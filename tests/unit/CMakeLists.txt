@@ -1,0 +1,62 @@
+# Unit tests
+
+# Memory tests
+eshkol_add_test(arena
+    SOURCES
+        test_arena.c
+    DEPS
+        eshkol_core
+)
+
+# String table tests
+eshkol_add_test(string_table
+    SOURCES
+        test_string_table.c
+    DEPS
+        eshkol_core
+)
+
+# Diagnostics tests
+eshkol_add_test(diagnostics
+    SOURCES
+        test_diagnostics.c
+    DEPS
+        eshkol_core
+)
+
+# Lexer tests
+eshkol_add_test(lexer
+    SOURCES
+        test_lexer.c
+    DEPS
+        eshkol_core
+        eshkol_frontend
+)
+
+# Parser tests
+eshkol_add_test(parser
+    SOURCES
+        test_parser.c
+    DEPS
+        eshkol_core
+        eshkol_frontend
+)
+
+# AST tests
+eshkol_add_test(ast
+    SOURCES
+        test_ast.c
+    DEPS
+        eshkol_core
+        eshkol_frontend
+)
+
+# Code generation tests
+eshkol_add_test(codegen
+    SOURCES
+        test_codegen.c
+    DEPS
+        eshkol_core
+        eshkol_frontend
+        eshkol_backend
+)

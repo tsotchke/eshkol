@@ -1,0 +1,32 @@
+;; Arithmetic Operations in Eshkol
+;; This example demonstrates basic arithmetic operations
+
+;; Define arithmetic functions
+(define (add x y)
+  (+ x y))
+
+(define (subtract x y)
+  (- x y))
+
+(define (multiply x y)
+  (* x y))
+
+(define (divide x y)
+  (/ x y))
+
+;; Define a function to demonstrate operator precedence
+(define (complex-expression a b c d)
+  (+ (* a b) (/ c d)))
+
+;; Main function
+(define (main)
+  (printf "Basic arithmetic operations:\n")
+  (printf "2 + 3 = %d\n" (add 2 3))
+  (printf "5 - 2 = %d\n" (subtract 5 2))
+  (printf "4 * 3 = %d\n" (multiply 4 3))
+  (printf "10 / 2 = %d\n" (divide 10 2))
+  
+  (printf "\nComplex expression (a * b + c / d):\n")
+  (printf "2 * 3 + 10 / 5 = %d\n" (complex-expression 2 3 10 5))
+  
+  0)  ; Return 0 to indicate success
