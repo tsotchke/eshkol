@@ -704,6 +704,56 @@ MatrixF* matrix_f_create(Arena* arena, size_t rows, size_t cols) {
 }
 
 /**
+ * @brief Create a new double matrix
+ * 
+ * @param arena Arena to allocate from
+ * @param rows Number of rows
+ * @param cols Number of columns
+ * @return A new double matrix, or NULL on failure
+ */
+MatrixD* matrix_d_create(Arena* arena, size_t rows, size_t cols) {
+    assert(arena != NULL);
+    assert(rows > 0 && rows <= VECTOR_MAX_DIM);
+    assert(cols > 0 && cols <= VECTOR_MAX_DIM);
+    
+    MatrixD* mat = arena_alloc_aligned(arena, sizeof(MatrixD), VECTOR_ALIGNMENT);
+    if (!mat) {
+        return NULL;
+    }
+    
+    mat->rows = rows;
+    mat->cols = cols;
+    memset(mat->data, 0, sizeof(mat->data));
+    
+    return mat;
+}
+
+/**
+ * @brief Create a new integer matrix
+ * 
+ * @param arena Arena to allocate from
+ * @param rows Number of rows
+ * @param cols Number of columns
+ * @return A new integer matrix, or NULL on failure
+ */
+MatrixI* matrix_i_create(Arena* arena, size_t rows, size_t cols) {
+    assert(arena != NULL);
+    assert(rows > 0 && rows <= VECTOR_MAX_DIM);
+    assert(cols > 0 && cols <= VECTOR_MAX_DIM);
+    
+    MatrixI* mat = arena_alloc_aligned(arena, sizeof(MatrixI), VECTOR_ALIGNMENT);
+    if (!mat) {
+        return NULL;
+    }
+    
+    mat->rows = rows;
+    mat->cols = cols;
+    memset(mat->data, 0, sizeof(mat->data));
+    
+    return mat;
+}
+
+/**
  * @brief Set a float matrix from an array
  * 
  * @param mat The matrix
