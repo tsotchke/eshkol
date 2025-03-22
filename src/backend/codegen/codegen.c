@@ -817,7 +817,7 @@ int codegen_compile_and_execute(CodegenContext* context, const char* c_file, cha
     
     // Create command to compile the C file
     char compile_cmd[1024];
-    snprintf(compile_cmd, sizeof(compile_cmd), "gcc -o %s.out %s", c_file, c_file);
+    snprintf(compile_cmd, sizeof(compile_cmd), "gcc -I../../include -o %s.out %s", c_file, c_file);
     
     // Compile the C file
     int result = system(compile_cmd);

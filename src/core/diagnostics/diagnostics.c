@@ -28,6 +28,7 @@ struct DiagnosticContext {
     Arena* arena;                /**< Arena for allocations */
     DiagnosticArray diagnostics; /**< Array of diagnostics */
     size_t error_count;          /**< Number of error and fatal messages */
+    DiagnosticVerbosity verbosity; /**< Verbosity level */
 };
 
 SourceLocation source_location_create(const char* file, int line, int column, int length) {
@@ -52,6 +53,7 @@ DiagnosticContext* diagnostic_context_create(Arena* arena) {
     context->diagnostics.count = 0;
     context->diagnostics.capacity = 0;
     context->error_count = 0;
+    context->verbosity = VERBOSITY_NORMAL; // Default to normal verbosity
     
     return context;
 }
@@ -160,9 +162,19 @@ void diagnostic_context_print(DiagnosticContext* context) {
     
     const char* reset_color = "\033[0m";
     
+    // Print verbosity level in debug mode
+    if (context->verbosity == VERBOSITY_DEBUG) {
+        printf("Diagnostic verbosity: DEBUG\n");
+    }
+    
     // Print each diagnostic
     for (size_t i = 0; i < context->diagnostics.count; i++) {
         const Diagnostic* diagnostic = &context->diagnostics.items[i];
+        
+        // Skip info messages in normal mode
+        if (diagnostic->severity == DIAGNOSTIC_INFO && context->verbosity == VERBOSITY_NORMAL) {
+            continue;
+        }
         
         // Get severity name and color
         const char* severity_name = get_severity_name(diagnostic->severity);
@@ -185,6 +197,23 @@ void diagnostic_context_print(DiagnosticContext* context) {
         
         // Print message
         printf("%s\n", diagnostic->message);
+        
+        // In debug mode, print additional information about the diagnostic
+        if (context->verbosity == VERBOSITY_DEBUG) {
+            printf("  - Severity: %d\n", diagnostic->severity);
+            printf("  - Location: file=%s, line=%d, column=%d, length=%d\n",
+                   diagnostic->location.file ? diagnostic->location.file : "(null)",
+                   diagnostic->location.line,
+                   diagnostic->location.column,
+                   diagnostic->location.length);
+        }
+    }
+    
+    // Print summary in verbose or debug mode
+    if (context->verbosity >= VERBOSITY_VERBOSE) {
+        printf("\nDiagnostic summary:\n");
+        printf("  - Total messages: %zu\n", context->diagnostics.count);
+        printf("  - Error messages: %zu\n", context->error_count);
     }
 }
 
@@ -197,4 +226,42 @@ void diagnostic_error(DiagnosticContext* context, int line, int column, const ch
     
     // Add diagnostic
     diagnostic_context_add(context, DIAGNOSTIC_ERROR, location, message, NULL);
+}
+
+void diagnostic_context_set_verbosity(DiagnosticContext* context, DiagnosticVerbosity verbosity) {
+    assert(context != NULL);
+    context->verbosity = verbosity;
+}
+
+DiagnosticVerbosity diagnostic_context_get_verbosity(DiagnosticContext* context) {
+    assert(context != NULL);
+    return context->verbosity;
+}
+
+void diagnostic_info(DiagnosticContext* context, int line, int column, const char* message) {
+    assert(context != NULL);
+    assert(message != NULL);
+    
+    // Only add info messages if verbosity is verbose or debug
+    if (context->verbosity >= VERBOSITY_VERBOSE) {
+        // Create source location
+        SourceLocation location = source_location_create(NULL, line, column, 0);
+        
+        // Add diagnostic
+        diagnostic_context_add(context, DIAGNOSTIC_INFO, location, message, NULL);
+    }
+}
+
+void diagnostic_debug(DiagnosticContext* context, int line, int column, const char* message) {
+    assert(context != NULL);
+    assert(message != NULL);
+    
+    // Only add debug messages if verbosity is debug
+    if (context->verbosity == VERBOSITY_DEBUG) {
+        // Create source location
+        SourceLocation location = source_location_create(NULL, line, column, 0);
+        
+        // Add diagnostic
+        diagnostic_context_add(context, DIAGNOSTIC_INFO, location, message, "DEBUG");
+    }
 }

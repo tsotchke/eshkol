@@ -72,6 +72,17 @@ typedef struct {
 typedef struct DiagnosticContext DiagnosticContext;
 
 /**
+ * @brief Diagnostic verbosity level
+ * 
+ * Controls the amount of information printed by the diagnostic system.
+ */
+typedef enum {
+    VERBOSITY_NORMAL,  /**< Normal verbosity level */
+    VERBOSITY_VERBOSE, /**< Verbose mode (-v) */
+    VERBOSITY_DEBUG    /**< Debug mode (-d) */
+} DiagnosticVerbosity;
+
+/**
  * @brief Create a diagnostic context
  * 
  * @param arena Arena to allocate from
@@ -144,6 +155,44 @@ void diagnostic_context_print(DiagnosticContext* context);
  * @param message Error message
  */
 void diagnostic_error(DiagnosticContext* context, int line, int column, const char* message);
+
+/**
+ * @brief Set the verbosity level of the diagnostic context
+ * 
+ * @param context The diagnostic context
+ * @param verbosity The verbosity level
+ */
+void diagnostic_context_set_verbosity(DiagnosticContext* context, DiagnosticVerbosity verbosity);
+
+/**
+ * @brief Get the verbosity level of the diagnostic context
+ * 
+ * @param context The diagnostic context
+ * @return The verbosity level
+ */
+DiagnosticVerbosity diagnostic_context_get_verbosity(DiagnosticContext* context);
+
+/**
+ * @brief Add an informational diagnostic message
+ * 
+ * @param context The diagnostic context
+ * @param line Line number (1-based)
+ * @param column Column number (1-based)
+ * @param message Info message
+ */
+void diagnostic_info(DiagnosticContext* context, int line, int column, const char* message);
+
+/**
+ * @brief Add a debug diagnostic message
+ * 
+ * This message will only be printed in debug mode.
+ * 
+ * @param context The diagnostic context
+ * @param line Line number (1-based)
+ * @param column Column number (1-based)
+ * @param message Debug message
+ */
+void diagnostic_debug(DiagnosticContext* context, int line, int column, const char* message);
 
 #ifdef __cplusplus
 }

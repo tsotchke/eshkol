@@ -13,6 +13,22 @@
 static char* read_file(const char* filename, size_t* length);
 
 /**
+ * Print usage information
+ * 
+ * @param program_name The name of the program
+ */
+static void print_usage(const char* program_name) {
+    fprintf(stderr, "Usage: %s [options] <input.esk> [output.c]\n", program_name);
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -v, --verbose   Enable verbose output\n");
+    fprintf(stderr, "  -d, --debug     Enable debug output (implies verbose)\n");
+    fprintf(stderr, "  -h, --help      Display this help message\n");
+    fprintf(stderr, "Arguments:\n");
+    fprintf(stderr, "  <input.esk>     Input Eshkol source file\n");
+    fprintf(stderr, "  [output.c]      Optional output C file (if not provided, compiles and runs)\n");
+}
+
+/**
  * Eshkol Compiler - Main Entry Point
  * 
  * This is the main entry point for the Eshkol compiler.
@@ -21,16 +37,57 @@ static char* read_file(const char* filename, size_t* length);
 int main(int argc, char** argv) {
     printf("Eshkol Compiler v0.1.0\n");
     
-    // Check arguments
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <input.esk> [output.c]\n", argv[0]);
-        fprintf(stderr, "  <input.esk>  Input Eshkol source file\n");
-        fprintf(stderr, "  [output.c]   Optional output C file (if not provided, compiles and runs)\n");
+    // Parse command line arguments
+    bool verbose_mode = false;
+    bool debug_mode = false;
+    const char* input_file = NULL;
+    const char* output_file = NULL;
+    
+    // Skip program name
+    int arg_index = 1;
+    
+    // Parse options
+    while (arg_index < argc && argv[arg_index][0] == '-') {
+        const char* arg = argv[arg_index];
+        
+        if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0) {
+            verbose_mode = true;
+        } else if (strcmp(arg, "-d") == 0 || strcmp(arg, "--debug") == 0) {
+            debug_mode = true;
+            verbose_mode = true; // Debug implies verbose
+        } else if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        } else {
+            fprintf(stderr, "Error: Unknown option '%s'\n", arg);
+            print_usage(argv[0]);
+            return 1;
+        }
+        
+        arg_index++;
+    }
+    
+    // Check if we have enough arguments
+    if (arg_index >= argc) {
+        fprintf(stderr, "Error: No input file specified\n");
+        print_usage(argv[0]);
         return 1;
     }
     
     // Get input filename
-    const char* input_file = argv[1];
+    input_file = argv[arg_index++];
+    
+    // Get output filename if provided
+    if (arg_index < argc) {
+        output_file = argv[arg_index++];
+    }
+    
+    // Print debug information
+    if (debug_mode) {
+        printf("Debug mode enabled\n");
+    } else if (verbose_mode) {
+        printf("Verbose mode enabled\n");
+    }
     
     // Read input file
     size_t source_length = 0;
@@ -63,6 +120,13 @@ int main(int argc, char** argv) {
         arena_destroy(arena);
         free(source);
         return 1;
+    }
+    
+    // Set verbosity level
+    if (debug_mode) {
+        diagnostic_context_set_verbosity(diag, VERBOSITY_DEBUG);
+    } else if (verbose_mode) {
+        diagnostic_context_set_verbosity(diag, VERBOSITY_VERBOSE);
     }
     
     // Initialize lexer
@@ -102,9 +166,8 @@ int main(int argc, char** argv) {
     }
     
     // Determine mode
-    if (argc >= 3) {
+    if (output_file) {
         // Compile to C file
-        const char* output_file = argv[2];
         printf("Compiling %s to %s...\n", input_file, output_file);
         
         // Generate C code

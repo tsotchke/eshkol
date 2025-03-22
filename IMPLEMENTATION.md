@@ -32,6 +32,7 @@ We have implemented the following components:
      - Source location tracking ✓
      - Diagnostic message system ✓
      - Error reporting utilities ✓
+     - Verbosity levels (normal, verbose, debug) ✓
    - Unit Tests:
      - Arena allocator tests ✓
      - String table tests ✓
@@ -101,6 +102,10 @@ We have implemented the following components:
 - Pipeline framework ✓
 - Compilation context ✓
 - Basic compilation flow ✓
+- Command-line interface with options ✓
+  - Verbose mode (-v, --verbose) ✓
+  - Debug mode (-d, --debug) ✓
+  - Help display (-h, --help) ✓
 - Pass management
 - Incremental compilation
 - Vector operation recognition and fusion
