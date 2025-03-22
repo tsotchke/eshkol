@@ -1004,3 +1004,184 @@ VectorF* compute_gradient_reverse_mode(Arena* arena, float (*f)(VectorF*), Vecto
     
     return gradient;
 }
+
+/**
+ * @brief Helper function to recursively compute derivatives
+ */
+static float compute_derivative_recursive(Arena* arena, float (*f)(VectorF*), float x, size_t order) {
+    if (order == 0) {
+        // Base case: evaluate the function
+        VectorF* x_vec = vector_f_create(arena, 1);
+        if (!x_vec) return 0.0f;
+        x_vec->data[0] = x;
+        return f(x_vec);
+    } else {
+        // Recursive case: use finite differences
+        const float h = 1e-4f;  // Small step size
+        float f_plus = compute_derivative_recursive(arena, f, x + h, order - 1);
+        float f_minus = compute_derivative_recursive(arena, f, x - h, order - 1);
+        return (f_plus - f_minus) / (2.0f * h);
+    }
+}
+
+/**
+ * @brief Compute the nth derivative of a scalar function of one variable
+ */
+float compute_nth_derivative(Arena* arena, float (*f)(VectorF*), float x, size_t order) {
+    assert(arena != NULL);
+    assert(f != NULL);
+    assert(order > 0);
+    
+    // Special case for first derivative
+    if (order == 1) {
+        VectorF* x_vec = vector_f_create(arena, 1);
+        if (!x_vec) return 0.0f;
+        x_vec->data[0] = x;
+        
+        VectorF* grad = compute_gradient_autodiff(arena, f, x_vec);
+        if (!grad) return 0.0f;
+        
+        return grad->data[0];
+    }
+    
+    // Special case for second derivative (Hessian)
+    if (order == 2) {
+        VectorF* x_vec = vector_f_create(arena, 1);
+        if (!x_vec) return 0.0f;
+        x_vec->data[0] = x;
+        
+        VectorF** hessian = compute_hessian(arena, f, x_vec);
+        if (!hessian || !hessian[0]) return 0.0f;
+        
+        return hessian[0]->data[0];
+    }
+    
+    // General case: use finite differences
+    return compute_derivative_recursive(arena, f, x, order);
+}
+
+/**
+ * @brief Helper function to compute the number of elements in a tensor of given order and dimension
+ */
+static size_t compute_tensor_size(size_t dim, size_t order) {
+    if (order == 0) return 1;  // Scalar
+    if (order == 1) return dim;  // Vector
+    
+    // For higher orders, use the formula for combinations with repetition
+    size_t result = 1;
+    for (size_t i = 0; i < order; i++) {
+        result *= (dim + i);
+        result /= (i + 1);
+    }
+    
+    return result;
+}
+
+/**
+ * @brief Helper function to recursively compute tensor elements
+ */
+static void compute_tensor_elements_recursive(
+    Arena* arena,
+    float (*f)(VectorF*),
+    VectorF* x,
+    size_t order,
+    size_t* indices,
+    size_t current_index,
+    size_t current_order,
+    float* tensor,
+    size_t* tensor_index
+) {
+    if (current_order == order) {
+        // Base case: compute the derivative
+        // Create a copy of x for finite differences
+        VectorF* x_copy = vector_f_copy(arena, x);
+        if (!x_copy) return;
+        
+        // Compute the derivative using finite differences
+        const float h = 1e-4f;  // Small step size
+        float result = 0.0f;
+        
+        // For each combination of indices, perturb the corresponding variables
+        // and compute the derivative using finite differences
+        for (size_t i = 0; i < order; i++) {
+            size_t idx = indices[i];
+            x_copy->data[idx] += h;
+            
+            // Compute f(x + h*e_i)
+            float f_plus = f(x_copy);
+            
+            // Compute f(x - h*e_i)
+            x_copy->data[idx] -= 2.0f * h;
+            float f_minus = f(x_copy);
+            
+            // Reset x_copy
+            x_copy->data[idx] += h;
+            
+            // Update result
+            result += (f_plus - f_minus) / (2.0f * h);
+        }
+        
+        // Store the result in the tensor
+        tensor[*tensor_index] = result;
+        (*tensor_index)++;
+        
+        return;
+    }
+    
+    // Recursive case: try all possible indices
+    for (size_t i = current_index; i < x->dim; i++) {
+        indices[current_order] = i;
+        compute_tensor_elements_recursive(
+            arena, f, x, order, indices, i,
+            current_order + 1, tensor, tensor_index
+        );
+    }
+}
+
+/**
+ * @brief Compute a tensor of higher-order derivatives of a scalar function
+ */
+void* compute_derivative_tensor(Arena* arena, float (*f)(VectorF*), VectorF* x, size_t order) {
+    assert(arena != NULL);
+    assert(f != NULL);
+    assert(x != NULL);
+    
+    // Special case for order 0 (function value)
+    if (order == 0) {
+        float* result = arena_alloc(arena, sizeof(float));
+        if (!result) return NULL;
+        *result = f(x);
+        return result;
+    }
+    
+    // Special case for order 1 (gradient)
+    if (order == 1) {
+        return compute_gradient_autodiff(arena, f, x);
+    }
+    
+    // Special case for order 2 (Hessian)
+    if (order == 2) {
+        return compute_hessian(arena, f, x);
+    }
+    
+    // General case: compute tensor of higher-order derivatives
+    size_t tensor_size = compute_tensor_size(x->dim, order);
+    float* tensor = arena_alloc(arena, tensor_size * sizeof(float));
+    if (!tensor) return NULL;
+    
+    // Initialize tensor elements to zero
+    for (size_t i = 0; i < tensor_size; i++) {
+        tensor[i] = 0.0f;
+    }
+    
+    // Compute tensor elements
+    size_t* indices = arena_alloc(arena, order * sizeof(size_t));
+    if (!indices) return NULL;
+    
+    size_t tensor_index = 0;
+    compute_tensor_elements_recursive(
+        arena, f, x, order, indices, 0, 0, tensor, &tensor_index
+    );
+    
+    return tensor;
+}

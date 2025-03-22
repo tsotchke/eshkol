@@ -266,6 +266,28 @@ VectorF** compute_jacobian(Arena* arena, VectorF* (*f)(Arena*, VectorF*), Vector
 VectorF** compute_hessian(Arena* arena, float (*f)(VectorF*), VectorF* x);
 
 /**
+ * @brief Compute the nth derivative of a scalar function of one variable
+ * 
+ * @param arena Arena for allocations
+ * @param f Function to differentiate (takes a VectorF* and returns a float)
+ * @param x Point at which to compute the derivative
+ * @param order Order of the derivative (1 for first derivative, 2 for second, etc.)
+ * @return nth derivative value
+ */
+float compute_nth_derivative(Arena* arena, float (*f)(VectorF*), float x, size_t order);
+
+/**
+ * @brief Compute a tensor of higher-order derivatives of a scalar function
+ * 
+ * @param arena Arena for allocations
+ * @param f Function to differentiate (takes a VectorF* and returns a float)
+ * @param x Point at which to compute the derivatives
+ * @param order Order of the derivatives (1 for gradient, 2 for Hessian, etc.)
+ * @return Tensor of higher-order derivatives
+ */
+void* compute_derivative_tensor(Arena* arena, float (*f)(VectorF*), VectorF* x, size_t order);
+
+/**
  * @brief Computational graph node types for reverse-mode automatic differentiation
  */
 typedef enum {

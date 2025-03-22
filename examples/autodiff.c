@@ -32,7 +32,7 @@ static VectorF* vector_function(Arena* arena, VectorF* x) {
     return result;
 }
 
-int main(int argc, char** argv) {
+int main(int argc __attribute__((unused)), char** argv __attribute__((unused))) {
     // Create memory arena
     Arena* arena = arena_create(1024 * 1024);
     if (!arena) {

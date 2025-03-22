@@ -25,8 +25,6 @@ eshkol_add_example(hello
     SOURCES
         hello.esk.c
     DEPS
-        eshkol_core
-        eshkol_frontend
         eshkol_backend
 )
 
@@ -35,8 +33,6 @@ eshkol_add_example(factorial
     SOURCES
         factorial.esk.c
     DEPS
-        eshkol_core
-        eshkol_frontend
         eshkol_backend
 )
 
