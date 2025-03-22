@@ -187,3 +187,14 @@ void diagnostic_context_print(DiagnosticContext* context) {
         printf("%s\n", diagnostic->message);
     }
 }
+
+void diagnostic_error(DiagnosticContext* context, int line, int column, const char* message) {
+    assert(context != NULL);
+    assert(message != NULL);
+    
+    // Create source location
+    SourceLocation location = source_location_create(NULL, line, column, 0);
+    
+    // Add diagnostic
+    diagnostic_context_add(context, DIAGNOSTIC_ERROR, location, message, NULL);
+}

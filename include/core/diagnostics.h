@@ -11,6 +11,7 @@
 
 #include "core/memory.h"
 #include <stddef.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -133,6 +134,16 @@ bool diagnostic_context_has_errors(DiagnosticContext* context);
  * @param context The diagnostic context
  */
 void diagnostic_context_print(DiagnosticContext* context);
+
+/**
+ * @brief Add an error diagnostic message
+ * 
+ * @param context The diagnostic context
+ * @param line Line number (1-based)
+ * @param column Column number (1-based)
+ * @param message Error message
+ */
+void diagnostic_error(DiagnosticContext* context, int line, int column, const char* message);
 
 #ifdef __cplusplus
 }

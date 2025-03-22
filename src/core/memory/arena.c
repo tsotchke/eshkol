@@ -3,7 +3,7 @@
  * @brief Implementation of the arena allocator
  */
 
-#include "eshkol/core/memory.h"
+#include "core/memory.h"
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
