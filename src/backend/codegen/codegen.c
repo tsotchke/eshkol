@@ -526,13 +526,79 @@ static bool generate_define(CodegenContext* context, const AstNode* node) {
 }
 
 /**
+ * @brief Convert a Type to a C type string
+ */
+static const char* type_to_c_type(Type* type) {
+    if (type == NULL) {
+        return "int"; // Default to int for untyped parameters
+    }
+    
+    switch (type->kind) {
+        case TYPE_VOID:
+            return "void";
+        case TYPE_BOOLEAN:
+            return "bool";
+        case TYPE_INTEGER:
+            switch (type->int_size) {
+                case INT_SIZE_8:
+                    return "int8_t";
+                case INT_SIZE_16:
+                    return "int16_t";
+                case INT_SIZE_32:
+                    return "int32_t";
+                case INT_SIZE_64:
+                    return "int64_t";
+                default:
+                    return "int";
+            }
+        case TYPE_FLOAT:
+            switch (type->float_size) {
+                case FLOAT_SIZE_32:
+                    return "float";
+                case FLOAT_SIZE_64:
+                    return "double";
+                default:
+                    return "double";
+            }
+        case TYPE_CHAR:
+            return "char";
+        case TYPE_STRING:
+            return "char*";
+        case TYPE_SYMBOL:
+            return "const char*";
+        case TYPE_PAIR:
+            return "void*"; // Pairs are represented as pointers
+        case TYPE_VECTOR:
+            return "VectorF*"; // Vectors are represented as VectorF*
+        case TYPE_FUNCTION:
+            return "void*"; // Functions are represented as function pointers
+        case TYPE_STRUCT:
+            return "void*"; // Structs are represented as pointers
+        case TYPE_UNION:
+            return "void*"; // Unions are represented as pointers
+        case TYPE_ANY:
+            return "eshkol_value_t"; // Any type is represented as eshkol_value_t
+        case TYPE_UNKNOWN:
+            return "void*"; // Unknown type is represented as void*
+        default:
+            return "int"; // Default to int
+    }
+}
+
+/**
  * @brief Generate C code for a function definition
  */
 static bool generate_function_def(CodegenContext* context, const AstNode* node) {
     assert(node->type == AST_FUNCTION_DEF);
     
+    // Get return type
+    const char* return_type = "int"; // Default to int
+    if (node->as.function_def.return_type != NULL) {
+        return_type = type_to_c_type(node->as.function_def.return_type);
+    }
+    
     // Generate function declaration with return type
-    fprintf(context->output, "int ");
+    fprintf(context->output, "%s ", return_type);
     
     // Generate function name
     if (!generate_expression(context, node->as.function_def.name)) {
@@ -547,10 +613,14 @@ static bool generate_function_def(CodegenContext* context, const AstNode* node) 
             fprintf(context->output, ", ");
         }
         
-        fprintf(context->output, "int ");
-        if (!generate_expression(context, node->as.function_def.params[i])) {
-            return false;
+        // Get parameter type
+        const char* param_type = "int"; // Default to int
+        Parameter* param = node->as.function_def.params[i];
+        if (param->type != NULL) {
+            param_type = type_to_c_type(param->type);
         }
+        
+        fprintf(context->output, "%s %s", param_type, param->name);
     }
     
     fprintf(context->output, ") {\n");
@@ -579,6 +649,15 @@ static bool generate_function_def(CodegenContext* context, const AstNode* node) 
  */
 static bool generate_variable_def(CodegenContext* context, const AstNode* node) {
     assert(node->type == AST_VARIABLE_DEF);
+    
+    // Get variable type
+    const char* var_type = "int"; // Default to int
+    if (node->type_info != NULL) {
+        var_type = type_to_c_type(node->type_info);
+    }
+    
+    // Generate variable declaration with type
+    fprintf(context->output, "%s ", var_type);
     
     // Generate variable name
     if (!generate_expression(context, node->as.variable_def.name)) {
@@ -726,7 +805,13 @@ static bool generate_program(CodegenContext* context, const AstNode* node) {
     fprintf(context->output, "// Forward declarations\n");
     for (size_t i = 0; i < node->as.program.expr_count; i++) {
         if (node->as.program.exprs[i]->type == AST_FUNCTION_DEF) {
-            fprintf(context->output, "int ");
+            // Get return type
+            const char* return_type = "int"; // Default to int
+            if (node->as.program.exprs[i]->as.function_def.return_type != NULL) {
+                return_type = type_to_c_type(node->as.program.exprs[i]->as.function_def.return_type);
+            }
+            
+            fprintf(context->output, "%s ", return_type);
             generate_expression(context, node->as.program.exprs[i]->as.function_def.name);
             fprintf(context->output, "(");
             
@@ -734,7 +819,15 @@ static bool generate_program(CodegenContext* context, const AstNode* node) {
                 if (j > 0) {
                     fprintf(context->output, ", ");
                 }
-                fprintf(context->output, "int");
+                
+                // Get parameter type
+                const char* param_type = "int"; // Default to int
+                Parameter* param = node->as.program.exprs[i]->as.function_def.params[j];
+                if (param->type != NULL) {
+                    param_type = type_to_c_type(param->type);
+                }
+                
+                fprintf(context->output, "%s", param_type);
             }
             
             fprintf(context->output, ");\n");
