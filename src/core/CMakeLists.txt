@@ -5,6 +5,7 @@ set(CORE_SOURCES
     memory/memory_tracking.c
     utils/string_table.c
     utils/dynamic_array.c
+    utils/file_io.c
     diagnostics/diagnostics.c
 )
 
@@ -15,6 +16,7 @@ set(CORE_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/memory/memory_tracking.h
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/string_table.h
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/dynamic_array.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/file_io.h
     ${CMAKE_CURRENT_SOURCE_DIR}/diagnostics/diagnostics.h
 )
 

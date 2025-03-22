@@ -32,6 +32,14 @@ eshkol_add_test(dynamic_array
         eshkol_core
 )
 
+# File I/O tests
+eshkol_add_test(file_io
+    SOURCES
+        test_file_io.c
+    DEPS
+        eshkol_core
+)
+
 # String table tests
 eshkol_add_test(string_table
     SOURCES
