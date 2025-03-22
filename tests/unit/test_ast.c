@@ -300,19 +300,19 @@ static void test_ast_create_lambda(void) {
     StringId id = string_table_intern(strings, str);
     assert(id != NULL);
     
-    // Create a parameter node
-    AstNode* param = ast_create_identifier(arena, id, 1, 10);
+    // Create a parameter
+    Parameter* param = parameter_create(arena, id, NULL, 1, 10);
     assert(param != NULL);
     
     // Create a parameter list
-    AstNode* params[1] = { param };
+    Parameter* params[1] = { param };
     
     // Create a body node
     AstNode* body = ast_create_identifier(arena, id, 1, 14);
     assert(body != NULL);
     
     // Create a lambda node
-    AstNode* node = ast_create_lambda(arena, params, 1, body, 1, 1);
+    AstNode* node = ast_create_lambda(arena, params, 1, NULL, body, 1, 1);
     assert(node != NULL);
     assert(node->type == AST_LAMBDA);
     assert(node->line == 1);
@@ -671,8 +671,8 @@ static void test_ast_print(void) {
     StringId sub_id = string_table_intern(strings, "-");
     
     // Create parameter list
-    AstNode* param = ast_create_identifier(arena, n_id, 1, 20);
-    AstNode* params[1] = { param };
+    Parameter* param = parameter_create(arena, n_id, NULL, 1, 20);
+    Parameter* params[1] = { param };
     
     // Create function name
     AstNode* name = ast_create_identifier(arena, factorial_id, 1, 9);
@@ -711,7 +711,7 @@ static void test_ast_print(void) {
     AstNode* if_expr = ast_create_if(arena, condition, one, mul_call, 2, 3);
     
     // Create function definition
-    AstNode* func_def = ast_create_function_def(arena, name, params, 1, if_expr, 1, 1);
+    AstNode* func_def = ast_create_function_def(arena, name, params, 1, NULL, if_expr, 1, 1);
     
     // Print the AST
     printf("\nPrinting factorial function AST:\n");
