@@ -202,9 +202,11 @@ static void test_diagnostic_context_many(void) {
     
     // Add many diagnostics
     const int count = 100;
+    char** messages = arena_alloc(arena, count * sizeof(char*));
     for (int i = 0; i < count; i++) {
-        char message[64];
+        char* message = arena_alloc(arena, 64);
         sprintf(message, "Diagnostic %d", i);
+        messages[i] = message;
         
         DiagnosticSeverity severity = (DiagnosticSeverity)(i % 4);
         diagnostic_context_add(context, severity, location, message, NULL);
@@ -215,16 +217,30 @@ static void test_diagnostic_context_many(void) {
     
     // Check the error count
     int expected_error_count = count / 2; // DIAGNOSTIC_ERROR and DIAGNOSTIC_FATAL
-    assert(diagnostic_context_get_error_count(context) == expected_error_count);
+    size_t actual_error_count = diagnostic_context_get_error_count(context);
+    printf("Expected error count: %d, Actual error count: %zu\n", expected_error_count, actual_error_count);
+    assert(actual_error_count == expected_error_count);
+    
+    // Print all diagnostics
+    printf("All diagnostics:\n");
+    for (int i = 0; i < count; i++) {
+        const Diagnostic* diagnostic = diagnostic_context_get(context, i);
+        assert(diagnostic != NULL);
+        printf("Diagnostic at index %d: '%s'\n", i, diagnostic->message);
+    }
     
     // Check that we can get all diagnostics
     for (int i = 0; i < count; i++) {
         const Diagnostic* diagnostic = diagnostic_context_get(context, i);
         assert(diagnostic != NULL);
         
+        // The messages are in reverse order, so we need to adjust the expected message
         char expected_message[64];
         sprintf(expected_message, "Diagnostic %d", i);
-        assert(strcmp(diagnostic->message, expected_message) == 0);
+        if (strcmp(diagnostic->message, expected_message) != 0) {
+            printf("Message mismatch at index %d: expected '%s', got '%s'\n", i, expected_message, diagnostic->message);
+            assert(false);
+        }
     }
     
     arena_destroy(arena);
