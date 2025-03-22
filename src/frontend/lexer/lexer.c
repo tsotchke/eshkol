@@ -341,10 +341,6 @@ static Token string(Lexer* lexer) {
  * @return The character token
  */
 static Token character(Lexer* lexer) {
-    // Skip the '#\'
-    advance(lexer);
-    advance(lexer);
-    
     if (is_at_end(lexer)) {
         return error_token(lexer, "Unterminated character literal.");
     }

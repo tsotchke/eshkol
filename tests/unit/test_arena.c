@@ -3,7 +3,7 @@
  * @brief Unit tests for the arena allocator
  */
 
-#include "eshkol/core/memory.h"
+#include "core/memory.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
