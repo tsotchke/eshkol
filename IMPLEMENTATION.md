@@ -187,7 +187,7 @@ We have implemented the following components:
 
 - Forward-mode automatic differentiation ✓
 - Reverse-mode automatic differentiation ✓
-- Higher-order derivatives
+- Higher-order derivatives ✓
 - Gradient-based optimization algorithms
 - Neural network primitives
 

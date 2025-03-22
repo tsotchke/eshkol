@@ -394,6 +394,7 @@ Token lexer_scan_token(Lexer* lexer) {
             }
             return make_token(lexer, TOKEN_COMMA);
         case '.': return make_token(lexer, TOKEN_DOT);
+        case ':': return make_token(lexer, TOKEN_COLON);
         case '"': return string(lexer);
         case '#':
             if (match(lexer, '(')) {
@@ -445,6 +446,7 @@ const char* token_type_to_string(TokenType type) {
         case TOKEN_COMMA: return ",";
         case TOKEN_COMMA_AT: return ",@";
         case TOKEN_DOT: return ".";
+        case TOKEN_COLON: return ":";
         case TOKEN_IDENTIFIER: return "IDENTIFIER";
         case TOKEN_BOOLEAN: return "BOOLEAN";
         case TOKEN_NUMBER: return "NUMBER";

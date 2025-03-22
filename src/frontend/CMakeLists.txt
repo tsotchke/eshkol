@@ -3,6 +3,8 @@ set(FRONTEND_SOURCES
     lexer/lexer.c
     ast/ast.c
     parser/parser.c
+    parser/type_parser.c
+    ast/parameter.c
 )
 
 # Define headers
@@ -10,6 +12,8 @@ set(FRONTEND_HEADERS
     ${CMAKE_SOURCE_DIR}/include/frontend/lexer/lexer.h
     ${CMAKE_SOURCE_DIR}/include/frontend/ast/ast.h
     ${CMAKE_SOURCE_DIR}/include/frontend/parser/parser.h
+    ${CMAKE_SOURCE_DIR}/include/frontend/parser/type_parser.h
+    ${CMAKE_SOURCE_DIR}/include/frontend/ast/parameter.h
 )
 
 # Create library

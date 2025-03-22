@@ -56,6 +56,14 @@ eshkol_add_test(autodiff
         eshkol_core
 )
 
+# Type system tests
+eshkol_add_test(type
+    SOURCES
+        test_type.c
+    DEPS
+        eshkol_core
+)
+
 # String table tests
 eshkol_add_test(string_table
     SOURCES

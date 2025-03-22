@@ -347,7 +347,7 @@ static AstNode* parse_define(Parser* parser, size_t line, size_t column) {
         
         // Parse the parameter list
         size_t param_count = 0;
-        AstNode** params = arena_alloc(parser->arena, sizeof(AstNode*) * 16); // Arbitrary initial capacity
+        Parameter** params = arena_alloc(parser->arena, sizeof(Parameter*) * 16); // Arbitrary initial capacity
         if (!params) {
             error(parser, "Failed to allocate memory for parameters");
             return NULL;
@@ -365,9 +365,9 @@ static AstNode* parse_define(Parser* parser, size_t line, size_t column) {
             }
             
             StringId param_name = parser->previous.value.string_id;
-            AstNode* param = ast_create_identifier(parser->arena, param_name, parser->previous.line, parser->previous.column);
+            Parameter* param = parameter_create(parser->arena, param_name, NULL, parser->previous.line, parser->previous.column);
             if (!param) {
-                error(parser, "Failed to create identifier node");
+                error(parser, "Failed to create parameter");
                 return NULL;
             }
             
@@ -422,7 +422,7 @@ static AstNode* parse_define(Parser* parser, size_t line, size_t column) {
         consume(parser, TOKEN_RPAREN, "Expected ')' after define");
         
         // Create a function definition node
-        return ast_create_function_def(parser->arena, name, params, param_count, body, line, column);
+        return ast_create_function_def(parser->arena, name, params, param_count, NULL, body, line, column);
     } else {
         error(parser, "Expected variable name or function definition");
         return NULL;
@@ -485,7 +485,7 @@ static AstNode* parse_lambda(Parser* parser, size_t line, size_t column) {
     }
     
     size_t param_count = 0;
-    AstNode** params = arena_alloc(parser->arena, sizeof(AstNode*) * 16); // Arbitrary initial capacity
+    Parameter** params = arena_alloc(parser->arena, sizeof(Parameter*) * 16); // Arbitrary initial capacity
     if (!params) {
         error(parser, "Failed to allocate memory for parameters");
         return NULL;
@@ -503,9 +503,9 @@ static AstNode* parse_lambda(Parser* parser, size_t line, size_t column) {
         }
         
         StringId param_name = parser->previous.value.string_id;
-        AstNode* param = ast_create_identifier(parser->arena, param_name, parser->previous.line, parser->previous.column);
+        Parameter* param = parameter_create(parser->arena, param_name, NULL, parser->previous.line, parser->previous.column);
         if (!param) {
-            error(parser, "Failed to create identifier node");
+            error(parser, "Failed to create parameter");
             return NULL;
         }
         
@@ -560,7 +560,7 @@ static AstNode* parse_lambda(Parser* parser, size_t line, size_t column) {
     consume(parser, TOKEN_RPAREN, "Expected ')' after lambda");
     
     // Create a lambda node
-    return ast_create_lambda(parser->arena, params, param_count, body, line, column);
+    return ast_create_lambda(parser->arena, params, param_count, NULL, body, line, column);
 }
 
 /**

@@ -195,12 +195,13 @@ AstNode* ast_create_define(Arena* arena, AstNode* name, AstNode* value, size_t l
  * @param arena Arena allocator
  * @param params Parameter list
  * @param param_count Number of parameters
+ * @param return_type Return type (can be NULL for untyped)
  * @param body Function body
  * @param line Line number
  * @param column Column number
  * @return A new lambda node, or NULL on failure
  */
-AstNode* ast_create_lambda(Arena* arena, AstNode** params, size_t param_count, AstNode* body, size_t line, size_t column) {
+AstNode* ast_create_lambda(Arena* arena, Parameter** params, size_t param_count, Type* return_type, AstNode* body, size_t line, size_t column) {
     AstNode* node = ast_create_node(arena, AST_LAMBDA, line, column);
     if (!node) {
         return NULL;
@@ -208,6 +209,7 @@ AstNode* ast_create_lambda(Arena* arena, AstNode** params, size_t param_count, A
     
     node->as.lambda.params = params;
     node->as.lambda.param_count = param_count;
+    node->as.lambda.return_type = return_type;
     node->as.lambda.body = body;
     
     return node;
@@ -628,12 +630,13 @@ AstNode* ast_create_sequence(Arena* arena, AstNode** exprs, size_t expr_count, s
  * @param name Function name
  * @param params Parameter list
  * @param param_count Number of parameters
+ * @param return_type Return type (can be NULL for untyped)
  * @param body Function body
  * @param line Line number
  * @param column Column number
  * @return A new function definition node, or NULL on failure
  */
-AstNode* ast_create_function_def(Arena* arena, AstNode* name, AstNode** params, size_t param_count, AstNode* body, size_t line, size_t column) {
+AstNode* ast_create_function_def(Arena* arena, AstNode* name, Parameter** params, size_t param_count, Type* return_type, AstNode* body, size_t line, size_t column) {
     AstNode* node = ast_create_node(arena, AST_FUNCTION_DEF, line, column);
     if (!node) {
         return NULL;
@@ -642,6 +645,7 @@ AstNode* ast_create_function_def(Arena* arena, AstNode* name, AstNode** params, 
     node->as.function_def.name = name;
     node->as.function_def.params = params;
     node->as.function_def.param_count = param_count;
+    node->as.function_def.return_type = return_type;
     node->as.function_def.body = body;
     
     return node;

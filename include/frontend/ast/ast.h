@@ -11,6 +11,8 @@
 #include "core/memory.h"
 #include "core/string_table.h"
 #include "core/diagnostics.h"
+#include "core/type.h"
+#include "frontend/ast/parameter.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -87,6 +89,7 @@ struct AstNode {
     AstNodeType type;         /**< Node type */
     size_t line;              /**< Line number */
     size_t column;            /**< Column number */
+    Type* type_info;          /**< Type information (can be NULL for untyped) */
     
     union {
         // Literals
@@ -124,8 +127,9 @@ struct AstNode {
         
         // Lambda
         struct {
-            AstNode** params; /**< Parameter list */
+            Parameter** params; /**< Parameter list */
             size_t param_count; /**< Number of parameters */
+            Type* return_type; /**< Return type (can be NULL for untyped) */
             AstNode* body;    /**< Function body */
         } lambda;
         
@@ -226,8 +230,9 @@ struct AstNode {
         // Function definition
         struct {
             AstNode* name;    /**< Function name */
-            AstNode** params; /**< Parameter list */
+            Parameter** params; /**< Parameter list */
             size_t param_count; /**< Number of parameters */
+            Type* return_type; /**< Return type (can be NULL for untyped) */
             AstNode* body;    /**< Function body */
         } function_def;
         
@@ -356,12 +361,13 @@ AstNode* ast_create_define(Arena* arena, AstNode* name, AstNode* value, size_t l
  * @param arena Arena allocator
  * @param params Parameter list
  * @param param_count Number of parameters
+ * @param return_type Return type (can be NULL for untyped)
  * @param body Function body
  * @param line Line number
  * @param column Column number
  * @return A new lambda node, or NULL on failure
  */
-AstNode* ast_create_lambda(Arena* arena, AstNode** params, size_t param_count, AstNode* body, size_t line, size_t column);
+AstNode* ast_create_lambda(Arena* arena, Parameter** params, size_t param_count, Type* return_type, AstNode* body, size_t line, size_t column);
 
 /**
  * @brief Create an if node
@@ -592,12 +598,13 @@ AstNode* ast_create_sequence(Arena* arena, AstNode** exprs, size_t expr_count, s
  * @param name Function name
  * @param params Parameter list
  * @param param_count Number of parameters
+ * @param return_type Return type (can be NULL for untyped)
  * @param body Function body
  * @param line Line number
  * @param column Column number
  * @return A new function definition node, or NULL on failure
  */
-AstNode* ast_create_function_def(Arena* arena, AstNode* name, AstNode** params, size_t param_count, AstNode* body, size_t line, size_t column);
+AstNode* ast_create_function_def(Arena* arena, AstNode* name, Parameter** params, size_t param_count, Type* return_type, AstNode* body, size_t line, size_t column);
 
 /**
  * @brief Create a variable definition node

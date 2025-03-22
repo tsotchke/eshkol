@@ -9,6 +9,7 @@ set(CORE_SOURCES
     utils/vector.c
     utils/simd.c
     utils/autodiff.c
+    utils/type.c
     diagnostics/diagnostics.c
 )
 
@@ -23,6 +24,7 @@ set(CORE_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/vector.h
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/simd.h
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/autodiff.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/type.h
     ${CMAKE_CURRENT_SOURCE_DIR}/diagnostics/diagnostics.h
 )
 

@@ -40,6 +40,7 @@ typedef enum {
     TOKEN_COMMA,            /**< Comma ',' */
     TOKEN_COMMA_AT,         /**< Comma-at ',@' */
     TOKEN_DOT,              /**< Dot '.' */
+    TOKEN_COLON,            /**< Colon ':' */
     TOKEN_IDENTIFIER,       /**< Identifier */
     TOKEN_BOOLEAN,          /**< Boolean literal (#t or #f) */
     TOKEN_NUMBER,           /**< Number literal */
