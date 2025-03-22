@@ -24,6 +24,14 @@ eshkol_add_test(memory_tracking
         eshkol_core
 )
 
+# Dynamic array tests
+eshkol_add_test(dynamic_array
+    SOURCES
+        test_dynamic_array.c
+    DEPS
+        eshkol_core
+)
+
 # String table tests
 eshkol_add_test(string_table
     SOURCES

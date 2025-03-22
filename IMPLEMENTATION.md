@@ -46,7 +46,7 @@ We have implemented the following components:
 
 ### Utility Components
 
-- Additional data structures (hash tables, dynamic arrays)
+- Additional data structures (hash tables, dynamic arrays) ✓
 - File I/O utilities
 
 ### Vector and Matrix Foundations
@@ -219,7 +219,7 @@ We have implemented the following components:
 - Complete remaining core infrastructure:
   - Object pool implementation ✓
   - Memory tracking utilities ✓
-  - Additional utility components
+  - Additional utility components (dynamic arrays) ✓
   - Vector/matrix data structures design
 - Begin frontend implementation:
   - Lexer implementation
