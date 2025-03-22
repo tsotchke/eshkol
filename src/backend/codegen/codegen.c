@@ -144,7 +144,128 @@ static bool generate_identifier(CodegenContext* context, const AstNode* node) {
 static bool generate_call(CodegenContext* context, const AstNode* node) {
     assert(node->type == AST_CALL);
     
-    // Generate function name
+    // Check if it's an operator call
+    if (node->as.call.callee->type == AST_IDENTIFIER) {
+        const char* op_name = node->as.call.callee->as.identifier.name;
+        
+        // Handle arithmetic operators
+        if (strcmp(op_name, "+") == 0 && node->as.call.arg_count == 2) {
+            fprintf(context->output, "(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, " + ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "-") == 0) {
+            if (node->as.call.arg_count == 1) {
+                // Unary minus
+                fprintf(context->output, "(-");
+                if (!generate_expression(context, node->as.call.args[0])) {
+                    return false;
+                }
+                fprintf(context->output, ")");
+                return true;
+            } else if (node->as.call.arg_count == 2) {
+                // Binary minus
+                fprintf(context->output, "(");
+                if (!generate_expression(context, node->as.call.args[0])) {
+                    return false;
+                }
+                fprintf(context->output, " - ");
+                if (!generate_expression(context, node->as.call.args[1])) {
+                    return false;
+                }
+                fprintf(context->output, ")");
+                return true;
+            }
+        } else if (strcmp(op_name, "*") == 0 && node->as.call.arg_count == 2) {
+            fprintf(context->output, "(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, " * ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "/") == 0 && node->as.call.arg_count == 2) {
+            fprintf(context->output, "(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, " / ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        }
+        
+        // Handle comparison operators
+        else if (strcmp(op_name, "<") == 0 && node->as.call.arg_count == 2) {
+            fprintf(context->output, "(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, " < ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, ">") == 0 && node->as.call.arg_count == 2) {
+            fprintf(context->output, "(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, " > ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "<=") == 0 && node->as.call.arg_count == 2) {
+            fprintf(context->output, "(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, " <= ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, ">=") == 0 && node->as.call.arg_count == 2) {
+            fprintf(context->output, "(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, " >= ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "=") == 0 && node->as.call.arg_count == 2) {
+            fprintf(context->output, "(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, " == ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        }
+    }
+    
+    // Regular function call
     if (!generate_expression(context, node->as.call.callee)) {
         return false;
     }
@@ -262,12 +383,15 @@ static bool generate_define(CodegenContext* context, const AstNode* node) {
 static bool generate_function_def(CodegenContext* context, const AstNode* node) {
     assert(node->type == AST_FUNCTION_DEF);
     
+    // Generate function declaration with return type
+    fprintf(context->output, "int ");
+    
     // Generate function name
     if (!generate_expression(context, node->as.function_def.name)) {
         return false;
     }
     
-    // Generate parameters
+    // Generate parameters with types
     fprintf(context->output, "(");
     
     for (size_t i = 0; i < node->as.function_def.param_count; i++) {
@@ -275,6 +399,7 @@ static bool generate_function_def(CodegenContext* context, const AstNode* node) 
             fprintf(context->output, ", ");
         }
         
+        fprintf(context->output, "int ");
         if (!generate_expression(context, node->as.function_def.params[i])) {
             return false;
         }
@@ -446,6 +571,26 @@ static bool generate_program(CodegenContext* context, const AstNode* node) {
     fprintf(context->output, "    void* pointer;\n");
     fprintf(context->output, "} eshkol_value_t;\n\n");
     
+    // Forward declare functions
+    fprintf(context->output, "// Forward declarations\n");
+    for (size_t i = 0; i < node->as.program.expr_count; i++) {
+        if (node->as.program.exprs[i]->type == AST_FUNCTION_DEF) {
+            fprintf(context->output, "int ");
+            generate_expression(context, node->as.program.exprs[i]->as.function_def.name);
+            fprintf(context->output, "(");
+            
+            for (size_t j = 0; j < node->as.program.exprs[i]->as.function_def.param_count; j++) {
+                if (j > 0) {
+                    fprintf(context->output, ", ");
+                }
+                fprintf(context->output, "int");
+            }
+            
+            fprintf(context->output, ");\n");
+        }
+    }
+    fprintf(context->output, "\n");
+    
     // Generate expressions
     for (size_t i = 0; i < node->as.program.expr_count; i++) {
         if (!generate_expression(context, node->as.program.exprs[i])) {
@@ -453,12 +598,24 @@ static bool generate_program(CodegenContext* context, const AstNode* node) {
         }
     }
     
-    // Generate main function
-    fprintf(context->output, "int main(int argc, char** argv) {\n");
-    fprintf(context->output, "    // TODO: Call the main function if it exists\n");
-    fprintf(context->output, "    printf(\"Hello from Eshkol!\\n\");\n");
-    fprintf(context->output, "    return 0;\n");
-    fprintf(context->output, "}\n");
+    // Generate main function if there isn't one already
+    bool has_main = false;
+    for (size_t i = 0; i < node->as.program.expr_count; i++) {
+        if (node->as.program.exprs[i]->type == AST_FUNCTION_DEF) {
+            AstNode* name = node->as.program.exprs[i]->as.function_def.name;
+            if (name->type == AST_IDENTIFIER && strcmp(name->as.identifier.name, "main") == 0) {
+                has_main = true;
+                break;
+            }
+        }
+    }
+    
+    if (!has_main) {
+        fprintf(context->output, "int main(int argc, char** argv) {\n");
+        fprintf(context->output, "    printf(\"Hello from Eshkol!\\n\");\n");
+        fprintf(context->output, "    return 0;\n");
+        fprintf(context->output, "}\n");
+    }
     
     return true;
 }
