@@ -40,6 +40,14 @@ eshkol_add_test(file_io
         eshkol_core
 )
 
+# Vector and SIMD tests
+eshkol_add_test(vector
+    SOURCES
+        test_vector.c
+    DEPS
+        eshkol_core
+)
+
 # String table tests
 eshkol_add_test(string_table
     SOURCES
