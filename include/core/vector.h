@@ -105,6 +105,16 @@ typedef struct {
 VectorF* vector_f_create(Arena* arena, size_t dim);
 
 /**
+ * @brief Create a new float vector from an array
+ * 
+ * @param arena Arena to allocate from
+ * @param data Array of floats
+ * @param dim Dimension of the vector
+ * @return A new float vector, or NULL on failure
+ */
+VectorF* vector_f_create_from_array(Arena* arena, const float* data, size_t dim);
+
+/**
  * @brief Create a new double vector
  * 
  * @param arena Arena to allocate from
@@ -649,6 +659,80 @@ MatrixD* matrix_d_identity(Arena* arena, size_t dim);
  * @return Identity matrix, or NULL on failure
  */
 MatrixI* matrix_i_identity(Arena* arena, size_t dim);
+
+/**
+ * @brief Function pointer type for scalar field functions
+ * 
+ * A scalar field is a function that maps a point in space to a scalar value.
+ * 
+ * @param v The point in space
+ * @return The scalar value at the point
+ */
+typedef float (*ScalarFieldFunc)(const VectorF* v);
+
+/**
+ * @brief Function pointer type for vector field functions
+ * 
+ * A vector field is a function that maps a point in space to a vector.
+ * 
+ * @param arena Arena to allocate from
+ * @param v The point in space
+ * @return The vector at the point
+ */
+typedef VectorF* (*VectorFieldFunc)(Arena* arena, const VectorF* v);
+
+/**
+ * @brief Compute the gradient of a scalar field at a point
+ * 
+ * The gradient of a scalar field is a vector field that points in the direction
+ * of the greatest rate of increase of the scalar field, with magnitude equal to
+ * the rate of increase in that direction.
+ * 
+ * @param arena Arena to allocate from
+ * @param f The scalar field function
+ * @param v The point at which to compute the gradient
+ * @return The gradient vector, or NULL on failure
+ */
+VectorF* compute_gradient(Arena* arena, ScalarFieldFunc f, const VectorF* v);
+
+/**
+ * @brief Compute the divergence of a vector field at a point
+ * 
+ * The divergence of a vector field is a scalar field that measures the rate at
+ * which the vector field "flows" away from a point.
+ * 
+ * @param arena Arena to allocate from
+ * @param F The vector field function
+ * @param v The point at which to compute the divergence
+ * @return The divergence value
+ */
+float compute_divergence(Arena* arena, VectorFieldFunc F, const VectorF* v);
+
+/**
+ * @brief Compute the curl of a vector field at a point
+ * 
+ * The curl of a vector field is a vector field that measures the rotation of the
+ * vector field around a point.
+ * 
+ * @param arena Arena to allocate from
+ * @param F The vector field function
+ * @param v The point at which to compute the curl
+ * @return The curl vector, or NULL on failure
+ */
+VectorF* compute_curl(Arena* arena, VectorFieldFunc F, const VectorF* v);
+
+/**
+ * @brief Compute the Laplacian of a scalar field at a point
+ * 
+ * The Laplacian of a scalar field is a scalar field that measures the divergence
+ * of the gradient of the scalar field.
+ * 
+ * @param arena Arena to allocate from
+ * @param f The scalar field function
+ * @param v The point at which to compute the Laplacian
+ * @return The Laplacian value
+ */
+float compute_laplacian(Arena* arena, ScalarFieldFunc f, const VectorF* v);
 
 #ifdef __cplusplus
 }

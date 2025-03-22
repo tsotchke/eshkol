@@ -33,6 +33,29 @@ VectorF* vector_f_create(Arena* arena, size_t dim) {
 }
 
 /**
+ * @brief Create a new float vector from an array
+ * 
+ * @param arena Arena to allocate from
+ * @param data Array of floats
+ * @param dim Dimension of the vector
+ * @return A new float vector, or NULL on failure
+ */
+VectorF* vector_f_create_from_array(Arena* arena, const float* data, size_t dim) {
+    assert(arena != NULL);
+    assert(data != NULL);
+    assert(dim > 0 && dim <= VECTOR_MAX_DIM);
+    
+    VectorF* vec = vector_f_create(arena, dim);
+    if (!vec) {
+        return NULL;
+    }
+    
+    memcpy(vec->data, data, dim * sizeof(float));
+    
+    return vec;
+}
+
+/**
  * @brief Create a new double vector
  * 
  * @param arena Arena to allocate from
@@ -1187,4 +1210,201 @@ MatrixI* matrix_i_identity(Arena* arena, size_t dim) {
     }
     
     return mat;
+}
+
+/**
+ * @brief Compute the gradient of a scalar field at a point
+ * 
+ * The gradient of a scalar field is a vector field that points in the direction
+ * of the greatest rate of increase of the scalar field, with magnitude equal to
+ * the rate of increase in that direction.
+ * 
+ * @param arena Arena to allocate from
+ * @param f The scalar field function
+ * @param v The point at which to compute the gradient
+ * @return The gradient vector, or NULL on failure
+ */
+VectorF* compute_gradient(Arena* arena, ScalarFieldFunc f, const VectorF* v) {
+    assert(arena != NULL);
+    assert(f != NULL);
+    assert(v != NULL);
+    
+    // Create a result vector
+    VectorF* result = vector_f_create(arena, v->dim);
+    if (!result) {
+        return NULL;
+    }
+    
+    // Compute the gradient using finite differences
+    const float h = 1e-4f; // Step size for finite differences
+    const float f_v = f(v); // Value of f at v
+    
+    // For each dimension, compute the partial derivative
+    for (size_t i = 0; i < v->dim; i++) {
+        // Create a perturbed vector
+        VectorF perturbed = *v;
+        perturbed.data[i] += h;
+        
+        // Compute the partial derivative
+        float f_perturbed = f(&perturbed);
+        result->data[i] = (f_perturbed - f_v) / h;
+    }
+    
+    return result;
+}
+
+/**
+ * @brief Compute the divergence of a vector field at a point
+ * 
+ * The divergence of a vector field is a scalar field that measures the rate at
+ * which the vector field "flows" away from a point.
+ * 
+ * @param arena Arena to allocate from
+ * @param F The vector field function
+ * @param v The point at which to compute the divergence
+ * @return The divergence value
+ */
+float compute_divergence(Arena* arena, VectorFieldFunc F, const VectorF* v) {
+    assert(arena != NULL);
+    assert(F != NULL);
+    assert(v != NULL);
+    
+    // Compute the vector field at the point
+    VectorF* F_v = F(arena, v);
+    if (!F_v) {
+        return 0.0f;
+    }
+    
+    // Compute the divergence using finite differences
+    const float h = 1e-4f; // Step size for finite differences
+    float divergence = 0.0f;
+    
+    // For each dimension, compute the partial derivative of the corresponding component
+    for (size_t i = 0; i < v->dim; i++) {
+        // Create a perturbed vector
+        VectorF perturbed = *v;
+        perturbed.data[i] += h;
+        
+        // Compute the vector field at the perturbed point
+        VectorF* F_perturbed = F(arena, &perturbed);
+        if (!F_perturbed) {
+            continue;
+        }
+        
+        // Compute the partial derivative
+        divergence += (F_perturbed->data[i] - F_v->data[i]) / h;
+    }
+    
+    return divergence;
+}
+
+/**
+ * @brief Compute the curl of a vector field at a point
+ * 
+ * The curl of a vector field is a vector field that measures the rotation of the
+ * vector field around a point.
+ * 
+ * @param arena Arena to allocate from
+ * @param F The vector field function
+ * @param v The point at which to compute the curl
+ * @return The curl vector, or NULL on failure
+ */
+VectorF* compute_curl(Arena* arena, VectorFieldFunc F, const VectorF* v) {
+    assert(arena != NULL);
+    assert(F != NULL);
+    assert(v != NULL);
+    assert(v->dim == 3); // Curl is only defined for 3D vector fields
+    
+    // Create a result vector
+    VectorF* result = vector_f_create(arena, 3);
+    if (!result) {
+        return NULL;
+    }
+    
+    // Compute the curl using finite differences
+    const float h = 1e-4f; // Step size for finite differences
+    
+    // Compute the vector field at the point
+    VectorF* F_v = F(arena, v);
+    if (!F_v) {
+        return result;
+    }
+    
+    // For each component of the curl, compute the cross derivatives
+    // curl[0] = dF_z/dy - dF_y/dz
+    // curl[1] = dF_x/dz - dF_z/dx
+    // curl[2] = dF_y/dx - dF_x/dy
+    
+    // Compute dF_y/dz
+    VectorF perturbed_z = *v;
+    perturbed_z.data[2] += h;
+    VectorF* F_perturbed_z = F(arena, &perturbed_z);
+    float dF_y_dz = F_perturbed_z ? (F_perturbed_z->data[1] - F_v->data[1]) / h : 0.0f;
+    
+    // Compute dF_z/dy
+    VectorF perturbed_y = *v;
+    perturbed_y.data[1] += h;
+    VectorF* F_perturbed_y = F(arena, &perturbed_y);
+    float dF_z_dy = F_perturbed_y ? (F_perturbed_y->data[2] - F_v->data[2]) / h : 0.0f;
+    
+    // Compute dF_x/dz
+    float dF_x_dz = F_perturbed_z ? (F_perturbed_z->data[0] - F_v->data[0]) / h : 0.0f;
+    
+    // Compute dF_z/dx
+    VectorF perturbed_x = *v;
+    perturbed_x.data[0] += h;
+    VectorF* F_perturbed_x = F(arena, &perturbed_x);
+    float dF_z_dx = F_perturbed_x ? (F_perturbed_x->data[2] - F_v->data[2]) / h : 0.0f;
+    
+    // Compute dF_y/dx
+    float dF_y_dx = F_perturbed_x ? (F_perturbed_x->data[1] - F_v->data[1]) / h : 0.0f;
+    
+    // Compute dF_x/dy
+    float dF_x_dy = F_perturbed_y ? (F_perturbed_y->data[0] - F_v->data[0]) / h : 0.0f;
+    
+    // Set the curl components
+    result->data[0] = dF_z_dy - dF_y_dz;
+    result->data[1] = dF_x_dz - dF_z_dx;
+    result->data[2] = dF_y_dx - dF_x_dy;
+    
+    return result;
+}
+
+/**
+ * @brief Compute the Laplacian of a scalar field at a point
+ * 
+ * The Laplacian of a scalar field is a scalar field that measures the divergence
+ * of the gradient of the scalar field.
+ * 
+ * @param arena Arena to allocate from
+ * @param f The scalar field function
+ * @param v The point at which to compute the Laplacian
+ * @return The Laplacian value
+ */
+float compute_laplacian(Arena* arena, ScalarFieldFunc f, const VectorF* v) {
+    assert(arena != NULL);
+    assert(f != NULL);
+    assert(v != NULL);
+    
+    // Compute the Laplacian using finite differences
+    const float h = 1e-4f; // Step size for finite differences
+    const float f_v = f(v); // Value of f at v
+    float laplacian = 0.0f;
+    
+    // For each dimension, compute the second partial derivative
+    for (size_t i = 0; i < v->dim; i++) {
+        // Create perturbed vectors
+        VectorF perturbed_plus = *v;
+        perturbed_plus.data[i] += h;
+        
+        VectorF perturbed_minus = *v;
+        perturbed_minus.data[i] -= h;
+        
+        // Compute the second partial derivative using central differences
+        float f_plus = f(&perturbed_plus);
+        float f_minus = f(&perturbed_minus);
+        laplacian += (f_plus - 2.0f * f_v + f_minus) / (h * h);
+    }
+    
+    return laplacian;
 }

@@ -984,5 +984,16 @@ static bool is_special_form(StringId name) {
            strcmp(name, "set!") == 0 ||
            strcmp(name, "let") == 0 ||
            strcmp(name, "and") == 0 ||
-           strcmp(name, "or") == 0;
+           strcmp(name, "or") == 0 ||
+           strcmp(name, "vector") == 0 ||
+           strcmp(name, "v+") == 0 ||
+           strcmp(name, "v-") == 0 ||
+           strcmp(name, "v*") == 0 ||
+           strcmp(name, "dot") == 0 ||
+           strcmp(name, "cross") == 0 ||
+           strcmp(name, "norm") == 0 ||
+           strcmp(name, "gradient") == 0 ||
+           strcmp(name, "divergence") == 0 ||
+           strcmp(name, "curl") == 0 ||
+           strcmp(name, "laplacian") == 0;
 }

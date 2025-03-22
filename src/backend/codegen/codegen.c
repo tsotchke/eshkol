@@ -110,10 +110,22 @@ static bool generate_string_literal(CodegenContext* context, const AstNode* node
 static bool generate_vector_literal(CodegenContext* context, const AstNode* node) {
     assert(node->type == AST_LITERAL_VECTOR);
     
-    // TODO: Implement vector literals
-    diagnostic_error(context->diagnostics, node->line, node->column, 
-                    "Vector literals not yet implemented");
-    return false;
+    fprintf(context->output, "(VectorF*)vector_f_create_from_array(arena, (float[]){");
+    
+    // Generate vector elements
+    for (size_t i = 0; i < node->as.vector.count; i++) {
+        if (i > 0) {
+            fprintf(context->output, ", ");
+        }
+        
+        if (!generate_expression(context, node->as.vector.elements[i])) {
+            return false;
+        }
+    }
+    
+    fprintf(context->output, "}, %zu)", node->as.vector.count);
+    
+    return true;
 }
 
 /**
@@ -257,6 +269,142 @@ static bool generate_call(CodegenContext* context, const AstNode* node) {
                 return false;
             }
             fprintf(context->output, " == ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        }
+        
+        // Handle vector operations
+        else if (strcmp(op_name, "vector") == 0) {
+            // Vector literal
+            fprintf(context->output, "vector_f_create_from_array(arena, (float[]){");
+            
+            // Generate vector elements
+            for (size_t i = 0; i < node->as.call.arg_count; i++) {
+                if (i > 0) {
+                    fprintf(context->output, ", ");
+                }
+                
+                if (!generate_expression(context, node->as.call.args[i])) {
+                    return false;
+                }
+            }
+            
+            fprintf(context->output, "}, %zu)", node->as.call.arg_count);
+            return true;
+        } else if (strcmp(op_name, "v+") == 0 && node->as.call.arg_count == 2) {
+            // Vector addition
+            fprintf(context->output, "vector_f_add(arena, ");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, ", ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "v-") == 0 && node->as.call.arg_count == 2) {
+            // Vector subtraction
+            fprintf(context->output, "vector_f_sub(arena, ");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, ", ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "v*") == 0 && node->as.call.arg_count == 2) {
+            // Vector scalar multiplication
+            fprintf(context->output, "vector_f_mul_scalar(arena, ");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, ", ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "dot") == 0 && node->as.call.arg_count == 2) {
+            // Dot product
+            fprintf(context->output, "vector_f_dot(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, ", ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "cross") == 0 && node->as.call.arg_count == 2) {
+            // Cross product
+            fprintf(context->output, "vector_f_cross(arena, ");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, ", ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "norm") == 0 && node->as.call.arg_count == 1) {
+            // Vector magnitude
+            fprintf(context->output, "vector_f_magnitude(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "gradient") == 0 && node->as.call.arg_count == 2) {
+            // Gradient of a scalar field
+            fprintf(context->output, "compute_gradient(arena, ");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, ", ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "divergence") == 0 && node->as.call.arg_count == 2) {
+            // Divergence of a vector field
+            fprintf(context->output, "compute_divergence(arena, ");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, ", ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "curl") == 0 && node->as.call.arg_count == 2) {
+            // Curl of a vector field
+            fprintf(context->output, "compute_curl(arena, ");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, ", ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "laplacian") == 0 && node->as.call.arg_count == 2) {
+            // Laplacian of a scalar field
+            fprintf(context->output, "compute_laplacian(arena, ");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, ", ");
             if (!generate_expression(context, node->as.call.args[1])) {
                 return false;
             }
@@ -558,7 +706,10 @@ static bool generate_program(CodegenContext* context, const AstNode* node) {
     // Generate header
     fprintf(context->output, "#include <stdio.h>\n");
     fprintf(context->output, "#include <stdlib.h>\n");
-    fprintf(context->output, "#include <stdbool.h>\n\n");
+    fprintf(context->output, "#include <stdbool.h>\n");
+    fprintf(context->output, "#include <math.h>\n");
+    fprintf(context->output, "#include \"core/vector.h\"\n");
+    fprintf(context->output, "#include \"core/memory.h\"\n\n");
     
     // Define eshkol_value_t
     fprintf(context->output, "// Eshkol value type\n");

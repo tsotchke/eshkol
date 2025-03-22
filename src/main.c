@@ -2,6 +2,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "core/memory.h"
+#include "core/string_table.h"
+#include "core/diagnostics.h"
+#include "frontend/lexer/lexer.h"
+#include "frontend/parser/parser.h"
+#include "backend/codegen.h"
+
 // Forward declarations of functions we'll implement later
 static char* read_file(const char* filename, size_t* length);
 
@@ -32,27 +39,113 @@ int main(int argc, char** argv) {
         return 1;
     }
     
+    // Initialize memory arena
+    Arena* arena = arena_create(1024 * 1024); // 1MB initial size
+    if (!arena) {
+        fprintf(stderr, "Error: Failed to create memory arena\n");
+        free(source);
+        return 1;
+    }
+    
+    // Initialize string table
+    StringTable* strings = string_table_create(arena, 1024); // 1024 initial capacity
+    if (!strings) {
+        fprintf(stderr, "Error: Failed to create string table\n");
+        arena_destroy(arena);
+        free(source);
+        return 1;
+    }
+    
+    // Initialize diagnostic context
+    DiagnosticContext* diag = diagnostic_context_create(arena);
+    if (!diag) {
+        fprintf(stderr, "Error: Failed to create diagnostic context\n");
+        arena_destroy(arena);
+        free(source);
+        return 1;
+    }
+    
+    // Initialize lexer
+    Lexer* lexer = lexer_create(arena, strings, diag, source);
+    if (!lexer) {
+        fprintf(stderr, "Error: Failed to create lexer\n");
+        arena_destroy(arena);
+        free(source);
+        return 1;
+    }
+    
+    // Initialize parser
+    Parser* parser = parser_create(arena, strings, diag, lexer);
+    if (!parser) {
+        fprintf(stderr, "Error: Failed to create parser\n");
+        arena_destroy(arena);
+        free(source);
+        return 1;
+    }
+    
+    // Parse program
+    AstNode* ast = parser_parse_program(parser);
+    if (!ast) {
+        fprintf(stderr, "Error: Failed to parse program\n");
+        arena_destroy(arena);
+        free(source);
+        return 1;
+    }
+    
+    // Initialize code generator
+    CodegenContext* codegen = codegen_context_create(arena, diag);
+    if (!codegen) {
+        fprintf(stderr, "Error: Failed to create code generator\n");
+        arena_destroy(arena);
+        free(source);
+        return 1;
+    }
+    
     // Determine mode
     if (argc >= 3) {
         // Compile to C file
         const char* output_file = argv[2];
         printf("Compiling %s to %s...\n", input_file, output_file);
         
-        // TODO: Implement compilation to C file
-        printf("Not implemented yet.\n");
+        // Generate C code
+        if (!codegen_generate(codegen, ast, output_file)) {
+            fprintf(stderr, "Error: Failed to generate C code\n");
+            arena_destroy(arena);
+            free(source);
+            return 1;
+        }
         
-        free(source);
-        return 0;
+        printf("Successfully compiled %s to %s\n", input_file, output_file);
     } else {
         // Compile and run
         printf("Compiling and running %s...\n", input_file);
         
-        // TODO: Implement compilation and execution
-        printf("Not implemented yet.\n");
+        // Generate C code to a temporary file
+        char temp_file[256];
+        snprintf(temp_file, sizeof(temp_file), "%s.c", input_file);
         
-        free(source);
-        return 0;
+        // Generate C code
+        if (!codegen_generate(codegen, ast, temp_file)) {
+            fprintf(stderr, "Error: Failed to generate C code\n");
+            arena_destroy(arena);
+            free(source);
+            return 1;
+        }
+        
+        // Compile and execute
+        int result = codegen_compile_and_execute(codegen, temp_file, NULL, 0);
+        if (result != 0) {
+            fprintf(stderr, "Error: Failed to compile and execute program\n");
+            arena_destroy(arena);
+            free(source);
+            return 1;
+        }
     }
+    
+    // Clean up
+    arena_destroy(arena);
+    free(source);
+    return 0;
 }
 
 /**
