@@ -92,11 +92,13 @@ eshkol_add_test(ast
 )
 
 # Code generation tests
-eshkol_add_test(codegen
-    SOURCES
-        test_codegen.c
-    DEPS
-        eshkol_core
-        eshkol_frontend
-        eshkol_backend
-)
+if(ESHKOL_BUILD_BACKEND)
+    eshkol_add_test(codegen
+        SOURCES
+            test_codegen.c
+        DEPS
+            eshkol_core
+            eshkol_frontend
+            eshkol_backend
+    )
+endif()

@@ -24,4 +24,7 @@ endmacro()
 
 # Add subdirectories
 add_subdirectory(unit)
-add_subdirectory(integration)
+
+if(ESHKOL_BUILD_INTEGRATION_TESTS)
+    add_subdirectory(integration)
+endif()
