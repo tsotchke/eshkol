@@ -8,6 +8,22 @@ eshkol_add_test(arena
         eshkol_core
 )
 
+# Object pool tests
+eshkol_add_test(object_pool
+    SOURCES
+        test_object_pool.c
+    DEPS
+        eshkol_core
+)
+
+# Memory tracking tests
+eshkol_add_test(memory_tracking
+    SOURCES
+        test_memory_tracking.c
+    DEPS
+        eshkol_core
+)
+
 # String table tests
 eshkol_add_test(string_table
     SOURCES
