@@ -1,0 +1,110 @@
+;; Automatic Differentiation Example
+;; This example demonstrates the use of automatic differentiation in Eshkol
+
+;; Define a simple function to differentiate: f(x) = x^2
+(define (square x)
+  (* x x))
+
+;; Define a function to compute the derivative of square at a point using forward-mode AD
+(define (square-derivative-forward x)
+  ;; Use the forward-mode autodiff system
+  (autodiff-forward square x))
+
+;; Define a function to compute the derivative of square at a point using reverse-mode AD
+(define (square-derivative-reverse x)
+  ;; Use the reverse-mode autodiff system
+  (autodiff-reverse square x))
+
+;; Define a multivariate function: f(x, y) = x^2 + y^2
+(define (sum-of-squares x y)
+  (+ (* x x) (* y y)))
+
+;; Define a function to compute the gradient of sum-of-squares at a point using forward-mode AD
+(define (sum-of-squares-gradient-forward x y)
+  ;; Use the forward-mode autodiff system
+  (autodiff-forward-gradient sum-of-squares (vector x y)))
+
+;; Define a function to compute the gradient of sum-of-squares at a point using reverse-mode AD
+(define (sum-of-squares-gradient-reverse x y)
+  ;; Use the reverse-mode autodiff system
+  (autodiff-reverse-gradient sum-of-squares (vector x y)))
+
+;; Define a more complex function: f(x, y) = sin(x) * cos(y)
+(define (sin-cos x y)
+  (* (sin x) (cos y)))
+
+;; Define a function to compute the gradient of sin-cos at a point using forward-mode AD
+(define (sin-cos-gradient-forward x y)
+  ;; Use the forward-mode autodiff system
+  (autodiff-forward-gradient sin-cos (vector x y)))
+
+;; Define a function to compute the gradient of sin-cos at a point using reverse-mode AD
+(define (sin-cos-gradient-reverse x y)
+  ;; Use the reverse-mode autodiff system
+  (autodiff-reverse-gradient sin-cos (vector x y)))
+
+;; Define a vector-valued function: f(x, y) = [x^2, y^2]
+(define (vector-function x y)
+  (vector (* x x) (* y y)))
+
+;; Define a function to compute the Jacobian of vector-function at a point
+(define (vector-function-jacobian x y)
+  ;; Use the autodiff system
+  (autodiff-jacobian vector-function (vector x y)))
+
+;; Define a function to compute the Hessian of sum-of-squares at a point
+(define (sum-of-squares-hessian x y)
+  ;; Use the autodiff system
+  (autodiff-hessian sum-of-squares (vector x y)))
+
+;; Main function to demonstrate the autodiff functionality
+(define (main)
+  ;; Compute the derivative of square at x = 3 using forward-mode AD
+  (let ((x 3)
+        (df/dx-forward (square-derivative-forward x))
+        (df/dx-reverse (square-derivative-reverse x)))
+    (printf "f(x) = x^2 at x = %f\n" x)
+    (printf "f'(x) = %f (forward-mode)\n" df/dx-forward)
+    (printf "f'(x) = %f (reverse-mode)\n\n" df/dx-reverse))
+  
+  ;; Compute the gradient of sum-of-squares at (x, y) = (2, 3)
+  (let ((x 2)
+        (y 3)
+        (grad-forward (sum-of-squares-gradient-forward x y))
+        (grad-reverse (sum-of-squares-gradient-reverse x y)))
+    (printf "f(x, y) = x^2 + y^2 at (x, y) = (%f, %f)\n" x y)
+    (printf "∇f(x, y) = [%f, %f] (forward-mode)\n" 
+            (vector-ref grad-forward 0) (vector-ref grad-forward 1))
+    (printf "∇f(x, y) = [%f, %f] (reverse-mode)\n\n" 
+            (vector-ref grad-reverse 0) (vector-ref grad-reverse 1)))
+  
+  ;; Compute the gradient of sin-cos at (x, y) = (1, 2)
+  (let ((x 1)
+        (y 2)
+        (grad-forward (sin-cos-gradient-forward x y))
+        (grad-reverse (sin-cos-gradient-reverse x y)))
+    (printf "f(x, y) = sin(x) * cos(y) at (x, y) = (%f, %f)\n" x y)
+    (printf "∇f(x, y) = [%f, %f] (forward-mode)\n" 
+            (vector-ref grad-forward 0) (vector-ref grad-forward 1))
+    (printf "∇f(x, y) = [%f, %f] (reverse-mode)\n\n" 
+            (vector-ref grad-reverse 0) (vector-ref grad-reverse 1)))
+  
+  ;; Compute the Jacobian of vector-function at (x, y) = (2, 3)
+  (let ((x 2)
+        (y 3)
+        (jac (vector-function-jacobian x y)))
+    (printf "f(x, y) = [x^2, y^2] at (x, y) = (%f, %f)\n" x y)
+    (printf "J = [%f, %f; %f, %f]\n\n" 
+            (matrix-ref jac 0 0) (matrix-ref jac 0 1)
+            (matrix-ref jac 1 0) (matrix-ref jac 1 1)))
+  
+  ;; Compute the Hessian of sum-of-squares at (x, y) = (2, 3)
+  (let ((x 2)
+        (y 3)
+        (hess (sum-of-squares-hessian x y)))
+    (printf "f(x, y) = x^2 + y^2 at (x, y) = (%f, %f)\n" x y)
+    (printf "H = [%f, %f; %f, %f]\n" 
+            (matrix-ref hess 0 0) (matrix-ref hess 0 1)
+            (matrix-ref hess 1 0) (matrix-ref hess 1 1)))
+  
+  0)

@@ -115,6 +115,15 @@ VectorF* vector_f_create(Arena* arena, size_t dim);
 VectorF* vector_f_create_from_array(Arena* arena, const float* data, size_t dim);
 
 /**
+ * @brief Create a copy of a float vector
+ * 
+ * @param arena Arena to allocate from
+ * @param vec Vector to copy
+ * @return A new float vector that is a copy of the input, or NULL on failure
+ */
+VectorF* vector_f_copy(Arena* arena, const VectorF* vec);
+
+/**
  * @brief Create a new double vector
  * 
  * @param arena Arena to allocate from

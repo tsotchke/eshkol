@@ -48,6 +48,14 @@ eshkol_add_test(vector
         eshkol_core
 )
 
+# Automatic differentiation tests
+eshkol_add_test(autodiff
+    SOURCES
+        test_autodiff.c
+    DEPS
+        eshkol_core
+)
+
 # String table tests
 eshkol_add_test(string_table
     SOURCES
@@ -93,7 +101,7 @@ eshkol_add_test(ast
 
 # Code generation tests
 if(ESHKOL_BUILD_BACKEND)
-    eshkol_add_test(codegen
+    eshkol_add_test(code_generator
         SOURCES
             test_codegen.c
         DEPS

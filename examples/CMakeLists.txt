@@ -23,7 +23,7 @@ endmacro()
 # Hello world example
 eshkol_add_example(hello
     SOURCES
-        hello.c
+        hello.esk.c
     DEPS
         eshkol_core
         eshkol_frontend
@@ -33,29 +33,40 @@ eshkol_add_example(hello
 # Factorial example
 eshkol_add_example(factorial
     SOURCES
-        factorial.c
+        factorial.esk.c
     DEPS
         eshkol_core
         eshkol_frontend
         eshkol_backend
 )
 
-# Function composition example
-eshkol_add_example(function_composition
-    SOURCES
-        function_composition.c
-    DEPS
-        eshkol_core
-        eshkol_frontend
-        eshkol_backend
-)
+# Only include examples that have corresponding .esk.c files
+# Function composition and arithmetic don't have .esk.c files yet
 
-# Arithmetic example
-eshkol_add_example(arithmetic
+# # Function composition example
+# eshkol_add_example(function_composition
+#     SOURCES
+#         function_composition.c
+#     DEPS
+#         eshkol_core
+#         eshkol_frontend
+#         eshkol_backend
+# )
+
+# # Arithmetic example
+# eshkol_add_example(arithmetic
+#     SOURCES
+#         arithmetic.c
+#     DEPS
+#         eshkol_core
+#         eshkol_frontend
+#         eshkol_backend
+# )
+
+# Automatic differentiation example
+eshkol_add_example(autodiff
     SOURCES
-        arithmetic.c
+        autodiff.c
     DEPS
         eshkol_core
-        eshkol_frontend
-        eshkol_backend
 )
