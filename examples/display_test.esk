@@ -1,0 +1,7 @@
+;; Display function test in Eshkol
+;; This demonstrates the use of the display function
+
+;; Main function
+(define (main)
+  (display "Hello from Eshkol!")
+  0)  ; Return 0 to indicate success

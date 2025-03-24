@@ -743,6 +743,15 @@ VectorF* compute_curl(Arena* arena, VectorFieldFunc F, const VectorF* v);
  */
 float compute_laplacian(Arena* arena, ScalarFieldFunc f, const VectorF* v);
 
+/**
+ * @brief Get a value from a float vector at a specific index
+ * 
+ * @param vec The vector
+ * @param index The index
+ * @return The value at the index
+ */
+float vector_f_get(const VectorF* vec, size_t index);
+
 #ifdef __cplusplus
 }
 #endif

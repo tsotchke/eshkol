@@ -4,6 +4,13 @@ dist/
 bin/
 lib/
 out/
+Debug/
+Release/
+x64/
+x86/
+[Bb]uild*/
+[Dd]ebug*/
+[Rr]elease*/
 
 # CMake generated files
 CMakeCache.txt
@@ -12,6 +19,7 @@ cmake_install.cmake
 Makefile
 *.cmake
 !CMakeLists.txt
+compile_commands.json
 
 # Compiled Object files
 *.o
@@ -38,6 +46,18 @@ Makefile
 # Generated files
 *.eskc
 *.eskir
+*.log
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+.*.swp
+.~lock.*
+*.esk.c
+*.esk.c.out
 
 # Editor files
 .vscode/
@@ -45,6 +65,14 @@ Makefile
 *.swp
 *~
 .DS_Store
+.vs/
+*.sublime-workspace
+*.sublime-project
+.project
+.classpath
+.settings/
+.atom/
+.editorconfig
 
 # Dependency directories
 node_modules/
@@ -56,6 +84,55 @@ vendor/
 *.idb
 *.pdb
 
+# Environment and secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+*.cert
+*.crt
+*.p12
+*.pfx
+*.der
+*.keystore
+secrets/
+credentials/
+
+# Logs and databases
+*.log
+logs/
+*.sqlite
+*.sqlite3
+*.db
+*.sql
+*.dump
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# User-specific files
+*.user
+*.userprefs
+*.usertasks
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.VC.opendb
+*.DotSettings.user
+
 # Testing
 Testing/
 CTestTestfile.cmake
+test-results/
+coverage/

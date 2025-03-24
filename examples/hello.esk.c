@@ -16,9 +16,9 @@ typedef union {
 } eshkol_value_t;
 
 // Forward declarations
-int main(void);
+int main();
 
-int main(void) {
-    printf("Hello, Eshkol!\n");
-    return 0;
+int main() {
+    return ({ printf("Hello, Eshkol!\n"); 0; });
 }
+

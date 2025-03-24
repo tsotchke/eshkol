@@ -16,15 +16,14 @@ typedef union {
 } eshkol_value_t;
 
 // Forward declarations
-int factorial(int n);
-int main(void);
+int factorial(int);
+int main();
 
 int factorial(int n) {
     return ((n < 2) ? 1 : (n * factorial((n - 1))));
 }
 
-int main(void) {
-    printf("Factorial of 5 is %d\n", factorial(5));
-    printf("Factorial of 10 is %d\n", factorial(10));
-    return 0;
+int main() {
+    return ({ printf("Factorial of 5 is %d\n", factorial(5)); printf("Factorial of 10 is %d\n", factorial(10)); 0; });
 }
+

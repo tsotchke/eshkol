@@ -8,22 +8,25 @@
 #include "core/diagnostics.h"
 #include "core/file_io.h"
 #include "frontend/ast/ast.h"
+#include "frontend/type_inference.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <unistd.h>
 
 /**
  * @brief Code generator context structure
  */
 struct CodegenContext {
-    Arena* arena;                /**< Arena for allocations */
-    DiagnosticContext* diagnostics; /**< Diagnostic context for error reporting */
-    FILE* output;                /**< Output file */
-    int indent_level;            /**< Current indentation level */
-    bool in_function;            /**< Whether we're currently in a function */
-    char* temp_dir;              /**< Temporary directory for compilation */
+    Arena* arena;                // Arena for allocations
+    DiagnosticContext* diagnostics; // Diagnostic context for error reporting
+    FILE* output;                // Output file
+    int indent_level;            // Current indentation level
+    bool in_function;            // Whether we're currently in a function
+    char* temp_dir;              // Temporary directory for compilation
+    TypeInferenceContext* type_inference; // Type inference context
 };
 
 /**
@@ -44,6 +47,10 @@ CodegenContext* codegen_context_create(Arena* arena, DiagnosticContext* diagnost
     context->indent_level = 0;
     context->in_function = false;
     context->temp_dir = NULL;
+    
+    // Create type inference context
+    context->type_inference = type_inference_context_create(arena);
+    if (!context->type_inference) return NULL;
     
     return context;
 }
@@ -145,7 +152,24 @@ static bool generate_nil_literal(CodegenContext* context, const AstNode* node) {
 static bool generate_identifier(CodegenContext* context, const AstNode* node) {
     assert(node->type == AST_IDENTIFIER);
     
-    fprintf(context->output, "%s", node->as.identifier.name);
+    // Convert Scheme identifiers to valid C identifiers
+    // Replace hyphens with underscores
+    char* c_name = strdup(node->as.identifier.name);
+    if (!c_name) {
+        diagnostic_error(context->diagnostics, node->line, node->column, 
+                        "Failed to allocate memory for identifier");
+        return false;
+    }
+    
+    for (char* p = c_name; *p; p++) {
+        if (*p == '-') {
+            *p = '_';
+        }
+    }
+    
+    fprintf(context->output, "%s", c_name);
+    
+    free(c_name);
     
     return true;
 }
@@ -410,6 +434,206 @@ static bool generate_call(CodegenContext* context, const AstNode* node) {
             }
             fprintf(context->output, ")");
             return true;
+        } else if (strcmp(op_name, "display") == 0 && node->as.call.arg_count == 1) {
+            // Display function (Scheme compatibility)
+            fprintf(context->output, "printf(\"%%s\\n\", ");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, ")");
+            return true;
+        } else if (strcmp(op_name, "string-append") == 0) {
+            // String append function
+            fprintf(context->output, "({ char buffer[1024] = \"\"; ");
+            
+            // Concatenate all arguments
+            for (size_t i = 0; i < node->as.call.arg_count; i++) {
+                fprintf(context->output, "strcat(buffer, ");
+                if (!generate_expression(context, node->as.call.args[i])) {
+                    return false;
+                }
+                fprintf(context->output, "); ");
+            }
+            
+            fprintf(context->output, "strdup(buffer); })");
+            return true;
+        } else if (strcmp(op_name, "number->string") == 0 && node->as.call.arg_count == 1) {
+            // Number to string conversion
+            fprintf(context->output, "({ char buffer[64]; snprintf(buffer, sizeof(buffer), \"%%g\", ");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, "); strdup(buffer); })");
+            return true;
+        }
+        
+        // Handle autodiff functions
+        else if (strcmp(op_name, "autodiff-forward") == 0 && node->as.call.arg_count == 2) {
+            // Forward-mode autodiff
+            // Create a wrapper function that adapts the user function to the expected signature
+            fprintf(context->output, "({ float (*wrapper_func)(VectorF*) = (float (*)(VectorF*))");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, "; ");
+            
+            // Create a vector from the scalar input
+            fprintf(context->output, "VectorF* vec_input = vector_f_create_from_array(arena, (float[]){");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, "}, 1); ");
+            
+            // Call the autodiff function
+            fprintf(context->output, "vector_f_get(compute_gradient_autodiff(arena, wrapper_func, vec_input), 0); })");
+            return true;
+        } else if (strcmp(op_name, "autodiff-reverse") == 0 && node->as.call.arg_count == 2) {
+            // Reverse-mode autodiff
+            // Create a wrapper function that adapts the user function to the expected signature
+            fprintf(context->output, "({ float (*wrapper_func)(VectorF*) = (float (*)(VectorF*))");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, "; ");
+            
+            // Create a vector from the scalar input
+            fprintf(context->output, "VectorF* vec_input = vector_f_create_from_array(arena, (float[]){");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, "}, 1); ");
+            
+            // Call the autodiff function
+            fprintf(context->output, "vector_f_get(compute_gradient_reverse_mode(arena, wrapper_func, vec_input), 0); })");
+            return true;
+        } else if (strcmp(op_name, "autodiff-forward-gradient") == 0 && node->as.call.arg_count == 2) {
+            // Forward-mode gradient
+            // Create a wrapper function that adapts the user function to the expected signature
+            fprintf(context->output, "({ float (*wrapper_func)(VectorF*) = (float (*)(VectorF*))");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, "; ");
+            
+            // The input is already a vector
+            fprintf(context->output, "compute_gradient_autodiff(arena, wrapper_func, ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, "); })");
+            return true;
+        } else if (strcmp(op_name, "autodiff-reverse-gradient") == 0 && node->as.call.arg_count == 2) {
+            // Reverse-mode gradient
+            // Create a wrapper function that adapts the user function to the expected signature
+            fprintf(context->output, "({ float (*wrapper_func)(VectorF*) = (float (*)(VectorF*))");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, "; ");
+            
+            // The input is already a vector
+            fprintf(context->output, "compute_gradient_reverse_mode(arena, wrapper_func, ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, "); })");
+            return true;
+        } else if (strcmp(op_name, "autodiff-jacobian") == 0 && node->as.call.arg_count == 2) {
+            // Jacobian matrix
+            // Create a wrapper function that adapts the user function to the expected signature
+            fprintf(context->output, "({ VectorF* (*wrapper_func)(Arena*, VectorF*) = (VectorF* (*)(Arena*, VectorF*))");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, "; ");
+            
+            // Call the jacobian function
+            fprintf(context->output, "compute_jacobian(arena, wrapper_func, ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, "); })");
+            return true;
+        } else if (strcmp(op_name, "autodiff-hessian") == 0 && node->as.call.arg_count == 2) {
+            // Hessian matrix
+            // Create a wrapper function that adapts the user function to the expected signature
+            fprintf(context->output, "({ float (*wrapper_func)(VectorF*) = (float (*)(VectorF*))");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, "; ");
+            
+            // Call the hessian function
+            fprintf(context->output, "compute_hessian(arena, wrapper_func, ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, "); })");
+            return true;
+        } else if (strcmp(op_name, "derivative") == 0 && node->as.call.arg_count == 2) {
+            // Derivative of a function at a point
+            // Create a wrapper function that adapts the user function to the expected signature
+            fprintf(context->output, "({ float (*wrapper_func)(float) = (float (*)(float))");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, "; ");
+            
+            // Call the derivative function
+            fprintf(context->output, "compute_nth_derivative(arena, wrapper_func, ");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, ", 1); })");
+            return true;
+        }
+        
+        // Handle vector and matrix operations
+        else if (strcmp(op_name, "vector-ref") == 0 && node->as.call.arg_count == 2) {
+            // Vector element access
+            fprintf(context->output, "(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, "->data[");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, "])");
+            return true;
+        } else if (strcmp(op_name, "matrix-ref") == 0 && node->as.call.arg_count == 3) {
+            // Matrix element access
+            fprintf(context->output, "(");
+            if (!generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(context->output, "[");
+            if (!generate_expression(context, node->as.call.args[1])) {
+                return false;
+            }
+            fprintf(context->output, "]->data[");
+            if (!generate_expression(context, node->as.call.args[2])) {
+                return false;
+            }
+            fprintf(context->output, "])");
+            return true;
+        } else if (strcmp(op_name, "printf") == 0) {
+            // Printf function
+            fprintf(context->output, "printf(");
+            
+            // Generate arguments
+            for (size_t i = 0; i < node->as.call.arg_count; i++) {
+                if (i > 0) {
+                    fprintf(context->output, ", ");
+                }
+                
+                if (!generate_expression(context, node->as.call.args[i])) {
+                    return false;
+                }
+            }
+            
+            fprintf(context->output, ")");
+            return true;
         }
     }
     
@@ -525,13 +749,15 @@ static bool generate_define(CodegenContext* context, const AstNode* node) {
     return true;
 }
 
+
 /**
  * @brief Convert a Type to a C type string
  */
 static const char* type_to_c_type(Type* type) {
-    if (type == NULL) {
-        return "int"; // Default to int for untyped parameters
-    }
+    // We should never have a NULL type, but just in case, default to int32_t
+    // if (type == NULL) {
+    //     return "int32_t";
+    // }
     
     switch (type->kind) {
         case TYPE_VOID:
@@ -595,6 +821,10 @@ static bool generate_function_def(CodegenContext* context, const AstNode* node) 
     const char* return_type = "int"; // Default to int
     if (node->as.function_def.return_type != NULL) {
         return_type = type_to_c_type(node->as.function_def.return_type);
+    } else if (node->as.function_def.body != NULL) {
+        // Infer return type using the type inference system
+        type_inference_infer(context->type_inference, (AstNode*)node->as.function_def.body);
+        return_type = type_inference_get_c_type(context->type_inference, node->as.function_def.body);
     }
     
     // Generate function declaration with return type
@@ -614,7 +844,7 @@ static bool generate_function_def(CodegenContext* context, const AstNode* node) 
         }
         
         // Get parameter type
-        const char* param_type = "int"; // Default to int
+        const char* param_type = "float"; // Default to float for autodiff functions
         Parameter* param = node->as.function_def.params[i];
         if (param->type != NULL) {
             param_type = type_to_c_type(param->type);
@@ -690,9 +920,33 @@ static bool generate_let(CodegenContext* context, const AstNode* node) {
             fprintf(context->output, "; ");
         }
         
-        fprintf(context->output, "eshkol_value_t ");
-        if (!generate_expression(context, node->as.let.bindings[i])) {
-            return false;
+        // Each binding is a define expression
+        AstNode* binding = node->as.let.bindings[i];
+        if (binding->type == AST_DEFINE) {
+            // Use the existing type information from the AST node
+            const char* var_type = type_to_c_type(binding->as.define.value->type_info);
+            
+            // Output the variable declaration
+            fprintf(context->output, "%s ", var_type);
+            if (!generate_identifier(context, binding->as.define.name)) {
+                return false;
+            }
+            fprintf(context->output, " = ");
+            
+            // Generate value
+            if (!generate_expression(context, binding->as.define.value)) {
+                return false;
+            }
+        } else {
+            // For non-define bindings, use the type inference system
+            type_inference_infer(context->type_inference, binding);
+            Type* type = type_inference_get_type(context->type_inference, binding);
+            const char* var_type = type ? type_to_c_type(type) : "float";
+            
+            fprintf(context->output, "%s ", var_type);
+            if (!generate_expression(context, binding)) {
+                return false;
+            }
         }
     }
     
@@ -722,8 +976,58 @@ static bool generate_sequence(CodegenContext* context, const AstNode* node) {
             fprintf(context->output, "; ");
         }
         
-        if (!generate_expression(context, node->as.sequence.exprs[i])) {
-            return false;
+        // Special handling for let expressions within sequences
+        if (node->as.sequence.exprs[i]->type == AST_LET) {
+            // For let expressions, we'll handle them specially to avoid type conflicts
+            AstNode* let_node = node->as.sequence.exprs[i];
+            
+            // Generate bindings
+            for (size_t j = 0; j < let_node->as.let.binding_count; j++) {
+                if (j > 0) {
+                    fprintf(context->output, "; ");
+                }
+                
+                // Each binding is a define expression
+                AstNode* binding = let_node->as.let.bindings[j];
+                if (binding->type == AST_DEFINE) {
+                    // Use the existing type information from the AST node
+                    const char* var_type = type_to_c_type(binding->as.define.value->type_info);
+                    
+                    // Output the variable declaration
+                    fprintf(context->output, "%s ", var_type);
+                    if (!generate_identifier(context, binding->as.define.name)) {
+                        return false;
+                    }
+                    fprintf(context->output, " = ");
+                    
+                    // Generate value
+                    if (!generate_expression(context, binding->as.define.value)) {
+                        return false;
+                    }
+                } else {
+                    // For non-define bindings, use the type inference system
+                    type_inference_infer(context->type_inference, binding);
+                    Type* type = type_inference_get_type(context->type_inference, binding);
+                    const char* var_type = type ? type_to_c_type(type) : "float";
+                    
+                    fprintf(context->output, "%s ", var_type);
+                    if (!generate_expression(context, binding)) {
+                        return false;
+                    }
+                }
+            }
+            
+            fprintf(context->output, "; ");
+            
+            // Generate body
+            if (!generate_expression(context, let_node->as.let.body)) {
+                return false;
+            }
+        } else {
+            // For non-let expressions, generate normally
+            if (!generate_expression(context, node->as.sequence.exprs[i])) {
+                return false;
+            }
         }
     }
     
@@ -788,7 +1092,12 @@ static bool generate_program(CodegenContext* context, const AstNode* node) {
     fprintf(context->output, "#include <stdbool.h>\n");
     fprintf(context->output, "#include <math.h>\n");
     fprintf(context->output, "#include \"core/vector.h\"\n");
-    fprintf(context->output, "#include \"core/memory.h\"\n\n");
+    fprintf(context->output, "#include \"core/memory.h\"\n");
+    fprintf(context->output, "#include \"core/autodiff.h\"\n\n");
+    
+    // Global arena variable
+    fprintf(context->output, "// Global arena for memory allocations\n");
+    fprintf(context->output, "Arena* arena = NULL;\n\n");
     
     // Define eshkol_value_t
     fprintf(context->output, "// Eshkol value type\n");
@@ -809,6 +1118,10 @@ static bool generate_program(CodegenContext* context, const AstNode* node) {
             const char* return_type = "int"; // Default to int
             if (node->as.program.exprs[i]->as.function_def.return_type != NULL) {
                 return_type = type_to_c_type(node->as.program.exprs[i]->as.function_def.return_type);
+            } else if (node->as.program.exprs[i]->as.function_def.body != NULL) {
+                // Infer return type using the type inference system
+                type_inference_infer(context->type_inference, (AstNode*)node->as.program.exprs[i]->as.function_def.body);
+                return_type = type_inference_get_c_type(context->type_inference, node->as.program.exprs[i]->as.function_def.body);
             }
             
             fprintf(context->output, "%s ", return_type);
@@ -821,7 +1134,7 @@ static bool generate_program(CodegenContext* context, const AstNode* node) {
                 }
                 
                 // Get parameter type
-                const char* param_type = "int"; // Default to int
+                const char* param_type = "float"; // Default to float for autodiff functions
                 Parameter* param = node->as.program.exprs[i]->as.function_def.params[j];
                 if (param->type != NULL) {
                     param_type = type_to_c_type(param->type);
@@ -856,7 +1169,15 @@ static bool generate_program(CodegenContext* context, const AstNode* node) {
     
     if (!has_main) {
         fprintf(context->output, "int main(int argc, char** argv) {\n");
-        fprintf(context->output, "    printf(\"Hello from Eshkol!\\n\");\n");
+        fprintf(context->output, "    // Initialize arena\n");
+        fprintf(context->output, "    arena = arena_create(1024 * 1024);\n");
+        fprintf(context->output, "    if (!arena) {\n");
+        fprintf(context->output, "        fprintf(stderr, \"Failed to create memory arena\\n\");\n");
+        fprintf(context->output, "        return 1;\n");
+        fprintf(context->output, "    }\n\n");
+        fprintf(context->output, "    printf(\"Hello from Eshkol!\\n\");\n\n");
+        fprintf(context->output, "    // Clean up arena\n");
+        fprintf(context->output, "    arena_destroy(arena);\n");
         fprintf(context->output, "    return 0;\n");
         fprintf(context->output, "}\n");
     }
@@ -908,9 +1229,43 @@ int codegen_compile_and_execute(CodegenContext* context, const char* c_file, cha
     assert(context != NULL);
     assert(c_file != NULL);
     
+    // Determine the include path based on the executable location
+    char include_path[1024] = {0};
+    
+    // Get the path to the source file
+    char source_path[1024] = {0};
+    char *source_dir = NULL;
+    
+    // Get the absolute path of the source file
+    if (c_file[0] == '/') {
+        // Absolute path
+        strncpy(source_path, c_file, sizeof(source_path) - 1);
+    } else {
+        // Relative path, prepend current directory
+        char cwd[1024] = {0};
+        if (getcwd(cwd, sizeof(cwd)) == NULL) {
+            diagnostic_error(context->diagnostics, 0, 0, "Failed to get current working directory");
+            return -1;
+        }
+        snprintf(source_path, sizeof(source_path), "%s/%s", cwd, c_file);
+    }
+    
+    // Extract the directory from the source path
+    source_dir = strdup(source_path);
+    char *last_slash = strrchr(source_dir, '/');
+    if (last_slash) {
+        *last_slash = '\0';
+    }
+    
+    // Construct the include path relative to the source directory
+    snprintf(include_path, sizeof(include_path), "%s/../include", source_dir);
+    
     // Create command to compile the C file
     char compile_cmd[1024];
-    snprintf(compile_cmd, sizeof(compile_cmd), "gcc -I../../include -o %s.out %s", c_file, c_file);
+    snprintf(compile_cmd, sizeof(compile_cmd), "gcc -I%s -o %s.out %s", include_path, c_file, c_file);
+    
+    // Free allocated memory
+    free(source_dir);
     
     // Compile the C file
     int result = system(compile_cmd);
