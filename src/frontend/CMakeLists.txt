@@ -5,7 +5,10 @@ set(FRONTEND_SOURCES
     parser/parser.c
     parser/type_parser.c
     ast/parameter.c
-    type_inference.c
+    type_inference/context.c
+    type_inference/inference.c
+    type_inference/conversion.c
+    type_inference/type_inference.c
 )
 
 # Define headers
@@ -16,6 +19,10 @@ set(FRONTEND_HEADERS
     ${CMAKE_SOURCE_DIR}/include/frontend/parser/type_parser.h
     ${CMAKE_SOURCE_DIR}/include/frontend/ast/parameter.h
     ${CMAKE_SOURCE_DIR}/include/frontend/type_inference.h
+    ${CMAKE_SOURCE_DIR}/include/frontend/type_inference/context.h
+    ${CMAKE_SOURCE_DIR}/include/frontend/type_inference/inference.h
+    ${CMAKE_SOURCE_DIR}/include/frontend/type_inference/conversion.h
+    ${CMAKE_SOURCE_DIR}/include/frontend/type_inference/type_inference.h
 )
 
 # Create library

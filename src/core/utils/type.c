@@ -476,12 +476,15 @@ Type* type_common_supertype(Arena* arena, Type* a, Type* b) {
     // If both are functions with the same parameter count, return a function with the common supertype of the return types
     if (a->kind == TYPE_FUNCTION && b->kind == TYPE_FUNCTION && a->function.param_count == b->function.param_count) {
         // Check if parameter types are compatible
-        Type** params = arena_alloc(arena, a->function.param_count * sizeof(Type*));
-        if (!params) return NULL;
-        
-        for (size_t i = 0; i < a->function.param_count; i++) {
-            params[i] = type_common_supertype(arena, a->function.params[i], b->function.params[i]);
-            if (!params[i]) return NULL;
+        Type** params = NULL;
+        if (a->function.param_count > 0) {
+            params = arena_alloc(arena, a->function.param_count * sizeof(Type*));
+            if (!params) return NULL;
+            
+            for (size_t i = 0; i < a->function.param_count; i++) {
+                params[i] = type_common_supertype(arena, a->function.params[i], b->function.params[i]);
+                if (!params[i]) return NULL;
+            }
         }
         
         // Get common supertype of return types

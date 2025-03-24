@@ -18,16 +18,28 @@
  */
 struct TypeInferenceContext {
     Arena* arena;                /**< Arena for allocations */
+    DiagnosticContext* diagnostics; /**< Diagnostic context for error reporting */
     AstNode** nodes;             /**< Array of AST nodes */
-    Type** types;                /**< Array of inferred types */
+    Type** inferred_types;       /**< Array of inferred types */
     size_t capacity;             /**< Capacity of the arrays */
     size_t count;                /**< Number of nodes */
+    
+    // Enhanced type system support
+    AstNode** explicit_nodes;    /**< Array of explicitly typed AST nodes */
+    Type** explicit_types;       /**< Array of explicit types */
+    size_t explicit_capacity;    /**< Capacity of the explicit arrays */
+    size_t explicit_count;       /**< Number of explicitly typed nodes */
+    
+    StringId* function_names;    /**< Array of function names */
+    Type** function_signatures;  /**< Array of function signatures */
+    size_t signature_capacity;   /**< Capacity of the signature arrays */
+    size_t signature_count;      /**< Number of function signatures */
 };
 
 /**
  * @brief Create a type inference context
  */
-TypeInferenceContext* type_inference_context_create(Arena* arena) {
+TypeInferenceContext* type_inference_context_create(Arena* arena, DiagnosticContext* diagnostics) {
     assert(arena != NULL);
     
     // Allocate context
@@ -36,15 +48,32 @@ TypeInferenceContext* type_inference_context_create(Arena* arena) {
     
     // Initialize context
     context->arena = arena;
+    context->diagnostics = diagnostics;
     context->capacity = 1024;
     context->count = 0;
+    context->explicit_capacity = 256;
+    context->explicit_count = 0;
+    context->signature_capacity = 128;
+    context->signature_count = 0;
     
     // Allocate arrays
     context->nodes = arena_alloc(arena, context->capacity * sizeof(AstNode*));
     if (!context->nodes) return NULL;
     
-    context->types = arena_alloc(arena, context->capacity * sizeof(Type*));
-    if (!context->types) return NULL;
+    context->inferred_types = arena_alloc(arena, context->capacity * sizeof(Type*));
+    if (!context->inferred_types) return NULL;
+    
+    context->explicit_nodes = arena_alloc(arena, context->explicit_capacity * sizeof(AstNode*));
+    if (!context->explicit_nodes) return NULL;
+    
+    context->explicit_types = arena_alloc(arena, context->explicit_capacity * sizeof(Type*));
+    if (!context->explicit_types) return NULL;
+    
+    context->function_names = arena_alloc(arena, context->signature_capacity * sizeof(StringId));
+    if (!context->function_names) return NULL;
+    
+    context->function_signatures = arena_alloc(arena, context->signature_capacity * sizeof(Type*));
+    if (!context->function_signatures) return NULL;
     
     return context;
 }
@@ -60,7 +89,8 @@ static bool add_node(TypeInferenceContext* context, AstNode* node, Type* type) {
     for (size_t i = 0; i < context->count; i++) {
         if (context->nodes[i] == node) {
             // Update the type
-            context->types[i] = type;
+            context->inferred_types[i] = type;
+            node->inferred_type = type;  // Also store directly in the node
             return true;
         }
     }
@@ -79,19 +109,302 @@ static bool add_node(TypeInferenceContext* context, AstNode* node, Type* type) {
         // Copy old arrays to new arrays
         for (size_t i = 0; i < context->count; i++) {
             new_nodes[i] = context->nodes[i];
-            new_types[i] = context->types[i];
+            new_types[i] = context->inferred_types[i];
         }
         
         // Update context
         context->nodes = new_nodes;
-        context->types = new_types;
+        context->inferred_types = new_types;
         context->capacity = new_capacity;
     }
     
     // Add the node
     context->nodes[context->count] = node;
-    context->types[context->count] = type;
+    context->inferred_types[context->count] = type;
+    node->inferred_type = type;  // Also store directly in the node
     context->count++;
+    
+    return true;
+}
+
+/**
+ * @brief Set an explicit type for an AST node
+ */
+void type_inference_set_explicit_type(TypeInferenceContext* context, AstNode* node, Type* type) {
+    assert(context != NULL);
+    assert(node != NULL);
+    
+    // Check if the node is already in the explicit context
+    for (size_t i = 0; i < context->explicit_count; i++) {
+        if (context->explicit_nodes[i] == node) {
+            // Update the type
+            context->explicit_types[i] = type;
+            node->type_info = type;  // Also store directly in the node
+            return;
+        }
+    }
+    
+    // Check if we need to resize the arrays
+    if (context->explicit_count >= context->explicit_capacity) {
+        size_t new_capacity = context->explicit_capacity * 2;
+        
+        // Allocate new arrays
+        AstNode** new_nodes = arena_alloc(context->arena, new_capacity * sizeof(AstNode*));
+        if (!new_nodes) return;
+        
+        Type** new_types = arena_alloc(context->arena, new_capacity * sizeof(Type*));
+        if (!new_types) return;
+        
+        // Copy old arrays to new arrays
+        for (size_t i = 0; i < context->explicit_count; i++) {
+            new_nodes[i] = context->explicit_nodes[i];
+            new_types[i] = context->explicit_types[i];
+        }
+        
+        // Update context
+        context->explicit_nodes = new_nodes;
+        context->explicit_types = new_types;
+        context->explicit_capacity = new_capacity;
+    }
+    
+    // Add the node
+    context->explicit_nodes[context->explicit_count] = node;
+    context->explicit_types[context->explicit_count] = type;
+    node->type_info = type;  // Also store directly in the node
+    context->explicit_count++;
+}
+
+/**
+ * @brief Set a function signature
+ */
+void type_inference_set_function_signature(TypeInferenceContext* context, StringId function_name, Type* type) {
+    assert(context != NULL);
+    assert(function_name != NULL);
+    
+    // Check if the function is already in the context
+    for (size_t i = 0; i < context->signature_count; i++) {
+        if (context->function_names[i] == function_name) {
+            // Update the signature
+            context->function_signatures[i] = type;
+            return;
+        }
+    }
+    
+    // Check if we need to resize the arrays
+    if (context->signature_count >= context->signature_capacity) {
+        size_t new_capacity = context->signature_capacity * 2;
+        
+        // Allocate new arrays
+        StringId* new_names = arena_alloc(context->arena, new_capacity * sizeof(StringId));
+        if (!new_names) return;
+        
+        Type** new_signatures = arena_alloc(context->arena, new_capacity * sizeof(Type*));
+        if (!new_signatures) return;
+        
+        // Copy old arrays to new arrays
+        for (size_t i = 0; i < context->signature_count; i++) {
+            new_names[i] = context->function_names[i];
+            new_signatures[i] = context->function_signatures[i];
+        }
+        
+        // Update context
+        context->function_names = new_names;
+        context->function_signatures = new_signatures;
+        context->signature_capacity = new_capacity;
+    }
+    
+    // Add the function
+    context->function_names[context->signature_count] = function_name;
+    context->function_signatures[context->signature_count] = type;
+    context->signature_count++;
+}
+
+/**
+ * @brief Get the explicit type for an AST node
+ */
+Type* type_inference_get_explicit_type(TypeInferenceContext* context, const AstNode* node) {
+    assert(context != NULL);
+    assert(node != NULL);
+    
+    // Check if the node is in the explicit context
+    for (size_t i = 0; i < context->explicit_count; i++) {
+        if (context->explicit_nodes[i] == node) {
+            return context->explicit_types[i];
+        }
+    }
+    
+    // Check if the node has an explicit type stored directly
+    if (node->type_info) {
+        return node->type_info;
+    }
+    
+    return NULL;
+}
+
+/**
+ * @brief Get the function signature for a function name
+ */
+Type* type_inference_get_function_signature(TypeInferenceContext* context, StringId function_name) {
+    assert(context != NULL);
+    assert(function_name != NULL);
+    
+    // Check if the function is in the context
+    for (size_t i = 0; i < context->signature_count; i++) {
+        if (context->function_names[i] == function_name) {
+            return context->function_signatures[i];
+        }
+    }
+    
+    return NULL;
+}
+
+/**
+ * @brief Resolve the final type for an AST node
+ */
+Type* type_inference_resolve_type(TypeInferenceContext* context, const AstNode* node) {
+    assert(context != NULL);
+    assert(node != NULL);
+    
+    // First check for explicit type
+    Type* explicit_type = type_inference_get_explicit_type(context, node);
+    if (explicit_type) {
+        return explicit_type;
+    }
+    
+    // If it's a function, check for separate declaration
+    if (node->type == AST_FUNCTION_DEF && node->as.function_def.name->type == AST_IDENTIFIER) {
+        StringId name = node->as.function_def.name->as.identifier.name;
+        Type* signature = type_inference_get_function_signature(context, name);
+        if (signature) {
+            return signature;
+        }
+    }
+    
+    // Fall back to inferred type
+    return type_inference_get_type(context, node);
+}
+
+/**
+ * @brief Collect explicit types from the AST
+ */
+bool type_inference_collect_explicit_types(TypeInferenceContext* context, AstNode* ast) {
+    if (!ast) return true;
+    
+    switch (ast->type) {
+        case AST_TYPE_DECLARATION: {
+            // Store the function signature
+            StringId function_name = ast->as.type_declaration.function_name;
+            Type* type = ast->as.type_declaration.type;
+            type_inference_set_function_signature(context, function_name, type);
+            break;
+        }
+        
+        case AST_FUNCTION_DEF: {
+            // Process function parameters with inline types
+            for (size_t i = 0; i < ast->as.function_def.param_count; i++) {
+                Parameter* param = ast->as.function_def.params[i];
+                if (param->type) {
+                    // Store parameter type
+                    AstNode* param_node = ast->as.function_def.param_nodes[i];
+                    type_inference_set_explicit_type(context, param_node, param->type);
+                }
+            }
+            
+            // Process function return type
+            if (ast->as.function_def.return_type) {
+                type_inference_set_explicit_type(context, ast, ast->as.function_def.return_type);
+            }
+            
+            // Recursively process function body
+            type_inference_collect_explicit_types(context, ast->as.function_def.body);
+            break;
+        }
+        
+        case AST_LET: {
+            // Process let bindings with inline types
+            for (size_t i = 0; i < ast->as.let.binding_count; i++) {
+                AstNode* binding = ast->as.let.bindings[i];
+                if (binding->type == AST_DEFINE && binding->as.define.value->type_info) {
+                    // Store binding type
+                    AstNode* binding_node = ast->as.let.binding_nodes[i];
+                    type_inference_set_explicit_type(context, binding_node, binding->as.define.value->type_info);
+                }
+                
+                // Recursively process binding value
+                type_inference_collect_explicit_types(context, binding);
+            }
+            
+            // Recursively process let body
+            type_inference_collect_explicit_types(context, ast->as.let.body);
+            break;
+        }
+        
+        case AST_PROGRAM: {
+            // Process top-level expressions
+            for (size_t i = 0; i < ast->as.program.expr_count; i++) {
+                type_inference_collect_explicit_types(context, ast->as.program.exprs[i]);
+            }
+            break;
+        }
+        
+        default:
+            // Recursively process child nodes based on node type
+            switch (ast->type) {
+                case AST_CALL:
+                    // Process callee
+                    type_inference_collect_explicit_types(context, ast->as.call.callee);
+                    // Process arguments
+                    for (size_t i = 0; i < ast->as.call.arg_count; i++) {
+                        type_inference_collect_explicit_types(context, ast->as.call.args[i]);
+                    }
+                    break;
+                
+                case AST_IF:
+                    // Process condition, then branch, and else branch
+                    type_inference_collect_explicit_types(context, ast->as.if_expr.condition);
+                    type_inference_collect_explicit_types(context, ast->as.if_expr.then_branch);
+                    if (ast->as.if_expr.else_branch) {
+                        type_inference_collect_explicit_types(context, ast->as.if_expr.else_branch);
+                    }
+                    break;
+                
+                case AST_BEGIN:
+                    // Process expressions
+                    for (size_t i = 0; i < ast->as.begin.expr_count; i++) {
+                        type_inference_collect_explicit_types(context, ast->as.begin.exprs[i]);
+                    }
+                    break;
+                
+                case AST_LAMBDA:
+                    // Process body
+                    type_inference_collect_explicit_types(context, ast->as.lambda.body);
+                    break;
+                
+                case AST_DEFINE:
+                    // Process name and value
+                    type_inference_collect_explicit_types(context, ast->as.define.name);
+                    type_inference_collect_explicit_types(context, ast->as.define.value);
+                    break;
+                
+                case AST_VARIABLE_DEF:
+                    // Process name and value
+                    type_inference_collect_explicit_types(context, ast->as.variable_def.name);
+                    type_inference_collect_explicit_types(context, ast->as.variable_def.value);
+                    break;
+                
+                case AST_SEQUENCE:
+                    // Process expressions
+                    for (size_t i = 0; i < ast->as.sequence.expr_count; i++) {
+                        type_inference_collect_explicit_types(context, ast->as.sequence.exprs[i]);
+                    }
+                    break;
+                
+                default:
+                    // No child nodes to process
+                    break;
+            }
+            break;
+    }
     
     return true;
 }
@@ -141,33 +454,6 @@ static Type* infer_string_literal(TypeInferenceContext* context, AstNode* node) 
 }
 
 /**
- * @brief Infer the type of a vector literal
- */
-static Type* infer_vector_literal(TypeInferenceContext* context, AstNode* node) {
-    assert(node->type == AST_LITERAL_VECTOR);
-    
-    // Infer the type of the first element
-    Type* element_type = NULL;
-    if (node->as.vector.count > 0) {
-        element_type = type_inference_infer_node(context, node->as.vector.elements[0]);
-    } else {
-        // Default to float for empty vectors
-        element_type = type_float_create(context->arena, FLOAT_SIZE_32);
-    }
-    
-    return type_vector_create(context->arena, element_type, node->as.vector.count);
-}
-
-/**
- * @brief Infer the type of a nil literal
- */
-static Type* infer_nil_literal(TypeInferenceContext* context, AstNode* node) {
-    assert(node->type == AST_LITERAL_NIL);
-    
-    return type_void_create(context->arena);
-}
-
-/**
  * @brief Infer the type of an identifier
  */
 static Type* infer_identifier(TypeInferenceContext* context, AstNode* node) {
@@ -178,7 +464,7 @@ static Type* infer_identifier(TypeInferenceContext* context, AstNode* node) {
         if (context->nodes[i]->type == AST_DEFINE &&
             context->nodes[i]->as.define.name->type == AST_IDENTIFIER &&
             strcmp(context->nodes[i]->as.define.name->as.identifier.name, node->as.identifier.name) == 0) {
-            return context->types[i];
+            return context->inferred_types[i];
         }
     }
     
@@ -303,6 +589,747 @@ static Type* infer_identifier(TypeInferenceContext* context, AstNode* node) {
         // For now, we'll represent ports as a special kind of pointer
         return type_any_create(context->arena); // TODO: Create a proper port type
     }
+    
+    // Procedure operations
+    if (strstr(name, "proc") ||
+        strstr(name, "func") ||
+        strstr(name, "callback") ||
+        strstr(name, "handler")) {
+        // Create a function type with unknown parameters and return type
+        return type_function_create(context->arena, 0, NULL, 
+                                   type_any_create(context->arena), true);
+    }
+    
+    // Default to float for numeric variables, as that's most common in scientific computing
+    return type_float_create(context->arena, FLOAT_SIZE_32);
+}
+
+/**
+ * @brief Infer the type of a vector literal
+ */
+static Type* infer_vector_literal(TypeInferenceContext* context, AstNode* node) {
+    assert(node->type == AST_LITERAL_VECTOR);
+    
+    // Infer the type of the first element
+    Type* element_type = NULL;
+    if (node->as.vector.count > 0) {
+        element_type = type_inference_infer_node(context, node->as.vector.elements[0]);
+    } else {
+        // Default to float for empty vectors
+        element_type = type_float_create(context->arena, FLOAT_SIZE_32);
+    }
+    
+    return type_vector_create(context->arena, element_type, node->as.vector.count);
+}
+
+/**
+ * @brief Infer the type of a nil literal
+ */
+static Type* infer_nil_literal(TypeInferenceContext* context, AstNode* node) {
+    assert(node->type == AST_LITERAL_NIL);
+    
+    return type_void_create(context->arena);
+}
+
+/**
+ * @brief Infer the type of a call expression
+ */
+static Type* infer_call(TypeInferenceContext* context, AstNode* node) {
+    assert(node->type == AST_CALL);
+    
+    // Check if it's an operator call
+    if (node->as.call.callee->type == AST_IDENTIFIER) {
+        const char* op_name = node->as.call.callee->as.identifier.name;
+        
+        // Handle arithmetic operators
+        if (strcmp(op_name, "+") == 0 || 
+            strcmp(op_name, "-") == 0 || 
+            strcmp(op_name, "*") == 0 || 
+            strcmp(op_name, "/") == 0) {
+            // Infer the type of the operands
+            Type* left_type = type_inference_infer_node(context, node->as.call.args[0]);
+            Type* right_type = NULL;
+            
+            if (node->as.call.arg_count > 1) {
+                right_type = type_inference_infer_node(context, node->as.call.args[1]);
+            } else {
+                // Unary operator
+                return left_type;
+            }
+            
+            // If both operands are integers, the result is an integer
+            if (left_type->kind == TYPE_INTEGER && right_type->kind == TYPE_INTEGER) {
+                return type_integer_create(context->arena, INT_SIZE_32);
+            }
+            
+            // If either operand is a float, the result is a float
+            if (left_type->kind == TYPE_FLOAT || right_type->kind == TYPE_FLOAT) {
+                return type_float_create(context->arena, FLOAT_SIZE_32);
+            }
+            
+            // If either operand is a vector, the result is a vector
+            if (left_type->kind == TYPE_VECTOR || right_type->kind == TYPE_VECTOR) {
+                // Determine the element type
+                Type* element_type = NULL;
+                
+                if (left_type->kind == TYPE_VECTOR && right_type->kind == TYPE_VECTOR) {
+                    // Both operands are vectors, use the common supertype of the element types
+                    element_type = type_common_supertype(context->arena, left_type->vector.element_type, right_type->vector.element_type);
+                } else if (left_type->kind == TYPE_VECTOR) {
+                    // Left operand is a vector, use its element type
+                    element_type = left_type->vector.element_type;
+                } else {
+                    // Right operand is a vector, use its element type
+                    element_type = right_type->vector.element_type;
+                }
+                
+                return type_vector_create(context->arena, element_type, 0);
+            }
+            
+            // Default to float
+            return type_float_create(context->arena, FLOAT_SIZE_32);
+        }
+        
+        // Handle comparison operators
+        else if (strcmp(op_name, "<") == 0 || 
+                 strcmp(op_name, ">") == 0 || 
+                 strcmp(op_name, "<=") == 0 || 
+                 strcmp(op_name, ">=") == 0 || 
+                 strcmp(op_name, "=") == 0) {
+            return type_boolean_create(context->arena);
+        }
+        
+        // Handle vector operations
+        else if (strcmp(op_name, "vector") == 0) {
+            // Vector literal
+            Type* element_type = NULL;
+            
+            if (node->as.call.arg_count > 0) {
+                element_type = type_inference_in
+/**
+ * @file type_inference.c
+ * @brief Implementation of the type inference system
+ */
+
+#include "frontend/type_inference.h"
+#include "core/memory.h"
+#include "core/type.h"
+#include "frontend/ast/ast.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <stdbool.h>
+
+/**
+ * @brief Type inference context structure
+ */
+struct TypeInferenceContext {
+    Arena* arena;                /**< Arena for allocations */
+    DiagnosticContext* diagnostics; /**< Diagnostic context for error reporting */
+    AstNode** nodes;             /**< Array of AST nodes */
+    Type** inferred_types;       /**< Array of inferred types */
+    size_t capacity;             /**< Capacity of the arrays */
+    size_t count;                /**< Number of nodes */
+    
+    // Enhanced type system support
+    AstNode** explicit_nodes;    /**< Array of explicitly typed AST nodes */
+    Type** explicit_types;       /**< Array of explicit types */
+    size_t explicit_capacity;    /**< Capacity of the explicit arrays */
+    size_t explicit_count;       /**< Number of explicitly typed nodes */
+    
+    StringId* function_names;    /**< Array of function names */
+    Type** function_signatures;  /**< Array of function signatures */
+    size_t signature_capacity;   /**< Capacity of the signature arrays */
+    size_t signature_count;      /**< Number of function signatures */
+};
+
+/**
+ * @brief Create a type inference context
+ */
+TypeInferenceContext* type_inference_context_create(Arena* arena, DiagnosticContext* diagnostics) {
+    assert(arena != NULL);
+    
+    // Allocate context
+    TypeInferenceContext* context = arena_alloc(arena, sizeof(TypeInferenceContext));
+    if (!context) return NULL;
+    
+    // Initialize context
+    context->arena = arena;
+    context->diagnostics = diagnostics;
+    context->capacity = 1024;
+    context->count = 0;
+    context->explicit_capacity = 256;
+    context->explicit_count = 0;
+    context->signature_capacity = 128;
+    context->signature_count = 0;
+    
+    // Allocate arrays
+    context->nodes = arena_alloc(arena, context->capacity * sizeof(AstNode*));
+    if (!context->nodes) return NULL;
+    
+    context->inferred_types = arena_alloc(arena, context->capacity * sizeof(Type*));
+    if (!context->inferred_types) return NULL;
+    
+    context->explicit_nodes = arena_alloc(arena, context->explicit_capacity * sizeof(AstNode*));
+    if (!context->explicit_nodes) return NULL;
+    
+    context->explicit_types = arena_alloc(arena, context->explicit_capacity * sizeof(Type*));
+    if (!context->explicit_types) return NULL;
+    
+    context->function_names = arena_alloc(arena, context->signature_capacity * sizeof(StringId));
+    if (!context->function_names) return NULL;
+    
+    context->function_signatures = arena_alloc(arena, context->signature_capacity * sizeof(Type*));
+    if (!context->function_signatures) return NULL;
+    
+    return context;
+}
+
+/**
+ * @brief Add a node to the context
+ */
+static bool add_node(TypeInferenceContext* context, AstNode* node, Type* type) {
+    assert(context != NULL);
+    assert(node != NULL);
+    
+    // Check if the node is already in the context
+    for (size_t i = 0; i < context->count; i++) {
+        if (context->nodes[i] == node) {
+            // Update the type
+            context->inferred_types[i] = type;
+            node->inferred_type = type;  // Also store directly in the node
+            return true;
+        }
+    }
+    
+    // Check if we need to resize the arrays
+    if (context->count >= context->capacity) {
+        size_t new_capacity = context->capacity * 2;
+        
+        // Allocate new arrays
+        AstNode** new_nodes = arena_alloc(context->arena, new_capacity * sizeof(AstNode*));
+        if (!new_nodes) return false;
+        
+        Type** new_types = arena_alloc(context->arena, new_capacity * sizeof(Type*));
+        if (!new_types) return false;
+        
+        // Copy old arrays to new arrays
+        for (size_t i = 0; i < context->count; i++) {
+            new_nodes[i] = context->nodes[i];
+            new_types[i] = context->inferred_types[i];
+        }
+        
+        // Update context
+        context->nodes = new_nodes;
+        context->inferred_types = new_types;
+        context->capacity = new_capacity;
+    }
+    
+    // Add the node
+    context->nodes[context->count] = node;
+    context->inferred_types[context->count] = type;
+    node->inferred_type = type;  // Also store directly in the node
+    context->count++;
+    
+    return true;
+}
+
+/**
+ * @brief Set an explicit type for an AST node
+ */
+void type_inference_set_explicit_type(TypeInferenceContext* context, AstNode* node, Type* type) {
+    assert(context != NULL);
+    assert(node != NULL);
+    
+    // Check if the node is already in the explicit context
+    for (size_t i = 0; i < context->explicit_count; i++) {
+        if (context->explicit_nodes[i] == node) {
+            // Update the type
+            context->explicit_types[i] = type;
+            node->type_info = type;  // Also store directly in the node
+            return;
+        }
+    }
+    
+    // Check if we need to resize the arrays
+    if (context->explicit_count >= context->explicit_capacity) {
+        size_t new_capacity = context->explicit_capacity * 2;
+        
+        // Allocate new arrays
+        AstNode** new_nodes = arena_alloc(context->arena, new_capacity * sizeof(AstNode*));
+        if (!new_nodes) return;
+        
+        Type** new_types = arena_alloc(context->arena, new_capacity * sizeof(Type*));
+        if (!new_types) return;
+        
+        // Copy old arrays to new arrays
+        for (size_t i = 0; i < context->explicit_count; i++) {
+            new_nodes[i] = context->explicit_nodes[i];
+            new_types[i] = context->explicit_types[i];
+        }
+        
+        // Update context
+        context->explicit_nodes = new_nodes;
+        context->explicit_types = new_types;
+        context->explicit_capacity = new_capacity;
+    }
+    
+    // Add the node
+    context->explicit_nodes[context->explicit_count] = node;
+    context->explicit_types[context->explicit_count] = type;
+    node->type_info = type;  // Also store directly in the node
+    context->explicit_count++;
+}
+
+/**
+ * @brief Set a function signature
+ */
+void type_inference_set_function_signature(TypeInferenceContext* context, StringId function_name, Type* type) {
+    assert(context != NULL);
+    assert(function_name != NULL);
+    
+    // Check if the function is already in the context
+    for (size_t i = 0; i < context->signature_count; i++) {
+        if (context->function_names[i] == function_name) {
+            // Update the signature
+            context->function_signatures[i] = type;
+            return;
+        }
+    }
+    
+    // Check if we need to resize the arrays
+    if (context->signature_count >= context->signature_capacity) {
+        size_t new_capacity = context->signature_capacity * 2;
+        
+        // Allocate new arrays
+        StringId* new_names = arena_alloc(context->arena, new_capacity * sizeof(StringId));
+        if (!new_names) return;
+        
+        Type** new_signatures = arena_alloc(context->arena, new_capacity * sizeof(Type*));
+        if (!new_signatures) return;
+        
+        // Copy old arrays to new arrays
+        for (size_t i = 0; i < context->signature_count; i++) {
+            new_names[i] = context->function_names[i];
+            new_signatures[i] = context->function_signatures[i];
+        }
+        
+        // Update context
+        context->function_names = new_names;
+        context->function_signatures = new_signatures;
+        context->signature_capacity = new_capacity;
+    }
+    
+    // Add the function
+    context->function_names[context->signature_count] = function_name;
+    context->function_signatures[context->signature_count] = type;
+    context->signature_count++;
+}
+
+/**
+ * @brief Get the explicit type for an AST node
+ */
+Type* type_inference_get_explicit_type(TypeInferenceContext* context, const AstNode* node) {
+    assert(context != NULL);
+    assert(node != NULL);
+    
+    // Check if the node is in the explicit context
+    for (size_t i = 0; i < context->explicit_count; i++) {
+        if (context->explicit_nodes[i] == node) {
+            return context->explicit_types[i];
+        }
+    }
+    
+    // Check if the node has an explicit type stored directly
+    if (node->type_info) {
+        return node->type_info;
+    }
+    
+    return NULL;
+}
+
+/**
+ * @brief Get the function signature for a function name
+ */
+Type* type_inference_get_function_signature(TypeInferenceContext* context, StringId function_name) {
+    assert(context != NULL);
+    assert(function_name != NULL);
+    
+    // Check if the function is in the context
+    for (size_t i = 0; i < context->signature_count; i++) {
+        if (context->function_names[i] == function_name) {
+            return context->function_signatures[i];
+        }
+    }
+    
+    return NULL;
+}
+
+/**
+ * @brief Resolve the final type for an AST node
+ */
+Type* type_inference_resolve_type(TypeInferenceContext* context, const AstNode* node) {
+    assert(context != NULL);
+    assert(node != NULL);
+    
+    // First check for explicit type
+    Type* explicit_type = type_inference_get_explicit_type(context, node);
+    if (explicit_type) {
+        return explicit_type;
+    }
+    
+    // If it's a function, check for separate declaration
+    if (node->type == AST_FUNCTION_DEF && node->as.function_def.name->type == AST_IDENTIFIER) {
+        StringId name = node->as.function_def.name->as.identifier.name;
+        Type* signature = type_inference_get_function_signature(context, name);
+        if (signature) {
+            return signature;
+        }
+    }
+    
+    // Fall back to inferred type
+    return type_inference_get_type(context, node);
+}
+
+/**
+ * @brief Collect explicit types from the AST
+ */
+bool type_inference_collect_explicit_types(TypeInferenceContext* context, AstNode* ast) {
+    if (!ast) return true;
+    
+    switch (ast->type) {
+        case AST_TYPE_DECLARATION: {
+            // Store the function signature
+            StringId function_name = ast->as.type_declaration.function_name;
+            Type* type = ast->as.type_declaration.type;
+            type_inference_set_function_signature(context, function_name, type);
+            break;
+        }
+        
+        case AST_FUNCTION_DEF: {
+            // Process function parameters with inline types
+            for (size_t i = 0; i < ast->as.function_def.param_count; i++) {
+                Parameter* param = ast->as.function_def.params[i];
+                if (param->type) {
+                    // Store parameter type
+                    AstNode* param_node = ast->as.function_def.param_nodes[i];
+                    type_inference_set_explicit_type(context, param_node, param->type);
+                }
+            }
+            
+            // Process function return type
+            if (ast->as.function_def.return_type) {
+                type_inference_set_explicit_type(context, ast, ast->as.function_def.return_type);
+            }
+            
+            // Recursively process function body
+            type_inference_collect_explicit_types(context, ast->as.function_def.body);
+            break;
+        }
+        
+        case AST_LET: {
+            // Process let bindings with inline types
+            for (size_t i = 0; i < ast->as.let.binding_count; i++) {
+                AstNode* binding = ast->as.let.bindings[i];
+                if (binding->type == AST_DEFINE && binding->as.define.value->type_info) {
+                    // Store binding type
+                    AstNode* binding_node = ast->as.let.binding_nodes[i];
+                    type_inference_set_explicit_type(context, binding_node, binding->as.define.value->type_info);
+                }
+                
+                // Recursively process binding value
+                type_inference_collect_explicit_types(context, binding);
+            }
+            
+            // Recursively process let body
+            type_inference_collect_explicit_types(context, ast->as.let.body);
+            break;
+        }
+        
+        case AST_PROGRAM: {
+            // Process top-level expressions
+            for (size_t i = 0; i < ast->as.program.expr_count; i++) {
+                type_inference_collect_explicit_types(context, ast->as.program.exprs[i]);
+            }
+            break;
+        }
+        
+        default:
+            // Recursively process child nodes based on node type
+            switch (ast->type) {
+                case AST_CALL:
+                    // Process callee
+                    type_inference_collect_explicit_types(context, ast->as.call.callee);
+                    // Process arguments
+                    for (size_t i = 0; i < ast->as.call.arg_count; i++) {
+                        type_inference_collect_explicit_types(context, ast->as.call.args[i]);
+                    }
+                    break;
+                
+                case AST_IF:
+                    // Process condition, then branch, and else branch
+                    type_inference_collect_explicit_types(context, ast->as.if_expr.condition);
+                    type_inference_collect_explicit_types(context, ast->as.if_expr.then_branch);
+                    if (ast->as.if_expr.else_branch) {
+                        type_inference_collect_explicit_types(context, ast->as.if_expr.else_branch);
+                    }
+                    break;
+                
+                case AST_BEGIN:
+                    // Process expressions
+                    for (size_t i = 0; i < ast->as.begin.expr_count; i++) {
+                        type_inference_collect_explicit_types(context, ast->as.begin.exprs[i]);
+                    }
+                    break;
+                
+                case AST_LAMBDA:
+                    // Process body
+                    type_inference_collect_explicit_types(context, ast->as.lambda.body);
+                    break;
+                
+                case AST_DEFINE:
+                    // Process name and value
+                    type_inference_collect_explicit_types(context, ast->as.define.name);
+                    type_inference_collect_explicit_types(context, ast->as.define.value);
+                    break;
+                
+                case AST_VARIABLE_DEF:
+                    // Process name and value
+                    type_inference_collect_explicit_types(context, ast->as.variable_def.name);
+                    type_inference_collect_explicit_types(context, ast->as.variable_def.value);
+                    break;
+                
+                case AST_SEQUENCE:
+                    // Process expressions
+                    for (size_t i = 0; i < ast->as.sequence.expr_count; i++) {
+                        type_inference_collect_explicit_types(context, ast->as.sequence.exprs[i]);
+                    }
+                    break;
+                
+                default:
+                    // No child nodes to process
+                    break;
+            }
+            break;
+    }
+    
+    return true;
+}
+
+// Forward declaration
+static Type* type_inference_infer_node(TypeInferenceContext* context, AstNode* node);
+
+/**
+ * @brief Infer the type of a number literal
+ */
+static Type* infer_number_literal(TypeInferenceContext* context, AstNode* node) {
+    assert(node->type == AST_LITERAL_NUMBER);
+    
+    // Check if the number is an integer
+    if (node->as.number.value == (int)node->as.number.value) {
+        return type_integer_create(context->arena, INT_SIZE_32);
+    } else {
+        return type_float_create(context->arena, FLOAT_SIZE_32);
+    }
+}
+
+/**
+ * @brief Infer the type of a boolean literal
+ */
+static Type* infer_boolean_literal(TypeInferenceContext* context, AstNode* node) {
+    assert(node->type == AST_LITERAL_BOOLEAN);
+    
+    return type_boolean_create(context->arena);
+}
+
+/**
+ * @brief Infer the type of a character literal
+ */
+static Type* infer_character_literal(TypeInferenceContext* context, AstNode* node) {
+    assert(node->type == AST_LITERAL_CHARACTER);
+    
+    return type_char_create(context->arena);
+}
+
+/**
+ * @brief Infer the type of a string literal
+ */
+static Type* infer_string_literal(TypeInferenceContext* context, AstNode* node) {
+    assert(node->type == AST_LITERAL_STRING);
+    
+    return type_string_create(context->arena);
+}
+
+/**
+ * @brief Infer the type of a call expression
+ */
+static Type* infer_call(TypeInferenceContext* context, AstNode* node) {
+    assert(node->type == AST_CALL);
+    
+    // Check if it's an operator call
+    if (node->as.call.callee->type == AST_IDENTIFIER) {
+        const char* op_name = node->as.call.callee->as.identifier.name;
+        
+        // Handle arithmetic operators
+        if (strcmp(op_name, "+") == 0 || 
+            strcmp(op_name, "-") == 0 || 
+            strcmp(op_name, "*") == 0 || 
+            strcmp(op_name, "/") == 0) {
+            // Infer the type of the operands
+            Type* left_type = type_inference_infer_node(context, node->as.call.args[0]);
+            Type* right_type = NULL;
+            
+            if (node->as.call.arg_count > 1) {
+                right_type = type_inference_infer_node(context, node->as.call.args[1]);
+            } else {
+                // Unary operator
+                return left_type;
+            }
+            
+            // If both operands are integers, the result is an integer
+            if (left_type->kind == TYPE_INTEGER && right_type->kind == TYPE_INTEGER) {
+                return type_integer_create(context->arena, INT_SIZE_32);
+            }
+            
+            // If either operand is a float, the result is a float
+            if (left_type->kind == TYPE_FLOAT || right_type->kind == TYPE_FLOAT) {
+                return type_float_create(context->arena, FLOAT_SIZE_32);
+            }
+            
+            // If either operand is a vector, the result is a vector
+            if (left_type->kind == TYPE_VECTOR || right_type->kind == TYPE_VECTOR) {
+                // Determine the element type
+                Type* element_type = NULL;
+                
+                if (left_type->kind == TYPE_VECTOR && right_type->kind == TYPE_VECTOR) {
+                    // Both operands are vectors, use the common supertype of the element types
+                    element_type = type_common_supertype(context->arena, left_type->vector.element_type, right_type->vector.element_type);
+                } else if (left_type->kind == TYPE_VECTOR) {
+                    // Left operand is a vector, use its element type
+                    element_type = left_type->vector.element_type;
+                } else {
+                    // Right operand is a vector, use its element type
+                    element_type = right_type->vector.element_type;
+                }
+                
+                return type_vector_create(context->arena, element_type, 0);
+            }
+            
+            // Default to float
+            return type_float_create(context->arena, FLOAT_SIZE_32);
+        }
+        
+        // Handle comparison operators
+        else if (strcmp(op_name, "<") == 0 || 
+                 strcmp(op_name, ">") == 0 || 
+                 strcmp(op_name, "<=") == 0 || 
+                 strcmp(op_name, ">=") == 0 || 
+                 strcmp(op_name, "=") == 0) {
+            return type_boolean_create(context->arena);
+        }
+        
+        // Handle vector operations
+        else if (strcmp(op_name, "vector") == 0) {
+            // Vector literal
+            Type* element_type = NULL;
+            
+            if (node->as.call.arg_count > 0) {
+                element_type = type_inference_infer_node(context, node->as.call.args[0]);
+            } else {
+                // Default to float for empty vectors
+                element_type = type_float_create(context->arena, FLOAT_SIZE_32);
+            }
+            
+            return type_vector_create(context->arena, element_type, node->as.call.arg_count);
+        } else if (strcmp(op_name, "v+") == 0 || 
+                   strcmp(op_name, "v-") == 0) {
+            // Vector addition/subtraction
+            Type* left_type = type_inference_infer_node(context, node->as.call.args[0]);
+            Type* right_type = type_inference_infer_node(context, node->as.call.args[1]);
+            
+            // Both operands should be vectors
+            if (left_type->kind == TYPE_VECTOR && right_type->kind == TYPE_VECTOR) {
+                // Use the common supertype of the element types
+                Type* element_type = type_common_supertype(context->arena, left_type->vector.element_type, right_type->vector.element_type);
+                return type_vector_create(context->arena, element_type, 0);
+            }
+            
+            // Default to float vector
+            return type_vector_create(context->arena, type_float_create(context->arena, FLOAT_SIZE_32), 0);
+        } else if (strcmp(op_name, "v*") == 0) {
+            // Vector scalar multiplication
+            Type* left_type = type_inference_infer_node(context, node->as.call.args[0]);
+            Type* right_type = type_inference_infer_node(context, node->as.call.args[1]);
+            
+            // One operand should be a vector and the other a scalar
+            if (left_type->kind == TYPE_VECTOR && (right_type->kind == TYPE_INTEGER || right_type->kind == TYPE_FLOAT)) {
+                return type_vector_create(context->arena, left_type->vector.element_type, 0);
+            } else if ((left_type->kind == TYPE_INTEGER || left_type->kind == TYPE_FLOAT) && right_type->kind == TYPE_VECTOR) {
+                return type_vector_create(context->arena, right_type->vector.element_type, 0);
+            }
+            
+            // Default to float vector
+            return type_vector_create(context->arena, type_float_create(context->arena, FLOAT_SIZE_32), 0);
+        } else if (strcmp(op_name, "dot") == 0) {
+            // Dot product
+            return type_float_create(context->arena, FLOAT_SIZE_32);
+        } else if (strcmp(op_name, "cross") == 0) {
+            // Cross product
+            return type_vector_create(context->arena, type_float_create(context->arena, FLOAT_SIZE_32), 0);
+        } else if (strcmp(op_name, "norm") == 0) {
+            // Vector magnitude
+            return type_float_create(context->arena, FLOAT_SIZE_32);
+        } else if (strcmp(op_name, "gradient") == 0) {
+            // Gradient of a scalar field
+            return type_vector_create(context->arena, type_float_create(context->arena, FLOAT_SIZE_32), 0);
+        } else if (strcmp(op_name, "divergence") == 0) {
+            // Divergence of a vector field
+            return type_float_create(context->arena, FLOAT_SIZE_32);
+        } else if (strcmp(op_name, "curl") == 0) {
+            // Curl of a vector field
+            return type_vector_create(context->arena, type_float_create(context->arena, FLOAT_SIZE_32), 0);
+        } else if (strcmp(op_name, "laplacian") == 0) {
+            // Laplacian of a scalar field
+            return type_float_create(context->arena, FLOAT_SIZE_32);
+        } else if (strcmp(op_name, "display") == 0) {
+            // Display function (Scheme compatibility)
+            return type_void_create(context->arena);
+        }
+        
+        // Handle autodiff functions
+        else if (strcmp(op_name, "autodiff-forward") == 0 || 
+                 strcmp(op_name, "autodiff-reverse") == 0) {
+            // Forward/reverse-mode autodiff
+            return type_float_create(context->arena, FLOAT_SIZE_32);
+        } 
+        // Handle gradient functions - these return vectors
+        else if (strstr(op_name, "gradient") || 
+                 strstr(op_name, "grad") ||
+                 strcmp(op_name, "autodiff-forward-gradient") == 0 || 
+                 strcmp(op_name, "autodiff-reverse-gradient") == 0 ||
+                 strcmp(op_name, "sum-of-squares-gradient-forward") == 0 ||
+                 strcmp(op_name, "sum-of-squares-gradient-reverse") == 0 ||
+                 strcmp(op_name, "sin-cos-gradient-forward") == 0 ||
+                 strcmp(op_name, "sin-cos-gradient-reverse") == 0) {
+            // Forward/reverse-mode gradient
+            return type_vector_create(context->arena, type_float_create(context->arena, FLOAT_SIZE_32), 0);
+        } 
+        // Handle Jacobian and Hessian functions - these return matrices (vector of vectors)
+        else if (strstr(op_name, "jacobian") ||
+                 strstr(op_name, "hessian") ||
+                 strcmp(op_name, "autodiff-jacobian") == 0 ||
+                 strcmp(op_name, "vector-function-jacobian") == 0 ||
+                 strcmp(op_name, "autodiff-hessian") == 0 ||
+                 strcmp(op_name, "sum-of-squares-hessian") == 0) {
+            // Jacobian/Hessian matrix
+            // Create a matrix type (represented as a vector of vectors)
+            Type* element_type = type_vector_create(context->arena, type_float_create(context->arena, FLOAT_SIZE_32), 0);
+            return type_vector_create(context->arena, element_type, 0);
+        } else if (strcmp(op_name, "derivative") == 0) {
+            // Derivative of a function at a point
+            return type_float_create(context->arena, FLOAT_SIZE_32);
+        }
     
     // Procedure operations
     if (strstr(name, "proc") ||
@@ -460,7 +1487,11 @@ static Type* infer_call(TypeInferenceContext* context, AstNode* node) {
             // Forward/reverse-mode autodiff
             return type_float_create(context->arena, FLOAT_SIZE_32);
         } else if (strcmp(op_name, "autodiff-forward-gradient") == 0 || 
-                   strcmp(op_name, "autodiff-reverse-gradient") == 0) {
+                   strcmp(op_name, "autodiff-reverse-gradient") == 0 ||
+                   strcmp(op_name, "sum-of-squares-gradient-forward") == 0 ||
+                   strcmp(op_name, "sum-of-squares-gradient-reverse") == 0 ||
+                   strcmp(op_name, "sin-cos-gradient-forward") == 0 ||
+                   strcmp(op_name, "sin-cos-gradient-reverse") == 0) {
             // Forward/reverse-mode gradient
             return type_vector_create(context->arena, type_float_create(context->arena, FLOAT_SIZE_32), 0);
         } else if (strcmp(op_name, "autodiff-jacobian") == 0) {
@@ -822,7 +1853,7 @@ static Type* type_inference_infer_node(TypeInferenceContext* context, AstNode* n
     // Check if the node is already in the context
     for (size_t i = 0; i < context->count; i++) {
         if (context->nodes[i] == node) {
-            return context->types[i];
+            return context->inferred_types[i];
         }
     }
     
@@ -930,7 +1961,7 @@ Type* type_inference_get_type(TypeInferenceContext* context, const AstNode* node
     // Check if the node is in the context
     for (size_t i = 0; i < context->count; i++) {
         if (context->nodes[i] == node) {
-            return context->types[i];
+            return context->inferred_types[i];
         }
     }
     
@@ -940,7 +1971,7 @@ Type* type_inference_get_type(TypeInferenceContext* context, const AstNode* node
 /**
  * @brief Convert a Type to a C type string
  */
-static const char* type_to_c_type(Type* type) {
+const char* type_to_c_type(Type* type) {
     if (type == NULL) {
         return "int"; // Default to int for untyped parameters
     }

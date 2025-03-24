@@ -4,6 +4,10 @@
 #include <math.h>
 #include "core/vector.h"
 #include "core/memory.h"
+#include "core/autodiff.h"
+
+// Global arena for memory allocations
+Arena* arena = NULL;
 
 // Eshkol value type
 typedef union {
@@ -16,9 +20,5 @@ typedef union {
 } eshkol_value_t;
 
 // Forward declarations
-int main();
-
-int main() {
-    return ({ printf("Hello, Eshkol!\n"); 0; });
-}
+int32_t main();
 

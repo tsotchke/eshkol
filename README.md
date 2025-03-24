@@ -32,13 +32,17 @@ Unlike other languages that force you to choose between expressiveness and perfo
   - No garbage collection pauses or unpredictable latency spikes
   - Perfect for real-time applications and high-performance computing
 
-### 🛠️ Currently In Development
+### 🛠️ Recently Enhanced
 
-- **Type System** - Optional static typing (coming soon):
+- **Type System** - Comprehensive static typing with Scheme compatibility:
   - Gradual typing system that combines static and dynamic typing
-  - Type annotations for function parameters, return values, and variables
-  - Type inference to reduce annotation burden
+  - Three typing approaches: implicit typing, inline explicit typing, and separate type declarations
+  - Powerful type inference to reduce annotation burden
   - Compile-time type checking for early error detection
+  - Deep integration with automatic differentiation and scientific computing
+  - Full compatibility with standard Scheme
+
+### 🛠️ Currently In Development
 
 - **Scientific Computing Primitives** - Built-in support for numerical computation:
   - Vector and matrix operations with optimized implementations
@@ -132,7 +136,16 @@ Check out the `examples/` directory for sample programs demonstrating Eshkol's c
 - `factorial.esk` - Recursive factorial calculation
 - `function_composition.esk` - Higher-order functions and composition
 - `arithmetic.esk` - Basic arithmetic operations
-- `typed_functions.esk` - Using type annotations
+
+**Type System Examples:**
+- `untyped.esk` - Standard Scheme code without type annotations
+- `implicit_typed.esk` - Using type inference without explicit annotations
+- `inline_typed.esk` - Using inline explicit type annotations
+- `explicit_param_typed.esk` - Using explicit parameter type annotations
+- `separate_typed.esk` - Using separate type declarations
+- `simple_typed.esk` - Simple examples of typed functions
+
+**Scientific Computing Examples:**
 - `vector_calculus.esk` - Vector operations and calculus
 - `autodiff_example.esk` - Automatic differentiation in action
 
@@ -140,12 +153,30 @@ Check out the `examples/` directory for sample programs demonstrating Eshkol's c
 
 Comprehensive documentation is available to help you learn and master Eshkol:
 
+### Vision and Planning
+
 - **[Vision and Purpose](docs/vision/PURPOSE_AND_VISION.md)** - The core philosophy behind Eshkol
 - **[Differentiation Analysis](docs/vision/DIFFERENTIATION_ANALYSIS.md)** - How Eshkol compares to other languages
 - **[AI Focus](docs/vision/AI_FOCUS.md)** - Eshkol's unique advantages for AI development
 - **[Scientific Computing](docs/vision/SCIENTIFIC_COMPUTING.md)** - Eshkol's scientific computing capabilities
 - **[Technical White Paper](docs/vision/TECHNICAL_WHITE_PAPER.md)** - In-depth technical details
 - **[Future Roadmap](docs/vision/FUTURE_ROADMAP.md)** - The planned evolution of Eshkol
+
+### Type System
+
+- **[Type System Overview](docs/type_system/TYPE_SYSTEM.md)** - Comprehensive overview of Eshkol's type system
+- **[Influences](docs/type_system/INFLUENCES.md)** - Languages and systems that influenced Eshkol's type system
+- **[Scientific Computing and AI](docs/type_system/SCIENTIFIC_COMPUTING_AND_AI.md)** - How the type system enables scientific computing and AI
+- **[Scheme Compatibility](docs/type_system/SCHEME_COMPATIBILITY.md)** - How Eshkol maintains Scheme compatibility while adding types
+- **[Automatic Differentiation](docs/type_system/AUTODIFF.md)** - The synergy between the type system and automatic differentiation
+
+### Tutorials and References
+
+- **[Type System Tutorial](docs/tutorials/TYPE_SYSTEM_TUTORIAL.md)** - A practical guide to using Eshkol's type system
+- **[Type System Reference](docs/reference/TYPE_SYSTEM_REFERENCE.md)** - A comprehensive reference for all type-related syntax
+
+### Scheme Compatibility
+
 - **[Scheme Compatibility](docs/scheme_compatibility/MASTER_TRACKING.md)** - Status of Scheme feature implementation
 
 ## 🧩 File Extensions
@@ -178,7 +209,7 @@ If you use Eshkol in your research, please cite it as:
 ```bibtex
 @software{tsotchke2025eshkol,
   author       = {tsotchke},
-  title        = {Eshkol: A high-performance LISP-like language for scientific computing and AI},
+  title        = {Eshkol: A High-Performance LISP-like language for Scientific Computing and AI},
   year         = {2025},
   url          = {https://github.com/tsotchke/eshkol}
 }

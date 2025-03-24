@@ -31,6 +31,28 @@ Documentation related to Eshkol's compatibility with the Scheme programming lang
 - [Evolution](scheme_compatibility/EVOLUTION.md): Future plans for Scheme compatibility
 - [Known Issues](scheme_compatibility/KNOWN_ISSUES.md): Tracks known issues and limitations
 
+### [Type System](type_system/README.md)
+
+Documentation related to Eshkol's type system:
+
+- [Type System Overview](type_system/TYPE_SYSTEM.md): Comprehensive overview of Eshkol's type system
+- [Influences](type_system/INFLUENCES.md): Languages and systems that influenced Eshkol's type system
+- [Scientific Computing and AI](type_system/SCIENTIFIC_COMPUTING_AND_AI.md): How the type system enables scientific computing and AI
+- [Scheme Compatibility](type_system/SCHEME_COMPATIBILITY.md): How Eshkol maintains Scheme compatibility while adding types
+- [Automatic Differentiation](type_system/AUTODIFF.md): The synergy between the type system and automatic differentiation
+
+### [Tutorials](tutorials/README.md)
+
+Step-by-step guides and practical examples for learning and using Eshkol:
+
+- [Type System Tutorial](tutorials/TYPE_SYSTEM_TUTORIAL.md): A practical guide to using Eshkol's type system
+
+### [Reference](reference/README.md)
+
+Comprehensive and detailed information about Eshkol's syntax, semantics, and features:
+
+- [Type System Reference](reference/TYPE_SYSTEM_REFERENCE.md): A comprehensive reference for all type-related syntax and semantics
+
 ### [Planning](planning/README.md)
 
 Documentation related to the planning and design of Eshkol:

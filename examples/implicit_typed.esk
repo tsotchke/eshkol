@@ -1,0 +1,62 @@
+;;
+;; Implicit Typing Example in Eshkol
+;; This example demonstrates implicit typing through naming conventions
+;; Types are inferred by the compiler based on variable/function names
+;;
+
+;; Function with implicit integer parameters (i_ prefix suggests integers)
+(define (sum-integers i_a i_b)
+  (+ i_a i_b))
+
+;; Function with implicit float parameters (f_ prefix suggests floats)
+(define (average-floats f_a f_b)
+  (/ (+ f_a f_b) 2.0))
+
+;; Function with implicit vector parameter (v_ prefix suggests vector)
+(define (vector-magnitude v_input)
+  (let ((x (vector-ref v_input 0))
+        (y (vector-ref v_input 1))
+        (z (vector-ref v_input 2)))
+    (sqrt (+ (* x x) (* y y) (* z z)))))
+
+;; Function with implicit string parameter (str_ prefix suggests string)
+(define (format-greeting str_name)
+  (string-append "Hello, " str_name "!"))
+
+;; Function with implicit boolean parameter (b_ prefix suggests boolean)
+(define (logical-operation b_value1 b_value2)
+  (and b_value1 b_value2))
+
+;; Main function to demonstrate the examples
+(define (main)
+  ;; Integer operations with implicit typing
+  (define i_result (sum-integers 10 20))
+  (display "Sum of integers: ")
+  (display i_result)
+  (display "\n")
+  
+  ;; Float operations with implicit typing
+  (define f_result (average-floats 3.5 7.5))
+  (display "Average of floats: ")
+  (display f_result)
+  (display "\n")
+  
+  ;; Vector operations with implicit typing
+  (define v_point (vector 3.0 4.0 5.0))
+  (define f_magnitude (vector-magnitude v_point))
+  (display "Vector magnitude: ")
+  (display f_magnitude)
+  (display "\n")
+  
+  ;; String operations with implicit typing
+  (define str_result (format-greeting "Alice"))
+  (display str_result)
+  (display "\n")
+  
+  ;; Boolean operations with implicit typing
+  (define b_result (logical-operation #t #f))
+  (display "Logical AND result: ")
+  (display b_result)
+  (display "\n")
+  
+  0)  ; Return success code

@@ -24,8 +24,12 @@ static void test_codegen_context_create(void) {
     DiagnosticContext* diag = diagnostic_context_create(arena);
     assert(diag != NULL);
     
+    // Create type inference context
+    TypeInferenceContext* type_context = type_inference_context_create(arena, diag);
+    assert(type_context != NULL);
+    
     // Create code generator context
-    CodegenContext* codegen = codegen_context_create(arena, diag);
+    CodegenContext* codegen = codegen_context_create(arena, diag, type_context);
     assert(codegen != NULL);
     
     // Clean up
@@ -54,8 +58,12 @@ static void test_codegen_generate_simple(void) {
     AstNode* ast = ast_create_number(arena, 42.0, 1, 1);
     assert(ast != NULL);
     
+    // Create type inference context
+    TypeInferenceContext* type_context = type_inference_context_create(arena, diag);
+    assert(type_context != NULL);
+    
     // Create code generator context
-    CodegenContext* codegen = codegen_context_create(arena, diag);
+    CodegenContext* codegen = codegen_context_create(arena, diag, type_context);
     assert(codegen != NULL);
     
     // Generate C code to a temporary file
@@ -114,16 +122,23 @@ static void test_codegen_generate_typed_function(void) {
     AstNode* body = ast_create_call(arena, plus, args, 2, 2, 3);
     assert(body != NULL);
     
+    // Create parameter nodes (for type information)
+    AstNode* param_nodes[2] = { NULL, NULL };
+    
     // Create function definition
-    AstNode* func_def = ast_create_function_def(arena, name, params, 2, int_type, body, 1, 1);
+    AstNode* func_def = ast_create_function_def(arena, name, params, param_nodes, 2, int_type, body, 1, 1);
     assert(func_def != NULL);
     
     // Create program with the function definition
     AstNode* program = ast_create_program(arena, &func_def, 1, 1, 1);
     assert(program != NULL);
     
+    // Create type inference context
+    TypeInferenceContext* type_context = type_inference_context_create(arena, diag);
+    assert(type_context != NULL);
+    
     // Create code generator context
-    CodegenContext* codegen = codegen_context_create(arena, diag);
+    CodegenContext* codegen = codegen_context_create(arena, diag, type_context);
     assert(codegen != NULL);
     
     // Generate C code to a temporary file

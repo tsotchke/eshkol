@@ -1,11 +1,34 @@
 # Define sources
 set(BACKEND_SOURCES
-    codegen/codegen.c
+    codegen/expressions.c
+    codegen/literals.c
+    codegen/identifiers.c
+    codegen/calls.c
+    codegen/conditionals.c
+    codegen/blocks.c
+    codegen/definitions.c
+    codegen/type_conversion.c
+    codegen/context.c
+    codegen/compiler.c
+    codegen/program.c
+    codegen/statements.c
 )
 
 # Define headers
 set(BACKEND_HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/codegen/codegen.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/context.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/expressions.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/literals.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/identifiers.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/calls.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/conditionals.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/blocks.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/definitions.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/type_conversion.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/statements.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/compiler.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/program.h
 )
 
 # Create library

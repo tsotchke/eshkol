@@ -8,7 +8,7 @@
 #include "core/diagnostics.h"
 #include "core/file_io.h"
 #include "frontend/ast/ast.h"
-#include "frontend/type_inference.h"
+#include "frontend/type_inference/type_inference.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,17 +22,17 @@
 struct CodegenContext {
     Arena* arena;                // Arena for allocations
     DiagnosticContext* diagnostics; // Diagnostic context for error reporting
+    TypeInferenceContext* type_context; // Type inference context for type information
     FILE* output;                // Output file
     int indent_level;            // Current indentation level
     bool in_function;            // Whether we're currently in a function
     char* temp_dir;              // Temporary directory for compilation
-    TypeInferenceContext* type_inference; // Type inference context
 };
 
 /**
  * @brief Create a code generator context
  */
-CodegenContext* codegen_context_create(Arena* arena, DiagnosticContext* diagnostics) {
+CodegenContext* codegen_context_create(Arena* arena, DiagnosticContext* diagnostics, TypeInferenceContext* type_context) {
     assert(arena != NULL);
     assert(diagnostics != NULL);
     
@@ -43,16 +43,40 @@ CodegenContext* codegen_context_create(Arena* arena, DiagnosticContext* diagnost
     // Initialize context
     context->arena = arena;
     context->diagnostics = diagnostics;
+    context->type_context = type_context;
     context->output = NULL;
     context->indent_level = 0;
     context->in_function = false;
     context->temp_dir = NULL;
     
-    // Create type inference context
-    context->type_inference = type_inference_context_create(arena);
-    if (!context->type_inference) return NULL;
-    
     return context;
+}
+
+/**
+ * @brief Initialize a code generator context
+ */
+bool codegen_context_init(CodegenContext* context, Arena* arena, TypeInferenceContext* type_context, const char* output_file) {
+    assert(context != NULL);
+    assert(arena != NULL);
+    
+    // Initialize context
+    context->arena = arena;
+    context->type_context = type_context;
+    context->indent_level = 0;
+    context->in_function = false;
+    context->temp_dir = NULL;
+    
+    // Open output file
+    if (output_file != NULL) {
+        context->output = fopen(output_file, "w");
+        if (!context->output) {
+            return false;
+        }
+    } else {
+        context->output = stdout;
+    }
+    
+    return true;
 }
 
 /**
@@ -698,20 +722,49 @@ static bool generate_if(CodegenContext* context, const AstNode* node) {
 static bool generate_begin(CodegenContext* context, const AstNode* node) {
     assert(node->type == AST_BEGIN);
     
-    fprintf(context->output, "({ ");
-    
-    // Generate expressions
-    for (size_t i = 0; i < node->as.begin.expr_count; i++) {
-        if (i > 0) {
-            fprintf(context->output, "; ");
+    // If we're in a function, generate a block
+    if (context->in_function) {
+        fprintf(context->output, "{\n");
+        context->indent_level++;
+        
+        // Generate expressions
+        for (size_t i = 0; i < node->as.begin.expr_count - 1; i++) {
+            write_indent(context);
+            if (!generate_expression(context, node->as.begin.exprs[i])) {
+                return false;
+            }
+            fprintf(context->output, ";\n");
         }
         
-        if (!generate_expression(context, node->as.begin.exprs[i])) {
-            return false;
+        // Generate the last expression as the return value
+        if (node->as.begin.expr_count > 0) {
+            write_indent(context);
+            if (!generate_expression(context, node->as.begin.exprs[node->as.begin.expr_count - 1])) {
+                return false;
+            }
+            fprintf(context->output, "\n");
         }
+        
+        context->indent_level--;
+        write_indent(context);
+        fprintf(context->output, "}");
+    } else {
+        // If we're not in a function, use a statement expression
+        fprintf(context->output, "({ ");
+        
+        // Generate expressions
+        for (size_t i = 0; i < node->as.begin.expr_count; i++) {
+            if (i > 0) {
+                fprintf(context->output, "; ");
+            }
+            
+            if (!generate_expression(context, node->as.begin.exprs[i])) {
+                return false;
+            }
+        }
+        
+        fprintf(context->output, "; })");
     }
-    
-    fprintf(context->output, "; })");
     
     return true;
 }
@@ -749,15 +802,16 @@ static bool generate_define(CodegenContext* context, const AstNode* node) {
     return true;
 }
 
-
 /**
- * @brief Convert a Type to a C type string
+ * @brief Convert a Type to a C type string for code generation
+ * 
+ * This is a backend-specific version to avoid duplicate symbols with the one in type_inference.c
  */
-static const char* type_to_c_type(Type* type) {
-    // We should never have a NULL type, but just in case, default to int32_t
-    // if (type == NULL) {
-    //     return "int32_t";
-    // }
+static const char* codegen_type_to_c_type(Type* type) {
+    // Handle null type gracefully
+    if (type == NULL) {
+        return "void*";
+    }
     
     switch (type->kind) {
         case TYPE_VOID:
@@ -817,14 +871,30 @@ static const char* type_to_c_type(Type* type) {
 static bool generate_function_def(CodegenContext* context, const AstNode* node) {
     assert(node->type == AST_FUNCTION_DEF);
     
-    // Get return type
-    const char* return_type = "int"; // Default to int
-    if (node->as.function_def.return_type != NULL) {
-        return_type = type_to_c_type(node->as.function_def.return_type);
-    } else if (node->as.function_def.body != NULL) {
-        // Infer return type using the type inference system
-        type_inference_infer(context->type_inference, (AstNode*)node->as.function_def.body);
-        return_type = type_inference_get_c_type(context->type_inference, node->as.function_def.body);
+    // Get return type from type inference context
+    const char* return_type = "void";
+    Type* resolved_type = type_inference_resolve_type(context->type_context, node);
+    if (resolved_type != NULL) {
+        if (resolved_type->kind == TYPE_FUNCTION) {
+            // Function type, use the return type
+            return_type = codegen_type_to_c_type(resolved_type->function.return_type);
+        } else {
+            // Not a function type, use the resolved type directly
+            return_type = codegen_type_to_c_type(resolved_type);
+        }
+    } else {
+        // Fallback to AST node type info
+        if (node->as.function_def.return_type != NULL) {
+            return_type = codegen_type_to_c_type(node->as.function_def.return_type);
+        } else if (node->as.function_def.body != NULL && node->as.function_def.body->type_info != NULL) {
+            return_type = codegen_type_to_c_type(node->as.function_def.body->type_info);
+        } else {
+            // Special case for gradient functions
+            const char* name = node->as.function_def.name->as.identifier.name;
+            if (strstr(name, "gradient") != NULL || strstr(name, "jacobian") != NULL || strstr(name, "hessian") != NULL) {
+                return_type = "VectorF*";
+            }
+        }
     }
     
     // Generate function declaration with return type
@@ -843,11 +913,15 @@ static bool generate_function_def(CodegenContext* context, const AstNode* node) 
             fprintf(context->output, ", ");
         }
         
-        // Get parameter type
+        // Get parameter type from type inference context
         const char* param_type = "float"; // Default to float for autodiff functions
         Parameter* param = node->as.function_def.params[i];
-        if (param->type != NULL) {
-            param_type = type_to_c_type(param->type);
+        AstNode* param_node = node->as.function_def.param_nodes[i];
+        Type* param_resolved_type = type_inference_resolve_type(context->type_context, param_node);
+        if (param_resolved_type != NULL) {
+            param_type = codegen_type_to_c_type(param_resolved_type);
+        } else if (param->type != NULL) {
+            param_type = codegen_type_to_c_type(param->type);
         }
         
         fprintf(context->output, "%s %s", param_type, param->name);
@@ -880,10 +954,13 @@ static bool generate_function_def(CodegenContext* context, const AstNode* node) 
 static bool generate_variable_def(CodegenContext* context, const AstNode* node) {
     assert(node->type == AST_VARIABLE_DEF);
     
-    // Get variable type
+    // Get variable type from type inference context
     const char* var_type = "int"; // Default to int
-    if (node->type_info != NULL) {
-        var_type = type_to_c_type(node->type_info);
+    Type* resolved_type = type_inference_resolve_type(context->type_context, node);
+    if (resolved_type != NULL) {
+        var_type = codegen_type_to_c_type(resolved_type);
+    } else if (node->type_info != NULL) {
+        var_type = codegen_type_to_c_type(node->type_info);
     }
     
     // Generate variable declaration with type
@@ -922,9 +999,45 @@ static bool generate_let(CodegenContext* context, const AstNode* node) {
         
         // Each binding is a define expression
         AstNode* binding = node->as.let.bindings[i];
+        AstNode* binding_node = node->as.let.binding_nodes[i];
+        
         if (binding->type == AST_DEFINE) {
-            // Use the existing type information from the AST node
-            const char* var_type = type_to_c_type(binding->as.define.value->type_info);
+            // Determine the variable type with proper priority
+            const char* var_type = NULL;
+            
+            // First check for explicit type
+            Type* explicit_type = type_inference_get_explicit_type(context->type_context, binding_node);
+            if (explicit_type) {
+                var_type = codegen_type_to_c_type(explicit_type);
+            } else {
+                // Check for function signature
+                if (binding->as.define.value->type == AST_CALL && 
+                    binding->as.define.value->as.call.callee->type == AST_IDENTIFIER) {
+                    
+                    StringId func_name = binding->as.define.value->as.call.callee->as.identifier.name;
+                    
+                    // Special handling for gradient and matrix functions
+                    if (strstr(func_name, "gradient") || 
+                        strstr(func_name, "jacobian") || 
+                        strstr(func_name, "hessian") ||
+                        strstr(func_name, "vector")) {
+                        var_type = "VectorF*";
+                    }
+                }
+                
+                // If still not determined, use inferred type
+                if (!var_type) {
+                    Type* inferred_type = type_inference_get_type(context->type_context, binding->as.define.value);
+                    if (inferred_type) {
+                        var_type = codegen_type_to_c_type(inferred_type);
+                    }
+                }
+            }
+            
+            // Default to int if no type information is available
+            if (!var_type) {
+                var_type = "int";
+            }
             
             // Output the variable declaration
             fprintf(context->output, "%s ", var_type);
@@ -938,10 +1051,20 @@ static bool generate_let(CodegenContext* context, const AstNode* node) {
                 return false;
             }
         } else {
-            // For non-define bindings, use the type inference system
-            type_inference_infer(context->type_inference, binding);
-            Type* type = type_inference_get_type(context->type_inference, binding);
-            const char* var_type = type ? type_to_c_type(type) : "float";
+            // Direct binding
+            const char* var_type = "int"; // Default
+            
+            // First check for explicit type
+            Type* explicit_type = type_inference_get_explicit_type(context->type_context, binding);
+            if (explicit_type) {
+                var_type = codegen_type_to_c_type(explicit_type);
+            } else {
+                // Use inferred type
+                Type* inferred_type = type_inference_get_type(context->type_context, binding);
+                if (inferred_type) {
+                    var_type = codegen_type_to_c_type(inferred_type);
+                }
+            }
             
             fprintf(context->output, "%s ", var_type);
             if (!generate_expression(context, binding)) {
@@ -989,9 +1112,45 @@ static bool generate_sequence(CodegenContext* context, const AstNode* node) {
                 
                 // Each binding is a define expression
                 AstNode* binding = let_node->as.let.bindings[j];
+                AstNode* binding_node = let_node->as.let.binding_nodes[j];
+                
                 if (binding->type == AST_DEFINE) {
-                    // Use the existing type information from the AST node
-                    const char* var_type = type_to_c_type(binding->as.define.value->type_info);
+                    // Determine the variable type with proper priority
+                    const char* var_type = NULL;
+                    
+                    // First check for explicit type
+                    Type* explicit_type = type_inference_get_explicit_type(context->type_context, binding_node);
+                    if (explicit_type) {
+                        var_type = codegen_type_to_c_type(explicit_type);
+                    } else {
+                        // Check for function signature
+                        if (binding->as.define.value->type == AST_CALL && 
+                            binding->as.define.value->as.call.callee->type == AST_IDENTIFIER) {
+                            
+                            StringId func_name = binding->as.define.value->as.call.callee->as.identifier.name;
+                            
+                            // Special handling for gradient and matrix functions
+                            if (strstr(func_name, "gradient") || 
+                                strstr(func_name, "jacobian") || 
+                                strstr(func_name, "hessian") ||
+                                strstr(func_name, "vector")) {
+                                var_type = "VectorF*";
+                            }
+                        }
+                        
+                        // If still not determined, use inferred type
+                        if (!var_type) {
+                            Type* inferred_type = type_inference_get_type(context->type_context, binding->as.define.value);
+                            if (inferred_type) {
+                                var_type = codegen_type_to_c_type(inferred_type);
+                            }
+                        }
+                    }
+                    
+                    // Default to int if no type information is available
+                    if (!var_type) {
+                        var_type = "int";
+                    }
                     
                     // Output the variable declaration
                     fprintf(context->output, "%s ", var_type);
@@ -1005,10 +1164,20 @@ static bool generate_sequence(CodegenContext* context, const AstNode* node) {
                         return false;
                     }
                 } else {
-                    // For non-define bindings, use the type inference system
-                    type_inference_infer(context->type_inference, binding);
-                    Type* type = type_inference_get_type(context->type_inference, binding);
-                    const char* var_type = type ? type_to_c_type(type) : "float";
+                    // Direct binding
+                    const char* var_type = "int"; // Default
+                    
+                    // First check for explicit type
+                    Type* explicit_type = type_inference_get_explicit_type(context->type_context, binding);
+                    if (explicit_type) {
+                        var_type = codegen_type_to_c_type(explicit_type);
+                    } else {
+                        // Use inferred type
+                        Type* inferred_type = type_inference_get_type(context->type_context, binding);
+                        if (inferred_type) {
+                            var_type = codegen_type_to_c_type(inferred_type);
+                        }
+                    }
                     
                     fprintf(context->output, "%s ", var_type);
                     if (!generate_expression(context, binding)) {
@@ -1114,14 +1283,23 @@ static bool generate_program(CodegenContext* context, const AstNode* node) {
     fprintf(context->output, "// Forward declarations\n");
     for (size_t i = 0; i < node->as.program.expr_count; i++) {
         if (node->as.program.exprs[i]->type == AST_FUNCTION_DEF) {
-            // Get return type
-            const char* return_type = "int"; // Default to int
-            if (node->as.program.exprs[i]->as.function_def.return_type != NULL) {
-                return_type = type_to_c_type(node->as.program.exprs[i]->as.function_def.return_type);
-            } else if (node->as.program.exprs[i]->as.function_def.body != NULL) {
-                // Infer return type using the type inference system
-                type_inference_infer(context->type_inference, (AstNode*)node->as.program.exprs[i]->as.function_def.body);
-                return_type = type_inference_get_c_type(context->type_inference, node->as.program.exprs[i]->as.function_def.body);
+            // Get return type from type inference context
+            const char* return_type = "void"; // Default to void
+            AstNode* func_node = node->as.program.exprs[i];
+            Type* resolved_type = type_inference_resolve_type(context->type_context, func_node);
+            if (resolved_type != NULL) {
+                if (resolved_type->kind == TYPE_FUNCTION) {
+                    // Function type, use the return type
+                    return_type = codegen_type_to_c_type(resolved_type->function.return_type);
+                } else {
+                    // Not a function type, use the resolved type directly
+                    return_type = codegen_type_to_c_type(resolved_type);
+                }
+            } else if (func_node->as.function_def.return_type != NULL) {
+                return_type = codegen_type_to_c_type(func_node->as.function_def.return_type);
+            } else if (func_node->as.function_def.body != NULL && 
+                      func_node->as.function_def.body->type_info != NULL) {
+                return_type = codegen_type_to_c_type(func_node->as.function_def.body->type_info);
             }
             
             fprintf(context->output, "%s ", return_type);
@@ -1133,11 +1311,15 @@ static bool generate_program(CodegenContext* context, const AstNode* node) {
                     fprintf(context->output, ", ");
                 }
                 
-                // Get parameter type
+                // Get parameter type from type inference context
                 const char* param_type = "float"; // Default to float for autodiff functions
-                Parameter* param = node->as.program.exprs[i]->as.function_def.params[j];
-                if (param->type != NULL) {
-                    param_type = type_to_c_type(param->type);
+                Parameter* param = func_node->as.function_def.params[j];
+                AstNode* param_node = func_node->as.function_def.param_nodes[j];
+                Type* param_resolved_type = type_inference_resolve_type(context->type_context, param_node);
+                if (param_resolved_type != NULL) {
+                    param_type = codegen_type_to_c_type(param_resolved_type);
+                } else if (param->type != NULL) {
+                    param_type = codegen_type_to_c_type(param->type);
                 }
                 
                 fprintf(context->output, "%s", param_type);
@@ -1260,9 +1442,13 @@ int codegen_compile_and_execute(CodegenContext* context, const char* c_file, cha
     // Construct the include path relative to the source directory
     snprintf(include_path, sizeof(include_path), "%s/../include", source_dir);
     
+    // Create a temporary executable name
+    char temp_executable[1024];
+    snprintf(temp_executable, sizeof(temp_executable), "/tmp/eshkol_temp_%d", getpid());
+    
     // Create command to compile the C file
     char compile_cmd[1024];
-    snprintf(compile_cmd, sizeof(compile_cmd), "gcc -I%s -o %s.out %s", include_path, c_file, c_file);
+    snprintf(compile_cmd, sizeof(compile_cmd), "gcc -I%s -o %s %s", include_path, temp_executable, c_file);
     
     // Free allocated memory
     free(source_dir);
@@ -1276,7 +1462,7 @@ int codegen_compile_and_execute(CodegenContext* context, const char* c_file, cha
     
     // Create command to execute the compiled program
     char execute_cmd[1024];
-    snprintf(execute_cmd, sizeof(execute_cmd), "./%s.out", c_file);
+    snprintf(execute_cmd, sizeof(execute_cmd), "%s", temp_executable);
     
     // Add arguments
     for (int i = 0; i < argc; i++) {
@@ -1286,6 +1472,9 @@ int codegen_compile_and_execute(CodegenContext* context, const char* c_file, cha
     
     // Execute the compiled program
     result = system(execute_cmd);
+    
+    // Clean up the temporary executable
+    unlink(temp_executable);
     
     return result;
 }

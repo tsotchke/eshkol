@@ -1,6 +1,6 @@
 # Eshkol Scheme Compatibility - Known Issues and Limitations
 
-Last Updated: 2025-03-23
+Last Updated: 2025-03-24
 
 This document tracks known issues, limitations, and compatibility notes for Scheme support in Eshkol. It serves as a reference for users and developers to understand the current state of Scheme compatibility.
 
@@ -13,6 +13,11 @@ This document tracks known issues, limitations, and compatibility notes for Sche
 | SCH-003 | Limited support for the full numeric tower | Medium | Numeric operations | Known limitation | Phase 7 |
 | SCH-004 | No hygienic macro system | Medium | Macros | Known limitation | Phase 7 |
 | SCH-005 | No continuations support | Medium | call/cc, dynamic-wind | Known limitation | Phase 5 |
+| SCH-006 | Type inference for autodiff functions is incomplete | High | autodiff-forward, autodiff-reverse, gradient functions | In Progress | Phase 4 |
+| SCH-007 | Vector return types not correctly handled | High | Vector operations, gradient functions | In Progress | Phase 4 |
+| SCH-008 | Type conflicts in generated C code | High | Autodiff and vector functions | In Progress | Phase 4 |
+| SCH-009 | Inconsistent type handling between scalar and vector operations | Medium | Vector math operations | In Progress | Phase 4 |
+| SCH-010 | Implicit conversions between numeric types not fully supported | Medium | Numeric operations | Known limitation | Phase 4 |
 
 ## Compatibility Notes
 
@@ -72,6 +77,39 @@ Until the type system is fully integrated with Scheme, you can:
 2. Use type annotations only for performance-critical code
 3. Be aware that type errors may not be caught until runtime
 
+### Autodiff and Vector Type Issues
+
+To work around the current issues with automatic differentiation and vector types:
+
+1. Use explicit type annotations for functions that return vectors
+   ```scheme
+   (: sum-of-squares-gradient-forward (-> float float (Vector float)))
+   (define (sum-of-squares-gradient-forward x y)
+     (autodiff-forward-gradient sum-of-squares (vector x y)))
+   ```
+
+2. Avoid mixing scalar and vector operations in complex expressions
+   ```scheme
+   ;; Instead of this:
+   (define result (+ (vector-ref gradient 0) (* 2 (vector-ref gradient 1))))
+   
+   ;; Do this:
+   (define g0 (vector-ref gradient 0))
+   (define g1 (vector-ref gradient 1))
+   (define result (+ g0 (* 2 g1)))
+   ```
+
+3. Use intermediate variables with explicit types for autodiff results
+   ```scheme
+   (define gradient (autodiff-forward-gradient f input-vec))
+   (: dx float)
+   (define dx (vector-ref gradient 0))
+   (: dy float)
+   (define dy (vector-ref gradient 1))
+   ```
+
+4. For complex autodiff operations, consider breaking them down into simpler steps with explicit types
+
 ### Numeric Tower Limitations
 
 Until the full numeric tower is implemented, you can:
@@ -101,3 +139,5 @@ See the [Evolution Roadmap](./EVOLUTION.md) for planned improvements to Scheme c
 | Date | Changes |
 |------|---------|
 | 2025-03-23 | Initial document created |
+| 2025-03-24 | Added autodiff and vector calculus type issues (SCH-006 to SCH-010) |
+| 2025-03-24 | Added workarounds for autodiff and vector type issues |

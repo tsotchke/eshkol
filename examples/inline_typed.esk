@@ -1,0 +1,72 @@
+;;
+;; Inline Explicit Typing Example in Eshkol
+;; This example demonstrates explicit typing through inline parameter annotations
+;;
+
+;; Function with explicitly typed parameters
+(define (add-integers x : number y : number) : number
+  (+ x y))
+
+;; Function with explicitly typed parameters and return type
+(define (calculate-area width : float height : float) : float
+  (* width height))
+
+;; Function with mixed parameter types
+(define (format-data name : string age : number height : float) : string
+  (string-append name ", age " (number->string age) ", height " (number->string height) "m"))
+
+;; Function with vector parameter
+(define (compute-distance point1 : vector<float> point2 : vector<float>) : float
+  (let ((x1 (vector-ref point1 0))
+        (y1 (vector-ref point1 1))
+        (x2 (vector-ref point2 0))
+        (y2 (vector-ref point2 1)))
+    (sqrt (+ (expt (- x2 x1) 2) (expt (- y2 y1) 2)))))
+
+;; Function with boolean parameters
+(define (logical-xor a : boolean b : boolean) : boolean
+  (and (or a b) (not (and a b))))
+
+;; Function with function parameter
+(define (apply-twice f : (-> number number) x : number) : number
+  (f (f x)))
+
+;; Main function to demonstrate the examples
+(define (main)
+  ;; Integer operations with explicit typing
+  (define result1 (add-integers 15 27))
+  (display "15 + 27 = ")
+  (display result1)
+  (display "\n")
+  
+  ;; Float operations with explicit typing
+  (define area (calculate-area 4.5 6.2))
+  (display "Area of 4.5 x 6.2 = ")
+  (display area)
+  (display "\n")
+  
+  ;; String formatting with explicit typing
+  (define info (format-data "Alice" 30 1.75))
+  (display info)
+  (display "\n")
+  
+  ;; Vector operations with explicit typing
+  (define p1 (vector 1.0 2.0))
+  (define p2 (vector 4.0 6.0))
+  (define distance (compute-distance p1 p2))
+  (display "Distance between points: ")
+  (display distance)
+  (display "\n")
+  
+  ;; Boolean operations with explicit typing
+  (display "XOR of true and false: ")
+  (display (logical-xor #t #f))
+  (display "\n")
+  
+  ;; Function parameter with explicit typing
+  (define (double x : number) : number (* x 2))
+  (display "Applying double twice to 3: ")
+  (display (apply-twice double 3))
+  (display "\n")
+  
+  0)  ; Return success code

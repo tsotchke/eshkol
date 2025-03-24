@@ -7,6 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <execinfo.h>
 
 /**
  * @brief Memory block in the arena
@@ -134,7 +137,18 @@ void* arena_alloc(Arena* arena, size_t size) {
 
 void* arena_alloc_aligned(Arena* arena, size_t size, size_t alignment) {
     assert(arena != NULL);
-    assert(size > 0);
+    
+    // Add debug output for zero-sized allocations
+    if (size == 0) {
+        fprintf(stderr, "ERROR: Attempted to allocate 0 bytes in arena_alloc_aligned\n");
+        // Print stack trace if possible
+        void* buffer[100];
+        int nptrs = backtrace(buffer, 100);
+        backtrace_symbols_fd(buffer, nptrs, STDERR_FILENO);
+        // Continue with a minimum size of 1 instead of failing
+        size = 1;
+    }
+    
     assert(alignment > 0 && (alignment & (alignment - 1)) == 0);  // Power of 2
     
     // Try to allocate from current block

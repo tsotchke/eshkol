@@ -12,6 +12,8 @@
 #include "core/memory.h"
 #include "core/diagnostics.h"
 #include "frontend/ast/ast.h"
+#include "frontend/type_inference/type_inference.h"
+#include <stdio.h>
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -19,9 +21,7 @@ extern "C" {
 #endif
 
 /**
- * @brief Code generator context
- * 
- * Manages the state for code generation.
+ * @brief Code generator context structure
  */
 typedef struct CodegenContext CodegenContext;
 
@@ -30,9 +30,10 @@ typedef struct CodegenContext CodegenContext;
  * 
  * @param arena Arena for allocations
  * @param diagnostics Diagnostic context for error reporting
+ * @param type_context Type inference context for type information
  * @return A new code generator context, or NULL on failure
  */
-CodegenContext* codegen_context_create(Arena* arena, DiagnosticContext* diagnostics);
+CodegenContext* codegen_context_create(Arena* arena, DiagnosticContext* diagnostics, TypeInferenceContext* type_context);
 
 /**
  * @brief Generate C code from an AST
@@ -49,7 +50,7 @@ bool codegen_generate(CodegenContext* context, const AstNode* ast, const char* o
  * 
  * @param context The code generator context
  * @param c_file The C file to compile
- * @param args Command-line arguments for the program
+ * @param args Arguments to pass to the program
  * @param argc Number of arguments
  * @return The exit code of the program, or -1 on failure
  */

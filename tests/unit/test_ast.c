@@ -710,8 +710,11 @@ static void test_ast_print(void) {
     // Create if expression
     AstNode* if_expr = ast_create_if(arena, condition, one, mul_call, 2, 3);
     
+    // Create parameter nodes (for type information)
+    AstNode* param_nodes[1] = { NULL };
+    
     // Create function definition
-    AstNode* func_def = ast_create_function_def(arena, name, params, 1, NULL, if_expr, 1, 1);
+    AstNode* func_def = ast_create_function_def(arena, name, params, param_nodes, 1, NULL, if_expr, 1, 1);
     
     // Print the AST
     printf("\nPrinting factorial function AST:\n");

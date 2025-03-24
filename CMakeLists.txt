@@ -15,7 +15,7 @@ endif()
 # Options
 option(ESHKOL_BUILD_TESTS "Build tests" ON)
 option(ESHKOL_BUILD_EXAMPLES "Build examples" OFF)
-option(ESHKOL_BUILD_BACKEND "Build backend" OFF)
+option(ESHKOL_BUILD_BACKEND "Build backend" ON)
 option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
 option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer" OFF)
 option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)

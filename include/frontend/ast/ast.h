@@ -69,6 +69,7 @@ typedef enum {
     // Definitions
     AST_FUNCTION_DEF,         /**< Function definition */
     AST_VARIABLE_DEF,         /**< Variable definition */
+    AST_TYPE_DECLARATION,     /**< Type declaration (Haskell-style) */
     
     // Program
     AST_PROGRAM,              /**< Program (top-level) */
@@ -89,7 +90,8 @@ struct AstNode {
     AstNodeType type;         /**< Node type */
     size_t line;              /**< Line number */
     size_t column;            /**< Column number */
-    Type* type_info;          /**< Type information (can be NULL for untyped) */
+    Type* type_info;          /**< Explicit type information (from annotations) */
+    Type* inferred_type;      /**< Inferred type information */
     
     union {
         // Literals
@@ -160,6 +162,7 @@ struct AstNode {
         // Let, Letrec, Let*
         struct {
             AstNode** bindings; /**< Bindings */
+            AstNode** binding_nodes; /**< Binding nodes (for type information) */
             size_t binding_count; /**< Number of bindings */
             AstNode* body;    /**< Body expression */
         } let;
@@ -231,6 +234,7 @@ struct AstNode {
         struct {
             AstNode* name;    /**< Function name */
             Parameter** params; /**< Parameter list */
+            AstNode** param_nodes; /**< Parameter nodes (for type information) */
             size_t param_count; /**< Number of parameters */
             Type* return_type; /**< Return type (can be NULL for untyped) */
             AstNode* body;    /**< Function body */
@@ -241,6 +245,12 @@ struct AstNode {
             AstNode* name;    /**< Variable name */
             AstNode* value;   /**< Initial value */
         } variable_def;
+        
+        // Type declaration
+        struct {
+            StringId function_name; /**< Name of the function being typed */
+            Type* type;       /**< Function type (including params and return) */
+        } type_declaration;
         
         // Program
         struct {
@@ -422,39 +432,42 @@ AstNode* ast_create_set(Arena* arena, AstNode* name, AstNode* value, size_t line
  * 
  * @param arena Arena allocator
  * @param bindings Bindings
+ * @param binding_nodes Binding nodes (for type information)
  * @param binding_count Number of bindings
  * @param body Body expression
  * @param line Line number
  * @param column Column number
  * @return A new let node, or NULL on failure
  */
-AstNode* ast_create_let(Arena* arena, AstNode** bindings, size_t binding_count, AstNode* body, size_t line, size_t column);
+AstNode* ast_create_let(Arena* arena, AstNode** bindings, AstNode** binding_nodes, size_t binding_count, AstNode* body, size_t line, size_t column);
 
 /**
  * @brief Create a letrec node
  * 
  * @param arena Arena allocator
  * @param bindings Bindings
+ * @param binding_nodes Binding nodes (for type information)
  * @param binding_count Number of bindings
  * @param body Body expression
  * @param line Line number
  * @param column Column number
  * @return A new letrec node, or NULL on failure
  */
-AstNode* ast_create_letrec(Arena* arena, AstNode** bindings, size_t binding_count, AstNode* body, size_t line, size_t column);
+AstNode* ast_create_letrec(Arena* arena, AstNode** bindings, AstNode** binding_nodes, size_t binding_count, AstNode* body, size_t line, size_t column);
 
 /**
  * @brief Create a let* node
  * 
  * @param arena Arena allocator
  * @param bindings Bindings
+ * @param binding_nodes Binding nodes (for type information)
  * @param binding_count Number of bindings
  * @param body Body expression
  * @param line Line number
  * @param column Column number
  * @return A new let* node, or NULL on failure
  */
-AstNode* ast_create_letstar(Arena* arena, AstNode** bindings, size_t binding_count, AstNode* body, size_t line, size_t column);
+AstNode* ast_create_letstar(Arena* arena, AstNode** bindings, AstNode** binding_nodes, size_t binding_count, AstNode* body, size_t line, size_t column);
 
 /**
  * @brief Create an and node
@@ -597,6 +610,7 @@ AstNode* ast_create_sequence(Arena* arena, AstNode** exprs, size_t expr_count, s
  * @param arena Arena allocator
  * @param name Function name
  * @param params Parameter list
+ * @param param_nodes Parameter nodes (for type information)
  * @param param_count Number of parameters
  * @param return_type Return type (can be NULL for untyped)
  * @param body Function body
@@ -604,7 +618,7 @@ AstNode* ast_create_sequence(Arena* arena, AstNode** exprs, size_t expr_count, s
  * @param column Column number
  * @return A new function definition node, or NULL on failure
  */
-AstNode* ast_create_function_def(Arena* arena, AstNode* name, Parameter** params, size_t param_count, Type* return_type, AstNode* body, size_t line, size_t column);
+AstNode* ast_create_function_def(Arena* arena, AstNode* name, Parameter** params, AstNode** param_nodes, size_t param_count, Type* return_type, AstNode* body, size_t line, size_t column);
 
 /**
  * @brief Create a variable definition node
@@ -617,6 +631,18 @@ AstNode* ast_create_function_def(Arena* arena, AstNode* name, Parameter** params
  * @return A new variable definition node, or NULL on failure
  */
 AstNode* ast_create_variable_def(Arena* arena, AstNode* name, AstNode* value, size_t line, size_t column);
+
+/**
+ * @brief Create a type declaration node
+ * 
+ * @param arena Arena allocator
+ * @param function_name Name of the function being typed
+ * @param type Function type (including params and return)
+ * @param line Line number
+ * @param column Column number
+ * @return A new type declaration node, or NULL on failure
+ */
+AstNode* ast_create_type_declaration(Arena* arena, StringId function_name, Type* type, size_t line, size_t column);
 
 /**
  * @brief Create a program node

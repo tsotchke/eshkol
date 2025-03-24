@@ -7,7 +7,10 @@
 #include "core/diagnostics.h"
 #include "frontend/lexer/lexer.h"
 #include "frontend/parser/parser.h"
+#include "frontend/type_inference/type_inference.h"
 #include "backend/codegen.h"
+//#include "backend/codegen/compiler.h"
+//#include "backend/codegen/context.h"
 
 // Forward declarations of functions we'll implement later
 static char* read_file(const char* filename, size_t* length);
@@ -156,8 +159,33 @@ int main(int argc, char** argv) {
         return 1;
     }
     
+    // Initialize type inference context
+    TypeInferenceContext* type_context = type_inference_context_create(arena, diag);
+    if (!type_context) {
+        fprintf(stderr, "Error: Failed to create type inference context\n");
+        arena_destroy(arena);
+        free(source);
+        return 1;
+    }
+    
+    // Collect explicit types from the AST
+    if (!type_inference_collect_explicit_types(type_context, ast)) {
+        fprintf(stderr, "Error: Failed to collect explicit types\n");
+        arena_destroy(arena);
+        free(source);
+        return 1;
+    }
+    
+    // Infer types for the AST
+    if (!type_inference_infer(type_context, ast)) {
+        fprintf(stderr, "Error: Failed to infer types\n");
+        arena_destroy(arena);
+        free(source);
+        return 1;
+    }
+    
     // Initialize code generator
-    CodegenContext* codegen = codegen_context_create(arena, diag);
+    CodegenContext* codegen = codegen_context_create(arena, diag, type_context);
     if (!codegen) {
         fprintf(stderr, "Error: Failed to create code generator\n");
         arena_destroy(arena);

@@ -422,7 +422,20 @@ static AstNode* parse_define(Parser* parser, size_t line, size_t column) {
         consume(parser, TOKEN_RPAREN, "Expected ')' after define");
         
         // Create a function definition node
-        return ast_create_function_def(parser->arena, name, params, param_count, NULL, body, line, column);
+        // Create param_nodes array (NULL for now since we don't have parameter nodes)
+        AstNode** param_nodes = NULL;
+        if (param_count > 0) {
+            param_nodes = arena_alloc(parser->arena, sizeof(AstNode*) * param_count);
+            if (!param_nodes) {
+                error(parser, "Failed to allocate memory for parameter nodes");
+                return NULL;
+            }
+            for (size_t i = 0; i < param_count; i++) {
+                param_nodes[i] = NULL; // We don't have parameter nodes yet
+            }
+        }
+        
+        return ast_create_function_def(parser->arena, name, params, param_nodes, param_count, NULL, body, line, column);
     } else {
         error(parser, "Expected variable name or function definition");
         return NULL;
@@ -773,7 +786,20 @@ static AstNode* parse_let(Parser* parser, size_t line, size_t column) {
     consume(parser, TOKEN_RPAREN, "Expected ')' after let");
     
     // Create a let node
-    return ast_create_let(parser->arena, bindings, binding_count, body, line, column);
+    // Create binding_nodes array (NULL for now since we don't have binding nodes)
+    AstNode** binding_nodes = NULL;
+    if (binding_count > 0) {
+        binding_nodes = arena_alloc(parser->arena, sizeof(AstNode*) * binding_count);
+        if (!binding_nodes) {
+            error(parser, "Failed to allocate memory for binding nodes");
+            return NULL;
+        }
+        for (size_t i = 0; i < binding_count; i++) {
+            binding_nodes[i] = NULL; // We don't have binding nodes yet
+        }
+    }
+    
+    return ast_create_let(parser->arena, bindings, binding_nodes, binding_count, body, line, column);
 }
 
 /**

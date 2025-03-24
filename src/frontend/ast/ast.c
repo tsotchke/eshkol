@@ -29,6 +29,8 @@ AstNode* ast_create_node(Arena* arena, AstNodeType type, size_t line, size_t col
     node->type = type;
     node->line = line;
     node->column = column;
+    node->type_info = NULL;     // Initialize explicit type to NULL
+    node->inferred_type = NULL; // Initialize inferred type to NULL
     
     return node;
 }
@@ -308,19 +310,21 @@ AstNode* ast_create_set(Arena* arena, AstNode* name, AstNode* value, size_t line
  * 
  * @param arena Arena allocator
  * @param bindings Bindings
+ * @param binding_nodes Binding nodes (for type information)
  * @param binding_count Number of bindings
  * @param body Body expression
  * @param line Line number
  * @param column Column number
  * @return A new let node, or NULL on failure
  */
-AstNode* ast_create_let(Arena* arena, AstNode** bindings, size_t binding_count, AstNode* body, size_t line, size_t column) {
+AstNode* ast_create_let(Arena* arena, AstNode** bindings, AstNode** binding_nodes, size_t binding_count, AstNode* body, size_t line, size_t column) {
     AstNode* node = ast_create_node(arena, AST_LET, line, column);
     if (!node) {
         return NULL;
     }
     
     node->as.let.bindings = bindings;
+    node->as.let.binding_nodes = binding_nodes;
     node->as.let.binding_count = binding_count;
     node->as.let.body = body;
     
@@ -332,19 +336,21 @@ AstNode* ast_create_let(Arena* arena, AstNode** bindings, size_t binding_count, 
  * 
  * @param arena Arena allocator
  * @param bindings Bindings
+ * @param binding_nodes Binding nodes (for type information)
  * @param binding_count Number of bindings
  * @param body Body expression
  * @param line Line number
  * @param column Column number
  * @return A new letrec node, or NULL on failure
  */
-AstNode* ast_create_letrec(Arena* arena, AstNode** bindings, size_t binding_count, AstNode* body, size_t line, size_t column) {
+AstNode* ast_create_letrec(Arena* arena, AstNode** bindings, AstNode** binding_nodes, size_t binding_count, AstNode* body, size_t line, size_t column) {
     AstNode* node = ast_create_node(arena, AST_LETREC, line, column);
     if (!node) {
         return NULL;
     }
     
     node->as.let.bindings = bindings;
+    node->as.let.binding_nodes = binding_nodes;
     node->as.let.binding_count = binding_count;
     node->as.let.body = body;
     
@@ -356,19 +362,21 @@ AstNode* ast_create_letrec(Arena* arena, AstNode** bindings, size_t binding_coun
  * 
  * @param arena Arena allocator
  * @param bindings Bindings
+ * @param binding_nodes Binding nodes (for type information)
  * @param binding_count Number of bindings
  * @param body Body expression
  * @param line Line number
  * @param column Column number
  * @return A new let* node, or NULL on failure
  */
-AstNode* ast_create_letstar(Arena* arena, AstNode** bindings, size_t binding_count, AstNode* body, size_t line, size_t column) {
+AstNode* ast_create_letstar(Arena* arena, AstNode** bindings, AstNode** binding_nodes, size_t binding_count, AstNode* body, size_t line, size_t column) {
     AstNode* node = ast_create_node(arena, AST_LETSTAR, line, column);
     if (!node) {
         return NULL;
     }
     
     node->as.let.bindings = bindings;
+    node->as.let.binding_nodes = binding_nodes;
     node->as.let.binding_count = binding_count;
     node->as.let.body = body;
     
@@ -629,6 +637,7 @@ AstNode* ast_create_sequence(Arena* arena, AstNode** exprs, size_t expr_count, s
  * @param arena Arena allocator
  * @param name Function name
  * @param params Parameter list
+ * @param param_nodes Parameter nodes (for type information)
  * @param param_count Number of parameters
  * @param return_type Return type (can be NULL for untyped)
  * @param body Function body
@@ -636,7 +645,7 @@ AstNode* ast_create_sequence(Arena* arena, AstNode** exprs, size_t expr_count, s
  * @param column Column number
  * @return A new function definition node, or NULL on failure
  */
-AstNode* ast_create_function_def(Arena* arena, AstNode* name, Parameter** params, size_t param_count, Type* return_type, AstNode* body, size_t line, size_t column) {
+AstNode* ast_create_function_def(Arena* arena, AstNode* name, Parameter** params, AstNode** param_nodes, size_t param_count, Type* return_type, AstNode* body, size_t line, size_t column) {
     AstNode* node = ast_create_node(arena, AST_FUNCTION_DEF, line, column);
     if (!node) {
         return NULL;
@@ -644,6 +653,7 @@ AstNode* ast_create_function_def(Arena* arena, AstNode* name, Parameter** params
     
     node->as.function_def.name = name;
     node->as.function_def.params = params;
+    node->as.function_def.param_nodes = param_nodes;
     node->as.function_def.param_count = param_count;
     node->as.function_def.return_type = return_type;
     node->as.function_def.body = body;
@@ -669,6 +679,29 @@ AstNode* ast_create_variable_def(Arena* arena, AstNode* name, AstNode* value, si
     
     node->as.variable_def.name = name;
     node->as.variable_def.value = value;
+    
+    return node;
+}
+
+/**
+ * @brief Create a type declaration node
+ * 
+ * @param arena Arena allocator
+ * @param function_name Name of the function being typed
+ * @param type Function type (including params and return)
+ * @param line Line number
+ * @param column Column number
+ * @return A new type declaration node, or NULL on failure
+ */
+AstNode* ast_create_type_declaration(Arena* arena, StringId function_name, Type* type, size_t line, size_t column) {
+    AstNode* node = ast_create_node(arena, AST_TYPE_DECLARATION, line, column);
+    if (!node) {
+        return NULL;
+    }
+    
+    node->as.type_declaration.function_name = function_name;
+    node->as.type_declaration.type = type;
+    node->type_info = type;  // Store the type in the node itself
     
     return node;
 }
@@ -752,6 +785,7 @@ const char* ast_node_type_to_string(AstNodeType type) {
         case AST_SEQUENCE: return "SEQUENCE";
         case AST_FUNCTION_DEF: return "FUNCTION-DEF";
         case AST_VARIABLE_DEF: return "VARIABLE-DEF";
+        case AST_TYPE_DECLARATION: return "TYPE-DECLARATION";
         case AST_PROGRAM: return "PROGRAM";
         case AST_ERROR: return "ERROR";
         default: return "UNKNOWN";
@@ -804,6 +838,9 @@ void ast_print(const AstNode* node, int indent) {
         case AST_IDENTIFIER:
             printf(" %s", node->as.identifier.name);
             break;
+        case AST_TYPE_DECLARATION:
+            printf(" %s", node->as.type_declaration.function_name);
+            break;
         case AST_ERROR:
             printf(" \"%s\"", node->as.error.message);
             break;
@@ -811,6 +848,7 @@ void ast_print(const AstNode* node, int indent) {
             break;
     }
     
+    // Print type information if available
     printf(" (line %zu, column %zu)\n", node->line, node->column);
     
     // Recursively print children
@@ -959,3 +997,4 @@ void ast_print(const AstNode* node, int indent) {
             break;
     }
 }
+

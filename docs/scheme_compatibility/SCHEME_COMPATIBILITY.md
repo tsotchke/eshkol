@@ -174,9 +174,57 @@ In addition to standard Scheme features, Eshkol provides the following extension
 (define grad-h (gradient h (vector 1.0 2.0)))  ;; [4.0, 5.0]
 ```
 
+## Type System
+
+Eshkol supports a gradual typing system that allows both dynamically and statically typed code to coexist. The type system includes:
+
+### Type Annotations
+
+Eshkol supports three approaches to typing:
+
+1. **Implicit Typing**: Types are inferred from the context and usage.
+   ```scheme
+   (define (add x y)
+     (+ x y))  ; Types of x, y, and return value are inferred
+   ```
+
+2. **Inline Explicit Typing**: Types are specified inline with parameter declarations.
+   ```scheme
+   (define (add [x : int] [y : int]) : int
+     (+ x y))  ; Types are explicitly specified
+   ```
+
+3. **Separate Type Declarations**: Types are declared separately from the implementation.
+   ```scheme
+   (: add (-> int int int))
+   (define (add x y)
+     (+ x y))  ; Types are declared separately
+   ```
+
+### Type Inference
+
+The type inference system automatically determines types based on:
+- Literal values (numbers, strings, booleans, etc.)
+- Function applications and their known signatures
+- Operator usage and context
+- Vector and matrix operations
+
+### Vector and Tensor Types
+
+Eshkol has special support for vector and tensor types, which are crucial for scientific computing and AI applications:
+
+- Vector types with element type and size information
+- Matrix types with row and column dimensions
+- Tensor types with arbitrary dimensions
+- Type-specific operations for vectors and matrices
+
 ## Known Limitations
 
-- The type system is not fully implemented in this release
+- The type system is still under development and has some limitations:
+  - Type inference for automatic differentiation functions is incomplete
+  - Vector return types may not be correctly handled in all contexts
+  - Type conflicts can occur in generated C code
+  - Some complex type relationships are not yet fully supported
 - Tail call optimization is not guaranteed
 - Continuations are not supported
 - Macros are not supported

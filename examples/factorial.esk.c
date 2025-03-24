@@ -4,6 +4,10 @@
 #include <math.h>
 #include "core/vector.h"
 #include "core/memory.h"
+#include "core/autodiff.h"
+
+// Global arena for memory allocations
+Arena* arena = NULL;
 
 // Eshkol value type
 typedef union {
@@ -16,14 +20,14 @@ typedef union {
 } eshkol_value_t;
 
 // Forward declarations
-int factorial(int);
-int main();
+float factorial(float);
+int32_t main();
 
-int factorial(int n) {
+float factorial(float n) {
     return ((n < 2) ? 1 : (n * factorial((n - 1))));
 }
 
-int main() {
+int32_t main() {
     return ({ printf("Factorial of 5 is %d\n", factorial(5)); printf("Factorial of 10 is %d\n", factorial(10)); 0; });
 }
 

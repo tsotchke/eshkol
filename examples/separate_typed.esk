@@ -1,0 +1,105 @@
+;;
+;; Separate Type Declaration Example in Eshkol
+;; This example demonstrates explicit typing through separate type declarations
+;;
+
+;; Type declaration for a function that adds two numbers
+(: add-numbers (-> number number number))
+;; Implementation of the add-numbers function
+(define (add-numbers x y)
+  (+ x y))
+
+;; Type declaration for a function that calculates the area of a rectangle
+(: calculate-area (-> float float float))
+;; Implementation of the calculate-area function
+(define (calculate-area width height)
+  (* width height))
+
+;; Type declaration for a function that formats person data
+(: format-person (-> string number float string))
+;; Implementation of the format-person function
+(define (format-person name age height)
+  (string-append name ", age " (number->string age) ", height " (number->string height) "m"))
+
+;; Type declaration for a function that calculates distance between points
+(: compute-distance (-> vector<float> vector<float> float))
+;; Implementation of the compute-distance function
+(define (compute-distance point1 point2)
+  (let ((x1 (vector-ref point1 0))
+        (y1 (vector-ref point1 1))
+        (x2 (vector-ref point2 0))
+        (y2 (vector-ref point2 1)))
+    (sqrt (+ (expt (- x2 x1) 2) (expt (- y2 y1) 2)))))
+
+;; Type declaration for a function that performs logical XOR
+(: logical-xor (-> boolean boolean boolean))
+;; Implementation of the logical-xor function
+(define (logical-xor a b)
+  (and (or a b) (not (and a b))))
+
+;; Type declaration for a higher-order function
+(: apply-twice (-> (-> number number) number number))
+;; Implementation of the apply-twice function
+(define (apply-twice f x)
+  (f (f x)))
+
+;; Type declaration for gradient descent function
+(: gradient-descent (-> function vector<float> number vector<float>))
+;; Implementation of the gradient-descent function
+(define (gradient-descent f initial-point learning-rate)
+  (let ((gradient (autodiff-gradient f initial-point)))
+    (v- initial-point (v* gradient learning-rate))))
+
+;; Main function to demonstrate the examples
+(define (main)
+  ;; Integer operations with separate type declarations
+  (define result1 (add-numbers 25 17))
+  (display "25 + 17 = ")
+  (display result1)
+  (display "\n")
+  
+  ;; Float operations with separate type declarations
+  (define area (calculate-area 5.5 7.2))
+  (display "Area of 5.5 x 7.2 = ")
+  (display area)
+  (display "\n")
+  
+  ;; String formatting with separate type declarations
+  (define info (format-person "Alice" 28 1.68))
+  (display info)
+  (display "\n")
+  
+  ;; Vector operations with separate type declarations
+  (define p1 (vector 2.0 3.0))
+  (define p2 (vector 5.0 7.0))
+  (define dist (compute-distance p1 p2))
+  (display "Distance between points: ")
+  (display dist)
+  (display "\n")
+  
+  ;; Boolean operations with separate type declarations
+  (display "XOR of true and false: ")
+  (display (logical-xor #t #f))
+  (display "\n")
+  
+  ;; Higher-order function with separate type declarations
+  (define (double x) (* x 2))
+  (display "Applying double twice to 4: ")
+  (display (apply-twice double 4))
+  (display "\n")
+  
+  ;; Gradient descent example
+  (define (f v) 
+    (let ((x (vector-ref v 0))
+          (y (vector-ref v 1)))
+      (+ (* x x) (* y y))))  ; f(x,y) = x^2 + y^2
+  
+  (define initial (vector 1.0 1.0))
+  (define result (gradient-descent f initial 0.1))
+  (display "Gradient descent result: (")
+  (display (vector-ref result 0))
+  (display ", ")
+  (display (vector-ref result 1))
+  (display ")\n")
+  
+  0)  ; Return success code
