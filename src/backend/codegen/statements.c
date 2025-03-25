@@ -28,6 +28,14 @@ bool codegen_generate_function_def(CodegenContext* context, const AstNode* node)
     // Get type context
     TypeInferenceContext* type_context = codegen_context_get_type_context(context);
     
+    // Get diagnostics context
+    DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+    
+    // Debug message
+    char debug_msg[256];
+    snprintf(debug_msg, sizeof(debug_msg), "Generating function definition for node type %d", node->type);
+    diagnostic_debug(diagnostics, 0, 0, debug_msg);
+    
     // Determine if this is a define or function_def node
     const AstNode* func_node = node;
     const AstNode* name_node = NULL;
@@ -38,7 +46,6 @@ bool codegen_generate_function_def(CodegenContext* context, const AstNode* node)
     if (node->type == AST_DEFINE) {
         // Define node with lambda value
         if (node->as.define.value->type != AST_LAMBDA) {
-            DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
             diagnostic_error(diagnostics, node->line, node->column, "Expected lambda in function definition");
             return false;
         }
@@ -49,6 +56,18 @@ bool codegen_generate_function_def(CodegenContext* context, const AstNode* node)
         // Cast Parameter** to AstNode** - this is safe because we're only reading
         param_nodes = (const AstNode**)func_node->as.lambda.params;
         param_count = func_node->as.lambda.param_count;
+        
+        // Debug message
+        if (name_node->type == AST_IDENTIFIER) {
+            snprintf(debug_msg, sizeof(debug_msg), "Function name: %s", name_node->as.identifier.name);
+            diagnostic_debug(diagnostics, 0, 0, debug_msg);
+        }
+        
+        snprintf(debug_msg, sizeof(debug_msg), "Function body type: %d", body_node->type);
+        diagnostic_debug(diagnostics, 0, 0, debug_msg);
+        
+        snprintf(debug_msg, sizeof(debug_msg), "Parameter count: %zu", param_count);
+        diagnostic_debug(diagnostics, 0, 0, debug_msg);
     } else if (node->type == AST_FUNCTION_DEF) {
         // Function definition node
         name_node = node->as.function_def.name;
@@ -56,8 +75,19 @@ bool codegen_generate_function_def(CodegenContext* context, const AstNode* node)
         // Cast to const AstNode** to avoid discarding qualifiers warning
         param_nodes = (const AstNode**)node->as.function_def.param_nodes;
         param_count = node->as.function_def.param_count;
+        
+        // Debug message
+        if (name_node->type == AST_IDENTIFIER) {
+            snprintf(debug_msg, sizeof(debug_msg), "Function name: %s", name_node->as.identifier.name);
+            diagnostic_debug(diagnostics, 0, 0, debug_msg);
+        }
+        
+        snprintf(debug_msg, sizeof(debug_msg), "Function body type: %d", body_node->type);
+        diagnostic_debug(diagnostics, 0, 0, debug_msg);
+        
+        snprintf(debug_msg, sizeof(debug_msg), "Parameter count: %zu", param_count);
+        diagnostic_debug(diagnostics, 0, 0, debug_msg);
     } else {
-        DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
         diagnostic_error(diagnostics, node->line, node->column, "Invalid node type for function definition");
         return false;
     }
@@ -135,20 +165,64 @@ bool codegen_generate_function_def(CodegenContext* context, const AstNode* node)
     
     // Generate function body
     if (body_node != NULL) {
-        // Write indentation
-        codegen_context_write_indent(context);
-        
-        // Generate return statement if needed
-        if (strcmp(return_type, "void") != 0) {
-            fprintf(output, "return ");
+        // Check if the body is a sequence of expressions
+        if (body_node->type == AST_BEGIN || body_node->type == AST_SEQUENCE) {
+            // Handle multiple expressions in the body
+            size_t expr_count = (body_node->type == AST_BEGIN) ? 
+                                body_node->as.begin.expr_count : 
+                                body_node->as.sequence.expr_count;
+            
+            AstNode** exprs = (body_node->type == AST_BEGIN) ? 
+                             body_node->as.begin.exprs : 
+                             body_node->as.sequence.exprs;
+            
+            // Generate all expressions except the last one
+            for (size_t i = 0; i < expr_count - 1; i++) {
+                // Write indentation
+                codegen_context_write_indent(context);
+                
+                // Generate expression
+                if (!codegen_generate_expression(context, exprs[i])) {
+                    return false;
+                }
+                
+                fprintf(output, ";\n");
+            }
+            
+            // Generate the last expression with a return if needed
+            if (expr_count > 0) {
+                // Write indentation
+                codegen_context_write_indent(context);
+                
+                // Generate return statement if needed
+                if (strcmp(return_type, "void") != 0) {
+                    fprintf(output, "return ");
+                }
+                
+                // Generate last expression
+                if (!codegen_generate_expression(context, exprs[expr_count - 1])) {
+                    return false;
+                }
+                
+                fprintf(output, ";\n");
+            }
+        } else {
+            // Handle single expression body
+            // Write indentation
+            codegen_context_write_indent(context);
+            
+            // Generate return statement if needed
+            if (strcmp(return_type, "void") != 0) {
+                fprintf(output, "return ");
+            }
+            
+            // Generate body expression
+            if (!codegen_generate_expression(context, body_node)) {
+                return false;
+            }
+            
+            fprintf(output, ";\n");
         }
-        
-        // Generate body expression
-        if (!codegen_generate_expression(context, body_node)) {
-            return false;
-        }
-        
-        fprintf(output, ";\n");
     }
     
     // Decrement indent level

@@ -23,6 +23,14 @@ bool codegen_generate_expression(CodegenContext* context, const AstNode* node) {
     assert(context != NULL);
     assert(node != NULL);
     
+    // Get diagnostics context
+    DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+    
+    // Debug message
+    char debug_msg[256];
+    snprintf(debug_msg, sizeof(debug_msg), "Generating expression for node type %d", node->type);
+    diagnostic_debug(diagnostics, 0, 0, debug_msg);
+    
     // Generate code based on node type
     switch (node->type) {
         case AST_LITERAL_NUMBER:
@@ -49,6 +57,10 @@ bool codegen_generate_expression(CodegenContext* context, const AstNode* node) {
             return codegen_generate_lambda(context, node);
         case AST_DEFINE:
             return codegen_generate_define(context, node);
+        case AST_FUNCTION_DEF:
+            return codegen_generate_function_def(context, node);
+        case AST_VARIABLE_DEF:
+            return codegen_generate_variable_def(context, node);
         case AST_LET:
             return codegen_generate_let(context, node);
         case AST_LETREC:

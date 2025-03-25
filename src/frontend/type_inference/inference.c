@@ -250,6 +250,13 @@ static Type* infer_call(TypeInferenceContext* context, AstNode* node) {
     if (node->as.call.callee->type == AST_IDENTIFIER) {
         const char* op_name = node->as.call.callee->as.identifier.name;
         
+        // Handle string-append and number->string operations
+        if (strcmp(op_name, "string-append") == 0) {
+            return type_string_create(arena);
+        } else if (strcmp(op_name, "number->string") == 0) {
+            return type_string_create(arena);
+        }
+        
         // Handle arithmetic operators
         if (strcmp(op_name, "+") == 0 || 
             strcmp(op_name, "-") == 0 || 
@@ -430,6 +437,7 @@ static Type* infer_call(TypeInferenceContext* context, AstNode* node) {
 static Type* infer_if(TypeInferenceContext* context, AstNode* node) {
     assert(node->type == AST_IF);
     Arena* arena = type_inference_get_arena(context);
+    DiagnosticContext* diagnostics = type_inference_get_diagnostics(context);
     
     // Infer the type of the condition (we don't use the result, but we need to infer it)
     type_inference_infer_node(context, node->as.if_expr.condition);
@@ -444,6 +452,30 @@ static Type* infer_if(TypeInferenceContext* context, AstNode* node) {
     } else {
         // If there's no else branch, the result is void
         else_type = type_void_create(arena);
+    }
+    
+    // Check if we have mixed types (e.g., number and string)
+    if (then_type && else_type && 
+        then_type->kind != else_type->kind &&
+        then_type->kind != TYPE_VOID && else_type->kind != TYPE_VOID) {
+        
+        // Special case for mixed numeric types (integer and float)
+        if ((then_type->kind == TYPE_INTEGER && else_type->kind == TYPE_FLOAT) ||
+            (then_type->kind == TYPE_FLOAT && else_type->kind == TYPE_INTEGER)) {
+            // Promote to float
+            return type_float_create(arena, FLOAT_SIZE_32);
+        }
+        
+        // Special case for string and numeric types
+        if ((then_type->kind == TYPE_STRING && (else_type->kind == TYPE_INTEGER || else_type->kind == TYPE_FLOAT)) ||
+            (else_type->kind == TYPE_STRING && (then_type->kind == TYPE_INTEGER || then_type->kind == TYPE_FLOAT))) {
+            
+            // For scientific computing, we need to be careful with mixed types
+            // In this case, we'll use void* as a generic return type
+            diagnostic_debug(diagnostics, node->line, node->column, 
+                           "Mixed return types in conditional expression (string and numeric)");
+            return type_any_create(arena);
+        }
     }
     
     // Return the common supertype of the then and else branches

@@ -16,6 +16,20 @@
 #include <stdio.h>
 #include <stdbool.h>
 
+/* Include all codegen system components */
+#include "backend/codegen/blocks.h"
+#include "backend/codegen/calls.h"
+#include "backend/codegen/compiler.h"
+#include "backend/codegen/conditionals.h"
+#include "backend/codegen/context.h"
+#include "backend/codegen/definitions.h"
+#include "backend/codegen/expressions.h"
+#include "backend/codegen/identifiers.h"
+#include "backend/codegen/literals.h"
+#include "backend/codegen/program.h"
+#include "backend/codegen/statements.h"
+#include "backend/codegen/type_conversion.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif

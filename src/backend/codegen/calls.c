@@ -461,6 +461,69 @@ bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
             return true;
         } else if (strcmp(op_name, "printf") == 0) {
             // Printf function
+            if (node->as.call.arg_count > 0) {
+                // Get the format string
+                const AstNode* format_node = node->as.call.args[0];
+                
+                // Check if it's a string literal
+                if (format_node->type == AST_LITERAL_STRING) {
+                    // Get the format string
+                    const char* format = format_node->as.string.value;
+                    
+                    // Generate the printf call with the original format string
+                    fprintf(output, "printf(\"%s\"", format);
+                    
+                    // Generate the rest of the arguments
+                    for (size_t i = 1; i < node->as.call.arg_count; i++) {
+                        fprintf(output, ", ");
+                        
+                        // Cast the argument to the appropriate type based on the format specifier
+                        // Find the i-th format specifier in the format string
+                        const char* p = format;
+                        size_t count = 0;
+                        while ((p = strchr(p, '%')) != NULL) {
+                            if (p[1] != '%') {  // Skip %% (literal %)
+                                count++;
+                                if (count == i) {
+                                    break;
+                                }
+                            }
+                            p++;
+                        }
+                        
+                        // If we found a format specifier, check its type
+                        if (p != NULL) {
+                            // Skip the %
+                            p++;
+                            
+                            // Check the format specifier
+                            if (*p == 'd' || *p == 'i') {
+                                // Integer format specifier
+                                fprintf(output, "(int)(");
+                                if (!codegen_generate_expression(context, node->as.call.args[i])) {
+                                    return false;
+                                }
+                                fprintf(output, ")");
+                            } else {
+                                // Other format specifier, no cast needed
+                                if (!codegen_generate_expression(context, node->as.call.args[i])) {
+                                    return false;
+                                }
+                            }
+                        } else {
+                            // No format specifier found, just generate the expression
+                            if (!codegen_generate_expression(context, node->as.call.args[i])) {
+                                return false;
+                            }
+                        }
+                    }
+                    
+                    fprintf(output, ")");
+                    return true;
+                }
+            }
+            
+            // Default printf handling
             fprintf(output, "printf(");
             
             // Generate arguments
@@ -480,8 +543,26 @@ bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
     }
     
     // Regular function call
-    if (!codegen_generate_expression(context, node->as.call.callee)) {
-        return false;
+    if (node->as.call.callee->type == AST_IDENTIFIER) {
+        // Replace hyphens with underscores in function names
+        char* function_name = strdup(node->as.call.callee->as.identifier.name);
+        if (function_name) {
+            for (char* p = function_name; *p; p++) {
+                if (*p == '-') {
+                    *p = '_';
+                }
+            }
+            fprintf(output, "%s", function_name);
+            free(function_name);
+        } else {
+            if (!codegen_generate_expression(context, node->as.call.callee)) {
+                return false;
+            }
+        }
+    } else {
+        if (!codegen_generate_expression(context, node->as.call.callee)) {
+            return false;
+        }
     }
     
     // Generate arguments

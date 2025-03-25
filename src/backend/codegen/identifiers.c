@@ -20,8 +20,20 @@ bool codegen_generate_identifier(CodegenContext* context, const AstNode* node) {
     // Get output file
     FILE* output = codegen_context_get_output(context);
     
-    // Generate code
-    fprintf(output, "%s", node->as.identifier.name);
+    // Replace hyphens with underscores in identifiers
+    char* identifier_name = strdup(node->as.identifier.name);
+    if (identifier_name) {
+        for (char* p = identifier_name; *p; p++) {
+            if (*p == '-') {
+                *p = '_';
+            }
+        }
+        fprintf(output, "%s", identifier_name);
+        free(identifier_name);
+    } else {
+        // Fallback if memory allocation fails
+        fprintf(output, "%s", node->as.identifier.name);
+    }
     
     return true;
 }

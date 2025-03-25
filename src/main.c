@@ -41,8 +41,8 @@ int main(int argc, char** argv) {
     printf("Eshkol Compiler v0.1.0\n");
     
     // Parse command line arguments
-    bool verbose_mode = false;
-    bool debug_mode = false;
+    bool verbose_mode = true;  // Enable verbose mode by default
+    bool debug_mode = true;    // Enable debug mode by default
     const char* input_file = NULL;
     const char* output_file = NULL;
     
@@ -218,6 +218,14 @@ int main(int argc, char** argv) {
         // Generate C code
         if (!codegen_generate(codegen, ast, temp_file)) {
             fprintf(stderr, "Error: Failed to generate C code\n");
+            
+            // Print diagnostic messages
+            diagnostic_context_print(diag);
+            
+            // Print AST for debugging
+            fprintf(stderr, "AST dump:\n");
+            ast_print(ast, 0);
+            
             arena_destroy(arena);
             free(source);
             return 1;

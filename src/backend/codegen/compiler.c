@@ -26,46 +26,83 @@ bool codegen_generate(CodegenContext* context, const AstNode* ast, const char* o
     assert(context != NULL);
     assert(ast != NULL);
     
+    DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+    
+    // Debug: Print AST type
+    char debug_msg[256];
+    snprintf(debug_msg, sizeof(debug_msg), "AST type: %d", ast->type);
+    diagnostic_debug(diagnostics, 0, 0, debug_msg);
+    
     // Open output file
     if (output_file != NULL) {
+        snprintf(debug_msg, sizeof(debug_msg), "Opening output file: %s", output_file);
+        diagnostic_debug(diagnostics, 0, 0, debug_msg);
+        
         FILE* output = fopen(output_file, "w");
         if (!output) {
-            DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
-            diagnostic_error(diagnostics, 0, 0, "Failed to open output file");
+            snprintf(debug_msg, sizeof(debug_msg), "Failed to open output file: %s", output_file);
+            diagnostic_error(diagnostics, 0, 0, debug_msg);
             return false;
         }
         codegen_context_set_output(context, output);
+        diagnostic_debug(diagnostics, 0, 0, "Output file opened successfully");
     } else {
+        diagnostic_debug(diagnostics, 0, 0, "Using stdout for output");
         codegen_context_set_output(context, stdout);
     }
     
     // Generate code
     bool result = false;
     
-    DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
-    
     if (ast->type == AST_PROGRAM) {
-        diagnostic_debug(diagnostics, 0, 0, "Generating code for program");
+        snprintf(debug_msg, sizeof(debug_msg), "Generating code for program with %zu expressions", ast->as.program.expr_count);
+        diagnostic_debug(diagnostics, 0, 0, debug_msg);
+        
+        // Debug: Print program expressions
+        for (size_t i = 0; i < ast->as.program.expr_count; i++) {
+            snprintf(debug_msg, sizeof(debug_msg), "Program expression %zu: type %d", i, ast->as.program.exprs[i]->type);
+            diagnostic_debug(diagnostics, 0, 0, debug_msg);
+            
+            // If it's a define, print more details
+            if (ast->as.program.exprs[i]->type == AST_DEFINE) {
+                AstNode* name = ast->as.program.exprs[i]->as.define.name;
+                AstNode* value = ast->as.program.exprs[i]->as.define.value;
+                
+                if (name->type == AST_IDENTIFIER) {
+                    snprintf(debug_msg, sizeof(debug_msg), "Define name: %s", name->as.identifier.name);
+                    diagnostic_debug(diagnostics, 0, 0, debug_msg);
+                }
+                
+                snprintf(debug_msg, sizeof(debug_msg), "Define value type: %d", value->type);
+                diagnostic_debug(diagnostics, 0, 0, debug_msg);
+            }
+        }
+        
         result = codegen_generate_program(context, ast);
         if (!result) {
             diagnostic_error(diagnostics, 0, 0, "Failed to generate code for program");
         }
     } else {
-        diagnostic_debug(diagnostics, 0, 0, "Generating code for expression");
+        snprintf(debug_msg, sizeof(debug_msg), "Generating code for expression of type %d", ast->type);
+        diagnostic_debug(diagnostics, 0, 0, debug_msg);
+        
         result = codegen_generate_expression(context, ast);
         if (!result) {
-            diagnostic_error(diagnostics, 0, 0, "Failed to generate code for expression");
+            snprintf(debug_msg, sizeof(debug_msg), "Failed to generate code for expression of type %d", ast->type);
+            diagnostic_error(diagnostics, 0, 0, debug_msg);
         }
     }
     
     // Close output file
     FILE* output = codegen_context_get_output(context);
     if (output_file != NULL && output != NULL) {
+        diagnostic_debug(diagnostics, 0, 0, "Closing output file");
         fclose(output);
     }
     
     codegen_context_set_output(context, NULL);
     
+    diagnostic_debug(diagnostics, 0, 0, result ? "Code generation succeeded" : "Code generation failed");
     return result;
 }
 

@@ -224,7 +224,11 @@ void type_inference_set_function_signature(TypeInferenceContext* context, String
  */
 Type* type_inference_get_type(TypeInferenceContext* context, const AstNode* node) {
     assert(context != NULL);
-    assert(node != NULL);
+    
+    // Check if node is NULL
+    if (node == NULL) {
+        return NULL;
+    }
     
     // Check if the node is in the context
     for (size_t i = 0; i < context->count; i++) {
@@ -246,7 +250,11 @@ Type* type_inference_get_type(TypeInferenceContext* context, const AstNode* node
  */
 Type* type_inference_get_explicit_type(TypeInferenceContext* context, const AstNode* node) {
     assert(context != NULL);
-    assert(node != NULL);
+    
+    // Check if node is NULL
+    if (node == NULL) {
+        return NULL;
+    }
     
     // Check if the node is in the explicit context
     for (size_t i = 0; i < context->explicit_count; i++) {
@@ -268,7 +276,11 @@ Type* type_inference_get_explicit_type(TypeInferenceContext* context, const AstN
  */
 Type* type_inference_get_function_signature(TypeInferenceContext* context, StringId function_name) {
     assert(context != NULL);
-    assert(function_name != NULL);
+    
+    // Check if function_name is NULL
+    if (function_name == NULL) {
+        return NULL;
+    }
     
     // Check if the function is in the context
     for (size_t i = 0; i < context->signature_count; i++) {
