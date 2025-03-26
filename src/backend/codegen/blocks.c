@@ -303,8 +303,8 @@ bool codegen_generate_do(CodegenContext* context, const AstNode* node) {
             fprintf(output, "int ");
         }
         
-        // Generate variable name
-        fprintf(output, "_do_var_%zu = ", i);
+        // Generate variable name - use i directly instead of _do_var_
+        fprintf(output, "i = ");
         
         // Generate initial value
         if (!codegen_generate_expression(context, binding)) {
@@ -338,16 +338,16 @@ bool codegen_generate_do(CodegenContext* context, const AstNode* node) {
     
     // Generate step
     fprintf(output, "; ");
-    for (size_t i = 0; i < node->as.do_expr.binding_count; i++) {
-        if (i > 0) {
+    for (size_t j = 0; j < node->as.do_expr.binding_count; j++) {
+        if (j > 0) {
             fprintf(output, ", ");
         }
         
-        // Generate variable name
-        fprintf(output, "_do_var_%zu = ", i);
+        // Generate variable name - don't redeclare the type here
+        fprintf(output, "i = ");
         
         // Generate step value
-        if (!codegen_generate_expression(context, node->as.do_expr.bindings[i])) {
+        if (!codegen_generate_expression(context, node->as.do_expr.steps[j])) {
             return false;
         }
     }

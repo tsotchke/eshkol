@@ -4,19 +4,19 @@
 ;;
 
 ;; Function with explicitly typed parameters
-(define (add-integers (x : int) (y : int))
+(define (add-integers x : number y : number) : number
   (+ x y))
 
 ;; Function with explicitly typed parameters and return type
-(define (calculate-area (width : float) (height : float)) : float
+(define (calculate-area width : number height : number) : number
   (* width height))
 
 ;; Function with mixed parameter types
-(define (format-data (name : string) (age : int) (height : float))
+(define (format-data name : string age : number height : number) : string
   (string-append name ", age " (number->string age) ", height " (number->string height) "m"))
 
 ;; Function with vector parameter
-(define (compute-distance (point1 : (vector float)) (point2 : (vector float))) : float
+(define (compute-distance point1 : vector point2 : vector) : number
   (let ((x1 (vector-ref point1 0))
         (y1 (vector-ref point1 1))
         (x2 (vector-ref point2 0))
@@ -24,11 +24,11 @@
     (sqrt (+ (expt (- x2 x1) 2) (expt (- y2 y1) 2)))))
 
 ;; Function with boolean parameters
-(define (logical-xor (a : bool) (b : bool)) : bool
+(define (logical-xor a : boolean b : boolean) : boolean
   (and (or a b) (not (and a b))))
 
 ;; Function with function parameter
-(define (apply-twice (f : (function (int) int)) (x : int)) : int
+(define (apply-twice f : function x : number) : number
   (f (f x)))
 
 ;; Main function to demonstrate the examples
@@ -64,7 +64,7 @@
   (display "\n")
   
   ;; Function parameter with explicit typing
-  (define (double (x : int)) : int (* x 2))
+  (define (double x : number) : number (* x 2))
   (display "Applying double twice to 3: ")
   (display (apply-twice double 3))
   (display "\n")

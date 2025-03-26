@@ -10,6 +10,9 @@ set(CORE_SOURCES
     utils/simd.c
     utils/autodiff.c
     utils/type.c
+    utils/type_creation.c
+    utils/type_comparison.c
+    utils/type_conversion.c
     diagnostics/diagnostics.c
 )
 
@@ -24,8 +27,11 @@ set(CORE_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/vector.h
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/simd.h
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/autodiff.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils/type.h
     ${CMAKE_CURRENT_SOURCE_DIR}/diagnostics/diagnostics.h
+    ${CMAKE_SOURCE_DIR}/include/core/type.h
+    ${CMAKE_SOURCE_DIR}/include/core/type_creation.h
+    ${CMAKE_SOURCE_DIR}/include/core/type_comparison.h
+    ${CMAKE_SOURCE_DIR}/include/core/type_conversion.h
 )
 
 # Create library

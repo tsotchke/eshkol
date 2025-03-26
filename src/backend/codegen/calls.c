@@ -278,11 +278,26 @@ bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
             return true;
         } else if (strcmp(op_name, "display") == 0 && node->as.call.arg_count == 1) {
             // Display function (Scheme compatibility)
-            fprintf(output, "printf(\"%%s\\n\", ");
-            if (!codegen_generate_expression(context, node->as.call.args[0])) {
-                return false;
+            // Check if the argument is a string literal
+            AstNode* arg = node->as.call.args[0];
+            if (arg->type == AST_LITERAL_STRING) {
+                fprintf(output, "printf(\"%%s\", ");
+                if (!codegen_generate_expression(context, arg)) {
+                    return false;
+                }
+                fprintf(output, ")");
+            } else {
+                // For non-string values, use %d for integers and %f for floats
+                fprintf(output, "printf(\"%%d\", (int)(");
+                if (!codegen_generate_expression(context, arg)) {
+                    return false;
+                }
+                fprintf(output, "))");
             }
-            fprintf(output, ")");
+            return true;
+        } else if (strcmp(op_name, "newline") == 0 && node->as.call.arg_count == 0) {
+            // Newline function (Scheme compatibility)
+            fprintf(output, "printf(\"\\n\")");
             return true;
         } else if (strcmp(op_name, "string-append") == 0) {
             // String append function

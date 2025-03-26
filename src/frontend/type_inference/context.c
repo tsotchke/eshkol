@@ -6,6 +6,9 @@
 #include "frontend/type_inference/context.h"
 #include "core/memory.h"
 #include "core/type.h"
+#include "core/type_creation.h"
+#include "core/type_comparison.h"
+#include "core/type_conversion.h"
 #include "frontend/ast/ast.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,23 +20,23 @@
  * @brief Type inference context structure
  */
 struct TypeInferenceContext {
-    Arena* arena;                /**< Arena for allocations */
-    DiagnosticContext* diagnostics; /**< Diagnostic context for error reporting */
-    AstNode** nodes;             /**< Array of AST nodes */
-    Type** inferred_types;       /**< Array of inferred types */
-    size_t capacity;             /**< Capacity of the arrays */
-    size_t count;                /**< Number of nodes */
+    Arena* arena;                // Arena for allocations 
+    DiagnosticContext* diagnostics; // Diagnostic context for error reporting 
+    AstNode** nodes;             // Array of AST nodes 
+    Type** inferred_types;       // Array of inferred types 
+    size_t capacity;             // Capacity of the arrays 
+    size_t count;                // Number of nodes 
     
     // Enhanced type system support
-    AstNode** explicit_nodes;    /**< Array of explicitly typed AST nodes */
-    Type** explicit_types;       /**< Array of explicit types */
-    size_t explicit_capacity;    /**< Capacity of the explicit arrays */
-    size_t explicit_count;       /**< Number of explicitly typed nodes */
+    AstNode** explicit_nodes;    // Array of explicitly typed AST nodes 
+    Type** explicit_types;       // Array of explicit types 
+    size_t explicit_capacity;    // Capacity of the explicit arrays 
+    size_t explicit_count;       // Number of explicitly typed nodes 
     
-    StringId* function_names;    /**< Array of function names */
-    Type** function_signatures;  /**< Array of function signatures */
-    size_t signature_capacity;   /**< Capacity of the signature arrays */
-    size_t signature_count;      /**< Number of function signatures */
+    StringId* function_names;    // Array of function names 
+    Type** function_signatures;  // Array of function signatures 
+    size_t signature_capacity;   // Capacity of the signature arrays 
+    size_t signature_count;      // Number of function signatures 
 };
 
 /**

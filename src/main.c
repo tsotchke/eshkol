@@ -8,9 +8,9 @@
 #include "frontend/lexer/lexer.h"
 #include "frontend/parser/parser.h"
 #include "frontend/type_inference/type_inference.h"
+#include "frontend/type_inference/analysis.h"
 #include "backend/codegen.h"
-//#include "backend/codegen/compiler.h"
-//#include "backend/codegen/context.h"
+#include "backend/codegen/debug.h"
 
 // Forward declarations of functions we'll implement later
 static char* read_file(const char* filename, size_t* length);
@@ -23,9 +23,16 @@ static char* read_file(const char* filename, size_t* length);
 static void print_usage(const char* program_name) {
     fprintf(stderr, "Usage: %s [options] <input.esk> [output.c]\n", program_name);
     fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  -v, --verbose   Enable verbose output\n");
-    fprintf(stderr, "  -d, --debug     Enable debug output (implies verbose)\n");
-    fprintf(stderr, "  -h, --help      Display this help message\n");
+    fprintf(stderr, "  -v, --verbose         Enable verbose output\n");
+    fprintf(stderr, "  -d, --debug           Enable debug output (implies verbose)\n");
+    fprintf(stderr, "  -h, --help            Display this help message\n");
+    fprintf(stderr, "  --dump-ast            Dump AST visualization\n");
+    fprintf(stderr, "  --format=<fmt>        Output format for AST (dot, mermaid)\n");
+    fprintf(stderr, "  --analyze-types       Analyze type inference\n");
+    fprintf(stderr, "  --detail=<level>      Detail level for type analysis (basic, detailed, verbose)\n");
+    fprintf(stderr, "  --debug-codegen       Debug code generation\n");
+    fprintf(stderr, "  --stage=<stage>       Code generation stage to debug (ast, ir, c-code, all)\n");
+    fprintf(stderr, "  --profile=<phase>     Profile compilation phase (can be used multiple times)\n");
     fprintf(stderr, "Arguments:\n");
     fprintf(stderr, "  <input.esk>     Input Eshkol source file\n");
     fprintf(stderr, "  [output.c]      Optional output C file (if not provided, compiles and runs)\n");
@@ -41,8 +48,15 @@ int main(int argc, char** argv) {
     printf("Eshkol Compiler v0.1.0\n");
     
     // Parse command line arguments
-    bool verbose_mode = true;  // Enable verbose mode by default
-    bool debug_mode = true;    // Enable debug mode by default
+    bool verbose_mode = true;      // Enable verbose mode by default
+    bool debug_mode = true;        // Enable debug mode by default
+    bool dump_ast = false;         // AST visualization
+    const char* ast_format = NULL; // AST output format
+    bool analyze_types = false;    // Type analysis
+    const char* detail_level = "basic"; // Type analysis detail
+    bool debug_codegen = false;    // Debug code generation
+    const char* debug_stage = "all"; // Code gen stage to debug
+    bool profile_mode = false;     // Profile compilation
     const char* input_file = NULL;
     const char* output_file = NULL;
     
@@ -58,6 +72,45 @@ int main(int argc, char** argv) {
         } else if (strcmp(arg, "-d") == 0 || strcmp(arg, "--debug") == 0) {
             debug_mode = true;
             verbose_mode = true; // Debug implies verbose
+        } else if (strcmp(arg, "--dump-ast") == 0) {
+            dump_ast = true;
+        } else if (strncmp(arg, "--format=", 9) == 0) {
+            ast_format = arg + 9;
+            if (strcmp(ast_format, "dot") != 0 && strcmp(ast_format, "mermaid") != 0) {
+                fprintf(stderr, "Error: Invalid format '%s'. Must be 'dot' or 'mermaid'\n", ast_format);
+                return 1;
+            }
+        } else if (strcmp(arg, "--analyze-types") == 0) {
+            analyze_types = true;
+        } else if (strncmp(arg, "--detail=", 9) == 0) {
+            detail_level = arg + 9;
+            if (strcmp(detail_level, "basic") != 0 && 
+                strcmp(detail_level, "detailed") != 0 && 
+                strcmp(detail_level, "verbose") != 0) {
+                fprintf(stderr, "Error: Invalid detail level '%s'. Must be 'basic', 'detailed', or 'verbose'\n", detail_level);
+                return 1;
+            }
+        } else if (strcmp(arg, "--debug-codegen") == 0) {
+            debug_codegen = true;
+        } else if (strncmp(arg, "--stage=", 8) == 0) {
+            debug_stage = arg + 8;
+            if (strcmp(debug_stage, "ast") != 0 && 
+                strcmp(debug_stage, "ir") != 0 && 
+                strcmp(debug_stage, "c-code") != 0 && 
+                strcmp(debug_stage, "all") != 0) {
+                fprintf(stderr, "Error: Invalid stage '%s'. Must be 'ast', 'ir', 'c-code', or 'all'\n", debug_stage);
+                return 1;
+            }
+        } else if (strncmp(arg, "--profile=", 10) == 0) {
+            const char* phase = arg + 10;
+            if (strcmp(phase, "lexing") != 0 && 
+                strcmp(phase, "parsing") != 0 && 
+                strcmp(phase, "type-inference") != 0 && 
+                strcmp(phase, "codegen") != 0) {
+                fprintf(stderr, "Error: Invalid phase '%s'. Must be 'lexing', 'parsing', 'type-inference', or 'codegen'\n", phase);
+                return 1;
+            }
+            profile_mode = true;
         } else if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -80,7 +133,7 @@ int main(int argc, char** argv) {
     // Get input filename
     input_file = argv[arg_index++];
     
-    // Get output filename if provided
+        // Get output filename if provided
     if (arg_index < argc) {
         output_file = argv[arg_index++];
     }
@@ -88,6 +141,9 @@ int main(int argc, char** argv) {
     // Print debug information
     if (debug_mode) {
         printf("Debug mode enabled\n");
+        if (dump_ast) {
+            printf("AST visualization enabled (format: %s)\n", ast_format ? ast_format : "mermaid");
+        }
     } else if (verbose_mode) {
         printf("Verbose mode enabled\n");
     }
@@ -158,6 +214,18 @@ int main(int argc, char** argv) {
         free(source);
         return 1;
     }
+
+    // Handle AST visualization if requested
+    if (dump_ast || (output_file && strcmp(output_file, "--dump-ast") == 0)) {
+        const char* format = ast_format ? ast_format : "mermaid";
+        printf("Compiling %s to --dump-ast...\n", input_file);
+        printf("\nAST Visualization:\n");
+        ast_visualize(ast, format);
+        printf("\nSuccessfully compiled %s to --dump-ast\n", input_file);
+        arena_destroy(arena);
+        free(source);
+        return 0;
+    }
     
     // Initialize type inference context
     TypeInferenceContext* type_context = type_inference_context_create(arena, diag);
@@ -183,6 +251,15 @@ int main(int argc, char** argv) {
         free(source);
         return 1;
     }
+
+    // Handle type analysis if requested
+    if (analyze_types) {
+        printf("Analyzing types with detail level: %s\n", detail_level);
+        type_inference_analyze(type_context, ast, detail_level);
+        arena_destroy(arena);
+        free(source);
+        return 0;
+    }
     
     // Initialize code generator
     CodegenContext* codegen = codegen_context_create(arena, diag, type_context);
@@ -192,9 +269,27 @@ int main(int argc, char** argv) {
         free(source);
         return 1;
     }
+
+    // Handle code generation debugging if requested
+    if (debug_codegen) {
+        printf("Debugging code generation stage: %s\n", debug_stage);
+        codegen_debug(codegen, ast, debug_stage);
+        arena_destroy(arena);
+        free(source);
+        return 0;
+    }
+
+    // Handle profiling if requested
+    if (profile_mode) {
+        printf("Profiling compilation...\n");
+        codegen_profile(codegen, ast);
+        arena_destroy(arena);
+        free(source);
+        return 0;
+    }
     
     // Determine mode
-    if (output_file) {
+    if (output_file && output_file[0] != '-') {
         // Compile to C file
         printf("Compiling %s to %s...\n", input_file, output_file);
         

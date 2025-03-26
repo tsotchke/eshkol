@@ -8,6 +8,9 @@
 
 #include "core/memory.h"
 #include "core/type.h"
+#include "core/type_creation.h"
+#include "core/type_comparison.h"
+#include "core/type_conversion.h"
 #include "frontend/ast/ast.h"
 #include "core/diagnostics.h"
 #include <stdbool.h>

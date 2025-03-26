@@ -7,6 +7,9 @@
 #define ESHKOL_TYPE_INFERENCE_CONVERSION_H
 
 #include "core/type.h"
+#include "core/type_creation.h"
+#include "core/type_comparison.h"
+#include "core/type_conversion.h"
 #include "frontend/type_inference/context.h"
 
 /**

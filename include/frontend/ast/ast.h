@@ -189,6 +189,7 @@ struct AstNode {
         // Do
         struct {
             AstNode** bindings; /**< Bindings */
+            AstNode** steps;    /**< Step expressions */
             size_t binding_count; /**< Number of bindings */
             AstNode* test;    /**< Test expression */
             AstNode** result; /**< Result expressions */
@@ -533,7 +534,7 @@ AstNode* ast_create_case(Arena* arena, AstNode* key, AstNode** clauses, size_t c
  * @param column Column number
  * @return A new do node, or NULL on failure
  */
-AstNode* ast_create_do(Arena* arena, AstNode** bindings, size_t binding_count, AstNode* test, AstNode** result, size_t result_count, AstNode** body, size_t body_count, size_t line, size_t column);
+AstNode* ast_create_do(Arena* arena, AstNode** bindings, AstNode** steps, size_t binding_count, AstNode* test, AstNode** result, size_t result_count, AstNode** body, size_t body_count, size_t line, size_t column);
 
 /**
  * @brief Create a delay node
@@ -682,6 +683,14 @@ const char* ast_node_type_to_string(AstNodeType type);
  * @param indent Indentation level
  */
 void ast_print(const AstNode* node, int indent);
+
+/**
+ * @brief Visualize an AST node in a graph format
+ * 
+ * @param ast The AST node to visualize
+ * @param format The output format ("dot" or "mermaid")
+ */
+void ast_visualize(AstNode* ast, const char* format);
 
 #ifdef __cplusplus
 }

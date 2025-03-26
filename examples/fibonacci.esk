@@ -1,0 +1,22 @@
+;;
+;; Fibonacci Example in Eshkol
+;; This example demonstrates recursion and iteration in Scheme
+;;
+
+;; Define the recursive fibonacci function
+(define (fibonacci n)
+  (if (< n 2)
+      n
+      (+ (fibonacci (- n 1))
+         (fibonacci (- n 2)))))
+
+;; Main function to demonstrate the example
+(define (main)
+  (display "First 10 Fibonacci numbers:\n")
+  (do ((i 0 (+ i 1)))
+      ((= i 10) 0)
+    (display "fibonacci(")
+    (display i)
+    (display ") = ")
+    (display (fibonacci i))
+    (newline)))

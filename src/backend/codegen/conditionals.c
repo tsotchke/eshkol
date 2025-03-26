@@ -190,6 +190,80 @@ bool codegen_generate_case(CodegenContext* context, const AstNode* node) {
 }
 
 /**
+ * @brief Generate code for an if expression that returns a string
+ */
+char* codegen_generate_if_expr(CodegenContext* context, const AstNode* node) {
+    assert(context != NULL);
+    assert(node != NULL);
+    assert(node->type == AST_IF);
+    
+    Arena* arena = codegen_context_get_arena(context);
+    TypeInferenceContext* type_context = codegen_context_get_type_context(context);
+    
+    // Generate condition
+    char* condition = codegen_generate_expression_str(context, node->as.if_expr.condition);
+    if (!condition) return NULL;
+    
+    // Generate then branch
+    char* then_branch = codegen_generate_expression_str(context, node->as.if_expr.then_branch);
+    if (!then_branch) return NULL;
+    
+    // Generate else branch
+    char* else_branch = NULL;
+    if (node->as.if_expr.else_branch) {
+        else_branch = codegen_generate_expression_str(context, node->as.if_expr.else_branch);
+        if (!else_branch) return NULL;
+    } else {
+        else_branch = "0"; // Default to 0 for no else branch
+    }
+    
+    // Get the types of the branches
+    Type* then_type = type_inference_get_type(type_context, node->as.if_expr.then_branch);
+    Type* else_type = node->as.if_expr.else_branch ? 
+                     type_inference_get_type(type_context, node->as.if_expr.else_branch) :
+                     type_void_create(arena);
+    
+    // Check if we have mixed types (e.g., number and string)
+    if (then_type && else_type && 
+        then_type->kind != else_type->kind &&
+        then_type->kind != TYPE_VOID && else_type->kind != TYPE_VOID) {
+        
+        // Special case for mixed numeric types (integer and float)
+        if ((then_type->kind == TYPE_INTEGER && else_type->kind == TYPE_FLOAT) ||
+            (then_type->kind == TYPE_FLOAT && else_type->kind == TYPE_INTEGER)) {
+            // Promote to float - this is handled automatically by the ternary operator
+            char* result = arena_alloc(arena, strlen(condition) + strlen(then_branch) + strlen(else_branch) + 50);
+            sprintf(result, "(%s ? %s : %s)", condition, then_branch, else_branch);
+            return result;
+        }
+        
+        // Special case for string and numeric types
+        if ((then_type->kind == TYPE_STRING && (else_type->kind == TYPE_INTEGER || else_type->kind == TYPE_FLOAT)) ||
+            (else_type->kind == TYPE_STRING && (then_type->kind == TYPE_INTEGER || then_type->kind == TYPE_FLOAT))) {
+            
+            // For scientific computing, we need to be careful with mixed types
+            // We'll use void* as a generic return type
+            
+            // Convert both branches to void*
+            char* then_converted = codegen_type_apply_conversion(context, then_branch, then_type, type_any_create(arena));
+            char* else_converted = codegen_type_apply_conversion(context, else_branch, else_type, type_any_create(arena));
+            
+            // Generate the if expression with converted branches
+            char* result = arena_alloc(arena, strlen(condition) + strlen(then_converted) + strlen(else_converted) + 50);
+            sprintf(result, "(%s ? %s : %s)", condition, then_converted, else_converted);
+            
+            return result;
+        }
+    }
+    
+    // Generate the if expression
+    char* result = arena_alloc(arena, strlen(condition) + strlen(then_branch) + strlen(else_branch) + 50);
+    sprintf(result, "(%s ? %s : %s)", condition, then_branch, else_branch);
+    
+    return result;
+}
+
+/**
  * @brief Generate C code for an and expression
  */
 bool codegen_generate_and(CodegenContext* context, const AstNode* node) {

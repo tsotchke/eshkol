@@ -91,3 +91,33 @@ bool codegen_generate_expression(CodegenContext* context, const AstNode* node) {
         }
     }
 }
+
+/**
+ * @brief Generate C code for an expression that returns a string
+ */
+char* codegen_generate_expression_str(CodegenContext* context, const AstNode* node) {
+    assert(context != NULL);
+    assert(node != NULL);
+    
+    // Get diagnostics context
+    DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+    
+    // Debug message
+    char debug_msg[256];
+    snprintf(debug_msg, sizeof(debug_msg), "Generating expression string for node type %d", node->type);
+    diagnostic_debug(diagnostics, 0, 0, debug_msg);
+    
+    // Generate code based on node type
+    switch (node->type) {
+        case AST_IF:
+            return codegen_generate_if_expr(context, node);
+        default: {
+            // Unsupported node type
+            DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+            char error_message[100];
+            snprintf(error_message, sizeof(error_message), "Unsupported AST node type for string code generation: %d", node->type);
+            diagnostic_error(diagnostics, node->line, node->column, error_message);
+            return NULL;
+        }
+    }
+}

@@ -29,6 +29,15 @@ extern "C" {
  */
 bool codegen_generate_expression(CodegenContext* context, const AstNode* node);
 
+/**
+ * @brief Generate C code for an expression that returns a string
+ * 
+ * @param context The code generator context
+ * @param node The AST node
+ * @return The generated code as a string, or NULL on failure
+ */
+char* codegen_generate_expression_str(CodegenContext* context, const AstNode* node);
+
 #ifdef __cplusplus
 }
 #endif

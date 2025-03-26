@@ -7,6 +7,9 @@
 #include "frontend/type_inference/context.h"
 #include "core/memory.h"
 #include "core/type.h"
+#include "core/type_creation.h"
+#include "core/type_comparison.h"
+#include "core/type_conversion.h"
 #include "frontend/ast/ast.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -566,6 +569,13 @@ static Type* infer_function_def(TypeInferenceContext* context, AstNode* node) {
         }
     }
     
+    // Special case for main function - always returns int
+    if (node->as.function_def.name->type == AST_IDENTIFIER) {
+        const char* name = node->as.function_def.name->as.identifier.name;
+        if (strcmp(name, "main") == 0) {
+            body_type = type_integer_create(arena, INT_SIZE_32);
+        }
+    }
     
     // Create function type
     Type* function_type = type_function_create(arena, node->as.function_def.param_count, param_types, body_type, false);

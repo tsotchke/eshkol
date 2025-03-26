@@ -138,7 +138,15 @@ bool codegen_type_can_convert(Type* from, Type* to) {
         return true;
     }
     
-    // TODO: Add more conversions
+    // String to void* (for mixed type conditionals)
+    if (from->kind == TYPE_STRING && to->kind == TYPE_ANY) {
+        return true;
+    }
+    
+    // Numeric to void* (for mixed type conditionals)
+    if ((from->kind == TYPE_INTEGER || from->kind == TYPE_FLOAT) && to->kind == TYPE_ANY) {
+        return true;
+    }
     
     return false;
 }
@@ -170,6 +178,19 @@ const char* codegen_type_conversion_code(CodegenContext* context, Type* from, Ty
     } else if (from->kind == TYPE_INTEGER && to->kind == TYPE_CHAR) {
         return "(char)";
     } else if (to->kind == TYPE_ANY) {
+        // Special case for string to void*
+        if (from->kind == TYPE_STRING) {
+            return "(void*)(char*)";
+        }
+        // Special case for numeric to void*
+        else if (from->kind == TYPE_INTEGER || from->kind == TYPE_FLOAT) {
+            // For scientific computing, we need to be careful with numeric conversions
+            // We'll use a more explicit cast to void*
+            Arena* arena = codegen_context_get_arena(context);
+            char* result = arena_alloc(arena, strlen(from_type) + 20);
+            sprintf(result, "({ %s temp = ", from_type);
+            return result;
+        }
         return "(void*)";
     } else {
         // Default cast
@@ -192,7 +213,16 @@ char* codegen_type_apply_conversion(CodegenContext* context, const char* expr, T
     const char* conversion = codegen_type_conversion_code(context, from, to);
     
     // Apply conversion
-    char* result = arena_alloc(codegen_context_get_arena(context), strlen(conversion) + strlen(expr) + 3);
+    Arena* arena = codegen_context_get_arena(context);
+    
+    // Special case for numeric to void* (for mixed type conditionals)
+    if (to->kind == TYPE_ANY && (from->kind == TYPE_INTEGER || from->kind == TYPE_FLOAT)) {
+        char* result = arena_alloc(arena, strlen(conversion) + strlen(expr) + 30);
+        sprintf(result, "%s%s; (void*)&temp; })", conversion, expr);
+        return result;
+    }
+    
+    char* result = arena_alloc(arena, strlen(conversion) + strlen(expr) + 3);
     sprintf(result, "%s(%s)", conversion, expr);
     return result;
 }

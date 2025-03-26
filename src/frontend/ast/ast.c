@@ -488,13 +488,14 @@ AstNode* ast_create_case(Arena* arena, AstNode* key, AstNode** clauses, size_t c
  * @param column Column number
  * @return A new do node, or NULL on failure
  */
-AstNode* ast_create_do(Arena* arena, AstNode** bindings, size_t binding_count, AstNode* test, AstNode** result, size_t result_count, AstNode** body, size_t body_count, size_t line, size_t column) {
+AstNode* ast_create_do(Arena* arena, AstNode** bindings, AstNode** steps, size_t binding_count, AstNode* test, AstNode** result, size_t result_count, AstNode** body, size_t body_count, size_t line, size_t column) {
     AstNode* node = ast_create_node(arena, AST_DO, line, column);
     if (!node) {
         return NULL;
     }
     
     node->as.do_expr.bindings = bindings;
+    node->as.do_expr.steps = steps;
     node->as.do_expr.binding_count = binding_count;
     node->as.do_expr.test = test;
     node->as.do_expr.result = result;
@@ -997,4 +998,3 @@ void ast_print(const AstNode* node, int indent) {
             break;
     }
 }
-

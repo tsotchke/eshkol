@@ -6,6 +6,9 @@
 #include "frontend/parser/parser.h"
 #include "frontend/ast/parameter.h"
 #include "core/type.h"
+#include "core/type_creation.h"
+#include "core/type_comparison.h"
+#include "core/type_conversion.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

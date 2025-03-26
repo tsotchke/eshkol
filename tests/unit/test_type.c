@@ -1,4 +1,7 @@
 #include "core/type.h"
+#include "core/type_creation.h"
+#include "core/type_comparison.h"
+#include "core/type_conversion.h"
 #include "core/memory.h"
 #include <stdio.h>
 #include <stdlib.h>

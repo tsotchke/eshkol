@@ -16,6 +16,7 @@ static AstNode* parse_list(Parser* parser);
 static AstNode* parse_atom(Parser* parser);
 static AstNode* parse_special_form(Parser* parser, StringId name, size_t line, size_t column);
 static AstNode* parse_define(Parser* parser, size_t line, size_t column);
+static AstNode* parse_do(Parser* parser, size_t line, size_t column);
 static AstNode* parse_if(Parser* parser, size_t line, size_t column);
 static AstNode* parse_lambda(Parser* parser, size_t line, size_t column);
 static AstNode* parse_begin(Parser* parser, size_t line, size_t column);
@@ -282,6 +283,8 @@ static AstNode* parse_special_form(Parser* parser, StringId name, size_t line, s
         return parse_set(parser, line, column);
     } else if (strcmp(name, "let") == 0) {
         return parse_let(parser, line, column);
+    } else if (strcmp(name, "do") == 0) {
+        return parse_do(parser, line, column);
     } else if (strcmp(name, "and") == 0) {
         return parse_and_or(parser, AST_AND, line, column);
     } else if (strcmp(name, "or") == 0) {
@@ -811,6 +814,164 @@ static AstNode* parse_let(Parser* parser, size_t line, size_t column) {
  * @param column Column number
  * @return And or or node, or NULL on failure
  */
+/**
+ * @brief Parse a do special form
+ * 
+ * @param parser The parser
+ * @param line Line number
+ * @param column Column number
+ * @return Do node, or NULL on failure
+ */
+static AstNode* parse_do(Parser* parser, size_t line, size_t column) {
+    // Parse the variable specifications
+    if (!match(parser, TOKEN_LPAREN)) {
+        error(parser, "Expected '(' before variable specifications");
+        return NULL;
+    }
+    
+    // Parse the variable specifications
+    size_t var_count = 0;
+    AstNode** vars = arena_alloc(parser->arena, sizeof(AstNode*) * 16); // Arbitrary initial capacity
+    AstNode** steps = arena_alloc(parser->arena, sizeof(AstNode*) * 16);
+    if (!vars || !steps) {
+        error(parser, "Failed to allocate memory for variables");
+        return NULL;
+    }
+    
+    while (!check(parser, TOKEN_RPAREN) && !is_at_end(parser)) {
+        if (var_count >= 16) {
+            error(parser, "Too many variables in do");
+            return NULL;
+        }
+        
+        // Parse a variable specification
+        if (!match(parser, TOKEN_LPAREN)) {
+            error(parser, "Expected '(' before variable specification");
+            return NULL;
+        }
+        
+        // Parse the variable name
+        if (!match(parser, TOKEN_IDENTIFIER)) {
+            error(parser, "Expected variable name");
+            return NULL;
+        }
+        
+        StringId name_str = parser->previous.value.string_id;
+        AstNode* name = ast_create_identifier(parser->arena, name_str, parser->previous.line, parser->previous.column);
+        if (!name) {
+            error(parser, "Failed to create identifier node");
+            return NULL;
+        }
+        
+        // Parse the initial value
+        AstNode* init = parse_expression(parser);
+        if (!init) {
+            error(parser, "Expected initial value");
+            return NULL;
+        }
+        
+        // Parse the step expression
+        AstNode* step = parse_expression(parser);
+        if (!step) {
+            error(parser, "Expected step expression");
+            return NULL;
+        }
+        
+        // Consume the closing parenthesis of the variable specification
+        consume(parser, TOKEN_RPAREN, "Expected ')' after variable specification");
+        
+        // Create a define node
+        AstNode* var = ast_create_define(parser->arena, name, init, line, column);
+        if (!var) {
+            error(parser, "Failed to create variable node");
+            return NULL;
+        }
+        
+        vars[var_count] = var;
+        steps[var_count] = step;
+        var_count++;
+    }
+    
+    // Consume the closing parenthesis of the variable specifications
+    consume(parser, TOKEN_RPAREN, "Expected ')' after variable specifications");
+    
+    // Parse the test clause
+    if (!match(parser, TOKEN_LPAREN)) {
+        error(parser, "Expected '(' before test clause");
+        return NULL;
+    }
+    
+    // Parse the test expression
+    AstNode* test = parse_expression(parser);
+    if (!test) {
+        error(parser, "Expected test expression");
+        return NULL;
+    }
+    
+    // Parse the result expression
+    AstNode* result = parse_expression(parser);
+    if (!result) {
+        error(parser, "Expected result expression");
+        return NULL;
+    }
+    
+    // Consume the closing parenthesis of the test clause
+    consume(parser, TOKEN_RPAREN, "Expected ')' after test clause");
+    
+    // Parse the body expressions
+    size_t body_expr_count = 0;
+    AstNode** body_exprs = arena_alloc(parser->arena, sizeof(AstNode*) * 16); // Arbitrary initial capacity
+    if (!body_exprs) {
+        error(parser, "Failed to allocate memory for body expressions");
+        return NULL;
+    }
+    
+    while (!check(parser, TOKEN_RPAREN) && !is_at_end(parser)) {
+        if (body_expr_count >= 16) {
+            error(parser, "Too many expressions in do body");
+            return NULL;
+        }
+        
+        AstNode* expr = parse_expression(parser);
+        if (!expr) {
+            error(parser, "Expected expression");
+            return NULL;
+        }
+        
+        body_exprs[body_expr_count++] = expr;
+    }
+    
+    // Create a begin node for the body if there are multiple expressions
+    AstNode* body = NULL;
+    if (body_expr_count > 1) {
+        body = ast_create_begin(parser->arena, body_exprs, body_expr_count, line, column);
+    } else if (body_expr_count == 1) {
+        body = body_exprs[0];
+    } else {
+        body = ast_create_nil(parser->arena, line, column); // Empty body is allowed
+    }
+    
+    if (!body) {
+        error(parser, "Failed to create do body");
+        return NULL;
+    }
+    
+    // Consume the closing parenthesis of the do form
+    consume(parser, TOKEN_RPAREN, "Expected ')' after do");
+    
+    // Create result array with just the one result expression
+    AstNode** result_exprs = arena_alloc(parser->arena, sizeof(AstNode*));
+    if (!result_exprs) {
+        error(parser, "Failed to allocate memory for result expressions");
+        return NULL;
+    }
+    result_exprs[0] = result;
+
+
+    // Create a do node
+    return ast_create_do(parser->arena, vars, steps, var_count, test, result_exprs, 1, body_exprs, body_expr_count, line, column);
+}
+
 static AstNode* parse_and_or(Parser* parser, AstNodeType type, size_t line, size_t column) {
     // Parse the expressions
     size_t expr_count = 0;
@@ -1009,6 +1170,7 @@ static bool is_special_form(StringId name) {
            strcmp(name, "begin") == 0 ||
            strcmp(name, "set!") == 0 ||
            strcmp(name, "let") == 0 ||
+           strcmp(name, "do") == 0 ||
            strcmp(name, "and") == 0 ||
            strcmp(name, "or") == 0 ||
            strcmp(name, "vector") == 0 ||

@@ -2,6 +2,7 @@
 set(FRONTEND_SOURCES
     lexer/lexer.c
     ast/ast.c
+    ast/ast_visualize.c
     parser/parser.c
     parser/type_parser.c
     ast/parameter.c
@@ -9,6 +10,7 @@ set(FRONTEND_SOURCES
     type_inference/inference.c
     type_inference/conversion.c
     type_inference/type_inference.c
+    type_inference/analysis.c
 )
 
 # Define headers
@@ -23,6 +25,7 @@ set(FRONTEND_HEADERS
     ${CMAKE_SOURCE_DIR}/include/frontend/type_inference/inference.h
     ${CMAKE_SOURCE_DIR}/include/frontend/type_inference/conversion.h
     ${CMAKE_SOURCE_DIR}/include/frontend/type_inference/type_inference.h
+    ${CMAKE_SOURCE_DIR}/include/frontend/type_inference/analysis.h
 )
 
 # Create library
