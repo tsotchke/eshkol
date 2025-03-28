@@ -4,7 +4,7 @@
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Project Status](https://img.shields.io/badge/Status-Early%20Development-yellow.svg)]()
-[![Scheme Compatibility](https://img.shields.io/badge/Scheme-R5RS%20%7C%20R7RS--small-green.svg)]()
+[![Scheme Compatibility](https://img.shields.io/badge/Scheme-R5RS%20%7C%20R7RS--small-planned-orange.svg)]()
 
 ## 🌟 What is Eshkol?
 
@@ -23,7 +23,7 @@ Unlike other languages that force you to choose between expressiveness and perfo
 
 ### 🔥 What's Working Now
 
-- **Powerful Scheme Foundation** - Core special forms fully implemented:
+- **Powerful Scheme Foundation** - Core special forms implemented:
   - `define`, `if`, `lambda`, `begin`, `quote`, `set!`, `let`, `and`, `or`
   - Write expressive, functional code just like in Scheme
 
@@ -31,6 +31,19 @@ Unlike other languages that force you to choose between expressiveness and perfo
   - Predictable memory allocation and deallocation patterns
   - No garbage collection pauses or unpredictable latency spikes
   - Perfect for real-time applications and high-performance computing
+
+- **Vector Calculus Operations** - Built-in support for mathematical operations:
+  - Gradient computation (∇f)
+  - Divergence (∇·F)
+  - Curl (∇×F)
+  - Laplacian (∇²f)
+  - Vector field operations
+
+- **Automatic Differentiation** - First-class support for gradient-based methods:
+  - Forward-mode automatic differentiation
+  - Reverse-mode automatic differentiation
+  - Higher-order derivatives
+  - Jacobian and Hessian matrix computation (partial)
 
 ### 🛠️ Recently Enhanced
 
@@ -40,9 +53,34 @@ Unlike other languages that force you to choose between expressiveness and perfo
   - Powerful type inference to reduce annotation burden
   - Compile-time type checking for early error detection
   - Deep integration with automatic differentiation and scientific computing
-  - Full compatibility with standard Scheme
+
+- **MCP Tools Integration** - Development tools for analysis and debugging:
+  - Type analysis tools
+  - Code generation analysis
+  - Binding and lambda analysis
+  - AST visualization
+  - Closure memory visualization
+  - Mutual recursion analysis
 
 ### 🛠️ Currently In Development
+
+- **Type System Improvements** - Enhancing type inference and checking:
+  - Type inference for automatic differentiation functions
+  - Vector return type handling
+  - Resolving type conflicts in generated C code
+  - Integration of type information with code generation
+
+- **Scheme Compatibility** - Working towards R5RS and R7RS-small compatibility:
+  - Core list operations (cons, car, cdr)
+  - Basic type predicates
+  - Numeric operations (partial)
+  - Boolean operations (partial)
+
+- **Scientific Computing Enhancements** - Expanding numerical capabilities:
+  - SIMD code generation optimization
+  - Matrix algorithms
+  - Array optimizations
+  - Gradient-based optimization algorithms
 
 - **Scientific Computing Primitives** - Built-in support for numerical computation:
   - Vector and matrix operations with optimized implementations
@@ -69,7 +107,7 @@ Unlike other languages that force you to choose between expressiveness and perfo
 ### 🔮 Coming Soon
 
 - **Comprehensive Scheme Compatibility** - Full implementation of R5RS and R7RS-small:
-  - Phase 1 (In Progress): Core data types and fundamental operations
+  - Phase 1 (Planning): Core data types and fundamental operations
   - Phase 2: List processing and control flow
   - Phase 3: Higher-order functions and data structures
   - Phase 4: I/O and system interface
@@ -133,9 +171,12 @@ Compile and run:
 Check out the `examples/` directory for sample programs demonstrating Eshkol's capabilities:
 
 - `hello.esk` - Basic "Hello, World!" program
+- `display_test.esk` - Basic "Hello, World!" program using `display` function
 - `factorial.esk` - Recursive factorial calculation
 - `function_composition.esk` - Higher-order functions and composition
 - `arithmetic.esk` - Basic arithmetic operations
+- `fibonacci.esk` - Fibonacci sequence calculation
+- `mutual_recursion.esk` - Demonstration of mutual recursion
 
 **Type System Examples:**
 - `untyped.esk` - Standard Scheme code without type annotations
@@ -152,6 +193,11 @@ Check out the `examples/` directory for sample programs demonstrating Eshkol's c
 ## 📚 Documentation
 
 Comprehensive documentation is available to help you learn and master Eshkol:
+
+### Implementation Status
+
+- **[Implementation Status](IMPLEMENTATION.md)** - Current implementation status and roadmap
+- **[Design Document](DESIGN.md)** - Architecture and design decisions
 
 ### Vision and Planning
 
@@ -177,7 +223,10 @@ Comprehensive documentation is available to help you learn and master Eshkol:
 
 ### Scheme Compatibility
 
-- **[Scheme Compatibility](docs/scheme_compatibility/MASTER_TRACKING.md)** - Status of Scheme feature implementation
+- **[Scheme Compatibility](docs/scheme_compatibility/SCHEME_COMPATIBILITY.md)** - Overview of Scheme compatibility
+- **[Implementation Plan](docs/scheme_compatibility/IMPLEMENTATION_PLAN.md)** - Plan for implementing Scheme features
+- **[Known Issues](docs/scheme_compatibility/KNOWN_ISSUES.md)** - Current limitations and issues
+- **[Master Tracking](docs/scheme_compatibility/MASTER_TRACKING.md)** - Status of Scheme feature implementation
 
 ## 🧩 File Extensions
 
@@ -196,7 +245,7 @@ Eshkol uses the following file extensions:
 
 Eshkol is an ambitious project, and we welcome contributions from the community! Whether you're interested in language design, compiler implementation, scientific computing, or AI, there's a place for you in the Eshkol ecosystem.
 
-Check out our [Scheme Compatibility Implementation Plan](docs/scheme_compatibility/IMPLEMENTATION_PLAN.md) to see where you can help implement Scheme features.
+Check out our [Implementation Status](IMPLEMENTATION.md) and [Scheme Compatibility Implementation Plan](docs/scheme_compatibility/IMPLEMENTATION_PLAN.md) to see where you can help.
 
 ## 📜 License
 

@@ -1,6 +1,6 @@
 # Eshkol Scheme Compatibility - Known Issues and Limitations
 
-Last Updated: 2025-03-24
+Last Updated: 2025-03-28
 
 This document tracks known issues, limitations, and compatibility notes for Scheme support in Eshkol. It serves as a reference for users and developers to understand the current state of Scheme compatibility.
 
@@ -18,6 +18,11 @@ This document tracks known issues, limitations, and compatibility notes for Sche
 | SCH-008 | Type conflicts in generated C code | High | Autodiff and vector functions | In Progress | Phase 4 |
 | SCH-009 | Inconsistent type handling between scalar and vector operations | Medium | Vector math operations | In Progress | Phase 4 |
 | SCH-010 | Implicit conversions between numeric types not fully supported | Medium | Numeric operations | Known limitation | Phase 4 |
+| SCH-011 | Lambda capture analysis for autodiff functions is incomplete | High | Higher-order autodiff functions | In Progress | Phase 4 |
+| SCH-012 | MCP tools for type analysis use simplified implementations | Medium | analyze-types tool | In Progress | N/A |
+| SCH-013 | Core list operations not yet implemented | High | cons, car, cdr | Planning | Phase 7 |
+| SCH-014 | Basic type predicates not yet implemented | Medium | pair?, null?, list? | Planning | Phase 7 |
+| SCH-015 | Mutual recursion handling in type inference is incomplete | Medium | Mutually recursive functions | In Progress | Phase 4 |
 
 ## Compatibility Notes
 
@@ -39,15 +44,18 @@ Eshkol has some implementation-specific behavior that may differ from other Sche
 3. **Type Annotations**: Eshkol supports optional static type annotations, which are not part of standard Scheme.
 4. **Scientific Computing Extensions**: Eshkol includes additional vector and matrix operations for scientific computing.
 5. **Automatic Differentiation**: Eshkol includes support for automatic differentiation, which is not part of standard Scheme.
+6. **MCP Tools Integration**: Eshkol provides MCP tools for analyzing Scheme code, which are not part of standard Scheme.
 
 ### Standard Library Limitations
 
 The following standard library features are not yet fully implemented:
 
-1. **Complex Numbers**: Complex number support is planned for Phase 7.
-2. **Rational Numbers**: Rational number support is planned for Phase 7.
-3. **Library System**: The R7RS library system is not yet fully implemented.
-4. **Dynamic FFI**: Dynamic foreign function interface is not yet implemented.
+1. **List Operations**: Core list operations (cons, car, cdr) are in the planning stage.
+2. **Type Predicates**: Basic type predicates (pair?, null?, list?) are in the planning stage.
+3. **Complex Numbers**: Complex number support is planned for Phase 7.
+4. **Rational Numbers**: Rational number support is planned for Phase 7.
+5. **Library System**: The R7RS library system is not yet fully implemented.
+6. **Dynamic FFI**: Dynamic foreign function interface is not yet implemented.
 
 ## Deferred Features
 
@@ -56,8 +64,17 @@ The following features are intentionally deferred to later phases:
 1. **Full Continuations**: Full continuations support is deferred to Phase 5.
 2. **Hygienic Macros**: Hygienic macro system is deferred to Phase 7.
 3. **Full Numeric Tower**: Complete numeric tower is deferred to Phase 7.
-4. **Advanced I/O**: Advanced I/O features are deferred to Phase 4.
+4. **Advanced I/O**: Advanced I/O features are deferred to Phase 5.
 5. **Module System**: Enhanced module system is deferred to Phase 7.
+
+## MCP Tools Issues
+
+The following issues affect the MCP tools used for Scheme compatibility analysis:
+
+1. **Type Analysis Simplification**: The analyze-types tool uses a simplified implementation that doesn't fully parse the code.
+2. **Binding Analysis Limitations**: The analyze-bindings and analyze-lambda-captures tools may not correctly handle complex binding patterns.
+3. **Recursion Analysis Limitations**: The analyze-scheme-recursion and analyze-tscheme-recursion tools may not correctly handle all forms of mutual recursion.
+4. **Integration Issues**: The MCP tools are not fully integrated with the compiler pipeline.
 
 ## Workarounds
 
@@ -110,6 +127,24 @@ To work around the current issues with automatic differentiation and vector type
 
 4. For complex autodiff operations, consider breaking them down into simpler steps with explicit types
 
+5. Use the MCP tools to analyze your code for potential issues:
+   ```bash
+   # Analyze type inference for an Eshkol file
+   use_mcp_tool eshkol-tools analyze-types '{"filePath": "examples/autodiff_example.esk", "detail": "detailed"}'
+   
+   # Analyze lambda captures for an Eshkol file
+   use_mcp_tool eshkol-tools analyze-lambda-captures '{"filePath": "examples/autodiff_example.esk", "detail": "detailed"}'
+   ```
+
+### Lambda Capture Issues
+
+To work around issues with lambda captures in autodiff functions:
+
+1. Avoid capturing mutable variables in lambdas passed to autodiff functions
+2. Use explicit parameter passing instead of capturing variables
+3. Break complex higher-order functions into simpler functions
+4. Use the analyze-lambda-captures MCP tool to identify potential issues
+
 ### Numeric Tower Limitations
 
 Until the full numeric tower is implemented, you can:
@@ -117,6 +152,15 @@ Until the full numeric tower is implemented, you can:
 1. Use floating-point numbers for most calculations
 2. Be aware of precision limitations
 3. Implement your own rational or complex number types if needed
+
+### MCP Tools Limitations
+
+To work around limitations in the MCP tools:
+
+1. Use the tools as guidance rather than relying on them for complete analysis
+2. Verify tool results manually, especially for complex code
+3. Use multiple tools to get a more complete picture
+4. Report issues with the tools to help improve them
 
 ## Reporting Issues
 
@@ -129,6 +173,7 @@ If you encounter an issue with Scheme compatibility in Eshkol, please report it 
    - Actual behavior
    - Eshkol version
    - Any relevant context
+   - MCP tool analysis results, if applicable
 
 ## Planned Improvements
 
@@ -138,6 +183,12 @@ See the [Evolution Roadmap](./EVOLUTION.md) for planned improvements to Scheme c
 
 | Date | Changes |
 |------|---------|
-| 2025-03-23 | Initial document created |
+| 2025-03-28 | Comprehensive update with new issues and workarounds |
+| 2025-03-28 | Added MCP tools issues and workarounds |
+| 2025-03-28 | Added lambda capture issues (SCH-011) |
+| 2025-03-28 | Added MCP tools issues (SCH-012) |
+| 2025-03-28 | Added core list operations and type predicates issues (SCH-013, SCH-014) |
+| 2025-03-28 | Added mutual recursion handling issue (SCH-015) |
 | 2025-03-24 | Added autodiff and vector calculus type issues (SCH-006 to SCH-010) |
 | 2025-03-24 | Added workarounds for autodiff and vector type issues |
+| 2025-03-23 | Initial document created |

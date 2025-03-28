@@ -1,45 +1,104 @@
-# Eshkol Type System Documentation
+# Type System Documentation
 
-This directory contains comprehensive documentation about Eshkol's type system, its design principles, capabilities, and implementation details.
+This directory contains documentation related to Eshkol's type system, its design principles, capabilities, and implementation details.
 
 ## Overview
 
-Eshkol extends Scheme with a powerful, flexible type system designed to enhance code safety, performance, and expressiveness while maintaining full compatibility with standard Scheme. The type system is a cornerstone of Eshkol's design, enabling high-precision scientific computing and AI capabilities while preserving the elegance and simplicity of Scheme.
+Eshkol's type system is designed to provide the benefits of static typing while maintaining the flexibility and expressiveness of Scheme. It supports gradual typing, allowing developers to add type annotations incrementally as needed.
 
-## Documentation Files
+## Documents
 
-- [TYPE_SYSTEM.md](TYPE_SYSTEM.md): Main documentation providing a comprehensive overview of Eshkol's type system, its design principles, and capabilities.
-- [INFLUENCES.md](INFLUENCES.md): Detailed discussion of the languages and systems that influenced Eshkol's type system design.
-- [SCIENTIFIC_COMPUTING_AND_AI.md](SCIENTIFIC_COMPUTING_AND_AI.md): How Eshkol's type system enables high-precision scientific computing and AI capabilities.
-- [SCHEME_COMPATIBILITY.md](SCHEME_COMPATIBILITY.md): How Eshkol maintains full compatibility with standard Scheme while adding type system capabilities.
-- [AUTODIFF.md](AUTODIFF.md): The synergy between Eshkol's type system and automatic differentiation capabilities.
+### [Type System Overview](TYPE_SYSTEM.md)
+Comprehensive overview of Eshkol's type system, including its design principles, features, and implementation details.
+
+### [Influences](INFLUENCES.md)
+Languages and systems that influenced Eshkol's type system, including Typed Racket, Haskell, OCaml, TypeScript, and others.
+
+### [Scientific Computing and AI](SCIENTIFIC_COMPUTING_AND_AI.md)
+How Eshkol's type system enables scientific computing and AI applications, including vector operations, automatic differentiation, and more.
+
+### [Scheme Compatibility](SCHEME_COMPATIBILITY.md)
+How Eshkol maintains compatibility with Scheme while adding a type system, including gradual typing, type inference, and more.
+
+### [Automatic Differentiation](AUTODIFF.md)
+The synergy between Eshkol's type system and automatic differentiation, including type-directed automatic differentiation and more.
+
+### [MCP Tools for Autodiff](MCP_TOOLS_FOR_AUTODIFF.md)
+Documentation for MCP tools available for analyzing autodiff functions, including tools for analyzing type inference, lambda captures, and binding access.
 
 ## Key Features
 
-1. **Gradual Typing**: Types in Eshkol are optional, allowing for incremental adoption and mixing of typed and untyped code.
-2. **Type Inference**: Sophisticated type inference minimizes the need for explicit annotations.
-3. **Three Typing Approaches**:
-   - Implicit typing through type inference
-   - Inline explicit typing with parameter annotations
-   - Separate type declarations
-4. **Scientific Computing Support**: Specialized types and features for scientific computing and AI.
-5. **Scheme Compatibility**: Full compatibility with standard Scheme, preserving its semantics and features.
-6. **Automatic Differentiation**: Deep integration with the type system for efficient and correct differentiation.
+### Gradual Typing
 
-## Example Usage
-
-### Implicit Typing
+Eshkol's type system supports gradual typing, allowing developers to add type annotations incrementally as needed. This provides the benefits of static typing while maintaining the flexibility and expressiveness of Scheme.
 
 ```scheme
-;; No type annotations, but fully type-checked
-(define (add x y)
-  (+ x y))
+;; Untyped function
+(define (square x)
+  (* x x))
 
-;; The compiler infers that x and y must be numbers
-;; and that the function returns a number
+;; Typed function
+(: cube (-> number number))
+(define (cube x)
+  (* x x x))
 ```
 
-### Inline Explicit Typing
+### Type Inference
+
+Eshkol's type system includes a powerful type inference system that can infer types for most expressions, reducing the need for explicit type annotations.
+
+```scheme
+;; Type inference
+(define (add1 x) (+ x 1))
+;; Inferred type: (-> number number)
+```
+
+### Polymorphic Types
+
+Eshkol's type system supports polymorphic types, allowing functions to work with multiple types.
+
+```scheme
+;; Polymorphic function
+(: identity (forall (a) (-> a a)))
+(define (identity x) x)
+```
+
+### Type Classes
+
+Eshkol's type system includes type classes, allowing for ad-hoc polymorphism and operator overloading.
+
+```scheme
+;; Type class for equality
+(define-type-class (Eq a)
+  (== : (-> a a boolean)))
+
+;; Instance for numbers
+(define-instance (Eq number)
+  (define (== x y) (= x y)))
+```
+
+### Dependent Types
+
+Eshkol's type system includes limited support for dependent types, allowing types to depend on values.
+
+```scheme
+;; Dependent type for vectors
+(: vector-ref (forall (a n i) (-> (Vector a n) (Index i n) a)))
+```
+
+### Scientific Computing Types
+
+Eshkol's type system includes specialized types for scientific computing, including vectors, matrices, tensors, and more.
+
+```scheme
+;; Vector type
+(: v (Vector float64 3))
+(define v (vector 1.0 2.0 3.0))
+
+;; Matrix type
+(: m (Matrix float64 2 3))
+(define m (matrix [[1.0 2.0 3.0] [4.0 5.0 6.0]]))
+```
 
 ```scheme
 ;; Explicitly typed parameters and return type
@@ -55,7 +114,18 @@ Eshkol extends Scheme with a powerful, flexible type system designed to enhance 
     (sqrt (+ (expt (- x2 x1) 2) (expt (- y2 y1) 2)))))
 ```
 
-### Separate Type Declarations
+### Automatic Differentiation Types
+
+Eshkol's type system includes specialized types for automatic differentiation, including dual numbers, gradients, and more.
+
+```scheme
+;; Automatic differentiation
+(: f (-> float64 float64))
+(define (f x) (* x x))
+
+(: df/dx (-> float64 float64))
+(define df/dx (autodiff-gradient f))
+```
 
 ```scheme
 ;; Separate type declaration
@@ -67,7 +137,19 @@ Eshkol extends Scheme with a powerful, flexible type system designed to enhance 
     (v- initial-point (v* gradient learning-rate))))
 ```
 
+## MCP Tools for Type System Analysis
+
+Eshkol provides several MCP tools for analyzing the type system:
+
+- **[analyze-types](MCP_TOOLS_FOR_AUTODIFF.md#analyze-types)**: Analyzes type inference and type checking for Eshkol files
+- **[analyze-lambda-captures](MCP_TOOLS_FOR_AUTODIFF.md#analyze-lambda-captures)**: Analyzes closure environments and variable captures
+- **[analyze-binding-lifetime](MCP_TOOLS_FOR_AUTODIFF.md#analyze-binding-lifetime)**: Tracks binding creation and destruction
+- **[analyze-binding-access](MCP_TOOLS_FOR_AUTODIFF.md#analyze-binding-access)**: Examines how bindings are used
+- **[visualize-binding-flow](MCP_TOOLS_FOR_AUTODIFF.md#visualize-binding-flow)**: Tracks binding values through transformation stages
+
+These tools can help identify issues with type inference, lambda captures, and other aspects of the type system. See the [MCP Tools for Autodiff](MCP_TOOLS_FOR_AUTODIFF.md) document for more information.
+
 ## Related Documentation
 
-- [../tutorials/TYPE_SYSTEM_TUTORIAL.md](../tutorials/TYPE_SYSTEM_TUTORIAL.md): Practical tutorial on using the type system (planned)
-- [../reference/TYPE_SYSTEM_REFERENCE.md](../reference/TYPE_SYSTEM_REFERENCE.md): Comprehensive reference for all type-related syntax (planned)
+- [Type System Tutorial](../tutorials/TYPE_SYSTEM_TUTORIAL.md): A practical guide to using Eshkol's type system
+- [Type System Reference](../reference/TYPE_SYSTEM_REFERENCE.md): A comprehensive reference for all type-related syntax and semantics

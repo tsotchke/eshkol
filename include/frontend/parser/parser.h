@@ -11,6 +11,7 @@
 
 #include "frontend/lexer/lexer.h"
 #include "frontend/ast/ast.h"
+#include "frontend/binding/binding.h"
 #include "core/memory.h"
 #include "core/string_table.h"
 #include "core/diagnostics.h"
@@ -25,14 +26,15 @@ extern "C" {
  * @brief Parser structure
  */
 typedef struct {
-    Arena* arena;           /**< Arena allocator */
-    StringTable* strings;   /**< String table */
-    DiagnosticContext* diag; /**< Diagnostic context */
-    Lexer* lexer;           /**< Lexer */
-    Token current;          /**< Current token */
-    Token previous;         /**< Previous token */
-    bool had_error;         /**< Whether an error occurred */
-    bool panic_mode;        /**< Whether we're in panic mode */
+    Arena* arena;           // Arena allocator
+    StringTable* strings;   // String table
+    DiagnosticContext* diag; // Diagnostic context
+    Lexer* lexer;           // Lexer
+    Token current;          // Current token
+    Token previous;         // Previous token
+    bool had_error;         // Whether an error occurred
+    bool panic_mode;        // Whether we're in panic mode
+    BindingSystem* bindings; // Binding system
 } Parser;
 
 /**

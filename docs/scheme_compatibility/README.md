@@ -29,6 +29,9 @@ Future plans for Scheme compatibility beyond basic implementation, including per
 ### [Known Issues](KNOWN_ISSUES.md)
 Tracks known issues, limitations, and compatibility notes, including workarounds and planned improvements.
 
+### [MCP Tools for Scheme](MCP_TOOLS_FOR_SCHEME.md)
+Documentation for MCP tools available for analyzing Scheme compatibility, including tools for analyzing recursion, bindings, and lambda captures.
+
 ## Function Status
 
 The `function_status` directory contains detailed status information for each function group:
@@ -87,6 +90,17 @@ Eshkol's Scheme compatibility is being implemented in phases:
 - Dynamic Binding
 - Eval and Apply
 - Libraries and Modules
+
+## MCP Tools for Scheme Analysis
+
+Eshkol provides several MCP tools for analyzing Scheme code:
+
+- **[analyze-scheme-recursion](MCP_TOOLS_FOR_SCHEME.md#analyze-scheme-recursion)**: Analyzes mutual recursion and lambda captures in Scheme code using AST-based parsing
+- **[analyze-tscheme-recursion](MCP_TOOLS_FOR_SCHEME.md#analyze-tscheme-recursion)**: Uses improved TScheme parser for recursion analysis
+- **[analyze-bindings](MCP_TOOLS_FOR_SCHEME.md#analyze-bindings)**: Analyzes variable bindings in Scheme code
+- **[analyze-binding-access](MCP_TOOLS_FOR_SCHEME.md#analyze-binding-access)**: Examines how bindings are used in Scheme code
+
+These tools can help identify issues with Scheme code, mutual recursion, and other aspects of Scheme compatibility. See the [MCP Tools for Scheme](MCP_TOOLS_FOR_SCHEME.md) document for more information.
 
 ## Test Coverage
 

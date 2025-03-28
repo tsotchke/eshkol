@@ -15,6 +15,7 @@
 #include "frontend/ast/parameter.h"
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 /**
  * @brief String identifier type
@@ -92,6 +93,8 @@ struct AstNode {
     size_t column;            /**< Column number */
     Type* type_info;          /**< Explicit type information (from annotations) */
     Type* inferred_type;      /**< Inferred type information */
+    uint64_t binding_id;      /**< Binding ID (for variables and functions) */
+    uint64_t scope_id;        /**< Scope ID (for scopes) */
     
     union {
         // Literals

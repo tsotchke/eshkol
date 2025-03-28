@@ -30,6 +30,7 @@ Documentation related to Eshkol's compatibility with the Scheme programming lang
 - [Dependencies](scheme_compatibility/DEPENDENCIES.md): Maps dependencies between Scheme features
 - [Evolution](scheme_compatibility/EVOLUTION.md): Future plans for Scheme compatibility
 - [Known Issues](scheme_compatibility/KNOWN_ISSUES.md): Tracks known issues and limitations
+- [MCP Tools for Scheme](scheme_compatibility/MCP_TOOLS_FOR_SCHEME.md): Documentation for MCP tools for Scheme compatibility analysis
 
 ### [Type System](type_system/README.md)
 
@@ -40,6 +41,7 @@ Documentation related to Eshkol's type system:
 - [Scientific Computing and AI](type_system/SCIENTIFIC_COMPUTING_AND_AI.md): How the type system enables scientific computing and AI
 - [Scheme Compatibility](type_system/SCHEME_COMPATIBILITY.md): How Eshkol maintains Scheme compatibility while adding types
 - [Automatic Differentiation](type_system/AUTODIFF.md): The synergy between the type system and automatic differentiation
+- [MCP Tools for Autodiff](type_system/MCP_TOOLS_FOR_AUTODIFF.md): Documentation for MCP tools for autodiff analysis
 
 ### [Tutorials](tutorials/README.md)
 
@@ -70,6 +72,30 @@ Documentation related to the components of Eshkol (coming soon).
 ### Development
 
 Documentation related to the development of Eshkol (coming soon).
+
+## MCP Tools
+
+Eshkol provides several MCP tools for analyzing and debugging code:
+
+- **Type Analysis Tools**
+  - [analyze-types](type_system/MCP_TOOLS_FOR_AUTODIFF.md#analyze-types): Analyzes type inference and type checking for Eshkol files
+  - [analyze-codegen](type_system/MCP_TOOLS_FOR_AUTODIFF.md#analyze-codegen): Identifies code generation issues
+
+- **Binding and Lambda Analysis Tools**
+  - [analyze-bindings](scheme_compatibility/MCP_TOOLS_FOR_SCHEME.md#analyze-bindings): Analyzes variable bindings in Scheme code
+  - [analyze-lambda-captures](type_system/MCP_TOOLS_FOR_AUTODIFF.md#analyze-lambda-captures): Analyzes closure environments and variable captures
+  - [analyze-binding-lifetime](type_system/MCP_TOOLS_FOR_AUTODIFF.md#analyze-binding-lifetime): Tracks binding creation and destruction
+  - [analyze-binding-access](type_system/MCP_TOOLS_FOR_AUTODIFF.md#analyze-binding-access): Examines how bindings are used
+
+- **Visualization Tools**
+  - [visualize-ast](type_system/MCP_TOOLS_FOR_AUTODIFF.md#visualize-ast): Generates AST visualizations
+  - [visualize-closure-memory](type_system/MCP_TOOLS_FOR_AUTODIFF.md#visualize-closure-memory): Shows closure memory representation
+  - [visualize-binding-flow](type_system/MCP_TOOLS_FOR_AUTODIFF.md#visualize-binding-flow): Tracks binding values through transformation stages
+
+- **Recursion Analysis Tools**
+  - [analyze-mutual-recursion](scheme_compatibility/MCP_TOOLS_FOR_SCHEME.md#analyze-mutual-recursion): Analyzes mutual recursion patterns
+  - [analyze-scheme-recursion](scheme_compatibility/MCP_TOOLS_FOR_SCHEME.md#analyze-scheme-recursion): Analyzes recursion in Scheme code
+  - [analyze-tscheme-recursion](scheme_compatibility/MCP_TOOLS_FOR_SCHEME.md#analyze-tscheme-recursion): Uses improved TScheme parser for recursion analysis
 
 ## Key Features
 

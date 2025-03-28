@@ -31,6 +31,8 @@ AstNode* ast_create_node(Arena* arena, AstNodeType type, size_t line, size_t col
     node->column = column;
     node->type_info = NULL;     // Initialize explicit type to NULL
     node->inferred_type = NULL; // Initialize inferred type to NULL
+    node->binding_id = 0;       // Initialize binding ID to 0 (not bound)
+    node->scope_id = 0;         // Initialize scope ID to 0 (global scope)
     
     return node;
 }

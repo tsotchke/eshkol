@@ -64,6 +64,12 @@ Parser* parser_create(Arena* arena, StringTable* strings, DiagnosticContext* dia
     parser->had_error = false;
     parser->panic_mode = false;
     
+    // Initialize binding system
+    parser->bindings = binding_system_create(arena, diag);
+    if (!parser->bindings) {
+        return NULL;
+    }
+    
     // Initialize current and previous tokens
     parser->current = lexer_scan_token(lexer);
     parser->previous = parser->current;
@@ -253,7 +259,24 @@ static AstNode* parse_atom(Parser* parser) {
     } else if (match(parser, TOKEN_STRING)) {
         return ast_create_string(parser->arena, parser->previous.value.string_id, line, column);
     } else if (match(parser, TOKEN_IDENTIFIER)) {
-        return ast_create_identifier(parser->arena, parser->previous.value.string_id, line, column);
+        StringId name = parser->previous.value.string_id;
+        AstNode* node = ast_create_identifier(parser->arena, name, line, column);
+        if (!node) {
+            error(parser, "Failed to create identifier node");
+            return NULL;
+        }
+        
+        // Resolve the binding
+        uint64_t binding_id = binding_system_resolve_binding(parser->bindings, name);
+        if (binding_id != 0) {
+            // Set the binding ID in the node
+            node->binding_id = binding_id;
+            
+            // Set the scope ID in the node
+            node->scope_id = binding_system_get_binding_scope(parser->bindings, binding_id);
+        }
+        
+        return node;
     } else {
         error(parser, "Expected expression");
         return NULL;
@@ -330,8 +353,24 @@ static AstNode* parse_define(Parser* parser, size_t line, size_t column) {
         // Consume the closing parenthesis
         consume(parser, TOKEN_RPAREN, "Expected ')' after define");
         
+        // Add the binding to the binding system
+        uint64_t binding_id = binding_system_add_binding(parser->bindings, name_str, true);
+        if (binding_id == 0) {
+            error(parser, "Failed to add binding");
+            return NULL;
+        }
+        
+        // Set the binding ID in the name node
+        name->binding_id = binding_id;
+        
         // Create a variable definition node
-        return ast_create_variable_def(parser->arena, name, value, line, column);
+        AstNode* var_def = ast_create_variable_def(parser->arena, name, value, line, column);
+        if (!var_def) {
+            error(parser, "Failed to create variable definition node");
+            return NULL;
+        }
+        
+        return var_def;
     } else if (match(parser, TOKEN_LPAREN)) {
         // Function definition
         
@@ -500,28 +539,48 @@ static AstNode* parse_lambda(Parser* parser, size_t line, size_t column) {
         return NULL;
     }
     
+    // Create a new scope for the lambda
+    uint64_t lambda_scope_id = binding_system_enter_scope(parser->bindings);
+    if (lambda_scope_id == 0) {
+        error(parser, "Failed to create scope for lambda");
+        return NULL;
+    }
+    
     size_t param_count = 0;
     Parameter** params = arena_alloc(parser->arena, sizeof(Parameter*) * 16); // Arbitrary initial capacity
     if (!params) {
         error(parser, "Failed to allocate memory for parameters");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
     while (!check(parser, TOKEN_RPAREN) && !is_at_end(parser)) {
         if (param_count >= 16) {
             error(parser, "Too many parameters");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
         if (!match(parser, TOKEN_IDENTIFIER)) {
             error(parser, "Expected parameter name");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
         StringId param_name = parser->previous.value.string_id;
+        
+        // Add the parameter to the binding system
+        uint64_t binding_id = binding_system_add_binding(parser->bindings, param_name, false);
+        if (binding_id == 0) {
+            error(parser, "Failed to add binding for parameter");
+            binding_system_exit_scope(parser->bindings);
+            return NULL;
+        }
+        
         Parameter* param = parameter_create(parser->arena, param_name, NULL, parser->previous.line, parser->previous.column);
         if (!param) {
             error(parser, "Failed to create parameter");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
@@ -539,18 +598,21 @@ static AstNode* parse_lambda(Parser* parser, size_t line, size_t column) {
     AstNode** body_exprs = arena_alloc(parser->arena, sizeof(AstNode*) * 16); // Arbitrary initial capacity
     if (!body_exprs) {
         error(parser, "Failed to allocate memory for body expressions");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
     while (!check(parser, TOKEN_RPAREN) && !is_at_end(parser)) {
         if (body_expr_count >= 16) {
             error(parser, "Too many expressions in function body");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
         AstNode* expr = parse_expression(parser);
         if (!expr) {
             error(parser, "Expected expression");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
@@ -564,19 +626,33 @@ static AstNode* parse_lambda(Parser* parser, size_t line, size_t column) {
         body = body_exprs[0];
     } else {
         error(parser, "Expected at least one expression in function body");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
     if (!body) {
         error(parser, "Failed to create function body");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
     // Consume the closing parenthesis of the lambda form
     consume(parser, TOKEN_RPAREN, "Expected ')' after lambda");
     
+    // Exit the lambda scope
+    binding_system_exit_scope(parser->bindings);
+    
     // Create a lambda node
-    return ast_create_lambda(parser->arena, params, param_count, NULL, body, line, column);
+    AstNode* lambda = ast_create_lambda(parser->arena, params, param_count, NULL, body, line, column);
+    if (!lambda) {
+        error(parser, "Failed to create lambda node");
+        return NULL;
+    }
+    
+    // Set the scope ID in the lambda node
+    lambda->scope_id = lambda_scope_id;
+    
+    return lambda;
 }
 
 /**
@@ -660,6 +736,20 @@ static AstNode* parse_set(Parser* parser, size_t line, size_t column) {
         return NULL;
     }
     
+    // Resolve the binding
+    uint64_t binding_id = binding_system_resolve_binding(parser->bindings, name_str);
+    if (binding_id == 0) {
+        // Variable not found, report an error
+        error(parser, "Undefined variable");
+        return NULL;
+    }
+    
+    // Set the binding ID in the name node
+    name->binding_id = binding_id;
+    
+    // Set the scope ID in the name node
+    name->scope_id = binding_system_get_binding_scope(parser->bindings, binding_id);
+    
     // Parse the value
     AstNode* value = parse_expression(parser);
     if (!value) {
@@ -689,28 +779,39 @@ static AstNode* parse_let(Parser* parser, size_t line, size_t column) {
         return NULL;
     }
     
+    // Create a new scope for the let
+    uint64_t let_scope_id = binding_system_enter_scope(parser->bindings);
+    if (let_scope_id == 0) {
+        error(parser, "Failed to create scope for let");
+        return NULL;
+    }
+    
     size_t binding_count = 0;
     AstNode** bindings = arena_alloc(parser->arena, sizeof(AstNode*) * 16); // Arbitrary initial capacity
     if (!bindings) {
         error(parser, "Failed to allocate memory for bindings");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
     while (!check(parser, TOKEN_RPAREN) && !is_at_end(parser)) {
         if (binding_count >= 16) {
             error(parser, "Too many bindings");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
         // Parse a binding
         if (!match(parser, TOKEN_LPAREN)) {
             error(parser, "Expected '(' before binding");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
         // Parse the variable name
         if (!match(parser, TOKEN_IDENTIFIER)) {
             error(parser, "Expected variable name");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
@@ -718,6 +819,7 @@ static AstNode* parse_let(Parser* parser, size_t line, size_t column) {
         AstNode* name = ast_create_identifier(parser->arena, name_str, parser->previous.line, parser->previous.column);
         if (!name) {
             error(parser, "Failed to create identifier node");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
@@ -725,16 +827,29 @@ static AstNode* parse_let(Parser* parser, size_t line, size_t column) {
         AstNode* value = parse_expression(parser);
         if (!value) {
             error(parser, "Expected expression");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
         // Consume the closing parenthesis of the binding
         consume(parser, TOKEN_RPAREN, "Expected ')' after binding");
         
+        // Add the binding to the binding system
+        uint64_t binding_id = binding_system_add_binding(parser->bindings, name_str, false);
+        if (binding_id == 0) {
+            error(parser, "Failed to add binding");
+            binding_system_exit_scope(parser->bindings);
+            return NULL;
+        }
+        
+        // Set the binding ID in the name node
+        name->binding_id = binding_id;
+        
         // Create a variable definition node for the binding
         AstNode* binding = ast_create_variable_def(parser->arena, name, value, parser->previous.line, parser->previous.column);
         if (!binding) {
             error(parser, "Failed to create binding node");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
@@ -752,18 +867,21 @@ static AstNode* parse_let(Parser* parser, size_t line, size_t column) {
     AstNode** body_exprs = arena_alloc(parser->arena, sizeof(AstNode*) * 16); // Arbitrary initial capacity
     if (!body_exprs) {
         error(parser, "Failed to allocate memory for body expressions");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
     while (!check(parser, TOKEN_RPAREN) && !is_at_end(parser)) {
         if (body_expr_count >= 16) {
             error(parser, "Too many expressions in let body");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
         AstNode* expr = parse_expression(parser);
         if (!expr) {
             error(parser, "Expected expression");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
@@ -777,16 +895,21 @@ static AstNode* parse_let(Parser* parser, size_t line, size_t column) {
         body = body_exprs[0];
     } else {
         error(parser, "Expected at least one expression in let body");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
     if (!body) {
         error(parser, "Failed to create let body");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
     // Consume the closing parenthesis of the let form
     consume(parser, TOKEN_RPAREN, "Expected ')' after let");
+    
+    // Exit the let scope
+    binding_system_exit_scope(parser->bindings);
     
     // Create a let node
     // Create binding_nodes array (NULL for now since we don't have binding nodes)
@@ -802,7 +925,16 @@ static AstNode* parse_let(Parser* parser, size_t line, size_t column) {
         }
     }
     
-    return ast_create_let(parser->arena, bindings, binding_nodes, binding_count, body, line, column);
+    AstNode* let = ast_create_let(parser->arena, bindings, binding_nodes, binding_count, body, line, column);
+    if (!let) {
+        error(parser, "Failed to create let node");
+        return NULL;
+    }
+    
+    // Set the scope ID in the let node
+    let->scope_id = let_scope_id;
+    
+    return let;
 }
 
 /**
@@ -829,30 +961,41 @@ static AstNode* parse_do(Parser* parser, size_t line, size_t column) {
         return NULL;
     }
     
+    // Create a new scope for the do
+    uint64_t do_scope_id = binding_system_enter_scope(parser->bindings);
+    if (do_scope_id == 0) {
+        error(parser, "Failed to create scope for do");
+        return NULL;
+    }
+    
     // Parse the variable specifications
     size_t var_count = 0;
     AstNode** vars = arena_alloc(parser->arena, sizeof(AstNode*) * 16); // Arbitrary initial capacity
     AstNode** steps = arena_alloc(parser->arena, sizeof(AstNode*) * 16);
     if (!vars || !steps) {
         error(parser, "Failed to allocate memory for variables");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
     while (!check(parser, TOKEN_RPAREN) && !is_at_end(parser)) {
         if (var_count >= 16) {
             error(parser, "Too many variables in do");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
         // Parse a variable specification
         if (!match(parser, TOKEN_LPAREN)) {
             error(parser, "Expected '(' before variable specification");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
         // Parse the variable name
         if (!match(parser, TOKEN_IDENTIFIER)) {
             error(parser, "Expected variable name");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
@@ -860,13 +1003,26 @@ static AstNode* parse_do(Parser* parser, size_t line, size_t column) {
         AstNode* name = ast_create_identifier(parser->arena, name_str, parser->previous.line, parser->previous.column);
         if (!name) {
             error(parser, "Failed to create identifier node");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
+        
+        // Add the binding to the binding system
+        uint64_t binding_id = binding_system_add_binding(parser->bindings, name_str, false);
+        if (binding_id == 0) {
+            error(parser, "Failed to add binding");
+            binding_system_exit_scope(parser->bindings);
+            return NULL;
+        }
+        
+        // Set the binding ID in the name node
+        name->binding_id = binding_id;
         
         // Parse the initial value
         AstNode* init = parse_expression(parser);
         if (!init) {
             error(parser, "Expected initial value");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
@@ -874,6 +1030,7 @@ static AstNode* parse_do(Parser* parser, size_t line, size_t column) {
         AstNode* step = parse_expression(parser);
         if (!step) {
             error(parser, "Expected step expression");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
@@ -884,6 +1041,7 @@ static AstNode* parse_do(Parser* parser, size_t line, size_t column) {
         AstNode* var = ast_create_define(parser->arena, name, init, line, column);
         if (!var) {
             error(parser, "Failed to create variable node");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
@@ -898,6 +1056,7 @@ static AstNode* parse_do(Parser* parser, size_t line, size_t column) {
     // Parse the test clause
     if (!match(parser, TOKEN_LPAREN)) {
         error(parser, "Expected '(' before test clause");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
@@ -905,6 +1064,7 @@ static AstNode* parse_do(Parser* parser, size_t line, size_t column) {
     AstNode* test = parse_expression(parser);
     if (!test) {
         error(parser, "Expected test expression");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
@@ -912,6 +1072,7 @@ static AstNode* parse_do(Parser* parser, size_t line, size_t column) {
     AstNode* result = parse_expression(parser);
     if (!result) {
         error(parser, "Expected result expression");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
@@ -923,18 +1084,21 @@ static AstNode* parse_do(Parser* parser, size_t line, size_t column) {
     AstNode** body_exprs = arena_alloc(parser->arena, sizeof(AstNode*) * 16); // Arbitrary initial capacity
     if (!body_exprs) {
         error(parser, "Failed to allocate memory for body expressions");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
     while (!check(parser, TOKEN_RPAREN) && !is_at_end(parser)) {
         if (body_expr_count >= 16) {
             error(parser, "Too many expressions in do body");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
         AstNode* expr = parse_expression(parser);
         if (!expr) {
             error(parser, "Expected expression");
+            binding_system_exit_scope(parser->bindings);
             return NULL;
         }
         
@@ -953,11 +1117,15 @@ static AstNode* parse_do(Parser* parser, size_t line, size_t column) {
     
     if (!body) {
         error(parser, "Failed to create do body");
+        binding_system_exit_scope(parser->bindings);
         return NULL;
     }
     
     // Consume the closing parenthesis of the do form
     consume(parser, TOKEN_RPAREN, "Expected ')' after do");
+    
+    // Exit the do scope
+    binding_system_exit_scope(parser->bindings);
     
     // Create result array with just the one result expression
     AstNode** result_exprs = arena_alloc(parser->arena, sizeof(AstNode*));
@@ -967,9 +1135,17 @@ static AstNode* parse_do(Parser* parser, size_t line, size_t column) {
     }
     result_exprs[0] = result;
 
-
     // Create a do node
-    return ast_create_do(parser->arena, vars, steps, var_count, test, result_exprs, 1, body_exprs, body_expr_count, line, column);
+    AstNode* do_node = ast_create_do(parser->arena, vars, steps, var_count, test, result_exprs, 1, body_exprs, body_expr_count, line, column);
+    if (!do_node) {
+        error(parser, "Failed to create do node");
+        return NULL;
+    }
+    
+    // Set the scope ID in the do node
+    do_node->scope_id = do_scope_id;
+    
+    return do_node;
 }
 
 static AstNode* parse_and_or(Parser* parser, AstNodeType type, size_t line, size_t column) {
