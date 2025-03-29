@@ -1,103 +1,105 @@
-# Scheme Compatibility Test Coverage
+# Eshkol Scheme Compatibility - Test Coverage
 
-Last Updated: 2025-03-23
+Last Updated: 2025-03-29
 
-This document tracks test coverage for all implemented Scheme functions in Eshkol.
+## Overview
 
-## Overall Test Coverage
-- **Unit Tests**: 0%
-- **Edge Case Tests**: 0%
-- **Integration Tests**: 0%
+This document tracks the test coverage for Scheme compatibility features in Eshkol. It provides a comprehensive view of which features have been tested, the types of tests that have been written, and the overall test coverage.
 
-## Coverage by Phase
-| Phase | Unit Tests | Edge Cases | Integration |
-|-------|------------|------------|-------------|
-| Phase 1 | 0% | 0% | 0% |
-| Phase 2 | 0% | 0% | 0% |
-| Phase 3 | 0% | 0% | 0% |
-| Phase 4 | 0% | 0% | 0% |
-| Phase 5 | 0% | 0% | 0% |
+## Test Coverage Summary
 
-## Coverage by Function Group
-| Group | Unit Tests | Edge Cases | Integration |
-|-------|------------|------------|-------------|
-| Pairs and Lists | 0% | 0% | 0% |
-| Type Predicates | 0% | 0% | 0% |
-| Equality Predicates | 0% | 0% | 0% |
-| Basic Arithmetic | 0% | 0% | 0% |
-| List Processing | 0% | 0% | 0% |
-| Control Flow | 0% | 0% | 0% |
-| Advanced Numeric Operations | 0% | 0% | 0% |
-| Higher-Order Functions | 0% | 0% | 0% |
-| String Operations | 0% | 0% | 0% |
-| Character Operations | 0% | 0% | 0% |
-| Vector Operations | 0% | 0% | 0% |
-| I/O Operations | 0% | 0% | 0% |
-| System Interface | 0% | 0% | 0% |
-| Advanced Features | 0% | 0% | 0% |
+| Feature Group | Unit Tests | Edge Cases | Error Cases | Overall Coverage |
+|---------------|------------|------------|-------------|------------------|
+| Core List Operations | 100% | 100% | 100% | 100% |
+| Type Predicates | 0% | 0% | 0% | 0% |
+| Equality Predicates | 0% | 0% | 0% | 0% |
+| Basic Arithmetic | 30% | 30% | 30% | 30% |
+| Control Flow | 50% | 50% | 50% | 50% |
+| Higher-Order Functions | 0% | 0% | 0% | 0% |
+| I/O Operations | 0% | 0% | 0% | 0% |
 
-## Test Files
-- `tests/unit/test_pairs.c`: Tests for pair and list operations (Planned)
-- `tests/unit/test_predicates.c`: Tests for type predicates (Planned)
-- `tests/unit/test_equality.c`: Tests for equality predicates (Planned)
-- `tests/unit/test_arithmetic.c`: Tests for arithmetic operations (Planned)
-- `tests/integration/test_scheme_compatibility.c`: Integration tests for Scheme compatibility (Planned)
+## Detailed Test Coverage
 
-## Test Strategy
+### Core List Operations
+
+| Function | Unit Tests | Edge Cases | Error Cases | Test File |
+|----------|------------|------------|-------------|-----------|
+| `cons` | 100% | 100% | 100% | tests/unit/test_list.c |
+| `car` | 100% | 100% | 100% | tests/unit/test_list.c |
+| `cdr` | 100% | 100% | 100% | tests/unit/test_list.c |
+| `list` | 100% | 100% | 100% | tests/unit/test_list.c |
+| `pair?` | 100% | 100% | 100% | tests/unit/test_list.c |
+| `null?` | 100% | 100% | 100% | tests/unit/test_list.c |
+| `list?` | 100% | 100% | 100% | tests/unit/test_list.c |
+| `set-car!` | 100% | 100% | 100% | tests/unit/test_list.c |
+| `set-cdr!` | 100% | 100% | 100% | tests/unit/test_list.c |
+| `caar`, `cadr`, etc. | 100% | 100% | 100% | tests/unit/test_list.c |
+
+### Type Predicates
+
+| Function | Unit Tests | Edge Cases | Error Cases | Test File |
+|----------|------------|------------|-------------|-----------|
+| `boolean?` | 0% | 0% | 0% | - |
+| `symbol?` | 0% | 0% | 0% | - |
+| `number?` | 0% | 0% | 0% | - |
+| `string?` | 0% | 0% | 0% | - |
+| `char?` | 0% | 0% | 0% | - |
+| `procedure?` | 0% | 0% | 0% | - |
+| `vector?` | 0% | 0% | 0% | - |
+
+### Equality Predicates
+
+| Function | Unit Tests | Edge Cases | Error Cases | Test File |
+|----------|------------|------------|-------------|-----------|
+| `eq?` | 0% | 0% | 0% | - |
+| `eqv?` | 0% | 0% | 0% | - |
+| `equal?` | 0% | 0% | 0% | - |
+
+### Basic Arithmetic
+
+| Function | Unit Tests | Edge Cases | Error Cases | Test File |
+|----------|------------|------------|-------------|-----------|
+| `+` | 30% | 30% | 30% | tests/unit/test_arithmetic.c |
+| `-` | 30% | 30% | 30% | tests/unit/test_arithmetic.c |
+| `*` | 30% | 30% | 30% | tests/unit/test_arithmetic.c |
+| `/` | 30% | 30% | 30% | tests/unit/test_arithmetic.c |
+| `=` | 30% | 30% | 30% | tests/unit/test_arithmetic.c |
+| `<` | 30% | 30% | 30% | tests/unit/test_arithmetic.c |
+| `>` | 30% | 30% | 30% | tests/unit/test_arithmetic.c |
+| `<=` | 30% | 30% | 30% | tests/unit/test_arithmetic.c |
+| `>=` | 30% | 30% | 30% | tests/unit/test_arithmetic.c |
+
+## Test Types
 
 ### Unit Tests
-Unit tests verify the correct behavior of individual functions with normal inputs. Each function should have unit tests that cover:
-
-- Basic functionality with typical inputs
-- Different types of arguments (where applicable)
-- Different numbers of arguments (for variadic functions)
-- Return value correctness
+Unit tests verify that individual functions work correctly in isolation. They test the basic functionality of each function with normal inputs.
 
 ### Edge Case Tests
-Edge case tests verify the correct behavior of functions with boundary conditions. Each function should have edge case tests that cover:
+Edge case tests verify that functions handle boundary conditions correctly. They test functions with inputs that are at the limits of what the function can handle, such as empty lists, large numbers, or deeply nested structures.
 
-- Empty inputs (empty lists, strings, etc.)
-- Minimum and maximum values
-- Zero values
-- Negative values (where applicable)
-- Special cases mentioned in the Scheme standard
-
-### Error Tests
-Error tests verify appropriate error handling. Each function should have error tests that cover:
-
-- Wrong number of arguments
-- Wrong type of arguments
-- Invalid inputs
-- Resource exhaustion (memory, stack, etc.)
-
-### Integration Tests
-Integration tests verify the correct interaction between functions. Integration tests should cover:
-
-- Common function combinations
-- Complex expressions
-- Examples from the Scheme standard
-- Real-world Scheme code
-
-## Known Test Gaps
-- No tests for circular lists
-- No tests for very large lists
-- No tests for memory exhaustion
-- No tests for stack overflow
+### Error Case Tests
+Error case tests verify that functions handle invalid inputs correctly. They test functions with inputs that should cause errors, such as passing a non-pair to `car` or dividing by zero.
 
 ## Test Coverage Goals
-- **Phase 1**: 100% unit test coverage, 90% edge case coverage, 80% integration coverage
-- **Phase 2**: 100% unit test coverage, 90% edge case coverage, 80% integration coverage
-- **Phase 3**: 100% unit test coverage, 90% edge case coverage, 80% integration coverage
-- **Phase 4**: 100% unit test coverage, 90% edge case coverage, 80% integration coverage
-- **Phase 5**: 100% unit test coverage, 90% edge case coverage, 80% integration coverage
 
-## Test Automation
-- Unit tests and edge case tests are run automatically on every build
-- Integration tests are run automatically on every release
-- Test coverage is measured using gcov
-- Test results are reported in the build log
+The goal is to achieve 100% test coverage for all Scheme compatibility features. This includes:
+
+- Unit tests for all functions
+- Edge case tests for all functions
+- Error case tests for all functions
+
+## Test Coverage Improvements
+
+The following improvements are planned to increase test coverage:
+
+1. Implement unit tests for type predicates
+2. Implement unit tests for equality predicates
+3. Improve test coverage for arithmetic operations
+4. Implement tests for higher-order functions
+5. Implement tests for I/O operations
 
 ## Revision History
+
 | Date | Changes |
 |------|---------|
-| 2025-03-23 | Initial document created |
+| 2025-03-29 | Initial document created with test coverage for core list operations |

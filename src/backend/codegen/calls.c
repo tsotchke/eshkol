@@ -30,9 +30,21 @@ bool codegen_generate_tail_call(CodegenContext* context, const AstNode* node) {
     // Get output file
     FILE* output = codegen_context_get_output(context);
     
+    // Get binding system from context
+    BindingSystem* binding_system = codegen_context_get_binding_system(context);
+    if (!binding_system) {
+        DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+        diagnostic_error(diagnostics, node->line, node->column, "Binding system not available");
+        return false;
+    }
+    
+    // Get diagnostics context
+    DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+    
     // Check if this is a self-recursive tail call
     if (node->is_self_tail_call) {
         // For self-recursive tail calls, we generate a loop instead of a function call
+        diagnostic_debug(diagnostics, node->line, node->column, "Generating self-recursive tail call optimization");
         
         // First, we need to generate code to update the parameters
         fprintf(output, "{\n");
@@ -48,6 +60,17 @@ bool codegen_generate_tail_call(CodegenContext* context, const AstNode* node) {
                 return false;
             }
             fprintf(output, ";\n");
+            
+            // Add validation for arguments
+            codegen_context_write_indent(context);
+            fprintf(output, "if (temp_arg_%zu == NULL) {\n", i + 1);
+            codegen_context_increment_indent(context);
+            codegen_context_write_indent(context);
+            fprintf(output, "fprintf(stderr, \"Warning: NULL argument %zu in self-recursive call at line %d\\n\", %zu, %d);\n", 
+                    i + 1, node->line, i + 1, node->line);
+            codegen_context_decrement_indent(context);
+            codegen_context_write_indent(context);
+            fprintf(output, "}\n");
         }
         
         // Update the parameters with the temporary variables
@@ -67,6 +90,25 @@ bool codegen_generate_tail_call(CodegenContext* context, const AstNode* node) {
         fprintf(output, "}\n");
         
         return true;
+    }
+    // Check if this is a mutual recursive call
+    else if (node->as.call.callee->type == AST_IDENTIFIER && 
+             node->as.call.callee->binding_id != 0) {
+        uint64_t callee_binding_id = node->as.call.callee->binding_id;
+        uint64_t callee_scope_id = binding_system_get_binding_scope(binding_system, callee_binding_id);
+        
+        // Get the current scope ID
+        uint64_t current_scope_id = binding_system->current_scope_id;
+        
+        // Get the parent scope ID
+        uint64_t parent_scope_id = binding_system_get_parent_scope(binding_system, current_scope_id);
+        
+        // Check if this is a mutual recursive call (sibling functions)
+        if (parent_scope_id != 0 && 
+            binding_system_get_parent_scope(binding_system, callee_scope_id) == parent_scope_id) {
+            diagnostic_debug(diagnostics, node->line, node->column, 
+                            "Detected mutual recursive tail call");
+        }
     }
     
     // For non-self-recursive tail calls, we generate a return statement

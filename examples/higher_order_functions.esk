@@ -1,0 +1,252 @@
+;;; Higher-Order Functions Example
+;;; This file demonstrates the use of higher-order functions in Eshkol.
+
+;; Define some utility functions
+(define (square x) (* x x))
+(define (cube x) (* x x x))
+(define (add1 x) (+ x 1))
+(define (even? x) (= (remainder x 2) 0))
+(define (odd? x) (not (even? x)))
+
+;; Define a function that returns a function
+(define (make-adder n)
+  (lambda (x) (+ x n)))
+
+;; Define a function that takes a function as an argument
+(define (apply-twice f x)
+  (f (f x)))
+
+;; Define a function that composes two functions
+(define (compose f g)
+  (lambda (x) (f (g x))))
+
+;; Define a function that applies a function to each element of a list
+(define (my-map f lst)
+  (if (null? lst)
+      '()
+      (cons (f (car lst)) (my-map f (cdr lst)))))
+
+;; Define a function that applies a function to each element of a list for side effects
+(define (my-for-each f lst)
+  (if (null? lst)
+      #t
+      (begin
+        (f (car lst))
+        (my-for-each f (cdr lst)))))
+
+;; Define a function that filters a list based on a predicate
+(define (my-filter pred lst)
+  (cond
+    ((null? lst) '())
+    ((pred (car lst)) (cons (car lst) (my-filter pred (cdr lst))))
+    (else (my-filter pred (cdr lst)))))
+
+;; Define a function that folds a list from left to right
+(define (my-fold-left f init lst)
+  (if (null? lst)
+      init
+      (my-fold-left f (f init (car lst)) (cdr lst))))
+
+;; Define a function that folds a list from right to left
+(define (my-fold-right f init lst)
+  (if (null? lst)
+      init
+      (f (car lst) (my-fold-right f init (cdr lst)))))
+
+;; Define a function that curries a function
+(define (curry f)
+  (lambda (x)
+    (lambda (y)
+      (f x y))))
+
+;; Test the make-adder function
+(display "Testing make-adder:\n")
+(define add5 (make-adder 5))
+(display "add5(10): ")
+(display (add5 10))
+(newline)
+
+;; Test the apply-twice function
+(display "\nTesting apply-twice:\n")
+(display "apply-twice(square, 3): ")
+(display (apply-twice square 3))
+(newline)
+(display "apply-twice(add1, 5): ")
+(display (apply-twice add1 5))
+(newline)
+
+;; Test the compose function
+(display "\nTesting compose:\n")
+(define square-then-cube (compose cube square))
+(define cube-then-square (compose square cube))
+(display "square-then-cube(2): ")
+(display (square-then-cube 2))
+(newline)
+(display "cube-then-square(2): ")
+(display (cube-then-square 2))
+(newline)
+
+;; Test the my-map function
+(display "\nTesting my-map:\n")
+(display "my-map(square, '(1 2 3 4 5)): ")
+(display (my-map square '(1 2 3 4 5)))
+(newline)
+(display "my-map(cube, '(1 2 3)): ")
+(display (my-map cube '(1 2 3)))
+(newline)
+
+;; Test the my-for-each function
+(display "\nTesting my-for-each:\n")
+(display "my-for-each(display, '(1 2 3)): ")
+(my-for-each (lambda (x) (display x) (display " ")) '(1 2 3))
+(newline)
+
+;; Test the my-filter function
+(display "\nTesting my-filter:\n")
+(display "my-filter(even?, '(1 2 3 4 5 6)): ")
+(display (my-filter even? '(1 2 3 4 5 6)))
+(newline)
+(display "my-filter(odd?, '(1 2 3 4 5 6)): ")
+(display (my-filter odd? '(1 2 3 4 5 6)))
+(newline)
+
+;; Test the my-fold-left function
+(display "\nTesting my-fold-left:\n")
+(display "my-fold-left(+, 0, '(1 2 3 4 5)): ")
+(display (my-fold-left + 0 '(1 2 3 4 5)))
+(newline)
+(display "my-fold-left(-, 0, '(1 2 3)): ")
+(display (my-fold-left - 0 '(1 2 3)))
+(newline)
+
+;; Test the my-fold-right function
+(display "\nTesting my-fold-right:\n")
+(display "my-fold-right(+, 0, '(1 2 3 4 5)): ")
+(display (my-fold-right + 0 '(1 2 3 4 5)))
+(newline)
+(display "my-fold-right(-, 0, '(1 2 3)): ")
+(display (my-fold-right - 0 '(1 2 3)))
+(newline)
+
+;; Test the curry function
+(display "\nTesting curry:\n")
+(define add-curried (curry +))
+(define add3 (add-curried 3))
+(display "add3(4): ")
+(display (add3 4))
+(newline)
+
+;; Practical examples of higher-order functions
+
+;; Example 1: Using map to transform a list
+(display "\nExample 1: Using map to transform a list\n")
+(define (celsius->fahrenheit c)
+  (+ (* c 9/5) 32))
+
+(define celsius-temps '(0 10 20 30 40))
+(display "Celsius temps: ")
+(display celsius-temps)
+(newline)
+(display "Fahrenheit temps: ")
+(display (my-map celsius->fahrenheit celsius-temps))
+(newline)
+
+;; Example 2: Using filter to select items from a list
+(display "\nExample 2: Using filter to select items from a list\n")
+(define (prime? n)
+  (if (< n 2)
+      #f
+      (let loop ((i 2))
+        (cond
+          ((> (* i i) n) #t)
+          ((= (remainder n i) 0) #f)
+          (else (loop (+ i 1)))))))
+
+(define numbers '(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15))
+(display "Numbers: ")
+(display numbers)
+(newline)
+(display "Prime numbers: ")
+(display (my-filter prime? numbers))
+(newline)
+
+;; Example 3: Using fold to accumulate values
+(display "\nExample 3: Using fold to accumulate values\n")
+(define (sum lst)
+  (my-fold-left + 0 lst))
+
+(define (product lst)
+  (my-fold-left * 1 lst))
+
+(define (average lst)
+  (/ (sum lst) (length lst)))
+
+(define data '(1 2 3 4 5))
+(display "Data: ")
+(display data)
+(newline)
+(display "Sum: ")
+(display (sum data))
+(newline)
+(display "Product: ")
+(display (product data))
+(newline)
+(display "Average: ")
+(display (average data))
+(newline)
+
+;; Example 4: Using compose to create a pipeline
+(display "\nExample 4: Using compose to create a pipeline\n")
+(define (double x) (* x 2))
+(define (negate x) (- x))
+(define (increment x) (+ x 1))
+
+(define pipeline (compose increment (compose negate double)))
+(display "pipeline(5): ")
+(display (pipeline 5))
+(newline)
+
+;; Example 5: Using higher-order functions for data processing
+(display "\nExample 5: Using higher-order functions for data processing\n")
+(define students '(
+  (("name" . "Alice") ("score" . 95) ("grade" . "A"))
+  (("name" . "Bob") ("score" . 80) ("grade" . "B"))
+  (("name" . "Charlie") ("score" . 70) ("grade" . "C"))
+  (("name" . "David") ("score" . 85) ("grade" . "B"))
+  (("name" . "Eve") ("score" . 90) ("grade" . "A"))
+))
+
+(define (get-field record field)
+  (cdr (assoc field record)))
+
+(define (get-name student)
+  (get-field student "name"))
+
+(define (get-score student)
+  (get-field student "score"))
+
+(define (get-grade student)
+  (get-field student "grade"))
+
+(define (has-grade? grade)
+  (lambda (student)
+    (string=? (get-grade student) grade)))
+
+(define (average-score students)
+  (/ (my-fold-left (lambda (acc student) (+ acc (get-score student))) 0 students)
+     (length students)))
+
+(display "Students with grade A: ")
+(display (my-map get-name (my-filter (has-grade? "A") students)))
+(newline)
+(display "Average score: ")
+(display (average-score students))
+(newline)
+
+;; Main function
+(define (main)
+  (display "\nHigher-order functions are a powerful feature of functional programming languages.\n")
+  (display "They allow you to abstract over functions, creating more modular and reusable code.\n")
+  (display "Examples include map, filter, fold, compose, and curry.\n"))
+
+(main)

@@ -40,8 +40,11 @@ Eshkol supports the following Scheme data types:
 
 ### List Operations
 
-- `cons`, `car`, `cdr`: Basic list operations
-- `list`: List constructor
+- `cons`, `car`, `cdr`: Basic list operations ✅
+- `list`: List constructor ✅
+- `pair?`, `null?`, `list?`: List predicates ✅
+- `set-car!`, `set-cdr!`: Mutation operations ✅
+- `caar`, `cadr`, etc.: Nested car/cdr operations ✅
 - `length`: List length
 - `append`: List concatenation
 - `reverse`: List reversal

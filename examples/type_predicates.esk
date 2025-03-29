@@ -1,0 +1,148 @@
+;;; Type Predicates Example
+;;; This file demonstrates the use of type predicates in Eshkol.
+
+;; Define a function to print the type of a value
+(define (print-type value)
+  (cond
+    ((boolean? value) (display "Boolean: ") (display value))
+    ((number? value) (display "Number: ") (display value))
+    ((string? value) (display "String: ") (display value))
+    ((symbol? value) (display "Symbol: ") (display value))
+    ((procedure? value) (display "Procedure"))
+    ((pair? value) (display "Pair"))
+    ((null? value) (display "Empty List"))
+    ((vector? value) (display "Vector"))
+    (else (display "Unknown type")))
+  (newline))
+
+;; Test the print-type function with different types
+(display "Testing type predicates:\n")
+
+;; Booleans
+(print-type #t)
+(print-type #f)
+
+;; Numbers
+(print-type 42)
+(print-type 3.14)
+
+;; Strings
+(print-type "hello")
+(print-type "")
+
+;; Symbols
+(print-type 'symbol)
+(print-type 'x)
+
+;; Procedures
+(print-type print-type)
+(print-type (lambda (x) x))
+
+;; Pairs and Lists
+(print-type '(1 2 3))
+(print-type (cons 1 2))
+(print-type '())
+
+;; Vectors
+(print-type #(1 2 3))
+(print-type #())
+
+;; Define a function to check if a value is a number and perform an operation
+(define (safe-add a b)
+  (if (and (number? a) (number? b))
+      (+ a b)
+      (begin
+        (display "Error: Both arguments must be numbers\n")
+        #f)))
+
+;; Test the safe-add function
+(display "\nTesting safe-add function:\n")
+(display "safe-add 2 3: ")
+(display (safe-add 2 3))
+(newline)
+(display "safe-add 2 'x: ")
+(display (safe-add 2 'x))
+(newline)
+
+;; Define a function to check if a value is a list
+(define (is-proper-list? obj)
+  (cond
+    ((null? obj) #t)
+    ((pair? obj) (is-proper-list? (cdr obj)))
+    (else #f)))
+
+;; Test the is-proper-list? function
+(display "\nTesting is-proper-list? function:\n")
+(display "is-proper-list? '(1 2 3): ")
+(display (is-proper-list? '(1 2 3)))
+(newline)
+(display "is-proper-list? '(): ")
+(display (is-proper-list? '()))
+(newline)
+(display "is-proper-list? (cons 1 2): ")
+(display (is-proper-list? (cons 1 2)))
+(newline)
+
+;; Define a function to check if a value is a string and perform an operation
+(define (safe-string-append a b)
+  (if (and (string? a) (string? b))
+      (string-append a b)
+      (begin
+        (display "Error: Both arguments must be strings\n")
+        #f)))
+
+;; Test the safe-string-append function
+(display "\nTesting safe-string-append function:\n")
+(display "safe-string-append \"hello\" \" world\": ")
+(display (safe-string-append "hello" " world"))
+(newline)
+(display "safe-string-append \"hello\" 123: ")
+(display (safe-string-append "hello" 123))
+(newline)
+
+;; Define a function that uses multiple type predicates
+(define (describe-value value)
+  (cond
+    ((boolean? value) "a boolean")
+    ((number? value) 
+     (if (integer? value)
+         "an integer"
+         "a floating-point number"))
+    ((string? value) 
+     (if (string=? value "")
+         "an empty string"
+         "a non-empty string"))
+    ((symbol? value) "a symbol")
+    ((procedure? value) "a procedure")
+    ((pair? value) 
+     (if (is-proper-list? value)
+         "a proper list"
+         "an improper list"))
+    ((null? value) "an empty list")
+    ((vector? value) 
+     (if (= (vector-length value) 0)
+         "an empty vector"
+         "a non-empty vector"))
+    (else "an unknown type")))
+
+;; Test the describe-value function
+(display "\nTesting describe-value function:\n")
+(display "42 is ") (display (describe-value 42)) (newline)
+(display "3.14 is ") (display (describe-value 3.14)) (newline)
+(display "\"hello\" is ") (display (describe-value "hello")) (newline)
+(display "\"\" is ") (display (describe-value "")) (newline)
+(display "'symbol is ") (display (describe-value 'symbol)) (newline)
+(display "print-type is ") (display (describe-value print-type)) (newline)
+(display "'(1 2 3) is ") (display (describe-value '(1 2 3))) (newline)
+(display "(cons 1 2) is ") (display (describe-value (cons 1 2))) (newline)
+(display "'() is ") (display (describe-value '())) (newline)
+(display "#(1 2 3) is ") (display (describe-value #(1 2 3))) (newline)
+(display "#() is ") (display (describe-value #())) (newline)
+
+;; Main function
+(define (main)
+  (display "\nType predicates are essential for type checking in a dynamically typed language.\n")
+  (display "They allow you to verify the type of a value before performing operations on it.\n")
+  (display "This helps prevent runtime errors and makes your code more robust.\n"))
+
+(main)

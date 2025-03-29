@@ -23,8 +23,9 @@ Unlike other languages that force you to choose between expressiveness and perfo
 
 ### 🔥 What's Working Now
 
-- **Powerful Scheme Foundation** - Core special forms implemented:
+- **Powerful Scheme Foundation** - Core special forms and operations implemented:
   - `define`, `if`, `lambda`, `begin`, `quote`, `set!`, `let`, `and`, `or`
+  - Core list operations: `cons`, `car`, `cdr`, `list`, `pair?`, `null?`, `list?`, `set-car!`, `set-cdr!`
   - Write expressive, functional code just like in Scheme
 
 - **Arena-Based Memory Management** - Deterministic performance without GC pauses:
@@ -71,8 +72,8 @@ Unlike other languages that force you to choose between expressiveness and perfo
   - Integration of type information with code generation
 
 - **Scheme Compatibility** - Working towards R5RS and R7RS-small compatibility:
-  - Core list operations (cons, car, cdr)
   - Basic type predicates
+  - Additional list processing functions (append, reverse, etc.)
   - Numeric operations (partial)
   - Boolean operations (partial)
 
@@ -107,7 +108,7 @@ Unlike other languages that force you to choose between expressiveness and perfo
 ### 🔮 Coming Soon
 
 - **Comprehensive Scheme Compatibility** - Full implementation of R5RS and R7RS-small:
-  - Phase 1 (Planning): Core data types and fundamental operations
+  - Phase 1 (In Progress): Core data types and fundamental operations
   - Phase 2: List processing and control flow
   - Phase 3: Higher-order functions and data structures
   - Phase 4: I/O and system interface
@@ -177,6 +178,7 @@ Check out the `examples/` directory for sample programs demonstrating Eshkol's c
 - `arithmetic.esk` - Basic arithmetic operations
 - `fibonacci.esk` - Fibonacci sequence calculation
 - `mutual_recursion.esk` - Demonstration of mutual recursion
+- `list_operations.esk` - Demonstration of list operations
 
 **Type System Examples:**
 - `untyped.esk` - Standard Scheme code without type annotations
@@ -262,4 +264,3 @@ If you use Eshkol in your research, please cite it as:
   year         = {2025},
   url          = {https://github.com/tsotchke/eshkol}
 }
-```

@@ -17,15 +17,15 @@ Our implementation strategy follows these priority levels:
 ## Phase 1: Core Data Types and Fundamental Operations (Release 1.0)
 
 ### P0: Pairs and Lists
-| Function | Description | Implementation Notes |
-|----------|-------------|---------------------|
-| `cons` | Create a pair | Core memory structure for lists |
-| `car` | Get first element of pair | Direct memory access |
-| `cdr` | Get second element of pair | Direct memory access |
-| `list` | Create a list from elements | Built on cons |
-| `pair?` | Test if object is a pair | Type checking |
-| `null?` | Test for empty list | Special case checking |
-| `list?` | Test if object is a proper list | Recursive checking |
+| Function | Description | Implementation Notes | Status |
+|----------|-------------|---------------------|--------|
+| `cons` | Create a pair | Core memory structure for lists | Implemented |
+| `car` | Get first element of pair | Direct memory access | Implemented |
+| `cdr` | Get second element of pair | Direct memory access | Implemented |
+| `list` | Create a list from elements | Built on cons | Implemented |
+| `pair?` | Test if object is a pair | Type checking | Implemented |
+| `null?` | Test for empty list | Special case checking | Implemented |
+| `list?` | Test if object is a proper list | Recursive checking | Implemented |
 
 ### P0: Basic Type Predicates
 | Function | Description | Implementation Notes |
@@ -59,11 +59,11 @@ Our implementation strategy follows these priority levels:
 | `>=` | Greater than or equal | Support variable arguments |
 
 ### P1: Extended Pair Operations
-| Function | Description | Implementation Notes |
-|----------|-------------|---------------------|
-| `set-car!` | Modify first element of pair | Mutation operation |
-| `set-cdr!` | Modify second element of pair | Mutation operation |
-| `caar`, `cadr`, etc. | Nested car/cdr operations | Up to 4 levels deep |
+| Function | Description | Implementation Notes | Status |
+|----------|-------------|---------------------|--------|
+| `set-car!` | Modify first element of pair | Mutation operation | Implemented |
+| `set-cdr!` | Modify second element of pair | Mutation operation | Implemented |
+| `caar`, `cadr`, etc. | Nested car/cdr operations | Up to 4 levels deep | Implemented |
 
 ## Phase 2: List Processing and Control Flow (Release 1.1)
 

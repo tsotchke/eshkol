@@ -1,6 +1,6 @@
 # Eshkol Scheme Compatibility - Known Issues and Limitations
 
-Last Updated: 2025-03-28
+Last Updated: 2025-03-29
 
 This document tracks known issues, limitations, and compatibility notes for Scheme support in Eshkol. It serves as a reference for users and developers to understand the current state of Scheme compatibility.
 
@@ -23,6 +23,9 @@ This document tracks known issues, limitations, and compatibility notes for Sche
 | SCH-013 | Core list operations implemented | High | cons, car, cdr | Implemented | Phase 7 |
 | SCH-014 | Basic type predicates not yet implemented | Medium | pair?, null?, list? | Planning | Phase 7 |
 | SCH-015 | Mutual recursion handling in type inference is incomplete | Medium | Mutually recursive functions | In Progress | Phase 4 |
+| SCH-016 | Equality predicates not yet implemented | Medium | eq?, eqv?, equal? | Planning | Phase 7 |
+| SCH-017 | Higher-order functions not yet implemented | Medium | map, for-each, filter | Planning | Phase 7 |
+| SCH-018 | List processing functions not yet implemented | Medium | length, append, reverse | Planning | Phase 7 |
 
 ## Compatibility Notes
 
@@ -50,12 +53,33 @@ Eshkol has some implementation-specific behavior that may differ from other Sche
 
 The following standard library features are not yet fully implemented:
 
-1. **List Operations**: Core list operations (cons, car, cdr) have been implemented.
-2. **Type Predicates**: Basic type predicates (pair?, null?, list?) are in the planning stage.
-3. **Complex Numbers**: Complex number support is planned for Phase 7.
-4. **Rational Numbers**: Rational number support is planned for Phase 7.
-5. **Library System**: The R7RS library system is not yet fully implemented.
-6. **Dynamic FFI**: Dynamic foreign function interface is not yet implemented.
+1. **List Operations**: 
+   - Core list operations (cons, car, cdr) have been implemented.
+   - Additional list processing functions (length, append, reverse, etc.) are planned for Q2 2025.
+   - See [list_processing_roadmap.md](./roadmaps/list_processing_roadmap.md) for details.
+
+2. **Type Predicates**: 
+   - Basic type predicates (pair?, null?, list?) are in the planning stage.
+   - Implementation roadmap has been created.
+   - See [type_predicates_roadmap.md](./roadmaps/type_predicates_roadmap.md) for details.
+
+3. **Equality Predicates**:
+   - Equality predicates (eq?, eqv?, equal?) are in the planning stage.
+   - Implementation roadmap has been created.
+   - See [equality_predicates_roadmap.md](./roadmaps/equality_predicates_roadmap.md) for details.
+
+4. **Higher-Order Functions**:
+   - Higher-order functions (map, for-each, filter, etc.) are in the planning stage.
+   - Implementation roadmap has been created.
+   - See [higher_order_functions_roadmap.md](./roadmaps/higher_order_functions_roadmap.md) for details.
+
+5. **Complex Numbers**: Complex number support is planned for Phase 7.
+
+6. **Rational Numbers**: Rational number support is planned for Phase 7.
+
+7. **Library System**: The R7RS library system is not yet fully implemented.
+
+8. **Dynamic FFI**: Dynamic foreign function interface is not yet implemented.
 
 ## Deferred Features
 
@@ -179,10 +203,26 @@ If you encounter an issue with Scheme compatibility in Eshkol, please report it 
 
 See the [Evolution Roadmap](./EVOLUTION.md) for planned improvements to Scheme compatibility in Eshkol.
 
+## Example Files
+
+The following example files demonstrate the use of Scheme features in Eshkol:
+
+1. **Type Predicates**: [type_predicates.esk](../../examples/type_predicates.esk)
+2. **Equality Predicates**: [equality_predicates.esk](../../examples/equality_predicates.esk)
+3. **List Operations**: [list_operations.esk](../../examples/list_operations.esk)
+4. **Function Composition**: [function_composition.esk](../../examples/function_composition.esk)
+5. **Mutual Recursion**: [mutual_recursion.esk](../../examples/mutual_recursion.esk)
+
+These example files provide a reference for how to use Scheme features in Eshkol, even if some of the features are not yet fully implemented.
+
 ## Revision History
 
 | Date | Changes |
 |------|---------|
+| 2025-03-29 | Added new issues: equality predicates, higher-order functions, list processing functions (SCH-016, SCH-017, SCH-018) |
+| 2025-03-29 | Added links to implementation roadmaps |
+| 2025-03-29 | Added example files section |
+| 2025-03-29 | Updated standard library limitations section |
 | 2025-03-28 | Updated SCH-013: Core list operations implemented |
 | 2025-03-28 | Comprehensive update with new issues and workarounds |
 | 2025-03-28 | Added MCP tools issues and workarounds |
