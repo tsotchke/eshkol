@@ -1,0 +1,34 @@
+;;
+;; Simple Lambda and Closure Test Example
+;;
+;; This example demonstrates basic lambda and closure features
+;; without using function composition or mutual recursion.
+;;
+
+;; Simple functions
+(define (square x) (* x x))
+(define (add1 x) (+ x 1))
+
+;; Closure that captures a local variable
+(define (make-adder n)
+  (lambda (x) (+ x n)))
+
+;; Create a closure
+(define add5 (make-adder 5))
+
+;; Test simple functions
+(display "Testing simple functions:\n")
+(display "Square of 4: ")
+(display (square 4))
+(newline)
+(display "Add1 of 4: ")
+(display (add1 4))
+(newline)
+
+;; Test closures
+(display "\nTesting closures:\n")
+(display "add5(10): ")
+(display (add5 10))
+(newline)
+
+;; End of example

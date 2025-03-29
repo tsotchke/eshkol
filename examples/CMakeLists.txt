@@ -95,3 +95,15 @@ endmacro()
 #     SOURCES autodiff.c
 #     DEPS eshkol_core
 # )
+
+# # List operations example
+# eshkol_add_example(list_operations
+#     ESK_SOURCE list_operations.esk
+#     DEPS eshkol_backend
+# )
+
+# # Tail recursive factorial example
+# eshkol_add_example(tail_recursive_factorial
+#     ESK_SOURCE tail_recursive_factorial.esk
+#     DEPS eshkol_backend
+# )

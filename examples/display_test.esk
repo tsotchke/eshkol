@@ -4,4 +4,5 @@
 ;; Main function
 (define (main)
   (display "Hello from Eshkol!")
+  (newline)
   0)  ; Return 0 to indicate success

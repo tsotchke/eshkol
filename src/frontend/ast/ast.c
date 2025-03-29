@@ -33,6 +33,8 @@ AstNode* ast_create_node(Arena* arena, AstNodeType type, size_t line, size_t col
     node->inferred_type = NULL; // Initialize inferred type to NULL
     node->binding_id = 0;       // Initialize binding ID to 0 (not bound)
     node->scope_id = 0;         // Initialize scope ID to 0 (global scope)
+    node->is_tail_position = false; // Initialize tail position flag to false
+    node->is_self_tail_call = false; // Initialize self tail call flag to false
     
     return node;
 }
@@ -812,6 +814,181 @@ static void print_indent(int indent) {
  * @param node The AST node
  * @param indent Indentation level
  */
+/**
+ * @brief Mark tail positions in an AST
+ * 
+ * This function recursively traverses the AST and marks nodes that are in tail position.
+ * A node is in tail position if its value is returned directly from the function.
+ * 
+ * @param node The AST node to mark
+ * @param is_tail Whether the node is in tail position
+ */
+void ast_mark_tail_positions(AstNode* node, bool is_tail) {
+    if (!node) {
+        return;
+    }
+    
+    // Mark the node's tail position
+    node->is_tail_position = is_tail;
+    
+    // Recursively mark children based on their context
+    switch (node->type) {
+        case AST_LAMBDA:
+            // The body of a lambda is in tail position
+            ast_mark_tail_positions(node->as.lambda.body, true);
+            break;
+            
+        case AST_IF:
+            // The condition is not in tail position
+            ast_mark_tail_positions(node->as.if_expr.condition, false);
+            // The branches are in tail position if the if is in tail position
+            ast_mark_tail_positions(node->as.if_expr.then_branch, is_tail);
+            ast_mark_tail_positions(node->as.if_expr.else_branch, is_tail);
+            break;
+            
+        case AST_BEGIN:
+            // Only the last expression in a begin is in tail position
+            for (size_t i = 0; i < node->as.begin.expr_count; i++) {
+                ast_mark_tail_positions(node->as.begin.exprs[i], 
+                                       is_tail && (i == node->as.begin.expr_count - 1));
+            }
+            break;
+            
+        case AST_QUOTE:
+        case AST_QUASIQUOTE:
+        case AST_UNQUOTE:
+        case AST_UNQUOTE_SPLICING:
+        case AST_DELAY:
+            // The quoted expression is not in tail position
+            ast_mark_tail_positions(node->as.quote.expr, false);
+            break;
+            
+        case AST_SET:
+            // Neither the name nor the value are in tail position
+            ast_mark_tail_positions(node->as.set.name, false);
+            ast_mark_tail_positions(node->as.set.value, false);
+            break;
+            
+        case AST_LET:
+        case AST_LETREC:
+        case AST_LETSTAR:
+            // Bindings are not in tail position
+            for (size_t i = 0; i < node->as.let.binding_count; i++) {
+                ast_mark_tail_positions(node->as.let.bindings[i], false);
+            }
+            // The body is in tail position if the let is in tail position
+            ast_mark_tail_positions(node->as.let.body, is_tail);
+            break;
+            
+        case AST_AND:
+        case AST_OR:
+            // Only the last expression in a logical operation is in tail position
+            for (size_t i = 0; i < node->as.logical.expr_count; i++) {
+                ast_mark_tail_positions(node->as.logical.exprs[i], 
+                                       is_tail && (i == node->as.logical.expr_count - 1));
+            }
+            break;
+            
+        case AST_COND:
+            // All clauses are in tail position if the cond is in tail position
+            for (size_t i = 0; i < node->as.cond.clause_count; i++) {
+                ast_mark_tail_positions(node->as.cond.clauses[i], is_tail);
+            }
+            break;
+            
+        case AST_CASE:
+            // The key is not in tail position
+            ast_mark_tail_positions(node->as.case_expr.key, false);
+            // All clauses are in tail position if the case is in tail position
+            for (size_t i = 0; i < node->as.case_expr.clause_count; i++) {
+                ast_mark_tail_positions(node->as.case_expr.clauses[i], is_tail);
+            }
+            break;
+            
+        case AST_DO:
+            // Bindings and steps are not in tail position
+            for (size_t i = 0; i < node->as.do_expr.binding_count; i++) {
+                ast_mark_tail_positions(node->as.do_expr.bindings[i], false);
+                ast_mark_tail_positions(node->as.do_expr.steps[i], false);
+            }
+            // The test is not in tail position
+            ast_mark_tail_positions(node->as.do_expr.test, false);
+            // The result expressions are in tail position if the do is in tail position
+            for (size_t i = 0; i < node->as.do_expr.result_count; i++) {
+                ast_mark_tail_positions(node->as.do_expr.result[i], 
+                                       is_tail && (i == node->as.do_expr.result_count - 1));
+            }
+            // The body expressions are not in tail position
+            for (size_t i = 0; i < node->as.do_expr.body_count; i++) {
+                ast_mark_tail_positions(node->as.do_expr.body[i], false);
+            }
+            break;
+            
+        case AST_CALL:
+            // The callee is not in tail position
+            ast_mark_tail_positions(node->as.call.callee, false);
+            // The arguments are not in tail position
+            for (size_t i = 0; i < node->as.call.arg_count; i++) {
+                ast_mark_tail_positions(node->as.call.args[i], false);
+            }
+            
+            // Check if this is a self-recursive tail call
+            if (is_tail && node->as.call.callee->type == AST_IDENTIFIER) {
+                // If we're in a function definition, check if the callee is the same function
+                AstNode* current_function = NULL;
+                // TODO: Get the current function from the context
+                
+                if (current_function && current_function->type == AST_FUNCTION_DEF &&
+                    current_function->as.function_def.name->type == AST_IDENTIFIER) {
+                    const char* callee_name = node->as.call.callee->as.identifier.name;
+                    const char* function_name = current_function->as.function_def.name->as.identifier.name;
+                    
+                    if (strcmp(callee_name, function_name) == 0) {
+                        node->is_self_tail_call = true;
+                    }
+                }
+            }
+            break;
+            
+        case AST_SEQUENCE:
+            // Only the last expression in a sequence is in tail position
+            for (size_t i = 0; i < node->as.sequence.expr_count; i++) {
+                ast_mark_tail_positions(node->as.sequence.exprs[i], 
+                                       is_tail && (i == node->as.sequence.expr_count - 1));
+            }
+            break;
+            
+        case AST_FUNCTION_DEF:
+            // The name is not in tail position
+            ast_mark_tail_positions(node->as.function_def.name, false);
+            // The parameters are not in tail position
+            for (size_t i = 0; i < node->as.function_def.param_count; i++) {
+                ast_mark_tail_positions(node->as.function_def.param_nodes[i], false);
+            }
+            // The body is in tail position
+            ast_mark_tail_positions(node->as.function_def.body, true);
+            break;
+            
+        case AST_VARIABLE_DEF:
+            // The name is not in tail position
+            ast_mark_tail_positions(node->as.variable_def.name, false);
+            // The value is not in tail position
+            ast_mark_tail_positions(node->as.variable_def.value, false);
+            break;
+            
+        case AST_PROGRAM:
+            // Top-level expressions are not in tail position
+            for (size_t i = 0; i < node->as.program.expr_count; i++) {
+                ast_mark_tail_positions(node->as.program.exprs[i], false);
+            }
+            break;
+            
+        default:
+            // Other node types don't have children to mark
+            break;
+    }
+}
+
 void ast_print(const AstNode* node, int indent) {
     if (!node) {
         print_indent(indent);

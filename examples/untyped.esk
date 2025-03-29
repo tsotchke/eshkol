@@ -24,17 +24,17 @@
   (define result1 (add 5 10))
   (display "5 + 10 = ")
   (display result1)
-  (display "\n")
+  (newline)
   
   ;; Processing different data types
   (define result2 (process-data 5))
   (define result3 (process-data 15))
   (display "process-data(5) = ")
   (display result2)
-  (display "\n")
+  (newline)
   (display "process-data(15) = ")
   (display result3)
-  (display "\n")
+  (newline)
   
   ;; Working with vectors
   (define point (create-point 3.5 7.2))
@@ -42,6 +42,6 @@
   (display (vector-ref point 0))
   (display ", ")
   (display (vector-ref point 1))
-  (display ")\n")
-  
+  (display ")")
+  (newline)
   0)  ; Return success code

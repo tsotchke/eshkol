@@ -1,0 +1,42 @@
+;;
+;; Mutual Recursive Closure Example
+;;
+;; This example demonstrates mutual recursion with closures.
+;;
+
+;; Create a function that returns mutually recursive closures
+(define (make-even-odd-predicates)
+  (letrec ([is-even? (lambda (n)
+                       (if (= n 0)
+                           #t
+                           (is-odd? (- n 1))))]
+           [is-odd? (lambda (n)
+                      (if (= n 0)
+                          #f
+                          (is-even? (- n 1))))])
+    (list is-even? is-odd?)))
+
+;; Get the predicates
+(define predicates (make-even-odd-predicates))
+(define is-even? (car predicates))
+(define is-odd? (cadr predicates))
+
+;; Test the predicates with small values
+(display "Testing with small values:\n")
+(display "is-even?(4): ")
+(display (is-even? 4))
+(newline)
+(display "is-odd?(7): ")
+(display (is-odd? 7))
+(newline)
+
+;; Test with larger values to ensure tail call optimization works
+(display "\nTesting with larger values:\n")
+(display "is-even?(1000): ")
+(display (is-even? 1000))
+(newline)
+(display "is-odd?(999): ")
+(display (is-odd? 999))
+(newline)
+
+;; End of example

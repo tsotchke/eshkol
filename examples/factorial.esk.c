@@ -60,12 +60,18 @@ float factorial(float);
 int32_t main();
 
 float factorial(float n) {
-    return (((n < 2)) ? (1) : ((n * factorial((n - 1)))));
+    // Tail call optimization loop
+    while (1) {
+        return (((n < 2)) ? (1) : ((n * factorial((n - 1)))));
+    }
 }
 int32_t main() {
-    printf("Factorial of 5 is %d\n", (int)(factorial(5)));
-    printf("Factorial of 10 is %d\n", (int)(factorial(10)));
-    return 0;
+    // Tail call optimization loop
+    while (1) {
+        printf("Factorial of 5 is %d\n", (int)(factorial(5)));
+        printf("Factorial of 10 is %d\n", (int)(factorial(10)));
+        return 0;
+    }
 }
 // Initialize arena before main
 static void __attribute__((constructor)) init_arena() {

@@ -1,4 +1,4 @@
-#include "frontend/ast/ast.h"
+#include "frontend/ast/print/ast_print.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -100,6 +100,15 @@ static void print_mermaid_node(AstNode* node, int id) {
             break;
         case AST_ERROR:
             printf("Error\\n%s", node->as.error.message);
+            break;
+        case AST_BINDING_PAIR:
+            printf("Binding Pair");
+            break;
+        case AST_COND_CLAUSE:
+            printf("Cond Clause");
+            break;
+        case AST_CASE_CLAUSE:
+            printf("Case Clause");
             break;
         default:
             printf("Unknown\\n%d", node->type);
@@ -221,6 +230,18 @@ static void print_mermaid_edges(AstNode* node, int parent_id, int* current_id) {
                 print_mermaid_edges(node->as.program.exprs[i], my_id, current_id);
             }
             break;
+        case AST_BINDING_PAIR:
+            print_mermaid_edges(node->as.binding_pair.name, my_id, current_id);
+            print_mermaid_edges(node->as.binding_pair.value, my_id, current_id);
+            break;
+        case AST_COND_CLAUSE:
+            print_mermaid_edges(node->as.cond_clause.test, my_id, current_id);
+            print_mermaid_edges(node->as.cond_clause.result, my_id, current_id);
+            break;
+        case AST_CASE_CLAUSE:
+            print_mermaid_edges(node->as.case_clause.datum, my_id, current_id);
+            print_mermaid_edges(node->as.case_clause.expr, my_id, current_id);
+            break;
     }
 }
 
@@ -322,6 +343,15 @@ static void print_dot_node(AstNode* node, int id) {
             break;
         case AST_ERROR:
             printf("Error\\n%s", node->as.error.message);
+            break;
+        case AST_BINDING_PAIR:
+            printf("Binding Pair");
+            break;
+        case AST_COND_CLAUSE:
+            printf("Cond Clause");
+            break;
+        case AST_CASE_CLAUSE:
+            printf("Case Clause");
             break;
         default:
             printf("Unknown\\n%d", node->type);
@@ -443,10 +473,22 @@ static void print_dot_edges(AstNode* node, int parent_id, int* current_id) {
                 print_dot_edges(node->as.program.exprs[i], my_id, current_id);
             }
             break;
+        case AST_BINDING_PAIR:
+            print_dot_edges(node->as.binding_pair.name, my_id, current_id);
+            print_dot_edges(node->as.binding_pair.value, my_id, current_id);
+            break;
+        case AST_COND_CLAUSE:
+            print_dot_edges(node->as.cond_clause.test, my_id, current_id);
+            print_dot_edges(node->as.cond_clause.result, my_id, current_id);
+            break;
+        case AST_CASE_CLAUSE:
+            print_dot_edges(node->as.case_clause.datum, my_id, current_id);
+            print_dot_edges(node->as.case_clause.expr, my_id, current_id);
+            break;
     }
 }
 
-void ast_visualize(AstNode* ast, const char* format) {
+void ast_visualize_impl(AstNode* ast, const char* format) {
     if (strcmp(format, "mermaid") == 0) {
         printf("graph TD\n");
         int current_id = 0;

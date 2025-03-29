@@ -16,10 +16,12 @@ struct CodegenContext {
     Arena* arena;                // Arena for allocations
     DiagnosticContext* diagnostics; // Diagnostic context for error reporting
     TypeInferenceContext* type_context; // Type inference context for type information
+    BindingSystem* binding_system; // Binding system for variable tracking
     FILE* output;                // Output file
     int indent_level;            // Current indentation level
     bool in_function;            // Whether we're currently in a function
     char* temp_dir;              // Temporary directory for compilation
+    long function_position;      // Position in the output file for function definitions
 };
 
 /**
@@ -37,10 +39,19 @@ CodegenContext* codegen_context_create(Arena* arena, DiagnosticContext* diagnost
     context->arena = arena;
     context->diagnostics = diagnostics;
     context->type_context = type_context;
+    
+    // Create binding system
+    context->binding_system = binding_system_create(arena, diagnostics);
+    if (!context->binding_system) {
+        diagnostic_error(diagnostics, 0, 0, "Failed to create binding system");
+        return NULL;
+    }
+    
     context->output = NULL;
     context->indent_level = 0;
     context->in_function = false;
     context->temp_dir = NULL;
+    context->function_position = 0;
     
     return context;
 }
@@ -58,6 +69,16 @@ bool codegen_context_init(CodegenContext* context, Arena* arena, TypeInferenceCo
     context->indent_level = 0;
     context->in_function = false;
     context->temp_dir = NULL;
+    context->function_position = 0;
+    
+    // Create binding system if not already created
+    if (!context->binding_system) {
+        context->binding_system = binding_system_create(arena, context->diagnostics);
+        if (!context->binding_system) {
+            diagnostic_error(context->diagnostics, 0, 0, "Failed to create binding system");
+            return false;
+        }
+    }
     
     // Open output file
     if (output_file != NULL) {
@@ -172,4 +193,28 @@ void codegen_context_write_indent(CodegenContext* context) {
     for (int i = 0; i < context->indent_level; i++) {
         fprintf(context->output, "    ");
     }
+}
+
+/**
+ * @brief Get the binding system from the context
+ */
+BindingSystem* codegen_context_get_binding_system(CodegenContext* context) {
+    assert(context != NULL);
+    return context->binding_system;
+}
+
+/**
+ * @brief Get the function position from the context
+ */
+long codegen_context_get_function_position(CodegenContext* context) {
+    assert(context != NULL);
+    return context->function_position;
+}
+
+/**
+ * @brief Set the function position for the context
+ */
+void codegen_context_set_function_position(CodegenContext* context, long position) {
+    assert(context != NULL);
+    context->function_position = position;
 }

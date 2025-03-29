@@ -9,6 +9,7 @@
 #include "core/memory.h"
 #include "core/diagnostics.h"
 #include "frontend/type_inference/type_inference.h"
+#include "frontend/binding/binding.h"
 #include <stdio.h>
 #include <stdbool.h>
 
@@ -136,6 +137,30 @@ void codegen_context_set_in_function(CodegenContext* context, bool in_function);
  * @param context The code generator context
  */
 void codegen_context_write_indent(CodegenContext* context);
+
+/**
+ * @brief Get the binding system from the context
+ * 
+ * @param context The code generator context
+ * @return The binding system
+ */
+BindingSystem* codegen_context_get_binding_system(CodegenContext* context);
+
+/**
+ * @brief Get the function position from the context
+ * 
+ * @param context The code generator context
+ * @return The function position
+ */
+long codegen_context_get_function_position(CodegenContext* context);
+
+/**
+ * @brief Set the function position for the context
+ * 
+ * @param context The code generator context
+ * @param position The function position
+ */
+void codegen_context_set_function_position(CodegenContext* context, long position);
 
 #ifdef __cplusplus
 }

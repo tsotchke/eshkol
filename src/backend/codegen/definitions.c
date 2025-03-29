@@ -6,6 +6,7 @@
 #include "backend/codegen/definitions.h"
 #include "backend/codegen/expressions.h"
 #include "backend/codegen/type_conversion.h"
+#include "backend/codegen/closures.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -153,11 +154,15 @@ bool codegen_generate_function_def(CodegenContext* context, const AstNode* node)
     // Generate function body
     fprintf(output, "{\n");
     
+    // Add a loop for tail call optimization
+    fprintf(output, "    // Tail call optimization loop\n");
+    fprintf(output, "    while (1) {\n");
+    
     // Check if the body is a begin block (multiple statements)
     if (body_node && body_node->type == AST_BEGIN) {
         // Generate each statement in the begin block
         for (size_t i = 0; i < body_node->as.begin.expr_count - 1; i++) {
-            fprintf(output, "    ");
+            fprintf(output, "        ");
             if (!codegen_generate_expression(context, body_node->as.begin.exprs[i])) {
                 return false;
             }
@@ -166,7 +171,7 @@ bool codegen_generate_function_def(CodegenContext* context, const AstNode* node)
         
         // Generate the last statement with a return
         if (body_node->as.begin.expr_count > 0) {
-            fprintf(output, "    return ");
+            fprintf(output, "        return ");
             if (!codegen_generate_expression(context, body_node->as.begin.exprs[body_node->as.begin.expr_count - 1])) {
                 return false;
             }
@@ -174,16 +179,18 @@ bool codegen_generate_function_def(CodegenContext* context, const AstNode* node)
         }
     } else if (body_node) {
         // Single statement body
-        fprintf(output, "    return ");
+        fprintf(output, "        return ");
         if (!codegen_generate_expression(context, body_node)) {
             return false;
         }
         fprintf(output, ";\n");
     } else {
         // No body
-        fprintf(output, "    return 0;\n");
+        fprintf(output, "        return 0;\n");
     }
     
+    // Close the loop
+    fprintf(output, "    }\n");
     fprintf(output, "}");
     
     return true;
@@ -195,7 +202,17 @@ bool codegen_generate_function_def(CodegenContext* context, const AstNode* node)
 bool codegen_generate_variable_def(CodegenContext* context, const AstNode* node) {
     assert(context != NULL);
     assert(node != NULL);
-    assert(node->type == AST_DEFINE);
+    
+    // Get diagnostics context
+    DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+    
+    // Check node type
+    if (node->type != AST_DEFINE) {
+        char debug_msg[256];
+        snprintf(debug_msg, sizeof(debug_msg), "Expected AST_DEFINE node, got node type %d", node->type);
+        diagnostic_error(diagnostics, node->line, node->column, debug_msg);
+        return false;
+    }
     
     // Get output file
     FILE* output = codegen_context_get_output(context);
@@ -248,13 +265,8 @@ bool codegen_generate_lambda(CodegenContext* context, const AstNode* node) {
     assert(node != NULL);
     assert(node->type == AST_LAMBDA);
     
-    // Lambda expressions are not directly supported in C
-    // We need to generate a function pointer, but this is complex
-    // For now, we'll just generate an error
-    
-    DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
-    diagnostic_error(diagnostics, node->line, node->column, "Lambda expressions are not supported in C");
-    return false;
+    // Use the implementation from closures.c
+    return codegen_generate_closure(context, node);
 }
 
 /**

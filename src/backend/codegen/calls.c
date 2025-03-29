@@ -12,12 +12,119 @@
 #include <assert.h>
 
 /**
+ * @brief Generate C code for a tail call
+ * 
+ * This function generates optimized code for tail calls, converting
+ * recursive tail calls into loops to avoid stack overflow.
+ * 
+ * @param context The code generation context
+ * @param node The AST node representing the tail call
+ * @return true if successful, false otherwise
+ */
+bool codegen_generate_tail_call(CodegenContext* context, const AstNode* node) {
+    assert(context != NULL);
+    assert(node != NULL);
+    assert(node->type == AST_CALL);
+    assert(node->is_tail_position);
+    
+    // Get output file
+    FILE* output = codegen_context_get_output(context);
+    
+    // Check if this is a self-recursive tail call
+    if (node->is_self_tail_call) {
+        // For self-recursive tail calls, we generate a loop instead of a function call
+        
+        // First, we need to generate code to update the parameters
+        fprintf(output, "{\n");
+        codegen_context_increment_indent(context);
+        
+        // Generate temporary variables for the arguments
+        for (size_t i = 0; i < node->as.call.arg_count; i++) {
+            codegen_context_write_indent(context);
+            fprintf(output, "// Evaluate argument %zu\n", i + 1);
+            codegen_context_write_indent(context);
+            fprintf(output, "auto temp_arg_%zu = ", i + 1);
+            if (!codegen_generate_expression(context, node->as.call.args[i])) {
+                return false;
+            }
+            fprintf(output, ";\n");
+        }
+        
+        // Update the parameters with the temporary variables
+        for (size_t i = 0; i < node->as.call.arg_count; i++) {
+            codegen_context_write_indent(context);
+            // We assume the parameter names follow the pattern p1, p2, etc.
+            fprintf(output, "p%zu = temp_arg_%zu;\n", i + 1, i + 1);
+        }
+        
+        // Continue the loop
+        codegen_context_write_indent(context);
+        fprintf(output, "continue;\n");
+        
+        // Close the block
+        codegen_context_decrement_indent(context);
+        codegen_context_write_indent(context);
+        fprintf(output, "}\n");
+        
+        return true;
+    }
+    
+    // For non-self-recursive tail calls, we generate a return statement
+    fprintf(output, "return ");
+    
+    // Generate the function call
+    if (node->as.call.callee->type == AST_IDENTIFIER) {
+        // Replace hyphens with underscores in function names
+        char* function_name = strdup(node->as.call.callee->as.identifier.name);
+        if (function_name) {
+            for (char* p = function_name; *p; p++) {
+                if (*p == '-') {
+                    *p = '_';
+                }
+            }
+            fprintf(output, "%s", function_name);
+            free(function_name);
+        } else {
+            if (!codegen_generate_expression(context, node->as.call.callee)) {
+                return false;
+            }
+        }
+    } else {
+        if (!codegen_generate_expression(context, node->as.call.callee)) {
+            return false;
+        }
+    }
+    
+    // Generate arguments
+    fprintf(output, "(");
+    
+    for (size_t i = 0; i < node->as.call.arg_count; i++) {
+        if (i > 0) {
+            fprintf(output, ", ");
+        }
+        
+        if (!codegen_generate_expression(context, node->as.call.args[i])) {
+            return false;
+        }
+    }
+    
+    fprintf(output, ")");
+    
+    return true;
+}
+
+/**
  * @brief Generate C code for a function call
  */
 bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
     assert(context != NULL);
     assert(node != NULL);
     assert(node->type == AST_CALL);
+    
+    // Check if this is a tail call
+    if (node->is_tail_position) {
+        return codegen_generate_tail_call(context, node);
+    }
     
     // Get output file
     FILE* output = codegen_context_get_output(context);
@@ -294,10 +401,22 @@ bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
                 }
                 fprintf(output, "))");
             }
+            
+            // Add semicolon if not in a function
+            if (!codegen_context_in_function(context)) {
+                fprintf(output, ";");
+            }
+            
             return true;
         } else if (strcmp(op_name, "newline") == 0 && node->as.call.arg_count == 0) {
             // Newline function (Scheme compatibility)
             fprintf(output, "printf(\"\\n\")");
+            
+            // Add semicolon if not in a function
+            if (!codegen_context_in_function(context)) {
+                fprintf(output, ";");
+            }
+            
             return true;
         } else if (strcmp(op_name, "string-append") == 0) {
             // String append function

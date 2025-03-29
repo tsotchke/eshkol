@@ -13,6 +13,7 @@ set(BACKEND_SOURCES
     codegen/program.c
     codegen/statements.c
     codegen/debug.c
+    codegen/closures.c
 )
 
 # Define headers
@@ -31,6 +32,7 @@ set(BACKEND_HEADERS
     ${CMAKE_SOURCE_DIR}/include/backend/codegen/compiler.h
     ${CMAKE_SOURCE_DIR}/include/backend/codegen/program.h
     ${CMAKE_SOURCE_DIR}/include/backend/codegen/debug.h
+    ${CMAKE_SOURCE_DIR}/include/backend/codegen/closures.h
 )
 
 # Create library

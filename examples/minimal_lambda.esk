@@ -1,0 +1,21 @@
+;;
+;; Minimal Lambda Example
+;;
+;; This example demonstrates the most basic lambda functionality
+;; without using closures or captures.
+;;
+
+;; Define a simple function that returns a lambda
+(define (identity-maker)
+  (lambda (x) x))
+
+;; Get the identity function
+(define identity (identity-maker))
+
+;; Test the identity function
+(display "Testing identity function:\n")
+(display "identity(42): ")
+(display (identity 42))
+(newline)
+
+;; End of example

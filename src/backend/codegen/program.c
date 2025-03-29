@@ -232,8 +232,41 @@ static bool codegen_generate_main_function(CodegenContext* context, const AstNod
         fprintf(output, "        fprintf(stderr, \"Failed to create memory arena\\n\");\n");
         fprintf(output, "        return 1;\n");
         fprintf(output, "    }\n\n");
-        fprintf(output, "    printf(\"Hello from Eshkol!\\n\");\n\n");
-        fprintf(output, "    // Clean up arena\n");
+        
+        // Find all top-level expressions that are not function definitions
+        // and add them to the main function
+        for (size_t i = 0; i < program->as.program.expr_count; i++) {
+            AstNode* expr = program->as.program.exprs[i];
+            
+            // Skip function definitions
+            if (expr->type == AST_FUNCTION_DEF) {
+                continue;
+            }
+            
+            // Skip variable definitions with lambda values
+            if (expr->type == AST_DEFINE && 
+                expr->as.define.value && 
+                expr->as.define.value->type == AST_LAMBDA) {
+                continue;
+            }
+            
+            // For display and other expressions, add them to the main function
+            if (expr->type == AST_CALL) {
+                AstNode* callee = expr->as.call.callee;
+                if (callee && callee->type == AST_IDENTIFIER) {
+                    const char* name = callee->as.identifier.name;
+                    if (strcmp(name, "display") == 0 || strcmp(name, "newline") == 0) {
+                        fprintf(output, "    ");
+                        codegen_context_set_in_function(context, true);
+                        codegen_generate_expression(context, expr);
+                        codegen_context_set_in_function(context, false);
+                        fprintf(output, ";\n");
+                    }
+                }
+            }
+        }
+        
+        fprintf(output, "\n    // Clean up arena\n");
         fprintf(output, "    arena_destroy(arena);\n");
         fprintf(output, "    return 0;\n");
         fprintf(output, "}\n");
@@ -360,6 +393,19 @@ bool codegen_generate_program(CodegenContext* context, const AstNode* program) {
         
         snprintf(debug_msg, sizeof(debug_msg), "Generating expression %zu of type %d", i, expr->type);
         diagnostic_debug(diagnostics, 0, 0, debug_msg);
+        
+        // Skip display and newline calls at the top level, as they'll be added to the main function
+        if (expr->type == AST_CALL) {
+            AstNode* callee = expr->as.call.callee;
+            if (callee && callee->type == AST_IDENTIFIER) {
+                const char* name = callee->as.identifier.name;
+                if (strcmp(name, "display") == 0 || strcmp(name, "newline") == 0) {
+                    snprintf(debug_msg, sizeof(debug_msg), "Skipping top-level %s call", name);
+                    diagnostic_debug(diagnostics, 0, 0, debug_msg);
+                    continue;
+                }
+            }
+        }
         
         // Add more detailed debug info for specific node types
         if (expr->type == AST_DEFINE) {

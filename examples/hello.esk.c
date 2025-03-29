@@ -59,8 +59,11 @@ typedef union {
 int32_t main();
 
 int32_t main() {
-    printf("Hello, Eshkol!\n");
-    return 0;
+    // Tail call optimization loop
+    while (1) {
+        printf("Hello, Eshkol!\n");
+        return 0;
+    }
 }
 // Initialize arena before main
 static void __attribute__((constructor)) init_arena() {

@@ -20,7 +20,7 @@ This document tracks known issues, limitations, and compatibility notes for Sche
 | SCH-010 | Implicit conversions between numeric types not fully supported | Medium | Numeric operations | Known limitation | Phase 4 |
 | SCH-011 | Lambda capture analysis for autodiff functions is incomplete | High | Higher-order autodiff functions | In Progress | Phase 4 |
 | SCH-012 | MCP tools for type analysis use simplified implementations | Medium | analyze-types tool | In Progress | N/A |
-| SCH-013 | Core list operations not yet implemented | High | cons, car, cdr | Planning | Phase 7 |
+| SCH-013 | Core list operations implemented | High | cons, car, cdr | Implemented | Phase 7 |
 | SCH-014 | Basic type predicates not yet implemented | Medium | pair?, null?, list? | Planning | Phase 7 |
 | SCH-015 | Mutual recursion handling in type inference is incomplete | Medium | Mutually recursive functions | In Progress | Phase 4 |
 
@@ -50,7 +50,7 @@ Eshkol has some implementation-specific behavior that may differ from other Sche
 
 The following standard library features are not yet fully implemented:
 
-1. **List Operations**: Core list operations (cons, car, cdr) are in the planning stage.
+1. **List Operations**: Core list operations (cons, car, cdr) have been implemented.
 2. **Type Predicates**: Basic type predicates (pair?, null?, list?) are in the planning stage.
 3. **Complex Numbers**: Complex number support is planned for Phase 7.
 4. **Rational Numbers**: Rational number support is planned for Phase 7.
@@ -183,6 +183,7 @@ See the [Evolution Roadmap](./EVOLUTION.md) for planned improvements to Scheme c
 
 | Date | Changes |
 |------|---------|
+| 2025-03-28 | Updated SCH-013: Core list operations implemented |
 | 2025-03-28 | Comprehensive update with new issues and workarounds |
 | 2025-03-28 | Added MCP tools issues and workarounds |
 | 2025-03-28 | Added lambda capture issues (SCH-011) |

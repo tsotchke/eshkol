@@ -13,6 +13,8 @@ set(CORE_SOURCES
     utils/type_creation.c
     utils/type_comparison.c
     utils/type_conversion.c
+    utils/list.c
+    utils/closure.c
     diagnostics/diagnostics.c
 )
 
@@ -32,6 +34,8 @@ set(CORE_HEADERS
     ${CMAKE_SOURCE_DIR}/include/core/type_creation.h
     ${CMAKE_SOURCE_DIR}/include/core/type_comparison.h
     ${CMAKE_SOURCE_DIR}/include/core/type_conversion.h
+    ${CMAKE_SOURCE_DIR}/include/core/list.h
+    ${CMAKE_SOURCE_DIR}/include/core/closure.h
 )
 
 # Create library

@@ -1,0 +1,50 @@
+;;
+;; Tail Recursive Closure Example
+;;
+;; This example demonstrates tail call optimization with closures.
+;;
+
+;; Create a counter function that uses a closure to maintain state
+(define (make-counter start)
+  (lambda (increment)
+    (set! start (+ start increment))
+    start))
+
+;; Create a tail-recursive function that uses a closure
+(define (make-recursive-counter start)
+  (letrec ([count-helper
+            (lambda (n acc)
+              (if (<= n 0)
+                  acc
+                  (count-helper (- n 1) (+ acc 1))))])
+    (lambda (n)
+      (count-helper n start))))
+
+;; Create counter instances
+(define counter1 (make-counter 0))
+(define counter2 (make-counter 10))
+(define recursive-counter1 (make-recursive-counter 0))
+(define recursive-counter2 (make-recursive-counter 100))
+
+;; Test the counters
+(display "Testing counters:\n")
+(display "counter1(5): ")
+(display (counter1 5))
+(newline)
+(display "counter1(10): ")
+(display (counter1 10))
+(newline)
+(display "counter2(1): ")
+(display (counter2 1))
+(newline)
+
+;; Test the recursive counters with large values
+(display "\nTesting recursive counters:\n")
+(display "recursive-counter1(1000): ")
+(display (recursive-counter1 1000))
+(newline)
+(display "recursive-counter2(500): ")
+(display (recursive-counter2 500))
+(newline)
+
+;; End of example

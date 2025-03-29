@@ -1,0 +1,24 @@
+;;
+;; Tail Recursive Factorial Example
+;;
+;; This example demonstrates tail call optimization by implementing
+;; a tail-recursive factorial function.
+;;
+
+;; Tail-recursive factorial implementation
+;; This version uses an accumulator to avoid stack overflow
+(define (factorial-tail n)
+  (factorial-helper n 1))
+
+(define (factorial-helper n acc)
+  (if (<= n 1)
+      acc
+      (factorial-helper (- n 1) (* n acc))))
+
+;; Test the factorial function with a large number
+(display "Computing factorial of 1000 using tail recursion...\n")
+(display "Result: ")
+(display (factorial-tail 1000))
+(newline)
+
+;; End of example

@@ -72,6 +72,14 @@ eshkol_add_test(string_table
         eshkol_core
 )
 
+# List tests
+eshkol_add_test(list
+    SOURCES
+        test_list.c
+    DEPS
+        eshkol_core
+)
+
 # Diagnostics tests
 eshkol_add_test(diagnostics
     SOURCES

@@ -11,6 +11,7 @@
 #include "backend/codegen/blocks.h"
 #include "backend/codegen/definitions.h"
 #include "backend/codegen/type_conversion.h"
+#include "backend/codegen/closures.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
