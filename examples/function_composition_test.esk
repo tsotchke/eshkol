@@ -1,0 +1,87 @@
+;; Function Composition Test
+;; This example tests the new dynamic closure system for function composition
+
+;; Define some simple functions
+(define (square x)
+  (* x x))
+
+(define (double x)
+  (+ x x))
+
+(define (add1 x)
+  (+ x 1))
+
+(define (sub1 x)
+  (- x 1))
+
+;; Define a function composition function
+(define (compose f g)
+  (lambda (x)
+    (f (g x))))
+
+;; Create composed functions
+(define square-then-double (compose double square))
+(define double-then-square (compose square double))
+
+;; Create multi-level compositions
+(define add1-then-square (compose square add1))
+(define square-then-add1 (compose add1 square))
+
+;; Create a chain of compositions
+(define add1-square-double (compose double (compose square add1)))
+(define double-square-add1 (compose add1 (compose square double)))
+
+;; Main function
+(define (main)
+  (let ([x 3])
+    (printf "x = %d\n" x)
+    (printf "square(x) = %d\n" (square x))
+    (printf "double(x) = %d\n" (double x))
+    (printf "add1(x) = %d\n" (add1 x))
+    (printf "sub1(x) = %d\n" (sub1 x))
+    (printf "\n")
+    
+    (printf "square-then-double(x) = %d\n" (square-then-double x))
+    (printf "double-then-square(x) = %d\n" (double-then-square x))
+    (printf "\n")
+    
+    (printf "add1-then-square(x) = %d\n" (add1-then-square x))
+    (printf "square-then-add1(x) = %d\n" (square-then-add1 x))
+    (printf "\n")
+    
+    (printf "add1-square-double(x) = %d\n" (add1-square-double x))
+    (printf "double-square-add1(x) = %d\n" (double-square-add1 x))
+    (printf "\n")
+    
+    ;; Test direct composition
+    (printf "Direct composition: (compose double square)(x) = %d\n" 
+            ((compose double square) x))
+    
+    ;; Test nested composition
+    (printf "Nested composition: (compose add1 (compose square double))(x) = %d\n" 
+            ((compose add1 (compose square double)) x))
+    
+    ;; Test composition with lambda expressions
+    (printf "Lambda composition: (compose (lambda (y) (+ y 2)) square)(x) = %d\n" 
+            ((compose (lambda (y) (+ y 2)) square) x))
+    
+    ;; Test composition with higher-order functions
+    (define (make-adder n)
+      (lambda (x) (+ x n)))
+    
+    (define add2 (make-adder 2))
+    (define add3 (make-adder 3))
+    
+    (printf "HOF composition: (compose add2 add3)(x) = %d\n" 
+            ((compose add2 add3) x))
+    
+    ;; Test composition with recursive functions
+    (define (factorial n)
+      (if (<= n 1)
+          1
+          (* n (factorial (- n 1)))))
+    
+    (printf "Recursive composition: (compose add1 factorial)(5) = %d\n" 
+            ((compose add1 factorial) 5)))
+  
+  0)  ; Return 0 to indicate success

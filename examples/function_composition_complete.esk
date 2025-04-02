@@ -1,0 +1,103 @@
+;;
+;; Complete Function Composition Example
+;;
+;; This example demonstrates a comprehensive framework for function composition
+;; with both binary and n-ary composition, as well as array-based composition.
+;;
+
+;; Define some simple functions for testing
+(define (square x) (* x x))
+(define (add1 x) (+ x 1))
+(define (double x) (* x 2))
+(define (negate x) (- x))
+
+;; Part 1: Binary Function Composition
+;; -----------------------------------
+
+;; Define a binary function composition operator
+(define (compose f g)
+  (lambda (x) (f (g x))))
+
+;; Test binary composition
+(display "Testing binary composition:\n")
+(define square-then-add1 (compose add1 square))
+(display "square-then-add1(5) = ")
+(display (square-then-add1 5))  ; add1(square(5)) = add1(25) = 26
+(newline)
+
+(define add1-then-square (compose square add1))
+(display "add1-then-square(5) = ")
+(display (add1-then-square 5))  ; square(add1(5)) = square(6) = 36
+(newline)
+
+;; Part 2: N-ary Function Composition
+;; ----------------------------------
+
+;; Define a function that applies a sequence of functions to a value
+(define (apply-functions fs x)
+  (if (null? fs)
+      x
+      (apply-functions (cdr fs) ((car fs) x))))
+
+;; Define a function that composes multiple functions into a single function
+;; The functions are applied in reverse order (from right to left)
+(define (compose-n . fns)
+  (lambda (x)
+    (apply-functions (reverse fns) x)))
+
+;; Test n-ary composition
+(display "\nTesting n-ary composition:\n")
+(define f1 (compose-n square add1 double))
+(display "f1(5) = ")
+(display (f1 5))  ; square(add1(double(5))) = square(add1(10)) = square(11) = 121
+(newline)
+
+;; Part 3: Array-based Function Composition
+;; ----------------------------------------
+
+;; Define a function that applies a sequence of functions in an array to a value
+;; This is similar to the 'eval' function in the C example
+(define (eval fs size x)
+  (let loop ((i 0) (result x))
+    (if (= i size)
+        result
+        (loop (+ i 1) ((vector-ref fs i) result)))))
+
+;; Create a function array
+(define fs (vector square add1 double))
+
+;; Test the eval function
+(display "\nTesting array-based composition:\n")
+(display "eval(fs, 3, 5) = ")
+(display (eval fs 3 5))  ; double(add1(square(5))) = double(add1(25)) = double(26) = 52
+(newline)
+
+;; Reorder the functions in the array
+(vector-set! fs 0 double)
+(vector-set! fs 2 square)
+
+;; Test the eval function with reordered functions
+(display "\nTesting array-based composition with reordered functions:\n")
+(display "eval(fs, 3, 5) = ")
+(display (eval fs 3 5))  ; square(add1(double(5))) = square(add1(10)) = square(11) = 121
+(newline)
+
+;; Part 4: Creating a Composed Function from an Array
+;; -------------------------------------------------
+
+;; Define a function that creates a new function that is the composition of the functions in an array
+;; The functions are applied in the order they appear in the array
+(define (make-composed-function fs size)
+  (lambda (x)
+    (eval fs size x)))
+
+;; Create a composed function from the array
+(define composed-function (make-composed-function fs 3))
+
+;; Test the composed function
+(display "\nTesting composed function created from array:\n")
+(display "composed-function(5) = ")
+(display (composed-function 5))  ; square(add1(double(5))) = square(add1(10)) = square(11) = 121
+(newline)
+
+;; End of example

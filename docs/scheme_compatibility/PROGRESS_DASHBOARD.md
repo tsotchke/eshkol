@@ -151,3 +151,4 @@ If you'd like to contribute to Scheme compatibility in Eshkol, here are some way
 | Date | Changes |
 |------|---------|
 | 2025-03-29 | Initial dashboard created |
+| 2025-03-29 | Enhanced binding system with binding names for improved debugging |

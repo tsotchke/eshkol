@@ -113,12 +113,13 @@ int codegen_compile_and_execute(CodegenContext* context, const char* c_file, cha
     assert(context != NULL);
     assert(c_file != NULL);
     
-    // Determine the include path based on the executable location
+    // Determine the include path based on the Eshkol directory
     char include_path[1024] = {0};
     
     // Get the path to the source file
     char source_path[1024] = {0};
     char *source_dir = NULL;
+    char *eshkol_dir = NULL;
     
     // Get the absolute path of the source file
     if (c_file[0] == '/') {
@@ -142,8 +143,19 @@ int codegen_compile_and_execute(CodegenContext* context, const char* c_file, cha
         *last_slash = '\0';
     }
     
-    // Construct the include path relative to the source directory
-    snprintf(include_path, sizeof(include_path), "%s/../include", source_dir);
+    // Determine the Eshkol directory by finding "eshkol" in the source path
+    eshkol_dir = strstr(source_dir, "eshkol");
+    
+    if (eshkol_dir) {
+        // If the source file is in the Eshkol directory or a subdirectory
+        // Set include path relative to the Eshkol root
+        *eshkol_dir = '\0'; // Truncate at "eshkol"
+        snprintf(include_path, sizeof(include_path), "%seshkol/include", source_dir);
+    } else {
+        // If the source file is outside the Eshkol directory
+        // Assume the Eshkol directory is a sibling of the current directory
+        snprintf(include_path, sizeof(include_path), "%s/eshkol/include", source_dir);
+    }
     
     // Create a temporary executable name
     char temp_executable[1024];

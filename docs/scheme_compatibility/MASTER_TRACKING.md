@@ -21,6 +21,7 @@ Last Updated: 2025-03-29
 - [Evolution Roadmap](./EVOLUTION.md)
 
 ## Recent Updates
+- 2025-03-29: Enhanced binding system with binding names for improved debugging and visualization
 - 2025-03-29: Implemented core list operations (cons, car, cdr, list, etc.)
 - 2025-03-29: Updated documentation to reflect implementation of list operations
 - 2025-03-28: Comprehensive documentation update to reflect current project status
@@ -92,9 +93,11 @@ We have developed several MCP tools to assist with Scheme compatibility implemen
 - **analyze-scheme-recursion**: Analyzes mutual recursion and lambda captures in Scheme code
 - **analyze-tscheme-recursion**: Uses improved TScheme parser for recursion analysis
 - **analyze-bindings**: Analyzes variable bindings in Scheme code
-- **analyze-lambda-captures**: Analyzes closure environments and variable captures
+- **analyze-lambda-captures**: Analyzes closure environments and variable captures with binding names
+- **visualize-closure-memory**: Visualizes closure memory layout with binding names
+- **visualize-binding-flow**: Tracks binding values through transformation stages
 
-These tools help identify potential issues with Scheme compatibility and provide insights into how Scheme code is structured and executed.
+These tools help identify potential issues with Scheme compatibility and provide insights into how Scheme code is structured and executed. With the enhanced binding system, these tools now provide more detailed and readable output by including binding names in their analysis and visualization.
 
 ## Implementation Timeline
 

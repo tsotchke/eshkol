@@ -14,7 +14,11 @@ set(CORE_SOURCES
     utils/type_comparison.c
     utils/type_conversion.c
     utils/list.c
-    utils/closure.c
+    utils/closure_registry.c
+    utils/closure_environment.c
+    utils/closure_management.c
+    utils/closure_composition.c
+    utils/jit.c
     diagnostics/diagnostics.c
 )
 
@@ -36,6 +40,7 @@ set(CORE_HEADERS
     ${CMAKE_SOURCE_DIR}/include/core/type_conversion.h
     ${CMAKE_SOURCE_DIR}/include/core/list.h
     ${CMAKE_SOURCE_DIR}/include/core/closure.h
+    ${CMAKE_SOURCE_DIR}/include/core/jit.h
 )
 
 # Create library

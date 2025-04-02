@@ -1,0 +1,9 @@
+;;; Minimal Function Composition Test
+
+;; Define a simple function
+(define (add1 x) (+ x 1))
+
+;; Display results
+(display "add1(4): ")
+(display (add1 4))
+(newline)

@@ -341,7 +341,7 @@ normal_body_generation:
     fprintf(output, "eshkol_closure_create(%s, ", function_name);
     
     // Create environment
-    fprintf(output, "({ EshkolEnvironment* lambda_env = eshkol_environment_create(env, %zu); ", capture_count);
+    fprintf(output, "({ EshkolEnvironment* lambda_env = eshkol_environment_create(env, %zu, %lu); ", capture_count, node->scope_id);
     
     // Add captured variables to environment
     for (size_t i = 0; i < capture_count; i++) {
@@ -375,7 +375,7 @@ normal_body_generation:
         
         if (is_sibling_function) {
             // For sibling functions, we need to add them to the environment with special handling
-            fprintf(output, "/* Sibling function */ eshkol_environment_add(lambda_env, %s, NULL); ", name);
+            fprintf(output, "/* Sibling function */ eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
             
             // For mutual recursion, we need to ensure the function is properly initialized
             fprintf(output, "if (%s == NULL && env != NULL && env->parent != NULL) { "
@@ -383,7 +383,7 @@ normal_body_generation:
                     name, name, i);
         } else if (is_composition_function) {
             // For function composition, we need special handling
-            fprintf(output, "/* Function composition */ eshkol_environment_add(lambda_env, %s, NULL); ", name);
+            fprintf(output, "/* Function composition */ eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
             
             // For function composition, ensure the function is properly initialized
             fprintf(output, "if (%s == NULL && env != NULL) { "
@@ -396,7 +396,7 @@ normal_body_generation:
                     name, i, i, name);
         } else if (is_recursive_function) {
             // For recursive functions, we need to handle self-reference
-            fprintf(output, "/* Recursive function */ eshkol_environment_add(lambda_env, %s, NULL); ", name);
+            fprintf(output, "/* Recursive function */ eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
             
             // For recursive functions, ensure proper initialization
             fprintf(output, "if (%s == NULL && env != NULL) { "
@@ -404,7 +404,7 @@ normal_body_generation:
                     name, name, i);
         } else {
             // Normal case
-            fprintf(output, "eshkol_environment_add(lambda_env, %s, NULL); ", name);
+            fprintf(output, "eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
         }
     }
     
@@ -417,7 +417,76 @@ normal_body_generation:
 }
 
 /**
+ * @brief Helper function to detect if a node is a function composition
+ */
+bool is_function_composition(const AstNode* node) {
+    if (node == NULL || node->type != AST_CALL) {
+        return false;
+    }
+    
+    // Check if the callee is an identifier
+    if (node->as.call.callee->type == AST_IDENTIFIER) {
+        const char* func_name = node->as.call.callee->as.identifier.name;
+        
+        // Check if this is a direct call to 'compose'
+        if (strcmp(func_name, "compose") == 0) {
+            return true;
+        }
+        
+        // Check if this is a call to a composed function (e.g., square-then-double)
+        if (strstr(func_name, "-then-") != NULL) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * @brief Helper function to handle direct function composition calls
+ * 
+ * This function handles direct calls to the 'compose' function by generating
+ * specialized code that directly composes the functions without complex environment traversal.
+ */
+bool codegen_handle_direct_composition(CodegenContext* context, const AstNode* node, FILE* output) {
+    assert(context != NULL);
+    assert(node != NULL);
+    assert(node->type == AST_CALL);
+    assert(output != NULL);
+    
+    // Get diagnostics context
+    DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+    
+    // Debug message
+    diagnostic_debug(diagnostics, node->line, node->column, "Handling direct compose call");
+    
+    // Generate the composition code using the new dynamic closure system
+    fprintf(output, "eshkol_compose_functions(");
+    
+    // Generate the first function (f)
+    if (!codegen_generate_expression(context, node->as.call.args[0])) {
+        return false;
+    }
+    
+    fprintf(output, ", ");
+    
+    // Generate the second function (g)
+    if (!codegen_generate_expression(context, node->as.call.args[1])) {
+        return false;
+    }
+    
+    fprintf(output, ")");
+    
+    return true;
+}
+
+/**
  * @brief Helper function to handle function composition calls
+ * 
+ * This function handles function composition calls by detecting the type of composition
+ * and using the appropriate approach. For direct calls to 'compose', it uses a specialized
+ * approach that avoids complex environment traversal. For other cases, it uses a more
+ * general approach that preserves higher-order function support.
  */
 bool codegen_handle_composition_call(CodegenContext* context, const AstNode* node, FILE* output) {
     assert(context != NULL);
@@ -428,7 +497,22 @@ bool codegen_handle_composition_call(CodegenContext* context, const AstNode* nod
     // Get diagnostics context
     DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
     
-    // Debug message
+    // Check if this is a direct call to 'compose'
+    if (node->as.call.callee->type == AST_IDENTIFIER && 
+        strcmp(node->as.call.callee->as.identifier.name, "compose") == 0 &&
+        node->as.call.arg_count >= 2) {
+        // Use the specialized handler for direct compose calls
+        return codegen_handle_direct_composition(context, node, output);
+    }
+    
+    // Check if this is a direct call to 'compose-n'
+    if (node->as.call.callee->type == AST_IDENTIFIER && 
+        strcmp(node->as.call.callee->as.identifier.name, "compose-n") == 0) {
+        // Handle compose-n specially
+        return codegen_handle_compose_n(context, node, output);
+    }
+    
+    // For other composition calls, use a more robust approach
     diagnostic_debug(diagnostics, node->line, node->column, "Handling function composition call");
     
     // Generate a temporary variable for the closure
@@ -437,121 +521,8 @@ bool codegen_handle_composition_call(CodegenContext* context, const AstNode* nod
         return false;
     }
     
-    // Ensure the closure and its environment are valid
-    fprintf(output, "; "
-            "if (_compose_closure == NULL) { "
-            "  fprintf(stderr, \"Error: NULL closure in composition at line %d\\n\", %d); "
-            "  exit(1); "
-            "} "
-            
-            // Get the environment
-            "EshkolEnvironment* _compose_env = _compose_closure->environment; "
-            
-            // Ensure environment is properly initialized
-            "if (_compose_env == NULL) { "
-            "  _compose_env = eshkol_environment_create(NULL, 16); " // Increased capacity
-            "  _compose_closure->environment = _compose_env; "
-            "} "
-            
-            // Enhanced validation for function composition
-            "// Enhanced validation for function composition\n"
-            
-            // First, ensure the environment is not in a validation cycle
-            "if (_compose_env->in_validation) { "
-            "  _compose_env->in_validation = false; " // Reset if already in validation
-            "} "
-            
-            // Validate the environment chain
-            "eshkol_environment_validate(_compose_env); "
-            
-            // Explicitly reset the validation flag
-            "_compose_env->in_validation = false; "
-            
-            // Additional validation for function composition
-            "// Special handling for function composition\n"
-            "if (_compose_env->parent != NULL) { "
-            "  // Ensure parent environments are also validated\n"
-            "  for (EshkolEnvironment* _p = _compose_env->parent; _p != NULL; _p = _p->parent) { "
-            "    if (_p->in_validation) { "
-            "      _p->in_validation = false; " // Reset if already in validation
-            "      continue; "
-            "    } "
-            "    eshkol_environment_validate(_p); "
-            "    _p->in_validation = false; "  // Explicitly reset for each parent
-            "  } "
-            
-            "  // For function composition, we need to ensure all component functions are available\n"
-            "  // Copy any missing values from parent environments\n"
-            "  for (size_t _i = 0; _i < _compose_env->value_count; _i++) { "
-            "    if (_compose_env->values[_i] == NULL) { "
-            "      // Try to find the value in any parent environment\n"
-            "      for (EshkolEnvironment* _p = _compose_env->parent; _p != NULL; _p = _p->parent) { "
-            "        if (_i < _p->value_count && _p->values[_i] != NULL) { "
-            "          _compose_env->values[_i] = _p->values[_i]; "
-            "          break; "
-            "        } "
-            "      } "
-            "    } "
-            "  } "
-            
-            "  // Additional check for any remaining NULL values\n"
-            "  for (size_t _i = 0; _i < _compose_env->value_count; _i++) { "
-            "    if (_compose_env->values[_i] == NULL) { "
-            "      // If still NULL, try to find any non-NULL value to use as a placeholder\n"
-            "      for (size_t _j = 0; _j < _compose_env->value_count; _j++) { "
-            "        if (_j != _i && _compose_env->values[_j] != NULL) { "
-            "          _compose_env->values[_i] = _compose_env->values[_j]; "
-            "          break; "
-            "        } "
-            "      } "
-            "      // If still NULL, check parent environments for any non-NULL value\n"
-            "      if (_compose_env->values[_i] == NULL) { "
-            "        for (EshkolEnvironment* _p = _compose_env->parent; _p != NULL && _compose_env->values[_i] == NULL; _p = _p->parent) { "
-            "          for (size_t _j = 0; _j < _p->value_count; _j++) { "
-            "            if (_p->values[_j] != NULL) { "
-            "              _compose_env->values[_i] = _p->values[_j]; "
-            "              break; "
-            "            } "
-            "          } "
-            "        } "
-            "      } "
-            "    } "
-            "  } "
-            
-            "  // Special handling for nested compositions\n"
-            "  // For nested compositions like add1-then-square-then-double\n"
-            "  // we need to ensure all component functions are available\n"
-            "  for (size_t _i = 0; _i < _compose_env->value_count; _i++) { "
-            "    void* _func = _compose_env->values[_i]; "
-            "    if (_func != NULL) { "
-            "      // Check if this is a closure\n"
-            "      EshkolClosure* _inner_closure = (EshkolClosure*)_func; "
-            "      // Simple validation check - if it has a function pointer, it's likely a closure\n"
-            "      if (_inner_closure->function != NULL) { "
-            "        // This might be a closure, validate its environment\n"
-            "        EshkolEnvironment* _inner_env = _inner_closure->environment; "
-            "        if (_inner_env != NULL) { "
-            "          // Validate the inner environment\n"
-            "          if (!_inner_env->in_validation) { " // Avoid cycles
-            "            _inner_env->in_validation = true; "
-            "            eshkol_environment_validate(_inner_env); "
-            "            _inner_env->in_validation = false; "
-            "          } "
-            "        } "
-            "      } "
-            "    } "
-            "  } "
-            "} "
-            
-            // Final safety check - ensure we have valid function pointers
-            "// Final safety check for function pointers\n"
-            "if (_compose_closure->function == NULL) { "
-            "  fprintf(stderr, \"Error: NULL function pointer in composition at line %d\\n\", %d); "
-            "  exit(1); "
-            "} "
-            
-            // Call the function with the environment and arguments
-            "_compose_closure->function(_compose_env, (void*[]){", node->line);
+    // Call the function directly using eshkol_closure_call
+    fprintf(output, "; eshkol_closure_call(_compose_closure, (void*[]){");
     
     // Generate arguments
     for (size_t i = 0; i < node->as.call.arg_count; i++) {
@@ -572,193 +543,258 @@ bool codegen_handle_composition_call(CodegenContext* context, const AstNode* nod
 }
 
 /**
- * @brief Generate C code for a closure call
+ * @brief Helper function to handle compose-n function calls
+ * 
+ * This function handles calls to the 'compose-n' function, which composes
+ * multiple functions together. It generates specialized code that applies
+ * the functions in sequence.
  */
-bool codegen_generate_closure_call(CodegenContext* context, const AstNode* node) {
+bool codegen_handle_compose_n(CodegenContext* context, const AstNode* node, FILE* output) {
     assert(context != NULL);
     assert(node != NULL);
     assert(node->type == AST_CALL);
-    
-    // Get output file
-    FILE* output = codegen_context_get_output(context);
-    
-    // Get binding system from context
-    BindingSystem* binding_system = codegen_context_get_binding_system(context);
-    if (!binding_system) {
-        DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
-        diagnostic_error(diagnostics, node->line, node->column, "Binding system not available");
-        return false;
-    }
+    assert(output != NULL);
     
     // Get diagnostics context
     DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
     
-    // Detect if this is a higher-order function call by checking the AST structure
-    bool is_higher_order = false;
-    bool is_compose_call = false;
-    bool is_composed_function_call = false;
+    // Debug message
+    diagnostic_debug(diagnostics, node->line, node->column, "Handling compose-n call");
     
-    // Check if the callee is an identifier
-    if (node->as.call.callee->type == AST_IDENTIFIER) {
-        const char* func_name = node->as.call.callee->as.identifier.name;
-        
-        // Debug message
-        char debug_msg[256];
-        snprintf(debug_msg, sizeof(debug_msg), "Checking function call: %s", func_name);
-        diagnostic_debug(diagnostics, node->line, node->column, debug_msg);
-        
-        // Check if this is a direct call to 'compose'
-        if (strcmp(func_name, "compose") == 0) {
-            is_compose_call = true;
-            is_higher_order = true;
-            diagnostic_debug(diagnostics, node->line, node->column, "Detected direct compose call");
-        }
-        
-        // Check if this is a call to a composed function (e.g., square-then-double)
-        if (strstr(func_name, "-then-") != NULL) {
-            is_composed_function_call = true;
-            is_higher_order = true;
-            diagnostic_debug(diagnostics, node->line, node->column, "Detected composed function call");
-        }
-        
-        // If it has a binding ID, check if it's a higher-order function
-        if (node->as.call.callee->binding_id != 0) {
-            uint64_t binding_id = node->as.call.callee->binding_id;
-            uint64_t binding_scope = binding_system_get_binding_scope(binding_system, binding_id);
-            
-            // Check if this binding is from a parent scope (captured)
-            if (binding_scope != 0 && binding_scope != node->scope_id) {
-                is_higher_order = true;
-                diagnostic_debug(diagnostics, node->line, node->column, "Detected higher-order function (captured binding)");
-            }
-            
-            // Check if this is a lambda call (function composition or higher-order function)
-            for (size_t i = 0; i < binding_system->lambda_table.count; i++) {
-                if (binding_system->lambda_table.scope_ids[i] == binding_scope) {
-                    is_higher_order = true;
-                    diagnostic_debug(diagnostics, node->line, node->column, "Detected lambda call");
-                    break;
-                }
-            }
-        }
-    }
+    // First, generate a block that will contain our composition logic
+    fprintf(output, "({ ");
     
-    // For compose calls or composed function calls, use the specialized handler
-    if (is_compose_call || is_composed_function_call) {
-        return codegen_handle_composition_call(context, node, output);
-    }
-    
-    // For other higher-order functions, we need to use a robust approach
-    if (is_higher_order) {
-        // Generate a temporary variable for the closure
-        fprintf(output, "({ EshkolClosure* _tmp_closure = ");
-        if (!codegen_generate_expression(context, node->as.call.callee)) {
-            return false;
-        }
-        
-        // Ensure the closure and its environment are valid
-        fprintf(output, "; "
-                "if (_tmp_closure == NULL) { "
-                "  fprintf(stderr, \"Error: NULL closure at line %d\\n\", %d); "
-                "  exit(1); "
+    // Handle the case with no arguments
+    if (node->as.call.arg_count == 0) {
+        // Return the identity function
+        fprintf(output, "eshkol_closure_create("
+                "(void* (*)(EshkolEnvironment*, void**))({ "
+                "void* _identity_function(EshkolEnvironment* _env, void** _args) { "
+                "return _args[0]; "
                 "} "
-                "EshkolEnvironment* _env = _tmp_closure->environment; "
-                "// Ensure environment is properly initialized\n"
-                "if (_env == NULL) { "
-                "  _env = eshkol_environment_create(NULL, 8); "
-                "  _tmp_closure->environment = _env; "
-                "} "
-                
-                // Use our improved environment validation
-                "// Validate the environment to ensure all values are properly initialized\n"
-                "eshkol_environment_validate(_env); "
-                
-                // Reset validation flag to ensure it's not left in a bad state
-                "_env->in_validation = false; "
-                
-                // Additional validation for parent environments
-                "// Also validate parent environments\n"
-                "if (_env->parent != NULL) { "
-                "  for (EshkolEnvironment* _p = _env->parent; _p != NULL; _p = _p->parent) { "
-                "    eshkol_environment_validate(_p); "
-                "    _p->in_validation = false; "
-                "  } "
-                "} "
-                
-                // Call the function with the environment and arguments
-                "_tmp_closure->function(_env, (void*[]){", node->line);
+                "_identity_function; "
+                "}), "
+                "eshkol_environment_create(env, 0, %lu), "
+                "NULL, NULL, 1"
+                ")", node->scope_id);
         
-        // Generate arguments
-        for (size_t i = 0; i < node->as.call.arg_count; i++) {
-            if (i > 0) {
-                fprintf(output, ", ");
-            }
-            
-            fprintf(output, "(void*)(");
-            if (!codegen_generate_expression(context, node->as.call.args[i])) {
-                return false;
-            }
-            fprintf(output, ")");
-        }
-        
-        fprintf(output, "}); })");
-        
+        fprintf(output, "; })");
         return true;
     }
     
-    // For all other closure calls, use a robust approach as well
-    // Generate a temporary variable for the closure
-    fprintf(output, "({ EshkolClosure* _tmp_closure = ");
-    if (!codegen_generate_expression(context, node->as.call.callee)) {
-        return false;
+    // Handle the case with one argument
+    if (node->as.call.arg_count == 1) {
+        // Return the function as is
+        fprintf(output, "EshkolClosure* _single_func = ");
+        if (!codegen_generate_expression(context, node->as.call.args[0])) {
+            return false;
+        }
+        fprintf(output, "; ");
+        
+        // Validate the function
+        fprintf(output, "if (_single_func == NULL) { "
+                "fprintf(stderr, \"Error: NULL function in compose-n\\n\"); "
+                "exit(1); "
+                "} ");
+        
+        fprintf(output, "_single_func");
+        
+        fprintf(output, "; })");
+        return true;
     }
     
-    // Ensure the closure and its environment are valid
-    fprintf(output, "; "
-            "if (_tmp_closure == NULL) { "
-            "  fprintf(stderr, \"Error: NULL closure at line %d\\n\", %d); "
-            "  exit(1); "
-            "} "
-            "EshkolEnvironment* _env = _tmp_closure->environment; "
-            "// Ensure environment is properly initialized\n"
-            "if (_env == NULL) { "
-            "  _env = eshkol_environment_create(NULL, 8); "
-            "  _tmp_closure->environment = _env; "
-            "} "
-            
-            // Use our improved environment validation
-            "// Validate the environment to ensure all values are properly initialized\n"
-            "eshkol_environment_validate(_env); "
-            
-            // Reset validation flag to ensure it's not left in a bad state
-            "_env->in_validation = false; "
-            
-            // Additional validation for parent environments
-            "// Also validate parent environments\n"
-            "if (_env->parent != NULL) { "
-            "  for (EshkolEnvironment* _p = _env->parent; _p != NULL; _p = _p->parent) { "
-            "    eshkol_environment_validate(_p); "
-            "    _p->in_validation = false; "
-            "  } "
-            "} "
-            
-            // Call the function with the environment and arguments
-            "_tmp_closure->function(_env, (void*[]){", node->line);
+    // For multiple functions, we need to create an array of functions
+    fprintf(output, "EshkolClosure* _funcs[%zu] = {", node->as.call.arg_count);
     
-    // Generate arguments
+    // Generate the function array
     for (size_t i = 0; i < node->as.call.arg_count; i++) {
         if (i > 0) {
             fprintf(output, ", ");
         }
         
-        fprintf(output, "(void*)(");
         if (!codegen_generate_expression(context, node->as.call.args[i])) {
             return false;
         }
-        fprintf(output, ")");
+    }
+    fprintf(output, "};\n");
+    
+    // Validate each function in the array
+    for (size_t i = 0; i < node->as.call.arg_count; i++) {
+        fprintf(output, "if (_funcs[%zu] == NULL) { "
+                "fprintf(stderr, \"Error: NULL function at position %zu in compose-n\\n\", %zu); "
+                "exit(1); "
+                "} ", i, i, i);
     }
     
-    fprintf(output, "}); })");
+    // Create a new closure that will apply the functions in sequence
+    fprintf(output, "eshkol_closure_create("
+        "(void* (*)(EshkolEnvironment*, void**))({ "
+        "void* _composed_function(EshkolEnvironment* _env, void** _args) { "
+        // Validate environment
+        "if (_env == NULL) { "
+        "  fprintf(stderr, \"Error: NULL environment in compose-n function\\n\"); "
+        "  exit(1); "
+        "} "
+        
+        // Get captured variables from environment with validation
+        "void* _func_array_ptr = NULL; "
+        "void* _func_count_ptr = NULL; "
+        
+        "if (_env->value_count >= 2) { "
+        "  _func_array_ptr = _env->values[0]; "
+        "  _func_count_ptr = _env->values[1]; "
+        "} else { "
+        "  fprintf(stderr, \"Error: Invalid environment in compose-n (expected 2 values, got %zu)\\n\", "
+        "          _env->value_count); "
+        "  exit(1); "
+        "} "
+        
+        "EshkolClosure** _func_array = (EshkolClosure**)_func_array_ptr;"
+        "size_t _func_count = (size_t)_func_count_ptr;"
+        
+        // Validate function array
+        "if (_func_array == NULL) {"
+        "  fprintf(stderr, \"Error: NULL function array in composition\\n\");"
+        "  exit(1);"
+        "}"
+        
+        "void* _result = _args[0];"
+        "for (size_t i = _func_count; i > 0; i--) {"
+        "  if (_func_array[i-1] == NULL) {"
+        "    fprintf(stderr, \"Error: NULL function at position %zu in composition at runtime\\n\", i-1);"
+        "    exit(1);"
+        "  }"
+        "  _result = eshkol_closure_call(_func_array[i-1], (void*[]){_result});"
+        "}"
+        "return _result;"
+        "} "
+        "_composed_function; "
+        "}), "
+        
+        // Create a new environment that captures the function array and count
+        "({ "
+        "EshkolEnvironment* _compose_env = eshkol_environment_create(env, 2, %lu);"
+        "eshkol_environment_add(_compose_env, _funcs, NULL, \"funcs\");"
+        "eshkol_environment_add(_compose_env, (void*)%zu, NULL, \"count\");"
+        "_compose_env; "
+        "}), "
+        
+        // Return type and parameter types (NULL for now)
+        "NULL, NULL, 1"
+        ")", node->scope_id, node->as.call.arg_count);
+
+fprintf(output, "; })");
+
+return true;
+}
+
+/**
+* @brief Generate C code for a closure call
+*/
+bool codegen_generate_closure_call(CodegenContext* context, const AstNode* node) {
+assert(context != NULL);
+assert(node != NULL);
+assert(node->type == AST_CALL);
+
+// Get output file
+FILE* output = codegen_context_get_output(context);
+
+// Get binding system from context
+BindingSystem* binding_system = codegen_context_get_binding_system(context);
+if (!binding_system) {
+    DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+    diagnostic_error(diagnostics, node->line, node->column, "Binding system not available");
+    return false;
+}
+
+// Get diagnostics context
+DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+
+// Detect if this is a function composition call
+bool is_compose_call = false;
+bool is_compose_n_call = false;
+bool is_composed_function_call = false;
+
+// Check if the callee is an identifier
+if (node->as.call.callee->type == AST_IDENTIFIER) {
+    const char* func_name = node->as.call.callee->as.identifier.name;
     
-    return true;
+    // Check if this is a direct call to 'compose'
+    if (strcmp(func_name, "compose") == 0) {
+        is_compose_call = true;
+        diagnostic_debug(diagnostics, node->line, node->column, "Detected direct compose call");
+    }
+    
+    // Check if this is a direct call to 'compose-n'
+    if (strcmp(func_name, "compose-n") == 0) {
+        is_compose_n_call = true;
+        diagnostic_debug(diagnostics, node->line, node->column, "Detected direct compose-n call");
+    }
+    
+    // Check if this is a call to a composed function (e.g., square-then-double)
+    if (strstr(func_name, "-then-") != NULL) {
+        is_composed_function_call = true;
+        diagnostic_debug(diagnostics, node->line, node->column, "Detected composed function call");
+    }
+}
+
+// For compose calls, use the direct composition handler
+if (is_compose_call) {
+    return codegen_handle_direct_composition(context, node, output);
+}
+
+// For compose-n calls or composed function calls, use the specialized handler
+if (is_compose_n_call || is_composed_function_call) {
+    return codegen_handle_composition_call(context, node, output);
+}
+
+// Check if this is a call to a ComposedFunction
+fprintf(output, "({ ");
+fprintf(output, "void* _callee = (void*)(");
+if (!codegen_generate_expression(context, node->as.call.callee)) {
+    return false;
+}
+fprintf(output, "); ");
+
+// Check if this is a ComposedFunction by checking the type
+fprintf(output, "if (_callee != NULL && ((uintptr_t)_callee & 0x1)) { ");
+fprintf(output, "  // This is a ComposedFunction, call it directly ");
+fprintf(output, "  ComposedFunction* _composed = (ComposedFunction*)((uintptr_t)_callee & ~0x1); ");
+fprintf(output, "  void* _arg = (void*)(");
+
+// Generate the argument (only one for composed functions)
+if (node->as.call.arg_count > 0) {
+    if (!codegen_generate_expression(context, node->as.call.args[0])) {
+        return false;
+    }
+} else {
+    fprintf(output, "NULL");
+}
+
+fprintf(output, "); ");
+fprintf(output, "  eshkol_composed_function_call(_composed, _arg); ");
+fprintf(output, "} else { ");
+fprintf(output, "  // This is a regular closure, call it normally ");
+fprintf(output, "  EshkolClosure* _closure = (EshkolClosure*)_callee; ");
+
+// Call the function directly using eshkol_closure_call
+fprintf(output, "  eshkol_closure_call(_closure, (void*[]){");
+
+// Generate arguments
+for (size_t i = 0; i < node->as.call.arg_count; i++) {
+    if (i > 0) {
+        fprintf(output, ", ");
+    }
+    
+    fprintf(output, "(void*)(");
+    if (!codegen_generate_expression(context, node->as.call.args[i])) {
+        return false;
+    }
+    fprintf(output, ")");
+}
+
+fprintf(output, "}); ");
+fprintf(output, "} })");
+
+return true;
 }

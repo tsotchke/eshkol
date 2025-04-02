@@ -26,6 +26,7 @@ This document tracks known issues, limitations, and compatibility notes for Sche
 | SCH-016 | Equality predicates not yet implemented | Medium | eq?, eqv?, equal? | Planning | Phase 7 |
 | SCH-017 | Higher-order functions not yet implemented | Medium | map, for-each, filter | Planning | Phase 7 |
 | SCH-018 | List processing functions not yet implemented | Medium | length, append, reverse | Planning | Phase 7 |
+| SCH-019 | Function composition not working correctly | High | compose, higher-order functions | In Progress | Phase 4 |
 
 ## Compatibility Notes
 

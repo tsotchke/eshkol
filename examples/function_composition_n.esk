@@ -1,0 +1,87 @@
+;;
+;; N-ary Function Composition Example
+;;
+;; This example demonstrates a general framework for arbitrary function composition
+;; using an array-based approach similar to the C example.
+;;
+
+;; Define some simple functions for testing
+(define (square x) (* x x))
+(define (add1 x) (+ x 1))
+(define (double x) (* x 2))
+(define (negate x) (- x))
+
+;; Define a function that applies a sequence of functions to a value
+;; This is similar to the 'eval' function in the C example
+(define (apply-functions fs x)
+  (if (null? fs)
+      x
+      (apply-functions (cdr fs) ((car fs) x))))
+
+;; Define a function that composes multiple functions into a single function
+;; The functions are applied in reverse order (from right to left)
+(define (compose-n . fns)
+  (lambda (x)
+    (apply-functions (reverse fns) x)))
+
+;; Create function arrays for testing
+(define fs1 (list square add1 double))
+(define fs2 (list add1 square double))
+(define fs3 (list double square add1))
+
+;; Test the apply-functions function
+(display "Testing apply-functions:\n")
+(display "apply-functions(fs1, 5) = ")
+(display (apply-functions fs1 5))  ; double(add1(square(5))) = double(add1(25)) = double(26) = 52
+(newline)
+(display "apply-functions(fs2, 5) = ")
+(display (apply-functions fs2 5))  ; double(square(add1(5))) = double(square(6)) = double(36) = 72
+(newline)
+(display "apply-functions(fs3, 5) = ")
+(display (apply-functions fs3 5))  ; add1(square(double(5))) = add1(square(10)) = add1(100) = 101
+(newline)
+
+;; Test the compose-n function
+(display "\nTesting compose-n:\n")
+(define f1 (compose-n square add1 double))
+(display "f1(5) = ")
+(display (f1 5))  ; square(add1(double(5))) = square(add1(10)) = square(11) = 121
+(newline)
+(define f2 (compose-n add1 square double))
+(display "f2(5) = ")
+(display (f2 5))  ; add1(square(double(5))) = add1(square(10)) = add1(100) = 101
+(newline)
+(define f3 (compose-n double square add1))
+(display "f3(5) = ")
+(display (f3 5))  ; double(square(add1(5))) = double(square(6)) = double(36) = 72
+(newline)
+
+;; Demonstrate dynamic reordering of functions
+(display "\nTesting dynamic reordering:\n")
+(define (swap-functions fs i j)
+  (let* ((fs-vec (list->vector fs))
+         (temp (vector-ref fs-vec i)))
+    (vector-set! fs-vec i (vector-ref fs-vec j))
+    (vector-set! fs-vec j temp)
+    (vector->list fs-vec)))
+
+(define fs4 (swap-functions fs1 0 2))  ; Swap square and double
+(display "Original fs1: (square add1 double)\n")
+(display "Swapped fs4: (double add1 square)\n")
+(display "apply-functions(fs4, 5) = ")
+(display (apply-functions fs4 5))  ; square(add1(double(5))) = square(add1(10)) = square(11) = 121
+(newline)
+
+;; Demonstrate the C-style eval function
+(display "\nTesting C-style eval function:\n")
+(define (eval fs size x)
+  (let loop ((i 0) (result x))
+    (if (= i size)
+        result
+        (loop (+ i 1) ((list-ref fs i) result)))))
+
+(display "eval(fs1, 3, 5) = ")
+(display (eval fs1 3 5))  ; double(add1(square(5))) = double(add1(25)) = double(26) = 52
+(newline)
+
+;; End of example

@@ -10,6 +10,12 @@ This document summarizes the recent updates to the Scheme compatibility document
 - [Equality Predicates](../../examples/equality_predicates.esk): Demonstrates the use of equality predicates
 - [Higher-Order Functions](../../examples/higher_order_functions.esk): Demonstrates the implementation and use of higher-order functions
 
+## Code Improvements
+
+- **Enhanced Binding System**: Improved the binding system to store binding names in the environment, enabling better debugging and visualization of closures
+- **Updated Closure Generation**: Modified the code generation for closures to include binding names in the environment
+- **Improved Environment Creation**: Updated environment creation to include scope IDs for better tracking
+
 ## New Documentation
 
 - [Progress Dashboard](PROGRESS_DASHBOARD.md): High-level overview of Scheme compatibility progress

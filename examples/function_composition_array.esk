@@ -1,0 +1,41 @@
+;;
+;; Function Composition with Arrays Example
+;;
+;; This example demonstrates a general framework for arbitrary function composition
+;; using an array-based approach similar to the C example.
+;;
+
+;; Define some simple functions for testing
+(define (square x) (* x x))
+(define (add1 x) (+ x 1))
+(define (double x) (* x 2))
+(define (negate x) (- x))
+
+;; Define a function that applies a sequence of functions to a value
+;; This is similar to the 'eval' function in the C example
+(define (eval fs size x)
+  (let loop ((i 0) (result x))
+    (if (= i size)
+        result
+        (loop (+ i 1) ((vector-ref fs i) result)))))
+
+;; Create a function array
+(define fs (vector square add1 double))
+
+;; Test the eval function
+(display "Testing eval function:\n")
+(display "eval(fs, 3, 5) = ")
+(display (eval fs 3 5))  ; double(add1(square(5))) = double(add1(25)) = double(26) = 52
+(newline)
+
+;; Reorder the functions in the array
+(vector-set! fs 0 double)
+(vector-set! fs 2 square)
+
+;; Test the eval function with reordered functions
+(display "\nTesting eval function with reordered functions:\n")
+(display "eval(fs, 3, 5) = ")
+(display (eval fs 3 5))  ; square(add1(double(5))) = square(add1(10)) = square(11) = 121
+(newline)
+
+;; End of example

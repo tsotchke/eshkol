@@ -1,0 +1,24 @@
+;;; Simple Function Composition Test
+;;; This example demonstrates basic function composition in Eshkol
+
+;; Define some simple functions to compose
+(define (add1 x) (+ x 1))
+(define (square x) (* x x))
+
+;; Basic function composition
+(define (compose f g)
+  (lambda (x)
+    (f (g x))))
+
+;; Test basic composition
+(define add1-then-square (compose square add1))
+(define square-then-add1 (compose add1 square))
+
+;; Display results
+(display "add1-then-square(4): ")
+(display (add1-then-square 4))
+(newline)
+
+(display "square-then-add1(4): ")
+(display (square-then-add1 4))
+(newline)
