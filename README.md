@@ -4,7 +4,7 @@
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Project Status](https://img.shields.io/badge/Status-Early%20Developer%20Preview-yellow.svg)]()
-[![Scheme Compatibility](https://img.shields.io/badge/Scheme-R5RS%20%7C%20R7RS--small-in%20progress-orange.svg)]()
+[![Scheme Compatibility](https://img.shields.io/badge/Scheme-R5RS%20%7C%20R7RS--small%20in%20progress-orange.svg)]()
 
 ## ⚠️ Early Developer Preview
 
