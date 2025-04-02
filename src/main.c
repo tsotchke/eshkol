@@ -45,7 +45,7 @@ static void print_usage(const char* program_name) {
  * It handles command-line arguments and initiates the compilation process.
  */
 int main(int argc, char** argv) {
-    printf("Eshkol Compiler v0.1.0\n");
+    printf("Eshkol Compiler v0.1.1-alpha (Early Developer Preview)\n");
     
     // Parse command line arguments
     bool verbose_mode = true;      // Enable verbose mode by default
