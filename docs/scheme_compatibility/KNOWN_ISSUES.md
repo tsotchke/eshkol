@@ -1,32 +1,90 @@
 # Eshkol Scheme Compatibility - Known Issues and Limitations
 
-Last Updated: 2025-03-29
+**Early Developer Preview Notice**: This document is part of the Eshkol Early Developer Preview release. It provides a comprehensive list of known issues and limitations to help early adopters understand the current state of the project.
+
+Last Updated: 2025-04-02
 
 This document tracks known issues, limitations, and compatibility notes for Scheme support in Eshkol. It serves as a reference for users and developers to understand the current state of Scheme compatibility.
 
-## Current Issues
+## Current Issues by Component
 
-| ID | Description | Severity | Affected Functions | Status | Target Fix |
-|----|-------------|----------|-------------------|--------|------------|
-| SCH-001 | Type system integration with Scheme is incomplete | Medium | Type annotations, type checking | Known limitation | Phase 4 |
-| SCH-002 | No proper tail call optimization | Medium | Recursive functions | Known limitation | Phase 6 |
-| SCH-003 | Limited support for the full numeric tower | Medium | Numeric operations | Known limitation | Phase 7 |
-| SCH-004 | No hygienic macro system | Medium | Macros | Known limitation | Phase 7 |
-| SCH-005 | No continuations support | Medium | call/cc, dynamic-wind | Known limitation | Phase 5 |
-| SCH-006 | Type inference for autodiff functions is incomplete | High | autodiff-forward, autodiff-reverse, gradient functions | In Progress | Phase 4 |
-| SCH-007 | Vector return types not correctly handled | High | Vector operations, gradient functions | In Progress | Phase 4 |
-| SCH-008 | Type conflicts in generated C code | High | Autodiff and vector functions | In Progress | Phase 4 |
-| SCH-009 | Inconsistent type handling between scalar and vector operations | Medium | Vector math operations | In Progress | Phase 4 |
-| SCH-010 | Implicit conversions between numeric types not fully supported | Medium | Numeric operations | Known limitation | Phase 4 |
-| SCH-011 | Lambda capture analysis for autodiff functions is incomplete | High | Higher-order autodiff functions | In Progress | Phase 4 |
-| SCH-012 | MCP tools for type analysis use simplified implementations | Medium | analyze-types tool | In Progress | N/A |
-| SCH-013 | Core list operations implemented | High | cons, car, cdr | Implemented | Phase 7 |
-| SCH-014 | Basic type predicates not yet implemented | Medium | pair?, null?, list? | Planning | Phase 7 |
-| SCH-015 | Mutual recursion handling in type inference is incomplete | Medium | Mutually recursive functions | In Progress | Phase 4 |
-| SCH-016 | Equality predicates not yet implemented | Medium | eq?, eqv?, equal? | Planning | Phase 7 |
-| SCH-017 | Higher-order functions not yet implemented | Medium | map, for-each, filter | Planning | Phase 7 |
-| SCH-018 | List processing functions not yet implemented | Medium | length, append, reverse | Planning | Phase 7 |
-| SCH-019 | Function composition not working correctly | High | compose, higher-order functions | In Progress | Phase 4 |
+### Core Language Features
+
+| ID | Description | Severity | Affected Functions | Status | Target Fix | Est. Timeline |
+|----|-------------|----------|-------------------|--------|------------|---------------|
+| SCH-002 | No proper tail call optimization | Medium | Recursive functions | Known limitation | Phase 6 | Q1 2026 |
+| SCH-005 | No continuations support | Medium | call/cc, dynamic-wind | Known limitation | Phase 5 | Q1 2026 |
+| SCH-004 | No hygienic macro system | Medium | Macros | Known limitation | Phase 7 | Q3-Q4 2026 |
+| SCH-015 | Mutual recursion handling in type inference is incomplete | Medium | Mutually recursive functions | In Progress | Phase 4 | Q2 2025 |
+
+### Type System
+
+| ID | Description | Severity | Affected Functions | Status | Target Fix | Est. Timeline |
+|----|-------------|----------|-------------------|--------|------------|---------------|
+| SCH-001 | Type system integration with Scheme is incomplete | Medium | Type annotations, type checking | Known limitation | Phase 4 | Q2 2025 |
+| SCH-006 | Type inference for autodiff functions is incomplete | High | autodiff-forward, autodiff-reverse, gradient functions | In Progress | Phase 4 | Q2 2025 |
+| SCH-007 | Vector return types not correctly handled | High | Vector operations, gradient functions | In Progress | Phase 4 | Q2 2025 |
+| SCH-008 | Type conflicts in generated C code | High | Autodiff and vector functions | In Progress | Phase 4 | Q2 2025 |
+| SCH-010 | Implicit conversions between numeric types not fully supported | Medium | Numeric operations | Known limitation | Phase 4 | Q2 2025 |
+
+### Scientific Computing
+
+| ID | Description | Severity | Affected Functions | Status | Target Fix | Est. Timeline |
+|----|-------------|----------|-------------------|--------|------------|---------------|
+| SCH-003 | Limited support for the full numeric tower | Medium | Numeric operations | Known limitation | Phase 7 | Q3-Q4 2026 |
+| SCH-009 | Inconsistent type handling between scalar and vector operations | Medium | Vector math operations | In Progress | Phase 4 | Q2 2025 |
+| SCH-011 | Lambda capture analysis for autodiff functions is incomplete | High | Higher-order autodiff functions | In Progress | Phase 4 | Q2 2025 |
+
+### Function Composition
+
+| ID | Description | Severity | Affected Functions | Status | Target Fix | Est. Timeline |
+|----|-------------|----------|-------------------|--------|------------|---------------|
+| SCH-019 | Function composition partially implemented | High | compose, higher-order functions | In Progress | Phase 4 | Q2 2025 |
+
+### Standard Library
+
+| ID | Description | Severity | Affected Functions | Status | Target Fix | Est. Timeline |
+|----|-------------|----------|-------------------|--------|------------|---------------|
+| SCH-013 | Core list operations implemented | High | cons, car, cdr | Implemented | Phase 7 | Completed |
+| SCH-014 | Basic type predicates not yet implemented | Medium | pair?, null?, list? | Planning | Phase 7 | Q3 2025 |
+| SCH-016 | Equality predicates not yet implemented | Medium | eq?, eqv?, equal? | Planning | Phase 7 | Q3 2025 |
+| SCH-017 | Higher-order functions not yet implemented | Medium | map, for-each, filter | Planning | Phase 7 | Q3 2025 |
+| SCH-018 | List processing functions not yet implemented | Medium | length, append, reverse | Planning | Phase 7 | Q3 2025 |
+
+### Development Tools
+
+| ID | Description | Severity | Affected Functions | Status | Target Fix | Est. Timeline |
+|----|-------------|----------|-------------------|--------|------------|---------------|
+| SCH-012 | MCP tools for type analysis use simplified implementations | Medium | analyze-types tool | In Progress | N/A | Ongoing |
+
+## Function Composition Status
+
+The function composition system has been significantly improved with the implementation of a JIT compilation approach. This enables efficient function composition with proper handling of calling conventions. However, there are still some limitations:
+
+1. **Current Status**: The basic function composition mechanism works, but there are edge cases and advanced patterns that may not work correctly.
+
+2. **Recent Improvements**:
+   - JIT compilation for efficient machine code generation
+   - Support for both x86-64 and ARM64 architectures
+   - Fallback mechanism for environments where JIT isn't possible
+   - Proper handling of closure calling conventions
+
+3. **Known Limitations**:
+   - Complex composition chains may not work correctly in all cases
+   - Type inference for composed functions is incomplete
+   - Performance optimizations are still in progress
+
+4. **Workarounds**:
+   - Use simple binary function composition where possible
+   - Break complex compositions into simpler steps
+   - Use explicit type annotations for composed functions
+   - Test composed functions thoroughly before using in production code
+   - Use the MCP tools to analyze function composition patterns:
+     ```bash
+     use_mcp_tool eshkol-tools analyze-composition-chains '{"filePath": "examples/function_composition_test.esk", "detail": "detailed"}'
+     ```
+
+For more details on the function composition implementation, see [function_composition_solution_summary.md](../../function_composition_solution_summary.md).
 
 ## Compatibility Notes
 
@@ -202,7 +260,7 @@ If you encounter an issue with Scheme compatibility in Eshkol, please report it 
 
 ## Planned Improvements
 
-See the [Evolution Roadmap](./EVOLUTION.md) for planned improvements to Scheme compatibility in Eshkol.
+See the [Evolution Roadmap](./EVOLUTION.md) for planned improvements to Scheme compatibility in Eshkol and the [ROADMAP.md](../../ROADMAP.md) for the overall project roadmap.
 
 ## Example Files
 
@@ -212,7 +270,8 @@ The following example files demonstrate the use of Scheme features in Eshkol:
 2. **Equality Predicates**: [equality_predicates.esk](../../examples/equality_predicates.esk)
 3. **List Operations**: [list_operations.esk](../../examples/list_operations.esk)
 4. **Function Composition**: [function_composition.esk](../../examples/function_composition.esk)
-5. **Mutual Recursion**: [mutual_recursion.esk](../../examples/mutual_recursion.esk)
+5. **Advanced Function Composition**: [advanced_function_composition.esk](../../examples/advanced_function_composition.esk)
+6. **Mutual Recursion**: [mutual_recursion.esk](../../examples/mutual_recursion.esk)
 
 These example files provide a reference for how to use Scheme features in Eshkol, even if some of the features are not yet fully implemented.
 
@@ -220,6 +279,8 @@ These example files provide a reference for how to use Scheme features in Eshkol
 
 | Date | Changes |
 |------|---------|
+| 2025-04-02 | Reorganized issues by component, added estimated timelines, updated function composition section |
+| 2025-04-02 | Added Early Developer Preview notice, updated links to ROADMAP.md |
 | 2025-03-29 | Added new issues: equality predicates, higher-order functions, list processing functions (SCH-016, SCH-017, SCH-018) |
 | 2025-03-29 | Added links to implementation roadmaps |
 | 2025-03-29 | Added example files section |

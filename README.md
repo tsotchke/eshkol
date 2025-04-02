@@ -3,8 +3,24 @@
 *The high-performance LISP-like language that brings scientific computing and AI to the next level*
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Project Status](https://img.shields.io/badge/Status-Early%20Development-yellow.svg)]()
-[![Scheme Compatibility](https://img.shields.io/badge/Scheme-R5RS%20%7C%20R7RS--small-planned-orange.svg)]()
+[![Project Status](https://img.shields.io/badge/Status-Early%20Developer%20Preview-yellow.svg)]()
+[![Scheme Compatibility](https://img.shields.io/badge/Scheme-R5RS%20%7C%20R7RS--small-in%20progress-orange.svg)]()
+
+## ⚠️ Early Developer Preview
+
+**Important**: Eshkol is currently in early development. This preview release is intended for developers interested in exploring the language and potentially contributing to its development. It is **not yet ready for production use**.
+
+### Current Development Status
+
+| Component | Status | Completion | Notes |
+|-----------|--------|------------|-------|
+| Core Language Features | In Progress | 65% | Basic Scheme syntax and core special forms implemented |
+| Function Composition | In Progress | 75% | Basic composition works, advanced patterns may have issues |
+| Type System | In Progress | 55% | Optional type annotations and basic inference working |
+| Scientific Computing | In Progress | 70% | Vector operations and autodiff implemented |
+| MCP Tools | In Progress | 80% | Analysis tools available for development |
+
+See our [ROADMAP.md](ROADMAP.md) for development plans and [KNOWN_ISSUES.md](docs/scheme_compatibility/KNOWN_ISSUES.md) for current limitations and workarounds.
 
 ## 🌟 What is Eshkol?
 
@@ -171,16 +187,20 @@ Compile and run:
 
 Check out the `examples/` directory for sample programs demonstrating Eshkol's capabilities:
 
+**Fully Working Examples:**
 - `hello.esk` - Basic "Hello, World!" program
 - `display_test.esk` - Basic "Hello, World!" program using `display` function
 - `factorial.esk` - Recursive factorial calculation
-- `function_composition.esk` - Higher-order functions and composition
 - `arithmetic.esk` - Basic arithmetic operations
+- `tail_recursive_factorial.esk` - Tail-recursive factorial implementation
+
+**Examples in Development (May Have Limitations):**
+- `function_composition.esk` - Higher-order functions and composition
 - `fibonacci.esk` - Fibonacci sequence calculation
 - `mutual_recursion.esk` - Demonstration of mutual recursion
 - `list_operations.esk` - Demonstration of list operations
 
-**Type System Examples:**
+**Type System Examples (In Development):**
 - `untyped.esk` - Standard Scheme code without type annotations
 - `implicit_typed.esk` - Using type inference without explicit annotations
 - `inline_typed.esk` - Using inline explicit type annotations
@@ -188,7 +208,7 @@ Check out the `examples/` directory for sample programs demonstrating Eshkol's c
 - `separate_typed.esk` - Using separate type declarations
 - `simple_typed.esk` - Simple examples of typed functions
 
-**Scientific Computing Examples:**
+**Scientific Computing Examples (In Development):**
 - `vector_calculus.esk` - Vector operations and calculus
 - `autodiff_example.esk` - Automatic differentiation in action
 
