@@ -1,176 +1,278 @@
 # Memory Management in Eshkol
 
-## Arena-Based Memory Allocation
+## Table of Contents
+- [Overview](#overview)
+- [Arena-Based Memory Allocation](#arena-based-memory-allocation)
+- [How Memory Allocation Works](#how-memory-allocation-works)
+- [Code Examples](#code-examples)
+- [Best Practices](#best-practices)
+- [Performance Considerations](#performance-considerations)
+- [Troubleshooting](#troubleshooting)
+
+## Overview
 
 Eshkol uses arena-based memory allocation instead of traditional garbage collection. This approach provides predictable performance characteristics without the unpredictable pauses associated with garbage collection.
+
+## Arena-Based Memory Allocation
 
 ```mermaid
 graph TD
     A[Program Start] --> B[Create Arena]
     B --> C[Allocate Memory]
-    C --> D{More Allocations?}
+    C --> D[More Allocations?]
     D -->|Yes| C
     D -->|No| E[Process Data]
     E --> F[Destroy Arena]
     F --> G[Program End]
-    
-    subgraph "Arena Internals"
-        H[Initial Block]
-        H --> I[Block 2]
-        I --> J[Block 3]
-        J --> K[...]
-    end
-    
-    C -.-> H
-    
-    style A fill:#f9d5e5,stroke:#333,stroke-width:2px
-    style B fill:#f9d5e5,stroke:#333,stroke-width:2px
-    style C fill:#eeeeee,stroke:#333,stroke-width:2px
-    style D fill:#eeeeee,stroke:#333,stroke-width:2px
-    style E fill:#d0f0c0,stroke:#333,stroke-width:2px
-    style F fill:#d0f0c0,stroke:#333,stroke-width:2px
-    style G fill:#d0f0c0,stroke:#333,stroke-width:2px
+```
+
+The arena allocator in Eshkol works by pre-allocating large blocks of memory and then distributing smaller chunks from these blocks as needed. When a block is exhausted, a new, larger block is allocated.
+
+```mermaid
+subgraph "Arena Internals"
+    H[Initial Block] --> I[Block 2]
+    I --> J[Block 3]
+    J --> K[...]
+end
+
+C --> H
 ```
 
 ## How Memory Allocation Works
 
 The arena allocator in Eshkol works by pre-allocating large blocks of memory and then distributing smaller chunks from these blocks as needed. When a block is exhausted, a new, larger block is allocated.
 
-### Core Components
+1. When you create an arena, an initial memory block is allocated
+2. Allocation requests are served from this block until it's exhausted
+3. When more memory is needed, a new block (typically larger) is allocated
+4. When the arena is destroyed, all blocks are freed at once
 
-1. **Arena Structure**: Manages a linked list of memory blocks
-2. **Block Structure**: Contains metadata and a flexible array for actual data
-3. **Allocation Functions**: Provide memory from the current block or create new blocks
+This approach has several advantages:
+- No need to track individual allocations
+- No memory fragmentation
+- Predictable performance (no GC pauses)
+- Efficient bulk deallocation
 
-### Code Example: Arena Creation and Usage
+## Code Examples
+
+### Basic Arena Usage
 
 ```c
-// Create a memory arena with 1MB initial capacity
-Arena* arena = arena_create(1024 * 1024);
-if (!arena) {
-    fprintf(stderr, "Failed to create memory arena\n");
-    return 1;
-}
+// Create an arena with initial block size of 1024 bytes
+Arena* arena = create_arena(1024);
 
 // Allocate memory from the arena
-void* data1 = arena_alloc(arena, 1000);
-void* data2 = arena_alloc(arena, 2000);
-void* data3 = arena_alloc_aligned(arena, 4000, 16);  // 16-byte aligned allocation
+char* buffer = (char*)arena_alloc(arena, 100);
+strcpy(buffer, "Hello, Eshkol!");
 
-// Use the allocated memory...
+// Use the memory...
 
-// Free all memory at once
-arena_destroy(arena);
+// Destroy the arena when done (frees all allocated memory at once)
+destroy_arena(arena);
 ```
 
-## Benefits of Arena Allocation
+### Using Arenas in Eshkol
 
-### Performance Advantages
+```scheme
+;; Create a new arena
+(define arena (make-arena 1024))
 
-1. **No GC Pauses**: Deterministic performance without garbage collection pauses
-2. **Fast Allocation**: Allocation is typically just a pointer increment
-3. **Bulk Deallocation**: Free all memory at once with minimal overhead
-4. **Cache Locality**: Allocations are contiguous, improving cache performance
+;; Allocate memory from the arena
+(define data (arena-alloc arena 100))
 
-### Memory Usage Patterns
+;; Use the memory...
 
-```
-┌────────────────────────────────────────┐
-│ Arena Block 1 (e.g., 1MB)              │
-├────────┬────────┬────────┬─────────────┤
-│ Alloc 1│ Alloc 2│ Alloc 3│ Free Space  │
-└────────┴────────┴────────┴─────────────┘
-
-When Block 1 fills up:
-
-┌────────────────────────────────────────┐
-│ Arena Block 1 (e.g., 1MB) - FULL       │
-├────────┬────────┬────────┬─────────────┤
-│ Alloc 1│ Alloc 2│ Alloc 3│ Alloc 4     │
-└────────┴────────┴────────┴─────────────┘
-
-┌────────────────────────────────────────────────────┐
-│ Arena Block 2 (e.g., 2MB)                          │
-├────────┬────────┬──────────────────────────────────┤
-│ Alloc 5│ Alloc 6│ Free Space                       │
-└────────┴────────┴──────────────────────────────────┘
+;; Destroy the arena when done
+(destroy-arena arena)
 ```
 
-## Comparison with Traditional Memory Management
+### Nested Arenas
 
-| Feature | Arena Allocation | Garbage Collection | Manual Management |
-|---------|-----------------|-------------------|-------------------|
-| Allocation Speed | Very Fast | Moderate | Fast |
-| Deallocation | Bulk only | Automatic | Manual per object |
-| Memory Fragmentation | Low | Varies | High |
-| Memory Overhead | Low | High | Low |
-| Determinism | High | Low | High |
-| Ease of Use | Simple API | Transparent | Error-prone |
-| Memory Leaks | Only at arena level | Rare | Common |
-| Use Case | Short-lived computations | General purpose | Performance-critical |
+```scheme
+;; Create a parent arena for long-lived objects
+(define parent-arena (make-arena 4096))
 
-## Implementation Details
-
-The Eshkol arena allocator is implemented in `src/core/memory/arena.c` and includes the following key functions:
-
-```c
-// Create a new arena with the specified initial capacity
-Arena* arena_create(size_t initial_capacity);
-
-// Allocate memory from an arena
-void* arena_alloc(Arena* arena, size_t size);
-
-// Allocate aligned memory from an arena
-void* arena_alloc_aligned(Arena* arena, size_t size, size_t alignment);
-
-// Reset an arena (keep blocks but mark all as free)
-void arena_reset(Arena* arena);
-
-// Destroy an arena and free all its memory
-void arena_destroy(Arena* arena);
-
-// Get statistics about arena usage
-size_t arena_get_used_memory(const Arena* arena);
-size_t arena_get_allocation_count(const Arena* arena);
+;; Function that uses a child arena for temporary allocations
+(define (process-data input)
+  ;; Create a child arena for temporary allocations
+  (define temp-arena (make-arena 1024))
+  
+  ;; Process data using temporary allocations
+  (let* ((temp-buffer (arena-alloc temp-arena 512))
+         (result (do-processing input temp-buffer))
+         ;; Copy the result to the parent arena
+         (final-result (copy-to-arena result parent-arena)))
+    
+    ;; Destroy the temporary arena
+    (destroy-arena temp-arena)
+    
+    ;; Return the result (which lives in the parent arena)
+    final-result))
 ```
 
 ## Best Practices
 
-1. **Match Arena Lifetimes to Data Lifetimes**: Create arenas for data with similar lifespans
-2. **Size Appropriately**: Choose initial sizes based on expected allocation patterns
-3. **Reset vs. Destroy**: Reset arenas for reuse when appropriate instead of destroying and recreating
-4. **Avoid Mixing Allocation Methods**: Don't mix `malloc` and arena allocations for related data
-5. **Consider Alignment**: Use aligned allocations for SIMD operations and other alignment-sensitive data
+### 1. Match Arena Lifetimes to Data Lifetimes
 
-## Limitations and Considerations
+Create arenas that match the lifetime of the data they will contain:
 
-1. **Individual Deallocation**: Not possible to free individual allocations
-2. **Memory Pressure**: Long-lived arenas can hold onto memory longer than necessary
-3. **Sizing Challenges**: Choosing optimal initial sizes requires understanding usage patterns
-4. **Fragmentation Within Blocks**: Can occur if allocations vary widely in size
+```scheme
+;; Good: Arena lifetime matches data lifetime
+(define (process-request request)
+  (define request-arena (make-arena 1024))
+  (let ((result (process-with-arena request request-arena)))
+    (destroy-arena request-arena)
+    result))
 
-## Advanced Usage: Nested Arenas
-
-For complex applications, Eshkol supports creating hierarchical arena structures:
-
-```c
-// Create parent arena
-Arena* parent_arena = arena_create(1024 * 1024);
-
-// Create child arena for a specific computation
-Arena* child_arena = arena_create(64 * 1024);
-
-// Perform computation with child arena
-// ...
-
-// Free child arena when computation is complete
-arena_destroy(child_arena);
-
-// Parent arena continues to be used
-// ...
-
-// Eventually free parent arena
-arena_destroy(parent_arena);
+;; Bad: Arena outlives its data
+(define global-arena (make-arena 1024))
+(define (process-request request)
+  (process-with-arena request global-arena))
+;; Memory keeps accumulating in global-arena
 ```
 
-This approach allows for more fine-grained control over memory lifetimes while maintaining the performance benefits of arena allocation.
+### 2. Size Arenas Appropriately
+
+```scheme
+;; Too small: Will require many block allocations
+(define tiny-arena (make-arena 64))
+
+;; Too large: Wastes memory if not fully used
+(define huge-arena (make-arena 1024 * 1024 * 100))
+
+;; Just right: Based on expected usage
+(define (make-appropriate-arena expected-data-size)
+  (make-arena (* expected-data-size 1.5))) ;; 50% buffer
+```
+
+### 3. Use Nested Arenas for Different Lifetimes
+
+```scheme
+;; Create arenas for different data lifetimes
+(define session-arena (make-arena 16384))
+(define (handle-request request)
+  (define request-arena (make-arena 1024))
+  ;; Process request...
+  (let ((session-data (extract-session-data request))
+        (response-data (generate-response request)))
+    ;; Store session data in long-lived arena
+    (store-in-session (copy-to-arena session-data session-arena))
+    ;; Return response (will be copied out of request-arena)
+    (destroy-arena request-arena)
+    response-data))
+```
+
+## Performance Considerations
+
+1. **Initial Size**: Choose an appropriate initial size to minimize the number of block allocations
+2. **Allocation Pattern**: Sequential allocations are more efficient than interleaved allocations from different arenas
+3. **Memory Overhead**: Each arena has some overhead, so don't create too many small arenas
+4. **Block Growth Strategy**: Eshkol uses a doubling strategy for block sizes, which balances memory usage and allocation cost
+
+### Benchmarking Arena Performance
+
+```scheme
+(define (benchmark-arena-vs-gc iterations)
+  (define start-time (current-time))
+  
+  ;; Arena-based allocation
+  (let ((arena (make-arena 1024)))
+    (for-each (lambda (_)
+                (arena-alloc arena 100))
+              (range 0 iterations))
+    (destroy-arena arena))
+  
+  (define arena-time (- (current-time) start-time))
+  (set! start-time (current-time))
+  
+  ;; GC-based allocation
+  (for-each (lambda (_)
+              (make-bytes 100))
+            (range 0 iterations))
+  
+  (define gc-time (- (current-time) start-time))
+  
+  (println "Arena time: " arena-time)
+  (println "GC time: " gc-time)
+  (println "Ratio: " (/ gc-time arena-time)))
+```
+
+## Troubleshooting
+
+### Common Memory Issues
+
+#### Issue: Memory Leak in Arena
+**Symptom:** Program memory usage grows continuously
+**Cause:** Arena is not being destroyed after use
+**Solution:** Ensure `destroy_arena()` is called when the arena is no longer needed:
+
+```c
+void process_data() {
+  Arena* arena = create_arena(1024);
+  // ... process data ...
+  destroy_arena(arena);  // Don't forget this!
+}
+```
+
+#### Issue: Accessing Freed Memory
+**Symptom:** Program crashes with segmentation fault
+**Cause:** Accessing memory after arena destruction
+**Solution:** Ensure all references to arena-allocated memory are invalidated after arena destruction:
+
+```c
+void incorrect_usage() {
+  Arena* arena = create_arena(1024);
+  char* data = arena_alloc(arena, 100);
+  destroy_arena(arena);
+  printf("%s", data);  // WRONG: data is invalid after arena destruction
+}
+
+void correct_usage() {
+  Arena* arena = create_arena(1024);
+  char* data = arena_alloc(arena, 100);
+  // Copy data if needed beyond arena lifetime
+  char* persistent_data = strdup(data);
+  destroy_arena(arena);
+  printf("%s", persistent_data);
+  free(persistent_data);
+}
+```
+
+#### Issue: Running Out of Memory
+**Symptom:** Arena allocation fails
+**Cause:** Initial arena size too small or too many allocations
+**Solution:** Use larger initial size or create multiple arenas:
+
+```scheme
+;; Handle large data sets with appropriate arena size
+(define (process-large-data data)
+  (define estimated-size (* (length data) 16))  ;; 16 bytes per item estimate
+  (define arena (make-arena (max 1024 estimated-size)))
+  ;; Process data...
+  (destroy-arena arena))
+```
+
+#### Issue: Memory Fragmentation
+**Symptom:** Inefficient memory usage
+**Cause:** Interleaved allocations between different arenas
+**Solution:** Group related allocations in the same arena:
+
+```scheme
+;; Bad: Interleaved allocations
+(define arena1 (make-arena 1024))
+(define arena2 (make-arena 1024))
+(define a1 (arena-alloc arena1 100))
+(define b1 (arena-alloc arena2 100))
+(define a2 (arena-alloc arena1 100))
+(define b2 (arena-alloc arena2 100))
+
+;; Good: Grouped allocations
+(define arena1 (make-arena 1024))
+(define arena2 (make-arena 1024))
+(define a1 (arena-alloc arena1 100))
+(define a2 (arena-alloc arena1 100))
+(define b1 (arena-alloc arena2 100))
+(define b2 (arena-alloc arena2 100))
+```
+
+For more information on memory management and its implementation details, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation (coming soon).

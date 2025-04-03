@@ -1,5 +1,14 @@
 # Function Composition in Eshkol
 
+## Table of Contents
+- [Overview](#overview)
+- [Closure Implementation](#closure-implementation)
+- [Core Components](#core-components)
+- [Code Examples](#code-examples)
+- [Best Practices](#best-practices)
+- [Performance Considerations](#performance-considerations)
+- [Troubleshooting](#troubleshooting)
+
 ## Overview of Function Composition
 
 Function composition is a core feature of Eshkol, allowing developers to build complex operations by combining simpler functions. This functional programming approach enables cleaner, more modular code with improved reusability.
@@ -9,211 +18,226 @@ graph TD
     A[Function f] --> C[Composition f ∘ g]
     B[Function g] --> C
     C --> D[Result: f(g(x))]
-    
-    style A fill:#f9d5e5,stroke:#333,stroke-width:2px
-    style B fill:#f9d5e5,stroke:#333,stroke-width:2px
-    style C fill:#d0f0c0,stroke:#333,stroke-width:2px
-    style D fill:#d0f0c0,stroke:#333,stroke-width:2px
 ```
 
 ## Closure Implementation
 
 Closures in Eshkol are implemented using a combination of function pointers and environment structures. This allows functions to capture and retain access to variables from their defining scope.
 
-### Core Components
+```mermaid
+graph TD
+    A[Function Definition] --> B[EshkolClosure Structure]
+    B --> C[Function pointer]
+    B --> D[Environment]
+    D --> E[Parent environment]
+    D --> F[Captured values]
+    E --> G[Linked environments for nested scopes]
+```
 
-1. **EshkolClosure Structure**: Contains a function pointer and an environment
-2. **EshkolEnvironment**: Stores captured variables and their values
-3. **Environment Chain**: Linked environments for nested scopes
+## Core Components
+
+### 1. **EshkolClosure Structure**: Contains a function pointer and an environment
 
 ```c
 typedef struct {
     void* (*function)(void**, EshkolEnvironment*);  // Function pointer
     EshkolEnvironment* environment;                // Captured environment
 } EshkolClosure;
+```
 
+### 2. **EshkolEnvironment**: Stores captured variables and their values
+
+```c
 typedef struct EshkolEnvironment {
     struct EshkolEnvironment* parent;  // Parent environment
     void** values;                     // Captured values
     size_t value_count;                // Number of values
-    uint64_t ref_count;                // Reference count for memory management
-    // Additional fields omitted for brevity
 } EshkolEnvironment;
 ```
 
-## Function Composition Examples
+### 3. **Environment Chain**: Linked environments for nested scopes
 
-### Basic Composition
-
-```scheme
-;; Define simple functions
-(define square (lambda (x) (* x x)))
-(define add1 (lambda (x) (+ x 1)))
-(define double-value (lambda (x) (* x 2)))
-
-;; Compose functions
-(define (compose f g)
-  (lambda (x) (f (g x))))
-
-;; Create composed functions
-(define square-then-add1 (compose add1 square))
-(define add1-then-square (compose square add1))
-
-;; Usage
-(square-then-add1 5)  ;; add1(square(5)) = add1(25) = 26
-(add1-then-square 5)  ;; square(add1(5)) = square(6) = 36
+```c
+// Parent environment
+EshkolEnvironment* parent = create_environment(NULL);
+// Child environment with access to parent
+EshkolEnvironment* child = create_environment(parent);
 ```
 
-### Multi-Function Composition
+## Code Examples
+
+### Basic Function Composition
 
 ```scheme
-;; Compose multiple functions
-(define (compose-all . funcs)
-  (lambda (x)
-    (foldr (lambda (f result) (f result)) 
-           x 
-           funcs)))
-
-;; Create a pipeline of functions
-(define pipeline (compose-all double-value add1 square))
-
-;; Usage
-(pipeline 5)  ;; double-value(add1(square(5))) = double-value(add1(25)) = double-value(26) = 52
-```
-
-## Relationship Between Closures and Environments
-
-When a closure is created, it captures its lexical environment, including any variables referenced in the function body but defined in an outer scope.
-
-```scheme
-(define (make-counter start)
-  (let ((count start))
-    (lambda ()
-      (set! count (+ count 1))
-      count)))
-
-(define counter1 (make-counter 0))
-(define counter2 (make-counter 10))
-
-(counter1)  ;; 1
-(counter1)  ;; 2
-(counter2)  ;; 11
-```
-
-In this example:
-1. `make-counter` returns a closure that captures the `count` variable
-2. Each call to `make-counter` creates a new environment with its own `count`
-3. `counter1` and `counter2` are separate closures with different environments
-
-## Optimization Techniques
-
-Eshkol employs several optimization techniques for function composition:
-
-### 1. Inlining
-
-Small functions are often inlined to eliminate function call overhead:
-
-```scheme
-;; Original code
-(define (add1 x) (+ x 1))
+;; Define two simple functions
 (define (square x) (* x x))
-(define result (square (add1 5)))
+(define (add-one x) (+ x 1))
 
-;; After inlining optimization
-;; Effectively becomes:
-(define result (* (+ 5 1) (+ 5 1)))
-(define result 36)
+;; Compose them: first add-one, then square
+(define square-after-add-one (compose square add-one))
+
+;; Usage
+(square-after-add-one 4)  ; Returns 25: (4+1)^2 = 5^2 = 25
 ```
 
-### 2. Tail Call Optimization
-
-Eshkol implements proper tail call optimization to prevent stack overflow in recursive compositions:
+### Creating and Using Closures
 
 ```scheme
-;; Recursive function with tail call
-(define (map f lst)
-  (if (null? lst)
-      '()
-      (cons (f (car lst))
-            (map f (cdr lst)))))
+;; Create a function that captures its environment
+(define (make-adder n)
+  (lambda (x) (+ x n)))
 
-;; This compiles to a loop in C, avoiding stack growth
+;; Create closures with different captured values
+(define add-five (make-adder 5))
+(define add-ten (make-adder 10))
+
+;; Usage
+(add-five 3)  ; Returns 8
+(add-ten 3)   ; Returns 13
 ```
 
-### 3. Environment Pruning
-
-The compiler analyzes which variables are actually used by closures and only captures those, reducing memory overhead:
+### Advanced Composition with Multiple Arguments
 
 ```scheme
-;; Before optimization
-(let ((a 1) (b 2) (c 3))
-  (lambda (x) (+ x a)))  ;; Captures a, b, c
+;; Define a function that takes multiple arguments
+(define (weighted-sum a b weight)
+  (+ (* a weight) (* b (- 1 weight))))
 
-;; After environment pruning
-(let ((a 1) (b 2) (c 3))
-  (lambda (x) (+ x a)))  ;; Only captures a
-```
+;; Partially apply the function to create a new function
+(define (make-weighted-averager weight)
+  (lambda (a b) (weighted-sum a b weight)))
 
-### 4. Closure Specialization
+;; Create specific averagers
+(define equal-weight (make-weighted-averager 0.5))
+(define favor-first (make-weighted-averager 0.8))
 
-When a closure is called with constant arguments, the compiler can create specialized versions:
-
-```scheme
-;; Original higher-order function
-(define (multiplier n)
-  (lambda (x) (* x n)))
-
-;; When used with a constant
-(define double (multiplier 2))
-
-;; Can be specialized to:
-(define double (lambda (x) (* x 2)))
-```
-
-## Implementation Details
-
-The function composition system is implemented in the following files:
-
-- `src/core/utils/closure.c` - Core closure implementation
-- `src/core/utils/closure_environment.c` - Environment management
-- `src/core/utils/closure_management.c` - Closure lifecycle functions
-
-## Advanced Usage: Higher-Order Functions
-
-Eshkol supports a rich set of higher-order functions for working with collections:
-
-```scheme
-;; Map: Apply a function to each element
-(define (map f lst)
-  (if (null? lst)
-      '()
-      (cons (f (car lst))
-            (map f (cdr lst)))))
-
-;; Filter: Keep elements that satisfy a predicate
-(define (filter pred lst)
-  (cond ((null? lst) '())
-        ((pred (car lst))
-         (cons (car lst) (filter pred (cdr lst))))
-        (else (filter pred (cdr lst)))))
-
-;; Reduce: Combine elements using a function
-(define (reduce f init lst)
-  (if (null? lst)
-      init
-      (reduce f (f init (car lst)) (cdr lst))))
-
-;; Usage example
-(define numbers '(1 2 3 4 5))
-(define squares (map square numbers))
-(define even-squares (filter even? squares))
-(define sum (reduce + 0 even-squares))
+;; Usage
+(equal-weight 10 20)  ; Returns 15: 10*0.5 + 20*0.5
+(favor-first 10 20)   ; Returns 12: 10*0.8 + 20*0.2
 ```
 
 ## Best Practices
 
-1. **Favor composition over complex functions** - Build complex operations from simple, reusable functions
-2. **Use higher-order functions** - Leverage map, filter, reduce for cleaner code
-3. **Be mindful of closure capture** - Only capture what you need to minimize memory usage
-4. **Consider performance implications** - Use composition judiciously in performance-critical code
-5. **Leverage type annotations** - Add types to composed functions for better error checking and optimization
+### 1. Keep Functions Pure
+
+Pure functions (those without side effects) are easier to compose and reason about:
+
+```scheme
+;; Good: Pure function
+(define (add-tax price tax-rate)
+  (* price (+ 1 tax-rate)))
+
+;; Bad: Impure function with side effects
+(define (add-tax-and-log price tax-rate)
+  (let ((result (* price (+ 1 tax-rate))))
+    (println "Tax added: " result)
+    result))
+```
+
+### 2. Use Partial Application for Flexibility
+
+```scheme
+;; Create a general-purpose formatter
+(define (format-number num decimals)
+  (string-format "%.{decimals}f" num))
+
+;; Create specialized formatters through partial application
+(define format-currency (lambda (num) (format-number num 2)))
+(define format-percentage (lambda (num) (format-number (* num 100) 1)))
+```
+
+### 3. Compose Small, Single-Purpose Functions
+
+```scheme
+;; Small, focused functions
+(define (parse-int str) (string->number str))
+(define (is-even? num) (= (remainder num 2) 0))
+(define (format-result x) (if x "even" "odd"))
+
+;; Compose them for a complete operation
+(define is-string-even?
+  (compose format-result is-even? parse-int))
+```
+
+## Performance Considerations
+
+Function composition in Eshkol is designed to be efficient, but there are some considerations:
+
+1. **Closure Creation Cost**: Creating closures has a small overhead due to environment allocation
+2. **Call Depth**: Deeply nested function compositions can impact performance
+3. **Memory Usage**: Captured environments persist as long as the closure exists
+
+### Optimizing Composition Performance
+
+```scheme
+;; Less efficient: Creates intermediate closures
+(define f (compose h (compose g (compose f e))))
+
+;; More efficient: Single composition operation
+(define f (compose-all h g f e))
+```
+
+## Troubleshooting
+
+### Common Issues
+
+#### Issue: Unexpected Variable Values
+**Symptom:** Closure captures unexpected variable values
+**Cause:** Variables are captured by reference, not by value
+**Solution:** Ensure variables have their intended values when the closure is created
+
+```scheme
+;; Problematic code
+(define (make-functions)
+  (let ((functions '()))
+    (for-each (lambda (i)
+                (set! functions (cons (lambda () i) functions)))
+              (range 0 5))
+    (reverse functions)))
+
+;; Fixed version
+(define (make-functions)
+  (let ((functions '()))
+    (for-each (lambda (i)
+                (let ((captured-i i))  ; Create new binding for each iteration
+                  (set! functions (cons (lambda () captured-i) functions))))
+              (range 0 5))
+    (reverse functions)))
+```
+
+#### Issue: Memory Leaks
+**Symptom:** Increasing memory usage with many closures
+**Cause:** Environments not being released
+**Solution:** Limit closure lifetime or manually clear references
+
+```scheme
+;; Create a closure with a cleanup function
+(define (with-resource resource action)
+  (let ((result (action resource)))
+    (cleanup resource)  ; Explicitly clean up
+    result))
+```
+
+#### Issue: Stack Overflow
+**Symptom:** Stack overflow with deeply nested compositions
+**Cause:** Too many nested function calls
+**Solution:** Use tail-call optimization or iterative approaches
+
+```scheme
+;; Potentially problematic with deep recursion
+(define (map-compose f g lst)
+  (if (null? lst)
+      '()
+      (cons ((compose f g) (car lst))
+            (map-compose f g (cdr lst)))))
+
+;; Better: Use tail recursion
+(define (map-compose f g lst)
+  (let loop ((lst lst) (result '()))
+    (if (null? lst)
+        (reverse result)
+        (loop (cdr lst) 
+              (cons ((compose f g) (car lst)) result)))))
+```
+
+For more information on function composition and its applications, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation (coming soon).

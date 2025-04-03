@@ -1,26 +1,48 @@
 # Type System in Eshkol
 
-## Gradual Typing
+## Table of Contents
+- [Overview](#overview)
+- [Gradual Typing](#gradual-typing)
+- [Typing Approaches](#typing-approaches)
+- [Type Inference](#type-inference)
+- [Type-Directed Optimizations](#type-directed-optimizations)
+- [Code Examples](#code-examples)
+- [Common Type Errors](#common-type-errors)
+- [Best Practices](#best-practices)
+
+## Overview
 
 Eshkol implements a gradual typing system that combines the flexibility of dynamic typing with the safety and performance of static typing. This approach allows developers to choose the appropriate level of type annotation based on their needs.
 
 ```mermaid
 graph TD
-    A[Eshkol Code] --> B{Type Annotations?}
+    A[Eshkol Code] --> B[Type Annotations?]
     B -->|Yes| C[Static Type Checking]
     B -->|No| D[Dynamic Type Inference]
     C --> E[Type-Directed Optimizations]
-    D --> F[Runtime Type Checking]
-    E --> G[Generated C Code]
-    F --> G
-    
-    style A fill:#f9d5e5,stroke:#333,stroke-width:2px
-    style B fill:#eeeeee,stroke:#333,stroke-width:2px
-    style C fill:#d0f0c0,stroke:#333,stroke-width:2px
-    style D fill:#d0f0c0,stroke:#333,stroke-width:2px
-    style E fill:#d0f0c0,stroke:#333,stroke-width:2px
-    style F fill:#d0f0c0,stroke:#333,stroke-width:2px
-    style G fill:#d0f0c0,stroke:#333,stroke-width:2px
+    D --> E
+    E --> F[Generated C Code]
+    F --> G[Runtime Type Checking]
+```
+
+## Gradual Typing
+
+Eshkol's gradual typing system allows you to mix statically typed and dynamically typed code within the same program. This provides flexibility while still enabling type safety where needed.
+
+```scheme
+;; Dynamically typed function
+(define (add-dynamic a b)
+  (+ a b))
+
+;; Statically typed function
+(define (add-static : (Int -> Int -> Int))
+  (lambda (a b) (+ a b)))
+
+;; Mixed usage
+(add-dynamic 1 2)       ; Works fine
+(add-dynamic "a" "b")   ; Runtime error: Cannot add strings
+(add-static 1 2)        ; Works fine
+(add-static "a" "b")    ; Compile-time error: Type mismatch
 ```
 
 ## Typing Approaches
@@ -32,180 +54,256 @@ Eshkol supports three main approaches to typing:
 The compiler automatically infers types without explicit annotations:
 
 ```scheme
+;; Define a function
 (define add (lambda (a b) (+ a b)))
+
+;; Types inferred as integers
 (define result (add 5 10))  ; Types inferred as integers
 ```
 
 ### 2. Inline Explicit Typing
 
-Types can be specified directly in function parameters and return values:
+Types can be explicitly specified inline:
 
 ```scheme
-(define add (lambda (a : Int b : Int) : Int (+ a b)))
-```
-
-### 3. Separate Type Declarations
-
-Types can be declared separately from function definitions:
-
-```scheme
-(declare add (-> (Int Int) Int))
-(define add (lambda (a b) (+ a b)))
-```
-
-## Type System Features
-
-### Basic Types
-
-Eshkol provides a rich set of built-in types:
-
-| Type | Description | Example |
-|------|-------------|---------|
-| `Void` | No value | `(void)` |
-| `Boolean` | True or false | `#t`, `#f` |
-| `Int` | 32-bit integer | `42` |
-| `Int8`, `Int16`, `Int64` | Sized integers | `42i8`, `42i16`, `42i64` |
-| `UInt`, `UInt8`, etc. | Unsigned integers | `42u`, `42u8` |
-| `Float` | 32-bit floating point | `3.14` |
-| `Double` | 64-bit floating point | `3.14d0` |
-| `Char` | Unicode character | `#\a` |
-| `String` | Text string | `"hello"` |
-| `Symbol` | Unique identifier | `'symbol` |
-
-### Compound Types
-
-Eshkol also supports various compound types:
-
-```scheme
-;; Pairs and Lists
-(define p : (Pair Int String) (cons 1 "one"))
-(define lst : (List Int) '(1 2 3 4))
-
-;; Vectors
-(define v : (Vector Float 3) (vector 1.0 2.0 3.0))
-
-;; Functions
-(define f : (-> (Int Int) Int) (lambda (x y) (+ x y)))
-
-;; Optional types
-(define maybe-value : (Optional Int) (if (> x 0) x #f))
-```
-
-### Type Inference Process
-
-The type inference system in Eshkol works through several phases:
-
-1. **Collection of explicit types** - Gather all explicit type annotations
-2. **Constraint generation** - Create type constraints from expressions
-3. **Constraint solving** - Resolve constraints to determine types
-4. **Type checking** - Verify type consistency
-5. **Type-directed optimization** - Use type information for optimizations
-
-## Integration with Scientific Computing
-
-Eshkol's type system has special support for scientific computing types:
-
-```scheme
-;; Vector types with known dimensions
-(define v : (Vector Float 3) (vector 1.0 2.0 3.0))
-
-;; Matrix types
-(define m : (Matrix Float 2 3) (matrix [[1.0 2.0 3.0] [4.0 5.0 6.0]]))
-
-;; Dual numbers for automatic differentiation
-(define x : (Dual Float) (dual 3.0 1.0))
-
-;; Tensor types
-(define t : (Tensor Float 3) (tensor [[[1.0 2.0] [3.0 4.0]] [[5.0 6.0] [7.0 8.0]]]))
-```
-
-## Type Safety and Flexibility
-
-Eshkol balances type safety with flexibility through several mechanisms:
-
-### Gradual Type Boundaries
-
-At the boundary between statically and dynamically typed code, the compiler inserts appropriate runtime checks:
-
-```scheme
-;; Statically typed function
-(define add : (-> (Int Int) Int)
+;; Explicitly typed function
+(define (add : (Int -> Int -> Int))
   (lambda (a b) (+ a b)))
 
-;; Dynamically typed function using a statically typed one
-(define process-data
-  (lambda (data)
-    (add (first data) (second data))))  ; Runtime check inserted here
+;; Explicitly typed variable
+(define x : Int 42)
 ```
 
-### Type Assertions and Predicates
+### 3. Structural Typing
 
-Eshkol provides built-in predicates for type checking:
+Eshkol supports structural typing for complex data types:
 
 ```scheme
-(if (integer? x)
-    (+ x 1)
-    (error "Expected an integer"))
+;; Define a record type
+(define-type Point
+  (record
+    (x : Float)
+    (y : Float)))
 
-;; Type assertion
-(define result (as Int (compute-value)))
+;; Create a point
+(define p : Point (make-Point 3.0 4.0))
+
+;; Function that works with any structure that has x and y fields
+(define (distance : ({x : Float, y : Float} -> Float))
+  (lambda (point)
+    (sqrt (+ (square point.x) (square point.y)))))
 ```
 
-## Implementation Details
+## Type Inference
 
-The type system is implemented in the following files:
+Eshkol's type inference system automatically determines the types of expressions without requiring explicit annotations. This makes the code more concise while still providing type safety.
 
-- `src/frontend/type_inference.c` - Main type inference engine
-- `src/frontend/type_inference/context.c` - Type context management
-- `src/frontend/type_inference/inference.c` - Type inference algorithms
-- `src/core/utils/type_creation.c` - Type representation and creation
+### How Type Inference Works
 
-## Advanced Type Features
-
-### Parametric Polymorphism
-
-Eshkol supports generic types and functions:
+1. The compiler analyzes the operations performed on values
+2. It assigns the most general type that satisfies all constraints
+3. It propagates type information through the program
+4. It reports errors when type constraints cannot be satisfied
 
 ```scheme
-;; Generic identity function
-(define id : (forall (T) (-> (T) T))
+;; The compiler infers that x is an integer
+(define x (+ 1 2))
+
+;; The compiler infers that y is a string
+(define y (string-append "hello" " world"))
+
+;; The compiler infers that z is a list of integers
+(define z (map (lambda (n) (* n 2)) '(1 2 3)))
+```
+
+## Type-Directed Optimizations
+
+Eshkol uses type information to perform various optimizations:
+
+1. **Specialized Operations**: When types are known, specialized versions of operations can be used
+2. **Unboxing**: Primitive values can be unboxed for better performance
+3. **Inline Expansion**: Functions can be inlined when their types are fully known
+4. **Dead Code Elimination**: Code paths that are unreachable due to type constraints can be eliminated
+
+## Code Examples
+
+### Basic Type Annotations
+
+```scheme
+;; Function with type annotation
+(define (square : (Number -> Number))
+  (lambda (x) (* x x)))
+
+;; Variable with type annotation
+(define pi : Float 3.14159)
+
+;; List with type annotation
+(define numbers : (List Int) '(1 2 3 4 5))
+```
+
+### Polymorphic Functions
+
+```scheme
+;; Polymorphic identity function
+(define (identity : (forall a. a -> a))
   (lambda (x) x))
 
-;; Generic list map function
-(define map : (forall (A B) (-> ((-> (A) B) (List A)) (List B)))
+;; Polymorphic map function
+(define (map : (forall a b. (a -> b) -> (List a) -> (List b)))
   (lambda (f lst)
     (if (null? lst)
         '()
-        (cons (f (car lst)) (map f (cdr lst))))))
-```
-
-### Type Constraints
-
-Types can be constrained to specific interfaces:
-
-```scheme
-;; Function that works on any numeric type
-(define square : (forall (T) (-> (T) T) where (Numeric T))
-  (lambda (x) (* x x)))
+        (cons (f (car lst))
+              (map f (cdr lst))))))
 ```
 
 ### Union Types
 
-Eshkol supports union types for values that could be one of several types:
+```scheme
+;; Define a union type
+(define-type Result
+  (union
+    (Success (value : Any))
+    (Error (message : String))))
+
+;; Function that returns a Result
+(define (safe-divide : (Number -> Number -> Result))
+  (lambda (a b)
+    (if (= b 0)
+        (make-Error "Division by zero")
+        (make-Success (/ a b)))))
+
+;; Pattern matching on union types
+(define (handle-result : (Result -> Any))
+  (lambda (result)
+    (match result
+      ((Success value) value)
+      ((Error message) (display message) #f))))
+```
+
+## Common Type Errors
+
+### Type Mismatch
 
 ```scheme
-;; Function that returns either a string or an integer
-(define get-value : (-> () (Union String Int))
-  (lambda ()
-    (if (> (random) 0.5)
-        "hello"
-        42)))
+;; Type error: Cannot add a number and a string
+(define (add-error x y)
+  (+ x "hello"))  ; Error: Expected Number, got String
 ```
+
+**Error Message**: Type mismatch: Expected Number but got String in argument to +
+
+### Undefined Variable
+
+```scheme
+;; Type error: Undefined variable
+(define (undefined-var)
+  (+ x 1))  ; Error: Undefined variable x
+```
+
+**Error Message**: Undefined variable: x
+
+### Wrong Number of Arguments
+
+```scheme
+;; Type error: Wrong number of arguments
+(define (two-args a b) (+ a b))
+(two-args 1)  ; Error: Wrong number of arguments
+```
+
+**Error Message**: Wrong number of arguments: expected 2, got 1
+
+### Incompatible Types in Conditional
+
+```scheme
+;; Type error: Incompatible types in conditional branches
+(define (conditional-error x)
+  (if x
+      42
+      "hello"))  ; Error: Branches have incompatible types
+```
+
+**Error Message**: Type mismatch in conditional branches: Int vs String
 
 ## Best Practices
 
-1. **Start with minimal type annotations** - Let the inference system work for you
-2. **Add types at API boundaries** - Ensure interfaces are well-typed
-3. **Use explicit types for complex functions** - Improve readability and catch errors early
-4. **Leverage type-directed optimizations** - Add types to performance-critical code
-5. **Use separate type declarations for library interfaces** - Keep implementation details flexible
+### 1. Start with Minimal Type Annotations
+
+Begin with minimal or no type annotations and add them incrementally as needed:
+
+```scheme
+;; Start without annotations
+(define (factorial n)
+  (if (<= n 1)
+      1
+      (* n (factorial (- n 1)))))
+
+;; Add annotations for clarity or safety
+(define (factorial : (Int -> Int))
+  (lambda (n)
+    (if (<= n 1)
+        1
+        (* n (factorial (- n 1))))))
+```
+
+### 2. Annotate Public Interfaces
+
+Always add type annotations to public functions and data structures:
+
+```scheme
+;; Public function with clear type annotation
+(define (parse-json : (String -> (Union JsonObject JsonError)))
+  (lambda (json-string)
+    ;; Implementation...
+    ))
+```
+
+### 3. Use Type Aliases for Complex Types
+
+Create type aliases to make complex types more readable:
+
+```scheme
+;; Without type alias
+(define process-data : ((List (Record (name : String) (age : Int))) -> (Map String Int))
+  (lambda (data) ...))
+
+;; With type alias
+(define-type Person (Record (name : String) (age : Int)))
+(define-type PersonDatabase (Map String Int))
+(define process-data : ((List Person) -> PersonDatabase)
+  (lambda (data) ...))
+```
+
+### 4. Leverage Polymorphism
+
+Use polymorphic types to create reusable functions:
+
+```scheme
+;; Generic function that works with any comparable type
+(define (find : (forall a. (a -> Boolean) -> (List a) -> (Maybe a)))
+  (lambda (predicate lst)
+    (if (null? lst)
+        (Nothing)
+        (if (predicate (car lst))
+            (Just (car lst))
+            (find predicate (cdr lst))))))
+```
+
+### 5. Combine Static and Dynamic Typing Appropriately
+
+Use static typing for critical code paths and dynamic typing for prototyping or less critical sections:
+
+```scheme
+;; Critical function with static typing
+(define (calculate-trajectory : (Vector -> Float -> Vector))
+  (lambda (initial-position time)
+    ;; Implementation with guaranteed type safety
+    ))
+
+;; Utility function with dynamic typing for flexibility
+(define (debug-print data)
+  (display (format-data data))
+  data)
+```
+
+For more information on the type system and its implementation details, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation (coming soon).

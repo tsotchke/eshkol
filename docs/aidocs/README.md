@@ -1,46 +1,87 @@
 # Eshkol Programming Language Documentation
 
+![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
+![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 ## Introduction
 
 Eshkol is a high-performance programming language that combines the elegance and expressiveness of Scheme with the performance and efficiency of C. It features arena-based memory management, a gradual typing system, powerful function composition capabilities, and built-in support for scientific computing and automatic differentiation.
 
 The language is designed to be both approachable for beginners and powerful enough for advanced users, with a focus on performance-critical applications in scientific computing, machine learning, and systems programming.
 
+## Quick Start
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/openSVM/eshkol.git
+cd eshkol
+
+# Build the compiler
+make
+
+# Add to your PATH
+export PATH=$PATH:$(pwd)/bin
+```
+
+### Hello World Example
+
+```scheme
+;; hello.esh
+(println "Hello, Eshkol!")
+```
+
+Compile and run:
+
+```bash
+eshkol compile hello.esh
+./hello
+```
+
 ## Table of Contents
 
 ### Core Documentation
 
 - [Overview](OVERVIEW.md) - High-level overview of the Eshkol language
-- [Getting Started](GETTING_STARTED.md) - Installation and first steps
 - [Memory Management](MEMORY_MANAGEMENT.md) - Arena-based allocation system
 - [Type System](TYPE_SYSTEM.md) - Gradual typing and type inference
 - [Function Composition](FUNCTION_COMPOSITION.md) - Closures and function composition
 - [Automatic Differentiation](AUTODIFF.md) - Built-in autodiff capabilities
-- [Vector Operations](VECTOR_OPERATIONS.md) - SIMD-optimized vector math
-- [Compiler Architecture](COMPILER_ARCHITECTURE.md) - How the Eshkol compiler works
-- [Scheme Compatibility](SCHEME_COMPATIBILITY.md) - R5RS and R7RS-small support
-- [Knowledge Graph](KNOWLEDGE_GRAPH.md) - Relationships between language components
-- [Compilation Guide](COMPILATION_GUIDE.md) - Building Eshkol programs
-- [eBPF Guide](EBPF_GUIDE.md) - Compiling for eBPF targets
-- [Roadmap](ROADMAP.md) - Future development plans
+
+### Coming Soon
+
+The following documentation is under development and will be available in future updates:
+
+- Getting Started - Installation and first steps
+- Vector Operations - SIMD-optimized vector math
+- Compiler Architecture - How the Eshkol compiler works
+- Scheme Compatibility - R5RS and R7RS-small support
+- Knowledge Graph - Relationships between language components
+- Compilation Guide - Building Eshkol programs
+- eBPF Guide - Compiling for eBPF targets
+- Roadmap - Future development plans
 
 ### Examples and Tutorials
 
-- [BTree Map](examples/BTREE_MAP.md) - BTreeMap implementation
-- [Trie](examples/TRIE.md) - Trie data structure implementation
-- [Sorting Algorithms](examples/SORTING.md) - QuickSort and MergeSort
-- [Compression](examples/COMPRESSION.md) - Simple compression algorithms
-- [Neural Network](examples/NEURAL_NETWORK.md) - Neural network implementation
-- [Gradient Descent](examples/GRADIENT_DESCENT.md) - Optimization with autodiff
+The following examples are under development and will be available in future updates:
+
+- BTree Map - BTreeMap implementation
+- Trie - Trie data structure implementation
+- Sorting Algorithms - QuickSort and MergeSort
+- Compression - Simple compression algorithms
+- Neural Network - Neural network implementation
+- Gradient Descent - Optimization with autodiff
 
 ## How to Navigate This Documentation
 
 This documentation is organized to support different learning paths:
 
-1. **New to Eshkol?** Start with the [Overview](OVERVIEW.md) and [Getting Started](GETTING_STARTED.md) guides.
+1. **New to Eshkol?** Start with the [Overview](OVERVIEW.md) and check back soon for the Getting Started guide.
 2. **Interested in language features?** Explore the core documentation sections on memory management, type system, etc.
-3. **Looking for examples?** Check out the examples directory for complete implementations of common algorithms and data structures.
-4. **Want to contribute?** See the [Roadmap](ROADMAP.md) for development priorities and opportunities to help.
+3. **Looking for examples?** Check back soon for the examples directory with complete implementations of common algorithms and data structures.
+4. **Want to contribute?** Check back soon for the Roadmap for development priorities and opportunities to help.
 
 Each document includes diagrams (using Mermaid) to visualize concepts, code examples to demonstrate usage, and explanations of the underlying principles.
 
@@ -55,11 +96,20 @@ If you want to generate static images from the diagrams, you can use the Mermaid
 npm install -g @mermaid-js/mermaid-cli
 
 # Generate diagram images
-npx @mermaid-js/mermaid-cli -i docs/aidocs/OVERVIEW.md -o docs/aidocs/overview_diagram.png
+mmdc -i docs/aidocs/AUTODIFF.md -o diagrams/autodiff.png
 ```
 
-Note: The diagrams in this documentation are designed to be viewed directly in Markdown and don't require image generation for normal usage.
+## Contributing
+
+We welcome contributions to both the Eshkol language and its documentation. If you'd like to contribute:
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
+
+Please ensure your documentation follows the established format and includes appropriate diagrams and examples.
 
 ## License
 
-The Eshkol language and this documentation are licensed under [LICENSE INFORMATION].
+Eshkol is licensed under the MIT License. See the LICENSE file for details.

@@ -1,5 +1,13 @@
 # Automatic Differentiation in Eshkol
 
+## Table of Contents
+- [Overview](#overview)
+- [Forward-Mode and Reverse-Mode Differentiation](#forward-mode-and-reverse-mode-differentiation)
+- [Implementation Details](#implementation-details)
+- [Code Examples](#code-examples)
+- [Practical Example: Neural Network Training](#practical-example-neural-network-training)
+- [Troubleshooting](#troubleshooting)
+
 ## Overview of Automatic Differentiation
 
 Automatic differentiation (AD) is a computational technique for efficiently and accurately evaluating derivatives of numeric functions. Unlike numerical differentiation (which uses finite differences) or symbolic differentiation, automatic differentiation computes exact derivatives by applying the chain rule systematically to elementary operations.
@@ -7,18 +15,11 @@ Automatic differentiation (AD) is a computational technique for efficiently and 
 ```mermaid
 graph TD
     A[Function Definition] --> B[Computational Graph]
-    B --> C{AD Mode}
+    B --> C[AD Mode]
     C -->|Forward Mode| D[Forward Accumulation]
     C -->|Reverse Mode| E[Reverse Accumulation]
     D --> F[Gradient Computation]
     E --> F
-    
-    style A fill:#f9d5e5,stroke:#333,stroke-width:2px
-    style B fill:#eeeeee,stroke:#333,stroke-width:2px
-    style C fill:#eeeeee,stroke:#333,stroke-width:2px
-    style D fill:#d0f0c0,stroke:#333,stroke-width:2px
-    style E fill:#d0f0c0,stroke:#333,stroke-width:2px
-    style F fill:#d0f0c0,stroke:#333,stroke-width:2px
 ```
 
 ## Forward-Mode and Reverse-Mode Differentiation
@@ -50,7 +51,7 @@ Reverse-mode AD first evaluates the function to build a computational graph, the
 
 ```scheme
 ;; Define a function
-(define (f x y) (+ (* x x) (* y y)))
+(define (f x y) (+ (* x x) (* x y) (* y y)))
 
 ;; Create a computational node
 (define result (f (node 2.0) (node 3.0)))  ; Result is 13.0
@@ -75,7 +76,10 @@ typedef struct {
     float derivative;
 } DualNumber;
 
+// Create a dual number
 DualNumber dual_number_create(float value, float derivative);
+
+// Arithmetic operations
 DualNumber dual_number_add(DualNumber a, DualNumber b);
 DualNumber dual_number_mul(DualNumber a, DualNumber b);
 // Additional operations...
@@ -100,6 +104,7 @@ typedef struct ComputationalNode {
     // Additional fields...
 } ComputationalNode;
 
+// Compute gradients
 void compute_gradients(ComputationalNode* node);
 ```
 
@@ -133,151 +138,78 @@ void compute_gradients(ComputationalNode* node);
 (grad-f 2 3)  ; Returns [7, 8]
 ```
 
-### Computing Jacobian Matrices
+## Practical Example: Neural Network Training
+
+Here's how you can implement a simple neural network training loop using Eshkol's automatic differentiation:
 
 ```scheme
-;; Define a vector-valued function: f(x, y) = [x^2 + y, x*y]
-(define (f x y)
-  (vector (+ (* x x) y) (* x y)))
+(define (neural-network x w1 w2)
+  (let* ((layer1 (matrix-multiply x w1))
+         (activation1 (relu layer1))
+         (layer2 (matrix-multiply activation1 w2)))
+    layer2))
 
-;; Compute the Jacobian matrix
-(define J (jacobian f))
+(define (loss-function prediction actual)
+  (mean-squared-error prediction actual))
 
-;; Evaluate the Jacobian at (2, 3)
-(J 2 3)  ; Returns [[4, 1], [3, 2]]
+(define (train-step x y w1 w2 learning-rate)
+  ;; Forward pass with automatic differentiation tracking
+  (let* ((prediction (neural-network x w1 w2))
+         (loss (loss-function prediction y))
+         ;; Compute gradients using reverse-mode AD
+         (gradients (backward loss)))
+    
+    ;; Update weights using gradients
+    (set! w1 (matrix-subtract w1 (matrix-scale (gradient w1) learning-rate)))
+    (set! w2 (matrix-subtract w2 (matrix-scale (gradient w2) learning-rate)))
+    
+    (values loss w1 w2)))
 ```
 
-## Integration with the Type System
+## Troubleshooting
 
-Eshkol's automatic differentiation is deeply integrated with its type system:
+### Common Issues
+
+#### Issue: Incorrect Gradients
+**Symptom:** Gradients have unexpected values or NaN
+**Cause:** Often due to computational graph issues or numerical instability
+**Solution:** Check for proper node creation and ensure values are within reasonable ranges
 
 ```scheme
-;; Function with explicit types
-(define f : (-> (Float) Float)
-  (lambda (x) (* x x)))
-
-;; Gradient function has the same type signature
-(define df : (-> (Float) Float)
-  (gradient f))
-
-;; Dual numbers have their own type
-(define x : (Dual Float) (dual 3.0 1.0))
-
-;; Vector functions for gradient computation
-(define g : (-> ((Vector Float 3)) Float)
-  (lambda (v) (vector-dot v v)))
-
-;; Gradient of vector function returns a vector
-(define dg : (-> ((Vector Float 3)) (Vector Float 3))
-  (gradient g))
+;; Debug gradients by printing intermediate values
+(define (debug-gradients f x)
+  (let* ((result (f (node x)))
+         (_ (backward result))
+         (grad (gradient (node x))))
+    (println "f(" x ") = " (node-value result))
+    (println "df/dx(" x ") = " grad)
+    grad))
 ```
 
-## Applications in Machine Learning and Optimization
-
-### Gradient Descent Optimization
+#### Issue: Memory Leaks
+**Symptom:** Increasing memory usage during repeated AD operations
+**Cause:** Computational graph nodes not being properly released
+**Solution:** Use the `reset-gradients` function after each optimization step
 
 ```scheme
-;; Define an objective function to minimize
-(define (objective x y)
-  (+ (* x x) (* 2 y y)))
-
-;; Compute the gradient
-(define grad (gradient objective))
-
-;; Gradient descent optimization
-(define (optimize initial-x initial-y learning-rate iterations)
-  (let loop ((x initial-x)
-             (y initial-y)
-             (i 0))
-    (if (>= i iterations)
-        (vector x y)
-        (let* ((g (grad x y))
-               (new-x (- x (* learning-rate (vector-ref g 0))))
-               (new-y (- y (* learning-rate (vector-ref g 1)))))
-          (loop new-x new-y (+ i 1))))))
-
-;; Optimize starting from (5, 5) with learning rate 0.1 for 100 iterations
-(optimize 5.0 5.0 0.1 100)
+;; Proper cleanup after gradient computation
+(define (optimize f x learning-rate steps)
+  (let loop ((x x) (i 0))
+    (if (>= i steps)
+        x
+        (let* ((result (f (node x)))
+               (_ (backward result))
+               (grad (gradient (node x)))
+               (new-x (- x (* learning-rate grad))))
+          (reset-gradients)  ;; Important: clean up computational graph
+          (loop new-x (+ i 1))))))
 ```
 
-### Neural Network Training
+## Performance Considerations
 
-```scheme
-;; Define a simple neural network
-(define (neural-network x w1 w2 b1 b2)
-  (let* ((hidden (tanh (+ (* w1 x) b1)))
-         (output (+ (* w2 hidden) b2)))
-    output))
+- Forward-mode AD is more efficient for functions with few inputs
+- Reverse-mode AD is more efficient for functions with many inputs and few outputs
+- For large models, consider using batched operations to improve performance
+- The computational graph size grows with the complexity of your function, so reset gradients regularly
 
-;; Define loss function (mean squared error)
-(define (loss x y w1 w2 b1 b2)
-  (let* ((pred (neural-network x w1 w2 b1 b2))
-         (error (- pred y)))
-    (* error error)))
-
-;; Compute gradients with respect to parameters
-(define loss-grad (gradient loss))
-
-;; Update parameters using gradients
-(define (train-step x y w1 w2 b1 b2 learning-rate)
-  (let* ((grads (loss-grad x y w1 w2 b1 b2))
-         (dw1 (vector-ref grads 2))
-         (dw2 (vector-ref grads 3))
-         (db1 (vector-ref grads 4))
-         (db2 (vector-ref grads 5)))
-    (vector (- w1 (* learning-rate dw1))
-            (- w2 (* learning-rate dw2))
-            (- b1 (* learning-rate db1))
-            (- b2 (* learning-rate db2)))))
-```
-
-## Advanced Features
-
-### Higher-Order Derivatives
-
-Eshkol supports computing higher-order derivatives by applying the gradient function multiple times:
-
-```scheme
-;; Define a function
-(define (f x) (* x x x))  ; f(x) = x^3
-
-;; First derivative: f'(x) = 3x^2
-(define df (gradient f))
-
-;; Second derivative: f''(x) = 6x
-(define d2f (gradient df))
-
-;; Evaluate second derivative at x = 4
-(d2f 4)  ; Returns 24
-```
-
-### Hessian Computation
-
-For multivariate functions, Eshkol can compute the Hessian matrix (matrix of second derivatives):
-
-```scheme
-;; Define a multivariate function
-(define (f x y) (+ (* x x y) (* y y)))
-
-;; Compute the Hessian matrix
-(define H (hessian f))
-
-;; Evaluate the Hessian at (2, 3)
-(H 2 3)  ; Returns [[0, 2], [2, 2]]
-```
-
-## Best Practices
-
-1. **Use forward-mode for functions with few inputs** - More efficient for scalar-to-vector functions
-2. **Use reverse-mode for functions with many inputs** - More efficient for neural networks and large parameter spaces
-3. **Leverage type annotations** - Helps catch errors in differentiation code
-4. **Avoid non-differentiable operations** - Operations like `abs` or `floor` can cause issues
-5. **Use higher-order derivatives judiciously** - They increase computational cost
-6. **Batch computations when possible** - More efficient for large-scale optimization
-
-## Limitations and Considerations
-
-1. **Memory usage in reverse-mode** - Storing the computational graph can be memory-intensive
-2. **Non-differentiable points** - Functions with discontinuities require special handling
-3. **Numerical stability** - Very large or small values can lead to precision issues
-4. **Performance considerations** - Complex functions may have significant overhead
+For more information on optimizing automatic differentiation performance, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation (coming soon).
