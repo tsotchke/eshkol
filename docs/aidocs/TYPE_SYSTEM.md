@@ -306,4 +306,4 @@ Use static typing for critical code paths and dynamic typing for prototyping or 
   data)
 ```
 
-For more information on the type system and its implementation details, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation (coming soon).
+For more information on the type system and its implementation details, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation.

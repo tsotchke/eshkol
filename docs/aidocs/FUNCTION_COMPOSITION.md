@@ -240,4 +240,4 @@ Function composition in Eshkol is designed to be efficient, but there are some c
               (cons ((compose f g) (car lst)) result)))))
 ```
 
-For more information on function composition and its applications, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation (coming soon).
+For more information on function composition and its applications, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation.

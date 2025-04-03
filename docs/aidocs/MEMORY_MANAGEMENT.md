@@ -275,4 +275,4 @@ void correct_usage() {
 (define b2 (arena-alloc arena2 100))
 ```
 
-For more information on memory management and its implementation details, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation (coming soon).
+For more information on memory management and its implementation details, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation.

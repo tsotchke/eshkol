@@ -212,4 +212,4 @@ Here's how you can implement a simple neural network training loop using Eshkol'
 - For large models, consider using batched operations to improve performance
 - The computational graph size grows with the complexity of your function, so reset gradients regularly
 
-For more information on optimizing automatic differentiation performance, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation (coming soon).
+For more information on optimizing automatic differentiation performance, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation.
