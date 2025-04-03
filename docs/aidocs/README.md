@@ -67,7 +67,7 @@ The following documentation is under development and will be available in future
 
 The following examples are under development and will be available in future updates:
 
-- BTree Map - BTreeMap implementation
+- B-tree Map - BTreeMap implementation
 - Trie - Trie data structure implementation
 - Sorting Algorithms - QuickSort and MergeSort
 - Compression - Simple compression algorithms
