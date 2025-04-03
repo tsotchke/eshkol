@@ -10,7 +10,11 @@
 #define ESHKOL_SIMD_H
 
 #include <stdbool.h>
+
+// Only include SIMD headers on x86/x64 architectures
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <xmmintrin.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
