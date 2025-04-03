@@ -9,6 +9,7 @@
 #include <string.h>
 #include <assert.h>
 #include <pthread.h>
+#include <stdint.h>
 
 /**
  * @brief Memory allocation record
