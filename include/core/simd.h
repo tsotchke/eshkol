@@ -10,6 +10,7 @@
 #define ESHKOL_SIMD_H
 
 #include <stdbool.h>
+#include <xmmintrin.h>
 
 #ifdef __cplusplus
 extern "C" {

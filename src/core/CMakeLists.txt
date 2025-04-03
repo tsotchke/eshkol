@@ -55,6 +55,9 @@ target_include_directories(eshkol_core
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+# Link with math library
+target_link_libraries(eshkol_core PRIVATE m)
+
 # Set compile definitions
 target_compile_definitions(eshkol_core
     PRIVATE

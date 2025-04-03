@@ -136,3 +136,5 @@ Testing/
 CTestTestfile.cmake
 test-results/
 coverage/
+examples/*.c
+examples/*.esk.c
