@@ -128,7 +128,7 @@ Create arenas that match the lifetime of the data they will contain:
 (define global-arena (make-arena 1024))
 (define (process-request request)
   (process-with-arena request global-arena))
-;; Memory keeps accumulating in global-arena
+;; Memory will accumulate in global-arena, potentially leading to excessive memory consumption.
 ```
 
 ### 2. Size Arenas Appropriately
