@@ -192,9 +192,9 @@ Create arenas that match the lifetime of the data they will contain:
   
   (define gc-time (- (current-time) start-time))
   
-  (println "Arena time: " arena-time)
-  (println "GC time: " gc-time)
-  (println "Ratio: " (/ gc-time arena-time)))
+  (display "Arena time: " arena-time)
+  (display "GC time: " gc-time)
+  (display "Ratio: " (/ gc-time arena-time)))
 ```
 
 ## Troubleshooting

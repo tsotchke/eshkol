@@ -87,11 +87,11 @@ sudo make install
 To compile a simple Eshkol program:
 
 ```bash
-# Create hello.esh
-echo '(println "Hello, Eshkol!")' > hello.esh
+# Create hello.esk
+echo '(display "Hello, Eshkol!")' > hello.esk
 
 # Compile
-eshkol compile hello.esh
+eshkol hello.esk
 
 # Run
 ./hello
@@ -110,7 +110,7 @@ The Eshkol compilation process involves several stages:
 You can inspect intermediate outputs with the `--save-temps` flag:
 
 ```bash
-eshkol compile --save-temps program.esh
+eshkol compile --save-temps program.esk
 ```
 
 This will generate:
@@ -128,10 +128,10 @@ For larger projects with multiple files:
 # Project structure
 project/
 ├── src/
-│   ├── main.esh
-│   └── utils.esh
+│   ├── main.esk
+│   └── utils.esk
 └── include/
-    └── types.esh
+    └── types.esk
 
 # Compile
 eshkol build --source-dir=src --include-dir=include --output=myapp
@@ -140,9 +140,9 @@ eshkol build --source-dir=src --include-dir=include --output=myapp
 Alternatively, use a build file:
 
 ```scheme
-;; build.esh
+;; build.esk
 (define-project "MyApp"
-  (sources "src/main.esh" "src/utils.esh")
+  (sources "src/main.esk" "src/utils.esk")
   (includes "include")
   (output "myapp"))
 ```
@@ -150,7 +150,7 @@ Alternatively, use a build file:
 Then compile with:
 
 ```bash
-eshkol build build.esh
+eshkol build build.esk
 ```
 
 ## Compilation Options
@@ -159,38 +159,38 @@ eshkol build build.esh
 
 ```bash
 # Specify output file
-eshkol compile program.esh -o program_name
+eshkol compile program.esk -o program_name
 
 # Set optimization level (0-3)
-eshkol compile program.esh -O2
+eshkol compile program.esk -O2
 
 # Include debug information
-eshkol compile program.esh -g
+eshkol compile program.esk -g
 
 # Specify include directories
-eshkol compile program.esh -I/path/to/includes
+eshkol compile program.esk -I/path/to/includes
 
 # Link with libraries
-eshkol compile program.esh -lm -lblas
+eshkol compile program.esk -lm -lblas
 ```
 
 ### Advanced Options
 
 ```bash
 # Generate only C code without compiling
-eshkol compile --emit=c program.esh
+eshkol compile --emit=c program.esk
 
 # Specify C compiler
-eshkol compile --cc=clang program.esh
+eshkol compile --cc=clang program.esk
 
 # Pass flags to C compiler
-eshkol compile --cflags="-march=native -ffast-math" program.esh
+eshkol compile --cflags="-march=native -ffast-math" program.esk
 
 # Control SIMD vectorization
-eshkol compile --simd=avx2 program.esh
+eshkol compile --simd=avx2 program.esk
 
 # Enable specific optimizations
-eshkol compile --inline --unroll-loops program.esh
+eshkol compile --inline --unroll-loops program.esk
 ```
 
 ## Optimizations
@@ -222,14 +222,14 @@ For maximum performance, use profile-guided optimization (PGO):
 
 ```bash
 # Step 1: Compile with instrumentation
-eshkol compile --profile-gen program.esh -o program
+eshkol compile --profile-gen program.esk -o program
 
 # Step 2: Run the program to collect profile data
 ./program
 # This generates program.profdata
 
 # Step 3: Recompile using the profile data
-eshkol compile --profile-use program.esh -o program
+eshkol compile --profile-use program.esk -o program
 ```
 
 ## Cross-Compilation
@@ -238,13 +238,13 @@ Eshkol supports cross-compilation for different target platforms:
 
 ```bash
 # Cross-compile for ARM
-eshkol compile --target=arm-linux-gnueabihf program.esh
+eshkol compile --target=arm-linux-gnueabihf program.esk
 
 # Cross-compile for Windows from Linux
-eshkol compile --target=x86_64-w64-mingw32 program.esh
+eshkol compile --target=x86_64-w64-mingw32 program.esk
 
 # Cross-compile for macOS from Linux
-eshkol compile --target=x86_64-apple-darwin program.esh
+eshkol compile --target=x86_64-apple-darwin program.esk
 ```
 
 ### Using Docker for Cross-Compilation
@@ -264,7 +264,7 @@ EOF
 docker build -t eshkol-build .
 
 # Compile inside Docker
-docker run -v $(pwd):/app eshkol-build eshkol compile program.esh
+docker run -v $(pwd):/app eshkol-build eshkol compile program.esk
 ```
 
 ## Debugging Compiled Code
@@ -274,14 +274,14 @@ docker run -v $(pwd):/app eshkol-build eshkol compile program.esh
 To include debug information in your compiled program:
 
 ```bash
-eshkol compile -g program.esh
+eshkol compile -g program.esk
 ```
 
 ### Using GDB
 
 ```bash
 # Compile with debug info
-eshkol compile -g program.esh
+eshkol compile -g program.esk
 
 # Debug with GDB
 gdb ./program
@@ -300,7 +300,7 @@ For memory debugging, use Valgrind:
 
 ```bash
 # Compile with debug info
-eshkol compile -g program.esh
+eshkol compile -g program.esk
 
 # Run with Valgrind
 valgrind --leak-check=full ./program
@@ -355,7 +355,7 @@ Error: Arena already destroyed at line 25, column 10
 
 ```bash
 # Compile with profiling
-eshkol compile -pg program.esh
+eshkol compile -pg program.esk
 
 # Run the program
 ./program
@@ -371,7 +371,7 @@ gprof ./program gmon.out > analysis.txt
 You can specify custom memory allocators for your program:
 
 ```bash
-eshkol compile --allocator=jemalloc program.esh
+eshkol compile --allocator=jemalloc program.esk
 ```
 
 ### Link-Time Optimization
@@ -379,7 +379,7 @@ eshkol compile --allocator=jemalloc program.esh
 Enable link-time optimization for better performance:
 
 ```bash
-eshkol compile --lto program.esh
+eshkol compile --lto program.esk
 ```
 
 ### Embedding Resources
@@ -387,7 +387,7 @@ eshkol compile --lto program.esh
 To embed resources in your executable:
 
 ```bash
-eshkol compile --embed-resource=data.txt program.esh
+eshkol compile --embed-resource=data.txt program.esk
 ```
 
 Access the resource in your code:
@@ -401,13 +401,13 @@ Access the resource in your code:
 To create a shared library:
 
 ```bash
-eshkol compile --shared -o libmylib.so library.esh
+eshkol compile --shared -o libmylib.so library.esklib
 ```
 
 To create a static library:
 
 ```bash
-eshkol compile --static -o libmylib.a library.esh
+eshkol compile --static -o libmylib.a library.esklib
 ```
 
 ### Compiler Plugins
@@ -419,7 +419,7 @@ Extend the compiler with plugins:
 eshkol plugin install my-plugin
 
 # Use the plugin during compilation
-eshkol compile --plugin=my-plugin program.esh
+eshkol compile --plugin=my-plugin program.esk
 ```
 
 For more information on specific aspects of the Eshkol language, refer to the following documentation:

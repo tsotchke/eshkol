@@ -397,10 +397,10 @@ The final compilation process:
 
 ```bash
 # 1. Eshkol compiler generates C code
-eshkol compile -c program.esh -o program.c
+eshkol compile -c program.esk -o program.esk.c
 
 # 2. C compiler compiles to native code
-gcc program.c -o program -leshkol_runtime
+gcc program.esk.c -o program -leshkol_runtime
 ```
 
 ## Runtime System
@@ -478,13 +478,13 @@ Eshkol provides various compilation flags to control optimization:
 
 ```bash
 # Set optimization level (0-3)
-eshkol compile --opt-level=3 program.esh
+eshkol compile --opt-level=3 program.esk
 
 # Enable/disable specific optimizations
-eshkol compile --inline --no-loop-unroll program.esh
+eshkol compile --inline --no-loop-unroll program.esk
 
 # Control SIMD vectorization
-eshkol compile --simd=avx2 program.esh
+eshkol compile --simd=avx2 program.esk
 ```
 
 ### Profiling and Benchmarking
@@ -493,7 +493,7 @@ Eshkol includes built-in profiling tools:
 
 ```bash
 # Compile with profiling
-eshkol compile --profile program.esh
+eshkol compile --profile program.esk
 
 # Run the program to collect profile data
 ./program

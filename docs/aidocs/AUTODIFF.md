@@ -181,8 +181,8 @@ Here's how you can implement a simple neural network training loop using Eshkol'
   (let* ((result (f (node x)))
          (_ (backward result))
          (grad (gradient (node x))))
-    (println "f(" x ") = " (node-value result))
-    (println "df/dx(" x ") = " grad)
+    (display "f(" x ") = " (node-value result))
+    (display "df/dx(" x ") = " grad)
     grad))
 ```
 

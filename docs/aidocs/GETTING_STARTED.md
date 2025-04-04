@@ -23,7 +23,7 @@ Before installing Eshkol, ensure you have the following prerequisites:
 
 ```bash
 # Clone the repository
-git clone https://github.com/openSVM/eshkol.git
+git clone https://github.com/tsotchke/eshkol.git
 cd eshkol
 
 # Build the compiler
@@ -55,17 +55,17 @@ brew install eshkol
 
 Let's create a simple "Hello, World!" program to verify your installation:
 
-1. Create a file named `hello.esh`:
+1. Create a file named `hello.esk`:
 
 ```scheme
-;; hello.esh
-(println "Hello, Eshkol!")
+;; hello.esk
+(display "Hello, Eshkol!")
 ```
 
 2. Compile the program:
 
 ```bash
-eshkol compile hello.esh
+eshkol hello.esk
 ```
 
 3. Run the compiled program:
@@ -114,15 +114,15 @@ Eshkol uses S-expressions for its syntax, similar to Scheme and other Lisp diale
 ```scheme
 ;; Iterate over a list
 (for-each (lambda (item)
-            (println item))
+            (display item))
           '(1 2 3 4 5))
 
 ;; Recursive loop
 (define (countdown n)
   (if (<= n 0)
-      (println "Blast off!")
+      (display "Blast off!")
       (begin
-        (println n)
+        (display n)
         (countdown (- n 1)))))
 ```
 
@@ -206,7 +206,7 @@ Add the following to your `.emacs` file:
 
 ```elisp
 (require 'eshkol-mode)
-(add-to-list 'auto-mode-alist '("\\.esh\\'" . eshkol-mode))
+(add-to-list 'auto-mode-alist '("\\.esk\\'" . eshkol-mode))
 ```
 
 #### Vim/Neovim
@@ -215,7 +215,7 @@ Add the following to your `.vimrc` or `init.vim`:
 
 ```vim
 Plug 'eshkol/vim-eshkol'
-autocmd BufNewFile,BufRead *.esh setfiletype eshkol
+autocmd BufNewFile,BufRead *.esk setfiletype eshkol
 ```
 
 ### Project Structure
@@ -225,12 +225,12 @@ A typical Eshkol project structure:
 ```
 my-project/
 ├── src/
-│   ├── main.esh
-│   └── utils.esh
+│   ├── main.esk
+│   └── utils.esk
 ├── include/
-│   └── types.esh
+│   └── types.esk
 ├── tests/
-│   └── test-utils.esh
+│   └── test-utils.esk
 ├── build/
 └── Makefile
 ```
@@ -241,10 +241,10 @@ Example Makefile:
 .PHONY: all clean test
 
 all:
-	eshkol build src/main.esh -o build/main
+	eshkol build src/main.esk -o build/main
 
 test:
-	eshkol test tests/*.esh
+	eshkol test tests/*.esk
 
 clean:
 	rm -rf build/*
@@ -257,7 +257,7 @@ clean:
 Eshkol comes with a built-in debugger:
 
 ```bash
-eshkol debug my-program.esh
+eshkol debug my-program.esk
 ```
 
 Common debugger commands:
@@ -286,7 +286,7 @@ Common debugger commands:
 
 ```bash
 # Run with profiling enabled
-eshkol profile my-program.esh
+eshkol profile my-program.esk
 
 # Generate profile report
 eshkol profile-report
