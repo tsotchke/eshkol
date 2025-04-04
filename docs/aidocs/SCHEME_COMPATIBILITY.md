@@ -277,7 +277,7 @@ Eshkol provides tools to import existing Scheme code with minimal modifications.
 The `eshkol import` tool can automatically convert Scheme code to Eshkol:
 
 ```bash
-eshkol import scheme-file.scm --output eshkol-file.esh
+eshkol import scheme-file.scm --output eshkol-file.esk
 ```
 
 ### Manual Conversion Steps

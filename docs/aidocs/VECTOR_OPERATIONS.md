@@ -120,10 +120,10 @@ You can control SIMD usage with compiler flags:
 
 ```bash
 # Disable SIMD
-eshkol compile --no-simd program.esh
+eshkol compile --no-simd program.esk
 
 # Force specific SIMD instruction set
-eshkol compile --simd=avx2 program.esh
+eshkol compile --simd=avx2 program.esk
 ```
 
 ## Matrix Operations
@@ -309,7 +309,7 @@ Eshkol's vector operations integrate seamlessly with its automatic differentiati
 **Cause:** SIMD optimizations might not be enabled
 **Solution:** Check compiler flags and ensure SIMD is enabled:
 ```bash
-eshkol compile --simd=auto program.esh
+eshkol compile --simd=auto program.esk
 ```
 
 #### Issue: Numerical Instability

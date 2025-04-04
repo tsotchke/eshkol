@@ -80,7 +80,7 @@ sudo apt-get update
 sudo apt-get install -y build-essential llvm clang libbpf-dev linux-headers-$(uname -r)
 
 # Install Eshkol with eBPF support
-git clone https://github.com/openSVM/eshkol.git
+git clone https://github.com/tsotchke/eshkol.git
 cd eshkol
 make ebpf-support
 sudo make install
@@ -214,23 +214,23 @@ Eshkol provides wrappers around eBPF helper functions:
 
 ```bash
 # Compile Eshkol program to eBPF object file
-eshkol compile --target=bpf -o xdp_program.o xdp_program.esh
+eshkol compile --target=bpf -o xdp_program.o xdp_program.esk
 ```
 
 ### Compilation Options
 
 ```bash
 # Enable BTF (BPF Type Format) for better debugging
-eshkol compile --target=bpf --btf -o program.o program.esh
+eshkol compile --target=bpf --btf -o program.o program.esk
 
 # Enable CO-RE (Compile Once, Run Everywhere)
-eshkol compile --target=bpf --core -o program.o program.esh
+eshkol compile --target=bpf --core -o program.o program.esk
 
 # Set optimization level
-eshkol compile --target=bpf -O2 -o program.o program.esh
+eshkol compile --target=bpf -O2 -o program.o program.esk
 
 # Generate LLVM IR for inspection
-eshkol compile --target=bpf --emit=llvm-ir -o program.ll program.esh
+eshkol compile --target=bpf --emit=llvm-ir -o program.ll program.esk
 ```
 
 ### Inspecting Compiled Programs
@@ -251,7 +251,7 @@ Eshkol generates a user space loader program that loads and manages the eBPF pro
 
 ```bash
 # Generate both eBPF object and loader
-eshkol compile --target=bpf --gen-loader -o program program.esh
+eshkol compile --target=bpf --gen-loader -o program program.esk
 
 # Run the loader
 sudo ./program
@@ -272,7 +272,7 @@ sudo ./program
     
     ;; Read from maps
     (let ((counter (bpf-map-lookup prog "packet-counter" 0)))
-      (println "Packet count: " counter))
+      (printf "Packet count: " counter))
     
     ;; Wait for Ctrl+C
     (wait-for-signal :sigint)
@@ -470,7 +470,7 @@ For better debugging, use BTF (BPF Type Format):
 
 ```bash
 # Compile with BTF support
-eshkol compile --target=bpf --btf -o program.o program.esh
+eshkol compile --target=bpf --btf -o program.o program.esk
 
 # Inspect BTF information
 bpftool btf dump file program.o
@@ -482,7 +482,7 @@ View verifier logs to understand program rejection:
 
 ```bash
 # Enable verbose logging
-eshkol compile --target=bpf --verbose -o program.o program.esh
+eshkol compile --target=bpf --verbose -o program.o program.esk
 
 # Or view logs during loading
 sudo cat /sys/kernel/debug/tracing/trace_pipe

@@ -4,7 +4,9 @@
 - [Overview](#overview)
 - [Closure Implementation](#closure-implementation)
 - [Core Components](#core-components)
+- [Composition Patterns](#composition-patterns)
 - [Code Examples](#code-examples)
+- [MCP Tools for Analysis](#mcp-tools-for-analysis)
 - [Best Practices](#best-practices)
 - [Performance Considerations](#performance-considerations)
 - [Troubleshooting](#troubleshooting)
@@ -20,9 +22,11 @@ graph TD
     C --> D[Result: f(g(x))]
 ```
 
+In Eshkol, function composition is implemented using closures and a dynamic registry system that enables efficient composition of functions with proper environment management.
+
 ## Closure Implementation
 
-Closures in Eshkol are implemented using a combination of function pointers and environment structures. This allows functions to capture and retain access to variables from their defining scope.
+Closures in Eshkol are implemented using a dynamic registry system that manages function pointers and environment structures. This allows functions to capture and retain access to variables from their defining scope.
 
 ```mermaid
 graph TD
@@ -34,18 +38,36 @@ graph TD
     E --> G[Linked environments for nested scopes]
 ```
 
+The closure system uses a dynamic registry rather than a fixed-size registry, allowing for scalable management of closures and efficient function composition.
+
 ## Core Components
 
-### 1. **EshkolClosure Structure**: Contains a function pointer and an environment
+### 1. **Dynamic Closure Registry**: Manages closures with a scalable approach
 
 ```c
+// Dynamic registry for closures
 typedef struct {
-    void* (*function)(void**, EshkolEnvironment*);  // Function pointer
-    EshkolEnvironment* environment;                // Captured environment
+    EshkolClosure** closures;  // Array of closure pointers
+    size_t capacity;           // Current capacity of the array
+    size_t count;              // Number of closures in the registry
+} ClosureRegistry;
+```
+
+### 2. **EshkolClosure Structure**: Contains a function pointer and an environment
+
+```c
+// Closure structure
+typedef struct {
+    ClosureFunction function;  // Direct function pointer
+    EshkolEnvironment* environment;
+    Type* return_type;
+    Type** param_types;
+    size_t param_count;
+    int registry_index;  // Index in the registry, or -1 if not registered
 } EshkolClosure;
 ```
 
-### 2. **EshkolEnvironment**: Stores captured variables and their values
+### 3. **EshkolEnvironment**: Stores captured variables and their values
 
 ```c
 typedef struct EshkolEnvironment {
@@ -55,13 +77,76 @@ typedef struct EshkolEnvironment {
 } EshkolEnvironment;
 ```
 
-### 3. **Environment Chain**: Linked environments for nested scopes
+### 4. **Specialized Function Composition**: Optimized for composing functions
 
 ```c
-// Parent environment
-EshkolEnvironment* parent = create_environment(NULL);
-// Child environment with access to parent
-EshkolEnvironment* child = create_environment(parent);
+// Composed function structure
+typedef struct {
+    EshkolClosure* f;  // First function to apply (outer)
+    EshkolClosure* g;  // Second function to apply (inner)
+} ComposedFunction;
+```
+
+## Composition Patterns
+
+Eshkol supports several function composition patterns:
+
+### 1. **Binary Composition**
+
+The simplest form of composition, combining two functions:
+
+```scheme
+(define (compose f g)
+  (lambda (x)
+    (f (g x))))
+```
+
+### 2. **N-ary Composition**
+
+Composing multiple functions in sequence:
+
+```scheme
+(define (compose-n . fns)
+  (lambda (x)
+    (apply-functions (reverse fns) x)))
+```
+
+### 3. **Array-based Composition**
+
+Using arrays for efficient composition of multiple functions:
+
+```scheme
+(define (make-function-array . fns)
+  (let ((size (length fns))
+        (fs (list->vector fns)))
+    (lambda (x)
+      (eval-array fs size x))))
+```
+
+### 4. **Dynamic Composition**
+
+Mutable function composition that can be modified at runtime:
+
+```scheme
+(define (make-mutable-function-array . fns)
+  (let ((fs (list->vector fns)))
+    (lambda (op . args)
+      (case op
+        ((apply) (eval-array fs (vector-length fs) (car args)))
+        ((get) (vector-ref fs (car args)))
+        ((set!) (vector-set! fs (car args) (cadr args)))
+        ((size) (vector-length fs))
+        (else (error "Unknown operation" op))))))
+```
+
+### 5. **Pipeline Composition**
+
+Left-to-right composition (as opposed to the traditional right-to-left):
+
+```scheme
+(define (pipeline . fns)
+  (lambda (x)
+    (fold (lambda (f acc) (f acc)) x fns)))
 ```
 
 ## Code Examples
@@ -71,13 +156,13 @@ EshkolEnvironment* child = create_environment(parent);
 ```scheme
 ;; Define two simple functions
 (define (square x) (* x x))
-(define (add-one x) (+ x 1))
+(define (add1 x) (+ x 1))
 
-;; Compose them: first add-one, then square
-(define square-after-add-one (compose square add-one))
+;; Compose them: first add1, then square
+(define square-after-add1 (compose square add1))
 
 ;; Usage
-(square-after-add-one 4)  ; Returns 25: (4+1)^2 = 5^2 = 25
+(square-after-add1 4)  ; Returns 25: (4+1)^2 = 5^2 = 25
 ```
 
 ### Creating and Using Closures
@@ -116,6 +201,60 @@ EshkolEnvironment* child = create_environment(parent);
 (favor-first 10 20)   ; Returns 12: 10*0.8 + 20*0.2
 ```
 
+### Triple Composition
+
+```scheme
+;; Create a triple composition
+(define add1-then-square-then-double 
+  (compose double (compose square add1)))
+
+;; Usage
+(add1-then-square-then-double 4)  ; Returns 50: double(square(add1(4))) = double(square(5)) = double(25) = 50
+```
+
+## MCP Tools for Analysis
+
+Eshkol provides MCP tools for analyzing function composition patterns and performance:
+
+### 1. **analyze-composition-chains**
+
+Analyzes function composition patterns in Eshkol code:
+
+```bash
+use_mcp_tool eshkol-tools analyze-composition-chains '{"filePath": "examples/function_composition.esk", "detail": "detailed", "format": "mermaid"}'
+```
+
+This tool provides insights into:
+- Optimization opportunities
+- Type issues
+- Memory management
+- Performance insights
+- JIT compilation candidates
+
+### 2. **analyze-binding-access**
+
+Analyzes how bindings are used in function composition:
+
+```bash
+use_mcp_tool eshkol-tools analyze-binding-access '{"filePath": "examples/function_composition.esk", "bindingName": "compose"}'
+```
+
+### 3. **analyze-lambda-captures**
+
+Analyzes lambda captures in function composition:
+
+```bash
+use_mcp_tool eshkol-tools analyze-lambda-captures '{"filePath": "examples/function_composition.esk", "detail": "detailed"}'
+```
+
+### 4. **visualize-closure-memory**
+
+Visualizes how closures are represented in memory:
+
+```bash
+use_mcp_tool eshkol-tools visualize-closure-memory '{"filePath": "examples/function_composition_closure.esk", "format": "mermaid"}'
+```
+
 ## Best Practices
 
 ### 1. Keep Functions Pure
@@ -130,7 +269,9 @@ Pure functions (those without side effects) are easier to compose and reason abo
 ;; Bad: Impure function with side effects
 (define (add-tax-and-log price tax-rate)
   (let ((result (* price (+ 1 tax-rate))))
-    (println "Tax added: " result)
+    (display "Tax added: ")
+    (display result)
+    (newline)
     result))
 ```
 
@@ -159,22 +300,57 @@ Pure functions (those without side effects) are easier to compose and reason abo
   (compose format-result is-even? parse-int))
 ```
 
+### 4. Consider Memory Management
+
+Be mindful of closure environments and memory usage:
+
+```scheme
+;; Use the dynamic closure system for efficient memory management
+(define (process-with-cleanup resource processor)
+  (let ((result (processor resource)))
+    ;; Cleanup is handled automatically by the dynamic closure system
+    result))
+```
+
+### 5. Use Type Annotations for Complex Compositions
+
+```scheme
+;; Type annotations help with complex compositions
+(define (compose-typed : ((b -> c) -> (a -> b) -> (a -> c)))
+  (lambda (f g)
+    (lambda (x)
+      (f (g x)))))
+```
+
 ## Performance Considerations
 
-Function composition in Eshkol is designed to be efficient, but there are some considerations:
+Function composition in Eshkol is designed to be efficient, with several optimizations:
 
-1. **Closure Creation Cost**: Creating closures has a small overhead due to environment allocation
-2. **Call Depth**: Deeply nested function compositions can impact performance
-3. **Memory Usage**: Captured environments persist as long as the closure exists
+### 1. **Dynamic Registry**
 
-### Optimizing Composition Performance
+The dynamic registry system allows for efficient management of closures without the limitations of a fixed-size registry.
+
+### 2. **JIT Compilation**
+
+Eshkol uses JIT compilation for frequently used function compositions, improving performance for hot paths.
+
+### 3. **Optimized Composition Patterns**
+
+Different composition patterns have different performance characteristics:
+
+- **Binary composition**: Simple and efficient for composing two functions
+- **N-ary composition**: More flexible but slightly less efficient
+- **Array-based composition**: More efficient for composing many functions
+- **Pipeline composition**: More intuitive for left-to-right composition
+
+### 4. **Memory Usage Optimization**
 
 ```scheme
 ;; Less efficient: Creates intermediate closures
 (define f (compose h (compose g (compose f e))))
 
 ;; More efficient: Single composition operation
-(define f (compose-all h g f e))
+(define f (compose-n h g f e))
 ```
 
 ## Troubleshooting
@@ -208,13 +384,13 @@ Function composition in Eshkol is designed to be efficient, but there are some c
 #### Issue: Memory Leaks
 **Symptom:** Increasing memory usage with many closures
 **Cause:** Environments not being released
-**Solution:** Limit closure lifetime or manually clear references
+**Solution:** Use the dynamic closure system which properly manages memory
 
 ```scheme
-;; Create a closure with a cleanup function
+;; The dynamic closure system handles cleanup automatically
 (define (with-resource resource action)
   (let ((result (action resource)))
-    (cleanup resource)  ; Explicitly clean up
+    ;; Cleanup happens automatically
     result))
 ```
 
@@ -240,4 +416,20 @@ Function composition in Eshkol is designed to be efficient, but there are some c
               (cons ((compose f g) (car lst)) result)))))
 ```
 
-For more information on function composition and its applications, see the [Compiler Architecture](COMPILER_ARCHITECTURE.md) documentation.
+#### Issue: Type Errors in Composition
+**Symptom:** Type errors when composing functions
+**Cause:** Incompatible function signatures
+**Solution:** Use type annotations and the MCP tools to analyze type issues
+
+```scheme
+;; Use the analyze-types MCP tool to identify type issues
+;; use_mcp_tool eshkol-tools analyze-types '{"filePath": "examples/function_composition.esk", "detail": "detailed"}'
+
+;; Use type annotations to catch errors at compile time
+(define (compose-typed : ((b -> c) -> (a -> b) -> (a -> c)))
+  (lambda (f g)
+    (lambda (x)
+      (f (g x)))))
+```
+
+For more information on function composition and its applications, see the [Scheme Compatibility](SCHEME_COMPATIBILITY.md) documentation and the [MCP Tools for Scheme](../scheme_compatibility/MCP_TOOLS_FOR_SCHEME.md) documentation.
