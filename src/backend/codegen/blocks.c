@@ -289,24 +289,8 @@ bool codegen_generate_do(CodegenContext* context, const AstNode* node) {
     for (size_t i = 0; i < node->as.do_expr.binding_count; i++) {
         // Get binding
         AstNode* binding = node->as.do_expr.bindings[i];
-        
-        // Get type context
-        TypeInferenceContext* type_context = codegen_context_get_type_context(context);
-        
-        // Get variable type
-        Type* var_type = type_inference_get_type(type_context, binding);
-        
-        // Generate type
-        if (var_type) {
-            fprintf(output, "%s ", codegen_type_to_c_type(var_type));
-        } else {
-            fprintf(output, "int ");
-        }
-        
-        // Generate variable name - use i directly instead of _do_var_
-        fprintf(output, "i = ");
-        
-        // Generate initial value
+
+       // Generate initial value
         if (!codegen_generate_expression(context, binding)) {
             return false;
         }
@@ -344,8 +328,12 @@ bool codegen_generate_do(CodegenContext* context, const AstNode* node) {
         }
         
         // Generate variable name - don't redeclare the type here
-        fprintf(output, "i = ");
-        
+        AstNode* binding = node->as.do_expr.bindings[j];
+        if(!codegen_generate_identifier(context, binding->as.define.name)) {
+          return false;
+    }
+        fprintf(output, " = ");
+
         // Generate step value
         if (!codegen_generate_expression(context, node->as.do_expr.steps[j])) {
             return false;
