@@ -60,12 +60,93 @@ bool codegen_generate_closure(CodegenContext* context, const AstNode* node) {
     char function_name[64];
     snprintf(function_name, sizeof(function_name), "lambda_%lu", lambda_id);
     
+ 
+    // Generate closure creation code
+    fprintf(output, "eshkol_closure_create(%s, ", function_name);
+    
+    // Create environment
+    fprintf(output, "({ EshkolEnvironment* lambda_env = eshkol_environment_create(env, %zu, %lu); ", capture_count, node->scope_id);
+    
+    // Add captured variables to environment
+    for (size_t i = 0; i < capture_count; i++) {
+        uint64_t binding_id = binding_ids[i];
+        BindingSystem* binding_system = codegen_context_get_binding_system(context);
+        StringId name = binding_system_get_binding_name(binding_system, binding_id);
+        uint64_t binding_scope = binding_system_get_binding_scope(binding_system, binding_id);
+        
+        // Special handling for mutual recursion and function composition
+        bool is_sibling_function = false;
+        bool is_composition_function = false;
+        bool is_recursive_function = false;
+        uint64_t parent_scope = binding_system_get_parent_scope(binding_system, node->scope_id);
+        
+        // Check if this is a sibling function (mutual recursion)
+        if (parent_scope != 0 && binding_scope != node->scope_id && 
+            binding_system_get_parent_scope(binding_system, binding_scope) == parent_scope) {
+            // This is a binding from a sibling scope - likely a mutually recursive function
+            is_sibling_function = true;
+        } 
+        // Check if this is a function composition case
+        else if (name && (strcmp(name, "compose") == 0 || 
+                         (binding_system_is_ancestor_scope(binding_system, binding_scope, node->scope_id) &&
+                          !binding_system_is_descendant_scope(binding_system, binding_scope, node->scope_id)))) {
+            is_composition_function = true;
+        }
+        // Check if this is a recursive function (self-reference)
+        else if (binding_scope == node->scope_id) {
+            is_recursive_function = true;
+        }
+        
+        if (is_sibling_function) {
+            // For sibling functions, we need to add them to the environment with special handling
+            fprintf(output, "/* Sibling function */ eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
+            
+            // For mutual recursion, we need to ensure the function is properly initialized
+            fprintf(output, "if (%s == NULL && env != NULL && env->parent != NULL) { "
+                    "%s = eshkol_environment_get(env->parent, %d, 0); } ", 
+                    name, name, i);
+        } else if (is_composition_function) {
+            // For function composition, we need special handling
+            fprintf(output, "/* Function composition */ eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
+            
+            // For function composition, ensure the function is properly initialized
+            fprintf(output, "if (%s == NULL && env != NULL) { "
+                    "for (EshkolEnvironment* e = env; e != NULL; e = e->parent) { "
+                    "  if (e->value_count > %zu) { "
+                    "    void* val = e->values[%zu]; "
+                    "    if (val != NULL) { %s = val; break; } "
+                    "  } "
+                    "} } ", 
+                    name, i, i, name);
+        } else if (is_recursive_function) {
+            // For recursive functions, we need to handle self-reference
+            fprintf(output, "/* Recursive function */ eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
+            
+            // For recursive functions, ensure proper initialization
+            fprintf(output, "if (%s == NULL && env != NULL) { "
+                    "%s = eshkol_environment_get(env, %d, 0); } ", 
+                    name, name, i);
+        } else {
+            // Normal case
+            fprintf(output, "eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
+        }
+    }
+    
+    fprintf(output, "lambda_env; })");
+    
+    // Add return type and parameter types
+    fprintf(output, ", NULL, NULL, %zu);", node->as.lambda.param_count);
+    
+    // Close the loop and function
+    fprintf(output, "    }\n");
+    fprintf(output, "}\n");
+
     // Store the current output position
     long current_pos = ftell(output);
     
     // Move to the function definitions section
     long function_pos = codegen_context_get_function_position(context);
-    fseek(output, function_pos, SEEK_SET);
+    //fseek(output, function_pos, SEEK_SET);
     
     // Generate function prototype
     fprintf(output, "\n// Lambda function %lu\n", lambda_id);
@@ -101,7 +182,7 @@ bool codegen_generate_closure(CodegenContext* context, const AstNode* node) {
         
         // Check if this is a sibling function (mutual recursion)
         if (parent_scope != 0 && binding_scope != node->scope_id && 
-            binding_system_get_parent_scope(binding_system, binding_scope) == parent_scope) {
+  binding_system_get_parent_scope(binding_system, binding_scope) == parent_scope) {
             // This is a binding from a sibling scope - likely a mutually recursive function
             is_sibling_function = true;
             depth = 0; // Sibling functions are at the same level
@@ -325,95 +406,14 @@ normal_body_generation:
             return false;
         }
         fprintf(output, ");\n");
-    }
-    
-    // Close the loop and function
-    fprintf(output, "    }\n");
-    fprintf(output, "}\n");
+    } 
     
     // Update the function position
     codegen_context_set_function_position(context, ftell(output));
     
     // Move back to the current position
-    fseek(output, current_pos, SEEK_SET);
-    
-    // Generate closure creation code
-    fprintf(output, "eshkol_closure_create(%s, ", function_name);
-    
-    // Create environment
-    fprintf(output, "({ EshkolEnvironment* lambda_env = eshkol_environment_create(env, %zu, %lu); ", capture_count, node->scope_id);
-    
-    // Add captured variables to environment
-    for (size_t i = 0; i < capture_count; i++) {
-        uint64_t binding_id = binding_ids[i];
-        BindingSystem* binding_system = codegen_context_get_binding_system(context);
-        StringId name = binding_system_get_binding_name(binding_system, binding_id);
-        uint64_t binding_scope = binding_system_get_binding_scope(binding_system, binding_id);
-        
-        // Special handling for mutual recursion and function composition
-        bool is_sibling_function = false;
-        bool is_composition_function = false;
-        bool is_recursive_function = false;
-        uint64_t parent_scope = binding_system_get_parent_scope(binding_system, node->scope_id);
-        
-        // Check if this is a sibling function (mutual recursion)
-        if (parent_scope != 0 && binding_scope != node->scope_id && 
-            binding_system_get_parent_scope(binding_system, binding_scope) == parent_scope) {
-            // This is a binding from a sibling scope - likely a mutually recursive function
-            is_sibling_function = true;
-        } 
-        // Check if this is a function composition case
-        else if (name && (strcmp(name, "compose") == 0 || 
-                         (binding_system_is_ancestor_scope(binding_system, binding_scope, node->scope_id) &&
-                          !binding_system_is_descendant_scope(binding_system, binding_scope, node->scope_id)))) {
-            is_composition_function = true;
-        }
-        // Check if this is a recursive function (self-reference)
-        else if (binding_scope == node->scope_id) {
-            is_recursive_function = true;
-        }
-        
-        if (is_sibling_function) {
-            // For sibling functions, we need to add them to the environment with special handling
-            fprintf(output, "/* Sibling function */ eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
-            
-            // For mutual recursion, we need to ensure the function is properly initialized
-            fprintf(output, "if (%s == NULL && env != NULL && env->parent != NULL) { "
-                    "%s = eshkol_environment_get(env->parent, %d, 0); } ", 
-                    name, name, i);
-        } else if (is_composition_function) {
-            // For function composition, we need special handling
-            fprintf(output, "/* Function composition */ eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
-            
-            // For function composition, ensure the function is properly initialized
-            fprintf(output, "if (%s == NULL && env != NULL) { "
-                    "for (EshkolEnvironment* e = env; e != NULL; e = e->parent) { "
-                    "  if (e->value_count > %zu) { "
-                    "    void* val = e->values[%zu]; "
-                    "    if (val != NULL) { %s = val; break; } "
-                    "  } "
-                    "} } ", 
-                    name, i, i, name);
-        } else if (is_recursive_function) {
-            // For recursive functions, we need to handle self-reference
-            fprintf(output, "/* Recursive function */ eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
-            
-            // For recursive functions, ensure proper initialization
-            fprintf(output, "if (%s == NULL && env != NULL) { "
-                    "%s = eshkol_environment_get(env, %d, 0); } ", 
-                    name, name, i);
-        } else {
-            // Normal case
-            fprintf(output, "eshkol_environment_add(lambda_env, %s, NULL, \"%s\"); ", name, name);
-        }
-    }
-    
-    fprintf(output, "lambda_env; })");
-    
-    // Add return type and parameter types
-    fprintf(output, ", NULL, NULL, %zu)", node->as.lambda.param_count);
-    
-    return true;
+    //fseek(output, current_pos, SEEK_SET);
+       return true;
 }
 
 /**
