@@ -8,6 +8,7 @@
 #include "backend/codegen/expressions.h"
 #include "backend/codegen/type_conversion.h"
 #include "frontend/ast/ast.h"
+#include "frontend/ast/core/ast_core.h"
 #include "frontend/type_inference/type_inference.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -106,6 +107,8 @@ static bool codegen_generate_forward_declarations(CodegenContext* context, const
     // Generate forward declarations
     fprintf(output, "// Forward declarations\n");
     
+    size_t lambda_count = 1;
+
     for (size_t i = 0; i < program->as.program.expr_count; i++) {
         if (program->as.program.exprs[i]->type == AST_FUNCTION_DEF) {
             // Get function node
@@ -178,11 +181,16 @@ static bool codegen_generate_forward_declarations(CodegenContext* context, const
             }
             
             fprintf(output, ");\n");
-        }
+            const AstNode* body_node = func_node->as.function_def.body;
+            if(body_node->type == AST_LAMBDA) {
+              fprintf(output, "void* lambda_%lu(EshkolEnvironment* env, void** args);\n" , lambda_count++);
+         }
     }
+
+  }
     
     fprintf(output, "\n");
-    
+    fprintf(output, "EshkolEnvironment *env = NULL;");
     return true;
 }
 
@@ -377,7 +385,7 @@ bool codegen_generate_program(CodegenContext* context, const AstNode* program) {
         diagnostic_error(diagnostics, 0, 0, "Failed to generate program header");
         return false;
     }
-    
+
     // Generate forward declarations
     diagnostic_debug(diagnostics, 0, 0, "Generating forward declarations");
     if (!codegen_generate_forward_declarations(context, program)) {
@@ -385,7 +393,7 @@ bool codegen_generate_program(CodegenContext* context, const AstNode* program) {
         return false;
     }
     
-    // Generate expressions
+   // Generate expressions
     snprintf(debug_msg, sizeof(debug_msg), "Generating expressions (%zu total)", program->as.program.expr_count);
     diagnostic_debug(diagnostics, 0, 0, debug_msg);
     
@@ -478,14 +486,15 @@ bool codegen_generate_program(CodegenContext* context, const AstNode* program) {
         snprintf(debug_msg, sizeof(debug_msg), "Successfully generated expression %zu", i);
         diagnostic_debug(diagnostics, 0, 0, debug_msg);
     }
-    
+
+        
     // Generate main function if needed
     diagnostic_debug(diagnostics, 0, 0, "Generating main function if needed");
     if (!codegen_generate_main_function(context, program)) {
         diagnostic_error(diagnostics, 0, 0, "Failed to generate main function");
         return false;
     }
-    
+
     diagnostic_debug(diagnostics, 0, 0, "Program generation completed successfully");
     return true;
 }
