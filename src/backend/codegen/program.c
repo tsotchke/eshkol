@@ -32,6 +32,7 @@ static bool codegen_generate_program_header(CodegenContext* context) {
     fprintf(output, "#include <string.h>\n\n");
     fprintf(output, "#include \"core/vector.h\"\n");
     fprintf(output, "#include \"core/memory.h\"\n");
+    fprintf(output, "#include \"core/closure.h\"\n");
     fprintf(output, "#include \"core/autodiff.h\"\n\n");
     
     // Define minimal Arena implementation
