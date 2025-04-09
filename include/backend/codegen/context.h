@@ -152,15 +152,9 @@ BindingSystem* codegen_context_get_binding_system(CodegenContext* context);
  * @param context The code generator context
  * @return The function position
  */
-long codegen_context_get_function_position(CodegenContext* context);
+uint64_t codegen_context_pop_queue(CodegenContext* context);
 
-/**
- * @brief Set the function position for the context
- * 
- * @param context The code generator context
- * @param position The function position
- */
-void codegen_context_set_function_position(CodegenContext* context, long position);
+void codegen_context_push_queue(CodegenContext* context, uint64_t lambda_id);
 
 #ifdef __cplusplus
 }

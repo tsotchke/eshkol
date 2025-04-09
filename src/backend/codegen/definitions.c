@@ -266,7 +266,7 @@ bool codegen_generate_lambda(CodegenContext* context, const AstNode* node) {
     assert(node->type == AST_LAMBDA);
     
     // Use the implementation from closures.c
-    return codegen_generate_closure(context, node);
+    return codegen_generate_closure_constructor(context, node);
 }
 
 /**

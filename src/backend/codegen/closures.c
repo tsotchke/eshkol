@@ -13,18 +13,10 @@
 #include <string.h>
 #include <assert.h>
 
-/**
- * @brief Generate C code for a lambda expression (closure implementation)
- */
-bool codegen_generate_closure(CodegenContext* context, const AstNode* node) {
-    assert(context != NULL);
-    assert(node != NULL);
-    assert(node->type == AST_LAMBDA);
-    
-    // Get output file
+
+bool codegen_generate_closure_constructor(CodegenContext* context, const AstNode* node) {
     FILE* output = codegen_context_get_output(context);
-    
-    // Get binding system from context
+   // Get binding system from context
     BindingSystem* binding_system = codegen_context_get_binding_system(context);
     if (!binding_system) {
         DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
@@ -33,7 +25,7 @@ bool codegen_generate_closure(CodegenContext* context, const AstNode* node) {
     }
     
     // Get lambda ID
-    uint64_t lambda_id = binding_system_register_lambda(binding_system, node->scope_id);
+    uint64_t lambda_id = codegen_context_pop_queue(context);
     if (lambda_id == 0) {
         DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
         diagnostic_error(diagnostics, node->line, node->column, "Failed to register lambda");
@@ -59,8 +51,7 @@ bool codegen_generate_closure(CodegenContext* context, const AstNode* node) {
     // Generate a unique function name for the lambda
     char function_name[64];
     snprintf(function_name, sizeof(function_name), "lambda_%lu", lambda_id);
-    
- 
+  
     // Generate closure creation code
     fprintf(output, "eshkol_closure_create(%s, ", function_name);
     
@@ -135,17 +126,66 @@ bool codegen_generate_closure(CodegenContext* context, const AstNode* node) {
     fprintf(output, "lambda_env; })");
     
     // Add return type and parameter types
-    fprintf(output, ", NULL, NULL, %zu);", node->as.lambda.param_count);
-    
-    // Close the loop and function
-    fprintf(output, "    }\n");
-    fprintf(output, "}\n");
+    fprintf(output, ", NULL, NULL, %zu)", node->as.lambda.param_count); 
 
-    // Store the current output position
-    long current_pos = ftell(output);
+    return true; 
+}
+
+/**
+ * @brief Generate C code for a lambda expression (closure implementation)
+ */
+bool codegen_generate_closure(CodegenContext* context, const AstNode* node) {
+    assert(context != NULL);
+    assert(node != NULL);
+    assert(node->type == AST_LAMBDA);
+    
+    // Get output file
+    FILE* output = codegen_context_get_output(context);
+    
+    // Get binding system from context
+    BindingSystem* binding_system = codegen_context_get_binding_system(context);
+    if (!binding_system) {
+        DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+        diagnostic_error(diagnostics, node->line, node->column, "Binding system not available");
+        return false;
+    }
+    
+    // Get lambda ID
+    uint64_t lambda_id = binding_system_register_lambda(binding_system, node->scope_id);
+    codegen_context_push_queue(context, lambda_id);
+
+    if (lambda_id == 0) {
+        DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+        diagnostic_error(diagnostics, node->line, node->column, "Failed to register lambda");
+        return false;
+    }
+    
+    // Analyze lambda captures
+    if (!binding_system_analyze_lambda_captures(binding_system, node, lambda_id)) {
+        DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+        diagnostic_error(diagnostics, node->line, node->column, "Failed to analyze lambda captures");
+        return false;
+    }
+    
+    // Get captured bindings
+    uint64_t* binding_ids = NULL;
+    size_t capture_count = 0;
+    if (!binding_system_get_lambda_captures(binding_system, lambda_id, &binding_ids, &capture_count)) {
+        DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
+        diagnostic_error(diagnostics, node->line, node->column, "Failed to get lambda captures");
+        return false;
+    }
+    
+    // Generate a unique function name for the lambda
+    char function_name[64];
+    snprintf(function_name, sizeof(function_name), "lambda_%lu", lambda_id);
+    
+ 
+   // Store the current output position
+  // long current_pos = ftell(output);
     
     // Move to the function definitions section
-    long function_pos = codegen_context_get_function_position(context);
+    //long function_pos = codegen_context_get_function_position(context);
     //fseek(output, function_pos, SEEK_SET);
     
     // Generate function prototype
@@ -409,11 +449,14 @@ normal_body_generation:
     } 
     
     // Update the function position
-    codegen_context_set_function_position(context, ftell(output));
+    //codegen_context_set_function_position(context, ftell(output));
     
     // Move back to the current position
     //fseek(output, current_pos, SEEK_SET);
-       return true;
+    // Close the loop and function
+    fprintf(output, "    }\n");
+    fprintf(output, "}\n");
+    return true;
 }
 
 /**

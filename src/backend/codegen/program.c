@@ -4,12 +4,14 @@
  */
 
 #include "backend/codegen/program.h"
+#include "backend/codegen/closures.h"
 #include "backend/codegen/context.h"
 #include "backend/codegen/expressions.h"
 #include "backend/codegen/type_conversion.h"
 #include "frontend/ast/ast.h"
 #include "frontend/ast/core/ast_core.h"
 #include "frontend/type_inference/type_inference.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,8 +109,6 @@ static bool codegen_generate_forward_declarations(CodegenContext* context, const
     // Generate forward declarations
     fprintf(output, "// Forward declarations\n");
     
-    size_t lambda_count = 1;
-
     for (size_t i = 0; i < program->as.program.expr_count; i++) {
         if (program->as.program.exprs[i]->type == AST_FUNCTION_DEF) {
             // Get function node
@@ -181,11 +181,21 @@ static bool codegen_generate_forward_declarations(CodegenContext* context, const
             }
             
             fprintf(output, ");\n");
-            const AstNode* body_node = func_node->as.function_def.body;
-            if(body_node->type == AST_LAMBDA) {
-              fprintf(output, "void* lambda_%lu(EshkolEnvironment* env, void** args);\n" , lambda_count++);
-         }
-    }
+
+            size_t sp = 0;
+            AstNode* lambda_stack[1024];
+
+            AstNode* body_node = func_node->as.function_def.body;
+            while (body_node->type == AST_LAMBDA) {
+              lambda_stack[++sp] = body_node;
+              body_node = body_node->as.lambda.body;
+            }
+
+            while(sp > 0) {
+              codegen_generate_closure(context, lambda_stack[sp]);
+              sp--;
+            }
+        }
 
   }
     

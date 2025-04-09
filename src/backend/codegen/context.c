@@ -4,6 +4,7 @@
  */
 
 #include "backend/codegen/context.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +22,8 @@ struct CodegenContext {
     int indent_level;            // Current indentation level
     bool in_function;            // Whether we're currently in a function
     char* temp_dir;              // Temporary directory for compilation
-    long function_position;      // Position in the output file for function definitions
+    uint64_t lambda_queue[1024];
+    size_t q_head, q_tail;
 };
 
 /**
@@ -51,7 +53,8 @@ CodegenContext* codegen_context_create(Arena* arena, DiagnosticContext* diagnost
     context->indent_level = 0;
     context->in_function = false;
     context->temp_dir = NULL;
-    context->function_position = 0;
+    context->q_head = 0;
+    context->q_tail = 0;
     
     return context;
 }
@@ -69,7 +72,8 @@ bool codegen_context_init(CodegenContext* context, Arena* arena, TypeInferenceCo
     context->indent_level = 0;
     context->in_function = false;
     context->temp_dir = NULL;
-    context->function_position = 0;
+    context->q_head = 0;
+    context->q_tail = 0;
     
     // Create binding system if not already created
     if (!context->binding_system) {
@@ -203,18 +207,18 @@ BindingSystem* codegen_context_get_binding_system(CodegenContext* context) {
     return context->binding_system;
 }
 
-/**
- * @brief Get the function position from the context
- */
-long codegen_context_get_function_position(CodegenContext* context) {
+uint64_t codegen_context_pop_queue(CodegenContext* context) {
     assert(context != NULL);
-    return context->function_position;
+    return context->lambda_queue[context->q_head++];
 }
 
 /**
  * @brief Set the function position for the context
  */
-void codegen_context_set_function_position(CodegenContext* context, long position) {
+void codegen_context_push_queue(CodegenContext* context, uint64_t lambda_id) {
     assert(context != NULL);
-    context->function_position = position;
+    context->lambda_queue[context->q_tail++] = lambda_id;
 }
+/**
+ * @brief Get the function position from the context
+ */
