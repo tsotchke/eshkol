@@ -4,6 +4,7 @@
  */
 
 #include "frontend/parser/parser_define.h"
+#include "frontend/binding/binding.h"
 #include "frontend/parser/parser_helpers.h"
 #include "frontend/parser/parser_error.h"
 #include "frontend/parser/parser_expressions.h"
@@ -51,11 +52,13 @@ AstNode* parser_parse_define(Parser* parser, size_t line, size_t column) {
         
         // Create a variable definition node
         AstNode* var_def = ast_create_variable_def(parser->arena, name, value, line, column);
+
         if (!var_def) {
             parser_error(parser, "Failed to create variable definition node");
             return NULL;
         }
         
+        binding_system_register_define(parser->bindings, binding_id, value);
         return var_def;
     } else if (parser_match(parser, TOKEN_LPAREN)) {
         // Function definition
@@ -162,7 +165,15 @@ AstNode* parser_parse_define(Parser* parser, size_t line, size_t column) {
                 param_nodes[i] = NULL; // We don't have parameter nodes yet
             }
         }
-        
+       
+        // Add the binding to the binding system
+        uint64_t binding_id = binding_system_add_binding(parser->bindings, name_str, true);
+        if(!binding_id) {
+            parser_error(parser, "Failed to add binding");
+            return NULL;
+        }
+
+        binding_system_register_define(parser->bindings, binding_id, body);
         return ast_create_function_def(parser->arena, name, params, param_nodes, param_count, NULL, body, line, column);
     } else {
         parser_error(parser, "Expected variable name or function definition");

@@ -5,6 +5,7 @@
 #include "core/memory.h"
 #include "core/string_table.h"
 #include "core/diagnostics.h"
+#include "frontend/binding/binding.h"
 #include "frontend/lexer/lexer.h"
 #include "frontend/parser/parser.h"
 #include "frontend/type_inference/type_inference.h"
@@ -197,8 +198,10 @@ int main(int argc, char** argv) {
         return 1;
     }
     
+    BindingSystem* binding_system = binding_system_create(arena, diag);
+
     // Initialize parser
-    Parser* parser = parser_create(arena, strings, diag, lexer);
+    Parser* parser = parser_create(binding_system, arena, strings, diag, lexer);
     if (!parser) {
         fprintf(stderr, "Error: Failed to create parser\n");
         arena_destroy(arena);
@@ -228,7 +231,7 @@ int main(int argc, char** argv) {
     }
     
     // Initialize type inference context
-    TypeInferenceContext* type_context = type_inference_context_create(arena, diag);
+    TypeInferenceContext* type_context = type_inference_context_create(binding_system, arena, diag);
     if (!type_context) {
         fprintf(stderr, "Error: Failed to create type inference context\n");
         arena_destroy(arena);
