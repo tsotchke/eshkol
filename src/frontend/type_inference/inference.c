@@ -4,9 +4,11 @@
  */
 
 #include "frontend/type_inference/inference.h"
+#include "backend/codegen/context.h"
 #include "frontend/type_inference/context.h"
 #include "core/memory.h"
 #include "core/type.h"
+#include "frontend/binding/binding.h"
 #include "core/type_creation.h"
 #include "core/type_comparison.h"
 #include "core/type_conversion.h"
@@ -96,8 +98,12 @@ static Type* infer_nil_literal(TypeInferenceContext* context, AstNode* node) {
  */
 static Type* infer_identifier(TypeInferenceContext* context, AstNode* node) {
     assert(node->type == AST_IDENTIFIER);
+
     Arena* arena = type_inference_get_arena(context);
-    
+
+    // Get binding system
+    BindingSystem* binding_system = type_inference_get_binding_system(context);
+
     // Check if the identifier name contains special characters
     const char* name = node->as.identifier.name;
     for (size_t i = 0; name[i] != '\0'; i++) {
@@ -106,9 +112,13 @@ static Type* infer_identifier(TypeInferenceContext* context, AstNode* node) {
             // Special identifiers like operators are not variables
             return type_any_create(arena);
         }
+    } 
+
+    void* function_signature = type_inference_get_function_signature(context, name);
+    if (function_signature) {
+      return type_integer_create(arena, INT_SIZE_32);
     }
-    
-     
+
     // Vector operations
     if (strstr(name, "vector") || 
         strstr(name, "gradient") || 
@@ -252,7 +262,22 @@ static Type* infer_call(TypeInferenceContext* context, AstNode* node) {
     // Check if it's an operator call
     if (node->as.call.callee->type == AST_IDENTIFIER) {
         const char* op_name = node->as.call.callee->as.identifier.name;
+
+        BindingSystem* binding_system = type_inference_get_binding_system(context);
         
+        // Resolve the identifier in the binding system
+        uint64_t binding_id = binding_system_resolve_binding(binding_system, op_name);
+        printf("Resolved binding ID %lu for %s\n", binding_id, op_name);
+        if (binding_id != 0) {
+          AstNode* binded_node = binding_system_get_definition(binding_system, binding_id);
+          if(binded_node) {
+            return type_inference_infer_node(context, binded_node);
+          }
+        }
+        void* function_signature = type_inference_get_function_signature(context, op_name);
+        if (function_signature) {
+          return type_integer_create(arena, INT_SIZE_32);
+        }
         // Handle string-append and number->string operations
         if (strcmp(op_name, "string-append") == 0) {
             return type_string_create(arena);
@@ -424,10 +449,15 @@ static Type* infer_call(TypeInferenceContext* context, AstNode* node) {
     // Regular function call
     // Infer the type of the callee
     Type* callee_type = type_inference_infer_node(context, node->as.call.callee);
-    
+
     // If the callee is a function, return its return type
     if (callee_type->kind == TYPE_FUNCTION) {
-        return callee_type->function.return_type;
+        if (callee_type->function.param_count == node->as.call.arg_count) {
+          return callee_type->function.return_type;
+        }
+        
+        //TODO: Partial function application could be implemented here
+        return callee_type;
     }
     
     // Default to float

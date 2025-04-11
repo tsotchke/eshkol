@@ -12,6 +12,7 @@
 #include "core/memory.h"
 #include "core/string_table.h"
 #include "core/diagnostics.h"
+#include "frontend/ast/core/ast_core.h"
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -90,12 +91,23 @@ typedef struct {
 } EnvironmentTable;
 
 /**
- * @brief Binding system structure
+  * @brief Definitions table structure
+*/
+typedef struct {
+    uint64_t* ids;             /**< Definition IDs */
+    uint64_t* binding_ids;     /**< Binding IDs */
+    AstNode** nodes;           /**< Node of the definition*/
+    size_t count;              /**< Number of definitions */
+    size_t capacity;           /**< Capacity of the definitions table */
+} DefinitionsTable;
+
+/** @brief Binding system structure
  */
 typedef struct {
     Arena* arena;              /**< Arena allocator */
     DiagnosticContext* diag;   /**< Diagnostic context */
     BindingTable binding_table; /**< Binding table */
+    DefinitionsTable def_table; /**< Definitions table */
     ScopeStack scope_stack;    /**< Scope stack */
     LambdaTable lambda_table;  /**< Lambda table */
     EnvironmentTable env_table; /**< Environment table */
@@ -104,6 +116,7 @@ typedef struct {
     uint64_t next_scope_id;    /**< Next scope ID to assign */
     uint64_t next_lambda_id;   /**< Next lambda ID to assign */
     uint64_t next_env_id;      /**< Next environment ID to assign */
+    uint64_t next_def_id;      /**< Next definition ID to assign */
 } BindingSystem;
 
 /**
@@ -345,6 +358,26 @@ bool binding_system_analyze_captures(BindingSystem* system, const struct AstNode
 bool binding_system_analyze_lambda_captures(BindingSystem* system, 
                                           const struct AstNode* lambda, 
                                           uint64_t lambda_id);
+
+/**
+ * @brief Bind a node to the given binding
+ * 
+ * @param system The binding system
+ * @param bind_id The id of the binding
+ * @param node The node that the bind defines
+ * @return The ID of the new definition, or 0 on failure
+ */ 
+uint64_t binding_system_register_define(BindingSystem* system, uint64_t bind_id, AstNode* node);
+
+
+/**
+ * @brief Retrieve a node from the given binding
+ * 
+ * @param system The binding system
+ * @param bind_id The id of the binding
+ * @return The node of the definition 
+ */ 
+AstNode* binding_system_get_definition(BindingSystem* system, uint64_t bind_id);
 
 #ifdef __cplusplus
 }
