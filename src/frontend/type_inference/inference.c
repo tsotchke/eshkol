@@ -5,6 +5,7 @@
 
 #include "frontend/type_inference/inference.h"
 #include "backend/codegen/context.h"
+#include "frontend/ast/core/ast_core.h"
 #include "frontend/type_inference/context.h"
 #include "core/memory.h"
 #include "core/type.h"
@@ -267,10 +268,23 @@ static Type* infer_call(TypeInferenceContext* context, AstNode* node) {
         
         // Resolve the identifier in the binding system
         uint64_t binding_id = binding_system_resolve_binding(binding_system, op_name);
-        printf("Resolved binding ID %lu for %s\n", binding_id, op_name);
         if (binding_id != 0) {
           AstNode* binded_node = binding_system_get_definition(binding_system, binding_id);
-          if(binded_node) {
+
+          AstNode* current_node = node;
+          // Go upwards in the AST to find if we're not calling in our own definition
+          while (current_node && current_node->type != AST_PROGRAM) {
+            if (current_node == binded_node) {
+              return type_any_create(arena);
+            }
+            current_node = current_node->parent;
+          }
+
+          if (binded_node) {
+            if (binded_node->type == AST_FUNCTION_DEF) {
+              return type_inference_infer_node(context, binded_node->as.function_def.body);
+            }
+
             return type_inference_infer_node(context, binded_node);
           }
         }
