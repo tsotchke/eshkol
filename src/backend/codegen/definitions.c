@@ -208,7 +208,7 @@ bool codegen_generate_variable_def(CodegenContext* context, const AstNode* node)
     DiagnosticContext* diagnostics = codegen_context_get_diagnostics(context);
     
     // Check node type
-    if (node->type != AST_VARIABLE_DEF) {
+    if ((node->type != AST_DEFINE) && (node->type != AST_VARIABLE_DEF)) {
         char debug_msg[256];
         snprintf(debug_msg, sizeof(debug_msg), "Expected AST_DEFINE node, got node type %d", node->type);
         diagnostic_error(diagnostics, node->line, node->column, debug_msg);
