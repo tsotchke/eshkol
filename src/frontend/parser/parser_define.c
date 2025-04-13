@@ -172,9 +172,10 @@ AstNode* parser_parse_define(Parser* parser, size_t line, size_t column) {
             parser_error(parser, "Failed to add binding");
             return NULL;
         }
-
-        binding_system_register_define(parser->bindings, binding_id, body);
-        return ast_create_function_def(parser->arena, name, params, param_nodes, param_count, NULL, body, line, column);
+    
+        AstNode* function_def = ast_create_function_def(parser->arena, name, params, param_nodes, param_count, NULL, body, line, column);
+        binding_system_register_define(parser->bindings, binding_id, function_def);
+        return function_def;
     } else {
         parser_error(parser, "Expected variable name or function definition");
         return NULL;
