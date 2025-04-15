@@ -242,8 +242,6 @@ uint64_t binding_system_register_define(BindingSystem* system, uint64_t bind_id,
   assert(node != NULL);
   assert(bind_id != 0);
 
-  // Print debug
-  printf("Registering define: %lu of node %lu\n", bind_id, node->line);
   // Check if we need to resize the definitions table
   if(system->def_table.count >= system->def_table.capacity) {
     // Calculate new capacity
