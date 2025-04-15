@@ -275,7 +275,8 @@ static Type* infer_call(TypeInferenceContext* context, AstNode* node) {
           // Go upwards in the AST to find if we're not calling in our own definition
           while (current_node && current_node->type != AST_PROGRAM) {
             if (current_node == binded_node) {
-              return type_any_create(arena);
+              // Assume the function result is the default float type
+              return type_float_create(arena, FLOAT_SIZE_32);
             }
             current_node = current_node->parent;
           }
