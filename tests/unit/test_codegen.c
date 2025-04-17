@@ -7,6 +7,7 @@
 #include "frontend/ast/ast.h"
 #include "core/memory.h"
 #include "core/diagnostics.h"
+#include "frontend/binding/binding.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,8 +25,11 @@ static void test_codegen_context_create(void) {
     DiagnosticContext* diag = diagnostic_context_create(arena);
     assert(diag != NULL);
     
+    // Create binding system
+    BindingSystem* binding_system = binding_system_create(arena, diag);
+
     // Create type inference context
-    TypeInferenceContext* type_context = type_inference_context_create(arena, diag);
+    TypeInferenceContext* type_context = type_inference_context_create(binding_system, arena, diag);
     assert(type_context != NULL);
     
     // Create code generator context
@@ -54,12 +58,15 @@ static void test_codegen_generate_simple(void) {
     DiagnosticContext* diag = diagnostic_context_create(arena);
     assert(diag != NULL);
     
+    // Create binding system
+    BindingSystem* binding_system = binding_system_create(arena, diag);
+
     // Create a simple AST (just a number literal)
     AstNode* ast = ast_create_number(arena, 42.0, 1, 1);
     assert(ast != NULL);
     
     // Create type inference context
-    TypeInferenceContext* type_context = type_inference_context_create(arena, diag);
+    TypeInferenceContext* type_context = type_inference_context_create(binding_system, arena, diag);
     assert(type_context != NULL);
     
     // Create code generator context
@@ -132,9 +139,12 @@ static void test_codegen_generate_typed_function(void) {
     // Create program with the function definition
     AstNode* program = ast_create_program(arena, &func_def, 1, 1, 1);
     assert(program != NULL);
-    
+   
+    // Create binding system
+    BindingSystem* binding_system = binding_system_create(arena, diag);
+
     // Create type inference context
-    TypeInferenceContext* type_context = type_inference_context_create(arena, diag);
+    TypeInferenceContext* type_context = type_inference_context_create(binding_system, arena, diag);
     assert(type_context != NULL);
     
     // Create code generator context

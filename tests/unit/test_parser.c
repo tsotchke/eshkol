@@ -3,6 +3,7 @@
  * @brief Unit tests for the parser
  */
 
+#include "frontend/binding/binding.h"
 #include "frontend/parser/parser.h"
 #include "frontend/lexer/lexer.h"
 #include "frontend/ast/ast.h"
@@ -15,12 +16,15 @@
 #include <assert.h>
 
 // Helper function to create parser components
-static void setup_parser(Arena** arena, StringTable** strings, DiagnosticContext** diag, 
+static void setup_parser(Arena** arena, BindingSystem** binding_system, StringTable** strings, DiagnosticContext** diag, 
                          const char* source, Lexer** lexer, Parser** parser) {
     // Create an arena
     *arena = arena_create(1024);
     assert(*arena != NULL);
-    
+   
+    // Create a binding system
+    *binding_system = binding_system_create(*arena, *diag);
+
     // Create a string table
     *strings = string_table_create(*arena, 16);
     assert(*strings != NULL);
@@ -34,7 +38,7 @@ static void setup_parser(Arena** arena, StringTable** strings, DiagnosticContext
     assert(*lexer != NULL);
     
     // Create a parser
-    *parser = parser_create(*arena, *strings, *diag, *lexer);
+    *parser = parser_create(*binding_system, *arena, *strings, *diag, *lexer);
     assert(*parser != NULL);
 }
 
@@ -53,6 +57,9 @@ static void test_parser_create(void) {
     Arena* arena = arena_create(1024);
     assert(arena != NULL);
     
+    // Create a binding system
+    BindingSystem* binding_system = binding_system_create(arena, NULL);
+
     // Create a string table
     StringTable* strings = string_table_create(arena, 16);
     assert(strings != NULL);
@@ -67,7 +74,7 @@ static void test_parser_create(void) {
     assert(lexer != NULL);
     
     // Create a parser
-    Parser* parser = parser_create(arena, strings, diag, lexer);
+    Parser* parser = parser_create(arena, binding_system, strings, diag, lexer);
     assert(parser != NULL);
     assert(parser->arena == arena);
     assert(parser->strings == strings);
@@ -89,14 +96,15 @@ static void test_parser_parse_program(void) {
     printf("Testing parsing a simple program...\n");
     
     Arena* arena;
+    BindingSystem* binding_system;
     StringTable* strings;
     DiagnosticContext* diag;
     Lexer* lexer;
     Parser* parser;
     
     // Setup parser
-    setup_parser(&arena, &strings, &diag, "(define x 42)", &lexer, &parser);
-    
+    setup_parser(&arena, &binding_system, &strings, &diag, "(define x 42)", &lexer, &parser); 
+
     // Parse a program
     AstNode* program = parser_parse_program(parser);
     assert(program != NULL);
@@ -136,14 +144,15 @@ static void test_parser_empty_program(void) {
     printf("Testing parsing an empty program...\n");
     
     Arena* arena;
+    BindingSystem* binding_system;
     StringTable* strings;
     DiagnosticContext* diag;
     Lexer* lexer;
     Parser* parser;
     
     // Setup parser
-    setup_parser(&arena, &strings, &diag, "", &lexer, &parser);
-    
+    setup_parser(&arena, &binding_system, &strings, &diag, "", &lexer, &parser);
+
     // Parse a program
     AstNode* program = parser_parse_program(parser);
     assert(program != NULL);
@@ -167,13 +176,14 @@ static void test_parser_literals(void) {
     // Test number literal
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "42", &lexer, &parser);
-        
+        setup_parser(&arena, &binding_system, &strings, &diag, "42", &lexer, &parser); 
+
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
         assert(program->type == AST_PROGRAM);
@@ -189,13 +199,14 @@ static void test_parser_literals(void) {
     // Test boolean literal
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "#t", &lexer, &parser);
-        
+        setup_parser(&arena, &binding_system, &strings, &diag, "#t", &lexer, &parser); 
+
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
         assert(program->type == AST_PROGRAM);
@@ -211,13 +222,14 @@ static void test_parser_literals(void) {
     // Test string literal
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "\"hello\"", &lexer, &parser);
-        
+        setup_parser(&arena, &binding_system, &strings, &diag, "\"hello\"", &lexer, &parser); 
+
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
         assert(program->type == AST_PROGRAM);
@@ -242,12 +254,13 @@ static void test_parser_if_expression(void) {
     // Test if with both then and else branches
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "(if #t 1 2)", &lexer, &parser);
+        setup_parser(&arena, &binding_system, &strings, &diag, "(if #t 1 2)", &lexer, &parser);
         
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
@@ -278,13 +291,14 @@ static void test_parser_if_expression(void) {
     // Test if without else branch
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "(if #t 1)", &lexer, &parser);
-        
+        setup_parser(&arena, &binding_system, &strings, &diag, "(if #t 1)", &lexer, &parser); 
+
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
         assert(program->type == AST_PROGRAM);
@@ -322,12 +336,13 @@ static void test_parser_lambda_expression(void) {
     // Test lambda with no parameters
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "(lambda () 42)", &lexer, &parser);
+        setup_parser(&arena, &binding_system, &strings, &diag, "(lambda () 42)", &lexer, &parser);
         
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
@@ -351,12 +366,13 @@ static void test_parser_lambda_expression(void) {
     // Test lambda with parameters
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "(lambda (x y) (+ x y))", &lexer, &parser);
+        setup_parser(&arena, &binding_system, &strings, &diag, "(lambda (x y) (+ x y))", &lexer, &parser);
         
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
@@ -405,12 +421,13 @@ static void test_parser_begin_expression(void) {
     // Test begin with multiple expressions
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "(begin 1 2 3)", &lexer, &parser);
+        setup_parser(&arena, &binding_system, &strings, &diag, "(begin 1 2 3)", &lexer, &parser);
         
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
@@ -441,12 +458,13 @@ static void test_parser_begin_expression(void) {
     // Test begin with no expressions
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "(begin)", &lexer, &parser);
+        setup_parser(&arena, &binding_system, &strings, &diag, "(begin)", &lexer, &parser);
         
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
@@ -474,12 +492,13 @@ static void test_parser_and_or_expressions(void) {
     // Test and
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "(and #t #f #t)", &lexer, &parser);
+        setup_parser(&arena, &binding_system, &strings, &diag, "(and #t #f #t)", &lexer, &parser);
         
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
@@ -510,12 +529,13 @@ static void test_parser_and_or_expressions(void) {
     // Test or
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "(or #t #f #t)", &lexer, &parser);
+        setup_parser(&arena, &binding_system, &strings, &diag, "(or #t #f #t)", &lexer, &parser);
         
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
@@ -553,12 +573,13 @@ static void test_parser_nested_expressions(void) {
     printf("Testing parsing nested expressions...\n");
     
     Arena* arena;
+    BindingSystem* binding_system;
     StringTable* strings;
     DiagnosticContext* diag;
     Lexer* lexer;
     Parser* parser;
     
-    setup_parser(&arena, &strings, &diag, 
+    setup_parser(&arena, &binding_system, &strings, &diag, 
                  "(if (and #t (> x 10)) (begin (set! y 20) (+ y 5)) (lambda () 42))", 
                  &lexer, &parser);
     
@@ -617,12 +638,13 @@ static void test_parser_edge_cases(void) {
     // Test empty list
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, "()", &lexer, &parser);
+        setup_parser(&arena, &binding_system, &strings, &diag, "()", &lexer, &parser);
         
         AstNode* program = parser_parse_program(parser);
         assert(program != NULL);
@@ -639,12 +661,13 @@ static void test_parser_edge_cases(void) {
     // Test deeply nested expressions
     {
         Arena* arena;
+        BindingSystem* binding_system;
         StringTable* strings;
         DiagnosticContext* diag;
         Lexer* lexer;
         Parser* parser;
         
-        setup_parser(&arena, &strings, &diag, 
+        setup_parser(&arena, &binding_system, &strings, &diag, 
                      "(((((42)))))", 
                      &lexer, &parser);
         

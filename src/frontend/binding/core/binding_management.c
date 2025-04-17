@@ -3,6 +3,7 @@
  * @brief Binding management for the binding system
  */
 
+#include "frontend/ast/core/ast_core.h"
 #include "frontend/binding/binding.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -226,4 +227,77 @@ uint64_t binding_system_resolve_binding_in_scope(BindingSystem* system, StringId
     
     // Binding not found
     return 0;
+}
+
+/**
+ * @brief Bind a node to the given binding
+ * 
+ * @param system The binding system
+ * @param bind_id The id of the binding
+ * @param node The node that the bind defines
+ * @return The ID of the new definition, or 0 on failure
+ */ 
+uint64_t binding_system_register_define(BindingSystem* system, uint64_t bind_id, AstNode* node) {
+  assert(system != NULL);
+  assert(node != NULL);
+  assert(bind_id != 0);
+
+  // Check if we need to resize the definitions table
+  if(system->def_table.count >= system->def_table.capacity) {
+    // Calculate new capacity
+    size_t new_capacity = system->def_table.capacity == 0 ? 16 : system->def_table.capacity * 2;
+
+    uint64_t* new_ids = arena_alloc(system->arena, sizeof(uint64_t) * new_capacity);
+    uint64_t* new_binding_ids = arena_alloc(system->arena, sizeof(uint64_t) * new_capacity);
+    AstNode** new_nodes = arena_alloc(system->arena, sizeof(AstNode*) * new_capacity);
+
+    if(!new_ids || !new_nodes || !new_binding_ids) {
+      return 0;
+    }
+
+    // Copy old data
+    for(size_t i = 0; i < system->def_table.count; i++) {
+      new_ids[i] = system->def_table.ids[i];
+      new_binding_ids[i] = system->def_table.binding_ids[i];
+      new_nodes[i] = system->def_table.nodes[i];
+    }
+
+    // Update definitions table
+    system->def_table.ids = new_ids;
+    system->def_table.binding_ids = new_binding_ids;
+    system->def_table.nodes = new_nodes;
+    system->def_table.capacity = new_capacity;
+  }
+
+  // Create new definition
+  uint64_t def_id = system->next_def_id++;
+  system->def_table.ids[system->def_table.count] = def_id;
+  system->def_table.binding_ids[system->def_table.count] = bind_id;
+  system->def_table.nodes[system->def_table.count] = node;
+  system->def_table.count++;
+  return def_id;
+}
+
+
+/**
+ * @brief Retrieve a node from the given binding
+ * 
+ * @param system The binding system
+ * @param bind_id The id of the binding
+ * @return The node of the definition 
+ */ 
+AstNode* binding_system_get_definition(BindingSystem* system, uint64_t bind_id) {
+  assert(system != NULL);
+  assert(bind_id != 0);
+
+  // Search for binding
+  for(size_t i = 0; i < system->def_table.count; i++) {
+    if(system->def_table.binding_ids[i] == bind_id) {
+      // Found binding
+      return system->def_table.nodes[i];
+    }
+  }
+
+  // Binding not found
+  return NULL;
 }

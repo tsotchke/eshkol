@@ -13,6 +13,7 @@
 #include "core/type_conversion.h"
 #include "frontend/ast/ast.h"
 #include "core/diagnostics.h"
+#include "frontend/binding/binding.h"
 #include <stdbool.h>
 
 /**
@@ -27,7 +28,7 @@ typedef struct TypeInferenceContext TypeInferenceContext;
  * @param diagnostics Diagnostic context for error reporting
  * @return Type inference context
  */
-TypeInferenceContext* type_inference_context_create(Arena* arena, DiagnosticContext* diagnostics);
+TypeInferenceContext* type_inference_context_create(BindingSystem* binding_system, Arena* arena, DiagnosticContext* diagnostics);
 
 /**
  * @brief Add a node to the context with its inferred type
@@ -99,5 +100,10 @@ Arena* type_inference_get_arena(TypeInferenceContext* context);
  * @return Diagnostic context
  */
 DiagnosticContext* type_inference_get_diagnostics(TypeInferenceContext* context);
+
+/**
+* @brief Get the binding system from the context
+*/
+BindingSystem* type_inference_get_binding_system(TypeInferenceContext* context);
 
 #endif /* ESHKOL_TYPE_INFERENCE_CONTEXT_H */

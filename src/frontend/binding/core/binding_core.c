@@ -64,13 +64,21 @@ BindingSystem* binding_system_create(Arena* arena, DiagnosticContext* diag) {
     system->env_table.count = 0;
     system->env_table.capacity = 0;
     
+    // Initialize definitions tables
+    system->def_table.ids = NULL;
+    system->def_table.binding_ids = NULL;
+    system->def_table.nodes = NULL;
+    system->def_table.count = 0;
+    system->def_table.capacity = 0;
+
     // Initialize IDs
     system->current_scope_id = 0;
     system->next_binding_id = 1; // Start at 1, 0 is reserved for "not found"
     system->next_scope_id = 1;   // Start at 1, 0 is reserved for "global scope"
     system->next_lambda_id = 1;  // Start at 1, 0 is reserved for "not found"
     system->next_env_id = 1;     // Start at 1, 0 is reserved for "global environment"
-    
+    system->next_def_id = 1;     // Start at 1, 0 is reserved for "not found" 
+
     // Create global scope
     if (!binding_system_enter_scope(system)) {
         return NULL;

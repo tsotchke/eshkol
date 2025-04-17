@@ -4,6 +4,7 @@
  */
 
 #include "frontend/type_inference/type_inference.h"
+#include "frontend/binding/binding.h"
 #include "frontend/type_inference/context.h"
 #include "frontend/type_inference/inference.h"
 #include "frontend/type_inference/conversion.h"
@@ -22,11 +23,11 @@
 /**
  * @brief Initialize the type inference system
  */
-TypeInferenceContext* type_inference_init(Arena* arena, DiagnosticContext* diagnostics) {
+TypeInferenceContext* type_inference_init(BindingSystem* binding_system, Arena* arena, DiagnosticContext* diagnostics) {
     assert(arena != NULL);
     
     // Create the type inference context
-    TypeInferenceContext* context = type_inference_context_create(arena, diagnostics);
+    TypeInferenceContext* context = type_inference_context_create(binding_system, arena, diagnostics);
     if (!context) return NULL;
     
     return context;

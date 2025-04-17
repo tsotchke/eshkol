@@ -31,7 +31,7 @@ bool codegen_generate_closure(CodegenContext* context, const AstNode* node);
  * @param node The call AST node
  * @return true on success, false on failure
  */
-bool codegen_generate_closure_call(CodegenContext* context, const AstNode* node);
+bool codegen_generate_closure_constructor(CodegenContext* context, const AstNode* node);
 
 /**
  * @brief Helper function to detect if a node is a function composition
