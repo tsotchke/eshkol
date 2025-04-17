@@ -4,6 +4,7 @@
  */
 
 #include "frontend/parser/parser_core.h"
+#include "frontend/binding/binding.h"
 #include "frontend/parser/parser_helpers.h"
 #include "frontend/parser/parser_error.h"
 #include "frontend/parser/parser_expressions.h"
@@ -22,7 +23,7 @@
  * @param lexer Lexer
  * @return A new parser, or NULL on failure
  */
-Parser* parser_create(Arena* arena, StringTable* strings, DiagnosticContext* diag, Lexer* lexer) {
+Parser* parser_create(BindingSystem* binding_system, Arena* arena, StringTable* strings, DiagnosticContext* diag, Lexer* lexer) {
     assert(arena != NULL);
     assert(strings != NULL);
     assert(diag != NULL);
@@ -41,7 +42,7 @@ Parser* parser_create(Arena* arena, StringTable* strings, DiagnosticContext* dia
     parser->panic_mode = false;
     
     // Initialize binding system
-    parser->bindings = binding_system_create(arena, diag);
+    parser->bindings = binding_system;
     if (!parser->bindings) {
         return NULL;
     }

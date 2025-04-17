@@ -11,6 +11,7 @@ x86/
 [Bb]uild*/
 [Dd]ebug*/
 [Rr]elease*/
+.cache/
 
 # CMake generated files
 CMakeCache.txt

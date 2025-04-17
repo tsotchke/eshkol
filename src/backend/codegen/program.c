@@ -4,11 +4,14 @@
  */
 
 #include "backend/codegen/program.h"
+#include "backend/codegen/closures.h"
 #include "backend/codegen/context.h"
 #include "backend/codegen/expressions.h"
 #include "backend/codegen/type_conversion.h"
 #include "frontend/ast/ast.h"
+#include "frontend/ast/core/ast_core.h"
 #include "frontend/type_inference/type_inference.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +35,7 @@ static bool codegen_generate_program_header(CodegenContext* context) {
     fprintf(output, "#include <string.h>\n\n");
     fprintf(output, "#include \"core/vector.h\"\n");
     fprintf(output, "#include \"core/memory.h\"\n");
+    fprintf(output, "#include \"core/closure.h\"\n");
     fprintf(output, "#include \"core/autodiff.h\"\n\n");
     
     // Define minimal Arena implementation
@@ -177,11 +181,26 @@ static bool codegen_generate_forward_declarations(CodegenContext* context, const
             }
             
             fprintf(output, ");\n");
+
+            size_t sp = 0;
+            AstNode* lambda_stack[1024];
+
+            AstNode* body_node = func_node->as.function_def.body;
+            while (body_node->type == AST_LAMBDA) {
+              lambda_stack[++sp] = body_node;
+              body_node = body_node->as.lambda.body;
+            }
+
+            while(sp > 0) {
+              codegen_generate_closure(context, lambda_stack[sp]);
+              sp--;
+            }
         }
-    }
+
+  }
     
     fprintf(output, "\n");
-    
+    fprintf(output, "EshkolEnvironment *env = NULL;");
     return true;
 }
 
@@ -376,7 +395,7 @@ bool codegen_generate_program(CodegenContext* context, const AstNode* program) {
         diagnostic_error(diagnostics, 0, 0, "Failed to generate program header");
         return false;
     }
-    
+
     // Generate forward declarations
     diagnostic_debug(diagnostics, 0, 0, "Generating forward declarations");
     if (!codegen_generate_forward_declarations(context, program)) {
@@ -384,7 +403,7 @@ bool codegen_generate_program(CodegenContext* context, const AstNode* program) {
         return false;
     }
     
-    // Generate expressions
+   // Generate expressions
     snprintf(debug_msg, sizeof(debug_msg), "Generating expressions (%zu total)", program->as.program.expr_count);
     diagnostic_debug(diagnostics, 0, 0, debug_msg);
     
@@ -477,14 +496,15 @@ bool codegen_generate_program(CodegenContext* context, const AstNode* program) {
         snprintf(debug_msg, sizeof(debug_msg), "Successfully generated expression %zu", i);
         diagnostic_debug(diagnostics, 0, 0, debug_msg);
     }
-    
+
+        
     // Generate main function if needed
     diagnostic_debug(diagnostics, 0, 0, "Generating main function if needed");
     if (!codegen_generate_main_function(context, program)) {
         diagnostic_error(diagnostics, 0, 0, "Failed to generate main function");
         return false;
     }
-    
+
     diagnostic_debug(diagnostics, 0, 0, "Program generation completed successfully");
     return true;
 }

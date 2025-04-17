@@ -10,6 +10,7 @@
 #include "core/type_comparison.h"
 #include "core/type_conversion.h"
 #include "frontend/ast/ast.h"
+#include "frontend/binding/binding.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,7 @@
 struct TypeInferenceContext {
     Arena* arena;                // Arena for allocations 
     DiagnosticContext* diagnostics; // Diagnostic context for error reporting 
+    BindingSystem* binding_system; // Binding system for symbol resolution
     AstNode** nodes;             // Array of AST nodes 
     Type** inferred_types;       // Array of inferred types 
     size_t capacity;             // Capacity of the arrays 
@@ -42,7 +44,7 @@ struct TypeInferenceContext {
 /**
  * @brief Create a type inference context
  */
-TypeInferenceContext* type_inference_context_create(Arena* arena, DiagnosticContext* diagnostics) {
+TypeInferenceContext* type_inference_context_create(BindingSystem* binding_system, Arena* arena, DiagnosticContext* diagnostics) {
     assert(arena != NULL);
     
     // Allocate context
@@ -58,7 +60,8 @@ TypeInferenceContext* type_inference_context_create(Arena* arena, DiagnosticCont
     context->explicit_count = 0;
     context->signature_capacity = 128;
     context->signature_count = 0;
-    
+    context->binding_system = binding_system;
+
     // Allocate arrays
     context->nodes = arena_alloc(arena, context->capacity * sizeof(AstNode*));
     if (!context->nodes) return NULL;
@@ -309,4 +312,12 @@ Arena* type_inference_get_arena(TypeInferenceContext* context) {
 DiagnosticContext* type_inference_get_diagnostics(TypeInferenceContext* context) {
     assert(context != NULL);
     return context->diagnostics;
+}
+
+/**
+* @brief Get the binding system from the context
+*/
+BindingSystem* type_inference_get_binding_system(TypeInferenceContext* context) {
+    assert(context != NULL);
+    return context->binding_system;
 }

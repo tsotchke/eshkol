@@ -163,7 +163,7 @@ int codegen_compile_and_execute(CodegenContext* context, const char* c_file, cha
     
     // Create command to compile the C file
     char compile_cmd[1024];
-    snprintf(compile_cmd, sizeof(compile_cmd), "gcc -I%s -o %s %s", include_path, temp_executable, c_file);
+    snprintf(compile_cmd, sizeof(compile_cmd), "gcc -I%s -o %s %s %s", include_path, temp_executable, c_file, "../src/core/utils/closure.c");
     
     // Free allocated memory
     free(source_dir);

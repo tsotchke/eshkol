@@ -46,7 +46,7 @@ typedef struct {
  * @param lexer Lexer
  * @return A new parser, or NULL on failure
  */
-Parser* parser_create(Arena* arena, StringTable* strings, DiagnosticContext* diag, Lexer* lexer);
+Parser* parser_create(BindingSystem* binding_system, Arena* arena, StringTable* strings, DiagnosticContext* diag, Lexer* lexer);
 
 /**
  * @brief Parse a program
