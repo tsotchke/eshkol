@@ -74,7 +74,7 @@ static void test_parser_create(void) {
     assert(lexer != NULL);
     
     // Create a parser
-    Parser* parser = parser_create(arena, binding_system, strings, diag, lexer);
+    Parser* parser = parser_create(binding_system, arena, strings, diag, lexer);
     assert(parser != NULL);
     assert(parser->arena == arena);
     assert(parser->strings == strings);
