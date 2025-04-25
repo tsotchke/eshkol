@@ -16,6 +16,7 @@
 |-----------|--------|------------|-------|
 | Core Language Features | In Progress | 65% | Basic Scheme syntax and core special forms implemented |
 | Function Composition | In Progress | 75% | Basic composition works, advanced patterns may have issues |
+| Closure System | In Progress | 65% | Basic closures work, global variable initialization improved |
 | Type System | In Progress | 55% | Optional type annotations and basic inference working |
 | Scientific Computing | In Progress | 70% | Vector operations and autodiff implemented |
 | MCP Tools | In Progress | 80% | Analysis tools available for development |
@@ -193,12 +194,13 @@ Check out the `examples/` directory for sample programs demonstrating Eshkol's c
 - `factorial.esk` - Recursive factorial calculation
 - `arithmetic.esk` - Basic arithmetic operations
 - `tail_recursive_factorial.esk` - Tail-recursive factorial implementation
+- `fibonacci.esk` - Fibonacci sequence calculation
 
 **Examples in Development (May Have Limitations):**
 - `function_composition.esk` - Higher-order functions and composition
-- `fibonacci.esk` - Fibonacci sequence calculation
 - `mutual_recursion.esk` - Demonstration of mutual recursion
 - `list_operations.esk` - Demonstration of list operations
+- `minimal_lambda.esk` - Basic lambda and closure demonstration
 
 **Type System Examples (In Development):**
 - `untyped.esk` - Standard Scheme code without type annotations

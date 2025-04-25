@@ -147,7 +147,7 @@ void eshkol_environment_validate(EshkolEnvironment* env) {
         
     // Detect cycles using the in_validation flag
     if (env->in_validation) {
-        fprintf(stderr, "Warning: Cycle detected in environment chain (env_id: %lu)\n", env->env_id);
+        fprintf(stderr, "Warning: Cycle detected in environment chain (env_id: %llu)\n", env->env_id);
         // Don't reset the flag here, as we're detecting a cycle
         // The flag will be reset by the caller
         return;
@@ -163,7 +163,7 @@ void eshkol_environment_validate(EshkolEnvironment* env) {
     // Add current environment to cache
     env_cache[cache_count++] = env;
         
-    bool is_valid = true; // Used internally but not returned
+    bool is_valid __attribute__((unused)) = true; // Used internally but not returned
         
     // Check if this is a function composition environment by looking for specific patterns
     bool is_composition_env = false;
@@ -871,6 +871,83 @@ static void* closure_wrapper_2(void* x) {
  * @param closure The closure to convert
  * @return An EshkolFunction that wraps the closure
  */
+/**
+ * @brief Check if a pointer is a valid closure
+ * 
+ * @param ptr Pointer to check
+ * @return true if ptr is a valid closure, false otherwise
+ */
+bool eshkol_is_closure(void* ptr) {
+    if (ptr == NULL) {
+        return false;
+    }
+    
+    // Try to interpret the pointer as a closure
+    EshkolClosure* closure = (EshkolClosure*)ptr;
+    
+    // Basic sanity checks to validate if this is likely a closure
+    // Note: This can't be 100% accurate without risking a segfault
+    if (closure->function == NULL) {
+        return false;
+    }
+    
+    // Check if the closure has a valid environment pointer
+    if (closure->environment == NULL) {
+        return false;
+    }
+    
+    // Check param_count is within reasonable bounds
+    if (closure->param_count > 100) {  // Arbitrary reasonable limit
+        return false;
+    }
+    
+    // If param_count > 0, param_types should not be NULL
+    if (closure->param_count > 0 && closure->param_types == NULL) {
+        return false;
+    }
+    
+    // Check if registry_index is valid or -1 (not registered)
+    if (closure->registry_index >= MAX_CLOSURES && closure->registry_index != -1) {
+        return false;
+    }
+    
+    // Passed all checks, likely a valid closure
+    return true;
+}
+
+/**
+ * @brief Call a function or closure with an argument
+ * 
+ * This function can call regular functions, closures, or composed functions.
+ * It automatically detects the type of the function and calls it appropriately.
+ * 
+ * @param func The function or closure to call
+ * @param arg The argument to pass to the function
+ * @return The result of the function call
+ */
+void* eshkol_call_function(void* func, void* arg) {
+    if (func == NULL) {
+        fprintf(stderr, "Error: NULL function in eshkol_call_function\n");
+        return NULL;
+    }
+    
+    // Check if this is a composed function (marked with LSB set to 1)
+    if ((uintptr_t)func & 1) {
+        // This is a composed function
+        ComposedFunction* composed = (ComposedFunction*)((uintptr_t)func & ~1);
+        return eshkol_composed_function_call(composed, arg);
+    }
+    
+    // Check if this is a closure
+    if (eshkol_is_closure(func)) {
+        // This is a closure, call it using eshkol_closure_call
+        return eshkol_closure_call((EshkolClosure*)func, (void*[]){arg});
+    }
+    
+    // This is a regular function, call it directly
+    return ((void* (*)(void*))func)(arg);
+}
+
 EshkolFunction eshkol_closure_to_function(EshkolClosure* closure) {
     if (closure == NULL) {
         fprintf(stderr, "Error: NULL closure in eshkol_closure_to_function\n");
@@ -879,7 +956,7 @@ EshkolFunction eshkol_closure_to_function(EshkolClosure* closure) {
     
     // Find an available slot in the registry
     int slot = -1;
-    for (int i = 0; i < NUM_WRAPPERS; i++) {
+    for (size_t i = 0; i < NUM_WRAPPERS; i++) {
         if (!closure_registry[i].in_use) {
             slot = i;
             break;

@@ -50,7 +50,7 @@ bool codegen_generate_closure_constructor(CodegenContext* context, const AstNode
     
     // Generate a unique function name for the lambda
     char function_name[64];
-    snprintf(function_name, sizeof(function_name), "lambda_%lu", lambda_id);
+    snprintf(function_name, sizeof(function_name), "lambda_%llu", lambda_id);
   
     // Generate closure creation code
     fprintf(output, "eshkol_closure_create(%s, ", function_name);
@@ -94,7 +94,7 @@ bool codegen_generate_closure_constructor(CodegenContext* context, const AstNode
             
             // For mutual recursion, we need to ensure the function is properly initialized
             fprintf(output, "if (%s == NULL && env != NULL && env->parent != NULL) { "
-                    "%s = eshkol_environment_get(env->parent, %d, 0); } ", 
+                    "%s = eshkol_environment_get(env->parent, %zu, 0); } ", 
                     name, name, i);
         } else if (is_composition_function) {
             // For function composition, we need special handling
@@ -115,7 +115,7 @@ bool codegen_generate_closure_constructor(CodegenContext* context, const AstNode
             
             // For recursive functions, ensure proper initialization
             fprintf(output, "if (%s == NULL && env != NULL) { "
-                    "%s = eshkol_environment_get(env, %d, 0); } ", 
+                    "%s = eshkol_environment_get(env, %zu, 0); } ", 
                     name, name, i);
         } else {
             // Normal case
@@ -178,7 +178,7 @@ bool codegen_generate_closure(CodegenContext* context, const AstNode* node) {
     
     // Generate a unique function name for the lambda
     char function_name[64];
-    snprintf(function_name, sizeof(function_name), "lambda_%lu", lambda_id);
+    snprintf(function_name, sizeof(function_name), "lambda_%llu", lambda_id);
     
  
    // Store the current output position
@@ -189,7 +189,7 @@ bool codegen_generate_closure(CodegenContext* context, const AstNode* node) {
     //fseek(output, function_pos, SEEK_SET);
     
     // Generate function prototype
-    fprintf(output, "\n// Lambda function %lu\n", lambda_id);
+    fprintf(output, "\n// Lambda function %llu\n", lambda_id);
     fprintf(output, "void* %s(EshkolEnvironment* env, void** args) {\n", function_name);
     
     // Add a loop for tail call optimization
@@ -249,27 +249,27 @@ bool codegen_generate_closure(CodegenContext* context, const AstNode* node) {
             }
         }
         
-        fprintf(output, "        // Captured variable %s (binding %lu, depth %lu, index %d%s%s)\n", 
+        fprintf(output, "        // Captured variable %s (binding %llu, depth %llu, index %d%s%s)\n",
                 name, binding_id, depth, env_index, 
                 is_sibling_function ? ", sibling function" : "",
                 is_composition_function ? ", composition function" : "");
         
         if (is_sibling_function) {
             // For sibling functions, we need to get them from the parent environment
-            fprintf(output, "        void* %s = eshkol_environment_get(env->parent, %d, %lu);\n", 
+            fprintf(output, "        void* %s = eshkol_environment_get(env->parent, %d, %llu);\n",
                     name, env_index, depth);
         } else if (is_composition_function) {
             // For function composition, we need special handling
-            fprintf(output, "        void* %s = eshkol_environment_get(env, %d, %lu);\n", 
+            fprintf(output, "        void* %s = eshkol_environment_get(env, %d, %llu);\n",
                     name, env_index, depth);
             // Add a fallback for NULL values (forward references)
             fprintf(output, "        if (%s == NULL && env->parent != NULL) {\n", name);
-            fprintf(output, "            %s = eshkol_environment_get(env->parent, %d, %lu);\n", 
+            fprintf(output, "            %s = eshkol_environment_get(env->parent, %d, %llu);\n",
                     name, env_index, depth);
             fprintf(output, "        }\n");
         } else {
             // Normal case
-            fprintf(output, "        void* %s = eshkol_environment_get(env, %d, %lu);\n", 
+            fprintf(output, "        void* %s = eshkol_environment_get(env, %d, %llu);\n", 
                     name, env_index, depth);
         }
     }
@@ -300,6 +300,7 @@ bool codegen_generate_closure(CodegenContext* context, const AstNode* node) {
         // Special handling for the 'compose' function itself
         // Check if this is a lambda inside a function definition named "compose"
         AstNode* parent_node = NULL;
+        (void)parent_node; // Prevent unused variable warning
         uint64_t parent_scope = binding_system_get_parent_scope(binding_system, node->scope_id);
         if (parent_scope != 0) {
             // Try to find the parent node by scope ID
@@ -716,9 +717,9 @@ bool codegen_handle_compose_n(CodegenContext* context, const AstNode* node, FILE
         
         // Create a new environment that captures the function array and count
         "({ "
-        "EshkolEnvironment* _compose_env = eshkol_environment_create(env, 2, %lu);"
+        "EshkolEnvironment* _compose_env = eshkol_environment_create(env, 2, 0xFFFFFFFF);" // Using node scope_id: %llu
         "eshkol_environment_add(_compose_env, _funcs, NULL, \"funcs\");"
-        "eshkol_environment_add(_compose_env, (void*)%zu, NULL, \"count\");"
+        "eshkol_environment_add(_compose_env, (void*)(size_t)node->as.call.arg_count, NULL, \"count\");"
         "_compose_env; "
         "}), "
         

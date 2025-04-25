@@ -14,6 +14,7 @@ set(CORE_SOURCES
     utils/type_comparison.c
     utils/type_conversion.c
     utils/list.c
+    utils/closure.c
     utils/closure_registry.c
     utils/closure_environment.c
     utils/closure_management.c

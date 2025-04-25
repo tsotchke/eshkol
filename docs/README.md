@@ -8,6 +8,16 @@ Eshkol is a high-performance Scheme-like language that compiles to C, designed s
 
 ## Documentation Sections
 
+### [Core Language](aidocs/README.md)
+
+Documentation covering core language features and implementation details:
+
+- [Memory Management](aidocs/MEMORY_MANAGEMENT.md): Arena-based memory management in Eshkol
+- [Closures and Globals](aidocs/CLOSURES_AND_GLOBALS.md): Closure implementation and global variable handling
+- [Function Composition](aidocs/FUNCTION_COMPOSITION.md): Implementation of function composition
+- [Compilation Guide](aidocs/COMPILATION_GUIDE.md): Guide to compiling Eshkol programs
+- [Compiler Architecture](aidocs/COMPILER_ARCHITECTURE.md): Architecture of the Eshkol compiler
+
 ### [Vision](vision/README.md)
 
 Documentation outlining the vision, goals, and technical details of the Eshkol programming language:

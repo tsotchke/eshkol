@@ -168,8 +168,17 @@ The type inference system includes:
 ### Higher-Order Functions
 
 - Closure representation (Partial) ✓
+  - EshkolClosure structure implementation ✓
+  - Function pointer and environment representation ✓ 
+  - Closure validation with eshkol_is_closure ✓
+  - Safe calling with call_closure helper function ✓
 - Environment capture (Partial) ✓
+  - Variable capture in lexical environments ✓
+  - Environment chaining for nested scopes ✓
+  - Two-phase initialization for global variables ✓
 - Function pointer handling (Partial) ✓
+  - Unified interface for closures and function pointers ✓
+  - Context-based code generation (global vs. function context) ✓
 - Closure optimization (Planned)
 - Automatic differentiation of higher-order functions (Partial) ✓
 

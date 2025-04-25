@@ -17,7 +17,7 @@ static ClosureRegistry global_registry = {NULL, 0, 0};
  * 
  * This function initializes the global closure registry.
  */
-void init_closure_registry() {
+void init_closure_registry(void) {
     // Only initialize if not already initialized
     if (global_registry.closures == NULL) {
         global_registry.closures = malloc(sizeof(EshkolClosure*) * 16);
@@ -144,7 +144,7 @@ EshkolClosure* registry_get_closure(int index) {
  * 
  * This function frees all resources used by the registry.
  */
-void cleanup_closure_registry() {
+void cleanup_closure_registry(void) {
     // Check if the registry is initialized
     if (global_registry.closures == NULL) {
         return;  // Nothing to do

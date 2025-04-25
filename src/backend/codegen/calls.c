@@ -718,43 +718,149 @@ bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
         }
     }
     
-    // Regular function call
-    if (node->as.call.callee->type == AST_IDENTIFIER) {
-        // Replace hyphens with underscores in function names
-        char* function_name = strdup(node->as.call.callee->as.identifier.name);
-        if (function_name) {
-            for (char* p = function_name; *p; p++) {
-                if (*p == '-') {
-                    *p = '_';
+    // Generate a helper function for complex calls
+    static int call_helper_counter = 0;
+    char call_helper_name[64];
+    
+    // Check if we're in a function context
+    bool in_function = codegen_context_in_function(context);
+    // For now, assume all function calls inside a function are nested
+    bool is_nested_call = in_function && node->parent != NULL && 
+                         node->parent->type != AST_PROGRAM;
+    
+    if (in_function && is_nested_call) {
+        // For nested calls (e.g., inside printf), we break it into multiple steps using a temporary variable
+        fprintf(output, "(");
+        
+        // Generate code to declare a helper variable
+        snprintf(call_helper_name, sizeof(call_helper_name), "_callResult_%d", call_helper_counter++);
+        fprintf(output, "({ void* %s; ", call_helper_name);
+        
+        // Generate the function call using call_closure
+        fprintf(output, "%s = call_closure(", call_helper_name);
+        
+        // Generate the function/closure to call
+        if (node->as.call.callee->type == AST_IDENTIFIER) {
+            // Replace hyphens with underscores in function names
+            char* function_name = strdup(node->as.call.callee->as.identifier.name);
+            if (function_name) {
+                for (char* p = function_name; *p; p++) {
+                    if (*p == '-') {
+                        *p = '_';
+                    }
+                }
+                fprintf(output, "%s", function_name);
+                free(function_name);
+            } else {
+                if (!codegen_generate_expression(context, node->as.call.callee)) {
+                    return false;
                 }
             }
-            fprintf(output, "%s", function_name);
-            free(function_name);
         } else {
             if (!codegen_generate_expression(context, node->as.call.callee)) {
                 return false;
             }
         }
-    } else {
-        if (!codegen_generate_expression(context, node->as.call.callee)) {
-            return false;
-        }
-    }
-    
-    // Generate arguments
-    fprintf(output, "(");
-    
-    for (size_t i = 0; i < node->as.call.arg_count; i++) {
-        if (i > 0) {
-            fprintf(output, ", ");
+        
+        fprintf(output, ", ");
+        
+        // For now, we only support a single argument or no arguments
+        if (node->as.call.arg_count > 0) {
+            fprintf(output, "(void*)(");
+            if (!codegen_generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(output, ")");
+        } else {
+            fprintf(output, "NULL");
         }
         
-        if (!codegen_generate_expression(context, node->as.call.args[i])) {
-            return false;
-        }
+        fprintf(output, "); %s; }))", call_helper_name);
     }
-    
-    fprintf(output, ")");
+    else if (in_function) {
+        // Inside a function, use our call_closure helper
+        fprintf(output, "call_closure(");
+        
+        // Generate the function/closure to call
+        if (node->as.call.callee->type == AST_IDENTIFIER) {
+            // Replace hyphens with underscores in function names
+            char* function_name = strdup(node->as.call.callee->as.identifier.name);
+            if (function_name) {
+                for (char* p = function_name; *p; p++) {
+                    if (*p == '-') {
+                        *p = '_';
+                    }
+                }
+                fprintf(output, "%s", function_name);
+                free(function_name);
+            } else {
+                if (!codegen_generate_expression(context, node->as.call.callee)) {
+                    return false;
+                }
+            }
+        } else {
+            if (!codegen_generate_expression(context, node->as.call.callee)) {
+                return false;
+            }
+        }
+        
+        fprintf(output, ", ");
+        
+        // Generate the argument for the function call
+        if (node->as.call.arg_count > 0) {
+            fprintf(output, "(void*)(");
+            if (!codegen_generate_expression(context, node->as.call.args[0])) {
+                return false;
+            }
+            fprintf(output, ")");
+        } else {
+            fprintf(output, "NULL");
+        }
+        
+        fprintf(output, ")");
+    } else {
+        // Outside a function (global scope), we must use a simple direct call
+        // Just generate a direct call with arguments
+        
+        // Generate the function/closure to call
+        if (node->as.call.callee->type == AST_IDENTIFIER) {
+            // Replace hyphens with underscores in function names
+            char* function_name = strdup(node->as.call.callee->as.identifier.name);
+            if (function_name) {
+                for (char* p = function_name; *p; p++) {
+                    if (*p == '-') {
+                        *p = '_';
+                    }
+                }
+                fprintf(output, "%s", function_name);
+                free(function_name);
+            } else {
+                if (!codegen_generate_expression(context, node->as.call.callee)) {
+                    return false;
+                }
+            }
+        } else {
+            if (!codegen_generate_expression(context, node->as.call.callee)) {
+                return false;
+            }
+        }
+        
+        // Generate arguments
+        fprintf(output, "(");
+        
+        // Generate arguments for function call
+        for (size_t i = 0; i < node->as.call.arg_count; i++) {
+            if (i > 0) {
+                fprintf(output, ", ");
+            }
+            
+            if (!codegen_generate_expression(context, node->as.call.args[i])) {
+                return false;
+            }
+        }
+        
+        fprintf(output, ")");
+    }
     
     return true;
 }

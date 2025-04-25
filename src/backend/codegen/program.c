@@ -88,6 +88,23 @@ static bool codegen_generate_program_header(CodegenContext* context) {
     fprintf(output, "    void* pointer;\n");
     fprintf(output, "} eshkol_value_t;\n\n");
     
+    // Helper function to call a closure with a single argument
+    fprintf(output, "// Helper function to call a closure with a single argument\n");
+    fprintf(output, "void* call_closure(void* closure, void* arg) {\n");
+    fprintf(output, "    if (closure == NULL) {\n");
+    fprintf(output, "        fprintf(stderr, \"Error: NULL closure in call\\n\");\n");
+    fprintf(output, "        return NULL;\n");
+    fprintf(output, "    }\n");
+    fprintf(output, "    \n");
+    fprintf(output, "    if (eshkol_is_closure(closure)) {\n");
+    fprintf(output, "        // This is a closure, call it using eshkol_closure_call\n");
+    fprintf(output, "        return eshkol_closure_call((EshkolClosure*)closure, (void*[]){arg});\n");
+    fprintf(output, "    } else {\n");
+    fprintf(output, "        // Try to call it as a regular function\n");
+    fprintf(output, "        return ((void* (*)(void*))closure)(arg);\n");
+    fprintf(output, "    }\n");
+    fprintf(output, "}\n\n");
+    
     return true;
 }
 
@@ -200,7 +217,59 @@ static bool codegen_generate_forward_declarations(CodegenContext* context, const
   }
     
     fprintf(output, "\n");
-    fprintf(output, "EshkolEnvironment *env = NULL;");
+    fprintf(output, "EshkolEnvironment *env = NULL;\n\n");
+    
+    // Declare global variables but defer initialization to main function
+    for (size_t i = 0; i < program->as.program.expr_count; i++) {
+        if (program->as.program.exprs[i]->type == AST_DEFINE) {
+            AstNode* define_node = program->as.program.exprs[i];
+            AstNode* name_node = define_node->as.define.name;
+            AstNode* value_node = define_node->as.define.value;
+            
+            // Skip function definitions (they're implemented separately)
+            if (value_node->type == AST_LAMBDA) {
+                continue;
+            }
+            
+            // Get type context
+            TypeInferenceContext* type_context = codegen_context_get_type_context(context);
+            
+            // Get variable type
+            Type* var_type = type_inference_get_type(type_context, value_node);
+            
+            // Generate type
+            if (var_type) {
+                fprintf(output, "%s ", codegen_type_to_c_type(var_type));
+            } else {
+                fprintf(output, "void* ");
+            }
+            
+                // We need to be careful with initialization of global variables.
+                // In C, global variables can only be initialized with compile-time constants,
+                // not function calls or complex expressions.
+                
+                // Generate variable name (declaration only, without initialization)
+                if (name_node->type == AST_IDENTIFIER) {
+                    // Replace hyphens with underscores in variable names
+                    char* variable_name = strdup(name_node->as.identifier.name);
+                    if (variable_name) {
+                        for (char* p = variable_name; *p; p++) {
+                            if (*p == '-') {
+                                *p = '_';
+                            }
+                        }
+                        fprintf(output, "%s = NULL;", variable_name);
+                        free(variable_name);
+                    } else {
+                        fprintf(output, "%s = NULL;", name_node->as.identifier.name);
+                    }
+                } else {
+                    fprintf(output, "_var_%zu_%zu = NULL;", define_node->line, define_node->column);
+                }
+            
+            fprintf(output, "\n");
+        }
+    }
     return true;
 }
 
@@ -251,6 +320,99 @@ static bool codegen_generate_main_function(CodegenContext* context, const AstNod
         fprintf(output, "        fprintf(stderr, \"Failed to create memory arena\\n\");\n");
         fprintf(output, "        return 1;\n");
         fprintf(output, "    }\n\n");
+        fprintf(output, "    // Initialize environment\n");
+        fprintf(output, "    env = eshkol_environment_create(NULL, 10, 0);\n\n");
+        
+        // Initialize global variables
+        fprintf(output, "    // Initialize global variables\n");
+        
+        // First, initialize all global variables with explicit definitions
+        for (size_t i = 0; i < program->as.program.expr_count; i++) {
+            if (program->as.program.exprs[i]->type == AST_DEFINE) {
+                AstNode* define_node = program->as.program.exprs[i];
+                AstNode* name_node = define_node->as.define.name;
+                AstNode* value_node = define_node->as.define.value;
+                
+                // Skip function definitions (they're implemented separately)
+                if (value_node->type == AST_LAMBDA) {
+                    continue;
+                }
+                
+                // Generate variable name
+                if (name_node->type == AST_IDENTIFIER) {
+                    // Replace hyphens with underscores in variable names
+                    char* variable_name = strdup(name_node->as.identifier.name);
+                    if (variable_name) {
+                        for (char* p = variable_name; *p; p++) {
+                            if (*p == '-') {
+                                *p = '_';
+                            }
+                        }
+                        fprintf(output, "    %s = ", variable_name);
+                        free(variable_name);
+                    } else {
+                        fprintf(output, "    %s = ", name_node->as.identifier.name);
+                    }
+                } else {
+                    fprintf(output, "    _var_%zu_%zu = ", define_node->line, define_node->column);
+                }
+                
+                // Generate initialization expression - always in function context
+                codegen_context_set_in_function(context, true);
+                
+                // Handle lambda expressions specially with call_closure
+                if (value_node->type == AST_CALL) {
+                    // For function calls, use call_closure to handle closures properly
+                    fprintf(output, "call_closure(");
+                    
+                    // Generate the function/closure to call
+                    if (value_node->as.call.callee->type == AST_IDENTIFIER) {
+                        // Replace hyphens with underscores in function names
+                        char* function_name = strdup(value_node->as.call.callee->as.identifier.name);
+                        if (function_name) {
+                            for (char* p = function_name; *p; p++) {
+                                if (*p == '-') {
+                                    *p = '_';
+                                }
+                            }
+                            fprintf(output, "%s", function_name);
+                            free(function_name);
+                        } else {
+                            fprintf(output, "%s", value_node->as.call.callee->as.identifier.name);
+                        }
+                    } else {
+                        // Direct expression for the callee
+                        if (!codegen_generate_expression(context, value_node->as.call.callee)) {
+                            return false;
+                        }
+                    }
+                    
+                    fprintf(output, ", ");
+                    
+                    // Generate argument if any
+                    if (value_node->as.call.arg_count > 0) {
+                        fprintf(output, "(void*)(");
+                        if (!codegen_generate_expression(context, value_node->as.call.args[0])) {
+                            return false;
+                        }
+                        fprintf(output, ")");
+                    } else {
+                        fprintf(output, "NULL");
+                    }
+                    
+                    fprintf(output, ")");
+                } else {
+                    // Regular expression
+                    if (!codegen_generate_expression(context, value_node)) {
+                        return false;
+                    }
+                }
+                
+                codegen_context_set_in_function(context, false);
+                fprintf(output, ";\n");
+            }
+        }
+        fprintf(output, "\n");
         
         // Find all top-level expressions that are not function definitions
         // and add them to the main function

@@ -137,5 +137,8 @@ Testing/
 CTestTestfile.cmake
 test-results/
 coverage/
-examples/*.c
-examples/*.esk.c
+
+# Examples - only keep .esk source files and CMakeLists.txt
+examples/*
+!examples/*.esk
+!examples/CMakeLists.txt

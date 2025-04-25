@@ -1,0 +1,9 @@
+Eshkol Compiler v0.1.1-alpha (Early Developer Preview)
+Debug mode enabled
+Debugging code generation stage: c-code
+Code Generation Debug Output
+===========================
+
+Generated C Code:
+----------------
+/* Unsupported node type: 30 */

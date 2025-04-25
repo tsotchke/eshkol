@@ -67,6 +67,12 @@ To set up your development environment for Eshkol, you'll need:
    make
    ```
 
+3. Clean generated files from examples directory (before committing):
+   ```bash
+   # Run the clean_examples.sh script to remove generated files from Git tracking
+   ./clean_examples.sh
+   ```
+
 3. Install the MCP tools (optional, for development tools):
    ```bash
    cd ../eshkol-tools

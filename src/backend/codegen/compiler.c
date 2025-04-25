@@ -163,7 +163,16 @@ int codegen_compile_and_execute(CodegenContext* context, const char* c_file, cha
     
     // Create command to compile the C file
     char compile_cmd[1024];
-    snprintf(compile_cmd, sizeof(compile_cmd), "gcc -I%s -o %s %s %s", include_path, temp_executable, c_file, "../src/core/utils/closure.c");
+    
+    // Create closure.c path based on the Eshkol directory
+    char closure_path[1024];
+    if (eshkol_dir) {
+        snprintf(closure_path, sizeof(closure_path), "%seshkol/src/core/utils/closure.c", source_dir);
+    } else {
+        snprintf(closure_path, sizeof(closure_path), "%s/src/core/utils/closure.c", source_dir);
+    }
+    
+    snprintf(compile_cmd, sizeof(compile_cmd), "gcc -I%s -o %s %s %s", include_path, temp_executable, c_file, closure_path);
     
     // Free allocated memory
     free(source_dir);

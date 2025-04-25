@@ -224,11 +224,14 @@ bool codegen_generate_variable_def(CodegenContext* context, const AstNode* node)
     // Get variable type
     Type* var_type = type_inference_get_type(type_context, node->as.define.value);
     
+    // Check if we're in a function context
+    bool in_function = codegen_context_in_function(context);
+    
     // Generate type
     if (var_type) {
         fprintf(output, "%s ", codegen_type_to_c_type(var_type));
     } else {
-        fprintf(output, "int ");
+        fprintf(output, "void* ");
     }
     
     // Generate variable name
@@ -241,19 +244,45 @@ bool codegen_generate_variable_def(CodegenContext* context, const AstNode* node)
                     *p = '_';
                 }
             }
-            fprintf(output, "%s = ", variable_name);
+            
+            // Only initialize if we're inside a function
+            if (in_function) {
+                fprintf(output, "%s = ", variable_name);
+                
+                // Generate initialization value inside a function
+                if (!codegen_generate_expression(context, node->as.define.value)) {
+                    free(variable_name);
+                    return false;
+                }
+            } else {
+                // At global scope, just declare and set to NULL
+                fprintf(output, "%s = NULL", variable_name);
+            }
+            
             free(variable_name);
         } else {
-            fprintf(output, "%s = ", node->as.define.name->as.identifier.name);
+            if (in_function) {
+                fprintf(output, "%s = ", node->as.define.name->as.identifier.name);
+                if (!codegen_generate_expression(context, node->as.define.value)) {
+                    return false;
+                }
+            } else {
+                fprintf(output, "%s = NULL", node->as.define.name->as.identifier.name);
+            }
         }
     } else {
-        fprintf(output, "_var_%zu_%zu = ", node->line, node->column);
+        if (in_function) {
+            fprintf(output, "_var_%zu_%zu = ", node->line, node->column);
+            if (!codegen_generate_expression(context, node->as.define.value)) {
+                return false;
+            }
+        } else {
+            fprintf(output, "_var_%zu_%zu = NULL", node->line, node->column);
+        }
     }
     
-    // Generate value
-    if (!codegen_generate_expression(context, node->as.define.value)) {
-        return false;
-    }
+    // Add semicolon for variable definitions
+    fprintf(output, ";");
     
     return true;
 }
@@ -304,6 +333,9 @@ bool codegen_generate_set(CodegenContext* context, const AstNode* node) {
     if (!codegen_generate_expression(context, node->as.set.value)) {
         return false;
     }
+    
+    // Add semicolon for set! expressions
+    fprintf(output, ";");
     
     return true;
 }

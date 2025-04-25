@@ -46,6 +46,7 @@ eshkol compile hello.esh
 
 - [Overview](OVERVIEW.md) - High-level overview of the Eshkol language
 - [Memory Management](MEMORY_MANAGEMENT.md) - Arena-based allocation system
+- [Closures and Globals](CLOSURES_AND_GLOBALS.md) - Closure implementation and global variable handling
 - [Type System](TYPE_SYSTEM.md) - Gradual typing and type inference
 - [Function Composition](FUNCTION_COMPOSITION.md) - Closures and function composition
 - [Automatic Differentiation](AUTODIFF.md) - Built-in autodiff capabilities

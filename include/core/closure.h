@@ -88,7 +88,7 @@ void* composed_function_wrapper(EshkolEnvironment* env, void** args);
  * 
  * This function initializes the global closure registry.
  */
-void init_closure_registry();
+void init_closure_registry(void);
 
 /**
  * @brief Add a closure to the registry
@@ -118,7 +118,7 @@ EshkolClosure* registry_get_closure(int index);
  * 
  * This function frees all resources used by the registry.
  */
-void cleanup_closure_registry();
+void cleanup_closure_registry(void);
 
 /**
  * @brief Create a new environment
@@ -259,6 +259,26 @@ EshkolClosure* eshkol_compose_functions(EshkolClosure* f, EshkolClosure* g);
  * @return The result of applying g to args[0], then f to that result
  */
 void* composed_function_wrapper(EshkolEnvironment* env, void** args);
+
+/**
+ * @brief Check if a pointer is a valid closure
+ * 
+ * @param ptr Pointer to check
+ * @return true if ptr is a valid closure, false otherwise
+ */
+bool eshkol_is_closure(void* ptr);
+
+/**
+ * @brief Call a function or closure with an argument
+ * 
+ * This function can call regular functions, closures, or composed functions.
+ * It automatically detects the type of the function and calls it appropriately.
+ * 
+ * @param func The function or closure to call
+ * @param arg The argument to pass to the function
+ * @return The result of the function call
+ */
+void* eshkol_call_function(void* func, void* arg);
 
 #ifdef __cplusplus
 }

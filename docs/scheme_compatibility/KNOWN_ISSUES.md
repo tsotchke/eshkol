@@ -56,6 +56,7 @@ This document tracks known issues, limitations, and compatibility notes for Sche
 | ID | Description | Severity | Affected Functions | Status | Target Fix | Est. Timeline |
 |----|-------------|----------|-------------------|--------|------------|---------------|
 | SCH-012 | MCP tools for type analysis use simplified implementations | Medium | analyze-types tool | In Progress | N/A | Ongoing |
+| SCH-020 | Global variable initialization issues with closures | High | Functions returning closures, global variables | In Progress | Phase 4 | Q2 2025 |
 
 ## Function Composition Status
 
@@ -85,6 +86,35 @@ The function composition system has been significantly improved with the impleme
      ```
 
 For more details on the function composition implementation, see [function_composition_solution_summary.md](../../function_composition_solution_summary.md).
+
+## Closure System and Global Variable Status
+
+The closure and global variable handling system has been improved with the implementation of a two-phase initialization approach and better validation. This enables safer usage of closures stored in global variables. However, there are still some limitations:
+
+1. **Current Status**: Basic closures work correctly, but global variables containing closures require special handling.
+
+2. **Recent Improvements**:
+   - Two-phase initialization for global variables (declare with NULL, initialize in main)
+   - Added `eshkol_is_closure` function for validating closures
+   - Created `call_closure` helper function for safe closure calls
+   - Improved context-based code generation for global vs. function contexts
+   - Enhanced validation before closure operations
+
+3. **Known Limitations**:
+   - Closures in global variables may not be correctly initialized in some cases
+   - Generated C code does not fully support function calls in global initializers
+   - Validation of closure objects is not comprehensive
+   - Memory management for shared environments needs improvement
+
+4. **Workarounds**:
+   - Always validate closures before using them, especially from global variables
+   - Use the `call_closure` helper function instead of direct calls
+   - Initialize global variables in the main function, not at global scope
+   - Use MCP tools to analyze closure usage and potential issues:
+     ```bash
+     use_mcp_tool eshkol-tools analyze-lambda-captures '{"filePath": "examples/minimal_lambda.esk", "detail": "detailed"}'
+     ```
+   - Break complex lambdas into simpler functions when used in global context
 
 ## Compatibility Notes
 
