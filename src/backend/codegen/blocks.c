@@ -4,6 +4,7 @@
  */
 
 #include "backend/codegen/blocks.h"
+#include "backend/codegen/context.h"
 #include "backend/codegen/expressions.h"
 #include "backend/codegen/type_conversion.h"
 #include <stdio.h>
@@ -281,7 +282,10 @@ bool codegen_generate_do(CodegenContext* context, const AstNode* node) {
     
     // Get output file
     FILE* output = codegen_context_get_output(context);
-    
+   
+    // Definitions inside do blocks should be considered as being inside a function
+    codegen_context_set_in_function(context, true);
+
     // Generate code
     fprintf(output, "({ ");
     
@@ -358,5 +362,7 @@ bool codegen_generate_do(CodegenContext* context, const AstNode* node) {
     // Close do
     fprintf(output, "; })");
     
+    codegen_context_set_in_function(context, false);
+
     return true;
 }
