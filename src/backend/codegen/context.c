@@ -4,6 +4,7 @@
  */
 
 #include "backend/codegen/context.h"
+#include "frontend/type_inference/context.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,7 +44,7 @@ CodegenContext* codegen_context_create(Arena* arena, DiagnosticContext* diagnost
     context->type_context = type_context;
     
     // Create binding system
-    context->binding_system = binding_system_create(arena, diagnostics);
+    context->binding_system = type_inference_get_binding_system(type_context);
     if (!context->binding_system) {
         diagnostic_error(diagnostics, 0, 0, "Failed to create binding system");
         return NULL;

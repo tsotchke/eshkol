@@ -88,21 +88,19 @@ static bool codegen_generate_program_header(CodegenContext* context) {
     fprintf(output, "    void* pointer;\n");
     fprintf(output, "} eshkol_value_t;\n\n");
     
+
+    // Union return type that can be either C void* function or eshkol closure 
+    fprintf(output, "// Union return type that can be either C void* function or eshkol closure\n");
+    fprintf(output, "typedef union {\n");
+    fprintf(output, "    float (*procedure)(float);\n");
+    fprintf(output, "    EshkolClosure* closure;\n");
+    fprintf(output, "} eshkol_func_t;\n\n");
+
     // Helper function to call a closure with a single argument
     fprintf(output, "// Helper function to call a closure with a single argument\n");
-    fprintf(output, "void* call_closure(void* closure, void* arg) {\n");
-    fprintf(output, "    if (closure == NULL) {\n");
-    fprintf(output, "        fprintf(stderr, \"Error: NULL closure in call\\n\");\n");
-    fprintf(output, "        return NULL;\n");
-    fprintf(output, "    }\n");
-    fprintf(output, "    \n");
-    fprintf(output, "    if (eshkol_is_closure(closure)) {\n");
-    fprintf(output, "        // This is a closure, call it using eshkol_closure_call\n");
-    fprintf(output, "        return eshkol_closure_call((EshkolClosure*)closure, (void*[]){arg});\n");
-    fprintf(output, "    } else {\n");
-    fprintf(output, "        // Try to call it as a regular function\n");
-    fprintf(output, "        return ((void* (*)(void*))closure)(arg);\n");
-    fprintf(output, "    }\n");
+    fprintf(output, "float call_closure(eshkol_func_t func, float arg) {\n");
+    fprintf(output, "   // Try to call it as a regular function\n");
+    fprintf(output, "   return func.procedure(arg);\n");
     fprintf(output, "}\n\n");
     
     return true;

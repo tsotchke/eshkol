@@ -6,6 +6,10 @@
 #include "backend/codegen/calls.h"
 #include "backend/codegen/expressions.h"
 #include "backend/codegen/context.h"
+#include "backend/codegen/type_conversion.h"
+#include "frontend/binding/binding.h"
+#include "frontend/type_inference/context.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,6 +49,7 @@ bool codegen_generate_tail_call(CodegenContext* context, const AstNode* node) {
     if (node->is_self_tail_call) {
         // For self-recursive tail calls, we generate a loop instead of a function call
         diagnostic_debug(diagnostics, node->line, node->column, "Generating self-recursive tail call optimization");
+#include "frontend/type_inference/conversion.h"
         
         // First, we need to generate code to update the parameters
         fprintf(output, "{\n");
@@ -728,16 +733,23 @@ bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
     bool is_nested_call = in_function && node->parent != NULL && 
                          node->parent->type != AST_PROGRAM;
     
+
+    BindingSystem *binding_system = codegen_context_get_binding_system(context);
+    uint64_t binding_id = binding_system_resolve_binding(binding_system, node->as.call.callee->as.identifier.name);
+    AstNode* definition = binding_system_get_definition(binding_system, binding_id);
+    const char* type_name = codegen_get_c_type(context, definition->as.function_def.body); 
+
+
     if (in_function && is_nested_call) {
         // For nested calls (e.g., inside printf), we break it into multiple steps using a temporary variable
         fprintf(output, "(");
         
         // Generate code to declare a helper variable
         snprintf(call_helper_name, sizeof(call_helper_name), "_callResult_%d", call_helper_counter++);
-        fprintf(output, "({ void* %s; ", call_helper_name);
+        fprintf(output, "({ %s %s; ", type_name, call_helper_name);
         
         // Generate the function call using call_closure
-        fprintf(output, "%s = call_closure(", call_helper_name);
+        fprintf(output, "%s = (%s)(call_closure(", call_helper_name, type_name);
         
         // Generate the function/closure to call
         if (node->as.call.callee->type == AST_IDENTIFIER) {
@@ -749,7 +761,7 @@ bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
                         *p = '_';
                     }
                 }
-                fprintf(output, "%s", function_name);
+                fprintf(output, "(eshkol_func_t) {.procedure = %s}", function_name);
                 free(function_name);
             } else {
                 if (!codegen_generate_expression(context, node->as.call.callee)) {
@@ -766,7 +778,7 @@ bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
         
         // For now, we only support a single argument or no arguments
         if (node->as.call.arg_count > 0) {
-            fprintf(output, "(void*)(");
+            fprintf(output, "(");
             if (!codegen_generate_expression(context, node->as.call.args[0])) {
                 return false;
             }
@@ -775,7 +787,7 @@ bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
             fprintf(output, "NULL");
         }
         
-        fprintf(output, "); %s; }))", call_helper_name);
+        fprintf(output, ")); %s; }))", call_helper_name);
     }
     else if (in_function) {
         // Inside a function, use our call_closure helper
@@ -791,7 +803,7 @@ bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
                         *p = '_';
                     }
                 }
-                fprintf(output, "%s", function_name);
+                fprintf(output, "(eshkol_func_t) {.procedure = %s }", function_name);
                 free(function_name);
             } else {
                 if (!codegen_generate_expression(context, node->as.call.callee)) {
@@ -808,7 +820,7 @@ bool codegen_generate_call(CodegenContext* context, const AstNode* node) {
         
         // Generate the argument for the function call
         if (node->as.call.arg_count > 0) {
-            fprintf(output, "(void*)(");
+            fprintf(output, "(");
             if (!codegen_generate_expression(context, node->as.call.args[0])) {
                 return false;
             }
