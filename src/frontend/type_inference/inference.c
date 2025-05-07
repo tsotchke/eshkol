@@ -679,6 +679,27 @@ static Type* infer_sequence(TypeInferenceContext* context, AstNode* node) {
 }
 
 /**
+ * @brief Infer the type of a do expression
+ */
+static Type* infer_do(TypeInferenceContext* context, AstNode* node) {
+    assert(node->type == AST_DO);
+    
+    Type* type = NULL;
+
+    // Infer the type of each binding
+    for (size_t i = 0; i < node->as.do_expr.binding_count; i++) {
+        type_inference_infer_node(context, node->as.do_expr.bindings[i]);
+    }
+
+    // Infer the type of the body 
+    for (size_t i = 0; i < node->as.do_expr.body_count; i++) {
+        type = type_inference_infer_node(context, node->as.do_expr.body[i]);
+    }
+
+    return type;
+}
+
+/**
  * @brief Infer the type of an AST node
  */
 Type* type_inference_infer_node(TypeInferenceContext* context, AstNode* node) {
@@ -743,6 +764,10 @@ Type* type_inference_infer_node(TypeInferenceContext* context, AstNode* node) {
         case AST_SEQUENCE:
             type = infer_sequence(context, node);
             break;
+        case AST_DO:
+            type = infer_do(context, node);
+            break;
+
         default:
             // Default to float
             type = type_float_create(type_inference_get_arena(context), FLOAT_SIZE_32);
