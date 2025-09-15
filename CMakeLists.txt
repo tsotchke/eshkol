@@ -1,36 +1,103 @@
+#
+# Copyright (C) tsotchke
+#
+# SPDX-License-Identifier: MIT
+#
 cmake_minimum_required(VERSION 3.14)
-project(Eshkol VERSION 0.1.0 LANGUAGES C)
+
+set(ESHKOL_VERSION "0.1.1")
+
+project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
+
+include(CTest)
+include(GNUInstallDirs)
+include(FindPkgConfig)
 
 # Set C standard
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-
-# Set compiler flags
-if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -pedantic")
-    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g -O0")
-    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3")
-endif()
+set(CMAKE_C_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 
 # Options
 option(ESHKOL_BUILD_TESTS "Build tests" ON)
 option(ESHKOL_BUILD_EXAMPLES "Build examples" OFF)
-option(ESHKOL_BUILD_BACKEND "Build backend" ON)
 option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
 option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer" OFF)
 option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 
-# Include directories
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+# LLVM backend is always enabled
+set(ESHKOL_BUILD_BACKEND ON)
 
-# Add subdirectories
-add_subdirectory(src)
+# LLVM Configuration - Always required
+find_program(LLVM_CONFIG_EXECUTABLE NAMES llvm-config REQUIRED)
 
-if(ESHKOL_BUILD_TESTS)
-    enable_testing()
-    add_subdirectory(tests)
-endif()
+# Get LLVM configuration
+execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --cxxflags OUTPUT_VARIABLE LLVM_CXXFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
+execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --ldflags OUTPUT_VARIABLE LLVM_LDFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
+execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --libs all OUTPUT_VARIABLE LLVM_LIBS OUTPUT_STRIP_TRAILING_WHITESPACE)
+execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --system-libs OUTPUT_VARIABLE LLVM_SYSTEM_LIBS OUTPUT_STRIP_TRAILING_WHITESPACE)
 
-if(ESHKOL_BUILD_EXAMPLES)
-    add_subdirectory(examples)
-endif()
+# Convert to CMake format
+separate_arguments(LLVM_CXXFLAGS_LIST UNIX_COMMAND "${LLVM_CXXFLAGS}")
+separate_arguments(LLVM_LDFLAGS_LIST UNIX_COMMAND "${LLVM_LDFLAGS}")
+separate_arguments(LLVM_LIBS_LIST UNIX_COMMAND "${LLVM_LIBS}")
+separate_arguments(LLVM_SYSTEM_LIBS_LIST UNIX_COMMAND "${LLVM_SYSTEM_LIBS}")
+
+# Make uninstall.
+add_custom_target("uninstall" COMMENT "Uninstall installed files")
+add_custom_command(
+    TARGET "uninstall"
+    POST_BUILD
+    COMMENT "Uninstall files with install_manifest.txt"
+    COMMAND xargs rm -vf < install_manifest.txt || echo Nothing in
+            install_manifest.txt to be uninstalled!
+)
+
+# Debug repos
+add_custom_target("debug" COMMENT "Creates all debug files for the supported operating systems.")
+add_custom_command(
+  TARGET "debug"
+  POST_BUILD
+  COMMENT "Creates the debian files for building the debug files."
+  COMMAND cd ${CMAKE_CURRENT_SOURCE_DIR} && ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make-docker.sh ${CMAKE_CURRENT_BINARY_DIR} ${ESHKOL_VERSION} debug
+)
+
+# Get all the source code recursively.
+file(GLOB_RECURSE EXE_SRC RELATIVE ${CMAKE_SOURCE_DIR} "exe/*.cpp")
+file(GLOB_RECURSE LIB_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/*.c*")
+
+add_compile_definitions(
+  ESHKOL_VER="${ESHKOL_VERSION}"
+)
+
+# Create static library for executables.
+add_library(eshkol-static STATIC ${LIB_SRC})
+target_include_directories(
+  eshkol-static
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc/>
+)
+
+# Always add LLVM support to static library
+target_compile_options(eshkol-static PRIVATE ${LLVM_CXXFLAGS})
+target_link_options(eshkol-static PRIVATE ${LLVM_LDFLAGS_LIST})
+target_link_directories(eshkol-static PUBLIC ${LLVM_LIBS})
+target_compile_definitions(eshkol-static PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+
+# For each executable inside the executable files create the executable with LLVM backend.
+set(EXES)
+foreach (exe ${EXE_SRC})
+  get_filename_component(exename ${exe} NAME_WE)
+  list(APPEND EXES ${exename})
+
+  # Compile main executable source as object file  
+  add_executable(${exename} ${exe})
+  target_compile_options(${exename} PRIVATE ${LLVM_CXXFLAGS})
+  target_compile_definitions(${exename} PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+  target_include_directories(${exename} PRIVATE inc/)
+  target_link_libraries(${exename} PUBLIC eshkol-static ${LLVM_LIBS} ${LLVM_SYSTEM_LIBS})
+  target_link_directories(${exename} PUBLIC ${LLVM_LDFLAGS_LIST})
+endforeach ()
+
+# where to find our CMake modules
+set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(Packing)

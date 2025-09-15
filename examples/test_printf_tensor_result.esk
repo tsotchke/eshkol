@@ -1,0 +1,7 @@
+;; Test printf with tensor-reduce result
+
+(define (main)
+  (define v1 (vector 1 2 3))
+  (define total_sum (tensor-reduce-all v1 + 0))
+  (printf "Sum: %d\n" total_sum)
+  0)

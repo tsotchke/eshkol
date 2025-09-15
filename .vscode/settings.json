@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        "memory": "cpp",
+        "map": "cpp",
+        "vector": "cpp",
+        "fstream": "cpp",
+        "cstdlib": "cpp",
+        "string": "cpp",
+        "iostream": "cpp",
+        "sstream": "cpp"
+    }
+}

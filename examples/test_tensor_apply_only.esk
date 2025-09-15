@@ -1,0 +1,6 @@
+;; Test tensor-apply in isolation
+
+(define (main)
+  (define v1 (vector 1 2 3))
+  (define v2 (tensor-apply v1 double))
+  0)

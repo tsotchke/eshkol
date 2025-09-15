@@ -1,0 +1,40 @@
+;;
+;; Simple Fibonacci Example (without do loop)
+;; This example demonstrates recursion without advanced loop constructs
+;;
+
+;; Define the recursive fibonacci function
+(define (fibonacci n)
+  (if (< n 2)
+      n
+      (+ (fibonacci (- n 1))
+         (fibonacci (- n 2)))))
+
+;; Main function to demonstrate the example
+(define (main)
+  (display "First few Fibonacci numbers:\n")
+  (display "fibonacci(0) = ")
+  (display (fibonacci 0))
+  (newline)
+  (display "fibonacci(1) = ")
+  (display (fibonacci 1))
+  (newline)
+  (display "fibonacci(2) = ")
+  (display (fibonacci 2))
+  (newline)
+  (display "fibonacci(3) = ")
+  (display (fibonacci 3))
+  (newline)
+  (display "fibonacci(4) = ")
+  (display (fibonacci 4))
+  (newline)
+  (display "fibonacci(5) = ")
+  (display (fibonacci 5))
+  (newline)
+  (display "fibonacci(6) = ")
+  (display (fibonacci 6))
+  (newline)
+  (display "fibonacci(7) = ")
+  (display (fibonacci 7))
+  (newline)
+  0)

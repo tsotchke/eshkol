@@ -1,0 +1,6 @@
+;; Debug test without tensors
+
+;; Main function
+(define (main)
+  (printf "Hello from debug test\n")
+  0)

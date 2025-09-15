@@ -1,0 +1,12 @@
+;; Mixed VA ARG calls in Eshkol
+
+(define stuff-1 10)
+(define stuff-2 "Hello world!")
+(extern-var char* example_string)
+(extern-var int example_int)
+(extern void example_printf char* ...)
+
+(define (main)
+    (printf "%s -> %d\n" stuff-2 stuff-1)
+    (example_printf "%s -> %d\n" example_string example_int)
+    0)

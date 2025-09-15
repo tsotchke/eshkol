@@ -1,0 +1,6 @@
+;; Minimal test to isolate tensor segfault
+
+(define (main)
+  ;; Simple vector creation
+  (define v1 (vector 1 2 3))
+  0)
