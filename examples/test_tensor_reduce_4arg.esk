@@ -1,0 +1,6 @@
+;; Test 4-argument tensor-reduce in isolation
+
+(define (main)
+  (define m1 (matrix 2 2 1 2 3 4))
+  (define result (tensor-reduce m1 + 0 0))
+  0)

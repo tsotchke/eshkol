@@ -1,0 +1,32 @@
+;; Test tensor implementation in Eshkol
+;; This demonstrates vector/matrix/tensor operations
+
+;; Main function
+(define (main)
+  ;; Create a simple vector (1D tensor)
+  (define v1 (vector 1 2 3 4 5))
+  
+  ;; Create a 2D matrix (2D tensor)
+  (define m1 (matrix 2 3 1 2 3 4 5 6))
+  
+  ;; Create a 3D tensor
+  (define t1 (tensor 2 2 2 1 2 3 4 5 6 7 8))
+  
+  ;; Test tensor operations
+  (define v2 (vector 10 20 30 40 50))
+  
+  ;; Add tensors
+  (define v_sum (tensor-add v1 v2))
+  
+  ;; Get tensor elements
+  (define first_elem (tensor-get v1 0))
+  (define matrix_elem (tensor-get m1 1 2))
+  
+  ;; Display results
+  (printf "Tensor Operations Test\n")
+  (printf "=====================\n")
+  (printf "First element of v1: %d\n" first_elem)
+  (printf "Matrix element at (1,2): %d\n" matrix_elem)
+  (printf "Tensor shape of v1: %d\n" (tensor-shape v1))
+  
+  0)  ; Return 0 to indicate success

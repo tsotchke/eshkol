@@ -1,0 +1,19 @@
+;; Comprehensive demo of the :real modifier functionality
+
+;; Example 1: Map a friendly name to printf
+(extern void log_message :real printf char* ...)
+
+;; Example 2: Map to system functions with clearer names  
+(extern void* allocate_memory :real malloc int)
+(extern void deallocate_memory :real free void*)
+
+;; Example 3: Regular extern for comparison
+(extern int regular_function_name int int)
+
+(define (main)
+    (log_message "=== Eshkol :real Modifier Demo ===\n")
+    (log_message "✓ Parsed extern with :real modifier successfully\n")
+    (log_message "✓ Function table populated with alias -> real name mapping\n")
+    (log_message "✓ Ready for external function calls\n")
+    (log_message "\nThe :real modifier allows mapping Eshkol function names to actual C function names!\n")
+    0)

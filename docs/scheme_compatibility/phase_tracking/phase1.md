@@ -85,7 +85,7 @@ Last Updated: 2025-03-29
 ### Memory Representation
 - Pairs are represented as a structure with two pointers: car and cdr
 - The empty list is represented as a singleton object (ESHKOL_EMPTY_LIST)
-- Currently using malloc for memory allocation, will transition to arena allocator
+- Currently using calloc for memory allocation, will transition to arena allocator
 
 ### Type System Integration
 - Each object will have a type tag

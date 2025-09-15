@@ -1,0 +1,3 @@
+(define (main)
+  (printf "Test output\n")
+  0)

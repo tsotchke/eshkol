@@ -1,0 +1,21 @@
+;; Debug the 2x3 matrix case specifically
+
+(define (main)
+  ;; Exact same matrix as in the test
+  (define m1 (matrix 2 3 1 2 3 4 5 6))
+  (printf "Matrix: [[1, 2, 3], [4, 5, 6]]\n")
+  
+  ;; Test dimension 0 reduction
+  (define row_sum (tensor-reduce m1 + 0 0))
+  (printf "Dim 0 reduction (column sums):\n")
+  (printf "Element 0: %d (expected: 5 = 1+4)\n" (tensor-get row_sum 0))
+  (printf "Element 1: %d (expected: 7 = 2+5)\n" (tensor-get row_sum 1))  
+  (printf "Element 2: %d (expected: 9 = 3+6)\n" (tensor-get row_sum 2))
+  
+  ;; Test dimension 1 reduction  
+  (define col_sum (tensor-reduce m1 + 0 1))
+  (printf "Dim 1 reduction (row sums):\n")
+  (printf "Element 0: %d (expected: 6 = 1+2+3)\n" (tensor-get col_sum 0))
+  (printf "Element 1: %d (expected: 15 = 4+5+6)\n" (tensor-get col_sum 1))
+  
+  0)

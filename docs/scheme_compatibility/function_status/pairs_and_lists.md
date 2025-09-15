@@ -23,11 +23,11 @@ Last Updated: 2025-03-29
 - **Description**: Creates a new pair whose car is obj1 and cdr is obj2
 - **Standard Reference**: R7RS 6.4
 - **Implementation File**: src/core/utils/list.c
-- **Implementation Details**: Uses malloc for memory allocation, initializes pair with car and cdr values
+- **Implementation Details**: Uses calloc for memory allocation, initializes pair with car and cdr values
 - **Edge Cases Handled**:
   - Memory allocation failure
   - Automatic initialization of list module if needed
-- **Known Limitations**: Currently uses malloc instead of arena allocator
+- **Known Limitations**: Currently uses calloc instead of arena allocator
 - **Test File**: tests/unit/test_list.c
 - **Dependencies**: Memory management system
 

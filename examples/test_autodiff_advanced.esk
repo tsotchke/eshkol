@@ -1,0 +1,28 @@
+;; Advanced test file for symbolic automatic differentiation
+
+(define (main)
+    (printf "=== Advanced Symbolic Differentiation Test ===\n")
+    
+    ;; Test arithmetic operations
+    (printf "Testing arithmetic differentiation...\n")
+    
+    ;; Test: d/dx(x + 5)
+    (printf "d/dx(x + 5) = %ld\n" (diff (+ x 5) x))
+    
+    ;; Test: d/dx(x * 2)  
+    (printf "d/dx(x * 2) = %ld\n" (diff (* x 2) x))
+    
+    ;; Test: d/dx(x * x)
+    (printf "d/dx(x * x) = %ld\n" (diff (* x x) x))
+    
+    ;; Test mathematical functions if available
+    (printf "Testing function differentiation...\n")
+    
+    ;; Test: d/dx(sin(x))
+    (printf "d/dx(sin(x)) = %ld\n" (diff (sin x) x))
+    
+    ;; Test: d/dx(cos(x))  
+    (printf "d/dx(cos(x)) = %ld\n" (diff (cos x) x))
+    
+    (printf "=== Advanced Test Complete ===\n")
+    0)

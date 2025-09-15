@@ -1,0 +1,18 @@
+;; Simple test of dimensional reduction functionality
+
+(define (main)
+  ;; Test basic vector reduction
+  (define v1 (vector 5 10 15))
+  
+  ;; Test tensor-reduce-all (scalar result)
+  (define sum_all (tensor-reduce-all v1 + 0))  ;; 0 + 5 = 5
+  
+  ;; Test tensor-reduce with dimension (tensor result)
+  (define reduced_dim (tensor-reduce v1 + 0 0))  ;; Should create 1-element tensor
+  
+  ;; Test matrix reduction
+  (define m1 (matrix 2 2 1 2 3 4))
+  (define matrix_reduced (tensor-reduce m1 max 0 0))  ;; Reduce along dimension 0
+  
+  ;; Return 0 for success
+  0)

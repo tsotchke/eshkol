@@ -1,0 +1,51 @@
+;; Test fast tensor multiplication algorithms
+
+(define (main)
+  (printf "=== Fast Tensor Multiplication Test ===\n")
+  
+  ;; Test 1: Simple 2x2 matrix multiplication
+  (printf "\n1. Testing 2x2 Matrix Multiplication:\n")
+  (define A (matrix 2 2 1 2 3 4))
+  (define B (matrix 2 2 5 6 7 8))
+  (printf "Matrix A: %s\n" (matrix-to-string A))
+  (printf "Matrix B: %s\n" (matrix-to-string B))
+  
+  (define C (tensor-dot A B))
+  (printf "A * B = %s\n" (matrix-to-string C))
+  (printf "Expected: [[19, 22], [43, 50]] (1*5+2*7=19, 1*6+2*8=22, 3*5+4*7=43, 3*6+4*8=50)\n")
+  
+  ;; Test 2: 2x3 × 3x2 matrix multiplication  
+  (printf "\n2. Testing 2x3 × 3x2 Matrix Multiplication:\n")
+  (define D (matrix 2 3 1 2 3 4 5 6))
+  (define E (matrix 3 2 7 8 9 10 11 12))
+  (printf "Matrix D: %s\n" (matrix-to-string D))
+  (printf "Matrix E: %s\n" (matrix-to-string E))
+  
+  (define F (tensor-dot D E))
+  (printf "D * E = %s\n" (matrix-to-string F))
+  (printf "Expected: [[58, 64], [139, 154]] (calculations: row1=[1*7+2*9+3*11, 1*8+2*10+3*12])\n")
+  
+  ;; Test 3: Vector dot product (1D tensors)
+  (printf "\n3. Testing Vector Operations (fallback to element-wise):\n")
+  (define v1 (vector 1 2 3))
+  (define v2 (vector 4 5 6))
+  (printf "Vector v1: %s\n" (vector-to-string v1))
+  (printf "Vector v2: %s\n" (vector-to-string v2))
+  
+  (define v3 (tensor-dot v1 v2))
+  (printf "v1 * v2 = %s\n" (vector-to-string v3))
+  (printf "Note: This uses element-wise multiplication for non-2D tensors\n")
+  
+  ;; Test 4: Identity matrix test
+  (printf "\n4. Testing Identity Matrix Multiplication:\n")
+  (define I (matrix 2 2 1 0 0 1))
+  (define M (matrix 2 2 5 7 2 3))
+  (printf "Identity I: %s\n" (matrix-to-string I))
+  (printf "Matrix M: %s\n" (matrix-to-string M))
+  
+  (define IM (tensor-dot I M))
+  (printf "I * M = %s\n" (matrix-to-string IM))
+  (printf "Expected: %s (should equal M)\n" (matrix-to-string M))
+  
+  (printf "\n=== Fast tensor multiplication tests completed ===\n")
+  0)

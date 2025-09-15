@@ -1,0 +1,27 @@
+;; Test dimensional tensor reduction without printf
+
+(define (main)
+  ;; Test tensor-reduce-all (reduces entire tensor to scalar)
+  (define v1 (vector 1 2 3 4 5))
+  
+  (define total_sum (tensor-reduce-all v1 + 0))        ;; Should sum all elements
+  (define total_product (tensor-reduce-all v1 * 1))    ;; Should multiply all elements
+  (define total_max (tensor-reduce-all v1 max 0))      ;; Should find max
+  
+  ;; Test tensor-reduce with dimension parameter
+  ;; Creates a 2x3 matrix: [[1, 2, 3], [4, 5, 6]]
+  (define m1 (matrix 2 3 1 2 3 4 5 6))
+  
+  ;; Reduce along dimension 0 (rows -> single row)
+  (define row_sum (tensor-reduce m1 + 0 0))    ;; Sum along rows 
+  (define row_max (tensor-reduce m1 max 0 0))  ;; Max along rows
+  
+  ;; Reduce along dimension 1 (cols -> single column) 
+  (define col_sum (tensor-reduce m1 + 0 1))    ;; Sum along columns
+  (define col_mean (tensor-reduce m1 mean 0 1)) ;; Mean along columns
+  
+  ;; Test with 1D vector (dimension 0)
+  (define v2 (vector 10 5 15 3 8))
+  (define v_reduced (tensor-reduce v2 max 0 0))  ;; Find max in vector
+  
+  0)

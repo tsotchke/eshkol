@@ -1,0 +1,9 @@
+;; Simple test for :real modifier using a custom function name
+
+;; Declare a function that maps to printf but with a different name
+(extern void my_custom_print :real printf char* ...)
+
+(define (main)
+    ;; This should work by calling the real printf function
+    (my_custom_print "Testing :real modifier - this should work: %d\n" 123)
+    0)
