@@ -1,0 +1,8 @@
+;; Test to verify parsing works by checking output messages
+;; Use a function that doesn't exist to see debug output
+
+(extern void fake_function :real actual_c_function_name int)
+
+(define (main)
+    (printf "Test completed - look for debug messages about fake_function -> actual_c_function_name\n")
+    0)

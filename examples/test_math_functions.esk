@@ -1,0 +1,23 @@
+;; Test file for mathematical functions: sin, cos, sqrt, pow
+
+(define (main)
+    (printf "=== Mathematical Functions Test ===\n")
+    
+    ;; Test sin function
+    (printf "sin(0) = %ld\n" (sin 0))
+    (printf "sin(1) = %ld\n" (sin 1))
+    
+    ;; Test cos function  
+    (printf "cos(0) = %ld\n" (cos 0))
+    (printf "cos(1) = %ld\n" (cos 1))
+    
+    ;; Test sqrt function
+    (printf "sqrt(4) = %ld\n" (sqrt 4))
+    (printf "sqrt(9) = %ld\n" (sqrt 9))
+    
+    ;; Test pow function
+    (printf "pow(2, 3) = %ld\n" (pow 2 3))
+    (printf "pow(5, 2) = %ld\n" (pow 5 2))
+    
+    (printf "=== Test Complete ===\n")
+    0)

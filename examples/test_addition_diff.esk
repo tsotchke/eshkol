@@ -1,0 +1,6 @@
+;; Test addition differentiation
+
+(define (main)
+    (printf "Testing addition differentiation:\n")
+    (printf "d/dx(x + 3) = %ld\n" (diff (+ x 3) x))
+    0)

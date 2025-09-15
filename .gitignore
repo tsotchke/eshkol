@@ -1,89 +1,5 @@
 # Build directories
 build/
-dist/
-bin/
-lib/
-out/
-Debug/
-Release/
-x64/
-x86/
-[Bb]uild*/
-[Dd]ebug*/
-[Rr]elease*/
-.cache/
-
-# CMake generated files
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile
-*.cmake
-!CMakeLists.txt
-compile_commands.json
-
-# Compiled Object files
-*.o
-*.obj
-*.lo
-*.slo
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Compiled Static libraries
-*.a
-*.la
-*.lai
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Generated files
-*.eskc
-*.eskir
-*.log
-*.tmp
-*.temp
-*.bak
-*.backup
-*.swp
-*.swo
-*~
-.*.swp
-.~lock.*
-*.esk.c
-*.esk.c.out
-
-# Editor files
-.vscode/
-.idea/
-*.swp
-*~
-.DS_Store
-.vs/
-*.sublime-workspace
-*.sublime-project
-.project
-.classpath
-.settings/
-.atom/
-.editorconfig
-
-# Dependency directories
-node_modules/
-vendor/
-
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
 
 # Environment and secrets
 .env
@@ -137,5 +53,8 @@ Testing/
 CTestTestfile.cmake
 test-results/
 coverage/
-examples/*.c
-examples/*.esk.c
+
+compile_commands.json
+.aider*
+.claude/
+.cache/

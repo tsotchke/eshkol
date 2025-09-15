@@ -1,0 +1,16 @@
+;; Debug tensor dimensions
+
+(define (main)
+  (define A (matrix 2 2 1 2 3 4))
+  (printf "Matrix A created\n")
+  
+  ;; Try to see what tensor-dot does
+  (define B (matrix 2 2 5 6 7 8))  
+  (printf "Matrix B created\n")
+  
+  ;; Just test if tensor-dot compiles
+  (printf "Calling tensor-dot...\n")
+  (define C (tensor-dot A B))
+  (printf "tensor-dot completed\n")
+  
+  0)

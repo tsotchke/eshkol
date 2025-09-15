@@ -1,0 +1,11 @@
+;; Debug tensor-reduce return type issue
+
+(define (main)
+  ;; Create simple vector
+  (define v1 (vector 2 4 6))
+  
+  ;; Test 3-argument tensor-reduce (should return scalar)
+  (define result (tensor-reduce v1 + 0))
+  
+  ;; Return the result to test return type
+  result)

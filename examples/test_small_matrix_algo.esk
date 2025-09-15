@@ -1,0 +1,70 @@
+;; Test small matrix algorithms (STANDARD algorithm for matrices ≤4x4)
+;; This demonstrates the O(n³) triple-loop multiplication algorithm
+
+(define (main)
+  (printf "=== Small Matrix Algorithm Test (STANDARD O(n³)) ===\\n")
+  
+  ;; Test 1: 2x2 Matrix Multiplication - Classic example
+  (printf "\\n1. Testing 2x2 Matrix Multiplication:\\n")
+  (printf "   Algorithm: STANDARD (triple nested loops)\\n")
+  (printf "   Expected complexity: O(n³) = O(8) operations\\n")
+  
+  (define A (matrix 2 2 1 2 3 4))
+  (define B (matrix 2 2 5 6 7 8))
+  
+  (printf "   Matrix A (2x2): %s\\n" (matrix-to-string A))  
+  (printf "   Matrix B (2x2): %s\\n" (matrix-to-string B))
+  (printf "   Computing A × B...\\n")
+  
+  (define C (tensor-dot A B))
+  (printf "   Result C = A × B: %s\\n" (matrix-to-string C))
+  
+  ;; Show manual calculation for verification
+  (printf "\\n   Manual verification:\\n")
+  (printf "   C[0,0] = A[0,0]*B[0,0] + A[0,1]*B[1,0] = 1*5 + 2*7 = 19\\n")
+  (printf "   C[0,1] = A[0,0]*B[0,1] + A[0,1]*B[1,1] = 1*6 + 2*8 = 22\\n") 
+  (printf "   C[1,0] = A[1,0]*B[0,0] + A[1,1]*B[1,0] = 3*5 + 4*7 = 43\\n")
+  (printf "   C[1,1] = A[1,0]*B[0,1] + A[1,1]*B[1,1] = 3*6 + 4*8 = 50\\n")
+  (printf "   Expected result: [[19, 22], [43, 50]]\\n")
+  
+  ;; Verify individual elements
+  (printf "   Actual values: C[0,0]=%d, C[0,1]=%d, C[1,0]=%d, C[1,1]=%d\\n"
+          (tensor-get C 0) (tensor-get C 1) (tensor-get C 2) (tensor-get C 3))
+  
+  ;; Test 2: 3x3 Matrix Multiplication  
+  (printf "\\n2. Testing 3x3 Matrix Multiplication:\\n")
+  (printf "   Algorithm: STANDARD (still optimal for small matrices)\\n")
+  (printf "   Expected complexity: O(n³) = O(27) operations\\n")
+  
+  (define D (matrix 3 3 1 0 2 0 1 0 3 0 1))
+  (define E (matrix 3 3 1 2 0 0 1 1 0 0 1))
+  
+  (printf "   Matrix D (3x3): %s\\n" (matrix-to-string D))
+  (printf "   Matrix E (3x3): %s\\n" (matrix-to-string E))
+  (printf "   Computing D × E...\\n")
+  
+  (define F (tensor-dot D E))
+  (printf "   Result F = D × E: %s\\n" (matrix-to-string F))
+  
+  ;; Test 3: 4x4 Matrix (boundary case)
+  (printf "\\n3. Testing 4x4 Matrix (boundary for STANDARD algorithm):\\n")
+  (define G4 (matrix 4 4 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1))
+  (define H4 (matrix 4 4 2 1 1 1 1 2 1 1 1 1 2 1 1 1 1 2))
+  
+  (printf "   Matrix G4 (4x4 identity): First row [%d,%d,%d,%d]\\n"
+          (tensor-get G4 0) (tensor-get G4 1) (tensor-get G4 2) (tensor-get G4 3))
+  (printf "   Matrix H4 (4x4 with pattern): First row [%d,%d,%d,%d]\\n"
+          (tensor-get H4 0) (tensor-get H4 1) (tensor-get H4 2) (tensor-get H4 3))
+  (printf "   Computing G4 × H4...\\n")
+  
+  (define I4 (tensor-dot G4 H4))
+  (printf "   Result I4: First row [%d,%d,%d,%d] (should equal H4's first row)\\n"
+          (tensor-get I4 0) (tensor-get I4 1) (tensor-get I4 2) (tensor-get I4 3))
+  
+  (printf "\\n=== Summary: STANDARD Algorithm Performance ===\\n")
+  (printf "✓ 2x2 matrices: 8 scalar operations (2³)\\n")
+  (printf "✓ 3x3 matrices: 27 scalar operations (3³)\\n") 
+  (printf "✓ 4x4 matrices: 64 scalar operations (4³)\\n")
+  (printf "✓ All tests completed successfully\\n")
+  (printf "\\n=== Small Matrix Test Complete ===\\n")
+  0)

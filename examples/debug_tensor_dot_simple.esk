@@ -1,0 +1,20 @@
+;; Debug tensor-dot operation
+
+(define (main)
+  (printf "Creating matrices...\n")
+  (define A (matrix 2 2 1 2 3 4))
+  (define B (matrix 2 2 5 6 7 8))
+  
+  (printf "Matrix A created: [%d, %d, %d, %d]\n" 
+          (tensor-get A 0) (tensor-get A 1) (tensor-get A 2) (tensor-get A 3))
+  (printf "Matrix B created: [%d, %d, %d, %d]\n"
+          (tensor-get B 0) (tensor-get B 1) (tensor-get B 2) (tensor-get B 3))
+  
+  (printf "Calling tensor-dot...\n")
+  (define C (tensor-dot A B))
+  (printf "tensor-dot completed\n")
+  
+  (printf "Result C: [%d, %d, %d, %d]\n"
+          (tensor-get C 0) (tensor-get C 1) (tensor-get C 2) (tensor-get C 3))
+  
+  0)
