@@ -1,0 +1,11 @@
+;; Debug matrix dimensions to see if they're created correctly
+
+(define (main)
+  (define A (matrix 2 2 1 2 3 4))
+  (printf "Matrix A created\n")
+  
+  ;; Try to get matrix properties
+  (define dims (tensor-shape A))
+  (printf "Matrix A shape: %s\n" (vector-to-string dims))
+  
+  0)

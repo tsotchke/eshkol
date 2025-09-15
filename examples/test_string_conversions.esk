@@ -1,0 +1,29 @@
+;; Test vector-to-string and matrix-to-string functions
+
+(define (main)
+  (printf "=== Testing String Conversion Functions ===\n")
+  
+  ;; Test vector-to-string
+  (define v1 (vector 1 2 3 4 5))
+  (define v1_str (vector-to-string v1))
+  (printf "Vector v1: %s\n" v1_str)
+  
+  (define v2 (vector 10 20 30))
+  (define v2_str (vector-to-string v2))
+  (printf "Vector v2: %s\n" v2_str)
+  
+  ;; Test matrix-to-string
+  (define m1 (matrix 2 2 1 2 3 4))
+  (define m1_str (matrix-to-string m1))
+  (printf "Matrix 2x2: %s\n" m1_str)
+  
+  (define m2 (matrix 2 3 1 2 3 4 5 6))
+  (define m2_str (matrix-to-string m2))
+  (printf "Matrix 2x3: %s\n" m2_str)
+  
+  (define m3 (matrix 3 2 10 20 30 40 50 60))
+  (define m3_str (matrix-to-string m3))
+  (printf "Matrix 3x2: %s\n" m3_str)
+  
+  (printf "=== All tests completed ===\n")
+  0)

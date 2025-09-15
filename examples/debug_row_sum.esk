@@ -1,0 +1,18 @@
+;; Debug the row sum calculation step by step
+
+(define (main)
+  ;; Simple 2x2 matrix for easier debugging
+  (define m1 (matrix 2 2 1 2 3 4))
+  (printf "Matrix: [[1, 2], [3, 4]]\n")
+  
+  ;; Test dimension 0 reduction (should give column sums)
+  (define row_sum (tensor-reduce m1 + 0 0))
+  (printf "First element: %d\n" (tensor-get row_sum 0))
+  (printf "Expected: 4 (1+3)\n")
+  
+  ;; Get second element if possible
+  (define second_elem (tensor-get row_sum 1))
+  (printf "Second element: %d\n" second_elem)
+  (printf "Expected: 6 (2+4)\n")
+  
+  0)

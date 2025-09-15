@@ -1,0 +1,176 @@
+/*
+ * Copyright (C) tsotchke
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+#ifndef ESHKOL_ESHKOL_H
+#define ESHKOL_ESHKOL_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+
+#include <fstream>
+
+extern "C" {
+#endif
+
+typedef enum {
+    ESHKOL_INVALID,
+    ESHKOL_UNTYPED,
+    ESHKOL_UINT8,
+    ESHKOL_UINT16,
+    ESHKOL_UINT32,
+    ESHKOL_UINT64,
+    ESHKOL_INT8,
+    ESHKOL_INT16,
+    ESHKOL_INT32,
+    ESHKOL_INT64,
+    ESHKOL_DOUBLE,
+    ESHKOL_STRING,
+    ESHKOL_FUNC,
+    ESHKOL_VAR,
+    ESHKOL_OP,
+    ESHKOL_CONS,
+    ESHKOL_NULL,
+    ESHKOL_TENSOR
+} eshkol_type_t;
+
+typedef enum {
+    ESHKOL_INVALID_OP,
+    ESHKOL_COMPOSE_OP,
+    ESHKOL_IF_OP,
+    ESHKOL_ADD_OP,
+    ESHKOL_SUB_OP,
+    ESHKOL_MUL_OP,
+    ESHKOL_DIV_OP,
+    ESHKOL_CALL_OP,
+    ESHKOL_DEFINE_OP,
+    ESHKOL_SEQUENCE_OP,
+    ESHKOL_EXTERN_OP,
+    ESHKOL_EXTERN_VAR_OP,
+    ESHKOL_LAMBDA_OP,
+    ESHKOL_TENSOR_OP,
+    ESHKOL_DIFF_OP
+} eshkol_op_t;
+
+struct eshkol_ast;
+struct eshkol_operation;
+
+typedef struct eshkol_operation {
+    eshkol_op_t op;
+    union {
+        struct {
+            struct eshkol_ast *base;
+            struct eshkol_ast *ptr;
+        } assign_op;
+        struct {
+            struct eshkol_ast *func_a;
+            struct eshkol_ast *func_b;
+        } compose_op;
+        struct {
+            struct eshkol_operation *if_true;
+            struct eshkol_operation *if_false;
+        } if_op;
+        struct {
+            struct eshkol_ast *func;
+            struct eshkol_ast *variables;
+            uint64_t num_vars;
+        } call_op;
+        struct {
+            char *name;
+            struct eshkol_ast *value;
+            uint8_t is_function;
+            struct eshkol_ast *parameters;
+            uint64_t num_params;
+        } define_op;
+        struct {
+            struct eshkol_ast *expressions;
+            uint64_t num_expressions;
+        } sequence_op;
+        struct {
+            char *name;
+            char *real_name;
+            char *return_type;
+            struct eshkol_ast *parameters;
+            uint64_t num_params;
+        } extern_op;
+        struct {
+            char *name;
+            char *type;
+        } extern_var_op;
+	struct {
+            struct eshkol_ast *parameters;
+            uint64_t num_params;
+            struct eshkol_ast *body;
+            struct eshkol_ast *captured_vars;
+            uint64_t num_captured;
+        } lambda_op;
+        struct {
+            struct eshkol_ast *elements;
+            uint64_t *dimensions;
+            uint64_t num_dimensions;
+            uint64_t total_elements;
+        } tensor_op;
+        struct {
+            struct eshkol_ast *expression;  // Expression to differentiate
+            char *variable;                 // Variable to differentiate with respect to
+        } diff_op;
+    };
+} eshkol_operations_t;
+
+typedef struct eshkol_ast {
+    eshkol_type_t type;
+    union {
+        void *untyped_data;
+        uint8_t uint8_val;
+        uint16_t uint16_val;
+        uint32_t uint32_val;
+        uint64_t uint64_val;
+        int8_t int8_val;
+        int16_t int16_val;
+        int32_t int32_val;
+        int64_t int64_val;
+        double double_val;
+        struct {
+            char *ptr;
+            uint64_t size;
+        } str_val;
+        struct {
+            char *id;
+            uint8_t is_lambda;
+            eshkol_operations_t *func_commands;
+            struct eshkol_ast *variables;
+            uint64_t num_variables;
+            uint64_t size;
+        } eshkol_func;
+        struct {
+            char *id;
+            struct eshkol_ast *data;
+        } variable;
+        struct {
+            struct eshkol_ast *car;
+            struct eshkol_ast *cdr;
+        } cons_cell;
+        struct {
+            struct eshkol_ast *elements;
+            uint64_t *dimensions;
+            uint64_t num_dimensions;
+            uint64_t total_elements;
+        } tensor_val;
+        eshkol_operations_t operation;
+    };
+} eshkol_ast_t;
+
+void eshkol_ast_clean(eshkol_ast_t *ast);
+void eshkol_ast_pretty_print(const eshkol_ast_t *ast, int indent);
+
+#ifdef __cplusplus
+};
+
+eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file);
+
+#endif
+
+#endif

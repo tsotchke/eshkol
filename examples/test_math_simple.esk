@@ -1,0 +1,13 @@
+;; Simple test for mathematical functions
+
+(define (main)
+    (printf "Testing sin function:\n")
+    (sin 0)
+    (printf "Testing cos function:\n") 
+    (cos 0)
+    (printf "Testing sqrt function:\n")
+    (sqrt 4)
+    (printf "Testing pow function:\n")
+    (pow 2 3)
+    (printf "All functions called successfully!\n")
+    0)

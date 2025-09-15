@@ -1,0 +1,44 @@
+;; Demonstration of tensor visualization with string conversions
+
+(define (main)
+  (printf "=== Tensor Visualization Demo ===\n\n")
+  
+  (printf "1. Creating and visualizing vectors:\n")
+  (define data (vector 5 10 15 20 25))
+  (printf "   Original data: %s\n" (vector-to-string data))
+  
+  (define normalized (tensor-apply data increment))
+  (printf "   Incremented:   %s\n" (vector-to-string normalized))
+  
+  (define scaled (tensor-apply data double))
+  (printf "   Doubled:       %s\n" (vector-to-string scaled))
+  
+  (printf "\n2. Matrix operations and visualization:\n")
+  (define matrix_a (matrix 3 3 1 2 3 4 5 6 7 8 9))
+  (printf "   Matrix A (3x3):\n   %s\n" (matrix-to-string matrix_a))
+  
+  (define matrix_b (tensor-apply matrix_a square))
+  (printf "   Matrix A squared:\n   %s\n" (matrix-to-string matrix_b))
+  
+  (printf "\n3. Reduction operations:\n")
+  (define row_sums (tensor-reduce matrix_a + 0 0))
+  (printf "   Row sums: %s\n" (vector-to-string row_sums))
+  
+  (define total_sum (tensor-reduce matrix_a + 0))
+  (printf "   Total sum: %d\n" total_sum)
+  
+  (define max_value (tensor-reduce matrix_a max 0))
+  (printf "   Maximum value: %d\n" max_value)
+  
+  (printf "\n4. Practical example - Data transformation pipeline:\n")
+  (define raw_data (vector 12 18 24 30 36))
+  (printf "   Raw data:      %s\n" (vector-to-string raw_data))
+  
+  (define processed (tensor-apply raw_data double))
+  (printf "   After scaling: %s\n" (vector-to-string processed))
+  
+  (define sum_value (tensor-reduce raw_data + 0))
+  (printf "   Sum: %d, Count: 5\n" sum_value)
+  
+  (printf "\n=== Demo completed successfully ===\n")
+  0)
