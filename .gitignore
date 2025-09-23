@@ -17,6 +17,7 @@ build/
 *.keystore
 secrets/
 credentials/
+.vscode
 
 # Logs and databases
 *.log
