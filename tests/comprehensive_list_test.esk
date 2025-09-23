@@ -1,0 +1,86 @@
+;;
+;; Comprehensive List Operations Test
+;; Testing all list functions
+;;
+
+;; Test list creation and basic access
+(define test-list (list 10 20 30 40 50))
+(display "Test list: ")
+(display (car test-list)) (display " ")
+(display (cadr test-list)) (display " ")
+(display (caddr test-list)) (display " ")
+(display (car (cdr (cdr (cdr test-list))))) (display " ")
+(display (car (cdr (cdr (cdr (cdr test-list))))))
+(newline)
+
+;; Test compound car/cdr operations
+(define nested-list (list (list 1 2) (list 3 4) (list 5 6)))
+(display "Nested list car car: ")
+(display (caar nested-list))
+(newline)
+(display "Nested list car of second element: ")
+(display (caadr nested-list))
+(newline)
+
+;; Test list length
+(display "Length of test-list: ")
+(display (length test-list))
+(newline)
+(display "Length of empty list: ")
+(display (length (list)))
+(newline)
+
+;; Test list-ref (0-indexed access)
+(display "Element at index 0: ")
+(display (list-ref test-list 0))
+(newline)
+(display "Element at index 2: ")
+(display (list-ref test-list 2))
+(newline)
+
+;; Test list-tail
+(display "List tail from index 2: ")
+(define tail-list (list-tail test-list 2))
+(display (car tail-list)) (display " ")
+(display (cadr tail-list)) (display " ")
+(display (caddr tail-list))
+(newline)
+
+;; Test reverse
+(define short-list (list 1 2 3))
+(display "Original: ")
+(display (car short-list)) (display " ")
+(display (cadr short-list)) (display " ")
+(display (caddr short-list))
+(newline)
+(define reversed-list (reverse short-list))
+(display "Reversed: ")
+(display (car reversed-list)) (display " ")
+(display (cadr reversed-list)) (display " ")
+(display (caddr reversed-list))
+(newline)
+
+;; Test append
+(define list1 (list 1 2))
+(define list2 (list 3 4))
+(define appended (append list1 list2))
+(display "Appended: ")
+(display (car appended)) (display " ")
+(display (cadr appended)) (display " ")
+(display (caddr appended)) (display " ")
+(display (car (cdr (cdr (cdr appended)))))
+(newline)
+
+;; Test mutable operations
+(define mutable-pair (cons 100 200))
+(display "Before mutation: ")
+(display (car mutable-pair)) (display " : ") (display (cdr mutable-pair))
+(newline)
+(set-car! mutable-pair 999)
+(set-cdr! mutable-pair 888)
+(display "After mutation: ")
+(display (car mutable-pair)) (display " : ") (display (cdr mutable-pair))
+(newline)
+
+(display "All list operations test completed!")
+(newline)

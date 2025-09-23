@@ -1,0 +1,23 @@
+;;
+;; For-Each Function Test
+;;
+
+(display "Testing for-each function:")
+(newline)
+
+;; Create a simple list
+(define numbers (list 1 2 3 4))
+(display "Original list: ")
+(display (car numbers)) (display " ")
+(display (cadr numbers)) (display " ")
+(display (caddr numbers)) (display " ")
+(display (car (cdr (cdr (cdr numbers)))))
+(newline)
+
+;; Test for-each with display (side effects)
+(display "for-each with display: ")
+(for-each display numbers)
+(newline)
+
+(display "for-each test completed!")
+(newline)

@@ -1,0 +1,40 @@
+;;
+;; Debug Caddr Isolation - Test if caddr is the specific trigger
+;;
+
+(display "=== DEBUG CADDR ISOLATION TEST ===")
+(newline)
+
+;; Create the exact same setup as failing test
+(define list1 (list 1 2 3))
+(define list2 (list 4 5 6))
+(define result1 (map + list1 list2))
+
+;; Test different ways of accessing the third element
+(display "1. Testing car/cdr chain access:")
+(newline)
+(display "   Third element via car/cdr chain: ")
+(display (car (cdr (cdr result1))))
+(newline)
+
+(display "2. Testing direct caddr access:")
+(newline)
+(display "   Third element via caddr: ")
+(display (caddr result1))
+(newline)
+
+;; Now test the problematic combination: multiple display operations
+(display "3. Testing complete access pattern from failing test:")
+(newline)
+(display "   map + result: ")
+(if (null? result1)
+    (display "EMPTY")
+    (begin
+        (display (car result1)) (display " ")
+        (display (cadr result1)) (display " ")
+        (display (caddr result1))
+    ))
+(newline)
+
+(display "=== CADDR ISOLATION TEST COMPLETE ===")
+(newline)

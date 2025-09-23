@@ -1,0 +1,22 @@
+;;
+;; Minimal Test - No append function
+;;
+
+;; Test basic list creation
+(define simple-list (list 1 2 3))
+(display "First: ")
+(display (car simple-list))
+(newline)
+
+;; Test compound operations  
+(display "Second: ")
+(display (cadr simple-list))
+(newline)
+
+;; Test length
+(display "Length: ")
+(display (length simple-list))
+(newline)
+
+(display "Minimal test completed!")
+(newline)

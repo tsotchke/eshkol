@@ -7,6 +7,8 @@
         "cstdlib": "cpp",
         "string": "cpp",
         "iostream": "cpp",
-        "sstream": "cpp"
+        "sstream": "cpp",
+        "algorithm": "cpp",
+        "cctype": "cpp"
     }
 }

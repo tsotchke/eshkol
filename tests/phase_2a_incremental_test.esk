@@ -1,0 +1,53 @@
+;;
+;; Phase 2A Incremental Test - Testing each section separately
+;;
+
+(display "=== PHASE 2A INCREMENTAL TEST ===")
+(newline)
+
+;; Test 1: Basic multi-list map (same as failing test)
+(display "1. Testing multi-list map with addition:")
+(newline)
+(define list1 (list 1 2 3))
+(define list2 (list 4 5 6))
+(display "   List 1: 1 2 3")
+(newline)
+(display "   List 2: 4 5 6")
+(newline)
+
+(define result1 (map + list1 list2))
+(display "   map + result: ")
+(if (null? result1)
+    (display "EMPTY")
+    (begin
+        (display (car result1)) (display " ")
+        (display (cadr result1)) (display " ")
+        (display (caddr result1))
+    ))
+(newline)
+
+(display "=== FIRST TEST COMPLETE ===")
+(newline)
+
+;; Test 2: Multi-list map with different lengths (stops at shortest)
+(display "2. Testing multi-list map with different lengths:")
+(newline)
+(define short-list (list 10 20))
+(define long-list (list 1 2 3 4 5))
+(display "   Short list: 10 20")
+(newline)
+(display "   Long list: 1 2 3 4 5")
+(newline)
+
+(define result2 (map + short-list long-list))
+(display "   map + result (should have 2 elements): ")
+(if (null? result2)
+    (display "EMPTY")
+    (begin
+        (display (car result2)) (display " ")
+        (display (cadr result2))
+    ))
+(newline)
+
+(display "=== SECOND TEST COMPLETE ===")
+(newline)
