@@ -1,0 +1,26 @@
+;;
+;; Phase 2A Minimal Fail - Minimal test that triggers segfault
+;;
+
+(display "=== PHASE 2A MINIMAL FAIL ===")
+(newline)
+
+(define list1 (list 1 2 3))
+(define list2 (list 4 5 6))
+
+(define result1 (map + list1 list2))
+(display "First map operation succeeded")
+(newline)
+
+;; Add the second operation that might be causing issues
+(define short-list (list 10 20))
+(define long-list (list 1 2 3 4 5))
+(define result2 (map + short-list long-list))
+(display "Second map operation succeeded")
+(newline)
+
+;; Add the three-list operation
+(define list3 (list 100 200 300))
+(define result3 (map + list1 list2 list3))
+(display "Third map operation (3 lists) succeeded")
+(newline)
