@@ -15,6 +15,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// Include main Eshkol header for tagged data types
+#include "../../inc/eshkol/eshkol.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -73,9 +76,53 @@ typedef struct arena_cons_cell {
     int64_t cdr;           // Cdr value (as int64 for compatibility)
 } arena_cons_cell_t;
 
+// Enhanced cons cell structure with type information
+typedef struct arena_tagged_cons_cell {
+    uint8_t car_type;        // Type tag for car value (eshkol_value_type_t)
+    uint8_t cdr_type;        // Type tag for cdr value (eshkol_value_type_t)
+    uint16_t flags;          // Reserved flags (immutability, etc.)
+    eshkol_tagged_data_t car_data;  // Car value with union access
+    eshkol_tagged_data_t cdr_data;  // Cdr value with union access
+} arena_tagged_cons_cell_t;
+
+// Compile-time size validation
+_Static_assert(sizeof(arena_tagged_cons_cell_t) == 24,
+               "Tagged cons cell must be exactly 24 bytes");
+_Static_assert(sizeof(arena_cons_cell_t) == 16,
+               "Legacy cons cell size changed unexpectedly");
+
 // List-specific allocation functions
 arena_cons_cell_t* arena_allocate_cons_cell(arena_t* arena);
 void* arena_allocate_list_node(arena_t* arena, size_t element_size, size_t count);
+
+// Tagged cons cell allocation functions
+arena_tagged_cons_cell_t* arena_allocate_tagged_cons_cell(arena_t* arena);
+arena_tagged_cons_cell_t* arena_allocate_tagged_cons_batch(arena_t* arena, size_t count);
+
+// Convenience constructors
+arena_tagged_cons_cell_t* arena_create_int64_cons(arena_t* arena,
+                                                   int64_t car, uint8_t car_type,
+                                                   int64_t cdr, uint8_t cdr_type);
+arena_tagged_cons_cell_t* arena_create_mixed_cons(arena_t* arena,
+                                                   eshkol_tagged_data_t car, uint8_t car_type,
+                                                   eshkol_tagged_data_t cdr, uint8_t cdr_type);
+
+// Type-safe data access functions
+int64_t arena_tagged_cons_get_int64(const arena_tagged_cons_cell_t* cell, bool is_cdr);
+double arena_tagged_cons_get_double(const arena_tagged_cons_cell_t* cell, bool is_cdr);
+uint64_t arena_tagged_cons_get_ptr(const arena_tagged_cons_cell_t* cell, bool is_cdr);
+
+// Type-safe data setting functions
+void arena_tagged_cons_set_int64(arena_tagged_cons_cell_t* cell, bool is_cdr,
+                                  int64_t value, uint8_t type);
+void arena_tagged_cons_set_double(arena_tagged_cons_cell_t* cell, bool is_cdr,
+                                   double value, uint8_t type);
+void arena_tagged_cons_set_ptr(arena_tagged_cons_cell_t* cell, bool is_cdr,
+                                uint64_t value, uint8_t type);
+
+// Type query functions
+uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is_cdr);
+bool arena_tagged_cons_is_type(const arena_tagged_cons_cell_t* cell, bool is_cdr, uint8_t type);
 
 #ifdef __cplusplus
 } // extern "C"

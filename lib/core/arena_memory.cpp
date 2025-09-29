@@ -288,6 +288,216 @@ void* arena_allocate_list_node(arena_t* arena, size_t element_size, size_t count
     return arena_allocate(arena, element_size * count);
 }
 
+// Tagged cons cell allocation implementation
+arena_tagged_cons_cell_t* arena_allocate_tagged_cons_cell(arena_t* arena) {
+    if (!arena) {
+        eshkol_error("Cannot allocate tagged cons cell: null arena");
+        return nullptr;
+    }
+    
+    arena_tagged_cons_cell_t* cell = (arena_tagged_cons_cell_t*)
+        arena_allocate_aligned(arena, sizeof(arena_tagged_cons_cell_t), 8);
+    
+    if (!cell) {
+        eshkol_error("Failed to allocate tagged cons cell");
+        return nullptr;
+    }
+    
+    // Initialize with null types and zero values
+    cell->car_type = ESHKOL_VALUE_NULL;
+    cell->cdr_type = ESHKOL_VALUE_NULL;
+    cell->flags = 0;
+    cell->car_data.raw_val = 0;
+    cell->cdr_data.raw_val = 0;
+    
+    return cell;
+}
+
+// Batch allocation for efficiency
+arena_tagged_cons_cell_t* arena_allocate_tagged_cons_batch(arena_t* arena, size_t count) {
+    if (!arena || count == 0) {
+        eshkol_error("Invalid parameters for batch tagged cons allocation");
+        return nullptr;
+    }
+    
+    size_t total_size = sizeof(arena_tagged_cons_cell_t) * count;
+    arena_tagged_cons_cell_t* cells = (arena_tagged_cons_cell_t*)
+        arena_allocate_aligned(arena, total_size, 8);
+    
+    if (!cells) {
+        eshkol_error("Failed to allocate %zu tagged cons cells", count);
+        return nullptr;
+    }
+    
+    // Initialize all cells
+    for (size_t i = 0; i < count; i++) {
+        cells[i].car_type = ESHKOL_VALUE_NULL;
+        cells[i].cdr_type = ESHKOL_VALUE_NULL;
+        cells[i].flags = 0;
+        cells[i].car_data.raw_val = 0;
+        cells[i].cdr_data.raw_val = 0;
+    }
+    
+    return cells;
+}
+
+// Convenience constructor for int64 values
+arena_tagged_cons_cell_t* arena_create_int64_cons(arena_t* arena,
+                                                   int64_t car, uint8_t car_type,
+                                                   int64_t cdr, uint8_t cdr_type) {
+    arena_tagged_cons_cell_t* cell = arena_allocate_tagged_cons_cell(arena);
+    if (!cell) return nullptr;
+    
+    cell->car_type = car_type;
+    cell->car_data.int_val = car;
+    cell->cdr_type = cdr_type;
+    cell->cdr_data.int_val = cdr;
+    
+    return cell;
+}
+
+// Convenience constructor for mixed values
+arena_tagged_cons_cell_t* arena_create_mixed_cons(arena_t* arena,
+                                                   eshkol_tagged_data_t car, uint8_t car_type,
+                                                   eshkol_tagged_data_t cdr, uint8_t cdr_type) {
+    arena_tagged_cons_cell_t* cell = arena_allocate_tagged_cons_cell(arena);
+    if (!cell) return nullptr;
+    
+    cell->car_type = car_type;
+    cell->car_data = car;
+    cell->cdr_type = cdr_type;
+    cell->cdr_data = cdr;
+    
+    return cell;
+}
+
+// Type-safe data retrieval functions
+int64_t arena_tagged_cons_get_int64(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
+    if (!cell) {
+        eshkol_error("Cannot get int64 from null tagged cons cell");
+        return 0;
+    }
+    
+    uint8_t type = is_cdr ? cell->cdr_type : cell->car_type;
+    if (!ESHKOL_IS_INT64_TYPE(type)) {
+        eshkol_error("Attempted to get int64 from non-int64 cell (type=%d)", type);
+        return 0;
+    }
+    
+    return is_cdr ? cell->cdr_data.int_val : cell->car_data.int_val;
+}
+
+double arena_tagged_cons_get_double(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
+    if (!cell) {
+        eshkol_error("Cannot get double from null tagged cons cell");
+        return 0.0;
+    }
+    
+    uint8_t type = is_cdr ? cell->cdr_type : cell->car_type;
+    if (!ESHKOL_IS_DOUBLE_TYPE(type)) {
+        eshkol_error("Attempted to get double from non-double cell (type=%d)", type);
+        return 0.0;
+    }
+    
+    return is_cdr ? cell->cdr_data.double_val : cell->car_data.double_val;
+}
+
+uint64_t arena_tagged_cons_get_ptr(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
+    if (!cell) {
+        eshkol_error("Cannot get pointer from null tagged cons cell");
+        return 0;
+    }
+    
+    uint8_t type = is_cdr ? cell->cdr_type : cell->car_type;
+    if (!ESHKOL_IS_CONS_PTR_TYPE(type)) {
+        eshkol_error("Attempted to get pointer from non-pointer cell (type=%d)", type);
+        return 0;
+    }
+    
+    return is_cdr ? cell->cdr_data.ptr_val : cell->car_data.ptr_val;
+}
+
+// Type-safe data setting functions
+void arena_tagged_cons_set_int64(arena_tagged_cons_cell_t* cell, bool is_cdr,
+                                  int64_t value, uint8_t type) {
+    if (!cell) {
+        eshkol_error("Cannot set int64 on null tagged cons cell");
+        return;
+    }
+    
+    if (!ESHKOL_IS_INT64_TYPE(type)) {
+        eshkol_error("Invalid type for int64 value: %d", type);
+        return;
+    }
+    
+    if (is_cdr) {
+        cell->cdr_type = type;
+        cell->cdr_data.int_val = value;
+    } else {
+        cell->car_type = type;
+        cell->car_data.int_val = value;
+    }
+}
+
+void arena_tagged_cons_set_double(arena_tagged_cons_cell_t* cell, bool is_cdr,
+                                   double value, uint8_t type) {
+    if (!cell) {
+        eshkol_error("Cannot set double on null tagged cons cell");
+        return;
+    }
+    
+    if (!ESHKOL_IS_DOUBLE_TYPE(type)) {
+        eshkol_error("Invalid type for double value: %d", type);
+        return;
+    }
+    
+    if (is_cdr) {
+        cell->cdr_type = type;
+        cell->cdr_data.double_val = value;
+    } else {
+        cell->car_type = type;
+        cell->car_data.double_val = value;
+    }
+}
+
+void arena_tagged_cons_set_ptr(arena_tagged_cons_cell_t* cell, bool is_cdr,
+                                uint64_t value, uint8_t type) {
+    if (!cell) {
+        eshkol_error("Cannot set pointer on null tagged cons cell");
+        return;
+    }
+    
+    if (!ESHKOL_IS_CONS_PTR_TYPE(type)) {
+        eshkol_error("Invalid type for pointer value: %d", type);
+        return;
+    }
+    
+    if (is_cdr) {
+        cell->cdr_type = type;
+        cell->cdr_data.ptr_val = value;
+    } else {
+        cell->car_type = type;
+        cell->car_data.ptr_val = value;
+    }
+}
+
+// Type query functions
+uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
+    if (!cell) {
+        eshkol_error("Cannot get type from null tagged cons cell");
+        return ESHKOL_VALUE_NULL;
+    }
+    
+    return is_cdr ? cell->cdr_type : cell->car_type;
+}
+
+bool arena_tagged_cons_is_type(const arena_tagged_cons_cell_t* cell, bool is_cdr, uint8_t type) {
+    if (!cell) return false;
+    
+    uint8_t actual_type = is_cdr ? cell->cdr_type : cell->car_type;
+    return ESHKOL_GET_BASE_TYPE(actual_type) == ESHKOL_GET_BASE_TYPE(type);
+}
+
 #ifdef __cplusplus
 
 // C++ Arena wrapper implementation

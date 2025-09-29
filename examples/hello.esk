@@ -1,7 +1,4 @@
 ;; Hello World in Eshkol
 ;; This is the simplest possible Eshkol program
 
-;; Main function
-(define (main)
-  (printf "Hello, Eshkol!\n")
-  0)  ; Return 0 to indicate success
+(printf "Hello, Eshkol!\n")

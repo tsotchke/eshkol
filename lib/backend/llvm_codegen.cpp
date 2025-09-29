@@ -44,6 +44,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <cctype>
+#include <stack>
 
 using namespace llvm;
 
@@ -57,6 +58,22 @@ struct EshkolLLVMModule {
 };
 
 static std::map<LLVMModuleRef, std::unique_ptr<EshkolLLVMModule>> g_llvm_modules;
+
+// TypedValue structure to carry both LLVM value and type information
+struct TypedValue {
+    Value* llvm_value;              // LLVM IR value
+    eshkol_value_type_t type;       // Our type tag from eshkol.h
+    bool is_exact;                  // Scheme exactness tracking
+    
+    TypedValue() : llvm_value(nullptr), type(ESHKOL_VALUE_NULL), is_exact(true) {}
+    TypedValue(Value* val, eshkol_value_type_t t, bool exact = true)
+        : llvm_value(val), type(t), is_exact(exact) {}
+        
+    // Helper methods
+    bool isInt64() const { return type == ESHKOL_VALUE_INT64; }
+    bool isDouble() const { return type == ESHKOL_VALUE_DOUBLE; }
+    bool isNull() const { return type == ESHKOL_VALUE_NULL; }
+};
 
 class EshkolLLVMCodeGen {
 private:
@@ -493,7 +510,7 @@ private:
             }
         }
         
-        function_table[func_name] = function;
+        registerContextFunction(func_name, function);
         eshkol_debug("Created function declaration: %s with %llu parameters", 
                     func_name, (unsigned long long)num_params);
     }
@@ -599,6 +616,162 @@ private:
             }
             eshkol_debug("Arena scope cleanup complete (depth: %zu)", arena_scope_depth);
         }
+    }
+    
+    // Mixed type arithmetic helper functions
+    TypedValue promoteInt64ToDouble(const TypedValue& int64_val) {
+        if (!int64_val.isInt64()) return int64_val;
+        
+        Value* double_val = builder->CreateSIToFP(int64_val.llvm_value, Type::getDoubleTy(*context));
+        return TypedValue(double_val, ESHKOL_VALUE_DOUBLE, false); // Promoted values are inexact
+    }
+    
+    std::pair<TypedValue, TypedValue> promoteToCommonType(const TypedValue& left, const TypedValue& right) {
+        // Both int64: no promotion needed
+        if (left.isInt64() && right.isInt64()) {
+            return {left, right};
+        }
+        
+        // Both double: no promotion needed
+        if (left.isDouble() && right.isDouble()) {
+            return {left, right};
+        }
+        
+        // Mixed types: promote to double
+        if (left.isInt64() && right.isDouble()) {
+            return {promoteInt64ToDouble(left), right};
+        }
+        
+        if (left.isDouble() && right.isInt64()) {
+            return {left, promoteInt64ToDouble(right)};
+        }
+        
+        // Error case: unsupported type combination
+        eshkol_error("Unsupported type combination in arithmetic: %d and %d", left.type, right.type);
+        return {left, right};
+    }
+    
+    TypedValue generateMixedArithmetic(const std::string& operation, const TypedValue& left, const TypedValue& right) {
+        auto [promoted_left, promoted_right] = promoteToCommonType(left, right);
+        
+        Value* result_val = nullptr;
+        bool result_exact = promoted_left.is_exact && promoted_right.is_exact;
+        
+        if (promoted_left.isInt64() && promoted_right.isInt64()) {
+            // Pure integer arithmetic
+            if (operation == "add") {
+                result_val = builder->CreateAdd(promoted_left.llvm_value, promoted_right.llvm_value);
+            } else if (operation == "sub") {
+                result_val = builder->CreateSub(promoted_left.llvm_value, promoted_right.llvm_value);
+            } else if (operation == "mul") {
+                result_val = builder->CreateMul(promoted_left.llvm_value, promoted_right.llvm_value);
+            } else if (operation == "div") {
+                // Division always promotes to double in Scheme
+                auto double_left = promoteInt64ToDouble(promoted_left);
+                auto double_right = promoteInt64ToDouble(promoted_right);
+                result_val = builder->CreateFDiv(double_left.llvm_value, double_right.llvm_value);
+                return TypedValue(result_val, ESHKOL_VALUE_DOUBLE, false); // Division is inexact
+            }
+            return TypedValue(result_val, ESHKOL_VALUE_INT64, result_exact);
+        } else {
+            // Floating-point arithmetic (both operands are now double)
+            if (operation == "add") {
+                result_val = builder->CreateFAdd(promoted_left.llvm_value, promoted_right.llvm_value);
+            } else if (operation == "sub") {
+                result_val = builder->CreateFSub(promoted_left.llvm_value, promoted_right.llvm_value);
+            } else if (operation == "mul") {
+                result_val = builder->CreateFMul(promoted_left.llvm_value, promoted_right.llvm_value);
+            } else if (operation == "div") {
+                result_val = builder->CreateFDiv(promoted_left.llvm_value, promoted_right.llvm_value);
+            }
+            return TypedValue(result_val, ESHKOL_VALUE_DOUBLE, false); // Mixed arithmetic is inexact
+        }
+    }
+    
+    // Convert TypedValue back to raw Value* for compatibility
+    Value* typedValueToLLVM(const TypedValue& typed_val) {
+        return typed_val.llvm_value;
+    }
+    
+    // Create TypedValue from AST node
+    TypedValue codegenTypedAST(const eshkol_ast_t* ast) {
+        if (!ast) return TypedValue();
+        
+        switch (ast->type) {
+            case ESHKOL_INT64:
+                return TypedValue(
+                    ConstantInt::get(Type::getInt64Ty(*context), ast->int64_val),
+                    ESHKOL_VALUE_INT64,
+                    true  // Integer literals are exact
+                );
+                
+            case ESHKOL_DOUBLE:
+                return TypedValue(
+                    ConstantFP::get(Type::getDoubleTy(*context), ast->double_val),
+                    ESHKOL_VALUE_DOUBLE,
+                    false  // Double literals are inexact
+                );
+                
+            case ESHKOL_VAR:
+            case ESHKOL_OP:
+            default: {
+                // For variables and operations, generate LLVM value and detect type
+                Value* val = codegenAST(ast);
+                if (!val) return TypedValue();
+                
+                // Detect type from LLVM Value type
+                Type* llvm_type = val->getType();
+                if (llvm_type->isIntegerTy(64)) {
+                    return TypedValue(val, ESHKOL_VALUE_INT64, true);
+                } else if (llvm_type->isDoubleTy()) {
+                    return TypedValue(val, ESHKOL_VALUE_DOUBLE, false);
+                } else {
+                    // Non-numeric type (pointers, etc.)
+                    return TypedValue(val, ESHKOL_VALUE_NULL, true);
+                }
+            }
+        }
+    }
+    
+private:
+    // Function context management for isolation
+    struct FunctionContext {
+        std::map<std::string, Function*> local_functions;
+        std::vector<std::string> created_functions;  // Track functions created in this context
+    };
+    
+    std::stack<FunctionContext> function_contexts;
+    
+    void pushFunctionContext() {
+        FunctionContext ctx;
+        function_contexts.push(ctx);
+        eshkol_debug("Pushed function context (depth: %zu)", function_contexts.size());
+    }
+    
+    void popFunctionContext() {
+        if (function_contexts.empty()) {
+            eshkol_warn("Attempted to pop function context with no active context");
+            return;
+        }
+        
+        FunctionContext& ctx = function_contexts.top();
+        
+        // Clean up functions created in this context if needed
+        for (const std::string& func_name : ctx.created_functions) {
+            eshkol_debug("Context cleanup: function %s", func_name.c_str());
+            // Note: Don't actually erase from function_table as functions may be reused
+            // Just track for debugging purposes
+        }
+        
+        function_contexts.pop();
+        eshkol_debug("Popped function context (depth: %zu)", function_contexts.size());
+    }
+    
+    void registerContextFunction(const std::string& name, Function* func) {
+        if (!function_contexts.empty()) {
+            function_contexts.top().created_functions.push_back(name);
+        }
+        function_table[name] = func;
     }
     
     Value* codegenArenaConsCell(Value* car_val, Value* cdr_val) {
@@ -1298,27 +1471,20 @@ private:
             return nullptr;
         }
         
-        // Generate first operand
-        Value* result = codegenAST(&op->call_op.variables[0]);
-        if (!result) return nullptr;
+        // Generate first operand with type information
+        TypedValue result = codegenTypedAST(&op->call_op.variables[0]);
+        if (!result.llvm_value) return nullptr;
         
-        // Apply operation to remaining operands
+        // Apply operation to remaining operands with type promotion
         for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-            Value* operand = codegenAST(&op->call_op.variables[i]);
-            if (!operand) continue;
+            TypedValue operand = codegenTypedAST(&op->call_op.variables[i]);
+            if (!operand.llvm_value) continue;
             
-            if (operation == "add") {
-                result = builder->CreateAdd(result, operand);
-            } else if (operation == "sub") {
-                result = builder->CreateSub(result, operand);
-            } else if (operation == "mul") {
-                result = builder->CreateMul(result, operand);
-            } else if (operation == "div") {
-                result = builder->CreateSDiv(result, operand);
-            }
+            // Generate mixed arithmetic with proper type promotion
+            result = generateMixedArithmetic(operation, result, operand);
         }
         
-        return result;
+        return result.llvm_value;
     }
 
     Value* codegenComparison(const eshkol_operations_t* op, const std::string& operation) {
@@ -1651,13 +1817,36 @@ private:
         Value* pair_int = codegenAST(&op->call_op.variables[0]);
         if (!pair_int) return nullptr;
         
-        // Use the same struct type as arena allocation for consistency
+        // SAFETY CHECK: Ensure pair_int is not null (0) before dereferencing
+        Value* is_null = builder->CreateICmpEQ(pair_int, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* null_block = BasicBlock::Create(*context, "car_null", current_func);
+        BasicBlock* valid_block = BasicBlock::Create(*context, "car_valid", current_func);
+        BasicBlock* continue_block = BasicBlock::Create(*context, "car_continue", current_func);
+        
+        builder->CreateCondBr(is_null, null_block, valid_block);
+        
+        // Null block: return 0 (null) for safety
+        builder->SetInsertPoint(null_block);
+        Value* null_result = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        builder->CreateBr(continue_block);
+        
+        // Valid block: perform the car operation
+        builder->SetInsertPoint(valid_block);
         StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* cons_ptr = builder->CreateIntToPtr(pair_int, builder->getPtrTy());
-        
-        // Load car value
         Value* car_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 0);
-        return builder->CreateLoad(Type::getInt64Ty(*context), car_ptr);
+        Value* car_result = builder->CreateLoad(Type::getInt64Ty(*context), car_ptr);
+        builder->CreateBr(continue_block);
+        
+        // Continue block: use PHI to select result
+        builder->SetInsertPoint(continue_block);
+        PHINode* phi = builder->CreatePHI(Type::getInt64Ty(*context), 2);
+        phi->addIncoming(null_result, null_block);
+        phi->addIncoming(car_result, valid_block);
+        
+        return phi;
     }
     
     Value* codegenCdr(const eshkol_operations_t* op) {
@@ -1669,13 +1858,36 @@ private:
         Value* pair_int = codegenAST(&op->call_op.variables[0]);
         if (!pair_int) return nullptr;
         
-        // Use the same struct type as arena allocation for consistency
+        // SAFETY CHECK: Ensure pair_int is not null (0) before dereferencing
+        Value* is_null = builder->CreateICmpEQ(pair_int, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* null_block = BasicBlock::Create(*context, "cdr_null", current_func);
+        BasicBlock* valid_block = BasicBlock::Create(*context, "cdr_valid", current_func);
+        BasicBlock* continue_block = BasicBlock::Create(*context, "cdr_continue", current_func);
+        
+        builder->CreateCondBr(is_null, null_block, valid_block);
+        
+        // Null block: return 0 (null) for safety
+        builder->SetInsertPoint(null_block);
+        Value* null_result = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        builder->CreateBr(continue_block);
+        
+        // Valid block: perform the cdr operation
+        builder->SetInsertPoint(valid_block);
         StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* cons_ptr = builder->CreateIntToPtr(pair_int, builder->getPtrTy());
-        
-        // Load cdr value
         Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-        return builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+        Value* cdr_result = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+        builder->CreateBr(continue_block);
+        
+        // Continue block: use PHI to select result
+        builder->SetInsertPoint(continue_block);
+        PHINode* phi = builder->CreatePHI(Type::getInt64Ty(*context), 2);
+        phi->addIncoming(null_result, null_block);
+        phi->addIncoming(cdr_result, valid_block);
+        
+        return phi;
     }
     
     Value* codegenList(const eshkol_operations_t* op) {
@@ -1938,7 +2150,7 @@ private:
         current_function = prev_function;
         
         // Add lambda function to function table so it can be called
-        function_table[lambda_name] = lambda_func;
+        registerContextFunction(lambda_name, lambda_func);
         
         // Store closure information for later use
         if (!free_vars.empty()) {
@@ -3661,7 +3873,7 @@ private:
         return builder->CreatePtrToInt(typed_string_buffer, Type::getInt64Ty(*context));
     }
     
-    // Production implementation: Compound car/cdr operations (FIXED)
+    // Production implementation: Compound car/cdr operations (SAFE with null checks)
     Value* codegenCompoundCarCdr(const eshkol_operations_t* op, const std::string& pattern) {
         if (op->call_op.num_vars != 1) {
             eshkol_warn("compound car/cdr requires exactly 1 argument");
@@ -3675,21 +3887,56 @@ private:
         // cadr = (car (cdr list)) -> apply 'd' first, then 'a'
         // Pattern: 'a' = car, 'd' = cdr
         StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
+        Function* current_func = builder->GetInsertBlock()->getParent();
         
         // Apply operations in reverse order (innermost first)
         for (int i = pattern.length() - 1; i >= 0; i--) {
             char c = pattern[i];
+            
+            // SAFETY CHECK: Ensure current is not null (0) before dereferencing
+            Value* is_null = builder->CreateICmpEQ(current, ConstantInt::get(Type::getInt64Ty(*context), 0));
+            
+            // Create conditional branches for null check
+            BasicBlock* null_block = BasicBlock::Create(*context,
+                std::string("compound_") + c + "_null_" + std::to_string(i), current_func);
+            BasicBlock* valid_block = BasicBlock::Create(*context,
+                std::string("compound_") + c + "_valid_" + std::to_string(i), current_func);
+            BasicBlock* continue_block = BasicBlock::Create(*context,
+                std::string("compound_") + c + "_continue_" + std::to_string(i), current_func);
+            
+            builder->CreateCondBr(is_null, null_block, valid_block);
+            
+            // Null block: return 0 (null) for safety
+            builder->SetInsertPoint(null_block);
+            Value* null_result = ConstantInt::get(Type::getInt64Ty(*context), 0);
+            builder->CreateBr(continue_block);
+            
+            // Valid block: perform the car/cdr operation
+            builder->SetInsertPoint(valid_block);
             Value* cons_ptr = builder->CreateIntToPtr(current, builder->getPtrTy());
+            Value* operation_result = nullptr;
             
             if (c == 'a') {
                 // car operation
                 Value* car_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 0);
-                current = builder->CreateLoad(Type::getInt64Ty(*context), car_ptr);
+                operation_result = builder->CreateLoad(Type::getInt64Ty(*context), car_ptr);
             } else if (c == 'd') {
                 // cdr operation
                 Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-                current = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+                operation_result = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+            } else {
+                // Invalid operation - return null
+                operation_result = ConstantInt::get(Type::getInt64Ty(*context), 0);
             }
+            builder->CreateBr(continue_block);
+            
+            // Continue block: use PHI to select result
+            builder->SetInsertPoint(continue_block);
+            PHINode* phi = builder->CreatePHI(Type::getInt64Ty(*context), 2);
+            phi->addIncoming(null_result, null_block);
+            phi->addIncoming(operation_result, valid_block);
+            
+            current = phi;
         }
         
         return current;
@@ -4139,6 +4386,9 @@ private:
             return nullptr;
         }
         
+        // Add function context isolation
+        pushFunctionContext();
+        
         // Calculate required arity for builtin functions (number of lists)
         size_t num_lists = op->call_op.num_vars - 1;  // Total args minus procedure
         
@@ -4177,7 +4427,12 @@ private:
             return nullptr;
         }
         
-        return codegenMapMultiList(proc_func, lists);
+        Value* result = codegenMapMultiList(proc_func, lists);
+        
+        // Pop function context to clean up
+        popFunctionContext();
+        
+        return result;
     }
     
     // Helper function to resolve lambda/function from AST with arity-specific builtin handling
@@ -4256,7 +4511,7 @@ private:
                 builder->CreateRet(ConstantInt::get(Type::getInt64Ty(*context), 0));
                 
                 builder->restoreIP(old_point);
-                function_table[wrapper_name] = wrapper_func;
+                registerContextFunction(wrapper_name, wrapper_func);
                 
                 return wrapper_func;
             }
@@ -4272,8 +4527,11 @@ private:
         
         Function* current_func = builder->GetInsertBlock()->getParent();
         
-        // Create arena scope for map operations with tracking
-        arenaTrackedPushScope();
+        // CRITICAL FIX: Do not use arena scoping for map operations!
+        // Arena scoping resets the used pointer, making cons cell memory available for reuse
+        // This causes memory corruption when subsequent operations overwrite list data
+        // Map results must persist beyond their creation scope
+        eshkol_debug("Single-list map starting - no arena scoping to prevent memory corruption");
         
         // Initialize result list
         Value* result_head = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "map_result_head");
@@ -4350,8 +4608,9 @@ private:
         builder->SetInsertPoint(loop_exit);
         Value* final_result = builder->CreateLoad(Type::getInt64Ty(*context), result_head);
         
-        // Pop arena scope with tracking
-        arenaTrackedPopScope();
+        // CRITICAL FIX: No arena scope cleanup for map operations
+        // Map results must persist in arena memory for later car/cdr operations
+        eshkol_debug("Single-list map completed - cons cells remain persistent in arena memory");
         
         return final_result;
     }
@@ -4362,9 +4621,11 @@ private:
         
         Function* current_func = builder->GetInsertBlock()->getParent();
         
-        // Create arena scope for map operations
-        Value* arena_ptr = getArenaPtr();
-        builder->CreateCall(arena_push_scope_func, {arena_ptr});
+        // CRITICAL FIX: Do not use arena scoping for map operations!
+        // Arena scoping resets the used pointer, making cons cell memory available for reuse
+        // This causes memory corruption when subsequent operations overwrite list data
+        // Map results must persist beyond their creation scope, so no scope management needed
+        eshkol_debug("Map operation starting - no arena scoping to prevent memory corruption");
         
         // Initialize result list
         Value* result_head = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "multimap_result_head");
@@ -4416,6 +4677,10 @@ private:
             proc_args.push_back(element);
         }
         
+        // CRITICAL DEBUG: Add instrumentation to track corruption
+        eshkol_debug("MultiMap: About to call %s function with %zu arguments",
+                    proc_func->getName().str().c_str(), proc_args.size());
+        
         // Apply procedure to extracted elements
         Value* proc_result = builder->CreateCall(proc_func, proc_args);
         
@@ -4463,8 +4728,9 @@ private:
         builder->SetInsertPoint(loop_exit);
         Value* final_result = builder->CreateLoad(Type::getInt64Ty(*context), result_head);
         
-        // Pop arena scope
-        builder->CreateCall(arena_pop_scope_func, {arena_ptr});
+        // CRITICAL FIX: No arena scope cleanup for map operations
+        // Map results must persist in arena memory for later car/cdr operations
+        eshkol_debug("Multi-list map completed - cons cells remain persistent in arena memory");
         
         return final_result;
     }
@@ -4495,8 +4761,9 @@ private:
         Function* current_func = builder->GetInsertBlock()->getParent();
         
         // Create arena scope for filter operations
-        Value* arena_ptr = getArenaPtr();
-        builder->CreateCall(arena_push_scope_func, {arena_ptr});
+        // CRITICAL FIX: Do not use arena scoping for multi-list map operations!
+        // Arena scoping causes memory corruption by resetting used pointer
+        eshkol_debug("Multi-list map starting - no arena scoping to prevent memory corruption");
         
         // Initialize result list
         Value* result_head = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "filter_result_head");
@@ -4578,8 +4845,9 @@ private:
         builder->SetInsertPoint(loop_exit);
         Value* final_result = builder->CreateLoad(Type::getInt64Ty(*context), result_head);
         
-        // Pop arena scope
-        builder->CreateCall(arena_pop_scope_func, {arena_ptr});
+        // CRITICAL FIX: No arena scope cleanup for map operations
+        // Cons cells must remain persistent in arena memory
+        eshkol_debug("Multi-list map completed - persistent cons cells in arena");
         
         return final_result;
     }
@@ -5836,15 +6104,18 @@ private:
             return nullptr;
         }
         
-        // Create unique function name with operation and arity (no static cache - avoid corruption)
-        static int builtin_counter = 0;
-        std::string func_name = "builtin_" + operation + "_" + std::to_string(arity) + "arg_" + std::to_string(builtin_counter++);
+        // Use deterministic names based on operation and arity only
+        std::string func_name = "builtin_" + operation + "_" + std::to_string(arity) + "arg";
         
-        // Check if function already exists in function_table to avoid duplicates
+        // CRITICAL FIX: Disable function caching to prevent corruption
+        // The caching was causing corrupted functions to be reused across map operations
+        // Each function creation now happens in a clean context
+        
+        // Check if function exists but always recreate to ensure clean context
         auto existing_it = function_table.find(func_name);
         if (existing_it != function_table.end()) {
-            eshkol_debug("Reusing existing builtin function: %s", func_name.c_str());
-            return existing_it->second;
+            eshkol_debug("Removing potentially corrupted cached function: %s", func_name.c_str());
+            function_table.erase(existing_it);  // Always remove to ensure fresh creation
         }
         
         // Create function type with specified arity
@@ -5862,26 +6133,40 @@ private:
             module.get()
         );
         
-        // Create function body
-        BasicBlock* entry = BasicBlock::Create(*context, "entry", builtin_func);
+        // CRITICAL FIX: Create completely isolated context for function generation
+        // Save all IRBuilder state, not just insert point
         IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        BasicBlock* old_insert_block = builder->GetInsertBlock();
+        Function* old_function = old_insert_block ? old_insert_block->getParent() : nullptr;
+        
+        // Create function body in completely clean context
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", builtin_func);
+        builder->ClearInsertionPoint();  // Clear any corrupted state
         builder->SetInsertPoint(entry);
         
-        // Apply operation to all arguments
+        // Apply operation to all arguments with careful validation
         auto arg_it = builtin_func->arg_begin();
         Value* result = &*arg_it++;
+        
+        // Add debug validation for the first argument
+        eshkol_debug("Creating %s function with %zu args, first arg type: %s",
+                    operation.c_str(), arity, result->getType()->isIntegerTy() ? "int" : "other");
         
         for (size_t i = 1; i < arity && arg_it != builtin_func->arg_end(); ++i, ++arg_it) {
             Value* operand = &*arg_it;
             
+            // Add debug validation for each operand
+            eshkol_debug("Processing arg %zu for %s function, operand type: %s",
+                        i, operation.c_str(), operand->getType()->isIntegerTy() ? "int" : "other");
+            
             if (operation == "+") {
-                result = builder->CreateAdd(result, operand);
+                result = builder->CreateAdd(result, operand, "add_result");
             } else if (operation == "-") {
-                result = builder->CreateSub(result, operand);
+                result = builder->CreateSub(result, operand, "sub_result");
             } else if (operation == "*") {
-                result = builder->CreateMul(result, operand);
+                result = builder->CreateMul(result, operand, "mul_result");
             } else if (operation == "/") {
-                result = builder->CreateSDiv(result, operand);
+                result = builder->CreateSDiv(result, operand, "div_result");
             } else {
                 eshkol_error("Unknown arithmetic operation: %s", operation.c_str());
                 result = ConstantInt::get(Type::getInt64Ty(*context), 0);
@@ -5890,12 +6175,32 @@ private:
         }
         
         builder->CreateRet(result);
-        builder->restoreIP(old_point);
         
-        // Add to function table
-        function_table[func_name] = builtin_func;
+        // CRITICAL FIX: Properly restore IRBuilder state
+        if (old_point.isSet()) {
+            builder->restoreIP(old_point);
+        } else {
+            builder->ClearInsertionPoint();
+        }
         
-        eshkol_debug("Created builtin arithmetic function: %s for operation '%s' with arity %zu", 
+        // Add to function table using context management
+        registerContextFunction(func_name, builtin_func);
+        
+        // Validate function signature matches expected arity
+        if (builtin_func->getFunctionType()->getNumParams() != arity) {
+            eshkol_error("Generated function %s has wrong arity: expected %zu, got %u",
+                        func_name.c_str(), arity, builtin_func->getFunctionType()->getNumParams());
+            return nullptr;
+        }
+        
+        // Additional validation: Verify function body was created correctly
+        if (builtin_func->empty()) {
+            eshkol_error("Generated function %s has empty body", func_name.c_str());
+            return nullptr;
+        }
+        
+        eshkol_debug("Successfully created fresh builtin function: %s", func_name.c_str());
+        eshkol_debug("Created builtin arithmetic function: %s for operation '%s' with arity %zu",
                     func_name.c_str(), operation.c_str(), arity);
         
         return builtin_func;
