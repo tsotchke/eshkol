@@ -37,6 +37,47 @@ typedef enum {
     ESHKOL_TENSOR
 } eshkol_type_t;
 
+// Mixed type list support - Value type tags for tagged cons cells
+typedef enum {
+    ESHKOL_VALUE_NULL     = 0,  // Empty/null value
+    ESHKOL_VALUE_INT64    = 1,  // 64-bit signed integer
+    ESHKOL_VALUE_DOUBLE   = 2,  // Double-precision floating point
+    ESHKOL_VALUE_CONS_PTR = 3,  // Pointer to another cons cell
+    // Reserved for future expansion
+    ESHKOL_VALUE_MAX      = 15  // 4-bit type field limit
+} eshkol_value_type_t;
+
+// Type flags for Scheme exactness tracking
+#define ESHKOL_VALUE_EXACT_FLAG   0x10
+#define ESHKOL_VALUE_INEXACT_FLAG 0x20
+
+// Combined type constants for common cases
+#define ESHKOL_VALUE_EXACT_INT64     (ESHKOL_VALUE_INT64 | ESHKOL_VALUE_EXACT_FLAG)
+#define ESHKOL_VALUE_INEXACT_DOUBLE  (ESHKOL_VALUE_DOUBLE | ESHKOL_VALUE_INEXACT_FLAG)
+
+// Tagged data union for cons cell values
+typedef union eshkol_tagged_data {
+    int64_t int_val;     // Integer value
+    double double_val;   // Double-precision floating point value
+    uint64_t ptr_val;    // Pointer value (for cons cell pointers)
+    uint64_t raw_val;    // Raw 64-bit value for manipulation
+} eshkol_tagged_data_t;
+
+// Type checking helper macros
+#define ESHKOL_IS_INT64_TYPE(type)    (((type) & 0x0F) == ESHKOL_VALUE_INT64)
+#define ESHKOL_IS_DOUBLE_TYPE(type)   (((type) & 0x0F) == ESHKOL_VALUE_DOUBLE)
+#define ESHKOL_IS_CONS_PTR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_CONS_PTR)
+#define ESHKOL_IS_NULL_TYPE(type)     (((type) & 0x0F) == ESHKOL_VALUE_NULL)
+
+// Exactness checking macros
+#define ESHKOL_IS_EXACT(type)         (((type) & ESHKOL_VALUE_EXACT_FLAG) != 0)
+#define ESHKOL_IS_INEXACT(type)       (((type) & ESHKOL_VALUE_INEXACT_FLAG) != 0)
+
+// Type manipulation macros
+#define ESHKOL_MAKE_EXACT(type)       ((type) | ESHKOL_VALUE_EXACT_FLAG)
+#define ESHKOL_MAKE_INEXACT(type)     ((type) | ESHKOL_VALUE_INEXACT_FLAG)
+#define ESHKOL_GET_BASE_TYPE(type)    ((type) & 0x0F)
+
 typedef enum {
     ESHKOL_INVALID_OP,
     ESHKOL_COMPOSE_OP,
