@@ -63,6 +63,63 @@ typedef union eshkol_tagged_data {
     uint64_t raw_val;    // Raw 64-bit value for manipulation
 } eshkol_tagged_data_t;
 
+// Runtime tagged value representation for ALL Eshkol values
+// This struct is used throughout the system to preserve type information
+typedef struct eshkol_tagged_value {
+    uint8_t type;        // Value type (eshkol_value_type_t)
+    uint8_t flags;       // Exactness and other flags
+    uint16_t reserved;   // Reserved for future use
+    union {
+        int64_t int_val;
+        double double_val;
+        uint64_t ptr_val;
+    } data;
+} eshkol_tagged_value_t;
+
+// Compile-time size validation for tagged values
+_Static_assert(sizeof(eshkol_tagged_value_t) <= 16,
+               "Tagged value must fit in 16 bytes for efficiency");
+
+// Helper functions for tagged value manipulation
+static inline eshkol_tagged_value_t eshkol_make_int64(int64_t val, bool exact) {
+    eshkol_tagged_value_t result;
+    result.type = ESHKOL_VALUE_INT64;
+    result.flags = exact ? ESHKOL_VALUE_EXACT_FLAG : 0;
+    result.reserved = 0;
+    result.data.int_val = val;
+    return result;
+}
+
+static inline eshkol_tagged_value_t eshkol_make_double(double val) {
+    eshkol_tagged_value_t result;
+    result.type = ESHKOL_VALUE_DOUBLE;
+    result.flags = ESHKOL_VALUE_INEXACT_FLAG;
+    result.reserved = 0;
+    result.data.double_val = val;
+    return result;
+}
+
+static inline eshkol_tagged_value_t eshkol_make_ptr(uint64_t ptr, uint8_t type) {
+    eshkol_tagged_value_t result;
+    result.type = type;
+    result.flags = 0;
+    result.reserved = 0;
+    result.data.ptr_val = ptr;
+    return result;
+}
+
+static inline int64_t eshkol_unpack_int64(const eshkol_tagged_value_t* val) {
+    return val->data.int_val;
+}
+
+static inline double eshkol_unpack_double(const eshkol_tagged_value_t* val) {
+    return val->data.double_val;
+}
+
+static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
+    return val->data.ptr_val;
+}
+
 // Type checking helper macros
 #define ESHKOL_IS_INT64_TYPE(type)    (((type) & 0x0F) == ESHKOL_VALUE_INT64)
 #define ESHKOL_IS_DOUBLE_TYPE(type)   (((type) & 0x0F) == ESHKOL_VALUE_DOUBLE)

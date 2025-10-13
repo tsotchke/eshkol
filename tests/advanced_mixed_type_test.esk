@@ -1,0 +1,51 @@
+;;
+;; Advanced Mixed Type Lists Test
+;; Testing higher-order and utility functions with mixed types
+;;
+
+(display "=== ADVANCED MIXED TYPE LISTS TEST ===")
+(newline)
+
+;; Test 1: length with mixed types
+(display "1. Testing length:")
+(newline)
+(define mixed-nums (list 1 2.5 3 4.75 5))
+(display "   length of (1 2.5 3 4.75 5): ")
+(display (length mixed-nums))
+(newline)
+
+;; Test 2: append with mixed types
+(display "2. Testing append:")
+(newline)
+(define list1 (list 1 2.5))
+(define list2 (list 3 4.75))
+(display "   append (1 2.5) (3 4.75): ")
+(define appended (append list1 list2))
+(display (car appended)) (display " ")
+(display (cadr appended)) (display " ")
+(display (caddr appended)) (display " ")
+(display (cadddr appended))
+(newline)
+
+;; Test 3: reverse with mixed types
+(display "3. Testing reverse:")
+(newline)
+(define reversed (reverse mixed-nums))
+(display "   reverse of (1 2.5 3 4.75 5): ")
+(display (car reversed)) (display " ")
+(display (cadr reversed)) (display " ")
+(display (caddr reversed))
+(newline)
+
+;; Test 4: map with mixed types
+(display "4. Testing map:")
+(newline)
+(define doubled (map (lambda (x) (* x 2)) (list 1 2 3)))
+(display "   map (*2) on (1 2 3): ")
+(display (car doubled)) (display " ")
+(display (cadr doubled)) (display " ")
+(display (caddr doubled))
+(newline)
+
+(display "=== ADVANCED TEST COMPLETE ===")
+(newline)

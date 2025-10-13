@@ -481,6 +481,21 @@ void arena_tagged_cons_set_ptr(arena_tagged_cons_cell_t* cell, bool is_cdr,
     }
 }
 
+void arena_tagged_cons_set_null(arena_tagged_cons_cell_t* cell, bool is_cdr) {
+    if (!cell) {
+        eshkol_error("Cannot set null on null tagged cons cell");
+        return;
+    }
+    
+    if (is_cdr) {
+        cell->cdr_type = ESHKOL_VALUE_NULL;
+        cell->cdr_data.raw_val = 0;
+    } else {
+        cell->car_type = ESHKOL_VALUE_NULL;
+        cell->car_data.raw_val = 0;
+    }
+}
+
 // Type query functions
 uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
     if (!cell) {

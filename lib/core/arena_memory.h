@@ -119,6 +119,7 @@ void arena_tagged_cons_set_double(arena_tagged_cons_cell_t* cell, bool is_cdr,
                                    double value, uint8_t type);
 void arena_tagged_cons_set_ptr(arena_tagged_cons_cell_t* cell, bool is_cdr,
                                 uint64_t value, uint8_t type);
+void arena_tagged_cons_set_null(arena_tagged_cons_cell_t* cell, bool is_cdr);
 
 // Type query functions
 uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is_cdr);
