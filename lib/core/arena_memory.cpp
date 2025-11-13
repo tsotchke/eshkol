@@ -409,6 +409,12 @@ uint64_t arena_tagged_cons_get_ptr(const arena_tagged_cons_cell_t* cell, bool is
     }
     
     uint8_t type = is_cdr ? cell->cdr_type : cell->car_type;
+    uint8_t base_type = ESHKOL_GET_BASE_TYPE(type);
+    
+    if (base_type == ESHKOL_VALUE_NULL) {
+        return 0;
+    }
+    
     if (!ESHKOL_IS_CONS_PTR_TYPE(type)) {
         eshkol_error("Attempted to get pointer from non-pointer cell (type=%d)", type);
         return 0;
