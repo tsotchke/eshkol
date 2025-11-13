@@ -1165,6 +1165,109 @@ private:
         Value* data_as_int64 = builder->CreateLoad(Type::getInt64Ty(*context), data_ptr);
         return builder->CreateIntToPtr(data_as_int64, builder->getPtrTy());
     }
+    Value* extractCarAsTaggedValue(Value* cons_ptr_int) {
+        Value* cons_ptr = builder->CreateIntToPtr(cons_ptr_int, builder->getPtrTy());
+        
+        Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0);
+        Value* car_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_car});
+        
+        Value* car_base_type = builder->CreateAnd(car_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        Value* car_is_double = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* double_car = BasicBlock::Create(*context, "car_extract_double", current_func);
+        BasicBlock* int_car = BasicBlock::Create(*context, "car_extract_int", current_func);
+        BasicBlock* merge_car = BasicBlock::Create(*context, "car_merge", current_func);
+        
+        builder->CreateCondBr(car_is_double, double_car, int_car);
+        
+        builder->SetInsertPoint(double_car);
+        Value* car_double = builder->CreateCall(arena_tagged_cons_get_double_func, {cons_ptr, is_car});
+        Value* tagged_double = packDoubleToTaggedValue(car_double);
+        builder->CreateBr(merge_car);
+        BasicBlock* double_exit = builder->GetInsertBlock();
+        
+        builder->SetInsertPoint(int_car);
+        Value* car_int64 = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_car});
+        Value* tagged_int64 = packInt64ToTaggedValue(car_int64, true);
+        builder->CreateBr(merge_car);
+        BasicBlock* int_exit = builder->GetInsertBlock();
+        
+        builder->SetInsertPoint(merge_car);
+        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 2);
+        car_tagged_phi->addIncoming(tagged_double, double_exit);
+        car_tagged_phi->addIncoming(tagged_int64, int_exit);
+        
+        return car_tagged_phi;
+    }
+    
+    Value* extractCdrAsTaggedValue(Value* cons_ptr_int) {
+        Value* cons_ptr = builder->CreateIntToPtr(cons_ptr_int, builder->getPtrTy());
+        
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
+        
+        Value* cdr_base_type = builder->CreateAnd(cdr_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        Value* cdr_is_double = builder->CreateICmpEQ(cdr_base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* double_cdr = BasicBlock::Create(*context, "cdr_extract_double", current_func);
+        BasicBlock* int_cdr = BasicBlock::Create(*context, "cdr_extract_int", current_func);
+        BasicBlock* merge_cdr = BasicBlock::Create(*context, "cdr_merge", current_func);
+        
+        builder->CreateCondBr(cdr_is_double, double_cdr, int_cdr);
+        
+        builder->SetInsertPoint(double_cdr);
+        Value* cdr_double = builder->CreateCall(arena_tagged_cons_get_double_func, {cons_ptr, is_cdr});
+        Value* tagged_double_cdr = packDoubleToTaggedValue(cdr_double);
+        builder->CreateBr(merge_cdr);
+        BasicBlock* double_exit = builder->GetInsertBlock();
+        
+        builder->SetInsertPoint(int_cdr);
+        Value* cdr_int64 = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_cdr});
+        Value* tagged_int64_cdr = packInt64ToTaggedValue(cdr_int64, true);
+        builder->CreateBr(merge_cdr);
+        BasicBlock* int_exit = builder->GetInsertBlock();
+        
+        builder->SetInsertPoint(merge_cdr);
+        PHINode* cdr_tagged_phi = builder->CreatePHI(tagged_value_type, 2);
+        cdr_tagged_phi->addIncoming(tagged_double_cdr, double_exit);
+        cdr_tagged_phi->addIncoming(tagged_int64_cdr, int_exit);
+        
+        return cdr_tagged_phi;
+    }
+    
+    TypedValue detectValueType(Value* llvm_val) {
+        if (!llvm_val) return TypedValue();
+        
+        if (llvm_val->getType() == tagged_value_type) {
+            Value* int_val = unpackInt64FromTaggedValue(llvm_val);
+            return TypedValue(int_val, ESHKOL_VALUE_INT64, true);
+        }
+        
+        Type* val_type = llvm_val->getType();
+        if (val_type->isIntegerTy(64)) {
+            return TypedValue(llvm_val, ESHKOL_VALUE_INT64, true);
+        } else if (val_type->isDoubleTy()) {
+            return TypedValue(llvm_val, ESHKOL_VALUE_DOUBLE, false);
+        } else if (val_type->isPointerTy()) {
+            Value* as_int = builder->CreatePtrToInt(llvm_val, Type::getInt64Ty(*context));
+            return TypedValue(as_int, ESHKOL_VALUE_CONS_PTR, true);
+        }
+        
+        return TypedValue(
+            ConstantInt::get(Type::getInt64Ty(*context), 0),
+            ESHKOL_VALUE_NULL,
+            true
+        );
+    }
+    
     
     Value* codegenAST(const eshkol_ast_t* ast) {
         if (!ast) return nullptr;
@@ -4518,11 +4621,9 @@ private:
         Value* new_count = builder->CreateAdd(count, ConstantInt::get(Type::getInt64Ty(*context), 1));
         builder->CreateStore(new_count, counter);
         
-        // Move to cdr
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-        Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-        Value* cdr_val = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
         builder->CreateStore(cdr_val, current_ptr);
         
         // Jump back to condition
@@ -4780,40 +4881,60 @@ private:
         Value* new_count = builder->CreateAdd(count_val, ConstantInt::get(Type::getInt64Ty(*context), 1));
         builder->CreateStore(new_count, counter);
         
-        // Move to cdr
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-        Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-        Value* cdr_val = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
         builder->CreateStore(cdr_val, current_ptr);
         
         builder->CreateBr(loop_condition);
         
-        // Loop exit: return car of current element or 0 if index out of bounds
         builder->SetInsertPoint(loop_exit);
         Value* final_current = builder->CreateLoad(Type::getInt64Ty(*context), current_ptr);
         Value* final_not_null = builder->CreateICmpNE(final_current, ConstantInt::get(Type::getInt64Ty(*context), 0));
         
         BasicBlock* return_car = BasicBlock::Create(*context, "listref_return_car", current_func);
-        BasicBlock* return_zero = BasicBlock::Create(*context, "listref_return_zero", current_func);
+        BasicBlock* return_null = BasicBlock::Create(*context, "listref_return_null", current_func);
         BasicBlock* final_return = BasicBlock::Create(*context, "listref_final_return", current_func);
         
-        builder->CreateCondBr(final_not_null, return_car, return_zero);
+        builder->CreateCondBr(final_not_null, return_car, return_null);
         
         builder->SetInsertPoint(return_car);
         Value* final_cons_ptr = builder->CreateIntToPtr(final_current, builder->getPtrTy());
-        Value* final_car_ptr = builder->CreateStructGEP(arena_cons_type, final_cons_ptr, 0);
-        Value* car_result = builder->CreateLoad(Type::getInt64Ty(*context), final_car_ptr);
+        Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0);
+        Value* car_type = builder->CreateCall(arena_tagged_cons_get_type_func, {final_cons_ptr, is_car});
+        Value* car_base_type = builder->CreateAnd(car_type, ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        Value* car_is_double = builder->CreateICmpEQ(car_base_type, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        
+        BasicBlock* car_double_block = BasicBlock::Create(*context, "listref_car_double", current_func);
+        BasicBlock* car_int_block = BasicBlock::Create(*context, "listref_car_int", current_func);
+        BasicBlock* car_merge = BasicBlock::Create(*context, "listref_car_merge", current_func);
+        
+        builder->CreateCondBr(car_is_double, car_double_block, car_int_block);
+        
+        builder->SetInsertPoint(car_double_block);
+        Value* car_double = builder->CreateCall(arena_tagged_cons_get_double_func, {final_cons_ptr, is_car});
+        Value* tagged_car_double = packDoubleToTaggedValue(car_double);
+        builder->CreateBr(car_merge);
+        
+        builder->SetInsertPoint(car_int_block);
+        Value* car_int = builder->CreateCall(arena_tagged_cons_get_int64_func, {final_cons_ptr, is_car});
+        Value* tagged_car_int = packInt64ToTaggedValue(car_int, true);
+        builder->CreateBr(car_merge);
+        
+        builder->SetInsertPoint(car_merge);
+        PHINode* car_phi = builder->CreatePHI(tagged_value_type, 2);
+        car_phi->addIncoming(tagged_car_double, car_double_block);
+        car_phi->addIncoming(tagged_car_int, car_int_block);
         builder->CreateBr(final_return);
         
-        builder->SetInsertPoint(return_zero);
-        Value* zero_result = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        builder->SetInsertPoint(return_null);
+        Value* null_tagged = packInt64ToTaggedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), true);
         builder->CreateBr(final_return);
         
         builder->SetInsertPoint(final_return);
-        PHINode* phi = builder->CreatePHI(Type::getInt64Ty(*context), 2, "listref_result");
-        phi->addIncoming(car_result, return_car);
-        phi->addIncoming(zero_result, return_zero);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "listref_result");
+        phi->addIncoming(car_phi, car_merge);
+        phi->addIncoming(null_tagged, return_null);
         
         return phi;
     }
@@ -4861,11 +4982,9 @@ private:
         Value* new_count = builder->CreateAdd(count_val, ConstantInt::get(Type::getInt64Ty(*context), 1));
         builder->CreateStore(new_count, counter);
         
-        // Move to cdr
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-        Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-        Value* cdr_val = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
         builder->CreateStore(cdr_val, current_ptr);
         
         builder->CreateBr(loop_condition);
@@ -5997,15 +6116,11 @@ private:
         
         builder->CreateCondBr(continue_drop, loop_body, loop_exit);
         
-        // Loop body: skip current element and advance
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-        
-        // Move to cdr
-        Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-        Value* cdr_val = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
         builder->CreateStore(cdr_val, current_ptr);
         
         // Increment counter
@@ -6540,21 +6655,23 @@ private:
         // Store current as previous
         builder->CreateStore(current_val, previous_ptr);
         
-        // Move to cdr
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-        Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-        Value* cdr_val = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
         builder->CreateStore(cdr_val, current_ptr);
         
         builder->CreateBr(loop_condition);
         
-        // Loop exit: previous contains the last element
         builder->SetInsertPoint(loop_exit);
         Value* last_cons = builder->CreateLoad(Type::getInt64Ty(*context), previous_ptr);
         Value* last_cons_ptr = builder->CreateIntToPtr(last_cons, builder->getPtrTy());
-        Value* last_car_ptr = builder->CreateStructGEP(arena_cons_type, last_cons_ptr, 0);
-        Value* last_element = builder->CreateLoad(Type::getInt64Ty(*context), last_car_ptr);
+        Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0);
+        Value* last_car_type = builder->CreateCall(arena_tagged_cons_get_type_func, {last_cons_ptr, is_car});
+        Value* last_base = builder->CreateAnd(last_car_type, ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        Value* is_double_last = builder->CreateICmpEQ(last_base, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* last_element = builder->CreateSelect(is_double_last,
+            builder->CreateBitCast(builder->CreateCall(arena_tagged_cons_get_double_func, {last_cons_ptr, is_car}), Type::getInt64Ty(*context)),
+            builder->CreateCall(arena_tagged_cons_get_int64_func, {last_cons_ptr, is_car}));
         builder->CreateBr(final_block);
         
         // Final result selection
@@ -6603,14 +6720,12 @@ private:
         
         builder->CreateBr(loop_condition);
         
-        // Loop condition: check if cdr of current is null (meaning this is the last pair)
         builder->SetInsertPoint(loop_condition);
         Value* current_val = builder->CreateLoad(Type::getInt64Ty(*context), current_ptr);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-        Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-        Value* cdr_val = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
         
         // Check if cdr is null (this is the last pair)
         Value* cdr_is_null = builder->CreateICmpEQ(cdr_val, ConstantInt::get(Type::getInt64Ty(*context), 0));
