@@ -6669,16 +6669,34 @@ private:
         Value* last_car_type = builder->CreateCall(arena_tagged_cons_get_type_func, {last_cons_ptr, is_car});
         Value* last_base = builder->CreateAnd(last_car_type, ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         Value* is_double_last = builder->CreateICmpEQ(last_base, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
-        Value* last_element = builder->CreateSelect(is_double_last,
-            builder->CreateBitCast(builder->CreateCall(arena_tagged_cons_get_double_func, {last_cons_ptr, is_car}), Type::getInt64Ty(*context)),
-            builder->CreateCall(arena_tagged_cons_get_int64_func, {last_cons_ptr, is_car}));
+        
+        // Use proper branching instead of CreateSelect to avoid evaluating both branches
+        BasicBlock* extract_double = BasicBlock::Create(*context, "last_extract_double", current_func);
+        BasicBlock* extract_int = BasicBlock::Create(*context, "last_extract_int", current_func);
+        BasicBlock* merge_last = BasicBlock::Create(*context, "last_merge", current_func);
+        
+        builder->CreateCondBr(is_double_last, extract_double, extract_int);
+        
+        builder->SetInsertPoint(extract_double);
+        Value* last_double = builder->CreateCall(arena_tagged_cons_get_double_func, {last_cons_ptr, is_car});
+        Value* last_double_as_int = builder->CreateBitCast(last_double, Type::getInt64Ty(*context));
+        builder->CreateBr(merge_last);
+        
+        builder->SetInsertPoint(extract_int);
+        Value* last_int = builder->CreateCall(arena_tagged_cons_get_int64_func, {last_cons_ptr, is_car});
+        builder->CreateBr(merge_last);
+        
+        builder->SetInsertPoint(merge_last);
+        PHINode* last_element = builder->CreatePHI(Type::getInt64Ty(*context), 2, "last_value");
+        last_element->addIncoming(last_double_as_int, extract_double);
+        last_element->addIncoming(last_int, extract_int);
         builder->CreateBr(final_block);
         
         // Final result selection
         builder->SetInsertPoint(final_block);
         PHINode* phi = builder->CreatePHI(Type::getInt64Ty(*context), 2, "last_result");
         phi->addIncoming(ConstantInt::get(Type::getInt64Ty(*context), 0), empty_case); // null for empty list
-        phi->addIncoming(last_element, loop_exit);
+        phi->addIncoming(last_element, merge_last); // Changed from loop_exit to merge_last
         
         return phi;
     }
