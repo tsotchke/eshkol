@@ -691,10 +691,10 @@ private:
         const char* func_name = ast->operation.define_op.name;
         uint64_t num_params = ast->operation.define_op.num_params;
         
-        // Create function type - for now, all parameters and return type are int64
-        std::vector<Type*> param_types(num_params, Type::getInt64Ty(*context));
+        // Create polymorphic function type - all parameters and return type are tagged_value
+        std::vector<Type*> param_types(num_params, tagged_value_type);
         FunctionType* func_type = FunctionType::get(
-            Type::getInt64Ty(*context), // return type
+            tagged_value_type, // return tagged_value
             param_types,
             false // not varargs
         );
@@ -718,7 +718,7 @@ private:
         }
         
         registerContextFunction(func_name, function);
-        eshkol_debug("Created function declaration: %s with %llu parameters", 
+        eshkol_debug("Created polymorphic function declaration: %s with %llu tagged_value parameters",
                     func_name, (unsigned long long)num_params);
     }
     
