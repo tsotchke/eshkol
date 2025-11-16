@@ -18,6 +18,7 @@ build/
 secrets/
 credentials/
 .vscode/
+.roo/
 
 # Logs and databases
 *.log
