@@ -1267,6 +1267,281 @@ private:
             true
         );
     }
+    // Convert TypedValue to tagged_value (AST→IR boundary crossing)
+    Value* typedValueToTaggedValue(const TypedValue& tv) {
+        if (tv.isInt64()) {
+            return packInt64ToTaggedValue(tv.llvm_value, tv.is_exact);
+        } else if (tv.isDouble()) {
+            return packDoubleToTaggedValue(tv.llvm_value);
+        } else if (tv.type == ESHKOL_VALUE_CONS_PTR) {
+            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_CONS_PTR);
+        } else if (tv.isNull()) {
+            return packInt64ToTaggedValue(
+                ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+        }
+        
+        // Fallback: null tagged value
+        return packInt64ToTaggedValue(
+            ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+    }
+    
+    // Convert tagged_value to TypedValue (IR→AST boundary crossing)
+    TypedValue taggedValueToTypedValue(Value* tagged_val) {
+        if (!tagged_val || tagged_val->getType() != tagged_value_type) {
+            return TypedValue();
+        }
+        
+        // Extract type tag
+        Value* type_tag = getTaggedValueType(tagged_val);
+        
+        // Mask to get base type (type & 0x0F)
+        Value* base_type = builder->CreateAnd(type_tag,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        // Check exactness flag (type & 0x80)
+        Value* exact_flag = builder->CreateAnd(type_tag,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_EXACT_FLAG));
+        Value* is_exact_val = builder->CreateICmpNE(exact_flag,
+            ConstantInt::get(Type::getInt8Ty(*context), 0));
+        
+        // Branch based on type to unpack correctly
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* int_block = BasicBlock::Create(*context, "unpack_int64", current_func);
+        BasicBlock* double_block = BasicBlock::Create(*context, "unpack_double", current_func);
+        BasicBlock* ptr_block = BasicBlock::Create(*context, "unpack_ptr", current_func);
+        BasicBlock* merge_block = BasicBlock::Create(*context, "unpack_merge", current_func);
+        
+        Value* is_int = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_INT64));
+        Value* is_double = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        
+        BasicBlock* check_double = BasicBlock::Create(*context, "check_double", current_func);
+        builder->CreateCondBr(is_int, int_block, check_double);
+        
+        builder->SetInsertPoint(check_double);
+        builder->CreateCondBr(is_double, double_block, ptr_block);
+        
+        // Unpack int64
+        builder->SetInsertPoint(int_block);
+        Value* int_val = unpackInt64FromTaggedValue(tagged_val);
+        builder->CreateBr(merge_block);
+        
+        // Unpack double
+        builder->SetInsertPoint(double_block);
+        Value* double_val = unpackDoubleFromTaggedValue(tagged_val);
+        builder->CreateBr(merge_block);
+        
+        // Unpack pointer
+        builder->SetInsertPoint(ptr_block);
+        Value* ptr_val = unpackPtrFromTaggedValue(tagged_val);
+        Value* ptr_as_int = builder->CreatePtrToInt(ptr_val, Type::getInt64Ty(*context));
+        builder->CreateBr(merge_block);
+        
+        // For now, return a runtime TypedValue - in practice we'd need PHI nodes
+        // This is a simplified implementation showing the structure
+        builder->SetInsertPoint(merge_block);
+        
+        // Note: This returns the last unpacked value. A complete implementation
+        // would use PHI nodes and dynamic type tracking. For now, we demonstrate
+        // the conversion pattern that will be used in polymorphic functions.
+        return TypedValue(int_val, ESHKOL_VALUE_INT64, true);
+    }
+    
+    // ===== POLYMORPHIC ARITHMETIC FUNCTIONS (Phase 1.3) =====
+    // These operate on tagged_value parameters and handle mixed types
+    
+    Value* polymorphicAdd(Value* left_tagged, Value* right_tagged) {
+        if (!left_tagged || !right_tagged) {
+            return packInt64ToTaggedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+        }
+        
+        // Extract type tags
+        Value* left_type = getTaggedValueType(left_tagged);
+        Value* right_type = getTaggedValueType(right_tagged);
+        
+        Value* left_base = builder->CreateAnd(left_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        Value* right_base = builder->CreateAnd(right_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        // Check if either operand is double
+        Value* left_is_double = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* right_is_double = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* any_double = builder->CreateOr(left_is_double, right_is_double);
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* double_path = BasicBlock::Create(*context, "add_double_path", current_func);
+        BasicBlock* int_path = BasicBlock::Create(*context, "add_int_path", current_func);
+        BasicBlock* merge = BasicBlock::Create(*context, "add_merge", current_func);
+        
+        builder->CreateCondBr(any_double, double_path, int_path);
+        
+        // Double path: promote both to double and add
+        builder->SetInsertPoint(double_path);
+        Value* left_double = builder->CreateSelect(left_is_double,
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* right_double = builder->CreateSelect(right_is_double,
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* double_result = builder->CreateFAdd(left_double, right_double);
+        Value* tagged_double_result = packDoubleToTaggedValue(double_result);
+        builder->CreateBr(merge);
+        
+        // Int path: add as int64
+        builder->SetInsertPoint(int_path);
+        Value* left_int = unpackInt64FromTaggedValue(left_tagged);
+        Value* right_int = unpackInt64FromTaggedValue(right_tagged);
+        Value* int_result = builder->CreateAdd(left_int, right_int);
+        Value* tagged_int_result = packInt64ToTaggedValue(int_result, true);
+        builder->CreateBr(merge);
+        
+        // Merge results
+        builder->SetInsertPoint(merge);
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2);
+        result_phi->addIncoming(tagged_double_result, double_path);
+        result_phi->addIncoming(tagged_int_result, int_path);
+        
+        return result_phi;
+    }
+    
+    Value* polymorphicSub(Value* left_tagged, Value* right_tagged) {
+        if (!left_tagged || !right_tagged) {
+            return packInt64ToTaggedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+        }
+        
+        Value* left_type = getTaggedValueType(left_tagged);
+        Value* right_type = getTaggedValueType(right_tagged);
+        
+        Value* left_base = builder->CreateAnd(left_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        Value* right_base = builder->CreateAnd(right_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        Value* left_is_double = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* right_is_double = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* any_double = builder->CreateOr(left_is_double, right_is_double);
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* double_path = BasicBlock::Create(*context, "sub_double_path", current_func);
+        BasicBlock* int_path = BasicBlock::Create(*context, "sub_int_path", current_func);
+        BasicBlock* merge = BasicBlock::Create(*context, "sub_merge", current_func);
+        
+        builder->CreateCondBr(any_double, double_path, int_path);
+        
+        builder->SetInsertPoint(double_path);
+        Value* left_double = builder->CreateSelect(left_is_double,
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* right_double = builder->CreateSelect(right_is_double,
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* double_result = builder->CreateFSub(left_double, right_double);
+        Value* tagged_double_result = packDoubleToTaggedValue(double_result);
+        builder->CreateBr(merge);
+        
+        builder->SetInsertPoint(int_path);
+        Value* left_int = unpackInt64FromTaggedValue(left_tagged);
+        Value* right_int = unpackInt64FromTaggedValue(right_tagged);
+        Value* int_result = builder->CreateSub(left_int, right_int);
+        Value* tagged_int_result = packInt64ToTaggedValue(int_result, true);
+        builder->CreateBr(merge);
+        
+        builder->SetInsertPoint(merge);
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2);
+        result_phi->addIncoming(tagged_double_result, double_path);
+        result_phi->addIncoming(tagged_int_result, int_path);
+        
+        return result_phi;
+    }
+    
+    Value* polymorphicMul(Value* left_tagged, Value* right_tagged) {
+        if (!left_tagged || !right_tagged) {
+            return packInt64ToTaggedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+        }
+        
+        Value* left_type = getTaggedValueType(left_tagged);
+        Value* right_type = getTaggedValueType(right_tagged);
+        
+        Value* left_base = builder->CreateAnd(left_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        Value* right_base = builder->CreateAnd(right_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        Value* left_is_double = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* right_is_double = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* any_double = builder->CreateOr(left_is_double, right_is_double);
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* double_path = BasicBlock::Create(*context, "mul_double_path", current_func);
+        BasicBlock* int_path = BasicBlock::Create(*context, "mul_int_path", current_func);
+        BasicBlock* merge = BasicBlock::Create(*context, "mul_merge", current_func);
+        
+        builder->CreateCondBr(any_double, double_path, int_path);
+        
+        builder->SetInsertPoint(double_path);
+        Value* left_double = builder->CreateSelect(left_is_double,
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* right_double = builder->CreateSelect(right_is_double,
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* double_result = builder->CreateFMul(left_double, right_double);
+        Value* tagged_double_result = packDoubleToTaggedValue(double_result);
+        builder->CreateBr(merge);
+        
+        builder->SetInsertPoint(int_path);
+        Value* left_int = unpackInt64FromTaggedValue(left_tagged);
+        Value* right_int = unpackInt64FromTaggedValue(right_tagged);
+        Value* int_result = builder->CreateMul(left_int, right_int);
+        Value* tagged_int_result = packInt64ToTaggedValue(int_result, true);
+        builder->CreateBr(merge);
+        
+        builder->SetInsertPoint(merge);
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2);
+        result_phi->addIncoming(tagged_double_result, double_path);
+        result_phi->addIncoming(tagged_int_result, int_path);
+        
+        return result_phi;
+    }
+    
+    Value* polymorphicDiv(Value* left_tagged, Value* right_tagged) {
+        if (!left_tagged || !right_tagged) {
+            return packInt64ToTaggedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+        }
+        
+        // Division always promotes to double per Scheme semantics
+        Value* left_type = getTaggedValueType(left_tagged);
+        Value* right_type = getTaggedValueType(right_tagged);
+        
+        Value* left_base = builder->CreateAnd(left_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        Value* right_base = builder->CreateAnd(right_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        Value* left_is_double = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* right_is_double = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        
+        // Always convert to double for division
+        Value* left_double = builder->CreateSelect(left_is_double,
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* right_double = builder->CreateSelect(right_is_double,
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* result = builder->CreateFDiv(left_double, right_double);
+        return packDoubleToTaggedValue(result);  // Division always returns double (inexact)
+    }
+    
     
     
     Value* codegenAST(const eshkol_ast_t* ast) {
@@ -2000,13 +2275,14 @@ private:
         Function* printf_func = function_table["printf"];
         if (!printf_func) return nullptr;
         
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        
         // Check if arg is a tagged value struct
         if (arg->getType() == tagged_value_type) {
             // Extract type field from tagged value
             Value* type_field = getTaggedValueType(arg);
             
             // Branch based on type
-            Function* current_func = builder->GetInsertBlock()->getParent();
             BasicBlock* int_display = BasicBlock::Create(*context, "display_int", current_func);
             BasicBlock* double_display = BasicBlock::Create(*context, "display_double", current_func);
             BasicBlock* ptr_display = BasicBlock::Create(*context, "display_ptr", current_func);
@@ -2046,16 +2322,114 @@ private:
             return ConstantInt::get(Type::getInt32Ty(*context), 0);
         }
         
+        // Handle int64 values that might be list pointers
+        if (arg->getType()->isIntegerTy(64)) {
+            // Check if this is a valid list pointer (> 1000)
+            Value* is_large_enough = builder->CreateICmpUGT(arg,
+                ConstantInt::get(Type::getInt64Ty(*context), 1000));
+            
+            BasicBlock* display_list = BasicBlock::Create(*context, "display_list", current_func);
+            BasicBlock* display_int = BasicBlock::Create(*context, "display_int_value", current_func);
+            BasicBlock* display_done = BasicBlock::Create(*context, "display_complete", current_func);
+            
+            builder->CreateCondBr(is_large_enough, display_list, display_int);
+            
+            // Display as list
+            builder->SetInsertPoint(display_list);
+            builder->CreateCall(printf_func, {codegenString("(")});
+            
+            // Loop through list
+            Value* current_ptr = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "display_current");
+            Value* is_first = builder->CreateAlloca(Type::getInt1Ty(*context), nullptr, "display_is_first");
+            builder->CreateStore(arg, current_ptr);
+            builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), is_first);
+            
+            BasicBlock* list_loop_cond = BasicBlock::Create(*context, "display_list_cond", current_func);
+            BasicBlock* list_loop_body = BasicBlock::Create(*context, "display_list_body", current_func);
+            BasicBlock* list_loop_exit = BasicBlock::Create(*context, "display_list_exit", current_func);
+            
+            builder->CreateBr(list_loop_cond);
+            
+            // Loop condition: check if current != null
+            builder->SetInsertPoint(list_loop_cond);
+            Value* current_val = builder->CreateLoad(Type::getInt64Ty(*context), current_ptr);
+            Value* is_not_null = builder->CreateICmpNE(current_val,
+                ConstantInt::get(Type::getInt64Ty(*context), 0));
+            builder->CreateCondBr(is_not_null, list_loop_body, list_loop_exit);
+            
+            // Loop body: display element
+            builder->SetInsertPoint(list_loop_body);
+            
+            // Add space separator for non-first elements
+            Value* first_flag = builder->CreateLoad(Type::getInt1Ty(*context), is_first);
+            BasicBlock* skip_space = BasicBlock::Create(*context, "skip_space", current_func);
+            BasicBlock* add_space = BasicBlock::Create(*context, "add_space", current_func);
+            BasicBlock* display_element = BasicBlock::Create(*context, "display_elem", current_func);
+            
+            builder->CreateCondBr(first_flag, skip_space, add_space);
+            
+            builder->SetInsertPoint(add_space);
+            builder->CreateCall(printf_func, {codegenString(" ")});
+            builder->CreateBr(display_element);
+            
+            builder->SetInsertPoint(skip_space);
+            builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 0), is_first);
+            builder->CreateBr(display_element);
+            
+            // Display current element using tagged value extraction
+            builder->SetInsertPoint(display_element);
+            Value* car_tagged = extractCarAsTaggedValue(current_val);
+            Value* car_type = getTaggedValueType(car_tagged);
+            Value* car_base_type = builder->CreateAnd(car_type,
+                ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+            
+            Value* car_is_double = builder->CreateICmpEQ(car_base_type,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+            
+            BasicBlock* display_car_double = BasicBlock::Create(*context, "display_car_double", current_func);
+            BasicBlock* display_car_int = BasicBlock::Create(*context, "display_car_int", current_func);
+            BasicBlock* element_done = BasicBlock::Create(*context, "element_done", current_func);
+            
+            builder->CreateCondBr(car_is_double, display_car_double, display_car_int);
+            
+            builder->SetInsertPoint(display_car_double);
+            Value* car_double = unpackDoubleFromTaggedValue(car_tagged);
+            builder->CreateCall(printf_func, {codegenString("%g"), car_double});
+            builder->CreateBr(element_done);
+            
+            builder->SetInsertPoint(display_car_int);
+            Value* car_int = unpackInt64FromTaggedValue(car_tagged);
+            builder->CreateCall(printf_func, {codegenString("%lld"), car_int});
+            builder->CreateBr(element_done);
+            
+            // Move to next element
+            builder->SetInsertPoint(element_done);
+            Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
+            Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+            Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+                {cons_ptr, is_cdr});
+            builder->CreateStore(cdr_val, current_ptr);
+            builder->CreateBr(list_loop_cond);
+            
+            // List loop exit: close parenthesis
+            builder->SetInsertPoint(list_loop_exit);
+            builder->CreateCall(printf_func, {codegenString(")")});
+            builder->CreateBr(display_done);
+            
+            // Display as plain integer
+            builder->SetInsertPoint(display_int);
+            builder->CreateCall(printf_func, {codegenString("%lld"), arg});
+            builder->CreateBr(display_done);
+            
+            builder->SetInsertPoint(display_done);
+            return ConstantInt::get(Type::getInt32Ty(*context), 0);
+        }
+        
         // Legacy path for non-tagged values
         if (arg->getType()->isPointerTy()) {
             // String argument - print directly
             return builder->CreateCall(printf_func, {
                 codegenString("%s"), arg
-            });
-        } else if (arg->getType()->isIntegerTy()) {
-            // Integer argument - print with %d format
-            return builder->CreateCall(printf_func, {
-                codegenString("%lld"), arg
             });
         } else if (arg->getType()->isFloatingPointTy()) {
             // Float argument - print with %f format
@@ -5096,6 +5470,12 @@ private:
     Value* resolveLambdaFunction(const eshkol_ast_t* func_ast, size_t required_arity = 0) {
         if (!func_ast) return nullptr;
         
+        // Handle inline lambda expressions
+        if (func_ast->type == ESHKOL_OP && func_ast->operation.op == ESHKOL_LAMBDA_OP) {
+            eshkol_debug("Generating inline lambda for map/filter/etc.");
+            return codegenLambda(&func_ast->operation);
+        }
+        
         if (func_ast->type == ESHKOL_VAR) {
             std::string func_name = func_ast->variable.id;
             
@@ -5178,7 +5558,7 @@ private:
         return nullptr;
     }
     
-    // Single-list map implementation with arena integration
+    // Single-list map implementation with arena integration and tagged value support
     Value* codegenMapSingleList(Function* proc_func, Value* list) {
         if (!proc_func || !list) return nullptr;
         
@@ -5215,18 +5595,20 @@ private:
         // Loop body: apply procedure and build result
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
-        Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-        
-        // Get car of current input element
-        Value* input_car_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 0);
-        Value* input_element = builder->CreateLoad(Type::getInt64Ty(*context), input_car_ptr);
+        // MIGRATION ISSUE 1: Extract car using tagged value system
+        // Old: CreateStructGEP(arena_cons_type, cons_ptr, 0) + Load
+        // New: extractCarAsTaggedValue() + unpackInt64FromTaggedValue()
+        Value* car_tagged = extractCarAsTaggedValue(current_val);
+        Value* input_element = unpackInt64FromTaggedValue(car_tagged);
         
         // Apply procedure to current element
         Value* proc_result = builder->CreateCall(proc_func, {input_element});
         
-        // Create new cons cell for result
-        Value* new_result_cons = codegenArenaConsCell(proc_result, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        // Create new cons cell for result using TAGGED cons cell
+        // Detect result type and create tagged cons cell
+        TypedValue proc_result_typed = detectValueType(proc_result);
+        TypedValue cdr_null = TypedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_NULL);
+        Value* new_result_cons = codegenTaggedArenaConsCell(proc_result_typed, cdr_null);
         
         // Update result list
         Value* head_val = builder->CreateLoad(Type::getInt64Ty(*context), result_head);
@@ -5248,15 +5630,27 @@ private:
         builder->SetInsertPoint(update_tail);
         Value* tail_val = builder->CreateLoad(Type::getInt64Ty(*context), result_tail);
         Value* tail_cons_ptr = builder->CreateIntToPtr(tail_val, builder->getPtrTy());
-        Value* tail_cdr_ptr = builder->CreateStructGEP(arena_cons_type, tail_cons_ptr, 1);
-        builder->CreateStore(new_result_cons, tail_cdr_ptr);
+        
+        // MIGRATION ISSUE 3: Set cdr using tagged value system
+        // Old: CreateStructGEP(arena_cons_type, tail_cons_ptr, 1) + Store
+        // New: arena_tagged_cons_set_ptr_func(tail_cons_ptr, is_cdr=1, value, type)
+        Value* is_cdr_set = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* ptr_type = ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {tail_cons_ptr, is_cdr_set, new_result_cons, ptr_type});
         builder->CreateStore(new_result_cons, result_tail);
         builder->CreateBr(continue_map);
         
         // Continue: move to next input element
         builder->SetInsertPoint(continue_map);
-        Value* input_cdr_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 1);
-        Value* input_cdr = builder->CreateLoad(Type::getInt64Ty(*context), input_cdr_ptr);
+        
+        // MIGRATION ISSUE 2: Get cdr using tagged value system
+        // Old: CreateStructGEP(arena_cons_type, input_cons_ptr, 1) + Load
+        // New: arena_tagged_cons_get_ptr_func(input_cons_ptr, is_cdr=1)
+        Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
         builder->CreateBr(loop_condition);
@@ -5324,13 +5718,44 @@ private:
         
         StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         
-        // Extract car from each list for procedure arguments
+        // Extract car from each list for procedure arguments using tagged value system
         std::vector<Value*> proc_args;
         for (size_t i = 0; i < current_ptrs.size(); i++) {
             Value* current_val = builder->CreateLoad(Type::getInt64Ty(*context), current_ptrs[i]);
-            Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-            Value* car_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 0);
-            Value* element = builder->CreateLoad(Type::getInt64Ty(*context), car_ptr);
+            
+            // Use extractCarAsTaggedValue to properly handle type-aware extraction
+            Value* car_tagged = extractCarAsTaggedValue(current_val);
+            
+            // Unpack the value based on its type
+            Value* car_type = getTaggedValueType(car_tagged);
+            Value* car_base_type = builder->CreateAnd(car_type,
+                ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+            
+            Value* car_is_double = builder->CreateICmpEQ(car_base_type,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+            
+            // Create conditional extraction based on type
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* extract_double = BasicBlock::Create(*context, "multimap_extract_double", current_func);
+            BasicBlock* extract_int = BasicBlock::Create(*context, "multimap_extract_int", current_func);
+            BasicBlock* merge_extract = BasicBlock::Create(*context, "multimap_merge_extract", current_func);
+            
+            builder->CreateCondBr(car_is_double, extract_double, extract_int);
+            
+            builder->SetInsertPoint(extract_double);
+            Value* element_double = unpackDoubleFromTaggedValue(car_tagged);
+            Value* element_double_as_int = builder->CreateBitCast(element_double, Type::getInt64Ty(*context));
+            builder->CreateBr(merge_extract);
+            
+            builder->SetInsertPoint(extract_int);
+            Value* element_int = unpackInt64FromTaggedValue(car_tagged);
+            builder->CreateBr(merge_extract);
+            
+            builder->SetInsertPoint(merge_extract);
+            PHINode* element = builder->CreatePHI(Type::getInt64Ty(*context), 2);
+            element->addIncoming(element_double_as_int, extract_double);
+            element->addIncoming(element_int, extract_int);
+            
             proc_args.push_back(element);
         }
         
@@ -5341,8 +5766,10 @@ private:
         // Apply procedure to extracted elements
         Value* proc_result = builder->CreateCall(proc_func, proc_args);
         
-        // Create new cons cell for result
-        Value* new_result_cons = codegenArenaConsCell(proc_result, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        // Create new cons cell for result using tagged cons cells
+        TypedValue proc_result_typed = detectValueType(proc_result);
+        TypedValue cdr_null = TypedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_NULL);
+        Value* new_result_cons = codegenTaggedArenaConsCell(proc_result_typed, cdr_null);
         
         // Update result list
         Value* head_val = builder->CreateLoad(Type::getInt64Ty(*context), result_head);
@@ -5360,22 +5787,29 @@ private:
         builder->CreateStore(new_result_cons, result_tail);
         builder->CreateBr(continue_multimap);
         
-        // Update tail if not first result
+        // Update tail if not first result using tagged value system
         builder->SetInsertPoint(update_tail);
         Value* tail_val = builder->CreateLoad(Type::getInt64Ty(*context), result_tail);
         Value* tail_cons_ptr = builder->CreateIntToPtr(tail_val, builder->getPtrTy());
-        Value* tail_cdr_ptr = builder->CreateStructGEP(arena_cons_type, tail_cons_ptr, 1);
-        builder->CreateStore(new_result_cons, tail_cdr_ptr);
+        
+        // Use arena_tagged_cons_set_ptr_func to set cdr
+        Value* is_cdr_set = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* ptr_type = ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {tail_cons_ptr, is_cdr_set, new_result_cons, ptr_type});
         builder->CreateStore(new_result_cons, result_tail);
         builder->CreateBr(continue_multimap);
         
-        // Continue: advance all list pointers to their cdr
+        // Continue: advance all list pointers to their cdr using tagged value system
         builder->SetInsertPoint(continue_multimap);
         for (size_t i = 0; i < current_ptrs.size(); i++) {
             Value* current_val = builder->CreateLoad(Type::getInt64Ty(*context), current_ptrs[i]);
             Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-            Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-            Value* cdr_val = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+            
+            // Use arena_tagged_cons_get_ptr_func to get cdr
+            Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+            Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+                {cons_ptr, is_cdr_get});
             builder->CreateStore(cdr_val, current_ptrs[i]);
         }
         
@@ -7009,7 +7443,7 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         std::string link_cmd = "c++ -fPIE " + temp_obj + " -lm";
         
         // Add the eshkol static library for arena functions
-        link_cmd += " -L. -leshkol-static";
+        link_cmd += " -Lbuild -leshkol-static";
         
         // Add library search paths
         if (lib_paths && num_lib_paths > 0) {
