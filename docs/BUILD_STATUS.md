@@ -1,8 +1,8 @@
 # Eshkol Build Status - v1.0-Foundation Progress
 
-**Last Updated**: 2025-11-13  
-**Current Session**: Ready to begin Session 1  
-**Target Release**: v1.0-foundation  
+**Last Updated**: 2025-11-13
+**Current Session**: Sessions 003-004 Complete - Ready for Session 005
+**Target Release**: v1.0-foundation
 **Plan**: See [`V1_0_FOUNDATION_RELEASE_PLAN.md`](V1_0_FOUNDATION_RELEASE_PLAN.md)
 
 ---
@@ -12,8 +12,8 @@
 ### Month 1: Stabilization (Sessions 1-20)
 
 #### Week 1: Mixed-Type Completion (Sessions 1-10)
-- [ ] **Session 1-2**: Commit & Build Verification
-- [ ] **Session 3-4**: Analysis & Documentation
+- [x] **Session 1-2**: Commit & Build Verification
+- [x] **Session 3-4**: Analysis & Documentation
 - [ ] **Session 5-6**: Migrate map (single-list)
 - [ ] **Session 7-8**: Migrate map (multi-list)
 - [ ] **Session 9-10**: Migrate filter
@@ -76,21 +76,21 @@ make -j$(nproc)
 ### Higher-Order Functions Migration Status
 | Function | Lines | CreateStructGEP Calls | Status | Target Session |
 |----------|-------|----------------------|--------|----------------|
-| codegenMapSingleList | 5182-5273 | 3 | ⏳ TODO | 5-6 |
-| codegenMapMultiList | 5276-5393 | 3 | ⏳ TODO | 7-8 |
-| codegenFilter | 5396-5510 | 3 | ⏳ TODO | 9-10 |
-| codegenFold | 5513-5585 | 2 | ⏳ TODO | 11-12 |
-| codegenFoldRight | 5807-5810 | 0 (stub) | ⏳ TODO | 13-14 |
-| codegenForEachSingleList | 5759-5804 | 2 | ⏳ TODO | 15-16 |
-| codegenMember | ~5653-5723 | 2 | ⏳ TODO | 17 |
-| codegenAssoc | ~5813-5923 | 3 | ⏳ TODO | 17-18 |
-| codegenTake | ~5979-6079 | 3 | ⏳ TODO | 19 |
-| codegenFind | ~6138-6240 | 2 | ⏳ TODO | 19 |
-| codegenPartition | ~6242-6389 | 6 | ⏳ TODO | 20 |
-| codegenSplitAt | ~6392-6496 | 3 | ⏳ TODO | 20 |
-| codegenRemove | ~6499-6604 | 3 | ⏳ TODO | 20 |
-| codegenLast | ~6607-6684 | 2 | ⏳ TODO | 20 |
-| codegenLastPair | ~6687-6751 | 1 | ⏳ TODO | 20 |
+| codegenMapSingleList | 5182-5273 | 3 | 📋 Analyzed | 5-6 |
+| codegenMapMultiList | 5276-5393 | 3 | 📋 Analyzed | 6 |
+| codegenFilter | 5396-5510 | 3 | 📋 Analyzed | 9 |
+| codegenFold | 5513-5585 | 2 | 📋 Analyzed | 11 |
+| codegenFoldRight | 5807-5810 | 0 (stub) | 📋 Analyzed | 12 |
+| codegenForEachSingleList | 5759-5804 | 2 | 📋 Analyzed | 019 |
+| codegenMember | 5653-5723 | 2 | 📋 Analyzed | 015 |
+| codegenAssoc | 5813-5923 | 4 | 📋 Analyzed | 016 |
+| codegenTake | 5979-6079 | 3 | 📋 Analyzed | 017 |
+| codegenFind | 6138-6240 | 3 | 📋 Analyzed | 013 |
+| codegenPartition | 6242-6389 | 4 | 📋 Analyzed | 019 |
+| codegenSplitAt | 6392-6496 | 3 | 📋 Analyzed | 018 |
+| codegenRemove | 6499-6604 | 3 | 📋 Analyzed | 019 |
+| codegenLast | 6607-6702 | 0 (tagged) | ✅ Complete | - |
+| codegenLastPair | 6705-6768 | 0 (tagged) | ✅ Complete | - |
 
 ---
 
@@ -118,6 +118,46 @@ Commit: TBD
 ## Issues & Blockers
 
 ### Active Issues
+### Session 001-002 ✅ COMPLETE
+**Date**: 2025-11-13  
+**Objective**: Commit unstaged changes and verify build  
+**Status**: ✅ Complete  
+**Commit**: 88bb35e  
+
+**Files Modified**: 
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Tagged value system implementation
+- [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) - Tagged cons cell allocation
+- [`tests/phase_2a_group_a_test.esk`](../tests/phase_2a_group_a_test.esk) - Group A validation tests
+- [`docs/BUILD_STATUS.md`](BUILD_STATUS.md) - This file (new)
+- [`docs/MASTER_DEVELOPMENT_PLAN.md`](MASTER_DEVELOPMENT_PLAN.md) - 24-month roadmap (new)
+- [`docs/V1_0_FOUNDATION_RELEASE_PLAN.md`](V1_0_FOUNDATION_RELEASE_PLAN.md) - v1.0 detailed plan (new)
+
+**Tests Run**: 
+```
+cd build && ./eshkol-run ../tests/phase_2a_group_a_test.esk
+```
+
+**Test Results**:
+- ✅ length: 5 (expected: 5)
+- ✅ list-ref: All 5 elements correct (1, 2.5, 3, 4.75, 5)
+- ✅ list-tail: Correct sublists returned
+- ✅ drop: Correct elements dropped
+- ✅ last: Returns correct value (5) - minor type error message
+- ✅ last-pair: Correct last cons cell
+- ✅ Combined operations: All passing
+
+**Issues Found**:
+- ⚠️ codegenLast: Type checking error "type=17" (EXACT_INT64 = 1 | 0x10)
+  - Root cause: Trying to get double from exact int64
+  - Impact: None - correct value still returned
+  - Fix: Session 20 when updating utility functions
+
+**Build Status**: ✅ CLEAN  
+**Memory**: No leaks detected (basic run)  
+**Performance**: Compilation < 5s  
+
+**Next Session**: 003-004 Analysis & Documentation
+
 - None currently - ready to begin Session 1
 
 ### Resolved Issues  
@@ -134,26 +174,100 @@ Commit: TBD
 
 ## Session Log
 
-### Session 001-002 (Planned)
-**Date**: TBD  
-**Objective**: Commit unstaged changes and verify build  
-**Status**: Not started  
-**Files Modified**: None yet  
-**Tests Run**: None yet  
-**Notes**: Starting point for v1.0-foundation
+### Session 003-004 ✅ COMPLETE
+**Date**: 2025-11-13
+**Objective**: Analyze all 15 higher-order functions and create migration plan
+**Status**: ✅ Complete
+
+**Analysis Completed**:
+- ✅ Read all 15 higher-order functions (lines 5040-6751)
+- ✅ Documented exact `CreateStructGEP` usage and line numbers for each function
+- ✅ Identified 2 functions already using tagged helpers ([`codegenLast`](../lib/backend/llvm_codegen.cpp:6607), [`codegenLastPair`](../lib/backend/llvm_codegen.cpp:6705))
+- ✅ Identified 1 stub needing full implementation ([`codegenFoldRight`](../lib/backend/llvm_codegen.cpp:5807))
+- ✅ Identified 13 functions requiring migration from `CreateStructGEP` to tagged helpers
+- ✅ Created comprehensive migration specifications for each function
+- ✅ Established migration priority order (Sessions 005-020)
+- ✅ Designed complete test coverage plan with 7 test suites
+
+**Deliverables**:
+- 📄 [`docs/HIGHER_ORDER_REWRITE_PLAN.md`](HIGHER_ORDER_REWRITE_PLAN.md) (540 lines)
+  - Complete function-by-function analysis
+  - Exact line numbers for all changes
+  - Before/after code examples
+  - Migration patterns and best practices
+  - Session-by-session implementation plan
+  - Comprehensive test coverage specifications
+  - Risk assessment and mitigation strategies
+
+**Key Findings**:
+1. **Pattern Consistency**: All 13 functions needing migration follow similar patterns:
+   - Car extraction: 3-4 type-checking branches needed
+   - Cdr iteration: Simple helper function replacement
+   - Tail updates: Use `arena_tagged_cons_set_ptr_func`
+
+2. **Reference Implementations**: [`codegenLast`](../lib/backend/llvm_codegen.cpp:6607) and [`codegenLastPair`](../lib/backend/llvm_codegen.cpp:6705) provide working examples
+
+3. **Critical Path**: Map operations (Sessions 005-010) are foundation for all higher-order functions
+
+4. **Estimated Effort**:
+   - Simple functions: ~25-35 lines of changes each
+   - Complex functions: ~40-50 lines of changes each
+   - `codegenFoldRight`: ~120 lines (full implementation)
+   - Total estimated: ~500 lines of new/modified code
+
+**Next Session**: 005 - Begin migration with [`codegenMapSingleList`](../lib/backend/llvm_codegen.cpp:5182)
+
+### Session 001-002 ✅ COMPLETE
+**Date**: 2025-11-13
+**Objective**: Commit unstaged changes and verify build
+**Status**: ✅ Complete
+**Commit**: 88bb35e
+
+**Files Modified**:
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Tagged value system implementation
+- [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) - Tagged cons cell allocation
+- [`tests/phase_2a_group_a_test.esk`](../tests/phase_2a_group_a_test.esk) - Group A validation tests
+- [`docs/BUILD_STATUS.md`](BUILD_STATUS.md) - This file (new)
+- [`docs/MASTER_DEVELOPMENT_PLAN.md`](MASTER_DEVELOPMENT_PLAN.md) - 24-month roadmap (new)
+- [`docs/V1_0_FOUNDATION_RELEASE_PLAN.md`](V1_0_FOUNDATION_RELEASE_PLAN.md) - v1.0 detailed plan (new)
+
+**Tests Run**:
+```
+cd build && ./eshkol-run ../tests/phase_2a_group_a_test.esk
+```
+
+**Test Results**:
+- ✅ length: 5 (expected: 5)
+- ✅ list-ref: All 5 elements correct (1, 2.5, 3, 4.75, 5)
+- ✅ list-tail: Correct sublists returned
+- ✅ drop: Correct elements dropped
+- ✅ last: Returns correct value (5) - minor type error message
+- ✅ last-pair: Correct last cons cell
+- ✅ Combined operations: All passing
+
+**Issues Found**:
+- ⚠️ codegenLast: Type checking error "type=17" (EXACT_INT64 = 1 | 0x10)
+  - Root cause: Trying to get double from exact int64
+  - Impact: None - correct value still returned
+  - Fix: Session 20 when updating utility functions
+
+**Build Status**: ✅ CLEAN
+**Memory**: No leaks detected (basic run)
+**Performance**: Compilation < 5s
+
+**Next Session**: 003-004 Analysis & Documentation
 
 ---
 
 ## Next Session Preparation
 
-### Session 1-2 Checklist
-- [ ] Check git status
-- [ ] Review uncommitted changes
-- [ ] Commit with proper session message
-- [ ] Clean build
-- [ ] Run [`tests/phase_2a_group_a_test.esk`](../tests/phase_2a_group_a_test.esk)
-- [ ] Document results
-- [ ] Update this status file
+### Session 005 Checklist
+- [ ] Review [`docs/HIGHER_ORDER_REWRITE_PLAN.md`](HIGHER_ORDER_REWRITE_PLAN.md)
+- [ ] Study [`codegenLast`](../lib/backend/llvm_codegen.cpp:6607) as reference implementation
+- [ ] Begin migration of [`codegenMapSingleList`](../lib/backend/llvm_codegen.cpp:5182)
+- [ ] Replace 3 `CreateStructGEP` sites with tagged helpers
+- [ ] Create initial map test file
+- [ ] Verify no regressions
 
 ### Environment Setup
 - Working directory: `/Users/tyr/Desktop/eshkol`

@@ -1095,7 +1095,21 @@ private:
     // Pack/unpack values to/from eshkol_tagged_value_t structs
     
     Value* packInt64ToTaggedValue(Value* int64_val, bool is_exact = true) {
+        // Save current insertion point
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        
+        // Create alloca at function entry to ensure dominance
+        Function* func = builder->GetInsertBlock()->getParent();
+        if (func && !func->empty()) {
+            BasicBlock& entry = func->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
+        }
+        
         Value* tagged_val_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "tagged_val");
+        
+        // Restore insertion point for the actual stores
+        builder->restoreIP(saved_ip);
+        
         Value* type_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 0);
         builder->CreateStore(ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_INT64), type_ptr);
         Value* flags_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 1);
@@ -1109,7 +1123,21 @@ private:
     }
     
     Value* packDoubleToTaggedValue(Value* double_val) {
+        // Save current insertion point
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        
+        // Create alloca at function entry to ensure dominance
+        Function* func = builder->GetInsertBlock()->getParent();
+        if (func && !func->empty()) {
+            BasicBlock& entry = func->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
+        }
+        
         Value* tagged_val_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "tagged_val");
+        
+        // Restore insertion point for the actual stores
+        builder->restoreIP(saved_ip);
+        
         Value* type_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 0);
         builder->CreateStore(ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE), type_ptr);
         Value* flags_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 1);
@@ -1123,7 +1151,21 @@ private:
     }
     
     Value* packPtrToTaggedValue(Value* ptr_val, eshkol_value_type_t type) {
+        // Save current insertion point
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        
+        // Create alloca at function entry to ensure dominance
+        Function* func = builder->GetInsertBlock()->getParent();
+        if (func && !func->empty()) {
+            BasicBlock& entry = func->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
+        }
+        
         Value* tagged_val_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "tagged_val");
+        
+        // Restore insertion point for the actual stores
+        builder->restoreIP(saved_ip);
+        
         Value* type_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 0);
         builder->CreateStore(ConstantInt::get(Type::getInt8Ty(*context), type), type_ptr);
         Value* flags_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 1);
@@ -1159,7 +1201,21 @@ private:
     }
     
     Value* unpackPtrFromTaggedValue(Value* tagged_val) {
+        // Save current insertion point
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        
+        // Create alloca at function entry to ensure dominance
+        Function* func = builder->GetInsertBlock()->getParent();
+        if (func && !func->empty()) {
+            BasicBlock& entry = func->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
+        }
+        
         Value* temp_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "temp_tagged");
+        
+        // Restore insertion point for the actual operations
+        builder->restoreIP(saved_ip);
+        
         builder->CreateStore(tagged_val, temp_ptr);
         Value* data_ptr = builder->CreateStructGEP(tagged_value_type, temp_ptr, 3);
         Value* data_as_int64 = builder->CreateLoad(Type::getInt64Ty(*context), data_ptr);
@@ -1544,6 +1600,140 @@ private:
     
     
     
+    // ===== POLYMORPHIC FUNCTION WRAPPERS (Phase 2.4) =====
+    // Create Function* objects that wrap polymorphic arithmetic for use in higher-order functions
+    
+    Function* polymorphicAdd() {
+        std::string func_name = "polymorphic_add_2arg";
+        
+        // Check if already created
+        auto it = function_table.find(func_name);
+        if (it != function_table.end()) {
+            return it->second;
+        }
+        
+        // Create function type: (tagged_value, tagged_value) -> tagged_value
+        std::vector<Type*> param_types = {tagged_value_type, tagged_value_type};
+        FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+        
+        Function* func = Function::Create(func_type, Function::ExternalLinkage, func_name, module.get());
+        
+        // Save current insertion point
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        
+        // Create function body
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", func);
+        builder->SetInsertPoint(entry);
+        
+        auto arg_it = func->arg_begin();
+        Value* left = &*arg_it++;
+        Value* right = &*arg_it;
+        
+        // Call polymorphic add helper
+        Value* result = polymorphicAdd(left, right);
+        builder->CreateRet(result);
+        
+        // Restore insertion point
+        builder->restoreIP(old_point);
+        
+        function_table[func_name] = func;
+        return func;
+    }
+    
+    Function* polymorphicSub() {
+        std::string func_name = "polymorphic_sub_2arg";
+        
+        auto it = function_table.find(func_name);
+        if (it != function_table.end()) {
+            return it->second;
+        }
+        
+        std::vector<Type*> param_types = {tagged_value_type, tagged_value_type};
+        FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+        
+        Function* func = Function::Create(func_type, Function::ExternalLinkage, func_name, module.get());
+        
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", func);
+        builder->SetInsertPoint(entry);
+        
+        auto arg_it = func->arg_begin();
+        Value* left = &*arg_it++;
+        Value* right = &*arg_it;
+        
+        Value* result = polymorphicSub(left, right);
+        builder->CreateRet(result);
+        
+        builder->restoreIP(old_point);
+        
+        function_table[func_name] = func;
+        return func;
+    }
+    
+    Function* polymorphicMul() {
+        std::string func_name = "polymorphic_mul_2arg";
+        
+        auto it = function_table.find(func_name);
+        if (it != function_table.end()) {
+            return it->second;
+        }
+        
+        std::vector<Type*> param_types = {tagged_value_type, tagged_value_type};
+        FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+        
+        Function* func = Function::Create(func_type, Function::ExternalLinkage, func_name, module.get());
+        
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", func);
+        builder->SetInsertPoint(entry);
+        
+        auto arg_it = func->arg_begin();
+        Value* left = &*arg_it++;
+        Value* right = &*arg_it;
+        
+        Value* result = polymorphicMul(left, right);
+        builder->CreateRet(result);
+        
+        builder->restoreIP(old_point);
+        
+        function_table[func_name] = func;
+        return func;
+    }
+    
+    Function* polymorphicDiv() {
+        std::string func_name = "polymorphic_div_2arg";
+        
+        auto it = function_table.find(func_name);
+        if (it != function_table.end()) {
+            return it->second;
+        }
+        
+        std::vector<Type*> param_types = {tagged_value_type, tagged_value_type};
+        FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+        
+        Function* func = Function::Create(func_type, Function::ExternalLinkage, func_name, module.get());
+        
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", func);
+        builder->SetInsertPoint(entry);
+        
+        auto arg_it = func->arg_begin();
+        Value* left = &*arg_it++;
+        Value* right = &*arg_it;
+        
+        Value* result = polymorphicDiv(left, right);
+        builder->CreateRet(result);
+        
+        builder->restoreIP(old_point);
+        
+        function_table[func_name] = func;
+        return func;
+    }
+    
+    
     Value* codegenAST(const eshkol_ast_t* ast) {
         if (!ast) return nullptr;
 
@@ -1720,24 +1910,36 @@ private:
             return nullptr;
         }
         
-        // Return the result - ensure we always have a terminator
+        // Return the result - pack to tagged_value since functions now return tagged_value
         if (body_result) {
-            // If body_result is a function (lambda), we need to handle it specially
-            if (isa<Function>(body_result)) {
+            // If body_result is already a tagged_value, return it directly
+            if (body_result->getType() == tagged_value_type) {
+                builder->CreateRet(body_result);
+            }
+            // If body_result is a function (lambda), pack as function pointer
+            else if (isa<Function>(body_result)) {
                 Function* lambda_func = dyn_cast<Function>(body_result);
                 eshkol_debug("Function %s returns lambda %s", func_name, lambda_func->getName().str().c_str());
                 
-                // For functions that return lambdas, we return a pointer to the lambda
-                // Cast function pointer to int64 for return
+                // Pack function pointer to tagged_value
                 Value* func_addr = builder->CreatePtrToInt(lambda_func, Type::getInt64Ty(*context));
-                builder->CreateRet(func_addr);
-            } else {
-                builder->CreateRet(body_result);
+                Value* func_tagged = packPtrToTaggedValue(
+                    builder->CreateIntToPtr(func_addr, builder->getPtrTy()),
+                    ESHKOL_VALUE_CONS_PTR);
+                builder->CreateRet(func_tagged);
+            }
+            // Otherwise, detect type and pack to tagged_value
+            else {
+                TypedValue typed = detectValueType(body_result);
+                Value* tagged = typedValueToTaggedValue(typed);
+                builder->CreateRet(tagged);
             }
         } else {
-            // Return 0 as default
-            eshkol_debug("Function %s has no body result, returning 0", func_name);
-            builder->CreateRet(ConstantInt::get(Type::getInt64Ty(*context), 0));
+            // Return null tagged value as default
+            eshkol_debug("Function %s has no body result, returning null tagged value", func_name);
+            Value* null_tagged = packInt64ToTaggedValue(
+                ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+            builder->CreateRet(null_tagged);
         }
 
         // Restore previous state
@@ -2089,8 +2291,28 @@ private:
                 Type* expected_type = func_type->getParamType(i);
                 Type* actual_type = arg->getType();
 
+                // If function expects tagged_value, pack the argument
+                if (expected_type == tagged_value_type) {
+                    if (actual_type == tagged_value_type) {
+                        // Already tagged - use as-is
+                        // Do nothing, arg is already correct type
+                    } else if (actual_type->isIntegerTy(64)) {
+                        arg = packInt64ToTaggedValue(arg, true);
+                    } else if (actual_type->isDoubleTy()) {
+                        arg = packDoubleToTaggedValue(arg);
+                    } else if (actual_type->isPointerTy()) {
+                        arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_CONS_PTR);
+                    } else if (actual_type->isIntegerTy()) {
+                        // Convert other integer types to i64 first
+                        Value* as_i64 = builder->CreateSExtOrTrunc(arg, Type::getInt64Ty(*context));
+                        arg = packInt64ToTaggedValue(as_i64, true);
+                    } else {
+                        // Fallback: pack as null
+                        arg = packInt64ToTaggedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+                    }
+                }
                 // Perform type conversion if necessary
-                if (actual_type != expected_type) {
+                else if (actual_type != expected_type) {
                     if (actual_type->isIntegerTy() && expected_type->isIntegerTy()) {
                         // Integer to integer conversion
                         if (actual_type->getIntegerBitWidth() > expected_type->getIntegerBitWidth()) {
@@ -2213,20 +2435,35 @@ private:
             return nullptr;
         }
         
-        // Generate first operand with type information
-        TypedValue result = codegenTypedAST(&op->call_op.variables[0]);
-        if (!result.llvm_value) return nullptr;
-        
-        // Apply operation to remaining operands with type promotion
-        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-            TypedValue operand = codegenTypedAST(&op->call_op.variables[i]);
-            if (!operand.llvm_value) continue;
-            
-            // Generate mixed arithmetic with proper type promotion
-            result = generateMixedArithmetic(operation, result, operand);
+        // Convert all operands to tagged_value
+        std::vector<Value*> tagged_operands;
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
+            if (!tv.llvm_value) continue;
+            Value* tagged = typedValueToTaggedValue(tv);
+            tagged_operands.push_back(tagged);
         }
         
-        return result.llvm_value;
+        if (tagged_operands.empty()) return nullptr;
+        
+        // Apply polymorphic operation to operands (binary reduction for now)
+        Value* result = tagged_operands[0];
+        for (size_t i = 1; i < tagged_operands.size(); i++) {
+            if (operation == "add") {
+                result = polymorphicAdd(result, tagged_operands[i]);
+            } else if (operation == "sub") {
+                result = polymorphicSub(result, tagged_operands[i]);
+            } else if (operation == "mul") {
+                result = polymorphicMul(result, tagged_operands[i]);
+            } else if (operation == "div") {
+                result = polymorphicDiv(result, tagged_operands[i]);
+            }
+        }
+        
+        // Result is already a tagged_value - unpack it for backward compatibility
+        // (since existing code expects raw LLVM values)
+        TypedValue result_typed = taggedValueToTypedValue(result);
+        return result_typed.llvm_value;
     }
 
     Value* codegenComparison(const eshkol_operations_t* op, const std::string& operation) {
@@ -3029,17 +3266,17 @@ private:
             eshkol_debug("  Free variable: %s", var.c_str());
         }
         
-        // Create function type - original parameters + captured variables, all int64
+        // Create polymorphic function type - all parameters and return type are tagged_value
         std::vector<Type*> param_types;
         for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
-            param_types.push_back(Type::getInt64Ty(*context));
+            param_types.push_back(tagged_value_type);
         }
         for (size_t i = 0; i < free_vars.size(); i++) {
-            param_types.push_back(Type::getInt64Ty(*context));
+            param_types.push_back(tagged_value_type);
         }
         
         FunctionType* func_type = FunctionType::get(
-            Type::getInt64Ty(*context), // return type
+            tagged_value_type, // return tagged_value
             param_types,
             false // not varargs
         );
@@ -3103,12 +3340,23 @@ private:
             body_result = codegenAST(op->lambda_op.body);
         }
         
-        // Ensure we always have a terminator
+        // Pack return value to tagged_value (lambdas now return tagged_value)
         if (body_result) {
-            builder->CreateRet(body_result);
+            // If body_result is already a tagged_value, return it directly
+            if (body_result->getType() == tagged_value_type) {
+                builder->CreateRet(body_result);
+            }
+            // Otherwise, detect type and pack to tagged_value
+            else {
+                TypedValue typed = detectValueType(body_result);
+                Value* tagged = typedValueToTaggedValue(typed);
+                builder->CreateRet(tagged);
+            }
         } else {
-            // Return 0 as default
-            builder->CreateRet(ConstantInt::get(Type::getInt64Ty(*context), 0));
+            // Return null tagged value as default
+            Value* null_tagged = packInt64ToTaggedValue(
+                ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+            builder->CreateRet(null_tagged);
         }
         
         // Restore previous state
@@ -5500,18 +5748,26 @@ private:
                 return direct_it->second;
             }
             
-            // Handle builtin functions with proper arity-specific implementation
-            if (func_name == "+") {
-                return createBuiltinArithmeticFunction("+", required_arity);
+            // Handle builtin functions using polymorphic arithmetic (Phase 2.4)
+            // Note: For now we only support binary operations (arity 2)
+            if (func_name == "+" && required_arity == 2) {
+                return polymorphicAdd();
             }
-            if (func_name == "*") {
-                return createBuiltinArithmeticFunction("*", required_arity);
+            if (func_name == "*" && required_arity == 2) {
+                return polymorphicMul();
             }
-            if (func_name == "-") {
-                return createBuiltinArithmeticFunction("-", required_arity);
+            if (func_name == "-" && required_arity == 2) {
+                return polymorphicSub();
             }
-            if (func_name == "/") {
-                return createBuiltinArithmeticFunction("/", required_arity);
+            if (func_name == "/" && required_arity == 2) {
+                return polymorphicDiv();
+            }
+            
+            // Fallback for other arities (to be removed in Phase 3)
+            if (func_name == "+" || func_name == "*" || func_name == "-" || func_name == "/") {
+                eshkol_warn("Arithmetic operation %s with arity %zu not yet polymorphic, using old implementation",
+                           func_name.c_str(), required_arity);
+                return createBuiltinArithmeticFunction(func_name, required_arity);
             }
             
             // Handle display builtin function
@@ -5595,14 +5851,11 @@ private:
         // Loop body: apply procedure and build result
         builder->SetInsertPoint(loop_body);
         
-        // MIGRATION ISSUE 1: Extract car using tagged value system
-        // Old: CreateStructGEP(arena_cons_type, cons_ptr, 0) + Load
-        // New: extractCarAsTaggedValue() + unpackInt64FromTaggedValue()
+        // Extract car as tagged_value - polymorphic functions expect tagged_value!
         Value* car_tagged = extractCarAsTaggedValue(current_val);
-        Value* input_element = unpackInt64FromTaggedValue(car_tagged);
         
-        // Apply procedure to current element
-        Value* proc_result = builder->CreateCall(proc_func, {input_element});
+        // Apply procedure to current element (pass tagged_value directly)
+        Value* proc_result = builder->CreateCall(proc_func, {car_tagged});
         
         // Create new cons cell for result using TAGGED cons cell
         // Detect result type and create tagged cons cell
@@ -5718,45 +5971,15 @@ private:
         
         StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         
-        // Extract car from each list for procedure arguments using tagged value system
+        // Extract car from each list for procedure arguments as tagged_value
+        // CRITICAL FIX: Pass tagged_value directly to polymorphic functions, no unpacking needed!
         std::vector<Value*> proc_args;
         for (size_t i = 0; i < current_ptrs.size(); i++) {
             Value* current_val = builder->CreateLoad(Type::getInt64Ty(*context), current_ptrs[i]);
             
-            // Use extractCarAsTaggedValue to properly handle type-aware extraction
+            // Extract car as tagged_value - polymorphic functions expect tagged_value!
             Value* car_tagged = extractCarAsTaggedValue(current_val);
-            
-            // Unpack the value based on its type
-            Value* car_type = getTaggedValueType(car_tagged);
-            Value* car_base_type = builder->CreateAnd(car_type,
-                ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
-            
-            Value* car_is_double = builder->CreateICmpEQ(car_base_type,
-                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
-            
-            // Create conditional extraction based on type
-            Function* current_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* extract_double = BasicBlock::Create(*context, "multimap_extract_double", current_func);
-            BasicBlock* extract_int = BasicBlock::Create(*context, "multimap_extract_int", current_func);
-            BasicBlock* merge_extract = BasicBlock::Create(*context, "multimap_merge_extract", current_func);
-            
-            builder->CreateCondBr(car_is_double, extract_double, extract_int);
-            
-            builder->SetInsertPoint(extract_double);
-            Value* element_double = unpackDoubleFromTaggedValue(car_tagged);
-            Value* element_double_as_int = builder->CreateBitCast(element_double, Type::getInt64Ty(*context));
-            builder->CreateBr(merge_extract);
-            
-            builder->SetInsertPoint(extract_int);
-            Value* element_int = unpackInt64FromTaggedValue(car_tagged);
-            builder->CreateBr(merge_extract);
-            
-            builder->SetInsertPoint(merge_extract);
-            PHINode* element = builder->CreatePHI(Type::getInt64Ty(*context), 2);
-            element->addIncoming(element_double_as_int, extract_double);
-            element->addIncoming(element_int, extract_int);
-            
-            proc_args.push_back(element);
+            proc_args.push_back(car_tagged);
         }
         
         // CRITICAL DEBUG: Add instrumentation to track corruption
@@ -7202,7 +7425,7 @@ private:
         return phi;
     }
     
-    // Production implementation: Create arity-specific builtin arithmetic functions
+    // Production implementation: Create arity-specific builtin arithmetic functions (POLYMORPHIC)
     Function* createBuiltinArithmeticFunction(const std::string& operation, size_t arity) {
         if (arity == 0) {
             eshkol_error("Cannot create arithmetic function with 0 arguments");
@@ -7212,21 +7435,16 @@ private:
         // Use deterministic names based on operation and arity only
         std::string func_name = "builtin_" + operation + "_" + std::to_string(arity) + "arg";
         
-        // CRITICAL FIX: Disable function caching to prevent corruption
-        // The caching was causing corrupted functions to be reused across map operations
-        // Each function creation now happens in a clean context
-        
-        // Check if function exists but always recreate to ensure clean context
+        // Check if function already exists
         auto existing_it = function_table.find(func_name);
         if (existing_it != function_table.end()) {
-            eshkol_debug("Removing potentially corrupted cached function: %s", func_name.c_str());
-            function_table.erase(existing_it);  // Always remove to ensure fresh creation
+            return existing_it->second;
         }
         
-        // Create function type with specified arity
-        std::vector<Type*> param_types(arity, Type::getInt64Ty(*context));
+        // Create polymorphic function type with tagged_value parameters
+        std::vector<Type*> param_types(arity, tagged_value_type);
         FunctionType* func_type = FunctionType::get(
-            Type::getInt64Ty(*context),
+            tagged_value_type,  // Return tagged_value
             param_types,
             false // not varargs
         );
@@ -7238,74 +7456,46 @@ private:
             module.get()
         );
         
-        // CRITICAL FIX: Create completely isolated context for function generation
-        // Save all IRBuilder state, not just insert point
+        // Save current insertion point
         IRBuilderBase::InsertPoint old_point = builder->saveIP();
-        BasicBlock* old_insert_block = builder->GetInsertBlock();
-        Function* old_function = old_insert_block ? old_insert_block->getParent() : nullptr;
         
-        // Create function body in completely clean context
+        // Create function body
         BasicBlock* entry = BasicBlock::Create(*context, "entry", builtin_func);
-        builder->ClearInsertionPoint();  // Clear any corrupted state
         builder->SetInsertPoint(entry);
         
-        // Apply operation to all arguments with careful validation
+        // Apply polymorphic operation to all arguments (binary reduction)
         auto arg_it = builtin_func->arg_begin();
         Value* result = &*arg_it++;
-        
-        // Add debug validation for the first argument
-        eshkol_debug("Creating %s function with %zu args, first arg type: %s",
-                    operation.c_str(), arity, result->getType()->isIntegerTy() ? "int" : "other");
         
         for (size_t i = 1; i < arity && arg_it != builtin_func->arg_end(); ++i, ++arg_it) {
             Value* operand = &*arg_it;
             
-            // Add debug validation for each operand
-            eshkol_debug("Processing arg %zu for %s function, operand type: %s",
-                        i, operation.c_str(), operand->getType()->isIntegerTy() ? "int" : "other");
-            
             if (operation == "+") {
-                result = builder->CreateAdd(result, operand, "add_result");
+                result = polymorphicAdd(result, operand);
             } else if (operation == "-") {
-                result = builder->CreateSub(result, operand, "sub_result");
+                result = polymorphicSub(result, operand);
             } else if (operation == "*") {
-                result = builder->CreateMul(result, operand, "mul_result");
+                result = polymorphicMul(result, operand);
             } else if (operation == "/") {
-                result = builder->CreateSDiv(result, operand, "div_result");
+                result = polymorphicDiv(result, operand);
             } else {
                 eshkol_error("Unknown arithmetic operation: %s", operation.c_str());
-                result = ConstantInt::get(Type::getInt64Ty(*context), 0);
+                result = packInt64ToTaggedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), true);
                 break;
             }
         }
         
         builder->CreateRet(result);
         
-        // CRITICAL FIX: Properly restore IRBuilder state
+        // Restore IRBuilder state
         if (old_point.isSet()) {
             builder->restoreIP(old_point);
-        } else {
-            builder->ClearInsertionPoint();
         }
         
-        // Add to function table using context management
+        // Add to function table
         registerContextFunction(func_name, builtin_func);
         
-        // Validate function signature matches expected arity
-        if (builtin_func->getFunctionType()->getNumParams() != arity) {
-            eshkol_error("Generated function %s has wrong arity: expected %zu, got %u",
-                        func_name.c_str(), arity, builtin_func->getFunctionType()->getNumParams());
-            return nullptr;
-        }
-        
-        // Additional validation: Verify function body was created correctly
-        if (builtin_func->empty()) {
-            eshkol_error("Generated function %s has empty body", func_name.c_str());
-            return nullptr;
-        }
-        
-        eshkol_debug("Successfully created fresh builtin function: %s", func_name.c_str());
-        eshkol_debug("Created builtin arithmetic function: %s for operation '%s' with arity %zu",
+        eshkol_debug("Created polymorphic builtin function: %s for operation '%s' with arity %zu",
                     func_name.c_str(), operation.c_str(), arity);
         
         return builtin_func;
