@@ -77,17 +77,15 @@ typedef struct arena_cons_cell {
 } arena_cons_cell_t;
 
 // Enhanced cons cell structure with type information
+// Phase 3B: Now stores complete eshkol_tagged_value_t for direct tagged value storage
 typedef struct arena_tagged_cons_cell {
-    uint8_t car_type;        // Type tag for car value (eshkol_value_type_t)
-    uint8_t cdr_type;        // Type tag for cdr value (eshkol_value_type_t)
-    uint16_t flags;          // Reserved flags (immutability, etc.)
-    eshkol_tagged_data_t car_data;  // Car value with union access
-    eshkol_tagged_data_t cdr_data;  // Cdr value with union access
-} arena_tagged_cons_cell_t;
+    eshkol_tagged_value_t car;  // 16 bytes - Complete tagged value with type+flags+data
+    eshkol_tagged_value_t cdr;  // 16 bytes - Complete tagged value with type+flags+data
+} arena_tagged_cons_cell_t;     // Total: 32 bytes (perfect cache alignment!)
 
 // Compile-time size validation
-_Static_assert(sizeof(arena_tagged_cons_cell_t) == 24,
-               "Tagged cons cell must be exactly 24 bytes");
+_Static_assert(sizeof(arena_tagged_cons_cell_t) == 32,
+               "Tagged cons cell must be exactly 32 bytes for optimal cache alignment");
 _Static_assert(sizeof(arena_cons_cell_t) == 16,
                "Legacy cons cell size changed unexpectedly");
 
@@ -124,6 +122,14 @@ void arena_tagged_cons_set_null(arena_tagged_cons_cell_t* cell, bool is_cdr);
 // Type query functions
 uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is_cdr);
 bool arena_tagged_cons_is_type(const arena_tagged_cons_cell_t* cell, bool is_cdr, uint8_t type);
+
+// Direct tagged value access functions (NEW in Phase 3B)
+// These functions enable direct storage and retrieval of complete tagged_value structs
+void arena_tagged_cons_set_tagged_value(arena_tagged_cons_cell_t* cell,
+                                         bool is_cdr,
+                                         const eshkol_tagged_value_t* value);
+eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons_cell_t* cell,
+                                                          bool is_cdr);
 
 #ifdef __cplusplus
 } // extern "C"

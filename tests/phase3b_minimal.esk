@@ -1,0 +1,9 @@
+;; Minimal test for Phase 3B double arithmetic
+(display "Test: Adding doubles")
+(newline)
+(define result (+ 2.5 1.5))
+(display "Result computed")
+(newline)
+(display "Result: ") 
+(display result)
+(newline)
