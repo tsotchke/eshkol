@@ -1,0 +1,32 @@
+;; Diagnostic test for member and take
+
+(display "Testing member function:")
+(newline)
+(define test-list (list 1 2.0 3))
+(display "List: ")
+(display test-list)
+(newline)
+
+(display "Member 2.0: ")
+(define result (member 2.0 test-list))
+(display result)
+(newline)
+
+(display "Expected: (2.0 3)")
+(newline)
+(newline)
+
+(display "Testing take function:")
+(newline)
+(define test-list2 (list 1 2.0 3 4.0 5))
+(display "List: ")
+(display test-list2)
+(newline)
+
+(display "Take 3: ")
+(define result2 (take test-list2 3))
+(display result2)
+(newline)
+
+(display "Expected: (1 2.0 3)")
+(newline)

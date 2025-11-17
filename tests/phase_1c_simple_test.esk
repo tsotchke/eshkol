@@ -1,0 +1,21 @@
+;;
+;; Phase 1C Simple Test - Testing basic functionality
+;;
+
+(display "=== PHASE 1C SIMPLE TEST ===")
+(newline)
+
+;; Test 1: Last function only
+(display "1. Testing last function:")
+(newline)
+(define test-nums (list 10 20 30))
+(display "   Numbers: 10 20 30")
+(newline)
+
+(define last-num (last test-nums))
+(display "   last: ")
+(display last-num)
+(newline)
+
+(display "=== PHASE 1C SIMPLE SUCCESS! ===")
+(newline)

@@ -1,0 +1,40 @@
+;;
+;; Phase 1B Lambda Debug - Testing lambda resolution
+;;
+
+(display "=== LAMBDA DEBUG TEST ===")
+(newline)
+
+;; Test 1: Simple lambda definition and call
+(display "1. Testing simple lambda:")
+(newline)
+(define simple-func (lambda (x) (+ x 1)))
+(display "   simple-func defined")
+(newline)
+
+;; Test direct call
+(define result (simple-func 5))
+(display "   simple-func(5) = ")
+(display result)
+(newline)
+
+;; Test 2: Using lambda with find (simplified)
+(display "2. Testing lambda with find:")
+(newline)
+(define test-nums (list 1 2 3 4 5))
+(display "   Numbers: 1 2 3 4 5")
+(newline)
+
+;; Try to find 3
+(define is-three (lambda (x) (= x 3)))
+(display "   is-three lambda defined")
+(newline)
+
+;; This should work if lambda resolution works
+(define found-three (find is-three test-nums))
+(display "   find 3 result: ")
+(if (null? found-three) (display "NOT FOUND") (display found-three))
+(newline)
+
+(display "=== LAMBDA DEBUG COMPLETE ===")
+(newline)

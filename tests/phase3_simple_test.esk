@@ -1,0 +1,7 @@
+;; Simple Phase 3 test - one operation at a time
+
+(display "Test 1: Single-list map with integers")
+(newline)
+(define test1 (map (lambda (x) (+ x 1)) (list 1 2 3)))
+(display test1)
+(newline)

@@ -1,0 +1,101 @@
+;;
+;; Phase 2A Group A Migration Test
+;; Testing simple traversal functions with mixed type lists
+;;
+
+(display "=== PHASE 2A GROUP A TEST ===")
+(newline)
+
+;; Create mixed type test list
+(define mixed-list (list 1 2.5 3 4.75 5))
+
+;; Test 1: length with mixed types
+(display "1. Testing length:")
+(newline)
+(display "   length of (1 2.5 3 4.75 5): ")
+(display (length mixed-list))
+(display " (expect: 5)")
+(newline)
+
+;; Test 2: list-ref with mixed types
+(display "2. Testing list-ref:")
+(newline)
+(display "   (list-ref mixed-list 0): ")
+(display (list-ref mixed-list 0))
+(display " (expect: 1)")
+(newline)
+(display "   (list-ref mixed-list 1): ")
+(display (list-ref mixed-list 1))
+(display " (expect: 2.5)")
+(newline)
+(display "   (list-ref mixed-list 2): ")
+(display (list-ref mixed-list 2))
+(display " (expect: 3)")
+(newline)
+(display "   (list-ref mixed-list 3): ")
+(display (list-ref mixed-list 3))
+(display " (expect: 4.75)")
+(newline)
+(display "   (list-ref mixed-list 4): ")
+(display (list-ref mixed-list 4))
+(display " (expect: 5)")
+(newline)
+
+;; Test 3: list-tail with mixed types
+(display "3. Testing list-tail:")
+(newline)
+(display "   (list-tail mixed-list 2) first element: ")
+(display (car (list-tail mixed-list 2)))
+(display " (expect: 3)")
+(newline)
+(display "   (list-tail mixed-list 3) first element: ")
+(display (car (list-tail mixed-list 3)))
+(display " (expect: 4.75)")
+(newline)
+
+;; Test 4: drop with mixed types
+(display "4. Testing drop:")
+(newline)
+(display "   (drop mixed-list 2) first element: ")
+(display (car (drop mixed-list 2)))
+(display " (expect: 3)")
+(newline)
+(display "   length of (drop mixed-list 3): ")
+(display (length (drop mixed-list 3)))
+(display " (expect: 2)")
+(newline)
+
+;; Test 5: last with mixed types
+(display "5. Testing last:")
+(newline)
+(display "   (last mixed-list): ")
+(display (last mixed-list))
+(display " (expect: 5)")
+(newline)
+(display "   (last (list 1 2.5 3)): ")
+(display (last (list 1 2.5 3)))
+(display " (expect: 3)")
+(newline)
+
+;; Test 6: last-pair with mixed types
+(display "6. Testing last-pair:")
+(newline)
+(display "   (car (last-pair mixed-list)): ")
+(display (car (last-pair mixed-list)))
+(display " (expect: 5)")
+(newline)
+
+;; Test 7: Combined operations
+(display "7. Testing combined operations:")
+(newline)
+(display "   length of (list-tail mixed-list 2): ")
+(display (length (list-tail mixed-list 2)))
+(display " (expect: 3)")
+(newline)
+(display "   (last (drop mixed-list 2)): ")
+(display (last (drop mixed-list 2)))
+(display " (expect: 5)")
+(newline)
+
+(display "=== GROUP A TEST COMPLETE ===")
+(newline)

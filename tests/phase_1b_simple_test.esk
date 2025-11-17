@@ -1,0 +1,42 @@
+;;
+;; Phase 1B Simple Test - Basic take/drop functions
+;; Testing basic functionality without lambdas first
+;;
+
+(display "=== PHASE 1B SIMPLE TEST ===")
+(newline)
+
+;; Test 1: Take function (basic)
+(display "1. Testing take function:")
+(newline)
+(define test-list (list 10 20 30 40 50))
+(display "   Original list: 10 20 30 40 50")
+(newline)
+
+(define first-three (take test-list 3))
+(display "   take 3 result: ")
+(if (null? first-three) 
+    (display "EMPTY") 
+    (begin
+        (display (car first-three)) (display " ")
+        (display (cadr first-three)) (display " ")
+        (display (caddr first-three))
+    ))
+(newline)
+
+;; Test 2: Drop function (basic)
+(display "2. Testing drop function:")
+(newline)
+(define dropped-two (drop test-list 2))
+(display "   drop 2 result: ")
+(if (null? dropped-two)
+    (display "EMPTY")
+    (begin
+        (display (car dropped-two)) (display " ")
+        (display (cadr dropped-two)) (display " ")
+        (display (caddr dropped-two))
+    ))
+(newline)
+
+(display "=== PHASE 1B BASIC SUCCESS! ===")
+(newline)

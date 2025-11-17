@@ -1,0 +1,24 @@
+;;
+;; Simple Arena Test - Debug the segfault step by step
+;;
+
+;; Test 1: Simple cons cell
+(define simple-pair (cons 42 100))
+(display "Simple pair car: ")
+(display (car simple-pair))
+(newline)
+(display "Simple pair cdr: ")
+(display (cdr simple-pair))
+(newline)
+
+;; Test 2: Single level nesting
+(define single-nested (cons 1 (cons 2 0)))
+(display "Single nested car: ")
+(display (car single-nested))
+(newline)
+(display "Single nested cdr car: ")
+(display (car (cdr single-nested)))
+(newline)
+
+(display "Simple arena test completed!")
+(newline)

@@ -1,0 +1,30 @@
+;;
+;; Phase 2A Multi-list Debug - Testing actual multi-list functionality
+;;
+
+(display "=== PHASE 2A MULTI-LIST DEBUG ===")
+(newline)
+
+;; Test 1: Two-list map with addition
+(display "1. Testing two-list map:")
+(newline)
+(define list1 (list 1 2))
+(define list2 (list 3 4))
+(display "   List 1: 1 2")
+(newline)
+(display "   List 2: 3 4")
+(newline)
+
+;; This should call the 2-argument version of +
+(define multi-result (map + list1 list2))
+(display "   multi map + result: ")
+(if (null? multi-result)
+    (display "EMPTY")
+    (begin
+        (display (car multi-result)) (display " ")
+        (display (cadr multi-result))
+    ))
+(newline)
+
+(display "=== PHASE 2A MULTI-LIST DEBUG SUCCESS! ===")
+(newline)
