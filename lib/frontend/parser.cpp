@@ -203,6 +203,14 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "vector") return ESHKOL_TENSOR_OP;  // vector is just 1D tensor
     if (op == "matrix") return ESHKOL_TENSOR_OP;  // matrix is just 2D tensor
     if (op == "diff") return ESHKOL_DIFF_OP;
+    // Automatic differentiation operators
+    if (op == "derivative") return ESHKOL_DERIVATIVE_OP;
+    if (op == "gradient") return ESHKOL_GRADIENT_OP;
+    if (op == "jacobian") return ESHKOL_JACOBIAN_OP;
+    if (op == "hessian") return ESHKOL_HESSIAN_OP;
+    if (op == "divergence") return ESHKOL_DIVERGENCE_OP;
+    if (op == "curl") return ESHKOL_CURL_OP;
+    if (op == "laplacian") return ESHKOL_LAPLACIAN_OP;
     // Treat arithmetic operations as special CALL_OPs so they get proper argument handling
     // We'll store the operation type in the function name and handle display in the printer
     return ESHKOL_CALL_OP;

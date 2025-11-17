@@ -564,6 +564,161 @@ eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons
     return is_cdr ? cell->cdr : cell->car;
 }
 
+// ===== AD MEMORY MANAGEMENT IMPLEMENTATION =====
+
+// Dual number allocation
+eshkol_dual_number_t* arena_allocate_dual_number(arena_t* arena) {
+    if (!arena) {
+        eshkol_error("Cannot allocate dual number: null arena");
+        return nullptr;
+    }
+    
+    eshkol_dual_number_t* dual = (eshkol_dual_number_t*)
+        arena_allocate_aligned(arena, sizeof(eshkol_dual_number_t), 8);
+    
+    if (dual) {
+        dual->value = 0.0;
+        dual->derivative = 0.0;
+    }
+    
+    return dual;
+}
+
+eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count) {
+    if (!arena || count == 0) {
+        eshkol_error("Invalid parameters for batch dual number allocation");
+        return nullptr;
+    }
+    
+    size_t total_size = sizeof(eshkol_dual_number_t) * count;
+    eshkol_dual_number_t* duals = (eshkol_dual_number_t*)
+        arena_allocate_aligned(arena, total_size, 8);
+    
+    if (duals) {
+        for (size_t i = 0; i < count; i++) {
+            duals[i].value = 0.0;
+            duals[i].derivative = 0.0;
+        }
+    }
+    
+    return duals;
+}
+
+// AD node allocation for computational graphs
+ad_node_t* arena_allocate_ad_node(arena_t* arena) {
+    if (!arena) {
+        eshkol_error("Cannot allocate AD node: null arena");
+        return nullptr;
+    }
+    
+    ad_node_t* node = (ad_node_t*)
+        arena_allocate_aligned(arena, sizeof(ad_node_t), 8);
+    
+    if (node) {
+        node->type = AD_NODE_CONSTANT;
+        node->value = 0.0;
+        node->gradient = 0.0;
+        node->input1 = nullptr;
+        node->input2 = nullptr;
+        node->id = 0;
+    }
+    
+    return node;
+}
+
+ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count) {
+    if (!arena || count == 0) {
+        eshkol_error("Invalid parameters for batch AD node allocation");
+        return nullptr;
+    }
+    
+    size_t total_size = sizeof(ad_node_t) * count;
+    ad_node_t* nodes = (ad_node_t*)
+        arena_allocate_aligned(arena, total_size, 8);
+    
+    if (nodes) {
+        for (size_t i = 0; i < count; i++) {
+            nodes[i].type = AD_NODE_CONSTANT;
+            nodes[i].value = 0.0;
+            nodes[i].gradient = 0.0;
+            nodes[i].input1 = nullptr;
+            nodes[i].input2 = nullptr;
+            nodes[i].id = 0;
+        }
+    }
+    
+    return nodes;
+}
+
+// Tape allocation and management
+ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
+    if (!arena) {
+        eshkol_error("Cannot allocate tape: null arena");
+        return nullptr;
+    }
+    
+    if (initial_capacity == 0) {
+        initial_capacity = 64; // Default capacity
+    }
+    
+    ad_tape_t* tape = (ad_tape_t*)
+        arena_allocate_aligned(arena, sizeof(ad_tape_t), 8);
+    
+    if (!tape) {
+        eshkol_error("Failed to allocate tape structure");
+        return nullptr;
+    }
+    
+    // Allocate nodes array
+    size_t nodes_size = sizeof(ad_node_t*) * initial_capacity;
+    tape->nodes = (ad_node_t**)arena_allocate_aligned(arena, nodes_size, 8);
+    
+    if (!tape->nodes) {
+        eshkol_error("Failed to allocate tape nodes array");
+        return nullptr;
+    }
+    
+    tape->num_nodes = 0;
+    tape->capacity = initial_capacity;
+    tape->variables = nullptr;
+    tape->num_variables = 0;
+    
+    return tape;
+}
+
+void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node) {
+    if (!tape || !node) {
+        eshkol_error("Cannot add node to tape: null parameter");
+        return;
+    }
+    
+    if (tape->num_nodes >= tape->capacity) {
+        eshkol_error("Tape capacity exceeded: %zu/%zu", tape->num_nodes, tape->capacity);
+        return;
+    }
+    
+    tape->nodes[tape->num_nodes++] = node;
+}
+
+void arena_tape_reset(ad_tape_t* tape) {
+    if (!tape) {
+        eshkol_error("Cannot reset tape: null parameter");
+        return;
+    }
+    
+    // Reset node count but keep capacity
+    tape->num_nodes = 0;
+    
+    // Reset all node gradients to 0
+    for (size_t i = 0; i < tape->num_nodes; i++) {
+        if (tape->nodes[i]) {
+            tape->nodes[i]->gradient = 0.0;
+        }
+    }
+}
+
+// ===== END AD MEMORY MANAGEMENT IMPLEMENTATION =====
+
 #ifdef __cplusplus
 
 // C++ Arena wrapper implementation

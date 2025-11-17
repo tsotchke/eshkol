@@ -131,6 +131,24 @@ void arena_tagged_cons_set_tagged_value(arena_tagged_cons_cell_t* cell,
 eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons_cell_t* cell,
                                                           bool is_cdr);
 
+// ===== AD MEMORY MANAGEMENT =====
+// Allocation functions for automatic differentiation structures
+
+// Dual number allocation
+eshkol_dual_number_t* arena_allocate_dual_number(arena_t* arena);
+eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count);
+
+// AD node allocation for computational graphs
+ad_node_t* arena_allocate_ad_node(arena_t* arena);
+ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count);
+
+// Tape allocation and management
+ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
+void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node);
+void arena_tape_reset(ad_tape_t* tape);
+
+// ===== END AD MEMORY MANAGEMENT =====
+
 #ifdef __cplusplus
 } // extern "C"
 
