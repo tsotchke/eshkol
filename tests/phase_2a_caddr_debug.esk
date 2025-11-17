@@ -1,0 +1,33 @@
+;;
+;; Phase 2A Caddr Debug - Testing compound car/cdr access patterns
+;;
+
+(display "=== PHASE 2A CADDR DEBUG ===")
+(newline)
+
+;; Test 1: Multi-list map with safe result access
+(display "1. Testing multi-list map result:")
+(newline)
+(define list1 (list 1 2 3))
+(define list2 (list 4 5 6))
+
+(define result (map + list1 list2))
+(display "   map result created")
+(newline)
+
+;; Test safe access
+(display "   First element: ")
+(display (car result))
+(newline)
+
+(display "   Second element: ")
+(display (cadr result))
+(newline)
+
+;; Test the problematic caddr access
+(display "   Third element (caddr): ")
+(display (caddr result))
+(newline)
+
+(display "=== PHASE 2A CADDR DEBUG SUCCESS! ===")
+(newline)

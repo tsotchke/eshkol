@@ -1,0 +1,38 @@
+;;
+;; Basic Operations Test - Test individual features
+;;
+
+;; Test compound car/cdr operations  
+(define test-list (list 1 2 3 4))
+(display "cadr: ")
+(display (cadr test-list))
+(newline)
+(display "caddr: ")
+(display (caddr test-list))
+(newline)
+
+;; Test length
+(display "Length: ")
+(display (length test-list))
+(newline)
+
+;; Test list-ref
+(display "Element 0: ")
+(display (list-ref test-list 0))
+(newline)
+(display "Element 2: ")
+(display (list-ref test-list 2))
+(newline)
+
+;; Test mutable operations
+(define pair (cons 100 200))
+(display "Before: ")
+(display (car pair)) (display " ") (display (cdr pair))
+(newline)
+(set-car! pair 999)
+(display "After set-car!: ")
+(display (car pair)) (display " ") (display (cdr pair))
+(newline)
+
+(display "Basic operations test completed!")
+(newline)

@@ -1,0 +1,104 @@
+;;
+;; Phase 1B Test - List Processing Utilities
+;; Testing: take, drop, find, partition
+;;
+
+(display "=== PHASE 1B TEST: List Processing Utilities ===")
+(newline)
+
+;; Test 1: Take function
+(display "1. Testing take function:")
+(newline)
+(define test-list (list 10 20 30 40 50))
+(display "   Original list: 10 20 30 40 50")
+(newline)
+
+(define first-three (take test-list 3))
+(display "   take 3: ")
+(display (car first-three)) (display " ")
+(display (cadr first-three)) (display " ")
+(display (caddr first-three))
+(newline)
+
+(define first-zero (take test-list 0))
+(display "   take 0: ")
+(if (null? first-zero) (display "EMPTY") (display "NOT EMPTY"))
+(newline)
+
+;; Test 2: Drop function
+(display "2. Testing drop function:")
+(newline)
+(define dropped-two (drop test-list 2))
+(display "   drop 2: ")
+(display (car dropped-two)) (display " ")
+(display (cadr dropped-two)) (display " ")
+(display (caddr dropped-two))
+(newline)
+
+(define dropped-all (drop test-list 10))
+(display "   drop 10: ")
+(if (null? dropped-all) (display "EMPTY") (display "NOT EMPTY"))
+(newline)
+
+;; Test 3: Find function (using builtin predicates)
+(display "3. Testing find function:")
+(newline)
+(define mixed-nums (list 1 3 4 7 8))
+(display "   Numbers: 1 3 4 7 8")
+(newline)
+
+;; Create a simple even? predicate using lambda
+(define even? (lambda (x) (= (/ (* x 2) 2) x)))
+(define found-even (find even? mixed-nums))
+(display "   find even: ")
+(if (null? found-even) (display "NOT FOUND") (display found-even))
+(newline)
+
+;; Test 4: Partition function
+(display "4. Testing partition function:")
+(newline)
+(define partitioned (partition even? mixed-nums))
+(display "   partition even/odd:")
+(newline)
+
+(define evens (car partitioned))
+(define odds (cdr partitioned))
+
+(display "   Evens: ")
+(if (null? evens) 
+    (display "NONE") 
+    (begin 
+        (display (car evens))
+        (if (null? (cdr evens)) (display "") (display " "))
+    ))
+(newline)
+
+(display "   Odds: ")
+(if (null? odds) 
+    (display "NONE") 
+    (begin 
+        (display (car odds))
+        (if (null? (cdr odds)) (display "") (display " "))
+    ))
+(newline)
+
+;; Test 5: Combined functionality
+(display "5. Testing combined functionality:")
+(newline)
+(define big-list (list 2 4 6 8 10 12 14 16))
+(display "   Original: 2 4 6 8 10 12 14 16")
+(newline)
+
+(define first-half (take big-list 4))
+(define second-half (drop big-list 4))
+(display "   First half: ")
+(display (car first-half)) (display " ") (display (cadr first-half)) (display " ")
+(display (caddr first-half)) (display " ") (display (car (cdr (cdr (cdr first-half)))))
+(newline)
+(display "   Second half: ")
+(display (car second-half)) (display " ") (display (cadr second-half)) (display " ")
+(display (caddr second-half)) (display " ") (display (car (cdr (cdr (cdr second-half)))))
+(newline)
+
+(display "=== PHASE 1B COMPLETE SUCCESS! ===")
+(newline)

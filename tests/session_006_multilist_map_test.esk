@@ -1,0 +1,5 @@
+;; Session 006: Test multi-list map with tagged values
+;; Expected output: (5.5 7.5 9.5)
+
+(display (map + (list 1 2 3) (list 4.5 5.5 6.5)))
+(newline)
