@@ -39,12 +39,14 @@ typedef enum {
 
 // Mixed type list support - Value type tags for tagged cons cells
 typedef enum {
-    ESHKOL_VALUE_NULL     = 0,  // Empty/null value
-    ESHKOL_VALUE_INT64    = 1,  // 64-bit signed integer
-    ESHKOL_VALUE_DOUBLE   = 2,  // Double-precision floating point
-    ESHKOL_VALUE_CONS_PTR = 3,  // Pointer to another cons cell
+    ESHKOL_VALUE_NULL        = 0,  // Empty/null value
+    ESHKOL_VALUE_INT64       = 1,  // 64-bit signed integer
+    ESHKOL_VALUE_DOUBLE      = 2,  // Double-precision floating point
+    ESHKOL_VALUE_CONS_PTR    = 3,  // Pointer to another cons cell
+    ESHKOL_VALUE_DUAL_NUMBER = 4,  // Dual number for forward-mode AD
+    ESHKOL_VALUE_AD_NODE_PTR = 5,  // Pointer to AD computation graph node
     // Reserved for future expansion
-    ESHKOL_VALUE_MAX      = 15  // 4-bit type field limit
+    ESHKOL_VALUE_MAX         = 15  // 4-bit type field limit
 } eshkol_value_type_t;
 
 // Type flags for Scheme exactness tracking
@@ -80,6 +82,17 @@ typedef struct eshkol_tagged_value {
 // Compile-time size validation for tagged values
 _Static_assert(sizeof(eshkol_tagged_value_t) <= 16,
                "Tagged value must fit in 16 bytes for efficiency");
+
+// Dual number for forward-mode automatic differentiation
+// Stores value and derivative simultaneously for efficient chain rule computation
+typedef struct eshkol_dual_number {
+    double value;       // f(x) - the function value
+    double derivative;  // f'(x) - the derivative value
+} eshkol_dual_number_t;
+
+// Compile-time size validation for dual numbers
+_Static_assert(sizeof(eshkol_dual_number_t) == 16,
+               "Dual number must be 16 bytes for cache efficiency");
 
 // Helper functions for tagged value manipulation
 static inline eshkol_tagged_value_t eshkol_make_int64(int64_t val, bool exact) {
@@ -122,10 +135,12 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 }
 
 // Type checking helper macros
-#define ESHKOL_IS_INT64_TYPE(type)    (((type) & 0x0F) == ESHKOL_VALUE_INT64)
-#define ESHKOL_IS_DOUBLE_TYPE(type)   (((type) & 0x0F) == ESHKOL_VALUE_DOUBLE)
-#define ESHKOL_IS_CONS_PTR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_CONS_PTR)
-#define ESHKOL_IS_NULL_TYPE(type)     (((type) & 0x0F) == ESHKOL_VALUE_NULL)
+#define ESHKOL_IS_INT64_TYPE(type)       (((type) & 0x0F) == ESHKOL_VALUE_INT64)
+#define ESHKOL_IS_DOUBLE_TYPE(type)      (((type) & 0x0F) == ESHKOL_VALUE_DOUBLE)
+#define ESHKOL_IS_CONS_PTR_TYPE(type)    (((type) & 0x0F) == ESHKOL_VALUE_CONS_PTR)
+#define ESHKOL_IS_NULL_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_NULL)
+#define ESHKOL_IS_DUAL_NUMBER_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_DUAL_NUMBER)
+#define ESHKOL_IS_AD_NODE_PTR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_AD_NODE_PTR)
 
 // Exactness checking macros
 #define ESHKOL_IS_EXACT(type)         (((type) & ESHKOL_VALUE_EXACT_FLAG) != 0)
@@ -135,6 +150,63 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 #define ESHKOL_MAKE_EXACT(type)       ((type) | ESHKOL_VALUE_EXACT_FLAG)
 #define ESHKOL_MAKE_INEXACT(type)     ((type) | ESHKOL_VALUE_INEXACT_FLAG)
 #define ESHKOL_GET_BASE_TYPE(type)    ((type) & 0x0F)
+
+// Dual number helper functions for forward-mode automatic differentiation
+static inline eshkol_dual_number_t eshkol_make_dual(double value, double derivative) {
+    eshkol_dual_number_t result;
+    result.value = value;
+    result.derivative = derivative;
+    return result;
+}
+
+static inline double eshkol_dual_value(const eshkol_dual_number_t* d) {
+    return d->value;
+}
+
+static inline double eshkol_dual_derivative(const eshkol_dual_number_t* d) {
+    return d->derivative;
+}
+
+// ===== COMPUTATIONAL GRAPH NODE TYPES =====
+// AD node types for reverse-mode automatic differentiation
+
+typedef enum {
+    AD_NODE_CONSTANT,
+    AD_NODE_VARIABLE,
+    AD_NODE_ADD,
+    AD_NODE_SUB,
+    AD_NODE_MUL,
+    AD_NODE_DIV,
+    AD_NODE_SIN,
+    AD_NODE_COS,
+    AD_NODE_EXP,
+    AD_NODE_LOG,
+    AD_NODE_POW,
+    AD_NODE_NEG
+} ad_node_type_t;
+
+// Computational graph node for reverse-mode AD
+// Stores the computational graph for backpropagation
+typedef struct ad_node {
+    ad_node_type_t type;     // Type of operation
+    double value;            // Computed value during forward pass
+    double gradient;         // Accumulated gradient during backward pass
+    struct ad_node* input1;  // First parent node (null for constants/variables)
+    struct ad_node* input2;  // Second parent node (null for unary ops)
+    size_t id;              // Unique node ID for topological sorting
+} ad_node_t;
+
+// Computational graph tape for recording operations
+// Maintains all nodes in evaluation order for backpropagation
+typedef struct ad_tape {
+    ad_node_t** nodes;       // Array of nodes in evaluation order
+    size_t num_nodes;        // Current number of nodes
+    size_t capacity;         // Allocated capacity
+    ad_node_t** variables;   // Input variable nodes
+    size_t num_variables;    // Number of input variables
+} ad_tape_t;
+
+// ===== END COMPUTATIONAL GRAPH TYPES =====
 
 typedef enum {
     ESHKOL_INVALID_OP,
@@ -151,7 +223,15 @@ typedef enum {
     ESHKOL_EXTERN_VAR_OP,
     ESHKOL_LAMBDA_OP,
     ESHKOL_TENSOR_OP,
-    ESHKOL_DIFF_OP
+    ESHKOL_DIFF_OP,
+    // Automatic differentiation operators
+    ESHKOL_DERIVATIVE_OP,
+    ESHKOL_GRADIENT_OP,
+    ESHKOL_JACOBIAN_OP,
+    ESHKOL_HESSIAN_OP,
+    ESHKOL_DIVERGENCE_OP,
+    ESHKOL_CURL_OP,
+    ESHKOL_LAPLACIAN_OP
 } eshkol_op_t;
 
 struct eshkol_ast;

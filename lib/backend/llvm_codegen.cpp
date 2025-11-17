@@ -83,6 +83,10 @@ private:
     
     // Tagged value struct type for LLVM IR
     StructType* tagged_value_type;
+    
+    // Dual number struct type for forward-mode automatic differentiation
+    StructType* dual_number_type;
+    
     std::map<std::string, Value*> symbol_table;
     std::map<std::string, Value*> global_symbol_table; // Persistent global symbols
     std::map<std::string, Function*> function_table;
@@ -379,6 +383,14 @@ private:
         );
 
         function_table["pow"] = pow_func;
+
+        // Initialize dual number struct type for forward-mode automatic differentiation
+        std::vector<Type*> dual_fields;
+        dual_fields.push_back(Type::getDoubleTy(*context));  // value
+        dual_fields.push_back(Type::getDoubleTy(*context));  // derivative
+        dual_number_type = StructType::create(*context, dual_fields, "dual_number");
+        
+        eshkol_debug("Created dual_number LLVM type");
 
         // Arena management function declarations
         createArenaFunctions();
@@ -5010,23 +5022,268 @@ private:
         return derivative_result;
     }
     
+    // ===== PHASE 0: AUTODIFF TYPE-AWARE HELPERS =====
+    
+    // Helper: Detect if an expression evaluates to double type
+    bool isDoubleExpression(const eshkol_ast_t* expr) {
+        if (!expr) return false;
+        
+        switch (expr->type) {
+            case ESHKOL_DOUBLE:
+                return true;
+                
+            case ESHKOL_INT64:
+            case ESHKOL_VAR:
+                return false;
+                
+            case ESHKOL_OP:
+                // Check operation type
+                if (expr->operation.op == ESHKOL_CALL_OP &&
+                    expr->operation.call_op.func &&
+                    expr->operation.call_op.func->type == ESHKOL_VAR) {
+                    std::string func_name = expr->operation.call_op.func->variable.id;
+                    
+                    // Division always returns double
+                    if (func_name == "/") return true;
+                    
+                    // Trig functions return double
+                    if (func_name == "sin" || func_name == "cos" ||
+                        func_name == "exp" || func_name == "log" ||
+                        func_name == "sqrt" || func_name == "pow") {
+                        return true;
+                    }
+                    
+                    // For arithmetic ops, check if any operand is double
+                    if (func_name == "+" || func_name == "-" || func_name == "*") {
+                        for (uint64_t i = 0; i < expr->operation.call_op.num_vars; i++) {
+                            if (isDoubleExpression(&expr->operation.call_op.variables[i])) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+                
+            default:
+                return false;
+        }
+    }
+    
+    // Helper: Create type-appropriate constant (int64 or double)
+    Value* createTypedConstant(double value, const eshkol_ast_t* reference_expr) {
+        if (isDoubleExpression(reference_expr)) {
+            return ConstantFP::get(Type::getDoubleTy(*context), value);
+        } else {
+            return ConstantInt::get(Type::getInt64Ty(*context), static_cast<int64_t>(value));
+        }
+    }
+    
+    // Helper: Type-aware multiplication for derivatives
+    Value* createTypedMul(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
+        if (isDoubleExpression(reference_expr)) {
+            // Convert both to double if needed
+            if (a->getType()->isIntegerTy()) {
+                a = builder->CreateSIToFP(a, Type::getDoubleTy(*context));
+            }
+            if (b->getType()->isIntegerTy()) {
+                b = builder->CreateSIToFP(b, Type::getDoubleTy(*context));
+            }
+            return builder->CreateFMul(a, b);
+        } else {
+            // Integer multiplication
+            if (a->getType()->isFloatingPointTy()) {
+                a = builder->CreateFPToSI(a, Type::getInt64Ty(*context));
+            }
+            if (b->getType()->isFloatingPointTy()) {
+                b = builder->CreateFPToSI(b, Type::getInt64Ty(*context));
+            }
+            return builder->CreateMul(a, b);
+        }
+    }
+    
+    // Helper: Type-aware addition for derivatives
+    Value* createTypedAdd(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
+        if (isDoubleExpression(reference_expr)) {
+            // Convert both to double if needed
+            if (a->getType()->isIntegerTy()) {
+                a = builder->CreateSIToFP(a, Type::getDoubleTy(*context));
+            }
+            if (b->getType()->isIntegerTy()) {
+                b = builder->CreateSIToFP(b, Type::getDoubleTy(*context));
+            }
+            return builder->CreateFAdd(a, b);
+        } else {
+            // Integer addition
+            if (a->getType()->isFloatingPointTy()) {
+                a = builder->CreateFPToSI(a, Type::getInt64Ty(*context));
+            }
+            if (b->getType()->isFloatingPointTy()) {
+                b = builder->CreateFPToSI(b, Type::getInt64Ty(*context));
+            }
+            return builder->CreateAdd(a, b);
+        }
+    }
+    
+    // Helper: Type-aware subtraction for derivatives
+    Value* createTypedSub(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
+        if (isDoubleExpression(reference_expr)) {
+            // Convert both to double if needed
+            if (a->getType()->isIntegerTy()) {
+                a = builder->CreateSIToFP(a, Type::getDoubleTy(*context));
+            }
+            if (b->getType()->isIntegerTy()) {
+                b = builder->CreateSIToFP(b, Type::getDoubleTy(*context));
+            }
+            return builder->CreateFSub(a, b);
+        } else {
+            // Integer subtraction
+            if (a->getType()->isFloatingPointTy()) {
+                a = builder->CreateFPToSI(a, Type::getInt64Ty(*context));
+            }
+            if (b->getType()->isFloatingPointTy()) {
+                b = builder->CreateFPToSI(b, Type::getInt64Ty(*context));
+            }
+            return builder->CreateSub(a, b);
+        }
+    }
+    
+    // Helper: Type-aware division for derivatives
+    Value* createTypedDiv(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
+        // Division always returns double
+        if (a->getType()->isIntegerTy()) {
+            a = builder->CreateSIToFP(a, Type::getDoubleTy(*context));
+        }
+        if (b->getType()->isIntegerTy()) {
+            b = builder->CreateSIToFP(b, Type::getDoubleTy(*context));
+        }
+        return builder->CreateFDiv(a, b);
+    }
+    // ===== DUAL NUMBER LLVM IR HELPER FUNCTIONS =====
+    
+    // Pack value and derivative into dual number struct
+    Value* packDualNumber(Value* value, Value* derivative) {
+        if (!value || !derivative) return nullptr;
+        
+        // Create alloca for dual number at function entry
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        Function* func = builder->GetInsertBlock()->getParent();
+        if (func && !func->empty()) {
+            BasicBlock& entry = func->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
+        }
+        
+        Value* dual_ptr = builder->CreateAlloca(dual_number_type, nullptr, "dual");
+        
+        // Restore insertion point for the actual stores
+        builder->restoreIP(saved_ip);
+        
+        // Store value in field 0
+        Value* value_ptr = builder->CreateStructGEP(dual_number_type, dual_ptr, 0);
+        builder->CreateStore(value, value_ptr);
+        
+        // Store derivative in field 1
+        Value* deriv_ptr = builder->CreateStructGEP(dual_number_type, dual_ptr, 1);
+        builder->CreateStore(derivative, deriv_ptr);
+        
+        // Load and return the dual number struct
+        return builder->CreateLoad(dual_number_type, dual_ptr);
+    }
+    
+    // Unpack dual number into value and derivative components
+    std::pair<Value*, Value*> unpackDualNumber(Value* dual) {
+        if (!dual) return {nullptr, nullptr};
+        
+        // Store dual to temporary alloca
+        Value* dual_ptr = builder->CreateAlloca(dual_number_type, nullptr, "temp_dual");
+        builder->CreateStore(dual, dual_ptr);
+        
+        // Extract value (field 0)
+        Value* value_ptr = builder->CreateStructGEP(dual_number_type, dual_ptr, 0);
+        Value* value = builder->CreateLoad(Type::getDoubleTy(*context), value_ptr);
+        
+        // Extract derivative (field 1)
+        Value* deriv_ptr = builder->CreateStructGEP(dual_number_type, dual_ptr, 1);
+        Value* deriv = builder->CreateLoad(Type::getDoubleTy(*context), deriv_ptr);
+        
+        return {value, deriv};
+    }
+    
+    // Pack dual number into tagged value for storage
+    Value* packDualToTaggedValue(Value* dual) {
+        if (!dual) return nullptr;
+        
+        // Save current insertion point
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        
+        // Create alloca at function entry to ensure dominance
+        Function* func = builder->GetInsertBlock()->getParent();
+        if (func && !func->empty()) {
+            BasicBlock& entry = func->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
+        }
+        
+        // Allocate space for dual number
+        Value* dual_ptr = builder->CreateAlloca(dual_number_type, nullptr, "dual_temp");
+        
+        // Restore insertion point
+        builder->restoreIP(saved_ip);
+        
+        // Store dual number
+        builder->CreateStore(dual, dual_ptr);
+        
+        // Cast pointer to uint64 for storage in tagged value
+        Value* dual_as_int = builder->CreatePtrToInt(dual_ptr, Type::getInt64Ty(*context));
+        
+        // Pack as pointer type tagged value with DUAL_NUMBER type
+        return packPtrToTaggedValue(
+            builder->CreateIntToPtr(dual_as_int, builder->getPtrTy()),
+            ESHKOL_VALUE_DUAL_NUMBER
+        );
+    }
+    
+    // Unpack dual number from tagged value
+    Value* unpackDualFromTaggedValue(Value* tagged) {
+        if (!tagged) return nullptr;
+        
+        // Verify type is dual number
+        Value* type = getTaggedValueType(tagged);
+        Value* base_type = builder->CreateAnd(type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        // Extract pointer
+        Value* ptr_val = unpackPtrFromTaggedValue(tagged);
+        Value* dual_ptr = builder->CreateBitCast(ptr_val,
+            PointerType::get(dual_number_type, 0));
+        
+        // Load and return dual number
+        return builder->CreateLoad(dual_number_type, dual_ptr);
+    }
+    
+    // ===== END DUAL NUMBER HELPERS =====
+    
+    
     // Core symbolic differentiation function
     Value* differentiate(const eshkol_ast_t* expr, const char* var) {
         if (!expr || !var) return nullptr;
         
         switch (expr->type) {
             case ESHKOL_INT64:
-            case ESHKOL_DOUBLE:
-                // Derivative of constant is 0
+                // Derivative of integer constant is 0 (int64)
                 return ConstantInt::get(Type::getInt64Ty(*context), 0);
+                
+            case ESHKOL_DOUBLE:
+                // Derivative of double constant is 0.0 (double)
+                return ConstantFP::get(Type::getDoubleTy(*context), 0.0);
                 
             case ESHKOL_VAR:
                 // Derivative of variable
                 if (expr->variable.id && strcmp(expr->variable.id, var) == 0) {
                     // d/dx(x) = 1
+                    // Use int64 by default - type-aware ops will convert if needed
                     return ConstantInt::get(Type::getInt64Ty(*context), 1);
                 } else {
                     // d/dx(y) = 0 (where y != x)
+                    // Use int64 by default - type-aware ops will convert if needed
                     return ConstantInt::get(Type::getInt64Ty(*context), 0);
                 }
                 
@@ -5043,28 +5300,37 @@ private:
     Value* differentiateOperation(const eshkol_operations_t* op, const char* var) {
         if (!op) return ConstantInt::get(Type::getInt64Ty(*context), 0);
         
-        if (op->op == ESHKOL_CALL_OP && op->call_op.func && 
+        if (op->op == ESHKOL_CALL_OP && op->call_op.func &&
             op->call_op.func->type == ESHKOL_VAR && op->call_op.func->variable.id) {
             
             std::string func_name = op->call_op.func->variable.id;
+            
+            // Construct reference AST for type detection (use first operand)
+            const eshkol_ast_t* type_ref = (op->call_op.num_vars > 0) ?
+                &op->call_op.variables[0] : nullptr;
             
             // Addition rule: d/dx(f + g) = f' + g'
             if (func_name == "+" && op->call_op.num_vars >= 2) {
                 Value* result = differentiate(&op->call_op.variables[0], var);
                 for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
                     Value* term_derivative = differentiate(&op->call_op.variables[i], var);
-                    result = builder->CreateAdd(result, term_derivative);
+                    // Type-aware addition
+                    result = createTypedAdd(result, term_derivative, &op->call_op.variables[0]);
                 }
                 return result;
             }
+            
             // Subtraction rule: d/dx(f - g) = f' - g'
             else if (func_name == "-" && op->call_op.num_vars == 2) {
                 Value* f_prime = differentiate(&op->call_op.variables[0], var);
                 Value* g_prime = differentiate(&op->call_op.variables[1], var);
-                return builder->CreateSub(f_prime, g_prime);
+                return createTypedSub(f_prime, g_prime, &op->call_op.variables[0]);
             }
+            
             // Product rule: d/dx(f * g) = f' * g + f * g'
+            // PHASE 0 FIX: Complete product rule implementation with type handling
             else if (func_name == "*" && op->call_op.num_vars == 2) {
+                // Compute derivatives
                 Value* f_prime = differentiate(&op->call_op.variables[0], var);
                 Value* g_prime = differentiate(&op->call_op.variables[1], var);
                 
@@ -5072,42 +5338,215 @@ private:
                 Value* f = codegenAST(&op->call_op.variables[0]);
                 Value* g = codegenAST(&op->call_op.variables[1]);
                 
-                // Handle the special case of x * x -> 2x
-                // Check if both operands are the same variable
-                if (op->call_op.variables[0].type == ESHKOL_VAR && 
+                if (!f || !g || !f_prime || !g_prime) {
+                    return ConstantInt::get(Type::getInt64Ty(*context), 0);
+                }
+                
+                // Special optimization for x * x -> 2x
+                if (op->call_op.variables[0].type == ESHKOL_VAR &&
                     op->call_op.variables[1].type == ESHKOL_VAR &&
                     op->call_op.variables[0].variable.id && op->call_op.variables[1].variable.id &&
                     strcmp(op->call_op.variables[0].variable.id, var) == 0 &&
                     strcmp(op->call_op.variables[1].variable.id, var) == 0) {
-                    // This is x * x, derivative is 2x
-                    // Since we can't generate symbolic 2x, return 2 * current_x_value
-                    Value* two = ConstantInt::get(Type::getInt64Ty(*context), 2);
-                    return builder->CreateMul(two, f); // f is x, so 2*x
+                    // d/dx(x*x) = 2x - use type-appropriate constant
+                    Value* two = createTypedConstant(2.0, &op->call_op.variables[0]);
+                    return createTypedMul(two, f, &op->call_op.variables[0]);
                 }
                 
                 // General product rule: f' * g + f * g'
-                if (f && g && f_prime && g_prime) {
-                    Value* term1 = builder->CreateMul(f_prime, g);
-                    Value* term2 = builder->CreateMul(f, g_prime);
-                    return builder->CreateAdd(term1, term2);
+                Value* term1 = createTypedMul(f_prime, g, &op->call_op.variables[0]);
+                Value* term2 = createTypedMul(f, g_prime, &op->call_op.variables[0]);
+                return createTypedAdd(term1, term2, &op->call_op.variables[0]);
+            }
+            
+            // Division rule: d/dx(f/g) = (f'g - fg')/g²
+            // PHASE 0: NEW - Division rule implementation
+            else if (func_name == "/" && op->call_op.num_vars == 2) {
+                Value* f = codegenAST(&op->call_op.variables[0]);
+                Value* g = codegenAST(&op->call_op.variables[1]);
+                Value* f_prime = differentiate(&op->call_op.variables[0], var);
+                Value* g_prime = differentiate(&op->call_op.variables[1], var);
+                
+                if (!f || !g || !f_prime || !g_prime) {
+                    return ConstantFP::get(Type::getDoubleTy(*context), 0.0);
                 }
                 
-                // Fallback
-                return ConstantInt::get(Type::getInt64Ty(*context), 0);
+                // (f'*g - f*g') / g²
+                Value* f_prime_g = createTypedMul(f_prime, g, &op->call_op.variables[0]);
+                Value* f_g_prime = createTypedMul(f, g_prime, &op->call_op.variables[0]);
+                Value* numerator = createTypedSub(f_prime_g, f_g_prime, &op->call_op.variables[0]);
+                Value* g_squared = createTypedMul(g, g, &op->call_op.variables[0]);
+                
+                // Division always returns double
+                return createTypedDiv(numerator, g_squared, &op->call_op.variables[0]);
             }
-            // Mathematical functions - simplified for now
+            
+            // Sin: d/dx(sin(f)) = cos(f) * f'
+            // PHASE 0 FIX: Proper chain rule with cos(f) multiplication
             else if (func_name == "sin" && op->call_op.num_vars == 1) {
-                // d/dx(sin(f)) = cos(f) * f'
-                // For simplicity, if f=x, return 1 (cos(x)*1 conceptually)
-                Value* inner_derivative = differentiate(&op->call_op.variables[0], var);
-                return inner_derivative; // Simplified: just return f'
+                Value* f = codegenAST(&op->call_op.variables[0]);
+                Value* f_prime = differentiate(&op->call_op.variables[0], var);
+                
+                if (!f || !f_prime) {
+                    return ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+                }
+                
+                // Convert f to double for trig functions
+                if (f->getType()->isIntegerTy()) {
+                    f = builder->CreateSIToFP(f, Type::getDoubleTy(*context));
+                }
+                
+                // cos(f) * f'
+                Value* cos_f = builder->CreateCall(function_table["cos"], {f});
+                return createTypedMul(cos_f, f_prime, &op->call_op.variables[0]);
             }
+            
+            // Cos: d/dx(cos(f)) = -sin(f) * f'
+            // PHASE 0 FIX: Proper chain rule with -sin(f) multiplication
             else if (func_name == "cos" && op->call_op.num_vars == 1) {
-                // d/dx(cos(f)) = -sin(f) * f'  
-                // For simplicity, if f=x, return -1 (-sin(x)*1 conceptually)
-                Value* inner_derivative = differentiate(&op->call_op.variables[0], var);
-                Value* neg_one = ConstantInt::get(Type::getInt64Ty(*context), -1);
-                return builder->CreateMul(neg_one, inner_derivative);
+                Value* f = codegenAST(&op->call_op.variables[0]);
+                Value* f_prime = differentiate(&op->call_op.variables[0], var);
+                
+                if (!f || !f_prime) {
+                    return ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+                }
+                
+                // Convert f to double for trig functions
+                if (f->getType()->isIntegerTy()) {
+                    f = builder->CreateSIToFP(f, Type::getDoubleTy(*context));
+                }
+                
+                // -sin(f) * f'
+                Value* sin_f = builder->CreateCall(function_table["sin"], {f});
+                Value* neg_sin_f = builder->CreateFNeg(sin_f);
+                return createTypedMul(neg_sin_f, f_prime, &op->call_op.variables[0]);
+            }
+            
+            // Exponential: d/dx(exp(f)) = exp(f) * f'
+            // PHASE 0: NEW - Exponential rule
+            else if (func_name == "exp" && op->call_op.num_vars == 1) {
+                Value* f = codegenAST(&op->call_op.variables[0]);
+                Value* f_prime = differentiate(&op->call_op.variables[0], var);
+                
+                if (!f || !f_prime) {
+                    return ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+                }
+                
+                // Convert f to double for exp
+                if (f->getType()->isIntegerTy()) {
+                    f = builder->CreateSIToFP(f, Type::getDoubleTy(*context));
+                }
+                
+                // Declare exp function if not already declared
+                if (function_table.find("exp") == function_table.end()) {
+                    std::vector<Type*> exp_args = {Type::getDoubleTy(*context)};
+                    FunctionType* exp_type = FunctionType::get(
+                        Type::getDoubleTy(*context), exp_args, false);
+                    Function* exp_func = Function::Create(
+                        exp_type, Function::ExternalLinkage, "exp", module.get());
+                    function_table["exp"] = exp_func;
+                }
+                
+                // exp(f) * f'
+                Value* exp_f = builder->CreateCall(function_table["exp"], {f});
+                return createTypedMul(exp_f, f_prime, &op->call_op.variables[0]);
+            }
+            
+            // Natural log: d/dx(log(f)) = f' / f
+            // PHASE 0: NEW - Logarithm rule
+            else if (func_name == "log" && op->call_op.num_vars == 1) {
+                Value* f = codegenAST(&op->call_op.variables[0]);
+                Value* f_prime = differentiate(&op->call_op.variables[0], var);
+                
+                if (!f || !f_prime) {
+                    return ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+                }
+                
+                // Convert f to double for log
+                if (f->getType()->isIntegerTy()) {
+                    f = builder->CreateSIToFP(f, Type::getDoubleTy(*context));
+                }
+                
+                // Declare log function if not already declared
+                if (function_table.find("log") == function_table.end()) {
+                    std::vector<Type*> log_args = {Type::getDoubleTy(*context)};
+                    FunctionType* log_type = FunctionType::get(
+                        Type::getDoubleTy(*context), log_args, false);
+                    Function* log_func = Function::Create(
+                        log_type, Function::ExternalLinkage, "log", module.get());
+                    function_table["log"] = log_func;
+                }
+                
+                // f' / f (division always returns double)
+                return createTypedDiv(f_prime, f, &op->call_op.variables[0]);
+            }
+            
+            // Power rule: d/dx(f^n) = n * f^(n-1) * f' (for constant exponent)
+            // PHASE 0: NEW - Power rule (constant exponent only)
+            else if (func_name == "pow" && op->call_op.num_vars == 2) {
+                // Check if exponent is constant
+                if (op->call_op.variables[1].type == ESHKOL_INT64 ||
+                    op->call_op.variables[1].type == ESHKOL_DOUBLE) {
+                    
+                    Value* f = codegenAST(&op->call_op.variables[0]);
+                    Value* n = codegenAST(&op->call_op.variables[1]);
+                    Value* f_prime = differentiate(&op->call_op.variables[0], var);
+                    
+                    if (!f || !n || !f_prime) {
+                        return ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+                    }
+                    
+                    // Convert to double for pow
+                    if (f->getType()->isIntegerTy()) {
+                        f = builder->CreateSIToFP(f, Type::getDoubleTy(*context));
+                    }
+                    if (n->getType()->isIntegerTy()) {
+                        n = builder->CreateSIToFP(n, Type::getDoubleTy(*context));
+                    }
+                    
+                    // n * f^(n-1) * f'
+                    Value* one = ConstantFP::get(Type::getDoubleTy(*context), 1.0);
+                    Value* n_minus_1 = builder->CreateFSub(n, one);
+                    Value* f_power = builder->CreateCall(function_table["pow"], {f, n_minus_1});
+                    Value* n_times_power = builder->CreateFMul(n, f_power);
+                    
+                    // Result is always double for pow
+                    if (f_prime->getType()->isIntegerTy()) {
+                        f_prime = builder->CreateSIToFP(f_prime, Type::getDoubleTy(*context));
+                    }
+                    return builder->CreateFMul(n_times_power, f_prime);
+                }
+                // For non-constant exponent, return 0 for now (will implement in Phase 2)
+                else {
+                    eshkol_warn("Power rule with non-constant exponent not yet implemented");
+                    return ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+                }
+            }
+            
+            // Square root: d/dx(sqrt(f)) = f' / (2*sqrt(f))
+            // PHASE 0: BONUS - Sqrt rule
+            else if (func_name == "sqrt" && op->call_op.num_vars == 1) {
+                Value* f = codegenAST(&op->call_op.variables[0]);
+                Value* f_prime = differentiate(&op->call_op.variables[0], var);
+                
+                if (!f || !f_prime) {
+                    return ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+                }
+                
+                // Convert to double for sqrt
+                if (f->getType()->isIntegerTy()) {
+                    f = builder->CreateSIToFP(f, Type::getDoubleTy(*context));
+                }
+                
+                // f' / (2*sqrt(f))
+                Value* sqrt_f = builder->CreateCall(function_table["sqrt"], {f});
+                Value* two = ConstantFP::get(Type::getDoubleTy(*context), 2.0);
+                Value* two_sqrt_f = builder->CreateFMul(two, sqrt_f);
+                
+                if (f_prime->getType()->isIntegerTy()) {
+                    f_prime = builder->CreateSIToFP(f_prime, Type::getDoubleTy(*context));
+                }
+                return builder->CreateFDiv(f_prime, two_sqrt_f);
             }
         }
         
