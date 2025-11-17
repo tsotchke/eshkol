@@ -1,0 +1,16 @@
+; Simple test for Phase 2 Forward-Mode AD
+
+; Test 1: f(x) = x², f'(x) = 2x, f'(5) = 10
+(display "Test: derivative of x² at x=5: ")
+(display (derivative (lambda (x) (* x x)) 5.0))
+(newline)
+
+; Test 2: f(x) = 2x, f'(x) = 2
+(display "Test: derivative of 2x at x=3: ")
+(display (derivative (lambda (x) (* 2.0 x)) 3.0))
+(newline)
+
+; Test 3: f(x) = sin(x), f'(x) = cos(x), f'(0) ≈ 1
+(display "Test: derivative of sin(x) at x=0: ")
+(display (derivative (lambda (x) (sin x)) 0.0))
+(newline)

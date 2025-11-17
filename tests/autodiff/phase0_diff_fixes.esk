@@ -1,0 +1,241 @@
+;; Phase 0: Automatic Differentiation Foundation Fixes
+;; Tests for SCH-008 type conflicts, product rule, trig derivatives, and new rules
+;; Author: Autodiff Complete Implementation Plan
+;; Date: 2025-11-17
+
+;; ===== TYPE HANDLING TESTS (SCH-008 Fix) =====
+
+(display "Testing type handling in differentiation...")
+(newline)
+
+;; Test 1: Double constant multiplication
+;; d/dx(3.5 * x) should return 3.5 (double), not cast to int64
+(display "Test 1: d/dx(3.5 * x) = ")
+(display (diff (* 3.5 x) x))
+(newline)
+
+;; Test 2: Mixed type in product
+;; d/dx(2 * x) with integer should work
+(display "Test 2: d/dx(2 * x) = ")
+(display (diff (* 2 x) x))
+(newline)
+
+;; Test 3: Double in addition
+;; d/dx(x + 1.5) should return 1 (or 1.0 depending on implementation)
+(display "Test 3: d/dx(x + 1.5) = ")
+(display (diff (+ x 1.5) x))
+(newline)
+
+;; ===== PRODUCT RULE TESTS (Complete Implementation) =====
+
+(display "Testing product rule...")
+(newline)
+
+;; Test 4: General product rule - d/dx((x+1)*(x+2))
+;; Should use f'*g + f*g' = 1*(x+2) + (x+1)*1 = (x+2) + (x+1) = 2x + 3
+(display "Test 4: d/dx((x+1) * (x+2)) = ")
+(display (diff (* (+ x 1) (+ x 2)) x))
+(newline)
+
+;; Test 5: Product with constants - d/dx(3*x)
+;; f=3, g=x, f'=0, g'=1 => 0*x + 3*1 = 3
+(display "Test 5: d/dx(3 * x) = ")
+(display (diff (* 3 x) x))
+(newline)
+
+;; Test 6: Special case x*x still works - d/dx(x*x) = 2x
+(display "Test 6: d/dx(x * x) = ")
+(display (diff (* x x) x))
+(newline)
+
+;; Test 7: Product of expressions - d/dx((2x)*(3x))
+;; f=2x, g=3x, f'=2, g'=3 => 2*3x + 2x*3 = 6x + 6x = 12x
+(display "Test 7: d/dx((2*x) * (3*x)) = ")
+(display (diff (* (* 2 x) (* 3 x)) x))
+(newline)
+
+;; ===== TRIGONOMETRIC DERIVATIVE TESTS (Chain Rule Fix) =====
+
+(display "Testing trig derivatives with chain rule...")
+(newline)
+
+;; Test 8: d/dx(sin(x)) = cos(x)
+;; For x (simple variable), this returns cos(x)*1
+(display "Test 8: d/dx(sin(x)) with cos(x) = ")
+(display (diff (sin x) x))
+(newline)
+
+;; Test 9: d/dx(cos(x)) = -sin(x)
+(display "Test 9: d/dx(cos(x)) with -sin(x) = ")
+(display (diff (cos x) x))
+(newline)
+
+;; Test 10: d/dx(sin(2*x)) = cos(2x)*2 (chain rule)
+(display "Test 10: d/dx(sin(2*x)) = cos(2x)*2 = ")
+(display (diff (sin (* 2 x)) x))
+(newline)
+
+;; Test 11: d/dx(cos(x*x)) = -sin(x²)*2x (chain rule)
+(display "Test 11: d/dx(cos(x*x)) = -sin(x²)*2x = ")
+(display (diff (cos (* x x)) x))
+(newline)
+
+;; ===== DIVISION RULE TESTS (New Feature) =====
+
+(display "Testing division rule...")
+(newline)
+
+;; Test 12: d/dx(x/2) = 1/2 = 0.5
+(display "Test 12: d/dx(x / 2) = ")
+(display (diff (/ x 2) x))
+(newline)
+
+;; Test 13: d/dx(x/2.0) with double
+(display "Test 13: d/dx(x / 2.0) = ")
+(display (diff (/ x 2.0) x))
+(newline)
+
+;; Test 14: d/dx(1/x) = -1/x²
+;; f=1, g=x, f'=0, g'=1 => (0*x - 1*1)/x² = -1/x²
+(display "Test 14: d/dx(1 / x) = -1/x² = ")
+(display (diff (/ 1 x) x))
+(newline)
+
+;; Test 15: d/dx(x²/x) = d/dx(x) = 1
+;; f=x², g=x, f'=2x, g'=1 => (2x*x - x²*1)/x² = (2x² - x²)/x² = x²/x² = 1
+(display "Test 15: d/dx((x*x) / x) should simplify to 1 = ")
+(display (diff (/ (* x x) x) x))
+(newline)
+
+;; ===== EXPONENTIAL & LOGARITHM TESTS (New Features) =====
+
+(display "Testing exponential and logarithm rules...")
+(newline)
+
+;; Test 16: d/dx(exp(x)) = exp(x)
+(display "Test 16: d/dx(exp(x)) = exp(x) = ")
+(display (diff (exp x) x))
+(newline)
+
+;; Test 17: d/dx(exp(2*x)) = exp(2x)*2 (chain rule)
+(display "Test 17: d/dx(exp(2*x)) = exp(2x)*2 = ")
+(display (diff (exp (* 2 x)) x))
+(newline)
+
+;; Test 18: d/dx(log(x)) = 1/x
+(display "Test 18: d/dx(log(x)) = 1/x = ")
+(display (diff (log x) x))
+(newline)
+
+;; Test 19: d/dx(log(x+1)) = 1/(x+1) (chain rule)
+(display "Test 19: d/dx(log(x+1)) = 1/(x+1) = ")
+(display (diff (log (+ x 1)) x))
+(newline)
+
+;; Test 20: d/dx(log(x*x)) = 1/(x²)*2x = 2x/x² = 2/x
+(display "Test 20: d/dx(log(x*x)) = 2/x = ")
+(display (diff (log (* x x)) x))
+(newline)
+
+;; ===== POWER RULE TESTS (New Feature) =====
+
+(display "Testing power rule...")
+(newline)
+
+;; Test 21: d/dx(x^2) = 2x
+(display "Test 21: d/dx(pow(x, 2)) = 2x = ")
+(display (diff (pow x 2) x))
+(newline)
+
+;; Test 22: d/dx(x^3) = 3x²
+(display "Test 22: d/dx(pow(x, 3)) = 3x² = ")
+(display (diff (pow x 3) x))
+(newline)
+
+;; Test 23: d/dx(x^0.5) = 0.5*x^(-0.5) = 0.5/sqrt(x)
+(display "Test 23: d/dx(pow(x, 0.5)) = 0.5/sqrt(x) = ")
+(display (diff (pow x 0.5) x))
+(newline)
+
+;; Test 24: d/dx((2x)^3) using chain rule
+;; f=2x, n=3 => 3*(2x)²*2 = 3*4x²*2 = 24x²
+(display "Test 24: d/dx(pow(2*x, 3)) = 24x² = ")
+(display (diff (pow (* 2 x) 3) x))
+(newline)
+
+;; ===== SQUARE ROOT TESTS (Bonus Feature) =====
+
+(display "Testing square root rule...")
+(newline)
+
+;; Test 25: d/dx(sqrt(x)) = 1/(2*sqrt(x))
+(display "Test 25: d/dx(sqrt(x)) = 1/(2*sqrt(x)) = ")
+(display (diff (sqrt x) x))
+(newline)
+
+;; Test 26: d/dx(sqrt(x*x)) = d/dx(|x|) with chain rule
+;; = 1/(2*sqrt(x²)) * 2x = x/sqrt(x²) = x/|x|
+(display "Test 26: d/dx(sqrt(x*x)) = x/|x| = ")
+(display (diff (sqrt (* x x)) x))
+(newline)
+
+;; ===== COMPOSITE FUNCTION TESTS (Chain Rule) =====
+
+(display "Testing chain rule with composite functions...")
+(newline)
+
+;; Test 27: d/dx(sin(x²)) = cos(x²)*2x
+(display "Test 27: d/dx(sin(x*x)) = cos(x²)*2x = ")
+(display (diff (sin (* x x)) x))
+(newline)
+
+;; Test 28: d/dx(exp(x²)) = exp(x²)*2x
+(display "Test 28: d/dx(exp(x*x)) = exp(x²)*2x = ")
+(display (diff (exp (* x x)) x))
+(newline)
+
+;; Test 29: d/dx(log(sin(x))) = (1/sin(x))*cos(x) = cot(x)
+(display "Test 29: d/dx(log(sin(x))) = cot(x) = ")
+(display (diff (log (sin x)) x))
+(newline)
+
+;; Test 30: d/dx(sin(cos(x))) = cos(cos(x))*(-sin(x))
+(display "Test 30: d/dx(sin(cos(x))) = cos(cos(x))*(-sin(x)) = ")
+(display (diff (sin (cos x)) x))
+(newline)
+
+;; ===== COMPLEX EXPRESSION TESTS =====
+
+(display "Testing complex composite expressions...")
+(newline)
+
+;; Test 31: d/dx((x² + 3x + 2)) = 2x + 3
+(display "Test 31: d/dx(x² + 3x + 2) = 2x + 3 = ")
+(display (diff (+ (* x x) (+ (* 3 x) 2)) x))
+(newline)
+
+;; Test 32: d/dx(x³ - 2x² + 5x - 7) = 3x² - 4x + 5
+(display "Test 32: d/dx(x³ - 2x² + 5x - 7) = 3x² - 4x + 5 = ")
+(display (diff (+ (- (- (pow x 3) (* 2 (* x x))) (* 5 x)) 7) x))
+(newline)
+
+;; Test 33: Product of trig functions - d/dx(sin(x)*cos(x))
+;; = cos(x)*cos(x) + sin(x)*(-sin(x)) = cos²(x) - sin²(x) = cos(2x)
+(display "Test 33: d/dx(sin(x)*cos(x)) = cos²(x) - sin²(x) = ")
+(display (diff (* (sin x) (cos x)) x))
+(newline)
+
+;; Test 34: Quotient of polynomials - d/dx(x²/(x+1))
+;; Using quotient rule
+(display "Test 34: d/dx(x² / (x+1)) = ")
+(display (diff (/ (* x x) (+ x 1)) x))
+(newline)
+
+;; Test 35: Exponential times polynomial - d/dx(x²*exp(x))
+;; = 2x*exp(x) + x²*exp(x) = (2x + x²)*exp(x)
+(display "Test 35: d/dx(x²*exp(x)) = (2x + x²)*exp(x) = ")
+(display (diff (* (* x x) (exp x)) x))
+(newline)
+
+(display "Phase 0 differentiation tests complete!")
+(newline)

@@ -287,6 +287,52 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         return ast;
     }
     
+    // Handle case where first element is a lambda or other expression (e.g., ((lambda ...) ...))
+    if (token.type == TOKEN_LPAREN) {
+        // Parse the first element as an expression (could be lambda, function call, etc.)
+        eshkol_ast_t func_expr = parse_list(tokenizer);
+        if (func_expr.type == ESHKOL_INVALID) {
+            ast.type = ESHKOL_INVALID;
+            return ast;
+        }
+        
+        // Parse remaining elements as arguments
+        while (true) {
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_RPAREN) break;
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("Unexpected end of input in list");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t element;
+            if (token.type == TOKEN_LPAREN) {
+                element = parse_list(tokenizer);
+            } else {
+                element = parse_atom(token);
+            }
+            elements.push_back(element);
+        }
+        
+        // Set up as a function call with the lambda/expression as the function
+        ast.operation.op = ESHKOL_CALL_OP;
+        ast.operation.call_op.func = new eshkol_ast_t;
+        *ast.operation.call_op.func = func_expr;
+        
+        ast.operation.call_op.num_vars = elements.size();
+        if (ast.operation.call_op.num_vars > 0) {
+            ast.operation.call_op.variables = new eshkol_ast_t[ast.operation.call_op.num_vars];
+            for (size_t i = 0; i < ast.operation.call_op.num_vars; i++) {
+                ast.operation.call_op.variables[i] = elements[i];
+            }
+        } else {
+            ast.operation.call_op.variables = nullptr;
+        }
+        
+        return ast;
+    }
+    
     // First element should determine the operation
     if (token.type == TOKEN_SYMBOL) {
         std::string first_symbol = token.value;  // Store the function name
@@ -833,6 +879,71 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             
             ast.operation.diff_op.variable = new char[token.value.length() + 1];
             strcpy(ast.operation.diff_op.variable, token.value.c_str());
+            
+            return ast;
+        }
+        
+        // Special handling for derivative - forward-mode automatic differentiation
+        if (ast.operation.op == ESHKOL_DERIVATIVE_OP) {
+            // Syntax: (derivative function point)
+            // Example: (derivative (lambda (x) (* x x)) 5.0)
+            
+            // Parse the function to differentiate (can be lambda or function reference)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("derivative requires function as first argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t function;
+            if (token.type == TOKEN_LPAREN) {
+                function = parse_list(tokenizer);
+            } else {
+                function = parse_atom(token);
+            }
+            
+            if (function.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Parse the evaluation point
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("derivative requires evaluation point as second argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t point;
+            if (token.type == TOKEN_LPAREN) {
+                point = parse_list(tokenizer);
+            } else {
+                point = parse_atom(token);
+            }
+            
+            if (point.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Check for closing paren
+            Token close_token = tokenizer.nextToken();
+            if (close_token.type != TOKEN_RPAREN) {
+                eshkol_error("Expected closing parenthesis after derivative arguments");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Set up derivative operation
+            ast.operation.derivative_op.function = new eshkol_ast_t;
+            *ast.operation.derivative_op.function = function;
+            
+            ast.operation.derivative_op.point = new eshkol_ast_t;
+            *ast.operation.derivative_op.point = point;
+            
+            ast.operation.derivative_op.mode = 0; // Forward-mode by default
             
             return ast;
         }

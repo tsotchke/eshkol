@@ -1,0 +1,66 @@
+; ================================================================
+; Phase 2: Forward-Mode Automatic Differentiation Test Suite
+; Tests 1-7: Working dual number arithmetic and derivative operator
+; ================================================================
+
+; Test 1: Basic derivative - linear function
+; f(x) = 2x, f'(x) = 2
+(display "Test 1: Derivative of 2x at x=5... ")
+(define result1 (derivative (lambda (x) (* 2.0 x)) 5.0))
+(display result1)
+(newline)
+; Expected: 2.0
+
+; Test 2: Basic derivative - quadratic function
+; f(x) = x², f'(x) = 2x, f'(5) = 10
+(display "Test 2: Derivative of x² at x=5... ")
+(define result2 (derivative (lambda (x) (* x x)) 5.0))
+(display result2)
+(newline)
+; Expected: 10.0
+
+; Test 3: Basic derivative - cubic function
+; f(x) = x³, f'(x) = 3x², f'(2) = 12
+(display "Test 3: Derivative of x³ at x=2... ")
+(define result3 (derivative (lambda (x) (* x (* x x))) 2.0))
+(display result3)
+(newline)
+; Expected: 12.0
+
+; Test 4: Chain rule - sin of quadratic
+; f(x) = sin(x²), f'(x) = 2x·cos(x²)
+; At x=2: f'(2) = 4·cos(4) ≈ -2.614
+(display "Test 4: Derivative of sin(x²) at x=2... ")
+(define result4 (derivative (lambda (x) (sin (* x x))) 2.0))
+(display result4)
+(newline)
+; Expected: approximately -2.614
+
+; Test 5: Chain rule - exp of sin
+; f(x) = exp(sin(x)), f'(x) = cos(x)·exp(sin(x))
+; At x=1: f'(1) = cos(1)·exp(sin(1)) ≈ 1.378
+(display "Test 5: Derivative of exp(sin(x)) at x=1... ")
+(define result5 (derivative (lambda (x) (exp (sin x))) 1.0))
+(display result5)
+(newline)
+; Expected: approximately 1.378
+
+; Test 6: Product rule through dual arithmetic
+; f(x) = (x+1)(x+2), f'(x) = (x+2) + (x+1) = 2x+3
+; At x=3: f'(3) = 9
+(display "Test 6: Derivative of (x+1)(x+2) at x=3... ")
+(define result6 (derivative (lambda (x) (* (+ x 1.0) (+ x 2.0))) 3.0))
+(display result6)
+(newline)
+; Expected: 9.0
+
+; Test 7: Division through dual arithmetic
+; f(x) = x/2, f'(x) = 1/2 = 0.5
+(display "Test 7: Derivative of x/2 at x=10... ")
+(define result7 (derivative (lambda (x) (/ x 2.0)) 10.0))
+(display result7)
+(newline)
+; Expected: 0.5
+
+(display "\n=== Phase 2 Tests 1-7 Complete ===\n")
+(display "Forward-mode AD with dual numbers operational!\n")

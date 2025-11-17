@@ -1,0 +1,5 @@
+; Minimal test for nested lambda application
+(display "Testing nested lambda... ")
+(define result ((lambda (u) (* u u)) 3.0))
+(display result)
+(newline)

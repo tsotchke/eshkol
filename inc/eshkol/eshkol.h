@@ -296,6 +296,35 @@ typedef struct eshkol_operation {
             struct eshkol_ast *expression;  // Expression to differentiate
             char *variable;                 // Variable to differentiate with respect to
         } diff_op;
+        struct {
+            struct eshkol_ast *function;    // Function to differentiate (lambda or function reference)
+            struct eshkol_ast *point;       // Point to evaluate derivative at
+            uint8_t mode;                   // 0=forward, 1=reverse, 2=auto (for future use)
+        } derivative_op;
+        struct {
+            struct eshkol_ast *function;    // Scalar field function: ℝⁿ → ℝ
+            struct eshkol_ast *point;       // Point to evaluate gradient at
+        } gradient_op;
+        struct {
+            struct eshkol_ast *function;    // Vector field function: ℝⁿ → ℝᵐ
+            struct eshkol_ast *point;       // Point to evaluate jacobian at
+        } jacobian_op;
+        struct {
+            struct eshkol_ast *function;    // Scalar field function: ℝⁿ → ℝ
+            struct eshkol_ast *point;       // Point to evaluate hessian at
+        } hessian_op;
+        struct {
+            struct eshkol_ast *function;    // Vector field function: ℝⁿ → ℝⁿ
+            struct eshkol_ast *point;       // Point to evaluate divergence at
+        } divergence_op;
+        struct {
+            struct eshkol_ast *function;    // Vector field function: ℝ³ → ℝ³
+            struct eshkol_ast *point;       // Point to evaluate curl at
+        } curl_op;
+        struct {
+            struct eshkol_ast *function;    // Scalar field function: ℝⁿ → ℝ
+            struct eshkol_ast *point;       // Point to evaluate laplacian at
+        } laplacian_op;
     };
 } eshkol_operations_t;
 

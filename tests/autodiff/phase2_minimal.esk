@@ -1,0 +1,3 @@
+; Minimal single test - no defines, just one derivative call
+(display (derivative (lambda (x) (* x x)) 5.0))
+(newline)
