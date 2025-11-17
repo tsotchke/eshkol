@@ -1,0 +1,111 @@
+; ================================================================
+; Phase 2: Forward-Mode Automatic Differentiation Test Suite
+; Tests dual number arithmetic and derivative operator
+; ================================================================
+
+; Test 1: Basic derivative - linear function
+; f(x) = 2x, f'(x) = 2
+(display "Test 1: Derivative of 2x at x=5... ")
+(define result1 (derivative (lambda (x) (* 2.0 x)) 5.0))
+(display result1)
+(newline)
+; Expected: 2.0
+
+; Test 2: Basic derivative - quadratic function
+; f(x) = x², f'(x) = 2x, f'(5) = 10
+(display "Test 2: Derivative of x² at x=5... ")
+(define result2 (derivative (lambda (x) (* x x)) 5.0))
+(display result2)
+(newline)
+; Expected: 10.0
+
+; Test 3: Basic derivative - cubic function
+; f(x) = x³, f'(x) = 3x², f'(2) = 12
+(display "Test 3: Derivative of x³ at x=2... ")
+(define result3 (derivative (lambda (x) (* x (* x x))) 2.0))
+(display result3)
+(newline)
+; Expected: 12.0
+
+; Test 4: Chain rule - sin of quadratic
+; f(x) = sin(x²), f'(x) = 2x·cos(x²)
+; At x=2: f'(2) = 4·cos(4) ≈ -2.614
+(display "Test 4: Derivative of sin(x²) at x=2... ")
+(define result4 (derivative (lambda (x) (sin (* x x))) 2.0))
+(display result4)
+(newline)
+; Expected: approximately -2.614
+
+; Test 5: Chain rule - exp of sin
+; f(x) = exp(sin(x)), f'(x) = cos(x)·exp(sin(x))
+; At x=1: f'(1) = cos(1)·exp(sin(1)) ≈ 1.378
+(display "Test 5: Derivative of exp(sin(x)) at x=1... ")
+(define result5 (derivative (lambda (x) (exp (sin x))) 1.0))
+(display result5)
+(newline)
+; Expected: approximately 1.378
+
+; Test 6: Product rule through dual arithmetic
+; f(x) = (x+1)(x+2), f'(x) = (x+2) + (x+1) = 2x+3
+; At x=3: f'(3) = 9
+(display "Test 6: Derivative of (x+1)(x+2) at x=3... ")
+(define result6 (derivative (lambda (x) (* (+ x 1.0) (+ x 2.0))) 3.0))
+(display result6)
+(newline)
+; Expected: 9.0
+
+; Test 7: Division through dual arithmetic
+; f(x) = x/2, f'(x) = 1/2 = 0.5
+(display "Test 7: Derivative of x/2 at x=10... ")
+(define result7 (derivative (lambda (x) (/ x 2.0)) 10.0))
+(display result7)
+(newline)
+; Expected: 0.5
+
+; Test 8: Composite function - nested operations
+; f(x) = (2x+1)³, f'(x) = 3(2x+1)²·2 = 6(2x+1)²
+; At x=1: f'(1) = 6·9 = 54
+(display "Test 8: Derivative of (2x+1)³ at x=1... ")
+(define result8 (derivative (lambda (x)
+    ((lambda (u) (* u (* u u))) (+ (* 2.0 x) 1.0))) 1.0))
+(display result8)
+(newline)
+; Expected: 54.0
+
+; Test 9: Exponential function
+; f(x) = exp(x), f'(x) = exp(x)
+; At x=0: f'(0) = 1
+(display "Test 9: Derivative of exp(x) at x=0... ")
+(define result9 (derivative (lambda (x) (exp x)) 0.0))
+(display result9)
+(newline)
+; Expected: 1.0
+
+; Test 10: Logarithm function
+; f(x) = log(x), f'(x) = 1/x
+; At x=2: f'(2) = 0.5
+(display "Test 10: Derivative of log(x) at x=2... ")
+(define result10 (derivative (lambda (x) (log x)) 2.0))
+(display result10)
+(newline)
+; Expected: 0.5
+
+; Test 11: Cosine chain rule
+; f(x) = cos(2x), f'(x) = -2·sin(2x)
+; At x=0: f'(0) = 0
+(display "Test 11: Derivative of cos(2x) at x=0... ")
+(define result11 (derivative (lambda (x) (cos (* 2.0 x))) 0.0))
+(display result11)
+(newline)
+; Expected: 0.0
+
+; Test 12: Multiple compositions
+; f(x) = exp(sin(x²)), f'(x) = 2x·cos(x²)·exp(sin(x²))
+(display "Test 12: Derivative of exp(sin(x²)) at x=1... ")
+(define result12 (derivative (lambda (x) (exp (sin (* x x)))) 1.0))
+(display result12)
+(newline)
+; Expected: approximately 1.137
+
+(display "\n=== Phase 2 Forward-Mode AD Tests Complete ===\n")
+(display "All derivatives computed using dual numbers!\n")

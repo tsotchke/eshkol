@@ -1,0 +1,51 @@
+;; Phase 0: Type Mismatch Fix Test
+;; Simple test to verify that diff returns correct types for double expressions
+;; This tests ONLY the constant coefficient return, not full expression evaluation
+
+(display "Phase 0: Testing type-aware symbolic differentiation")
+(newline)
+
+;; Test 1: Integer constant derivative
+;; d/dx(5) should return 0 (int64)
+(define test1 (diff 5 x))
+(display "Test 1 - d/dx(5) = ")
+(display test1)
+(newline)
+
+;; Test 2: Double constant derivative  
+;; d/dx(5.5) should return 0.0 (double)
+(define test2 (diff 5.5 x))
+(display "Test 2 - d/dx(5.5) = ")
+(display test2)
+(newline)
+
+;; Test 3: Variable derivative
+;; d/dx(x) = 1
+(define test3 (diff x x))
+(display "Test 3 - d/dx(x) = ")
+(display test3)
+(newline)
+
+;; Test 4: Addition constant terms
+;; d/dx(3 + 5) = 0
+(define test4 (diff (+ 3 5) x))
+(display "Test 4 - d/dx(3 + 5) = ")
+(display test4)
+(newline)
+
+;; Test 5: Addition with variable
+;; d/dx(x + 5) = 1
+(define test5 (diff (+ x 5) x))
+(display "Test 5 - d/dx(x + 5) = ")
+(display test5)
+(newline)
+
+;; Test 6: Subtraction
+;; d/dx(x - 3) = 1
+(define test6 (diff (- x 3) x))
+(display "Test 6 - d/dx(x - 3) = ")
+(display test6)
+(newline)
+
+(display "Phase 0 type fix tests complete!")
+(newline)

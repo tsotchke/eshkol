@@ -1674,8 +1674,8 @@ private:
         return TypedValue(data, ESHKOL_VALUE_INT64, true);
     }
     
-    // ===== POLYMORPHIC ARITHMETIC FUNCTIONS (Phase 1.3) =====
-    // These operate on tagged_value parameters and handle mixed types
+    // ===== POLYMORPHIC ARITHMETIC FUNCTIONS (Phase 1.3 + Phase 2 Dual Number Support) =====
+    // These operate on tagged_value parameters and handle mixed types + dual numbers
     
     Value* polymorphicAdd(Value* left_tagged, Value* right_tagged) {
         if (!left_tagged || !right_tagged) {
@@ -1691,6 +1691,13 @@ private:
         Value* right_base = builder->CreateAnd(right_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
+        // PHASE 2: Check if either operand is a dual number
+        Value* left_is_dual = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
+        Value* right_is_dual = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
+        Value* any_dual = builder->CreateOr(left_is_dual, right_is_dual);
+        
         // Check if either operand is double
         Value* left_is_double = builder->CreateICmpEQ(left_base,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
@@ -1699,10 +1706,71 @@ private:
         Value* any_double = builder->CreateOr(left_is_double, right_is_double);
         
         Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* dual_path = BasicBlock::Create(*context, "add_dual_path", current_func);
+        BasicBlock* check_double = BasicBlock::Create(*context, "add_check_double", current_func);
         BasicBlock* double_path = BasicBlock::Create(*context, "add_double_path", current_func);
         BasicBlock* int_path = BasicBlock::Create(*context, "add_int_path", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "add_merge", current_func);
         
+        builder->CreateCondBr(any_dual, dual_path, check_double);
+        
+        // PHASE 2: Dual number path - use dual arithmetic for automatic differentiation
+        builder->SetInsertPoint(dual_path);
+        
+        // Convert non-dual operands to dual numbers (value, 0.0) - zero derivative for constants
+        // FIX: Replace CreateSelect on struct with branching
+        BasicBlock* left_is_dual_block = BasicBlock::Create(*context, "add_left_is_dual", current_func);
+        BasicBlock* left_not_dual_block = BasicBlock::Create(*context, "add_left_not_dual", current_func);
+        BasicBlock* left_merge_block = BasicBlock::Create(*context, "add_left_merge", current_func);
+        
+        builder->CreateCondBr(left_is_dual, left_is_dual_block, left_not_dual_block);
+        
+        builder->SetInsertPoint(left_is_dual_block);
+        Value* left_dual_value = unpackDualFromTaggedValue(left_tagged);
+        builder->CreateBr(left_merge_block);
+        
+        builder->SetInsertPoint(left_not_dual_block);
+        Value* left_as_double = builder->CreateSelect(left_is_double,
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* left_non_dual_value = packDualNumber(left_as_double, ConstantFP::get(Type::getDoubleTy(*context), 0.0));
+        builder->CreateBr(left_merge_block);
+        
+        builder->SetInsertPoint(left_merge_block);
+        PHINode* left_dual = builder->CreatePHI(dual_number_type, 2);
+        left_dual->addIncoming(left_dual_value, left_is_dual_block);
+        left_dual->addIncoming(left_non_dual_value, left_not_dual_block);
+        
+        // Same for right operand
+        BasicBlock* right_is_dual_block = BasicBlock::Create(*context, "add_right_is_dual", current_func);
+        BasicBlock* right_not_dual_block = BasicBlock::Create(*context, "add_right_not_dual", current_func);
+        BasicBlock* right_merge_block = BasicBlock::Create(*context, "add_right_merge", current_func);
+        
+        builder->CreateCondBr(right_is_dual, right_is_dual_block, right_not_dual_block);
+        
+        builder->SetInsertPoint(right_is_dual_block);
+        Value* right_dual_value = unpackDualFromTaggedValue(right_tagged);
+        builder->CreateBr(right_merge_block);
+        
+        builder->SetInsertPoint(right_not_dual_block);
+        Value* right_as_double = builder->CreateSelect(right_is_double,
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* right_non_dual_value = packDualNumber(right_as_double, ConstantFP::get(Type::getDoubleTy(*context), 0.0));
+        builder->CreateBr(right_merge_block);
+        
+        builder->SetInsertPoint(right_merge_block);
+        PHINode* right_dual = builder->CreatePHI(dual_number_type, 2);
+        right_dual->addIncoming(right_dual_value, right_is_dual_block);
+        right_dual->addIncoming(right_non_dual_value, right_not_dual_block);
+        
+        Value* dual_result = dualAdd(left_dual, right_dual);
+        Value* tagged_dual_result = packDualToTaggedValue(dual_result);
+        builder->CreateBr(merge);
+        BasicBlock* dual_path_exit = builder->GetInsertBlock();
+        
+        // Check for double (non-dual floating point)
+        builder->SetInsertPoint(check_double);
         builder->CreateCondBr(any_double, double_path, int_path);
         
         // Double path: promote both to double and add
@@ -1725,13 +1793,14 @@ private:
         Value* tagged_int_result = packInt64ToTaggedValue(int_result, true);
         builder->CreateBr(merge);
         
-        // Merge results
+        // Merge all paths
         builder->SetInsertPoint(merge);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2);
-        result_phi->addIncoming(tagged_double_result, double_path);
-        result_phi->addIncoming(tagged_int_result, int_path);
+        PHINode* add_result_phi = builder->CreatePHI(tagged_value_type, 3);
+        add_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
+        add_result_phi->addIncoming(tagged_double_result, double_path);
+        add_result_phi->addIncoming(tagged_int_result, int_path);
         
-        return result_phi;
+        return add_result_phi;
     }
     
     Value* polymorphicSub(Value* left_tagged, Value* right_tagged) {
@@ -1747,6 +1816,13 @@ private:
         Value* right_base = builder->CreateAnd(right_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
+        // PHASE 2: Check if either operand is a dual number
+        Value* left_is_dual = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
+        Value* right_is_dual = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
+        Value* any_dual = builder->CreateOr(left_is_dual, right_is_dual);
+        
         Value* left_is_double = builder->CreateICmpEQ(left_base,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
         Value* right_is_double = builder->CreateICmpEQ(right_base,
@@ -1754,10 +1830,69 @@ private:
         Value* any_double = builder->CreateOr(left_is_double, right_is_double);
         
         Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* dual_path = BasicBlock::Create(*context, "sub_dual_path", current_func);
+        BasicBlock* check_double = BasicBlock::Create(*context, "sub_check_double", current_func);
         BasicBlock* double_path = BasicBlock::Create(*context, "sub_double_path", current_func);
         BasicBlock* int_path = BasicBlock::Create(*context, "sub_int_path", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "sub_merge", current_func);
         
+        builder->CreateCondBr(any_dual, dual_path, check_double);
+        
+        // PHASE 2: Dual number path
+        builder->SetInsertPoint(dual_path);
+        
+        // FIX: Replace CreateSelect on struct with branching
+        BasicBlock* left_is_dual_block = BasicBlock::Create(*context, "sub_left_is_dual", current_func);
+        BasicBlock* left_not_dual_block = BasicBlock::Create(*context, "sub_left_not_dual", current_func);
+        BasicBlock* left_merge_block = BasicBlock::Create(*context, "sub_left_merge", current_func);
+        
+        builder->CreateCondBr(left_is_dual, left_is_dual_block, left_not_dual_block);
+        
+        builder->SetInsertPoint(left_is_dual_block);
+        Value* left_dual_value = unpackDualFromTaggedValue(left_tagged);
+        builder->CreateBr(left_merge_block);
+        
+        builder->SetInsertPoint(left_not_dual_block);
+        Value* left_as_double = builder->CreateSelect(left_is_double,
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* left_non_dual_value = packDualNumber(left_as_double, ConstantFP::get(Type::getDoubleTy(*context), 0.0));
+        builder->CreateBr(left_merge_block);
+        
+        builder->SetInsertPoint(left_merge_block);
+        PHINode* left_dual = builder->CreatePHI(dual_number_type, 2);
+        left_dual->addIncoming(left_dual_value, left_is_dual_block);
+        left_dual->addIncoming(left_non_dual_value, left_not_dual_block);
+        
+        // Same for right operand
+        BasicBlock* right_is_dual_block = BasicBlock::Create(*context, "sub_right_is_dual", current_func);
+        BasicBlock* right_not_dual_block = BasicBlock::Create(*context, "sub_right_not_dual", current_func);
+        BasicBlock* right_merge_block = BasicBlock::Create(*context, "sub_right_merge", current_func);
+        
+        builder->CreateCondBr(right_is_dual, right_is_dual_block, right_not_dual_block);
+        
+        builder->SetInsertPoint(right_is_dual_block);
+        Value* right_dual_value = unpackDualFromTaggedValue(right_tagged);
+        builder->CreateBr(right_merge_block);
+        
+        builder->SetInsertPoint(right_not_dual_block);
+        Value* right_as_double = builder->CreateSelect(right_is_double,
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* right_non_dual_value = packDualNumber(right_as_double, ConstantFP::get(Type::getDoubleTy(*context), 0.0));
+        builder->CreateBr(right_merge_block);
+        
+        builder->SetInsertPoint(right_merge_block);
+        PHINode* right_dual = builder->CreatePHI(dual_number_type, 2);
+        right_dual->addIncoming(right_dual_value, right_is_dual_block);
+        right_dual->addIncoming(right_non_dual_value, right_not_dual_block);
+        
+        Value* dual_result = dualSub(left_dual, right_dual);
+        Value* tagged_dual_result = packDualToTaggedValue(dual_result);
+        builder->CreateBr(merge);
+        BasicBlock* dual_path_exit = builder->GetInsertBlock();
+        
+        builder->SetInsertPoint(check_double);
         builder->CreateCondBr(any_double, double_path, int_path);
         
         builder->SetInsertPoint(double_path);
@@ -1778,12 +1913,14 @@ private:
         Value* tagged_int_result = packInt64ToTaggedValue(int_result, true);
         builder->CreateBr(merge);
         
+        // Merge all paths
         builder->SetInsertPoint(merge);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2);
-        result_phi->addIncoming(tagged_double_result, double_path);
-        result_phi->addIncoming(tagged_int_result, int_path);
+        PHINode* sub_result_phi = builder->CreatePHI(tagged_value_type, 3);
+        sub_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
+        sub_result_phi->addIncoming(tagged_double_result, double_path);
+        sub_result_phi->addIncoming(tagged_int_result, int_path);
         
-        return result_phi;
+        return sub_result_phi;
     }
     
     Value* polymorphicMul(Value* left_tagged, Value* right_tagged) {
@@ -1799,6 +1936,13 @@ private:
         Value* right_base = builder->CreateAnd(right_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
+        // PHASE 2: Check if either operand is a dual number
+        Value* left_is_dual = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
+        Value* right_is_dual = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
+        Value* any_dual = builder->CreateOr(left_is_dual, right_is_dual);
+        
         Value* left_is_double = builder->CreateICmpEQ(left_base,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
         Value* right_is_double = builder->CreateICmpEQ(right_base,
@@ -1806,10 +1950,69 @@ private:
         Value* any_double = builder->CreateOr(left_is_double, right_is_double);
         
         Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* dual_path = BasicBlock::Create(*context, "mul_dual_path", current_func);
+        BasicBlock* check_double = BasicBlock::Create(*context, "mul_check_double", current_func);
         BasicBlock* double_path = BasicBlock::Create(*context, "mul_double_path", current_func);
         BasicBlock* int_path = BasicBlock::Create(*context, "mul_int_path", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "mul_merge", current_func);
         
+        builder->CreateCondBr(any_dual, dual_path, check_double);
+        
+        // PHASE 2: Dual number path - use dual multiplication (product rule)
+        builder->SetInsertPoint(dual_path);
+        
+        // FIX: Replace CreateSelect on struct with branching
+        BasicBlock* left_is_dual_block = BasicBlock::Create(*context, "mul_left_is_dual", current_func);
+        BasicBlock* left_not_dual_block = BasicBlock::Create(*context, "mul_left_not_dual", current_func);
+        BasicBlock* left_merge_block = BasicBlock::Create(*context, "mul_left_merge", current_func);
+        
+        builder->CreateCondBr(left_is_dual, left_is_dual_block, left_not_dual_block);
+        
+        builder->SetInsertPoint(left_is_dual_block);
+        Value* left_dual_value = unpackDualFromTaggedValue(left_tagged);
+        builder->CreateBr(left_merge_block);
+        
+        builder->SetInsertPoint(left_not_dual_block);
+        Value* left_as_double = builder->CreateSelect(left_is_double,
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* left_non_dual_value = packDualNumber(left_as_double, ConstantFP::get(Type::getDoubleTy(*context), 0.0));
+        builder->CreateBr(left_merge_block);
+        
+        builder->SetInsertPoint(left_merge_block);
+        PHINode* left_dual = builder->CreatePHI(dual_number_type, 2);
+        left_dual->addIncoming(left_dual_value, left_is_dual_block);
+        left_dual->addIncoming(left_non_dual_value, left_not_dual_block);
+        
+        // Same for right operand
+        BasicBlock* right_is_dual_block = BasicBlock::Create(*context, "mul_right_is_dual", current_func);
+        BasicBlock* right_not_dual_block = BasicBlock::Create(*context, "mul_right_not_dual", current_func);
+        BasicBlock* right_merge_block = BasicBlock::Create(*context, "mul_right_merge", current_func);
+        
+        builder->CreateCondBr(right_is_dual, right_is_dual_block, right_not_dual_block);
+        
+        builder->SetInsertPoint(right_is_dual_block);
+        Value* right_dual_value = unpackDualFromTaggedValue(right_tagged);
+        builder->CreateBr(right_merge_block);
+        
+        builder->SetInsertPoint(right_not_dual_block);
+        Value* right_as_double = builder->CreateSelect(right_is_double,
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* right_non_dual_value = packDualNumber(right_as_double, ConstantFP::get(Type::getDoubleTy(*context), 0.0));
+        builder->CreateBr(right_merge_block);
+        
+        builder->SetInsertPoint(right_merge_block);
+        PHINode* right_dual = builder->CreatePHI(dual_number_type, 2);
+        right_dual->addIncoming(right_dual_value, right_is_dual_block);
+        right_dual->addIncoming(right_non_dual_value, right_not_dual_block);
+        
+        Value* dual_result = dualMul(left_dual, right_dual);
+        Value* tagged_dual_result = packDualToTaggedValue(dual_result);
+        builder->CreateBr(merge);
+        BasicBlock* dual_path_exit = builder->GetInsertBlock();
+        
+        builder->SetInsertPoint(check_double);
         builder->CreateCondBr(any_double, double_path, int_path);
         
         builder->SetInsertPoint(double_path);
@@ -1830,12 +2033,14 @@ private:
         Value* tagged_int_result = packInt64ToTaggedValue(int_result, true);
         builder->CreateBr(merge);
         
+        // Merge all paths
         builder->SetInsertPoint(merge);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2);
-        result_phi->addIncoming(tagged_double_result, double_path);
-        result_phi->addIncoming(tagged_int_result, int_path);
+        PHINode* mul_result_phi = builder->CreatePHI(tagged_value_type, 3);
+        mul_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
+        mul_result_phi->addIncoming(tagged_double_result, double_path);
+        mul_result_phi->addIncoming(tagged_int_result, int_path);
         
-        return result_phi;
+        return mul_result_phi;
     }
     
     Value* polymorphicDiv(Value* left_tagged, Value* right_tagged) {
@@ -1852,12 +2057,81 @@ private:
         Value* right_base = builder->CreateAnd(right_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
+        // PHASE 2: Check if either operand is a dual number
+        Value* left_is_dual = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
+        Value* right_is_dual = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
+        Value* any_dual = builder->CreateOr(left_is_dual, right_is_dual);
+        
         Value* left_is_double = builder->CreateICmpEQ(left_base,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
         Value* right_is_double = builder->CreateICmpEQ(right_base,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
         
-        // Always convert to double for division
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* dual_path = BasicBlock::Create(*context, "div_dual_path", current_func);
+        BasicBlock* regular_path = BasicBlock::Create(*context, "div_regular_path", current_func);
+        BasicBlock* merge = BasicBlock::Create(*context, "div_merge", current_func);
+        
+        builder->CreateCondBr(any_dual, dual_path, regular_path);
+        
+        // PHASE 2: Dual number path - use dual division (quotient rule)
+        builder->SetInsertPoint(dual_path);
+        
+        // FIX: Replace CreateSelect on struct with branching
+        BasicBlock* left_is_dual_block = BasicBlock::Create(*context, "div_left_is_dual", current_func);
+        BasicBlock* left_not_dual_block = BasicBlock::Create(*context, "div_left_not_dual", current_func);
+        BasicBlock* left_merge_block = BasicBlock::Create(*context, "div_left_merge", current_func);
+        
+        builder->CreateCondBr(left_is_dual, left_is_dual_block, left_not_dual_block);
+        
+        builder->SetInsertPoint(left_is_dual_block);
+        Value* left_dual_value = unpackDualFromTaggedValue(left_tagged);
+        builder->CreateBr(left_merge_block);
+        
+        builder->SetInsertPoint(left_not_dual_block);
+        Value* left_as_double = builder->CreateSelect(left_is_double,
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* left_non_dual_value = packDualNumber(left_as_double, ConstantFP::get(Type::getDoubleTy(*context), 0.0));
+        builder->CreateBr(left_merge_block);
+        
+        builder->SetInsertPoint(left_merge_block);
+        PHINode* left_dual = builder->CreatePHI(dual_number_type, 2);
+        left_dual->addIncoming(left_dual_value, left_is_dual_block);
+        left_dual->addIncoming(left_non_dual_value, left_not_dual_block);
+        
+        // Same for right operand
+        BasicBlock* right_is_dual_block = BasicBlock::Create(*context, "div_right_is_dual", current_func);
+        BasicBlock* right_not_dual_block = BasicBlock::Create(*context, "div_right_not_dual", current_func);
+        BasicBlock* right_merge_block = BasicBlock::Create(*context, "div_right_merge", current_func);
+        
+        builder->CreateCondBr(right_is_dual, right_is_dual_block, right_not_dual_block);
+        
+        builder->SetInsertPoint(right_is_dual_block);
+        Value* right_dual_value = unpackDualFromTaggedValue(right_tagged);
+        builder->CreateBr(right_merge_block);
+        
+        builder->SetInsertPoint(right_not_dual_block);
+        Value* right_as_double = builder->CreateSelect(right_is_double,
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* right_non_dual_value = packDualNumber(right_as_double, ConstantFP::get(Type::getDoubleTy(*context), 0.0));
+        builder->CreateBr(right_merge_block);
+        
+        builder->SetInsertPoint(right_merge_block);
+        PHINode* right_dual = builder->CreatePHI(dual_number_type, 2);
+        right_dual->addIncoming(right_dual_value, right_is_dual_block);
+        right_dual->addIncoming(right_non_dual_value, right_not_dual_block);
+        
+        Value* dual_result = dualDiv(left_dual, right_dual);
+        Value* tagged_dual_result = packDualToTaggedValue(dual_result);
+        builder->CreateBr(merge);
+        BasicBlock* dual_path_exit = builder->GetInsertBlock();
+        
+        // Regular path: Always convert to double for division
+        builder->SetInsertPoint(regular_path);
         Value* left_double = builder->CreateSelect(left_is_double,
             unpackDoubleFromTaggedValue(left_tagged),
             builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
@@ -1865,7 +2139,16 @@ private:
             unpackDoubleFromTaggedValue(right_tagged),
             builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
         Value* result = builder->CreateFDiv(left_double, right_double);
-        return packDoubleToTaggedValue(result);  // Division always returns double (inexact)
+        Value* tagged_regular_result = packDoubleToTaggedValue(result);
+        builder->CreateBr(merge);
+        
+        // Merge paths
+        builder->SetInsertPoint(merge);
+        PHINode* div_result_phi = builder->CreatePHI(tagged_value_type, 2);
+        div_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
+        div_result_phi->addIncoming(tagged_regular_result, regular_path);
+        
+        return div_result_phi;
     }
     
     // ===== POLYMORPHIC COMPARISON FUNCTIONS (Phase 3 Fix) =====
@@ -2207,6 +2490,9 @@ private:
             case ESHKOL_DIFF_OP:
                 return codegenDiff(op);
                 
+            case ESHKOL_DERIVATIVE_OP:
+                return codegenDerivative(op);
+                
             default:
                 eshkol_warn("Unhandled operation type: %d", op->op);
                 return nullptr;
@@ -2414,6 +2700,12 @@ private:
         if (func_name == "=") return codegenComparison(op, "eq");
         if (func_name == "<=") return codegenComparison(op, "le");
         if (func_name == ">=") return codegenComparison(op, "ge");
+        
+        // Handle math functions with dual number support (Phase 2)
+        if (func_name == "sin") return codegenMathFunction(op, "sin");
+        if (func_name == "cos") return codegenMathFunction(op, "cos");
+        if (func_name == "exp") return codegenMathFunction(op, "exp");
+        if (func_name == "log") return codegenMathFunction(op, "log");
         
         // Handle display/newline operations
         if (func_name == "display") return codegenDisplay(op);
@@ -3048,6 +3340,77 @@ private:
         }
         
         return nullptr;
+    }
+    
+    Value* codegenMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("%s requires exactly 1 argument", func_name.c_str());
+            return nullptr;
+        }
+        
+        // Get argument with type information
+        TypedValue arg_tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!arg_tv.llvm_value) return nullptr;
+        
+        // Convert to tagged_value for runtime type detection
+        Value* arg_tagged = typedValueToTaggedValue(arg_tv);
+        
+        // Extract type tag
+        Value* arg_type = getTaggedValueType(arg_tagged);
+        Value* arg_base_type = builder->CreateAnd(arg_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        // Check if argument is a dual number
+        Value* arg_is_dual = builder->CreateICmpEQ(arg_base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* dual_path = BasicBlock::Create(*context, (func_name + "_dual_path").c_str(), current_func);
+        BasicBlock* regular_path = BasicBlock::Create(*context, (func_name + "_regular_path").c_str(), current_func);
+        BasicBlock* merge = BasicBlock::Create(*context, (func_name + "_merge").c_str(), current_func);
+        
+        builder->CreateCondBr(arg_is_dual, dual_path, regular_path);
+        
+        // PHASE 2: Dual number path - use dual math functions
+        builder->SetInsertPoint(dual_path);
+        Value* arg_dual = unpackDualFromTaggedValue(arg_tagged);
+        Value* dual_result = nullptr;
+        if (func_name == "sin") {
+            dual_result = dualSin(arg_dual);
+        } else if (func_name == "cos") {
+            dual_result = dualCos(arg_dual);
+        } else if (func_name == "exp") {
+            dual_result = dualExp(arg_dual);
+        } else if (func_name == "log") {
+            dual_result = dualLog(arg_dual);
+        }
+        Value* tagged_dual_result = packDualToTaggedValue(dual_result);
+        builder->CreateBr(merge);
+        
+        // Regular path: unpack argument and call regular function
+        builder->SetInsertPoint(regular_path);
+        
+        // Check if argument is double or int64
+        Value* arg_is_double = builder->CreateICmpEQ(arg_base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        
+        // Convert to double for math functions
+        Value* arg_double = builder->CreateSelect(arg_is_double,
+            unpackDoubleFromTaggedValue(arg_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(arg_tagged), Type::getDoubleTy(*context)));
+        
+        // Call the math function
+        Value* result_double = builder->CreateCall(function_table[func_name], {arg_double});
+        Value* tagged_regular_result = packDoubleToTaggedValue(result_double);
+        builder->CreateBr(merge);
+        
+        // Merge paths
+        builder->SetInsertPoint(merge);
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, (func_name + "_result").c_str());
+        result_phi->addIncoming(tagged_dual_result, dual_path);
+        result_phi->addIncoming(tagged_regular_result, regular_path);
+        
+        return result_phi;
     }
     
     Value* codegenNewline(const eshkol_operations_t* op) {
@@ -5260,6 +5623,282 @@ private:
     }
     
     // ===== END DUAL NUMBER HELPERS =====
+    
+    // ===== PHASE 2: DUAL NUMBER ARITHMETIC OPERATIONS =====
+    // Forward-mode automatic differentiation via dual numbers
+    // Each operation propagates derivatives using automatic differentiation rules
+    
+    // Addition: (a, a') + (b, b') = (a+b, a'+b')
+    Value* dualAdd(Value* dual_a, Value* dual_b) {
+        if (!dual_a || !dual_b) return nullptr;
+        
+        auto [a, a_prime] = unpackDualNumber(dual_a);
+        auto [b, b_prime] = unpackDualNumber(dual_b);
+        
+        // Value: a + b
+        Value* value = builder->CreateFAdd(a, b);
+        
+        // Derivative: a' + b'
+        Value* deriv = builder->CreateFAdd(a_prime, b_prime);
+        
+        return packDualNumber(value, deriv);
+    }
+    
+    // Subtraction: (a, a') - (b, b') = (a-b, a'-b')
+    Value* dualSub(Value* dual_a, Value* dual_b) {
+        if (!dual_a || !dual_b) return nullptr;
+        
+        auto [a, a_prime] = unpackDualNumber(dual_a);
+        auto [b, b_prime] = unpackDualNumber(dual_b);
+        
+        // Value: a - b
+        Value* value = builder->CreateFSub(a, b);
+        
+        // Derivative: a' - b'
+        Value* deriv = builder->CreateFSub(a_prime, b_prime);
+        
+        return packDualNumber(value, deriv);
+    }
+    
+    // Multiplication: (a, a') * (b, b') = (a*b, a'*b + a*b')
+    // This is the product rule for automatic differentiation
+    Value* dualMul(Value* dual_a, Value* dual_b) {
+        if (!dual_a || !dual_b) return nullptr;
+        
+        auto [a, a_prime] = unpackDualNumber(dual_a);
+        auto [b, b_prime] = unpackDualNumber(dual_b);
+        
+        // Value: a * b
+        Value* value = builder->CreateFMul(a, b);
+        
+        // Derivative: a' * b + a * b' (product rule)
+        Value* term1 = builder->CreateFMul(a_prime, b);
+        Value* term2 = builder->CreateFMul(a, b_prime);
+        Value* deriv = builder->CreateFAdd(term1, term2);
+        
+        return packDualNumber(value, deriv);
+    }
+    
+    // Division: (a, a') / (b, b') = (a/b, (a'*b - a*b')/b²)
+    // This is the quotient rule for automatic differentiation
+    Value* dualDiv(Value* dual_a, Value* dual_b) {
+        if (!dual_a || !dual_b) return nullptr;
+        
+        auto [a, a_prime] = unpackDualNumber(dual_a);
+        auto [b, b_prime] = unpackDualNumber(dual_b);
+        
+        // Value: a / b
+        Value* value = builder->CreateFDiv(a, b);
+        
+        // Derivative: (a' * b - a * b') / b²
+        Value* numerator_term1 = builder->CreateFMul(a_prime, b);
+        Value* numerator_term2 = builder->CreateFMul(a, b_prime);
+        Value* numerator = builder->CreateFSub(numerator_term1, numerator_term2);
+        Value* denominator = builder->CreateFMul(b, b);
+        Value* deriv = builder->CreateFDiv(numerator, denominator);
+        
+        return packDualNumber(value, deriv);
+    }
+    
+    // Sine: sin(a, a') = (sin(a), a' * cos(a))
+    // Chain rule: d/dx[sin(f(x))] = cos(f(x)) * f'(x)
+    Value* dualSin(Value* dual_a) {
+        if (!dual_a) return nullptr;
+        
+        auto [a, a_prime] = unpackDualNumber(dual_a);
+        
+        // Value: sin(a)
+        Value* value = builder->CreateCall(function_table["sin"], {a});
+        
+        // Derivative: a' * cos(a)
+        Value* cos_a = builder->CreateCall(function_table["cos"], {a});
+        Value* deriv = builder->CreateFMul(a_prime, cos_a);
+        
+        return packDualNumber(value, deriv);
+    }
+    
+    // Cosine: cos(a, a') = (cos(a), -a' * sin(a))
+    // Chain rule: d/dx[cos(f(x))] = -sin(f(x)) * f'(x)
+    Value* dualCos(Value* dual_a) {
+        if (!dual_a) return nullptr;
+        
+        auto [a, a_prime] = unpackDualNumber(dual_a);
+        
+        // Value: cos(a)
+        Value* value = builder->CreateCall(function_table["cos"], {a});
+        
+        // Derivative: -a' * sin(a)
+        Value* sin_a = builder->CreateCall(function_table["sin"], {a});
+        Value* neg_sin_a = builder->CreateFNeg(sin_a);
+        Value* deriv = builder->CreateFMul(a_prime, neg_sin_a);
+        
+        return packDualNumber(value, deriv);
+    }
+    
+    // Exponential: exp(a, a') = (exp(a), a' * exp(a))
+    // Chain rule: d/dx[exp(f(x))] = exp(f(x)) * f'(x)
+    Value* dualExp(Value* dual_a) {
+        if (!dual_a) return nullptr;
+        
+        auto [a, a_prime] = unpackDualNumber(dual_a);
+        
+        // Declare exp function if not already declared
+        if (function_table.find("exp") == function_table.end()) {
+            std::vector<Type*> exp_args = {Type::getDoubleTy(*context)};
+            FunctionType* exp_type = FunctionType::get(
+                Type::getDoubleTy(*context), exp_args, false);
+            Function* exp_func = Function::Create(
+                exp_type, Function::ExternalLinkage, "exp", module.get());
+            function_table["exp"] = exp_func;
+        }
+        
+        // Value: exp(a)
+        Value* exp_a = builder->CreateCall(function_table["exp"], {a});
+        
+        // Derivative: a' * exp(a)
+        Value* deriv = builder->CreateFMul(a_prime, exp_a);
+        
+        return packDualNumber(exp_a, deriv);
+    }
+    
+    // Logarithm: log(a, a') = (log(a), a'/a)
+    // Chain rule: d/dx[log(f(x))] = f'(x)/f(x)
+    Value* dualLog(Value* dual_a) {
+        if (!dual_a) return nullptr;
+        
+        auto [a, a_prime] = unpackDualNumber(dual_a);
+        
+        // Declare log function if not already declared
+        if (function_table.find("log") == function_table.end()) {
+            std::vector<Type*> log_args = {Type::getDoubleTy(*context)};
+            FunctionType* log_type = FunctionType::get(
+                Type::getDoubleTy(*context), log_args, false);
+            Function* log_func = Function::Create(
+                log_type, Function::ExternalLinkage, "log", module.get());
+            function_table["log"] = log_func;
+        }
+        
+        // Value: log(a)
+        Value* value = builder->CreateCall(function_table["log"], {a});
+        
+        // Derivative: a' / a
+        Value* deriv = builder->CreateFDiv(a_prime, a);
+        
+        return packDualNumber(value, deriv);
+    }
+    
+    // Power: (a, a')^(b, b') = (a^b, a^b * (b' * log(a) + b * a'/a))
+    // General power rule for both base and exponent being functions
+    Value* dualPow(Value* dual_a, Value* dual_b) {
+        if (!dual_a || !dual_b) return nullptr;
+        
+        auto [a, a_prime] = unpackDualNumber(dual_a);
+        auto [b, b_prime] = unpackDualNumber(dual_b);
+        
+        // Declare log function if not already declared
+        if (function_table.find("log") == function_table.end()) {
+            std::vector<Type*> log_args = {Type::getDoubleTy(*context)};
+            FunctionType* log_type = FunctionType::get(
+                Type::getDoubleTy(*context), log_args, false);
+            Function* log_func = Function::Create(
+                log_type, Function::ExternalLinkage, "log", module.get());
+            function_table["log"] = log_func;
+        }
+        
+        // Value: a^b
+        Value* value = builder->CreateCall(function_table["pow"], {a, b});
+        
+        // Derivative: a^b * (b' * log(a) + b * a'/a)
+        Value* log_a = builder->CreateCall(function_table["log"], {a});
+        Value* term1 = builder->CreateFMul(b_prime, log_a);
+        Value* term2 = builder->CreateFMul(b, builder->CreateFDiv(a_prime, a));
+        Value* sum = builder->CreateFAdd(term1, term2);
+        Value* deriv = builder->CreateFMul(value, sum);
+        
+        return packDualNumber(value, deriv);
+    }
+    
+    // Negation: -(a, a') = (-a, -a')
+    Value* dualNeg(Value* dual_a) {
+        if (!dual_a) return nullptr;
+        
+        auto [a, a_prime] = unpackDualNumber(dual_a);
+        
+        // Value: -a
+        Value* value = builder->CreateFNeg(a);
+        
+        // Derivative: -a'
+        Value* deriv = builder->CreateFNeg(a_prime);
+        
+        return packDualNumber(value, deriv);
+    }
+    
+    // ===== END DUAL NUMBER ARITHMETIC =====
+    // ===== PHASE 2: DERIVATIVE OPERATOR IMPLEMENTATION =====
+    // Runtime derivative computation using dual numbers
+    
+    Value* codegenDerivative(const eshkol_operations_t* op) {
+        if (!op->derivative_op.function || !op->derivative_op.point) {
+            eshkol_error("Invalid derivative operation - missing function or point");
+            return nullptr;
+        }
+        
+        eshkol_info("Computing derivative using forward-mode AD (dual numbers)");
+        
+        // Get the function to differentiate
+        Value* func = resolveLambdaFunction(op->derivative_op.function);
+        if (!func) {
+            eshkol_error("Failed to resolve function for derivative");
+            return nullptr;
+        }
+        
+        Function* func_ptr = dyn_cast<Function>(func);
+        if (!func_ptr) {
+            eshkol_error("derivative operator requires a function");
+            return nullptr;
+        }
+        
+        // Get evaluation point - must be a scalar double
+        Value* x = codegenAST(op->derivative_op.point);
+        if (!x) {
+            eshkol_error("Failed to evaluate derivative point");
+            return nullptr;
+        }
+        
+        // Convert x to double if it's an integer
+        if (x->getType()->isIntegerTy()) {
+            x = builder->CreateSIToFP(x, Type::getDoubleTy(*context));
+        } else if (x->getType() != Type::getDoubleTy(*context)) {
+            eshkol_error("derivative point must be numeric (int64 or double)");
+            return nullptr;
+        }
+        
+        // Create dual number with seed derivative = 1.0
+        // This means: "we're computing the derivative with respect to this input"
+        Value* one = ConstantFP::get(Type::getDoubleTy(*context), 1.0);
+        Value* x_dual = packDualNumber(x, one);
+        
+        // Pack dual number into tagged_value for function call
+        Value* x_dual_tagged = packDualToTaggedValue(x_dual);
+        
+        // Call function with dual number input
+        // The function will automatically use dual arithmetic, propagating derivatives
+        Value* result_tagged = builder->CreateCall(func_ptr, {x_dual_tagged});
+        
+        // Unpack result from tagged_value
+        Value* result_dual = unpackDualFromTaggedValue(result_tagged);
+        
+        // Extract derivative component from result
+        auto [value, derivative] = unpackDualNumber(result_dual);
+        
+        eshkol_debug("Derivative operator: extracted derivative component");
+        
+        // Return just the derivative (as a double)
+        return derivative;
+    }
+    
+    // ===== END DERIVATIVE OPERATOR =====
+    
     
     
     // Core symbolic differentiation function
