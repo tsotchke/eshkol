@@ -296,19 +296,23 @@ arena_tagged_cons_cell_t* arena_allocate_tagged_cons_cell(arena_t* arena) {
     }
     
     arena_tagged_cons_cell_t* cell = (arena_tagged_cons_cell_t*)
-        arena_allocate_aligned(arena, sizeof(arena_tagged_cons_cell_t), 8);
+        arena_allocate_aligned(arena, sizeof(arena_tagged_cons_cell_t), 16);
     
     if (!cell) {
         eshkol_error("Failed to allocate tagged cons cell");
         return nullptr;
     }
     
-    // Initialize with null types and zero values
-    cell->car_type = ESHKOL_VALUE_NULL;
-    cell->cdr_type = ESHKOL_VALUE_NULL;
-    cell->flags = 0;
-    cell->car_data.raw_val = 0;
-    cell->cdr_data.raw_val = 0;
+    // Initialize with null types and zero values (Phase 3B: new structure)
+    cell->car.type = ESHKOL_VALUE_NULL;
+    cell->car.flags = 0;
+    cell->car.reserved = 0;
+    cell->car.data.raw_val = 0;
+    
+    cell->cdr.type = ESHKOL_VALUE_NULL;
+    cell->cdr.flags = 0;
+    cell->cdr.reserved = 0;
+    cell->cdr.data.raw_val = 0;
     
     return cell;
 }
@@ -322,20 +326,24 @@ arena_tagged_cons_cell_t* arena_allocate_tagged_cons_batch(arena_t* arena, size_
     
     size_t total_size = sizeof(arena_tagged_cons_cell_t) * count;
     arena_tagged_cons_cell_t* cells = (arena_tagged_cons_cell_t*)
-        arena_allocate_aligned(arena, total_size, 8);
+        arena_allocate_aligned(arena, total_size, 16);
     
     if (!cells) {
         eshkol_error("Failed to allocate %zu tagged cons cells", count);
         return nullptr;
     }
     
-    // Initialize all cells
+    // Initialize all cells (Phase 3B: new structure)
     for (size_t i = 0; i < count; i++) {
-        cells[i].car_type = ESHKOL_VALUE_NULL;
-        cells[i].cdr_type = ESHKOL_VALUE_NULL;
-        cells[i].flags = 0;
-        cells[i].car_data.raw_val = 0;
-        cells[i].cdr_data.raw_val = 0;
+        cells[i].car.type = ESHKOL_VALUE_NULL;
+        cells[i].car.flags = 0;
+        cells[i].car.reserved = 0;
+        cells[i].car.data.raw_val = 0;
+        
+        cells[i].cdr.type = ESHKOL_VALUE_NULL;
+        cells[i].cdr.flags = 0;
+        cells[i].cdr.reserved = 0;
+        cells[i].cdr.data.raw_val = 0;
     }
     
     return cells;
@@ -348,10 +356,11 @@ arena_tagged_cons_cell_t* arena_create_int64_cons(arena_t* arena,
     arena_tagged_cons_cell_t* cell = arena_allocate_tagged_cons_cell(arena);
     if (!cell) return nullptr;
     
-    cell->car_type = car_type;
-    cell->car_data.int_val = car;
-    cell->cdr_type = cdr_type;
-    cell->cdr_data.int_val = cdr;
+    // Phase 3B: Access nested tagged_value structure
+    cell->car.type = car_type;
+    cell->car.data.int_val = car;
+    cell->cdr.type = cdr_type;
+    cell->cdr.data.int_val = cdr;
     
     return cell;
 }
@@ -363,10 +372,13 @@ arena_tagged_cons_cell_t* arena_create_mixed_cons(arena_t* arena,
     arena_tagged_cons_cell_t* cell = arena_allocate_tagged_cons_cell(arena);
     if (!cell) return nullptr;
     
-    cell->car_type = car_type;
-    cell->car_data = car;
-    cell->cdr_type = cdr_type;
-    cell->cdr_data = cdr;
+    // Phase 3B: Access nested tagged_value structure
+    // Use raw_val for efficient union copy (all union members share the same memory)
+    cell->car.type = car_type;
+    cell->car.data.raw_val = car.raw_val;
+    
+    cell->cdr.type = cdr_type;
+    cell->cdr.data.raw_val = cdr.raw_val;
     
     return cell;
 }
@@ -378,13 +390,15 @@ int64_t arena_tagged_cons_get_int64(const arena_tagged_cons_cell_t* cell, bool i
         return 0;
     }
     
-    uint8_t type = is_cdr ? cell->cdr_type : cell->car_type;
+    // Phase 3B: Access nested tagged_value structure
+    const eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
+    uint8_t type = tv->type;
     if (!ESHKOL_IS_INT64_TYPE(type)) {
         eshkol_error("Attempted to get int64 from non-int64 cell (type=%d)", type);
         return 0;
     }
     
-    return is_cdr ? cell->cdr_data.int_val : cell->car_data.int_val;
+    return tv->data.int_val;
 }
 
 double arena_tagged_cons_get_double(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
@@ -393,13 +407,15 @@ double arena_tagged_cons_get_double(const arena_tagged_cons_cell_t* cell, bool i
         return 0.0;
     }
     
-    uint8_t type = is_cdr ? cell->cdr_type : cell->car_type;
+    // Phase 3B: Access nested tagged_value structure
+    const eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
+    uint8_t type = tv->type;
     if (!ESHKOL_IS_DOUBLE_TYPE(type)) {
         eshkol_error("Attempted to get double from non-double cell (type=%d)", type);
         return 0.0;
     }
     
-    return is_cdr ? cell->cdr_data.double_val : cell->car_data.double_val;
+    return tv->data.double_val;
 }
 
 uint64_t arena_tagged_cons_get_ptr(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
@@ -408,7 +424,9 @@ uint64_t arena_tagged_cons_get_ptr(const arena_tagged_cons_cell_t* cell, bool is
         return 0;
     }
     
-    uint8_t type = is_cdr ? cell->cdr_type : cell->car_type;
+    // Phase 3B: Access nested tagged_value structure
+    const eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
+    uint8_t type = tv->type;
     uint8_t base_type = ESHKOL_GET_BASE_TYPE(type);
     
     if (base_type == ESHKOL_VALUE_NULL) {
@@ -420,7 +438,7 @@ uint64_t arena_tagged_cons_get_ptr(const arena_tagged_cons_cell_t* cell, bool is
         return 0;
     }
     
-    return is_cdr ? cell->cdr_data.ptr_val : cell->car_data.ptr_val;
+    return tv->data.ptr_val;
 }
 
 // Type-safe data setting functions
@@ -436,13 +454,10 @@ void arena_tagged_cons_set_int64(arena_tagged_cons_cell_t* cell, bool is_cdr,
         return;
     }
     
-    if (is_cdr) {
-        cell->cdr_type = type;
-        cell->cdr_data.int_val = value;
-    } else {
-        cell->car_type = type;
-        cell->car_data.int_val = value;
-    }
+    // Phase 3B: Access nested tagged_value structure
+    eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
+    tv->type = type;
+    tv->data.int_val = value;
 }
 
 void arena_tagged_cons_set_double(arena_tagged_cons_cell_t* cell, bool is_cdr,
@@ -457,13 +472,10 @@ void arena_tagged_cons_set_double(arena_tagged_cons_cell_t* cell, bool is_cdr,
         return;
     }
     
-    if (is_cdr) {
-        cell->cdr_type = type;
-        cell->cdr_data.double_val = value;
-    } else {
-        cell->car_type = type;
-        cell->car_data.double_val = value;
-    }
+    // Phase 3B: Access nested tagged_value structure
+    eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
+    tv->type = type;
+    tv->data.double_val = value;
 }
 
 void arena_tagged_cons_set_ptr(arena_tagged_cons_cell_t* cell, bool is_cdr,
@@ -478,13 +490,10 @@ void arena_tagged_cons_set_ptr(arena_tagged_cons_cell_t* cell, bool is_cdr,
         return;
     }
     
-    if (is_cdr) {
-        cell->cdr_type = type;
-        cell->cdr_data.ptr_val = value;
-    } else {
-        cell->car_type = type;
-        cell->car_data.ptr_val = value;
-    }
+    // Phase 3B: Access nested tagged_value structure
+    eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
+    tv->type = type;
+    tv->data.ptr_val = value;
 }
 
 void arena_tagged_cons_set_null(arena_tagged_cons_cell_t* cell, bool is_cdr) {
@@ -493,13 +502,10 @@ void arena_tagged_cons_set_null(arena_tagged_cons_cell_t* cell, bool is_cdr) {
         return;
     }
     
-    if (is_cdr) {
-        cell->cdr_type = ESHKOL_VALUE_NULL;
-        cell->cdr_data.raw_val = 0;
-    } else {
-        cell->car_type = ESHKOL_VALUE_NULL;
-        cell->car_data.raw_val = 0;
-    }
+    // Phase 3B: Access nested tagged_value structure
+    eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
+    tv->type = ESHKOL_VALUE_NULL;
+    tv->data.raw_val = 0;
 }
 
 // Type query functions
@@ -509,14 +515,53 @@ uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is
         return ESHKOL_VALUE_NULL;
     }
     
-    return is_cdr ? cell->cdr_type : cell->car_type;
+    // Phase 3B: Access nested tagged_value structure
+    const eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
+    return tv->type;
 }
 
 bool arena_tagged_cons_is_type(const arena_tagged_cons_cell_t* cell, bool is_cdr, uint8_t type) {
     if (!cell) return false;
     
-    uint8_t actual_type = is_cdr ? cell->cdr_type : cell->car_type;
+    // Phase 3B: Access nested tagged_value structure
+    const eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
+    uint8_t actual_type = tv->type;
     return ESHKOL_GET_BASE_TYPE(actual_type) == ESHKOL_GET_BASE_TYPE(type);
+}
+
+// Direct tagged value access functions (NEW in Phase 3B)
+// These enable direct storage and retrieval of complete tagged_value structs
+void arena_tagged_cons_set_tagged_value(arena_tagged_cons_cell_t* cell,
+                                         bool is_cdr,
+                                         const eshkol_tagged_value_t* value) {
+    if (!cell || !value) {
+        eshkol_error("Cannot set tagged value: null parameter");
+        return;
+    }
+    
+    // Direct struct copy - this is the key optimization of Phase 3B!
+    if (is_cdr) {
+        cell->cdr = *value;
+    } else {
+        cell->car = *value;
+    }
+}
+
+eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons_cell_t* cell,
+                                                          bool is_cdr) {
+    if (!cell) {
+        eshkol_error("Cannot get tagged value from null cell");
+        // Return null value
+        eshkol_tagged_value_t null_val;
+        null_val.type = ESHKOL_VALUE_NULL;
+        null_val.flags = 0;
+        null_val.reserved = 0;
+        null_val.data.int_val = 0;
+        return null_val;
+    }
+    
+    // Direct struct copy - this is the key optimization of Phase 3B!
+    return is_cdr ? cell->cdr : cell->car;
 }
 
 #ifdef __cplusplus

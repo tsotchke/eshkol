@@ -1,0 +1,7 @@
+;; Incremental test to find the failure point
+
+(display "Test 1: Lambda with arithmetic")
+(newline)
+(define test1 (map (lambda (x) (+ x 1)) (list 1 2.0 3)))
+(display test1)
+(newline)

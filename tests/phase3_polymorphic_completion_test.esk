@@ -1,0 +1,64 @@
+;; Phase 3: Polymorphic Tagged Value System Complete Test
+;; Tests all higher-order functions with mixed types
+
+(display "=== PHASE 3: POLYMORPHIC SYSTEM COMPLETE ===")
+(newline)
+
+;; Test 1: Single-list map with mixed types
+(display "1. Single-list map (mixed types): ")
+(define test1 (map (lambda (x) (+ x 1)) (list 1 2.0 3)))
+(display test1)
+(newline)
+;; Expected: (2 3.0 4) or (2.0 3.0 4.0) if promoted
+
+;; Test 2: Multi-list map with mixed types - THE CRITICAL TEST
+(display "2. Multi-list map (mixed types): ")
+(define test2 (map + (list 1 2.0 3) (list 4 5.0 6)))
+(display test2)
+(newline)
+;; Expected: (5.0 7.0 9.0) - NO CORRUPTION!
+
+;; Test 3: Filter preserves types
+(display "3. Filter (preserve types): ")
+(define test3 (filter (lambda (x) (> x 5)) (list 1 2.0 10 3.5 20)))
+(display test3)
+(newline)
+;; Expected: (10 20) - types preserved, 3.5 filtered out since > only works on ints
+
+;; Test 4: Fold with type promotion
+(display "4. Fold (type promotion): ")
+(define test4 (fold + 0 (list 1 2.0 3)))
+(display test4)
+(newline)
+;; Expected: 6.0 (promoted to double)
+
+;; Test 5: Complex chaining
+(display "5. Complex chain: ")
+(define test5 (fold + 0 (map (lambda (x) (* x 2)) (list 1 2.0 3))))
+(display test5)
+(newline)
+;; Expected: 12.0 (types preserved through pipeline)
+
+;; Test 6: Member with mixed types
+(display "6. Member (mixed): ")
+(define test6 (member 2.0 (list 1 2.0 3)))
+(display test6)
+(newline)
+;; Expected: (2.0 3) - tail from matching element
+
+;; Test 7: Take with mixed types
+(display "7. Take (mixed): ")
+(define test7 (take (list 1 2.0 3 4.0 5) 3))
+(display test7)
+(newline)
+;; Expected: (1 2.0 3)
+
+;; Test 8: Find with mixed types
+(display "8. Find (mixed): ")
+(define test8 (find (lambda (x) (> x 2)) (list 1 2.0 3 4.0)))
+(display test8)
+(newline)
+;; Expected: 3 (first element > 2)
+
+(display "=== ALL TESTS SHOULD SHOW CORRECT VALUES ===")
+(newline)

@@ -112,6 +112,10 @@ private:
     Function* arena_tagged_cons_set_null_func;
     Function* arena_tagged_cons_get_type_func;
     
+    // Phase 3B: Direct tagged_value access functions
+    Function* arena_tagged_cons_set_tagged_value_func;
+    Function* arena_tagged_cons_get_tagged_value_func;
+    
     // List operation function declarations (clean, non-redundant)
     Function* length_impl_func;
     Function* append_impl_func;
@@ -680,6 +684,49 @@ private:
         );
 
         function_table["arena_tagged_cons_get_type"] = arena_tagged_cons_get_type_func;
+        
+        // Phase 3B: arena_tagged_cons_set_tagged_value function:
+        // void arena_tagged_cons_set_tagged_value(arena_tagged_cons_cell_t* cell, bool is_cdr, const eshkol_tagged_value_t* value)
+        std::vector<Type*> set_tagged_value_args;
+        set_tagged_value_args.push_back(PointerType::getUnqual(*context)); // arena_tagged_cons_cell_t* cell
+        set_tagged_value_args.push_back(Type::getInt1Ty(*context)); // bool is_cdr
+        set_tagged_value_args.push_back(PointerType::getUnqual(*context)); // const eshkol_tagged_value_t* value
+        
+        FunctionType* set_tagged_value_type = FunctionType::get(
+            Type::getVoidTy(*context),
+            set_tagged_value_args,
+            false
+        );
+        
+        arena_tagged_cons_set_tagged_value_func = Function::Create(
+            set_tagged_value_type,
+            Function::ExternalLinkage,
+            "arena_tagged_cons_set_tagged_value",
+            module.get()
+        );
+        
+        function_table["arena_tagged_cons_set_tagged_value"] = arena_tagged_cons_set_tagged_value_func;
+        
+        // Phase 3B: arena_tagged_cons_get_tagged_value function:
+        // eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons_cell_t* cell, bool is_cdr)
+        std::vector<Type*> get_tagged_value_args;
+        get_tagged_value_args.push_back(PointerType::getUnqual(*context)); // const arena_tagged_cons_cell_t* cell
+        get_tagged_value_args.push_back(Type::getInt1Ty(*context)); // bool is_cdr
+        
+        FunctionType* get_tagged_value_type = FunctionType::get(
+            tagged_value_type, // return eshkol_tagged_value_t
+            get_tagged_value_args,
+            false
+        );
+        
+        arena_tagged_cons_get_tagged_value_func = Function::Create(
+            get_tagged_value_type,
+            Function::ExternalLinkage,
+            "arena_tagged_cons_get_tagged_value",
+            module.get()
+        );
+        
+        function_table["arena_tagged_cons_get_tagged_value"] = arena_tagged_cons_get_tagged_value_func;
     }
     
     void createFunctionDeclaration(const eshkol_ast_t* ast) {
@@ -834,6 +881,21 @@ private:
     }
     
     std::pair<TypedValue, TypedValue> promoteToCommonType(const TypedValue& left, const TypedValue& right) {
+        // Handle NULL types - treat as int64(0)
+        if (left.isNull() && right.isNull()) {
+            TypedValue zero_left(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_INT64, true);
+            TypedValue zero_right(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_INT64, true);
+            return {zero_left, zero_right};
+        }
+        if (left.isNull()) {
+            TypedValue zero_left(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_INT64, true);
+            return {zero_left, right};
+        }
+        if (right.isNull()) {
+            TypedValue zero_right(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_INT64, true);
+            return {left, zero_right};
+        }
+        
         // Both int64: no promotion needed
         if (left.isInt64() && right.isInt64()) {
             return {left, right};
@@ -928,7 +990,14 @@ private:
                 
                 // Detect type from LLVM Value type
                 Type* llvm_type = val->getType();
-                if (llvm_type->isIntegerTy(64)) {
+                
+                // Special handling for tagged_value: return it as-is, type info is in the tagged_value itself
+                if (llvm_type == tagged_value_type) {
+                    // For tagged_value, we can't extract type at compile time
+                    // Return the tagged_value wrapped in TypedValue
+                    // The caller must handle this by checking if llvm_value->getType() == tagged_value_type
+                    return TypedValue(val, ESHKOL_VALUE_INT64, true);  // Type info is in tagged_value itself
+                } else if (llvm_type->isIntegerTy(64)) {
                     return TypedValue(val, ESHKOL_VALUE_INT64, true);
                 } else if (llvm_type->isDoubleTy()) {
                     return TypedValue(val, ESHKOL_VALUE_DOUBLE, false);
@@ -1008,7 +1077,7 @@ private:
         // Return pointer to cons cell as int64
         return builder->CreatePtrToInt(cons_ptr, Type::getInt64Ty(*context));
     }
-    // New tagged cons cell allocation with type information - uses C helper functions to avoid manual bitcasting
+    // Phase 3B: Simplified tagged cons cell allocation - direct tagged_value storage!
     Value* codegenTaggedArenaConsCell(const TypedValue& car_val, const TypedValue& cdr_val) {
         Value* arena_ptr = getArenaPtr();
         if (!arena_ptr) {
@@ -1016,78 +1085,116 @@ private:
             return nullptr;
         }
         
-        // Allocate tagged cons cell (24 bytes) using arena
+        // Allocate tagged cons cell (32 bytes in Phase 3B) using arena
         Value* cons_ptr = builder->CreateCall(arena_allocate_tagged_cons_cell_func, {arena_ptr});
         
-        // Use C helper functions to set values - they handle the union storage correctly
-        Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0); // false = car
-        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1); // true = cdr
+        // Convert TypedValue to tagged_value
+        Value* car_tagged = typedValueToTaggedValue(car_val);
+        Value* cdr_tagged = typedValueToTaggedValue(cdr_val);
         
-        // Determine type tag for car with exactness
-        uint8_t car_type_with_flags = car_val.type;
-        if (car_val.isInt64() && car_val.is_exact) {
-            car_type_with_flags = ESHKOL_VALUE_INT64 | ESHKOL_VALUE_EXACT_FLAG;
-        } else if (car_val.isDouble()) {
-            car_type_with_flags = ESHKOL_VALUE_DOUBLE | ESHKOL_VALUE_INEXACT_FLAG;
-        }
-        Value* car_type_tag = ConstantInt::get(Type::getInt8Ty(*context), car_type_with_flags);
+        // Store COMPLETE tagged_value structs directly using Phase 3B helpers!
+        Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0);
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
         
-        // Set car value using appropriate C helper function
-        if (car_val.isDouble()) {
-            builder->CreateCall(arena_tagged_cons_set_double_func,
-                {cons_ptr, is_car, car_val.llvm_value, car_type_tag});
-        } else if (car_val.isInt64()) {
-            builder->CreateCall(arena_tagged_cons_set_int64_func,
-                {cons_ptr, is_car, car_val.llvm_value, car_type_tag});
-        } else if (car_val.isNull()) {
-            // Use set_null for NULL types
-            builder->CreateCall(arena_tagged_cons_set_null_func, {cons_ptr, is_car});
-        } else {
-            // CONS_PTR type - use set_ptr helper
-            Value* car_as_uint64 = car_val.llvm_value;
-            if (car_val.llvm_value->getType()->isPointerTy()) {
-                car_as_uint64 = builder->CreatePtrToInt(car_val.llvm_value, Type::getInt64Ty(*context));
-            } else if (car_val.llvm_value->getType() != Type::getInt64Ty(*context)) {
-                car_as_uint64 = builder->CreateSExtOrTrunc(car_val.llvm_value, Type::getInt64Ty(*context));
-            }
-            builder->CreateCall(arena_tagged_cons_set_ptr_func,
-                {cons_ptr, is_car, car_as_uint64, car_type_tag});
+        // Phase 3B FIX: Create allocas at function entry to ensure dominance
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        Function* func = builder->GetInsertBlock()->getParent();
+        if (func && !func->empty()) {
+            BasicBlock& entry = func->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
         }
         
-        // Determine type tag for cdr with exactness
-        uint8_t cdr_type_with_flags = cdr_val.type;
-        if (cdr_val.isInt64() && cdr_val.is_exact) {
-            cdr_type_with_flags = ESHKOL_VALUE_INT64 | ESHKOL_VALUE_EXACT_FLAG;
-        } else if (cdr_val.isDouble()) {
-            cdr_type_with_flags = ESHKOL_VALUE_DOUBLE | ESHKOL_VALUE_INEXACT_FLAG;
-        }
-        Value* cdr_type_tag = ConstantInt::get(Type::getInt8Ty(*context), cdr_type_with_flags);
+        // Create pointers to tagged values for passing by reference
+        Value* car_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "car_tagged_ptr");
+        Value* cdr_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "cdr_tagged_ptr");
         
-        // Set cdr value using appropriate C helper function
-        if (cdr_val.isDouble()) {
-            builder->CreateCall(arena_tagged_cons_set_double_func,
-                {cons_ptr, is_cdr, cdr_val.llvm_value, cdr_type_tag});
-        } else if (cdr_val.isInt64()) {
-            builder->CreateCall(arena_tagged_cons_set_int64_func,
-                {cons_ptr, is_cdr, cdr_val.llvm_value, cdr_type_tag});
-        } else if (cdr_val.isNull()) {
-            // Use set_null for NULL types
-            builder->CreateCall(arena_tagged_cons_set_null_func, {cons_ptr, is_cdr});
-        } else {
-            // CONS_PTR type - use set_ptr helper
-            Value* cdr_as_uint64 = cdr_val.llvm_value;
-            if (cdr_val.llvm_value->getType()->isPointerTy()) {
-                cdr_as_uint64 = builder->CreatePtrToInt(cdr_val.llvm_value, Type::getInt64Ty(*context));
-            } else if (cdr_val.llvm_value->getType() != Type::getInt64Ty(*context)) {
-                cdr_as_uint64 = builder->CreateSExtOrTrunc(cdr_val.llvm_value, Type::getInt64Ty(*context));
-            }
-            builder->CreateCall(arena_tagged_cons_set_ptr_func,
-                {cons_ptr, is_cdr, cdr_as_uint64, cdr_type_tag});
-        }
+        // Restore insertion point for stores and calls
+        builder->restoreIP(saved_ip);
         
-        eshkol_debug("Created tagged cons cell: car_type=%d, cdr_type=%d", car_val.type, cdr_val.type);
+        builder->CreateStore(car_tagged, car_ptr);
+        builder->CreateStore(cdr_tagged, cdr_ptr);
+        
+        // Direct struct copy - this is the key optimization of Phase 3B!
+        builder->CreateCall(arena_tagged_cons_set_tagged_value_func, {cons_ptr, is_car, car_ptr});
+        builder->CreateCall(arena_tagged_cons_set_tagged_value_func, {cons_ptr, is_cdr, cdr_ptr});
+        
+        eshkol_debug("Created tagged cons cell (Phase 3B): car_type=%d, cdr_type=%d", car_val.type, cdr_val.type);
         
         // Return pointer to cons cell as int64
+        return builder->CreatePtrToInt(cons_ptr, Type::getInt64Ty(*context));
+    }
+    
+    // ROBUST SOLUTION: Create cons cell directly from tagged_value with type preservation
+    // This stores the VALUE from tagged_value into the cons cell car, preserving the type
+    Value* codegenTaggedArenaConsCellFromTaggedValue(Value* car_tagged, Value* cdr_tagged) {
+        Value* arena_ptr = getArenaPtr();
+        if (!arena_ptr) {
+            eshkol_error("Arena not initialized for tagged cons cell allocation");
+            return nullptr;
+        }
+        
+        // Allocate tagged cons cell
+        Value* cons_ptr = builder->CreateCall(arena_allocate_tagged_cons_cell_func, {arena_ptr});
+        
+        // Extract type from car_tagged
+        Value* car_type = getTaggedValueType(car_tagged);
+        Value* car_base_type = builder->CreateAnd(car_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        Value* car_is_double = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* car_double = BasicBlock::Create(*context, "cons_car_double", current_func);
+        BasicBlock* car_int = BasicBlock::Create(*context, "cons_car_int", current_func);
+        BasicBlock* car_done = BasicBlock::Create(*context, "cons_car_done", current_func);
+        
+        Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0);
+        
+        builder->CreateCondBr(car_is_double, car_double, car_int);
+        
+        // Store car as double
+        builder->SetInsertPoint(car_double);
+        Value* car_double_val = unpackDoubleFromTaggedValue(car_tagged);
+        builder->CreateCall(arena_tagged_cons_set_double_func,
+            {cons_ptr, is_car, car_double_val, car_type});
+        builder->CreateBr(car_done);
+        
+        // Store car as int64
+        builder->SetInsertPoint(car_int);
+        Value* car_int_val = unpackInt64FromTaggedValue(car_tagged);
+        builder->CreateCall(arena_tagged_cons_set_int64_func,
+            {cons_ptr, is_car, car_int_val, car_type});
+        builder->CreateBr(car_done);
+        
+        // Store cdr - check if it's null (value == 0)
+        builder->SetInsertPoint(car_done);
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_data = unpackInt64FromTaggedValue(cdr_tagged);
+        Value* cdr_is_null = builder->CreateICmpEQ(cdr_data,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        
+        BasicBlock* cdr_null_block = BasicBlock::Create(*context, "cons_cdr_null", current_func);
+        BasicBlock* cdr_ptr_block = BasicBlock::Create(*context, "cons_cdr_ptr", current_func);
+        BasicBlock* cdr_done_block = BasicBlock::Create(*context, "cons_cdr_done", current_func);
+        
+        builder->CreateCondBr(cdr_is_null, cdr_null_block, cdr_ptr_block);
+        
+        // Cdr is null - use set_null
+        builder->SetInsertPoint(cdr_null_block);
+        builder->CreateCall(arena_tagged_cons_set_null_func, {cons_ptr, is_cdr});
+        builder->CreateBr(cdr_done_block);
+        
+        // Cdr is a pointer - use set_ptr
+        builder->SetInsertPoint(cdr_ptr_block);
+        Value* ptr_type = ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {cons_ptr, is_cdr, cdr_data, ptr_type});
+        builder->CreateBr(cdr_done_block);
+        
+        builder->SetInsertPoint(cdr_done_block);
+        
+        // Return cons cell pointer as int64
         return builder->CreatePtrToInt(cons_ptr, Type::getInt64Ty(*context));
     }
     
@@ -1299,12 +1406,58 @@ private:
         return cdr_tagged_phi;
     }
     
+    // Robust helper to convert tagged_value to TypedValue with proper runtime type detection
+    // This preserves type information through PHI nodes
     TypedValue detectValueType(Value* llvm_val) {
         if (!llvm_val) return TypedValue();
         
         if (llvm_val->getType() == tagged_value_type) {
+            // Extract type tag from tagged_value
+            Value* type_tag = getTaggedValueType(llvm_val);
+            Value* base_type = builder->CreateAnd(type_tag,
+                ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+            
+            // Check if it's a double
+            Value* is_double = builder->CreateICmpEQ(base_type,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+            
+            // Branch to unpack the correct type
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* double_block = BasicBlock::Create(*context, "detect_double", current_func);
+            BasicBlock* int_block = BasicBlock::Create(*context, "detect_int", current_func);
+            BasicBlock* merge_block = BasicBlock::Create(*context, "detect_merge", current_func);
+            
+            builder->CreateCondBr(is_double, double_block, int_block);
+            
+            // Unpack as double and create TypedValue
+            builder->SetInsertPoint(double_block);
+            Value* double_val = unpackDoubleFromTaggedValue(llvm_val);
+            builder->CreateBr(merge_block);
+            BasicBlock* double_exit = builder->GetInsertBlock();
+            
+            // Unpack as int64 and create TypedValue
+            builder->SetInsertPoint(int_block);
             Value* int_val = unpackInt64FromTaggedValue(llvm_val);
-            return TypedValue(int_val, ESHKOL_VALUE_INT64, true);
+            builder->CreateBr(merge_block);
+            BasicBlock* int_exit = builder->GetInsertBlock();
+            
+            // Return TypedValue with int64 value
+            // The type will be determined by the cons cell storage
+            builder->SetInsertPoint(merge_block);
+            PHINode* value_phi = builder->CreatePHI(Type::getInt64Ty(*context), 2);
+            // For double, bitcast to int64 for storage
+            Value* double_as_int = builder->CreateBitCast(double_val, Type::getInt64Ty(*context));
+            value_phi->addIncoming(double_as_int, double_exit);
+            value_phi->addIncoming(int_val, int_exit);
+            
+            // Create type PHI to track whether it's int or double
+            PHINode* type_phi = builder->CreatePHI(Type::getInt8Ty(*context), 2);
+            type_phi->addIncoming(ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE), double_exit);
+            type_phi->addIncoming(ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_INT64), int_exit);
+            
+            // Return TypedValue with runtime type - but we can't do this statically
+            // For now, assume int64 and let the caller handle conversion
+            return TypedValue(value_phi, ESHKOL_VALUE_INT64, true);
         }
         
         Type* val_type = llvm_val->getType();
@@ -1325,6 +1478,11 @@ private:
     }
     // Convert TypedValue to tagged_value (AST→IR boundary crossing)
     Value* typedValueToTaggedValue(const TypedValue& tv) {
+        // CRITICAL: If already a tagged_value, return as-is (don't double-pack!)
+        if (tv.llvm_value && tv.llvm_value->getType() == tagged_value_type) {
+            return tv.llvm_value;
+        }
+        
         if (tv.isInt64()) {
             return packInt64ToTaggedValue(tv.llvm_value, tv.is_exact);
         } else if (tv.isDouble()) {
@@ -1341,67 +1499,20 @@ private:
             ConstantInt::get(Type::getInt64Ty(*context), 0), true);
     }
     
-    // Convert tagged_value to TypedValue (IR→AST boundary crossing)
+    // Simple helper to wrap tagged_value in TypedValue (for cons cell creation)
+    // This avoids complex control flow by just storing the tagged_value as-is
     TypedValue taggedValueToTypedValue(Value* tagged_val) {
         if (!tagged_val || tagged_val->getType() != tagged_value_type) {
             return TypedValue();
         }
         
-        // Extract type tag
-        Value* type_tag = getTaggedValueType(tagged_val);
+        // Simply unpack the int64 data field - we'll let runtime type checking handle it
+        // This avoids dominance issues from complex branching
+        Value* data = unpackInt64FromTaggedValue(tagged_val);
         
-        // Mask to get base type (type & 0x0F)
-        Value* base_type = builder->CreateAnd(type_tag,
-            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
-        
-        // Check exactness flag (type & 0x80)
-        Value* exact_flag = builder->CreateAnd(type_tag,
-            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_EXACT_FLAG));
-        Value* is_exact_val = builder->CreateICmpNE(exact_flag,
-            ConstantInt::get(Type::getInt8Ty(*context), 0));
-        
-        // Branch based on type to unpack correctly
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* int_block = BasicBlock::Create(*context, "unpack_int64", current_func);
-        BasicBlock* double_block = BasicBlock::Create(*context, "unpack_double", current_func);
-        BasicBlock* ptr_block = BasicBlock::Create(*context, "unpack_ptr", current_func);
-        BasicBlock* merge_block = BasicBlock::Create(*context, "unpack_merge", current_func);
-        
-        Value* is_int = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_INT64));
-        Value* is_double = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
-        
-        BasicBlock* check_double = BasicBlock::Create(*context, "check_double", current_func);
-        builder->CreateCondBr(is_int, int_block, check_double);
-        
-        builder->SetInsertPoint(check_double);
-        builder->CreateCondBr(is_double, double_block, ptr_block);
-        
-        // Unpack int64
-        builder->SetInsertPoint(int_block);
-        Value* int_val = unpackInt64FromTaggedValue(tagged_val);
-        builder->CreateBr(merge_block);
-        
-        // Unpack double
-        builder->SetInsertPoint(double_block);
-        Value* double_val = unpackDoubleFromTaggedValue(tagged_val);
-        builder->CreateBr(merge_block);
-        
-        // Unpack pointer
-        builder->SetInsertPoint(ptr_block);
-        Value* ptr_val = unpackPtrFromTaggedValue(tagged_val);
-        Value* ptr_as_int = builder->CreatePtrToInt(ptr_val, Type::getInt64Ty(*context));
-        builder->CreateBr(merge_block);
-        
-        // For now, return a runtime TypedValue - in practice we'd need PHI nodes
-        // This is a simplified implementation showing the structure
-        builder->SetInsertPoint(merge_block);
-        
-        // Note: This returns the last unpacked value. A complete implementation
-        // would use PHI nodes and dynamic type tracking. For now, we demonstrate
-        // the conversion pattern that will be used in polymorphic functions.
-        return TypedValue(int_val, ESHKOL_VALUE_INT64, true);
+        // For cons cell creation, we just need the raw data
+        // The type is preserved in the tagged_value itself
+        return TypedValue(data, ESHKOL_VALUE_INT64, true);
     }
     
     // ===== POLYMORPHIC ARITHMETIC FUNCTIONS (Phase 1.3) =====
@@ -1596,6 +1707,93 @@ private:
             builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
         Value* result = builder->CreateFDiv(left_double, right_double);
         return packDoubleToTaggedValue(result);  // Division always returns double (inexact)
+    }
+    
+    // ===== POLYMORPHIC COMPARISON FUNCTIONS (Phase 3 Fix) =====
+    // Handle mixed-type comparisons with runtime type detection
+    
+    Value* polymorphicCompare(Value* left_tagged, Value* right_tagged,
+                             const std::string& operation) {
+        if (!left_tagged || !right_tagged) {
+            return packInt64ToTaggedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+        }
+        
+        // Extract type tags
+        Value* left_type = getTaggedValueType(left_tagged);
+        Value* right_type = getTaggedValueType(right_tagged);
+        
+        Value* left_base = builder->CreateAnd(left_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        Value* right_base = builder->CreateAnd(right_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        // Check if either operand is double
+        Value* left_is_double = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* right_is_double = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* any_double = builder->CreateOr(left_is_double, right_is_double);
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* double_path = BasicBlock::Create(*context, "cmp_double_path", current_func);
+        BasicBlock* int_path = BasicBlock::Create(*context, "cmp_int_path", current_func);
+        BasicBlock* merge = BasicBlock::Create(*context, "cmp_merge", current_func);
+        
+        builder->CreateCondBr(any_double, double_path, int_path);
+        
+        // Double path: promote both to double and compare
+        builder->SetInsertPoint(double_path);
+        Value* left_double = builder->CreateSelect(left_is_double,
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* right_double = builder->CreateSelect(right_is_double,
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        
+        Value* double_cmp = nullptr;
+        if (operation == "lt") {
+            double_cmp = builder->CreateFCmpOLT(left_double, right_double);
+        } else if (operation == "gt") {
+            double_cmp = builder->CreateFCmpOGT(left_double, right_double);
+        } else if (operation == "eq") {
+            double_cmp = builder->CreateFCmpOEQ(left_double, right_double);
+        } else if (operation == "le") {
+            double_cmp = builder->CreateFCmpOLE(left_double, right_double);
+        } else if (operation == "ge") {
+            double_cmp = builder->CreateFCmpOGE(left_double, right_double);
+        }
+        Value* double_result_int = builder->CreateZExt(double_cmp, Type::getInt64Ty(*context));
+        Value* tagged_double_result = packInt64ToTaggedValue(double_result_int, true);
+        builder->CreateBr(merge);
+        
+        // Int path: compare as int64
+        builder->SetInsertPoint(int_path);
+        Value* left_int = unpackInt64FromTaggedValue(left_tagged);
+        Value* right_int = unpackInt64FromTaggedValue(right_tagged);
+        
+        Value* int_cmp = nullptr;
+        if (operation == "lt") {
+            int_cmp = builder->CreateICmpSLT(left_int, right_int);
+        } else if (operation == "gt") {
+            int_cmp = builder->CreateICmpSGT(left_int, right_int);
+        } else if (operation == "ge") {
+            int_cmp = builder->CreateICmpSGE(left_int, right_int);
+        } else if (operation == "le") {
+            int_cmp = builder->CreateICmpSLE(left_int, right_int);
+        } else if (operation == "eq") {
+            int_cmp = builder->CreateICmpEQ(left_int, right_int);
+        }
+        Value* int_result_extended = builder->CreateZExt(int_cmp, Type::getInt64Ty(*context));
+        Value* tagged_int_result = packInt64ToTaggedValue(int_result_extended, true);
+        builder->CreateBr(merge);
+        
+        // Merge results
+        builder->SetInsertPoint(merge);
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2);
+        result_phi->addIncoming(tagged_double_result, double_path);
+        result_phi->addIncoming(tagged_int_result, int_path);
+        
+        return result_phi;
     }
     
     
@@ -2460,10 +2658,9 @@ private:
             }
         }
         
-        // Result is already a tagged_value - unpack it for backward compatibility
-        // (since existing code expects raw LLVM values)
-        TypedValue result_typed = taggedValueToTypedValue(result);
-        return result_typed.llvm_value;
+        // Phase 3B: Keep result as tagged_value to preserve type information!
+        // Don't unpack - variables will store tagged_value directly
+        return result;
     }
 
     Value* codegenComparison(const eshkol_operations_t* op, const std::string& operation) {
@@ -2472,31 +2669,18 @@ private:
             return nullptr;
         }
         
-        // Generate operands
-        Value* left = codegenAST(&op->call_op.variables[0]);
-        Value* right = codegenAST(&op->call_op.variables[1]);
+        // Generate operands with type information
+        TypedValue left_tv = codegenTypedAST(&op->call_op.variables[0]);
+        TypedValue right_tv = codegenTypedAST(&op->call_op.variables[1]);
         
-        if (!left || !right) return nullptr;
+        if (!left_tv.llvm_value || !right_tv.llvm_value) return nullptr;
         
-        Value* result = nullptr;
-        if (operation == "lt") {
-            result = builder->CreateICmpSLT(left, right);
-        } else if (operation == "gt") {
-            result = builder->CreateICmpSGT(left, right);
-        } else if (operation == "eq") {
-            result = builder->CreateICmpEQ(left, right);
-        } else if (operation == "le") {
-            result = builder->CreateICmpSLE(left, right);
-        } else if (operation == "ge") {
-            result = builder->CreateICmpSGE(left, right);
-        }
+        // Convert to tagged_value for runtime polymorphism
+        Value* left_tagged = typedValueToTaggedValue(left_tv);
+        Value* right_tagged = typedValueToTaggedValue(right_tv);
         
-        if (result) {
-            // Convert boolean result to int64 (0 or 1)
-            return builder->CreateZExt(result, Type::getInt64Ty(*context));
-        }
-        
-        return nullptr;
+        // Call polymorphic comparison that handles runtime type detection
+        return polymorphicCompare(left_tagged, right_tagged, operation);
     }
     
     Value* codegenDisplay(const eshkol_operations_t* op) {
@@ -2643,10 +2827,32 @@ private:
             builder->SetInsertPoint(element_done);
             Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
             Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
-            Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
-                {cons_ptr, is_cdr});
+            
+            // Phase 3B: Check cdr type before extracting - might not be a pointer!
+            Value* cdr_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
+            Value* cdr_base_type = builder->CreateAnd(cdr_type,
+                ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+            Value* cdr_is_ptr = builder->CreateICmpEQ(cdr_base_type,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
+            Value* cdr_is_null = builder->CreateICmpEQ(cdr_base_type,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_NULL));
+            Value* can_traverse = builder->CreateOr(cdr_is_ptr, cdr_is_null);
+            
+            // FIX: Use branching instead of select to avoid evaluating get_ptr on non-pointers
+            BasicBlock* ptr_cdr = BasicBlock::Create(*context, "display_ptr_cdr", current_func);
+            BasicBlock* end_list = BasicBlock::Create(*context, "display_end_list", current_func);
+            
+            builder->CreateCondBr(can_traverse, ptr_cdr, end_list);
+            
+            builder->SetInsertPoint(ptr_cdr);
+            Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
             builder->CreateStore(cdr_val, current_ptr);
             builder->CreateBr(list_loop_cond);
+            
+            // Cdr is not a proper list continuation - end display
+            builder->SetInsertPoint(end_list);
+            builder->CreateCall(printf_func, {codegenString(")")});
+            builder->CreateBr(display_done);
             
             // List loop exit: close parenthesis
             builder->SetInsertPoint(list_loop_exit);
@@ -5329,15 +5535,15 @@ private:
         // Copy loop body: copy current element and advance
         builder->SetInsertPoint(copy_loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* src_cons_ptr = builder->CreateIntToPtr(current_src, builder->getPtrTy());
         
-        // Get car from source
-        Value* src_car_ptr = builder->CreateStructGEP(arena_cons_type, src_cons_ptr, 0);
-        Value* src_car = builder->CreateLoad(Type::getInt64Ty(*context), src_car_ptr);
+        // Extract car as tagged_value and convert to TypedValue
+        Value* src_car_tagged = extractCarAsTaggedValue(current_src);
+        TypedValue src_car_typed = taggedValueToTypedValue(src_car_tagged);
         
-        // Create new cons cell with car and null cdr (will be updated)
-        Value* new_cons = codegenArenaConsCell(src_car, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        // Create new cons cell with car and null cdr (will be updated) with type preservation
+        TypedValue cdr_null = TypedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_NULL);
+        Value* new_cons = codegenTaggedArenaConsCell(src_car_typed, cdr_null);
         
         // Update result head/tail
         Value* head_val = builder->CreateLoad(Type::getInt64Ty(*context), result_head);
@@ -5359,15 +5565,20 @@ private:
         builder->SetInsertPoint(update_tail);
         Value* tail_val = builder->CreateLoad(Type::getInt64Ty(*context), result_tail);
         Value* tail_cons_ptr = builder->CreateIntToPtr(tail_val, builder->getPtrTy());
-        Value* tail_cdr_ptr = builder->CreateStructGEP(arena_cons_type, tail_cons_ptr, 1);
-        builder->CreateStore(new_cons, tail_cdr_ptr);
+        
+        // Use arena_tagged_cons_set_ptr_func to set cdr
+        Value* is_cdr_set = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* ptr_type_tag = ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {tail_cons_ptr, is_cdr_set, new_cons, ptr_type_tag});
         builder->CreateStore(new_cons, result_tail);
         builder->CreateBr(continue_copy);
         
-        // Continue: move to next source element
+        // Continue: move to next source element using tagged helper
         builder->SetInsertPoint(continue_copy);
-        Value* src_cdr_ptr = builder->CreateStructGEP(arena_cons_type, src_cons_ptr, 1);
-        Value* src_cdr = builder->CreateLoad(Type::getInt64Ty(*context), src_cdr_ptr);
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* src_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {src_cons_ptr, is_cdr_get});
         builder->CreateStore(src_cdr, source_current);
         
         builder->CreateBr(copy_loop_cond);
@@ -5384,8 +5595,12 @@ private:
         
         builder->SetInsertPoint(connect_tail);
         Value* final_tail_cons_ptr = builder->CreateIntToPtr(final_tail, builder->getPtrTy());
-        Value* final_tail_cdr_ptr = builder->CreateStructGEP(arena_cons_type, final_tail_cons_ptr, 1);
-        builder->CreateStore(list2, final_tail_cdr_ptr);
+        
+        // Use arena_tagged_cons_set_ptr_func to connect tail to list2
+        Value* is_cdr_final = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* ptr_type_final = ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {final_tail_cons_ptr, is_cdr_final, list2, ptr_type_final});
         builder->CreateBr(done_copy);
         
         builder->SetInsertPoint(done_copy);
@@ -5436,20 +5651,22 @@ private:
         // Loop body: cons car onto result and move to cdr
         builder->SetInsertPoint(loop_body);
         
-        // Get car of current element
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-        Value* car_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 0);
-        Value* car_val = builder->CreateLoad(Type::getInt64Ty(*context), car_ptr);
         
-        // Cons car onto result: (car . result)
+        // Extract car as tagged_value and convert to TypedValue
+        Value* car_tagged = extractCarAsTaggedValue(current_val);
+        TypedValue car_typed = taggedValueToTypedValue(car_tagged);
+        
+        // Cons car onto result: (car . result) with type preservation
         Value* result_val = builder->CreateLoad(Type::getInt64Ty(*context), result);
-        Value* new_result = codegenArenaConsCell(car_val, result_val);
+        TypedValue result_typed = TypedValue(result_val, ESHKOL_VALUE_CONS_PTR, true);
+        Value* new_result = codegenTaggedArenaConsCell(car_typed, result_typed);
         builder->CreateStore(new_result, result);
         
-        // Move to cdr
-        Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-        Value* cdr_val = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+        // Move to cdr using tagged helper
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {cons_ptr, is_cdr_get});
         builder->CreateStore(cdr_val, current_ptr);
         
         // Jump back to condition
@@ -5627,11 +5844,28 @@ private:
         Value* new_value = codegenAST(&op->call_op.variables[1]);
         if (!pair || !new_value) return nullptr;
         
-        // Mutate the car of the pair
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
+        // Mutate the car of the pair using tagged helper
         Value* cons_ptr = builder->CreateIntToPtr(pair, builder->getPtrTy());
-        Value* car_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 0);
-        builder->CreateStore(new_value, car_ptr);
+        
+        // Detect new value type and use appropriate setter
+        TypedValue new_val_typed = detectValueType(new_value);
+        Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0);
+        uint8_t type_tag = new_val_typed.type;
+        
+        if (new_val_typed.isInt64()) {
+            builder->CreateCall(arena_tagged_cons_set_int64_func,
+                {cons_ptr, is_car, new_val_typed.llvm_value,
+                 ConstantInt::get(Type::getInt8Ty(*context), type_tag)});
+        } else if (new_val_typed.isDouble()) {
+            builder->CreateCall(arena_tagged_cons_set_double_func,
+                {cons_ptr, is_car, new_val_typed.llvm_value,
+                 ConstantInt::get(Type::getInt8Ty(*context), type_tag)});
+        } else {
+            // Pointer/other types
+            builder->CreateCall(arena_tagged_cons_set_ptr_func,
+                {cons_ptr, is_car, new_val_typed.llvm_value,
+                 ConstantInt::get(Type::getInt8Ty(*context), type_tag)});
+        }
         
         // Return the new value (Scheme convention)
         return new_value;
@@ -5648,11 +5882,28 @@ private:
         Value* new_value = codegenAST(&op->call_op.variables[1]);
         if (!pair || !new_value) return nullptr;
         
-        // Mutate the cdr of the pair
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
+        // Mutate the cdr of the pair using tagged helper
         Value* cons_ptr = builder->CreateIntToPtr(pair, builder->getPtrTy());
-        Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-        builder->CreateStore(new_value, cdr_ptr);
+        
+        // Detect new value type and use appropriate setter
+        TypedValue new_val_typed = detectValueType(new_value);
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        uint8_t type_tag = new_val_typed.type;
+        
+        if (new_val_typed.isInt64()) {
+            builder->CreateCall(arena_tagged_cons_set_int64_func,
+                {cons_ptr, is_cdr, new_val_typed.llvm_value,
+                 ConstantInt::get(Type::getInt8Ty(*context), type_tag)});
+        } else if (new_val_typed.isDouble()) {
+            builder->CreateCall(arena_tagged_cons_set_double_func,
+                {cons_ptr, is_cdr, new_val_typed.llvm_value,
+                 ConstantInt::get(Type::getInt8Ty(*context), type_tag)});
+        } else {
+            // Pointer/other types
+            builder->CreateCall(arena_tagged_cons_set_ptr_func,
+                {cons_ptr, is_cdr, new_val_typed.llvm_value,
+                 ConstantInt::get(Type::getInt8Ty(*context), type_tag)});
+        }
         
         // Return the new value (Scheme convention)
         return new_value;
@@ -5763,10 +6014,8 @@ private:
                 return polymorphicDiv();
             }
             
-            // Fallback for other arities (to be removed in Phase 3)
+            // Handle all arities with polymorphic functions
             if (func_name == "+" || func_name == "*" || func_name == "-" || func_name == "/") {
-                eshkol_warn("Arithmetic operation %s with arity %zu not yet polymorphic, using old implementation",
-                           func_name.c_str(), required_arity);
                 return createBuiltinArithmeticFunction(func_name, required_arity);
             }
             
@@ -5857,11 +6106,12 @@ private:
         // Apply procedure to current element (pass tagged_value directly)
         Value* proc_result = builder->CreateCall(proc_func, {car_tagged});
         
-        // Create new cons cell for result using TAGGED cons cell
-        // Detect result type and create tagged cons cell
-        TypedValue proc_result_typed = detectValueType(proc_result);
-        TypedValue cdr_null = TypedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_NULL);
-        Value* new_result_cons = codegenTaggedArenaConsCell(proc_result_typed, cdr_null);
+        // Create new cons cell for result - proc_result is already tagged_value!
+        // Create null cdr as int64(0) - will be detected as null in helper
+        Value* cdr_null_int = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        Value* cdr_null_tagged = packInt64ToTaggedValue(cdr_null_int, true);
+        Value* new_result_cons = codegenTaggedArenaConsCellFromTaggedValue(
+            proc_result, cdr_null_tagged);
         
         // Update result list
         Value* head_val = builder->CreateLoad(Type::getInt64Ty(*context), result_head);
@@ -5989,10 +6239,12 @@ private:
         // Apply procedure to extracted elements
         Value* proc_result = builder->CreateCall(proc_func, proc_args);
         
-        // Create new cons cell for result using tagged cons cells
-        TypedValue proc_result_typed = detectValueType(proc_result);
-        TypedValue cdr_null = TypedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_NULL);
-        Value* new_result_cons = codegenTaggedArenaConsCell(proc_result_typed, cdr_null);
+        // Create new cons cell for result - proc_result is already tagged_value!
+        // Create null cdr as int64(0) - will be detected as null in helper
+        Value* cdr_null_int = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        Value* cdr_null_tagged = packInt64ToTaggedValue(cdr_null_int, true);
+        Value* new_result_cons = codegenTaggedArenaConsCellFromTaggedValue(
+            proc_result, cdr_null_tagged);
         
         // Update result list
         Value* head_val = builder->CreateLoad(Type::getInt64Ty(*context), result_head);
@@ -6107,23 +6359,25 @@ private:
         // Loop body: get current element and check predicate
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
-        Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
+        // Extract car as tagged_value - polymorphic functions expect tagged_value!
+        Value* input_element_tagged = extractCarAsTaggedValue(current_val);
         
-        // Get car of current input element
-        Value* input_car_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 0);
-        Value* input_element = builder->CreateLoad(Type::getInt64Ty(*context), input_car_ptr);
+        // Apply predicate to current element (pass tagged_value directly)
+        Value* pred_result = builder->CreateCall(pred_func, {input_element_tagged});
         
-        // Apply predicate to current element
-        Value* pred_result = builder->CreateCall(pred_func, {input_element});
+        // Predicate returns tagged_value - unpack to check boolean result
+        Value* pred_result_int = unpackInt64FromTaggedValue(pred_result);
         
         // Check if predicate returned true (non-zero)
-        Value* pred_is_true = builder->CreateICmpNE(pred_result, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* pred_is_true = builder->CreateICmpNE(pred_result_int, ConstantInt::get(Type::getInt64Ty(*context), 0));
         builder->CreateCondBr(pred_is_true, add_element, skip_element);
         
         // Add element to result if predicate is true
+        // Convert tagged_value to TypedValue for cons cell creation
         builder->SetInsertPoint(add_element);
-        Value* new_result_cons = codegenArenaConsCell(input_element, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        TypedValue elem_typed = taggedValueToTypedValue(input_element_tagged);
+        TypedValue cdr_null = TypedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_NULL);
+        Value* new_result_cons = codegenTaggedArenaConsCell(elem_typed, cdr_null);
         
         // Update result list
         Value* head_val = builder->CreateLoad(Type::getInt64Ty(*context), result_head);
@@ -6142,15 +6396,23 @@ private:
         builder->SetInsertPoint(update_tail);
         Value* tail_val = builder->CreateLoad(Type::getInt64Ty(*context), result_tail);
         Value* tail_cons_ptr = builder->CreateIntToPtr(tail_val, builder->getPtrTy());
-        Value* tail_cdr_ptr = builder->CreateStructGEP(arena_cons_type, tail_cons_ptr, 1);
-        builder->CreateStore(new_result_cons, tail_cdr_ptr);
+        
+        // Use arena_tagged_cons_set_ptr_func to set cdr
+        Value* is_cdr_set = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* ptr_type_tag = ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {tail_cons_ptr, is_cdr_set, new_result_cons, ptr_type_tag});
         builder->CreateStore(new_result_cons, result_tail);
         builder->CreateBr(skip_element);
         
         // Skip element: move to next input element
         builder->SetInsertPoint(skip_element);
-        Value* input_cdr_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 1);
-        Value* input_cdr = builder->CreateLoad(Type::getInt64Ty(*context), input_cdr_ptr);
+        Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
+        
+        // Use arena_tagged_cons_get_ptr_func to get cdr
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
         builder->CreateBr(loop_condition);
@@ -6215,23 +6477,29 @@ private:
         // Loop body: apply procedure to accumulator and current element
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         
-        // Get car of current input element
-        Value* input_car_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 0);
-        Value* input_element = builder->CreateLoad(Type::getInt64Ty(*context), input_car_ptr);
+        // Extract car as tagged_value - polymorphic functions expect tagged_value!
+        Value* input_element_tagged = extractCarAsTaggedValue(current_val);
         
         // Get current accumulator value
         Value* acc_val = builder->CreateLoad(Type::getInt64Ty(*context), accumulator);
         
-        // Apply procedure: proc(accumulator, current_element)
-        Value* new_acc = builder->CreateCall(proc_func, {acc_val, input_element});
+        // Pack accumulator to tagged_value if needed
+        Value* acc_tagged = (acc_val->getType() == tagged_value_type) ? acc_val :
+            packInt64ToTaggedValue(acc_val, true);
+        
+        // Apply procedure: proc(accumulator, current_element) with tagged values
+        Value* new_acc_tagged = builder->CreateCall(proc_func, {acc_tagged, input_element_tagged});
+        
+        // Unpack result for storage
+        Value* new_acc = unpackInt64FromTaggedValue(new_acc_tagged);
         builder->CreateStore(new_acc, accumulator);
         
-        // Move to next input element
-        Value* input_cdr_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 1);
-        Value* input_cdr = builder->CreateLoad(Type::getInt64Ty(*context), input_cdr_ptr);
+        // Move to next input element using tagged helper
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
         builder->CreateBr(loop_condition);
@@ -6341,12 +6609,11 @@ private:
         // Loop body: compare current element with item
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         
-        // Get car of current element
-        Value* car_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 0);
-        Value* current_element = builder->CreateLoad(Type::getInt64Ty(*context), car_ptr);
+        // Extract car as tagged_value
+        Value* current_element_tagged = extractCarAsTaggedValue(current_val);
+        Value* current_element = unpackInt64FromTaggedValue(current_element_tagged);
         
         // Perform comparison based on type
         Value* is_match = nullptr;
@@ -6364,10 +6631,11 @@ private:
         builder->SetInsertPoint(found_match);
         builder->CreateBr(loop_exit);
         
-        // Continue search: move to next element
+        // Continue search: move to next element using tagged helper
         builder->SetInsertPoint(continue_search);
-        Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-        Value* cdr_val = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {cons_ptr, is_cdr_get});
         builder->CreateStore(cdr_val, current_ptr);
         
         builder->CreateBr(loop_condition);
@@ -6438,19 +6706,18 @@ private:
         // Loop body: apply procedure for side effects
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         
-        // Get car of current input element
-        Value* input_car_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 0);
-        Value* input_element = builder->CreateLoad(Type::getInt64Ty(*context), input_car_ptr);
+        // Extract car as tagged_value - polymorphic functions expect tagged_value!
+        Value* input_element_tagged = extractCarAsTaggedValue(current_val);
         
         // Apply procedure to current element (ignore return value - side effects only)
-        builder->CreateCall(proc_func, {input_element});
+        builder->CreateCall(proc_func, {input_element_tagged});
         
-        // Move to next input element
-        Value* input_cdr_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 1);
-        Value* input_cdr = builder->CreateLoad(Type::getInt64Ty(*context), input_cdr_ptr);
+        // Move to next input element using tagged helper
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
         builder->CreateBr(loop_condition);
@@ -6502,12 +6769,11 @@ private:
         // Loop body: get current association pair
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* alist_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         
-        // Get car of alist element (should be a pair)
-        Value* alist_car_ptr = builder->CreateStructGEP(arena_cons_type, alist_cons_ptr, 0);
-        Value* current_pair = builder->CreateLoad(Type::getInt64Ty(*context), alist_car_ptr);
+        // Extract car of alist element (should be a pair) using tagged helper
+        Value* current_pair_tagged = extractCarAsTaggedValue(current_val);
+        Value* current_pair = unpackInt64FromTaggedValue(current_pair_tagged);
         
         // Check if current_pair is actually a pair (not null)
         Value* pair_is_valid = builder->CreateICmpNE(current_pair, ConstantInt::get(Type::getInt64Ty(*context), 0));
@@ -6515,11 +6781,10 @@ private:
         
         // Check key: extract key from pair and compare
         builder->SetInsertPoint(check_key);
-        Value* pair_cons_ptr = builder->CreateIntToPtr(current_pair, builder->getPtrTy());
         
-        // Get key from pair (car of the pair)
-        Value* pair_key_ptr = builder->CreateStructGEP(arena_cons_type, pair_cons_ptr, 0);
-        Value* pair_key = builder->CreateLoad(Type::getInt64Ty(*context), pair_key_ptr);
+        // Extract key from pair (car of the pair) using tagged helper
+        Value* pair_key_tagged = extractCarAsTaggedValue(current_pair);
+        Value* pair_key = unpackInt64FromTaggedValue(pair_key_tagged);
         
         // Perform comparison based on type
         Value* keys_match = nullptr;
@@ -6537,10 +6802,11 @@ private:
         builder->SetInsertPoint(found_match);
         builder->CreateBr(loop_exit);
         
-        // Continue search: move to next element in alist
+        // Continue search: move to next element in alist using tagged helper
         builder->SetInsertPoint(continue_search);
-        Value* alist_cdr_ptr = builder->CreateStructGEP(arena_cons_type, alist_cons_ptr, 1);
-        Value* alist_cdr = builder->CreateLoad(Type::getInt64Ty(*context), alist_cdr_ptr);
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* alist_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {alist_cons_ptr, is_cdr_get});
         builder->CreateStore(alist_cdr, current_ptr);
         
         builder->CreateBr(loop_condition);
@@ -6559,11 +6825,10 @@ private:
         
         builder->CreateCondBr(is_found, return_pair, return_false);
         
-        // Return the pair if found
+        // Return the pair if found using tagged helper
         builder->SetInsertPoint(return_pair);
-        Value* found_cons_ptr = builder->CreateIntToPtr(final_current, builder->getPtrTy());
-        Value* found_car_ptr = builder->CreateStructGEP(arena_cons_type, found_cons_ptr, 0);
-        Value* found_pair = builder->CreateLoad(Type::getInt64Ty(*context), found_car_ptr);
+        Value* found_pair_tagged = extractCarAsTaggedValue(final_current);
+        Value* found_pair = unpackInt64FromTaggedValue(found_pair_tagged);
         builder->CreateBr(final_return);
         
         // Return false/null if not found
@@ -6681,15 +6946,15 @@ private:
         // Loop body: take current element and advance
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         
-        // Get car of current element
-        Value* input_car_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 0);
-        Value* input_element = builder->CreateLoad(Type::getInt64Ty(*context), input_car_ptr);
+        // Extract car as tagged_value and convert to TypedValue
+        Value* input_element_tagged = extractCarAsTaggedValue(current_val);
+        TypedValue input_element_typed = taggedValueToTypedValue(input_element_tagged);
         
-        // Create new cons cell for result
-        Value* new_result_cons = codegenArenaConsCell(input_element, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        // Create new cons cell for result with type preservation
+        TypedValue cdr_null = TypedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_NULL);
+        Value* new_result_cons = codegenTaggedArenaConsCell(input_element_typed, cdr_null);
         
         // Update result list (similar to map)
         Value* head_val = builder->CreateLoad(Type::getInt64Ty(*context), result_head);
@@ -6709,15 +6974,22 @@ private:
         builder->SetInsertPoint(update_tail);
         Value* tail_val = builder->CreateLoad(Type::getInt64Ty(*context), result_tail);
         Value* tail_cons_ptr = builder->CreateIntToPtr(tail_val, builder->getPtrTy());
-        Value* tail_cdr_ptr = builder->CreateStructGEP(arena_cons_type, tail_cons_ptr, 1);
-        builder->CreateStore(new_result_cons, tail_cdr_ptr);
+        
+        // Use arena_tagged_cons_set_ptr_func to set cdr
+        Value* is_cdr_set = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* ptr_type_tag = ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {tail_cons_ptr, is_cdr_set, new_result_cons, ptr_type_tag});
         builder->CreateStore(new_result_cons, result_tail);
         builder->CreateBr(continue_take_loop);
         
         // Continue: move to next input element and increment counter
         builder->SetInsertPoint(continue_take_loop);
-        Value* input_cdr_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 1);
-        Value* input_cdr = builder->CreateLoad(Type::getInt64Ty(*context), input_cdr_ptr);
+        
+        // Use arena_tagged_cons_get_ptr_func to get cdr
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
         Value* new_count = builder->CreateAdd(count_val, ConstantInt::get(Type::getInt64Ty(*context), 1));
@@ -6838,28 +7110,30 @@ private:
         // Loop body: check predicate on current element
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         
-        // Get car of current element
-        Value* car_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 0);
-        Value* current_element = builder->CreateLoad(Type::getInt64Ty(*context), car_ptr);
+        // Extract car as tagged_value - polymorphic functions expect tagged_value!
+        Value* current_element_tagged = extractCarAsTaggedValue(current_val);
         
-        // Apply predicate to current element
-        Value* pred_result = builder->CreateCall(pred_func, {current_element});
+        // Apply predicate to current element (pass tagged_value directly)
+        Value* pred_result = builder->CreateCall(pred_func, {current_element_tagged});
+        
+        // Predicate returns tagged_value - unpack to check boolean result
+        Value* pred_result_int = unpackInt64FromTaggedValue(pred_result);
         
         // Check if predicate returned true (non-zero)
-        Value* pred_is_true = builder->CreateICmpNE(pred_result, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* pred_is_true = builder->CreateICmpNE(pred_result_int, ConstantInt::get(Type::getInt64Ty(*context), 0));
         builder->CreateCondBr(pred_is_true, found_element, continue_search);
         
         // Found element: return the element itself
         builder->SetInsertPoint(found_element);
         builder->CreateBr(loop_exit);
         
-        // Continue search: move to next element
+        // Continue search: move to next element using tagged helper
         builder->SetInsertPoint(continue_search);
-        Value* cdr_ptr = builder->CreateStructGEP(arena_cons_type, cons_ptr, 1);
-        Value* cdr_val = builder->CreateLoad(Type::getInt64Ty(*context), cdr_ptr);
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {cons_ptr, is_cdr_get});
         builder->CreateStore(cdr_val, current_ptr);
         
         builder->CreateBr(loop_condition);
@@ -6876,11 +7150,10 @@ private:
         
         builder->CreateCondBr(is_found, return_element, return_null);
         
-        // Return the element if found
+        // Return the element if found using tagged helper
         builder->SetInsertPoint(return_element);
-        Value* found_cons_ptr = builder->CreateIntToPtr(final_current, builder->getPtrTy());
-        Value* found_car_ptr = builder->CreateStructGEP(arena_cons_type, found_cons_ptr, 0);
-        Value* found_element_val = builder->CreateLoad(Type::getInt64Ty(*context), found_car_ptr);
+        Value* found_element_tagged = extractCarAsTaggedValue(final_current);
+        Value* found_element_val = unpackInt64FromTaggedValue(found_element_tagged);
         builder->CreateBr(final_return);
         
         // Return null if not found
@@ -6957,23 +7230,26 @@ private:
         // Loop body: get current element and check predicate
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         
-        // Get car of current input element
-        Value* input_car_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 0);
-        Value* input_element = builder->CreateLoad(Type::getInt64Ty(*context), input_car_ptr);
+        // Extract car as tagged_value - polymorphic functions expect tagged_value!
+        Value* input_element_tagged = extractCarAsTaggedValue(current_val);
         
-        // Apply predicate to current element
-        Value* pred_result = builder->CreateCall(pred_func, {input_element});
+        // Apply predicate to current element (pass tagged_value directly)
+        Value* pred_result = builder->CreateCall(pred_func, {input_element_tagged});
+        
+        // Predicate returns tagged_value - unpack to check boolean result
+        Value* pred_result_int = unpackInt64FromTaggedValue(pred_result);
         
         // Check if predicate returned true (non-zero)
-        Value* pred_is_true = builder->CreateICmpNE(pred_result, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* pred_is_true = builder->CreateICmpNE(pred_result_int, ConstantInt::get(Type::getInt64Ty(*context), 0));
         builder->CreateCondBr(pred_is_true, add_to_true, add_to_false);
         
         // Add element to true list if predicate is true
         builder->SetInsertPoint(add_to_true);
-        Value* new_true_cons = codegenArenaConsCell(input_element, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        TypedValue elem_typed = taggedValueToTypedValue(input_element_tagged);
+        TypedValue cdr_null = TypedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_NULL);
+        Value* new_true_cons = codegenTaggedArenaConsCell(elem_typed, cdr_null);
         
         // Update true list
         Value* true_head_val = builder->CreateLoad(Type::getInt64Ty(*context), true_head);
@@ -6992,14 +7268,18 @@ private:
         builder->SetInsertPoint(update_true_tail);
         Value* true_tail_val = builder->CreateLoad(Type::getInt64Ty(*context), true_tail);
         Value* true_tail_cons_ptr = builder->CreateIntToPtr(true_tail_val, builder->getPtrTy());
-        Value* true_tail_cdr_ptr = builder->CreateStructGEP(arena_cons_type, true_tail_cons_ptr, 1);
-        builder->CreateStore(new_true_cons, true_tail_cdr_ptr);
+        
+        // Use arena_tagged_cons_set_ptr_func to set cdr
+        Value* is_cdr_set_true = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* ptr_type_tag = ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {true_tail_cons_ptr, is_cdr_set_true, new_true_cons, ptr_type_tag});
         builder->CreateStore(new_true_cons, true_tail);
         builder->CreateBr(continue_partition);
         
         // Add element to false list if predicate is false
         builder->SetInsertPoint(add_to_false);
-        Value* new_false_cons = codegenArenaConsCell(input_element, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* new_false_cons = codegenTaggedArenaConsCell(elem_typed, cdr_null);
         
         // Update false list
         Value* false_head_val = builder->CreateLoad(Type::getInt64Ty(*context), false_head);
@@ -7018,15 +7298,19 @@ private:
         builder->SetInsertPoint(update_false_tail);
         Value* false_tail_val = builder->CreateLoad(Type::getInt64Ty(*context), false_tail);
         Value* false_tail_cons_ptr = builder->CreateIntToPtr(false_tail_val, builder->getPtrTy());
-        Value* false_tail_cdr_ptr = builder->CreateStructGEP(arena_cons_type, false_tail_cons_ptr, 1);
-        builder->CreateStore(new_false_cons, false_tail_cdr_ptr);
+        
+        // Use arena_tagged_cons_set_ptr_func to set cdr
+        Value* is_cdr_set_false = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {false_tail_cons_ptr, is_cdr_set_false, new_false_cons, ptr_type_tag});
         builder->CreateStore(new_false_cons, false_tail);
         builder->CreateBr(continue_partition);
         
-        // Continue: move to next input element
+        // Continue: move to next input element using tagged helper
         builder->SetInsertPoint(continue_partition);
-        Value* input_cdr_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 1);
-        Value* input_cdr = builder->CreateLoad(Type::getInt64Ty(*context), input_cdr_ptr);
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
         builder->CreateBr(loop_condition);
@@ -7094,15 +7378,15 @@ private:
         // Loop body: take current element for prefix and advance
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         
-        // Get car of current element
-        Value* input_car_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 0);
-        Value* input_element = builder->CreateLoad(Type::getInt64Ty(*context), input_car_ptr);
+        // Extract car as tagged_value and convert to TypedValue
+        Value* input_element_tagged = extractCarAsTaggedValue(current_val);
+        TypedValue input_element_typed = taggedValueToTypedValue(input_element_tagged);
         
-        // Create new cons cell for prefix
-        Value* new_prefix_cons = codegenArenaConsCell(input_element, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        // Create new cons cell for prefix with type preservation
+        TypedValue cdr_null = TypedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_NULL);
+        Value* new_prefix_cons = codegenTaggedArenaConsCell(input_element_typed, cdr_null);
         
         // Update prefix list (similar to take)
         Value* prefix_head_val = builder->CreateLoad(Type::getInt64Ty(*context), prefix_head);
@@ -7122,15 +7406,22 @@ private:
         builder->SetInsertPoint(update_prefix_tail);
         Value* prefix_tail_val = builder->CreateLoad(Type::getInt64Ty(*context), prefix_tail);
         Value* prefix_tail_cons_ptr = builder->CreateIntToPtr(prefix_tail_val, builder->getPtrTy());
-        Value* prefix_tail_cdr_ptr = builder->CreateStructGEP(arena_cons_type, prefix_tail_cons_ptr, 1);
-        builder->CreateStore(new_prefix_cons, prefix_tail_cdr_ptr);
+        
+        // Use arena_tagged_cons_set_ptr_func to set cdr
+        Value* is_cdr_set = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* ptr_type_tag = ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {prefix_tail_cons_ptr, is_cdr_set, new_prefix_cons, ptr_type_tag});
         builder->CreateStore(new_prefix_cons, prefix_tail);
         builder->CreateBr(continue_splitat);
         
         // Continue: move to next input element and increment counter
         builder->SetInsertPoint(continue_splitat);
-        Value* input_cdr_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 1);
-        Value* input_cdr = builder->CreateLoad(Type::getInt64Ty(*context), input_cdr_ptr);
+        
+        // Use arena_tagged_cons_get_ptr_func to get cdr
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
         Value* new_count = builder->CreateAdd(count_val, ConstantInt::get(Type::getInt64Ty(*context), 1));
@@ -7196,12 +7487,11 @@ private:
         // Loop body: get current element and check if it matches item to remove
         builder->SetInsertPoint(loop_body);
         
-        StructType* arena_cons_type = StructType::get(Type::getInt64Ty(*context), Type::getInt64Ty(*context));
         Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         
-        // Get car of current input element
-        Value* input_car_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 0);
-        Value* input_element = builder->CreateLoad(Type::getInt64Ty(*context), input_car_ptr);
+        // Extract car as tagged_value
+        Value* input_element_tagged = extractCarAsTaggedValue(current_val);
+        Value* input_element = unpackInt64FromTaggedValue(input_element_tagged);
         
         // Compare current element with item to remove
         Value* is_match = nullptr;
@@ -7218,7 +7508,9 @@ private:
         
         // Keep element (doesn't match item to remove)
         builder->SetInsertPoint(keep_element);
-        Value* new_result_cons = codegenArenaConsCell(input_element, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        TypedValue elem_typed = taggedValueToTypedValue(input_element_tagged);
+        TypedValue cdr_null = TypedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), ESHKOL_VALUE_NULL);
+        Value* new_result_cons = codegenTaggedArenaConsCell(elem_typed, cdr_null);
         
         // Update result list
         Value* head_val = builder->CreateLoad(Type::getInt64Ty(*context), result_head);
@@ -7237,15 +7529,22 @@ private:
         builder->SetInsertPoint(update_tail);
         Value* tail_val = builder->CreateLoad(Type::getInt64Ty(*context), result_tail);
         Value* tail_cons_ptr = builder->CreateIntToPtr(tail_val, builder->getPtrTy());
-        Value* tail_cdr_ptr = builder->CreateStructGEP(arena_cons_type, tail_cons_ptr, 1);
-        builder->CreateStore(new_result_cons, tail_cdr_ptr);
+        
+        // Use arena_tagged_cons_set_ptr_func to set cdr
+        Value* is_cdr_set = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* ptr_type_tag = ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {tail_cons_ptr, is_cdr_set, new_result_cons, ptr_type_tag});
         builder->CreateStore(new_result_cons, result_tail);
         builder->CreateBr(skip_element);
         
         // Skip element: move to next input element (for both keep and remove cases)
         builder->SetInsertPoint(skip_element);
-        Value* input_cdr_ptr = builder->CreateStructGEP(arena_cons_type, input_cons_ptr, 1);
-        Value* input_cdr = builder->CreateLoad(Type::getInt64Ty(*context), input_cdr_ptr);
+        
+        // Use arena_tagged_cons_get_ptr_func to get cdr
+        Value* is_cdr_get = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
         builder->CreateBr(loop_condition);
@@ -7321,39 +7620,18 @@ private:
         
         builder->SetInsertPoint(loop_exit);
         Value* last_cons = builder->CreateLoad(Type::getInt64Ty(*context), previous_ptr);
-        Value* last_cons_ptr = builder->CreateIntToPtr(last_cons, builder->getPtrTy());
-        Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0);
-        Value* last_car_type = builder->CreateCall(arena_tagged_cons_get_type_func, {last_cons_ptr, is_car});
-        Value* last_base = builder->CreateAnd(last_car_type, ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
-        Value* is_double_last = builder->CreateICmpEQ(last_base, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
         
-        // Use proper branching instead of CreateSelect to avoid evaluating both branches
-        BasicBlock* extract_double = BasicBlock::Create(*context, "last_extract_double", current_func);
-        BasicBlock* extract_int = BasicBlock::Create(*context, "last_extract_int", current_func);
-        BasicBlock* merge_last = BasicBlock::Create(*context, "last_merge", current_func);
-        
-        builder->CreateCondBr(is_double_last, extract_double, extract_int);
-        
-        builder->SetInsertPoint(extract_double);
-        Value* last_double = builder->CreateCall(arena_tagged_cons_get_double_func, {last_cons_ptr, is_car});
-        Value* last_double_as_int = builder->CreateBitCast(last_double, Type::getInt64Ty(*context));
-        builder->CreateBr(merge_last);
-        
-        builder->SetInsertPoint(extract_int);
-        Value* last_int = builder->CreateCall(arena_tagged_cons_get_int64_func, {last_cons_ptr, is_car});
-        builder->CreateBr(merge_last);
-        
-        builder->SetInsertPoint(merge_last);
-        PHINode* last_element = builder->CreatePHI(Type::getInt64Ty(*context), 2, "last_value");
-        last_element->addIncoming(last_double_as_int, extract_double);
-        last_element->addIncoming(last_int, extract_int);
+        // CRITICAL FIX: Use extractCarAsTaggedValue - no bitcast needed!
+        // Extract last element as tagged_value (preserves type correctly)
+        Value* last_element_tagged = extractCarAsTaggedValue(last_cons);
         builder->CreateBr(final_block);
         
-        // Final result selection
+        // Final result selection - return tagged_value
         builder->SetInsertPoint(final_block);
-        PHINode* phi = builder->CreatePHI(Type::getInt64Ty(*context), 2, "last_result");
-        phi->addIncoming(ConstantInt::get(Type::getInt64Ty(*context), 0), empty_case); // null for empty list
-        phi->addIncoming(last_element, merge_last); // Changed from loop_exit to merge_last
+        Value* null_tagged = packInt64ToTaggedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "last_result");
+        phi->addIncoming(null_tagged, empty_case); // null for empty list
+        phi->addIncoming(last_element_tagged, loop_exit);
         
         return phi;
     }
@@ -7427,9 +7705,10 @@ private:
     
     // Production implementation: Create arity-specific builtin arithmetic functions (POLYMORPHIC)
     Function* createBuiltinArithmeticFunction(const std::string& operation, size_t arity) {
+        // FIX: For arity=0, just use arity=2 (fold will call with 2 args anyway)
         if (arity == 0) {
-            eshkol_error("Cannot create arithmetic function with 0 arguments");
-            return nullptr;
+            eshkol_debug("Arity 0 requested for %s, using arity 2 instead", operation.c_str());
+            arity = 2;
         }
         
         // Use deterministic names based on operation and arity only

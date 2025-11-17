@@ -73,6 +73,7 @@ typedef struct eshkol_tagged_value {
         int64_t int_val;
         double double_val;
         uint64_t ptr_val;
+        uint64_t raw_val;   // For raw manipulation and zero-initialization
     } data;
 } eshkol_tagged_value_t;
 
