@@ -947,6 +947,195 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             
             return ast;
         }
+        
+        // Special handling for gradient - reverse-mode automatic differentiation
+        if (ast.operation.op == ESHKOL_GRADIENT_OP) {
+            // Syntax: (gradient function vector)
+            // Example: (gradient (lambda (v) (dot v v)) (vector 1.0 2.0 3.0))
+            
+            // Parse the function to differentiate (can be lambda or function reference)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("gradient requires function as first argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t function;
+            if (token.type == TOKEN_LPAREN) {
+                function = parse_list(tokenizer);
+            } else {
+                function = parse_atom(token);
+            }
+            
+            if (function.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Parse the evaluation point (vector)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("gradient requires evaluation vector as second argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t point;
+            if (token.type == TOKEN_LPAREN) {
+                point = parse_list(tokenizer);
+            } else {
+                point = parse_atom(token);
+            }
+            
+            if (point.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Check for closing paren
+            Token close_token = tokenizer.nextToken();
+            if (close_token.type != TOKEN_RPAREN) {
+                eshkol_error("Expected closing parenthesis after gradient arguments");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Set up gradient operation
+            ast.operation.gradient_op.function = new eshkol_ast_t;
+            *ast.operation.gradient_op.function = function;
+            
+            ast.operation.gradient_op.point = new eshkol_ast_t;
+            *ast.operation.gradient_op.point = point;
+            
+            return ast;
+        }
+        
+        // Special handling for jacobian - matrix of partial derivatives
+        if (ast.operation.op == ESHKOL_JACOBIAN_OP) {
+            // Syntax: (jacobian function vector)
+            // Example: (jacobian (lambda (v) (vector (* (vref v 0) (vref v 1)) (pow (vref v 0) 2))) (vector 2.0 3.0))
+            
+            // Parse the function to differentiate
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("jacobian requires function as first argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t function;
+            if (token.type == TOKEN_LPAREN) {
+                function = parse_list(tokenizer);
+            } else {
+                function = parse_atom(token);
+            }
+            
+            if (function.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Parse the evaluation point (vector)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("jacobian requires evaluation vector as second argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t point;
+            if (token.type == TOKEN_LPAREN) {
+                point = parse_list(tokenizer);
+            } else {
+                point = parse_atom(token);
+            }
+            
+            if (point.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Check for closing paren
+            Token close_token = tokenizer.nextToken();
+            if (close_token.type != TOKEN_RPAREN) {
+                eshkol_error("Expected closing parenthesis after jacobian arguments");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Set up jacobian operation
+            ast.operation.jacobian_op.function = new eshkol_ast_t;
+            *ast.operation.jacobian_op.function = function;
+            
+            ast.operation.jacobian_op.point = new eshkol_ast_t;
+            *ast.operation.jacobian_op.point = point;
+            
+            return ast;
+        }
+        
+        // Special handling for hessian - matrix of second derivatives
+        if (ast.operation.op == ESHKOL_HESSIAN_OP) {
+            // Syntax: (hessian function vector)
+            // Example: (hessian (lambda (v) (dot v v)) (vector 1.0 2.0 3.0))
+            
+            // Parse the function to differentiate
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("hessian requires function as first argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t function;
+            if (token.type == TOKEN_LPAREN) {
+                function = parse_list(tokenizer);
+            } else {
+                function = parse_atom(token);
+            }
+            
+            if (function.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Parse the evaluation point (vector)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("hessian requires evaluation vector as second argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t point;
+            if (token.type == TOKEN_LPAREN) {
+                point = parse_list(tokenizer);
+            } else {
+                point = parse_atom(token);
+            }
+            
+            if (point.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Check for closing paren
+            Token close_token = tokenizer.nextToken();
+            if (close_token.type != TOKEN_RPAREN) {
+                eshkol_error("Expected closing parenthesis after hessian arguments");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Set up hessian operation
+            ast.operation.hessian_op.function = new eshkol_ast_t;
+            *ast.operation.hessian_op.function = function;
+            
+            ast.operation.hessian_op.point = new eshkol_ast_t;
+            *ast.operation.hessian_op.point = point;
+            
+            return ast;
+        }
 
         // Special handling for extern - declare external C variable/function.
         if (ast.operation.op == ESHKOL_EXTERN_VAR_OP) {

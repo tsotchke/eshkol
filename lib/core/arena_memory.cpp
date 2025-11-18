@@ -706,15 +706,43 @@ void arena_tape_reset(ad_tape_t* tape) {
         return;
     }
     
-    // Reset node count but keep capacity
-    tape->num_nodes = 0;
+    // CRITICAL FIX: Reset gradients BEFORE resetting node count!
+    // The loop was never executing because num_nodes was already 0
+    size_t node_count = tape->num_nodes;
     
     // Reset all node gradients to 0
-    for (size_t i = 0; i < tape->num_nodes; i++) {
+    for (size_t i = 0; i < node_count; i++) {
         if (tape->nodes[i]) {
             tape->nodes[i]->gradient = 0.0;
         }
     }
+    
+    // Now reset node count (for next forward pass)
+    tape->num_nodes = 0;
+}
+
+// Additional tape query functions
+ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index) {
+    if (!tape) {
+        eshkol_error("Cannot get node from null tape");
+        return nullptr;
+    }
+    
+    if (index >= tape->num_nodes) {
+        eshkol_error("Tape index out of bounds: %zu >= %zu", index, tape->num_nodes);
+        return nullptr;
+    }
+    
+    return tape->nodes[index];
+}
+
+size_t arena_tape_get_node_count(const ad_tape_t* tape) {
+    if (!tape) {
+        eshkol_error("Cannot get node count from null tape");
+        return 0;
+    }
+    
+    return tape->num_nodes;
 }
 
 // ===== END AD MEMORY MANAGEMENT IMPLEMENTATION =====

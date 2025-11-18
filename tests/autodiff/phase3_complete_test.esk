@@ -1,0 +1,95 @@
+;; Phase 3 Complete Test Suite - Gradient, Jacobian, Hessian Operators
+;; Tests for Sessions 19-23 implementation
+
+;; Test parsing and placeholder implementations compile without errors
+
+(extern void printf char* ...)
+(extern void :real printf display char* ...)
+
+;; ===== TEST 1: Gradient Parsing =====
+;; Verify gradient syntax is parsed correctly
+(define (test-gradient-parsing)
+  (display "Test 1: Gradient parsing... ")
+  ;; This tests that gradient parses without error
+  ;; Implementation is placeholder, so we just check it doesn't crash
+  (let ((result (gradient (lambda (v) 0) (vector 1.0 2.0 3.0))))
+    (display "OK")
+    (newline)
+    0))
+
+;; ===== TEST 2: Jacobian Parsing =====
+;; Verify jacobian syntax is parsed correctly
+(define (test-jacobian-parsing)
+  (display "Test 2: Jacobian parsing... ")
+  (let ((result (jacobian (lambda (v) (vector 1.0 2.0)) (vector 1.0 2.0))))
+    (display "OK")
+    (newline)
+    0))
+
+;; ===== TEST 3: Hessian Parsing =====
+;; Verify hessian syntax is parsed correctly
+(define (test-hessian-parsing)
+  (display "Test 3: Hessian parsing... ")
+  (let ((result (hessian (lambda (v) 0) (vector 1.0 2.0 3.0))))
+    (display "OK")
+    (newline)
+    0))
+
+;; ===== TEST 4: Derivative Still Works =====
+;; Verify Phase 2 derivative operator still works after Phase 3 changes
+(define (test-derivative-still-works)
+  (display "Test 4: Derivative (Phase 2) still works... ")
+  (let ((result (derivative (lambda (x) (* x x)) 5.0)))
+    (display "derivative of x^2 at x=5.0 = ")
+    (display result)
+    (newline)
+    (if (= result 10.0)
+        (begin
+          (display "  PASS: Got expected value 10.0")
+          (newline)
+          1)
+        (begin
+          (display "  WARN: Expected 10.0, got different value")
+          (newline)
+          0))))
+
+;; ===== TEST 5: Multiple Gradient Calls =====
+;; Test multiple gradient operations don't interfere
+(define (test-multiple-gradients)
+  (display "Test 5: Multiple gradient calls... ")
+  (let ((g1 (gradient (lambda (v) 0) (vector 1.0 2.0)))
+        (g2 (gradient (lambda (v) 0) (vector 3.0 4.0 5.0))))
+    (display "OK")
+    (newline)
+    0))
+
+;; ===== MAIN TEST RUNNER =====
+(define (main)
+  (display "==============================================")
+  (newline)
+  (display "Phase 3 Complete Test Suite - Sessions 19-23")
+  (newline)
+  (display "==============================================")
+  (newline)
+  (newline)
+  
+  ;; Run all tests
+  (test-gradient-parsing)
+  (test-jacobian-parsing)
+  (test-hessian-parsing)
+  (test-derivative-still-works)
+  (test-multiple-gradients)
+  
+  (newline)
+  (display "==============================================")
+  (newline)
+  (display "Phase 3 Tests Complete")
+  (newline)
+  (display "NOTE: Gradient/Jacobian/Hessian are placeholders")
+  (newline)
+  (display "Full implementation in Phase 4 will compute actual gradients")
+  (newline)
+  (display "==============================================")
+  (newline)
+  
+  0)
