@@ -147,6 +147,10 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
 void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node);
 void arena_tape_reset(ad_tape_t* tape);
 
+// Tape query functions
+ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index);
+size_t arena_tape_get_node_count(const ad_tape_t* tape);
+
 // ===== END AD MEMORY MANAGEMENT =====
 
 #ifdef __cplusplus

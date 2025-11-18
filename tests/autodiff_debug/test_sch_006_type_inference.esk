@@ -1,0 +1,44 @@
+;; SCH-006: Type Inference Test
+;; Tests that autodiff functions properly infer types without explicit annotations
+
+(display "=== SCH-006: Type Inference Test ===")
+(newline)
+
+;; Test 1: Simple lambda differentiation
+;; Function: f(x) = x²
+;; Expected: derivative should work without type annotations
+(define f (lambda (x) (* x x)))
+
+;; This should infer:
+;; - f: number -> number (polymorphic)
+;; - derivative: (number -> number) -> number -> number
+(display "Test 1: d/dx(x²)")
+(newline)
+(display "At x=5: ")
+(display (diff (* 5 5) x))  ; Currently works: symbolic diff
+(newline)
+
+;; What SHOULD work but doesn't yet:
+;; (define df (gradient f))  ; gradient of f
+;; (display (df 5))          ; Should return 10
+
+;; Test 2: Mixed type lambda (int and double)
+(define g (lambda (x) (* x 2.5)))
+
+(display "Test 2: d/dx(x * 2.5)")
+(newline)
+(display "At x=4: ")
+(display (diff (* 4 2.5) x))  ; Should handle double constant
+(newline)
+
+;; Test 3: Composition (when lambda differentiation works)
+;; (define h (compose g f))
+;; (display "Test 3: d/dx((x * 2.5)²)")
+;; (display (diff (h x) x))
+
+(display "=== Type inference tests defined ===")
+(newline)
+(display "EXPECTED: All derivatives computed with correct types")
+(newline)
+(display "ACTUAL: Only symbolic diff works, gradient/lambda not implemented")
+(newline)

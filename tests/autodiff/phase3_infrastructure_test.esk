@@ -1,0 +1,13 @@
+;; Phase 3 Infrastructure Test
+;; Test that the code compiles with Phase 3 AD node types
+
+;; Simple test - just verify basic operations work
+(define x 5)
+(display x)
+(newline)
+
+;; Test Phase 2 (derivative) still works
+(define f (lambda (x) (* x x)))
+(define df (derivative f 3.0))
+(display df)
+(newline)
