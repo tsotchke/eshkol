@@ -1,0 +1,16 @@
+========================================
+Test: phase_2a_safe_test.esk
+Time: Thu Nov 20 19:36:55 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== PHASE 2A SAFE TEST ===
+1. Testing two 3-element lists:
+   List 1: 1 2 3
+   List 2: 4 5 6
+   map + result: 5 7 9
+=== PHASE 2A SAFE TEST COMPLETE ===
+STATUS: PASS

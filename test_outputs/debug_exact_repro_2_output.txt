@@ -1,0 +1,20 @@
+========================================
+Test: debug_exact_repro_2.esk
+Time: Thu Nov 20 19:36:46 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== PHASE 2A MULTI-LIST MAP TEST ===
+1. Testing multi-list map with addition:
+   List 1: 1 2 3
+   List 2: 4 5 6
+   map + result: 5 7 9
+2. Testing multi-list map with different lengths:
+   Short list: 10 20
+   Long list: 1 2 3 4 5
+   map + result (should have 2 elements): 11 22
+=== EXACT REPRO 2 COMPLETE ===
+STATUS: PASS

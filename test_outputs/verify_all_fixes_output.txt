@@ -1,0 +1,10 @@
+========================================
+Test: verify_all_fixes.esk
+Time: Thu Nov 20 19:36:57 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+STATUS: RUNTIME FAIL (segfault or crash)

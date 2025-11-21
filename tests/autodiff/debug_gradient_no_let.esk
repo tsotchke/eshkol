@@ -1,0 +1,11 @@
+;; Test gradient without let binding
+(extern void printf char* ...)
+
+(define test-func (lambda (v) 0))
+(define test-vector (vector 1.0 2.0))
+
+(define (main)
+  (display "Testing gradient operator...\n")
+  (gradient test-func test-vector)
+  (display "Gradient test passed\n")
+  0)

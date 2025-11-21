@@ -1,0 +1,49 @@
+;; Test AD-Aware Execution Mode (Phase 3/4 Completion)
+;; Tests that gradient properly builds computational graphs through polymorphic operations
+
+;; Test 1: Simple identity gradient - should return [1.0]
+;; ∂/∂x(x) = 1
+(display "Test 1: Simple identity gradient")
+(newline)
+(define grad1 (gradient (lambda (v) (vref v 0)) (vector 3.0)))
+(display "grad1 = ")
+(display grad1)
+(newline)
+(display "Expected: vector with single element 1.0")
+(newline)
+(newline)
+
+;; Test 2: Square function gradient - should return [6.0]
+;; ∂/∂x(x²) = 2x, at x=3: 2*3 = 6
+(display "Test 2: Square function gradient")
+(newline)
+(define grad2 (gradient (lambda (v) (* (vref v 0) (vref v 0))) (vector 3.0)))
+(display "grad2 = ")
+(display grad2)
+(newline)
+(display "Expected: vector with single element 6.0")
+(newline)
+(newline)
+
+;; Test 3: Linear function gradient - should return [2.0]
+;; ∂/∂x(2x) = 2, at any x
+(display "Test 3: Linear function gradient")
+(newline)
+(define grad3 (gradient (lambda (v) (* 2.0 (vref v 0))) (vector 5.0)))
+(display "grad3 = ")
+(display grad3)
+(newline)
+(display "Expected: vector with single element 2.0")
+(newline)
+(newline)
+
+;; Test 4: Addition gradient - should return [3.0]
+;; ∂/∂x(3x) = 3, at any x
+(display "Test 4: Addition gradient (3x via x+x+x)")
+(newline)
+(define grad4 (gradient (lambda (v) (+ (vref v 0) (vref v 0) (vref v 0))) (vector 2.0)))
+(display "grad4 = ")
+(display grad4)
+(newline)
+(display "Expected: vector with single element 3.0")
+(newline)

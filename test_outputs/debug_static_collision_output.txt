@@ -1,0 +1,15 @@
+========================================
+Test: debug_static_collision.esk
+Time: Thu Nov 20 19:36:47 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== DEBUG STATIC COLLISION TEST ===
+First map completed
+Second map completed
+Third map completed
+=== STATIC COLLISION TEST COMPLETE ===
+STATUS: PASS

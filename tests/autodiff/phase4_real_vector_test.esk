@@ -1,0 +1,47 @@
+;; Phase 4 Real Vector Calculus Test
+;; Tests with actual vector-valued functions for Jacobian computation
+
+;; Test 1: Jacobian of F(x,y) = [xy, x²] at (2,3)
+;; Expected Jacobian: [[3, 2], [4, 0]]
+(define (test-jacobian-2d)
+  (let ((F (lambda (v) 
+             (vector (* (vref v 0) (vref v 1))      ; F₁(x,y) = xy
+                     (* (vref v 0) (vref v 0))))))  ; F₂(x,y) = x²
+    (let ((J (jacobian F (vector 2.0 3.0))))
+      (display "Test 1 - Jacobian of F(x,y)=[xy, x²] at (2,3)")
+      (newline)
+      (display "Jacobian computed successfully")
+      (newline))))
+
+;; Test 2: Divergence of simple 2D field F(x,y) = [x, y]
+;; ∇·F = ∂F₁/∂x + ∂F₂/∂y = 1 + 1 = 2
+(define (test-divergence-2d)
+  (let ((F (lambda (v) 
+             (vector (vref v 0)    ; F₁(x,y) = x
+                     (vref v 1)))))  ; F₂(x,y) = y
+    (let ((div (divergence F (vector 2.0 3.0))))
+      (display "Test 2 - Divergence of F(x,y)=[x,y] at (2,3): ")
+      (display div)
+      (newline))))
+
+;; Test 3: Curl of 3D vector field F(x,y,z) = [0, 0, xy]
+;; ∇×F should give rotation about z-axis
+(define (test-curl-3d)
+  (let ((F (lambda (v) 
+             (vector 0.0                            ; F₁ = 0
+                     0.0                            ; F₂ = 0
+                     (* (vref v 0) (vref v 1))))))  ; F₃ = xy
+    (let ((curl-result (curl F (vector 1.0 2.0 3.0))))
+      (display "Test 3 - Curl of F(x,y,z)=[0,0,xy] computed")
+      (newline))))
+
+;; Run all tests
+(display "=== Phase 4 Real Vector Calculus Tests ===")
+(newline)
+
+(test-jacobian-2d)
+(test-divergence-2d)
+(test-curl-3d)
+
+(display "=== All Phase 4 tests completed! ===")
+(newline)

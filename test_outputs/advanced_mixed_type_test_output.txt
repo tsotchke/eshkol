@@ -1,0 +1,20 @@
+========================================
+Test: advanced_mixed_type_test.esk
+Time: Thu Nov 20 19:36:43 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== ADVANCED MIXED TYPE LISTS TEST ===
+1. Testing length:
+   length of (1 2.5 3 4.75 5): 5
+2. Testing append:
+   append (1 2.5) (3 4.75): 1 2.500000 3 4.750000
+3. Testing reverse:
+   reverse of (1 2.5 3 4.75 5): 5 4.750000 3
+4. Testing map:
+   map (*2) on (1 2 3): 2 4 6
+=== ADVANCED TEST COMPLETE ===
+STATUS: PASS

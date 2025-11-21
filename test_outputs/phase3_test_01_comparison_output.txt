@@ -1,0 +1,12 @@
+========================================
+Test: phase3_test_01_comparison.esk
+Time: Thu Nov 20 19:36:51 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+Test 1: Simple comparison
+1
+STATUS: PASS

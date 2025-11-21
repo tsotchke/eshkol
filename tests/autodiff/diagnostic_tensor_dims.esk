@@ -1,0 +1,35 @@
+;; Diagnostic: Test if we can create a vector and read its dimension
+;; This isolates tensor creation/reading from gradient logic
+
+(extern void printf char* ...)
+
+(define (test-vector-creation)
+  (display "Creating vector with 3 elements...")
+  (newline)
+  (define v (vector 1.0 2.0 3.0))
+  (display "Vector created: ")
+  (display v)
+  (newline)
+  
+  ;; Try to access an element
+  (display "Accessing element 0: ")
+  (display (vref v 0))
+  (newline)
+  
+  (display "Accessing element 1: ")
+  (display (vref v 1))
+  (newline)
+  
+  (display "Accessing element 2: ")
+  (display (vref v 2))
+  (newline)
+  
+  0)
+
+(define (main)
+  (display "=== Tensor Dimension Diagnostic ===")
+  (newline)
+  (test-vector-creation)
+  (display "=== Test Complete ===")
+  (newline)
+  0)

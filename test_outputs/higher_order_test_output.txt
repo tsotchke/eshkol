@@ -1,0 +1,19 @@
+========================================
+Test: higher_order_test.esk
+Time: Thu Nov 20 19:36:48 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+Testing make-list:
+make-list 5 zeros: 0 0 0 (length: 5)
+make-list 3 ones: 1 1 1
+Testing member:
+member 20 in [10,20,30,40]: 20 30
+member 99 in [10,20,30,40]: 1
+Testing map:
+map + on [1,2,3,4]: 1 2 3 4
+Higher-order functions test completed!
+STATUS: PASS

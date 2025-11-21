@@ -1,0 +1,49 @@
+;; Test file for let expressions and global lambda definitions
+;; This tests both BLOCKING issues from AUTODIFF_DEBUG_STABILIZATION.md
+
+;; Test 1: Simple let expression
+(let ((x 5))
+  (display x))
+(newline)
+
+;; Test 2: Let with multiple bindings
+(let ((x 1) (y 2))
+  (display (+ x y)))
+(newline)
+
+;; Test 3: Nested let expressions
+(let ((x 10))
+  (let ((y 20))
+    (display (+ x y))))
+(newline)
+
+;; Test 4: Let with vector
+(let ((v (vector 1.0 2.0 3.0)))
+  (display v))
+(newline)
+
+;; Test 5: Global lambda definition (CRITICAL TEST)
+(define test-func (lambda (v) 0.0))
+
+;; Test 6: Call global lambda
+(display (test-func 5.0))
+(newline)
+
+;; Test 7: Gradient with inline lambda (this already works)
+(display (gradient (lambda (v) 0.0) (vector 1.0 2.0)))
+(newline)
+
+;; Test 8: Gradient with global lambda (CRITICAL - previously failed)
+(display (gradient test-func (vector 1.0 2.0)))
+(newline)
+
+;; Test 9: Let with lambda binding
+(let ((f (lambda (x) (* x 2))))
+  (display (f 21)))
+(newline)
+
+;; Test 10: Nested lambda in let
+(let ((make-adder (lambda (n) (lambda (x) (+ x n)))))
+  (let ((add5 (make-adder 5)))
+    (display (add5 10))))
+(newline)

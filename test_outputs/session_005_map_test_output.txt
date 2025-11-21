@@ -1,0 +1,10 @@
+========================================
+Test: session_005_map_test.esk
+Time: Thu Nov 20 19:36:56 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+STATUS: RUNTIME FAIL (segfault or crash)

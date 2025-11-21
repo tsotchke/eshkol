@@ -1,0 +1,22 @@
+========================================
+Test: list_star_test.esk
+Time: Thu Nov 20 19:36:48 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+Testing list* function:
+list* single arg: 42
+list* improper list created
+First element: 1
+Second element: 2
+Third element: 3
+Terminal (should be 99): 99
+list* with list terminal:
+First: 10
+Second: 20
+Third: 30
+List* test completed!
+STATUS: PASS

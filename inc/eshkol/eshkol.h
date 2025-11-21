@@ -222,6 +222,7 @@ typedef enum {
     ESHKOL_EXTERN_OP,
     ESHKOL_EXTERN_VAR_OP,
     ESHKOL_LAMBDA_OP,
+    ESHKOL_LET_OP,
     ESHKOL_TENSOR_OP,
     ESHKOL_DIFF_OP,
     // Automatic differentiation operators
@@ -231,7 +232,8 @@ typedef enum {
     ESHKOL_HESSIAN_OP,
     ESHKOL_DIVERGENCE_OP,
     ESHKOL_CURL_OP,
-    ESHKOL_LAPLACIAN_OP
+    ESHKOL_LAPLACIAN_OP,
+    ESHKOL_DIRECTIONAL_DERIV_OP
 } eshkol_op_t;
 
 struct eshkol_ast;
@@ -280,13 +282,18 @@ typedef struct eshkol_operation {
             char *type;
         } extern_var_op;
 	struct {
-            struct eshkol_ast *parameters;
-            uint64_t num_params;
-            struct eshkol_ast *body;
-            struct eshkol_ast *captured_vars;
-            uint64_t num_captured;
-        } lambda_op;
-        struct {
+	           struct eshkol_ast *parameters;
+	           uint64_t num_params;
+	           struct eshkol_ast *body;
+	           struct eshkol_ast *captured_vars;
+	           uint64_t num_captured;
+	       } lambda_op;
+	       struct {
+	           struct eshkol_ast *bindings;      // Array of (variable value) pairs
+	           uint64_t num_bindings;
+	           struct eshkol_ast *body;
+	       } let_op;
+	       struct {
             struct eshkol_ast *elements;
             uint64_t *dimensions;
             uint64_t num_dimensions;
@@ -325,6 +332,11 @@ typedef struct eshkol_operation {
             struct eshkol_ast *function;    // Scalar field function: ℝⁿ → ℝ
             struct eshkol_ast *point;       // Point to evaluate laplacian at
         } laplacian_op;
+        struct {
+            struct eshkol_ast *function;    // Scalar field function: ℝⁿ → ℝ
+            struct eshkol_ast *point;       // Point to evaluate directional derivative at
+            struct eshkol_ast *direction;   // Direction vector
+        } directional_deriv_op;
     };
 } eshkol_operations_t;
 

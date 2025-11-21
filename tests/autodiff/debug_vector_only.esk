@@ -1,0 +1,8 @@
+;; Test vector creation only
+(extern void printf char* ...)
+
+(define (main)
+  (display "Creating vector...\n")
+  (let ((v (vector 1.0 2.0)))
+    (display "Vector created\n")
+    0))

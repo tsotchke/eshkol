@@ -1,0 +1,14 @@
+========================================
+Test: minimal_test.esk
+Time: Thu Nov 20 19:36:49 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+First: 1
+Second: 2
+Length: 3
+Minimal test completed!
+STATUS: PASS

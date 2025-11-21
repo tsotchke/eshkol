@@ -1,0 +1,35 @@
+;; Basic test for let expressions and global lambda definitions
+;; NO gradient - just test the core features
+
+;; Test 1: Simple let expression
+(let ((x 5))
+  (display x))
+(newline)
+
+;; Test 2: Let with multiple bindings
+(let ((x 1) (y 2))
+  (display (+ x y)))
+(newline)
+
+;; Test 3: Nested let
+(let ((x 10))
+  (let ((y 20))
+    (display (+ x y))))
+(newline)
+
+;; Test 4: Global lambda definition
+(define test-func (lambda (x) (* x 2)))
+
+;; Test 5: Call global lambda
+(display (test-func 21))
+(newline)
+
+;; Test 6: Global lambda with define
+(define square (lambda (n) (* n n)))
+(display (square 7))
+(newline)
+
+;; Test 7: Let with lambda
+(let ((double (lambda (x) (* x 2))))
+  (display (double 15)))
+(newline)

@@ -21,6 +21,8 @@
 ;; Verify jacobian syntax is parsed correctly
 (define (test-jacobian-parsing)
   (display "Test 2: Jacobian parsing... ")
+  (display "[ENTERING JACOBIAN TEST]")
+  (newline)
   (let ((result (jacobian (lambda (v) (vector 1.0 2.0)) (vector 1.0 2.0))))
     (display "OK")
     (newline)

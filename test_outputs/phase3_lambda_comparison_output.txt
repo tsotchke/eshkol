@@ -1,0 +1,12 @@
+========================================
+Test: phase3_lambda_comparison.esk
+Time: Thu Nov 20 19:36:50 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+Testing lambda with comparison
+1
+STATUS: PASS

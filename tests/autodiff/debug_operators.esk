@@ -1,0 +1,14 @@
+;; Test each operator individually to identify which one fails
+(extern void printf char* ...)
+
+(define (main)
+  (display "Testing gradient operator...\n")
+  (let ((result (gradient (lambda (v) 0) (vector 1.0 2.0))))
+    (display "Gradient test passed\n"))
+  
+  (display "Testing jacobian operator...\n")
+  (let ((result (jacobian (lambda (v) (vector 1.0 2.0)) (vector 1.0 2.0))))
+    (display "Jacobian test passed\n"))
+  
+  (display "All tests passed\n")
+  0)

@@ -1,0 +1,15 @@
+========================================
+Test: phase_2a_simple_debug.esk
+Time: Thu Nov 20 19:36:56 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== PHASE 2A DEBUG TEST ===
+1. Testing single-list map:
+   List: 1 2
+   single map + result: 1 2
+=== PHASE 2A DEBUG SUCCESS! ===
+STATUS: PASS

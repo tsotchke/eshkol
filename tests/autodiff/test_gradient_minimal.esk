@@ -1,0 +1,15 @@
+;; Minimal gradient test - no nested lets
+;; Test if gradient compiles and runs without segfault
+
+(define f (lambda (v) (* (vref v 0) (vref v 0))))
+(define v (vector 3.0))
+
+(display "Testing gradient computation...")
+(newline)
+
+(define grad (gradient f v))
+
+(display "Gradient computed (may be zero vector due to implementation issues)")
+(newline)
+(display "Test completed without segfault!")
+(newline)

@@ -1,0 +1,15 @@
+========================================
+Test: phase_1c_simple_test.esk
+Time: Thu Nov 20 19:36:53 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== PHASE 1C SIMPLE TEST ===
+1. Testing last function:
+   Numbers: 10 20 30
+   last: 30
+=== PHASE 1C SIMPLE SUCCESS! ===
+STATUS: PASS

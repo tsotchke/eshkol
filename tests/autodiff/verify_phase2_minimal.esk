@@ -1,0 +1,7 @@
+;; Minimal Phase 2 test - just derivative of x^2
+(display "Testing derivative of x^2 at x=5... ")
+(define result (derivative (lambda (x) (* x x)) 5.0))
+(display result)
+(newline)
+(display "Expected: 10.0")
+(newline)
