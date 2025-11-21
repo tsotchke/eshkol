@@ -195,6 +195,7 @@ static eshkol_ast_t parse_atom(const Token& token) {
 static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "if") return ESHKOL_IF_OP;
     if (op == "lambda") return ESHKOL_LAMBDA_OP;
+    if (op == "let") return ESHKOL_LET_OP;
     if (op == "compose") return ESHKOL_COMPOSE_OP;
     if (op == "define") return ESHKOL_DEFINE_OP;
     if (op == "extern") return ESHKOL_EXTERN_OP;
@@ -211,6 +212,7 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "divergence") return ESHKOL_DIVERGENCE_OP;
     if (op == "curl") return ESHKOL_CURL_OP;
     if (op == "laplacian") return ESHKOL_LAPLACIAN_OP;
+    if (op == "directional-derivative") return ESHKOL_DIRECTIONAL_DERIV_OP;
     // Treat arithmetic operations as special CALL_OPs so they get proper argument handling
     // We'll store the operation type in the function name and handle display in the printer
     return ESHKOL_CALL_OP;
@@ -616,6 +618,153 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // For now, no captured variables (will implement closure analysis later)
             ast.operation.lambda_op.captured_vars = nullptr;
             ast.operation.lambda_op.num_captured = 0;
+            
+            return ast;
+        }
+        
+        // Special handling for let - local variable bindings
+        if (ast.operation.op == ESHKOL_LET_OP) {
+            // Syntax: (let ((var1 val1) (var2 val2) ...) body)
+            
+            // Parse bindings list
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_LPAREN) {
+                eshkol_error("let requires bindings list as first argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            std::vector<eshkol_ast_t> bindings;
+            
+            // Parse each binding: (variable value)
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in let bindings");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                
+                if (token.type != TOKEN_LPAREN) {
+                    eshkol_error("let binding must be a list (variable value)");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                
+                // Parse variable name
+                token = tokenizer.nextToken();
+                if (token.type != TOKEN_SYMBOL) {
+                    eshkol_error("let binding must start with variable name");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                
+                eshkol_ast_t var_ast = {.type = ESHKOL_VAR};
+                var_ast.variable.id = new char[token.value.length() + 1];
+                strcpy(var_ast.variable.id, token.value.c_str());
+                var_ast.variable.data = nullptr;
+                
+                // Parse value expression
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Expected value in let binding");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                
+                eshkol_ast_t val_ast;
+                if (token.type == TOKEN_LPAREN) {
+                    val_ast = parse_list(tokenizer);
+                } else {
+                    val_ast = parse_atom(token);
+                }
+                
+                if (val_ast.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                
+                // Check for closing paren of binding
+                token = tokenizer.nextToken();
+                if (token.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected closing parenthesis after let binding");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                
+                // Store binding as a cons cell (var . val)
+                eshkol_ast_t binding = {.type = ESHKOL_CONS};
+                binding.cons_cell.car = new eshkol_ast_t;
+                *binding.cons_cell.car = var_ast;
+                binding.cons_cell.cdr = new eshkol_ast_t;
+                *binding.cons_cell.cdr = val_ast;
+                
+                bindings.push_back(binding);
+            }
+            
+            // Parse body expressions (can be multiple, like in define)
+            std::vector<eshkol_ast_t> body_expressions;
+            
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in let body");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                
+                eshkol_ast_t expr;
+                if (token.type == TOKEN_LPAREN) {
+                    expr = parse_list(tokenizer);
+                } else {
+                    expr = parse_atom(token);
+                }
+                
+                if (expr.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                
+                body_expressions.push_back(expr);
+            }
+            
+            if (body_expressions.empty()) {
+                eshkol_error("let body cannot be empty");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Create proper body (single expression or sequence)
+            eshkol_ast_t body;
+            if (body_expressions.size() == 1) {
+                body = body_expressions[0];
+            } else {
+                // Multiple expressions: wrap in sequence
+                body.type = ESHKOL_OP;
+                body.operation.op = ESHKOL_SEQUENCE_OP;
+                body.operation.sequence_op.num_expressions = body_expressions.size();
+                body.operation.sequence_op.expressions = new eshkol_ast_t[body_expressions.size()];
+                
+                for (size_t i = 0; i < body_expressions.size(); i++) {
+                    body.operation.sequence_op.expressions[i] = body_expressions[i];
+                }
+            }
+            
+            // Set up let operation
+            ast.operation.let_op.num_bindings = bindings.size();
+            if (ast.operation.let_op.num_bindings > 0) {
+                ast.operation.let_op.bindings = new eshkol_ast_t[ast.operation.let_op.num_bindings];
+                for (size_t i = 0; i < ast.operation.let_op.num_bindings; i++) {
+                    ast.operation.let_op.bindings[i] = bindings[i];
+                }
+            } else {
+                ast.operation.let_op.bindings = nullptr;
+            }
+            
+            ast.operation.let_op.body = new eshkol_ast_t;
+            *ast.operation.let_op.body = body;
             
             return ast;
         }
@@ -1133,6 +1282,281 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             
             ast.operation.hessian_op.point = new eshkol_ast_t;
             *ast.operation.hessian_op.point = point;
+            
+            return ast;
+        }
+        
+        // Special handling for divergence - vector field divergence
+        if (ast.operation.op == ESHKOL_DIVERGENCE_OP) {
+            // Syntax: (divergence function vector)
+            // Example: (divergence (lambda (v) v) (vector 1.0 2.0 3.0))
+            
+            // Parse the function (vector field F: ℝⁿ → ℝⁿ)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("divergence requires function as first argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t function;
+            if (token.type == TOKEN_LPAREN) {
+                function = parse_list(tokenizer);
+            } else {
+                function = parse_atom(token);
+            }
+            
+            if (function.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Parse the evaluation point (vector)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("divergence requires evaluation vector as second argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t point;
+            if (token.type == TOKEN_LPAREN) {
+                point = parse_list(tokenizer);
+            } else {
+                point = parse_atom(token);
+            }
+            
+            if (point.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Check for closing paren
+            Token close_token = tokenizer.nextToken();
+            if (close_token.type != TOKEN_RPAREN) {
+                eshkol_error("Expected closing parenthesis after divergence arguments");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Set up divergence operation
+            ast.operation.divergence_op.function = new eshkol_ast_t;
+            *ast.operation.divergence_op.function = function;
+            
+            ast.operation.divergence_op.point = new eshkol_ast_t;
+            *ast.operation.divergence_op.point = point;
+            
+            return ast;
+        }
+        
+        // Special handling for curl - vector field curl (3D only)
+        if (ast.operation.op == ESHKOL_CURL_OP) {
+            // Syntax: (curl function vector)
+            // Example: (curl (lambda (v) (vector (* (vref v 1) (vref v 2)) ...)) (vector 1.0 2.0 3.0))
+            
+            // Parse the function (vector field F: ℝ³ → ℝ³)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("curl requires function as first argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t function;
+            if (token.type == TOKEN_LPAREN) {
+                function = parse_list(tokenizer);
+            } else {
+                function = parse_atom(token);
+            }
+            
+            if (function.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Parse the evaluation point (vector)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("curl requires evaluation vector as second argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t point;
+            if (token.type == TOKEN_LPAREN) {
+                point = parse_list(tokenizer);
+            } else {
+                point = parse_atom(token);
+            }
+            
+            if (point.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Check for closing paren
+            Token close_token = tokenizer.nextToken();
+            if (close_token.type != TOKEN_RPAREN) {
+                eshkol_error("Expected closing parenthesis after curl arguments");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Set up curl operation
+            ast.operation.curl_op.function = new eshkol_ast_t;
+            *ast.operation.curl_op.function = function;
+            
+            ast.operation.curl_op.point = new eshkol_ast_t;
+            *ast.operation.curl_op.point = point;
+            
+            return ast;
+        }
+        
+        // Special handling for laplacian - scalar field laplacian
+        if (ast.operation.op == ESHKOL_LAPLACIAN_OP) {
+            // Syntax: (laplacian function vector)
+            // Example: (laplacian (lambda (v) (dot v v)) (vector 1.0 2.0 3.0))
+            
+            // Parse the function (scalar field f: ℝⁿ → ℝ)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("laplacian requires function as first argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t function;
+            if (token.type == TOKEN_LPAREN) {
+                function = parse_list(tokenizer);
+            } else {
+                function = parse_atom(token);
+            }
+            
+            if (function.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Parse the evaluation point (vector)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("laplacian requires evaluation vector as second argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t point;
+            if (token.type == TOKEN_LPAREN) {
+                point = parse_list(tokenizer);
+            } else {
+                point = parse_atom(token);
+            }
+            
+            if (point.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Check for closing paren
+            Token close_token = tokenizer.nextToken();
+            if (close_token.type != TOKEN_RPAREN) {
+                eshkol_error("Expected closing parenthesis after laplacian arguments");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Set up laplacian operation
+            ast.operation.laplacian_op.function = new eshkol_ast_t;
+            *ast.operation.laplacian_op.function = function;
+            
+            ast.operation.laplacian_op.point = new eshkol_ast_t;
+            *ast.operation.laplacian_op.point = point;
+            
+            return ast;
+        }
+        
+        // Special handling for directional-derivative - derivative in a direction
+        if (ast.operation.op == ESHKOL_DIRECTIONAL_DERIV_OP) {
+            // Syntax: (directional-derivative function point direction)
+            // Example: (directional-derivative f (vector 1.0 2.0) (vector 1.0 0.0))
+            
+            // Parse the function (scalar field f: ℝⁿ → ℝ)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("directional-derivative requires function as first argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t function;
+            if (token.type == TOKEN_LPAREN) {
+                function = parse_list(tokenizer);
+            } else {
+                function = parse_atom(token);
+            }
+            
+            if (function.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Parse the evaluation point (vector)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("directional-derivative requires evaluation point as second argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t point;
+            if (token.type == TOKEN_LPAREN) {
+                point = parse_list(tokenizer);
+            } else {
+                point = parse_atom(token);
+            }
+            
+            if (point.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Parse the direction vector
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("directional-derivative requires direction vector as third argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            eshkol_ast_t direction;
+            if (token.type == TOKEN_LPAREN) {
+                direction = parse_list(tokenizer);
+            } else {
+                direction = parse_atom(token);
+            }
+            
+            if (direction.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Check for closing paren
+            Token close_token = tokenizer.nextToken();
+            if (close_token.type != TOKEN_RPAREN) {
+                eshkol_error("Expected closing parenthesis after directional-derivative arguments");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            
+            // Set up directional-derivative operation
+            ast.operation.directional_deriv_op.function = new eshkol_ast_t;
+            *ast.operation.directional_deriv_op.function = function;
+            
+            ast.operation.directional_deriv_op.point = new eshkol_ast_t;
+            *ast.operation.directional_deriv_op.point = point;
+            
+            ast.operation.directional_deriv_op.direction = new eshkol_ast_t;
+            *ast.operation.directional_deriv_op.direction = direction;
             
             return ast;
         }

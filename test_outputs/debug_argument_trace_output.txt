@@ -1,0 +1,20 @@
+========================================
+Test: debug_argument_trace.esk
+Time: Thu Nov 20 19:36:44 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== ARGUMENT TRACE DEBUG ===
+List1 elements: 1 2 3
+List2 elements: 4 5 6
+Manual arithmetic tests:
+1 + 4 = 5
+2 + 5 = 7
+3 + 6 = 9
+Now testing map + list1 list2:
+Result: 5 7 9
+=== END ARGUMENT TRACE ===
+STATUS: PASS

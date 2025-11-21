@@ -1,0 +1,26 @@
+;; ===== PHASE 4: SIMPLIFIED VECTOR CALCULUS TEST =====
+;; Minimal test to verify operators work without linker conflicts
+
+;; Test 1: Divergence of identity field F(v) = v
+;; Should return n (dimension count) = 3.0
+
+(define F-identity (lambda (v) v))
+(divergence F-identity (vector 1.0 2.0 3.0))
+
+;; Test 2: Laplacian of simple quadratic f(x) = x²
+;; Second derivative of x² is 2, so Laplacian = 2.0
+
+(define f-simple (lambda (v) (* (vref v 0) (vref v 0))))
+(laplacian f-simple (vector 1.0 2.0 3.0))
+
+;; Test 3: Directional derivative
+;; For f(x,y) = x² + y², gradient is (2x, 2y) = (6, 8) at (3,4)
+;; In direction (1,0), result should be 6.0
+
+(define f-2d (lambda (v) 
+  (+ (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1)))))
+
+(directional-derivative f-2d 
+                       (vector 3.0 4.0)
+                       (vector 1.0 0.0))

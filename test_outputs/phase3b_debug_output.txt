@@ -1,0 +1,21 @@
+========================================
+Test: phase3b_debug.esk
+Time: Thu Nov 20 19:36:51 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+Test 1: Define int
+int-val: 10
+Test 2: Define double
+double-val: 2.500000
+Test 3: Add two ints
+sum-ints: 8
+Test 4: Add two doubles
+sum-doubles: 4.000000
+Test 5: Add int and double
+mixed-sum: 12.500000
+=== DEBUG TEST COMPLETE ===
+STATUS: PASS

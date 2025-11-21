@@ -1,0 +1,14 @@
+;; Minimal Phase 3 gradient test
+(display "Testing gradient of f(v) = v[0]^2 at v=(3.0)... ")
+(newline)
+
+;; Simple scalar function of a vector
+(define f (lambda (v) (* (vref v 0) (vref v 0))))
+(define point (vector 3.0))
+(define grad (gradient f point))
+
+(display "Gradient result: ")
+(display grad)
+(newline)
+(display "Expected: vector containing [6.0] (2*x at x=3)")
+(newline)

@@ -1,0 +1,22 @@
+;; Verify gradient actually computes correct values
+(display "Testing gradient computation...")
+(newline)
+
+;; f(v) = v[0]^2, gradient should be [2*v[0]] = [6.0] at v=(3.0)
+(define f (lambda (v) (* (vref v 0) (vref v 0))))
+(define point (vector 3.0))
+(define grad (gradient f point))
+
+;; Extract the gradient value using vref
+(define grad_0 (vref grad 0))
+(display "Gradient[0] = ")
+(display grad_0)
+(newline)
+(display "Expected: 6.0")
+(newline)
+
+;; Test passes if grad_0 is close to 6.0
+(if (= grad_0 6.0)
+    (display "✓ GRADIENT WORKS!")
+    (display "✗ Gradient incorrect"))
+(newline)

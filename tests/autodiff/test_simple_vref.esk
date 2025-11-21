@@ -1,0 +1,12 @@
+;; Ultra-simple test: just create vector and access element
+(display "Creating vector...")
+(newline)
+(define v (vector 3.0))
+(display "Vector created")
+(newline)
+(display "Accessing element 0...")
+(newline)
+(define elem (vref v 0))
+(display "Element: ")
+(display elem)
+(newline)

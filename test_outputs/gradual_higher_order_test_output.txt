@@ -1,0 +1,17 @@
+========================================
+Test: gradual_higher_order_test.esk
+Time: Thu Nov 20 19:36:48 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+Step 1: Testing make-list variants
+make-list 3 zeros: 0 (length: 3)
+make-list 2 ones: 1 1
+Step 2: Testing member
+Created test-list: 10 20 30
+member 20 found: 0
+Gradual test completed!
+STATUS: PASS

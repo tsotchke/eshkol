@@ -1,0 +1,7 @@
+;; Test main function without gradient
+(extern void printf char* ...)
+
+(define (main)
+  (display "Test 1: Basic display works\n")
+  (display "Test 2: Calling display again\n")
+  0)

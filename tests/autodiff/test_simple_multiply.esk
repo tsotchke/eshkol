@@ -1,0 +1,13 @@
+;; Simple test: Just multiply two vector elements
+;; No gradient yet, just verify arithmetic works
+
+(define (test-multiply)
+  (let ((v (vector 3.0 4.0)))
+    (let ((x (vref v 0)))
+      (let ((y (vref v 1)))
+        (let ((product (* x y)))
+          (display "Product of 3.0 * 4.0 = ")
+          (display product)
+          (newline))))))
+
+(test-multiply)

@@ -1,0 +1,23 @@
+;; Test lambda returning vector with runtime debug
+(extern void printf char* ...)
+
+(define make-vec (lambda (v) (vector 1.0 2.0)))
+
+(define (main)
+  (display "Testing lambda that returns vector...\n")
+  (let ((result (make-vec 0)))
+    (display "Lambda returned (raw value): ")
+    (display result)
+    (newline)
+    ;; Try to access it as a vector
+    (display "Attempting to display as vector...\n")
+    (if (> result 1000)
+        (begin
+          (display "Result is a valid pointer: ")
+          (display result)
+          (newline))
+        (begin
+          (display "Result is NOT a valid pointer (too small): ")
+          (display result)
+          (newline))))
+  0)

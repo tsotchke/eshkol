@@ -1,0 +1,16 @@
+========================================
+Test: debug_minimal_fail.esk
+Time: Thu Nov 20 19:36:47 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== DEBUG MINIMAL FAIL TEST ===
+Map operation completed
+First element: 5
+Second element: 7
+About to access third element...
+Third element: 9
+=== MINIMAL FAIL TEST COMPLETE ===STATUS: PASS

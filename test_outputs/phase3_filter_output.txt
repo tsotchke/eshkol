@@ -1,0 +1,10 @@
+========================================
+Test: phase3_filter.esk
+Time: Thu Nov 20 19:36:49 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+STATUS: RUNTIME FAIL (segfault or crash)

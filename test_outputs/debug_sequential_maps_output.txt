@@ -1,0 +1,22 @@
+========================================
+Test: debug_sequential_maps.esk
+Time: Thu Nov 20 19:36:47 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== SEQUENTIAL MAP DEBUG ===
+1. Testing multi-list map with addition:
+   List 1: 1 2 3
+   List 2: 4 5 6
+   Expected: 5 7 9
+   Actual: 5 7 9
+2. Testing multi-list map with different lengths:
+   Short list: 10 20
+   Long list: 1 2 3 4 5
+   Expected: 11 22
+   Actual: 11 22
+=== END SEQUENTIAL DEBUG ===
+STATUS: PASS

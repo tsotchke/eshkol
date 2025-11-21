@@ -1,0 +1,34 @@
+========================================
+Test: phase_2a_group_a_test.esk
+Time: Thu Nov 20 19:36:54 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== PHASE 2A GROUP A TEST ===
+1. Testing length:
+   length of (1 2.5 3 4.75 5): 5 (expect: 5)
+2. Testing list-ref:
+   (list-ref mixed-list 0): 1 (expect: 1)
+   (list-ref mixed-list 1): 2.500000 (expect: 2.5)
+   (list-ref mixed-list 2): 3 (expect: 3)
+   (list-ref mixed-list 3): 4.750000 (expect: 4.75)
+   (list-ref mixed-list 4): 5 (expect: 5)
+3. Testing list-tail:
+   (list-tail mixed-list 2) first element: 3 (expect: 3)
+   (list-tail mixed-list 3) first element: 4.750000 (expect: 4.75)
+4. Testing drop:
+   (drop mixed-list 2) first element: 3 (expect: 3)
+   length of (drop mixed-list 3): 2 (expect: 2)
+5. Testing last:
+   (last mixed-list): 5 (expect: 5)
+   (last (list 1 2.5 3)): 3 (expect: 3)
+6. Testing last-pair:
+   (car (last-pair mixed-list)): 5 (expect: 5)
+7. Testing combined operations:
+   length of (list-tail mixed-list 2): 3 (expect: 3)
+   (last (drop mixed-list 2)): 5 (expect: 5)
+=== GROUP A TEST COMPLETE ===
+STATUS: PASS

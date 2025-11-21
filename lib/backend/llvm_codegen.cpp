@@ -45,6 +45,7 @@
 #include <algorithm>
 #include <cctype>
 #include <stack>
+#include <unistd.h>
 
 using namespace llvm;
 
@@ -102,8 +103,8 @@ private:
     Function* current_function;
     BasicBlock* main_entry;
     
-    // Arena management for list operations
-    Value* current_arena_ptr; // Pointer to current arena
+    // Arena management for list operations - GLOBAL ARENA ARCHITECTURE
+    GlobalVariable* global_arena; // Global arena pointer (shared across all scopes)
     size_t arena_scope_depth; // Track nested arena scopes
     Function* arena_create_func;
     Function* arena_destroy_func;
@@ -150,6 +151,7 @@ public:
         module = std::make_unique<Module>(module_name, *context);
         builder = std::make_unique<IRBuilder<>>(*context);
         current_function = nullptr;
+        global_arena = nullptr; // Will be created in generateIR()
         arena_scope_depth = 0; // Initialize arena scope tracking
         
         // Initialize tagged value struct type: {uint8_t type, uint8_t flags, uint16_t reserved, union data}
@@ -173,10 +175,25 @@ public:
     
     std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts) {
         try {
+            // Create global arena variable (shared across all functions and scopes)
+            global_arena = new GlobalVariable(
+                *module,
+                PointerType::getUnqual(*context),
+                false, // not constant
+                GlobalValue::InternalLinkage, // Internal linkage - defined in this module
+                ConstantPointerNull::get(PointerType::getUnqual(*context)), // Initialize to null
+                "__global_arena"
+            );
+            eshkol_debug("Created global arena variable: __global_arena");
+            
             // Create built-in function declarations
             createBuiltinFunctions();
 
-            // Process all top-level definitions first
+            // SAFE ORDER: Function declarations → Function bodies → Global variables in main()
+            // Global variables (including lambdas) are processed ONLY in main function context
+            // This avoids issues with processing lambdas without a function context
+            
+            // Step 1: Create function declarations FIRST
             for (size_t i = 0; i < num_asts; i++) {
                 if (asts[i].type == ESHKOL_OP && asts[i].operation.op == ESHKOL_DEFINE_OP) {
                     if (asts[i].operation.define_op.is_function) {
@@ -185,8 +202,9 @@ public:
                     }
                 }
             }
+            eshkol_debug("Created all function declarations");
             
-            // Generate function definitions FIRST
+            // Step 2: Generate function definitions
             for (size_t i = 0; i < num_asts; i++) {
                 if (asts[i].type == ESHKOL_OP && asts[i].operation.op == ESHKOL_DEFINE_OP &&
                     asts[i].operation.define_op.is_function) {
@@ -230,36 +248,16 @@ public:
                     
                     // Add terminator to main function if it doesn't have one
                     if (!builder->GetInsertBlock()->getTerminator()) {
+                        // GLOBAL ARENA FIX: Cleanup arena before return
+                        Value* arena_to_destroy = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                        builder->CreateCall(arena_destroy_func, {arena_to_destroy});
+                        eshkol_debug("Added global arena cleanup before main return (top-level expressions)");
+                        
                         builder->CreateRet(ConstantInt::get(Type::getInt32Ty(*context), 0));
                     }
                 }
             } else {
-                // User has defined main - process global variables first, then create wrapper
-                // Process global variable definitions in a temporary function context
-                Function* temp_main = Function::Create(
-                    FunctionType::get(Type::getInt32Ty(*context), false),
-                    Function::InternalLinkage, 
-                    "__global_init", 
-                    module.get()
-                );
-                BasicBlock* temp_entry = BasicBlock::Create(*context, "entry", temp_main);
-                builder->SetInsertPoint(temp_entry);
-                current_function = temp_main;
-                
-                // Process global variable definitions
-                for (size_t i = 0; i < num_asts; i++) {
-                    if (asts[i].type == ESHKOL_OP && asts[i].operation.op == ESHKOL_DEFINE_OP &&
-                        !asts[i].operation.define_op.is_function) {
-                        codegenAST(&asts[i]);
-                    }
-                }
-                
-                // Terminate and remove the temporary function
-                builder->CreateRet(ConstantInt::get(Type::getInt32Ty(*context), 0));
-                temp_main->eraseFromParent();
-                current_function = nullptr;
-                
-                // Now create the C-style wrapper
+                // User has defined main - just create wrapper (globals already processed above)
                 createMainWrapper();
             }
             
@@ -950,11 +948,25 @@ private:
             main_entry = BasicBlock::Create(*context, "entry", c_main);
             builder->SetInsertPoint(main_entry);
             
+            // GLOBAL ARENA FIX: Initialize global arena once in main
+            Value* arena_size = ConstantInt::get(Type::getInt64Ty(*context), 8192);
+            Value* arena_ptr = builder->CreateCall(arena_create_func, {arena_size});
+            builder->CreateStore(arena_ptr, global_arena);
+            eshkol_debug("Initialized global arena in main wrapper");
+            
             // Call scheme_main
             Value* result = builder->CreateCall(main_func);
             
+            // CRITICAL FIX: scheme_main returns tagged_value, need to unpack to int64 first
+            Value* result_int64 = unpackInt64FromTaggedValue(result);
+            
+            // GLOBAL ARENA FIX: Cleanup arena before return
+            Value* arena_to_destroy = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            builder->CreateCall(arena_destroy_func, {arena_to_destroy});
+            eshkol_debug("Added global arena cleanup before main return");
+            
             // Convert result to int32 and return
-            Value* int32_result = builder->CreateTrunc(result, Type::getInt32Ty(*context));
+            Value* int32_result = builder->CreateTrunc(result_int64, Type::getInt32Ty(*context));
             builder->CreateRet(int32_result);
             
             function_table["main"] = c_main;
@@ -968,38 +980,31 @@ private:
             // Don't set terminator yet - we'll add expressions and then terminate
             
             function_table["main"] = main_func;
-        }
-        
-        // Initialize arena for list operations in main function
-        if (main_entry) {
+            
+            // GLOBAL ARENA FIX: Initialize global arena once in main
             builder->SetInsertPoint(main_entry);
-            initializeArena();
+            Value* arena_size = ConstantInt::get(Type::getInt64Ty(*context), 8192);
+            Value* arena_ptr = builder->CreateCall(arena_create_func, {arena_size});
+            builder->CreateStore(arena_ptr, global_arena);
+            eshkol_debug("Initialized global arena in main (top-level expressions case)");
         }
     }
     
     void initializeArena() {
-        // Create arena with default block size of 8192 bytes
-        Value* arena_size = ConstantInt::get(Type::getInt64Ty(*context), 8192);
-        current_arena_ptr = builder->CreateCall(arena_create_func, {arena_size});
-        
-        // Store arena pointer for later use
-        AllocaInst* arena_storage = builder->CreateAlloca(
-            PointerType::getUnqual(*context),
-            nullptr,
-            "arena_ptr"
-        );
-        builder->CreateStore(current_arena_ptr, arena_storage);
-        symbol_table["__arena"] = arena_storage;
-        
-        eshkol_debug("Initialized arena for list operations");
+        // DEPRECATED: Arena initialization is now handled globally in createMainWrapper()
+        // This function is kept for compatibility but does nothing
+        // All functions now share the global arena automatically
+        eshkol_debug("initializeArena() called but using global arena (no-op)");
     }
     
     Value* getArenaPtr() {
-        auto it = symbol_table.find("__arena");
-        if (it != symbol_table.end()) {
-            return builder->CreateLoad(PointerType::getUnqual(*context), it->second);
+        // GLOBAL ARENA FIX: Load arena pointer from global variable
+        // This allows all functions and scopes to share the same arena
+        if (!global_arena) {
+            eshkol_error("Global arena not initialized!");
+            return nullptr;
         }
-        return current_arena_ptr;
+        return builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
     }
     
     // Production-grade arena scope tracking helpers
@@ -1483,7 +1488,22 @@ private:
         Value* reserved_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 2);
         builder->CreateStore(ConstantInt::get(Type::getInt16Ty(*context), 0), reserved_ptr);
         Value* data_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 3);
-        Value* ptr_as_int64 = builder->CreatePtrToInt(ptr_val, Type::getInt64Ty(*context));
+        
+        // CRITICAL FIX: ptr_val might already be i64 (from PtrToInt in codegenTensorOperation)
+        // Don't double-convert!
+        Value* ptr_as_int64;
+        if (ptr_val->getType()->isIntegerTy(64)) {
+            // Already i64 - use directly
+            ptr_as_int64 = ptr_val;
+        } else if (ptr_val->getType()->isPointerTy()) {
+            // Is a pointer - convert to i64
+            ptr_as_int64 = builder->CreatePtrToInt(ptr_val, Type::getInt64Ty(*context));
+        } else {
+            // Other type - try to convert
+            eshkol_warn("packPtrToTaggedValue: unexpected type, defaulting to 0");
+            ptr_as_int64 = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        }
+        
         builder->CreateStore(ptr_as_int64, data_ptr);
         return builder->CreateLoad(tagged_value_type, tagged_val_ptr);
     }
@@ -1778,6 +1798,12 @@ private:
         
         Type* val_type = llvm_val->getType();
         if (val_type->isIntegerTy(64)) {
+            // CRITICAL FIX: Check if i64 came from PtrToInt (tensor/cons pointers)
+            // If so, treat as CONS_PTR, not INT64!
+            if (isa<PtrToIntInst>(llvm_val)) {
+                eshkol_debug("detectValueType: i64 from PtrToInt, treating as CONS_PTR");
+                return TypedValue(llvm_val, ESHKOL_VALUE_CONS_PTR, true);
+            }
             return TypedValue(llvm_val, ESHKOL_VALUE_INT64, true);
         } else if (val_type->isDoubleTy()) {
             return TypedValue(llvm_val, ESHKOL_VALUE_DOUBLE, false);
@@ -1846,7 +1872,14 @@ private:
         Value* right_base = builder->CreateAnd(right_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
-        // PHASE 2: Check if either operand is a dual number
+        // PHASE 3/4: Check if either operand is an AD node (reverse-mode)
+        Value* left_is_ad = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_AD_NODE_PTR));
+        Value* right_is_ad = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_AD_NODE_PTR));
+        Value* any_ad = builder->CreateOr(left_is_ad, right_is_ad);
+        
+        // PHASE 2: Check if either operand is a dual number (forward-mode)
         Value* left_is_dual = builder->CreateICmpEQ(left_base,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
         Value* right_is_dual = builder->CreateICmpEQ(right_base,
@@ -1861,12 +1894,74 @@ private:
         Value* any_double = builder->CreateOr(left_is_double, right_is_double);
         
         Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* ad_path = BasicBlock::Create(*context, "add_ad_path", current_func);
+        BasicBlock* check_dual = BasicBlock::Create(*context, "add_check_dual", current_func);
         BasicBlock* dual_path = BasicBlock::Create(*context, "add_dual_path", current_func);
         BasicBlock* check_double = BasicBlock::Create(*context, "add_check_double", current_func);
         BasicBlock* double_path = BasicBlock::Create(*context, "add_double_path", current_func);
         BasicBlock* int_path = BasicBlock::Create(*context, "add_int_path", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "add_merge", current_func);
         
+        builder->CreateCondBr(any_ad, ad_path, check_dual);
+        
+        // PHASE 3/4: AD node path - build computational graph
+        builder->SetInsertPoint(ad_path);
+        
+        // Convert non-AD operands to AD constants
+        BasicBlock* left_is_ad_block = BasicBlock::Create(*context, "add_left_is_ad", current_func);
+        BasicBlock* left_not_ad_block = BasicBlock::Create(*context, "add_left_not_ad", current_func);
+        BasicBlock* left_ad_merge = BasicBlock::Create(*context, "add_left_ad_merge", current_func);
+        
+        builder->CreateCondBr(left_is_ad, left_is_ad_block, left_not_ad_block);
+        
+        builder->SetInsertPoint(left_is_ad_block);
+        Value* left_ad_ptr = unpackPtrFromTaggedValue(left_tagged);
+        builder->CreateBr(left_ad_merge);
+        
+        builder->SetInsertPoint(left_not_ad_block);
+        Value* left_val = builder->CreateSelect(
+            builder->CreateICmpEQ(left_base, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE)),
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* left_ad_const = createADConstant(left_val);
+        builder->CreateBr(left_ad_merge);
+        
+        builder->SetInsertPoint(left_ad_merge);
+        PHINode* left_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+        left_ad_node->addIncoming(left_ad_ptr, left_is_ad_block);
+        left_ad_node->addIncoming(left_ad_const, left_not_ad_block);
+        
+        // Same for right operand
+        BasicBlock* right_is_ad_block = BasicBlock::Create(*context, "add_right_is_ad", current_func);
+        BasicBlock* right_not_ad_block = BasicBlock::Create(*context, "add_right_not_ad", current_func);
+        BasicBlock* right_ad_merge = BasicBlock::Create(*context, "add_right_ad_merge", current_func);
+        
+        builder->CreateCondBr(right_is_ad, right_is_ad_block, right_not_ad_block);
+        
+        builder->SetInsertPoint(right_is_ad_block);
+        Value* right_ad_ptr = unpackPtrFromTaggedValue(right_tagged);
+        builder->CreateBr(right_ad_merge);
+        
+        builder->SetInsertPoint(right_not_ad_block);
+        Value* right_val = builder->CreateSelect(
+            builder->CreateICmpEQ(right_base, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE)),
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* right_ad_const = createADConstant(right_val);
+        builder->CreateBr(right_ad_merge);
+        
+        builder->SetInsertPoint(right_ad_merge);
+        PHINode* right_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+        right_ad_node->addIncoming(right_ad_ptr, right_is_ad_block);
+        right_ad_node->addIncoming(right_ad_const, right_not_ad_block);
+        
+        // Record ADD operation in computational graph
+        Value* result_ad_node = recordADNodeBinary(2, left_ad_node, right_ad_node); // AD_NODE_ADD = 2
+        Value* ad_result_tagged = packPtrToTaggedValue(result_ad_node, ESHKOL_VALUE_AD_NODE_PTR);
+        builder->CreateBr(merge);
+        BasicBlock* ad_path_exit = builder->GetInsertBlock();
+        
+        builder->SetInsertPoint(check_dual);
         builder->CreateCondBr(any_dual, dual_path, check_double);
         
         // PHASE 2: Dual number path - use dual arithmetic for automatic differentiation
@@ -1950,7 +2045,8 @@ private:
         
         // Merge all paths
         builder->SetInsertPoint(merge);
-        PHINode* add_result_phi = builder->CreatePHI(tagged_value_type, 3);
+        PHINode* add_result_phi = builder->CreatePHI(tagged_value_type, 4);
+        add_result_phi->addIncoming(ad_result_tagged, ad_path_exit);
         add_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
         add_result_phi->addIncoming(tagged_double_result, double_path);
         add_result_phi->addIncoming(tagged_int_result, int_path);
@@ -1971,7 +2067,14 @@ private:
         Value* right_base = builder->CreateAnd(right_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
-        // PHASE 2: Check if either operand is a dual number
+        // PHASE 3/4: Check if either operand is an AD node (reverse-mode)
+        Value* left_is_ad = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_AD_NODE_PTR));
+        Value* right_is_ad = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_AD_NODE_PTR));
+        Value* any_ad = builder->CreateOr(left_is_ad, right_is_ad);
+        
+        // PHASE 2: Check if either operand is a dual number (forward-mode)
         Value* left_is_dual = builder->CreateICmpEQ(left_base,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
         Value* right_is_dual = builder->CreateICmpEQ(right_base,
@@ -1985,12 +2088,71 @@ private:
         Value* any_double = builder->CreateOr(left_is_double, right_is_double);
         
         Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* ad_path = BasicBlock::Create(*context, "sub_ad_path", current_func);
+        BasicBlock* check_dual = BasicBlock::Create(*context, "sub_check_dual", current_func);
         BasicBlock* dual_path = BasicBlock::Create(*context, "sub_dual_path", current_func);
         BasicBlock* check_double = BasicBlock::Create(*context, "sub_check_double", current_func);
         BasicBlock* double_path = BasicBlock::Create(*context, "sub_double_path", current_func);
         BasicBlock* int_path = BasicBlock::Create(*context, "sub_int_path", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "sub_merge", current_func);
         
+        builder->CreateCondBr(any_ad, ad_path, check_dual);
+        
+        // PHASE 3/4: AD node path - build computational graph
+        builder->SetInsertPoint(ad_path);
+        
+        BasicBlock* left_is_ad_block = BasicBlock::Create(*context, "sub_left_is_ad", current_func);
+        BasicBlock* left_not_ad_block = BasicBlock::Create(*context, "sub_left_not_ad", current_func);
+        BasicBlock* left_ad_merge = BasicBlock::Create(*context, "sub_left_ad_merge", current_func);
+        
+        builder->CreateCondBr(left_is_ad, left_is_ad_block, left_not_ad_block);
+        
+        builder->SetInsertPoint(left_is_ad_block);
+        Value* left_ad_ptr = unpackPtrFromTaggedValue(left_tagged);
+        builder->CreateBr(left_ad_merge);
+        
+        builder->SetInsertPoint(left_not_ad_block);
+        Value* left_val = builder->CreateSelect(
+            builder->CreateICmpEQ(left_base, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE)),
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* left_ad_const = createADConstant(left_val);
+        builder->CreateBr(left_ad_merge);
+        
+        builder->SetInsertPoint(left_ad_merge);
+        PHINode* left_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+        left_ad_node->addIncoming(left_ad_ptr, left_is_ad_block);
+        left_ad_node->addIncoming(left_ad_const, left_not_ad_block);
+        
+        BasicBlock* right_is_ad_block = BasicBlock::Create(*context, "sub_right_is_ad", current_func);
+        BasicBlock* right_not_ad_block = BasicBlock::Create(*context, "sub_right_not_ad", current_func);
+        BasicBlock* right_ad_merge = BasicBlock::Create(*context, "sub_right_ad_merge", current_func);
+        
+        builder->CreateCondBr(right_is_ad, right_is_ad_block, right_not_ad_block);
+        
+        builder->SetInsertPoint(right_is_ad_block);
+        Value* right_ad_ptr = unpackPtrFromTaggedValue(right_tagged);
+        builder->CreateBr(right_ad_merge);
+        
+        builder->SetInsertPoint(right_not_ad_block);
+        Value* right_val = builder->CreateSelect(
+            builder->CreateICmpEQ(right_base, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE)),
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* right_ad_const = createADConstant(right_val);
+        builder->CreateBr(right_ad_merge);
+        
+        builder->SetInsertPoint(right_ad_merge);
+        PHINode* right_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+        right_ad_node->addIncoming(right_ad_ptr, right_is_ad_block);
+        right_ad_node->addIncoming(right_ad_const, right_not_ad_block);
+        
+        Value* result_ad_node = recordADNodeBinary(3, left_ad_node, right_ad_node); // AD_NODE_SUB = 3
+        Value* ad_result_tagged = packPtrToTaggedValue(result_ad_node, ESHKOL_VALUE_AD_NODE_PTR);
+        builder->CreateBr(merge);
+        BasicBlock* ad_path_exit = builder->GetInsertBlock();
+        
+        builder->SetInsertPoint(check_dual);
         builder->CreateCondBr(any_dual, dual_path, check_double);
         
         // PHASE 2: Dual number path
@@ -2070,7 +2232,8 @@ private:
         
         // Merge all paths
         builder->SetInsertPoint(merge);
-        PHINode* sub_result_phi = builder->CreatePHI(tagged_value_type, 3);
+        PHINode* sub_result_phi = builder->CreatePHI(tagged_value_type, 4);
+        sub_result_phi->addIncoming(ad_result_tagged, ad_path_exit);
         sub_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
         sub_result_phi->addIncoming(tagged_double_result, double_path);
         sub_result_phi->addIncoming(tagged_int_result, int_path);
@@ -2091,7 +2254,14 @@ private:
         Value* right_base = builder->CreateAnd(right_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
-        // PHASE 2: Check if either operand is a dual number
+        // PHASE 3/4: Check if either operand is an AD node (reverse-mode)
+        Value* left_is_ad = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_AD_NODE_PTR));
+        Value* right_is_ad = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_AD_NODE_PTR));
+        Value* any_ad = builder->CreateOr(left_is_ad, right_is_ad);
+        
+        // PHASE 2: Check if either operand is a dual number (forward-mode)
         Value* left_is_dual = builder->CreateICmpEQ(left_base,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
         Value* right_is_dual = builder->CreateICmpEQ(right_base,
@@ -2105,12 +2275,71 @@ private:
         Value* any_double = builder->CreateOr(left_is_double, right_is_double);
         
         Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* ad_path = BasicBlock::Create(*context, "mul_ad_path", current_func);
+        BasicBlock* check_dual = BasicBlock::Create(*context, "mul_check_dual", current_func);
         BasicBlock* dual_path = BasicBlock::Create(*context, "mul_dual_path", current_func);
         BasicBlock* check_double = BasicBlock::Create(*context, "mul_check_double", current_func);
         BasicBlock* double_path = BasicBlock::Create(*context, "mul_double_path", current_func);
         BasicBlock* int_path = BasicBlock::Create(*context, "mul_int_path", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "mul_merge", current_func);
         
+        builder->CreateCondBr(any_ad, ad_path, check_dual);
+        
+        // PHASE 3/4: AD node path - build computational graph
+        builder->SetInsertPoint(ad_path);
+        
+        BasicBlock* left_is_ad_block = BasicBlock::Create(*context, "mul_left_is_ad", current_func);
+        BasicBlock* left_not_ad_block = BasicBlock::Create(*context, "mul_left_not_ad", current_func);
+        BasicBlock* left_ad_merge = BasicBlock::Create(*context, "mul_left_ad_merge", current_func);
+        
+        builder->CreateCondBr(left_is_ad, left_is_ad_block, left_not_ad_block);
+        
+        builder->SetInsertPoint(left_is_ad_block);
+        Value* left_ad_ptr = unpackPtrFromTaggedValue(left_tagged);
+        builder->CreateBr(left_ad_merge);
+        
+        builder->SetInsertPoint(left_not_ad_block);
+        Value* left_val = builder->CreateSelect(
+            builder->CreateICmpEQ(left_base, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE)),
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* left_ad_const = createADConstant(left_val);
+        builder->CreateBr(left_ad_merge);
+        
+        builder->SetInsertPoint(left_ad_merge);
+        PHINode* left_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+        left_ad_node->addIncoming(left_ad_ptr, left_is_ad_block);
+        left_ad_node->addIncoming(left_ad_const, left_not_ad_block);
+        
+        BasicBlock* right_is_ad_block = BasicBlock::Create(*context, "mul_right_is_ad", current_func);
+        BasicBlock* right_not_ad_block = BasicBlock::Create(*context, "mul_right_not_ad", current_func);
+        BasicBlock* right_ad_merge = BasicBlock::Create(*context, "mul_right_ad_merge", current_func);
+        
+        builder->CreateCondBr(right_is_ad, right_is_ad_block, right_not_ad_block);
+        
+        builder->SetInsertPoint(right_is_ad_block);
+        Value* right_ad_ptr = unpackPtrFromTaggedValue(right_tagged);
+        builder->CreateBr(right_ad_merge);
+        
+        builder->SetInsertPoint(right_not_ad_block);
+        Value* right_val = builder->CreateSelect(
+            builder->CreateICmpEQ(right_base, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE)),
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* right_ad_const = createADConstant(right_val);
+        builder->CreateBr(right_ad_merge);
+        
+        builder->SetInsertPoint(right_ad_merge);
+        PHINode* right_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+        right_ad_node->addIncoming(right_ad_ptr, right_is_ad_block);
+        right_ad_node->addIncoming(right_ad_const, right_not_ad_block);
+        
+        Value* result_ad_node = recordADNodeBinary(4, left_ad_node, right_ad_node); // AD_NODE_MUL = 4
+        Value* ad_result_tagged = packPtrToTaggedValue(result_ad_node, ESHKOL_VALUE_AD_NODE_PTR);
+        builder->CreateBr(merge);
+        BasicBlock* ad_path_exit = builder->GetInsertBlock();
+        
+        builder->SetInsertPoint(check_dual);
         builder->CreateCondBr(any_dual, dual_path, check_double);
         
         // PHASE 2: Dual number path - use dual multiplication (product rule)
@@ -2190,7 +2419,8 @@ private:
         
         // Merge all paths
         builder->SetInsertPoint(merge);
-        PHINode* mul_result_phi = builder->CreatePHI(tagged_value_type, 3);
+        PHINode* mul_result_phi = builder->CreatePHI(tagged_value_type, 4);
+        mul_result_phi->addIncoming(ad_result_tagged, ad_path_exit);
         mul_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
         mul_result_phi->addIncoming(tagged_double_result, double_path);
         mul_result_phi->addIncoming(tagged_int_result, int_path);
@@ -2212,7 +2442,14 @@ private:
         Value* right_base = builder->CreateAnd(right_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
-        // PHASE 2: Check if either operand is a dual number
+        // PHASE 3/4: Check if either operand is an AD node (reverse-mode)
+        Value* left_is_ad = builder->CreateICmpEQ(left_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_AD_NODE_PTR));
+        Value* right_is_ad = builder->CreateICmpEQ(right_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_AD_NODE_PTR));
+        Value* any_ad = builder->CreateOr(left_is_ad, right_is_ad);
+        
+        // PHASE 2: Check if either operand is a dual number (forward-mode)
         Value* left_is_dual = builder->CreateICmpEQ(left_base,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DUAL_NUMBER));
         Value* right_is_dual = builder->CreateICmpEQ(right_base,
@@ -2225,10 +2462,69 @@ private:
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
         
         Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* ad_path = BasicBlock::Create(*context, "div_ad_path", current_func);
+        BasicBlock* check_dual = BasicBlock::Create(*context, "div_check_dual", current_func);
         BasicBlock* dual_path = BasicBlock::Create(*context, "div_dual_path", current_func);
         BasicBlock* regular_path = BasicBlock::Create(*context, "div_regular_path", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "div_merge", current_func);
         
+        builder->CreateCondBr(any_ad, ad_path, check_dual);
+        
+        // PHASE 3/4: AD node path - build computational graph
+        builder->SetInsertPoint(ad_path);
+        
+        BasicBlock* left_is_ad_block = BasicBlock::Create(*context, "div_left_is_ad", current_func);
+        BasicBlock* left_not_ad_block = BasicBlock::Create(*context, "div_left_not_ad", current_func);
+        BasicBlock* left_ad_merge = BasicBlock::Create(*context, "div_left_ad_merge", current_func);
+        
+        builder->CreateCondBr(left_is_ad, left_is_ad_block, left_not_ad_block);
+        
+        builder->SetInsertPoint(left_is_ad_block);
+        Value* left_ad_ptr = unpackPtrFromTaggedValue(left_tagged);
+        builder->CreateBr(left_ad_merge);
+        
+        builder->SetInsertPoint(left_not_ad_block);
+        Value* left_val = builder->CreateSelect(
+            builder->CreateICmpEQ(left_base, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE)),
+            unpackDoubleFromTaggedValue(left_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), Type::getDoubleTy(*context)));
+        Value* left_ad_const = createADConstant(left_val);
+        builder->CreateBr(left_ad_merge);
+        
+        builder->SetInsertPoint(left_ad_merge);
+        PHINode* left_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+        left_ad_node->addIncoming(left_ad_ptr, left_is_ad_block);
+        left_ad_node->addIncoming(left_ad_const, left_not_ad_block);
+        
+        BasicBlock* right_is_ad_block = BasicBlock::Create(*context, "div_right_is_ad", current_func);
+        BasicBlock* right_not_ad_block = BasicBlock::Create(*context, "div_right_not_ad", current_func);
+        BasicBlock* right_ad_merge = BasicBlock::Create(*context, "div_right_ad_merge", current_func);
+        
+        builder->CreateCondBr(right_is_ad, right_is_ad_block, right_not_ad_block);
+        
+        builder->SetInsertPoint(right_is_ad_block);
+        Value* right_ad_ptr = unpackPtrFromTaggedValue(right_tagged);
+        builder->CreateBr(right_ad_merge);
+        
+        builder->SetInsertPoint(right_not_ad_block);
+        Value* right_val = builder->CreateSelect(
+            builder->CreateICmpEQ(right_base, ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE)),
+            unpackDoubleFromTaggedValue(right_tagged),
+            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), Type::getDoubleTy(*context)));
+        Value* right_ad_const = createADConstant(right_val);
+        builder->CreateBr(right_ad_merge);
+        
+        builder->SetInsertPoint(right_ad_merge);
+        PHINode* right_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+        right_ad_node->addIncoming(right_ad_ptr, right_is_ad_block);
+        right_ad_node->addIncoming(right_ad_const, right_not_ad_block);
+        
+        Value* result_ad_node = recordADNodeBinary(5, left_ad_node, right_ad_node); // AD_NODE_DIV = 5
+        Value* ad_result_tagged = packPtrToTaggedValue(result_ad_node, ESHKOL_VALUE_AD_NODE_PTR);
+        builder->CreateBr(merge);
+        BasicBlock* ad_path_exit = builder->GetInsertBlock();
+        
+        builder->SetInsertPoint(check_dual);
         builder->CreateCondBr(any_dual, dual_path, regular_path);
         
         // PHASE 2: Dual number path - use dual division (quotient rule)
@@ -2299,7 +2595,8 @@ private:
         
         // Merge paths
         builder->SetInsertPoint(merge);
-        PHINode* div_result_phi = builder->CreatePHI(tagged_value_type, 2);
+        PHINode* div_result_phi = builder->CreatePHI(tagged_value_type, 3);
+        div_result_phi->addIncoming(ad_result_tagged, ad_path_exit);
         div_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
         div_result_phi->addIncoming(tagged_regular_result, regular_path);
         
@@ -2639,6 +2936,9 @@ private:
             case ESHKOL_LAMBDA_OP:
                 return codegenLambda(op);
                 
+            case ESHKOL_LET_OP:
+                return codegenLet(op);
+                
             case ESHKOL_TENSOR_OP:
                 return codegenTensorOperation(op);
                 
@@ -2656,6 +2956,18 @@ private:
                 
             case ESHKOL_HESSIAN_OP:
                 return codegenHessian(op);
+                
+            case ESHKOL_DIVERGENCE_OP:
+                return codegenDivergence(op);
+                
+            case ESHKOL_CURL_OP:
+                return codegenCurl(op);
+                
+            case ESHKOL_LAPLACIAN_OP:
+                return codegenLaplacian(op);
+                
+            case ESHKOL_DIRECTIONAL_DERIV_OP:
+                return codegenDirectionalDerivative(op);
                 
             default:
                 eshkol_warn("Unhandled operation type: %d", op->op);
@@ -2691,6 +3003,9 @@ private:
         Function* prev_function = current_function;
         current_function = function;
         
+        // GLOBAL ARENA FIX: No per-function arena initialization needed
+        // All functions share the global arena initialized in main
+        
         // Add parameters to symbol table
         std::map<std::string, Value*> prev_symbols = symbol_table;
         if (op->define_op.parameters) {
@@ -2724,7 +3039,8 @@ private:
                 builder->CreateRet(body_result);
             }
             // If body_result is a function (lambda), pack as function pointer
-            else if (isa<Function>(body_result)) {
+            // CRITICAL FIX: Check for null before isa<Function>
+            else if (body_result && isa<Function>(body_result)) {
                 Function* lambda_func = dyn_cast<Function>(body_result);
                 eshkol_debug("Function %s returns lambda %s", func_name, lambda_func->getName().str().c_str());
                 
@@ -2775,35 +3091,81 @@ private:
         }
 
         if (current_function) {
+            // CRITICAL FIX: Check if we're in __global_init temp function
+            // If so, use GlobalVariable instead of AllocaInst so definitions survive temp function erasure!
+            bool is_global_init = (current_function->getName() == "__global_init");
+            
             // For functions (lambdas), store as int64 pointer
             Type* storage_type = value->getType();
-            if (isa<Function>(value)) {
+            // CRITICAL FIX: Check for null before isa<Function> to avoid assertion
+            if (value && isa<Function>(value)) {
                 Function* func = dyn_cast<Function>(value);
                 storage_type = Type::getInt64Ty(*context);
                 
                 // Store direct function reference for lambda resolution FIRST
+                // CRITICAL: Store in BOTH tables to ensure retrieval works
                 symbol_table[std::string(var_name) + "_func"] = func;
                 global_symbol_table[std::string(var_name) + "_func"] = func;
-                eshkol_debug("Stored lambda function reference: %s_func -> %s", var_name, func->getName().str().c_str());
+                eshkol_debug("Stored lambda function reference: %s_func -> %s (in both symbol tables)",
+                            var_name, func->getName().str().c_str());
                 
                 value = builder->CreatePtrToInt(func, storage_type);
             }
             
-            AllocaInst* variable = builder->CreateAlloca(
-                storage_type,
-                nullptr,
-                var_name
-            );
-            // Fix alignment mismatch: explicitly set proper alignment for i64
-            if (storage_type->isIntegerTy(64)) {
-                variable->setAlignment(Align(8)); // Explicit 8-byte alignment for i64
+            if (is_global_init) {
+                // In __global_init: create GlobalVariable so it survives function erasure
+                Constant* init_value = dyn_cast<Constant>(value);
+                if (!init_value) {
+                    // If not constant, we need to handle this differently
+                    // For now, just create with UndefValue and warn
+                    eshkol_warn("Non-constant value in __global_init for %s", var_name);
+                    init_value = UndefValue::get(storage_type);
+                }
+                
+                GlobalVariable* global_var = new GlobalVariable(
+                    *module,
+                    storage_type,
+                    false, // not constant
+                    GlobalValue::InternalLinkage,
+                    init_value,
+                    var_name
+                );
+                
+                // Store actual value if not constant (requires runtime init in main)
+                if (!dyn_cast<Constant>(value)) {
+                    builder->CreateStore(value, global_var);
+                }
+                
+                symbol_table[var_name] = global_var;
+                global_symbol_table[var_name] = global_var;
+                eshkol_debug("Created GlobalVariable for %s in __global_init", var_name);
+            } else {
+                // Normal function context: use AllocaInst
+                AllocaInst* variable = builder->CreateAlloca(
+                    storage_type,
+                    nullptr,
+                    var_name
+                );
+                // Fix alignment mismatch: explicitly set proper alignment for i64
+                if (storage_type->isIntegerTy(64)) {
+                    variable->setAlignment(Align(8)); // Explicit 8-byte alignment for i64
+                }
+                builder->CreateStore(value, variable);
+                symbol_table[var_name] = variable;
             }
-            builder->CreateStore(value, variable);
-            symbol_table[var_name] = variable;
         } else {
             // For global variables, handle function pointers specially
-            if (isa<Function>(value)) {
+            // CRITICAL FIX: Check for null before isa<Function> to avoid assertion
+            if (value && isa<Function>(value)) {
                 Function* func = dyn_cast<Function>(value);
+                
+                // CRITICAL FIX: Store direct function reference FIRST for lambda resolution
+                // This MUST happen for global lambdas too!
+                symbol_table[std::string(var_name) + "_func"] = func;
+                global_symbol_table[std::string(var_name) + "_func"] = func;
+                eshkol_debug("Stored GLOBAL lambda function reference: %s_func -> %s (in both tables)",
+                            var_name, func->getName().str().c_str());
+                
                 // Store function pointer as a global variable with proper initialization
                 Constant* func_ptr = ConstantExpr::getPtrToInt(func, Type::getInt64Ty(*context));
                 GlobalVariable *variable = new GlobalVariable(
@@ -2817,17 +3179,23 @@ private:
                 symbol_table[var_name] = variable;
                 global_symbol_table[var_name] = variable; // Also store in global table
                 
-                // Also store a direct reference to the function for lambda resolution
-                symbol_table[std::string(var_name) + "_func"] = func;
-                global_symbol_table[std::string(var_name) + "_func"] = func; // Also store in global table
                 eshkol_debug("Created global lambda variable: %s", var_name);
             } else {
+                // CRITICAL FIX: GlobalVariable requires Constant initializer
+                // For non-constant values, use UndefValue and mark for runtime init
+                Constant* init_value = dyn_cast<Constant>(value);
+                if (!init_value) {
+                    // Non-constant value - use UndefValue as placeholder
+                    init_value = UndefValue::get(value->getType());
+                    eshkol_debug("Global variable %s has non-constant initializer, will init at runtime", var_name);
+                }
+                
                 GlobalVariable *variable = new GlobalVariable(
                     *module,
                     value->getType(),
                     false,
                     GlobalValue::WeakAnyLinkage,
-                    dyn_cast<Constant>(value),
+                    init_value,  // Always valid Constant now
                     var_name
                 );
                 symbol_table[var_name] = variable;
@@ -2972,6 +3340,7 @@ private:
         
         // Handle tensor operations
         if (func_name == "tensor-get") return codegenTensorGet(op);
+        if (func_name == "vref") return codegenVectorRef(op);  // Alias for tensor-get with single index
         if (func_name == "tensor-set") return codegenTensorSet(op);
         if (func_name == "tensor-add") return codegenTensorArithmetic(op, "add");
         if (func_name == "tensor-sub") return codegenTensorArithmetic(op, "sub");
@@ -2997,16 +3366,32 @@ private:
         // Handle function calls - check both function table and lambda variables
         Function* callee = function_table[func_name];
         
+        eshkol_error("DEBUG: codegenCall for %s, callee from function_table = %p", func_name.c_str(), callee);
+        
         // If not found in function table, check if it's a variable containing a lambda
         if (!callee) {
             // First check if there's a direct function reference
+            eshkol_error("DEBUG: Checking symbol_table for %s_func", func_name.c_str());
             auto func_it = symbol_table.find(func_name + "_func");
-            if (func_it != symbol_table.end()) {
+            if (func_it != symbol_table.end() && func_it->second) {
+                eshkol_error("DEBUG: Found %s_func in symbol_table", func_name.c_str());
+                // CRITICAL FIX: Check for null before isa<Function>
                 if (isa<Function>(func_it->second)) {
                     callee = dyn_cast<Function>(func_it->second);
                     eshkol_debug("Resolved lambda function directly for variable %s", func_name.c_str());
                 }
             } else {
+                eshkol_error("DEBUG: %s_func NOT in symbol_table, checking global", func_name.c_str());
+                func_it = global_symbol_table.find(func_name + "_func");
+                if (func_it != global_symbol_table.end() && func_it->second) {
+                    eshkol_error("DEBUG: Found %s_func in global_symbol_table!", func_name.c_str());
+                    if (isa<Function>(func_it->second)) {
+                        callee = dyn_cast<Function>(func_it->second);
+                        eshkol_debug("Resolved lambda from global for %s", func_name.c_str());
+                    }
+                } else {
+                    eshkol_error("DEBUG: %s_func NOT in global_symbol_table either!", func_name.c_str());
+                }
                 // Fall back to the variable lookup
                 auto var_it = symbol_table.find(func_name);
                 if (var_it != symbol_table.end()) {
@@ -3059,8 +3444,9 @@ private:
                     func_it = global_symbol_table.find(std::string(func_name) + "_func");
                 }
                 
-                if ((func_it != symbol_table.end() || global_symbol_table.find(std::string(func_name) + "_func") != global_symbol_table.end()) 
-                    && isa<Function>(func_it->second)) {
+                if ((func_it != symbol_table.end() || global_symbol_table.find(std::string(func_name) + "_func") != global_symbol_table.end())
+                    && func_it->second && isa<Function>(func_it->second)) {
+                    // CRITICAL FIX: Check for null before isa<Function>
                     callee = dyn_cast<Function>(func_it->second);
                     eshkol_debug("Resolved closure function for %s", func_name.c_str());
                 } else {
@@ -3208,12 +3594,17 @@ private:
                 }
                 
                 if (found_value) {
-                    args.push_back(ConstantInt::get(Type::getInt64Ty(*context), captured_value));
-                    eshkol_debug("Added captured argument %lld for %s closure", captured_value, func_name.c_str());
+                    // CRITICAL FIX: Pack captured value to tagged_value since lambdas expect tagged_value
+                    Value* captured_i64 = ConstantInt::get(Type::getInt64Ty(*context), captured_value);
+                    Value* captured_tagged = packInt64ToTaggedValue(captured_i64, true);
+                    args.push_back(captured_tagged);
+                    eshkol_debug("Added captured argument %lld for %s closure (packed to tagged_value)", captured_value, func_name.c_str());
                 } else {
-                    // Fallback: add 0 as captured value
-                    args.push_back(ConstantInt::get(Type::getInt64Ty(*context), 0));
-                    eshkol_debug("Added default captured argument 0 for %s closure", func_name.c_str());
+                    // Fallback: add 0 as captured value (pack to tagged_value)
+                    Value* zero_i64 = ConstantInt::get(Type::getInt64Ty(*context), 0);
+                    Value* zero_tagged = packInt64ToTaggedValue(zero_i64, true);
+                    args.push_back(zero_tagged);
+                    eshkol_debug("Added default captured argument 0 for %s closure (packed to tagged_value)", func_name.c_str());
                 }
             }
         }
@@ -3318,15 +3709,19 @@ private:
             // Extract type field from tagged value
             Value* type_field = getTaggedValueType(arg);
             
-            // Branch based on type
+            // CRITICAL FIX: Mask out flags to get base type (like car/cdr do)
+            Value* base_type = builder->CreateAnd(type_field,
+                ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+            
+            // Branch based on base type (without flags)
             BasicBlock* int_display = BasicBlock::Create(*context, "display_int", current_func);
             BasicBlock* double_display = BasicBlock::Create(*context, "display_double", current_func);
             BasicBlock* ptr_display = BasicBlock::Create(*context, "display_ptr", current_func);
             BasicBlock* display_done = BasicBlock::Create(*context, "display_done", current_func);
             
-            Value* is_int = builder->CreateICmpEQ(type_field,
+            Value* is_int = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_INT64));
-            Value* is_double = builder->CreateICmpEQ(type_field,
+            Value* is_double = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
             
             BasicBlock* check_double = BasicBlock::Create(*context, "check_double", current_func);
@@ -3358,19 +3753,111 @@ private:
             return ConstantInt::get(Type::getInt32Ty(*context), 0);
         }
         
-        // Handle int64 values that might be list pointers (also handle tagged_value)
+        // Handle int64 values that might be tensor/list pointers (also handle tagged_value)
         Value* arg_int = safeExtractInt64(arg);
         
         if (arg->getType()->isIntegerTy(64) || arg->getType() == tagged_value_type) {
-            // Check if this is a valid list pointer (> 1000)
+            // Check if this is a valid pointer (> 1000)
             Value* is_large_enough = builder->CreateICmpUGT(arg_int,
                 ConstantInt::get(Type::getInt64Ty(*context), 1000));
             
+            BasicBlock* check_type = BasicBlock::Create(*context, "display_check_type", current_func);
+            BasicBlock* display_tensor = BasicBlock::Create(*context, "display_tensor", current_func);
             BasicBlock* display_list = BasicBlock::Create(*context, "display_list", current_func);
             BasicBlock* display_int = BasicBlock::Create(*context, "display_int_value", current_func);
             BasicBlock* display_done = BasicBlock::Create(*context, "display_complete", current_func);
             
-            builder->CreateCondBr(is_large_enough, display_list, display_int);
+            builder->CreateCondBr(is_large_enough, check_type, display_int);
+            
+            // Check if it's a tensor or a list by attempting to read first field as tensor structure
+            builder->SetInsertPoint(check_type);
+            
+            // Define tensor structure
+            std::vector<Type*> tensor_fields;
+            tensor_fields.push_back(PointerType::getUnqual(*context));
+            tensor_fields.push_back(Type::getInt64Ty(*context));
+            tensor_fields.push_back(PointerType::getUnqual(*context));
+            tensor_fields.push_back(Type::getInt64Ty(*context));
+            StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+            
+            Value* potential_tensor_ptr = builder->CreateIntToPtr(arg_int, builder->getPtrTy());
+            
+            // Try to read num_dimensions field (field index 1)
+            Value* num_dims_field = builder->CreateStructGEP(tensor_type, potential_tensor_ptr, 1);
+            Value* num_dims = builder->CreateLoad(Type::getInt64Ty(*context), num_dims_field);
+            
+            // Tensors have num_dimensions between 1 and 10; lists would have random values
+            Value* dims_ge_1 = builder->CreateICmpUGE(num_dims, ConstantInt::get(Type::getInt64Ty(*context), 1));
+            Value* dims_le_10 = builder->CreateICmpULE(num_dims, ConstantInt::get(Type::getInt64Ty(*context), 10));
+            Value* is_tensor = builder->CreateAnd(dims_ge_1, dims_le_10);
+            
+            builder->CreateCondBr(is_tensor, display_tensor, display_list);
+            
+            // Display tensor as #(e1 e2 e3 ...)
+            builder->SetInsertPoint(display_tensor);
+            
+            // Print opening "#("
+            builder->CreateCall(printf_func, {codegenString("#(")});
+            
+            // Get total elements
+            Value* total_field = builder->CreateStructGEP(tensor_type, potential_tensor_ptr, 3);
+            Value* total_elements = builder->CreateLoad(Type::getInt64Ty(*context), total_field);
+            
+            // Get elements array
+            Value* elements_field = builder->CreateStructGEP(tensor_type, potential_tensor_ptr, 2);
+            Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field);
+            Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
+            
+            // Loop through elements
+            Value* tensor_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "tensor_display_idx");
+            builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), tensor_idx);
+            
+            BasicBlock* tensor_loop_cond = BasicBlock::Create(*context, "tensor_loop_cond", current_func);
+            BasicBlock* tensor_loop_body = BasicBlock::Create(*context, "tensor_loop_body", current_func);
+            BasicBlock* tensor_loop_exit = BasicBlock::Create(*context, "tensor_loop_exit", current_func);
+            
+            builder->CreateBr(tensor_loop_cond);
+            
+            builder->SetInsertPoint(tensor_loop_cond);
+            Value* current_idx = builder->CreateLoad(Type::getInt64Ty(*context), tensor_idx);
+            Value* idx_less = builder->CreateICmpULT(current_idx, total_elements);
+            builder->CreateCondBr(idx_less, tensor_loop_body, tensor_loop_exit);
+            
+            builder->SetInsertPoint(tensor_loop_body);
+            
+            // Add space before non-first elements
+            Value* is_first_elem = builder->CreateICmpEQ(current_idx, ConstantInt::get(Type::getInt64Ty(*context), 0));
+            BasicBlock* skip_space_tensor = BasicBlock::Create(*context, "skip_space_tensor", current_func);
+            BasicBlock* add_space_tensor = BasicBlock::Create(*context, "add_space_tensor", current_func);
+            BasicBlock* print_elem = BasicBlock::Create(*context, "print_tensor_elem", current_func);
+            
+            builder->CreateCondBr(is_first_elem, skip_space_tensor, add_space_tensor);
+            
+            builder->SetInsertPoint(add_space_tensor);
+            builder->CreateCall(printf_func, {codegenString(" ")});
+            builder->CreateBr(print_elem);
+            
+            builder->SetInsertPoint(skip_space_tensor);
+            builder->CreateBr(print_elem);
+            
+            builder->SetInsertPoint(print_elem);
+            
+            // Load element as int64, then bitcast to double for display
+            Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr, current_idx);
+            Value* elem_int64 = builder->CreateLoad(Type::getInt64Ty(*context), elem_ptr);
+            Value* elem_double = builder->CreateBitCast(elem_int64, Type::getDoubleTy(*context));
+            
+            // Display as double
+            builder->CreateCall(printf_func, {codegenString("%g"), elem_double});
+            
+            // Increment index
+            Value* next_idx = builder->CreateAdd(current_idx, ConstantInt::get(Type::getInt64Ty(*context), 1));
+            builder->CreateStore(next_idx, tensor_idx);
+            builder->CreateBr(tensor_loop_cond);
+            
+            builder->SetInsertPoint(tensor_loop_exit);
+            builder->CreateCall(printf_func, {codegenString(")")});
+            builder->CreateBr(display_done);
             
             // Display as list
             builder->SetInsertPoint(display_list);
@@ -3481,9 +3968,37 @@ private:
             builder->CreateCall(printf_func, {codegenString(")")});
             builder->CreateBr(display_done);
             
-            // Display as plain integer
+            // Display as plain integer - but check if it might be a bitcast double
             builder->SetInsertPoint(display_int);
+            
+            // Heuristic: IEEE 754 doubles have exponent bits in high positions
+            // Check if this looks like a double bit pattern (exponent field non-zero)
+            Value* exponent_mask = ConstantInt::get(Type::getInt64Ty(*context), 0x7FF0000000000000ULL);
+            Value* exponent_bits = builder->CreateAnd(arg_int, exponent_mask);
+            Value* has_exponent = builder->CreateICmpNE(exponent_bits, ConstantInt::get(Type::getInt64Ty(*context), 0));
+            
+            // Also check it's not a small integer (< 1000) which definitely isn't a double
+            Value* is_small_int = builder->CreateICmpULT(arg_int, ConstantInt::get(Type::getInt64Ty(*context), 1000));
+            Value* likely_double = builder->CreateAnd(has_exponent, builder->CreateNot(is_small_int));
+            
+            BasicBlock* display_as_double = BasicBlock::Create(*context, "display_int_as_double", current_func);
+            BasicBlock* display_as_int = BasicBlock::Create(*context, "display_as_plain_int", current_func);
+            BasicBlock* int_display_done = BasicBlock::Create(*context, "int_display_done", current_func);
+            
+            builder->CreateCondBr(likely_double, display_as_double, display_as_int);
+            
+            // Display as double (bitcast int64 to double)
+            builder->SetInsertPoint(display_as_double);
+            Value* as_double = builder->CreateBitCast(arg_int, Type::getDoubleTy(*context));
+            builder->CreateCall(printf_func, {codegenString("%g"), as_double});
+            builder->CreateBr(int_display_done);
+            
+            // Display as plain integer
+            builder->SetInsertPoint(display_as_int);
             builder->CreateCall(printf_func, {codegenString("%lld"), arg_int});
+            builder->CreateBr(int_display_done);
+            
+            builder->SetInsertPoint(int_display_done);
             builder->CreateBr(display_done);
             
             builder->SetInsertPoint(display_done);
@@ -4251,6 +4766,9 @@ private:
         current_function = lambda_func;
         std::map<std::string, Value*> prev_symbols = symbol_table;
         
+        // GLOBAL ARENA FIX: No per-lambda arena initialization needed
+        // All lambdas share the global arena initialized in main
+        
         // Add parameters to symbol table
         arg_it = lambda_func->arg_begin();
         if (op->lambda_op.parameters) {
@@ -4271,23 +4789,35 @@ private:
         // Generate lambda body
         Value* body_result = nullptr;
         if (op->lambda_op.body) {
+            eshkol_error("DEBUG: About to generate lambda body");
             body_result = codegenAST(op->lambda_op.body);
+            eshkol_error("DEBUG: Lambda body codegenAST returned Value* = %p", body_result);
+            if (body_result) {
+                eshkol_error("DEBUG: Lambda body result type: %s",
+                    body_result->getType()->isIntegerTy() ? "Integer" :
+                    (body_result->getType() == tagged_value_type ? "TaggedValue" : "Other"));
+            }
         }
         
         // Pack return value to tagged_value (lambdas now return tagged_value)
         if (body_result) {
             // If body_result is already a tagged_value, return it directly
             if (body_result->getType() == tagged_value_type) {
+                eshkol_error("DEBUG: Lambda returning tagged_value directly");
                 builder->CreateRet(body_result);
             }
             // Otherwise, detect type and pack to tagged_value
             else {
+                eshkol_error("DEBUG: Lambda body is not tagged_value, detecting type and packing");
                 TypedValue typed = detectValueType(body_result);
+                eshkol_error("DEBUG: detectValueType returned type=%d", typed.type);
                 Value* tagged = typedValueToTaggedValue(typed);
+                eshkol_error("DEBUG: typedValueToTaggedValue returned Value* = %p", tagged);
                 builder->CreateRet(tagged);
             }
         } else {
             // Return null tagged value as default
+            eshkol_error("DEBUG: Lambda body_result is nullptr, returning null tagged value");
             Value* null_tagged = packInt64ToTaggedValue(
                 ConstantInt::get(Type::getInt64Ty(*context), 0), true);
             builder->CreateRet(null_tagged);
@@ -4299,6 +4829,11 @@ private:
         
         // Add lambda function to function table so it can be called
         registerContextFunction(lambda_name, lambda_func);
+        
+        // CRITICAL FIX: Also add to global_symbol_table immediately for gradient/jacobian resolution
+        // This allows autodiff operators to find lambdas WITHOUT changing evaluation order
+        global_symbol_table[lambda_name] = lambda_func;
+        eshkol_debug("Added lambda %s to global_symbol_table for autodiff resolution", lambda_name.c_str());
         
         // Store closure information for later use
         if (!free_vars.empty()) {
@@ -4316,6 +4851,94 @@ private:
         
         // Return the lambda function itself
         return lambda_func;
+    }
+    
+    Value* codegenLet(const eshkol_operations_t* op) {
+        if (!op || !op->let_op.body) {
+            eshkol_error("Invalid let expression - missing body");
+            return nullptr;
+        }
+        
+        eshkol_debug("Processing let expression with %llu bindings",
+                    (unsigned long long)op->let_op.num_bindings);
+        
+        // Save current symbol table state
+        std::map<std::string, Value*> prev_symbols = symbol_table;
+        
+        // Process all bindings: evaluate values and add to symbol table
+        for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+            const eshkol_ast_t* binding = &op->let_op.bindings[i];
+            
+            // Binding is a cons cell: (variable . value)
+            if (binding->type != ESHKOL_CONS || !binding->cons_cell.car || !binding->cons_cell.cdr) {
+                eshkol_error("Invalid let binding structure at index %llu", (unsigned long long)i);
+                continue;
+            }
+            
+            // Extract variable name from car
+            const eshkol_ast_t* var_ast = binding->cons_cell.car;
+            if (var_ast->type != ESHKOL_VAR || !var_ast->variable.id) {
+                eshkol_error("Let binding must have variable name");
+                continue;
+            }
+            
+            std::string var_name = var_ast->variable.id;
+            
+            // Evaluate value expression from cdr
+            const eshkol_ast_t* val_ast = binding->cons_cell.cdr;
+            Value* val = codegenAST(val_ast);
+            if (!val) {
+                eshkol_warn("Failed to evaluate let binding value for %s", var_name.c_str());
+                continue;
+            }
+            
+            // Determine storage type based on value type
+            Type* storage_type = val->getType();
+            
+            // Check if value is a function and store appropriately
+            if (val && isa<Function>(val)) {
+                Function* func = dyn_cast<Function>(val);
+                storage_type = Type::getInt64Ty(*context);
+                
+                // Store direct function reference for lambda resolution
+                symbol_table[var_name + "_func"] = func;
+                eshkol_debug("Let binding: stored lambda function reference %s_func", var_name.c_str());
+                
+                val = builder->CreatePtrToInt(func, storage_type);
+            }
+            
+            // Create alloca for the variable in current function scope
+            if (current_function) {
+                AllocaInst* var_alloca = builder->CreateAlloca(
+                    storage_type,
+                    nullptr,
+                    var_name.c_str()
+                );
+                
+                // Set proper alignment for i64 types
+                if (storage_type->isIntegerTy(64)) {
+                    var_alloca->setAlignment(Align(8));
+                }
+                
+                builder->CreateStore(val, var_alloca);
+                symbol_table[var_name] = var_alloca;
+                
+                eshkol_debug("Let binding: %s = <value>", var_name.c_str());
+            } else {
+                eshkol_warn("Let expression outside function context - creating temporary binding");
+                symbol_table[var_name] = val;
+            }
+        }
+        
+        // Evaluate body in the new scope with bindings
+        Value* body_result = codegenAST(op->let_op.body);
+        
+        // Restore previous symbol table state
+        symbol_table = prev_symbols;
+        
+        eshkol_debug("Let expression completed, scope restored");
+        
+        return body_result ? body_result : ConstantInt::get(Type::getInt64Ty(*context), 0);
     }
     
     Value* codegenTensor(const eshkol_ast_t* ast) {
@@ -4362,18 +4985,19 @@ private:
         for (uint64_t i = 0; i < ast->tensor_val.total_elements; i++) {
             Value* element_val = codegenAST(&ast->tensor_val.elements[i]);
             if (element_val) {
-                // Ensure element is int64
+                // CRITICAL FIX: Store elements as int64, but preserve double bit patterns
                 if (element_val->getType() != Type::getInt64Ty(*context)) {
                     if (element_val->getType()->isIntegerTy()) {
                         element_val = builder->CreateSExtOrTrunc(element_val, Type::getInt64Ty(*context));
                     } else if (element_val->getType()->isFloatingPointTy()) {
-                        element_val = builder->CreateFPToSI(element_val, Type::getInt64Ty(*context));
+                        // Use BitCast for doubles, NOT FPToSI (which truncates to integer!)
+                        element_val = builder->CreateBitCast(element_val, Type::getInt64Ty(*context));
                     } else {
                         element_val = ConstantInt::get(Type::getInt64Ty(*context), 0);
                     }
                 }
                 
-                Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr, 
+                Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr,
                                                    ConstantInt::get(Type::getInt64Ty(*context), i));
                 builder->CreateStore(element_val, elem_ptr);
             }
@@ -4399,25 +5023,46 @@ private:
     Value* codegenTensorOperation(const eshkol_operations_t* op) {
         if (!op || op->op != ESHKOL_TENSOR_OP) return nullptr;
         
+        eshkol_error("DEBUG: codegenTensorOperation called! num_dims=%llu, total_elems=%llu",
+            (unsigned long long)op->tensor_op.num_dimensions,
+            (unsigned long long)op->tensor_op.total_elements);
+        
         // Create tensor structure: { dimensions*, num_dimensions, elements*, total_elements }
         std::vector<Type*> tensor_fields;
         tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions array
         tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements array  
+        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements array
         tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
         StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
         
         // Allocate memory for tensor structure
         Function* malloc_func = function_table["malloc"];
+        eshkol_error("DEBUG: malloc_func = %p", malloc_func);
         if (!malloc_func) {
             eshkol_error("malloc function not found");
             return nullptr;
         }
         
-        Value* tensor_size = ConstantInt::get(Type::getInt64Ty(*context), 
+        Value* tensor_size = ConstantInt::get(Type::getInt64Ty(*context),
                                             module->getDataLayout().getTypeAllocSize(tensor_type));
+        eshkol_error("DEBUG: About to call malloc for tensor, size=%llu",
+            (unsigned long long)module->getDataLayout().getTypeAllocSize(tensor_type));
         Value* tensor_ptr = builder->CreateCall(malloc_func, {tensor_size});
+        eshkol_error("DEBUG: malloc CreateCall returned Value* = %p", tensor_ptr);
+        
+        // RUNTIME DEBUG: Add printf to see actual malloc result at runtime
+        Function* printf_func = function_table["printf"];
+        if (printf_func) {
+            Value* tensor_ptr_int = builder->CreatePtrToInt(tensor_ptr, Type::getInt64Ty(*context));
+            builder->CreateCall(printf_func, {
+                codegenString("RUNTIME: malloc returned %p (size=%zu)\n"),
+                tensor_ptr_int,
+                tensor_size
+            });
+        }
+        
         Value* typed_tensor_ptr = builder->CreatePointerCast(tensor_ptr, builder->getPtrTy());
+        eshkol_error("DEBUG: typed_tensor_ptr after cast = %p", typed_tensor_ptr);
         
         // Allocate and populate dimensions array
         Value* dims_size = ConstantInt::get(Type::getInt64Ty(*context), 
@@ -4440,18 +5085,19 @@ private:
         for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
             Value* element_val = codegenAST(&op->tensor_op.elements[i]);
             if (element_val) {
-                // Ensure element is int64
+                // CRITICAL FIX: Store elements as int64, but preserve double bit patterns
                 if (element_val->getType() != Type::getInt64Ty(*context)) {
                     if (element_val->getType()->isIntegerTy()) {
                         element_val = builder->CreateSExtOrTrunc(element_val, Type::getInt64Ty(*context));
                     } else if (element_val->getType()->isFloatingPointTy()) {
-                        element_val = builder->CreateFPToSI(element_val, Type::getInt64Ty(*context));
+                        // Use BitCast for doubles, NOT FPToSI (which truncates to integer!)
+                        element_val = builder->CreateBitCast(element_val, Type::getInt64Ty(*context));
                     } else {
                         element_val = ConstantInt::get(Type::getInt64Ty(*context), 0);
                     }
                 }
                 
-                Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr, 
+                Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr,
                                                    ConstantInt::get(Type::getInt64Ty(*context), i));
                 builder->CreateStore(element_val, elem_ptr);
             }
@@ -4471,7 +5117,9 @@ private:
         builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), op->tensor_op.total_elements), total_elements_field_ptr);
         
         // Return pointer to tensor as int64
-        return builder->CreatePtrToInt(typed_tensor_ptr, Type::getInt64Ty(*context));
+        Value* result_int = builder->CreatePtrToInt(typed_tensor_ptr, Type::getInt64Ty(*context));
+        eshkol_error("DEBUG: codegenTensorOperation returning Value* = %p (should be PtrToInt instruction)", result_int);
+        return result_int;
     }
     
     Value* codegenTensorGet(const eshkol_operations_t* op) {
@@ -4530,6 +5178,98 @@ private:
         // Load element at linear index
         Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr, linear_index);
         return builder->CreateLoad(Type::getInt64Ty(*context), elem_ptr);
+    }
+    
+    Value* codegenVectorRef(const eshkol_operations_t* op) {
+        // vref: (vref vector index) - shorthand for (tensor-get vector index)
+        // Simplified 1D tensor access for vectors
+        // PHASE 3/4 FIX: Now AD-aware - detects and preserves AD node pointers
+        if (op->call_op.num_vars != 2) {
+            eshkol_error("vref requires exactly 2 arguments: vector and index");
+            return nullptr;
+        }
+        
+        Value* vector_val = codegenAST(&op->call_op.variables[0]);
+        Value* index = codegenAST(&op->call_op.variables[1]);
+        if (!vector_val || !index) return nullptr;
+        
+        // Unpack if tagged_value (lambda parameters are tagged_value)
+        Value* vector_ptr_int = safeExtractInt64(vector_val);
+        Value* index_int = safeExtractInt64(index);
+        
+        // Define tensor structure
+        std::vector<Type*> tensor_fields;
+        tensor_fields.push_back(PointerType::getUnqual(*context));
+        tensor_fields.push_back(Type::getInt64Ty(*context));
+        tensor_fields.push_back(PointerType::getUnqual(*context));
+        tensor_fields.push_back(Type::getInt64Ty(*context));
+        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        
+        Value* vector_ptr = builder->CreateIntToPtr(vector_ptr_int, builder->getPtrTy());
+        
+        // Get elements array
+        Value* elements_field = builder->CreateStructGEP(tensor_type, vector_ptr, 2);
+        Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field);
+        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
+        
+        // Load element as int64 (could be double bitcasted OR AD node pointer)
+        Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr, index_int);
+        Value* elem_as_int64 = builder->CreateLoad(Type::getInt64Ty(*context), elem_ptr);
+        
+        // CRITICAL FIX: Return tagged_value with proper type detection
+        // Handle 3 cases: small integers, doubles (bitcast), AD node pointers
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        
+        // Case 1: Small values (< 1000) are plain integers
+        Value* is_small_int = builder->CreateICmpULT(elem_as_int64,
+            ConstantInt::get(Type::getInt64Ty(*context), 1000));
+        
+        // Case 2 vs 3: For large values, distinguish doubles from pointers using IEEE 754 exponent bits
+        Value* exponent_mask = ConstantInt::get(Type::getInt64Ty(*context), 0x7FF0000000000000ULL);
+        Value* exponent_bits = builder->CreateAnd(elem_as_int64, exponent_mask);
+        Value* has_exponent = builder->CreateICmpNE(exponent_bits,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        
+        BasicBlock* int_path = BasicBlock::Create(*context, "vref_int", current_func);
+        BasicBlock* check_large = BasicBlock::Create(*context, "vref_check_large", current_func);
+        BasicBlock* double_path = BasicBlock::Create(*context, "vref_double", current_func);
+        BasicBlock* ad_node_path = BasicBlock::Create(*context, "vref_ad_node", current_func);
+        BasicBlock* vref_merge = BasicBlock::Create(*context, "vref_merge", current_func);
+        
+        builder->CreateCondBr(is_small_int, int_path, check_large);
+        
+        // Small integer path: Pack as int64
+        builder->SetInsertPoint(int_path);
+        Value* int_tagged = packInt64ToTaggedValue(elem_as_int64, true);
+        builder->CreateBr(vref_merge);
+        BasicBlock* int_exit = builder->GetInsertBlock();
+        
+        // Check if large value is double (has exponent) or AD node (no exponent)
+        builder->SetInsertPoint(check_large);
+        builder->CreateCondBr(has_exponent, double_path, ad_node_path);
+        
+        // Double path: Bitcast int64 to double and pack
+        builder->SetInsertPoint(double_path);
+        Value* elem_double = builder->CreateBitCast(elem_as_int64, Type::getDoubleTy(*context));
+        Value* double_tagged = packDoubleToTaggedValue(elem_double);
+        builder->CreateBr(vref_merge);
+        BasicBlock* double_exit = builder->GetInsertBlock();
+        
+        // AD node path: Treat as AD node pointer
+        builder->SetInsertPoint(ad_node_path);
+        Value* ad_node_ptr = builder->CreateIntToPtr(elem_as_int64, PointerType::getUnqual(*context));
+        Value* ad_node_tagged = packPtrToTaggedValue(ad_node_ptr, ESHKOL_VALUE_AD_NODE_PTR);
+        builder->CreateBr(vref_merge);
+        BasicBlock* ad_exit = builder->GetInsertBlock();
+        
+        // Merge: Return tagged_value (int, double, or AD node)
+        builder->SetInsertPoint(vref_merge);
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "vref_result");
+        result_phi->addIncoming(int_tagged, int_exit);
+        result_phi->addIncoming(double_tagged, double_exit);
+        result_phi->addIncoming(ad_node_tagged, ad_exit);
+        
+        return result_phi;
     }
     
     Value* codegenTensorSet(const eshkol_operations_t* op) {
@@ -6323,22 +7063,38 @@ private:
     
     // Main backward pass function - propagates gradients from output to inputs
     void codegenBackward(Value* output_node_ptr, Value* tape_ptr) {
-        if (!output_node_ptr || !tape_ptr) {
-            eshkol_error("Invalid backward pass: null output node or tape");
+        // CRITICAL: Add runtime null checks for placeholder functions
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        if (!current_func) {
+            eshkol_error("Backward pass requires active function context");
             return;
         }
+        
+        // Create safety check blocks
+        BasicBlock* check_validity = BasicBlock::Create(*context, "backward_check_valid", current_func);
+        BasicBlock* backward_valid = BasicBlock::Create(*context, "backward_valid", current_func);
+        BasicBlock* backward_skip = BasicBlock::Create(*context, "backward_skip", current_func);
+        
+        builder->CreateBr(check_validity);
+        
+        // Check if output node and tape are valid (not null)
+        builder->SetInsertPoint(check_validity);
+        Value* output_int = builder->CreatePtrToInt(output_node_ptr, Type::getInt64Ty(*context));
+        Value* tape_int = builder->CreatePtrToInt(tape_ptr, Type::getInt64Ty(*context));
+        
+        Value* output_valid = builder->CreateICmpNE(output_int, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* tape_valid = builder->CreateICmpNE(tape_int, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* both_valid = builder->CreateAnd(output_valid, tape_valid);
+        
+        builder->CreateCondBr(both_valid, backward_valid, backward_skip);
+        
+        builder->SetInsertPoint(backward_valid);
         
         // Initialize output gradient = 1.0 (seed for backpropagation)
         storeNodeGradient(output_node_ptr, ConstantFP::get(Type::getDoubleTy(*context), 1.0));
         
         // Get number of nodes in tape (runtime value, not compile-time constant)
         Value* num_nodes = builder->CreateCall(arena_tape_get_node_count_func, {tape_ptr});
-        
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        if (!current_func) {
-            eshkol_error("Backward pass requires active function context");
-            return;
-        }
         
         // Allocate loop counter for backward traversal (MUST iterate in reverse order)
         Value* counter = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "backward_counter");
@@ -6399,6 +7155,10 @@ private:
         
         // Loop exit: backward pass complete
         builder->SetInsertPoint(loop_exit);
+        builder->CreateBr(backward_skip);
+        
+        // Skip block: exit point for null/invalid inputs
+        builder->SetInsertPoint(backward_skip);
         
         eshkol_debug("Completed backward pass through computational graph");
     }
@@ -6608,31 +7368,64 @@ private:
     // Reverse-mode automatic differentiation for vector gradients
     
     Value* codegenGradient(const eshkol_operations_t* op) {
+        eshkol_error("DEBUG: codegenGradient called");
+        
         if (!op->gradient_op.function || !op->gradient_op.point) {
             eshkol_error("Invalid gradient operation - missing function or point");
             return nullptr;
         }
         
-        eshkol_info("Computing gradient using reverse-mode automatic differentiation");
+        eshkol_error("DEBUG: About to resolve lambda function");
         
         // Resolve function (lambda or function reference)
         Value* func = resolveLambdaFunction(op->gradient_op.function);
+        
+        eshkol_error("DEBUG: resolveLambdaFunction returned: %p", func);
+        
         if (!func) {
             eshkol_error("Failed to resolve function for gradient computation");
             return nullptr;
         }
         
+        eshkol_error("DEBUG: About to dyn_cast Function");
+        
         Function* func_ptr = dyn_cast<Function>(func);
+        
+        eshkol_error("DEBUG: dyn_cast returned: %p", func_ptr);
+        
         if (!func_ptr) {
             eshkol_error("Gradient operator requires actual function, got non-function value");
             return nullptr;
         }
+        
+        eshkol_error("DEBUG: Successfully got Function pointer");
         
         // Evaluate point to get input vector
         Value* vector_ptr_int = codegenAST(op->gradient_op.point);
         if (!vector_ptr_int) {
             eshkol_error("Failed to evaluate gradient evaluation point");
             return nullptr;
+        }
+        
+        // DIAGNOSTIC 1: Check what codegenAST returned
+        eshkol_error("DEBUG 1: codegenAST returned type: %s, is AllocaInst: %d",
+            vector_ptr_int->getType()->isIntegerTy() ? "Integer" :
+            (isa<AllocaInst>(vector_ptr_int) ? "AllocaInst" : "Other"),
+            isa<AllocaInst>(vector_ptr_int));
+        
+        // CRITICAL FIX: If result is AllocaInst (let-binding variable), load the value
+        if (isa<AllocaInst>(vector_ptr_int)) {
+            AllocaInst* alloca = dyn_cast<AllocaInst>(vector_ptr_int);
+            Type* allocated_type = alloca->getAllocatedType();
+            
+            eshkol_error("DEBUG 2: AllocaInst detected, allocated type: %s",
+                allocated_type->isIntegerTy(64) ? "i64" : "Other");
+            
+            vector_ptr_int = builder->CreateLoad(allocated_type, vector_ptr_int);
+            
+            eshkol_error("DEBUG 3: After load, value type: %s, is i64: %d",
+                vector_ptr_int->getType()->isIntegerTy() ? "Integer" : "Other",
+                vector_ptr_int->getType()->isIntegerTy(64));
         }
         
         // Get malloc for tensor allocations
@@ -6650,13 +7443,41 @@ private:
         tensor_fields.push_back(Type::getInt64Ty(*context));       // uint64_t total_elements
         StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
         
+        // DIAGNOSTIC 4: Check vector_ptr_int value type and value
+        Function* printf_func = function_table["printf"];
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("DEBUG 4: vector_ptr_int = %lld, type is i64: %d\n"),
+                vector_ptr_int,
+                ConstantInt::get(Type::getInt64Ty(*context), vector_ptr_int->getType()->isIntegerTy(64) ? 1 : 0)
+            });
+        }
+        
         // Convert int64 pointer to typed tensor pointer
         Value* vector_ptr = builder->CreateIntToPtr(vector_ptr_int, builder->getPtrTy());
+        
+        // DIAGNOSTIC 5: Check tensor pointer conversion
+        if (printf_func) {
+            Value* vector_int_check = builder->CreatePtrToInt(vector_ptr, Type::getInt64Ty(*context));
+            builder->CreateCall(printf_func, {
+                codegenString("DEBUG 5: After IntToPtr, vector_ptr as int = %lld\n"),
+                vector_int_check
+            });
+        }
         
         // Extract ALL tensor properties (MUST access all fields correctly)
         Value* dims_field_ptr = builder->CreateStructGEP(tensor_type, vector_ptr, 0);
         Value* dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dims_field_ptr);
         Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
+        
+        // DIAGNOSTIC 6: Check dims_ptr value
+        if (printf_func) {
+            Value* dims_int_check = builder->CreatePtrToInt(typed_dims_ptr, Type::getInt64Ty(*context));
+            builder->CreateCall(printf_func, {
+                codegenString("DEBUG 6: dims_ptr as int = %lld\n"),
+                dims_int_check
+            });
+        }
         
         Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, vector_ptr, 2);
         Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field_ptr);
@@ -6665,7 +7486,25 @@ private:
         // Load dimension n from tensor (RUNTIME value, NOT hardcoded)
         Value* dim0_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_dims_ptr,
             ConstantInt::get(Type::getInt64Ty(*context), 0));
+        
+        // DIAGNOSTIC 7: Check dim0_ptr before loading
+        if (printf_func) {
+            Value* dim0_int_check = builder->CreatePtrToInt(dim0_ptr, Type::getInt64Ty(*context));
+            builder->CreateCall(printf_func, {
+                codegenString("DEBUG 7: dim0_ptr as int = %lld\n"),
+                dim0_int_check
+            });
+        }
+        
         Value* n = builder->CreateLoad(Type::getInt64Ty(*context), dim0_ptr);
+        
+        // DIAGNOSTIC 8: Final dimension value check
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("DEBUG 8: LOADED n = %lld (should be 3 for vector(1.0 2.0 3.0))\n"),
+                n
+            });
+        }
         
         // Validate dimension is non-zero
         Value* n_is_zero = builder->CreateICmpEQ(n, ConstantInt::get(Type::getInt64Ty(*context), 0));
@@ -6673,13 +7512,17 @@ private:
         
         BasicBlock* dim_valid = BasicBlock::Create(*context, "grad_dim_valid", current_func);
         BasicBlock* dim_invalid = BasicBlock::Create(*context, "grad_dim_invalid", current_func);
+        BasicBlock* grad_done = BasicBlock::Create(*context, "grad_done", current_func);
         
         builder->CreateCondBr(n_is_zero, dim_invalid, dim_valid);
         
+        // Invalid dimension: log error and return null
         builder->SetInsertPoint(dim_invalid);
         eshkol_error("Gradient requires non-zero dimension vector");
-        builder->CreateRet(ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* null_result = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        builder->CreateBr(grad_done);
         
+        // Valid dimension: compute gradient
         builder->SetInsertPoint(dim_valid);
         
         // Allocate result gradient vector (SAME structure as input vector)
@@ -6771,10 +7614,12 @@ private:
         
         builder->SetInsertPoint(init_vars_body);
         
-        // Load input vector element at index j (convert int64 to double if needed)
-        Value* elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context),
+        // CRITICAL FIX: Tensor elements are stored as int64, load as int64 then convert to double
+        Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context),
             typed_elements_ptr, j);
-        Value* elem_val = builder->CreateLoad(Type::getDoubleTy(*context), elem_ptr);
+        Value* elem_val_int64 = builder->CreateLoad(Type::getInt64Ty(*context), elem_ptr);
+        // Convert int64 to double for AD operations
+        Value* elem_val = builder->CreateSIToFP(elem_val_int64, Type::getDoubleTy(*context));
         
         // Create AD variable node with this value
         Value* var_node = createADVariable(elem_val, 0);
@@ -6856,22 +7701,71 @@ private:
         
         // Step 5: Call function with AD node tensor (builds computational graph on tape)
         Value* ad_tensor_int = builder->CreatePtrToInt(typed_ad_tensor_ptr, Type::getInt64Ty(*context));
-        Value* output_node_int = builder->CreateCall(func_ptr, {ad_tensor_int});
+        // Pack into tagged_value for function call (lambdas expect tagged_value)
+        Value* ad_tensor_tagged = packInt64ToTaggedValue(ad_tensor_int, true);
+        Value* output_tagged = builder->CreateCall(func_ptr, {ad_tensor_tagged});
+        // Unpack result back to int64
+        Value* output_node_int = unpackInt64FromTaggedValue(output_tagged);
         
         // Convert output to AD node pointer
         Value* output_node_ptr = builder->CreateIntToPtr(output_node_int,
             PointerType::getUnqual(*context));
         
-        // Step 6: Run backward pass through computational graph
-        codegenBackward(output_node_ptr, partial_tape);
+        // CRITICAL FIX: Use type-based detection instead of pointer value heuristic
+        // Check if output is actually an AD node by examining its type tag
+        Value* output_type = getTaggedValueType(output_tagged);
+        Value* output_base_type = builder->CreateAnd(output_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        Value* output_is_ad_node = builder->CreateICmpEQ(output_base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_AD_NODE_PTR));
         
-        // Step 7: Extract gradient from active variable node
-        Value* partial_grad = loadNodeGradient(active_var_node);
+        BasicBlock* has_valid_output = BasicBlock::Create(*context, "grad_valid_output", current_func);
+        BasicBlock* invalid_output = BasicBlock::Create(*context, "grad_invalid_output", current_func);
+        BasicBlock* after_backward = BasicBlock::Create(*context, "grad_after_backward", current_func);
+        
+        // Branch based on type check (robust detection)
+        builder->CreateCondBr(output_is_ad_node, has_valid_output, invalid_output);
+        
+        // Step 6: Run backward pass through computational graph (only for valid AD nodes)
+        builder->SetInsertPoint(has_valid_output);
+        codegenBackward(output_node_ptr, partial_tape);
+        builder->CreateBr(after_backward);
+        
+        // Skip backward pass if output is invalid (placeholder function returning scalar)
+        builder->SetInsertPoint(invalid_output);
+        eshkol_debug("Gradient: Skipping backward pass - function returned non-AD value");
+        builder->CreateBr(after_backward);
+        
+        builder->SetInsertPoint(after_backward);
+        
+        // Step 7: Extract gradient from active variable node (or 0 if no backward pass)
+        Value* partial_grad_ptr = builder->CreateAlloca(Type::getDoubleTy(*context), nullptr, "partial_grad");
+        builder->CreateStore(ConstantFP::get(Type::getDoubleTy(*context), 0.0), partial_grad_ptr);
+        
+        // Only extract gradient if we had valid AD output
+        BasicBlock* extract_grad = BasicBlock::Create(*context, "grad_extract", current_func);
+        BasicBlock* use_zero = BasicBlock::Create(*context, "grad_use_zero", current_func);
+        BasicBlock* grad_extracted = BasicBlock::Create(*context, "grad_extracted", current_func);
+        
+        builder->CreateCondBr(output_is_ad_node, extract_grad, use_zero);
+        
+        builder->SetInsertPoint(extract_grad);
+        Value* extracted_grad = loadNodeGradient(active_var_node);
+        builder->CreateStore(extracted_grad, partial_grad_ptr);
+        builder->CreateBr(grad_extracted);
+        
+        builder->SetInsertPoint(use_zero);
+        builder->CreateBr(grad_extracted);
+        
+        builder->SetInsertPoint(grad_extracted);
+        Value* partial_grad = builder->CreateLoad(Type::getDoubleTy(*context), partial_grad_ptr);
         
         // Step 8: Store partial derivative in result vector at index i
-        Value* result_elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context),
+        // CRITICAL FIX: Tensor elements stored as int64, must bitcast double to int64
+        Value* partial_grad_as_int64 = builder->CreateBitCast(partial_grad, Type::getInt64Ty(*context));
+        Value* result_elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context),
             typed_result_elements_ptr, i);
-        builder->CreateStore(partial_grad, result_elem_ptr);
+        builder->CreateStore(partial_grad_as_int64, result_elem_ptr);
         
         // Step 9: Reset tape for next iteration (MUST call to zero gradients)
         builder->CreateCall(arena_tape_reset_func, {partial_tape});
@@ -6888,8 +7782,17 @@ private:
         builder->SetInsertPoint(grad_loop_exit);
         
         eshkol_info("Gradient computation complete, returning vector of size n");
+        Value* grad_result = builder->CreatePtrToInt(typed_result_tensor_ptr, Type::getInt64Ty(*context));
+        builder->CreateBr(grad_done);
+        BasicBlock* dim_valid_exit = builder->GetInsertBlock();
         
-        return builder->CreatePtrToInt(typed_result_tensor_ptr, Type::getInt64Ty(*context));
+        // Merge valid and invalid paths
+        builder->SetInsertPoint(grad_done);
+        PHINode* result_phi = builder->CreatePHI(Type::getInt64Ty(*context), 2, "grad_result");
+        result_phi->addIncoming(null_result, dim_invalid);
+        result_phi->addIncoming(grad_result, dim_valid_exit);
+        
+        return result_phi;
     }
     
     // ===== PHASE 3: JACOBIAN OPERATOR IMPLEMENTATION =====
@@ -6903,7 +7806,14 @@ private:
         
         eshkol_info("Computing Jacobian matrix using reverse-mode AD");
         
-        Function* func_ptr = dyn_cast<Function>(resolveLambdaFunction(op->jacobian_op.function));
+        // CRITICAL FIX: Must null-check before dyn_cast to avoid LLVM assertion
+        Value* func = resolveLambdaFunction(op->jacobian_op.function);
+        if (!func) {
+            eshkol_error("Failed to resolve function for Jacobian computation");
+            return nullptr;
+        }
+        
+        Function* func_ptr = dyn_cast<Function>(func);
         if (!func_ptr) {
             eshkol_error("Jacobian requires function, got non-function");
             return nullptr;
@@ -6913,6 +7823,12 @@ private:
         if (!vector_ptr_int) {
             eshkol_error("Failed to evaluate Jacobian point");
             return nullptr;
+        }
+        
+        // CRITICAL FIX: If result is AllocaInst (let-binding variable), load the value
+        if (isa<AllocaInst>(vector_ptr_int)) {
+            AllocaInst* alloca = dyn_cast<AllocaInst>(vector_ptr_int);
+            vector_ptr_int = builder->CreateLoad(alloca->getAllocatedType(), vector_ptr_int);
         }
         
         Function* malloc_func = function_table["malloc"];
@@ -6944,8 +7860,33 @@ private:
             ConstantInt::get(Type::getInt64Ty(*context), 0));
         Value* n = builder->CreateLoad(Type::getInt64Ty(*context), n_ptr);
         
+        // Get current function for basic block creation
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        
         // Call function once to determine output dimension m
-        Value* test_output_int = builder->CreateCall(func_ptr, {vector_ptr_int});
+        Value* vector_tagged = packInt64ToTaggedValue(vector_ptr_int, true);
+        Value* test_output_tagged = builder->CreateCall(func_ptr, {vector_tagged});
+        Value* test_output_int = unpackInt64FromTaggedValue(test_output_tagged);
+        
+        // CRITICAL FIX: Check if output is valid (non-zero) before dereferencing
+        // If function returns null/scalar instead of vector, just return null jacobian
+        Value* output_is_null = builder->CreateICmpEQ(test_output_int,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        
+        BasicBlock* output_valid_block = BasicBlock::Create(*context, "jac_output_valid", current_func);
+        BasicBlock* output_invalid_block = BasicBlock::Create(*context, "jac_output_invalid", current_func);
+        BasicBlock* jac_return_block = BasicBlock::Create(*context, "jac_return", current_func);
+        
+        builder->CreateCondBr(output_is_null, output_invalid_block, output_valid_block);
+        
+        // Invalid output: return null jacobian (don't crash)
+        builder->SetInsertPoint(output_invalid_block);
+        eshkol_error("Jacobian: function returned null (expected vector)");
+        Value* null_jac = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        builder->CreateBr(jac_return_block);
+        
+        // Valid output: continue with dimension extraction
+        builder->SetInsertPoint(output_valid_block);
         Value* test_output_ptr = builder->CreateIntToPtr(test_output_int, builder->getPtrTy());
         
         Value* output_dims_field = builder->CreateStructGEP(tensor_type, test_output_ptr, 0);
@@ -6995,8 +7936,6 @@ private:
         
         Value* jac_elems_field = builder->CreateStructGEP(tensor_type, typed_jac_ptr, 2);
         builder->CreateStore(typed_jac_elems, jac_elems_field);
-        
-        Function* current_func = builder->GetInsertBlock()->getParent();
         
         // ===== DOUBLE NESTED LOOP =====
         BasicBlock* outer_cond = BasicBlock::Create(*context, "jac_outer_cond", current_func);
@@ -7058,9 +7997,11 @@ private:
         builder->CreateCondBr(jac_init_less, jac_init_body, jac_init_exit);
         
         builder->SetInsertPoint(jac_init_body);
-        Value* jac_elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context),
+        // CRITICAL FIX: Tensor elements stored as int64, load as int64 then convert
+        Value* jac_elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context),
             typed_input_elements, jac_init_i);
-        Value* jac_elem_val = builder->CreateLoad(Type::getDoubleTy(*context), jac_elem_ptr);
+        Value* jac_elem_int64 = builder->CreateLoad(Type::getInt64Ty(*context), jac_elem_ptr);
+        Value* jac_elem_val = builder->CreateSIToFP(jac_elem_int64, Type::getDoubleTy(*context));
         Value* jac_var_node = createADVariable(jac_elem_val, 0);
         
         Value* jac_node_slot = builder->CreateGEP(PointerType::getUnqual(*context),
@@ -7133,7 +8074,9 @@ private:
         
         // Call function to get output
         Value* jac_ad_tensor_int = builder->CreatePtrToInt(typed_jac_ad_tensor, Type::getInt64Ty(*context));
-        Value* jac_output_int = builder->CreateCall(func_ptr, {jac_ad_tensor_int});
+        Value* jac_ad_tensor_tagged = packInt64ToTaggedValue(jac_ad_tensor_int, true);
+        Value* jac_output_tagged = builder->CreateCall(func_ptr, {jac_ad_tensor_tagged});
+        Value* jac_output_int = unpackInt64FromTaggedValue(jac_output_tagged);
         Value* jac_output_ptr = builder->CreateIntToPtr(jac_output_int, builder->getPtrTy());
         
         // Extract output elements
@@ -7177,7 +8120,16 @@ private:
         builder->CreateBr(outer_cond);
         
         builder->SetInsertPoint(outer_exit);
-        return builder->CreatePtrToInt(typed_jac_ptr, Type::getInt64Ty(*context));
+        Value* jac_result = builder->CreatePtrToInt(typed_jac_ptr, Type::getInt64Ty(*context));
+        builder->CreateBr(jac_return_block);
+        
+        // Merge null and valid results
+        builder->SetInsertPoint(jac_return_block);
+        PHINode* result_phi = builder->CreatePHI(Type::getInt64Ty(*context), 2, "jac_result");
+        result_phi->addIncoming(null_jac, output_invalid_block);
+        result_phi->addIncoming(jac_result, outer_exit);
+        
+        return result_phi;
     }
     
     // ===== PHASE 3: HESSIAN OPERATOR IMPLEMENTATION =====
@@ -7191,7 +8143,14 @@ private:
         
         eshkol_info("Computing Hessian matrix (second derivatives)");
         
-        Function* func_ptr = dyn_cast<Function>(resolveLambdaFunction(op->hessian_op.function));
+        // CRITICAL FIX: Must null-check before dyn_cast to avoid LLVM assertion
+        Value* func = resolveLambdaFunction(op->hessian_op.function);
+        if (!func) {
+            eshkol_error("Failed to resolve function for Hessian computation");
+            return nullptr;
+        }
+        
+        Function* func_ptr = dyn_cast<Function>(func);
         if (!func_ptr) {
             eshkol_error("Hessian requires function");
             return nullptr;
@@ -7201,6 +8160,12 @@ private:
         if (!vector_ptr_int) {
             eshkol_error("Failed to evaluate Hessian point");
             return nullptr;
+        }
+        
+        // CRITICAL FIX: If result is AllocaInst (let-binding variable), load the value
+        if (isa<AllocaInst>(vector_ptr_int)) {
+            AllocaInst* alloca = dyn_cast<AllocaInst>(vector_ptr_int);
+            vector_ptr_int = builder->CreateLoad(alloca->getAllocatedType(), vector_ptr_int);
         }
         
         Function* malloc_func = function_table["malloc"];
@@ -7328,9 +8293,11 @@ private:
         builder->CreateCondBr(bg_j_less_n, bg_init_body, bg_init_exit);
         
         builder->SetInsertPoint(bg_init_body);
-        Value* bg_elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context),
+        // CRITICAL FIX: Tensor elements stored as int64, load as int64 then convert
+        Value* bg_elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context),
             typed_input_elements, bg_j);
-        Value* bg_elem = builder->CreateLoad(Type::getDoubleTy(*context), bg_elem_ptr);
+        Value* bg_elem_int64 = builder->CreateLoad(Type::getInt64Ty(*context), bg_elem_ptr);
+        Value* bg_elem = builder->CreateSIToFP(bg_elem_int64, Type::getDoubleTy(*context));
         Value* bg_node = createADVariable(bg_elem, 0);
         
         Value* bg_node_slot = builder->CreateGEP(PointerType::getUnqual(*context),
@@ -7401,7 +8368,9 @@ private:
         
         // Call function
         Value* bg_ad_tensor_int = builder->CreatePtrToInt(typed_bg_ad_tensor, Type::getInt64Ty(*context));
-        Value* bg_output_int = builder->CreateCall(func_ptr, {bg_ad_tensor_int});
+        Value* bg_ad_tensor_tagged = packInt64ToTaggedValue(bg_ad_tensor_int, true);
+        Value* bg_output_tagged = builder->CreateCall(func_ptr, {bg_ad_tensor_tagged});
+        Value* bg_output_int = unpackInt64FromTaggedValue(bg_output_tagged);
         Value* bg_output_node = builder->CreateIntToPtr(bg_output_int, PointerType::getUnqual(*context));
         
         // Backward pass
@@ -7505,6 +8474,488 @@ private:
     }
     
     // ===== END PHASE 3 OPERATORS =====
+    // ===== PHASE 4: VECTOR CALCULUS OPERATORS =====
+    // Differential geometry operators for physics simulations and field theory
+    
+    // Divergence: ∇·F for vector field F: ℝⁿ → ℝⁿ
+    // Returns scalar: ∇·F = ∂F₁/∂x₁ + ∂F₂/∂x₂ + ... + ∂Fₙ/∂xₙ
+    // This is the trace of the Jacobian matrix
+    Value* codegenDivergence(const eshkol_operations_t* op) {
+        if (!op->divergence_op.function || !op->divergence_op.point) {
+            eshkol_error("Invalid divergence operation - missing function or point");
+            return nullptr;
+        }
+        
+        eshkol_info("Computing divergence of vector field");
+        
+        // The divergence is the sum of diagonal elements of the Jacobian
+        // For F: ℝⁿ → ℝⁿ, Jacobian is n×n, divergence is trace(J)
+        
+        // Compute Jacobian matrix first
+        eshkol_operations_t jacobian_temp;
+        jacobian_temp.op = ESHKOL_JACOBIAN_OP;
+        jacobian_temp.jacobian_op.function = op->divergence_op.function;
+        jacobian_temp.jacobian_op.point = op->divergence_op.point;
+        
+        Value* jacobian_ptr_int = codegenJacobian(&jacobian_temp);
+        if (!jacobian_ptr_int) {
+            eshkol_error("Failed to compute Jacobian for divergence");
+            return nullptr;
+        }
+        
+        // Define tensor structure
+        std::vector<Type*> tensor_fields;
+        tensor_fields.push_back(PointerType::getUnqual(*context));
+        tensor_fields.push_back(Type::getInt64Ty(*context));
+        tensor_fields.push_back(PointerType::getUnqual(*context));
+        tensor_fields.push_back(Type::getInt64Ty(*context));
+        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        
+        Value* jacobian_ptr = builder->CreateIntToPtr(jacobian_ptr_int, builder->getPtrTy());
+        
+        // Extract dimension n from Jacobian (it's n×n)
+        Value* dims_field = builder->CreateStructGEP(tensor_type, jacobian_ptr, 0);
+        Value* dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dims_field);
+        Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
+        
+        Value* n_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_dims_ptr,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* n = builder->CreateLoad(Type::getInt64Ty(*context), n_ptr);
+        
+        // Get Jacobian elements
+        Value* elements_field = builder->CreateStructGEP(tensor_type, jacobian_ptr, 2);
+        Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field);
+        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
+        
+        // Sum diagonal elements: J[0,0] + J[1,1] + ... + J[n-1,n-1]
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* sum_loop_cond = BasicBlock::Create(*context, "div_sum_cond", current_func);
+        BasicBlock* sum_loop_body = BasicBlock::Create(*context, "div_sum_body", current_func);
+        BasicBlock* sum_loop_exit = BasicBlock::Create(*context, "div_sum_exit", current_func);
+        
+        Value* sum_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "sum_idx");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), sum_idx);
+        
+        Value* divergence_acc = builder->CreateAlloca(Type::getDoubleTy(*context), nullptr, "div_acc");
+        builder->CreateStore(ConstantFP::get(Type::getDoubleTy(*context), 0.0), divergence_acc);
+        
+        builder->CreateBr(sum_loop_cond);
+        
+        builder->SetInsertPoint(sum_loop_cond);
+        Value* i = builder->CreateLoad(Type::getInt64Ty(*context), sum_idx);
+        Value* i_less_n = builder->CreateICmpULT(i, n);
+        builder->CreateCondBr(i_less_n, sum_loop_body, sum_loop_exit);
+        
+        builder->SetInsertPoint(sum_loop_body);
+        
+        // Calculate diagonal index: i*n + i
+        Value* linear_idx = builder->CreateMul(i, n);
+        linear_idx = builder->CreateAdd(linear_idx, i);
+        
+        // Load J[i,i]
+        Value* elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context),
+            typed_elements_ptr, linear_idx);
+        Value* diagonal_elem = builder->CreateLoad(Type::getDoubleTy(*context), elem_ptr);
+        
+        // Add to accumulator
+        Value* current_div = builder->CreateLoad(Type::getDoubleTy(*context), divergence_acc);
+        Value* new_div = builder->CreateFAdd(current_div, diagonal_elem);
+        builder->CreateStore(new_div, divergence_acc);
+        
+        Value* next_i = builder->CreateAdd(i, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(next_i, sum_idx);
+        builder->CreateBr(sum_loop_cond);
+        
+        builder->SetInsertPoint(sum_loop_exit);
+        Value* result = builder->CreateLoad(Type::getDoubleTy(*context), divergence_acc);
+        
+        eshkol_info("Divergence computation complete");
+        return result;
+    }
+    
+    // Curl: ∇×F for vector field F: ℝ³ → ℝ³
+    // Returns vector: (∇×F) = [∂F₃/∂x₂ - ∂F₂/∂x₃, ∂F₁/∂x₃ - ∂F₃/∂x₁, ∂F₂/∂x₁ - ∂F₁/∂x₂]
+    // ONLY defined for 3D vector fields
+    Value* codegenCurl(const eshkol_operations_t* op) {
+        if (!op->curl_op.function || !op->curl_op.point) {
+            eshkol_error("Invalid curl operation - missing function or point");
+            return nullptr;
+        }
+        
+        eshkol_info("Computing curl of 3D vector field");
+        
+        // First, validate that input is 3D
+        Value* vector_ptr_int = codegenAST(op->curl_op.point);
+        if (!vector_ptr_int) {
+            eshkol_error("Failed to evaluate curl point");
+            return nullptr;
+        }
+        
+        // CRITICAL FIX: If result is AllocaInst (let-binding variable), load the value
+        if (isa<AllocaInst>(vector_ptr_int)) {
+            AllocaInst* alloca = dyn_cast<AllocaInst>(vector_ptr_int);
+            vector_ptr_int = builder->CreateLoad(alloca->getAllocatedType(), vector_ptr_int);
+        }
+        
+        // Define tensor structure
+        std::vector<Type*> tensor_fields;
+        tensor_fields.push_back(PointerType::getUnqual(*context));
+        tensor_fields.push_back(Type::getInt64Ty(*context));
+        tensor_fields.push_back(PointerType::getUnqual(*context));
+        tensor_fields.push_back(Type::getInt64Ty(*context));
+        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        
+        Value* vector_ptr = builder->CreateIntToPtr(vector_ptr_int, builder->getPtrTy());
+        
+        // Extract dimension
+        Value* dims_field = builder->CreateStructGEP(tensor_type, vector_ptr, 0);
+        Value* dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dims_field);
+        Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
+        
+        Value* n_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_dims_ptr,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* n = builder->CreateLoad(Type::getInt64Ty(*context), n_ptr);
+        
+        // VALIDATE: dimension must be exactly 3
+        Value* n_is_three = builder->CreateICmpEQ(n, ConstantInt::get(Type::getInt64Ty(*context), 3));
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* dim_valid = BasicBlock::Create(*context, "curl_dim_valid", current_func);
+        BasicBlock* dim_invalid = BasicBlock::Create(*context, "curl_dim_invalid", current_func);
+        BasicBlock* curl_done = BasicBlock::Create(*context, "curl_done", current_func);
+        
+        builder->CreateCondBr(n_is_three, dim_valid, dim_invalid);
+        
+        // Invalid dimension: log error and create null result
+        builder->SetInsertPoint(dim_invalid);
+        eshkol_error("Curl only defined for 3D vector fields");
+        Value* null_result = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        builder->CreateBr(curl_done);
+        
+        // Valid dimension: compute curl
+        builder->SetInsertPoint(dim_valid);
+        
+        // Compute Jacobian matrix (3×3)
+        eshkol_operations_t jacobian_temp;
+        jacobian_temp.op = ESHKOL_JACOBIAN_OP;
+        jacobian_temp.jacobian_op.function = op->curl_op.function;
+        jacobian_temp.jacobian_op.point = op->curl_op.point;
+        
+        Value* jacobian_ptr_int = codegenJacobian(&jacobian_temp);
+        if (!jacobian_ptr_int) {
+            eshkol_error("Failed to compute Jacobian for curl");
+            return nullptr;
+        }
+        
+        Value* jacobian_ptr = builder->CreateIntToPtr(jacobian_ptr_int, builder->getPtrTy());
+        
+        // Get Jacobian elements
+        Value* jac_elements_field = builder->CreateStructGEP(tensor_type, jacobian_ptr, 2);
+        Value* jac_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), jac_elements_field);
+        Value* typed_jac_elements = builder->CreatePointerCast(jac_elements_ptr, builder->getPtrTy());
+        
+        // Extract specific partial derivatives
+        // J[i,j] = ∂Fᵢ/∂xⱼ (row i, column j)
+        // For 3×3 matrix, linear index = i*3 + j
+        
+        // curl_x = ∂F₃/∂x₂ - ∂F₂/∂x₃ = J[2,1] - J[1,2]
+        Value* j21_idx = ConstantInt::get(Type::getInt64Ty(*context), 2*3 + 1); // row 2, col 1
+        Value* j21_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j21_idx);
+        Value* dF3_dx2 = builder->CreateLoad(Type::getDoubleTy(*context), j21_ptr);
+        
+        Value* j12_idx = ConstantInt::get(Type::getInt64Ty(*context), 1*3 + 2); // row 1, col 2
+        Value* j12_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j12_idx);
+        Value* dF2_dx3 = builder->CreateLoad(Type::getDoubleTy(*context), j12_ptr);
+        
+        Value* curl_x = builder->CreateFSub(dF3_dx2, dF2_dx3);
+        
+        // curl_y = ∂F₁/∂x₃ - ∂F₃/∂x₁ = J[0,2] - J[2,0]
+        Value* j02_idx = ConstantInt::get(Type::getInt64Ty(*context), 0*3 + 2); // row 0, col 2
+        Value* j02_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j02_idx);
+        Value* dF1_dx3 = builder->CreateLoad(Type::getDoubleTy(*context), j02_ptr);
+        
+        Value* j20_idx = ConstantInt::get(Type::getInt64Ty(*context), 2*3 + 0); // row 2, col 0
+        Value* j20_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j20_idx);
+        Value* dF3_dx1 = builder->CreateLoad(Type::getDoubleTy(*context), j20_ptr);
+        
+        Value* curl_y = builder->CreateFSub(dF1_dx3, dF3_dx1);
+        
+        // curl_z = ∂F₂/∂x₁ - ∂F₁/∂x₂ = J[1,0] - J[0,1]
+        Value* j10_idx = ConstantInt::get(Type::getInt64Ty(*context), 1*3 + 0); // row 1, col 0
+        Value* j10_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j10_idx);
+        Value* dF2_dx1 = builder->CreateLoad(Type::getDoubleTy(*context), j10_ptr);
+        
+        Value* j01_idx = ConstantInt::get(Type::getInt64Ty(*context), 0*3 + 1); // row 0, col 1
+        Value* j01_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j01_idx);
+        Value* dF1_dx2 = builder->CreateLoad(Type::getDoubleTy(*context), j01_ptr);
+        
+        Value* curl_z = builder->CreateFSub(dF2_dx1, dF1_dx2);
+        
+        // Create result 3D vector
+        Function* malloc_func = function_table["malloc"];
+        if (!malloc_func) {
+            eshkol_error("malloc not found for curl result");
+            return nullptr;
+        }
+        
+        // Allocate result tensor (3D vector)
+        Value* result_tensor_size = ConstantInt::get(Type::getInt64Ty(*context),
+            module->getDataLayout().getTypeAllocSize(tensor_type));
+        Value* result_ptr = builder->CreateCall(malloc_func, {result_tensor_size});
+        Value* typed_result_ptr = builder->CreatePointerCast(result_ptr, builder->getPtrTy());
+        
+        // Set dimensions [3]
+        Value* result_dims_size = ConstantInt::get(Type::getInt64Ty(*context), sizeof(uint64_t));
+        Value* result_dims_ptr = builder->CreateCall(malloc_func, {result_dims_size});
+        Value* typed_result_dims = builder->CreatePointerCast(result_dims_ptr, builder->getPtrTy());
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 3), typed_result_dims);
+        
+        Value* result_dims_field = builder->CreateStructGEP(tensor_type, typed_result_ptr, 0);
+        builder->CreateStore(typed_result_dims, result_dims_field);
+        
+        Value* result_num_dims_field = builder->CreateStructGEP(tensor_type, typed_result_ptr, 1);
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 1), result_num_dims_field);
+        
+        Value* result_total_field = builder->CreateStructGEP(tensor_type, typed_result_ptr, 3);
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 3), result_total_field);
+        
+        // Allocate and fill elements [curl_x, curl_y, curl_z]
+        Value* result_elems_size = ConstantInt::get(Type::getInt64Ty(*context), 3 * sizeof(double));
+        Value* result_elems_ptr = builder->CreateCall(malloc_func, {result_elems_size});
+        Value* typed_result_elems = builder->CreatePointerCast(result_elems_ptr, builder->getPtrTy());
+        
+        Value* result_elems_field = builder->CreateStructGEP(tensor_type, typed_result_ptr, 2);
+        builder->CreateStore(typed_result_elems, result_elems_field);
+        
+        // Store curl components
+        Value* elem0_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_result_elems,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        builder->CreateStore(curl_x, elem0_ptr);
+        
+        Value* elem1_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_result_elems,
+            ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(curl_y, elem1_ptr);
+        
+        Value* elem2_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_result_elems,
+            ConstantInt::get(Type::getInt64Ty(*context), 2));
+        builder->CreateStore(curl_z, elem2_ptr);
+        
+        eshkol_info("Curl computation complete, returning 3D vector");
+        Value* curl_result = builder->CreatePtrToInt(typed_result_ptr, Type::getInt64Ty(*context));
+        builder->CreateBr(curl_done);
+        BasicBlock* dim_valid_exit = builder->GetInsertBlock(); // Capture actual predecessor!
+        
+        // Merge valid and invalid paths
+        builder->SetInsertPoint(curl_done);
+        PHINode* result_phi = builder->CreatePHI(Type::getInt64Ty(*context), 2, "curl_result");
+        result_phi->addIncoming(null_result, dim_invalid);
+        result_phi->addIncoming(curl_result, dim_valid_exit); // Use actual predecessor
+        
+        return result_phi;
+    }
+    
+    // Laplacian: ∇²f for scalar field f: ℝⁿ → ℝ
+    // Returns scalar: ∇²f = ∂²f/∂x₁² + ∂²f/∂x₂² + ... + ∂²f/∂xₙ²
+    // This is the trace of the Hessian matrix
+    Value* codegenLaplacian(const eshkol_operations_t* op) {
+        if (!op->laplacian_op.function || !op->laplacian_op.point) {
+            eshkol_error("Invalid laplacian operation - missing function or point");
+            return nullptr;
+        }
+        
+        eshkol_info("Computing Laplacian of scalar field");
+        
+        // The Laplacian is the sum of diagonal elements of the Hessian
+        // For f: ℝⁿ → ℝ, Hessian is n×n, Laplacian is trace(H)
+        
+        // Compute Hessian matrix first
+        eshkol_operations_t hessian_temp;
+        hessian_temp.op = ESHKOL_HESSIAN_OP;
+        hessian_temp.hessian_op.function = op->laplacian_op.function;
+        hessian_temp.hessian_op.point = op->laplacian_op.point;
+        
+        Value* hessian_ptr_int = codegenHessian(&hessian_temp);
+        if (!hessian_ptr_int) {
+            eshkol_error("Failed to compute Hessian for Laplacian");
+            return nullptr;
+        }
+        
+        // Define tensor structure
+        std::vector<Type*> tensor_fields;
+        tensor_fields.push_back(PointerType::getUnqual(*context));
+        tensor_fields.push_back(Type::getInt64Ty(*context));
+        tensor_fields.push_back(PointerType::getUnqual(*context));
+        tensor_fields.push_back(Type::getInt64Ty(*context));
+        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        
+        Value* hessian_ptr = builder->CreateIntToPtr(hessian_ptr_int, builder->getPtrTy());
+        
+        // Extract dimension n from Hessian (it's n×n)
+        Value* dims_field = builder->CreateStructGEP(tensor_type, hessian_ptr, 0);
+        Value* dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dims_field);
+        Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
+        
+        Value* n_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_dims_ptr,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* n = builder->CreateLoad(Type::getInt64Ty(*context), n_ptr);
+        
+        // Get Hessian elements
+        Value* elements_field = builder->CreateStructGEP(tensor_type, hessian_ptr, 2);
+        Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field);
+        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
+        
+        // Sum diagonal elements: H[0,0] + H[1,1] + ... + H[n-1,n-1]
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* sum_loop_cond = BasicBlock::Create(*context, "lap_sum_cond", current_func);
+        BasicBlock* sum_loop_body = BasicBlock::Create(*context, "lap_sum_body", current_func);
+        BasicBlock* sum_loop_exit = BasicBlock::Create(*context, "lap_sum_exit", current_func);
+        
+        Value* sum_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "sum_idx");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), sum_idx);
+        
+        Value* laplacian_acc = builder->CreateAlloca(Type::getDoubleTy(*context), nullptr, "lap_acc");
+        builder->CreateStore(ConstantFP::get(Type::getDoubleTy(*context), 0.0), laplacian_acc);
+        
+        builder->CreateBr(sum_loop_cond);
+        
+        builder->SetInsertPoint(sum_loop_cond);
+        Value* i = builder->CreateLoad(Type::getInt64Ty(*context), sum_idx);
+        Value* i_less_n = builder->CreateICmpULT(i, n);
+        builder->CreateCondBr(i_less_n, sum_loop_body, sum_loop_exit);
+        
+        builder->SetInsertPoint(sum_loop_body);
+        
+        // Calculate diagonal index: i*n + i
+        Value* linear_idx = builder->CreateMul(i, n);
+        linear_idx = builder->CreateAdd(linear_idx, i);
+        
+        // Load H[i,i]
+        Value* elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context),
+            typed_elements_ptr, linear_idx);
+        Value* diagonal_elem = builder->CreateLoad(Type::getDoubleTy(*context), elem_ptr);
+        
+        // Add to accumulator
+        Value* current_lap = builder->CreateLoad(Type::getDoubleTy(*context), laplacian_acc);
+        Value* new_lap = builder->CreateFAdd(current_lap, diagonal_elem);
+        builder->CreateStore(new_lap, laplacian_acc);
+        
+        Value* next_i = builder->CreateAdd(i, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(next_i, sum_idx);
+        builder->CreateBr(sum_loop_cond);
+        
+        builder->SetInsertPoint(sum_loop_exit);
+        Value* result = builder->CreateLoad(Type::getDoubleTy(*context), laplacian_acc);
+        
+        eshkol_info("Laplacian computation complete");
+        return result;
+    }
+    
+    // Directional Derivative: D_v f = ∇f · v
+    // Computes the derivative of scalar field f in direction v
+    Value* codegenDirectionalDerivative(const eshkol_operations_t* op) {
+        if (!op->directional_deriv_op.function || !op->directional_deriv_op.point ||
+            !op->directional_deriv_op.direction) {
+            eshkol_error("Invalid directional-derivative operation - missing function, point, or direction");
+            return nullptr;
+        }
+        
+        eshkol_info("Computing directional derivative");
+        
+        // Step 1: Compute gradient ∇f
+        eshkol_operations_t gradient_temp;
+        gradient_temp.op = ESHKOL_GRADIENT_OP;
+        gradient_temp.gradient_op.function = op->directional_deriv_op.function;
+        gradient_temp.gradient_op.point = op->directional_deriv_op.point;
+        
+        Value* gradient_ptr_int = codegenGradient(&gradient_temp);
+        if (!gradient_ptr_int) {
+            eshkol_error("Failed to compute gradient for directional derivative");
+            return nullptr;
+        }
+        
+        // Step 2: Get direction vector
+        Value* direction_ptr_int = codegenAST(op->directional_deriv_op.direction);
+        if (!direction_ptr_int) {
+            eshkol_error("Failed to evaluate direction vector");
+            return nullptr;
+        }
+        
+        // Step 3: Compute dot product: ∇f · v
+        // Define tensor structure
+        std::vector<Type*> tensor_fields;
+        tensor_fields.push_back(PointerType::getUnqual(*context));
+        tensor_fields.push_back(Type::getInt64Ty(*context));
+        tensor_fields.push_back(PointerType::getUnqual(*context));
+        tensor_fields.push_back(Type::getInt64Ty(*context));
+        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        
+        Value* gradient_ptr = builder->CreateIntToPtr(gradient_ptr_int, builder->getPtrTy());
+        Value* direction_ptr = builder->CreateIntToPtr(direction_ptr_int, builder->getPtrTy());
+        
+        // Get gradient elements
+        Value* grad_elements_field = builder->CreateStructGEP(tensor_type, gradient_ptr, 2);
+        Value* grad_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), grad_elements_field);
+        Value* typed_grad_elements = builder->CreatePointerCast(grad_elements_ptr, builder->getPtrTy());
+        
+        // Get direction elements
+        Value* dir_elements_field = builder->CreateStructGEP(tensor_type, direction_ptr, 2);
+        Value* dir_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dir_elements_field);
+        Value* typed_dir_elements = builder->CreatePointerCast(dir_elements_ptr, builder->getPtrTy());
+        
+        // Get dimension n
+        Value* grad_total_field = builder->CreateStructGEP(tensor_type, gradient_ptr, 3);
+        Value* n = builder->CreateLoad(Type::getInt64Ty(*context), grad_total_field);
+        
+        // Compute dot product: sum(grad[i] * dir[i])
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* dot_loop_cond = BasicBlock::Create(*context, "dirderiv_dot_cond", current_func);
+        BasicBlock* dot_loop_body = BasicBlock::Create(*context, "dirderiv_dot_body", current_func);
+        BasicBlock* dot_loop_exit = BasicBlock::Create(*context, "dirderiv_dot_exit", current_func);
+        
+        Value* dot_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "dot_idx");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), dot_idx);
+        
+        Value* dot_acc = builder->CreateAlloca(Type::getDoubleTy(*context), nullptr, "dot_acc");
+        builder->CreateStore(ConstantFP::get(Type::getDoubleTy(*context), 0.0), dot_acc);
+        
+        builder->CreateBr(dot_loop_cond);
+        
+        builder->SetInsertPoint(dot_loop_cond);
+        Value* i = builder->CreateLoad(Type::getInt64Ty(*context), dot_idx);
+        Value* i_less_n = builder->CreateICmpULT(i, n);
+        builder->CreateCondBr(i_less_n, dot_loop_body, dot_loop_exit);
+        
+        builder->SetInsertPoint(dot_loop_body);
+        
+        // Load grad[i]
+        Value* grad_elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context),
+            typed_grad_elements, i);
+        Value* grad_elem = builder->CreateLoad(Type::getDoubleTy(*context), grad_elem_ptr);
+        
+        // Load dir[i]
+        Value* dir_elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context),
+            typed_dir_elements, i);
+        Value* dir_elem = builder->CreateLoad(Type::getDoubleTy(*context), dir_elem_ptr);
+        
+        // Multiply and accumulate
+        Value* prod = builder->CreateFMul(grad_elem, dir_elem);
+        Value* current_dot = builder->CreateLoad(Type::getDoubleTy(*context), dot_acc);
+        Value* new_dot = builder->CreateFAdd(current_dot, prod);
+        builder->CreateStore(new_dot, dot_acc);
+        
+        Value* next_i = builder->CreateAdd(i, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(next_i, dot_idx);
+        builder->CreateBr(dot_loop_cond);
+        
+        builder->SetInsertPoint(dot_loop_exit);
+        Value* result = builder->CreateLoad(Type::getDoubleTy(*context), dot_acc);
+        
+        eshkol_info("Directional derivative computation complete");
+        return result;
+    }
+    
+    // ===== END PHASE 4: VECTOR CALCULUS OPERATORS =====
+    
     
     // Core symbolic differentiation function
     Value* differentiate(const eshkol_ast_t* expr, const char* var) {
@@ -8849,36 +10300,63 @@ private:
     
     // Helper function to resolve lambda/function from AST with arity-specific builtin handling
     Value* resolveLambdaFunction(const eshkol_ast_t* func_ast, size_t required_arity = 0) {
-        if (!func_ast) return nullptr;
+        if (!func_ast) {
+            eshkol_error("resolveLambdaFunction: func_ast is nullptr");
+            return nullptr;
+        }
         
         // Handle inline lambda expressions
         if (func_ast->type == ESHKOL_OP && func_ast->operation.op == ESHKOL_LAMBDA_OP) {
-            eshkol_debug("Generating inline lambda for map/filter/etc.");
-            return codegenLambda(&func_ast->operation);
+            eshkol_debug("Generating inline lambda for gradient/jacobian/etc.");
+            Value* lambda_result = codegenLambda(&func_ast->operation);
+            if (!lambda_result) {
+                eshkol_error("codegenLambda returned nullptr for inline lambda");
+            } else {
+                eshkol_debug("Successfully generated inline lambda: %p", lambda_result);
+            }
+            return lambda_result;
         }
         
         if (func_ast->type == ESHKOL_VAR) {
             std::string func_name = func_ast->variable.id;
             
-            // First, try to find lambda function directly with _func suffix
+            eshkol_debug("Resolving lambda variable: %s", func_name.c_str());
+            
+            // Strategy 1: Try to find lambda function directly with _func suffix in LOCAL table
             auto func_it = symbol_table.find(func_name + "_func");
-            if (func_it != symbol_table.end() && isa<Function>(func_it->second)) {
-                eshkol_debug("Found lambda function %s_func in symbol table", func_name.c_str());
-                return func_it->second;
+            if (func_it != symbol_table.end() && func_it->second) {
+                eshkol_debug("Found %s_func in symbol_table, checking if Function", func_name.c_str());
+                if (isa<Function>(func_it->second)) {
+                    eshkol_debug("SUCCESS: Found lambda function %s_func in symbol table", func_name.c_str());
+                    return func_it->second;
+                } else {
+                    eshkol_debug("WARNING: %s_func found but is not a Function", func_name.c_str());
+                }
+            } else {
+                eshkol_debug("NOT FOUND: %s_func not in symbol_table", func_name.c_str());
             }
             
-            // Try global symbol table
+            // Strategy 2: Try global symbol table
             func_it = global_symbol_table.find(func_name + "_func");
-            if (func_it != global_symbol_table.end() && isa<Function>(func_it->second)) {
-                eshkol_debug("Found lambda function %s_func in global symbol table", func_name.c_str());
-                return func_it->second;
+            if (func_it != global_symbol_table.end() && func_it->second) {
+                eshkol_debug("Found %s_func in global_symbol_table, checking if Function", func_name.c_str());
+                if (isa<Function>(func_it->second)) {
+                    eshkol_debug("SUCCESS: Found lambda function %s_func in global symbol table", func_name.c_str());
+                    return func_it->second;
+                } else {
+                    eshkol_debug("WARNING: %s_func found in global but is not a Function", func_name.c_str());
+                }
+            } else {
+                eshkol_debug("NOT FOUND: %s_func not in global_symbol_table", func_name.c_str());
             }
             
-            // Check direct function table lookup
+            // Strategy 3: Check direct function table lookup
             auto direct_it = function_table.find(func_name);
             if (direct_it != function_table.end()) {
-                eshkol_debug("Found function %s in function table", func_name.c_str());
+                eshkol_debug("SUCCESS: Found function %s in function table", func_name.c_str());
                 return direct_it->second;
+            } else {
+                eshkol_debug("NOT FOUND: %s not in function_table", func_name.c_str());
             }
             
             // Handle builtin functions using polymorphic arithmetic (Phase 2.4)
@@ -10834,6 +12312,13 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
     }
     
     try {
+        // Get absolute path to build directory where libeshkol-static.a is located
+        char cwd[4096];
+        if (getcwd(cwd, sizeof(cwd)) != nullptr) {
+            std::string build_dir = std::string(cwd) + "/build";
+            eshkol_debug("Adding library search path: %s", build_dir.c_str());
+        }
+        
         // Use system linker to create executable
         std::string link_cmd = "c++ -fPIE " + temp_obj + " -lm";
         
@@ -10846,8 +12331,17 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             }
         }
         
-        // Add the eshkol static library for arena functions
-        link_cmd += " -leshkol-static";
+        // CRITICAL FIX: Use direct path to library file instead of -L flag
+        // This avoids directory search path issues
+        char build_path[4096];
+        if (getcwd(build_path, sizeof(build_path)) != nullptr) {
+            std::string lib_path = std::string(build_path) + "/build/libeshkol-static.a";
+            link_cmd += " " + lib_path;
+            eshkol_debug("Linking with library: %s", lib_path.c_str());
+        } else {
+            // Fallback to search path method
+            link_cmd += " -L./build -leshkol-static";
+        }
         
         // Add linked libraries
         if (linked_libs && num_linked_libs > 0) {

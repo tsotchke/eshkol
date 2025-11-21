@@ -1,0 +1,30 @@
+========================================
+Test: phase_1b_test.esk
+Time: Thu Nov 20 19:36:53 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== PHASE 1B TEST: List Processing Utilities ===
+1. Testing take function:
+   Original list: 10 20 30 40 50
+   take 3: 10 20 30
+   take 0: EMPTY
+2. Testing drop function:
+   drop 2: 30 40 50
+   drop 10: EMPTY
+3. Testing find function:
+   Numbers: 1 3 4 7 8
+   find even: 1
+4. Testing partition function:
+   partition even/odd:
+   Evens: 1 
+   Odds: NONE
+5. Testing combined functionality:
+   Original: 2 4 6 8 10 12 14 16
+   First half: 2 4 6 8
+   Second half: 10 12 14 16
+=== PHASE 1B COMPLETE SUCCESS! ===
+STATUS: PASS

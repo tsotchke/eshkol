@@ -1,0 +1,14 @@
+========================================
+Test: for_each_test.esk
+Time: Thu Nov 20 19:36:47 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+Testing for-each function:
+Original list: 1 2 3 4
+for-each with display: 1234
+for-each test completed!
+STATUS: PASS

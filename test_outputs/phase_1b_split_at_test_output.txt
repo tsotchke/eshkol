@@ -1,0 +1,24 @@
+========================================
+Test: phase_1b_split_at_test.esk
+Time: Thu Nov 20 19:36:52 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+=== SPLIT-AT TEST ===
+1. Testing split-at function:
+   Original list: 10 20 30 40 50
+   split-at 2:
+   Prefix: 10 20
+   Suffix: 30 40 50
+2. Testing edge cases:
+   split-at 0:
+   Prefix: EMPTY
+   Suffix: 10 20
+   split-at 5:
+   Prefix: 10 20
+   Suffix: EMPTY
+=== SPLIT-AT TEST COMPLETE ===
+STATUS: PASS

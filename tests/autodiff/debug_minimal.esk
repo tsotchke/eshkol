@@ -1,0 +1,5 @@
+;; Minimal gradient test - simplest possible case
+(define (main)
+  (display "Starting minimal gradient test\n")
+  (display "Test complete\n")
+  0)

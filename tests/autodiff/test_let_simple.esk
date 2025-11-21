@@ -1,0 +1,27 @@
+;; Simple test for let expressions only
+
+;; Test 1: Simple let expression
+(let ((x 5))
+  (display x))
+(newline)
+
+;; Test 2: Let with multiple bindings
+(let ((x 1) (y 2))
+  (display (+ x y)))
+(newline)
+
+;; Test 3: Let with vector
+(let ((v (vector 1.0 2.0)))
+  (display v))
+(newline)
+
+;; Test 4: Global lambda definition  
+(define test-func (lambda (v) 0.0))
+
+;; Test 5: Call global lambda
+(display (test-func 5.0))
+(newline)
+
+;; Test 6: Gradient with global lambda (CRITICAL TEST)
+(display (gradient test-func (vector 1.0 2.0)))
+(newline)

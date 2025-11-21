@@ -1,0 +1,18 @@
+========================================
+Test: assoc_test.esk
+Time: Thu Nov 20 19:36:43 EST 2025
+========================================
+
+COMPILATION: SUCCESS
+
+OUTPUT:
+----------------------------------------
+Testing association list functions:
+Association list created:
+First pair: 10 -> 100
+Second pair: 20 -> 200
+Testing assoc:
+assoc 20: FOUND
+assoc 99: NOT FOUND
+Association test completed!
+STATUS: PASS
