@@ -55,6 +55,8 @@ Testing/
 CTestTestfile.cmake
 test-results/
 coverage/
+test_outputs/
+a.out
 
 compile_commands.json
 .aider*

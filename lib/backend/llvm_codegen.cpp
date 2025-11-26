@@ -3769,8 +3769,29 @@ private:
             
             builder->CreateCondBr(is_large_enough, check_type, display_int);
             
-            // Check if it's a tensor or a list by attempting to read first field as tensor structure
+            // SAFE DETECTION: Try as cons cell FIRST using arena functions
             builder->SetInsertPoint(check_type);
+            
+            // Try to read type tag using arena_tagged_cons_get_type_func
+            // This is safe because it uses the actual cons cell access functions
+            Value* cons_check_ptr = builder->CreateIntToPtr(arg_int, builder->getPtrTy());
+            Value* is_car_check = ConstantInt::get(Type::getInt1Ty(*context), 0);
+            Value* car_type_tag = builder->CreateCall(arena_tagged_cons_get_type_func,
+                {cons_check_ptr, is_car_check});
+            
+            // Valid type tags are 0-5 (NULL, INT64, DOUBLE, CONS_PTR, DUAL_NUMBER, AD_NODE_PTR)
+            // Mask to get base type (remove flags)
+            Value* type_base = builder->CreateAnd(car_type_tag,
+                ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+            Value* type_in_range = builder->CreateICmpULE(type_base,
+                ConstantInt::get(Type::getInt8Ty(*context), 5));
+            
+            // If valid cons cell type, display as list
+            BasicBlock* try_tensor_check = BasicBlock::Create(*context, "display_try_tensor", current_func);
+            builder->CreateCondBr(type_in_range, display_list, try_tensor_check);
+            
+            // Only try tensor if NOT a valid cons cell
+            builder->SetInsertPoint(try_tensor_check);
             
             // Define tensor structure
             std::vector<Type*> tensor_fields;
@@ -3780,18 +3801,26 @@ private:
             tensor_fields.push_back(Type::getInt64Ty(*context));
             StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
             
-            Value* potential_tensor_ptr = builder->CreateIntToPtr(arg_int, builder->getPtrTy());
+            // Add safety: check alignment (tensors are 8-byte aligned from malloc)
+            Value* is_aligned = builder->CreateICmpEQ(
+                builder->CreateAnd(arg_int, ConstantInt::get(Type::getInt64Ty(*context), 7)),
+                ConstantInt::get(Type::getInt64Ty(*context), 0));
             
-            // Try to read num_dimensions field (field index 1)
+            BasicBlock* check_tensor_dims = BasicBlock::Create(*context, "check_tensor_dims", current_func);
+            builder->CreateCondBr(is_aligned, check_tensor_dims, display_int);
+            
+            // Try reading num_dimensions with validation
+            builder->SetInsertPoint(check_tensor_dims);
+            Value* potential_tensor_ptr = builder->CreateIntToPtr(arg_int, builder->getPtrTy());
             Value* num_dims_field = builder->CreateStructGEP(tensor_type, potential_tensor_ptr, 1);
             Value* num_dims = builder->CreateLoad(Type::getInt64Ty(*context), num_dims_field);
             
-            // Tensors have num_dimensions between 1 and 10; lists would have random values
+            // Tensors have reasonable num_dimensions (1-10)
             Value* dims_ge_1 = builder->CreateICmpUGE(num_dims, ConstantInt::get(Type::getInt64Ty(*context), 1));
             Value* dims_le_10 = builder->CreateICmpULE(num_dims, ConstantInt::get(Type::getInt64Ty(*context), 10));
-            Value* is_tensor = builder->CreateAnd(dims_ge_1, dims_le_10);
+            Value* is_likely_tensor = builder->CreateAnd(dims_ge_1, dims_le_10);
             
-            builder->CreateCondBr(is_tensor, display_tensor, display_list);
+            builder->CreateCondBr(is_likely_tensor, display_tensor, display_int);
             
             // Display tensor as #(e1 e2 e3 ...)
             builder->SetInsertPoint(display_tensor);
@@ -3842,13 +3871,46 @@ private:
             
             builder->SetInsertPoint(print_elem);
             
-            // Load element as int64, then bitcast to double for display
+            // Load element as int64
             Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr, current_idx);
             Value* elem_int64 = builder->CreateLoad(Type::getInt64Ty(*context), elem_ptr);
-            Value* elem_double = builder->CreateBitCast(elem_int64, Type::getDoubleTy(*context));
             
-            // Display as double
-            builder->CreateCall(printf_func, {codegenString("%g"), elem_double});
+            // CRITICAL FIX: Detect element type (int vs double) using IEEE 754 heuristic
+            // Model after vref implementation (lines 5223-5270)
+            
+            // Case 1: Small values (< 1000) are plain integers
+            Value* tensor_elem_is_small = builder->CreateICmpULT(elem_int64,
+                ConstantInt::get(Type::getInt64Ty(*context), 1000));
+            
+            // Case 2: Check IEEE 754 exponent bits for doubles
+            Value* tensor_elem_exp_mask = ConstantInt::get(Type::getInt64Ty(*context), 0x7FF0000000000000ULL);
+            Value* tensor_elem_exp_bits = builder->CreateAnd(elem_int64, tensor_elem_exp_mask);
+            Value* tensor_elem_has_exp = builder->CreateICmpNE(tensor_elem_exp_bits,
+                ConstantInt::get(Type::getInt64Ty(*context), 0));
+            
+            BasicBlock* tensor_elem_int = BasicBlock::Create(*context, "tensor_elem_int", current_func);
+            BasicBlock* tensor_elem_check_double = BasicBlock::Create(*context, "tensor_elem_check_double", current_func);
+            BasicBlock* tensor_elem_double = BasicBlock::Create(*context, "tensor_elem_double", current_func);
+            BasicBlock* tensor_elem_done = BasicBlock::Create(*context, "tensor_elem_done", current_func);
+            
+            builder->CreateCondBr(tensor_elem_is_small, tensor_elem_int, tensor_elem_check_double);
+            
+            // Check if large value is double (has exponent) or int/pointer (no exponent)
+            builder->SetInsertPoint(tensor_elem_check_double);
+            builder->CreateCondBr(tensor_elem_has_exp, tensor_elem_double, tensor_elem_int);
+            
+            // Display as integer
+            builder->SetInsertPoint(tensor_elem_int);
+            builder->CreateCall(printf_func, {codegenString("%lld"), elem_int64});
+            builder->CreateBr(tensor_elem_done);
+            
+            // Display as double (bitcast from int64)
+            builder->SetInsertPoint(tensor_elem_double);
+            Value* elem_as_double = builder->CreateBitCast(elem_int64, Type::getDoubleTy(*context));
+            builder->CreateCall(printf_func, {codegenString("%g"), elem_as_double});
+            builder->CreateBr(tensor_elem_done);
+            
+            builder->SetInsertPoint(tensor_elem_done);
             
             // Increment index
             Value* next_idx = builder->CreateAdd(current_idx, ConstantInt::get(Type::getInt64Ty(*context), 1));
