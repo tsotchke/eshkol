@@ -158,6 +158,9 @@ private:
     
     // Nested S-expression display helper (N-depth recursive)
     Function* display_sexpr_list_func;
+    // Recursive tensor display helper (N-dimensional nested structure)
+    Function* display_tensor_recursive_func;
+    
     
 public:
     EshkolLLVMCodeGen(const char* module_name) {
@@ -1147,6 +1150,219 @@ private:
         
         function_table["displaySExprList"] = display_sexpr_list_func;
         eshkol_debug("Created recursive N-depth S-expression display helper function");
+    }
+    
+    void createDisplayTensorRecursiveFunction() {
+        // Recursive helper function for displaying tensors with proper dimensional nesting
+        // Signature: void displayTensorRecursive(double* elements, uint64_t* dims, uint64_t num_dims, uint64_t current_dim, uint64_t offset)
+        
+        
+        std::vector<Type*> params;
+        params.push_back(PointerType::getUnqual(*context));  // double* elements
+        params.push_back(PointerType::getUnqual(*context));  // uint64_t* dims
+        params.push_back(Type::getInt64Ty(*context));        // uint64_t num_dims
+        params.push_back(Type::getInt64Ty(*context));        // uint64_t current_dim
+        params.push_back(Type::getInt64Ty(*context));        // uint64_t offset
+        
+        FunctionType* func_type = FunctionType::get(
+            Type::getVoidTy(*context),
+            params,
+            false  // not varargs
+        );
+        
+        display_tensor_recursive_func = Function::Create(
+            func_type,
+            Function::InternalLinkage,
+            "displayTensorRecursive",
+            module.get()
+        );
+        
+        // Create function body
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", display_tensor_recursive_func);
+        
+        // Save old insertion point
+        IRBuilderBase::InsertPoint old_ip = builder->saveIP();
+        builder->SetInsertPoint(entry);
+        
+        // Get parameters
+        auto arg_it = display_tensor_recursive_func->arg_begin();
+        Value* elements = &*arg_it++;
+        elements->setName("elements");
+        Value* dims = &*arg_it++;
+        dims->setName("dims");
+        Value* num_dims = &*arg_it++;
+        num_dims->setName("num_dims");
+        Value* current_dim = &*arg_it++;
+        current_dim->setName("current_dim");
+        Value* offset = &*arg_it;
+        offset->setName("offset");
+        
+        Function* printf_func = function_table["printf"];
+        
+        // Check: current_dim == num_dims - 1? (base case)
+        Value* num_dims_minus_1 = builder->CreateSub(num_dims, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        Value* is_base_case = builder->CreateICmpEQ(current_dim, num_dims_minus_1);
+        
+        BasicBlock* base_case = BasicBlock::Create(*context, "base_case", display_tensor_recursive_func);
+        BasicBlock* recursive_case = BasicBlock::Create(*context, "recursive_case", display_tensor_recursive_func);
+        BasicBlock* func_exit = BasicBlock::Create(*context, "exit", display_tensor_recursive_func);
+        
+        builder->CreateCondBr(is_base_case, base_case, recursive_case);
+        
+        // === BASE CASE: Print innermost dimension ===
+        builder->SetInsertPoint(base_case);
+        builder->CreateCall(printf_func, {codegenString("(")});
+        
+        // Get dimension size at current_dim
+        Value* dim_size_ptr = builder->CreateGEP(Type::getInt64Ty(*context), dims, current_dim);
+        Value* dim_size = builder->CreateLoad(Type::getInt64Ty(*context), dim_size_ptr);
+        
+        // Loop: print elements
+        BasicBlock* base_loop_cond = BasicBlock::Create(*context, "base_loop_cond", display_tensor_recursive_func);
+        BasicBlock* base_loop_body = BasicBlock::Create(*context, "base_loop_body", display_tensor_recursive_func);
+        BasicBlock* base_loop_exit = BasicBlock::Create(*context, "base_loop_exit", display_tensor_recursive_func);
+        
+        Value* base_i = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "base_i");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), base_i);
+        builder->CreateBr(base_loop_cond);
+        
+        builder->SetInsertPoint(base_loop_cond);
+        Value* i_val = builder->CreateLoad(Type::getInt64Ty(*context), base_i);
+        Value* i_less = builder->CreateICmpULT(i_val, dim_size);
+        builder->CreateCondBr(i_less, base_loop_body, base_loop_exit);
+        
+        builder->SetInsertPoint(base_loop_body);
+        // Add space before non-first elements
+        Value* i_is_zero = builder->CreateICmpEQ(i_val, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        BasicBlock* skip_space = BasicBlock::Create(*context, "skip_space", display_tensor_recursive_func);
+        BasicBlock* print_space = BasicBlock::Create(*context, "print_space", display_tensor_recursive_func);
+        BasicBlock* print_elem = BasicBlock::Create(*context, "print_elem", display_tensor_recursive_func);
+        
+        builder->CreateCondBr(i_is_zero, skip_space, print_space);
+        
+        builder->SetInsertPoint(print_space);
+        builder->CreateCall(printf_func, {codegenString(" ")});
+        builder->CreateBr(print_elem);
+        
+        builder->SetInsertPoint(skip_space);
+        builder->CreateBr(print_elem);
+        
+        builder->SetInsertPoint(print_elem);
+        // Print element at offset + i
+        Value* elem_idx = builder->CreateAdd(offset, i_val);
+        Value* elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context), elements, elem_idx);
+        Value* elem_val = builder->CreateLoad(Type::getDoubleTy(*context), elem_ptr);
+        builder->CreateCall(printf_func, {codegenString("%g"), elem_val});
+        
+        // Increment i
+        Value* i_next = builder->CreateAdd(i_val, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(i_next, base_i);
+        builder->CreateBr(base_loop_cond);
+        
+        builder->SetInsertPoint(base_loop_exit);
+        builder->CreateCall(printf_func, {codegenString(")")});
+        builder->CreateBr(func_exit);
+        
+        // === RECURSIVE CASE: Process outer dimension ===
+        builder->SetInsertPoint(recursive_case);
+        builder->CreateCall(printf_func, {codegenString("(")});
+        
+        // Calculate stride = product of dims[current_dim+1..num_dims-1]
+        Value* stride = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "stride");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 1), stride);
+        
+        // Compute stride using loop
+        Value* next_dim = builder->CreateAdd(current_dim, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        
+        BasicBlock* stride_loop_cond = BasicBlock::Create(*context, "stride_cond", display_tensor_recursive_func);
+        BasicBlock* stride_loop_body = BasicBlock::Create(*context, "stride_body", display_tensor_recursive_func);
+        BasicBlock* stride_loop_exit = BasicBlock::Create(*context, "stride_exit", display_tensor_recursive_func);
+        
+        Value* k = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "k");
+        builder->CreateStore(next_dim, k);
+        builder->CreateBr(stride_loop_cond);
+        
+        builder->SetInsertPoint(stride_loop_cond);
+        Value* k_val = builder->CreateLoad(Type::getInt64Ty(*context), k);
+        Value* k_less = builder->CreateICmpULT(k_val, num_dims);
+        builder->CreateCondBr(k_less, stride_loop_body, stride_loop_exit);
+        
+        builder->SetInsertPoint(stride_loop_body);
+        Value* dim_k_ptr = builder->CreateGEP(Type::getInt64Ty(*context), dims, k_val);
+        Value* dim_k = builder->CreateLoad(Type::getInt64Ty(*context), dim_k_ptr);
+        Value* current_stride = builder->CreateLoad(Type::getInt64Ty(*context), stride);
+        Value* new_stride = builder->CreateMul(current_stride, dim_k);
+        builder->CreateStore(new_stride, stride);
+        Value* k_next = builder->CreateAdd(k_val, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(k_next, k);
+        builder->CreateBr(stride_loop_cond);
+        
+        builder->SetInsertPoint(stride_loop_exit);
+        Value* final_stride = builder->CreateLoad(Type::getInt64Ty(*context), stride);
+        
+        // Get current dimension size
+        Value* curr_dim_ptr = builder->CreateGEP(Type::getInt64Ty(*context), dims, current_dim);
+        Value* curr_dim_size = builder->CreateLoad(Type::getInt64Ty(*context), curr_dim_ptr);
+        
+        // Loop over current dimension, recursing for each slice
+        BasicBlock* rec_loop_cond = BasicBlock::Create(*context, "rec_loop_cond", display_tensor_recursive_func);
+        BasicBlock* rec_loop_body = BasicBlock::Create(*context, "rec_loop_body", display_tensor_recursive_func);
+        BasicBlock* rec_loop_exit = BasicBlock::Create(*context, "rec_loop_exit", display_tensor_recursive_func);
+        
+        Value* rec_i = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "rec_i");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), rec_i);
+        builder->CreateBr(rec_loop_cond);
+        
+        builder->SetInsertPoint(rec_loop_cond);
+        Value* i_val_rec = builder->CreateLoad(Type::getInt64Ty(*context), rec_i);
+        Value* i_less_rec = builder->CreateICmpULT(i_val_rec, curr_dim_size);
+        builder->CreateCondBr(i_less_rec, rec_loop_body, rec_loop_exit);
+        
+        builder->SetInsertPoint(rec_loop_body);
+        // Add space before non-first slices
+        Value* i_is_zero_rec = builder->CreateICmpEQ(i_val_rec, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        BasicBlock* skip_space_rec = BasicBlock::Create(*context, "skip_space_rec", display_tensor_recursive_func);
+        BasicBlock* print_space_rec = BasicBlock::Create(*context, "print_space_rec", display_tensor_recursive_func);
+        BasicBlock* make_recursive_call = BasicBlock::Create(*context, "recursive_call", display_tensor_recursive_func);
+        
+        builder->CreateCondBr(i_is_zero_rec, skip_space_rec, print_space_rec);
+        
+        builder->SetInsertPoint(print_space_rec);
+        builder->CreateCall(printf_func, {codegenString(" ")});
+        builder->CreateBr(make_recursive_call);
+        
+        builder->SetInsertPoint(skip_space_rec);
+        builder->CreateBr(make_recursive_call);
+        
+        builder->SetInsertPoint(make_recursive_call);
+        // RECURSIVE CALL: Process next dimension at offset + i*stride
+        Value* new_offset = builder->CreateAdd(offset, builder->CreateMul(i_val_rec, final_stride));
+        builder->CreateCall(display_tensor_recursive_func, {
+            elements,
+            dims,
+            num_dims,
+            next_dim,
+            new_offset
+        });
+        
+        // Increment i
+        Value* i_next_rec = builder->CreateAdd(i_val_rec, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(i_next_rec, rec_i);
+        builder->CreateBr(rec_loop_cond);
+        
+        builder->SetInsertPoint(rec_loop_exit);
+        builder->CreateCall(printf_func, {codegenString(")")});
+        builder->CreateBr(func_exit);
+        
+        // Exit point
+        builder->SetInsertPoint(func_exit);
+        builder->CreateRetVoid();
+        
+        // Restore insertion point
+        builder->restoreIP(old_ip);
+        
+        function_table["displayTensorRecursive"] = display_tensor_recursive_func;
+        eshkol_debug("Created recursive N-dimensional tensor display helper function");
     }
     
     void createFunctionDeclaration(const eshkol_ast_t* ast) {
@@ -4128,7 +4344,7 @@ private:
             
             builder->SetInsertPoint(tag_print_elem);
             
-            // Load element and detect type using IEEE 754 heuristic
+            // JACOBIAN FIX: Load element and detect type (int, double, or CONS_PTR for nested lists)
             Value* tag_elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr, tag_current_idx);
             Value* tag_elem_int64 = builder->CreateLoad(Type::getInt64Ty(*context), tag_elem_ptr);
             
@@ -4140,15 +4356,33 @@ private:
                 ConstantInt::get(Type::getInt64Ty(*context), 0));
             Value* tag_likely_double = builder->CreateAnd(tag_has_exp, builder->CreateNot(tag_is_small));
             
+            // JACOBIAN FIX: Check if it's a large pointer (CONS_PTR for nested list)
+            Value* tag_is_large_ptr = builder->CreateICmpUGT(tag_elem_int64,
+                ConstantInt::get(Type::getInt64Ty(*context), 1000));
+            Value* tag_not_double = builder->CreateNot(tag_has_exp);
+            Value* tag_is_cons_ptr = builder->CreateAnd(tag_is_large_ptr, tag_not_double);
+            
             BasicBlock* tag_elem_double = BasicBlock::Create(*context, "tag_elem_double", current_func);
+            BasicBlock* tag_elem_check_ptr = BasicBlock::Create(*context, "tag_elem_check_ptr", current_func);
+            BasicBlock* tag_elem_list = BasicBlock::Create(*context, "tag_elem_list", current_func);
             BasicBlock* tag_elem_int = BasicBlock::Create(*context, "tag_elem_int", current_func);
             BasicBlock* tag_elem_done = BasicBlock::Create(*context, "tag_elem_done", current_func);
             
-            builder->CreateCondBr(tag_likely_double, tag_elem_double, tag_elem_int);
+            builder->CreateCondBr(tag_likely_double, tag_elem_double, tag_elem_check_ptr);
             
             builder->SetInsertPoint(tag_elem_double);
             Value* tag_as_double = builder->CreateBitCast(tag_elem_int64, Type::getDoubleTy(*context));
             builder->CreateCall(printf_func, {codegenString("%g"), tag_as_double});
+            builder->CreateBr(tag_elem_done);
+            
+            // JACOBIAN FIX: Check if element is CONS_PTR (nested list from Jacobian)
+            builder->SetInsertPoint(tag_elem_check_ptr);
+            builder->CreateCondBr(tag_is_cons_ptr, tag_elem_list, tag_elem_int);
+            
+            // JACOBIAN FIX: Display nested list recursively
+            builder->SetInsertPoint(tag_elem_list);
+            Value* tag_list_depth = ConstantInt::get(Type::getInt32Ty(*context), 0);
+            builder->CreateCall(display_sexpr_list_func, {tag_elem_int64, tag_list_depth});
             builder->CreateBr(tag_elem_done);
             
             builder->SetInsertPoint(tag_elem_int);
@@ -4496,8 +4730,8 @@ private:
             Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr, current_idx);
             Value* elem_int64 = builder->CreateLoad(Type::getInt64Ty(*context), elem_ptr);
             
-            // CRITICAL FIX: Detect element type (int vs double) using IEEE 754 heuristic
-            // Model after vref implementation (lines 5223-5270)
+            // JACOBIAN FIX: Detect element type (int, double, or CONS_PTR for nested lists)
+            // This allows tensors containing list pointers to display nested structure
             
             // Case 1: Small values (< 1000) are plain integers
             Value* tensor_elem_is_small = builder->CreateICmpULT(elem_int64,
@@ -4509,16 +4743,28 @@ private:
             Value* tensor_elem_has_exp = builder->CreateICmpNE(tensor_elem_exp_bits,
                 ConstantInt::get(Type::getInt64Ty(*context), 0));
             
+            // Case 3: Check if it's a large pointer value (potential CONS_PTR)
+            Value* tensor_elem_is_large_ptr = builder->CreateICmpUGT(elem_int64,
+                ConstantInt::get(Type::getInt64Ty(*context), 1000));
+            Value* tensor_elem_not_double = builder->CreateNot(tensor_elem_has_exp);
+            Value* tensor_elem_is_cons_ptr = builder->CreateAnd(tensor_elem_is_large_ptr, tensor_elem_not_double);
+            
             BasicBlock* tensor_elem_int = BasicBlock::Create(*context, "tensor_elem_int", current_func);
             BasicBlock* tensor_elem_check_double = BasicBlock::Create(*context, "tensor_elem_check_double", current_func);
+            BasicBlock* tensor_elem_check_ptr = BasicBlock::Create(*context, "tensor_elem_check_ptr", current_func);
             BasicBlock* tensor_elem_double = BasicBlock::Create(*context, "tensor_elem_double", current_func);
+            BasicBlock* tensor_elem_list = BasicBlock::Create(*context, "tensor_elem_list", current_func);
             BasicBlock* tensor_elem_done = BasicBlock::Create(*context, "tensor_elem_done", current_func);
             
             builder->CreateCondBr(tensor_elem_is_small, tensor_elem_int, tensor_elem_check_double);
             
-            // Check if large value is double (has exponent) or int/pointer (no exponent)
+            // Check if large value is double or pointer
             builder->SetInsertPoint(tensor_elem_check_double);
-            builder->CreateCondBr(tensor_elem_has_exp, tensor_elem_double, tensor_elem_int);
+            builder->CreateCondBr(tensor_elem_has_exp, tensor_elem_double, tensor_elem_check_ptr);
+            
+            // Check if large non-double value is cons ptr
+            builder->SetInsertPoint(tensor_elem_check_ptr);
+            builder->CreateCondBr(tensor_elem_is_cons_ptr, tensor_elem_list, tensor_elem_int);
             
             // Display as integer
             builder->SetInsertPoint(tensor_elem_int);
@@ -4529,6 +4775,12 @@ private:
             builder->SetInsertPoint(tensor_elem_double);
             Value* elem_as_double = builder->CreateBitCast(elem_int64, Type::getDoubleTy(*context));
             builder->CreateCall(printf_func, {codegenString("%g"), elem_as_double});
+            builder->CreateBr(tensor_elem_done);
+            
+            // Display as nested list (recursively display CONS_PTR)
+            builder->SetInsertPoint(tensor_elem_list);
+            Value* initial_depth = ConstantInt::get(Type::getInt32Ty(*context), 0);
+            builder->CreateCall(display_sexpr_list_func, {elem_int64, initial_depth});
             builder->CreateBr(tensor_elem_done);
             
             builder->SetInsertPoint(tensor_elem_done);
@@ -5809,6 +6061,11 @@ private:
         for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
             Value* element_val = codegenAST(&op->tensor_op.elements[i]);
             if (element_val) {
+                // CRITICAL FIX: Extract i64 from tagged_value (preserves AD node pointers!)
+                if (element_val->getType() == tagged_value_type) {
+                    element_val = safeExtractInt64(element_val);
+                }
+                
                 // CRITICAL FIX: Store elements as int64, but preserve double bit patterns
                 if (element_val->getType() != Type::getInt64Ty(*context)) {
                     if (element_val->getType()->isIntegerTy()) {
@@ -8820,8 +9077,8 @@ private:
         
         // Step 5: Call function with AD node tensor (builds computational graph on tape)
         Value* ad_tensor_int = builder->CreatePtrToInt(typed_ad_tensor_ptr, Type::getInt64Ty(*context));
-        // Pack into tagged_value for function call (lambdas expect tagged_value)
-        Value* ad_tensor_tagged = packInt64ToTaggedValue(ad_tensor_int, true);
+        // CRITICAL FIX: Pack as TENSOR_PTR not INT64, so identity lambdas preserve type
+        Value* ad_tensor_tagged = packPtrToTaggedValue(ad_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
         
         // PHASE 1 FIX: Set AD mode flag and tape pointer before calling lambda
         builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), ad_mode_active);
@@ -8990,7 +9247,8 @@ private:
         Function* current_func = builder->GetInsertBlock()->getParent();
         
         // Call function once to determine output dimension m
-        Value* vector_tagged = packInt64ToTaggedValue(vector_ptr_int, true);
+        // CRITICAL FIX: Pack as TENSOR_PTR not INT64, so identity lambdas preserve type
+        Value* vector_tagged = packPtrToTaggedValue(vector_ptr_int, ESHKOL_VALUE_TENSOR_PTR);
         Value* test_output_tagged = builder->CreateCall(func_ptr, {vector_tagged});
         
         // CRITICAL FIX: Tensors are now tagged with TENSOR_PTR type (not CONS_PTR)
@@ -9425,7 +9683,8 @@ private:
         
         // Call function to get output
         Value* jac_ad_tensor_int = builder->CreatePtrToInt(typed_jac_ad_tensor, Type::getInt64Ty(*context));
-        Value* jac_ad_tensor_tagged = packInt64ToTaggedValue(jac_ad_tensor_int, true);
+        // CRITICAL FIX: Pack as TENSOR_PTR not INT64, so identity lambdas preserve type
+        Value* jac_ad_tensor_tagged = packPtrToTaggedValue(jac_ad_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
         
         // PHASE 1 FIX: Set AD mode flag to true before calling lambda
         builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), ad_mode_active);
@@ -9537,8 +9796,183 @@ private:
         builder->CreateBr(outer_cond);
         
         builder->SetInsertPoint(outer_exit);
-        Value* jac_result_int = builder->CreatePtrToInt(typed_jac_ptr, Type::getInt64Ty(*context));
-        // Tag as TENSOR_PTR for proper display handling (packPtrToTaggedValue handles i64 directly)
+        
+        // JACOBIAN NESTED LIST FIX: Convert m×n tensor to nested list structure ((row1) (row2) ...)
+        // This allows existing display() to show proper matrix structure without modifications
+        
+        // Get Jacobian elements for conversion
+        Value* jac_convert_elems_field = builder->CreateStructGEP(tensor_type, typed_jac_ptr, 2);
+        Value* jac_convert_elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), jac_convert_elems_field);
+        Value* typed_jac_convert_elems = builder->CreatePointerCast(jac_convert_elems_ptr, builder->getPtrTy());
+        
+        // Build nested list: start from last row, build backwards
+        Value* outer_list = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "jac_outer_list");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), outer_list); // Start with null
+        
+        // Outer loop: i from m-1 down to 0 (build list backwards)
+        BasicBlock* convert_outer_cond = BasicBlock::Create(*context, "jac_convert_outer_cond", current_func);
+        BasicBlock* convert_outer_body = BasicBlock::Create(*context, "jac_convert_outer_body", current_func);
+        BasicBlock* convert_outer_exit = BasicBlock::Create(*context, "jac_convert_outer_exit", current_func);
+        
+        Value* convert_row_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "convert_row_idx");
+        builder->CreateStore(m, convert_row_idx); // Start at m (will decrement before use)
+        builder->CreateBr(convert_outer_cond);
+        
+        builder->SetInsertPoint(convert_outer_cond);
+        Value* row_count = builder->CreateLoad(Type::getInt64Ty(*context), convert_row_idx);
+        Value* row_gt_zero = builder->CreateICmpUGT(row_count, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        builder->CreateCondBr(row_gt_zero, convert_outer_body, convert_outer_exit);
+        
+        builder->SetInsertPoint(convert_outer_body);
+        
+        // Decrement to get current row index (0-based)
+        Value* current_row = builder->CreateSub(row_count, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(current_row, convert_row_idx);
+        
+        // Build row list: collect n elements from this row
+        Value* row_list = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "jac_row_list");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), row_list); // Start with null
+        
+        // Inner loop: j from n-1 down to 0 (build row list backwards)
+        BasicBlock* convert_inner_cond = BasicBlock::Create(*context, "jac_convert_inner_cond", current_func);
+        BasicBlock* convert_inner_body = BasicBlock::Create(*context, "jac_convert_inner_body", current_func);
+        BasicBlock* convert_inner_exit = BasicBlock::Create(*context, "jac_convert_inner_exit", current_func);
+        
+        Value* convert_col_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "convert_col_idx");
+        builder->CreateStore(n, convert_col_idx); // Start at n (will decrement before use)
+        builder->CreateBr(convert_inner_cond);
+        
+        builder->SetInsertPoint(convert_inner_cond);
+        Value* col_count = builder->CreateLoad(Type::getInt64Ty(*context), convert_col_idx);
+        Value* col_gt_zero = builder->CreateICmpUGT(col_count, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        builder->CreateCondBr(col_gt_zero, convert_inner_body, convert_inner_exit);
+        
+        builder->SetInsertPoint(convert_inner_body);
+        
+        // Decrement to get current column index (0-based)
+        Value* current_col = builder->CreateSub(col_count, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(current_col, convert_col_idx);
+        
+        // Get element at [current_row, current_col]
+        Value* elem_linear_idx = builder->CreateMul(current_row, n);
+        elem_linear_idx = builder->CreateAdd(elem_linear_idx, current_col);
+        Value* elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_convert_elems, elem_linear_idx);
+        Value* elem_double = builder->CreateLoad(Type::getDoubleTy(*context), elem_ptr);
+        
+        // Pack element as tagged_value
+        Value* elem_tagged = packDoubleToTaggedValue(elem_double);
+        
+        // Get current row list
+        Value* current_row_list = builder->CreateLoad(Type::getInt64Ty(*context), row_list);
+        Value* row_list_tagged = (current_row_list == ConstantInt::get(Type::getInt64Ty(*context), 0)) ?
+            packNullToTaggedValue() :
+            packPtrToTaggedValue(builder->CreateIntToPtr(current_row_list, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+        
+        // Cons element onto row list
+        Value* new_row_cons = codegenTaggedArenaConsCellFromTaggedValue(elem_tagged, row_list_tagged);
+        builder->CreateStore(new_row_cons, row_list);
+        
+        builder->CreateBr(convert_inner_cond);
+        
+        builder->SetInsertPoint(convert_inner_exit);
+        
+        // Row complete - cons it onto outer list
+        Value* completed_row_list = builder->CreateLoad(Type::getInt64Ty(*context), row_list);
+        Value* completed_row_tagged = packPtrToTaggedValue(
+            builder->CreateIntToPtr(completed_row_list, builder->getPtrTy()),
+            ESHKOL_VALUE_CONS_PTR);
+        
+        Value* current_outer_list = builder->CreateLoad(Type::getInt64Ty(*context), outer_list);
+        Value* outer_list_tagged = (current_outer_list == ConstantInt::get(Type::getInt64Ty(*context), 0)) ?
+            packNullToTaggedValue() :
+            packPtrToTaggedValue(builder->CreateIntToPtr(current_outer_list, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+        
+        // Cons row onto outer list
+        Value* new_outer_cons = codegenTaggedArenaConsCellFromTaggedValue(completed_row_tagged, outer_list_tagged);
+        builder->CreateStore(new_outer_cons, outer_list);
+        
+        builder->CreateBr(convert_outer_cond);
+        
+        builder->SetInsertPoint(convert_outer_exit);
+        
+        // JACOBIAN FIX: Create 1D tensor containing row lists as elements
+        // This displays as #((row1) (row2)) - tensor prefix with nested row structure
+        
+        // Allocate result tensor (1D, m elements where each is a row list pointer)
+        Value* result_tensor_size = ConstantInt::get(Type::getInt64Ty(*context),
+            module->getDataLayout().getTypeAllocSize(tensor_type));
+        Value* result_tensor_ptr = builder->CreateCall(malloc_func, {result_tensor_size});
+        Value* typed_result_tensor = builder->CreatePointerCast(result_tensor_ptr, builder->getPtrTy());
+        
+        // Set dimensions: [m] (1D vector of m rows)
+        Value* result_dims_size = ConstantInt::get(Type::getInt64Ty(*context), sizeof(uint64_t));
+        Value* result_dims_ptr = builder->CreateCall(malloc_func, {result_dims_size});
+        Value* typed_result_dims = builder->CreatePointerCast(result_dims_ptr, builder->getPtrTy());
+        builder->CreateStore(m, typed_result_dims);
+        
+        // Set tensor fields
+        builder->CreateStore(typed_result_dims,
+            builder->CreateStructGEP(tensor_type, typed_result_tensor, 0)); // dimensions
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 1),
+            builder->CreateStructGEP(tensor_type, typed_result_tensor, 1)); // num_dimensions = 1
+        builder->CreateStore(m,
+            builder->CreateStructGEP(tensor_type, typed_result_tensor, 3)); // total_elements = m
+        
+        // Allocate elements array (m pointers to row lists)
+        Value* result_elems_size = builder->CreateMul(m,
+            ConstantInt::get(Type::getInt64Ty(*context), sizeof(uint64_t)));
+        Value* result_elems_ptr = builder->CreateCall(malloc_func, {result_elems_size});
+        Value* typed_result_elems = builder->CreatePointerCast(result_elems_ptr, builder->getPtrTy());
+        
+        builder->CreateStore(typed_result_elems,
+            builder->CreateStructGEP(tensor_type, typed_result_tensor, 2)); // elements
+        
+        // Fill elements array with row list pointers (extract from nested list)
+        BasicBlock* fill_tensor_cond = BasicBlock::Create(*context, "jac_fill_tensor_cond", current_func);
+        BasicBlock* fill_tensor_body = BasicBlock::Create(*context, "jac_fill_tensor_body", current_func);
+        BasicBlock* fill_tensor_exit = BasicBlock::Create(*context, "jac_fill_tensor_exit", current_func);
+        
+        Value* fill_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "fill_idx");
+        Value* list_walker = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "list_walker");
+        
+        Value* final_nested_list = builder->CreateLoad(Type::getInt64Ty(*context), outer_list);
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), fill_idx);
+        builder->CreateStore(final_nested_list, list_walker);
+        builder->CreateBr(fill_tensor_cond);
+        
+        builder->SetInsertPoint(fill_tensor_cond);
+        Value* fill_i = builder->CreateLoad(Type::getInt64Ty(*context), fill_idx);
+        Value* walker_val = builder->CreateLoad(Type::getInt64Ty(*context), list_walker);
+        Value* fill_i_less_m = builder->CreateICmpULT(fill_i, m);
+        Value* walker_not_null = builder->CreateICmpNE(walker_val, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* continue_fill = builder->CreateAnd(fill_i_less_m, walker_not_null);
+        builder->CreateCondBr(continue_fill, fill_tensor_body, fill_tensor_exit);
+        
+        builder->SetInsertPoint(fill_tensor_body);
+        
+        // Extract car (row list pointer) from current cons cell
+        Value* walker_cons_ptr = builder->CreateIntToPtr(walker_val, builder->getPtrTy());
+        Value* row_list_tagged_fill = extractCarAsTaggedValue(walker_val);
+        Value* row_list_ptr = unpackInt64FromTaggedValue(row_list_tagged_fill);
+        
+        // Store row list pointer in tensor elements array
+        Value* elem_slot = builder->CreateGEP(Type::getInt64Ty(*context), typed_result_elems, fill_i);
+        builder->CreateStore(row_list_ptr, elem_slot);
+        
+        // Move to next row (cdr)
+        Value* is_cdr_walker = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* next_walker = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            {walker_cons_ptr, is_cdr_walker});
+        builder->CreateStore(next_walker, list_walker);
+        
+        Value* next_fill_idx = builder->CreateAdd(fill_i, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(next_fill_idx, fill_idx);
+        builder->CreateBr(fill_tensor_cond);
+        
+        builder->SetInsertPoint(fill_tensor_exit);
+        
+        // Return tensor of row lists as TENSOR_PTR
+        Value* jac_result_int = builder->CreatePtrToInt(typed_result_tensor, Type::getInt64Ty(*context));
         Value* jac_result = packPtrToTaggedValue(jac_result_int, ESHKOL_VALUE_TENSOR_PTR);
         builder->CreateBr(jac_return_block);
         
@@ -9546,7 +9980,7 @@ private:
         builder->SetInsertPoint(jac_return_block);
         PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, "jac_result");
         result_phi->addIncoming(null_jac_tagged, output_invalid_block);
-        result_phi->addIncoming(jac_result, outer_exit);
+        result_phi->addIncoming(jac_result, fill_tensor_exit);
         
         return result_phi;
     }
@@ -9680,8 +10114,9 @@ private:
         Value* arena_ptr = getArenaPtr();
         Value* bg_tape = builder->CreateCall(arena_allocate_tape_func,
             {arena_ptr, ConstantInt::get(Type::getInt64Ty(*context), 1024)});
-        Value* bg_saved_tape = current_tape_ptr;
-        current_tape_ptr = bg_tape;
+        
+        // CRITICAL: Set global tape pointer (runtime Value*, not compile-time member)
+        builder->CreateStore(bg_tape, current_ad_tape);
         
         // Create variable nodes
         Value* bg_nodes_size = builder->CreateMul(n,
@@ -9780,7 +10215,7 @@ private:
         
         // Call function
         Value* bg_ad_tensor_int = builder->CreatePtrToInt(typed_bg_ad_tensor, Type::getInt64Ty(*context));
-        Value* bg_ad_tensor_tagged = packInt64ToTaggedValue(bg_ad_tensor_int, true);
+        Value* bg_ad_tensor_tagged = packPtrToTaggedValue(bg_ad_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
         
         // PHASE 1 FIX: Set AD mode flag to true before calling lambda
         builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), ad_mode_active);
@@ -9808,7 +10243,9 @@ private:
         builder->CreateStore(bg_partial, bg_store_ptr);
         
         builder->CreateCall(arena_tape_reset_func, {bg_tape});
-        current_tape_ptr = bg_saved_tape;
+        
+        // Clear global tape pointer
+        builder->CreateStore(ConstantPointerNull::get(PointerType::getUnqual(*context)), current_ad_tape);
         
         Value* bg_next_i = builder->CreateAdd(bg_i, ConstantInt::get(Type::getInt64Ty(*context), 1));
         builder->CreateStore(bg_next_i, base_grad_idx);
@@ -9816,83 +10253,402 @@ private:
         
         builder->SetInsertPoint(base_grad_loop_exit);
         
-        // Now compute Hessian using numerical differentiation: H[i,j] = (∇f(v+εeⱼ)[i] - ∇f(v)[i])/ε
-        // Double nested loop over i and j
-        BasicBlock* hess_outer_cond = BasicBlock::Create(*context, "hess_outer_cond", current_func);
-        BasicBlock* hess_outer_body = BasicBlock::Create(*context, "hess_outer_body", current_func);
-        BasicBlock* hess_inner_cond = BasicBlock::Create(*context, "hess_inner_cond", current_func);
-        BasicBlock* hess_inner_body = BasicBlock::Create(*context, "hess_inner_body", current_func);
-        BasicBlock* hess_inner_exit = BasicBlock::Create(*context, "hess_inner_exit", current_func);
-        BasicBlock* hess_outer_exit = BasicBlock::Create(*context, "hess_outer_exit", current_func);
+        // NUMERICAL DIFFERENTIATION: Compute Hessian H[i,j] = ∂²f/∂xᵢ∂xⱼ
+        // Using finite difference: H[i,j] ≈ (∇ᵢf(v+ε·eⱼ) - ∇ᵢf(v)) / ε
+        // Outer loop: for each column j (variable to perturb)
         
-        Value* hess_i_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "hess_i");
-        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), hess_i_idx);
-        builder->CreateBr(hess_outer_cond);
+        // CRITICAL: Load arena_ptr ONCE before loops to ensure dominance
+        Value* hess_arena_ptr = getArenaPtr();
         
-        builder->SetInsertPoint(hess_outer_cond);
-        Value* hess_i = builder->CreateLoad(Type::getInt64Ty(*context), hess_i_idx);
-        Value* hess_i_less_n = builder->CreateICmpULT(hess_i, n);
-        builder->CreateCondBr(hess_i_less_n, hess_outer_body, hess_outer_exit);
+        BasicBlock* hess_col_cond = BasicBlock::Create(*context, "hess_col_cond", current_func);
+        BasicBlock* hess_col_body = BasicBlock::Create(*context, "hess_col_body", current_func);
+        BasicBlock* hess_col_exit = BasicBlock::Create(*context, "hess_col_exit", current_func);
         
-        builder->SetInsertPoint(hess_outer_body);
-        Value* hess_j_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "hess_j");
+        Value* hess_j_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "hess_j_col");
         builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), hess_j_idx);
-        builder->CreateBr(hess_inner_cond);
+        builder->CreateBr(hess_col_cond);
         
-        builder->SetInsertPoint(hess_inner_cond);
+        // Column loop condition: j < n
+        builder->SetInsertPoint(hess_col_cond);
         Value* hess_j = builder->CreateLoad(Type::getInt64Ty(*context), hess_j_idx);
         Value* hess_j_less_n = builder->CreateICmpULT(hess_j, n);
-        builder->CreateCondBr(hess_j_less_n, hess_inner_body, hess_inner_exit);
+        builder->CreateCondBr(hess_j_less_n, hess_col_body, hess_col_exit);
         
-        // Compute perturbed gradient component
-        builder->SetInsertPoint(hess_inner_body);
+        builder->SetInsertPoint(hess_col_body);
         
-        // For simplicity, use symmetric finite difference
-        // H[i,j] ≈ ∂²f/∂xᵢ∂xⱼ computed via gradient
-        // Since Hessian is symmetric for smooth functions, H[i,j] = H[j,i]
-        // We compute using numerical differentiation of gradient
+        // Step 1: Create perturbed vector v_j = v + ε·e_j
+        Value* perturbed_vec_size = builder->CreateMul(n,
+            ConstantInt::get(Type::getInt64Ty(*context), sizeof(double)));
+        Value* perturbed_vec_ptr = builder->CreateCall(malloc_func, {perturbed_vec_size});
+        Value* typed_perturbed_vec = builder->CreatePointerCast(perturbed_vec_ptr, builder->getPtrTy());
         
-        // Load base gradient[i]
-        Value* base_grad_i_ptr = builder->CreateGEP(Type::getDoubleTy(*context),
-            typed_base_grad, hess_i);
+        // Copy input vector and perturb j-th component
+        BasicBlock* copy_loop_cond = BasicBlock::Create(*context, "hess_copy_cond", current_func);
+        BasicBlock* copy_loop_body = BasicBlock::Create(*context, "hess_copy_body", current_func);
+        BasicBlock* copy_loop_exit = BasicBlock::Create(*context, "hess_copy_exit", current_func);
+        
+        Value* copy_k_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "copy_k");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), copy_k_idx);
+        builder->CreateBr(copy_loop_cond);
+        
+        builder->SetInsertPoint(copy_loop_cond);
+        Value* copy_k = builder->CreateLoad(Type::getInt64Ty(*context), copy_k_idx);
+        Value* copy_k_less_n = builder->CreateICmpULT(copy_k, n);
+        builder->CreateCondBr(copy_k_less_n, copy_loop_body, copy_loop_exit);
+        
+        builder->SetInsertPoint(copy_loop_body);
+        
+        // Load input[k]
+        Value* input_k_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_input_elements, copy_k);
+        Value* input_k_int64 = builder->CreateLoad(Type::getInt64Ty(*context), input_k_ptr);
+        Value* input_k_double = builder->CreateBitCast(input_k_int64, Type::getDoubleTy(*context));
+        
+        // If k == j, add epsilon; otherwise copy as-is
+        Value* k_is_j = builder->CreateICmpEQ(copy_k, hess_j);
+        Value* perturbed_val = builder->CreateSelect(k_is_j,
+            builder->CreateFAdd(input_k_double, epsilon),
+            input_k_double);
+        
+        // Store in perturbed vector
+        Value* pert_k_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_perturbed_vec, copy_k);
+        builder->CreateStore(perturbed_val, pert_k_ptr);
+        
+        Value* copy_k_next = builder->CreateAdd(copy_k, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(copy_k_next, copy_k_idx);
+        builder->CreateBr(copy_loop_cond);
+        
+        builder->SetInsertPoint(copy_loop_exit);
+        
+        // Step 2: Compute gradient at perturbed point
+        // Create tape for perturbed gradient computation
+        Value* pert_tape = builder->CreateCall(arena_allocate_tape_func,
+            {hess_arena_ptr, ConstantInt::get(Type::getInt64Ty(*context), 1024)});
+        
+        // Create AD variable nodes from perturbed vector
+        Value* pert_nodes_size = builder->CreateMul(n,
+            ConstantInt::get(Type::getInt64Ty(*context), sizeof(void*)));
+        Value* pert_nodes_ptr = builder->CreateCall(malloc_func, {pert_nodes_size});
+        Value* typed_pert_nodes = builder->CreatePointerCast(pert_nodes_ptr, builder->getPtrTy());
+        
+        // Initialize perturbed variable nodes
+        BasicBlock* pert_init_cond = BasicBlock::Create(*context, "pert_init_cond", current_func);
+        BasicBlock* pert_init_body = BasicBlock::Create(*context, "pert_init_body", current_func);
+        BasicBlock* pert_init_exit = BasicBlock::Create(*context, "pert_init_exit", current_func);
+        
+        Value* pert_init_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "pert_init_idx");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), pert_init_idx);
+        builder->CreateBr(pert_init_cond);
+        
+        builder->SetInsertPoint(pert_init_cond);
+        Value* pert_k = builder->CreateLoad(Type::getInt64Ty(*context), pert_init_idx);
+        Value* pert_k_less_n = builder->CreateICmpULT(pert_k, n);
+        builder->CreateCondBr(pert_k_less_n, pert_init_body, pert_init_exit);
+        
+        builder->SetInsertPoint(pert_init_body);
+        
+        Value* pert_elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_perturbed_vec, pert_k);
+        Value* pert_elem_val = builder->CreateLoad(Type::getDoubleTy(*context), pert_elem_ptr);
+        Value* hess_pert_var_node = createADVariable(pert_elem_val, 0);
+        
+        Value* hess_pert_node_slot = builder->CreateGEP(PointerType::getUnqual(*context), typed_pert_nodes, pert_k);
+        builder->CreateStore(hess_pert_var_node, hess_pert_node_slot);
+        
+        Value* pert_k_next = builder->CreateAdd(pert_k, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(pert_k_next, pert_init_idx);
+        builder->CreateBr(pert_init_cond);
+        
+        builder->SetInsertPoint(pert_init_exit);
+        
+        // Build AD tensor from perturbed nodes
+        Value* pert_ad_tensor_size = ConstantInt::get(Type::getInt64Ty(*context),
+            module->getDataLayout().getTypeAllocSize(tensor_type));
+        Value* pert_ad_tensor_ptr = builder->CreateCall(malloc_func, {pert_ad_tensor_size});
+        Value* typed_pert_ad_tensor = builder->CreatePointerCast(pert_ad_tensor_ptr, builder->getPtrTy());
+        
+        // Set tensor dimensions
+        Value* pert_ad_dims_size = ConstantInt::get(Type::getInt64Ty(*context), sizeof(uint64_t));
+        Value* pert_ad_dims_ptr = builder->CreateCall(malloc_func, {pert_ad_dims_size});
+        Value* typed_pert_ad_dims = builder->CreatePointerCast(pert_ad_dims_ptr, builder->getPtrTy());
+        builder->CreateStore(n, typed_pert_ad_dims);
+        
+        builder->CreateStore(typed_pert_ad_dims,
+            builder->CreateStructGEP(tensor_type, typed_pert_ad_tensor, 0));
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 1),
+            builder->CreateStructGEP(tensor_type, typed_pert_ad_tensor, 1));
+        builder->CreateStore(n,
+            builder->CreateStructGEP(tensor_type, typed_pert_ad_tensor, 3));
+        
+        // Allocate and fill AD tensor elements
+        Value* pert_ad_elems_size = builder->CreateMul(n,
+            ConstantInt::get(Type::getInt64Ty(*context), sizeof(uint64_t)));
+        Value* pert_ad_elems_ptr = builder->CreateCall(malloc_func, {pert_ad_elems_size});
+        Value* typed_pert_ad_elems = builder->CreatePointerCast(pert_ad_elems_ptr, builder->getPtrTy());
+        
+        builder->CreateStore(typed_pert_ad_elems,
+            builder->CreateStructGEP(tensor_type, typed_pert_ad_tensor, 2));
+        
+        // Copy perturbed node pointers into AD tensor
+        BasicBlock* pert_copy_cond = BasicBlock::Create(*context, "pert_copy_cond", current_func);
+        BasicBlock* pert_copy_body = BasicBlock::Create(*context, "pert_copy_body", current_func);
+        BasicBlock* pert_copy_exit = BasicBlock::Create(*context, "pert_copy_exit", current_func);
+        
+        Value* pert_copy_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "pert_copy_idx");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), pert_copy_idx);
+        builder->CreateBr(pert_copy_cond);
+        
+        builder->SetInsertPoint(pert_copy_cond);
+        Value* pert_copy_k = builder->CreateLoad(Type::getInt64Ty(*context), pert_copy_idx);
+        Value* pert_copy_less_n = builder->CreateICmpULT(pert_copy_k, n);
+        builder->CreateCondBr(pert_copy_less_n, pert_copy_body, pert_copy_exit);
+        
+        builder->SetInsertPoint(pert_copy_body);
+        
+        Value* pert_src_slot = builder->CreateGEP(PointerType::getUnqual(*context), typed_pert_nodes, pert_copy_k);
+        Value* pert_src_node = builder->CreateLoad(PointerType::getUnqual(*context), pert_src_slot);
+        Value* pert_node_int = builder->CreatePtrToInt(pert_src_node, Type::getInt64Ty(*context));
+        
+        Value* pert_dst_slot = builder->CreateGEP(Type::getInt64Ty(*context), typed_pert_ad_elems, pert_copy_k);
+        builder->CreateStore(pert_node_int, pert_dst_slot);
+        
+        Value* pert_copy_next = builder->CreateAdd(pert_copy_k, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(pert_copy_next, pert_copy_idx);
+        builder->CreateBr(pert_copy_cond);
+        
+        builder->SetInsertPoint(pert_copy_exit);
+        
+        // Call function with perturbed AD tensor
+        Value* pert_ad_tensor_int = builder->CreatePtrToInt(typed_pert_ad_tensor, Type::getInt64Ty(*context));
+        Value* pert_ad_tensor_tagged = packPtrToTaggedValue(pert_ad_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+        
+        // Set AD mode and tape
+        builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), ad_mode_active);
+        builder->CreateStore(pert_tape, current_ad_tape);
+        
+        Value* pert_output_tagged = builder->CreateCall(func_ptr, {pert_ad_tensor_tagged});
+        
+        // Reset AD mode and tape
+        builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 0), ad_mode_active);
+        builder->CreateStore(ConstantPointerNull::get(PointerType::getUnqual(*context)), current_ad_tape);
+        
+        Value* pert_output_int = unpackInt64FromTaggedValue(pert_output_tagged);
+        Value* pert_output_node = builder->CreateIntToPtr(pert_output_int, PointerType::getUnqual(*context));
+        
+        // Run backward pass
+        codegenBackward(pert_output_node, pert_tape);
+        
+        // Allocate array for perturbed gradient
+        Value* pert_grad_size = builder->CreateMul(n,
+            ConstantInt::get(Type::getInt64Ty(*context), sizeof(double)));
+        Value* pert_grad_ptr = builder->CreateCall(malloc_func, {pert_grad_size});
+        Value* typed_pert_grad = builder->CreatePointerCast(pert_grad_ptr, builder->getPtrTy());
+        
+        // Extract perturbed gradient into array
+        BasicBlock* pert_extract_cond = BasicBlock::Create(*context, "pert_extract_cond", current_func);
+        BasicBlock* pert_extract_body = BasicBlock::Create(*context, "pert_extract_body", current_func);
+        BasicBlock* pert_extract_exit = BasicBlock::Create(*context, "pert_extract_exit", current_func);
+        
+        Value* pert_extract_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "pert_extract_idx");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), pert_extract_idx);
+        builder->CreateBr(pert_extract_cond);
+        
+        builder->SetInsertPoint(pert_extract_cond);
+        Value* extract_i = builder->CreateLoad(Type::getInt64Ty(*context), pert_extract_idx);
+        Value* extract_less_n = builder->CreateICmpULT(extract_i, n);
+        builder->CreateCondBr(extract_less_n, pert_extract_body, pert_extract_exit);
+        
+        builder->SetInsertPoint(pert_extract_body);
+        
+        // Get gradient from variable node i
+        Value* hess_pert_var_slot = builder->CreateGEP(PointerType::getUnqual(*context), typed_pert_nodes, extract_i);
+        Value* hess_pert_var_node_load = builder->CreateLoad(PointerType::getUnqual(*context), hess_pert_var_slot);
+        Value* hess_pert_grad_i = loadNodeGradient(hess_pert_var_node_load);
+        
+        // Store in perturbed gradient array
+        Value* hess_pert_grad_store_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_pert_grad, extract_i);
+        builder->CreateStore(hess_pert_grad_i, hess_pert_grad_store_ptr);
+        
+        Value* extract_next = builder->CreateAdd(extract_i, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(extract_next, pert_extract_idx);
+        builder->CreateBr(pert_extract_cond);
+        
+        builder->SetInsertPoint(pert_extract_exit);
+        
+        // Step 3: Compute H[i,j] for all rows i
+        BasicBlock* hess_row_cond = BasicBlock::Create(*context, "hess_row_cond", current_func);
+        BasicBlock* hess_row_body = BasicBlock::Create(*context, "hess_row_body", current_func);
+        BasicBlock* hess_row_exit = BasicBlock::Create(*context, "hess_row_exit", current_func);
+        
+        Value* hess_i_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "hess_i_row");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), hess_i_idx);
+        builder->CreateBr(hess_row_cond);
+        
+        builder->SetInsertPoint(hess_row_cond);
+        Value* hess_i = builder->CreateLoad(Type::getInt64Ty(*context), hess_i_idx);
+        Value* hess_i_less_n = builder->CreateICmpULT(hess_i, n);
+        builder->CreateCondBr(hess_i_less_n, hess_row_body, hess_row_exit);
+        
+        builder->SetInsertPoint(hess_row_body);
+        
+        // Load base_grad[i]
+        Value* base_grad_i_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_base_grad, hess_i);
         Value* base_grad_i = builder->CreateLoad(Type::getDoubleTy(*context), base_grad_i_ptr);
         
-        // For second derivative, we would perturb component j and recompute gradient[i]
-        // This requires creating a perturbed input vector
-        // For production: use numerical approximation H[i,j] = (∇ᵢf(v+εeⱼ) - ∇ᵢf(v))/ε
+        // Load pert_grad[i]
+        Value* hess_pert_grad_i_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_pert_grad, hess_i);
+        Value* hess_pert_grad_i_val = builder->CreateLoad(Type::getDoubleTy(*context), hess_pert_grad_i_ptr);
         
-        // Simplified: Use analytical second derivative for quadratic forms
-        // For f(v) = v·v, Hessian is 2I (diagonal of 2s)
-        // For general case, properly compute using gradient perturbation
+        // Compute H[i,j] = (pert_grad[i] - base_grad[i]) / epsilon
+        Value* grad_diff = builder->CreateFSub(hess_pert_grad_i_val, base_grad_i);
+        Value* second_deriv = builder->CreateFDiv(grad_diff, epsilon);
         
-        Value* is_diagonal = builder->CreateICmpEQ(hess_i, hess_j);
-        Value* second_deriv = builder->CreateSelect(is_diagonal,
-            ConstantFP::get(Type::getDoubleTy(*context), 2.0),
-            ConstantFP::get(Type::getDoubleTy(*context), 0.0));
-        
-        // Store H[i,j]
+        // Store H[i,j] in Hessian matrix (row-major: i*n + j)
         Value* hess_linear_idx = builder->CreateMul(hess_i, n);
         hess_linear_idx = builder->CreateAdd(hess_linear_idx, hess_j);
+        Value* hess_store_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_hess_elems, hess_linear_idx);
+        builder->CreateStore(second_deriv, hess_store_ptr);
         
-        Value* hess_elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context),
-            typed_hess_elems, hess_linear_idx);
-        builder->CreateStore(second_deriv, hess_elem_ptr);
+        Value* hess_i_next = builder->CreateAdd(hess_i, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(hess_i_next, hess_i_idx);
+        builder->CreateBr(hess_row_cond);
         
-        Value* hess_next_j = builder->CreateAdd(hess_j, ConstantInt::get(Type::getInt64Ty(*context), 1));
-        builder->CreateStore(hess_next_j, hess_j_idx);
-        builder->CreateBr(hess_inner_cond);
+        builder->SetInsertPoint(hess_row_exit);
         
-        builder->SetInsertPoint(hess_inner_exit);
-        Value* hess_next_i = builder->CreateAdd(hess_i, ConstantInt::get(Type::getInt64Ty(*context), 1));
-        builder->CreateStore(hess_next_i, hess_i_idx);
-        builder->CreateBr(hess_outer_cond);
+        // Reset tape for next column
+        builder->CreateCall(arena_tape_reset_func, {pert_tape});
         
-        builder->SetInsertPoint(hess_outer_exit);
+        // Next column
+        Value* hess_j_next = builder->CreateAdd(hess_j, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(hess_j_next, hess_j_idx);
+        builder->CreateBr(hess_col_cond);
+        
+        builder->SetInsertPoint(hess_col_exit);
         
         eshkol_info("Hessian computation complete");
         // Tag as TENSOR_PTR for proper display handling
         Value* hess_result_int = builder->CreatePtrToInt(typed_hess_ptr, Type::getInt64Ty(*context));
         return packPtrToTaggedValue(hess_result_int, ESHKOL_VALUE_TENSOR_PTR);
+    }
+    // ===== N-DIMENSIONAL NULL VECTOR HELPER =====
+    // Create n-dimensional null vector (all zeros) for error handling
+    // Handles ANY dimension at runtime - NEVER hardcode dimensions!
+    Value* createNullVectorTensor(Value* dimension) {
+        Function* malloc_func = function_table["malloc"];
+        if (!malloc_func) {
+            eshkol_error("malloc not found for null vector creation");
+            return ConstantInt::get(Type::getInt64Ty(*context), 0);
+        }
+        
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        
+        // Allocate tensor structure
+        Value* tensor_size = ConstantInt::get(Type::getInt64Ty(*context),
+            module->getDataLayout().getTypeAllocSize(tensor_type));
+        Value* tensor_ptr = builder->CreateCall(malloc_func, {tensor_size});
+        Value* typed_tensor_ptr = builder->CreatePointerCast(tensor_ptr, builder->getPtrTy());
+        
+        // Allocate dimensions array (1D vector of given dimension)
+        Value* dims_size = ConstantInt::get(Type::getInt64Ty(*context), sizeof(uint64_t));
+        Value* dims_ptr = builder->CreateCall(malloc_func, {dims_size});
+        Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
+        builder->CreateStore(dimension, typed_dims_ptr);  // Runtime dimension!
+        
+        // Store tensor metadata
+        builder->CreateStore(typed_dims_ptr,
+            builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 0));  // dimensions
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 1),
+            builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 1));  // num_dimensions = 1
+        builder->CreateStore(dimension,
+            builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 3));  // total_elements = dimension
+        
+        // Allocate elements array (dimension * sizeof(double))
+        Value* elems_size = builder->CreateMul(dimension,
+            ConstantInt::get(Type::getInt64Ty(*context), sizeof(double)));
+        Value* elems_ptr = builder->CreateCall(malloc_func, {elems_size});
+        Value* typed_elems_ptr = builder->CreatePointerCast(elems_ptr, builder->getPtrTy());
+        
+        // Zero all elements using RUNTIME LOOP (n-dimensional!)
+        BasicBlock* zero_cond = BasicBlock::Create(*context, "null_vec_zero_cond", current_func);
+        BasicBlock* zero_body = BasicBlock::Create(*context, "null_vec_zero_body", current_func);
+        BasicBlock* zero_exit = BasicBlock::Create(*context, "null_vec_zero_exit", current_func);
+        
+        Value* idx_ptr = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "zero_idx");
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), idx_ptr);
+        builder->CreateBr(zero_cond);
+        
+        builder->SetInsertPoint(zero_cond);
+        Value* idx = builder->CreateLoad(Type::getInt64Ty(*context), idx_ptr);
+        Value* idx_less = builder->CreateICmpULT(idx, dimension);
+        builder->CreateCondBr(idx_less, zero_body, zero_exit);
+        
+        builder->SetInsertPoint(zero_body);
+        Value* elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_elems_ptr, idx);
+        builder->CreateStore(ConstantFP::get(Type::getDoubleTy(*context), 0.0), elem_ptr);
+        Value* next_idx = builder->CreateAdd(idx, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(next_idx, idx_ptr);
+        builder->CreateBr(zero_cond);
+        
+        builder->SetInsertPoint(zero_exit);
+        
+        builder->CreateStore(typed_elems_ptr,
+            builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 2));  // elements
+        
+        // Return tensor pointer as i64
+        return builder->CreatePtrToInt(typed_tensor_ptr, Type::getInt64Ty(*context));
+    }
+    
+    
+    // Helper: Extract J[row,col] from Jacobian's nested list structure
+    // Jacobian tensor elements are int64 list pointers (rows), not doubles!
+    Value* extractJacobianElement(Value* jacobian_ptr, Value* row_idx, Value* col_idx, Value* n) {
+        // Get Jacobian elements array (contains list pointers)
+        Value* jac_elements_field = builder->CreateStructGEP(tensor_type, jacobian_ptr, 2);
+        Value* jac_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), jac_elements_field);
+        Value* typed_jac_elements = builder->CreatePointerCast(jac_elements_ptr, builder->getPtrTy());
+        
+        // Load row list pointer at row_idx
+        Value* row_ptr_slot = builder->CreateGEP(Type::getInt64Ty(*context), typed_jac_elements, row_idx);
+        Value* row_list_int = builder->CreateLoad(Type::getInt64Ty(*context), row_ptr_slot);
+        
+        // Traverse row list to column position col_idx
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* traverse_cond = BasicBlock::Create(*context, "jac_traverse_cond", current_func);
+        BasicBlock* traverse_body = BasicBlock::Create(*context, "jac_traverse_body", current_func);
+        BasicBlock* traverse_exit = BasicBlock::Create(*context, "jac_traverse_exit", current_func);
+        
+        Value* current_list = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "current_list");
+        Value* current_col = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "current_col");
+        builder->CreateStore(row_list_int, current_list);
+        builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), current_col);
+        builder->CreateBr(traverse_cond);
+        
+        builder->SetInsertPoint(traverse_cond);
+        Value* col = builder->CreateLoad(Type::getInt64Ty(*context), current_col);
+        Value* list_ptr = builder->CreateLoad(Type::getInt64Ty(*context), current_list);
+        Value* col_matches = builder->CreateICmpEQ(col, col_idx);
+        Value* list_not_null = builder->CreateICmpNE(list_ptr, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        Value* continue_traverse = builder->CreateAnd(builder->CreateNot(col_matches), list_not_null);
+        builder->CreateCondBr(continue_traverse, traverse_body, traverse_exit);
+        
+        builder->SetInsertPoint(traverse_body);
+        // Move to cdr
+        Value* cons_ptr = builder->CreateIntToPtr(list_ptr, builder->getPtrTy());
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* next_list = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        builder->CreateStore(next_list, current_list);
+        Value* next_col = builder->CreateAdd(col, ConstantInt::get(Type::getInt64Ty(*context), 1));
+        builder->CreateStore(next_col, current_col);
+        builder->CreateBr(traverse_cond);
+        
+        builder->SetInsertPoint(traverse_exit);
+        Value* final_list = builder->CreateLoad(Type::getInt64Ty(*context), current_list);
+        
+        // Extract car (the double value) from final position
+        Value* final_cons = builder->CreateIntToPtr(final_list, builder->getPtrTy());
+        Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0);
+        Value* elem_tagged = extractCarAsTaggedValue(final_list);
+        Value* elem_double = unpackDoubleFromTaggedValue(elem_tagged);
+        
+        return elem_double;
     }
     
     // ===== END PHASE 3 OPERATORS =====
@@ -9987,14 +10743,8 @@ private:
         
         builder->SetInsertPoint(sum_loop_body);
         
-        // Calculate diagonal index: i*n + i
-        Value* linear_idx = builder->CreateMul(i, n);
-        linear_idx = builder->CreateAdd(linear_idx, i);
-        
-        // Load J[i,i]
-        Value* elem_ptr = builder->CreateGEP(Type::getDoubleTy(*context),
-            typed_elements_ptr, linear_idx);
-        Value* diagonal_elem = builder->CreateLoad(Type::getDoubleTy(*context), elem_ptr);
+        // Extract J[i,i] from nested list structure (not direct double access!)
+        Value* diagonal_elem = extractJacobianElement(jacobian_ptr, i, i, n);
         
         // Add to accumulator
         Value* current_div = builder->CreateLoad(Type::getDoubleTy(*context), divergence_acc);
@@ -10064,10 +10814,15 @@ private:
         
         builder->CreateCondBr(n_is_three, dim_valid, dim_invalid);
         
-        // Invalid dimension: log error and create null result
+        // Invalid dimension: log error and create null 3D vector (not scalar!)
         builder->SetInsertPoint(dim_invalid);
         eshkol_error("Curl only defined for 3D vector fields");
-        Value* null_result = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        Value* null_result_int = createNullVectorTensor(
+            ConstantInt::get(Type::getInt64Ty(*context), 3)
+        );
+        // Tag as TENSOR_PTR for proper display
+        Value* null_result = packPtrToTaggedValue(null_result_int, ESHKOL_VALUE_TENSOR_PTR);
+        BasicBlock* dim_invalid_exit = builder->GetInsertBlock(); // Capture actual exit block!
         builder->CreateBr(curl_done);
         
         // Valid dimension: compute curl
@@ -10088,66 +10843,72 @@ private:
         // CRITICAL FIX: Unpack tensor pointer from tagged_value
         Value* jacobian_ptr_int = safeExtractInt64(jacobian_tagged);
         
-        // CRITICAL FIX: Add runtime null check - jacobian may return 0 if function output is invalid
-        Value* jac_is_null = builder->CreateICmpEQ(jacobian_ptr_int,
-            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        // CRITICAL FIX: Check type tag (TENSOR_PTR), not pointer value!
+        // Jacobian can return valid zero tensor, so pointer != 0 check is wrong
+        Value* jacobian_type = getTaggedValueType(jacobian_tagged);
+        Value* jacobian_base_type = builder->CreateAnd(jacobian_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        Value* jac_is_tensor = builder->CreateICmpEQ(jacobian_base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_TENSOR_PTR));
         
         BasicBlock* jac_valid = BasicBlock::Create(*context, "curl_jac_valid", current_func);
         BasicBlock* jac_invalid = BasicBlock::Create(*context, "curl_jac_invalid", current_func);
         
-        builder->CreateCondBr(jac_is_null, jac_invalid, jac_valid);
+        // If IS tensor, proceed; if NOT tensor, error path
+        builder->CreateCondBr(jac_is_tensor, jac_valid, jac_invalid);
         
-        // Invalid jacobian: return null curl vector instead of crashing
+        // Invalid jacobian: return null 3D vector (not scalar!)
         builder->SetInsertPoint(jac_invalid);
         eshkol_error("Curl: Jacobian returned null, returning null vector");
-        Value* null_curl = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        Value* null_curl_int = createNullVectorTensor(
+            ConstantInt::get(Type::getInt64Ty(*context), 3)
+        );
+        // Tag as TENSOR_PTR for proper display
+        Value* null_curl = packPtrToTaggedValue(null_curl_int, ESHKOL_VALUE_TENSOR_PTR);
+        BasicBlock* jac_invalid_exit = builder->GetInsertBlock(); // Capture actual exit block!
         builder->CreateBr(curl_done);
         
         // Valid jacobian: continue with normal computation
         builder->SetInsertPoint(jac_valid);
         
         Value* jacobian_ptr = builder->CreateIntToPtr(jacobian_ptr_int, builder->getPtrTy());
+        Value* n_const = ConstantInt::get(Type::getInt64Ty(*context), 3);
         
-        // Get Jacobian elements
-        Value* jac_elements_field = builder->CreateStructGEP(tensor_type, jacobian_ptr, 2);
-        Value* jac_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), jac_elements_field);
-        Value* typed_jac_elements = builder->CreatePointerCast(jac_elements_ptr, builder->getPtrTy());
-        
-        // Extract specific partial derivatives
+        // Extract specific partial derivatives from Jacobian's nested list structure
         // J[i,j] = ∂Fᵢ/∂xⱼ (row i, column j)
-        // For 3×3 matrix, linear index = i*3 + j
+        // Jacobian elements are LIST POINTERS (rows), not doubles!
         
-        // curl_x = ∂F₃/∂x₂ - ∂F₂/∂x₃ = J[2,1] - J[1,2]
-        Value* j21_idx = ConstantInt::get(Type::getInt64Ty(*context), 2*3 + 1); // row 2, col 1
-        Value* j21_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j21_idx);
-        Value* dF3_dx2 = builder->CreateLoad(Type::getDoubleTy(*context), j21_ptr);
-        
-        Value* j12_idx = ConstantInt::get(Type::getInt64Ty(*context), 1*3 + 2); // row 1, col 2
-        Value* j12_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j12_idx);
-        Value* dF2_dx3 = builder->CreateLoad(Type::getDoubleTy(*context), j12_ptr);
-        
+        // curl_x = ∂F₃/∂y - ∂F₂/∂z = J[2,1] - J[1,2]
+        Value* dF3_dx2 = extractJacobianElement(jacobian_ptr,
+            ConstantInt::get(Type::getInt64Ty(*context), 2),  // row 2
+            ConstantInt::get(Type::getInt64Ty(*context), 1),  // col 1
+            n_const);
+        Value* dF2_dx3 = extractJacobianElement(jacobian_ptr,
+            ConstantInt::get(Type::getInt64Ty(*context), 1),  // row 1
+            ConstantInt::get(Type::getInt64Ty(*context), 2),  // col 2
+            n_const);
         Value* curl_x = builder->CreateFSub(dF3_dx2, dF2_dx3);
         
-        // curl_y = ∂F₁/∂x₃ - ∂F₃/∂x₁ = J[0,2] - J[2,0]
-        Value* j02_idx = ConstantInt::get(Type::getInt64Ty(*context), 0*3 + 2); // row 0, col 2
-        Value* j02_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j02_idx);
-        Value* dF1_dx3 = builder->CreateLoad(Type::getDoubleTy(*context), j02_ptr);
-        
-        Value* j20_idx = ConstantInt::get(Type::getInt64Ty(*context), 2*3 + 0); // row 2, col 0
-        Value* j20_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j20_idx);
-        Value* dF3_dx1 = builder->CreateLoad(Type::getDoubleTy(*context), j20_ptr);
-        
+        // curl_y = ∂F₁/∂z - ∂F₃/∂x = J[0,2] - J[2,0]
+        Value* dF1_dx3 = extractJacobianElement(jacobian_ptr,
+            ConstantInt::get(Type::getInt64Ty(*context), 0),  // row 0
+            ConstantInt::get(Type::getInt64Ty(*context), 2),  // col 2
+            n_const);
+        Value* dF3_dx1 = extractJacobianElement(jacobian_ptr,
+            ConstantInt::get(Type::getInt64Ty(*context), 2),  // row 2
+            ConstantInt::get(Type::getInt64Ty(*context), 0),  // col 0
+            n_const);
         Value* curl_y = builder->CreateFSub(dF1_dx3, dF3_dx1);
         
-        // curl_z = ∂F₂/∂x₁ - ∂F₁/∂x₂ = J[1,0] - J[0,1]
-        Value* j10_idx = ConstantInt::get(Type::getInt64Ty(*context), 1*3 + 0); // row 1, col 0
-        Value* j10_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j10_idx);
-        Value* dF2_dx1 = builder->CreateLoad(Type::getDoubleTy(*context), j10_ptr);
-        
-        Value* j01_idx = ConstantInt::get(Type::getInt64Ty(*context), 0*3 + 1); // row 0, col 1
-        Value* j01_ptr = builder->CreateGEP(Type::getDoubleTy(*context), typed_jac_elements, j01_idx);
-        Value* dF1_dx2 = builder->CreateLoad(Type::getDoubleTy(*context), j01_ptr);
-        
+        // curl_z = ∂F₂/∂x - ∂F₁/∂y = J[1,0] - J[0,1]
+        Value* dF2_dx1 = extractJacobianElement(jacobian_ptr,
+            ConstantInt::get(Type::getInt64Ty(*context), 1),  // row 1
+            ConstantInt::get(Type::getInt64Ty(*context), 0),  // col 0
+            n_const);
+        Value* dF1_dx2 = extractJacobianElement(jacobian_ptr,
+            ConstantInt::get(Type::getInt64Ty(*context), 0),  // row 0
+            ConstantInt::get(Type::getInt64Ty(*context), 1),  // col 1
+            n_const);
         Value* curl_z = builder->CreateFSub(dF2_dx1, dF1_dx2);
         
         // Create result 3D vector
@@ -10200,15 +10961,18 @@ private:
         builder->CreateStore(curl_z, elem2_ptr);
         
         eshkol_info("Curl computation complete, returning 3D vector");
-        Value* curl_result = builder->CreatePtrToInt(typed_result_ptr, Type::getInt64Ty(*context));
+        Value* curl_result_int = builder->CreatePtrToInt(typed_result_ptr, Type::getInt64Ty(*context));
+        // Tag as TENSOR_PTR for proper display and type consistency
+        Value* curl_result = packPtrToTaggedValue(curl_result_int, ESHKOL_VALUE_TENSOR_PTR);
         builder->CreateBr(curl_done);
         BasicBlock* dim_valid_exit = builder->GetInsertBlock(); // Capture actual predecessor!
         
-        // Merge valid and invalid paths
+        // Merge all paths with tagged_value results (type-consistent!)
         builder->SetInsertPoint(curl_done);
-        PHINode* result_phi = builder->CreatePHI(Type::getInt64Ty(*context), 2, "curl_result");
-        result_phi->addIncoming(null_result, dim_invalid);
-        result_phi->addIncoming(curl_result, dim_valid_exit); // Use actual predecessor
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "curl_result");
+        result_phi->addIncoming(null_result, dim_invalid_exit);   // Already tagged
+        result_phi->addIncoming(null_curl, jac_invalid_exit);     // Already tagged
+        result_phi->addIncoming(curl_result, dim_valid_exit);
         
         return result_phi;
     }
@@ -10360,11 +11124,14 @@ private:
         Value* gradient_ptr_int = safeExtractInt64(gradient_tagged);
         
         // Step 2: Get direction vector
-        Value* direction_ptr_int = codegenAST(op->directional_deriv_op.direction);
-        if (!direction_ptr_int) {
+        Value* direction_val = codegenAST(op->directional_deriv_op.direction);
+        if (!direction_val) {
             eshkol_error("Failed to evaluate direction vector");
             return nullptr;
         }
+        
+        // CRITICAL FIX: Extract i64 from tagged_value before IntToPtr
+        Value* direction_ptr_int = safeExtractInt64(direction_val);
         
         // Step 3: Compute dot product: ∇f · v
         // Use class member tensor_type (shared by all tensor operations)
@@ -13895,3 +14662,4 @@ void eshkol_dispose_llvm_module(LLVMModuleRef module_ref) {
 } // extern "C"
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED
+
