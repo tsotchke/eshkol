@@ -1,0 +1,13 @@
+;; Test Jacobian matrix display fix
+;; Should show #((row1) (row2)) not #(flat elements)
+
+(define F (lambda (v)
+  (vector 
+    (+ (* 3.0 (vref v 0)) (* 2.0 (vref v 1)))
+    (+ (* 4.0 (vref v 0)) (* 0.0 (vref v 1))))))
+
+(display (jacobian F (vector 1.0 1.0)))
+(newline)
+
+;; Expected: #((3 2) (4 0)) showing 2x2 matrix structure
+;; Bug was: #(3 2 4 0) showing flat array

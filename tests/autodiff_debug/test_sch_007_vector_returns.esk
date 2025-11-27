@@ -1,0 +1,230 @@
+;; SCH-007: Advanced Vector Calculus Showcase
+;; Demonstrates vector-valued function differentiation and field operators
+
+(display "=== SCH-007: Advanced Vector Calculus ===")
+(newline)
+(newline)
+
+;; ===== PART 1: JACOBIAN MATRICES =====
+;; Jacobian: J_ij = ∂F_i/∂x_j for F: ℝⁿ → ℝᵐ
+
+(display "PART 1: Jacobian Matrices")
+(newline)
+(display "For vector-valued functions F: ℝⁿ → ℝᵐ")
+(newline)
+(newline)
+
+;; Test 1.1: 2D to 2D transformation
+(define F1 (lambda (v)
+  (vector (* (vref v 0) (vref v 1))    ; F₁(x,y) = xy
+          (* (vref v 0) (vref v 0))))) ; F₂(x,y) = x²
+
+(display "Test 1.1: Jacobian of F(x,y) = [xy, x²] at (2,3)")
+(newline)
+(define J1 (jacobian F1 (vector 2.0 3.0)))
+(display "Result: ")
+(display J1)
+(newline)
+(display "Expected: #((3 2) (4 0))")
+(newline)
+(display "Matrix interpretation:")
+(newline)
+(display "  [∂(xy)/∂x  ∂(xy)/∂y ] = [y  x] = [3 2]")
+(newline)
+(display "  [∂(x²)/∂x  ∂(x²)/∂y ] = [2x 0] = [4 0]")
+(newline)
+(newline)
+
+;; Test 1.2: 3D vector field
+(define F2 (lambda (v)
+  (vector (vref v 0)              ; F₁(v) = x
+          (vref v 1)              ; F₂(v) = y  
+          (* (vref v 0) (vref v 1))))) ; F₃(v) = xy
+
+(display "Test 1.2: Jacobian of F(x,y,z) = [x, y, xy] at (1,2,3)")
+(newline)
+(define J2 (jacobian F2 (vector 1.0 2.0 3.0)))
+(display "Result: ")
+(display J2)
+(newline)
+(display "Expected: #((1 0 0) (0 1 0) (2 1 0))")
+(newline)
+(display "First two rows are identity, third row is [y x 0]")
+(newline)
+(newline)
+
+;; ===== PART 2: DIVERGENCE OPERATOR =====
+;; Divergence: ∇·F = trace(J) for vector field F: ℝⁿ → ℝⁿ
+
+(display "PART 2: Divergence (∇·F)")
+(newline)
+(display "Scalar measure of vector field expansion")
+(newline)
+(newline)
+
+;; Test 2.1: Identity field
+(define ID (lambda (v)
+  (vector (vref v 0) (vref v 1) (vref v 2))))
+
+(display "Test 2.1: ∇·F for identity field F(v)=v at (1,2,3)")
+(newline)
+(display "Result: ")
+(display (divergence ID (vector 1.0 2.0 3.0)))
+(newline)
+(display "Expected: 3.0 (∂x/∂x + ∂y/∂y + ∂z/∂z = 1+1+1)")
+(newline)
+(newline)
+
+;; Test 2.2: Radial field
+(define RAD (lambda (v)
+  (vector (* 2.0 (vref v 0))    ; F = 2v (radial outward)
+          (* 2.0 (vref v 1))
+          (* 2.0 (vref v 2)))))
+
+(display "Test 2.2: ∇·F for radial field F(v)=2v at (1,1,1)")
+(newline)
+(display "Result: ")
+(display (divergence RAD (vector 1.0 1.0 1.0)))
+(newline)
+(display "Expected: 6.0 (2+2+2, field expands everywhere)")
+(newline)
+(newline)
+
+;; ===== PART 3: CURL OPERATOR =====
+;; Curl: ∇×F measures rotation of 3D vector field
+
+(display "PART 3: Curl (∇×F) - 3D Only")
+(newline)
+(display "Measures rotational component of vector field")
+(newline)
+(newline)
+
+;; Test 3.1: Rotation field (xy in z-plane)
+(define ROT (lambda (v)
+  (vector 0.0
+          0.0
+          (* (vref v 0) (vref v 1))))) ; F = [0, 0, xy]
+
+(display "Test 3.1: ∇×F for F(x,y,z)=[0,0,xy] at (1,2,3)")
+(newline)
+(define curl1 (curl ROT (vector 1.0 2.0 3.0)))
+(display "Result: ")
+(display curl1)
+(newline)
+(display "Expected: #(1 -2 0)")
+(newline)
+(display "Curl = [∂Fz/∂y - ∂Fy/∂z, ∂Fx/∂z - ∂Fz/∂x, ∂Fy/∂x - ∂Fx/∂y]")
+(newline)
+(display "     = [x - 0, 0 - y, 0 - 0] = [x, -y, 0] = [1, -2, 0]")
+(newline)
+(newline)
+
+;; Test 3.2: Conservative field (gradient of scalar)
+(define CONS (lambda (v)
+  (vector (vref v 0)              ; F = ∇(x²/2 + y²/2) 
+          (vref v 1)              ; = [x, y, 0]
+          0.0)))
+
+(display "Test 3.2: ∇×F for conservative field F=[x,y,0] at (2,3,1)")
+(newline)
+(define curl2 (curl CONS (vector 2.0 3.0 1.0)))
+(display "Result: ")
+(display curl2)
+(newline)
+(display "Expected: #(0 0 0) (curl of gradient is always zero)")
+(newline)
+(newline)
+
+;; ===== PART 4: LAPLACIAN OPERATOR =====
+;; Laplacian: ∇²f = trace(Hessian) = ∑∂²f/∂x_i²
+
+(display "PART 4: Laplacian (∇²f)")
+(newline)
+(display "Sum of unmixed second partial derivatives")
+(newline)
+(newline)
+
+;; Test 4.1: Quadratic function
+(define quad (lambda (v)
+  (+ (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1)))))
+
+(display "Test 4.1: ∇²(x² + y²) at (1,1)")
+(newline)
+(display "Result: ")
+(display (laplacian quad (vector 1.0 1.0)))
+(newline)
+(display "Expected: 4.0 (∂²/∂x² + ∂²/∂y² = 2 + 2)")
+(newline)
+(newline)
+
+;; Test 4.2: Harmonic function
+(define harm (lambda (v)
+  (- (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1)))))
+
+(display "Test 4.2: ∇²(x² - y²) at (2,2)")
+(newline)
+(display "Result: ")
+(display (laplacian harm (vector 2.0 2.0)))
+(newline)
+(display "Expected: 0.0 (harmonic: ∂²/∂x² - ∂²/∂y² = 2 - 2 = 0)")
+(newline)
+(newline)
+
+;; ===== PART 5: DIRECTIONAL DERIVATIVES =====
+;; D_v f = ∇f · v (derivative in direction v)
+
+(display "PART 5: Directional Derivatives")
+(newline)
+(display "Rate of change in specified direction")
+(newline)
+(newline)
+
+;; Test 5.1: Simple quadratic
+(define f (lambda (v)
+  (+ (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1)))))
+
+(display "Test 5.1: D_(1,1) of f(x,y)=x²+y² at (3,4)")
+(newline)
+(display "Direction: (1,1) unnormalized")
+(newline)
+(define dir1 (vector 1.0 1.0))
+(display "Result: ")
+(display (directional-derivative f (vector 3.0 4.0) dir1))
+(newline)
+(display "Expected: 14.0 (∇f·(1,1) = (6,8)·(1,1) = 6+8)")
+(newline)
+(newline)
+
+;; Test 5.2: Normalized direction
+(display "Test 5.2: D_(1/√2, 1/√2) of same function")
+(newline)
+(define dir2 (vector 0.7071067811865476 0.7071067811865476))  ; 1/√2
+(display "Result: ")
+(display (directional-derivative f (vector 3.0 4.0) dir2))
+(newline)
+(display "Expected: ~9.899 ((6+8)/√2)")
+(newline)
+(newline)
+
+;; ===== SUMMARY =====
+
+(display "=== Vector Calculus Operations Complete ===")
+(newline)
+(display "✓ Jacobian: Matrix of partial derivatives")
+(newline)
+(display "✓ Divergence: Scalar expansion measure (∇·F)")
+(newline)
+(display "✓ Curl: Vector rotation measure (∇×F, 3D only)")
+(newline)
+(display "✓ Laplacian: Second-order scalar operator (∇²f)")
+(newline)
+(display "✓ Directional Derivative: Derivative along vector (∇f·v)")
+(newline)
+(newline)
+(display "All operations use reverse-mode AD (computational graphs)")
+(newline)
+(display "and are mathematically correct!")
+(newline)

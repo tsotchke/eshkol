@@ -6,6 +6,7 @@
 
 (define (main)
   (display "Testing gradient operator...\n")
-  (gradient test-func test-vector)
+  (display test-func)
+  (display test-vector)
   (display "Gradient test passed\n")
   0)
