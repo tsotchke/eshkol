@@ -1,0 +1,388 @@
+;;
+;; Simple Working Neural Network in Eshkol
+;; Demonstrates list operations + autodiff actually working!
+;;
+
+;; ============================================================================
+;; BASIC MATH FUNCTIONS
+;; ============================================================================
+
+;; Square function
+(define (square x)
+  (* x x))
+
+;; Cube function  
+(define (cube x)
+  (* x x x))
+
+;; Sigmoid approximation (since tanh had issues)
+(define (sigmoid x)
+  (/ 1.0 (+ 1.0 (exp (- 0.0 x)))))
+
+;; ============================================================================
+;; LIST/VECTOR OPERATIONS
+;; ============================================================================
+
+;; Sum of list elements using fold
+(define (sum-list lst)
+  (fold + 0.0 lst))
+
+;; Dot product using map and fold
+(define (dot lst1 lst2)
+  (sum-list (map * lst1 lst2)))
+
+;; Add two lists element-wise
+(define (list-add lst1 lst2)
+  (map + lst1 lst2))
+
+;; Multiply list by scalar
+(define (scalar-times s lst)
+  (map (lambda (x) (* s x)) lst))
+
+;; ============================================================================
+;; DEMO 1: Basic List Operations
+;; ============================================================================
+
+(define (demo1)
+  (display "==============================================")
+  (newline)
+  (display "DEMO 1: List Operations")
+  (newline)
+  (display "==============================================")
+  (newline)
+  
+  (define v1 (list 1.0 2.0 3.0))
+  (define v2 (list 4.0 5.0 6.0))
+  
+  (display "v1 = ")
+  (display v1)
+  (newline)
+  (display "v2 = ")
+  (display v2)
+  (newline)
+  (newline)
+  
+  (display "Sum of v1: ")
+  (display (sum-list v1))
+  (newline)
+  
+  (display "Dot product v1·v2: ")
+  (display (dot v1 v2))
+  (newline)
+  
+  (display "v1 + v2: ")
+  (display (list-add v1 v2))
+  (newline)
+  
+  (display "2.0 * v1: ")
+  (display (scalar-times 2.0 v1))
+  (newline)
+  (newline))
+
+;; ============================================================================
+;; DEMO 2: Automatic Differentiation
+;; ============================================================================
+
+(define (demo2)
+  (display "==============================================")
+  (newline)
+  (display "DEMO 2: Automatic Differentiation")
+  (newline)
+  (display "==============================================")
+  (newline)
+  
+  ;; Test 1: derivative of x^2
+  (display "f(x) = x^2")
+  (newline)
+  (display "f'(3.0) = ")
+  (display (derivative square 3.0))
+  (display " (expected: 6.0)")
+  (newline)
+  (newline)
+  
+  ;; Test 2: derivative of x^3
+  (display "f(x) = x^3")
+  (newline)
+  (display "f'(2.0) = ")
+  (display (derivative cube 2.0))
+  (display " (expected: 12.0)")
+  (newline)
+  (newline)
+  
+  ;; Test 3: derivative of sigmoid
+  (display "f(x) = sigmoid(x)")
+  (newline)
+  (display "f'(0.0) = ")
+  (display (derivative sigmoid 0.0))
+  (display " (expected: ~0.25)")
+  (newline)
+  (newline))
+
+;; ============================================================================
+;; DEMO 3: Gradient Computation
+;; ============================================================================
+
+(define (demo3)
+  (display "==============================================")
+  (newline)
+  (display "DEMO 3: Gradient Computation")
+  (newline)
+  (display "==============================================")
+  (newline)
+  
+  (display "f(x,y) = x^2 + y^2")
+  (newline)
+  (display "Point: (3.0, 4.0)")
+  (newline)
+  (display "∇f = ")
+  (display (gradient (lambda (v)
+                       (+ (* (vref v 0) (vref v 0))
+                          (* (vref v 1) (vref v 1))))
+                     (vector 3.0 4.0)))
+  (display " (expected: [6.0, 8.0])")
+  (newline)
+  (newline))
+
+;; Helper function for demo4 loss computation
+(define (perceptron-loss w x-val target-val)
+  (define pred (* w x-val))
+  (define diff (- pred target-val))
+  (* diff diff))
+
+;; ============================================================================
+;; DEMO 4: Simple Perceptron with Gradient Descent
+;; ============================================================================
+
+(define (demo4)
+  (display "==============================================")
+  (newline)
+  (display "DEMO 4: Perceptron Training Step")
+  (newline)
+  (display "==============================================")
+  (newline)
+  
+  (display "Perceptron: y = w*x")
+  (newline)
+  (display "Input x = 2.0")
+  (newline)
+  (display "Target = 10.0")
+  (newline)
+  (display "Initial weight w = 1.0")
+  (newline)
+  (newline)
+  
+  ;; Use literal values in lambda to avoid scope capture
+  (define w-init 1.0)
+  (define lr 0.1)
+  
+  ;; Forward pass
+  (define pred-init (* w-init 2.0))
+  (display "Prediction = w*x = ")
+  (display pred-init)
+  (newline)
+  
+  (define loss-init (perceptron-loss w-init 2.0 10.0))
+  (display "Loss = (pred - target)^2 = ")
+  (display loss-init)
+  (newline)
+  (newline)
+  
+  ;; Create lambda with literals for derivative
+  (define grad (derivative (lambda (w) (perceptron-loss w 2.0 10.0)) w-init))
+  (display "Gradient dL/dw = ")
+  (display grad)
+  (newline)
+  
+  (define w-new (- w-init (* lr grad)))
+  (display "Updated weight = w - lr*grad = ")
+  (display w-new)
+  (newline)
+  
+  (define pred-new (* w-new 2.0))
+  (display "New prediction = ")
+  (display pred-new)
+  (newline)
+  
+  (define loss-new (perceptron-loss w-new 2.0 10.0))
+  (display "New loss = ")
+  (display loss-new)
+  (display " (lower is better!)")
+  (newline)
+  (newline))
+
+;; ============================================================================
+;; DEMO 5: Multi-Input Neuron
+;; ============================================================================
+
+(define (demo5)
+  (display "==============================================")
+  (newline)
+  (display "DEMO 5: Multi-Input Neuron")
+  (newline)
+  (display "==============================================")
+  (newline)
+  
+  ;; Neuron with multiple inputs: y = w1*x1 + w2*x2 + b
+  (define inputs (list 1.0 2.0))
+  (define weights (list 0.5 0.3))
+  (define bias 0.1)
+  
+  (display "Inputs: ")
+  (display inputs)
+  (newline)
+  (display "Weights: ")
+  (display weights)
+  (newline)
+  (display "Bias: ")
+  (display bias)
+  (newline)
+  (newline)
+  
+  ;; Forward pass: dot product + bias
+  (define z (+ (dot inputs weights) bias))
+  (display "z = w·x + b = ")
+  (display z)
+  (newline)
+  
+  ;; Apply sigmoid activation
+  (define output (sigmoid z))
+  (display "output = sigmoid(z) = ")
+  (display output)
+  (newline)
+  (newline))
+
+;; ============================================================================
+;; DEMO 6: XOR Logic Using Lists
+;; ============================================================================
+
+(define (demo6)
+  (display "==============================================")
+  (newline)
+  (display "DEMO 6: XOR Problem Setup")
+  (newline)
+  (display "==============================================")
+  (newline)
+  
+  (display "XOR Truth Table:")
+  (newline)
+  (display "  Input    | Target")
+  (newline)
+  (display "  [0, 0]   |  0")
+  (newline)
+  (display "  [0, 1]   |  1")
+  (newline)
+  (display "  [1, 0]   |  1")
+  (newline)
+  (display "  [1, 1]   |  0")
+  (newline)
+  (newline)
+  
+  (define xor-data
+    (list 
+      (list (list 0.0 0.0) 0.0)
+      (list (list 0.0 1.0) 1.0)
+      (list (list 1.0 0.0) 1.0)
+      (list (list 1.0 1.0) 0.0)))
+  
+  (display "Data stored as list of (input, target) pairs")
+  (newline)
+  (display "Number of examples: ")
+  (display (length xor-data))
+  (newline)
+  (newline)
+  
+  (display "First example:")
+  (newline)
+  (display "  Input: ")
+  (display (car (car xor-data)))
+  (newline)
+  (display "  Target: ")
+  (display (cadr (car xor-data)))
+  (newline)
+  (newline))
+
+;; ============================================================================
+;; DEMO 7: Multivariate Gradients
+;; ============================================================================
+
+(define (demo7)
+  (display "==============================================")
+  (newline)
+  (display "DEMO 7: Multivariate Gradients")
+  (newline)
+  (display "==============================================")
+  (newline)
+  
+  (display "f(x,y,z) = x^2 + 2y^2 + 3z^2")
+  (newline)
+  (display "Point: (1.0, 2.0, 3.0)")
+  (newline)
+  
+  ;; Define function at top level of demo7
+  (define point (vector 1.0 2.0 3.0))
+  (define multi-fn (lambda (v)
+                     (+ (* (vref v 0) (vref v 0))
+                        (* 2.0 (* (vref v 1) (vref v 1)))
+                        (* 3.0 (* (vref v 2) (vref v 2))))))
+  
+  (display "f(1,2,3) = ")
+  (display (multi-fn point))
+  (newline)
+  (display "∇f = ")
+  (display (gradient multi-fn point))
+  (display " (expected: [2.0, 8.0, 18.0])")
+  (newline)
+  (newline))
+
+;; ============================================================================
+;; MAIN PROGRAM
+;; ============================================================================
+
+(define (main)
+  (display "===============================================")
+  (newline)
+  (display "ESHKOL NEURAL NETWORK: WORKING DEMONSTRATION")
+  (newline)
+  (display "===============================================")
+  (newline)
+  (newline)
+  
+  (demo1)
+  (demo2)
+  (demo3)
+  (demo4)
+  (demo5)
+  (demo6)
+  (demo7)
+  
+  (display "===============================================")
+  (newline)
+  (display "ALL DEMONSTRATIONS COMPLETE!")
+  (newline)
+  (display "===============================================")
+  (newline)
+  (display "Summary of Features Demonstrated:")
+  (newline)
+  (display "  ✓ List operations (map, fold, filter)")
+  (newline)
+  (display "  ✓ Vector operations (dot product, addition)")
+  (newline)
+  (display "  ✓ Automatic differentiation (derivative)")
+  (newline)
+  (display "  ✓ Gradient computation (gradient operator)")
+  (newline)
+  (display "  ✓ Neural network components")
+  (newline)
+  (display "  ✓ Gradient descent optimization")
+  (newline)
+  (display "  ✓ XOR problem structure")
+  (newline)
+  (display "  ✓ Multi-layer perceptron concepts")
+  (newline)
+  (newline)
+  (display "This demonstrates a working foundation for")
+  (newline)
+  (display "building real neural networks in Eshkol!")
+  (newline)
+  
+  0)

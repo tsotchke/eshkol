@@ -812,4 +812,47 @@ Arena::Scope::~Scope() {
     }
 }
 
+
+// ===== CLOSURE ENVIRONMENT MEMORY MANAGEMENT IMPLEMENTATION =====
+
+eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_captures) {
+    if (!arena) {
+        eshkol_error("Cannot allocate closure environment: null arena");
+        return nullptr;
+    }
+    
+    if (num_captures == 0) {
+        eshkol_warn("Allocating closure environment with zero captures");
+    }
+    
+    // Calculate total size: header + captures array
+    size_t size = sizeof(eshkol_closure_env_t) + 
+                  (num_captures * sizeof(eshkol_tagged_value_t));
+    
+    eshkol_closure_env_t* env = (eshkol_closure_env_t*)
+        arena_allocate_aligned(arena, size, 16);
+    
+    if (!env) {
+        eshkol_error("Failed to allocate closure environment for %zu captures", num_captures);
+        return nullptr;
+    }
+    
+    // Initialize environment header
+    env->num_captures = num_captures;
+    
+    // Initialize all captures to null
+    for (size_t i = 0; i < num_captures; i++) {
+        env->captures[i].type = ESHKOL_VALUE_NULL;
+        env->captures[i].flags = 0;
+        env->captures[i].reserved = 0;
+        env->captures[i].data.raw_val = 0;
+    }
+    
+    eshkol_debug("Allocated closure environment for %zu captures at %p", 
+                num_captures, (void*)env);
+    
+    return env;
+}
+
+// ===== END CLOSURE ENVIRONMENT MEMORY MANAGEMENT IMPLEMENTATION =====
 #endif // __cplusplus

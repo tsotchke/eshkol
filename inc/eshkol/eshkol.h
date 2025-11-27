@@ -208,6 +208,22 @@ typedef struct ad_tape {
     size_t num_variables;    // Number of input variables
 } ad_tape_t;
 
+// ===== CLOSURE ENVIRONMENT STRUCTURES =====
+// Support for lexical closures - capturing parent scope variables
+
+// Closure environment structure (arena-allocated)
+// Holds captured variables from parent scope for nested functions
+typedef struct eshkol_closure_env {
+    size_t num_captures;                  // Number of captured variables
+    eshkol_tagged_value_t captures[];     // Flexible array of captured values
+} eshkol_closure_env_t;
+
+// Compile-time size validation
+_Static_assert(sizeof(eshkol_closure_env_t) == sizeof(size_t),
+               "Closure environment header must be minimal");
+
+// ===== END CLOSURE ENVIRONMENT STRUCTURES =====
+
 // ===== END COMPUTATIONAL GRAPH TYPES =====
 
 typedef enum {
