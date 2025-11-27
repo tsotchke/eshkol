@@ -151,6 +151,14 @@ void arena_tape_reset(ad_tape_t* tape);
 ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index);
 size_t arena_tape_get_node_count(const ad_tape_t* tape);
 
+// ===== CLOSURE ENVIRONMENT MEMORY MANAGEMENT =====
+// Allocation functions for lexical closure environments
+
+// Allocate closure environment with space for captured variables
+eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_captures);
+
+// ===== END CLOSURE ENVIRONMENT MEMORY MANAGEMENT =====
+
 // ===== END AD MEMORY MANAGEMENT =====
 
 #ifdef __cplusplus

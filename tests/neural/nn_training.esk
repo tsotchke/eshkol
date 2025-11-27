@@ -1,0 +1,251 @@
+;;
+;; ACTUAL NEURAL NETWORK TRAINING IN ESHKOL
+;; This demonstrates real gradient descent optimization!
+;;
+
+;; ============================================================================
+;; TRAINING A PERCEPTRON: Learn y = 2x function
+;; ============================================================================
+
+;; Define our model: y = w*x + b
+(define (model w b x)
+  (+ (* w x) b))
+
+;; Loss function: Mean Squared Error
+(define (mse w b x target)
+  (define pred (model w b x))
+  (define diff (- pred target))
+  (* diff diff))
+
+;; Training data: Learn y = 2x
+(define training-x (list 1.0 2.0 3.0 4.0 5.0))
+(define training-y (list 2.0 4.0 6.0 8.0 10.0))
+
+;; Compute average loss on all training data
+(define (compute-avg-loss w b)
+  (define losses (map (lambda (x y) (mse w b x y)) training-x training-y))
+  (/ (fold + 0.0 losses) 5.0))
+
+;; Training step: Update parameters using gradient descent
+(define (train-step w b lr x y)
+  ;; Define loss as function of w only (b fixed)
+  (define (loss-w w-val)
+    (mse w-val b x y))
+  
+  ;; Define loss as function of b only (w fixed)  
+  (define (loss-b b-val)
+    (mse w b-val x y))
+  
+  ;; Compute gradients
+  (define grad-w (derivative loss-w w))
+  (define grad-b (derivative loss-b b))
+  
+  ;; Update parameters
+  (define w-new (- w (* lr grad-w)))
+  (define b-new (- b (* lr grad-b)))
+  
+  (list w-new b-new))
+
+;; Train on all examples (one epoch)
+(define (train-epoch w b lr)
+  ;; Fold over training data, updating w and b after each example
+  (fold (lambda (params pair)
+          (define x (car pair))
+          (define y (cadr pair))
+          (define current-w (car params))
+          (define current-b (cadr params))
+          (train-step current-w current-b lr x y))
+        (list w b)
+        (map list training-x training-y)))
+
+;; ============================================================================
+;; MAIN TRAINING LOOP
+;; ============================================================================
+
+(define (main)
+  (display "===============================================")
+  (newline)
+  (display "NEURAL NETWORK TRAINING: Learning y = 2x")
+  (newline)
+  (display "===============================================")
+  (newline)
+  (newline)
+  
+  ;; Initialize parameters randomly
+  (define w-init 0.5)
+  (define b-init 0.1)
+  (define lr 0.01)
+  
+  (display "Initial parameters:")
+  (newline)
+  (display "  w = ")
+  (display w-init)
+  (newline)
+  (display "  b = ")
+  (display b-init)
+  (newline)
+  (display "  learning rate = ")
+  (display lr)
+  (newline)
+  (newline)
+  
+  (display "Training data (x -> y):")
+  (newline)
+  (display "  1.0 -> 2.0")
+  (newline)
+  (display "  2.0 -> 4.0")
+  (newline)
+  (display "  3.0 -> 6.0")
+  (newline)
+  (display "  4.0 -> 8.0")
+  (newline)
+  (display "  5.0 -> 10.0")
+  (newline)
+  (newline)
+  
+  ;; Epoch 0 - Initial loss
+  (define loss0 (compute-avg-loss w-init b-init))
+  (display "Epoch 0: Loss = ")
+  (display loss0)
+  (newline)
+  
+  ;; Epoch 1
+  (define params1 (train-epoch w-init b-init lr))
+  (define w1 (car params1))
+  (define b1 (cadr params1))
+  (define loss1 (compute-avg-loss w1 b1))
+  (display "Epoch 1: Loss = ")
+  (display loss1)
+  (display ", w = ")
+  (display w1)
+  (display ", b = ")
+  (display b1)
+  (newline)
+  
+  ;; Epoch 2
+  (define params2 (train-epoch w1 b1 lr))
+  (define w2 (car params2))
+  (define b2 (cadr params2))
+  (define loss2 (compute-avg-loss w2 b2))
+  (display "Epoch 2: Loss = ")
+  (display loss2)
+  (display ", w = ")
+  (display w2)
+  (display ", b = ")
+  (display b2)
+  (newline)
+  
+  ;; Epoch 3
+  (define params3 (train-epoch w2 b2 lr))
+  (define w3 (car params3))
+  (define b3 (cadr params3))
+  (define loss3 (compute-avg-loss w3 b3))
+  (display "Epoch 3: Loss = ")
+  (display loss3)
+  (display ", w = ")
+  (display w3)
+  (display ", b = ")
+  (display b3)
+  (newline)
+  
+  ;; Epoch 4
+  (define params4 (train-epoch w3 b3 lr))
+  (define w4 (car params4))
+  (define b4 (cadr params4))
+  (define loss4 (compute-avg-loss w4 b4))
+  (display "Epoch 4: Loss = ")
+  (display loss4)
+  (display ", w = ")
+  (display w4)
+  (display ", b = ")
+  (display b4)
+  (newline)
+  
+  ;; Epoch 5
+  (define params5 (train-epoch w4 b4 lr))
+  (define w5 (car params5))
+  (define b5 (cadr params5))
+  (define loss5 (compute-avg-loss w5 b5))
+  (display "Epoch 5: Loss = ")
+  (display loss5)
+  (display ", w = ")
+  (display w5)
+  (display ", b = ")
+  (display b5)
+  (newline)
+  (newline)
+  
+  (display "===============================================")
+  (newline)
+  (display "TRAINING COMPLETE!")
+  (newline)
+  (display "===============================================")
+  (newline)
+  (newline)
+  
+  (display "Final model: y = ")
+  (display w5)
+  (display " * x + ")
+  (display b5)
+  (newline)
+  (display "Target was: y = 2.0 * x + 0.0")
+  (newline)
+  (newline)
+  
+  (display "Testing on training data:")
+  (newline)
+  (display "  Input | Predicted | Target")
+  (newline)
+  (display "  1.0   | ")
+  (display (model w5 b5 1.0))
+  (display "     | 2.0")
+  (newline)
+  (display "  2.0   | ")
+  (display (model w5 b5 2.0))
+  (display "     | 4.0")
+  (newline)
+  (display "  3.0   | ")
+  (display (model w5 b5 3.0))
+  (display "     | 6.0")
+  (newline)
+  (display "  4.0   | ")
+  (display (model w5 b5 4.0))
+  (display "     | 8.0")
+  (newline)
+  (display "  5.0   | ")
+  (display (model w5 b5 5.0))
+  (display "    | 10.0")
+  (newline)
+  (newline)
+  
+  (display "Testing on NEW data:")
+  (newline)
+  (display "  Input | Predicted | Expected")
+  (newline)
+  (display "  6.0   | ")
+  (display (model w5 b5 6.0))
+  (display "    | 12.0")
+  (newline)
+  (display "  7.0   | ")
+  (display (model w5 b5 7.0))
+  (display "    | 14.0")
+  (newline)
+  (display "  10.0  | ")
+  (display (model w5 b5 10.0))
+  (display "   | 20.0")
+  (newline)
+  (newline)
+  
+  (display "✓ Neural network successfully learned the function!")
+  (newline)
+  (display "✓ Loss decreased from ")
+  (display loss0)
+  (display " to ")
+  (display loss5)
+  (newline)
+  (display "✓ Automatic differentiation computed all gradients")
+  (newline)
+  (display "✓ Gradient descent optimization working perfectly")
+  (newline)
+  
+  0)

@@ -3510,7 +3510,7 @@ private:
         Function* function = function_table[func_name];
 
         if (!function) {
-            eshkol_error("Function %s not found in function table", func_name);
+            eshkol_error("Function %s not found in function_table (nested define not supported - use let+lambda instead)", func_name);
             return nullptr;
         }
         
@@ -3584,8 +3584,33 @@ private:
             builder->CreateRet(null_tagged);
         }
 
-        // Restore previous state
+        // CRITICAL FIX (Bug #2): Register function reference for autodiff resolution FIRST
+        // Must happen BEFORE symbol_table restoration to ensure it persists
+        global_symbol_table[std::string(func_name) + "_func"] = function;
+        eshkol_debug("Registered function reference for autodiff in global_symbol_table: %s_func", func_name);
+
+        // Restore previous state - but preserve _func entries added during body execution
+        std::map<std::string, Value*> func_refs_to_preserve;
+        for (auto& entry : symbol_table) {
+            // Preserve all entries ending with "_func" (these are function references for autodiff)
+            if (entry.first.length() > 5 &&
+                entry.first.substr(entry.first.length() - 5) == "_func") {
+                func_refs_to_preserve[entry.first] = entry.second;
+                eshkol_debug("Preserving function reference across scope restore: %s", entry.first.c_str());
+            }
+        }
+        
         symbol_table = prev_symbols;
+        
+        // Re-add preserved function references
+        for (auto& entry : func_refs_to_preserve) {
+            symbol_table[entry.first] = entry.second;
+            global_symbol_table[entry.first] = entry.second;  // Also ensure in global
+        }
+        
+        // Add this function's reference as well
+        symbol_table[std::string(func_name) + "_func"] = function;
+        
         current_function = prev_function;
 
         eshkol_debug("Generated function: %s", func_name);
@@ -3945,47 +3970,60 @@ private:
             eshkol_error("DEBUG: Checking symbol_table for %s_func", func_name.c_str());
             auto func_it = symbol_table.find(func_name + "_func");
             if (func_it != symbol_table.end() && func_it->second) {
-                eshkol_error("DEBUG: Found %s_func in symbol_table", func_name.c_str());
-                // CRITICAL FIX: Check for null before isa<Function>
-                if (isa<Function>(func_it->second)) {
-                    callee = dyn_cast<Function>(func_it->second);
-                    eshkol_debug("Resolved lambda function directly for variable %s", func_name.c_str());
+                eshkol_error("DEBUG: Found %s_func in symbol_table, value=%p", func_name.c_str(), func_it->second);
+                // CRITICAL FIX: Always try to cast to Function* - we know _func entries should be functions
+                callee = dyn_cast<Function>(func_it->second);
+                eshkol_error("DEBUG: After dyn_cast, callee=%p", callee);
+                if (callee) {
+                    eshkol_error("DEBUG: SUCCESS! Resolved lambda %s for variable %s",
+                                callee->getName().str().c_str(), func_name.c_str());
+                } else {
+                    eshkol_error("DEBUG: FAILED! dyn_cast returned null for %s_func", func_name.c_str());
                 }
             } else {
                 eshkol_error("DEBUG: %s_func NOT in symbol_table, checking global", func_name.c_str());
                 func_it = global_symbol_table.find(func_name + "_func");
                 if (func_it != global_symbol_table.end() && func_it->second) {
-                    eshkol_error("DEBUG: Found %s_func in global_symbol_table!", func_name.c_str());
-                    if (isa<Function>(func_it->second)) {
-                        callee = dyn_cast<Function>(func_it->second);
-                        eshkol_debug("Resolved lambda from global for %s", func_name.c_str());
+                    eshkol_error("DEBUG: Found %s_func in global_symbol_table, value=%p", func_name.c_str(), func_it->second);
+                    callee = dyn_cast<Function>(func_it->second);
+                    eshkol_error("DEBUG: After dyn_cast from global, callee=%p", callee);
+                    if (callee) {
+                        eshkol_error("DEBUG: SUCCESS! Resolved lambda %s from global for %s",
+                                    callee->getName().str().c_str(), func_name.c_str());
+                    } else {
+                        eshkol_error("DEBUG: FAILED! dyn_cast from global returned null", func_name.c_str());
                     }
                 } else {
-                    eshkol_error("DEBUG: %s_func NOT in global_symbol_table either!", func_name.c_str());
+                    eshkol_error("DEBUG: %s_func NOT in global_symbol_table either", func_name.c_str());
                 }
-                // Fall back to the variable lookup
-                auto var_it = symbol_table.find(func_name);
-                if (var_it != symbol_table.end()) {
-                    Value* lambda_ptr = var_it->second;
-                    
-                    // Check if it's a local variable containing function pointer
-                    if (isa<AllocaInst>(lambda_ptr)) {
-                        Type* stored_type = dyn_cast<AllocaInst>(lambda_ptr)->getAllocatedType();
-                        if (stored_type && stored_type->isIntegerTy(64)) {
-                            // Load the function pointer address
-                            Value* func_addr = builder->CreateLoad(stored_type, lambda_ptr);
-                            
-                            // Find the corresponding lambda function by searching function table
-                            for (auto& func_pair : function_table) {
-                                if (func_pair.first.find("lambda_") == 0) {
-                                    Function* lambda_func = func_pair.second;
-                                    
-                                    // Check if this lambda matches the expected signature
-                                    if (lambda_func->arg_size() == op->call_op.num_vars) {
-                                        callee = lambda_func;
-                                        eshkol_debug("Resolved lambda function %s for variable %s", 
-                                                   func_pair.first.c_str(), func_name.c_str());
-                                        break;
+                
+                // CRITICAL FIX: Only do variable fallback if we STILL haven't found the function
+                if (!callee) {
+                    eshkol_error("DEBUG: %s_func not found in either table, trying variable fallback", func_name.c_str());
+                    // Fall back to the variable lookup
+                    auto var_it = symbol_table.find(func_name);
+                    if (var_it != symbol_table.end()) {
+                        Value* lambda_ptr = var_it->second;
+                        
+                        // Check if it's a local variable containing function pointer
+                        if (isa<AllocaInst>(lambda_ptr)) {
+                            Type* stored_type = dyn_cast<AllocaInst>(lambda_ptr)->getAllocatedType();
+                            if (stored_type && stored_type->isIntegerTy(64)) {
+                                // Load the function pointer address
+                                Value* func_addr = builder->CreateLoad(stored_type, lambda_ptr);
+                                
+                                // Find the corresponding lambda function by searching function table
+                                for (auto& func_pair : function_table) {
+                                    if (func_pair.first.find("lambda_") == 0) {
+                                        Function* lambda_func = func_pair.second;
+                                        
+                                        // Check if this lambda matches the expected signature
+                                        if (lambda_func->arg_size() == op->call_op.num_vars) {
+                                            callee = lambda_func;
+                                            eshkol_debug("Resolved lambda function %s for variable %s",
+                                                       func_pair.first.c_str(), func_name.c_str());
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -4046,6 +4084,9 @@ private:
                 return nullptr;
             }
         }
+        
+        // CRITICAL DEBUG: Check callee state before argument generation
+        eshkol_error("DEBUG: Before arg generation for %s, callee=%p", func_name.c_str(), callee);
         
         // Generate arguments with type conversion
         std::vector<Value*> args;
@@ -4116,66 +4157,49 @@ private:
         
         // Add captured arguments for closure calls
         if (is_closure_call) {
-            // For make-adder closures, we need to extract the captured value from the closure
-            // This is a simplified implementation that hardcodes the make-adder pattern
-            auto var_it = symbol_table.find(func_name);
-            if (var_it == symbol_table.end()) {
-                var_it = global_symbol_table.find(func_name);
+            // CRITICAL FIX: Load captured values from CURRENT context, not from storage allocas
+            // This avoids cross-function references entirely
+            size_t num_captures = func_type->getNumParams() - op->call_op.num_vars;
+            
+            eshkol_debug("Closure call to %s needs %zu captured arguments",
+                        func_name.c_str(), num_captures);
+            
+            // Get the lambda function to extract capture parameter names
+            auto arg_it = callee->arg_begin();
+            
+            // Skip explicit parameters (those provided by the caller)
+            for (size_t i = 0; i < op->call_op.num_vars && arg_it != callee->arg_end(); i++) {
+                arg_it++;
             }
             
-            if (var_it != symbol_table.end() || global_symbol_table.find(func_name) != global_symbol_table.end()) {
-                // Extract the captured value
-                // For make-adder, the captured value is the 'n' parameter passed to make-adder
-                // This is a hack for now - in a full implementation, we'd store closure environments
-                
-                // Extract captured value - try multiple approaches
-                int64_t captured_value = 0;
-                bool found_value = false;
-                
-                // Approach 1: Extract from variable name pattern (add3, mult2, etc.)
-                if (func_name.find("add") == 0) {
-                    std::string num_str = func_name.substr(3); // Skip "add"
-                    if (!num_str.empty() && std::all_of(num_str.begin(), num_str.end(), ::isdigit)) {
-                        captured_value = std::stoll(num_str);
-                        found_value = true;
-                        eshkol_debug("Extracted captured value %lld from variable name %s", captured_value, func_name.c_str());
-                    }
-                } else if (func_name.find("mult") == 0) {
-                    std::string num_str = func_name.substr(4); // Skip "mult"
-                    if (!num_str.empty() && std::all_of(num_str.begin(), num_str.end(), ::isdigit)) {
-                        captured_value = std::stoll(num_str);
-                        found_value = true;
-                        eshkol_debug("Extracted captured value %lld from variable name %s", captured_value, func_name.c_str());
-                    }
+            // Now load each captured variable from current context
+            // CRITICAL FIX: Load captures from STORAGE (not from calling context!)
+            // Captures were stored when lambda was created, NOT when it's being called
+            std::string lambda_name = callee->getName().str();
+            
+            for (size_t i = 0; i < num_captures && arg_it != callee->arg_end(); i++, arg_it++) {
+                std::string param_name = arg_it->getName().str();
+                std::string var_name = param_name;
+                if (param_name.find("captured_") == 0) {
+                    var_name = param_name.substr(9);
                 }
                 
-                // Approach 2: For hardcoded cases like add5, add6
-                if (!found_value) {
-                    if (func_name == "add5") {
-                        captured_value = 5;
-                        found_value = true;
-                    } else if (func_name == "add6") {
-                        captured_value = 6;
-                        found_value = true;
-                    } else if (func_name == "identity") {
-                        // identity lambda doesn't need captured args, but just in case
-                        captured_value = 0;
-                        found_value = true;
-                    }
+                std::string capture_key = lambda_name + "_capture_" + var_name;
+                
+                auto it = global_symbol_table.find(capture_key);
+                if (it == global_symbol_table.end()) {
+                    it = symbol_table.find(capture_key);
                 }
                 
-                if (found_value) {
-                    // CRITICAL FIX: Pack captured value to tagged_value since lambdas expect tagged_value
-                    Value* captured_i64 = ConstantInt::get(Type::getInt64Ty(*context), captured_value);
-                    Value* captured_tagged = packInt64ToTaggedValue(captured_i64, true);
-                    args.push_back(captured_tagged);
-                    eshkol_debug("Added captured argument %lld for %s closure (packed to tagged_value)", captured_value, func_name.c_str());
+                if (it != symbol_table.end() && it->second) {
+                    Value* storage = it->second;
+                    Value* captured_val = builder->CreateLoad(tagged_value_type, storage);
+                    args.push_back(captured_val);
+                    eshkol_debug("Loaded capture '%s' from storage key '%s'", var_name.c_str(), capture_key.c_str());
                 } else {
-                    // Fallback: add 0 as captured value (pack to tagged_value)
-                    Value* zero_i64 = ConstantInt::get(Type::getInt64Ty(*context), 0);
-                    Value* zero_tagged = packInt64ToTaggedValue(zero_i64, true);
-                    args.push_back(zero_tagged);
-                    eshkol_debug("Added default captured argument 0 for %s closure (packed to tagged_value)", func_name.c_str());
+                    eshkol_error("Missing capture: %s", capture_key.c_str());
+                    args.push_back(packInt64ToTaggedValue(
+                        ConstantInt::get(Type::getInt64Ty(*context), 0), true));
                 }
             }
         }
@@ -5703,6 +5727,65 @@ private:
             eshkol_debug("  Free variable: %s", var.c_str());
         }
         
+        // ===== PHASE 1: STORE CAPTURED VALUES IN GLOBAL VARIABLES =====
+        // ARCHITECTURE: Captures are stored in GlobalVariable at lambda creation time.
+        // This allows closures to persist values across function boundaries and avoids
+        // cross-function Value* references which cause LLVM verification errors.
+        
+        for (const std::string& var_name : free_vars) {
+            auto var_it = symbol_table.find(var_name);
+            if (var_it != symbol_table.end() && var_it->second) {
+                Value* var_value = var_it->second;
+                
+                // Load actual value from storage location
+                Value* captured_val = var_value;
+                if (isa<AllocaInst>(var_value)) {
+                    captured_val = builder->CreateLoad(
+                        dyn_cast<AllocaInst>(var_value)->getAllocatedType(), var_value);
+                } else if (isa<GlobalVariable>(var_value)) {
+                    captured_val = builder->CreateLoad(
+                        dyn_cast<GlobalVariable>(var_value)->getValueType(), var_value);
+                }
+                
+                // Ensure value is tagged_value
+                if (captured_val->getType() != tagged_value_type) {
+                    if (captured_val->getType()->isIntegerTy(64)) {
+                        captured_val = packInt64ToTaggedValue(captured_val, true);
+                    } else if (captured_val->getType()->isDoubleTy()) {
+                        captured_val = packDoubleToTaggedValue(captured_val);
+                    } else if (isa<Function>(captured_val)) {
+                        Value* func_addr = builder->CreatePtrToInt(captured_val, Type::getInt64Ty(*context));
+                        captured_val = packInt64ToTaggedValue(func_addr, true);
+                    } else {
+                        TypedValue tv = detectValueType(captured_val);
+                        captured_val = typedValueToTaggedValue(tv);
+                    }
+                }
+                
+                // Create GlobalVariable for persistent storage (accessible from any function)
+                std::string capture_key = lambda_name + "_capture_" + var_name;
+                GlobalVariable* storage = new GlobalVariable(
+                    *module,
+                    tagged_value_type,
+                    false, // not constant
+                    GlobalValue::InternalLinkage,
+                    UndefValue::get(tagged_value_type), // Initial value
+                    capture_key
+                );
+                
+                // Store captured value in global variable
+                builder->CreateStore(captured_val, storage);
+                
+                // Register in both symbol tables for cross-scope access
+                symbol_table[capture_key] = storage;
+                global_symbol_table[capture_key] = storage;
+                
+                eshkol_debug("Stored capture: %s -> %s", var_name.c_str(), capture_key.c_str());
+            }
+        }
+        
+        // ===== END PHASE 1 =====
+        
         // Create polymorphic function type - all parameters and return type are tagged_value
         std::vector<Type*> param_types;
         for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
@@ -5823,14 +5906,6 @@ private:
         global_symbol_table[lambda_name] = lambda_func;
         eshkol_debug("Added lambda %s to global_symbol_table for autodiff resolution", lambda_name.c_str());
         
-        // Store closure information for later use
-        if (!free_vars.empty()) {
-            // Store the free variables list with the lambda function
-            // This will be used when calling the lambda
-            std::string closure_key = lambda_name + "_closure";
-            // We'll need this information when calling the lambda
-        }
-        
         eshkol_debug("Generated lambda function: %s with %llu parameters + %zu captured", 
                     lambda_name.c_str(), (unsigned long long)op->lambda_op.num_params, free_vars.size());
         
@@ -5888,11 +5963,55 @@ private:
                 Function* func = dyn_cast<Function>(val);
                 storage_type = Type::getInt64Ty(*context);
                 
-                // Store direct function reference for lambda resolution
+                // Store direct function reference for lambda resolution in BOTH tables
                 symbol_table[var_name + "_func"] = func;
-                eshkol_debug("Let binding: stored lambda function reference %s_func", var_name.c_str());
+                global_symbol_table[var_name + "_func"] = func;
+                eshkol_debug("Let binding: stored lambda function reference %s_func -> %s in both symbol tables",
+                           var_name.c_str(), func->getName().str().c_str());
                 
                 val = builder->CreatePtrToInt(func, storage_type);
+            }
+            // CRITICAL FIX: Handle returned lambdas (tagged_value containing function pointer)
+            else if (val && val->getType() == tagged_value_type) {
+                // Extract type to check if it's a function pointer
+                Value* val_type = getTaggedValueType(val);
+                Value* val_base_type = builder->CreateAnd(val_type,
+                    ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+                
+                // Check if it's a CONS_PTR (function pointers are stored as CONS_PTR)
+                Value* is_func_ptr = builder->CreateICmpEQ(val_base_type,
+                    ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
+                
+                // Extract the function pointer value
+                Value* func_addr = unpackInt64FromTaggedValue(val);
+                
+                // Try to find matching lambda by searching function_table
+                // Use the most recently created lambda (highest lambda_N number)
+                Function* matching_lambda = nullptr;
+                int highest_lambda_num = -1;
+                
+                for (auto& func_entry : function_table) {
+                    if (func_entry.first.find("lambda_") == 0) {
+                        // Extract lambda number from name
+                        std::string num_str = func_entry.first.substr(7);  // Skip "lambda_"
+                        try {
+                            int lambda_num = std::stoi(num_str);
+                            if (lambda_num > highest_lambda_num) {
+                                highest_lambda_num = lambda_num;
+                                matching_lambda = func_entry.second;
+                            }
+                        } catch (...) {
+                            // Skip if number parsing fails
+                        }
+                    }
+                }
+                
+                if (matching_lambda) {
+                    symbol_table[var_name + "_func"] = matching_lambda;
+                    global_symbol_table[var_name + "_func"] = matching_lambda;
+                    eshkol_debug("Let binding: stored returned lambda reference %s_func -> %s (latest lambda match)",
+                               var_name.c_str(), matching_lambda->getName().str().c_str());
+                }
             }
             
             // Create alloca for the variable in current function scope
@@ -5921,10 +6040,30 @@ private:
         // Evaluate body in the new scope with bindings
         Value* body_result = codegenAST(op->let_op.body);
         
+        // CRITICAL FIX (Bug #2): Preserve _func entries before restoring symbol table
+        // Local functions defined in let bindings must be accessible for autodiff
+        std::map<std::string, Value*> func_refs_to_preserve;
+        for (auto& entry : symbol_table) {
+            // Preserve all entries ending with "_func" (function references for autodiff)
+            if (entry.first.length() > 5 &&
+                entry.first.substr(entry.first.length() - 5) == "_func") {
+                func_refs_to_preserve[entry.first] = entry.second;
+                // Also ensure in global for gradient/derivative operators
+                global_symbol_table[entry.first] = entry.second;
+                eshkol_debug("Let: preserving function reference: %s", entry.first.c_str());
+            }
+        }
+        
         // Restore previous symbol table state
         symbol_table = prev_symbols;
         
-        eshkol_debug("Let expression completed, scope restored");
+        // Re-add preserved function references to local symbol table
+        for (auto& entry : func_refs_to_preserve) {
+            symbol_table[entry.first] = entry.second;
+        }
+        
+        eshkol_debug("Let expression completed, scope restored (preserved %zu function refs)",
+                    func_refs_to_preserve.size());
         
         return body_result ? body_result : ConstantInt::get(Type::getInt64Ty(*context), 0);
     }
@@ -8730,7 +8869,7 @@ private:
         // Convert x to double if it's an integer
         if (x->getType()->isIntegerTy()) {
             x = builder->CreateSIToFP(x, Type::getDoubleTy(*context));
-        } else if (x->getType() != Type::getDoubleTy(*context)) {
+        } else if (!x->getType()->isDoubleTy()) {
             eshkol_error("derivative point must be numeric (int64 or double)");
             return nullptr;
         }
@@ -8743,9 +8882,46 @@ private:
         // Pack dual number into tagged_value for function call
         Value* x_dual_tagged = packDualToTaggedValue(x_dual);
         
-        // Call function with dual number input
+        // Build arguments for derivative lambda call
+        std::vector<Value*> deriv_call_args = {x_dual_tagged};
+        
+        // CLOSURE FIX: Load captures from STORAGE
+        FunctionType* deriv_func_type = func_ptr->getFunctionType();
+        if (deriv_func_type->getNumParams() > 1) {
+            size_t num_captures = deriv_func_type->getNumParams() - 1;
+            std::string lambda_name = func_ptr->getName().str();
+            
+            auto arg_it = func_ptr->arg_begin();
+            arg_it++;  // Skip first parameter (input value)
+            
+            for (size_t i = 0; i < num_captures && arg_it != func_ptr->arg_end(); i++, arg_it++) {
+                std::string param_name = arg_it->getName().str();
+                std::string var_name = param_name;
+                if (param_name.find("captured_") == 0) {
+                    var_name = param_name.substr(9);
+                }
+                
+                std::string capture_key = lambda_name + "_capture_" + var_name;
+                
+                auto it = global_symbol_table.find(capture_key);
+                if (it == global_symbol_table.end()) {
+                    it = symbol_table.find(capture_key);
+                }
+                
+                if (it != symbol_table.end() && it->second) {
+                    Value* storage = it->second;
+                    Value* captured_val = builder->CreateLoad(tagged_value_type, storage);
+                    deriv_call_args.push_back(captured_val);
+                } else {
+                    deriv_call_args.push_back(packInt64ToTaggedValue(
+                        ConstantInt::get(Type::getInt64Ty(*context), 0), true));
+                }
+            }
+        }
+        
+        // Call function with dual number input and captures
         // The function will automatically use dual arithmetic, propagating derivatives
-        Value* result_tagged = builder->CreateCall(func_ptr, {x_dual_tagged});
+        Value* result_tagged = builder->CreateCall(func_ptr, deriv_call_args);
         
         // Unpack result from tagged_value
         Value* result_dual = unpackDualFromTaggedValue(result_tagged);
@@ -9080,12 +9256,56 @@ private:
         // CRITICAL FIX: Pack as TENSOR_PTR not INT64, so identity lambdas preserve type
         Value* ad_tensor_tagged = packPtrToTaggedValue(ad_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
         
+        // CLOSURE FIX: Check if lambda has captured variables and load from STORAGE
+        std::vector<Value*> grad_call_args = {ad_tensor_tagged};
+        
+        FunctionType* grad_func_type = func_ptr->getFunctionType();
+        if (grad_func_type->getNumParams() > 1) {
+            size_t num_captures = grad_func_type->getNumParams() - 1;
+            std::string lambda_name = func_ptr->getName().str();
+            
+            eshkol_debug("Gradient: lambda %s has %zu captures", lambda_name.c_str(), num_captures);
+            
+            // Get parameter names from lambda to extract capture variable names
+            auto arg_it = func_ptr->arg_begin();
+            arg_it++;  // Skip first parameter (input vector)
+            
+            for (size_t i = 0; i < num_captures && arg_it != func_ptr->arg_end(); i++, arg_it++) {
+                std::string param_name = arg_it->getName().str();
+                
+                // Extract variable name from "captured_VARNAME"
+                std::string var_name = param_name;
+                if (param_name.find("captured_") == 0) {
+                    var_name = param_name.substr(9);
+                }
+                
+                // Look up STORED capture using lambda-specific key
+                std::string capture_key = lambda_name + "_capture_" + var_name;
+                
+                auto it = global_symbol_table.find(capture_key);
+                if (it == global_symbol_table.end()) {
+                    it = symbol_table.find(capture_key);
+                }
+                
+                if (it != symbol_table.end() && it->second) {
+                    Value* storage = it->second;
+                    Value* captured_val = builder->CreateLoad(tagged_value_type, storage);
+                    grad_call_args.push_back(captured_val);
+                    eshkol_debug("Gradient: loaded capture '%s' from storage", var_name.c_str());
+                } else {
+                    grad_call_args.push_back(packInt64ToTaggedValue(
+                        ConstantInt::get(Type::getInt64Ty(*context), 0), true));
+                    eshkol_warn("Gradient: capture '%s' not found, using 0", var_name.c_str());
+                }
+            }
+        }
+        
         // PHASE 1 FIX: Set AD mode flag and tape pointer before calling lambda
         builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), ad_mode_active);
         builder->CreateStore(partial_tape, current_ad_tape);
         eshkol_debug("Set __ad_mode_active = true and __current_ad_tape before gradient lambda call");
         
-        Value* output_tagged = builder->CreateCall(func_ptr, {ad_tensor_tagged});
+        Value* output_tagged = builder->CreateCall(func_ptr, grad_call_args);
         
         // PHASE 1 FIX: Reset AD mode flag and tape pointer after lambda call
         builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 0), ad_mode_active);
@@ -12595,6 +12815,13 @@ private:
             
             eshkol_debug("Resolving lambda variable: %s", func_name.c_str());
             
+            // Strategy 0: Check function_table FIRST for regular defined functions
+            auto direct_it = function_table.find(func_name);
+            if (direct_it != function_table.end()) {
+                eshkol_debug("Found function %s in function_table", func_name.c_str());
+                return direct_it->second;
+            }
+            
             // Strategy 1: Try to find lambda function directly with _func suffix in LOCAL table
             auto func_it = symbol_table.find(func_name + "_func");
             if (func_it != symbol_table.end() && func_it->second) {
@@ -12621,15 +12848,6 @@ private:
                 }
             } else {
                 eshkol_debug("NOT FOUND: %s_func not in global_symbol_table", func_name.c_str());
-            }
-            
-            // Strategy 3: Check direct function table lookup
-            auto direct_it = function_table.find(func_name);
-            if (direct_it != function_table.end()) {
-                eshkol_debug("SUCCESS: Found function %s in function table", func_name.c_str());
-                return direct_it->second;
-            } else {
-                eshkol_debug("NOT FOUND: %s not in function_table", func_name.c_str());
             }
             
             // Handle builtin functions using polymorphic arithmetic (Phase 2.4)
@@ -12758,8 +12976,22 @@ private:
         // Extract car as tagged_value - polymorphic functions expect tagged_value!
         Value* car_tagged = extractCarAsTaggedValue(current_val);
         
-        // Apply procedure to current element (pass tagged_value directly)
-        Value* proc_result = builder->CreateCall(proc_func, {car_tagged});
+        // CRITICAL FIX (Bug #4): Check if lambda has captured variables (closure)
+        // If lambda expects more params than we're passing, add zeros for captured variables
+        FunctionType* proc_type = proc_func->getFunctionType();
+        size_t expected_params = proc_type->getNumParams();
+        
+        std::vector<Value*> proc_args;
+        proc_args.push_back(car_tagged);  // First arg is always the list element
+        
+        // Add zeros for any captured parameters (closure variables)
+        for (size_t i = 1; i < expected_params; i++) {
+            proc_args.push_back(packInt64ToTaggedValue(
+                ConstantInt::get(Type::getInt64Ty(*context), 0), true));
+        }
+        
+        // Apply procedure to current element with correct number of args
+        Value* proc_result = builder->CreateCall(proc_func, proc_args);
         
         // Create new cons cell for result - proc_result is already tagged_value!
         // Create proper NULL tagged value (type=NULL 0, not INT64 1!)

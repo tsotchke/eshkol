@@ -11,6 +11,7 @@
 #include <cctype>
 #include <sstream>
 #include <vector>
+#include <set>
 
 enum TokenType {
     TOKEN_LPAREN,
@@ -217,6 +218,239 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     // We'll store the operation type in the function name and handle display in the printer
     return ESHKOL_CALL_OP;
 }
+// Forward declaration for scope tracking
+class ScopeTracker {
+private:
+    std::vector<std::set<std::string>> scope_stack;
+    
+public:
+    ScopeTracker() {
+        // Push global scope
+        scope_stack.push_back(std::set<std::string>());
+    }
+    
+    void pushScope() {
+        scope_stack.push_back(std::set<std::string>());
+    }
+    
+    void popScope() {
+        if (scope_stack.size() > 1) {  // Keep global scope
+            scope_stack.pop_back();
+        }
+    }
+    
+    void addVariable(const std::string& var) {
+        if (!scope_stack.empty()) {
+            scope_stack.back().insert(var);
+        }
+    }
+    
+    bool isInCurrentScope(const std::string& var) const {
+        if (scope_stack.empty()) return false;
+        return scope_stack.back().count(var) > 0;
+    }
+    
+    bool isInAnyParentScope(const std::string& var) const {
+        // Check all scopes except current
+        for (size_t i = 0; i + 1 < scope_stack.size(); i++) {
+            if (scope_stack[i].count(var) > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    std::set<std::string> getAllParentScopeVars() const {
+        std::set<std::string> all_vars;
+        // Collect from all scopes except current
+        for (size_t i = 0; i + 1 < scope_stack.size(); i++) {
+            all_vars.insert(scope_stack[i].begin(), scope_stack[i].end());
+        }
+        return all_vars;
+    }
+};
+
+// Global scope tracker (will be reset for each file)
+static ScopeTracker g_scope_tracker;
+
+
+// ===== CLOSURE CAPTURE ANALYSIS =====
+// Static AST analysis for closure capture detection
+
+// Helper: Collect all defined variables at a given AST level (not recursing into nested functions)
+static void collectDefinedVariables(const eshkol_ast_t* ast, std::set<std::string>& defined_vars) {
+    if (!ast) return;
+    
+    // Only look at top-level defines, not nested ones
+    if (ast->type == ESHKOL_OP && ast->operation.op == ESHKOL_DEFINE_OP) {
+        if (ast->operation.define_op.name) {
+            defined_vars.insert(ast->operation.define_op.name);
+        }
+    }
+}
+
+// Helper: Collect defined variables from function body (for function's local scope)
+static void collectBodyDefinedVariables(const eshkol_ast_t* body, std::set<std::string>& defined_vars) {
+    if (!body) return;
+    
+    // Handle sequence of expressions (common in function bodies)
+    if (body->type == ESHKOL_OP && body->operation.op == ESHKOL_SEQUENCE_OP) {
+        for (uint64_t i = 0; i < body->operation.sequence_op.num_expressions; i++) {
+            collectDefinedVariables(&body->operation.sequence_op.expressions[i], defined_vars);
+        }
+    } else {
+        collectDefinedVariables(body, defined_vars);
+    }
+}
+
+// Recursively collect all variable references in an AST subtree
+static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::string>& refs) {
+    if (!ast) return;
+    
+    switch (ast->type) {
+        case ESHKOL_VAR:
+            // Found a variable reference
+            if (ast->variable.id) {
+                refs.insert(ast->variable.id);
+            }
+            break;
+            
+        case ESHKOL_OP:
+            switch (ast->operation.op) {
+                case ESHKOL_CALL_OP:
+                    // Collect from function
+                    if (ast->operation.call_op.func) {
+                        collectVariableReferences(ast->operation.call_op.func, refs);
+                    }
+                    // Collect from arguments
+                    for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
+                        collectVariableReferences(&ast->operation.call_op.variables[i], refs);
+                    }
+                    break;
+                    
+                case ESHKOL_LAMBDA_OP:
+                    // Don't collect from lambda parameters (they shadow)
+                    // But do collect from lambda body
+                    if (ast->operation.lambda_op.body) {
+                        collectVariableReferences(ast->operation.lambda_op.body, refs);
+                    }
+                    break;
+                    
+                case ESHKOL_DEFINE_OP:
+                    // Collect from defined value
+                    if (ast->operation.define_op.value) {
+                        collectVariableReferences(ast->operation.define_op.value, refs);
+                    }
+                    break;
+                    
+                case ESHKOL_LET_OP:
+                    // Collect from bindings and body
+                    for (uint64_t i = 0; i < ast->operation.let_op.num_bindings; i++) {
+                        collectVariableReferences(&ast->operation.let_op.bindings[i], refs);
+                    }
+                    if (ast->operation.let_op.body) {
+                        collectVariableReferences(ast->operation.let_op.body, refs);
+                    }
+                    break;
+                    
+                case ESHKOL_SEQUENCE_OP:
+                    // Collect from all expressions in sequence
+                    for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
+                        collectVariableReferences(&ast->operation.sequence_op.expressions[i], refs);
+                    }
+                    break;
+                    
+                case ESHKOL_DERIVATIVE_OP:
+                    if (ast->operation.derivative_op.function) {
+                        collectVariableReferences(ast->operation.derivative_op.function, refs);
+                    }
+                    if (ast->operation.derivative_op.point) {
+                        collectVariableReferences(ast->operation.derivative_op.point, refs);
+                    }
+                    break;
+                    
+                case ESHKOL_GRADIENT_OP:
+                    if (ast->operation.gradient_op.function) {
+                        collectVariableReferences(ast->operation.gradient_op.function, refs);
+                    }
+                    if (ast->operation.gradient_op.point) {
+                        collectVariableReferences(ast->operation.gradient_op.point, refs);
+                    }
+                    break;
+                    
+                default:
+                    // For other operations, recursively check if they have nested ASTs
+                    break;
+            }
+            break;
+            
+        case ESHKOL_CONS:
+            if (ast->cons_cell.car) {
+                collectVariableReferences(ast->cons_cell.car, refs);
+            }
+            if (ast->cons_cell.cdr) {
+                collectVariableReferences(ast->cons_cell.cdr, refs);
+            }
+            break;
+            
+        default:
+            // Leaf nodes (numbers, strings, etc.) don't reference variables
+            break;
+    }
+}
+
+// Analyze lambda for captured variables using STATIC AST ANALYSIS
+// Returns a list of variable names that are captured from parent scope
+// parent_defined_vars: variables available in the enclosing scope
+static std::vector<std::string> analyzeLambdaCaptures(
+    const eshkol_ast_t* lambda_body,
+    const std::vector<eshkol_ast_t>& params,
+    const std::set<std::string>& parent_defined_vars
+) {
+    // Collect parameter names (these shadow parent scope)
+    std::set<std::string> param_names;
+    for (const auto& param : params) {
+        if (param.type == ESHKOL_VAR && param.variable.id) {
+            param_names.insert(param.variable.id);
+        }
+    }
+    
+    // Collect variables defined in lambda body (these are local)
+    std::set<std::string> local_defined;
+    collectBodyDefinedVariables(lambda_body, local_defined);
+    
+    // Collect all variable references in lambda body
+    std::set<std::string> all_refs;
+    collectVariableReferences(lambda_body, all_refs);
+    
+    // Determine captures: referenced, not in params, not locally defined, but in parent scope
+    std::vector<std::string> captures;
+    for (const auto& var : all_refs) {
+        if (param_names.count(var) == 0 &&          // Not a parameter
+            local_defined.count(var) == 0 &&         // Not locally defined
+            parent_defined_vars.count(var) > 0) {    // Available in parent scope
+            captures.push_back(var);
+            eshkol_debug("Lambda captures variable: %s", var.c_str());
+        }
+    }
+    
+    return captures;
+}
+
+// Static analysis helper: Build scope context for analyzing a function body
+// Returns set of all variables available in the current scope
+static std::set<std::string> buildScopeContext(const eshkol_ast_t* enclosing_func_body) {
+    std::set<std::string> available_vars;
+    
+    if (!enclosing_func_body) return available_vars;
+    
+    // Collect all defines from enclosing function body
+    collectBodyDefinedVariables(enclosing_func_body, available_vars);
+    
+    return available_vars;
+}
+
+// ===== END CLOSURE CAPTURE ANALYSIS =====
 
 static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer);
 
@@ -615,9 +849,33 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.lambda_op.body = new eshkol_ast_t;
             *ast.operation.lambda_op.body = body;
             
-            // For now, no captured variables (will implement closure analysis later)
-            ast.operation.lambda_op.captured_vars = nullptr;
-            ast.operation.lambda_op.num_captured = 0;
+            // Analyze for captured variables
+            // NOTE: During parsing we don't have complete scope context yet
+            // Real capture analysis happens in codegen via findFreeVariables()
+            // Pass empty set for now - this just populates AST structure
+            std::set<std::string> empty_parent_scope;
+            std::vector<std::string> captures = analyzeLambdaCaptures(&body, params, empty_parent_scope);
+            
+            if (!captures.empty()) {
+                // Lambda has captured variables - populate AST
+                ast.operation.lambda_op.num_captured = captures.size();
+                ast.operation.lambda_op.captured_vars = new eshkol_ast_t[captures.size()];
+                
+                for (size_t i = 0; i < captures.size(); i++) {
+                    ast.operation.lambda_op.captured_vars[i].type = ESHKOL_VAR;
+                    ast.operation.lambda_op.captured_vars[i].variable.id =
+                        new char[captures[i].length() + 1];
+                    strcpy(ast.operation.lambda_op.captured_vars[i].variable.id,
+                           captures[i].c_str());
+                    ast.operation.lambda_op.captured_vars[i].variable.data = nullptr;
+                }
+                
+                eshkol_debug("Lambda has %zu captured variables", captures.size());
+            } else {
+                // No captured variables
+                ast.operation.lambda_op.captured_vars = nullptr;
+                ast.operation.lambda_op.num_captured = 0;
+            }
             
             return ast;
         }

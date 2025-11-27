@@ -1,0 +1,119 @@
+;;
+;; Minimal Working Neural Network Demo in Eshkol
+;; Demonstrates autodiff + list operations that ACTUALLY WORK
+;;
+
+;; ============================================================================
+;; CORE MATH FUNCTIONS (TOP-LEVEL ONLY FOR AUTODIFF)
+;; ============================================================================
+
+(define (square x)
+  (* x x))
+
+(define (cube x)
+  (* x x x))
+
+;; ============================================================================
+;; DEMO 1: Basic Autodiff
+;; ============================================================================
+
+(define (main)
+  (display "===============================================")
+  (newline)
+  (display "ESHKOL NEURAL NETWORK: MINIMAL WORKING DEMO")
+  (newline)
+  (display "===============================================")
+  (newline)
+  (newline)
+  
+  ;; Test 1: Derivative of x^2
+  (display "TEST 1: Derivative of x^2")
+  (newline)
+  (display "f(x) = x^2, f'(3.0) = ")
+  (display (derivative square 3.0))
+  (display " (expected: 6.0)")
+  (newline)
+  (newline)
+  
+  ;; Test 2: Derivative of x^3
+  (display "TEST 2: Derivative of x^3")
+  (newline)
+  (display "f(x) = x^3, f'(2.0) = ")
+  (display (derivative cube 2.0))
+  (display " (expected: 12.0)")
+  (newline)
+  (newline)
+  
+  ;; Test 3: List operations with map
+  (display "TEST 3: List Operations")
+  (newline)
+  (define nums (list 1.0 2.0 3.0))
+  (display "List: ")
+  (display nums)
+  (newline)
+  (display "Sum (fold): ")
+  (display (fold + 0.0 nums))
+  (newline)
+  (display "Doubled (map): ")
+  (display (map (lambda (x) (* 2.0 x)) nums))
+  (newline)
+  (newline)
+  
+  ;; Test 4: Dot product using list operations
+  (display "TEST 4: Dot Product")
+  (newline)
+  (define v1 (list 1.0 2.0 3.0))
+  (define v2 (list 4.0 5.0 6.0))
+  (display "v1 = ")
+  (display v1)
+  (newline)
+  (display "v2 = ")
+  (display v2)
+  (newline)
+  (define products (map * v1 v2))
+  (display "Element-wise product: ")
+  (display products)
+  (newline)
+  (display "Dot product v1·v2 = ")
+  (display (fold + 0.0 products))
+  (display " (expected: 32.0)")
+  (newline)
+  (newline)
+  
+  ;; Test 5: Simple gradient
+  (display "TEST 5: Gradient Computation")
+  (newline)
+  (define point (vector 3.0 4.0))
+  (display "Point: (3.0, 4.0)")
+  (newline)
+  (display "∇(x^2 + y^2) = ")
+  (display (gradient (lambda (v) (+ (* (vref v 0) (vref v 0))
+                                     (* (vref v 1) (vref v 1))))
+                      point))
+  (display " (expected: [6.0, 8.0])")
+  (newline)
+  (newline)
+  
+  (display "===============================================")
+  (newline)
+  (display "ALL TESTS COMPLETE!")
+  (newline)
+  (display "===============================================")
+  (newline)
+  (display "Features Demonstrated:")
+  (newline)
+  (display "  ✓ Automatic differentiation (derivative)")
+  (newline)
+  (display "  ✓ Gradient computation")
+  (newline)
+  (display "  ✓ List operations (map, fold)")
+  (newline)
+  (display "  ✓ Higher-order functions")
+  (newline)
+  (display "  ✓ Vector operations")
+  (newline)
+  (newline)
+  (display "Foundation ready for neural networks!")
+  (newline)
+  
+  0)
