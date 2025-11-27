@@ -1,0 +1,12 @@
+;; Simple test to see diff output
+(display "Test 1: d/dx(2 * x) = ")
+(display (diff (* 2 x) x))
+(newline)
+
+(display "Test 2: d/dx(x * x) = ")
+(display (diff (* x x) x))
+(newline)
+
+(display "Test 3: d/dx(x + 1) = ")
+(display (diff (+ x 1) x))
+(newline)

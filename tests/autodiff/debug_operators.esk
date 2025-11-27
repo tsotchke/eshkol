@@ -5,11 +5,13 @@
   (display "Testing gradient operator...\n")
   (let ((result (gradient (lambda (v) 0) (vector 1.0 2.0))))
     (display result)
+    (newline)
     (display "Gradient test passed\n"))
   
   (display "Testing jacobian operator...\n")
   (let ((result (jacobian (lambda (v) (vector 1.0 2.0)) (vector 1.0 2.0))))
     (display result)
+    (newline)
     (display "Jacobian test passed\n"))
   
   (display "All tests passed\n")

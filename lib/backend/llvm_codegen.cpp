@@ -1358,23 +1358,39 @@ private:
         Value* car_base_type = builder->CreateAnd(car_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
+        // SYMBOLIC DIFF FIX: Check for DOUBLE, CONS_PTR (string pointers!), and INT64
         Value* car_is_double = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* car_is_ptr = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
         
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* car_double = BasicBlock::Create(*context, "cons_car_double", current_func);
+        BasicBlock* check_ptr = BasicBlock::Create(*context, "cons_car_check_ptr", current_func);
+        BasicBlock* car_ptr = BasicBlock::Create(*context, "cons_car_ptr", current_func);
         BasicBlock* car_int = BasicBlock::Create(*context, "cons_car_int", current_func);
         BasicBlock* car_done = BasicBlock::Create(*context, "cons_car_done", current_func);
         
         Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0);
         
-        builder->CreateCondBr(car_is_double, car_double, car_int);
+        builder->CreateCondBr(car_is_double, car_double, check_ptr);
         
         // Store car as double
         builder->SetInsertPoint(car_double);
         Value* car_double_val = unpackDoubleFromTaggedValue(car_tagged);
         builder->CreateCall(arena_tagged_cons_set_double_func,
             {cons_ptr, is_car, car_double_val, car_type});
+        builder->CreateBr(car_done);
+        
+        // Check if CONS_PTR
+        builder->SetInsertPoint(check_ptr);
+        builder->CreateCondBr(car_is_ptr, car_ptr, car_int);
+        
+        // Store car as pointer (string symbols, nested lists, etc.)
+        builder->SetInsertPoint(car_ptr);
+        Value* car_ptr_val = unpackInt64FromTaggedValue(car_tagged);
+        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            {cons_ptr, is_car, car_ptr_val, car_type});
         builder->CreateBr(car_done);
         
         // Store car as int64
@@ -1384,7 +1400,7 @@ private:
             {cons_ptr, is_car, car_int_val, car_type});
         builder->CreateBr(car_done);
         
-        // Store cdr - check type first (could be null, ptr, or even double!)
+        // Store cdr - SYMBOLIC DIFF FIX: check for NULL, DOUBLE, CONS_PTR, INT64
         builder->SetInsertPoint(car_done);
         Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
         
@@ -1397,11 +1413,15 @@ private:
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_NULL));
         Value* cdr_is_double = builder->CreateICmpEQ(cdr_base_type,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        Value* cdr_is_ptr = builder->CreateICmpEQ(cdr_base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
         
         BasicBlock* cdr_null_block = BasicBlock::Create(*context, "cons_cdr_null", current_func);
         BasicBlock* cdr_check_double = BasicBlock::Create(*context, "cons_cdr_check_double", current_func);
         BasicBlock* cdr_double_block = BasicBlock::Create(*context, "cons_cdr_double", current_func);
+        BasicBlock* cdr_check_ptr = BasicBlock::Create(*context, "cons_cdr_check_ptr", current_func);
         BasicBlock* cdr_ptr_block = BasicBlock::Create(*context, "cons_cdr_ptr", current_func);
+        BasicBlock* cdr_int_block = BasicBlock::Create(*context, "cons_cdr_int", current_func);
         BasicBlock* cdr_done_block = BasicBlock::Create(*context, "cons_cdr_done", current_func);
         
         builder->CreateCondBr(cdr_is_null, cdr_null_block, cdr_check_double);
@@ -1413,7 +1433,7 @@ private:
         
         // Check if cdr is double
         builder->SetInsertPoint(cdr_check_double);
-        builder->CreateCondBr(cdr_is_double, cdr_double_block, cdr_ptr_block);
+        builder->CreateCondBr(cdr_is_double, cdr_double_block, cdr_check_ptr);
         
         // Cdr is double - use set_double
         builder->SetInsertPoint(cdr_double_block);
@@ -1422,24 +1442,19 @@ private:
             {cons_ptr, is_cdr, cdr_double_val, cdr_type});
         builder->CreateBr(cdr_done_block);
         
-        // Cdr is a pointer or int64 - use set_ptr or set_int64
+        // Check if CONS_PTR
+        builder->SetInsertPoint(cdr_check_ptr);
+        builder->CreateCondBr(cdr_is_ptr, cdr_ptr_block, cdr_int_block);
+        
+        // Cdr is CONS_PTR - use set_ptr (for nested lists in S-expressions!)
         builder->SetInsertPoint(cdr_ptr_block);
-        Value* cdr_is_ptr = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
-        
-        BasicBlock* cdr_is_ptr_block = BasicBlock::Create(*context, "cons_cdr_is_ptr", current_func);
-        BasicBlock* cdr_is_int_block = BasicBlock::Create(*context, "cons_cdr_is_int", current_func);
-        
-        builder->CreateCondBr(cdr_is_ptr, cdr_is_ptr_block, cdr_is_int_block);
-        
-        builder->SetInsertPoint(cdr_is_ptr_block);
         Value* cdr_ptr_val = unpackInt64FromTaggedValue(cdr_tagged);
-        Value* ptr_type = ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR);
         builder->CreateCall(arena_tagged_cons_set_ptr_func,
-            {cons_ptr, is_cdr, cdr_ptr_val, ptr_type});
+            {cons_ptr, is_cdr, cdr_ptr_val, cdr_type});
         builder->CreateBr(cdr_done_block);
         
-        builder->SetInsertPoint(cdr_is_int_block);
+        // Cdr is int64 - use set_int64
+        builder->SetInsertPoint(cdr_int_block);
         Value* cdr_int_val = unpackInt64FromTaggedValue(cdr_tagged);
         builder->CreateCall(arena_tagged_cons_set_int64_func,
             {cons_ptr, is_cdr, cdr_int_val, cdr_type});
@@ -1637,19 +1652,32 @@ private:
         Value* car_base_type = builder->CreateAnd(car_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
-        // FIX: Check for all three types: DOUBLE, CONS_PTR, INT64
+        // SYMBOLIC DIFF FIX: Check for NULL, DOUBLE, CONS_PTR, INT64
+        Value* car_is_null = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_NULL));
         Value* car_is_double = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
         Value* car_is_ptr = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
         
         Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* null_car = BasicBlock::Create(*context, "car_extract_null", current_func);
         BasicBlock* double_car = BasicBlock::Create(*context, "car_extract_double", current_func);
         BasicBlock* check_ptr_car = BasicBlock::Create(*context, "car_check_ptr", current_func);
         BasicBlock* ptr_car = BasicBlock::Create(*context, "car_extract_ptr", current_func);
         BasicBlock* int_car = BasicBlock::Create(*context, "car_extract_int", current_func);
         BasicBlock* merge_car = BasicBlock::Create(*context, "car_merge", current_func);
         
+        BasicBlock* check_double = BasicBlock::Create(*context, "car_check_double", current_func);
+        
+        builder->CreateCondBr(car_is_null, null_car, check_double);
+        
+        builder->SetInsertPoint(null_car);
+        Value* tagged_null = packNullToTaggedValue();
+        builder->CreateBr(merge_car);
+        BasicBlock* null_exit = builder->GetInsertBlock();
+        
+        builder->SetInsertPoint(check_double);
         builder->CreateCondBr(car_is_double, double_car, check_ptr_car);
         
         builder->SetInsertPoint(double_car);
@@ -1674,7 +1702,8 @@ private:
         BasicBlock* int_exit = builder->GetInsertBlock();
         
         builder->SetInsertPoint(merge_car);
-        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 3);
+        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 4);
+        car_tagged_phi->addIncoming(tagged_null, null_exit);
         car_tagged_phi->addIncoming(tagged_double, double_exit);
         car_tagged_phi->addIncoming(tagged_ptr, ptr_exit);
         car_tagged_phi->addIncoming(tagged_int64, int_exit);
@@ -1691,7 +1720,7 @@ private:
         Value* cdr_base_type = builder->CreateAnd(cdr_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
-        // FIX: Check for all three types: DOUBLE, CONS_PTR, INT64/NULL
+        // SYMBOLIC DIFF FIX: Check for NULL, DOUBLE, CONS_PTR, INT64 (NULL already handled)
         Value* cdr_is_double = builder->CreateICmpEQ(cdr_base_type,
             ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
         Value* cdr_is_ptr = builder->CreateICmpEQ(cdr_base_type,
@@ -1844,8 +1873,21 @@ private:
         Type* val_type = llvm_val->getType();
         if (val_type->isIntegerTy(64)) {
             // CRITICAL FIX: Check if i64 came from PtrToInt (tensor/cons pointers)
-            // If so, treat as CONS_PTR, not INT64!
+            // Distinguish tensor pointers from cons cell pointers using name heuristics
             if (isa<PtrToIntInst>(llvm_val)) {
+                PtrToIntInst* ptoi = dyn_cast<PtrToIntInst>(llvm_val);
+                if (ptoi) {
+                    // Heuristic: tensor operations have specific naming patterns
+                    std::string name = ptoi->getName().str();
+                    if (name.find("tensor") != std::string::npos ||
+                        name.find("vector") != std::string::npos ||
+                        name.find("gradient") != std::string::npos ||
+                        name.find("jacobian") != std::string::npos ||
+                        name.find("hessian") != std::string::npos) {
+                        eshkol_debug("detectValueType: i64 from tensor PtrToInt (%s)", name.c_str());
+                        return TypedValue(llvm_val, ESHKOL_VALUE_TENSOR_PTR, true);
+                    }
+                }
                 eshkol_debug("detectValueType: i64 from PtrToInt, treating as CONS_PTR");
                 return TypedValue(llvm_val, ESHKOL_VALUE_CONS_PTR, true);
             }
@@ -3810,18 +3852,249 @@ private:
             Value* base_type = builder->CreateAnd(type_field,
                 ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
             
-            // Branch based on base type (without flags)
-            BasicBlock* int_display = BasicBlock::Create(*context, "display_int", current_func);
-            BasicBlock* double_display = BasicBlock::Create(*context, "display_double", current_func);
-            BasicBlock* ptr_display = BasicBlock::Create(*context, "display_ptr", current_func);
-            BasicBlock* display_done = BasicBlock::Create(*context, "display_done", current_func);
+            // CRITICAL FIX: Check for TENSOR_PTR first!
+            Value* is_tensor_ptr = builder->CreateICmpEQ(base_type,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_TENSOR_PTR));
             
+            BasicBlock* tensor_ptr_display = BasicBlock::Create(*context, "display_tagged_tensor", current_func);
+            BasicBlock* check_other_types = BasicBlock::Create(*context, "display_check_other", current_func);
+            
+            builder->CreateCondBr(is_tensor_ptr, tensor_ptr_display, check_other_types);
+            
+            // Display tensor from tagged_value with TENSOR_PTR type
+            builder->SetInsertPoint(tensor_ptr_display);
+            Value* tensor_ptr_int = unpackInt64FromTaggedValue(arg);
+            Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
+            
+            // Print opening "#("
+            builder->CreateCall(printf_func, {codegenString("#(")});
+            
+            // Get total elements
+            Value* total_field = builder->CreateStructGEP(tensor_type, tensor_ptr, 3);
+            Value* total_elements = builder->CreateLoad(Type::getInt64Ty(*context), total_field);
+            
+            // Get elements array
+            Value* elements_field = builder->CreateStructGEP(tensor_type, tensor_ptr, 2);
+            Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field);
+            Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
+            
+            // Loop through elements
+            BasicBlock* tensor_tag_loop_cond = BasicBlock::Create(*context, "tensor_tag_loop_cond", current_func);
+            BasicBlock* tensor_tag_loop_body = BasicBlock::Create(*context, "tensor_tag_loop_body", current_func);
+            BasicBlock* tensor_tag_loop_exit = BasicBlock::Create(*context, "tensor_tag_loop_exit", current_func);
+            BasicBlock* tensor_tag_done = BasicBlock::Create(*context, "tensor_tag_done", current_func);
+            
+            Value* tensor_tag_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "tensor_tag_idx");
+            builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), tensor_tag_idx);
+            builder->CreateBr(tensor_tag_loop_cond);
+            
+            builder->SetInsertPoint(tensor_tag_loop_cond);
+            Value* tag_current_idx = builder->CreateLoad(Type::getInt64Ty(*context), tensor_tag_idx);
+            Value* tag_idx_less = builder->CreateICmpULT(tag_current_idx, total_elements);
+            builder->CreateCondBr(tag_idx_less, tensor_tag_loop_body, tensor_tag_loop_exit);
+            
+            builder->SetInsertPoint(tensor_tag_loop_body);
+            
+            // Add space before non-first elements
+            Value* tag_is_first = builder->CreateICmpEQ(tag_current_idx, ConstantInt::get(Type::getInt64Ty(*context), 0));
+            BasicBlock* tag_skip_space = BasicBlock::Create(*context, "tag_skip_space", current_func);
+            BasicBlock* tag_add_space = BasicBlock::Create(*context, "tag_add_space", current_func);
+            BasicBlock* tag_print_elem = BasicBlock::Create(*context, "tag_print_elem", current_func);
+            
+            builder->CreateCondBr(tag_is_first, tag_skip_space, tag_add_space);
+            
+            builder->SetInsertPoint(tag_add_space);
+            builder->CreateCall(printf_func, {codegenString(" ")});
+            builder->CreateBr(tag_print_elem);
+            
+            builder->SetInsertPoint(tag_skip_space);
+            builder->CreateBr(tag_print_elem);
+            
+            builder->SetInsertPoint(tag_print_elem);
+            
+            // Load element and detect type using IEEE 754 heuristic
+            Value* tag_elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr, tag_current_idx);
+            Value* tag_elem_int64 = builder->CreateLoad(Type::getInt64Ty(*context), tag_elem_ptr);
+            
+            Value* tag_is_small = builder->CreateICmpULT(tag_elem_int64,
+                ConstantInt::get(Type::getInt64Ty(*context), 1000));
+            Value* tag_exp_mask = ConstantInt::get(Type::getInt64Ty(*context), 0x7FF0000000000000ULL);
+            Value* tag_exp_bits = builder->CreateAnd(tag_elem_int64, tag_exp_mask);
+            Value* tag_has_exp = builder->CreateICmpNE(tag_exp_bits,
+                ConstantInt::get(Type::getInt64Ty(*context), 0));
+            Value* tag_likely_double = builder->CreateAnd(tag_has_exp, builder->CreateNot(tag_is_small));
+            
+            BasicBlock* tag_elem_double = BasicBlock::Create(*context, "tag_elem_double", current_func);
+            BasicBlock* tag_elem_int = BasicBlock::Create(*context, "tag_elem_int", current_func);
+            BasicBlock* tag_elem_done = BasicBlock::Create(*context, "tag_elem_done", current_func);
+            
+            builder->CreateCondBr(tag_likely_double, tag_elem_double, tag_elem_int);
+            
+            builder->SetInsertPoint(tag_elem_double);
+            Value* tag_as_double = builder->CreateBitCast(tag_elem_int64, Type::getDoubleTy(*context));
+            builder->CreateCall(printf_func, {codegenString("%g"), tag_as_double});
+            builder->CreateBr(tag_elem_done);
+            
+            builder->SetInsertPoint(tag_elem_int);
+            builder->CreateCall(printf_func, {codegenString("%lld"), tag_elem_int64});
+            builder->CreateBr(tag_elem_done);
+            
+            builder->SetInsertPoint(tag_elem_done);
+            Value* tag_next_idx = builder->CreateAdd(tag_current_idx, ConstantInt::get(Type::getInt64Ty(*context), 1));
+            builder->CreateStore(tag_next_idx, tensor_tag_idx);
+            builder->CreateBr(tensor_tag_loop_cond);
+            
+            builder->SetInsertPoint(tensor_tag_loop_exit);
+            builder->CreateCall(printf_func, {codegenString(")")});
+            builder->CreateBr(tensor_tag_done);
+            
+            builder->SetInsertPoint(check_other_types);
+            
+            // Branch based on base type (without flags)
+            // SYMBOLIC DIFF FIX: Check for CONS_PTR (S-expressions) FIRST!
+            Value* is_cons_ptr = builder->CreateICmpEQ(base_type,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
             Value* is_int = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_INT64));
             Value* is_double = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
             
+            BasicBlock* cons_ptr_display = BasicBlock::Create(*context, "display_cons_ptr", current_func);
+            BasicBlock* int_display = BasicBlock::Create(*context, "display_int", current_func);
+            BasicBlock* double_display = BasicBlock::Create(*context, "display_double", current_func);
+            BasicBlock* ptr_display = BasicBlock::Create(*context, "display_ptr", current_func);
+            
+            BasicBlock* check_int = BasicBlock::Create(*context, "check_int", current_func);
             BasicBlock* check_double = BasicBlock::Create(*context, "check_double", current_func);
+            
+            builder->CreateCondBr(is_cons_ptr, cons_ptr_display, check_int);
+            
+            // Display CONS_PTR as list (S-expressions from symbolic diff!)
+            builder->SetInsertPoint(cons_ptr_display);
+            Value* list_ptr_int = unpackInt64FromTaggedValue(arg);
+            
+            // Full S-expression display with proper list traversal
+            builder->CreateCall(printf_func, {codegenString("(")});
+            
+            Value* sexpr_current = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "sexpr_current");
+            Value* sexpr_first = builder->CreateAlloca(Type::getInt1Ty(*context), nullptr, "sexpr_first");
+            builder->CreateStore(list_ptr_int, sexpr_current);
+            builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), sexpr_first);
+            
+            BasicBlock* sexpr_loop_cond = BasicBlock::Create(*context, "sexpr_loop_cond", current_func);
+            BasicBlock* sexpr_loop_body = BasicBlock::Create(*context, "sexpr_loop_body", current_func);
+            BasicBlock* sexpr_loop_exit = BasicBlock::Create(*context, "sexpr_loop_exit", current_func);
+            
+            builder->CreateBr(sexpr_loop_cond);
+            
+            builder->SetInsertPoint(sexpr_loop_cond);
+            Value* sexpr_val = builder->CreateLoad(Type::getInt64Ty(*context), sexpr_current);
+            Value* sexpr_not_null = builder->CreateICmpNE(sexpr_val, ConstantInt::get(Type::getInt64Ty(*context), 0));
+            builder->CreateCondBr(sexpr_not_null, sexpr_loop_body, sexpr_loop_exit);
+            
+            builder->SetInsertPoint(sexpr_loop_body);
+            
+            // Add space before non-first elements
+            Value* sexpr_first_flag = builder->CreateLoad(Type::getInt1Ty(*context), sexpr_first);
+            BasicBlock* sexpr_skip_space = BasicBlock::Create(*context, "sexpr_skip_space", current_func);
+            BasicBlock* sexpr_add_space = BasicBlock::Create(*context, "sexpr_add_space", current_func);
+            BasicBlock* sexpr_display_elem = BasicBlock::Create(*context, "sexpr_display_elem", current_func);
+            
+            builder->CreateCondBr(sexpr_first_flag, sexpr_skip_space, sexpr_add_space);
+            
+            builder->SetInsertPoint(sexpr_add_space);
+            builder->CreateCall(printf_func, {codegenString(" ")});
+            builder->CreateBr(sexpr_display_elem);
+            
+            builder->SetInsertPoint(sexpr_skip_space);
+            builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 0), sexpr_first);
+            builder->CreateBr(sexpr_display_elem);
+            
+            // Display element
+            builder->SetInsertPoint(sexpr_display_elem);
+            Value* sexpr_car_tagged = extractCarAsTaggedValue(sexpr_val);
+            Value* sexpr_car_type = getTaggedValueType(sexpr_car_tagged);
+            Value* sexpr_car_base = builder->CreateAnd(sexpr_car_type,
+                ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+            
+            Value* sexpr_car_is_ptr = builder->CreateICmpEQ(sexpr_car_base,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
+            Value* sexpr_car_is_double = builder->CreateICmpEQ(sexpr_car_base,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+            
+            BasicBlock* sexpr_check_string = BasicBlock::Create(*context, "sexpr_check_string", current_func);
+            BasicBlock* sexpr_check_double = BasicBlock::Create(*context, "sexpr_check_double", current_func);
+            BasicBlock* sexpr_display_double = BasicBlock::Create(*context, "sexpr_display_double", current_func);
+            BasicBlock* sexpr_display_int = BasicBlock::Create(*context, "sexpr_display_int", current_func);
+            BasicBlock* sexpr_elem_done = BasicBlock::Create(*context, "sexpr_elem_done", current_func);
+            
+            builder->CreateCondBr(sexpr_car_is_ptr, sexpr_check_string, sexpr_check_double);
+            
+            // Check if CONS_PTR is string or nested list
+            builder->SetInsertPoint(sexpr_check_string);
+            Value* sexpr_car_ptr_int = unpackInt64FromTaggedValue(sexpr_car_tagged);
+            Value* sexpr_car_ptr = builder->CreateIntToPtr(sexpr_car_ptr_int, builder->getPtrTy());
+            Value* sexpr_first_byte = builder->CreateLoad(Type::getInt8Ty(*context), sexpr_car_ptr);
+            Value* sexpr_is_printable = builder->CreateAnd(
+                builder->CreateICmpUGE(sexpr_first_byte, ConstantInt::get(Type::getInt8Ty(*context), 32)),
+                builder->CreateICmpULE(sexpr_first_byte, ConstantInt::get(Type::getInt8Ty(*context), 126)));
+            
+            BasicBlock* sexpr_display_string = BasicBlock::Create(*context, "sexpr_display_string", current_func);
+            BasicBlock* sexpr_display_nested = BasicBlock::Create(*context, "sexpr_display_nested", current_func);
+            
+            builder->CreateCondBr(sexpr_is_printable, sexpr_display_string, sexpr_display_nested);
+            
+            builder->SetInsertPoint(sexpr_display_string);
+            builder->CreateCall(printf_func, {codegenString("%s"), sexpr_car_ptr});
+            builder->CreateBr(sexpr_elem_done);
+            
+            builder->SetInsertPoint(sexpr_display_nested);
+            builder->CreateCall(printf_func, {codegenString("(...)")});
+            builder->CreateBr(sexpr_elem_done);
+            
+            builder->SetInsertPoint(sexpr_check_double);
+            builder->CreateCondBr(sexpr_car_is_double, sexpr_display_double, sexpr_display_int);
+            
+            builder->SetInsertPoint(sexpr_display_double);
+            Value* sexpr_car_double = unpackDoubleFromTaggedValue(sexpr_car_tagged);
+            builder->CreateCall(printf_func, {codegenString("%g"), sexpr_car_double});
+            builder->CreateBr(sexpr_elem_done);
+            
+            builder->SetInsertPoint(sexpr_display_int);
+            Value* sexpr_car_int = unpackInt64FromTaggedValue(sexpr_car_tagged);
+            builder->CreateCall(printf_func, {codegenString("%lld"), sexpr_car_int});
+            builder->CreateBr(sexpr_elem_done);
+            
+            // Move to next element
+            builder->SetInsertPoint(sexpr_elem_done);
+            Value* sexpr_cons_ptr = builder->CreateIntToPtr(sexpr_val, builder->getPtrTy());
+            Value* sexpr_is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+            Value* sexpr_cdr_type = builder->CreateCall(arena_tagged_cons_get_type_func, {sexpr_cons_ptr, sexpr_is_cdr});
+            Value* sexpr_cdr_base = builder->CreateAnd(sexpr_cdr_type,
+                ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+            Value* sexpr_cdr_is_ptr = builder->CreateICmpEQ(sexpr_cdr_base,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
+            Value* sexpr_cdr_is_null = builder->CreateICmpEQ(sexpr_cdr_base,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_NULL));
+            
+            BasicBlock* sexpr_cdr_ptr = BasicBlock::Create(*context, "sexpr_cdr_ptr", current_func);
+            BasicBlock* sexpr_cdr_null = BasicBlock::Create(*context, "sexpr_cdr_null", current_func);
+            
+            builder->CreateCondBr(sexpr_cdr_is_ptr, sexpr_cdr_ptr, sexpr_cdr_null);
+            
+            builder->SetInsertPoint(sexpr_cdr_ptr);
+            Value* sexpr_next = builder->CreateCall(arena_tagged_cons_get_ptr_func, {sexpr_cons_ptr, sexpr_is_cdr});
+            builder->CreateStore(sexpr_next, sexpr_current);
+            builder->CreateBr(sexpr_loop_cond);
+            
+            builder->SetInsertPoint(sexpr_cdr_null);
+            builder->CreateCondBr(sexpr_cdr_is_null, sexpr_loop_exit, sexpr_loop_exit);
+            
+            builder->SetInsertPoint(sexpr_loop_exit);
+            builder->CreateCall(printf_func, {codegenString(")")});
+            builder->CreateBr(tensor_tag_done);
+            
+            builder->SetInsertPoint(check_int);
             builder->CreateCondBr(is_int, int_display, check_double);
             
             builder->SetInsertPoint(check_double);
@@ -3831,22 +4104,22 @@ private:
             builder->SetInsertPoint(int_display);
             Value* int_val = unpackInt64FromTaggedValue(arg);
             builder->CreateCall(printf_func, {codegenString("%lld"), int_val});
-            builder->CreateBr(display_done);
+            builder->CreateBr(tensor_tag_done);
             
             // Display double
             builder->SetInsertPoint(double_display);
             Value* double_val = unpackDoubleFromTaggedValue(arg);
             builder->CreateCall(printf_func, {codegenString("%f"), double_val});
-            builder->CreateBr(display_done);
+            builder->CreateBr(tensor_tag_done);
             
             // Display pointer (as int64 for now)
             builder->SetInsertPoint(ptr_display);
             Value* ptr_val = unpackPtrFromTaggedValue(arg);
             Value* ptr_as_int = builder->CreatePtrToInt(ptr_val, Type::getInt64Ty(*context));
             builder->CreateCall(printf_func, {codegenString("%lld"), ptr_as_int});
-            builder->CreateBr(display_done);
+            builder->CreateBr(tensor_tag_done);
             
-            builder->SetInsertPoint(display_done);
+            builder->SetInsertPoint(tensor_tag_done);
             return ConstantInt::get(Type::getInt32Ty(*context), 0);
         }
         
@@ -3854,15 +4127,39 @@ private:
         Value* arg_int = safeExtractInt64(arg);
         
         if (arg->getType()->isIntegerTy(64) || arg->getType() == tagged_value_type) {
-            // Check if this is a valid pointer (> 1000)
-            Value* is_large_enough = builder->CreateICmpUGT(arg_int,
-                ConstantInt::get(Type::getInt64Ty(*context), 1000));
-            
+            // Create all BasicBlocks first
             BasicBlock* check_type = BasicBlock::Create(*context, "display_check_type", current_func);
             BasicBlock* display_tensor = BasicBlock::Create(*context, "display_tensor", current_func);
             BasicBlock* display_list = BasicBlock::Create(*context, "display_list", current_func);
             BasicBlock* display_int = BasicBlock::Create(*context, "display_int_value", current_func);
             BasicBlock* display_done = BasicBlock::Create(*context, "display_complete", current_func);
+            
+            // CRITICAL FIX: If arg is tagged_value with TENSOR_PTR type, handle specially
+            // This prevents calling cons cell functions on tensor pointers (which causes type=32 errors)
+            if (arg->getType() == tagged_value_type) {
+                Value* arg_type = getTaggedValueType(arg);
+                Value* arg_base_type = builder->CreateAnd(arg_type,
+                    ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+                
+                Value* is_tensor_ptr = builder->CreateICmpEQ(arg_base_type,
+                    ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_TENSOR_PTR));
+                
+                BasicBlock* tensor_ptr_check = BasicBlock::Create(*context, "display_tensor_ptr_check", current_func);
+                BasicBlock* continue_normal = BasicBlock::Create(*context, "display_continue_normal", current_func);
+                
+                builder->CreateCondBr(is_tensor_ptr, tensor_ptr_check, continue_normal);
+                
+                // Tensor pointer path: go directly to tensor display
+                builder->SetInsertPoint(tensor_ptr_check);
+                builder->CreateBr(display_tensor);
+                
+                // Continue with normal display logic
+                builder->SetInsertPoint(continue_normal);
+            }
+            
+            // Check if this is a valid pointer (> 1000)
+            Value* is_large_enough = builder->CreateICmpUGT(arg_int,
+                ConstantInt::get(Type::getInt64Ty(*context), 1000));
             
             builder->CreateCondBr(is_large_enough, check_type, display_int);
             
@@ -3876,12 +4173,12 @@ private:
             Value* car_type_tag = builder->CreateCall(arena_tagged_cons_get_type_func,
                 {cons_check_ptr, is_car_check});
             
-            // Valid type tags are 0-5 (NULL, INT64, DOUBLE, CONS_PTR, DUAL_NUMBER, AD_NODE_PTR)
+            // Valid type tags are 0-6 (NULL, INT64, DOUBLE, CONS_PTR, DUAL_NUMBER, AD_NODE_PTR, TENSOR_PTR)
             // Mask to get base type (remove flags)
             Value* type_base = builder->CreateAnd(car_type_tag,
                 ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
             Value* type_in_range = builder->CreateICmpULE(type_base,
-                ConstantInt::get(Type::getInt8Ty(*context), 5));
+                ConstantInt::get(Type::getInt8Ty(*context), 6));
             
             // If valid cons cell type, display as list
             BasicBlock* try_tensor_check = BasicBlock::Create(*context, "display_try_tensor", current_func);
@@ -3890,13 +4187,7 @@ private:
             // Only try tensor if NOT a valid cons cell
             builder->SetInsertPoint(try_tensor_check);
             
-            // Define tensor structure
-            std::vector<Type*> tensor_fields;
-            tensor_fields.push_back(PointerType::getUnqual(*context));
-            tensor_fields.push_back(Type::getInt64Ty(*context));
-            tensor_fields.push_back(PointerType::getUnqual(*context));
-            tensor_fields.push_back(Type::getInt64Ty(*context));
-            StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+            // Use class member tensor_type (shared by all tensor operations)
             
             // Add safety: check alignment (tensors are 8-byte aligned from malloc)
             Value* is_aligned = builder->CreateICmpEQ(
@@ -4060,19 +4351,73 @@ private:
             builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 0), is_first);
             builder->CreateBr(display_element);
             
-            // Display current element using tagged value extraction
+            // Display current element - SYMBOLIC DIFF FIX: Check for string pointers FIRST
             builder->SetInsertPoint(display_element);
-            Value* car_tagged = extractCarAsTaggedValue(current_val);
-            Value* car_type = getTaggedValueType(car_tagged);
-            Value* car_base_type = builder->CreateAnd(car_type,
+            
+            // Get car type BEFORE extraction to detect string pointers
+            Value* elem_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
+            Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0);
+            Value* elem_car_type = builder->CreateCall(arena_tagged_cons_get_type_func,
+                {elem_cons_ptr, is_car});
+            Value* car_base_type = builder->CreateAnd(elem_car_type,
                 ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
             
-            Value* car_is_double = builder->CreateICmpEQ(car_base_type,
+            // Check if car is CONS_PTR (could be string symbol OR nested list)
+            Value* car_is_cons_ptr = builder->CreateICmpEQ(car_base_type,
+                ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
+            
+            BasicBlock* check_if_string = BasicBlock::Create(*context, "check_car_string", current_func);
+            BasicBlock* extract_normal = BasicBlock::Create(*context, "extract_car_normal", current_func);
+            BasicBlock* element_done = BasicBlock::Create(*context, "element_done", current_func);
+            
+            builder->CreateCondBr(car_is_cons_ptr, check_if_string, extract_normal);
+            
+            // CONS_PTR path: Check if it's a string pointer (symbolic operator) or nested list
+            builder->SetInsertPoint(check_if_string);
+            Value* car_ptr_int = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+                {elem_cons_ptr, is_car});
+            Value* car_ptr = builder->CreateIntToPtr(car_ptr_int, builder->getPtrTy());
+            
+            // Load first byte to detect strings (ASCII printable characters)
+            Value* first_byte_ptr = builder->CreatePointerCast(car_ptr, builder->getPtrTy());
+            Value* first_byte = builder->CreateLoad(Type::getInt8Ty(*context), first_byte_ptr);
+            
+            // Check if first byte is printable ASCII (32-126) - indicates string symbol
+            Value* is_printable_low = builder->CreateICmpUGE(first_byte,
+                ConstantInt::get(Type::getInt8Ty(*context), 32));
+            Value* is_printable_high = builder->CreateICmpULE(first_byte,
+                ConstantInt::get(Type::getInt8Ty(*context), 126));
+            Value* is_likely_string = builder->CreateAnd(is_printable_low, is_printable_high);
+            
+            BasicBlock* display_string_symbol = BasicBlock::Create(*context, "display_string_symbol", current_func);
+            BasicBlock* display_nested_list = BasicBlock::Create(*context, "display_nested_list", current_func);
+            
+            builder->CreateCondBr(is_likely_string, display_string_symbol, display_nested_list);
+            
+            // Display string symbol (operator names like "+", "*", "sin", etc.)
+            builder->SetInsertPoint(display_string_symbol);
+            builder->CreateCall(printf_func, {codegenString("%s"), car_ptr});
+            builder->CreateBr(element_done);
+            
+            // Display nested list recursively (existing cons_ptr logic)
+            builder->SetInsertPoint(display_nested_list);
+            // For nested S-expressions, we need to recursively display them
+            // For now, just display as "(nested)" - full recursive display would go here
+            builder->CreateCall(printf_func, {codegenString("(nested)")});
+            builder->CreateBr(element_done);
+            
+            // Normal extraction path for int64/double values
+            builder->SetInsertPoint(extract_normal);
+            Value* car_tagged = extractCarAsTaggedValue(current_val);
+            Value* car_type = getTaggedValueType(car_tagged);
+            Value* car_extracted_base = builder->CreateAnd(car_type,
+                ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+            
+            Value* car_is_double = builder->CreateICmpEQ(car_extracted_base,
                 ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
             
             BasicBlock* display_car_double = BasicBlock::Create(*context, "display_car_double", current_func);
             BasicBlock* display_car_int = BasicBlock::Create(*context, "display_car_int", current_func);
-            BasicBlock* element_done = BasicBlock::Create(*context, "element_done", current_func);
             
             builder->CreateCondBr(car_is_double, display_car_double, display_car_int);
             
@@ -5103,13 +5448,7 @@ private:
     Value* codegenTensor(const eshkol_ast_t* ast) {
         if (!ast || ast->type != ESHKOL_TENSOR) return nullptr;
         
-        // Create tensor structure: { dimensions*, num_dimensions, elements*, total_elements }
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions array
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements array  
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         // Allocate memory for tensor structure
         Function* malloc_func = function_table["malloc"];
@@ -5185,14 +5524,8 @@ private:
         eshkol_error("DEBUG: codegenTensorOperation called! num_dims=%llu, total_elems=%llu",
             (unsigned long long)op->tensor_op.num_dimensions,
             (unsigned long long)op->tensor_op.total_elements);
+        // Use class member tensor_type (shared by all tensor operations)
         
-        // Create tensor structure: { dimensions*, num_dimensions, elements*, total_elements }
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions array
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements array
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
         
         // Allocate memory for tensor structure
         Function* malloc_func = function_table["malloc"];
@@ -5263,22 +5596,54 @@ private:
         }
         
         // Store fields in tensor structure
+        // SEGFAULT DEBUG: Add prints after each field store
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("TENSOR SETUP: About to store dims_ptr to field 0\n")
+            });
+        }
+        
         Value* dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 0);
         builder->CreateStore(typed_dims_ptr, dims_field_ptr);
+        
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("TENSOR SETUP: Stored dims, about to store num_dimensions to field 1\n")
+            });
+        }
         
         Value* num_dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 1);
         builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), op->tensor_op.num_dimensions), num_dims_field_ptr);
         
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("TENSOR SETUP: Stored num_dims, about to store elements_ptr to field 2\n")
+            });
+        }
+        
         Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 2);
         builder->CreateStore(typed_elements_ptr, elements_field_ptr);
+        
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("TENSOR SETUP: Stored elements, about to store total_elements to field 3\n")
+            });
+        }
         
         Value* total_elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 3);
         builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), op->tensor_op.total_elements), total_elements_field_ptr);
         
-        // Return pointer to tensor as int64
-        Value* result_int = builder->CreatePtrToInt(typed_tensor_ptr, Type::getInt64Ty(*context));
-        eshkol_error("DEBUG: codegenTensorOperation returning Value* = %p (should be PtrToInt instruction)", result_int);
-        return result_int;
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("TENSOR SETUP: All fields stored successfully\n")
+            });
+        }
+        
+        // Return pointer to tensor as tagged value with TENSOR_PTR type tag
+        Value* tensor_int = builder->CreatePtrToInt(typed_tensor_ptr, Type::getInt64Ty(*context));
+        eshkol_error("DEBUG: codegenTensorOperation returning tagged tensor pointer");
+        // packPtrToTaggedValue handles i64 directly - no need to convert back to ptr
+        return packPtrToTaggedValue(tensor_int, ESHKOL_VALUE_TENSOR_PTR);
     }
     
     Value* codegenTensorGet(const eshkol_operations_t* op) {
@@ -5294,13 +5659,7 @@ private:
         // Load the tensor pointer value from the variable
         Value* tensor_ptr_int = builder->CreateLoad(Type::getInt64Ty(*context), tensor_var_ptr);
         
-        // Convert int64 back to tensor pointer
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
         
@@ -5356,13 +5715,7 @@ private:
         Value* vector_ptr_int = safeExtractInt64(vector_val);
         Value* index_int = safeExtractInt64(index);
         
-        // Define tensor structure
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* vector_ptr = builder->CreateIntToPtr(vector_ptr_int, builder->getPtrTy());
         
@@ -5473,13 +5826,7 @@ private:
         // Load the tensor pointer value from the variable
         Value* tensor_ptr_int = builder->CreateLoad(Type::getInt64Ty(*context), tensor_var_ptr);
         
-        // Convert int64 back to tensor pointer
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
         
@@ -5532,12 +5879,7 @@ private:
         // For simplicity, this is a basic element-wise operation implementation
         // A full implementation would check dimensions compatibility
         
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* tensor1_ptr = builder->CreateIntToPtr(tensor1_int, builder->getPtrTy());
         Value* tensor2_ptr = builder->CreateIntToPtr(tensor2_int, builder->getPtrTy());
@@ -5635,13 +5977,7 @@ private:
         Value* tensor_a_ptr_int = builder->CreateLoad(Type::getInt64Ty(*context), tensor_a_var_ptr);
         Value* tensor_b_ptr_int = builder->CreateLoad(Type::getInt64Ty(*context), tensor_b_var_ptr);
         
-        // Convert to tensor pointers
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* tensor_a_ptr = builder->CreateIntToPtr(tensor_a_ptr_int, builder->getPtrTy());
         Value* tensor_b_ptr = builder->CreateIntToPtr(tensor_b_ptr_int, builder->getPtrTy());
@@ -5900,12 +6236,7 @@ private:
         Value* tensor_ptr_int = codegenAST(&op->call_op.variables[0]);
         if (!tensor_ptr_int) return nullptr;
         
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
         
@@ -5944,12 +6275,7 @@ private:
         std::string func_name = func_ast->variable.id;
         
         // Convert int64 back to tensor pointer
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
         
@@ -6086,13 +6412,7 @@ private:
         
         std::string func_name = func_ast->variable.id;
         
-        // Convert int64 back to tensor pointer
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
         
@@ -6204,13 +6524,7 @@ private:
         
         std::string func_name = func_ast->variable.id;
         
-        // Convert int64 back to tensor pointer
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
         
@@ -6457,23 +6771,50 @@ private:
     }
     
     // Symbolic differentiation function
+    // Returns S-expression (list) representing symbolic derivative formula
     Value* codegenDiff(const eshkol_operations_t* op) {
         if (!op->diff_op.expression || !op->diff_op.variable) {
             eshkol_error("Invalid diff operation");
             return nullptr;
         }
         
-        eshkol_info("Computing derivative of expression with respect to %s", op->diff_op.variable);
+        const char* var = op->diff_op.variable;
+        eshkol_info("Building symbolic derivative S-expression for %s", var);
         
-        // Perform actual symbolic differentiation
-        Value* derivative_result = differentiate(op->diff_op.expression, op->diff_op.variable);
+        // STEP 1: Build symbolic derivative as AST (compile-time)
+        eshkol_ast_t* symbolic_deriv = buildSymbolicDerivative(
+            op->diff_op.expression,
+            var
+        );
         
-        if (!derivative_result) {
-            eshkol_error("Failed to compute symbolic derivative");
-            return ConstantInt::get(Type::getInt64Ty(*context), 0);
+        if (!symbolic_deriv) {
+            eshkol_error("Failed to build symbolic derivative");
+            return packInt64ToTaggedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), true);
         }
         
-        return derivative_result;
+        // STEP 2: Generate runtime code that constructs the S-expression
+        // For simple constants, return them directly (not as lists)
+        if (symbolic_deriv->type == ESHKOL_INT64 || symbolic_deriv->type == ESHKOL_DOUBLE) {
+            Value* result = codegenQuotedAST(symbolic_deriv);
+            
+            // Clean up temporary AST
+            eshkol_ast_clean(symbolic_deriv);
+            free(symbolic_deriv);
+            
+            eshkol_info("Generated constant symbolic derivative");
+            return result;
+        }
+        
+        // For complex expressions, convert to S-expression list
+        Value* result = codegenQuotedAST(symbolic_deriv);
+        
+        // Clean up temporary AST
+        eshkol_ast_clean(symbolic_deriv);
+        free(symbolic_deriv);
+        
+        eshkol_info("Generated symbolic derivative S-expression");
+        
+        return result;
     }
     
     // ===== PHASE 0: AUTODIFF TYPE-AWARE HELPERS =====
@@ -6612,6 +6953,374 @@ private:
         }
         return builder->CreateFDiv(a, b);
     }
+    // ===== SYMBOLIC DIFFERENTIATION HELPER FUNCTIONS =====
+    // AST-based symbolic derivative builder (compile-time transformation)
+    
+    // Helper: Check if AST is a constant (number)
+    bool isConstant(const eshkol_ast_t* ast) {
+        return ast && (ast->type == ESHKOL_INT64 || ast->type == ESHKOL_DOUBLE);
+    }
+    
+    // Helper: Check if AST is specific variable
+    bool isVariable(const eshkol_ast_t* ast, const char* var_name) {
+        return ast && ast->type == ESHKOL_VAR &&
+               ast->variable.id && strcmp(ast->variable.id, var_name) == 0;
+    }
+    
+    // Helper: Check if constant equals specific value
+    bool isConstantValue(const eshkol_ast_t* ast, double value) {
+        if (ast->type == ESHKOL_INT64) return (double)ast->int64_val == value;
+        if (ast->type == ESHKOL_DOUBLE) return ast->double_val == value;
+        return false;
+    }
+    
+    // Helper: Check if constant equals 0
+    bool isConstantZero(const eshkol_ast_t* ast) {
+        return isConstantValue(ast, 0.0);
+    }
+    
+    // Helper: Check if constant equals 1
+    bool isConstantOne(const eshkol_ast_t* ast) {
+        return isConstantValue(ast, 1.0);
+    }
+    
+    // Core symbolic differentiation function (AST → AST transformation)
+    eshkol_ast_t* buildSymbolicDerivative(const eshkol_ast_t* expr, const char* var) {
+        if (!expr || !var) return eshkol_make_int_ast(0);
+        
+        switch (expr->type) {
+            case ESHKOL_INT64:
+            case ESHKOL_DOUBLE:
+                // d/dx(c) = 0
+                return eshkol_make_int_ast(0);
+                
+            case ESHKOL_VAR:
+                // d/dx(x) = 1, d/dx(y) = 0
+                if (expr->variable.id && strcmp(expr->variable.id, var) == 0)
+                    return eshkol_make_int_ast(1);
+                else
+                    return eshkol_make_int_ast(0);
+                    
+            case ESHKOL_OP:
+                return differentiateOperationSymbolic(&expr->operation, var);
+                
+            default:
+                return eshkol_make_int_ast(0);
+        }
+    }
+    
+    // Differentiate operations (symbolic, AST-based)
+    eshkol_ast_t* differentiateOperationSymbolic(const eshkol_operations_t* op, const char* var) {
+        if (!op || op->op != ESHKOL_CALL_OP) {
+            return eshkol_make_int_ast(0);
+        }
+        
+        if (!op->call_op.func || op->call_op.func->type != ESHKOL_VAR ||
+            !op->call_op.func->variable.id) {
+            return eshkol_make_int_ast(0);
+        }
+        
+        const char* func_name = op->call_op.func->variable.id;
+        
+        // ADDITION RULE: d/dx(f + g) = f' + g'
+        if (strcmp(func_name, "+") == 0 && op->call_op.num_vars >= 2) {
+            eshkol_ast_t* result = buildSymbolicDerivative(&op->call_op.variables[0], var);
+            
+            for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+                eshkol_ast_t* term = buildSymbolicDerivative(&op->call_op.variables[i], var);
+                
+                // Simplification: skip adding 0
+                if (isConstantZero(term)) {
+                    continue;
+                } else if (isConstantZero(result)) {
+                    result = term;
+                } else {
+                    result = eshkol_make_binary_op_ast("+", result, term);
+                }
+            }
+            return result;
+        }
+        
+        // SUBTRACTION RULE: d/dx(f - g) = f' - g'
+        if (strcmp(func_name, "-") == 0 && op->call_op.num_vars == 2) {
+            eshkol_ast_t* f_prime = buildSymbolicDerivative(&op->call_op.variables[0], var);
+            eshkol_ast_t* g_prime = buildSymbolicDerivative(&op->call_op.variables[1], var);
+            
+            // Simplification: f' - 0 = f'
+            if (isConstantZero(g_prime)) return f_prime;
+            // Simplification: 0 - g' = -g' (would need negation)
+            if (isConstantZero(f_prime)) {
+                return eshkol_make_unary_call_ast("-", g_prime);
+            }
+            
+            return eshkol_make_binary_op_ast("-", f_prime, g_prime);
+        }
+        
+        // PRODUCT RULE: d/dx(f * g) = f'*g + f*g'
+        if (strcmp(func_name, "*") == 0 && op->call_op.num_vars == 2) {
+            const eshkol_ast_t* f = &op->call_op.variables[0];
+            const eshkol_ast_t* g = &op->call_op.variables[1];
+            
+            // SPECIAL CASE: d/dx(c * x) = c (constant * variable)
+            if (isConstant(f) && isVariable(g, var)) {
+                return eshkol_copy_ast(f);
+            }
+            if (isVariable(f, var) && isConstant(g)) {
+                return eshkol_copy_ast(g);
+            }
+            
+            // SPECIAL CASE: d/dx(x * x) = 2*x (simplified)
+            if (isVariable(f, var) && isVariable(g, var)) {
+                // Return '(* 2 x) as S-expression
+                return eshkol_make_binary_op_ast("*",
+                    eshkol_make_int_ast(2),
+                    eshkol_make_var_ast(var));
+            }
+            
+            // GENERAL CASE: f'*g + f*g'
+            eshkol_ast_t* f_prime = buildSymbolicDerivative(f, var);
+            eshkol_ast_t* g_prime = buildSymbolicDerivative(g, var);
+            
+            // Simplification: 0*g + f*0 = 0
+            if (isConstantZero(f_prime) && isConstantZero(g_prime)) {
+                return eshkol_make_int_ast(0);
+            }
+            // Simplification: 0*g + f*g' = f*g'
+            if (isConstantZero(f_prime)) {
+                return eshkol_make_binary_op_ast("*", eshkol_copy_ast(f), g_prime);
+            }
+            // Simplification: f'*g + f*0 = f'*g
+            if (isConstantZero(g_prime)) {
+                return eshkol_make_binary_op_ast("*", f_prime, eshkol_copy_ast(g));
+            }
+            
+            eshkol_ast_t* term1 = eshkol_make_binary_op_ast("*", f_prime, eshkol_copy_ast(g));
+            eshkol_ast_t* term2 = eshkol_make_binary_op_ast("*", eshkol_copy_ast(f), g_prime);
+            return eshkol_make_binary_op_ast("+", term1, term2);
+        }
+        
+        // QUOTIENT RULE: d/dx(f / g) = (f'*g - f*g') / g²
+        if (strcmp(func_name, "/") == 0 && op->call_op.num_vars == 2) {
+            const eshkol_ast_t* f = &op->call_op.variables[0];
+            const eshkol_ast_t* g = &op->call_op.variables[1];
+            
+            eshkol_ast_t* f_prime = buildSymbolicDerivative(f, var);
+            eshkol_ast_t* g_prime = buildSymbolicDerivative(g, var);
+            
+            // Build: (f'*g - f*g') / g²
+            eshkol_ast_t* f_prime_g = eshkol_make_binary_op_ast("*", f_prime, eshkol_copy_ast(g));
+            eshkol_ast_t* f_g_prime = eshkol_make_binary_op_ast("*", eshkol_copy_ast(f), g_prime);
+            eshkol_ast_t* numerator = eshkol_make_binary_op_ast("-", f_prime_g, f_g_prime);
+            eshkol_ast_t* g_squared = eshkol_make_binary_op_ast("*", eshkol_copy_ast(g), eshkol_copy_ast(g));
+            
+            return eshkol_make_binary_op_ast("/", numerator, g_squared);
+        }
+        
+        // CHAIN RULE: d/dx(sin(f)) = cos(f) * f'
+        if (strcmp(func_name, "sin") == 0 && op->call_op.num_vars == 1) {
+            const eshkol_ast_t* f = &op->call_op.variables[0];
+            eshkol_ast_t* f_prime = buildSymbolicDerivative(f, var);
+            eshkol_ast_t* cos_f = eshkol_make_unary_call_ast("cos", eshkol_copy_ast(f));
+            
+            // Special case: d/dx(sin(x)) = cos(x) (not cos(x)*1)
+            if (isConstantOne(f_prime)) {
+                return cos_f;
+            }
+            
+            return eshkol_make_binary_op_ast("*", cos_f, f_prime);
+        }
+        
+        // CHAIN RULE: d/dx(cos(f)) = -sin(f) * f'
+        if (strcmp(func_name, "cos") == 0 && op->call_op.num_vars == 1) {
+            const eshkol_ast_t* f = &op->call_op.variables[0];
+            eshkol_ast_t* f_prime = buildSymbolicDerivative(f, var);
+            eshkol_ast_t* sin_f = eshkol_make_unary_call_ast("sin", eshkol_copy_ast(f));
+            eshkol_ast_t* neg_sin_f = eshkol_make_unary_call_ast("-", sin_f);
+            
+            // Special case: d/dx(cos(x)) = -sin(x) (not -sin(x)*1)
+            if (isConstantOne(f_prime)) {
+                return neg_sin_f;
+            }
+            
+            return eshkol_make_binary_op_ast("*", neg_sin_f, f_prime);
+        }
+        
+        // CHAIN RULE: d/dx(exp(f)) = exp(f) * f'
+        if (strcmp(func_name, "exp") == 0 && op->call_op.num_vars == 1) {
+            const eshkol_ast_t* f = &op->call_op.variables[0];
+            eshkol_ast_t* f_prime = buildSymbolicDerivative(f, var);
+            eshkol_ast_t* exp_f = eshkol_make_unary_call_ast("exp", eshkol_copy_ast(f));
+            
+            // Special case: d/dx(exp(x)) = exp(x)
+            if (isConstantOne(f_prime)) {
+                return exp_f;
+            }
+            
+            return eshkol_make_binary_op_ast("*", exp_f, f_prime);
+        }
+        
+        // CHAIN RULE: d/dx(log(f)) = f' / f
+        if (strcmp(func_name, "log") == 0 && op->call_op.num_vars == 1) {
+            const eshkol_ast_t* f = &op->call_op.variables[0];
+            eshkol_ast_t* f_prime = buildSymbolicDerivative(f, var);
+            
+            // Special case: d/dx(log(x)) = 1/x
+            if (isConstantOne(f_prime)) {
+                return eshkol_make_binary_op_ast("/", eshkol_make_int_ast(1), eshkol_copy_ast(f));
+            }
+            
+            return eshkol_make_binary_op_ast("/", f_prime, eshkol_copy_ast(f));
+        }
+        
+        // POWER RULE: d/dx(f^n) = n * f^(n-1) * f' (constant exponent)
+        if (strcmp(func_name, "pow") == 0 && op->call_op.num_vars == 2) {
+            const eshkol_ast_t* f = &op->call_op.variables[0];
+            const eshkol_ast_t* n = &op->call_op.variables[1];
+            
+            // Only handle constant exponents
+            if (isConstant(n)) {
+                eshkol_ast_t* f_prime = buildSymbolicDerivative(f, var);
+                
+                // Build: n * f^(n-1) * f'
+                eshkol_ast_t* n_minus_1 = nullptr;
+                if (n->type == ESHKOL_INT64) {
+                    n_minus_1 = eshkol_make_int_ast(n->int64_val - 1);
+                } else {
+                    n_minus_1 = eshkol_make_double_ast(n->double_val - 1.0);
+                }
+                
+                eshkol_ast_t* f_power = eshkol_make_binary_op_ast("pow", eshkol_copy_ast(f), n_minus_1);
+                eshkol_ast_t* n_times_power = eshkol_make_binary_op_ast("*", eshkol_copy_ast(n), f_power);
+                
+                // Special case: f'=1, simplify to n * f^(n-1)
+                if (isConstantOne(f_prime)) {
+                    return n_times_power;
+                }
+                
+                return eshkol_make_binary_op_ast("*", n_times_power, f_prime);
+            }
+        }
+        
+        // SQRT RULE: d/dx(sqrt(f)) = f' / (2*sqrt(f))
+        if (strcmp(func_name, "sqrt") == 0 && op->call_op.num_vars == 1) {
+            const eshkol_ast_t* f = &op->call_op.variables[0];
+            eshkol_ast_t* f_prime = buildSymbolicDerivative(f, var);
+            
+            // Build: f' / (2*sqrt(f))
+            eshkol_ast_t* sqrt_f = eshkol_make_unary_call_ast("sqrt", eshkol_copy_ast(f));
+            eshkol_ast_t* two_sqrt_f = eshkol_make_binary_op_ast("*", eshkol_make_int_ast(2), sqrt_f);
+            
+            // Special case: f'=1, simplify to 1 / (2*sqrt(f))
+            if (isConstantOne(f_prime)) {
+                return eshkol_make_binary_op_ast("/", eshkol_make_int_ast(1), two_sqrt_f);
+            }
+            
+            return eshkol_make_binary_op_ast("/", f_prime, two_sqrt_f);
+        }
+        
+        // Unknown operation - return 0
+        return eshkol_make_int_ast(0);
+    }
+    
+    // Convert AST to runtime S-expression (quoted list)
+    Value* codegenQuotedAST(const eshkol_ast_t* ast) {
+        if (!ast) return packInt64ToTaggedValue(
+            ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+        
+        switch (ast->type) {
+            case ESHKOL_INT64:
+                // Return integer directly (not as list)
+                return packInt64ToTaggedValue(
+                    ConstantInt::get(Type::getInt64Ty(*context), ast->int64_val),
+                    true);
+                
+            case ESHKOL_DOUBLE:
+                // Return double directly (not as list)
+                return packDoubleToTaggedValue(
+                    ConstantFP::get(Type::getDoubleTy(*context), ast->double_val));
+                
+            case ESHKOL_VAR:
+                // Return symbol as string (for now, could be enhanced)
+                return packPtrToTaggedValue(
+                    codegenString(ast->variable.id),
+                    ESHKOL_VALUE_CONS_PTR);
+                
+            case ESHKOL_OP:
+                if (ast->operation.op == ESHKOL_CALL_OP) {
+                    // Build list: (op arg1 arg2 ...) and wrap as tagged_value
+                    Value* list_ptr = codegenQuotedList(&ast->operation);
+                    // SYMBOLIC DIFF FIX: Wrap list pointer in tagged_value for nested S-expressions
+                    if (list_ptr == ConstantInt::get(Type::getInt64Ty(*context), 0)) {
+                        return packNullToTaggedValue();
+                    }
+                    return packPtrToTaggedValue(
+                        builder->CreateIntToPtr(list_ptr, builder->getPtrTy()),
+                        ESHKOL_VALUE_CONS_PTR);
+                }
+                break;
+                
+            default:
+                return packInt64ToTaggedValue(
+                    ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+        }
+        
+        return packInt64ToTaggedValue(
+            ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+    }
+    
+    // Build runtime S-expression list from call operation
+    Value* codegenQuotedList(const eshkol_operations_t* op) {
+        if (!op || op->op != ESHKOL_CALL_OP) {
+            return packInt64ToTaggedValue(ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+        }
+        
+        // Build list from right to left: (op arg1 arg2 ...)
+        // Start with empty list (null)
+        Value* result_int = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        
+        // Add arguments in reverse
+        for (int64_t i = op->call_op.num_vars - 1; i >= 0; i--) {
+            Value* elem_tagged = codegenQuotedAST(&op->call_op.variables[i]);
+            
+            // Convert result_int to tagged value
+            Value* result_tagged;
+            if (result_int == ConstantInt::get(Type::getInt64Ty(*context), 0)) {
+                result_tagged = packNullToTaggedValue();
+            } else {
+                result_tagged = packPtrToTaggedValue(
+                    builder->CreateIntToPtr(result_int, builder->getPtrTy()),
+                    ESHKOL_VALUE_CONS_PTR);
+            }
+            
+            // Create cons cell from two tagged values
+            Value* cons_cell = codegenTaggedArenaConsCellFromTaggedValue(elem_tagged, result_tagged);
+            result_int = cons_cell;
+        }
+        
+        // Add operator symbol at front
+        if (op->call_op.func && op->call_op.func->variable.id) {
+            Value* op_string = codegenString(op->call_op.func->variable.id);
+            TypedValue op_symbol(op_string, ESHKOL_VALUE_CONS_PTR, true);
+            Value* op_tagged = typedValueToTaggedValue(op_symbol);
+            
+            Value* result_tagged;
+            if (result_int == ConstantInt::get(Type::getInt64Ty(*context), 0)) {
+                result_tagged = packNullToTaggedValue();
+            } else {
+                result_tagged = packPtrToTaggedValue(
+                    builder->CreateIntToPtr(result_int, builder->getPtrTy()),
+                    ESHKOL_VALUE_CONS_PTR);
+            }
+            
+            Value* final_list = codegenTaggedArenaConsCellFromTaggedValue(op_tagged, result_tagged);
+            // SYMBOLIC DIFF FIX: Return int64 pointer, not tagged (for consistency with codegenQuotedAST caller)
+            return final_list;
+        }
+        
+        // SYMBOLIC DIFF FIX: Return int64 pointer, not tagged (for consistency with codegenQuotedAST caller)
+        return result_int;
+    }
+    
     // ===== DUAL NUMBER LLVM IR HELPER FUNCTIONS =====
     
     // Pack value and derivative into dual number struct
@@ -7599,32 +8308,15 @@ private:
         eshkol_error("DEBUG: Successfully got Function pointer");
         
         // Evaluate point to get input vector
-        Value* vector_ptr_int = codegenAST(op->gradient_op.point);
-        if (!vector_ptr_int) {
+        Value* vector_val = codegenAST(op->gradient_op.point);
+        if (!vector_val) {
             eshkol_error("Failed to evaluate gradient evaluation point");
             return nullptr;
         }
         
-        // DIAGNOSTIC 1: Check what codegenAST returned
-        eshkol_error("DEBUG 1: codegenAST returned type: %s, is AllocaInst: %d",
-            vector_ptr_int->getType()->isIntegerTy() ? "Integer" :
-            (isa<AllocaInst>(vector_ptr_int) ? "AllocaInst" : "Other"),
-            isa<AllocaInst>(vector_ptr_int));
-        
-        // CRITICAL FIX: If result is AllocaInst (let-binding variable), load the value
-        if (isa<AllocaInst>(vector_ptr_int)) {
-            AllocaInst* alloca = dyn_cast<AllocaInst>(vector_ptr_int);
-            Type* allocated_type = alloca->getAllocatedType();
-            
-            eshkol_error("DEBUG 2: AllocaInst detected, allocated type: %s",
-                allocated_type->isIntegerTy(64) ? "i64" : "Other");
-            
-            vector_ptr_int = builder->CreateLoad(allocated_type, vector_ptr_int);
-            
-            eshkol_error("DEBUG 3: After load, value type: %s, is i64: %d",
-                vector_ptr_int->getType()->isIntegerTy() ? "Integer" : "Other",
-                vector_ptr_int->getType()->isIntegerTy(64));
-        }
+        // CRITICAL FIX: Unpack tensor pointer from tagged_value
+        // codegenTensorOperation now returns tagged_value with TENSOR_PTR type
+        Value* vector_ptr_int = safeExtractInt64(vector_val);
         
         // Get malloc for tensor allocations
         Function* malloc_func = function_table["malloc"];
@@ -7632,14 +8324,8 @@ private:
             eshkol_error("malloc function not found for gradient computation");
             return nullptr;
         }
+        // Use class member tensor_type (shared by all tensor operations)
         
-        // Define tensor structure type (MUST match existing tensor layout)
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // uint64_t* dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context));       // uint64_t num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // double* elements
-        tensor_fields.push_back(Type::getInt64Ty(*context));       // uint64_t total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
         
         // DIAGNOSTIC 4: Check vector_ptr_int value type and value
         Function* printf_func = function_table["printf"];
@@ -7712,12 +8398,15 @@ private:
         BasicBlock* dim_invalid = BasicBlock::Create(*context, "grad_dim_invalid", current_func);
         BasicBlock* grad_done = BasicBlock::Create(*context, "grad_done", current_func);
         
+        // CRITICAL FIX: Create null tagged value BEFORE branching (for PHI node dominance)
+        Value* null_tagged_grad = packInt64ToTaggedValue(
+            ConstantInt::get(Type::getInt64Ty(*context), 0), true);
+        
         builder->CreateCondBr(n_is_zero, dim_invalid, dim_valid);
         
         // Invalid dimension: log error and return null
         builder->SetInsertPoint(dim_invalid);
         eshkol_error("Gradient requires non-zero dimension vector");
-        Value* null_result = ConstantInt::get(Type::getInt64Ty(*context), 0);
         builder->CreateBr(grad_done);
         
         // Valid dimension: compute gradient
@@ -7992,14 +8681,16 @@ private:
         builder->SetInsertPoint(grad_loop_exit);
         
         eshkol_info("Gradient computation complete, returning vector of size n");
-        Value* grad_result = builder->CreatePtrToInt(typed_result_tensor_ptr, Type::getInt64Ty(*context));
+        Value* grad_result_int = builder->CreatePtrToInt(typed_result_tensor_ptr, Type::getInt64Ty(*context));
+        // Tag as TENSOR_PTR for proper display handling (packPtrToTaggedValue handles i64 directly)
+        Value* grad_result = packPtrToTaggedValue(grad_result_int, ESHKOL_VALUE_TENSOR_PTR);
         builder->CreateBr(grad_done);
         BasicBlock* dim_valid_exit = builder->GetInsertBlock();
         
         // Merge valid and invalid paths
         builder->SetInsertPoint(grad_done);
-        PHINode* result_phi = builder->CreatePHI(Type::getInt64Ty(*context), 2, "grad_result");
-        result_phi->addIncoming(null_result, dim_invalid);
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, "grad_result");
+        result_phi->addIncoming(null_tagged_grad, dim_invalid);
         result_phi->addIncoming(grad_result, dim_valid_exit);
         
         return result_phi;
@@ -8014,14 +8705,8 @@ private:
             return nullptr;
         }
         
-        // CRITICAL FIX: Create tensor_type ONCE at start, BEFORE any loops (like gradient does)
-        // This prevents LLVM IR name conflicts and invalid pointer casts in nested loops
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // uint64_t* dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context));       // uint64_t num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // double* elements
-        tensor_fields.push_back(Type::getInt64Ty(*context));       // uint64_t total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by ALL tensor operations)
+        // This prevents LLVM IR type conflicts from shadowing the class member
         
         eshkol_info("Computing Jacobian matrix using reverse-mode AD");
         
@@ -8038,17 +8723,15 @@ private:
             return nullptr;
         }
         
-        Value* vector_ptr_int = codegenAST(op->jacobian_op.point);
-        if (!vector_ptr_int) {
+        Value* vector_val = codegenAST(op->jacobian_op.point);
+        if (!vector_val) {
             eshkol_error("Failed to evaluate Jacobian point");
             return nullptr;
         }
         
-        // CRITICAL FIX: If result is AllocaInst (let-binding variable), load the value
-        if (isa<AllocaInst>(vector_ptr_int)) {
-            AllocaInst* alloca = dyn_cast<AllocaInst>(vector_ptr_int);
-            vector_ptr_int = builder->CreateLoad(alloca->getAllocatedType(), vector_ptr_int);
-        }
+        // CRITICAL FIX: Unpack tensor pointer from tagged_value
+        // codegenTensorOperation now returns tagged_value with TENSOR_PTR type
+        Value* vector_ptr_int = safeExtractInt64(vector_val);
         
         Function* malloc_func = function_table["malloc"];
         if (!malloc_func) {
@@ -8078,15 +8761,19 @@ private:
         Value* vector_tagged = packInt64ToTaggedValue(vector_ptr_int, true);
         Value* test_output_tagged = builder->CreateCall(func_ptr, {vector_tagged});
         
-        // CRITICAL FIX: Use type-based validation like gradient does
-        // Check type tag to see if output is a tensor (CONS_PTR) or scalar/null
+        // CRITICAL FIX: Tensors are now tagged with TENSOR_PTR type (not CONS_PTR)
+        // Check type tag to see if output is a tensor or scalar/null
         Value* output_type = getTaggedValueType(test_output_tagged);
         Value* output_base_type = builder->CreateAnd(output_type,
             ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
-        // Tensors are tagged as CONS_PTR (from PtrToInt in codegenTensorOperation)
+        // Tensors are tagged as TENSOR_PTR (from codegenTensorOperation)
         Value* output_is_tensor = builder->CreateICmpEQ(output_base_type,
-            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_TENSOR_PTR));
+        
+        // CRITICAL FIX: Create null tagged value BEFORE branching (for PHI node dominance)
+        Value* null_jac_tagged = packInt64ToTaggedValue(
+            ConstantInt::get(Type::getInt64Ty(*context), 0), true);
         
         // If not a tensor, return null jacobian gracefully (don't crash)
         BasicBlock* output_valid_block = BasicBlock::Create(*context, "jac_output_valid", current_func);
@@ -8102,7 +8789,6 @@ private:
         // Invalid output: return null jacobian (don't crash)
         builder->SetInsertPoint(output_invalid_block);
         eshkol_error("Jacobian: function returned null (expected vector)");
-        Value* null_jac = ConstantInt::get(Type::getInt64Ty(*context), 0);
         builder->CreateBr(jac_return_block);
         
         // Valid output: continue with dimension extraction
@@ -8431,6 +9117,14 @@ private:
             builder->CreateStructGEP(tensor_type, typed_jac_ad_tensor, 2));
         
         // Copy nodes
+        // SEGFAULT DEBUG: Add prints before and during copy loop
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Starting node copy loop (n=%lld nodes)\n"),
+                n
+            });
+        }
+        
         BasicBlock* jac_copy_cond = BasicBlock::Create(*context, "jac_copy_cond", current_func);
         BasicBlock* jac_copy_body = BasicBlock::Create(*context, "jac_copy_body", current_func);
         BasicBlock* jac_copy_exit = BasicBlock::Create(*context, "jac_copy_exit", current_func);
@@ -8445,20 +9139,57 @@ private:
         builder->CreateCondBr(jac_copy_less, jac_copy_body, jac_copy_exit);
         
         builder->SetInsertPoint(jac_copy_body);
+        
+        // SEGFAULT DEBUG: Print each copy iteration
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Copy loop i=%lld, loading node from var_nodes\n"),
+                jac_copy_i
+            });
+        }
+        
         Value* jac_src_slot = builder->CreateGEP(PointerType::getUnqual(*context),
             typed_jac_var_nodes, jac_copy_i);
         Value* jac_src_node = builder->CreateLoad(PointerType::getUnqual(*context), jac_src_slot);
+        
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Loaded node %p, converting to int64\n"),
+                builder->CreatePtrToInt(jac_src_node, Type::getInt64Ty(*context))
+            });
+        }
+        
         Value* jac_node_int = builder->CreatePtrToInt(jac_src_node, Type::getInt64Ty(*context));
+        
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Node as int=%lld, storing to AD tensor elements[%lld]\n"),
+                jac_node_int,
+                jac_copy_i
+            });
+        }
         
         Value* jac_dst_slot = builder->CreateGEP(Type::getInt64Ty(*context),
             typed_jac_ad_elems, jac_copy_i);
         builder->CreateStore(jac_node_int, jac_dst_slot);
+        
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Stored node pointer successfully\n")
+            });
+        }
         
         Value* jac_next_copy = builder->CreateAdd(jac_copy_i, ConstantInt::get(Type::getInt64Ty(*context), 1));
         builder->CreateStore(jac_next_copy, jac_copy_idx);
         builder->CreateBr(jac_copy_cond);
         
         builder->SetInsertPoint(jac_copy_exit);
+        
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Node copy loop completed, about to call lambda\n")
+            });
+        }
         
         // Call function to get output
         Value* jac_ad_tensor_int = builder->CreatePtrToInt(typed_jac_ad_tensor, Type::getInt64Ty(*context));
@@ -8480,20 +9211,76 @@ private:
         Value* out_elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), out_elems_field);
         Value* typed_out_elems = builder->CreatePointerCast(out_elems_ptr, builder->getPtrTy());
         
-        // Get output component i_out as AD node
+        // Get output component i_out (may be AD node OR double value)
         Value* out_comp_ptr = builder->CreateGEP(Type::getInt64Ty(*context),
             typed_out_elems, i_out);
         Value* out_comp_int = builder->CreateLoad(Type::getInt64Ty(*context), out_comp_ptr);
-        Value* out_comp_node = builder->CreateIntToPtr(out_comp_int, PointerType::getUnqual(*context));
         
-        // Run backward pass
+        // CRITICAL SAFETY CHECK: Detect if output element is AD node or regular value
+        // AD nodes are allocated in heap (> 1000), doubles have IEEE754 exponent bits
+        Value* is_small_value = builder->CreateICmpULT(out_comp_int,
+            ConstantInt::get(Type::getInt64Ty(*context), 1000));
+        
+        // Check IEEE754 exponent for doubles (bit pattern detection)
+        Value* exp_mask_jac = ConstantInt::get(Type::getInt64Ty(*context), 0x7FF0000000000000ULL);
+        Value* exp_bits_jac = builder->CreateAnd(out_comp_int, exp_mask_jac);
+        Value* has_exponent_jac = builder->CreateICmpNE(exp_bits_jac,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        
+        // If has exponent, it's a double, not an AD node pointer
+        Value* is_likely_double_jac = builder->CreateAnd(has_exponent_jac,
+            builder->CreateNot(is_small_value));
+        
+        // Output is AD node only if: not small AND not double
+        Value* elem_is_ad_node = builder->CreateAnd(
+            builder->CreateNot(is_small_value),
+            builder->CreateNot(is_likely_double_jac));
+        
+        // Allocate storage for partial derivative result (accessible across blocks)
+        Value* partial_deriv_storage = builder->CreateAlloca(Type::getDoubleTy(*context), nullptr, "jac_partial_storage");
+        
+        BasicBlock* run_jac_backward = BasicBlock::Create(*context, "jac_run_backward", current_func);
+        BasicBlock* skip_jac_backward = BasicBlock::Create(*context, "jac_skip_backward", current_func);
+        BasicBlock* after_jac_backward = BasicBlock::Create(*context, "jac_after_backward", current_func);
+        
+        builder->CreateCondBr(elem_is_ad_node, run_jac_backward, skip_jac_backward);
+        
+        // Run backward pass only if output element is AD node
+        builder->SetInsertPoint(run_jac_backward);
+        
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Output element is AD node, running backward pass\n")
+            });
+        }
+        
+        Value* out_comp_node = builder->CreateIntToPtr(out_comp_int, PointerType::getUnqual(*context));
         codegenBackward(out_comp_node, jac_tape);
         
         // Extract gradient from variable j_in
         Value* jac_grad_var_slot = builder->CreateGEP(PointerType::getUnqual(*context),
             typed_jac_var_nodes, j_in);
         Value* jac_grad_var_node = builder->CreateLoad(PointerType::getUnqual(*context), jac_grad_var_slot);
-        Value* partial_deriv = loadNodeGradient(jac_grad_var_node);
+        Value* computed_partial_deriv = loadNodeGradient(jac_grad_var_node);
+        builder->CreateStore(computed_partial_deriv, partial_deriv_storage);
+        builder->CreateBr(after_jac_backward);
+        
+        // Skip backward pass if output is not AD node (constant function)
+        builder->SetInsertPoint(skip_jac_backward);
+        
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Output element is NOT AD node (constant), gradient=0.0\n")
+            });
+        }
+        
+        Value* zero_deriv_jac = ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+        builder->CreateStore(zero_deriv_jac, partial_deriv_storage);
+        builder->CreateBr(after_jac_backward);
+        
+        // Merge paths - load result from storage
+        builder->SetInsertPoint(after_jac_backward);
+        Value* partial_deriv = builder->CreateLoad(Type::getDoubleTy(*context), partial_deriv_storage);
         
         // Store J[i_out,j_in] at linear index: i_out*n + j_in
         Value* linear_idx = builder->CreateMul(i_out, n);
@@ -8518,13 +9305,15 @@ private:
         builder->CreateBr(outer_cond);
         
         builder->SetInsertPoint(outer_exit);
-        Value* jac_result = builder->CreatePtrToInt(typed_jac_ptr, Type::getInt64Ty(*context));
+        Value* jac_result_int = builder->CreatePtrToInt(typed_jac_ptr, Type::getInt64Ty(*context));
+        // Tag as TENSOR_PTR for proper display handling (packPtrToTaggedValue handles i64 directly)
+        Value* jac_result = packPtrToTaggedValue(jac_result_int, ESHKOL_VALUE_TENSOR_PTR);
         builder->CreateBr(jac_return_block);
         
         // Merge null and valid results
         builder->SetInsertPoint(jac_return_block);
-        PHINode* result_phi = builder->CreatePHI(Type::getInt64Ty(*context), 2, "jac_result");
-        result_phi->addIncoming(null_jac, output_invalid_block);
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, "jac_result");
+        result_phi->addIncoming(null_jac_tagged, output_invalid_block);
         result_phi->addIncoming(jac_result, outer_exit);
         
         return result_phi;
@@ -8554,17 +9343,15 @@ private:
             return nullptr;
         }
         
-        Value* vector_ptr_int = codegenAST(op->hessian_op.point);
-        if (!vector_ptr_int) {
+        Value* vector_val = codegenAST(op->hessian_op.point);
+        if (!vector_val) {
             eshkol_error("Failed to evaluate Hessian point");
             return nullptr;
         }
         
-        // CRITICAL FIX: If result is AllocaInst (let-binding variable), load the value
-        if (isa<AllocaInst>(vector_ptr_int)) {
-            AllocaInst* alloca = dyn_cast<AllocaInst>(vector_ptr_int);
-            vector_ptr_int = builder->CreateLoad(alloca->getAllocatedType(), vector_ptr_int);
-        }
+        // CRITICAL FIX: Unpack tensor pointer from tagged_value
+        // codegenTensorOperation now returns tagged_value with TENSOR_PTR type
+        Value* vector_ptr_int = safeExtractInt64(vector_val);
         
         Function* malloc_func = function_table["malloc"];
         if (!malloc_func) {
@@ -8572,13 +9359,7 @@ private:
             return nullptr;
         }
         
-        // Tensor structure definition
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         // Extract input dimension n
         Value* input_ptr = builder->CreateIntToPtr(vector_ptr_int, builder->getPtrTy());
@@ -8877,7 +9658,9 @@ private:
         builder->SetInsertPoint(hess_outer_exit);
         
         eshkol_info("Hessian computation complete");
-        return builder->CreatePtrToInt(typed_hess_ptr, Type::getInt64Ty(*context));
+        // Tag as TENSOR_PTR for proper display handling
+        Value* hess_result_int = builder->CreatePtrToInt(typed_hess_ptr, Type::getInt64Ty(*context));
+        return packPtrToTaggedValue(hess_result_int, ESHKOL_VALUE_TENSOR_PTR);
     }
     
     // ===== END PHASE 3 OPERATORS =====
@@ -8904,11 +9687,14 @@ private:
         jacobian_temp.jacobian_op.function = op->divergence_op.function;
         jacobian_temp.jacobian_op.point = op->divergence_op.point;
         
-        Value* jacobian_ptr_int = codegenJacobian(&jacobian_temp);
-        if (!jacobian_ptr_int) {
+        Value* jacobian_tagged = codegenJacobian(&jacobian_temp);
+        if (!jacobian_tagged) {
             eshkol_error("Failed to compute Jacobian for divergence");
             return nullptr;
         }
+        
+        // CRITICAL FIX: Unpack tensor pointer from tagged_value
+        Value* jacobian_ptr_int = safeExtractInt64(jacobian_tagged);
         
         // CRITICAL FIX: Add runtime null check - jacobian may return 0 if function output is invalid
         Value* jacobian_is_null = builder->CreateICmpEQ(jacobian_ptr_int,
@@ -8930,13 +9716,7 @@ private:
         // Valid jacobian: continue with normal computation
         builder->SetInsertPoint(jacobian_valid);
         
-        // Define tensor structure
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* jacobian_ptr = builder->CreateIntToPtr(jacobian_ptr_int, builder->getPtrTy());
         
@@ -9019,25 +9799,17 @@ private:
         eshkol_info("Computing curl of 3D vector field");
         
         // First, validate that input is 3D
-        Value* vector_ptr_int = codegenAST(op->curl_op.point);
-        if (!vector_ptr_int) {
+        Value* vector_val = codegenAST(op->curl_op.point);
+        if (!vector_val) {
             eshkol_error("Failed to evaluate curl point");
             return nullptr;
         }
         
-        // CRITICAL FIX: If result is AllocaInst (let-binding variable), load the value
-        if (isa<AllocaInst>(vector_ptr_int)) {
-            AllocaInst* alloca = dyn_cast<AllocaInst>(vector_ptr_int);
-            vector_ptr_int = builder->CreateLoad(alloca->getAllocatedType(), vector_ptr_int);
-        }
+        // CRITICAL FIX: Unpack tensor pointer from tagged_value
+        // codegenTensorOperation now returns tagged_value with TENSOR_PTR type
+        Value* vector_ptr_int = safeExtractInt64(vector_val);
+        // Use class member tensor_type (shared by all tensor operations)
         
-        // Define tensor structure
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
         
         Value* vector_ptr = builder->CreateIntToPtr(vector_ptr_int, builder->getPtrTy());
         
@@ -9075,11 +9847,14 @@ private:
         jacobian_temp.jacobian_op.function = op->curl_op.function;
         jacobian_temp.jacobian_op.point = op->curl_op.point;
         
-        Value* jacobian_ptr_int = codegenJacobian(&jacobian_temp);
-        if (!jacobian_ptr_int) {
+        Value* jacobian_tagged = codegenJacobian(&jacobian_temp);
+        if (!jacobian_tagged) {
             eshkol_error("Failed to compute Jacobian for curl");
             return nullptr;
         }
+        
+        // CRITICAL FIX: Unpack tensor pointer from tagged_value
+        Value* jacobian_ptr_int = safeExtractInt64(jacobian_tagged);
         
         // CRITICAL FIX: Add runtime null check - jacobian may return 0 if function output is invalid
         Value* jac_is_null = builder->CreateICmpEQ(jacobian_ptr_int,
@@ -9226,11 +10001,14 @@ private:
         hessian_temp.hessian_op.function = op->laplacian_op.function;
         hessian_temp.hessian_op.point = op->laplacian_op.point;
         
-        Value* hessian_ptr_int = codegenHessian(&hessian_temp);
-        if (!hessian_ptr_int) {
+        Value* hessian_tagged = codegenHessian(&hessian_temp);
+        if (!hessian_tagged) {
             eshkol_error("Failed to compute Hessian for Laplacian");
             return nullptr;
         }
+        
+        // CRITICAL FIX: Unpack tensor pointer from tagged_value
+        Value* hessian_ptr_int = safeExtractInt64(hessian_tagged);
         
         // CRITICAL FIX: Add runtime null check - hessian may return 0 if function output is invalid
         Value* hessian_is_null = builder->CreateICmpEQ(hessian_ptr_int,
@@ -9252,13 +10030,7 @@ private:
         // Valid hessian: continue with normal computation
         builder->SetInsertPoint(hessian_valid);
         
-        // Define tensor structure
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* hessian_ptr = builder->CreateIntToPtr(hessian_ptr_int, builder->getPtrTy());
         
@@ -9346,11 +10118,14 @@ private:
         gradient_temp.gradient_op.function = op->directional_deriv_op.function;
         gradient_temp.gradient_op.point = op->directional_deriv_op.point;
         
-        Value* gradient_ptr_int = codegenGradient(&gradient_temp);
-        if (!gradient_ptr_int) {
+        Value* gradient_tagged = codegenGradient(&gradient_temp);
+        if (!gradient_tagged) {
             eshkol_error("Failed to compute gradient for directional derivative");
             return nullptr;
         }
+        
+        // CRITICAL FIX: Unpack tensor pointer from tagged_value
+        Value* gradient_ptr_int = safeExtractInt64(gradient_tagged);
         
         // Step 2: Get direction vector
         Value* direction_ptr_int = codegenAST(op->directional_deriv_op.direction);
@@ -9360,13 +10135,7 @@ private:
         }
         
         // Step 3: Compute dot product: ∇f · v
-        // Define tensor structure
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* gradient_ptr = builder->CreateIntToPtr(gradient_ptr_int, builder->getPtrTy());
         Value* direction_ptr = builder->CreateIntToPtr(direction_ptr_int, builder->getPtrTy());
@@ -9437,37 +10206,51 @@ private:
     
     
     // Core symbolic differentiation function
+    // Now works within lambda context - variable comes from lambda parameter
     Value* differentiate(const eshkol_ast_t* expr, const char* var) {
         if (!expr || !var) return nullptr;
+        
+        // Variable should already be in symbol table from lambda parameter
+        // No need to create placeholder - we're building symbolic expressions!
+        
+        Value* result = nullptr;
         
         switch (expr->type) {
             case ESHKOL_INT64:
                 // Derivative of integer constant is 0 (int64)
-                return ConstantInt::get(Type::getInt64Ty(*context), 0);
+                result = ConstantInt::get(Type::getInt64Ty(*context), 0);
+                break;
                 
             case ESHKOL_DOUBLE:
                 // Derivative of double constant is 0.0 (double)
-                return ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+                result = ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+                break;
                 
             case ESHKOL_VAR:
                 // Derivative of variable
                 if (expr->variable.id && strcmp(expr->variable.id, var) == 0) {
                     // d/dx(x) = 1
                     // Use int64 by default - type-aware ops will convert if needed
-                    return ConstantInt::get(Type::getInt64Ty(*context), 1);
+                    result = ConstantInt::get(Type::getInt64Ty(*context), 1);
                 } else {
                     // d/dx(y) = 0 (where y != x)
                     // Use int64 by default - type-aware ops will convert if needed
-                    return ConstantInt::get(Type::getInt64Ty(*context), 0);
+                    result = ConstantInt::get(Type::getInt64Ty(*context), 0);
                 }
+                break;
                 
             case ESHKOL_OP:
-                return differentiateOperation(&expr->operation, var);
+                result = differentiateOperation(&expr->operation, var);
+                break;
                 
             default:
                 // Unsupported expression type - return 0
-                return ConstantInt::get(Type::getInt64Ty(*context), 0);
+                result = ConstantInt::get(Type::getInt64Ty(*context), 0);
+                break;
         }
+        
+        // No symbol table restoration needed - variable stays from lambda context
+        return result;
     }
     
     // Differentiate operations (arithmetic, functions, etc.)
@@ -9520,18 +10303,8 @@ private:
                     return ConstantInt::get(Type::getInt64Ty(*context), 0);
                 }
                 
-                // Special optimization for x * x -> 2x
-                if (op->call_op.variables[0].type == ESHKOL_VAR &&
-                    op->call_op.variables[1].type == ESHKOL_VAR &&
-                    op->call_op.variables[0].variable.id && op->call_op.variables[1].variable.id &&
-                    strcmp(op->call_op.variables[0].variable.id, var) == 0 &&
-                    strcmp(op->call_op.variables[1].variable.id, var) == 0) {
-                    // d/dx(x*x) = 2x - use type-appropriate constant
-                    Value* two = createTypedConstant(2.0, &op->call_op.variables[0]);
-                    return createTypedMul(two, f, &op->call_op.variables[0]);
-                }
-                
                 // General product rule: f' * g + f * g'
+                // Handles all cases including x*x -> 1*x + x*1 = 2x
                 Value* term1 = createTypedMul(f_prime, g, &op->call_op.variables[0]);
                 Value* term2 = createTypedMul(f, g_prime, &op->call_op.variables[0]);
                 return createTypedAdd(term1, term2, &op->call_op.variables[0]);
@@ -9776,13 +10549,7 @@ private:
         // Load the tensor pointer value from the variable
         Value* tensor_ptr_int = builder->CreateLoad(Type::getInt64Ty(*context), tensor_var_ptr);
         
-        // Convert int64 back to tensor pointer
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
         
@@ -9933,13 +10700,7 @@ private:
         // Load the tensor pointer value from the variable
         Value* tensor_ptr_int = builder->CreateLoad(Type::getInt64Ty(*context), tensor_var_ptr);
         
-        // Convert int64 back to tensor pointer
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // dimensions
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // elements
-        tensor_fields.push_back(Type::getInt64Ty(*context)); // total_elements
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        // Use class member tensor_type (shared by all tensor operations)
         
         Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
         
