@@ -1,0 +1,18 @@
+;; Test if BitCast fix corrects AD variable initialization
+;; This tests gradient operator (runtime AD) not symbolic diff
+
+(define f (lambda (v) 
+  (let ((x (vref v 0)))
+    (* x x))))
+
+(define input-vec (vector 5.0))
+
+(display "Testing gradient of f(x) = x² at x=5.0...")
+(newline)
+(display "Expected gradient: [10.0]")
+(newline)
+
+(define grad (gradient f input-vec))
+(display "Computed gradient: ")
+(display grad)
+(newline)

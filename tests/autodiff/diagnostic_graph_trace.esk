@@ -1,0 +1,35 @@
+;; Diagnostic: Trace computational graph construction
+;; This will add logging to see if AD nodes are being created and if graph is built
+
+(define (main)
+  (display "=== Graph Construction Diagnostic ===\n")
+  
+  ;; Test 1: Simple function that SHOULD build a graph
+  (display "Test 1: f(v) = v[0] * v[0] at v=(3.0)\n")
+  (define f (lambda (v) 
+    (let ((x (vref v 0)))
+      (begin
+        (display "  Inside lambda, loaded x via vref\n")
+        (* x x)))))
+  
+  (display "  Created lambda\n")
+  (define point (vector 3.0))
+  (display "  Created point vector\n")
+  
+  (display "  Calling gradient...\n")
+  (define grad (gradient f point))
+  (display "  Gradient returned\n")
+  
+  (display "  Gradient result: ")
+  (display grad)
+  (newline)
+  
+  (display "  Extracting gradient[0]...\n")
+  (define g0 (vref grad 0))
+  (display "  g0 = ")
+  (display g0)
+  (newline)
+  (display "  Expected: 6.0\n")
+  
+  (display "\n=== Diagnostic Complete ===\n")
+  0)

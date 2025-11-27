@@ -1,0 +1,23 @@
+;; Direct gradient test - bypass display to check actual values
+;; Access gradient elements directly using vref
+
+(define f (lambda (v) 
+  (let ((x (vref v 0)))
+    (* x x))))
+
+(define input-vec (vector 5.0))
+
+(display "Computing gradient of f(x) = x² at x=5.0")
+(newline)
+(display "Expected: gradient[0] = 10.0")
+(newline)
+
+(define grad (gradient f input-vec))
+
+;; Access gradient element directly
+(display "Accessing gradient element 0 using vref...")
+(newline)
+(define grad-elem (vref grad 0))
+(display "Gradient[0] = ")
+(display grad-elem)
+(newline)

@@ -1,0 +1,1196 @@
+=========================================
+  Autodiff Test Suite - Verbose Mode
+=========================================
+
+Output directory: autodiff_test_outputs
+
+Running tests in tests/autodiff...
+
+========================================
+Testing: debug_gradient_no_let.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Time: Wed Nov 26 20:29:48 EST 2025
+
+----------------------------------------
+[1m[31m     error:[0m DEBUG: codegenGradient called
+[1m[31m     error:[0m DEBUG: About to resolve lambda function
+[1m[31m     error:[0m DEBUG: resolveLambdaFunction returned: 0x0
+[1m[31m     error:[0m Failed to resolve function for gradient computation
+----------------------------------------
+
+----------------------------------------
+Testing gradient operator...
+Gradient test passed
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/debug_gradient_no_let_full_output.txt
+
+========================================
+Testing: debug_gradient_only.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x115104930 (should be PtrToInt instruction)
+[1m[31m     error:[0m DEBUG 1: codegenAST returned type: Integer, is AllocaInst: 0
+[1m[31m     error:[0m Gradient requires non-zero dimension vector
+----------------------------------------
+
+----------------------------------------
+Testing gradient operator...
+DEBUG 4: vector_ptr_int = 4997537952, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 4997537952
+DEBUG 6: dims_ptr as int = 4997537712
+DEBUG 7: dim0_ptr as int = 4997537712
+DEBUG 8: LOADED n = 2)
+Gradient test passed
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/debug_gradient_only_full_output.txt
+
+========================================
+Testing: debug_lambda_vector_return.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+----------------------------------------
+[1m[31m     error:[0m DEBUG: codegenCall for make-vec, callee from function_table = 0x0
+[1m[31m     error:[0m DEBUG: Checking symbol_table for make-vec_func
+[1m[31m     error:[0m DEBUG: make-vec_func NOT in symbol_table, checking global
+[1m[31m     error:[0m DEBUG: make-vec_func NOT in global_symbol_table either!
+[1m[33m   warning:[0m Could not resolve closure function for: make-vec
+----------------------------------------
+
+----------------------------------------
+Testing lambda that returns vector...
+Lambda returned (raw value): 0
+Attempting to display as vector...
+Result is NOT a valid pointer (too small): 0
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/debug_lambda_vector_return_full_output.txt
+
+========================================
+Testing: debug_minimal.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Test: debug_minimal.esk
+File: tests/autodiff/debug_minimal.esk
+Time: Wed Nov 26 20:29:49 EST 2025
+
+----------------------------------------
+----------------------------------------
+
+----------------------------------------
+Starting minimal gradient test
+Test complete
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/debug_minimal_full_output.txt
+
+========================================
+Testing: debug_no_gradient.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Test: debug_no_gradient.esk
+File: tests/autodiff/debug_no_gradient.esk
+Time: Wed Nov 26 20:29:49 EST 2025
+
+----------------------------------------
+----------------------------------------
+
+----------------------------------------
+Test 1: Basic display works
+Test 2: Calling display again
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/debug_no_gradient_full_output.txt
+
+========================================
+Testing: debug_operators.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+scripts/run_autodiff_tests_with_output.sh: line 45: 30306 Segmentation fault: 11  ./a.out >> "$output_file" 2>&1
+[0;31m  ❌ Runtime SEGFAULT[0m
+[0;31m  ❌ OVERALL: FAIL[0m
+
+Runtime output (last 30 lines):
+[1m[31m     error:[0m DEBUG 1: codegenAST returned type: Integer, is AllocaInst: 0
+[1m[31m     error:[0m Gradient requires non-zero dimension vector
+[1m[31m     error:[0m DEBUG: About to generate lambda body
+[1m[31m     error:[0m DEBUG: codegenTensorOperation called! num_dims=1, total_elems=2
+[1m[31m     error:[0m DEBUG: malloc_func = 0x147f11648
+[1m[31m     error:[0m DEBUG: About to call malloc for tensor, size=32
+[1m[31m     error:[0m DEBUG: malloc CreateCall returned Value* = 0x147f22180
+[1m[31m     error:[0m DEBUG: typed_tensor_ptr after cast = 0x147f22180
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x147f22e00 (should be PtrToInt instruction)
+[1m[31m     error:[0m DEBUG: Lambda body codegenAST returned Value* = 0x147f22e00
+[1m[31m     error:[0m DEBUG: Lambda body result type: Integer
+[1m[31m     error:[0m DEBUG: Lambda body is not tagged_value, detecting type and packing
+[1m[31m     error:[0m DEBUG: detectValueType returned type=3
+[1m[31m     error:[0m DEBUG: typedValueToTaggedValue returned Value* = 0x147f23480
+[1m[31m     error:[0m DEBUG: codegenTensorOperation called! num_dims=1, total_elems=2
+[1m[31m     error:[0m DEBUG: malloc_func = 0x147f11648
+[1m[31m     error:[0m DEBUG: About to call malloc for tensor, size=32
+[1m[31m     error:[0m DEBUG: malloc CreateCall returned Value* = 0x147f23660
+[1m[31m     error:[0m DEBUG: typed_tensor_ptr after cast = 0x147f23660
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x147f24030 (should be PtrToInt instruction)
+[1m[31m     error:[0m Jacobian: function returned null (expected vector)
+----------------------------------------
+
+RUNTIME OUTPUT:
+----------------------------------------
+----------------------------------------
+RUNTIME: FAILED (exit code: 139)
+ERROR TYPE: SEGMENTATION FAULT
+FINAL STATUS: RUNTIME FAIL
+
+Full output saved to: autodiff_test_outputs/debug_operators_full_output.txt
+
+========================================
+Testing: debug_vector_creation.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m DEBUG: codegenCall for test-vector-creation, callee from function_table = 0x12e813e78
+[1m[31m     error:[0m DEBUG: codegenCall for test-2d-vector, callee from function_table = 0x12e813f08
+----------------------------------------
+
+----------------------------------------
+=== Vector Creation Debug ===
+Created vector with element 3.0
+Vector element at index 0: 3.000000
+Created 2D vector [2.0, 3.0]
+Element 0: 2.000000
+Element 1: 3.000000
+=== Done ===
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/debug_vector_creation_full_output.txt
+
+========================================
+Testing: debug_vector_only.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+----------------------------------------
+[1m[31m     error:[0m DEBUG: codegenTensorOperation called! num_dims=1, total_elems=2
+[1m[31m     error:[0m DEBUG: malloc_func = 0x139910f68
+[1m[31m     error:[0m DEBUG: About to call malloc for tensor, size=32
+[1m[31m     error:[0m DEBUG: malloc CreateCall returned Value* = 0x138e1dba0
+[1m[31m     error:[0m DEBUG: typed_tensor_ptr after cast = 0x138e1dba0
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x138e1eb20 (should be PtrToInt instruction)
+----------------------------------------
+
+----------------------------------------
+Creating vector...
+Vector created
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/debug_vector_only_full_output.txt
+
+========================================
+Testing: diagnostic_graph_trace.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+  Created point vector
+  Calling gradient...
+DEBUG 4: vector_ptr_int = 5802844320, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 5802844320
+DEBUG 6: dims_ptr as int = 5802844080
+DEBUG 7: dim0_ptr as int = 5802844080
+DEBUG 8: LOADED n = 1)
+  Inside lambda, loaded x via vref
+  Gradient returned
+  Gradient result: ([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=32)
+0)
+  Extracting gradient[0]...
+  g0 = 6.000000
+  Expected: 6.0
+
+=== Diagnostic Complete ===
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/diagnostic_graph_trace_full_output.txt
+
+========================================
+Testing: diagnostic_tensor_dims.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x156011970 (should be PtrToInt instruction)
+[1m[31m     error:[0m DEBUG: codegenCall for test-vector-creation, callee from function_table = 0x15600fa18
+----------------------------------------
+
+----------------------------------------
+=== Tensor Dimension Diagnostic ===
+Creating vector with 3 elements...
+Vector created: ([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=176)
+0)
+Accessing element 0: 1.000000
+Accessing element 1: 2.000000
+Accessing element 2: 3.000000
+=== Test Complete ===
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/diagnostic_tensor_dims_full_output.txt
+
+========================================
+Testing: phase0_diff_fixes.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Test 24: d/dx(pow(2*x, 3)) = 24x² = 0.000000
+Testing square root rule...
+Test 25: d/dx(sqrt(x)) = 1/(2*sqrt(x)) = 0.000000
+Test 26: d/dx(sqrt(x*x)) = x/|x| = 0.000000
+Testing chain rule with composite functions...
+Test 27: d/dx(sin(x*x)) = cos(x²)*2x = 0.000000
+Test 28: d/dx(exp(x*x)) = exp(x²)*2x = 0.000000
+Test 29: d/dx(log(sin(x))) = cot(x) = 0.000000
+Test 30: d/dx(sin(cos(x))) = cos(cos(x))*(-sin(x)) = 0.000000
+Testing complex composite expressions...
+Test 31: d/dx(x² + 3x + 2) = 2x + 3 = 0
+Test 32: d/dx(x³ - 2x² + 5x - 7) = 3x² - 4x + 5 = 0.000000
+Test 33: d/dx(sin(x)*cos(x)) = cos²(x) - sin²(x) = 0
+Test 34: d/dx(x² / (x+1)) = 0.000000
+Test 35: d/dx(x²*exp(x)) = (2x + x²)*exp(x) = 0
+Phase 0 differentiation tests complete!
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/phase0_diff_fixes_full_output.txt
+
+========================================
+Testing: phase0_type_fix_test.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+
+----------------------------------------
+----------------------------------------
+
+----------------------------------------
+Phase 0: Testing type-aware symbolic differentiation
+Test 1 - d/dx(5) = 0
+Test 2 - d/dx(5.5) = 0.000000
+Test 3 - d/dx(x) = 1
+Test 4 - d/dx(3 + 5) = 0
+Test 5 - d/dx(x + 5) = 1
+Test 6 - d/dx(x - 3) = 1
+Phase 0 type fix tests complete!
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/phase0_type_fix_test_full_output.txt
+
+========================================
+Testing: phase2_forward_test.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+----------------------------------------
+Test 1: Derivative of 2x at x=5... 2.000000
+Test 2: Derivative of x² at x=5... 10.000000
+Test 3: Derivative of x³ at x=2... 12.000000
+Test 4: Derivative of sin(x²) at x=2... -2.614574
+Test 5: Derivative of exp(sin(x)) at x=1... 1.253381
+Test 6: Derivative of (x+1)(x+2) at x=3... 9.000000
+Test 7: Derivative of x/2 at x=10... 0.500000
+Test 8: Derivative of (2x+1)³ at x=1... 54.000000
+Test 9: Derivative of exp(x) at x=0... 1.000000
+Test 10: Derivative of log(x) at x=2... 0.500000
+Test 11: Derivative of cos(2x) at x=0... -0.000000
+Test 12: Derivative of exp(sin(x²)) at x=1... 2.506762
+
+=== Phase 2 Forward-Mode AD Tests Complete ===
+All derivatives computed using dual numbers!
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/phase2_forward_test_full_output.txt
+
+========================================
+Testing: phase2_minimal.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+File: tests/autodiff/phase2_minimal.esk
+Time: Wed Nov 26 20:29:51 EST 2025
+
+----------------------------------------
+[1m[31m     error:[0m DEBUG: About to generate lambda body
+[1m[31m     error:[0m DEBUG: Lambda body codegenAST returned Value* = 0x158012f98
+[1m[31m     error:[0m DEBUG: Lambda body result type: TaggedValue
+[1m[31m     error:[0m DEBUG: Lambda returning tagged_value directly
+----------------------------------------
+
+----------------------------------------
+10.000000
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/phase2_minimal_full_output.txt
+
+========================================
+Testing: phase2_simple_test.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m DEBUG: About to generate lambda body
+[1m[31m     error:[0m DEBUG: Lambda body codegenAST returned Value* = 0x14d11ce78
+[1m[31m     error:[0m DEBUG: Lambda body result type: TaggedValue
+[1m[31m     error:[0m DEBUG: Lambda returning tagged_value directly
+[1m[31m     error:[0m DEBUG: About to generate lambda body
+[1m[31m     error:[0m DEBUG: Lambda body codegenAST returned Value* = 0x14d121da8
+[1m[31m     error:[0m DEBUG: Lambda body result type: TaggedValue
+[1m[31m     error:[0m DEBUG: Lambda returning tagged_value directly
+----------------------------------------
+
+----------------------------------------
+Test: derivative of x² at x=5: 10.000000
+Test: derivative of 2x at x=3: 2.000000
+Test: derivative of sin(x) at x=0: 1.000000
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/phase2_simple_test_full_output.txt
+
+========================================
+Testing: phase2_test2.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+File: tests/autodiff/phase2_test2.esk
+Time: Wed Nov 26 20:29:51 EST 2025
+
+----------------------------------------
+[1m[31m     error:[0m DEBUG: About to generate lambda body
+[1m[31m     error:[0m DEBUG: Lambda body codegenAST returned Value* = 0x14f71f428
+[1m[31m     error:[0m DEBUG: Lambda body result type: TaggedValue
+[1m[31m     error:[0m DEBUG: Lambda returning tagged_value directly
+----------------------------------------
+
+----------------------------------------
+2.000000
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/phase2_test2_full_output.txt
+
+========================================
+Testing: phase2_tests_1_7.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m DEBUG: Lambda returning tagged_value directly
+----------------------------------------
+
+----------------------------------------
+Test 1: Derivative of 2x at x=5... 2.000000
+Test 2: Derivative of x² at x=5... 10.000000
+Test 3: Derivative of x³ at x=2... 12.000000
+Test 4: Derivative of sin(x²) at x=2... -2.614574
+Test 5: Derivative of exp(sin(x)) at x=1... 1.253381
+Test 6: Derivative of (x+1)(x+2) at x=3... 9.000000
+Test 7: Derivative of x/2 at x=10... 0.500000
+
+=== Phase 2 Tests 1-7 Complete ===
+Forward-mode AD with dual numbers operational!
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/phase2_tests_1_7_full_output.txt
+
+========================================
+Testing: phase3_complete_test.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+scripts/run_autodiff_tests_with_output.sh: line 45: 30526 Segmentation fault: 11  ./a.out >> "$output_file" 2>&1
+[0;31m  ❌ Runtime SEGFAULT[0m
+[0;31m  ❌ OVERALL: FAIL[0m
+
+Runtime output (last 30 lines):
+[1m[31m     error:[0m DEBUG: Lambda body result type: Integer
+[1m[31m     error:[0m DEBUG: Lambda body is not tagged_value, detecting type and packing
+[1m[31m     error:[0m DEBUG: detectValueType returned type=1
+[1m[31m     error:[0m DEBUG: typedValueToTaggedValue returned Value* = 0x1398514d0
+[1m[31m     error:[0m DEBUG: resolveLambdaFunction returned: 0x13984b6d8
+[1m[31m     error:[0m DEBUG: About to dyn_cast Function
+[1m[31m     error:[0m DEBUG: dyn_cast returned: 0x13984b6d8
+[1m[31m     error:[0m DEBUG: Successfully got Function pointer
+[1m[31m     error:[0m DEBUG: codegenTensorOperation called! num_dims=1, total_elems=3
+[1m[31m     error:[0m DEBUG: malloc_func = 0x139805018
+[1m[31m     error:[0m DEBUG: About to call malloc for tensor, size=32
+[1m[31m     error:[0m DEBUG: malloc CreateCall returned Value* = 0x139851800
+[1m[31m     error:[0m DEBUG: typed_tensor_ptr after cast = 0x139851800
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x139852640 (should be PtrToInt instruction)
+[1m[31m     error:[0m DEBUG 1: codegenAST returned type: Integer, is AllocaInst: 0
+[1m[31m     error:[0m Gradient requires non-zero dimension vector
+[1m[31m     error:[0m DEBUG: codegenCall for test-gradient-parsing, callee from function_table = 0x1398076c8
+[1m[31m     error:[0m DEBUG: codegenCall for test-jacobian-parsing, callee from function_table = 0x139807758
+[1m[31m     error:[0m DEBUG: codegenCall for test-hessian-parsing, callee from function_table = 0x139807828
+[1m[31m     error:[0m DEBUG: codegenCall for test-derivative-still-works, callee from function_table = 0x139807928
+[1m[31m     error:[0m DEBUG: codegenCall for test-multiple-gradients, callee from function_table = 0x139807a28
+----------------------------------------
+
+RUNTIME OUTPUT:
+----------------------------------------
+----------------------------------------
+RUNTIME: FAILED (exit code: 139)
+ERROR TYPE: SEGMENTATION FAULT
+FINAL STATUS: RUNTIME FAIL
+
+Full output saved to: autodiff_test_outputs/phase3_complete_test_full_output.txt
+
+========================================
+Testing: phase3_infrastructure_test.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Time: Wed Nov 26 20:29:52 EST 2025
+
+----------------------------------------
+[1m[31m     error:[0m DEBUG: About to generate lambda body
+[1m[31m     error:[0m DEBUG: Lambda body codegenAST returned Value* = 0x153611218
+[1m[31m     error:[0m DEBUG: Lambda body result type: TaggedValue
+[1m[31m     error:[0m DEBUG: Lambda returning tagged_value directly
+----------------------------------------
+
+----------------------------------------
+5
+6.000000
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/phase3_infrastructure_test_full_output.txt
+
+========================================
+Testing: phase3_real_ad_test.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Test 1 - Gradient of x² at x=3: 6.000000
+DEBUG 4: vector_ptr_int = 5819621712, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 5819621712
+DEBUG 6: dims_ptr as int = 5819621040
+DEBUG 7: dim0_ptr as int = 5819621040
+DEBUG 8: LOADED n = 2)
+Test 2 - Gradient of x+y at (2,3): [1.000000, 1.000000]
+DEBUG 4: vector_ptr_int = 5819622080, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 5819622080
+DEBUG 6: dims_ptr as int = 5819622112
+DEBUG 7: dim0_ptr as int = 5819622112
+DEBUG 8: LOADED n = 2)
+Test 3 - Gradient of x*y at (2,3): [3.000000, 2.000000]
+All gradient tests completed!
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/phase3_real_ad_test_full_output.txt
+
+========================================
+Testing: phase4_real_vector_test.esk
+========================================
+[0;31m  ❌ Compilation failed[0m
+[0;31m  ❌ OVERALL: FAIL[0m
+
+Compilation errors (last 30 lines):
+[1m[31m     error:[0m DEBUG: Lambda body codegenAST returned Value* = 0x12af6e250
+[1m[31m     error:[0m DEBUG: Lambda body result type: Integer
+[1m[31m     error:[0m DEBUG: Lambda body is not tagged_value, detecting type and packing
+[1m[31m     error:[0m DEBUG: detectValueType returned type=3
+[1m[31m     error:[0m DEBUG: typedValueToTaggedValue returned Value* = 0x12af6e870
+[1m[31m     error:[0m DEBUG: codegenTensorOperation called! num_dims=1, total_elems=3
+[1m[31m     error:[0m DEBUG: malloc_func = 0x12c004518
+[1m[31m     error:[0m DEBUG: About to call malloc for tensor, size=32
+[1m[31m     error:[0m DEBUG: malloc CreateCall returned Value* = 0x12af6ecb0
+[1m[31m     error:[0m DEBUG: typed_tensor_ptr after cast = 0x12af6ecb0
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x12af6fa90 (should be PtrToInt instruction)
+[1m[31m     error:[0m Curl only defined for 3D vector fields
+[1m[31m     error:[0m DEBUG: codegenTensorOperation called! num_dims=1, total_elems=3
+[1m[31m     error:[0m DEBUG: malloc_func = 0x12c004518
+[1m[31m     error:[0m DEBUG: About to call malloc for tensor, size=32
+[1m[31m     error:[0m DEBUG: malloc CreateCall returned Value* = 0x12af701a0
+[1m[31m     error:[0m DEBUG: typed_tensor_ptr after cast = 0x12af701a0
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x12af70f50 (should be PtrToInt instruction)
+[1m[31m     error:[0m Jacobian: function returned null (expected vector)
+[1m[31m     error:[0m Curl: Jacobian returned null, returning null vector
+[1m[31m     error:[0m DEBUG: codegenCall for test-jacobian-2d, callee from function_table = 0x12c006bc8
+[1m[31m     error:[0m DEBUG: codegenCall for test-divergence-2d, callee from function_table = 0x12c006c58
+[1m[31m     error:[0m DEBUG: codegenCall for test-curl-3d, callee from function_table = 0x12c006d28
+[1m[31m     error:[0m LLVM module verification failed: PHINode should have one entry for each predecessor of its parent basic block!
+  %curl_result = phi i64 [ 0, %curl_dim_invalid ], [ %251, %curl_jac_valid ]
+
+[1m[31m     error:[0m Failed to generate LLVM IR
+----------------------------------------
+COMPILATION: FAILED
+FINAL STATUS: COMPILE FAIL
+
+Full output saved to: autodiff_test_outputs/phase4_real_vector_test_full_output.txt
+
+========================================
+Testing: phase4_simple_test.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+
+----------------------------------------
+[1m[31m     error:[0m Cannot add node to tape: null parameter
+[1m[31m     error:[0m Cannot add node to tape: null parameter
+[1m[31m     error:[0m Cannot add node to tape: null parameter
+DEBUG 4: vector_ptr_int = 5083513488, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 5083513488
+DEBUG 6: dims_ptr as int = 5083513520
+DEBUG 7: dim0_ptr as int = 5083513520
+DEBUG 8: LOADED n = 2)
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/phase4_simple_test_full_output.txt
+
+========================================
+Testing: phase4_vector_calculus_test.esk
+========================================
+[0;31m  ❌ Compilation failed[0m
+[0;31m  ❌ OVERALL: FAIL[0m
+
+Compilation errors (last 30 lines):
+[1m[31m     error:[0m DEBUG: typed_tensor_ptr after cast = 0x140715fa0
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x140745020 (should be PtrToInt instruction)
+[1m[31m     error:[0m Laplacian: Hessian returned null, returning 0.0
+[1m[31m     error:[0m DEBUG: codegenGradient called
+[1m[31m     error:[0m DEBUG: About to resolve lambda function
+[1m[31m     error:[0m DEBUG: resolveLambdaFunction returned: 0x14069b3e8
+[1m[31m     error:[0m DEBUG: About to dyn_cast Function
+[1m[31m     error:[0m DEBUG: dyn_cast returned: 0x14069b3e8
+[1m[31m     error:[0m DEBUG: Successfully got Function pointer
+[1m[31m     error:[0m DEBUG: codegenTensorOperation called! num_dims=1, total_elems=2
+[1m[31m     error:[0m DEBUG: malloc_func = 0x151816bf8
+[1m[31m     error:[0m DEBUG: About to call malloc for tensor, size=32
+[1m[31m     error:[0m DEBUG: malloc CreateCall returned Value* = 0x140750cd0
+[1m[31m     error:[0m DEBUG: typed_tensor_ptr after cast = 0x140750cd0
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x140751950 (should be PtrToInt instruction)
+[1m[31m     error:[0m DEBUG 1: codegenAST returned type: Integer, is AllocaInst: 0
+[1m[31m     error:[0m Gradient requires non-zero dimension vector
+[1m[31m     error:[0m DEBUG: codegenTensorOperation called! num_dims=1, total_elems=2
+[1m[31m     error:[0m DEBUG: malloc_func = 0x151816bf8
+[1m[31m     error:[0m DEBUG: About to call malloc for tensor, size=32
+[1m[31m     error:[0m DEBUG: malloc CreateCall returned Value* = 0x14075c740
+[1m[31m     error:[0m DEBUG: typed_tensor_ptr after cast = 0x14075c740
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x1407737b0 (should be PtrToInt instruction)
+[1m[31m     error:[0m LLVM module verification failed: PHINode should have one entry for each predecessor of its parent basic block!
+  %curl_result = phi i64 [ 0, %curl_dim_invalid ], [ %704, %curl_jac_valid ]
+
+[1m[31m     error:[0m Failed to generate LLVM IR
+----------------------------------------
+COMPILATION: FAILED
+FINAL STATUS: COMPILE FAIL
+
+Full output saved to: autodiff_test_outputs/phase4_vector_calculus_test_full_output.txt
+
+========================================
+Testing: test_ad_aware_execution.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Expected: vector with single element 1.0
+
+Test 2: Square function gradient
+grad2 = ([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=144)
+0)
+Expected: vector with single element 6.0
+
+Test 3: Linear function gradient
+grad3 = ([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=0)
+0)
+Expected: vector with single element 2.0
+
+Test 4: Addition gradient (3x via x+x+x)
+grad4 = ([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=0)
+0)
+Expected: vector with single element 3.0
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/test_ad_aware_execution_full_output.txt
+
+========================================
+Testing: test_bitcast_fix.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m Gradient requires non-zero dimension vector
+----------------------------------------
+
+----------------------------------------
+DEBUG 4: vector_ptr_int = 5819621536, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 5819621536
+DEBUG 6: dims_ptr as int = 5819621296
+DEBUG 7: dim0_ptr as int = 5819621296
+DEBUG 8: LOADED n = 1)
+Testing gradient of f(x) = x² at x=5.0...
+Expected gradient: [10.0]
+Computed gradient: ([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=32)
+0)
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/test_bitcast_fix_full_output.txt
+
+========================================
+Testing: test_gradient_direct.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m Gradient requires non-zero dimension vector
+----------------------------------------
+
+----------------------------------------
+DEBUG 4: vector_ptr_int = 5047869600, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 5047869600
+DEBUG 6: dims_ptr as int = 5047869360
+DEBUG 7: dim0_ptr as int = 5047869360
+DEBUG 8: LOADED n = 1)
+Computing gradient of f(x) = x² at x=5.0
+Expected: gradient[0] = 10.0
+Accessing gradient element 0 using vref...
+Gradient[0] = 10.000000
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/test_gradient_direct_full_output.txt
+
+========================================
+Testing: test_gradient_minimal.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m DEBUG 1: codegenAST returned type: Integer, is AllocaInst: 0
+[1m[31m     error:[0m Gradient requires non-zero dimension vector
+----------------------------------------
+
+----------------------------------------
+DEBUG 4: vector_ptr_int = 5467300000, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 5467300000
+DEBUG 6: dims_ptr as int = 5467299760
+DEBUG 7: dim0_ptr as int = 5467299760
+DEBUG 8: LOADED n = 1)
+Testing gradient computation...
+Gradient computed (may be zero vector due to implementation issues)
+Test completed without segfault!
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/test_gradient_minimal_full_output.txt
+
+========================================
+Testing: test_let_and_lambda.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+DEBUG 5: After IntToPtr, vector_ptr as int = 5477777824
+DEBUG 6: dims_ptr as int = 5477777856
+DEBUG 7: dim0_ptr as int = 5477777856
+DEBUG 8: LOADED n = 2)
+([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=0)
+0)
+DEBUG 4: vector_ptr_int = 5477778208, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 5477778208
+DEBUG 6: dims_ptr as int = 5477778240
+DEBUG 7: dim0_ptr as int = 5477778240
+DEBUG 8: LOADED n = 2)
+([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=128)
+0)
+42
+15
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/test_let_and_lambda_full_output.txt
+
+========================================
+Testing: test_let_simple.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+----------------------------------------
+5
+3
+([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=176)
+0)
+0.000000
+DEBUG 4: vector_ptr_int = 4696588704, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 4696588704
+DEBUG 6: dims_ptr as int = 4696588736
+DEBUG 7: dim0_ptr as int = 4696588736
+DEBUG 8: LOADED n = 2)
+([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=0)
+0)
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/test_let_simple_full_output.txt
+
+========================================
+Testing: test_nested_lambda.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+File: tests/autodiff/test_nested_lambda.esk
+Time: Wed Nov 26 20:29:54 EST 2025
+
+----------------------------------------
+[1m[31m     error:[0m DEBUG: About to generate lambda body
+[1m[31m     error:[0m DEBUG: Lambda body codegenAST returned Value* = 0x11690f598
+[1m[31m     error:[0m DEBUG: Lambda body result type: TaggedValue
+[1m[31m     error:[0m DEBUG: Lambda returning tagged_value directly
+----------------------------------------
+
+----------------------------------------
+Testing nested lambda... 9.000000
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/test_nested_lambda_full_output.txt
+
+========================================
+Testing: test_simple_multiply.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+----------------------------------------
+[1m[31m     error:[0m DEBUG: codegenTensorOperation called! num_dims=1, total_elems=2
+[1m[31m     error:[0m DEBUG: malloc_func = 0x148f114d8
+[1m[31m     error:[0m DEBUG: About to call malloc for tensor, size=32
+[1m[31m     error:[0m DEBUG: malloc CreateCall returned Value* = 0x148f147b0
+[1m[31m     error:[0m DEBUG: typed_tensor_ptr after cast = 0x148f147b0
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x148f157b0 (should be PtrToInt instruction)
+[1m[31m     error:[0m DEBUG: codegenCall for test-multiply, callee from function_table = 0x148f13b78
+----------------------------------------
+
+----------------------------------------
+Product of 3.0 * 4.0 = 12.000000
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/test_simple_multiply_full_output.txt
+
+========================================
+Testing: test_simple_vref.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m DEBUG: codegenTensorOperation called! num_dims=1, total_elems=1
+[1m[31m     error:[0m DEBUG: malloc_func = 0x15980d708
+[1m[31m     error:[0m DEBUG: About to call malloc for tensor, size=32
+[1m[31m     error:[0m DEBUG: malloc CreateCall returned Value* = 0x148604280
+[1m[31m     error:[0m DEBUG: typed_tensor_ptr after cast = 0x148604280
+[1m[31m     error:[0m DEBUG: codegenTensorOperation returning Value* = 0x1486050c0 (should be PtrToInt instruction)
+----------------------------------------
+
+----------------------------------------
+Creating vector...
+Vector created
+Accessing element 0...
+Element: 3.000000
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/test_simple_vref_full_output.txt
+
+========================================
+Testing: validation_01_type_detection.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Expected: vector(1.0, -1.0)
+
+Test 1.4: Division detects AD nodes
+DEBUG 4: vector_ptr_int = 4797256128, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 4797256128
+DEBUG 6: dims_ptr as int = 4797256160
+DEBUG 7: dim0_ptr as int = 4797256160
+DEBUG 8: LOADED n = 1)
+Gradient of (x/2) at x=6: ([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=32)
+0)
+Expected: vector(0.5) - quotient rule
+
+Type Detection Tests Complete
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/validation_01_type_detection_full_output.txt
+
+========================================
+Testing: validation_02_graph_construction.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Expected: vector(12.0, 8.0, 6.0) - [yz, xz, xy]
+
+Test 2.3: Nested operations ((x+y)*(x-y))
+DEBUG 4: vector_ptr_int = 5006967728, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 5006967728
+DEBUG 6: dims_ptr as int = 5006967760
+DEBUG 7: dim0_ptr as int = 5006967760
+DEBUG 8: LOADED n = 2)
+Gradient: ([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=16)
+0)
+Expected: vector(10.0, -6.0) - [2x, -2y]
+
+Graph Construction Tests Complete
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/validation_02_graph_construction_full_output.txt
+
+========================================
+Testing: validation_03_backward_pass.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Expected: vector(10.0, 11.0) - [2x+y, x+2y]
+
+Test 3.4: Chain rule - gradient of (x+y)²
+DEBUG 4: vector_ptr_int = 4839196448, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 4839196448
+DEBUG 6: dims_ptr as int = 4839196480
+DEBUG 7: dim0_ptr as int = 4839196480
+DEBUG 8: LOADED n = 2)
+Result: ([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=128)
+0)
+Expected: vector(10.0, 10.0) - both 2(x+y) = 10
+
+Backward Pass Tests Complete
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/validation_03_backward_pass_full_output.txt
+
+========================================
+Testing: validation_04_tensor_integration.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Expected: vector(2.0, 3.0, 5.0) - constant coefficients
+
+Test 4.3: Gradient with cross terms
+DEBUG 4: vector_ptr_int = 5762991024, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 5762991024
+DEBUG 6: dims_ptr as int = 5762991056
+DEBUG 7: dim0_ptr as int = 5762991056
+DEBUG 8: LOADED n = 2)
+Result: ([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=16)
+0)
+Expected: vector(4.0, 3.0) - [∂(xy)/∂x, ∂(xy)/∂y]
+
+Tensor-AD Integration Tests Complete
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/validation_04_tensor_integration_full_output.txt
+
+========================================
+Testing: verify_gradient_working.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m Gradient requires non-zero dimension vector
+----------------------------------------
+
+----------------------------------------
+DEBUG 4: vector_ptr_int = 4846543008, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 4846543008
+DEBUG 6: dims_ptr as int = 4846542768
+DEBUG 7: dim0_ptr as int = 4846542768
+DEBUG 8: LOADED n = 1)
+Testing gradient computation...
+Gradient[0] = 6.000000
+Expected: 6.0
+✓ GRADIENT WORKS!
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/verify_gradient_working_full_output.txt
+
+========================================
+Testing: verify_phase2_minimal.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+Time: Wed Nov 26 20:29:56 EST 2025
+
+----------------------------------------
+[1m[31m     error:[0m DEBUG: About to generate lambda body
+[1m[31m     error:[0m DEBUG: Lambda body codegenAST returned Value* = 0x149e207f8
+[1m[31m     error:[0m DEBUG: Lambda body result type: TaggedValue
+[1m[31m     error:[0m DEBUG: Lambda returning tagged_value directly
+----------------------------------------
+
+----------------------------------------
+Testing derivative of x^2 at x=5... 10.000000
+Expected: 10.0
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/verify_phase2_minimal_full_output.txt
+
+========================================
+Testing: verify_phase3_gradient.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m Gradient requires non-zero dimension vector
+----------------------------------------
+
+----------------------------------------
+DEBUG 4: vector_ptr_int = 5576351904, type is i64: 1
+DEBUG 5: After IntToPtr, vector_ptr as int = 5576351904
+DEBUG 6: dims_ptr as int = 5576351664
+DEBUG 7: dim0_ptr as int = 5576351664
+DEBUG 8: LOADED n = 1)
+Testing gradient of f(v) = v[0]^2 at v=(3.0)... 
+Gradient result: ([1m[31m     error:[0m Attempted to get int64 from non-int64 cell (type=32)
+0)
+Expected: vector containing [6.0] (2*x at x=3)
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/verify_phase3_gradient_full_output.txt
+
+Running tests in tests/autodiff_debug...
+
+========================================
+Testing: test_sch_006_type_inference.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+[1m[31m     error:[0m DEBUG: Lambda body codegenAST returned Value* = 0x156e1f388
+[1m[31m     error:[0m DEBUG: Lambda body result type: TaggedValue
+[1m[31m     error:[0m DEBUG: Lambda returning tagged_value directly
+----------------------------------------
+
+----------------------------------------
+=== SCH-006: Type Inference Test ===
+Test 1: d/dx(x²)
+At x=5: 0
+Test 2: d/dx(x * 2.5)
+At x=4: 0
+=== Type inference tests defined ===
+EXPECTED: All derivatives computed with correct types
+ACTUAL: Only symbolic diff works, gradient/lambda not implemented
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/test_sch_006_type_inference_full_output.txt
+
+========================================
+Testing: test_sch_007_vector_returns.esk
+========================================
+[0;32m  ✅ Compilation succeeded[0m
+[0;32m  ✅ Runtime succeeded[0m
+[0;32m  ✅ OVERALL: PASS[0m
+
+Runtime output:
+
+----------------------------------------
+----------------------------------------
+
+----------------------------------------
+=== SCH-006: Type Inference Test ===
+Test 1: d/dx(x²)
+At x=5: 0
+Test 2: d/dx(x * 2.5)
+At x=4: 0
+=== Type inference tests defined ===
+EXPECTED: All derivatives computed with correct types
+ACTUAL: Only symbolic diff works, gradient/lambda not implemented
+----------------------------------------
+
+FINAL STATUS: PASS
+
+Full output saved to: autodiff_test_outputs/test_sch_007_vector_returns_full_output.txt
+
+=========================================
+  Autodiff Test Results Summary
+=========================================
+Total Tests:        41
+[0;32mPassed:             37[0m
+[0;31mFailed:             4[0m
+  Compile Failures: 2
+  Runtime Failures: 2
+  Segfaults:        2
+
+Failed Tests:
+  - debug_operators.esk
+  - phase3_complete_test.esk
+  - phase4_real_vector_test.esk
+  - phase4_vector_calculus_test.esk
+
+Segfault Tests:
+  - debug_operators.esk
+  - phase3_complete_test.esk
+
+Pass Rate: 90%
+
+[0;34mAll test outputs saved in: autodiff_test_outputs[0m
+[0;34mSummary file: autodiff_test_outputs/autodiff_results_summary.txt[0m
+
