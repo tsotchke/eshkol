@@ -91,6 +91,10 @@ private:
     // PHASE 3: AD node struct type for reverse-mode automatic differentiation
     StructType* ad_node_type;
     
+    // JACOBIAN SEGFAULT FIX: Tensor struct type as class member (shared by all functions)
+    // This prevents LLVM IR name conflicts and type mismatches in nested operations
+    StructType* tensor_type;
+    
     // PHASE 3: Current tape for reverse-mode AD
     Value* current_tape_ptr;
     size_t next_node_id;
@@ -106,6 +110,13 @@ private:
     // Arena management for list operations - GLOBAL ARENA ARCHITECTURE
     GlobalVariable* global_arena; // Global arena pointer (shared across all scopes)
     size_t arena_scope_depth; // Track nested arena scopes
+    
+    // PHASE 1 AUTODIFF FIX: Global AD mode flag for runtime context detection
+    GlobalVariable* ad_mode_active; // Global flag: true when executing in AD context
+    
+    // PHASE 1 AUTODIFF FIX: Global tape pointer for runtime graph recording
+    GlobalVariable* current_ad_tape; // Global tape pointer: set by gradient/jacobian/etc operators
+    
     Function* arena_create_func;
     Function* arena_destroy_func;
     Function* arena_allocate_func;
@@ -153,6 +164,7 @@ public:
         current_function = nullptr;
         global_arena = nullptr; // Will be created in generateIR()
         arena_scope_depth = 0; // Initialize arena scope tracking
+        ad_mode_active = nullptr; // Will be created in generateIR()
         
         // Initialize tagged value struct type: {uint8_t type, uint8_t flags, uint16_t reserved, union data}
         std::vector<Type*> tagged_value_fields;
@@ -185,6 +197,28 @@ public:
                 "__global_arena"
             );
             eshkol_debug("Created global arena variable: __global_arena");
+            
+            // PHASE 1 AUTODIFF FIX: Create global AD mode flag
+            ad_mode_active = new GlobalVariable(
+                *module,
+                Type::getInt1Ty(*context),
+                false, // not constant
+                GlobalValue::InternalLinkage, // Internal linkage
+                ConstantInt::get(Type::getInt1Ty(*context), 0), // Initialize to false
+                "__ad_mode_active"
+            );
+            eshkol_debug("Created global AD mode flag: __ad_mode_active (initialized to false)");
+            
+            // PHASE 1 AUTODIFF FIX: Create global tape pointer
+            current_ad_tape = new GlobalVariable(
+                *module,
+                PointerType::getUnqual(*context),
+                false, // not constant
+                GlobalValue::InternalLinkage, // Internal linkage
+                ConstantPointerNull::get(PointerType::getUnqual(*context)), // Initialize to null
+                "__current_ad_tape"
+            );
+            eshkol_debug("Created global AD tape pointer: __current_ad_tape (initialized to null)");
             
             // Create built-in function declarations
             createBuiltinFunctions();
@@ -423,6 +457,17 @@ private:
         next_node_id = 0;
         
         eshkol_debug("Created ad_node LLVM type for reverse-mode AD");
+        
+        // JACOBIAN SEGFAULT FIX: Create tensor type ONCE as class member
+        // Structure: {dimensions*, num_dimensions, elements*, total_elements}
+        std::vector<Type*> tensor_fields;
+        tensor_fields.push_back(PointerType::getUnqual(*context)); // uint64_t* dimensions
+        tensor_fields.push_back(Type::getInt64Ty(*context));       // uint64_t num_dimensions
+        tensor_fields.push_back(PointerType::getUnqual(*context)); // double* elements
+        tensor_fields.push_back(Type::getInt64Ty(*context));       // uint64_t total_elements
+        tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        
+        eshkol_debug("Created tensor LLVM type (shared by all operations)");
 
         // Arena management function declarations
         createArenaFunctions();
@@ -3213,8 +3258,60 @@ private:
     }
     
     Value* codegenCall(const eshkol_operations_t* op) {
-        if (!op->call_op.func || op->call_op.func->type != ESHKOL_VAR || 
-            !op->call_op.func->variable.id) {
+        if (!op->call_op.func) {
+            return nullptr;
+        }
+        
+        // CRITICAL FIX: Handle inline lambda expressions: ((lambda (x) body) arg)
+        // This pattern appears in nested lambda calls and must be supported
+        if (op->call_op.func->type == ESHKOL_OP &&
+            op->call_op.func->operation.op == ESHKOL_LAMBDA_OP) {
+            
+            // Generate the inline lambda
+            Value* lambda = codegenLambda(&op->call_op.func->operation);
+            if (!lambda) {
+                eshkol_error("Failed to generate inline lambda in call expression");
+                return nullptr;
+            }
+            
+            Function* lambda_func = dyn_cast<Function>(lambda);
+            if (!lambda_func) {
+                eshkol_error("Inline lambda did not produce a Function");
+                return nullptr;
+            }
+            
+            // Generate arguments
+            std::vector<Value*> args;
+            FunctionType* func_type = lambda_func->getFunctionType();
+            
+            for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                Value* arg = codegenAST(&op->call_op.variables[i]);
+                if (arg && i < func_type->getNumParams()) {
+                    Type* expected_type = func_type->getParamType(i);
+                    
+                    // Pack to tagged_value if needed (lambdas expect tagged_value)
+                    if (expected_type == tagged_value_type && arg->getType() != tagged_value_type) {
+                        if (arg->getType()->isIntegerTy(64)) {
+                            arg = packInt64ToTaggedValue(arg, true);
+                        } else if (arg->getType()->isDoubleTy()) {
+                            arg = packDoubleToTaggedValue(arg);
+                        } else {
+                            TypedValue tv = detectValueType(arg);
+                            arg = typedValueToTaggedValue(tv);
+                        }
+                    }
+                    
+                    args.push_back(arg);
+                }
+            }
+            
+            // Call the inline lambda
+            return builder->CreateCall(lambda_func, args);
+        }
+        
+        // Handle variable function references (existing code)
+        if (op->call_op.func->type != ESHKOL_VAR || !op->call_op.func->variable.id) {
+            eshkol_error("Call expression requires variable or inline lambda");
             return nullptr;
         }
         
@@ -5278,26 +5375,48 @@ private:
         Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_elements_ptr, index_int);
         Value* elem_as_int64 = builder->CreateLoad(Type::getInt64Ty(*context), elem_ptr);
         
-        // CRITICAL FIX: Return tagged_value with proper type detection
+        // PHASE 1 FIX: Runtime AD mode detection using global flag
         // Handle 3 cases: small integers, doubles (bitcast), AD node pointers
         Function* current_func = builder->GetInsertBlock()->getParent();
         
-        // Case 1: Small values (< 1000) are plain integers
-        Value* is_small_int = builder->CreateICmpULT(elem_as_int64,
-            ConstantInt::get(Type::getInt64Ty(*context), 1000));
+        // PHASE 1 FIX: Check global __ad_mode_active flag at RUNTIME
+        Value* in_ad_mode = builder->CreateLoad(Type::getInt1Ty(*context), ad_mode_active);
         
-        // Case 2 vs 3: For large values, distinguish doubles from pointers using IEEE 754 exponent bits
-        Value* exponent_mask = ConstantInt::get(Type::getInt64Ty(*context), 0x7FF0000000000000ULL);
-        Value* exponent_bits = builder->CreateAnd(elem_as_int64, exponent_mask);
-        Value* has_exponent = builder->CreateICmpNE(exponent_bits,
-            ConstantInt::get(Type::getInt64Ty(*context), 0));
-        
+        BasicBlock* ad_mode_check = BasicBlock::Create(*context, "vref_ad_mode_check", current_func);
+        BasicBlock* normal_mode_check = BasicBlock::Create(*context, "vref_normal_mode_check", current_func);
         BasicBlock* int_path = BasicBlock::Create(*context, "vref_int", current_func);
         BasicBlock* check_large = BasicBlock::Create(*context, "vref_check_large", current_func);
         BasicBlock* double_path = BasicBlock::Create(*context, "vref_double", current_func);
         BasicBlock* ad_node_path = BasicBlock::Create(*context, "vref_ad_node", current_func);
         BasicBlock* vref_merge = BasicBlock::Create(*context, "vref_merge", current_func);
         
+        builder->CreateCondBr(in_ad_mode, ad_mode_check, normal_mode_check);
+        
+        // AD mode path: prioritize AD node interpretation for large values
+        builder->SetInsertPoint(ad_mode_check);
+        Value* is_small_in_ad = builder->CreateICmpULT(elem_as_int64,
+            ConstantInt::get(Type::getInt64Ty(*context), 1000));
+        BasicBlock* ad_mode_small = BasicBlock::Create(*context, "vref_ad_small", current_func);
+        BasicBlock* ad_mode_large = BasicBlock::Create(*context, "vref_ad_large", current_func);
+        builder->CreateCondBr(is_small_in_ad, ad_mode_small, ad_mode_large);
+        
+        // AD mode, small value: integer
+        builder->SetInsertPoint(ad_mode_small);
+        Value* ad_int_tagged = packInt64ToTaggedValue(elem_as_int64, true);
+        builder->CreateBr(vref_merge);
+        BasicBlock* ad_small_exit = builder->GetInsertBlock();
+        
+        // AD mode, large value: AD node pointer (skip exponent check)
+        builder->SetInsertPoint(ad_mode_large);
+        Value* ad_ptr = builder->CreateIntToPtr(elem_as_int64, PointerType::getUnqual(*context));
+        Value* ad_tagged = packPtrToTaggedValue(ad_ptr, ESHKOL_VALUE_AD_NODE_PTR);
+        builder->CreateBr(vref_merge);
+        BasicBlock* ad_large_exit = builder->GetInsertBlock();
+        
+        // Normal mode path: use existing IEEE754 heuristic
+        builder->SetInsertPoint(normal_mode_check);
+        Value* is_small_int = builder->CreateICmpULT(elem_as_int64,
+            ConstantInt::get(Type::getInt64Ty(*context), 1000));
         builder->CreateCondBr(is_small_int, int_path, check_large);
         
         // Small integer path: Pack as int64
@@ -5306,8 +5425,12 @@ private:
         builder->CreateBr(vref_merge);
         BasicBlock* int_exit = builder->GetInsertBlock();
         
-        // Check if large value is double (has exponent) or AD node (no exponent)
+        // Check if large value is double (has exponent) or pointer (no exponent)
         builder->SetInsertPoint(check_large);
+        Value* exponent_mask = ConstantInt::get(Type::getInt64Ty(*context), 0x7FF0000000000000ULL);
+        Value* exponent_bits = builder->CreateAnd(elem_as_int64, exponent_mask);
+        Value* has_exponent = builder->CreateICmpNE(exponent_bits,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
         builder->CreateCondBr(has_exponent, double_path, ad_node_path);
         
         // Double path: Bitcast int64 to double and pack
@@ -5317,7 +5440,7 @@ private:
         builder->CreateBr(vref_merge);
         BasicBlock* double_exit = builder->GetInsertBlock();
         
-        // AD node path: Treat as AD node pointer
+        // AD node path: Treat as AD node pointer (fallback for normal mode)
         builder->SetInsertPoint(ad_node_path);
         Value* ad_node_ptr = builder->CreateIntToPtr(elem_as_int64, PointerType::getUnqual(*context));
         Value* ad_node_tagged = packPtrToTaggedValue(ad_node_ptr, ESHKOL_VALUE_AD_NODE_PTR);
@@ -5326,7 +5449,9 @@ private:
         
         // Merge: Return tagged_value (int, double, or AD node)
         builder->SetInsertPoint(vref_merge);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "vref_result");
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 5, "vref_result");
+        result_phi->addIncoming(ad_int_tagged, ad_small_exit);
+        result_phi->addIncoming(ad_tagged, ad_large_exit);
         result_phi->addIncoming(int_tagged, int_exit);
         result_phi->addIncoming(double_tagged, double_exit);
         result_phi->addIncoming(ad_node_tagged, ad_exit);
@@ -6852,10 +6977,9 @@ private:
             id_ptr
         );
         
-        // Add node to tape if tape exists
-        if (current_tape_ptr) {
-            builder->CreateCall(arena_tape_add_node_func, {current_tape_ptr, node_ptr});
-        }
+        // Add node to tape - PHASE 1 FIX: Use global runtime tape pointer
+        Value* tape_ptr_runtime = builder->CreateLoad(PointerType::getUnqual(*context), current_ad_tape);
+        builder->CreateCall(arena_tape_add_node_func, {tape_ptr_runtime, node_ptr});
         
         return node_ptr;
     }
@@ -6977,10 +7101,9 @@ private:
             id_ptr
         );
         
-        // Add to tape
-        if (current_tape_ptr) {
-            builder->CreateCall(arena_tape_add_node_func, {current_tape_ptr, node_ptr});
-        }
+        // Add to tape - PHASE 1 FIX: Use global runtime tape pointer
+        Value* tape_ptr_runtime_binary = builder->CreateLoad(PointerType::getUnqual(*context), current_ad_tape);
+        builder->CreateCall(arena_tape_add_node_func, {tape_ptr_runtime_binary, node_ptr});
         
         return node_ptr;
     }
@@ -7062,10 +7185,23 @@ private:
             id_ptr
         );
         
-        // Add to tape
-        if (current_tape_ptr) {
-            builder->CreateCall(arena_tape_add_node_func, {current_tape_ptr, node_ptr});
-        }
+        // Add to tape - PHASE 1 FIX: Use global runtime tape pointer
+        Value* tape_ptr_runtime_unary = builder->CreateLoad(PointerType::getUnqual(*context), current_ad_tape);
+        Value* tape_not_null_unary = builder->CreateICmpNE(
+            builder->CreatePtrToInt(tape_ptr_runtime_unary, Type::getInt64Ty(*context)),
+            ConstantInt::get(Type::getInt64Ty(*context), 0)
+        );
+        
+        BasicBlock* add_unary_to_tape = BasicBlock::Create(*context, "add_unary_to_tape", builder->GetInsertBlock()->getParent());
+        BasicBlock* skip_unary_tape = BasicBlock::Create(*context, "skip_unary_tape", builder->GetInsertBlock()->getParent());
+        
+        builder->CreateCondBr(tape_not_null_unary, add_unary_to_tape, skip_unary_tape);
+        
+        builder->SetInsertPoint(add_unary_to_tape);
+        builder->CreateCall(arena_tape_add_node_func, {tape_ptr_runtime_unary, node_ptr});
+        builder->CreateBr(skip_unary_tape);
+        
+        builder->SetInsertPoint(skip_unary_tape);
         
         return node_ptr;
     }
@@ -7563,7 +7699,7 @@ private:
         // DIAGNOSTIC 8: Final dimension value check
         if (printf_func) {
             builder->CreateCall(printf_func, {
-                codegenString("DEBUG 8: LOADED n = %lld (should be 3 for vector(1.0 2.0 3.0))\n"),
+                codegenString("DEBUG 8: LOADED n = %lld)\n"),
                 n
             });
         }
@@ -7680,8 +7816,8 @@ private:
         Value* elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context),
             typed_elements_ptr, j);
         Value* elem_val_int64 = builder->CreateLoad(Type::getInt64Ty(*context), elem_ptr);
-        // Convert int64 to double for AD operations
-        Value* elem_val = builder->CreateSIToFP(elem_val_int64, Type::getDoubleTy(*context));
+        // FIX 1a: BitCast preserves IEEE754 bits, SIToFP corrupts them
+        Value* elem_val = builder->CreateBitCast(elem_val_int64, Type::getDoubleTy(*context));
         
         // Create AD variable node with this value
         Value* var_node = createADVariable(elem_val, 0);
@@ -7765,7 +7901,19 @@ private:
         Value* ad_tensor_int = builder->CreatePtrToInt(typed_ad_tensor_ptr, Type::getInt64Ty(*context));
         // Pack into tagged_value for function call (lambdas expect tagged_value)
         Value* ad_tensor_tagged = packInt64ToTaggedValue(ad_tensor_int, true);
+        
+        // PHASE 1 FIX: Set AD mode flag and tape pointer before calling lambda
+        builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), ad_mode_active);
+        builder->CreateStore(partial_tape, current_ad_tape);
+        eshkol_debug("Set __ad_mode_active = true and __current_ad_tape before gradient lambda call");
+        
         Value* output_tagged = builder->CreateCall(func_ptr, {ad_tensor_tagged});
+        
+        // PHASE 1 FIX: Reset AD mode flag and tape pointer after lambda call
+        builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 0), ad_mode_active);
+        builder->CreateStore(ConstantPointerNull::get(PointerType::getUnqual(*context)), current_ad_tape);
+        eshkol_debug("Set __ad_mode_active = false and cleared __current_ad_tape after gradient lambda call");
+        
         // Unpack result back to int64
         Value* output_node_int = unpackInt64FromTaggedValue(output_tagged);
         
@@ -7866,6 +8014,15 @@ private:
             return nullptr;
         }
         
+        // CRITICAL FIX: Create tensor_type ONCE at start, BEFORE any loops (like gradient does)
+        // This prevents LLVM IR name conflicts and invalid pointer casts in nested loops
+        std::vector<Type*> tensor_fields;
+        tensor_fields.push_back(PointerType::getUnqual(*context)); // uint64_t* dimensions
+        tensor_fields.push_back(Type::getInt64Ty(*context));       // uint64_t num_dimensions
+        tensor_fields.push_back(PointerType::getUnqual(*context)); // double* elements
+        tensor_fields.push_back(Type::getInt64Ty(*context));       // uint64_t total_elements
+        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
+        
         eshkol_info("Computing Jacobian matrix using reverse-mode AD");
         
         // CRITICAL FIX: Must null-check before dyn_cast to avoid LLVM assertion
@@ -7899,14 +8056,6 @@ private:
             return nullptr;
         }
         
-        // Tensor structure definition
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        tensor_fields.push_back(PointerType::getUnqual(*context));
-        tensor_fields.push_back(Type::getInt64Ty(*context));
-        StructType* tensor_type = StructType::create(*context, tensor_fields, "tensor");
-        
         // Extract input dimension n from input vector
         Value* input_ptr = builder->CreateIntToPtr(vector_ptr_int, builder->getPtrTy());
         
@@ -7928,18 +8077,27 @@ private:
         // Call function once to determine output dimension m
         Value* vector_tagged = packInt64ToTaggedValue(vector_ptr_int, true);
         Value* test_output_tagged = builder->CreateCall(func_ptr, {vector_tagged});
-        Value* test_output_int = unpackInt64FromTaggedValue(test_output_tagged);
         
-        // CRITICAL FIX: Check if output is valid (non-zero) before dereferencing
-        // If function returns null/scalar instead of vector, just return null jacobian
-        Value* output_is_null = builder->CreateICmpEQ(test_output_int,
-            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        // CRITICAL FIX: Use type-based validation like gradient does
+        // Check type tag to see if output is a tensor (CONS_PTR) or scalar/null
+        Value* output_type = getTaggedValueType(test_output_tagged);
+        Value* output_base_type = builder->CreateAnd(output_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
         
+        // Tensors are tagged as CONS_PTR (from PtrToInt in codegenTensorOperation)
+        Value* output_is_tensor = builder->CreateICmpEQ(output_base_type,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
+        
+        // If not a tensor, return null jacobian gracefully (don't crash)
         BasicBlock* output_valid_block = BasicBlock::Create(*context, "jac_output_valid", current_func);
         BasicBlock* output_invalid_block = BasicBlock::Create(*context, "jac_output_invalid", current_func);
         BasicBlock* jac_return_block = BasicBlock::Create(*context, "jac_return", current_func);
         
-        builder->CreateCondBr(output_is_null, output_invalid_block, output_valid_block);
+        builder->CreateCondBr(output_is_tensor, output_valid_block, output_invalid_block);
+        
+        // Unpack int64 for valid tensor path only
+        builder->SetInsertPoint(output_valid_block);
+        Value* test_output_int = unpackInt64FromTaggedValue(test_output_tagged);
         
         // Invalid output: return null jacobian (don't crash)
         builder->SetInsertPoint(output_invalid_block);
@@ -7949,15 +8107,57 @@ private:
         
         // Valid output: continue with dimension extraction
         builder->SetInsertPoint(output_valid_block);
+        
+        // RUNTIME DEBUG: Confirm we reached valid path
+        Function* printf_func = function_table["printf"];
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Type check passed, extracting dimensions from tensor\n")
+            });
+        }
+        
         Value* test_output_ptr = builder->CreateIntToPtr(test_output_int, builder->getPtrTy());
+        
+        // RUNTIME DEBUG: Print tensor pointer value
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: test_output_ptr = %p\n"),
+                builder->CreatePtrToInt(test_output_ptr, Type::getInt64Ty(*context))
+            });
+        }
         
         Value* output_dims_field = builder->CreateStructGEP(tensor_type, test_output_ptr, 0);
         Value* output_dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), output_dims_field);
+        
+        // RUNTIME DEBUG: Print dims pointer
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: output_dims_ptr = %p\n"),
+                builder->CreatePtrToInt(output_dims_ptr, Type::getInt64Ty(*context))
+            });
+        }
+        
         Value* typed_output_dims = builder->CreatePointerCast(output_dims_ptr, builder->getPtrTy());
         
         Value* m_ptr = builder->CreateGEP(Type::getInt64Ty(*context), typed_output_dims,
             ConstantInt::get(Type::getInt64Ty(*context), 0));
+        
+        // RUNTIME DEBUG: About to load m value
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: About to load output dimension m\n")
+            });
+        }
+        
         Value* m = builder->CreateLoad(Type::getInt64Ty(*context), m_ptr);
+        
+        // RUNTIME DEBUG: Print m value
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: output dimension m = %lld\n"),
+                m
+            });
+        }
         
         // Allocate Jacobian matrix (m×n, 2D tensor)
         Value* jac_tensor_size = ConstantInt::get(Type::getInt64Ty(*context),
@@ -7999,7 +8199,14 @@ private:
         Value* jac_elems_field = builder->CreateStructGEP(tensor_type, typed_jac_ptr, 2);
         builder->CreateStore(typed_jac_elems, jac_elems_field);
         
-        // ===== DOUBLE NESTED LOOP =====
+        // RUNTIME DEBUG: Print Jacobian dimensions before loops
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Starting computation for %lld x %lld matrix\n"),
+                m, n
+            });
+        }
+        
         BasicBlock* outer_cond = BasicBlock::Create(*context, "jac_outer_cond", current_func);
         BasicBlock* outer_body = BasicBlock::Create(*context, "jac_outer_body", current_func);
         BasicBlock* inner_cond = BasicBlock::Create(*context, "jac_inner_cond", current_func);
@@ -8009,6 +8216,14 @@ private:
         
         Value* out_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "out_idx");
         builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), out_idx);
+        
+        // RUNTIME DEBUG: Print before entering loops
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Entering double loop...\n")
+            });
+        }
+        
         builder->CreateBr(outer_cond);
         
         // Outer: i_out < m
@@ -8018,6 +8233,15 @@ private:
         builder->CreateCondBr(i_out_less_m, outer_body, outer_exit);
         
         builder->SetInsertPoint(outer_body);
+        
+        // RUNTIME DEBUG: Print outer loop iteration
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Outer loop iteration i_out = %lld\n"),
+                i_out
+            });
+        }
+        
         Value* in_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "in_idx");
         builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), in_idx);
         builder->CreateBr(inner_cond);
@@ -8031,12 +8255,30 @@ private:
         // Compute ∂Fᵢ/∂xⱼ
         builder->SetInsertPoint(inner_body);
         
+        // RUNTIME DEBUG: Print inner loop iteration
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Inner loop j_in = %lld, computing ∂F%lld/∂x%lld\n"),
+                j_in, i_out, j_in
+            });
+        }
+        
         Value* arena_ptr = getArenaPtr();
+        
+        // RUNTIME DEBUG: Print before tape allocation
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Allocating tape for this partial derivative...\n")
+            });
+        }
+        
         Value* jac_tape = builder->CreateCall(arena_allocate_tape_func,
             {arena_ptr, ConstantInt::get(Type::getInt64Ty(*context), 1024)});
         
-        Value* old_tape = current_tape_ptr;
-        current_tape_ptr = jac_tape;
+        // CRITICAL FIX: Use global AD tape pointer, not member variable!
+        // current_tape_ptr is compile-time C++ state, jac_tape is runtime LLVM Value*
+        // Assigning Value* to member variable corrupts memory - use global instead
+        builder->CreateStore(jac_tape, current_ad_tape);
         
         // Create n AD variable nodes
         Value* jac_var_nodes_size = builder->CreateMul(n,
@@ -8051,6 +8293,14 @@ private:
         
         Value* jac_init_idx = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "jac_init_idx");
         builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 0), jac_init_idx);
+        
+        // RUNTIME DEBUG: Before var nodes init loop
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Starting variable nodes initialization loop\n")
+            });
+        }
+        
         builder->CreateBr(jac_init_cond);
         
         builder->SetInsertPoint(jac_init_cond);
@@ -8059,11 +8309,29 @@ private:
         builder->CreateCondBr(jac_init_less, jac_init_body, jac_init_exit);
         
         builder->SetInsertPoint(jac_init_body);
+        
+        // RUNTIME DEBUG: Init loop iteration
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Init loop i=%lld, loading element from input\n"),
+                jac_init_i
+            });
+        }
+        
         // CRITICAL FIX: Tensor elements stored as int64, load as int64 then convert
         Value* jac_elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context),
             typed_input_elements, jac_init_i);
         Value* jac_elem_int64 = builder->CreateLoad(Type::getInt64Ty(*context), jac_elem_ptr);
-        Value* jac_elem_val = builder->CreateSIToFP(jac_elem_int64, Type::getDoubleTy(*context));
+        
+        // RUNTIME DEBUG: Element loaded
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Loaded element %lld, converting to double\n"),
+                jac_elem_int64
+            });
+        }
+        // FIX 1b: BitCast preserves IEEE754 bits, SIToFP corrupts them
+        Value* jac_elem_val = builder->CreateBitCast(jac_elem_int64, Type::getDoubleTy(*context));
         Value* jac_var_node = createADVariable(jac_elem_val, 0);
         
         Value* jac_node_slot = builder->CreateGEP(PointerType::getUnqual(*context),
@@ -8076,18 +8344,75 @@ private:
         
         builder->SetInsertPoint(jac_init_exit);
         
+        // RUNTIME DEBUG: Init loop complete, building AD tensor
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Init loop complete, building AD tensor for function call\n")
+            });
+        }
+        
         // Build AD tensor for function call
         Value* jac_ad_tensor_size = ConstantInt::get(Type::getInt64Ty(*context),
             module->getDataLayout().getTypeAllocSize(tensor_type));
+        
+        // RUNTIME DEBUG: About to malloc AD tensor
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: About to malloc AD tensor, size=%lld\n"),
+                jac_ad_tensor_size
+            });
+        }
+        
         Value* jac_ad_tensor_ptr = builder->CreateCall(malloc_func, {jac_ad_tensor_size});
+        
+        // RUNTIME DEBUG: AD tensor malloc succeeded
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: AD tensor malloc succeeded, pointer=%p\n"),
+                builder->CreatePtrToInt(jac_ad_tensor_ptr, Type::getInt64Ty(*context))
+            });
+        }
+        
         Value* typed_jac_ad_tensor = builder->CreatePointerCast(jac_ad_tensor_ptr, builder->getPtrTy());
+        
+        // RUNTIME DEBUG: Pointer cast complete
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Pointer cast complete, setting up tensor structure\n")
+            });
+        }
         
         // Set AD tensor structure
         Value* jac_ad_dims_size = ConstantInt::get(Type::getInt64Ty(*context), sizeof(uint64_t));
         Value* jac_ad_dims_ptr = builder->CreateCall(malloc_func, {jac_ad_dims_size});
+        
+        // RUNTIME DEBUG: Dims allocated
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Dims malloc done, casting pointer\n")
+            });
+        }
+        
         Value* typed_jac_ad_dims = builder->CreatePointerCast(jac_ad_dims_ptr, builder->getPtrTy());
+        
+        // RUNTIME DEBUG: About to store n
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: About to store n=%lld to dims array\n"),
+                n
+            });
+        }
+        
         builder->CreateStore(n, typed_jac_ad_dims);
         
+        // RUNTIME DEBUG: Stored n successfully
+        if (printf_func) {
+            builder->CreateCall(printf_func, {
+                codegenString("JACOBIAN: Stored n to dims, now setting tensor fields\n")
+            });
+        }
+        
+        // Set tensor fields directly (malloc never returns null in practice)
         builder->CreateStore(typed_jac_ad_dims,
             builder->CreateStructGEP(tensor_type, typed_jac_ad_tensor, 0));
         builder->CreateStore(ConstantInt::get(Type::getInt64Ty(*context), 1),
@@ -8095,7 +8420,8 @@ private:
         builder->CreateStore(n,
             builder->CreateStructGEP(tensor_type, typed_jac_ad_tensor, 3));
         
-        // Allocate and copy AD node pointers
+        // CRITICAL FIX: Move elements allocation INSIDE tensor_valid_block
+        // Otherwise typed_jac_ad_tensor is not available after the branch!
         Value* jac_ad_elems_size = builder->CreateMul(n,
             ConstantInt::get(Type::getInt64Ty(*context), sizeof(uint64_t)));
         Value* jac_ad_elems_ptr = builder->CreateCall(malloc_func, {jac_ad_elems_size});
@@ -8137,7 +8463,15 @@ private:
         // Call function to get output
         Value* jac_ad_tensor_int = builder->CreatePtrToInt(typed_jac_ad_tensor, Type::getInt64Ty(*context));
         Value* jac_ad_tensor_tagged = packInt64ToTaggedValue(jac_ad_tensor_int, true);
+        
+        // PHASE 1 FIX: Set AD mode flag to true before calling lambda
+        builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), ad_mode_active);
+        
         Value* jac_output_tagged = builder->CreateCall(func_ptr, {jac_ad_tensor_tagged});
+        
+        // PHASE 1 FIX: Set AD mode flag back to false after lambda call
+        builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 0), ad_mode_active);
+        
         Value* jac_output_int = unpackInt64FromTaggedValue(jac_output_tagged);
         Value* jac_output_ptr = builder->CreateIntToPtr(jac_output_int, builder->getPtrTy());
         
@@ -8170,7 +8504,9 @@ private:
         builder->CreateStore(partial_deriv, jac_result_elem_ptr);
         
         builder->CreateCall(arena_tape_reset_func, {jac_tape});
-        current_tape_ptr = old_tape;
+        
+        // CRITICAL FIX: Clear global tape pointer (like gradient does)
+        builder->CreateStore(ConstantPointerNull::get(PointerType::getUnqual(*context)), current_ad_tape);
         
         Value* next_j_in = builder->CreateAdd(j_in, ConstantInt::get(Type::getInt64Ty(*context), 1));
         builder->CreateStore(next_j_in, in_idx);
@@ -8359,7 +8695,8 @@ private:
         Value* bg_elem_ptr = builder->CreateGEP(Type::getInt64Ty(*context),
             typed_input_elements, bg_j);
         Value* bg_elem_int64 = builder->CreateLoad(Type::getInt64Ty(*context), bg_elem_ptr);
-        Value* bg_elem = builder->CreateSIToFP(bg_elem_int64, Type::getDoubleTy(*context));
+        // FIX 1c: BitCast preserves IEEE754 bits, SIToFP corrupts them
+        Value* bg_elem = builder->CreateBitCast(bg_elem_int64, Type::getDoubleTy(*context));
         Value* bg_node = createADVariable(bg_elem, 0);
         
         Value* bg_node_slot = builder->CreateGEP(PointerType::getUnqual(*context),
@@ -8431,7 +8768,15 @@ private:
         // Call function
         Value* bg_ad_tensor_int = builder->CreatePtrToInt(typed_bg_ad_tensor, Type::getInt64Ty(*context));
         Value* bg_ad_tensor_tagged = packInt64ToTaggedValue(bg_ad_tensor_int, true);
+        
+        // PHASE 1 FIX: Set AD mode flag to true before calling lambda
+        builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), ad_mode_active);
+        
         Value* bg_output_tagged = builder->CreateCall(func_ptr, {bg_ad_tensor_tagged});
+        
+        // PHASE 1 FIX: Set AD mode flag back to false after lambda call
+        builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 0), ad_mode_active);
+        
         Value* bg_output_int = unpackInt64FromTaggedValue(bg_output_tagged);
         Value* bg_output_node = builder->CreateIntToPtr(bg_output_int, PointerType::getUnqual(*context));
         
@@ -8565,6 +8910,26 @@ private:
             return nullptr;
         }
         
+        // CRITICAL FIX: Add runtime null check - jacobian may return 0 if function output is invalid
+        Value* jacobian_is_null = builder->CreateICmpEQ(jacobian_ptr_int,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        
+        Function* div_current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* jacobian_valid = BasicBlock::Create(*context, "div_jac_valid", div_current_func);
+        BasicBlock* jacobian_invalid = BasicBlock::Create(*context, "div_jac_invalid", div_current_func);
+        BasicBlock* div_final = BasicBlock::Create(*context, "div_final", div_current_func);
+        
+        builder->CreateCondBr(jacobian_is_null, jacobian_invalid, jacobian_valid);
+        
+        // Invalid jacobian: return 0.0 instead of crashing
+        builder->SetInsertPoint(jacobian_invalid);
+        eshkol_error("Divergence: Jacobian returned null, returning 0.0");
+        Value* zero_result = ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+        builder->CreateBr(div_final);
+        
+        // Valid jacobian: continue with normal computation
+        builder->SetInsertPoint(jacobian_valid);
+        
         // Define tensor structure
         std::vector<Type*> tensor_fields;
         tensor_fields.push_back(PointerType::getUnqual(*context));
@@ -8629,10 +8994,17 @@ private:
         builder->CreateBr(sum_loop_cond);
         
         builder->SetInsertPoint(sum_loop_exit);
-        Value* result = builder->CreateLoad(Type::getDoubleTy(*context), divergence_acc);
+        Value* divergence_result = builder->CreateLoad(Type::getDoubleTy(*context), divergence_acc);
+        builder->CreateBr(div_final);
+        
+        // Merge valid and invalid paths
+        builder->SetInsertPoint(div_final);
+        PHINode* result_phi = builder->CreatePHI(Type::getDoubleTy(*context), 2, "div_result");
+        result_phi->addIncoming(zero_result, jacobian_invalid);
+        result_phi->addIncoming(divergence_result, sum_loop_exit);
         
         eshkol_info("Divergence computation complete");
-        return result;
+        return result_phi;
     }
     
     // Curl: ∇×F for vector field F: ℝ³ → ℝ³
@@ -8708,6 +9080,24 @@ private:
             eshkol_error("Failed to compute Jacobian for curl");
             return nullptr;
         }
+        
+        // CRITICAL FIX: Add runtime null check - jacobian may return 0 if function output is invalid
+        Value* jac_is_null = builder->CreateICmpEQ(jacobian_ptr_int,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        
+        BasicBlock* jac_valid = BasicBlock::Create(*context, "curl_jac_valid", current_func);
+        BasicBlock* jac_invalid = BasicBlock::Create(*context, "curl_jac_invalid", current_func);
+        
+        builder->CreateCondBr(jac_is_null, jac_invalid, jac_valid);
+        
+        // Invalid jacobian: return null curl vector instead of crashing
+        builder->SetInsertPoint(jac_invalid);
+        eshkol_error("Curl: Jacobian returned null, returning null vector");
+        Value* null_curl = ConstantInt::get(Type::getInt64Ty(*context), 0);
+        builder->CreateBr(curl_done);
+        
+        // Valid jacobian: continue with normal computation
+        builder->SetInsertPoint(jac_valid);
         
         Value* jacobian_ptr = builder->CreateIntToPtr(jacobian_ptr_int, builder->getPtrTy());
         
@@ -8842,6 +9232,26 @@ private:
             return nullptr;
         }
         
+        // CRITICAL FIX: Add runtime null check - hessian may return 0 if function output is invalid
+        Value* hessian_is_null = builder->CreateICmpEQ(hessian_ptr_int,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+        
+        Function* lap_current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* hessian_valid = BasicBlock::Create(*context, "lap_hess_valid", lap_current_func);
+        BasicBlock* hessian_invalid = BasicBlock::Create(*context, "lap_hess_invalid", lap_current_func);
+        BasicBlock* lap_final = BasicBlock::Create(*context, "lap_final", lap_current_func);
+        
+        builder->CreateCondBr(hessian_is_null, hessian_invalid, hessian_valid);
+        
+        // Invalid hessian: return 0.0 instead of crashing
+        builder->SetInsertPoint(hessian_invalid);
+        eshkol_error("Laplacian: Hessian returned null, returning 0.0");
+        Value* zero_lap_result = ConstantFP::get(Type::getDoubleTy(*context), 0.0);
+        builder->CreateBr(lap_final);
+        
+        // Valid hessian: continue with normal computation
+        builder->SetInsertPoint(hessian_valid);
+        
         // Define tensor structure
         std::vector<Type*> tensor_fields;
         tensor_fields.push_back(PointerType::getUnqual(*context));
@@ -8906,10 +9316,17 @@ private:
         builder->CreateBr(sum_loop_cond);
         
         builder->SetInsertPoint(sum_loop_exit);
-        Value* result = builder->CreateLoad(Type::getDoubleTy(*context), laplacian_acc);
+        Value* laplacian_result = builder->CreateLoad(Type::getDoubleTy(*context), laplacian_acc);
+        builder->CreateBr(lap_final);
+        
+        // Merge valid and invalid paths
+        builder->SetInsertPoint(lap_final);
+        PHINode* lap_result_phi = builder->CreatePHI(Type::getDoubleTy(*context), 2, "lap_result");
+        lap_result_phi->addIncoming(zero_lap_result, hessian_invalid);
+        lap_result_phi->addIncoming(laplacian_result, sum_loop_exit);
         
         eshkol_info("Laplacian computation complete");
-        return result;
+        return lap_result_phi;
     }
     
     // Directional Derivative: D_v f = ∇f · v
@@ -9095,6 +9512,10 @@ private:
                 Value* f = codegenAST(&op->call_op.variables[0]);
                 Value* g = codegenAST(&op->call_op.variables[1]);
                 
+                // FIX 2a: Unpack tagged_value if needed (codegenAST now returns tagged_value)
+                if (f && f->getType() == tagged_value_type) f = safeExtractInt64(f);
+                if (g && g->getType() == tagged_value_type) g = safeExtractInt64(g);
+                
                 if (!f || !g || !f_prime || !g_prime) {
                     return ConstantInt::get(Type::getInt64Ty(*context), 0);
                 }
@@ -9121,6 +9542,11 @@ private:
             else if (func_name == "/" && op->call_op.num_vars == 2) {
                 Value* f = codegenAST(&op->call_op.variables[0]);
                 Value* g = codegenAST(&op->call_op.variables[1]);
+                
+                // FIX 2b: Unpack tagged_value if needed
+                if (f && f->getType() == tagged_value_type) f = safeExtractInt64(f);
+                if (g && g->getType() == tagged_value_type) g = safeExtractInt64(g);
+                
                 Value* f_prime = differentiate(&op->call_op.variables[0], var);
                 Value* g_prime = differentiate(&op->call_op.variables[1], var);
                 
@@ -9142,6 +9568,10 @@ private:
             // PHASE 0 FIX: Proper chain rule with cos(f) multiplication
             else if (func_name == "sin" && op->call_op.num_vars == 1) {
                 Value* f = codegenAST(&op->call_op.variables[0]);
+                
+                // FIX 2c: Unpack tagged_value if needed
+                if (f && f->getType() == tagged_value_type) f = safeExtractInt64(f);
+                
                 Value* f_prime = differentiate(&op->call_op.variables[0], var);
                 
                 if (!f || !f_prime) {
@@ -9162,6 +9592,10 @@ private:
             // PHASE 0 FIX: Proper chain rule with -sin(f) multiplication
             else if (func_name == "cos" && op->call_op.num_vars == 1) {
                 Value* f = codegenAST(&op->call_op.variables[0]);
+                
+                // FIX 2d: Unpack tagged_value if needed
+                if (f && f->getType() == tagged_value_type) f = safeExtractInt64(f);
+                
                 Value* f_prime = differentiate(&op->call_op.variables[0], var);
                 
                 if (!f || !f_prime) {
@@ -9183,6 +9617,10 @@ private:
             // PHASE 0: NEW - Exponential rule
             else if (func_name == "exp" && op->call_op.num_vars == 1) {
                 Value* f = codegenAST(&op->call_op.variables[0]);
+                
+                // FIX 2e: Unpack tagged_value if needed
+                if (f && f->getType() == tagged_value_type) f = safeExtractInt64(f);
+                
                 Value* f_prime = differentiate(&op->call_op.variables[0], var);
                 
                 if (!f || !f_prime) {
@@ -9213,6 +9651,10 @@ private:
             // PHASE 0: NEW - Logarithm rule
             else if (func_name == "log" && op->call_op.num_vars == 1) {
                 Value* f = codegenAST(&op->call_op.variables[0]);
+                
+                // FIX 2f: Unpack tagged_value if needed
+                if (f && f->getType() == tagged_value_type) f = safeExtractInt64(f);
+                
                 Value* f_prime = differentiate(&op->call_op.variables[0], var);
                 
                 if (!f || !f_prime) {
@@ -9247,6 +9689,11 @@ private:
                     
                     Value* f = codegenAST(&op->call_op.variables[0]);
                     Value* n = codegenAST(&op->call_op.variables[1]);
+                    
+                    // FIX 2g: Unpack tagged_value if needed
+                    if (f && f->getType() == tagged_value_type) f = safeExtractInt64(f);
+                    if (n && n->getType() == tagged_value_type) n = safeExtractInt64(n);
+                    
                     Value* f_prime = differentiate(&op->call_op.variables[0], var);
                     
                     if (!f || !n || !f_prime) {
@@ -9284,6 +9731,10 @@ private:
             // PHASE 0: BONUS - Sqrt rule
             else if (func_name == "sqrt" && op->call_op.num_vars == 1) {
                 Value* f = codegenAST(&op->call_op.variables[0]);
+                
+                // FIX 2h: Unpack tagged_value if needed
+                if (f && f->getType() == tagged_value_type) f = safeExtractInt64(f);
+                
                 Value* f_prime = differentiate(&op->call_op.variables[0], var);
                 
                 if (!f || !f_prime) {
