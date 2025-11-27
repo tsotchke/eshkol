@@ -156,6 +156,9 @@ private:
     Function* list_ref_impl_func;
     Function* list_tail_impl_func;
     
+    // Nested S-expression display helper (N-depth recursive)
+    Function* display_sexpr_list_func;
+    
 public:
     EshkolLLVMCodeGen(const char* module_name) {
         context = std::make_unique<LLVMContext>();
@@ -937,6 +940,213 @@ private:
         function_table["arena_tape_get_node_count"] = arena_tape_get_node_count_func;
         
         eshkol_debug("Created tape management function declarations for reverse-mode AD");
+        
+        // Create nested S-expression display helper (N-depth recursive)
+        createDisplaySExprListFunction();
+    }
+    
+    void createDisplaySExprListFunction() {
+        // Recursive helper function for displaying nested S-expressions at arbitrary depth
+        // Signature: void displaySExprList(int64_t list_ptr, int32_t depth)
+        
+        std::vector<Type*> params;
+        params.push_back(Type::getInt64Ty(*context));  // list_ptr
+        params.push_back(Type::getInt32Ty(*context));  // depth
+        
+        FunctionType* func_type = FunctionType::get(
+            Type::getVoidTy(*context),  // returns void
+            params,
+            false  // not varargs
+        );
+        
+        display_sexpr_list_func = Function::Create(
+            func_type,
+            Function::InternalLinkage,  // Internal - only used within module
+            "displaySExprList",
+            module.get()
+        );
+        
+        // Create function body
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", display_sexpr_list_func);
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        builder->SetInsertPoint(entry);
+        
+        // Get parameters
+        auto arg_it = display_sexpr_list_func->arg_begin();
+        Value* list_ptr_param = &*arg_it++;
+        list_ptr_param->setName("list_ptr");
+        Value* depth_param = &*arg_it;
+        depth_param->setName("depth");
+        
+        Function* printf_func = function_table["printf"];
+        
+        // DEPTH LIMIT CHECK (prevent infinite loops from circular structures)
+        Value* max_depth = ConstantInt::get(Type::getInt32Ty(*context), 20);
+        Value* depth_exceeded = builder->CreateICmpUGT(depth_param, max_depth);
+        
+        BasicBlock* depth_ok = BasicBlock::Create(*context, "depth_ok", display_sexpr_list_func);
+        BasicBlock* depth_exceeded_block = BasicBlock::Create(*context, "depth_exceeded", display_sexpr_list_func);
+        BasicBlock* func_exit = BasicBlock::Create(*context, "func_exit", display_sexpr_list_func);
+        
+        builder->CreateCondBr(depth_exceeded, depth_exceeded_block, depth_ok);
+        
+        // Depth exceeded: print warning and return
+        builder->SetInsertPoint(depth_exceeded_block);
+        builder->CreateCall(printf_func, {codegenString("[depth-limit-exceeded]")});
+        builder->CreateBr(func_exit);
+        
+        // Depth OK: continue with display
+        builder->SetInsertPoint(depth_ok);
+        
+        // Print opening parenthesis
+        builder->CreateCall(printf_func, {codegenString("(")});
+        
+        // Initialize loop state
+        Value* current = builder->CreateAlloca(Type::getInt64Ty(*context), nullptr, "current");
+        Value* is_first = builder->CreateAlloca(Type::getInt1Ty(*context), nullptr, "is_first");
+        builder->CreateStore(list_ptr_param, current);
+        builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), is_first);
+        
+        // Create loop blocks
+        BasicBlock* loop_cond = BasicBlock::Create(*context, "loop_cond", display_sexpr_list_func);
+        BasicBlock* loop_body = BasicBlock::Create(*context, "loop_body", display_sexpr_list_func);
+        BasicBlock* loop_exit = BasicBlock::Create(*context, "loop_exit", display_sexpr_list_func);
+        
+        builder->CreateBr(loop_cond);
+        
+        // Loop condition: while current != null
+        builder->SetInsertPoint(loop_cond);
+        Value* current_val = builder->CreateLoad(Type::getInt64Ty(*context), current);
+        Value* not_null = builder->CreateICmpNE(current_val, ConstantInt::get(Type::getInt64Ty(*context), 0));
+        builder->CreateCondBr(not_null, loop_body, loop_exit);
+        
+        // Loop body: display element
+        builder->SetInsertPoint(loop_body);
+        
+        // Add spacing before non-first elements
+        Value* first_flag = builder->CreateLoad(Type::getInt1Ty(*context), is_first);
+        BasicBlock* skip_space = BasicBlock::Create(*context, "skip_space", display_sexpr_list_func);
+        BasicBlock* add_space = BasicBlock::Create(*context, "add_space", display_sexpr_list_func);
+        BasicBlock* display_elem = BasicBlock::Create(*context, "display_elem", display_sexpr_list_func);
+        
+        builder->CreateCondBr(first_flag, skip_space, add_space);
+        
+        builder->SetInsertPoint(add_space);
+        builder->CreateCall(printf_func, {codegenString(" ")});
+        builder->CreateBr(display_elem);
+        
+        builder->SetInsertPoint(skip_space);
+        builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 0), is_first);
+        builder->CreateBr(display_elem);
+        
+        // Display element - extract car and check type
+        builder->SetInsertPoint(display_elem);
+        Value* car_tagged = extractCarAsTaggedValue(current_val);
+        Value* car_type = getTaggedValueType(car_tagged);
+        Value* car_base = builder->CreateAnd(car_type,
+            ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        
+        // Type branching: CONS_PTR, DOUBLE, or INT64
+        Value* car_is_ptr = builder->CreateICmpEQ(car_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
+        Value* car_is_double = builder->CreateICmpEQ(car_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
+        
+        BasicBlock* check_ptr = BasicBlock::Create(*context, "check_ptr", display_sexpr_list_func);
+        BasicBlock* check_double = BasicBlock::Create(*context, "check_double", display_sexpr_list_func);
+        BasicBlock* display_string = BasicBlock::Create(*context, "display_string", display_sexpr_list_func);
+        BasicBlock* display_nested = BasicBlock::Create(*context, "display_nested_rec", display_sexpr_list_func);
+        BasicBlock* display_double = BasicBlock::Create(*context, "display_double", display_sexpr_list_func);
+        BasicBlock* display_int = BasicBlock::Create(*context, "display_int", display_sexpr_list_func);
+        BasicBlock* elem_done = BasicBlock::Create(*context, "elem_done", display_sexpr_list_func);
+        
+        builder->CreateCondBr(car_is_ptr, check_ptr, check_double);
+        
+        // Check if CONS_PTR is string or nested list using ASCII heuristic
+        builder->SetInsertPoint(check_ptr);
+        Value* car_ptr_int = unpackInt64FromTaggedValue(car_tagged);
+        Value* car_ptr = builder->CreateIntToPtr(car_ptr_int, builder->getPtrTy());
+        
+        // String detection: check pointer range and first byte
+        Value* ptr_reasonable = builder->CreateICmpUGT(car_ptr_int,
+            ConstantInt::get(Type::getInt64Ty(*context), 1000));
+        Value* ptr_not_huge = builder->CreateICmpULT(car_ptr_int,
+            ConstantInt::get(Type::getInt64Ty(*context), 0x7FFFFFFFFFFFFFFFULL));
+        Value* ptr_in_range = builder->CreateAnd(ptr_reasonable, ptr_not_huge);
+        
+        BasicBlock* check_ascii = BasicBlock::Create(*context, "check_ascii", display_sexpr_list_func);
+        builder->CreateCondBr(ptr_in_range, check_ascii, display_nested);
+        
+        builder->SetInsertPoint(check_ascii);
+        Value* first_byte = builder->CreateLoad(Type::getInt8Ty(*context), car_ptr);
+        Value* is_printable = builder->CreateAnd(
+            builder->CreateICmpUGE(first_byte, ConstantInt::get(Type::getInt8Ty(*context), 32)),
+            builder->CreateICmpULE(first_byte, ConstantInt::get(Type::getInt8Ty(*context), 126)));
+        builder->CreateCondBr(is_printable, display_string, display_nested);
+        
+        // Display string symbol (operators like "+", "*", "sin", etc.)
+        builder->SetInsertPoint(display_string);
+        builder->CreateCall(printf_func, {codegenString("%s"), car_ptr});
+        builder->CreateBr(elem_done);
+        
+        // Display nested list - RECURSIVE CALL for N-depth support!
+        builder->SetInsertPoint(display_nested);
+        Value* next_depth = builder->CreateAdd(depth_param, ConstantInt::get(Type::getInt32Ty(*context), 1));
+        builder->CreateCall(display_sexpr_list_func, {car_ptr_int, next_depth});  // Recursion!
+        builder->CreateBr(elem_done);
+        
+        // Display double
+        builder->SetInsertPoint(check_double);
+        builder->CreateCondBr(car_is_double, display_double, display_int);
+        
+        builder->SetInsertPoint(display_double);
+        Value* car_double_val = unpackDoubleFromTaggedValue(car_tagged);
+        builder->CreateCall(printf_func, {codegenString("%g"), car_double_val});
+        builder->CreateBr(elem_done);
+        
+        // Display int
+        builder->SetInsertPoint(display_int);
+        Value* car_int_val = unpackInt64FromTaggedValue(car_tagged);
+        builder->CreateCall(printf_func, {codegenString("%lld"), car_int_val});
+        builder->CreateBr(elem_done);
+        
+        // Move to next element (cdr traversal)
+        builder->SetInsertPoint(elem_done);
+        Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
+        Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
+        Value* cdr_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
+        Value* cdr_base = builder->CreateAnd(cdr_type, ConstantInt::get(Type::getInt8Ty(*context), 0x0F));
+        Value* cdr_is_ptr = builder->CreateICmpEQ(cdr_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_CONS_PTR));
+        Value* cdr_is_null = builder->CreateICmpEQ(cdr_base,
+            ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_NULL));
+        
+        BasicBlock* cdr_ptr = BasicBlock::Create(*context, "cdr_ptr", display_sexpr_list_func);
+        BasicBlock* cdr_end = BasicBlock::Create(*context, "cdr_end", display_sexpr_list_func);
+        
+        builder->CreateCondBr(cdr_is_ptr, cdr_ptr, cdr_end);
+        
+        builder->SetInsertPoint(cdr_ptr);
+        Value* next_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        builder->CreateStore(next_ptr, current);
+        builder->CreateBr(loop_cond);
+        
+        builder->SetInsertPoint(cdr_end);
+        builder->CreateCondBr(cdr_is_null, loop_exit, loop_exit);
+        
+        // Loop exit: close parenthesis and return
+        builder->SetInsertPoint(loop_exit);
+        builder->CreateCall(printf_func, {codegenString(")")});
+        builder->CreateBr(func_exit);
+        
+        builder->SetInsertPoint(func_exit);
+        builder->CreateRetVoid();
+        
+        // Restore insertion point
+        builder->restoreIP(old_point);
+        
+        function_table["displaySExprList"] = display_sexpr_list_func;
+        eshkol_debug("Created recursive N-depth S-expression display helper function");
     }
     
     void createFunctionDeclaration(const eshkol_ast_t* ast) {
@@ -1691,7 +1901,10 @@ private:
         
         builder->SetInsertPoint(ptr_car);
         Value* car_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car});
-        Value* tagged_ptr = packInt64ToTaggedValue(car_ptr, true);
+        // SYMBOLIC DIFF FIX: Preserve CONS_PTR type for strings/nested lists!
+        Value* tagged_ptr = packPtrToTaggedValue(
+            builder->CreateIntToPtr(car_ptr, builder->getPtrTy()),
+            ESHKOL_VALUE_CONS_PTR);
         builder->CreateBr(merge_car);
         BasicBlock* ptr_exit = builder->GetInsertBlock();
         
@@ -1750,7 +1963,10 @@ private:
         
         builder->SetInsertPoint(ptr_cdr);
         Value* cdr_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
-        Value* tagged_ptr_cdr = packInt64ToTaggedValue(cdr_ptr, true);
+        // SYMBOLIC DIFF FIX: Preserve CONS_PTR type for nested lists!
+        Value* tagged_ptr_cdr = packPtrToTaggedValue(
+            builder->CreateIntToPtr(cdr_ptr, builder->getPtrTy()),
+            ESHKOL_VALUE_CONS_PTR);
         builder->CreateBr(merge_cdr);
         BasicBlock* ptr_exit = builder->GetInsertBlock();
         
@@ -4022,8 +4238,11 @@ private:
             Value* sexpr_car_is_double = builder->CreateICmpEQ(sexpr_car_base,
                 ConstantInt::get(Type::getInt8Ty(*context), ESHKOL_VALUE_DOUBLE));
             
+            // CRITICAL: Declare ALL BasicBlocks BEFORE using them
             BasicBlock* sexpr_check_string = BasicBlock::Create(*context, "sexpr_check_string", current_func);
             BasicBlock* sexpr_check_double = BasicBlock::Create(*context, "sexpr_check_double", current_func);
+            BasicBlock* sexpr_display_string = BasicBlock::Create(*context, "sexpr_display_string", current_func);
+            BasicBlock* sexpr_display_nested = BasicBlock::Create(*context, "sexpr_display_nested", current_func);
             BasicBlock* sexpr_display_double = BasicBlock::Create(*context, "sexpr_display_double", current_func);
             BasicBlock* sexpr_display_int = BasicBlock::Create(*context, "sexpr_display_int", current_func);
             BasicBlock* sexpr_elem_done = BasicBlock::Create(*context, "sexpr_elem_done", current_func);
@@ -4034,13 +4253,25 @@ private:
             builder->SetInsertPoint(sexpr_check_string);
             Value* sexpr_car_ptr_int = unpackInt64FromTaggedValue(sexpr_car_tagged);
             Value* sexpr_car_ptr = builder->CreateIntToPtr(sexpr_car_ptr_int, builder->getPtrTy());
+            
+            // CRITICAL: String pointers from codegenString() point to GlobalVariable arrays
+            // Need to check a reasonable address range AND first byte
+            Value* ptr_is_reasonable = builder->CreateICmpUGT(sexpr_car_ptr_int,
+                ConstantInt::get(Type::getInt64Ty(*context), 1000));
+            Value* ptr_is_not_huge = builder->CreateICmpULT(sexpr_car_ptr_int,
+                ConstantInt::get(Type::getInt64Ty(*context), 0x7FFFFFFFFFFFFFFFULL));
+            Value* ptr_in_range = builder->CreateAnd(ptr_is_reasonable, ptr_is_not_huge);
+            
+            BasicBlock* check_ascii = BasicBlock::Create(*context, "sexpr_check_ascii", current_func);
+            
+            // If pointer not in reasonable range, treat as nested list
+            builder->CreateCondBr(ptr_in_range, check_ascii, sexpr_display_nested);
+            
+            builder->SetInsertPoint(check_ascii);
             Value* sexpr_first_byte = builder->CreateLoad(Type::getInt8Ty(*context), sexpr_car_ptr);
             Value* sexpr_is_printable = builder->CreateAnd(
                 builder->CreateICmpUGE(sexpr_first_byte, ConstantInt::get(Type::getInt8Ty(*context), 32)),
                 builder->CreateICmpULE(sexpr_first_byte, ConstantInt::get(Type::getInt8Ty(*context), 126)));
-            
-            BasicBlock* sexpr_display_string = BasicBlock::Create(*context, "sexpr_display_string", current_func);
-            BasicBlock* sexpr_display_nested = BasicBlock::Create(*context, "sexpr_display_nested", current_func);
             
             builder->CreateCondBr(sexpr_is_printable, sexpr_display_string, sexpr_display_nested);
             
@@ -4049,7 +4280,9 @@ private:
             builder->CreateBr(sexpr_elem_done);
             
             builder->SetInsertPoint(sexpr_display_nested);
-            builder->CreateCall(printf_func, {codegenString("(...)")});
+            // Nested list - display using N-depth recursive helper function
+            Value* initial_depth = ConstantInt::get(Type::getInt32Ty(*context), 1);
+            builder->CreateCall(display_sexpr_list_func, {sexpr_car_ptr_int, initial_depth});
             builder->CreateBr(sexpr_elem_done);
             
             builder->SetInsertPoint(sexpr_check_double);
@@ -4399,11 +4632,10 @@ private:
             builder->CreateCall(printf_func, {codegenString("%s"), car_ptr});
             builder->CreateBr(element_done);
             
-            // Display nested list recursively (existing cons_ptr logic)
+            // Display nested list using N-depth recursive helper function
             builder->SetInsertPoint(display_nested_list);
-            // For nested S-expressions, we need to recursively display them
-            // For now, just display as "(nested)" - full recursive display would go here
-            builder->CreateCall(printf_func, {codegenString("(nested)")});
+            Value* initial_depth_2 = ConstantInt::get(Type::getInt32Ty(*context), 1);
+            builder->CreateCall(display_sexpr_list_func, {car_ptr_int, initial_depth_2});
             builder->CreateBr(element_done);
             
             // Normal extraction path for int64/double values
