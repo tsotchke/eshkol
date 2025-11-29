@@ -1,0 +1,4 @@
+; Test gradient with vref-based function
+(define f (lambda (v) (* (vref v 0) (vref v 0))))
+(display (gradient f (vector 3.0)))
+(newline)

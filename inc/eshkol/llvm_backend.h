@@ -70,6 +70,48 @@ void eshkol_dispose_llvm_module(LLVMModuleRef module);
  */
 void eshkol_print_llvm_ir(LLVMModuleRef module);
 
+/*
+ * REPL Mode: Enable symbol persistence across compiler invocations
+ * When enabled, symbols registered via eshkol_repl_register_* will be available
+ * in subsequent compilations, allowing cross-evaluation function calls.
+ */
+void eshkol_repl_enable(void);
+
+/*
+ * REPL Mode: Disable symbol persistence
+ * Clears all registered REPL symbols.
+ */
+void eshkol_repl_disable(void);
+
+/*
+ * REPL Mode: Register a JIT symbol (variable) for cross-evaluation access
+ * @param name Symbol name (e.g., "myvar")
+ * @param address JIT address of the symbol
+ */
+void eshkol_repl_register_symbol(const char* name, uint64_t address);
+
+/*
+ * REPL Mode: Register a JIT function for cross-evaluation access
+ * @param name Function name (e.g., "lambda_0" or "myfunc")
+ * @param address JIT address of the function
+ * @param arity Number of parameters the function takes
+ */
+void eshkol_repl_register_function(const char* name, uint64_t address, size_t arity);
+
+/*
+ * REPL Mode: Register variable -> lambda name mapping for s-expression lookup
+ * @param var_name Variable name (e.g., "square")
+ * @param lambda_name Lambda function name (e.g., "lambda_0")
+ */
+void eshkol_repl_register_lambda_name(const char* var_name, const char* lambda_name);
+
+/*
+ * REPL Mode: Register s-expression runtime value
+ * @param sexpr_name S-expression global name (e.g., "lambda_0_sexpr")
+ * @param sexpr_value Runtime pointer value of the s-expression
+ */
+void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value);
+
 #else
 
 // Stub implementations when LLVM backend is disabled
@@ -79,6 +121,12 @@ void eshkol_print_llvm_ir(LLVMModuleRef module);
 #define eshkol_compile_llvm_ir_to_executable(module, filename, lib_paths, num_lib_paths, linked_libs, num_linked_libs) (-1)
 #define eshkol_dispose_llvm_module(module) do {} while(0)
 #define eshkol_print_llvm_ir(module) do {} while(0)
+#define eshkol_repl_enable() do {} while(0)
+#define eshkol_repl_disable() do {} while(0)
+#define eshkol_repl_register_symbol(name, address) do {} while(0)
+#define eshkol_repl_register_function(name, address, arity) do {} while(0)
+#define eshkol_repl_register_lambda_name(var_name, lambda_name) do {} while(0)
+#define eshkol_repl_register_sexpr(sexpr_name, sexpr_value) do {} while(0)
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED
 

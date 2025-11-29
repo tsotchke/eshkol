@@ -1,0 +1,3 @@
+; gradient scalar test
+(define square (lambda (x) (* x x)))
+(display (gradient square 3.0))

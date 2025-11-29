@@ -1,0 +1,38 @@
+; Simple Lambda S-Expression Display Test
+; Tests homoiconic lambda display without advanced features
+
+; Test 1: Simple lambda display
+(define square (lambda (x) (* x x)))
+(display square)
+(newline)
+
+; Test 2: Lambda execution still works
+(display (square 5))
+(newline)
+
+; Test 3: Multi-parameter lambda
+(define add (lambda (x y) (+ x y)))
+(display add)
+(newline)
+(display (add 3 7))
+(newline)
+
+; Test 4: Nested expression lambda
+(define complex (lambda (x) (+ (* x x) (* x 2))))
+(display complex)
+(newline)
+(display (complex 3))
+(newline)
+
+; Test 5: Map with lambda (must still work!)
+(display (map (lambda (x) (* x 2)) (list 1 2 3)))
+(newline)
+
+; Expected output:
+; (lambda (x) (* x x))
+; 25
+; (lambda (x y) (+ x y))
+; 10  
+; (lambda (x) (+ (* x x) (* x 2)))
+; 15
+; (2 4 6)

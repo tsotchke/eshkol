@@ -134,3 +134,43 @@ eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast) {
     
     return copy;
 }
+
+// ===== REPL DISPLAY HELPER =====
+
+// Helper: Wrap expression in (begin (display expr) (newline))
+// Used by REPL to automatically display expression results
+eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr) {
+    // Create: (begin (display expr) (newline))
+    eshkol_ast_t* wrapper = eshkol_alloc_symbolic_ast();
+    wrapper->type = ESHKOL_OP;
+    wrapper->operation.op = ESHKOL_CALL_OP;
+
+    // Function: "begin"
+    wrapper->operation.call_op.func = eshkol_make_var_ast("begin");
+    wrapper->operation.call_op.num_vars = 2;
+    wrapper->operation.call_op.variables =
+        (eshkol_ast_t*)malloc(2 * sizeof(eshkol_ast_t));
+
+    // Element 1: (display expr)
+    eshkol_ast_t* display_call = eshkol_alloc_symbolic_ast();
+    display_call->type = ESHKOL_OP;
+    display_call->operation.op = ESHKOL_CALL_OP;
+    display_call->operation.call_op.func = eshkol_make_var_ast("display");
+    display_call->operation.call_op.num_vars = 1;
+    display_call->operation.call_op.variables =
+        (eshkol_ast_t*)malloc(sizeof(eshkol_ast_t));
+    display_call->operation.call_op.variables[0] = *expr;
+
+    // Element 2: (newline)
+    eshkol_ast_t* newline_call = eshkol_alloc_symbolic_ast();
+    newline_call->type = ESHKOL_OP;
+    newline_call->operation.op = ESHKOL_CALL_OP;
+    newline_call->operation.call_op.func = eshkol_make_var_ast("newline");
+    newline_call->operation.call_op.num_vars = 0;
+    newline_call->operation.call_op.variables = nullptr;
+
+    wrapper->operation.call_op.variables[0] = *display_call;
+    wrapper->operation.call_op.variables[1] = *newline_call;
+
+    return wrapper;
+}

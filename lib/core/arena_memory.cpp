@@ -21,6 +21,12 @@
 // Default alignment for memory allocations
 #define DEFAULT_ALIGNMENT 8
 
+// Global tape pointer for AD operations (shared across JIT modules in REPL)
+ad_tape_t* __current_ad_tape = nullptr;
+
+// Global shared arena for REPL mode (persistent across evaluations)
+arena_t* __repl_shared_arena = nullptr;
+
 // Utility function to align size to boundary
 static size_t align_size(size_t size, size_t alignment) {
     return (size + alignment - 1) & ~(alignment - 1);

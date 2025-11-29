@@ -111,6 +111,12 @@ add_custom_command(
 file(GLOB_RECURSE EXE_SRC RELATIVE ${CMAKE_SOURCE_DIR} "exe/*.cpp")
 file(GLOB_RECURSE LIB_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/*.c*")
 
+# Exclude REPL sources from main library (REPL will be separate)
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/repl/.*")
+
+# Get REPL sources separately
+file(GLOB REPL_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/repl/*.cpp")
+
 add_compile_definitions(
   ESHKOL_VER="${ESHKOL_VERSION}"
 )
@@ -149,9 +155,15 @@ endif()
 set(EXES)
 foreach (exe ${EXE_SRC})
   get_filename_component(exename ${exe} NAME_WE)
+
+  # Skip eshkol-repl - it's handled separately below
+  if(exename STREQUAL "eshkol-repl")
+    continue()
+  endif()
+
   list(APPEND EXES ${exename})
 
-  # Compile main executable source as object file  
+  # Compile main executable source as object file
   add_executable(${exename} ${exe})
   target_compile_options(${exename} PRIVATE ${LLVM_CXXFLAGS})
   target_compile_definitions(${exename} PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
@@ -169,6 +181,80 @@ foreach (exe ${EXE_SRC})
   
   target_link_libraries(${exename} PUBLIC eshkol-static ${LLVM_LIBS} ${LLVM_SYSTEM_LIBS})
 endforeach ()
+
+# ===== REPL Support =====
+# Optional REPL with JIT execution
+
+option(BUILD_REPL "Build the interactive REPL" ON)
+
+if(BUILD_REPL AND REPL_SRC)
+  # REPL library
+  add_library(eshkol-repl-lib STATIC ${REPL_SRC})
+
+  target_include_directories(eshkol-repl-lib
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc/>
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl
+  )
+
+  # REPL needs LLVM ORC JIT components
+  target_compile_options(eshkol-repl-lib PRIVATE ${LLVM_CXXFLAGS})
+  target_compile_definitions(eshkol-repl-lib PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+
+  if(LLVM_INCLUDE_DIRS)
+    target_include_directories(eshkol-repl-lib PRIVATE ${LLVM_INCLUDE_DIRS})
+  endif()
+
+  if(LLVM_LIBRARY_DIRS)
+    target_link_directories(eshkol-repl-lib PRIVATE ${LLVM_LIBRARY_DIRS})
+  endif()
+
+  # Link against main compiler library and LLVM
+  target_link_libraries(eshkol-repl-lib PUBLIC eshkol-static ${LLVM_LIBS} ${LLVM_SYSTEM_LIBS})
+
+  # REPL executable (only if we have the source)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/exe/eshkol-repl.cpp")
+    add_executable(eshkol-repl exe/eshkol-repl.cpp)
+
+    target_compile_options(eshkol-repl PRIVATE ${LLVM_CXXFLAGS})
+    target_compile_definitions(eshkol-repl PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+    target_include_directories(eshkol-repl PRIVATE inc/)
+
+    if(LLVM_INCLUDE_DIRS)
+      target_include_directories(eshkol-repl PRIVATE ${LLVM_INCLUDE_DIRS})
+    endif()
+
+    if(LLVM_LIBRARY_DIRS)
+      target_link_directories(eshkol-repl PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    # Find readline library (optional but recommended)
+    find_library(READLINE_LIBRARY readline)
+    if(READLINE_LIBRARY)
+      message(STATUS "Found readline: ${READLINE_LIBRARY}")
+      target_link_libraries(eshkol-repl PRIVATE ${READLINE_LIBRARY})
+      target_compile_definitions(eshkol-repl PRIVATE HAVE_READLINE)
+    else()
+      message(WARNING "readline not found - REPL will use basic input (no history)")
+    endif()
+
+    target_link_libraries(eshkol-repl PRIVATE eshkol-repl-lib)
+
+    # Export all symbols for JIT symbol resolution
+    # This makes arena_*, printf, etc. available to JIT-compiled code
+    if(APPLE)
+      target_link_options(eshkol-repl PRIVATE "-Wl,-export_dynamic")
+    else()
+      target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
+    endif()
+
+    # Install REPL executable
+    install(TARGETS eshkol-repl DESTINATION bin)
+
+    message(STATUS "REPL build enabled - target: eshkol-repl")
+  endif()
+endif()
 
 # where to find our CMake modules
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
