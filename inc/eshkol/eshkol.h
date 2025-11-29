@@ -46,6 +46,7 @@ typedef enum {
     ESHKOL_VALUE_DUAL_NUMBER = 4,  // Dual number for forward-mode AD
     ESHKOL_VALUE_AD_NODE_PTR = 5,  // Pointer to AD computation graph node
     ESHKOL_VALUE_TENSOR_PTR  = 6,  // Pointer to tensor structure
+    ESHKOL_VALUE_LAMBDA_SEXPR = 7, // Lambda S-expression metadata (homoiconicity)
     // Reserved for future expansion
     ESHKOL_VALUE_MAX         = 15  // 4-bit type field limit
 } eshkol_value_type_t;
@@ -143,6 +144,7 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 #define ESHKOL_IS_DUAL_NUMBER_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_DUAL_NUMBER)
 #define ESHKOL_IS_AD_NODE_PTR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_AD_NODE_PTR)
 #define ESHKOL_IS_TENSOR_PTR_TYPE(type)  (((type) & 0x0F) == ESHKOL_VALUE_TENSOR_PTR)
+#define ESHKOL_IS_LAMBDA_SEXPR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_LAMBDA_SEXPR)
 
 // Exactness checking macros
 #define ESHKOL_IS_EXACT(type)         (((type) & ESHKOL_VALUE_EXACT_FLAG) != 0)
@@ -412,6 +414,9 @@ eshkol_ast_t* eshkol_make_double_ast(double value);
 eshkol_ast_t* eshkol_make_binary_op_ast(const char* op, eshkol_ast_t* left, eshkol_ast_t* right);
 eshkol_ast_t* eshkol_make_unary_call_ast(const char* func, eshkol_ast_t* arg);
 eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast);
+
+// REPL display helper
+eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr);
 
 #ifdef __cplusplus
 };

@@ -142,6 +142,12 @@ eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count);
 ad_node_t* arena_allocate_ad_node(arena_t* arena);
 ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count);
 
+// Global tape pointer for AD operations (shared across JIT modules in REPL)
+extern ad_tape_t* __current_ad_tape;
+
+// Global shared arena for REPL mode (persistent across evaluations)
+extern arena_t* __repl_shared_arena;
+
 // Tape allocation and management
 ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
 void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node);
