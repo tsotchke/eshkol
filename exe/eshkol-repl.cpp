@@ -13,7 +13,19 @@
 #include <string>
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
 #include <unistd.h>  // For close(), unlink(), mkstemp()
+
+// Global flag for Ctrl+C handling
+volatile sig_atomic_t g_interrupted = 0;
+
+// Signal handler for Ctrl+C
+void sigint_handler(int sig) {
+    (void)sig;  // Unused
+    g_interrupted = 1;
+    // Don't call non-async-signal-safe functions here
+    // Just set the flag and let the main loop handle it
+}
 
 #ifdef HAVE_READLINE
 #include <readline/readline.h>
@@ -36,6 +48,50 @@ void add_history(const char*) {}  // No-op if no readline
 // Parser function from eshkol.h (declared in C++)
 extern "C++" {
     eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file);
+}
+
+// Helper: Check if input has balanced parentheses
+bool is_balanced(const std::string& input) {
+    int depth = 0;
+    bool in_string = false;
+    bool in_comment = false;
+
+    for (size_t i = 0; i < input.length(); ++i) {
+        char c = input[i];
+
+        // Handle line comments
+        if (c == ';' && !in_string) {
+            in_comment = true;
+        }
+        if (c == '\n' && in_comment) {
+            in_comment = false;
+            continue;
+        }
+        if (in_comment) {
+            continue;
+        }
+
+        // Handle string literals
+        if (c == '"' && (i == 0 || input[i-1] != '\\')) {
+            in_string = !in_string;
+            continue;
+        }
+        if (in_string) {
+            continue;
+        }
+
+        // Count parentheses
+        if (c == '(') {
+            depth++;
+        } else if (c == ')') {
+            depth--;
+            if (depth < 0) {
+                return false;  // More closing than opening
+            }
+        }
+    }
+
+    return depth == 0;
 }
 
 // Helper: Parse a string to AST by writing to temp file
@@ -102,9 +158,13 @@ const char* get_lambda_var_name(const eshkol_ast_t& ast) {
 }
 
 int main(int argc, char** argv) {
+    // Install Ctrl+C handler
+    signal(SIGINT, sigint_handler);
+
     std::cout << "Eshkol REPL v0.1.1 (Compiler-First Architecture)\n";
     std::cout << "Type (exit) or Ctrl+D to quit\n";
-    std::cout << "Type :help for commands\n\n";
+    std::cout << "Type :help for commands\n";
+    std::cout << "Press Ctrl+C to cancel multi-line input\n\n";
 
     // Initialize REPL JIT context
     eshkol::ReplJITContext repl_ctx;
@@ -112,50 +172,192 @@ int main(int argc, char** argv) {
     std::cout << "\n";  // After JIT initialization message
 
     while (true) {
-        char* input = readline("eshkol> ");
+        // Reset interrupt flag
+        g_interrupted = 0;
 
-        // EOF (Ctrl+D)
-        if (!input) {
-            std::cout << "\nGoodbye!" << std::endl;  // Use endl to flush
-            break;
-        }
+        // Accumulate multi-line input
+        std::string input_str;
+        bool first_line = true;
+        int line_count = 0;
 
-        // Empty input
-        if (strlen(input) == 0) {
+        while (true) {
+            // Check for interrupt before reading
+            if (g_interrupted) {
+                std::cout << "\n^C (cancelled)\n";
+                g_interrupted = 0;
+                input_str.clear();
+                break;
+            }
+
+            // Calculate current paren depth for better UX
+            int current_depth = 0;
+            if (!first_line && !input_str.empty()) {
+                bool in_str = false, in_com = false;
+                for (char c : input_str) {
+                    if (c == ';' && !in_str) in_com = true;
+                    if (c == '\n' && in_com) { in_com = false; continue; }
+                    if (in_com) continue;
+                    if (c == '"') { in_str = !in_str; continue; }
+                    if (in_str) continue;
+                    if (c == '(') current_depth++;
+                    else if (c == ')') current_depth--;
+                }
+            }
+
+            // Create prompt showing line number and paren depth for continuation
+            std::string prompt_str;
+            if (first_line) {
+                prompt_str = "eshkol> ";
+            } else {
+                prompt_str = "  [" + std::to_string(line_count) +
+                             "," + std::to_string(current_depth) + "]> ";
+            }
+
+            char* input = readline(prompt_str.c_str());
+
+            // EOF (Ctrl+D)
+            if (!input) {
+                if (!first_line && !input_str.empty()) {
+                    // Treat EOF in continuation as force-completing the input
+                    std::cout << " (force completing with unbalanced parentheses)\n";
+                    break;
+                }
+                std::cout << "\nGoodbye!" << std::endl;
+                _exit(0);
+            }
+
+            // Check if continuation line is empty - treat as "remove last line" or cancel
+            if (!first_line && strlen(input) == 0 && !input_str.empty()) {
+                // Find the last newline and remove everything after it
+                size_t last_newline = input_str.rfind('\n');
+                if (last_newline != std::string::npos) {
+                    // Multiple lines - remove the last one
+                    input_str = input_str.substr(0, last_newline);
+                    line_count--;
+                    std::cout << "(removed last line, " << line_count << " line"
+                              << (line_count != 1 ? "s" : "") << " remaining)\n";
+                    free(input);
+                    continue;
+                } else {
+                    // Only one line - cancel input instead of removing
+                    std::cout << "(cancelled)\n";
+                    input_str.clear();
+                    line_count = 0;
+                    first_line = true;
+                    free(input);
+                    continue;
+                }
+            }
+
+            // Add to accumulated input
+            if (!first_line && !input_str.empty()) {
+                input_str += "\n";
+            }
+            input_str += input;
+            line_count++;
+
+            // Check for exit on first line
+            if (first_line && (strcmp(input, "(exit)") == 0 ||
+                              strcmp(input, "exit") == 0 ||
+                              strcmp(input, "quit") == 0)) {
+                free(input);
+                std::cout << "Goodbye!" << std::endl;
+                _exit(0);
+            }
+
+            // Check for special commands (work on any line)
+            if (strcmp(input, ":cancel") == 0) {
+                free(input);
+                std::cout << "(cancelled multi-line input)\n";
+                input_str.clear();
+                break;
+            }
+
+            // First-line-only commands
+            if (first_line && strcmp(input, ":help") == 0) {
+                free(input);
+                std::cout << "Available commands:\n";
+                std::cout << "  :help     - Show this help\n";
+                std::cout << "  :quit     - Exit REPL\n";
+                std::cout << "  :cancel   - Cancel multi-line input\n";
+                std::cout << "  (exit)    - Exit REPL\n";
+                std::cout << "\nMulti-line editing:\n";
+                std::cout << "  - Incomplete expressions auto-continue to next line\n";
+                std::cout << "  - Continuation prompt: [line,depth]>\n";
+                std::cout << "    * line  = continuation line number (starts at 1)\n";
+                std::cout << "    * depth = unclosed '(' count (evaluates when 0)\n";
+                std::cout << "  - Empty line on continuation removes last line\n";
+                std::cout << "  - Ctrl+C cancels multi-line input\n";
+                std::cout << "  - Ctrl+D on continuation force-completes input\n";
+                std::cout << "\nAll compiler features available:\n";
+                std::cout << "  - Arithmetic: (+ 1 2), (- 10 3), (* 4 5), (/ 10 2)\n";
+                std::cout << "  - Variables: (define x 10)\n";
+                std::cout << "  - Lambdas: (define square (lambda (n) (* n n)))\n";
+                std::cout << "  - Autodiff: (derivative (lambda (x) (* x x)) 5.0)\n";
+                std::cout << "  - Lists: (list 1 2 3), (map + (list 1 2) (list 3 4))\n";
+                input_str.clear();
+                break;
+            }
+
+            if (first_line && strcmp(input, ":quit") == 0) {
+                free(input);
+                std::cout << "Goodbye!" << std::endl;
+                _exit(0);
+            }
+
             free(input);
+
+            // Empty first line - just continue
+            if (first_line && input_str.empty()) {
+                input_str.clear();
+                break;
+            }
+
+            // Check parenthesis balance
+            int depth = 0;
+            bool in_string = false;
+            bool in_comment = false;
+            for (size_t i = 0; i < input_str.length(); ++i) {
+                char c = input_str[i];
+                if (c == ';' && !in_string) in_comment = true;
+                if (c == '\n' && in_comment) { in_comment = false; continue; }
+                if (in_comment) continue;
+                if (c == '"' && (i == 0 || input_str[i-1] != '\\')) {
+                    in_string = !in_string;
+                    continue;
+                }
+                if (in_string) continue;
+                if (c == '(') depth++;
+                else if (c == ')') {
+                    depth--;
+                    if (depth < 0) {
+                        // More closing than opening - syntax error
+                        std::cerr << "Error: Unmatched closing parenthesis\n";
+                        input_str.clear();
+                        break;
+                    }
+                }
+            }
+
+            // Check if we had an error (depth < 0)
+            if (input_str.empty()) {
+                break;  // Error was reported, start over
+            }
+
+            // Check if expression is complete (balanced)
+            if (depth == 0) {
+                // Complete expression - add to history and process
+                add_history(input_str.c_str());
+                break;
+            }
+
+            // Not balanced - continue reading more lines
+            first_line = false;
+        }
+
+        // Skip if empty (from :help or empty line)
+        if (input_str.empty()) {
             continue;
-        }
-
-        // Add to history
-        add_history(input);
-
-        std::string input_str(input);
-        free(input);
-
-        // Check for exit command
-        if (input_str == "(exit)" || input_str == "exit" || input_str == "quit") {
-            std::cout << "Goodbye!" << std::endl;  // Use endl to flush
-            break;
-        }
-
-        // Check for special commands
-        if (input_str == ":help") {
-            std::cout << "Available commands:\n";
-            std::cout << "  :help     - Show this help\n";
-            std::cout << "  :quit     - Exit REPL\n";
-            std::cout << "  (exit)    - Exit REPL\n";
-            std::cout << "\nAll compiler features available:\n";
-            std::cout << "  - Arithmetic: (+ 1 2), (- 10 3), (* 4 5), (/ 10 2)\n";
-            std::cout << "  - Variables: (define x 10)\n";
-            std::cout << "  - Lambdas: (define square (lambda (n) (* n n)))\n";
-            std::cout << "  - Autodiff: (derivative (lambda (x) (* x x)) 5.0)\n";
-            std::cout << "  - Lists: (list 1 2 3), (map + (list 1 2) (list 3 4))\n";
-            continue;
-        }
-
-        if (input_str == ":quit") {
-            std::cout << "Goodbye!" << std::endl;  // Use endl to flush
-            break;
         }
 
         // Parse and evaluate

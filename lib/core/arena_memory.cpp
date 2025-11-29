@@ -24,6 +24,10 @@
 // Global tape pointer for AD operations (shared across JIT modules in REPL)
 ad_tape_t* __current_ad_tape = nullptr;
 
+// Global AD mode flag (shared across JIT modules in REPL)
+// CRITICAL: This must be shared so lambdas from one module can see AD mode set by another
+bool __ad_mode_active = false;
+
 // Global shared arena for REPL mode (persistent across evaluations)
 arena_t* __repl_shared_arena = nullptr;
 

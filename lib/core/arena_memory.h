@@ -145,6 +145,10 @@ ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count);
 // Global tape pointer for AD operations (shared across JIT modules in REPL)
 extern ad_tape_t* __current_ad_tape;
 
+// Global AD mode flag (shared across JIT modules in REPL)
+// CRITICAL: This must be shared so lambdas from one module can see AD mode set by another
+extern bool __ad_mode_active;
+
 // Global shared arena for REPL mode (persistent across evaluations)
 extern arena_t* __repl_shared_arena;
 
