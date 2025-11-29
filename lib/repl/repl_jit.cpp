@@ -109,8 +109,7 @@ void ReplJITContext::initializeJIT() {
     __repl_shared_arena = arena_create(8192);  // 8KB default block size
     shared_arena_ = __repl_shared_arena;  // Keep local copy for cleanup
 
-    std::cout << "REPL JIT initialized successfully" << std::endl;
-    std::cout << "Shared arena created at " << __repl_shared_arena << std::endl;
+    // REPL JIT initialized silently
 }
 
 // REMOVED: Failed IR manipulation approach - now using AST-level wrapping instead
@@ -191,6 +190,14 @@ void ReplJITContext::registerRuntimeSymbols() {
         orc::ExecutorAddr::fromPtr((void*)&::__current_ad_tape),
         JITSymbolFlags::Exported  // NOT Callable - this is a data symbol
     };
+
+    // Register global AD mode flag (shared across all JIT modules for gradient/jacobian operations)
+    // CRITICAL: This must be shared so lambdas from one module can see AD mode set by another
+    symbols[ES.intern("__ad_mode_active")] = {
+        orc::ExecutorAddr::fromPtr((void*)&::__ad_mode_active),
+        JITSymbolFlags::Exported  // NOT Callable - this is a data symbol
+    };
+    std::cout << "Registered __ad_mode_active at " << (void*)&::__ad_mode_active << std::endl;
 
     // Register global shared arena pointer (shared across all REPL evaluations)
     symbols[ES.intern("__repl_shared_arena")] = {

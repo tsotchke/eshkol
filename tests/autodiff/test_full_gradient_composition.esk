@@ -1,0 +1,44 @@
+(define w1 (vector 0.5 -0.3))
+(define b1 0.1)
+(define x (vector 1.0 2.0))
+
+(define dot (lambda (v1 v2)
+  (+ (* (vref v1 0) (vref v2 0))
+     (* (vref v1 1) (vref v2 1)))))
+
+(define relu (lambda (x)
+  (if (< x 0.0)
+      0.0
+      x)))
+
+(define layer1 (lambda (w b x-vec)
+  (relu (+ (dot w x-vec) b))))
+
+(display "layer1 result: ")
+(display (layer1 w1 b1 x))
+(newline)
+
+(define mse-loss (lambda (w)
+  (let ((pred (+ (dot w x) b1)))
+    (* pred pred))))
+
+(display "mse-loss result: ")
+(display (mse-loss w1))
+(newline)
+
+(display "gradient mse-loss: ")
+(display (gradient mse-loss w1))
+(newline)
+
+(define cross-product (lambda (w)
+  (let ((a (vref w 0))
+        (b (vref w 1)))
+    (+ (* a a) (* b b) (* a b)))))
+
+(display "cross-product result: ")
+(display (cross-product w1))
+(newline)
+
+(display "gradient cross-product: ")
+(display (gradient cross-product w1))
+(newline)

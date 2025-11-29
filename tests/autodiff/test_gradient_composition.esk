@@ -1,0 +1,14 @@
+(define x (vector 1.0 2.0))
+(define b1 0.1)
+
+(define dot (lambda (v1 v2)
+  (+ (* (vref v1 0) (vref v2 0))
+     (* (vref v1 1) (vref v2 1)))))
+
+(define mse-loss (lambda (w)
+  (let ((pred (+ (dot w x) b1)))
+    (* pred pred))))
+
+(define w1 (vector 0.5 -0.3))
+(display (gradient mse-loss w1))
+(newline)

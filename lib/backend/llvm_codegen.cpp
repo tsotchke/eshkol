@@ -228,16 +228,30 @@ public:
             eshkol_debug("Created global arena variable: __global_arena");
             
             // PHASE 1 AUTODIFF FIX: Create global AD mode flag
-            ad_mode_active = new GlobalVariable(
-                *module,
-                Type::getInt1Ty(*context),
-                false, // not constant
-                GlobalValue::InternalLinkage, // Internal linkage
-                ConstantInt::get(Type::getInt1Ty(*context), 0), // Initialize to false
-                "__ad_mode_active"
-            );
-            eshkol_debug("Created global AD mode flag: __ad_mode_active (initialized to false)");
-            
+            // CRITICAL BUG FIX: In REPL mode, use ExternalLinkage to share flag across JIT modules
+            // This allows lambdas compiled in one module to see AD mode set by another module
+            // Without this fix, gradient calls on the same function with different vectors crash
+            if (g_repl_mode_enabled) {
+                ad_mode_active = new GlobalVariable(
+                    *module,
+                    Type::getInt1Ty(*context),
+                    false, // not constant
+                    GlobalValue::ExternalLinkage, // External - shared across REPL modules
+                    nullptr, // External - no initializer (defined in arena_memory.cpp)
+                    "__ad_mode_active"
+                );
+            } else {
+                ad_mode_active = new GlobalVariable(
+                    *module,
+                    Type::getInt1Ty(*context),
+                    false, // not constant
+                    GlobalValue::InternalLinkage, // Internal linkage for compiled mode
+                    ConstantInt::get(Type::getInt1Ty(*context), 0), // Initialize to false
+                    "__ad_mode_active"
+                );
+                eshkol_debug("Created global AD mode flag: __ad_mode_active (initialized to false)");
+            }
+
             // PHASE 1 AUTODIFF FIX: Create global tape pointer
             // In REPL mode, use ExternalLinkage to share tape across JIT modules
             // In compiler mode, use InternalLinkage with null initializer
@@ -6270,7 +6284,51 @@ private:
                             findFreeVariables(&op->sequence_op.expressions[i], current_scope, parameters, num_params, free_vars);
                         }
                         break;
-                    // Add other operation types as needed
+                    case ESHKOL_LET_OP: {
+                        // CRITICAL: Handle let expressions to find free variables in bindings and body
+                        // First, collect let-bound variable names (they shadow outer scope)
+                        std::vector<std::string> let_bound_names;
+                        for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                            const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                            if (binding->type == ESHKOL_CONS && binding->cons_cell.car) {
+                                const eshkol_ast_t* var_ast = binding->cons_cell.car;
+                                if (var_ast->type == ESHKOL_VAR && var_ast->variable.id) {
+                                    let_bound_names.push_back(var_ast->variable.id);
+                                }
+                            }
+                        }
+
+                        // Search binding VALUE expressions (they can reference outer scope)
+                        for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                            const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                            if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
+                                findFreeVariables(binding->cons_cell.cdr, current_scope, parameters, num_params, free_vars);
+                            }
+                        }
+
+                        // Search let body - but let-bound variables should be treated as parameters
+                        // Create extended parameter list including let-bound names
+                        if (op->let_op.body) {
+                            // We need to pass let-bound names as "virtual parameters" so they're not captured
+                            // For simplicity, just search the body and filter out let-bound names after
+                            findFreeVariables(op->let_op.body, current_scope, parameters, num_params, free_vars);
+
+                            // Remove any let-bound names that were incorrectly added as free vars
+                            for (const std::string& let_var : let_bound_names) {
+                                free_vars.erase(std::remove(free_vars.begin(), free_vars.end(), let_var), free_vars.end());
+                            }
+                        }
+                        break;
+                    }
+                    case ESHKOL_LAMBDA_OP:
+                        // Nested lambda - search its body too (but its parameters are bound)
+                        if (op->lambda_op.body) {
+                            findFreeVariables(op->lambda_op.body, current_scope,
+                                             op->lambda_op.parameters, op->lambda_op.num_params, free_vars);
+                        }
+                        break;
+                    // Note: 'if' conditionals are handled as CALL_OP with func_name "if"
+                    // The ESHKOL_CALL_OP case above correctly handles them via call_op.variables
                     default:
                         break;
                 }
@@ -6920,18 +6978,7 @@ private:
         
         // PHASE 1 FIX: Check global __ad_mode_active flag at RUNTIME
         Value* in_ad_mode = builder->CreateLoad(Type::getInt1Ty(*context), ad_mode_active);
-        
-        // DEBUG: Log AD mode flag value
-        Function* printf_func = function_table["printf"];
-        if (printf_func) {
-            Value* ad_mode_int = builder->CreateZExt(in_ad_mode, Type::getInt32Ty(*context));
-            builder->CreateCall(printf_func, {
-                codegenString("[DEBUG vref] __ad_mode_active=%d, elem_as_int64=%p\n"),
-                ad_mode_int,
-                elem_as_int64
-            });
-        }
-        
+
         BasicBlock* ad_mode_check = BasicBlock::Create(*context, "vref_ad_mode_check", current_func);
         BasicBlock* normal_mode_check = BasicBlock::Create(*context, "vref_normal_mode_check", current_func);
         BasicBlock* int_path = BasicBlock::Create(*context, "vref_int", current_func);
@@ -6941,23 +6988,44 @@ private:
         BasicBlock* vref_merge = BasicBlock::Create(*context, "vref_merge", current_func);
         
         builder->CreateCondBr(in_ad_mode, ad_mode_check, normal_mode_check);
-        
-        // AD mode path: prioritize AD node interpretation for large values
+
+        // AD mode path: MUST STILL distinguish AD nodes from regular doubles!
+        // Captured tensors like 'x' contain regular doubles even when ad_mode_active=true
         builder->SetInsertPoint(ad_mode_check);
         Value* is_small_in_ad = builder->CreateICmpULT(elem_as_int64,
             ConstantInt::get(Type::getInt64Ty(*context), 1000));
         BasicBlock* ad_mode_small = BasicBlock::Create(*context, "vref_ad_small", current_func);
         BasicBlock* ad_mode_large = BasicBlock::Create(*context, "vref_ad_large", current_func);
         builder->CreateCondBr(is_small_in_ad, ad_mode_small, ad_mode_large);
-        
+
         // AD mode, small value: integer
         builder->SetInsertPoint(ad_mode_small);
         Value* ad_int_tagged = packInt64ToTaggedValue(elem_as_int64, true);
         builder->CreateBr(vref_merge);
         BasicBlock* ad_small_exit = builder->GetInsertBlock();
-        
-        // AD mode, large value: AD node pointer (skip exponent check)
+
+        // AD mode, large value: CRITICAL FIX - use IEEE754 exponent check like normal mode
+        // AD node pointers are memory addresses (no exponent bits in high position)
+        // Doubles have exponent bits set (0x7FF0000000000000 mask)
         builder->SetInsertPoint(ad_mode_large);
+        Value* ad_exponent_mask = ConstantInt::get(Type::getInt64Ty(*context), 0x7FF0000000000000ULL);
+        Value* ad_exponent_bits = builder->CreateAnd(elem_as_int64, ad_exponent_mask);
+        Value* ad_has_exponent = builder->CreateICmpNE(ad_exponent_bits,
+            ConstantInt::get(Type::getInt64Ty(*context), 0));
+
+        BasicBlock* ad_large_is_double = BasicBlock::Create(*context, "vref_ad_large_double", current_func);
+        BasicBlock* ad_large_is_ptr = BasicBlock::Create(*context, "vref_ad_large_ptr", current_func);
+        builder->CreateCondBr(ad_has_exponent, ad_large_is_double, ad_large_is_ptr);
+
+        // AD mode, large value with exponent: it's a double (e.g., captured constant tensor)
+        builder->SetInsertPoint(ad_large_is_double);
+        Value* ad_elem_double = builder->CreateBitCast(elem_as_int64, Type::getDoubleTy(*context));
+        Value* ad_double_tagged = packDoubleToTaggedValue(ad_elem_double);
+        builder->CreateBr(vref_merge);
+        BasicBlock* ad_double_exit = builder->GetInsertBlock();
+
+        // AD mode, large value without exponent: AD node pointer
+        builder->SetInsertPoint(ad_large_is_ptr);
         Value* ad_ptr = builder->CreateIntToPtr(elem_as_int64, PointerType::getUnqual(*context));
         Value* ad_tagged = packPtrToTaggedValue(ad_ptr, ESHKOL_VALUE_AD_NODE_PTR);
         builder->CreateBr(vref_merge);
@@ -6999,9 +7067,10 @@ private:
         
         // Merge: Return tagged_value (int, double, or AD node from tensor)
         builder->SetInsertPoint(vref_merge);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 5, "vref_result");
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 6, "vref_result");
         result_phi->addIncoming(ad_int_tagged, ad_small_exit);
-        result_phi->addIncoming(ad_tagged, ad_large_exit);
+        result_phi->addIncoming(ad_double_tagged, ad_double_exit);  // AD mode double (captured tensors)
+        result_phi->addIncoming(ad_tagged, ad_large_exit);          // AD mode AD node pointer
         result_phi->addIncoming(int_tagged, int_exit);
         result_phi->addIncoming(double_tagged, double_exit);
         result_phi->addIncoming(tensor_ad_node_tagged, ad_exit);
@@ -8966,28 +9035,8 @@ private:
         
         // Allocate AD node
         Value* arena_ptr = getArenaPtr();
-        
-        // DEBUG: Check if arena_ptr is null
-        Function* printf_func = function_table["printf"];
-        if (printf_func) {
-            Value* arena_int = builder->CreatePtrToInt(arena_ptr, Type::getInt64Ty(*context));
-            builder->CreateCall(printf_func, {
-                codegenString("[DEBUG createADConstant] arena_ptr=%p\n"),
-                arena_int
-            });
-        }
-        
         Value* node_ptr = builder->CreateCall(arena_allocate_ad_node_func, {arena_ptr});
-        
-        // DEBUG: Check if node_ptr is null after allocation
-        if (printf_func) {
-            Value* node_int = builder->CreatePtrToInt(node_ptr, Type::getInt64Ty(*context));
-            builder->CreateCall(printf_func, {
-                codegenString("[DEBUG createADConstant] node_ptr=%p\n"),
-                node_int
-            });
-        }
-        
+
         // Set type = AD_NODE_CONSTANT (0)
         Value* type_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 0);
         builder->CreateStore(
@@ -10049,15 +10098,55 @@ private:
             typed_var_nodes, ConstantInt::get(Type::getInt64Ty(*context), 0));
         Value* single_ad_node = builder->CreateLoad(PointerType::getUnqual(*context), single_ad_node_slot);
         Value* scalar_ad_tagged = packPtrToTaggedValue(single_ad_node, ESHKOL_VALUE_AD_NODE_PTR);
-        
+
         std::vector<Value*> scalar_args = {scalar_ad_tagged};
-        
+
+        // CRITICAL FIX: Add captured arguments for scalar path too!
+        FunctionType* scalar_func_type = func_ptr->getFunctionType();
+        if (scalar_func_type->getNumParams() > 1) {
+            size_t scalar_num_captures = scalar_func_type->getNumParams() - 1;
+            std::string scalar_lambda_name = func_ptr->getName().str();
+
+            eshkol_debug("Gradient (scalar path): lambda %s has %zu captures", scalar_lambda_name.c_str(), scalar_num_captures);
+
+            auto scalar_arg_it = func_ptr->arg_begin();
+            scalar_arg_it++;  // Skip first parameter
+
+            for (size_t ci = 0; ci < scalar_num_captures && scalar_arg_it != func_ptr->arg_end(); ci++, scalar_arg_it++) {
+                std::string scalar_param_name = scalar_arg_it->getName().str();
+                std::string scalar_var_name = scalar_param_name;
+                if (scalar_param_name.find("captured_") == 0) {
+                    scalar_var_name = scalar_param_name.substr(9);
+                }
+
+                std::string scalar_capture_key = scalar_lambda_name + "_capture_" + scalar_var_name;
+
+                auto scalar_it = global_symbol_table.find(scalar_capture_key);
+                bool found_in_global = (scalar_it != global_symbol_table.end());
+                if (!found_in_global) {
+                    scalar_it = symbol_table.find(scalar_capture_key);
+                }
+
+                bool found = found_in_global ? (scalar_it != global_symbol_table.end()) : (scalar_it != symbol_table.end());
+                if (found && scalar_it->second) {
+                    Value* scalar_storage = scalar_it->second;
+                    Value* scalar_captured_val = builder->CreateLoad(tagged_value_type, scalar_storage);
+                    scalar_args.push_back(scalar_captured_val);
+                    eshkol_debug("Gradient (scalar): loaded capture '%s' from storage", scalar_var_name.c_str());
+                } else {
+                    scalar_args.push_back(packInt64ToTaggedValue(
+                        ConstantInt::get(Type::getInt64Ty(*context), 0), true));
+                    eshkol_warn("Gradient (scalar): capture '%s' not found, using 0", scalar_var_name.c_str());
+                }
+            }
+        }
+
         // CRITICAL: Set AD mode and tape before calling lambda
         builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 1), ad_mode_active);
         builder->CreateStore(partial_tape, current_ad_tape);
-        
+
         Value* scalar_output = builder->CreateCall(func_ptr, scalar_args);
-        
+
         // Reset AD mode and tape after call
         builder->CreateStore(ConstantInt::get(Type::getInt1Ty(*context), 0), ad_mode_active);
         builder->CreateStore(ConstantPointerNull::get(PointerType::getUnqual(*context)), current_ad_tape);
@@ -10095,11 +10184,14 @@ private:
                 std::string capture_key = lambda_name + "_capture_" + var_name;
                 
                 auto it = global_symbol_table.find(capture_key);
-                if (it == global_symbol_table.end()) {
+                bool found_in_global = (it != global_symbol_table.end());
+                if (!found_in_global) {
                     it = symbol_table.find(capture_key);
                 }
-                
-                if (it != symbol_table.end() && it->second) {
+
+                // FIX: Check against correct map based on where we found it
+                bool found = found_in_global ? (it != global_symbol_table.end()) : (it != symbol_table.end());
+                if (found && it->second) {
                     Value* storage = it->second;
                     Value* captured_val = builder->CreateLoad(tagged_value_type, storage);
                     grad_call_args.push_back(captured_val);
