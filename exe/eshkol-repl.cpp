@@ -141,13 +141,18 @@ bool is_definition_statement(const eshkol_ast_t& ast) {
     return false;
 }
 
-// Helper: Check if AST defines a lambda and return the variable name if so
+// Helper: Check if AST defines a lambda/function and return the variable name if so
 const char* get_lambda_var_name(const eshkol_ast_t& ast) {
     if (ast.type != ESHKOL_OP || ast.operation.op != ESHKOL_DEFINE_OP) {
         return nullptr;
     }
 
-    // Check if the value is a lambda
+    // Check if this is a function definition: (define (func-name args...) body)
+    if (ast.operation.define_op.is_function) {
+        return ast.operation.define_op.name;
+    }
+
+    // Check if the value is a lambda: (define name (lambda ...))
     if (ast.operation.define_op.value &&
         ast.operation.define_op.value->type == ESHKOL_OP &&
         ast.operation.define_op.value->operation.op == ESHKOL_LAMBDA_OP) {

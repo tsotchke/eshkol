@@ -65,6 +65,14 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module, const char* filen
 void eshkol_dispose_llvm_module(LLVMModuleRef module);
 
 /*
+ * Release module ownership for JIT use
+ * Removes module from internal storage so JIT can take ownership.
+ * CRITICAL: After calling this, the caller MUST NOT call eshkol_dispose_llvm_module.
+ * @param module LLVM module reference
+ */
+void eshkol_release_module_for_jit(LLVMModuleRef module);
+
+/*
  * Print LLVM IR to stdout
  * @param module LLVM module reference
  */

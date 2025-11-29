@@ -243,6 +243,15 @@ typedef enum {
     ESHKOL_EXTERN_VAR_OP,
     ESHKOL_LAMBDA_OP,
     ESHKOL_LET_OP,
+    ESHKOL_LET_STAR_OP,  // let* - sequential bindings
+    ESHKOL_LETREC_OP,    // letrec - recursive bindings (all bindings visible to all values)
+    ESHKOL_AND_OP,       // short-circuit and
+    ESHKOL_OR_OP,        // short-circuit or
+    ESHKOL_COND_OP,      // multi-branch conditional
+    ESHKOL_WHEN_OP,      // when - one-armed if (execute when true)
+    ESHKOL_UNLESS_OP,    // unless - negated when (execute when false)
+    ESHKOL_QUOTE_OP,     // quote - literal data
+    ESHKOL_SET_OP,       // set! - variable mutation
     ESHKOL_TENSOR_OP,
     ESHKOL_DIFF_OP,
     // Automatic differentiation operators
@@ -313,6 +322,10 @@ typedef struct eshkol_operation {
 	           uint64_t num_bindings;
 	           struct eshkol_ast *body;
 	       } let_op;
+	       struct {
+	           char *name;                       // Variable name to mutate
+	           struct eshkol_ast *value;         // New value
+	       } set_op;
 	       struct {
             struct eshkol_ast *elements;
             uint64_t *dimensions;

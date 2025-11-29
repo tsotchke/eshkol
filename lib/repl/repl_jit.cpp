@@ -197,8 +197,6 @@ void ReplJITContext::registerRuntimeSymbols() {
         orc::ExecutorAddr::fromPtr((void*)&::__ad_mode_active),
         JITSymbolFlags::Exported  // NOT Callable - this is a data symbol
     };
-    std::cout << "Registered __ad_mode_active at " << (void*)&::__ad_mode_active << std::endl;
-
     // Register global shared arena pointer (shared across all REPL evaluations)
     symbols[ES.intern("__repl_shared_arena")] = {
         orc::ExecutorAddr::fromPtr((void*)&::__repl_shared_arena),
@@ -402,8 +400,8 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     // This allows the current module to reference functions/variables from previous evaluations
     injectPreviousSymbols(cpp_module);
 
-    // REPL SYMBOL TRACKING: Extract lambda functions defined in this module
-    // Fill in lambda names for variables that were pre-registered
+    // REPL SYMBOL TRACKING: Extract lambda/function definitions from this module
+    // Fill in names for variables that were pre-registered
     for (auto& func : cpp_module->functions()) {
         if (func.isDeclaration() || func.getName().starts_with("llvm.")) {
             continue;
@@ -420,6 +418,17 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                     defined_lambdas_[var_name] = {fname, arity};
                     break;  // Only fill one pending slot per lambda
                 }
+            }
+        }
+        // Track user-defined functions (e.g., squared-sum from "(define (squared-sum x) ...)")
+        // These have the same name as the pre-registered variable
+        else if (defined_lambdas_.find(fname) != defined_lambdas_.end()) {
+            auto& lambda_info = defined_lambdas_[fname];
+            if (lambda_info.first.empty()) {
+                // This was a pending registration - fill it in
+                // For user-defined functions, the function name IS the variable name
+                size_t arity = func.arg_size();
+                defined_lambdas_[fname] = {fname, arity};
             }
         }
     }
@@ -506,6 +515,12 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         }
         global_var_names.push_back(var_name);
     }
+
+    // CRITICAL FIX: Release ownership from g_llvm_modules before JIT takes it
+    // The module is stored in g_llvm_modules by eshkol_generate_llvm_ir().
+    // Without this, both g_llvm_modules and JIT think they own the module,
+    // causing double-free/use-after-free crashes on subsequent evaluations.
+    eshkol_release_module_for_jit(c_module);
 
     // Add module to JIT (takes ownership)
     addModule(std::unique_ptr<Module>(cpp_module));
