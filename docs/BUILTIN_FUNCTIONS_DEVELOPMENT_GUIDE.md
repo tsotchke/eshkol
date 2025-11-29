@@ -2,16 +2,16 @@
 
 ## Executive Summary
 
-This document provides a comprehensive analysis of Eshkol's built-in functions, comparing the current implementation against the complete operations specification. It serves as a development roadmap for achieving language completeness while aligning with the 24-month Master Development Plan.
+This document provides a comprehensive analysis of Eshkol's built-in functions, comparing the current implementation against the complete operations specification. It serves as a development roadmap for achieving language completeness.
 
 **Legend:**
 - ✅ = Implemented and working
 - ⚠️ = Partially implemented or has known issues
 - ❌ = Not implemented
 
-**Summary Statistics:**
-- **Implemented:** ~75 operations
-- **Not Implemented:** ~85 operations
+**Summary Statistics (Updated):**
+- **Implemented:** ~123 operations
+- **Not Implemented:** ~37 operations
 - **Priority for eval:** quote, apply, set!
 
 ---
@@ -25,7 +25,7 @@ This document provides a comprehensive analysis of Eshkol's built-in functions, 
 | `define` (nested) | Inside function bodies | Nested definitions | ✅ |
 | `lambda` | `(lambda (x) body)` | Anonymous functions | ✅ |
 | `let` | `(let ((x 1)) body)` | Parallel binding | ✅ |
-| `let*` | `(let* ((x 1) (y x)) body)` | Sequential binding | ❌ |
+| `let*` | `(let* ((x 1) (y x)) body)` | Sequential binding | ✅ |
 | `letrec` | `(letrec ((f ...)) body)` | Recursive binding | ❌ |
 | `if` | `(if cond then else)` | Conditional | ✅ |
 | `cond` | `(cond (test expr) ...)` | Multi-branch conditional | ❌ |
@@ -37,11 +37,6 @@ This document provides a comprehensive analysis of Eshkol's built-in functions, 
 | `unquote-splicing` | `,@expr` | Splice in quasiquote | ❌ |
 | `set!` | `(set! var value)` | Variable mutation | ❌ |
 
-**Implementation Notes:**
-- `let*` can be transformed to nested `let`s
-- `letrec` requires forward declaration for mutual recursion
-- `quote` is critical for `eval` implementation
-
 ---
 
 ## 2. Arithmetic Operations
@@ -52,24 +47,22 @@ This document provides a comprehensive analysis of Eshkol's built-in functions, 
 | `-` | `(- a b ...)` | Subtraction (variadic) | ✅ |
 | `*` | `(* a b ...)` | Multiplication (variadic) | ✅ |
 | `/` | `(/ a b ...)` | Division (variadic) | ✅ |
-| `%` / `mod` / `modulo` | `(% a b)` | Modulo (floor division) | ❌ |
-| `remainder` | `(remainder a b)` | Remainder (truncate div) | ❌ |
-| `quotient` | `(quotient a b)` | Integer division | ❌ |
-| `abs` | `(abs x)` | Absolute value | ❌ |
-| `floor` | `(floor x)` | Round down | ❌ |
-| `ceiling` | `(ceiling x)` | Round up | ❌ |
-| `round` | `(round x)` | Round to nearest | ❌ |
-| `truncate` | `(truncate x)` | Truncate toward zero | ❌ |
-| `min` | `(min a b ...)` | Minimum (variadic) | ❌ |
-| `max` | `(max a b ...)` | Maximum (variadic) | ❌ |
-| `gcd` | `(gcd a b)` | Greatest common divisor | ❌ |
-| `lcm` | `(lcm a b)` | Least common multiple | ❌ |
-| `expt` | `(expt base exp)` | Exponentiation | ❌ (use `pow`) |
+| `%` / `mod` / `modulo` | `(% a b)` | Modulo (floor division) | ⚠️ (single call works) |
+| `remainder` | `(remainder a b)` | Remainder (truncate div) | ⚠️ (single call works) |
+| `quotient` | `(quotient a b)` | Integer division | ✅ |
+| `abs` | `(abs x)` | Absolute value | ✅ |
+| `floor` | `(floor x)` | Round down | ✅ |
+| `ceiling` | `(ceiling x)` | Round up | ✅ |
+| `round` | `(round x)` | Round to nearest | ✅ |
+| `truncate` | `(truncate x)` | Truncate toward zero | ✅ |
+| `min` | `(min a b ...)` | Minimum (variadic) | ✅ |
+| `max` | `(max a b ...)` | Maximum (variadic) | ✅ |
+| `gcd` | `(gcd a b)` | Greatest common divisor | ✅ |
+| `lcm` | `(lcm a b)` | Least common multiple | ✅ |
+| `expt` | `(expt base exp)` | Exponentiation | ✅ |
 
-**Implementation Notes:**
-- Current arithmetic is polymorphic (int64/double)
-- `modulo` vs `remainder`: different rounding semantics
-- `abs`, `floor`, `ceiling` map to libc `fabs`, `floor`, `ceil`
+**Known Issues:**
+- `modulo` and `remainder` can crash when called multiple times in sequence due to raw int64 return values being misinterpreted as cons pointers. Single calls work correctly.
 
 ---
 
@@ -82,17 +75,12 @@ This document provides a comprehensive analysis of Eshkol's built-in functions, 
 | `<` | `(< a b)` | Less than | ✅ |
 | `>=` | `(>= a b)` | Greater or equal | ✅ |
 | `<=` | `(<= a b)` | Less or equal | ✅ |
-| `and` | `(and a b ...)` | Logical AND (short-circuit) | ❌ |
-| `or` | `(or a b ...)` | Logical OR (short-circuit) | ❌ |
-| `not` | `(not x)` | Logical NOT | ❌ |
-| `eq?` | `(eq? a b)` | Identity (pointer) equality | ❌ |
-| `eqv?` | `(eqv? a b)` | Value equality (primitives) | ❌ |
-| `equal?` | `(equal? a b)` | Deep structural equality | ❌ |
-
-**Implementation Notes:**
-- `and`/`or` are special forms (short-circuit evaluation)
-- `eq?` compares pointer addresses
-- `equal?` requires recursive comparison for lists/vectors
+| `and` | `(and a b ...)` | Logical AND (short-circuit) | ✅ |
+| `or` | `(or a b ...)` | Logical OR (short-circuit) | ✅ |
+| `not` | `(not x)` | Logical NOT | ✅ |
+| `eq?` | `(eq? a b)` | Identity (pointer) equality | ✅ |
+| `eqv?` | `(eqv? a b)` | Value equality (primitives) | ✅ |
+| `equal?` | `(equal? a b)` | Deep structural equality | ✅ |
 
 ---
 
@@ -106,9 +94,9 @@ This document provides a comprehensive analysis of Eshkol's built-in functions, 
 | `set-car!` | `(set-car! pair val)` | Mutate car | ❌ |
 | `set-cdr!` | `(set-cdr! pair val)` | Mutate cdr | ❌ |
 | `list` | `(list a b ...)` | Create list | ✅ |
-| `list?` | `(list? x)` | Test if proper list | ❌ |
+| `list?` | `(list? x)` | Test if proper list | ✅ |
 | `null?` | `(null? x)` | Test if empty list | ✅ |
-| `pair?` | `(pair? x)` | Test if pair | ❌ |
+| `pair?` | `(pair? x)` | Test if pair | ✅ |
 | `length` | `(length lst)` | List length | ✅ |
 | `append` | `(append lst1 lst2 ...)` | Concatenate (variadic) | ✅ |
 | `reverse` | `(reverse lst)` | Reverse list | ✅ |
@@ -161,10 +149,6 @@ All 16 four-level accessors (`caaaar` through `cddddr`) are **✅ Implemented**.
 | `compose` | `(compose f g)` | Function composition | ✅ |
 | `curry` | `(curry f)` | Currying | ❌ |
 
-**Implementation Notes:**
-- `map` supports multiple lists (N-ary)
-- `apply` is critical for `eval` and variadic functions
-
 ---
 
 ## 8. List Search & Membership
@@ -206,20 +190,24 @@ All 16 four-level accessors (`caaaar` through `cddddr`) are **✅ Implemented**.
 |-----------|--------|-------------|--------|
 | `sin` | `(sin x)` | Sine | ✅ |
 | `cos` | `(cos x)` | Cosine | ✅ |
-| `tan` | `(tan x)` | Tangent | ❌ |
-| `asin` | `(asin x)` | Arc sine | ❌ |
-| `acos` | `(acos x)` | Arc cosine | ❌ |
-| `atan` | `(atan x)` | Arc tangent | ❌ |
-| `atan2` | `(atan2 y x)` | Two-arg arctangent | ❌ |
+| `tan` | `(tan x)` | Tangent | ✅ |
+| `asin` | `(asin x)` | Arc sine | ✅ |
+| `acos` | `(acos x)` | Arc cosine | ✅ |
+| `atan` | `(atan x)` | Arc tangent | ✅ |
+| `atan2` | `(atan2 y x)` | Two-arg arctangent | ✅ |
+| `sinh` | `(sinh x)` | Hyperbolic sine | ✅ |
+| `cosh` | `(cosh x)` | Hyperbolic cosine | ✅ |
+| `tanh` | `(tanh x)` | Hyperbolic tangent | ✅ |
+| `asinh` | `(asinh x)` | Inverse hyperbolic sine | ✅ |
+| `acosh` | `(acosh x)` | Inverse hyperbolic cosine | ✅ |
+| `atanh` | `(atanh x)` | Inverse hyperbolic tangent | ✅ |
 | `sqrt` | `(sqrt x)` | Square root | ✅ |
+| `cbrt` | `(cbrt x)` | Cube root | ✅ |
 | `pow` | `(pow base exp)` | Power | ✅ |
 | `exp` | `(exp x)` | e^x | ✅ |
 | `log` | `(log x)` | Natural logarithm | ✅ |
-| `log10` | `(log10 x)` | Base-10 logarithm | ❌ |
-
-**Implementation Notes:**
-- All math functions use libc implementations
-- `tan`, `asin`, `acos`, `atan`, `atan2`, `log10` are trivial to add
+| `log10` | `(log10 x)` | Base-10 logarithm | ✅ |
+| `log2` | `(log2 x)` | Base-2 logarithm | ✅ |
 
 ---
 
@@ -264,11 +252,6 @@ All 16 four-level accessors (`caaaar` through `cddddr`) are **✅ Implemented**.
 | `directional-derivative` | `(directional-derivative f v dir)` | Directional deriv | ✅ |
 | `diff` | `(diff expr var)` | Symbolic differentiation | ✅ |
 
-**Implementation Notes:**
-- Forward-mode uses dual numbers
-- Reverse-mode uses computation graph (AD tape)
-- Symbolic diff returns S-expressions
-
 ---
 
 ## 13. String Operations
@@ -296,24 +279,19 @@ All 16 four-level accessors (`caaaar` through `cddddr`) are **✅ Implemented**.
 
 | Operation | Syntax | Description | Status |
 |-----------|--------|-------------|--------|
-| `number?` | `(number? x)` | Test if number | ❌ |
-| `integer?` | `(integer? x)` | Test if integer | ❌ |
-| `real?` | `(real? x)` | Test if real | ❌ |
+| `number?` | `(number? x)` | Test if number | ✅ |
+| `integer?` | `(integer? x)` | Test if integer | ✅ |
+| `real?` | `(real? x)` | Test if real | ✅ |
 | `exact?` | `(exact? x)` | Test if exact | ❌ |
 | `inexact?` | `(inexact? x)` | Test if inexact | ❌ |
-| `positive?` | `(positive? x)` | x > 0 | ❌ |
-| `negative?` | `(negative? x)` | x < 0 | ❌ |
-| `zero?` | `(zero? x)` | x = 0 | ❌ |
-| `odd?` | `(odd? x)` | Is odd | ❌ |
-| `even?` | `(even? x)` | Is even | ❌ |
+| `positive?` | `(positive? x)` | x > 0 | ✅ |
+| `negative?` | `(negative? x)` | x < 0 | ✅ |
+| `zero?` | `(zero? x)` | x = 0 | ✅ |
+| `odd?` | `(odd? x)` | Is odd | ✅ |
+| `even?` | `(even? x)` | Is even | ✅ |
 | `procedure?` | `(procedure? x)` | Test if function | ❌ |
 | `boolean?` | `(boolean? x)` | Test if boolean | ❌ |
 | `symbol?` | `(symbol? x)` | Test if symbol | ❌ |
-
-**Implementation Notes:**
-- Tagged value system already has type field
-- Each predicate checks `(type & 0x0F) == EXPECTED_TYPE`
-- Trivial to implement given existing infrastructure
 
 ---
 
@@ -372,139 +350,42 @@ All 16 four-level accessors (`caaaar` through `cddddr`) are **✅ Implemented**.
 
 ---
 
-## Implementation Priority Matrix
+## Remaining Work - Priority List
 
-### Priority 1: Critical for `eval` (Sprint 1-2)
-
-| Operation | Effort | Dependency |
-|-----------|--------|------------|
+### Priority 1: Critical for `eval`
+| Operation | Effort | Notes |
+|-----------|--------|-------|
 | `quote` | Medium | Parser token exists |
 | `apply` | Medium | Variadic calls |
 | `set!` | Medium | GlobalVariable mutation |
-| `eq?` | Low | Pointer comparison |
-| `eqv?` | Low | Type-aware comparison |
-| `equal?` | Medium | Recursive comparison |
+| ~~`eq?`~~ | ~~Low~~ | ✅ Implemented |
+| ~~`eqv?`~~ | ~~Low~~ | ✅ Implemented |
+| ~~`equal?`~~ | ~~Medium~~ | ✅ Implemented |
 
-### Priority 2: Core Scheme Compatibility (Sprint 3-4)
-
-| Operation | Effort | Dependency |
-|-----------|--------|------------|
-| `let*` | Low | Transform to nested `let` |
+### Priority 2: Core Scheme Compatibility
+| Operation | Effort | Notes |
+|-----------|--------|-------|
 | `letrec` | Medium | Forward declaration |
 | `cond` | Low | Transform to nested `if` |
-| `and` | Low | Short-circuit codegen |
-| `or` | Low | Short-circuit codegen |
-| `not` | Low | Boolean negation |
-| `pair?` | Low | Type tag check |
-| `list?` | Low | Recursive null check |
-| Type predicates | Low | Type tag checks |
+| `case` | Medium | Pattern matching |
+| `when`/`unless` | Low | Simple macros |
 
-### Priority 3: Numeric Completeness (Sprint 5-6)
+### Priority 3: List Operations
+| Operation | Effort | Notes |
+|-----------|--------|-------|
+| `member`/`memq`/`memv` | Low | List search |
+| `assoc`/`assq`/`assv` | Low | Alist operations |
+| `any`/`every` | Low | Predicate checks |
+| `sort` | Medium | Merge sort |
+| `zip`/`unzip` | Low | List manipulation |
 
-| Operation | Effort | Dependency |
-|-----------|--------|------------|
-| `abs` | Low | `fabs()` |
-| `floor`, `ceiling`, `round`, `truncate` | Low | libc functions |
-| `modulo`, `remainder`, `quotient` | Low | `fmod`, integer div |
-| `min`, `max` | Low | Variadic fold |
-| `gcd`, `lcm` | Low | Euclidean algorithm |
-| Numeric predicates | Low | Comparisons |
-
-### Priority 4: Extended Math (Sprint 7-8)
-
-| Operation | Effort | Dependency |
-|-----------|--------|------------|
-| `tan`, `asin`, `acos`, `atan`, `atan2` | Low | libc functions |
-| `log10` | Low | libc `log10()` |
-| String operations | Medium | Runtime string type |
-
-### Priority 5: Advanced Features (Sprint 9+)
-
-| Operation | Effort | Dependency |
-|-----------|--------|------------|
-| `sort` | Medium | Merge sort impl |
-| `zip`, `unzip` | Low | List manipulation |
-| `curry` | Medium | Closure generation |
-| `matmul`, `transpose` | Medium | Tensor operations |
+### Priority 4: Advanced Features
+| Operation | Effort | Notes |
+|-----------|--------|-------|
+| String operations | Medium | Need runtime string type |
+| `matmul`/`transpose` | Medium | Tensor operations |
 | Error handling | High | Exception infrastructure |
 | `call/cc` | High | Continuation capture |
-
----
-
-## Technical Implementation Guide
-
-### Adding a Simple Builtin (e.g., `abs`)
-
-1. **Parser** (parser.cpp): No change needed (handled as function call)
-
-2. **Codegen** (llvm_codegen.cpp):
-```cpp
-// In codegenCallBuiltin()
-if (func_name == "abs") {
-    Value* arg = codegen(call->variables[0]);
-    Value* val = extractDoubleFromTaggedValue(arg);
-    Value* result = Builder->CreateCall(
-        Intrinsic::getDeclaration(TheModule, Intrinsic::fabs, {Type::getDoubleTy(*Context)}),
-        {val}
-    );
-    return createTaggedDouble(result);
-}
-```
-
-### Adding a Special Form (e.g., `and`)
-
-1. **Parser** (parser.cpp):
-```cpp
-// In get_operator_type()
-if (op == "and") return ESHKOL_AND_OP;
-```
-
-2. **AST** (eshkol.h):
-```cpp
-// Add to eshkol_op_t enum
-ESHKOL_AND_OP,
-```
-
-3. **Codegen** (llvm_codegen.cpp):
-```cpp
-Value* codegenAnd(const eshkol_ast_t* ast) {
-    // Short-circuit: if first is false, return false immediately
-    BasicBlock* EvalSecond = BasicBlock::Create(*Context, "and.second");
-    BasicBlock* Done = BasicBlock::Create(*Context, "and.done");
-
-    Value* first = codegen(ast->operation.call_op.variables[0]);
-    Value* first_bool = isTruthy(first);
-    Builder->CreateCondBr(first_bool, EvalSecond, Done);
-
-    // Evaluate second only if first was true
-    TheFunction->getBasicBlockList().push_back(EvalSecond);
-    Builder->SetInsertPoint(EvalSecond);
-    Value* second = codegen(ast->operation.call_op.variables[1]);
-    Builder->CreateBr(Done);
-
-    // Merge
-    TheFunction->getBasicBlockList().push_back(Done);
-    Builder->SetInsertPoint(Done);
-    PHINode* result = Builder->CreatePHI(getTaggedValueType(), 2);
-    result->addIncoming(createTaggedBoolean(false), /* first was false */);
-    result->addIncoming(second, EvalSecond);
-    return result;
-}
-```
-
-### Adding a Type Predicate (e.g., `pair?`)
-
-```cpp
-Value* codegenPairPredicate(const eshkol_ast_t* ast) {
-    Value* arg = codegen(ast->operation.call_op.variables[0]);
-    Value* type_field = extractTypeFromTaggedValue(arg);
-    Value* is_cons = Builder->CreateICmpEQ(
-        type_field,
-        ConstantInt::get(Type::getInt8Ty(*Context), ESHKOL_VALUE_CONS_PTR)
-    );
-    return createTaggedBoolean(is_cons);
-}
-```
 
 ---
 
@@ -512,10 +393,15 @@ Value* codegenPairPredicate(const eshkol_ast_t* ast) {
 
 ### Fully Implemented (✅)
 ```
-+, -, *, /
++, -, *, /, quotient
 =, <, >, <=, >=
-sin, cos, sqrt, pow, exp, log
-cons, car, cdr, list, null?, length, append, reverse
+and, or, not
+eq?, eqv?, equal?
+abs, floor, ceiling, round, truncate, min, max, gcd, lcm, expt
+sin, cos, tan, asin, acos, atan, atan2
+sinh, cosh, tanh, asinh, acosh, atanh
+sqrt, cbrt, pow, exp, log, log10, log2
+cons, car, cdr, list, null?, pair?, list?, length, append, reverse
 list-ref, list-tail, last, last-pair
 take, drop, split-at, partition, remove, find
 All c[ad]+r accessors (28 total)
@@ -525,44 +411,39 @@ tensor-add, tensor-sub, tensor-mul, tensor-div
 derivative, gradient, jacobian, hessian
 divergence, curl, laplacian, directional-derivative, diff
 display, newline
-define, lambda, if, let, begin
+define, lambda, if, let, let*, begin
 extern, extern-var
+number?, integer?, real?, positive?, negative?, zero?, odd?, even?
 ```
 
-### Not Implemented (❌) - High Priority
+### Partially Working (⚠️)
+```
+modulo, remainder       (Single call works, multiple calls may crash)
+tensor-set, tensor-get  (Different naming)
+```
+
+### Not Implemented (❌)
 ```
 quote, apply, set!               (Critical for eval)
-and, or, not                     (Boolean logic)
-eq?, eqv?, equal?                (Equivalence)
-let*, letrec, cond, case         (Control flow)
-pair?, list?, procedure?         (Type predicates)
-abs, floor, ceiling, round       (Numeric)
-modulo, remainder, quotient      (Numeric)
-min, max                         (Numeric)
-```
-
-### Not Implemented (❌) - Medium Priority
-```
-member, memq, assoc, assq        (List search)
-sort, zip, unzip                 (List manipulation)
-tan, asin, acos, atan, atan2     (Trig)
+letrec, cond, case               (Control flow)
+set-car!, set-cdr!               (Mutation)
+member, memq, memv               (List search)
+assoc, assq, assv                (Alist operations)
+any, every                       (Predicate checks)
+make-list, iota                  (List generation)
+remq, delete, sort, zip, unzip   (List manipulation)
 String operations                (All)
-make-vector, vector-length       (Vector)
-matmul, transpose, reshape       (Tensor)
-when, unless                     (Control)
-```
-
-### Not Implemented (❌) - Lower Priority
-```
-curry                            (HOF)
-do, while                        (Loops)
-error, guard                     (Exceptions)
-read, write                      (I/O)
-arity, procedure-arity           (Introspection)
-call/cc                          (Continuations)
+vector?, make-vector, vector-length, vector->list, list->vector
+tensor-shape, reshape, transpose, matmul
+when, unless, do, while, break, continue
+exact?, inexact?, procedure?, boolean?, symbol?
+print, write, read, read-line
+error, raise, guard
+arity, procedure-arity
+curry, call/cc
 ```
 
 ---
 
-*Document generated from comprehensive codebase analysis*
-*Source files: llvm_codegen.cpp (15,625 lines), parser.cpp (2,085 lines), eshkol.h (429 lines)*
+*Document updated: Current session*
+*Source files: llvm_codegen.cpp, parser.cpp, eshkol.h*

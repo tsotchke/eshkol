@@ -28,6 +28,24 @@ ad_tape_t* __current_ad_tape = nullptr;
 // CRITICAL: This must be shared so lambdas from one module can see AD mode set by another
 bool __ad_mode_active = false;
 
+// NESTED GRADIENT FIX: Tape stack for arbitrary-depth nested gradients
+// MAX_TAPE_DEPTH must match the value in llvm_codegen.cpp
+static const size_t MAX_TAPE_DEPTH = 32;
+ad_tape_t* __ad_tape_stack[MAX_TAPE_DEPTH] = {nullptr};
+uint64_t __ad_tape_depth = 0;
+
+// DOUBLE BACKWARD: Storage for outer AD node when in nested gradient
+void* __outer_ad_node_storage = nullptr;
+void* __outer_ad_node_to_inner = nullptr;
+void* __outer_grad_accumulator = nullptr;
+void* __inner_var_node_ptr = nullptr;
+uint64_t __gradient_x_degree = 0;
+
+// N-DIMENSIONAL DERIVATIVES: Stack of outer AD nodes for arbitrary depth nesting
+#define MAX_TAPE_DEPTH 16
+void* __outer_ad_node_stack[MAX_TAPE_DEPTH] = {nullptr};
+uint64_t __outer_ad_node_depth = 0;
+
 // Global shared arena for REPL mode (persistent across evaluations)
 arena_t* __repl_shared_arena = nullptr;
 
