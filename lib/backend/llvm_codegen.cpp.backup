@@ -230,10 +230,11 @@ public:
         
         // Initialize tagged value struct type: {uint8_t type, uint8_t flags, uint16_t reserved, union data}
         std::vector<Type*> tagged_value_fields;
-        tagged_value_fields.push_back(Type::getInt8Ty(*context));   // type
-        tagged_value_fields.push_back(Type::getInt8Ty(*context));   // flags
-        tagged_value_fields.push_back(Type::getInt16Ty(*context));  // reserved
-        tagged_value_fields.push_back(Type::getInt64Ty(*context));  // data union (8 bytes, largest member)
+        tagged_value_fields.push_back(Type::getInt8Ty(*context));   // Field 0: type (offset 0)
+        tagged_value_fields.push_back(Type::getInt8Ty(*context));   // Field 1: flags (offset 1)
+        tagged_value_fields.push_back(Type::getInt16Ty(*context));  // Field 2: reserved (offset 2)
+        tagged_value_fields.push_back(Type::getInt32Ty(*context));  // Field 3: PADDING for 8-byte alignment (offset 4)
+        tagged_value_fields.push_back(Type::getInt64Ty(*context));  // Field 4: data union (offset 8, 8 bytes)
         tagged_value_type = StructType::create(*context, tagged_value_fields, "eshkol_tagged_value");
         
         // Set target triple
@@ -531,9 +532,11 @@ public:
                             // After each expression that might define a lambda, generate its S-expression
                             // This ensures S-expressions are available immediately after the define
                             if (!pending_lambda_sexprs.empty()) {
+                                fprintf(stderr, "[TOP-LEVEL] Generating S-expressions for %zu pending lambdas\n",
                                         pending_lambda_sexprs.size());
                                 for (size_t j = 0; j < pending_lambda_sexprs.size(); j++) {
                                     const auto& meta = pending_lambda_sexprs[j];
+                                    fprintf(stderr, "[TOP-LEVEL] Processing lambda %zu: %s\n", j, meta.lambda_name.c_str());
 
                                     Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
 
@@ -1950,9 +1953,11 @@ private:
                 builder->CreateStore(arena_ptr, global_arena);
                 
                 // Generate S-expressions now that arena is ready
+                fprintf(stderr, "[COMPILE] Generating deferred lambda S-expressions for %zu lambdas\n", pending_lambda_sexprs.size());
 
                 for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
                     const auto& meta = pending_lambda_sexprs[i];
+                    fprintf(stderr, "[COMPILE] Processing lambda %zu: %s\n", i, meta.lambda_name.c_str());
                     
                     Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
                     
@@ -2602,6 +2607,27 @@ private:
         // Direct struct copy - this is the key optimization of Phase 3B!
         builder->CreateCall(arena_tagged_cons_set_tagged_value_func, {cons_ptr, is_car, car_ptr});
         builder->CreateCall(arena_tagged_cons_set_tagged_value_func, {cons_ptr, is_cdr, cdr_ptr});
+
+        // DEBUG: Verify flags were correctly stored in the cons cell
+        Function* printf_func4 = module->getFunction("printf");
+        if (!printf_func4) {
+            FunctionType* printf_type = FunctionType::get(
+                Type::getInt32Ty(*context),
+                {PointerType::getUnqual(*context)},
+                true);
+            printf_func4 = Function::Create(printf_type, Function::ExternalLinkage, "printf", module.get());
+        }
+        // Read back the car from the cons cell
+        Function* get_car_func = module->getFunction("arena_tagged_cons_get_tagged_value");
+        if (get_car_func) {
+            Value* readback_car_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "readback_car");
+            builder->CreateCall(get_car_func, {cons_ptr, is_car, readback_car_ptr});
+            Value* readback_car = builder->CreateLoad(tagged_value_type, readback_car_ptr);
+            Value* readback_flags = getTaggedValueFlags(readback_car);
+            Value* fmt_readback = builder->CreateGlobalStringPtr("[CONS-CREATE] Readback car flags=%d\n");
+            Value* readback_flags_ext = builder->CreateZExt(readback_flags, Type::getInt32Ty(*context));
+            builder->CreateCall(printf_func4, {fmt_readback, readback_flags_ext});
+        }
 
         eshkol_debug("Created tagged cons cell (Phase 3B): car_type=%d, cdr_type=%d", car_val.type, cdr_val.type);
 
@@ -3348,6 +3374,7 @@ private:
         } else if (tv.type == ESHKOL_VALUE_AD_NODE_PTR) {
             return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_AD_NODE_PTR);
         } else if (tv.type == ESHKOL_VALUE_LAMBDA_SEXPR) {
+            fprintf(stderr, "[typedValueToTaggedValue] LAMBDA_SEXPR with flags=%d\n", (int)tv.flags);
             Value* result = packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_LAMBDA_SEXPR, tv.flags);
 
             // DEBUG: Verify flags are in the result
@@ -10697,11 +10724,13 @@ private:
             bool is_op_node = (op->call_op.variables[i].type == ESHKOL_OP);
             bool is_lambda_op = is_op_node && (op->call_op.variables[i].operation.op == ESHKOL_LAMBDA_OP);
 
+            fprintf(stderr, "[ESHKOL DEBUG] List element %lld: is_lambda_sexpr=%d, is_op_node=%d, is_lambda_op=%d\n",
                     (long long)i, is_lambda_sexpr, is_op_node, is_lambda_op);
 
             if (is_lambda_sexpr && is_lambda_op) {
                 // This is an inline lambda that was just generated
                 this_lambda_name = last_generated_lambda_name;
+                fprintf(stderr, "[ESHKOL DEBUG] Captured inline lambda name: %s\n", this_lambda_name.c_str());
             }
 
             if (element.llvm_value) {
@@ -10721,6 +10750,7 @@ private:
                         // Inline lambda: use the lambda name we captured immediately after generation
                         std::string lambda_sexpr_key = this_lambda_name + "_sexpr";
                         sexpr_global = module->getNamedGlobal(lambda_sexpr_key);
+                        fprintf(stderr, "[ESHKOL DEBUG] Looking up S-expression global: %s, found: %s\n",
                                 lambda_sexpr_key.c_str(), sexpr_global ? "YES" : "NO");
                     }
 
@@ -10743,7 +10773,9 @@ private:
                         builder->CreateCall(printf_func, {fmt, global_addr});
 
                         element = TypedValue(global_addr, ESHKOL_VALUE_LAMBDA_SEXPR, true, TypedValue::FLAG_INDIRECT);
+                        fprintf(stderr, "[ESHKOL DEBUG] Set lambda element to indirect reference with FLAG_INDIRECT\n");
                     } else {
+                        fprintf(stderr, "[ESHKOL DEBUG] FAILED to find S-expression global for lambda in list!\n");
                     }
                 }
                 // Create tagged cons cell: (element . rest) with type preservation
@@ -11188,6 +11220,7 @@ private:
         // S-expressions will be generated in createMainWrapper() after all lambdas are compiled
         // This prevents basic block corruption from generating IR during lambda compilation
         pending_lambda_sexprs.push_back({op, lambda_name});
+        fprintf(stderr, "[LAMBDA GEN] Added %s to pending_lambda_sexprs (now %zu total)\n",
                 lambda_name.c_str(), pending_lambda_sexprs.size());
 
         // Track last generated lambda name for codegenList to use

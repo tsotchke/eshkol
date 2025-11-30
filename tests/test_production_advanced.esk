@@ -1,0 +1,219 @@
+;; Advanced Production Test for v1.0-architecture
+;; Tests: File I/O, nested defines, let bindings, lambdas, vectors, math ops
+
+;; ============================================
+;; Part 1: File I/O with nested operations
+;; ============================================
+(display "=== Part 1: File I/O ===")
+(newline)
+
+;; Write to file
+(define outfile (open-output-file "/tmp/production_test.txt"))
+(write-string "line1: hello world\n" outfile)
+(write-string "line2: nested define test\n" outfile)
+(write-string "line3: production ready\n" outfile)
+(close-port outfile)
+(display "  Wrote 3 lines to file")
+(newline)
+
+;; Read back and verify with define
+(define infile (open-input-file "/tmp/production_test.txt"))
+(define line1 (read-line infile))
+(define line2 (read-line infile))
+(define line3 (read-line infile))
+(close-port infile)
+
+(display "  line1: ")
+(display line1)
+(newline)
+(display "  line2: ")
+(display line2)
+(newline)
+(display "  line3: ")
+(display line3)
+(newline)
+
+;; ============================================
+;; Part 2: Nested defines at arbitrary depth
+;; ============================================
+(display "=== Part 2: Nested Defines ===")
+(newline)
+
+;; Top-level define
+(define x 10)
+(display "  x = ")
+(display x)
+(newline)
+
+;; Define within let
+(let ((a 20))
+  (let ((b 30))
+    (let ((c (+ a b)))
+      (display "  a + b = ")
+      (display c)
+      (newline))))
+
+;; ============================================
+;; Part 3: Lambda and Higher-Order Functions
+;; ============================================
+(display "=== Part 3: Lambdas ===")
+(newline)
+
+(define square (lambda (n) (* n n)))
+(define cube (lambda (n) (* n n n)))
+
+(display "  square(5) = ")
+(display (square 5))
+(newline)
+
+(display "  cube(3) = ")
+(display (cube 3))
+(newline)
+
+;; Lambda in let binding
+(let ((double (lambda (x) (* x 2))))
+  (display "  double(7) = ")
+  (display (double 7))
+  (newline))
+
+;; ============================================
+;; Part 4: Vector Operations
+;; ============================================
+(display "=== Part 4: Vectors ===")
+(newline)
+
+(define v1 #(1.0 2.0 3.0))
+(define v2 #(4.0 5.0 6.0))
+
+(display "  v1 = ")
+(display v1)
+(newline)
+
+(display "  v2 = ")
+(display v2)
+(newline)
+
+(define sum (+ v1 v2))
+(display "  v1 + v2 = ")
+(display sum)
+(newline)
+
+;; ============================================
+;; Part 5: String Operations
+;; ============================================
+(display "=== Part 5: Strings ===")
+(newline)
+
+(define s1 "Hello")
+(define s2 "World")
+(define s3 (string-append s1 " " s2 "!"))
+
+(display "  s1 = ")
+(display s1)
+(newline)
+
+(display "  s2 = ")
+(display s2)
+(newline)
+
+(display "  string-append: ")
+(display s3)
+(newline)
+
+(display "  string-length: ")
+(display (string-length s3))
+(newline)
+
+;; ============================================
+;; Part 6: List Operations
+;; ============================================
+(display "=== Part 6: Lists ===")
+(newline)
+
+(define lst (list 1 2 3 4 5))
+(display "  list: ")
+(display lst)
+(newline)
+
+(display "  car: ")
+(display (car lst))
+(newline)
+
+(display "  cdr: ")
+(display (cdr lst))
+(newline)
+
+(display "  length: ")
+(display (length lst))
+(newline)
+
+;; ============================================
+;; Part 7: Conditionals
+;; ============================================
+(display "=== Part 7: Conditionals ===")
+(newline)
+
+(display "  (if (> 5 3) 'yes 'no): ")
+(display (if (> 5 3) 'yes 'no))
+(newline)
+
+(display "  (cond ((< 1 0) 'a) ((< 2 1) 'b) (else 'c)): ")
+(display (cond ((< 1 0) 'a) ((< 2 1) 'b) (else 'c)))
+(newline)
+
+;; ============================================
+;; Part 8: Math Functions
+;; ============================================
+(display "=== Part 8: Math ===")
+(newline)
+
+(display "  (sin 0): ")
+(display (sin 0))
+(newline)
+
+(display "  (cos 0): ")
+(display (cos 0))
+(newline)
+
+(display "  (sqrt 16): ")
+(display (sqrt 16))
+(newline)
+
+(display "  (exp 1): ")
+(display (exp 1))
+(newline)
+
+;; ============================================
+;; Part 9: Combined File + Compute
+;; ============================================
+(display "=== Part 9: Combined Operations ===")
+(newline)
+
+;; Write computed values to file
+(define compute-out (open-output-file "/tmp/computed.txt"))
+(define result1 (+ 100 200))
+(define result2 (* 3 7))
+(write-string "Sum: " compute-out)
+(write-line (number->string result1) compute-out)
+(write-string "Product: " compute-out)
+(write-line (number->string result2) compute-out)
+(close-port compute-out)
+
+;; Read back computed values
+(define compute-in (open-input-file "/tmp/computed.txt"))
+(define computed-line1 (read-line compute-in))
+(define computed-line2 (read-line compute-in))
+(close-port compute-in)
+
+(display "  ")
+(display computed-line1)
+(newline)
+(display "  ")
+(display computed-line2)
+(newline)
+
+;; ============================================
+;; Complete
+;; ============================================
+(display "=== All Tests Complete ===")
+(newline)

@@ -451,21 +451,22 @@ uint64_t arena_tagged_cons_get_ptr(const arena_tagged_cons_cell_t* cell, bool is
         eshkol_error("Cannot get pointer from null tagged cons cell");
         return 0;
     }
-    
+
     // Phase 3B: Access nested tagged_value structure
     const eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
     uint8_t type = tv->type;
     uint8_t base_type = ESHKOL_GET_BASE_TYPE(type);
-    
+
     if (base_type == ESHKOL_VALUE_NULL) {
         return 0;
     }
-    
-    if (!ESHKOL_IS_CONS_PTR_TYPE(type)) {
+
+    // HOMOICONIC FIX: Accept any pointer type (CONS_PTR, STRING_PTR, VECTOR_PTR, etc.)
+    if (!ESHKOL_IS_ANY_PTR_TYPE(type)) {
         eshkol_error("Attempted to get pointer from non-pointer cell (type=%d)", type);
         return 0;
     }
-    
+
     return tv->data.ptr_val;
 }
 
@@ -512,8 +513,9 @@ void arena_tagged_cons_set_ptr(arena_tagged_cons_cell_t* cell, bool is_cdr,
         eshkol_error("Cannot set pointer on null tagged cons cell");
         return;
     }
-    
-    if (!ESHKOL_IS_CONS_PTR_TYPE(type)) {
+
+    // Allow any pointer type (CONS_PTR, STRING_PTR, VECTOR_PTR, TENSOR_PTR, AD_NODE_PTR, LAMBDA_SEXPR)
+    if (!ESHKOL_IS_ANY_PTR_TYPE(type)) {
         eshkol_error("Invalid type for pointer value: %d", type);
         return;
     }

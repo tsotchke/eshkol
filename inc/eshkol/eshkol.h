@@ -34,7 +34,8 @@ typedef enum {
     ESHKOL_OP,
     ESHKOL_CONS,
     ESHKOL_NULL,
-    ESHKOL_TENSOR
+    ESHKOL_TENSOR,
+    ESHKOL_CHAR
 } eshkol_type_t;
 
 // Mixed type list support - Value type tags for tagged cons cells
@@ -47,6 +48,9 @@ typedef enum {
     ESHKOL_VALUE_AD_NODE_PTR = 5,  // Pointer to AD computation graph node
     ESHKOL_VALUE_TENSOR_PTR  = 6,  // Pointer to tensor structure
     ESHKOL_VALUE_LAMBDA_SEXPR = 7, // Lambda S-expression metadata (homoiconicity)
+    ESHKOL_VALUE_STRING_PTR  = 8,  // Pointer to string (char* with length prefix)
+    ESHKOL_VALUE_CHAR        = 9,  // Character (stored as Unicode codepoint in data field)
+    ESHKOL_VALUE_VECTOR_PTR  = 10, // Pointer to Scheme vector (heterogeneous array of tagged values)
     // Reserved for future expansion
     ESHKOL_VALUE_MAX         = 15  // 4-bit type field limit
 } eshkol_value_type_t;
@@ -137,7 +141,7 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 }
 
 // Type checking helper macros
-#define ESHKOL_IS_INT64_TYPE(type)       (((type) & 0x0F) == ESHKOL_VALUE_INT64)
+#define ESHKOL_IS_INT64_TYPE(type)       (((type) & 0x0F) == ESHKOL_VALUE_INT64 || ((type) & 0x0F) == ESHKOL_VALUE_CHAR)
 #define ESHKOL_IS_DOUBLE_TYPE(type)      (((type) & 0x0F) == ESHKOL_VALUE_DOUBLE)
 #define ESHKOL_IS_CONS_PTR_TYPE(type)    (((type) & 0x0F) == ESHKOL_VALUE_CONS_PTR)
 #define ESHKOL_IS_NULL_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_NULL)
@@ -145,6 +149,16 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 #define ESHKOL_IS_AD_NODE_PTR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_AD_NODE_PTR)
 #define ESHKOL_IS_TENSOR_PTR_TYPE(type)  (((type) & 0x0F) == ESHKOL_VALUE_TENSOR_PTR)
 #define ESHKOL_IS_LAMBDA_SEXPR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_LAMBDA_SEXPR)
+#define ESHKOL_IS_STRING_PTR_TYPE(type)  (((type) & 0x0F) == ESHKOL_VALUE_STRING_PTR)
+#define ESHKOL_IS_CHAR_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_CHAR)
+#define ESHKOL_IS_VECTOR_PTR_TYPE(type)  (((type) & 0x0F) == ESHKOL_VALUE_VECTOR_PTR)
+// General pointer type check: any type that stores a pointer value (not int64 or double)
+#define ESHKOL_IS_ANY_PTR_TYPE(type)     (ESHKOL_IS_CONS_PTR_TYPE(type) || \
+                                          ESHKOL_IS_STRING_PTR_TYPE(type) || \
+                                          ESHKOL_IS_VECTOR_PTR_TYPE(type) || \
+                                          ESHKOL_IS_TENSOR_PTR_TYPE(type) || \
+                                          ESHKOL_IS_AD_NODE_PTR_TYPE(type) || \
+                                          ESHKOL_IS_LAMBDA_SEXPR_TYPE(type))
 
 // Exactness checking macros
 #define ESHKOL_IS_EXACT(type)         (((type) & ESHKOL_VALUE_EXACT_FLAG) != 0)
@@ -248,6 +262,8 @@ typedef enum {
     ESHKOL_AND_OP,       // short-circuit and
     ESHKOL_OR_OP,        // short-circuit or
     ESHKOL_COND_OP,      // multi-branch conditional
+    ESHKOL_CASE_OP,      // case expression (switch on value)
+    ESHKOL_DO_OP,        // do loop (iteration construct)
     ESHKOL_WHEN_OP,      // when - one-armed if (execute when true)
     ESHKOL_UNLESS_OP,    // unless - negated when (execute when false)
     ESHKOL_QUOTE_OP,     // quote - literal data

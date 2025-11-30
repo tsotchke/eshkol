@@ -216,7 +216,8 @@ void ReplJITContext::registerRuntimeSymbols() {
         std::exit(1);
     }
 
-    std::cout << "Registered " << symbols.size() << " runtime symbols" << std::endl;
+    // Debug output disabled for cleaner REPL experience
+    // std::cout << "Registered " << symbols.size() << " runtime symbols" << std::endl;
 }
 
 LLVMContext& ReplJITContext::getContext() {
@@ -554,7 +555,8 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 // Mark this lambda as registered
                 registered_lambdas_.insert(lambda_name);
 
-                std::cout << "REPL: Registered " << var_name << " -> " << lambda_name << " (arity " << arity << ")" << std::endl;
+                // Debug output disabled for cleaner REPL experience
+                // std::cout << "REPL: Registered " << var_name << " -> " << lambda_name << " (arity " << arity << ")" << std::endl;
             }
         }
     }
@@ -579,10 +581,10 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
             // (No need to call registerSymbol - it's already in the JIT)
             eshkol_repl_register_symbol(var_name.c_str(), var_addr);
 
-            // Only print registration message for non-string-constant globals
-            if (!var_name.starts_with(".str")) {
-                std::cout << "REPL: Registered variable " << var_name << " @ 0x" << std::hex << var_addr << std::dec << std::endl;
-            }
+            // Debug output disabled for cleaner REPL experience
+            // if (!var_name.starts_with(".str")) {
+            //     std::cout << "REPL: Registered variable " << var_name << " @ 0x" << std::hex << var_addr << std::dec << std::endl;
+            // }
 
             // DEFER s-expression value capture until AFTER function execution
             // (s-expressions are initialized inside the entry function)

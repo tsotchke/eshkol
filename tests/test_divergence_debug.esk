@@ -1,0 +1,23 @@
+;; Test divergence, laplacian, directional-derivative
+
+(define (main)
+  (display "Test 1: Divergence of identity\n")
+  (define F-identity (lambda (v) v))
+  (define result1 (divergence F-identity (vector 1.0 2.0 3.0)))
+  (display result1)
+  (newline)
+
+  (display "Test 2: Laplacian of x^2\n")
+  (define f-simple (lambda (v) (* (vref v 0) (vref v 0))))
+  (define result2 (laplacian f-simple (vector 1.0 2.0 3.0)))
+  (display result2)
+  (newline)
+
+  (display "Test 3: Directional derivative\n")
+  (define f-2d (lambda (v)
+    (+ (* (vref v 0) (vref v 0))
+       (* (vref v 1) (vref v 1)))))
+  (define result3 (directional-derivative f-2d (vector 3.0 4.0) (vector 1.0 0.0)))
+  (display result3)
+  (newline)
+  0)

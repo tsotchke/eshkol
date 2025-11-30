@@ -108,10 +108,6 @@ static std::vector<LambdaSExprMetadata> pending_lambda_sexprs;
 // Track the most recently generated lambda name for codegenList
 static std::string last_generated_lambda_name;
 
-// HOMOICONIC FIX: Map lambda Function* pointers to their S-expression global names
-// This allows codegenList to find the correct S-expression for each inline lambda
-static std::map<Function*, std::string> lambda_sexpr_map;
-
 class EshkolLLVMCodeGen {
 private:
     std::unique_ptr<LLVMContext> context;
@@ -531,7 +527,6 @@ public:
                             // After each expression that might define a lambda, generate its S-expression
                             // This ensures S-expressions are available immediately after the define
                             if (!pending_lambda_sexprs.empty()) {
-                                        pending_lambda_sexprs.size());
                                 for (size_t j = 0; j < pending_lambda_sexprs.size(); j++) {
                                     const auto& meta = pending_lambda_sexprs[j];
 
@@ -548,19 +543,6 @@ public:
                                             sexpr_key
                                         );
                                     }
-
-                                    // DEBUG: Add runtime printf to show value being stored
-                                    Function* printf_func = module->getFunction("printf");
-                                    if (!printf_func) {
-                                        FunctionType* printf_type = FunctionType::get(
-                                            Type::getInt32Ty(*context),
-                                            {PointerType::getUnqual(*context)},
-                                            true);  // varargs
-                                        printf_func = Function::Create(printf_type, Function::ExternalLinkage, "printf", module.get());
-                                    }
-                                    Value* fmt = builder->CreateGlobalStringPtr(("[RUNTIME] Storing sexpr " + meta.lambda_name + ": %lld\n").c_str());
-                                    builder->CreateCall(printf_func, {fmt, sexpr_ptr});
-
                                     builder->CreateStore(sexpr_ptr, sexpr_global);
 
                                     // Add to global symbol table for display lookup
@@ -1950,7 +1932,8 @@ private:
                 builder->CreateStore(arena_ptr, global_arena);
                 
                 // Generate S-expressions now that arena is ready
-
+                eshkol_debug("Generating deferred lambda S-expressions for %zu lambdas", pending_lambda_sexprs.size());
+                
                 for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
                     const auto& meta = pending_lambda_sexprs[i];
                     
@@ -1969,20 +1952,7 @@ private:
                         );
                     }
                     builder->CreateStore(sexpr_ptr, sexpr_global);
-
-                    // DEBUG: Add runtime printf to show S-expression value being stored
-                    Function* printf_func = module->getFunction("printf");
-                    if (!printf_func) {
-                        FunctionType* printf_type = FunctionType::get(
-                            Type::getInt32Ty(*context),
-                            {PointerType::getUnqual(*context)},
-                            true);  // varargs
-                        printf_func = Function::Create(printf_type, Function::ExternalLinkage, "printf", module.get());
-                    }
-                    Value* fmt_str = builder->CreateGlobalStringPtr("[RUNTIME] Storing S-expr for %s: ptr=%lld\\n");
-                    Value* lambda_name_str = builder->CreateGlobalStringPtr(meta.lambda_name.c_str());
-                    builder->CreateCall(printf_func, {fmt_str, lambda_name_str, sexpr_ptr});
-
+                    
                     // Add to global symbol table for display lookup
                     global_symbol_table[sexpr_key] = sexpr_global;
                     eshkol_debug("Generated S-expression for lambda %s", meta.lambda_name.c_str());
@@ -2602,7 +2572,7 @@ private:
         // Direct struct copy - this is the key optimization of Phase 3B!
         builder->CreateCall(arena_tagged_cons_set_tagged_value_func, {cons_ptr, is_car, car_ptr});
         builder->CreateCall(arena_tagged_cons_set_tagged_value_func, {cons_ptr, is_cdr, cdr_ptr});
-
+        
         eshkol_debug("Created tagged cons cell (Phase 3B): car_type=%d, cdr_type=%d", car_val.type, cdr_val.type);
 
         // Return pointer to cons cell as int64
@@ -2950,11 +2920,7 @@ private:
         Value* data_as_int64 = builder->CreateLoad(Type::getInt64Ty(*context), data_ptr);
         return builder->CreateIntToPtr(data_as_int64, builder->getPtrTy());
     }
-
     Value* extractCarAsTaggedValue(Value* cons_ptr_int) {
-        // TYPE SYSTEM FIX: Use safeExtractInt64 to handle tagged_value structs
-        cons_ptr_int = safeExtractInt64(cons_ptr_int);
-
         Value* cons_ptr = builder->CreateIntToPtr(cons_ptr_int, builder->getPtrTy());
 
         Value* is_car = ConstantInt::get(Type::getInt1Ty(*context), 0);
@@ -3058,9 +3024,6 @@ private:
     }
     
     Value* extractCdrAsTaggedValue(Value* cons_ptr_int) {
-        // TYPE SYSTEM FIX: Use safeExtractInt64 to handle tagged_value structs
-        cons_ptr_int = safeExtractInt64(cons_ptr_int);
-
         Value* cons_ptr = builder->CreateIntToPtr(cons_ptr_int, builder->getPtrTy());
         
         Value* is_cdr = ConstantInt::get(Type::getInt1Ty(*context), 1);
@@ -3348,23 +3311,7 @@ private:
         } else if (tv.type == ESHKOL_VALUE_AD_NODE_PTR) {
             return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_AD_NODE_PTR);
         } else if (tv.type == ESHKOL_VALUE_LAMBDA_SEXPR) {
-            Value* result = packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_LAMBDA_SEXPR, tv.flags);
-
-            // DEBUG: Verify flags are in the result
-            Value* result_flags = getTaggedValueFlags(result);
-            Function* printf_func3 = module->getFunction("printf");
-            if (!printf_func3) {
-                FunctionType* printf_type = FunctionType::get(
-                    Type::getInt32Ty(*context),
-                    {PointerType::getUnqual(*context)},
-                    true);
-                printf_func3 = Function::Create(printf_type, Function::ExternalLinkage, "printf", module.get());
-            }
-            Value* fmt_verify = builder->CreateGlobalStringPtr("[PACK-VERIFY] After packing, flags=%d\n");
-            Value* flags_verify_ext = builder->CreateZExt(result_flags, Type::getInt32Ty(*context));
-            builder->CreateCall(printf_func3, {fmt_verify, flags_verify_ext});
-
-            return result;
+            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_LAMBDA_SEXPR, tv.flags);
         } else if (tv.isNull()) {
             return packNullToTaggedValue();
         }
@@ -6523,28 +6470,9 @@ private:
             // Handle LAMBDA_SEXPR: check flags to determine if indirect or direct
             builder->SetInsertPoint(sexpr_display_lambda);
             Value* lambda_flags = getTaggedValueFlags(sexpr_car_tagged);
-
-            // DEBUG: Print flags value
-            Function* printf_func2 = module->getFunction("printf");
-            if (!printf_func2) {
-                FunctionType* printf_type = FunctionType::get(
-                    Type::getInt32Ty(*context),
-                    {PointerType::getUnqual(*context)},
-                    true);
-                printf_func2 = Function::Create(printf_type, Function::ExternalLinkage, "printf", module.get());
-            }
-            Value* fmt_flags = builder->CreateGlobalStringPtr("[DISPLAY-LAMBDA] flags=%d\n");
-            Value* flags_ext = builder->CreateZExt(lambda_flags, Type::getInt32Ty(*context));
-            builder->CreateCall(printf_func2, {fmt_flags, flags_ext});
-
             Value* is_indirect = builder->CreateICmpNE(
                 builder->CreateAnd(lambda_flags, ConstantInt::get(Type::getInt8Ty(*context), TypedValue::FLAG_INDIRECT)),
                 ConstantInt::get(Type::getInt8Ty(*context), 0));
-
-            // DEBUG: Print is_indirect result
-            Value* fmt_isindir = builder->CreateGlobalStringPtr("[DISPLAY-LAMBDA] is_indirect=%d\n");
-            Value* is_indirect_ext = builder->CreateZExt(is_indirect, Type::getInt32Ty(*context));
-            builder->CreateCall(printf_func2, {fmt_isindir, is_indirect_ext});
 
             BasicBlock* lambda_indirect = BasicBlock::Create(*context, "lambda_indirect", current_func);
             BasicBlock* lambda_direct = BasicBlock::Create(*context, "lambda_direct", current_func);
@@ -6553,26 +6481,8 @@ private:
             // Indirect case: load S-expression pointer from global address
             builder->SetInsertPoint(lambda_indirect);
             Value* global_addr_int = unpackInt64FromTaggedValue(sexpr_car_tagged);
-
-            // DEBUG: Print global address being loaded from
-            Function* printf_func = module->getFunction("printf");
-            if (!printf_func) {
-                FunctionType* printf_type = FunctionType::get(
-                    Type::getInt32Ty(*context),
-                    {PointerType::getUnqual(*context)},
-                    true);
-                printf_func = Function::Create(printf_type, Function::ExternalLinkage, "printf", module.get());
-            }
-            Value* fmt1 = builder->CreateGlobalStringPtr("[DISPLAY-INDIRECT] Loading from global addr: %lld\n");
-            builder->CreateCall(printf_func, {fmt1, global_addr_int});
-
             Value* global_ptr = builder->CreateIntToPtr(global_addr_int, builder->getPtrTy());
             Value* indirect_sexpr_ptr = builder->CreateLoad(Type::getInt64Ty(*context), global_ptr);
-
-            // DEBUG: Print S-expression pointer that was loaded
-            Value* fmt2 = builder->CreateGlobalStringPtr("[DISPLAY-INDIRECT] Loaded sexpr ptr: %lld\n");
-            builder->CreateCall(printf_func, {fmt2, indirect_sexpr_ptr});
-
             Value* indirect_depth = ConstantInt::get(Type::getInt32Ty(*context), 0);
             builder->CreateCall(display_sexpr_list_func, {indirect_sexpr_ptr, indirect_depth});
             builder->CreateBr(sexpr_elem_done);
@@ -10689,21 +10599,6 @@ private:
         // Build list from last element to first (right-associative)
         for (int64_t i = op->call_op.num_vars - 1; i >= 0; i--) {
             TypedValue element = codegenTypedAST(&op->call_op.variables[i]);
-
-            // HOMOICONIC FIX: Capture lambda name immediately after generation
-            // This must happen before the next element is processed (which might overwrite last_generated_lambda_name)
-            std::string this_lambda_name;
-            bool is_lambda_sexpr = (element.type == ESHKOL_VALUE_LAMBDA_SEXPR);
-            bool is_op_node = (op->call_op.variables[i].type == ESHKOL_OP);
-            bool is_lambda_op = is_op_node && (op->call_op.variables[i].operation.op == ESHKOL_LAMBDA_OP);
-
-                    (long long)i, is_lambda_sexpr, is_op_node, is_lambda_op);
-
-            if (is_lambda_sexpr && is_lambda_op) {
-                // This is an inline lambda that was just generated
-                this_lambda_name = last_generated_lambda_name;
-            }
-
             if (element.llvm_value) {
                 // HOMOICONIC FIX: For lambdas in lists, store the ADDRESS of the sexpr global
                 // At display time, we load from this address to get the S-expression pointer
@@ -10717,11 +10612,12 @@ private:
                         std::string var_name = op->call_op.variables[i].variable.id;
                         std::string var_sexpr_key = var_name + "_sexpr";
                         sexpr_global = module->getNamedGlobal(var_sexpr_key);
-                    } else if (!this_lambda_name.empty()) {
-                        // Inline lambda: use the lambda name we captured immediately after generation
-                        std::string lambda_sexpr_key = this_lambda_name + "_sexpr";
+                    } else if (op->call_op.variables[i].type == ESHKOL_OP &&
+                               op->call_op.variables[i].operation.op == ESHKOL_LAMBDA_OP &&
+                               !last_generated_lambda_name.empty()) {
+                        // Inline lambda: use the most recently generated lambda_N_sexpr
+                        std::string lambda_sexpr_key = last_generated_lambda_name + "_sexpr";
                         sexpr_global = module->getNamedGlobal(lambda_sexpr_key);
-                                lambda_sexpr_key.c_str(), sexpr_global ? "YES" : "NO");
                     }
 
                     if (sexpr_global) {
@@ -10729,21 +10625,7 @@ private:
                         // At runtime display, we'll load from this address
                         // Set FLAG_INDIRECT to indicate this is an indirect reference
                         Value* global_addr = builder->CreatePtrToInt(sexpr_global, Type::getInt64Ty(*context));
-
-                        // DEBUG: Emit runtime printf to show global address being stored
-                        Function* printf_func = module->getFunction("printf");
-                        if (!printf_func) {
-                            FunctionType* printf_type = FunctionType::get(
-                                Type::getInt32Ty(*context),
-                                {PointerType::getUnqual(*context)},
-                                true);
-                            printf_func = Function::Create(printf_type, Function::ExternalLinkage, "printf", module.get());
-                        }
-                        Value* fmt = builder->CreateGlobalStringPtr(("[LIST-CREATE] Storing global addr for " + this_lambda_name + ": %lld\n").c_str());
-                        builder->CreateCall(printf_func, {fmt, global_addr});
-
                         element = TypedValue(global_addr, ESHKOL_VALUE_LAMBDA_SEXPR, true, TypedValue::FLAG_INDIRECT);
-                    } else {
                     }
                 }
                 // Create tagged cons cell: (element . rest) with type preservation
@@ -11188,14 +11070,9 @@ private:
         // S-expressions will be generated in createMainWrapper() after all lambdas are compiled
         // This prevents basic block corruption from generating IR during lambda compilation
         pending_lambda_sexprs.push_back({op, lambda_name});
-                lambda_name.c_str(), pending_lambda_sexprs.size());
 
         // Track last generated lambda name for codegenList to use
         last_generated_lambda_name = lambda_name;
-
-        // HOMOICONIC FIX: Map lambda function to its S-expression global name
-        // This allows codegenList to find the correct S-expression for inline lambdas
-        lambda_sexpr_map[lambda_func] = lambda_name;
 
         // HOMOICONIC FIX: Create S-expression global variable IMMEDIATELY so detectValueType can find it
         // The actual S-expression will be stored into this global at runtime in createMainWrapper()
@@ -14521,7 +14398,7 @@ private:
             }
 
             Value* op_string = codegenString(op->call_op.func->variable.id);
-            TypedValue op_symbol(op_string, ESHKOL_VALUE_STRING_PTR, true);
+            TypedValue op_symbol(op_string, ESHKOL_VALUE_CONS_PTR, true);
             Value* op_tagged = typedValueToTaggedValue(op_symbol);
 
             Value* result_tagged;
@@ -14559,7 +14436,7 @@ private:
             
             // Create parameter symbol string
             Value* param_name = codegenString(params[i].variable.id);
-            Value* param_tagged = packPtrToTaggedValue(param_name, ESHKOL_VALUE_STRING_PTR);
+            Value* param_tagged = packPtrToTaggedValue(param_name, ESHKOL_VALUE_CONS_PTR);
             
             // Get rest of list as tagged value
             Value* rest_tagged;
@@ -14605,7 +14482,7 @@ private:
         
         // 3a: Create "lambda" symbol string
         Value* lambda_symbol = codegenString("lambda");
-        Value* lambda_tagged = packPtrToTaggedValue(lambda_symbol, ESHKOL_VALUE_STRING_PTR);
+        Value* lambda_tagged = packPtrToTaggedValue(lambda_symbol, ESHKOL_VALUE_CONS_PTR);
         
         // 3b: Pack param_list as tagged value
         Value* param_list_tagged;
@@ -20354,14 +20231,10 @@ private:
     // Clean iterative append implementation (NO recursion, NO arena scoping)
     Value* codegenIterativeAppend(Value* list1, Value* list2) {
         if (!list1 || !list2) return nullptr;
-
-        // TYPE SYSTEM FIX: Use safeExtractInt64 to handle tagged_value structs
-        list1 = safeExtractInt64(list1);
-        list2 = safeExtractInt64(list2);
-
+        
         // CRITICAL FIX: No arena scoping - append results must persist
         Function* current_func = builder->GetInsertBlock()->getParent();
-
+        
         // Check if list1 is empty
         Value* is_empty = builder->CreateICmpEQ(list1, ConstantInt::get(Type::getInt64Ty(*context), 0));
         
@@ -20747,12 +20620,9 @@ private:
         Value* pair = codegenAST(&op->call_op.variables[0]);
         Value* new_value = codegenAST(&op->call_op.variables[1]);
         if (!pair || !new_value) return nullptr;
-
-        // TYPE SYSTEM FIX: Use safeExtractInt64 to handle tagged_value structs
-        Value* pair_int = safeExtractInt64(pair);
-
+        
         // Mutate the car of the pair using tagged helper
-        Value* cons_ptr = builder->CreateIntToPtr(pair_int, builder->getPtrTy());
+        Value* cons_ptr = builder->CreateIntToPtr(pair, builder->getPtrTy());
         
         // Detect new value type and use appropriate setter
         TypedValue new_val_typed = detectValueType(new_value);
@@ -20784,16 +20654,13 @@ private:
             eshkol_warn("set-cdr! requires exactly 2 arguments: pair and new-value");
             return nullptr;
         }
-
+        
         Value* pair = codegenAST(&op->call_op.variables[0]);
         Value* new_value = codegenAST(&op->call_op.variables[1]);
         if (!pair || !new_value) return nullptr;
-
-        // TYPE SYSTEM FIX: Use safeExtractInt64 to handle tagged_value structs
-        Value* pair_int = safeExtractInt64(pair);
-
+        
         // Mutate the cdr of the pair using tagged helper
-        Value* cons_ptr = builder->CreateIntToPtr(pair_int, builder->getPtrTy());
+        Value* cons_ptr = builder->CreateIntToPtr(pair, builder->getPtrTy());
         
         // Detect new value type and use appropriate setter
         TypedValue new_val_typed = detectValueType(new_value);
