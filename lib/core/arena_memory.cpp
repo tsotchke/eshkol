@@ -544,10 +544,21 @@ uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is
         eshkol_error("Cannot get type from null tagged cons cell");
         return ESHKOL_VALUE_NULL;
     }
-    
+
     // Phase 3B: Access nested tagged_value structure
     const eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
     return tv->type;
+}
+
+// Get flags from tagged cons cell
+uint8_t arena_tagged_cons_get_flags(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
+    if (!cell) {
+        eshkol_error("Cannot get flags from null tagged cons cell");
+        return 0;
+    }
+
+    const eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
+    return tv->flags;
 }
 
 bool arena_tagged_cons_is_type(const arena_tagged_cons_cell_t* cell, bool is_cdr, uint8_t type) {

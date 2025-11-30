@@ -109,15 +109,29 @@ private:
     Token readNumber() {
         size_t start = pos;
         std::string value;
-        
+
         if (input[pos] == '-') {
             value += input[pos++];
         }
-        
+
+        // Read integer or decimal part
         while (pos < length && (std::isdigit(input[pos]) || input[pos] == '.')) {
             value += input[pos++];
         }
-        
+
+        // Handle scientific notation (e.g., 1e-7, 2.5E+10, 3e4)
+        if (pos < length && (input[pos] == 'e' || input[pos] == 'E')) {
+            value += input[pos++];
+            // Handle optional sign after 'e'
+            if (pos < length && (input[pos] == '+' || input[pos] == '-')) {
+                value += input[pos++];
+            }
+            // Read exponent digits
+            while (pos < length && std::isdigit(input[pos])) {
+                value += input[pos++];
+            }
+        }
+
         return {TOKEN_NUMBER, value, start};
     }
     
@@ -193,7 +207,10 @@ static eshkol_ast_t parse_atom(const Token& token) {
             break;
             
         case TOKEN_NUMBER: {
-            if (token.value.find('.') != std::string::npos) {
+            // Check if it's a floating-point number (has '.' or scientific notation 'e'/'E')
+            if (token.value.find('.') != std::string::npos ||
+                token.value.find('e') != std::string::npos ||
+                token.value.find('E') != std::string::npos) {
                 ast.type = ESHKOL_DOUBLE;
                 ast.double_val = std::stod(token.value);
             } else {
@@ -527,6 +544,131 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
     }
 }
 
+// Transform internal defines to letrec
+// Takes a vector of body expressions and returns a transformed AST
+// Internal defines at the start of the body are converted to letrec bindings
+//
+// Example:
+//   (define a 1)
+//   (define (helper x) (+ x 1))
+//   (+ a (helper 2))
+// Becomes:
+//   (letrec ((a 1) (helper (lambda (x) (+ x 1))))
+//     (+ a (helper 2)))
+static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_ast_t>& body_expressions) {
+    eshkol_ast_t result;
+
+    // Find all internal defines (they must be at the beginning per Scheme semantics)
+    std::vector<eshkol_ast_t> defines;
+    size_t first_non_define = 0;
+
+    for (size_t i = 0; i < body_expressions.size(); i++) {
+        const auto& expr = body_expressions[i];
+        if (expr.type == ESHKOL_OP && expr.operation.op == ESHKOL_DEFINE_OP) {
+            defines.push_back(expr);
+            first_non_define = i + 1;
+        } else {
+            break;  // Stop at first non-define expression
+        }
+    }
+
+    // If no internal defines, return original body
+    if (defines.empty()) {
+        if (body_expressions.size() == 1) {
+            return body_expressions[0];
+        } else {
+            // Create sequence
+            result.type = ESHKOL_OP;
+            result.operation.op = ESHKOL_SEQUENCE_OP;
+            result.operation.sequence_op.num_expressions = body_expressions.size();
+            result.operation.sequence_op.expressions = new eshkol_ast_t[body_expressions.size()];
+            for (size_t i = 0; i < body_expressions.size(); i++) {
+                result.operation.sequence_op.expressions[i] = body_expressions[i];
+            }
+            return result;
+        }
+    }
+
+    eshkol_debug("Transforming %zu internal defines to letrec", defines.size());
+
+    // Create letrec AST
+    result.type = ESHKOL_OP;
+    result.operation.op = ESHKOL_LETREC_OP;
+
+    // Convert defines to bindings
+    result.operation.let_op.num_bindings = defines.size();
+    result.operation.let_op.bindings = new eshkol_ast_t[defines.size()];
+
+    for (size_t i = 0; i < defines.size(); i++) {
+        const auto& def = defines[i];
+
+        // Create variable node for binding
+        eshkol_ast_t var_ast = {.type = ESHKOL_VAR};
+        var_ast.variable.id = new char[strlen(def.operation.define_op.name) + 1];
+        strcpy(var_ast.variable.id, def.operation.define_op.name);
+        var_ast.variable.data = nullptr;
+
+        // Get value - if it's a function define, wrap in lambda
+        eshkol_ast_t val_ast;
+        if (def.operation.define_op.is_function) {
+            // Create lambda for function definition
+            val_ast.type = ESHKOL_OP;
+            val_ast.operation.op = ESHKOL_LAMBDA_OP;
+            val_ast.operation.lambda_op.num_params = def.operation.define_op.num_params;
+
+            if (val_ast.operation.lambda_op.num_params > 0) {
+                val_ast.operation.lambda_op.parameters = new eshkol_ast_t[val_ast.operation.lambda_op.num_params];
+                for (size_t j = 0; j < val_ast.operation.lambda_op.num_params; j++) {
+                    val_ast.operation.lambda_op.parameters[j] = def.operation.define_op.parameters[j];
+                }
+            } else {
+                val_ast.operation.lambda_op.parameters = nullptr;
+            }
+
+            val_ast.operation.lambda_op.body = def.operation.define_op.value;
+            val_ast.operation.lambda_op.captured_vars = nullptr;
+            val_ast.operation.lambda_op.num_captured = 0;
+        } else {
+            // Simple variable define - use value directly
+            val_ast = *def.operation.define_op.value;
+        }
+
+        // Create binding as cons cell (var . val)
+        result.operation.let_op.bindings[i].type = ESHKOL_CONS;
+        result.operation.let_op.bindings[i].cons_cell.car = new eshkol_ast_t;
+        *result.operation.let_op.bindings[i].cons_cell.car = var_ast;
+        result.operation.let_op.bindings[i].cons_cell.cdr = new eshkol_ast_t;
+        *result.operation.let_op.bindings[i].cons_cell.cdr = val_ast;
+    }
+
+    // Create body from remaining expressions
+    eshkol_ast_t body;
+    size_t remaining = body_expressions.size() - first_non_define;
+
+    if (remaining == 0) {
+        // No body expressions after defines - this is an error
+        // But for robustness, return the last define's value
+        eshkol_error("Internal defines must be followed by at least one expression");
+        body.type = ESHKOL_NULL;
+    } else if (remaining == 1) {
+        body = body_expressions[first_non_define];
+    } else {
+        // Multiple expressions - wrap in sequence
+        body.type = ESHKOL_OP;
+        body.operation.op = ESHKOL_SEQUENCE_OP;
+        body.operation.sequence_op.num_expressions = remaining;
+        body.operation.sequence_op.expressions = new eshkol_ast_t[remaining];
+        for (size_t i = 0; i < remaining; i++) {
+            body.operation.sequence_op.expressions[i] = body_expressions[first_non_define + i];
+        }
+    }
+
+    result.operation.let_op.body = new eshkol_ast_t;
+    *result.operation.let_op.body = body;
+
+    return result;
+}
+
 // Analyze lambda for captured variables using STATIC AST ANALYSIS
 // Returns a list of variable names that are captured from parent scope
 // parent_defined_vars: variables available in the enclosing scope
@@ -749,25 +891,15 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     body_expressions.push_back(expr);
                 }
                 
-                // Create proper sequence for multiple expressions
-                eshkol_ast_t body;
-                if (body_expressions.size() == 1) {
-                    body = body_expressions[0];
-                } else if (body_expressions.size() > 1) {
-                    // Create a sequence operation to hold all expressions
-                    body.type = ESHKOL_OP;
-                    body.operation.op = ESHKOL_SEQUENCE_OP;
-                    body.operation.sequence_op.num_expressions = body_expressions.size();
-                    body.operation.sequence_op.expressions = new eshkol_ast_t[body_expressions.size()];
-                    
-                    for (size_t i = 0; i < body_expressions.size(); i++) {
-                        body.operation.sequence_op.expressions[i] = body_expressions[i];
-                    }
-                } else {
+                // Transform internal defines to letrec (if any)
+                // This handles: single expression, sequence, and internal defines
+                if (body_expressions.empty()) {
                     eshkol_error("Function body cannot be empty");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
+
+                eshkol_ast_t body = transformInternalDefinesToLetrec(body_expressions);
                 
                 // Set up define operation for function
                 ast.operation.define_op.name = new char[strlen(func_signature.eshkol_func.id) + 1];
@@ -1067,28 +1199,35 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
             }
             
-            // Parse lambda body
-            token = tokenizer.nextToken();
-            if (token.type == TOKEN_EOF) {
+            // Parse lambda body (can be multiple expressions with internal defines)
+            std::vector<eshkol_ast_t> body_expressions;
+
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in lambda body");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                eshkol_ast_t expr;
+                if (token.type == TOKEN_LPAREN) {
+                    expr = parse_list(tokenizer);
+                } else {
+                    expr = parse_atom(token);
+                }
+                body_expressions.push_back(expr);
+            }
+
+            if (body_expressions.empty()) {
                 eshkol_error("lambda requires body expression");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
-            eshkol_ast_t body;
-            if (token.type == TOKEN_LPAREN) {
-                body = parse_list(tokenizer);
-            } else {
-                body = parse_atom(token);
-            }
-            
-            // Check for closing paren
-            token = tokenizer.nextToken();
-            if (token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing parenthesis after lambda body");
-                ast.type = ESHKOL_INVALID;
-                return ast;
-            }
+
+            // Transform internal defines to letrec (same as function define)
+            eshkol_ast_t body = transformInternalDefinesToLetrec(body_expressions);
             
             // Set up lambda operation
             ast.operation.lambda_op.num_params = params.size();
