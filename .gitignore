@@ -58,6 +58,7 @@ coverage/
 test_outputs/
 autodiff_test_outputs/
 a.out
+*.ll
 
 compile_commands.json
 .aider*

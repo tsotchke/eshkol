@@ -1,0 +1,11 @@
+(define make-adder (lambda (n) (lambda (x) (+ x n))))
+(define add5 (make-adder 5))
+(define l1 (lambda (x) (* x 2)))
+(define funcs (list l1))
+
+(display "add5: ") (display add5) (newline)
+(display "l1: ") (display l1) (newline)
+(display "diff (* x x) x: ") (display (diff (* x x) x)) (newline)
+(display "add5 10: ") (display (add5 10)) (newline)
+(display "l1 5: ") (display (l1 5)) (newline)
+(display "funcs: ") (display funcs) (newline)

@@ -1,0 +1,1 @@
+(define add5 (lambda (x) (+ x 5))) (display add5) (newline)
