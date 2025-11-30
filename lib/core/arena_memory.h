@@ -121,6 +121,7 @@ void arena_tagged_cons_set_null(arena_tagged_cons_cell_t* cell, bool is_cdr);
 
 // Type query functions
 uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is_cdr);
+uint8_t arena_tagged_cons_get_flags(const arena_tagged_cons_cell_t* cell, bool is_cdr);
 bool arena_tagged_cons_is_type(const arena_tagged_cons_cell_t* cell, bool is_cdr, uint8_t type);
 
 // Direct tagged value access functions (NEW in Phase 3B)
