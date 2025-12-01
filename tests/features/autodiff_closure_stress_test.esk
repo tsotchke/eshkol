@@ -1,0 +1,204 @@
+;; Comprehensive Autodiff Closure Stress Test
+;; Tests all autodiff operators with nested lambdas, closures, and complex compositions
+
+;; Test 1: Gradient with let-bound lambda (basic)
+(display "Test 1: Gradient with let-bound lambda")
+(newline)
+(let ((f (lambda (v) (* (vref v 0) (vref v 0)))))
+  (display "  f(x) = x^2, gradient at x=3: ")
+  (display (gradient f (vector 3.0)))
+  (newline))
+
+;; Test 2: Gradient with nested let and captures
+(display "Test 2: Gradient with closure capturing 'a'")
+(newline)
+(let ((a 2.0))
+  (let ((f (lambda (v) (* a (* (vref v 0) (vref v 0))))))
+    (display "  f(x) = 2*x^2, gradient at x=3: ")
+    (display (gradient f (vector 3.0)))
+    (newline)))
+
+;; Test 3: Jacobian with let-bound lambda
+(display "Test 3: Jacobian with let-bound lambda")
+(newline)
+(let ((F (lambda (v)
+           (vector (* (vref v 0) (vref v 1))
+                   (* (vref v 0) (vref v 0))))))
+  (display "  F(x,y) = [xy, x^2], Jacobian at (2,3): ")
+  (display (jacobian F (vector 2.0 3.0)))
+  (newline))
+
+;; Test 4: Jacobian with closure capturing a scalar
+(display "Test 4: Jacobian with closure capturing scalar 'k'")
+(newline)
+(let ((k 3.0))
+  (let ((F (lambda (v)
+             (vector (* k (vref v 0))
+                     (* k (vref v 1))))))
+    (display "  F(x,y) = [3x, 3y], Jacobian at (1,2): ")
+    (display (jacobian F (vector 1.0 2.0)))
+    (newline)))
+
+;; Test 5: Hessian with let-bound lambda
+(display "Test 5: Hessian with let-bound lambda")
+(newline)
+(let ((f (lambda (v)
+           (+ (* (vref v 0) (vref v 0))
+              (* (vref v 1) (vref v 1))))))
+  (display "  f(x,y) = x^2 + y^2, Hessian at (1,1): ")
+  (display (hessian f (vector 1.0 1.0)))
+  (newline))
+
+;; Test 6: Hessian with nested closures
+(display "Test 6: Hessian with double-nested closures")
+(newline)
+(let ((a 2.0))
+  (let ((b 3.0))
+    (let ((f (lambda (v)
+               (+ (* a (* (vref v 0) (vref v 0)))
+                  (* b (* (vref v 1) (vref v 1)))))))
+      (display "  f(x,y) = 2x^2 + 3y^2, Hessian at (1,1): ")
+      (display (hessian f (vector 1.0 1.0)))
+      (newline))))
+
+;; Test 7: Divergence with let-bound vector field
+(display "Test 7: Divergence with let-bound vector field")
+(newline)
+(let ((F (lambda (v)
+           (vector (vref v 0)
+                   (vref v 1)))))
+  (display "  F(x,y) = [x, y], div(F) at (1,2): ")
+  (display (divergence F (vector 1.0 2.0)))
+  (newline))
+
+;; Test 8: Divergence with closure
+(display "Test 8: Divergence with closure capturing 'c'")
+(newline)
+(let ((c 5.0))
+  (let ((F (lambda (v)
+             (vector (* c (vref v 0))
+                     (* c (vref v 1))))))
+    (display "  F(x,y) = [5x, 5y], div(F) at (1,1): ")
+    (display (divergence F (vector 1.0 1.0)))
+    (newline)))
+
+;; Test 9: Curl with let-bound 3D vector field
+(display "Test 9: Curl with let-bound 3D vector field")
+(newline)
+(let ((F (lambda (v)
+           (vector 0.0
+                   0.0
+                   (* (vref v 0) (vref v 1))))))
+  (display "  F = [0, 0, xy], curl(F) at (2,3,0): ")
+  (display (curl F (vector 2.0 3.0 0.0)))
+  (newline))
+
+;; Test 10: Laplacian with let-bound scalar field
+(display "Test 10: Laplacian with let-bound scalar field")
+(newline)
+(let ((f (lambda (v)
+           (- (* (vref v 0) (vref v 0))
+              (* (vref v 1) (vref v 1))))))
+  (display "  f(x,y) = x^2 - y^2, Laplacian at (1,1): ")
+  (display (laplacian f (vector 1.0 1.0)))
+  (newline))
+
+;; Test 11: Laplacian with closure
+(display "Test 11: Laplacian with closure capturing coefficient")
+(newline)
+(let ((alpha 4.0))
+  (let ((f (lambda (v)
+             (* alpha (+ (* (vref v 0) (vref v 0))
+                         (* (vref v 1) (vref v 1)))))))
+    (display "  f(x,y) = 4(x^2 + y^2), Laplacian at (1,1): ")
+    (display (laplacian f (vector 1.0 1.0)))
+    (newline)))
+
+;; Test 12: Directional derivative with let-bound function
+(display "Test 12: Directional derivative with let-bound function")
+(newline)
+(let ((f (lambda (v)
+           (+ (* 3.0 (vref v 0))
+              (* 4.0 (vref v 1))))))
+  (display "  f(x,y) = 3x + 4y, D_{(1/sqrt2, 1/sqrt2)} at (1,1): ")
+  (display (directional-derivative f (vector 0.707107 0.707107) (vector 1.0 1.0)))
+  (newline))
+
+;; Test 13: Multiple autodiff operations in sequence
+(display "Test 13: Multiple autodiff operations in sequence")
+(newline)
+(let ((f (lambda (v) (* (vref v 0) (vref v 0)))))
+  (display "  gradient: ")
+  (display (gradient f (vector 4.0)))
+  (display ", hessian: ")
+  (display (hessian f (vector 4.0)))
+  (newline))
+
+;; Test 14: Gradient of multivariate polynomial with captures
+(display "Test 14: Multivariate polynomial with 3 captured coefficients")
+(newline)
+(let ((a 1.0))
+  (let ((b 2.0))
+    (let ((c 3.0))
+      (let ((f (lambda (v)
+                 (+ (* a (* (vref v 0) (vref v 0)))
+                    (* b (* (vref v 0) (vref v 1)))
+                    (* c (* (vref v 1) (vref v 1)))))))
+        (display "  f(x,y) = x^2 + 2xy + 3y^2, gradient at (1,1): ")
+        (display (gradient f (vector 1.0 1.0)))
+        (newline)))))
+
+;; Test 15: Higher-order - gradient of function that itself uses autodiff concepts
+(display "Test 15: Complex nested function with trigonometric components")
+(newline)
+(let ((f (lambda (v)
+           (* (sin (vref v 0)) (cos (vref v 1))))))
+  (display "  f(x,y) = sin(x)*cos(y), gradient at (0, 0): ")
+  (display (gradient f (vector 0.0 0.0)))
+  (newline))
+
+;; Test 16: 3D gradient with captures
+(display "Test 16: 3D gradient with captured coefficients")
+(newline)
+(let ((w1 1.0))
+  (let ((w2 2.0))
+    (let ((w3 3.0))
+      (let ((f (lambda (v)
+                 (+ (* w1 (vref v 0))
+                    (* w2 (vref v 1))
+                    (* w3 (vref v 2))))))
+        (display "  f(x,y,z) = x + 2y + 3z, gradient at (1,1,1): ")
+        (display (gradient f (vector 1.0 1.0 1.0)))
+        (newline)))))
+
+;; Test 17: Jacobian of 3x3 transformation
+(display "Test 17: Jacobian of 3D rotation-like transform")
+(newline)
+(let ((F (lambda (v)
+           (vector (- (vref v 0) (vref v 1))
+                   (+ (vref v 0) (vref v 1))
+                   (vref v 2)))))
+  (display "  F = [x-y, x+y, z], Jacobian at origin: ")
+  (display (jacobian F (vector 0.0 0.0 0.0)))
+  (newline))
+
+;; Test 18: Stress test - deeply nested captures
+(display "Test 18: Deeply nested captures (5 levels)")
+(newline)
+(let ((a 1.0))
+  (let ((b 2.0))
+    (let ((c 3.0))
+      (let ((d 4.0))
+        (let ((e 5.0))
+          (let ((f (lambda (v)
+                     (+ (* a (vref v 0))
+                        (* b (vref v 0))
+                        (* c (vref v 0))
+                        (* d (vref v 0))
+                        (* e (vref v 0))))))
+            (display "  f(x) = (1+2+3+4+5)x = 15x, gradient at x=1: ")
+            (display (gradient f (vector 1.0)))
+            (newline)))))))
+
+(display "All autodiff closure stress tests completed!")
+(newline)

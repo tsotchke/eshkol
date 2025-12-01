@@ -264,6 +264,8 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     // Note: "compose" is now a user-definable higher-order function, not a special op
     if (op == "define") return ESHKOL_DEFINE_OP;
     if (op == "set!") return ESHKOL_SET_OP;
+    if (op == "import") return ESHKOL_IMPORT_OP;
+    if (op == "require") return ESHKOL_IMPORT_OP;  // alias for import
     if (op == "extern") return ESHKOL_EXTERN_OP;
     if (op == "extern-var") return ESHKOL_EXTERN_VAR_OP;
     if (op == "tensor") return ESHKOL_TENSOR_OP;
@@ -628,6 +630,13 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
             val_ast.operation.lambda_op.body = def.operation.define_op.value;
             val_ast.operation.lambda_op.captured_vars = nullptr;
             val_ast.operation.lambda_op.num_captured = 0;
+            val_ast.operation.lambda_op.is_variadic = def.operation.define_op.is_variadic;
+            if (def.operation.define_op.rest_param) {
+                val_ast.operation.lambda_op.rest_param = new char[strlen(def.operation.define_op.rest_param) + 1];
+                strcpy(val_ast.operation.lambda_op.rest_param, def.operation.define_op.rest_param);
+            } else {
+                val_ast.operation.lambda_op.rest_param = nullptr;
+            }
         } else {
             // Simple variable define - use value directly
             val_ast = *def.operation.define_op.value;
@@ -726,24 +735,29 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer);
 
 static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
     // Parse function signature: (func-name param1 param2 ...)
+    // Or:                       (func-name param1 . rest)  - with rest parameter
     // Returns an AST with function name and parameters
     eshkol_ast_t signature = {.type = ESHKOL_FUNC};
     std::vector<eshkol_ast_t> params;
-    
+
+    // Initialize variadic fields
+    signature.eshkol_func.is_variadic = 0;
+    signature.eshkol_func.rest_param = nullptr;
+
     Token token = tokenizer.nextToken();
-    
+
     // First token should be the function name
     if (token.type != TOKEN_SYMBOL) {
         eshkol_error("Expected function name in define");
         signature.type = ESHKOL_INVALID;
         return signature;
     }
-    
+
     // Set function name
     signature.eshkol_func.id = new char[token.value.length() + 1];
     strcpy(signature.eshkol_func.id, token.value.c_str());
     signature.eshkol_func.is_lambda = 0;
-    
+
     // Parse parameters
     while (true) {
         token = tokenizer.nextToken();
@@ -753,7 +767,30 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             signature.type = ESHKOL_INVALID;
             return signature;
         }
-        
+
+        // Check for dotted rest parameter: (func-name x y . rest)
+        if (token.type == TOKEN_SYMBOL && token.value == ".") {
+            // Next token should be the rest parameter name
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_SYMBOL) {
+                eshkol_error("Expected rest parameter name after '.'");
+                signature.type = ESHKOL_INVALID;
+                return signature;
+            }
+            signature.eshkol_func.is_variadic = 1;
+            signature.eshkol_func.rest_param = new char[token.value.length() + 1];
+            strcpy(signature.eshkol_func.rest_param, token.value.c_str());
+
+            // Expect closing paren
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                eshkol_error("Expected ')' after rest parameter");
+                signature.type = ESHKOL_INVALID;
+                return signature;
+            }
+            break;
+        }
+
         if (token.type == TOKEN_SYMBOL) {
             eshkol_ast_t param = {.type = ESHKOL_VAR};
             param.variable.id = new char[token.value.length() + 1];
@@ -766,7 +803,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             return signature;
         }
     }
-    
+
     // Set up parameter array
     signature.eshkol_func.num_variables = params.size();
     if (signature.eshkol_func.num_variables > 0) {
@@ -777,7 +814,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
     } else {
         signature.eshkol_func.variables = nullptr;
     }
-    
+
     return signature;
 }
 
@@ -919,7 +956,16 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 
                 ast.operation.define_op.value = new eshkol_ast_t;
                 *ast.operation.define_op.value = body;
-                
+
+                // Copy variadic information from function signature
+                ast.operation.define_op.is_variadic = func_signature.eshkol_func.is_variadic;
+                if (func_signature.eshkol_func.rest_param) {
+                    ast.operation.define_op.rest_param = new char[strlen(func_signature.eshkol_func.rest_param) + 1];
+                    strcpy(ast.operation.define_op.rest_param, func_signature.eshkol_func.rest_param);
+                } else {
+                    ast.operation.define_op.rest_param = nullptr;
+                }
+
                 return ast;
                 
             } else if (token.type == TOKEN_SYMBOL) {
@@ -1167,36 +1213,75 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         // Special handling for lambda - anonymous function
         if (ast.operation.op == ESHKOL_LAMBDA_OP) {
             // Syntax: (lambda (param1 param2 ...) body)
-            
-            // Parse parameter list
+            // Or:     (lambda (param1 param2 . rest) body)  - with rest parameter
+            // Or:     (lambda args body)                     - variadic, all args as list
+
+            // Initialize variadic fields
+            ast.operation.lambda_op.is_variadic = 0;
+            ast.operation.lambda_op.rest_param = nullptr;
+
+            // Parse parameter list or single symbol
             token = tokenizer.nextToken();
-            if (token.type != TOKEN_LPAREN) {
-                eshkol_error("lambda requires parameter list as first argument");
+
+            std::vector<eshkol_ast_t> params;
+
+            if (token.type == TOKEN_SYMBOL) {
+                // Variadic lambda: (lambda args body)
+                // All arguments are captured as a single list parameter
+                ast.operation.lambda_op.is_variadic = 1;
+                ast.operation.lambda_op.rest_param = new char[token.value.length() + 1];
+                strcpy(ast.operation.lambda_op.rest_param, token.value.c_str());
+                // No fixed parameters
+            } else if (token.type == TOKEN_LPAREN) {
+                // Regular parameter list or mixed with rest parameter
+                while (true) {
+                    token = tokenizer.nextToken();
+                    if (token.type == TOKEN_RPAREN) break;
+                    if (token.type == TOKEN_EOF) {
+                        eshkol_error("Unexpected end of input in lambda parameter list");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+
+                    // Check for dotted rest parameter: (x y . rest)
+                    if (token.type == TOKEN_SYMBOL && token.value == ".") {
+                        // Next token should be the rest parameter name
+                        token = tokenizer.nextToken();
+                        if (token.type != TOKEN_SYMBOL) {
+                            eshkol_error("Expected rest parameter name after '.'");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+                        ast.operation.lambda_op.is_variadic = 1;
+                        ast.operation.lambda_op.rest_param = new char[token.value.length() + 1];
+                        strcpy(ast.operation.lambda_op.rest_param, token.value.c_str());
+
+                        // Expect closing paren
+                        token = tokenizer.nextToken();
+                        if (token.type != TOKEN_RPAREN) {
+                            eshkol_error("Expected ')' after rest parameter");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+                        break;
+                    }
+
+                    if (token.type == TOKEN_SYMBOL) {
+                        eshkol_ast_t param = {.type = ESHKOL_VAR};
+                        param.variable.id = new char[token.value.length() + 1];
+                        strcpy(param.variable.id, token.value.c_str());
+                        param.variable.data = nullptr;
+                        params.push_back(param);
+                    } else {
+                        eshkol_error("Expected parameter name in lambda");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                }
+            } else {
+                eshkol_error("lambda requires parameter list or rest parameter symbol");
                 ast.type = ESHKOL_INVALID;
                 return ast;
-            }
-            
-            std::vector<eshkol_ast_t> params;
-            while (true) {
-                token = tokenizer.nextToken();
-                if (token.type == TOKEN_RPAREN) break;
-                if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in lambda parameter list");
-                    ast.type = ESHKOL_INVALID;
-                    return ast;
-                }
-                
-                if (token.type == TOKEN_SYMBOL) {
-                    eshkol_ast_t param = {.type = ESHKOL_VAR};
-                    param.variable.id = new char[token.value.length() + 1];
-                    strcpy(param.variable.id, token.value.c_str());
-                    param.variable.data = nullptr;
-                    params.push_back(param);
-                } else {
-                    eshkol_error("Expected parameter name in lambda");
-                    ast.type = ESHKOL_INVALID;
-                    return ast;
-                }
             }
             
             // Parse lambda body (can be multiple expressions with internal defines)
@@ -1332,6 +1417,15 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t val_ast;
                 if (token.type == TOKEN_LPAREN) {
                     val_ast = parse_list(tokenizer);
+                } else if (token.type == TOKEN_QUOTE) {
+                    // Handle quoted expressions in let binding value: (let ((x '())) ...)
+                    eshkol_ast_t quoted = parse_quoted_data(tokenizer);
+                    val_ast.type = ESHKOL_OP;
+                    val_ast.operation.op = ESHKOL_QUOTE_OP;
+                    val_ast.operation.call_op.func = nullptr;
+                    val_ast.operation.call_op.num_vars = 1;
+                    val_ast.operation.call_op.variables = new eshkol_ast_t[1];
+                    val_ast.operation.call_op.variables[0] = quoted;
                 } else {
                     val_ast = parse_atom(token);
                 }
@@ -2839,8 +2933,30 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
             
             return ast;
+        } else if (ast.operation.op == ESHKOL_IMPORT_OP) {
+            // Syntax: (import "path/to/file.esk")
+            // Or:     (require "path/to/file.esk")
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_STRING) {
+                eshkol_error("import/require requires a string path as argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            ast.operation.import_op.path = new char[strlen(token.value.c_str()) + 1];
+            strcpy(ast.operation.import_op.path, token.value.c_str());
+
+            // Expect closing paren
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                eshkol_error("import/require takes exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            return ast;
         }
-        
+
         // Parse arguments for non-define operations
         // Special handling for quote - its argument can be any data, including (1 2 3)
         if (ast.operation.op == ESHKOL_QUOTE_OP) {
@@ -3065,35 +3181,36 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
     }
 }
 
-eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file)
+// Generic stream-based parser (works with any std::istream)
+eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 {
     std::string input;
     std::string line;
     bool in_quote = false;
     int bracket_depth = 0;
     bool found_expression = false;
-    
+
     // Read characters until we have a complete S-expression
-    while (!in_file.eof()) {
-        int c = in_file.get();
-        if (in_file.eof()) break;
-        
+    while (!in_stream.eof()) {
+        int c = in_stream.get();
+        if (in_stream.eof()) break;
+
         // Handle comments - skip to end of line
         if (c == ';' && !in_quote) {
-            std::getline(in_file, line); // consume rest of line
+            std::getline(in_stream, line); // consume rest of line
             if (bracket_depth == 0 && !input.empty()) {
                 input += ' '; // Add space to separate from next token
             }
             continue;
         }
-        
+
         // Track quotes
         if (c == '"' && (input.empty() || input.back() != '\\')) {
             in_quote = !in_quote;
         }
-        
+
         input += static_cast<char>(c);
-        
+
         // Track parentheses depth (only outside quotes)
         if (!in_quote) {
             if (c == '(') {
@@ -3106,12 +3223,12 @@ eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file)
                 }
             } else if (!std::isspace(c) && bracket_depth == 0) {
                 // Found atom at top level - read until whitespace or special char
-                while (!in_file.eof()) {
-                    int next_c = in_file.peek();
+                while (!in_stream.eof()) {
+                    int next_c = in_stream.peek();
                     if (std::isspace(next_c) || next_c == '(' || next_c == ')' || next_c == ';') {
                         break;
                     }
-                    c = in_file.get();
+                    c = in_stream.get();
                     if (c == '"') in_quote = !in_quote;
                     input += static_cast<char>(c);
                 }
@@ -3120,20 +3237,26 @@ eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file)
             }
         }
     }
-    
+
     // Parse the collected input
     if (!input.empty() && found_expression) {
         // Remove leading/trailing whitespace
         size_t start = input.find_first_not_of(" \t\n\r");
         size_t end = input.find_last_not_of(" \t\n\r");
-        
+
         if (start != std::string::npos && end != std::string::npos) {
             input = input.substr(start, end - start + 1);
-            
+
             SchemeTokenizer tokenizer(input);
             return parse_expression(tokenizer);
         }
     }
-    
+
     return {.type = ESHKOL_INVALID};
+}
+
+// File-based parser (wrapper for backwards compatibility)
+eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file)
+{
+    return eshkol_parse_next_ast_from_stream(in_file);
 }

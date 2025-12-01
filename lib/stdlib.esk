@@ -76,10 +76,19 @@
   (lambda (x y)
     ((f x) y)))
 
-;; partial: Partial application - fix the first argument
-(define (partial f x)
-  (lambda args
-    (apply f (cons x args))))
+;; partial1: Partial application for unary functions - fix the first argument
+;; Returns a zero-argument thunk
+(define (partial1 f x)
+  (lambda () (f x)))
+
+;; partial2: Partial application for binary functions
+;; (partial2 + 5) => (lambda (y) (+ 5 y))
+(define (partial2 f x)
+  (lambda (y) (f x y)))
+
+;; partial3: Partial application for ternary functions
+(define (partial3 f x)
+  (lambda (y z) (f x y z)))
 
 ;; negate: Negate a predicate
 (define (negate pred)
@@ -122,7 +131,7 @@
         ((null? (cdr lst)) lst)
         (else
          (let ((n (len lst)))
-           (let ((mid (/ n 2)))
+           (let ((mid (quotient n 2)))
              (merge (sort (take-n mid lst) less?)
                     (sort (drop-n mid lst) less?)))))))
 
@@ -130,18 +139,32 @@
 ;;; List Generation
 ;;; ============================================================
 
-;; iota: Generate a list of numbers
+;; iota: Generate a list of numbers starting from 0
 ;; (iota 5) => (0 1 2 3 4)
-;; (iota 5 1) => (1 2 3 4 5)
-;; (iota 5 0 2) => (0 2 4 6 8)
-(define (iota count . args)
-  (let ((start (if (null? args) 0 (car args)))
-        (step (if (or (null? args) (null? (cdr args))) 1 (cadr args))))
-    (define (build n acc)
-      (if (< n 0)
-          acc
-          (build (- n 1) (cons (+ start (* n step)) acc))))
-    (build (- count 1) '())))
+(define (iota count)
+  (define (build n acc)
+    (if (< n 0)
+        acc
+        (build (- n 1) (cons n acc))))
+  (build (- count 1) '()))
+
+;; iota-from: Generate a list of numbers starting from a given value
+;; (iota-from 5 1) => (1 2 3 4 5)
+(define (iota-from count start)
+  (define (build n acc)
+    (if (< n 0)
+        acc
+        (build (- n 1) (cons (+ start n) acc))))
+  (build (- count 1) '()))
+
+;; iota-step: Generate a list of numbers with custom start and step
+;; (iota-step 5 0 2) => (0 2 4 6 8)
+(define (iota-step count start step)
+  (define (build n acc)
+    (if (< n 0)
+        acc
+        (build (- n 1) (cons (+ start (* n step)) acc))))
+  (build (- count 1) '()))
 
 ;; repeat: Create a list with n copies of x
 (define (repeat n x)
