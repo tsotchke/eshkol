@@ -51,6 +51,8 @@ typedef enum {
     ESHKOL_VALUE_STRING_PTR  = 8,  // Pointer to string (char* with length prefix)
     ESHKOL_VALUE_CHAR        = 9,  // Character (stored as Unicode codepoint in data field)
     ESHKOL_VALUE_VECTOR_PTR  = 10, // Pointer to Scheme vector (heterogeneous array of tagged values)
+    ESHKOL_VALUE_SYMBOL      = 11, // Symbol (interned string for identifiers)
+    ESHKOL_VALUE_CLOSURE_PTR = 12, // Pointer to closure (func_ptr + captured environment)
     // Reserved for future expansion
     ESHKOL_VALUE_MAX         = 15  // 4-bit type field limit
 } eshkol_value_type_t;
@@ -152,6 +154,7 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 #define ESHKOL_IS_STRING_PTR_TYPE(type)  (((type) & 0x0F) == ESHKOL_VALUE_STRING_PTR)
 #define ESHKOL_IS_CHAR_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_CHAR)
 #define ESHKOL_IS_VECTOR_PTR_TYPE(type)  (((type) & 0x0F) == ESHKOL_VALUE_VECTOR_PTR)
+#define ESHKOL_IS_SYMBOL_TYPE(type)      (((type) & 0x0F) == ESHKOL_VALUE_SYMBOL)
 // General pointer type check: any type that stores a pointer value (not int64 or double)
 #define ESHKOL_IS_ANY_PTR_TYPE(type)     (ESHKOL_IS_CONS_PTR_TYPE(type) || \
                                           ESHKOL_IS_STRING_PTR_TYPE(type) || \
@@ -237,6 +240,13 @@ typedef struct eshkol_closure_env {
 // Compile-time size validation
 _Static_assert(sizeof(eshkol_closure_env_t) == sizeof(size_t),
                "Closure environment header must be minimal");
+
+// Full closure structure combining function pointer and environment
+// This is what gets allocated when a closure-returning function is called
+typedef struct eshkol_closure {
+    uint64_t func_ptr;                    // Pointer to the lambda function
+    eshkol_closure_env_t* env;            // Pointer to captured environment (may be NULL for no captures)
+} eshkol_closure_t;
 
 // ===== END CLOSURE ENVIRONMENT STRUCTURES =====
 

@@ -1,0 +1,65 @@
+; Test new builtin functions
+
+; Test iota - generate range
+(display "Testing iota:")
+(newline)
+(display (iota 5))
+(newline)
+(display (iota 5 1))  ; start at 1
+(newline)
+(display (iota 5 0 2))  ; step by 2
+(newline)
+
+; Test reduce - fold left
+(display "Testing reduce:")
+(newline)
+(display (reduce + 0 '(1 2 3 4 5)))  ; sum = 15
+(newline)
+(display (reduce * 1 '(1 2 3 4 5)))  ; product = 120
+(newline)
+
+; Test sort with comparison function
+(display "Testing sort:")
+(newline)
+(display (sort '(3 1 4 1 5 9 2 6) <))  ; ascending
+(newline)
+(display (sort '(3 1 4 1 5 9 2 6) >))  ; descending
+(newline)
+
+; Test unzip
+(display "Testing unzip:")
+(newline)
+(display (unzip '((a 1) (b 2) (c 3))))
+(newline)
+
+; Test compose
+(display "Testing compose:")
+(newline)
+(define add1 (lambda (x) (+ x 1)))
+(define double (lambda (x) (* x 2)))
+(define add1-then-double (compose double add1))
+(display (add1-then-double 5))  ; (5+1)*2 = 12
+(newline)
+
+; Test boolean?
+(display "Testing boolean?:")
+(newline)
+(display (boolean? #t))  ; true
+(newline)
+(display (boolean? #f))  ; true
+(newline)
+(display (boolean? 42))  ; false
+(newline)
+
+; Test procedure?
+(display "Testing procedure?:")
+(newline)
+(display (procedure? +))  ; true
+(newline)
+(display (procedure? (lambda (x) x)))  ; true
+(newline)
+(display (procedure? 42))  ; false
+(newline)
+
+(display "All tests completed!")
+(newline)

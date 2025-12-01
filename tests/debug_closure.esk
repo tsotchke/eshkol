@@ -1,0 +1,17 @@
+;;; Minimal closure test
+
+(define (make-adder n)
+  (display "make-adder called with n = ")
+  (display n)
+  (newline)
+  (lambda (x) (+ x n)))
+
+(display "Calling make-adder...")
+(newline)
+(define add5 (make-adder 5))
+
+(display "Got add5, now calling it...")
+(newline)
+(display "add5 10 = ")
+(display (add5 10))
+(newline)
