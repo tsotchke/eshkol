@@ -14,9 +14,13 @@
 #include <stdlib.h>
 #include <getopt.h>
 #include <unistd.h>
+#include <filesystem>
+#include <mach-o/dyld.h>  // For _NSGetExecutablePath on macOS
 
 #include <string>
 #include <vector>
+#include <set>
+#include <sstream>
 
 static struct option long_options[] = {
     {"help", no_argument, nullptr, 'h'},
@@ -28,8 +32,16 @@ static struct option long_options[] = {
     {"shared-lib", no_argument, nullptr, 's'},
     {"lib", required_argument, nullptr, 'l'},
     {"lib-path", required_argument, nullptr, 'L'},
+    {"no-stdlib", no_argument, nullptr, 'n'},
     {0, 0, 0, 0}
 };
+
+// Set to track imported files (prevent circular imports)
+static std::set<std::string> imported_files;
+
+// Forward declarations
+static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& base_dir, bool debug_mode);
+static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t>& asts, bool debug_mode);
 
 static void print_help(int x = 0)
 {
@@ -43,11 +55,153 @@ static void print_help(int x = 0)
         "\t--compile-only:[-c] = Compiles into an intermediate object file.\n"
         "\t--shared-lib:[-s] = Compiles it into a shared library.\n"
         "\t--lib:[-l] = Links a shared library to the resulting executable.\n"
-        "\t--lib-path:[-L] = Adds a directory to the library search path.\n\n"
+        "\t--lib-path:[-L] = Adds a directory to the library search path.\n"
+        "\t--no-stdlib:[-n] = Do not auto-load the standard library.\n\n"
         "This is an early developer release (%s) of the Eshkol Compiler/Interpreter.\n",
         ESHKOL_VER
     );
     exit(x);
+}
+
+// Load ASTs from a file
+static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t>& asts, bool debug_mode)
+{
+    // Check file exists first (required before calling canonical)
+    if (!std::filesystem::exists(filepath)) {
+        eshkol_error("File not found: %s", filepath.c_str());
+        return;
+    }
+
+    // Normalize path to prevent duplicate imports
+    std::string normalized_path = std::filesystem::canonical(filepath).string();
+
+    // Skip if already imported
+    if (imported_files.count(normalized_path)) {
+        if (debug_mode) {
+            eshkol_debug("Skipping already imported file: %s", normalized_path.c_str());
+        }
+        return;
+    }
+    imported_files.insert(normalized_path);
+
+    std::ifstream read_file(filepath);
+    if (!read_file.is_open()) {
+        eshkol_error("Failed to open file: %s", filepath.c_str());
+        return;
+    }
+
+    if (debug_mode) {
+        eshkol_info("Loading file: %s", filepath.c_str());
+    }
+
+    eshkol_ast_t ast = eshkol_parse_next_ast(read_file);
+    while (ast.type != ESHKOL_INVALID) {
+        if (debug_mode) {
+            printf("\n=== AST Debug Output ===\n");
+            eshkol_ast_pretty_print(&ast, 0);
+            printf("========================\n\n");
+        }
+        asts.push_back(ast);
+        ast = eshkol_parse_next_ast(read_file);
+    }
+
+    read_file.close();
+}
+
+// Process import statements in ASTs and load referenced files
+static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& base_dir, bool debug_mode)
+{
+    std::vector<eshkol_ast_t> new_asts;
+    std::vector<eshkol_ast_t> imported_asts;
+
+    for (auto& ast : asts) {
+        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_IMPORT_OP) {
+            // This is an import statement
+            std::string import_path = ast.operation.import_op.path;
+
+            // Resolve relative paths
+            std::filesystem::path resolved_path;
+            if (import_path[0] == '/') {
+                // Absolute path
+                resolved_path = import_path;
+            } else {
+                // Relative to base directory
+                resolved_path = std::filesystem::path(base_dir) / import_path;
+            }
+
+            if (!std::filesystem::exists(resolved_path)) {
+                eshkol_error("Import file not found: %s", resolved_path.c_str());
+                continue;
+            }
+
+            // Load the imported file
+            std::vector<eshkol_ast_t> file_asts;
+            load_file_asts(resolved_path.string(), file_asts, debug_mode);
+
+            // Recursively process imports in the loaded file
+            std::string import_dir = resolved_path.parent_path().string();
+            process_imports(file_asts, import_dir, debug_mode);
+
+            // Add imported ASTs (definitions from the imported file)
+            for (auto& imported_ast : file_asts) {
+                imported_asts.push_back(imported_ast);
+            }
+
+            // Don't add the import statement itself to new_asts
+        } else {
+            // Not an import, keep the AST
+            new_asts.push_back(ast);
+        }
+    }
+
+    // Prepend imported ASTs before the current file's ASTs
+    asts.clear();
+    for (auto& ast : imported_asts) {
+        asts.push_back(ast);
+    }
+    for (auto& ast : new_asts) {
+        asts.push_back(ast);
+    }
+}
+
+// Find the stdlib.esk file
+static std::string find_stdlib()
+{
+    // Check common locations
+    std::vector<std::string> stdlib_paths = {
+        // Relative to current directory (development)
+        "lib/stdlib.esk",
+        "../lib/stdlib.esk",
+        // Installation paths
+        "/usr/local/share/eshkol/stdlib.esk",
+        "/usr/share/eshkol/stdlib.esk",
+    };
+
+    // Also check relative to the executable
+    char exe_path[4096];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len == -1) {
+        // Try macOS method
+        uint32_t size = sizeof(exe_path);
+        if (_NSGetExecutablePath(exe_path, &size) == 0) {
+            std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
+            stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/stdlib.esk").string());
+            stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.esk").string());
+        }
+    } else {
+        exe_path[len] = '\0';
+        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
+        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/stdlib.esk").string());
+        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.esk").string());
+    }
+
+    for (const auto& path : stdlib_paths) {
+        if (std::filesystem::exists(path)) {
+            return std::filesystem::canonical(path).string();
+        }
+    }
+
+    return "";  // Not found
 }
 
 int main(int argc, char **argv)
@@ -58,6 +212,7 @@ int main(int argc, char **argv)
     uint8_t dump_ast = 0;
     uint8_t dump_ir = 0;
     uint8_t compile_only = 0;
+    uint8_t no_stdlib = 0;
 
     std::vector<char*> source_files;
     std::vector<char*> compiled_files;
@@ -70,7 +225,7 @@ int main(int argc, char **argv)
 
     if (argc == 1) print_help(1);
 
-    while ((ch = getopt_long(argc, argv, "hdaio:csl:L:", long_options, nullptr)) != -1) {
+    while ((ch = getopt_long(argc, argv, "hdaio:csl:L:n", long_options, nullptr)) != -1) {
         switch (ch) {
         case 'h':
             print_help(0);
@@ -101,6 +256,9 @@ int main(int argc, char **argv)
         case 'L':
             lib_paths.push_back(optarg);
             break;
+        case 'n':
+            no_stdlib = 1;
+            break;
         default:
             print_help(1);
         }
@@ -108,70 +266,86 @@ int main(int argc, char **argv)
 
     if (optind == argc) print_help(1);
 
+    // Helper function to check string suffix (C++17 compatible)
+    auto ends_with = [](const std::string& str, const std::string& suffix) {
+        if (suffix.size() > str.size()) return false;
+        return str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+
     for (; optind < argc; ++optind) {
         std::string tmp = (const char*) argv[optind];
-        if (tmp.ends_with(".esk"))
+        if (ends_with(tmp, ".esk"))
             source_files.push_back(argv[optind]);
-        else if (tmp.ends_with(".o"))
+        else if (ends_with(tmp, ".o"))
             compiled_files.push_back(argv[optind]);
     }
 
-    for (const auto &source_file : source_files) {
-        std::ifstream read_file(source_file);
-
-        eshkol_ast_t ast = eshkol_parse_next_ast(read_file);
-
-        while (ast.type != ESHKOL_INVALID) {
+    // Load standard library first (unless --no-stdlib)
+    if (!no_stdlib) {
+        std::string stdlib_path = find_stdlib();
+        if (!stdlib_path.empty()) {
             if (debug_mode) {
-                printf("\n=== AST Debug Output ===\n");
-                eshkol_ast_pretty_print(&ast, 0);
-                printf("========================\n\n");
+                eshkol_info("Loading standard library from: %s", stdlib_path.c_str());
             }
-            asts.push_back(ast);
-            ast = eshkol_parse_next_ast(read_file);
+            load_file_asts(stdlib_path, asts, debug_mode);
+        } else {
+            if (debug_mode) {
+                eshkol_warn("Standard library not found, proceeding without it");
+            }
+        }
+    }
+
+    // Load user source files
+    for (const auto &source_file : source_files) {
+        // Get base directory for resolving imports
+        std::filesystem::path source_path(source_file);
+        std::string base_dir = source_path.parent_path().string();
+        if (base_dir.empty()) base_dir = ".";
+
+        // Load the file
+        load_file_asts(source_file, asts, debug_mode);
+
+        // Process imports in the loaded ASTs
+        process_imports(asts, base_dir, debug_mode);
+    }
+
+    // Handle AST dumping if requested
+    if (dump_ast && !source_files.empty()) {
+        std::string ast_filename;
+        if (output) {
+            ast_filename = std::string(output) + ".ast";
+        } else {
+            std::string first_source = source_files[0];
+            size_t last_slash = first_source.find_last_of("/\\");
+            size_t last_dot = first_source.find_last_of('.');
+            std::string base_name;
+            if (last_slash != std::string::npos) {
+                if (last_dot != std::string::npos && last_dot > last_slash) {
+                    base_name = first_source.substr(last_slash + 1, last_dot - last_slash - 1);
+                } else {
+                    base_name = first_source.substr(last_slash + 1);
+                }
+            } else {
+                if (last_dot != std::string::npos) {
+                    base_name = first_source.substr(0, last_dot);
+                } else {
+                    base_name = first_source;
+                }
+            }
+            ast_filename = base_name + ".ast";
         }
 
-        read_file.close();
-        
-        // Handle AST dumping if requested
-        if (dump_ast) {
-            std::string ast_filename;
-            if (output) {
-                ast_filename = std::string(output) + ".ast";
-            } else {
-                size_t last_slash = std::string(source_file).find_last_of("/\\");
-                size_t last_dot = std::string(source_file).find_last_of('.');
-                std::string base_name;
-                if (last_slash != std::string::npos) {
-                    if (last_dot != std::string::npos && last_dot > last_slash) {
-                        base_name = std::string(source_file).substr(last_slash + 1, last_dot - last_slash - 1);
-                    } else {
-                        base_name = std::string(source_file).substr(last_slash + 1);
-                    }
-                } else {
-                    if (last_dot != std::string::npos) {
-                        base_name = std::string(source_file).substr(0, last_dot);
-                    } else {
-                        base_name = source_file;
-                    }
-                }
-                ast_filename = base_name + ".ast";
+        std::ofstream ast_file(ast_filename);
+        if (ast_file.is_open()) {
+            for (const auto& ast : asts) {
+                ast_file << "=== AST Node ===\n";
+                eshkol_ast_pretty_print(&ast, 0);
+                ast_file << "=================\n\n";
             }
-            
-            std::ofstream ast_file(ast_filename);
-            if (ast_file.is_open()) {
-                for (const auto& ast : asts) {
-                    ast_file << "=== AST Node ===\n";
-                    // We need to redirect the pretty print output to the file
-                    // For now, just indicate that AST dumping is requested
-                    ast_file << "AST dump for file: " << source_file << "\n";
-                    ast_file << "=================\n\n";
-                }
-                ast_file.close();
-                eshkol_info("AST dumped to: %s", ast_filename.c_str());
-            } else {
-                eshkol_error("Failed to open AST file: %s", ast_filename.c_str());
-            }
+            ast_file.close();
+            eshkol_info("AST dumped to: %s", ast_filename.c_str());
+        } else {
+            eshkol_error("Failed to open AST file: %s", ast_filename.c_str());
         }
     }
 

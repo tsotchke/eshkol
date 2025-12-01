@@ -278,6 +278,7 @@ typedef enum {
     ESHKOL_UNLESS_OP,    // unless - negated when (execute when false)
     ESHKOL_QUOTE_OP,     // quote - literal data
     ESHKOL_SET_OP,       // set! - variable mutation
+    ESHKOL_IMPORT_OP,    // import - load another Eshkol file
     ESHKOL_TENSOR_OP,
     ESHKOL_DIFF_OP,
     // Automatic differentiation operators
@@ -320,6 +321,8 @@ typedef struct eshkol_operation {
             uint8_t is_function;
             struct eshkol_ast *parameters;
             uint64_t num_params;
+            uint8_t is_variadic;      // True if function accepts variable arguments
+            char *rest_param;         // Name of rest parameter (for variadic functions)
         } define_op;
         struct {
             struct eshkol_ast *expressions;
@@ -342,6 +345,8 @@ typedef struct eshkol_operation {
 	           struct eshkol_ast *body;
 	           struct eshkol_ast *captured_vars;
 	           uint64_t num_captured;
+	           uint8_t is_variadic;       // True if lambda accepts variable arguments
+	           char *rest_param;          // Name of rest parameter (for variadic lambdas)
 	       } lambda_op;
 	       struct {
 	           struct eshkol_ast *bindings;      // Array of (variable value) pairs
@@ -352,6 +357,9 @@ typedef struct eshkol_operation {
 	           char *name;                       // Variable name to mutate
 	           struct eshkol_ast *value;         // New value
 	       } set_op;
+	       struct {
+	           char *path;                       // Path to file to import
+	       } import_op;
 	       struct {
             struct eshkol_ast *elements;
             uint64_t *dimensions;
@@ -423,6 +431,8 @@ typedef struct eshkol_ast {
             struct eshkol_ast *variables;
             uint64_t num_variables;
             uint64_t size;
+            uint8_t is_variadic;      // True if function accepts variable arguments
+            char *rest_param;         // Name of rest parameter (for variadic functions)
         } eshkol_func;
         struct {
             char *id;
@@ -460,7 +470,11 @@ eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr);
 #ifdef __cplusplus
 };
 
+// Parse next AST from file stream
 eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file);
+
+// Parse next AST from any input stream (including string streams for stdlib)
+eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream);
 
 #endif
 
