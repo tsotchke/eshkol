@@ -58,8 +58,10 @@ coverage/
 test_outputs/
 autodiff_test_outputs/
 neural_test_outputs/
+.o
 a.out
 *.ll
+
 
 compile_commands.json
 .aider*

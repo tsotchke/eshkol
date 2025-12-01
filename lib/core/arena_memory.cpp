@@ -889,10 +889,44 @@ eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_capt
         env->captures[i].data.raw_val = 0;
     }
     
-    eshkol_debug("Allocated closure environment for %zu captures at %p", 
+    eshkol_debug("Allocated closure environment for %zu captures at %p",
                 num_captures, (void*)env);
-    
+
     return env;
+}
+
+eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures) {
+    if (!arena) {
+        eshkol_error("Cannot allocate closure: null arena");
+        return nullptr;
+    }
+
+    // Allocate the closure structure
+    eshkol_closure_t* closure = (eshkol_closure_t*)
+        arena_allocate_aligned(arena, sizeof(eshkol_closure_t), 16);
+
+    if (!closure) {
+        eshkol_error("Failed to allocate closure structure");
+        return nullptr;
+    }
+
+    closure->func_ptr = func_ptr;
+
+    // Allocate environment if there are captures
+    if (num_captures > 0) {
+        closure->env = arena_allocate_closure_env(arena, num_captures);
+        if (!closure->env) {
+            eshkol_error("Failed to allocate closure environment");
+            return nullptr;
+        }
+    } else {
+        closure->env = nullptr;
+    }
+
+    eshkol_debug("Allocated closure at %p with func_ptr=%p, env=%p (%zu captures)",
+                (void*)closure, (void*)func_ptr, (void*)closure->env, num_captures);
+
+    return closure;
 }
 
 // ===== END CLOSURE ENVIRONMENT MEMORY MANAGEMENT IMPLEMENTATION =====

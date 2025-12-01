@@ -261,7 +261,7 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "when") return ESHKOL_WHEN_OP;
     if (op == "unless") return ESHKOL_UNLESS_OP;
     if (op == "quote") return ESHKOL_QUOTE_OP;
-    if (op == "compose") return ESHKOL_COMPOSE_OP;
+    // Note: "compose" is now a user-definable higher-order function, not a special op
     if (op == "define") return ESHKOL_DEFINE_OP;
     if (op == "set!") return ESHKOL_SET_OP;
     if (op == "extern") return ESHKOL_EXTERN_OP;

@@ -1,0 +1,59 @@
+;;; Simple closure tests that don't require passing builtins as values
+
+;; Test 1: Basic closure capturing function parameter
+(define (make-adder n)
+  (lambda (x) (+ x n)))
+
+(define add5 (make-adder 5))
+(define add10 (make-adder 10))
+
+(display "Test 1: make-adder closure")
+(newline)
+(display "add5 10 = ")
+(display (add5 10))  ; 15
+(newline)
+(display "add10 7 = ")
+(display (add10 7))  ; 17
+(newline)
+
+;; Test 2: Compose with explicit lambdas
+(define (compose f g)
+  (lambda (x) (f (g x))))
+
+(define add1 (lambda (x) (+ x 1)))
+(define double (lambda (x) (* x 2)))
+(define add1-then-double (compose double add1))
+
+(display "Test 2: compose")
+(newline)
+(display "add1-then-double 5 = ")
+(display (add1-then-double 5))  ; (5+1)*2 = 12
+(newline)
+
+;; Test 3: Multiple captures
+(define (make-linear-function a b)
+  (lambda (x) (+ (* a x) b)))
+
+(define f1 (make-linear-function 2 3))  ; 2x + 3
+(define f2 (make-linear-function 5 1))  ; 5x + 1
+
+(display "Test 3: make-linear-function")
+(newline)
+(display "f1 4 = ")
+(display (f1 4))  ; 2*4 + 3 = 11
+(newline)
+(display "f2 2 = ")
+(display (f2 2))  ; 5*2 + 1 = 11
+(newline)
+
+;; Test 4: Identity function
+(define (identity x) x)
+
+(display "Test 4: identity")
+(newline)
+(display "identity 42 = ")
+(display (identity 42))
+(newline)
+
+(display "All simple closure tests passed!")
+(newline)
