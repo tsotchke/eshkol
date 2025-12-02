@@ -1,0 +1,6 @@
+;;; Test: Double move should fail
+;;; Expected: Error - "Double move of 'x' - value already moved"
+
+(define x (owned (cons 1 2)))
+(define y (move x))
+(define z (move x))  ; ERROR: x already moved

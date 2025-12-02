@@ -1,0 +1,43 @@
+;;; Test reorganized stdlib
+(display "Testing reorganized stdlib:")
+(newline)
+
+;;; Test arithmetic operators
+(display "  add(3, 4) = ")
+(display (add 3 4))
+(newline)
+
+;;; Test comparison
+(display "  lt(3, 5) = ")
+(display (lt 3 5))
+(newline)
+
+;;; Test predicates
+(display "  is-even?(4) = ")
+(display (is-even? 4))
+(newline)
+
+;;; Test compose
+(define (double x) (* x 2))
+(define (inc x) (+ x 1))
+(display "  (compose double inc)(5) = ")
+(display ((compose double inc) 5))
+(newline)
+
+;;; Test iota
+(display "  (iota 5) = ")
+(display (iota 5))
+(newline)
+
+;;; Test curry
+(display "  ((curry2 add) 3 4) = ")
+(display (((curry2 add) 3) 4))
+(newline)
+
+;;; Test sort
+(display "  (sort '(3 1 4 1 5) <) = ")
+(display (sort '(3 1 4 1 5) <))
+(newline)
+
+(display "Stdlib test passed!")
+(newline)

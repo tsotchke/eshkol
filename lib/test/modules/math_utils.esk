@@ -1,0 +1,14 @@
+;;; Math utilities module - demonstrates symbol visibility
+;;; Only 'double-it' and 'square' are exported
+;;; 'helper' is private and won't be visible outside this module
+
+(provide double-it square)
+
+;;; Private helper function - not exported
+(define (helper x) (+ x x))
+
+;;; Public function - uses private helper
+(define (double-it x) (helper x))
+
+;;; Another public function
+(define (square x) (* x x))

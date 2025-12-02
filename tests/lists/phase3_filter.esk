@@ -1,5 +1,7 @@
 ;; Test filter with comparison
 
+(require stdlib)
+
 (display "Test 3: Filter with comparison lambda")
 (newline)
 (define test3 (filter (lambda (x) (> x 5)) (list 1 2.0 10 3.5 20)))

@@ -1,6 +1,8 @@
 ; Lambda S-Expression Homoiconic Display Test
 ; Tests that lambdas display as (lambda (params) body) instead of <function>
 
+(require stdlib)
+
 ; Test 1: Simple lambda display
 (define square (lambda (x) (* x x)))
 (display square)

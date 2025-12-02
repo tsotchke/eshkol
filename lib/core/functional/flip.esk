@@ -1,0 +1,8 @@
+;;; core/functional/flip.esk
+;;; Argument manipulation combinators
+
+(provide flip)
+
+;;; flip: Swap the arguments of a binary function
+(define (flip f)
+  (lambda (x y) (f y x)))

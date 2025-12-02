@@ -1,0 +1,102 @@
+;; Debug test for closure and symbol handling
+
+(require stdlib)
+
+(display "=== Closure Tests ===")
+(newline)
+
+;; Test 1: Simple closure with set!
+(define counter 0)
+(define (increment-counter x)
+  (set! counter (+ counter x)))
+
+(increment-counter 5)
+(display "After increment-counter 5: ")
+(display counter)
+(newline)
+
+;; Test 2: for-each with closure
+(set! counter 0)
+(for-each increment-counter '(1 2 3 4))
+(display "After for-each increment: ")
+(display counter)
+(newline)
+
+;; Test 3: for-each with inline lambda
+(define sum2 0)
+(for-each (lambda (x) (set! sum2 (+ sum2 x))) '(1 2 3 4))
+(display "After for-each lambda: ")
+(display sum2)
+(newline)
+
+(newline)
+(display "=== Symbol Tests ===")
+(newline)
+
+;; Test 4: Simple symbol comparison
+(display "eq? a a: ")
+(display (eq? 'a 'a))
+(newline)
+
+(display "equal? a a: ")
+(display (equal? 'a 'a))
+(newline)
+
+;; Test 5: Symbol in list
+(define sym-list (list 'a 'b 'c))
+(display "sym-list: ")
+(display sym-list)
+(newline)
+
+(display "car sym-list: ")
+(display (car sym-list))
+(newline)
+
+;; Test 6: member with symbols
+(display "member b sym-list: ")
+(display (member 'b sym-list))
+(newline)
+
+;; Test 7: assoc with symbols
+(define sym-alist (list (cons 'a 1) (cons 'b 2) (cons 'c 3)))
+(display "sym-alist: ")
+(display sym-alist)
+(newline)
+
+(display "assoc b sym-alist: ")
+(display (assoc 'b sym-alist))
+(newline)
+
+;; Test 8: zip with symbols
+(display "zip (1 2) (a b): ")
+(display (zip '(1 2) '(a b)))
+(newline)
+
+;; Test 9: list of symbols
+(display "list 'x 'y 'z: ")
+(display (list 'x 'y 'z))
+(newline)
+
+;; Test 10: make-list with symbol
+(display "make-list 3 'x: ")
+(display (make-list 3 'x))
+(newline)
+
+(newline)
+(display "=== last-pair test ===")
+(newline)
+
+(define lp-test '(1 2 3))
+(display "Input list: ")
+(display lp-test)
+(newline)
+(display "last-pair result: ")
+(display (last-pair lp-test))
+(newline)
+(display "last-pair car: ")
+(display (car (last-pair lp-test)))
+(newline)
+
+(newline)
+(display "=== Done ===")
+(newline)

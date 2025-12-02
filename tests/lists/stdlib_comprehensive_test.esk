@@ -1,0 +1,319 @@
+;; Comprehensive stdlib function tests
+;; Tests all functions moved from C++ to Eshkol stdlib
+
+(require stdlib)
+
+;; Test counter for tracking
+(define test-count 0)
+(define pass-count 0)
+
+(define (test name expected actual)
+  (set! test-count (+ test-count 1))
+  (if (equal? expected actual)
+      (begin
+        (set! pass-count (+ pass-count 1))
+        (display "PASS: ")
+        (display name)
+        (newline))
+      (begin
+        (display "FAIL: ")
+        (display name)
+        (display " - expected: ")
+        (display expected)
+        (display " got: ")
+        (display actual)
+        (newline))))
+
+(define (test-bool name expected actual)
+  (set! test-count (+ test-count 1))
+  (if (if expected actual (not actual))
+      (begin
+        (set! pass-count (+ pass-count 1))
+        (display "PASS: ")
+        (display name)
+        (newline))
+      (begin
+        (display "FAIL: ")
+        (display name)
+        (display " - expected: ")
+        (display expected)
+        (display " got: ")
+        (display actual)
+        (newline))))
+
+(display "=== STDLIB COMPREHENSIVE TESTS ===")
+(newline)
+(newline)
+
+;; ============================================
+;; SECTION 1: Query Functions (query.esk)
+;; ============================================
+(display "--- Query Functions ---")
+(newline)
+
+;; length tests
+(test "length empty" 0 (length '()))
+(test "length single" 1 (length '(1)))
+(test "length three" 3 (length '(1 2 3)))
+(test "length five" 5 (length '(a b c d e)))
+
+;; find tests
+(test "find first" 2 (find (lambda (x) (> x 1)) '(1 2 3 4)))
+(test "find last" 4 (find (lambda (x) (> x 3)) '(1 2 3 4)))
+(test "find none" #f (find (lambda (x) (> x 10)) '(1 2 3)))
+(test "find empty" #f (find (lambda (x) #t) '()))
+
+;; take tests
+(test "take zero" '() (take '(1 2 3) 0))
+(test "take one" '(1) (take '(1 2 3) 1))
+(test "take two" '(1 2) (take '(1 2 3) 2))
+(test "take all" '(1 2 3) (take '(1 2 3) 3))
+(test "take more" '(1 2 3) (take '(1 2 3) 5))
+(test "take empty" '() (take '() 3))
+
+;; drop tests
+(test "drop zero" '(1 2 3) (drop '(1 2 3) 0))
+(test "drop one" '(2 3) (drop '(1 2 3) 1))
+(test "drop two" '(3) (drop '(1 2 3) 2))
+(test "drop all" '() (drop '(1 2 3) 3))
+(test "drop more" '() (drop '(1 2 3) 5))
+(test "drop empty" '() (drop '() 2))
+
+;; last tests
+(test "last single" 1 (last '(1)))
+(test "last three" 3 (last '(1 2 3)))
+(test "last five" 5 (last '(1 2 3 4 5)))
+
+;; last-pair tests
+(test "last-pair single" '(1) (last-pair '(1)))
+(test "last-pair three" '(3) (last-pair '(1 2 3)))
+
+(newline)
+
+;; ============================================
+;; SECTION 2: Transform Functions (transform.esk)
+;; ============================================
+(display "--- Transform Functions ---")
+(newline)
+
+;; append tests
+(test "append empty-empty" '() (append '() '()))
+(test "append empty-list" '(1 2) (append '() '(1 2)))
+(test "append list-empty" '(1 2) (append '(1 2) '()))
+(test "append two" '(1 2 3 4) (append '(1 2) '(3 4)))
+(test "append single" '(1 2) (append '(1) '(2)))
+(test "append nested" '((1) (2) (3)) (append '((1) (2)) '((3))))
+
+;; reverse tests
+(test "reverse empty" '() (reverse '()))
+(test "reverse single" '(1) (reverse '(1)))
+(test "reverse three" '(3 2 1) (reverse '(1 2 3)))
+(test "reverse five" '(5 4 3 2 1) (reverse '(1 2 3 4 5)))
+
+;; filter tests
+(test "filter none" '() (filter (lambda (x) (> x 10)) '(1 2 3)))
+(test "filter all" '(1 2 3) (filter (lambda (x) (> x 0)) '(1 2 3)))
+(test "filter some" '(2 4) (filter (lambda (x) (= 0 (modulo x 2))) '(1 2 3 4 5)))
+(test "filter empty" '() (filter (lambda (x) #t) '()))
+
+;; remove tests
+(test "remove none" '(1 2 3) (remove (lambda (x) (> x 10)) '(1 2 3)))
+(test "remove all" '() (remove (lambda (x) (> x 0)) '(1 2 3)))
+(test "remove some" '(1 3 5) (remove (lambda (x) (= 0 (modulo x 2))) '(1 2 3 4 5)))
+
+;; partition tests
+(define part-result (partition (lambda (x) (> x 2)) '(1 2 3 4 5)))
+(test "partition matches" '(3 4 5) (car part-result))
+(test "partition non-matches" '(1 2) (cadr part-result))
+
+;; unzip tests
+(define unzip-result (unzip '((1 a) (2 b) (3 c))))
+(test "unzip firsts" '(1 2 3) (car unzip-result))
+(test "unzip seconds" '(a b c) (cadr unzip-result))
+
+(newline)
+
+;; ============================================
+;; SECTION 3: Higher-Order Functions (higher_order.esk)
+;; ============================================
+(display "--- Higher-Order Functions ---")
+(newline)
+
+;; fold tests (left fold)
+(test "fold sum" 10 (fold + 0 '(1 2 3 4)))
+(test "fold product" 24 (fold * 1 '(1 2 3 4)))
+(test "fold cons" '(3 2 1) (fold (lambda (acc x) (cons x acc)) '() '(1 2 3)))
+(test "fold empty" 0 (fold + 0 '()))
+(test "fold single" 5 (fold + 0 '(5)))
+
+;; fold-right tests
+(test "fold-right cons" '(1 2 3) (fold-right cons '() '(1 2 3)))
+(test "fold-right subtract" 2 (fold-right - 0 '(1 2 3)))  ; (1 - (2 - (3 - 0))) = 2
+(test "fold-right empty" 0 (fold-right + 0 '()))
+
+;; for-each tests (side effect check)
+(define for-each-sum 0)
+(for-each (lambda (x) (set! for-each-sum (+ for-each-sum x))) '(1 2 3 4))
+(test "for-each side-effect" 10 for-each-sum)
+
+;; any tests
+(test-bool "any found" #t (any (lambda (x) (> x 3)) '(1 2 3 4 5)))
+(test-bool "any not-found" #f (any (lambda (x) (> x 10)) '(1 2 3)))
+(test-bool "any empty" #f (any (lambda (x) #t) '()))
+(test-bool "any first" #t (any (lambda (x) (= x 1)) '(1 2 3)))
+(test-bool "any last" #t (any (lambda (x) (= x 3)) '(1 2 3)))
+
+;; every tests
+(test-bool "every all-pass" #t (every (lambda (x) (> x 0)) '(1 2 3)))
+(test-bool "every one-fails" #f (every (lambda (x) (> x 1)) '(1 2 3)))
+(test-bool "every empty" #t (every (lambda (x) #f) '()))
+(test-bool "every all-fail" #f (every (lambda (x) (> x 10)) '(1 2 3)))
+
+(newline)
+
+;; ============================================
+;; SECTION 4: Search Functions (search.esk)
+;; ============================================
+(display "--- Search Functions ---")
+(newline)
+
+;; member tests
+(test "member found-first" '(1 2 3) (member 1 '(1 2 3)))
+(test "member found-middle" '(2 3) (member 2 '(1 2 3)))
+(test "member found-last" '(3) (member 3 '(1 2 3)))
+(test-bool "member not-found" #f (member 4 '(1 2 3)))
+(test-bool "member empty" #f (member 1 '()))
+
+;; memq tests (identity comparison)
+(test "memq found" '(2 3) (memq 2 '(1 2 3)))
+(test-bool "memq not-found" #f (memq 4 '(1 2 3)))
+
+;; list-ref tests
+(test "list-ref first" 1 (list-ref '(1 2 3) 0))
+(test "list-ref middle" 2 (list-ref '(1 2 3) 1))
+(test "list-ref last" 3 (list-ref '(1 2 3) 2))
+
+;; list-tail tests
+(test "list-tail zero" '(1 2 3) (list-tail '(1 2 3) 0))
+(test "list-tail one" '(2 3) (list-tail '(1 2 3) 1))
+(test "list-tail two" '(3) (list-tail '(1 2 3) 2))
+(test "list-tail all" '() (list-tail '(1 2 3) 3))
+
+;; assoc tests
+(define alist '((a . 1) (b . 2) (c . 3)))
+(test "assoc found-first" '(a . 1) (assoc 'a alist))
+(test "assoc found-middle" '(b . 2) (assoc 'b alist))
+(test "assoc found-last" '(c . 3) (assoc 'c alist))
+(test-bool "assoc not-found" #f (assoc 'd alist))
+
+;; assq tests
+(test "assq found" '(b . 2) (assq 'b alist))
+(test-bool "assq not-found" #f (assq 'z alist))
+
+(newline)
+
+;; ============================================
+;; SECTION 5: Generate Functions (generate.esk)
+;; ============================================
+(display "--- Generate Functions ---")
+(newline)
+
+;; make-list tests
+(test "make-list zero" '() (make-list 0 'x))
+(test "make-list one" '(x) (make-list 1 'x))
+(test "make-list three" '(x x x) (make-list 3 'x))
+(test "make-list numbers" '(0 0 0 0) (make-list 4 0))
+
+;; range tests
+(test "range empty" '() (range 5 5))
+(test "range single" '(0) (range 0 1))
+(test "range five" '(0 1 2 3 4) (range 0 5))
+(test "range mid" '(3 4 5 6) (range 3 7))
+
+;; zip tests
+(test "zip equal" '((1 a) (2 b) (3 c)) (zip '(1 2 3) '(a b c)))
+(test "zip first-shorter" '((1 a) (2 b)) (zip '(1 2) '(a b c)))
+(test "zip second-shorter" '((1 a) (2 b)) (zip '(1 2 3) '(a b)))
+(test "zip empty-first" '() (zip '() '(a b c)))
+(test "zip empty-second" '() (zip '(1 2 3) '()))
+
+;; iota tests
+(test "iota basic" '(0 1 2 3 4) (iota 5))
+(test "iota-from" '(10 11 12 13 14) (iota-from 5 10))
+(test "iota-step" '(0 2 4 6 8) (iota-step 5 0 2))
+
+;; repeat tests
+(test "repeat zero" '() (repeat 0 'x))
+(test "repeat one" '(x) (repeat 1 'x))
+(test "repeat five" '(x x x x x) (repeat 5 'x))
+
+(newline)
+
+;; ============================================
+;; SECTION 6: Edge Cases and Complex Scenarios
+;; ============================================
+(display "--- Edge Cases & Complex Scenarios ---")
+(newline)
+
+;; Nested list operations
+(test "nested reverse" '((3) (2) (1)) (reverse '((1) (2) (3))))
+(test "nested append" '((1 2) (3 4) (5 6)) (append '((1 2) (3 4)) '((5 6))))
+
+;; Chained operations
+(test "filter-then-reverse" '(4 2) (reverse (filter (lambda (x) (= 0 (modulo x 2))) '(1 2 3 4))))
+(test "take-then-reverse" '(3 2 1) (reverse (take '(1 2 3 4 5) 3)))
+(test "drop-then-length" 2 (length (drop '(1 2 3 4 5) 3)))
+
+;; Fold with complex operations
+(test "fold-max" 5 (fold (lambda (acc x) (if (> x acc) x acc)) 0 '(3 1 4 1 5 9 2 6)))
+(test "fold-min" 1 (fold (lambda (acc x) (if (< x acc) x acc)) 100 '(3 1 4 1 5 9 2 6)))
+
+;; Map combined with other operations
+(test "map-then-fold" 30 (fold + 0 (map (lambda (x) (* x 2)) '(1 2 3 4 5))))
+(test "filter-then-fold" 6 (fold + 0 (filter (lambda (x) (> x 1)) '(1 2 3))))
+
+;; Complex predicate with any/every
+(test-bool "any with member" #t (any (lambda (x) (member x '(a b c))) '(1 2 b 4)))
+(test-bool "every positive after filter" #t (every (lambda (x) (> x 0)) (filter (lambda (x) (> x 0)) '(-1 1 -2 2))))
+
+;; Empty list handling
+(test "fold empty list" 42 (fold + 42 '()))
+(test "fold-right empty" 42 (fold-right + 42 '()))
+(test "filter empty" '() (filter (lambda (x) #t) '()))
+(test "map empty" '() (map (lambda (x) x) '()))
+(test "append empty-empty" '() (append '() '()))
+
+;; Single element lists
+(test "fold single" 5 (fold + 0 '(5)))
+(test "filter single-pass" '(5) (filter (lambda (x) #t) '(5)))
+(test "filter single-fail" '() (filter (lambda (x) #f) '(5)))
+(test "reverse single" '(5) (reverse '(5)))
+
+;; Large list operations (stress test)
+(define large-list (range 0 100))
+(test "large length" 100 (length large-list))
+(test "large sum" 4950 (fold + 0 large-list))
+(test "large filter count" 50 (length (filter (lambda (x) (= 0 (modulo x 2))) large-list)))
+(test "large take" 10 (length (take large-list 10)))
+(test "large drop" 90 (length (drop large-list 10)))
+
+(newline)
+
+;; ============================================
+;; Final Summary
+;; ============================================
+(display "=================================")
+(newline)
+(display "Total tests: ")
+(display test-count)
+(newline)
+(display "Passed: ")
+(display pass-count)
+(newline)
+(display "Failed: ")
+(display (- test-count pass-count))
+(newline)
+(if (= test-count pass-count)
+    (display "ALL TESTS PASSED!")
+    (display "SOME TESTS FAILED!"))
+(newline)

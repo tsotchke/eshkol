@@ -1,0 +1,52 @@
+;;; Debug test for last-pair function
+
+(require stdlib)
+
+(display "=== Debugging last-pair ===")
+(newline)
+
+;; Define an inline version
+(define (last-pair-inline lst)
+  (if (null? (cdr lst))
+      lst
+      (last-pair-inline (cdr lst))))
+
+;; Test list
+(define test-list '(1 2 3))
+
+(display "Test list: ")
+(display test-list)
+(newline)
+
+;; Test inline version
+(display "inline last-pair-inline: ")
+(define lp-inline (last-pair-inline test-list))
+(display lp-inline)
+(newline)
+
+;; Test stdlib version
+(display "stdlib last-pair: ")
+(define lp-stdlib (last-pair test-list))
+(display lp-stdlib)
+(newline)
+
+;; Check types
+(display "Checking pair? on inline: ")
+(display (pair? lp-inline))
+(newline)
+
+(display "Checking pair? on stdlib: ")
+(display (pair? lp-stdlib))
+(newline)
+
+;; Test car on both
+(display "car of inline: ")
+(display (car lp-inline))
+(newline)
+
+(display "car of stdlib: ")
+(display (car lp-stdlib))
+(newline)
+
+(display "=== Done ===")
+(newline)

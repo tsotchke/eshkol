@@ -45,8 +45,11 @@ for test_file in tests/ml/*.esk; do
     test_name=$(basename "$test_file")
     printf "Testing %-50s " "$test_name"
 
+    # Clean up stale temp files before each test
+    rm -f a.out a.out.tmp.o
+
     # Try to compile
-    if ./build/eshkol-run --no-stdlib "$test_file" -L./build > /dev/null 2>&1; then
+    if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
         # Compilation succeeded, try to run
         if ./a.out > /tmp/test_output.txt 2>&1; then
             # Check if there were any errors in output

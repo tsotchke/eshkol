@@ -3,6 +3,8 @@
 ;; Testing map, filter, fold, make-list, member functions
 ;;
 
+(require stdlib)
+
 ;; Test make-list
 (display "Testing make-list:")
 (newline)

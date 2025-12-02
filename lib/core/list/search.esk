@@ -1,0 +1,68 @@
+;;; core/list/search.esk
+;;; List searching functions (membership and association)
+
+(provide member memq memv assoc assq assv list-ref list-tail)
+
+;;; member: Return sublist starting with first element equal? to x, or #f
+;;; (member 3 '(1 2 3 4 5)) => (3 4 5)
+(define (member x lst)
+  (if (null? lst)
+      #f
+      (if (equal? x (car lst))
+          lst
+          (member x (cdr lst)))))
+
+;;; memq: Like member but uses eq? for comparison
+(define (memq x lst)
+  (if (null? lst)
+      #f
+      (if (eq? x (car lst))
+          lst
+          (memq x (cdr lst)))))
+
+;;; memv: Like member but uses eqv? for comparison
+(define (memv x lst)
+  (if (null? lst)
+      #f
+      (if (eqv? x (car lst))
+          lst
+          (memv x (cdr lst)))))
+
+;;; assoc: Find first pair with car equal? to key, or #f
+;;; (assoc 'b '((a 1) (b 2) (c 3))) => (b 2)
+(define (assoc key alist)
+  (if (null? alist)
+      #f
+      (if (equal? key (caar alist))
+          (car alist)
+          (assoc key (cdr alist)))))
+
+;;; assq: Like assoc but uses eq? for comparison
+(define (assq key alist)
+  (if (null? alist)
+      #f
+      (if (eq? key (caar alist))
+          (car alist)
+          (assq key (cdr alist)))))
+
+;;; assv: Like assoc but uses eqv? for comparison
+(define (assv key alist)
+  (if (null? alist)
+      #f
+      (if (eqv? key (caar alist))
+          (car alist)
+          (assv key (cdr alist)))))
+
+;;; list-ref: Return the nth element (0-indexed)
+;;; (list-ref '(a b c d) 2) => c
+(define (list-ref lst n)
+  (if (<= n 0)
+      (car lst)
+      (list-ref (cdr lst) (- n 1))))
+
+;;; list-tail: Return the sublist starting at position n
+;;; (list-tail '(a b c d) 2) => (c d)
+(define (list-tail lst n)
+  (if (<= n 0)
+      lst
+      (list-tail (cdr lst) (- n 1))))

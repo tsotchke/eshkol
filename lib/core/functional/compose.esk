@@ -1,0 +1,20 @@
+;;; core/functional/compose.esk
+;;; Function composition combinators
+
+(provide compose compose3 identity constantly)
+
+;;; compose: Create a new function that applies g then f
+;;; (compose f g) => (lambda (x) (f (g x)))
+(define (compose f g)
+  (lambda (x) (f (g x))))
+
+;;; compose3: Compose three functions
+(define (compose3 f g h)
+  (lambda (x) (f (g (h x)))))
+
+;;; identity: Return the argument unchanged
+(define (identity x) x)
+
+;;; constantly: Return a function that always returns the given value
+(define (constantly x)
+  (lambda (y) x))

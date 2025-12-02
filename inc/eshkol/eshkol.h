@@ -35,7 +35,8 @@ typedef enum {
     ESHKOL_CONS,
     ESHKOL_NULL,
     ESHKOL_TENSOR,
-    ESHKOL_CHAR
+    ESHKOL_CHAR,
+    ESHKOL_BOOL
 } eshkol_type_t;
 
 // Mixed type list support - Value type tags for tagged cons cells
@@ -53,6 +54,7 @@ typedef enum {
     ESHKOL_VALUE_VECTOR_PTR  = 10, // Pointer to Scheme vector (heterogeneous array of tagged values)
     ESHKOL_VALUE_SYMBOL      = 11, // Symbol (interned string for identifiers)
     ESHKOL_VALUE_CLOSURE_PTR = 12, // Pointer to closure (func_ptr + captured environment)
+    ESHKOL_VALUE_BOOL        = 13, // Boolean (#t or #f, stored as 1 or 0)
     // Reserved for future expansion
     ESHKOL_VALUE_MAX         = 15  // 4-bit type field limit
 } eshkol_value_type_t;
@@ -156,6 +158,7 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 #define ESHKOL_IS_VECTOR_PTR_TYPE(type)  (((type) & 0x0F) == ESHKOL_VALUE_VECTOR_PTR)
 #define ESHKOL_IS_SYMBOL_TYPE(type)      (((type) & 0x0F) == ESHKOL_VALUE_SYMBOL)
 #define ESHKOL_IS_CLOSURE_PTR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_CLOSURE_PTR)
+#define ESHKOL_IS_BOOL_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_BOOL)
 // General pointer type check: any type that stores a pointer value (not int64 or double)
 #define ESHKOL_IS_ANY_PTR_TYPE(type)     (ESHKOL_IS_CONS_PTR_TYPE(type) || \
                                           ESHKOL_IS_STRING_PTR_TYPE(type) || \
@@ -281,7 +284,16 @@ typedef enum {
     ESHKOL_UNLESS_OP,    // unless - negated when (execute when false)
     ESHKOL_QUOTE_OP,     // quote - literal data
     ESHKOL_SET_OP,       // set! - variable mutation
-    ESHKOL_IMPORT_OP,    // import - load another Eshkol file
+    ESHKOL_IMPORT_OP,    // import - load another Eshkol file (legacy string path)
+    ESHKOL_REQUIRE_OP,   // require - import module by symbolic name (new module system)
+    ESHKOL_PROVIDE_OP,   // provide - export symbols from module
+    // Memory management operators (OALR - Ownership-Aware Lexical Regions)
+    ESHKOL_WITH_REGION_OP,  // with-region - lexical region for batch allocation/free
+    ESHKOL_OWNED_OP,        // owned - linear type for resources
+    ESHKOL_MOVE_OP,         // move - transfer ownership
+    ESHKOL_BORROW_OP,       // borrow - temporary read-only access
+    ESHKOL_SHARED_OP,       // shared - reference-counted allocation
+    ESHKOL_WEAK_REF_OP,     // weak-ref - weak reference (doesn't prevent cleanup)
     ESHKOL_TENSOR_OP,
     ESHKOL_DIFF_OP,
     // Automatic differentiation operators
@@ -363,6 +375,39 @@ typedef struct eshkol_operation {
 	       struct {
 	           char *path;                       // Path to file to import
 	       } import_op;
+	       struct {
+	           char **module_names;              // Array of symbolic module names (e.g., "data.json")
+	           uint64_t num_modules;             // Number of modules to require
+	       } require_op;
+	       struct {
+	           char **export_names;              // Array of exported symbol names
+	           uint64_t num_exports;             // Number of symbols to export
+	       } provide_op;
+	       // ===== MEMORY MANAGEMENT OPERATIONS (OALR) =====
+	       struct {
+	           char *name;                       // Optional region name (NULL for anonymous)
+	           uint64_t size_hint;               // Optional size hint in bytes (0 for default)
+	           struct eshkol_ast *body;          // Body expressions to execute in region
+	           uint64_t num_body_exprs;          // Number of body expressions
+	       } with_region_op;
+	       struct {
+	           struct eshkol_ast *value;         // Value to mark as owned
+	       } owned_op;
+	       struct {
+	           struct eshkol_ast *value;         // Value to transfer ownership of
+	       } move_op;
+	       struct {
+	           struct eshkol_ast *value;         // Value to borrow
+	           struct eshkol_ast *body;          // Body expressions during borrow
+	           uint64_t num_body_exprs;          // Number of body expressions
+	       } borrow_op;
+	       struct {
+	           struct eshkol_ast *value;         // Value to make shared (ref-counted)
+	       } shared_op;
+	       struct {
+	           struct eshkol_ast *value;         // Shared value to create weak ref from
+	       } weak_ref_op;
+	       // ===== END MEMORY MANAGEMENT OPERATIONS =====
 	       struct {
             struct eshkol_ast *elements;
             uint64_t *dimensions;

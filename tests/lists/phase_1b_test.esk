@@ -3,6 +3,8 @@
 ;; Testing: take, drop, find, partition
 ;;
 
+(require stdlib)
+
 (display "=== PHASE 1B TEST: List Processing Utilities ===")
 (newline)
 

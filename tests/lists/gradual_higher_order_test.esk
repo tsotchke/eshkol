@@ -3,6 +3,8 @@
 ;; Adding complexity step by step
 ;;
 
+(require stdlib)
+
 ;; Step 1: Test make-list with different parameters
 (display "Step 1: Testing make-list variants")
 (newline)

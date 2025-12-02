@@ -1,0 +1,47 @@
+;;; core/list/higher_order.esk
+;;; Higher-order list functions
+
+(provide fold fold-right for-each any every)
+
+;;; fold: Left fold (foldl)
+;;; Applies proc to accumulator and each element from left to right
+;;; (fold + 0 '(1 2 3 4)) => 10
+(define (fold proc init lst)
+  (if (null? lst)
+      init
+      (fold proc (proc init (car lst)) (cdr lst))))
+
+;;; fold-right: Right fold (foldr)
+;;; Applies proc to each element and accumulator from right to left
+;;; (fold-right cons '() '(1 2 3)) => (1 2 3)
+(define (fold-right proc init lst)
+  (if (null? lst)
+      init
+      (proc (car lst) (fold-right proc init (cdr lst)))))
+
+;;; for-each: Apply proc to each element for side effects
+;;; Returns undefined (void)
+(define (for-each proc lst)
+  (if (null? lst)
+      #f
+      (begin
+        (proc (car lst))
+        (for-each proc (cdr lst)))))
+
+;;; any: Return #t if any element satisfies predicate
+;;; (any even? '(1 3 4 5)) => #t
+(define (any pred lst)
+  (if (null? lst)
+      #f
+      (if (pred (car lst))
+          #t
+          (any pred (cdr lst)))))
+
+;;; every: Return #t if all elements satisfy predicate
+;;; (every even? '(2 4 6)) => #t
+(define (every pred lst)
+  (if (null? lst)
+      #t
+      (if (pred (car lst))
+          (every pred (cdr lst))
+          #f)))

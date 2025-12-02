@@ -1,0 +1,62 @@
+;;; core/list/transform.esk
+;;; List transformation functions
+
+(provide take drop append reverse filter remove unzip partition)
+
+;;; take: Return first n elements of a list
+(define (take lst n)
+  (if (or (<= n 0) (null? lst))
+      '()
+      (cons (car lst) (take (cdr lst) (- n 1)))))
+
+;;; drop: Skip first n elements and return the rest
+(define (drop lst n)
+  (if (or (<= n 0) (null? lst))
+      lst
+      (drop (cdr lst) (- n 1))))
+
+;;; append: Concatenate two lists
+(define (append lst1 lst2)
+  (if (null? lst1)
+      lst2
+      (cons (car lst1) (append (cdr lst1) lst2))))
+
+;;; reverse: Reverse a list (tail-recursive)
+(define (reverse lst)
+  (define (rev-helper lst acc)
+    (if (null? lst)
+        acc
+        (rev-helper (cdr lst) (cons (car lst) acc))))
+  (rev-helper lst '()))
+
+;;; filter: Return elements satisfying predicate
+(define (filter pred lst)
+  (cond ((null? lst) '())
+        ((pred (car lst)) (cons (car lst) (filter pred (cdr lst))))
+        (else (filter pred (cdr lst)))))
+
+;;; remove: Remove all elements equal to x
+(define (remove x lst)
+  (filter (lambda (e) (not (equal? e x))) lst))
+
+;;; unzip: Split a list of pairs into two lists
+;;; (unzip '((a 1) (b 2) (c 3))) => ((a b c) (1 2 3))
+(define (unzip pairs)
+  (define (unzip-helper pairs firsts seconds)
+    (if (null? pairs)
+        (list (reverse firsts) (reverse seconds))
+        (let ((pair (car pairs)))
+          (unzip-helper (cdr pairs)
+                        (cons (car pair) firsts)
+                        (cons (cadr pair) seconds)))))
+  (unzip-helper pairs '() '()))
+
+;;; partition: Split list into two based on predicate
+(define (partition pred lst)
+  (define (part-helper lst yes no)
+    (cond ((null? lst) (list (reverse yes) (reverse no)))
+          ((pred (car lst))
+           (part-helper (cdr lst) (cons (car lst) yes) no))
+          (else
+           (part-helper (cdr lst) yes (cons (car lst) no)))))
+  (part-helper lst '() '()))

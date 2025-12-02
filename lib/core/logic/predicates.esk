@@ -1,0 +1,10 @@
+;;; core/logic/predicates.esk
+;;; Numeric predicates as first-class functions
+
+(provide is-zero? is-positive? is-negative? is-even? is-odd?)
+
+(define (is-zero? x) (zero? x))
+(define (is-positive? x) (> x 0))
+(define (is-negative? x) (< x 0))
+(define (is-even? x) (even? x))
+(define (is-odd? x) (odd? x))

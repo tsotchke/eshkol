@@ -2,6 +2,8 @@
 ;; Simple Make-List Test
 ;;
 
+(require stdlib)
+
 (display "Before make-list")
 (newline)
 

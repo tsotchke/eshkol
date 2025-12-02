@@ -1,5 +1,7 @@
 ;; Diagnostic test for member and take
 
+(require stdlib)
+
 (display "Testing member function:")
 (newline)
 (define test-list (list 1 2.0 3))

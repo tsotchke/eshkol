@@ -3,6 +3,8 @@
 ;; Testing higher-order and utility functions with mixed types
 ;;
 
+(require stdlib)
+
 (display "=== ADVANCED MIXED TYPE LISTS TEST ===")
 (newline)
 

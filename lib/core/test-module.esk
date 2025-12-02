@@ -1,0 +1,12 @@
+;;; lib/core/test-module.esk
+;;; Test module for the new module system
+
+(provide test-greeting test-add)
+
+(define (test-greeting name)
+  (display "Hello, ")
+  (display name)
+  (newline))
+
+(define (test-add a b)
+  (+ a b))

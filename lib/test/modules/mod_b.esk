@@ -1,0 +1,5 @@
+;;; Module B - creates cycle by requiring A
+(require test.modules.mod_a)
+(provide func-b)
+
+(define (func-b x) (* x 2))

@@ -1,0 +1,7 @@
+;;; Test that private symbols are not accessible
+(require test.modules.math_utils)
+
+;;; This should fail - helper is private
+(display "Trying to call private helper: ")
+(display (helper 5))
+(newline)

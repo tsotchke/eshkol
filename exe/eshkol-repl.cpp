@@ -243,12 +243,16 @@ eshkol_ast_t parse_string(const std::string& input) {
     return ast;
 }
 
-// Helper: Check if AST is a definition statement
+// Helper: Check if AST is a definition or module statement (shouldn't wrap with display)
 bool is_definition_statement(const eshkol_ast_t& ast) {
     if (ast.type != ESHKOL_OP) {
         return false;
     }
-    return ast.operation.op == ESHKOL_DEFINE_OP;
+    // Definition statements and module system statements don't produce displayable values
+    return ast.operation.op == ESHKOL_DEFINE_OP ||
+           ast.operation.op == ESHKOL_IMPORT_OP ||
+           ast.operation.op == ESHKOL_REQUIRE_OP ||
+           ast.operation.op == ESHKOL_PROVIDE_OP;
 }
 
 // Helper: Get defined name from AST

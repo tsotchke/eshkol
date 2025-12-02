@@ -1,0 +1,37 @@
+;;; core/list/query.esk
+;;; List query functions
+
+(provide count-if find length last last-pair)
+
+;;; count-if: Count elements satisfying predicate
+(define (count-if pred lst)
+  (if (null? lst)
+      0
+      (+ (if (pred (car lst)) 1 0)
+         (count-if pred (cdr lst)))))
+
+;;; find: Return first element satisfying predicate, or #f
+(define (find pred lst)
+  (if (null? lst)
+      #f
+      (if (pred (car lst))
+          (car lst)
+          (find pred (cdr lst)))))
+
+;;; length: Return the number of elements in a list
+(define (length lst)
+  (if (null? lst)
+      0
+      (+ 1 (length (cdr lst)))))
+
+;;; last: Return the last element of a list
+(define (last lst)
+  (if (null? (cdr lst))
+      (car lst)
+      (last (cdr lst))))
+
+;;; last-pair: Return the last pair (cons cell) of a list
+(define (last-pair lst)
+  (if (null? (cdr lst))
+      lst
+      (last-pair (cdr lst))))

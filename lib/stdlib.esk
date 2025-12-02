@@ -1,216 +1,24 @@
 ;;; Eshkol Standard Library
-;;; Higher-level functions written in Eshkol itself
-;;; These replace the C implementations for simplicity and maintainability
+;;; Re-exports all core modules for convenience
 
-;;; ============================================================
-;;; First-Class Operator Wrappers
-;;; ============================================================
-;;; These wrap builtin operators as first-class functions that can be
-;;; passed to higher-order functions like curry2, flip, etc.
+;;; Operators - first-class wrappers for built-in operators
+(require core.operators.arithmetic)
+(require core.operators.compare)
 
-;; Arithmetic operators
-(define (add x y) (+ x y))
-(define (sub x y) (- x y))
-(define (mul x y) (* x y))
-(define (div x y) (/ x y))
+;;; Logic - predicates and boolean combinators
+(require core.logic.predicates)
+(require core.logic.types)
+(require core.logic.boolean)
 
-;; Comparison operators
-(define (lt x y) (< x y))
-(define (gt x y) (> x y))
-(define (le x y) (<= x y))
-(define (ge x y) (>= x y))
-(define (eq x y) (= x y))
+;;; Functional - composition, currying, combinators
+(require core.functional.compose)
+(require core.functional.curry)
+(require core.functional.flip)
 
-;; Predicates as functions
-(define (is-zero? x) (zero? x))
-(define (is-positive? x) (> x 0))
-(define (is-negative? x) (< x 0))
-(define (is-even? x) (even? x))
-(define (is-odd? x) (odd? x))
-(define (is-null? x) (null? x))
-(define (is-pair? x) (pair? x))
-
-;;; ============================================================
-;;; Function Composition and Combinators
-;;; ============================================================
-
-;; compose: Create a new function that applies g then f
-;; (compose f g) => (lambda (x) (f (g x)))
-(define (compose f g)
-  (lambda (x) (f (g x))))
-
-;; compose3: Compose three functions
-(define (compose3 f g h)
-  (lambda (x) (f (g (h x)))))
-
-;; identity: Return the argument unchanged
-(define (identity x) x)
-
-;; constantly: Return a function that always returns the given value
-(define (constantly x)
-  (lambda (y) x))
-
-;; flip: Swap the arguments of a binary function
-(define (flip f)
-  (lambda (x y) (f y x)))
-
-;;; ============================================================
-;;; Currying
-;;; ============================================================
-
-;; curry2: Curry a 2-argument function
-(define (curry2 f)
-  (lambda (x)
-    (lambda (y)
-      (f x y))))
-
-;; curry3: Curry a 3-argument function
-(define (curry3 f)
-  (lambda (x)
-    (lambda (y)
-      (lambda (z)
-        (f x y z)))))
-
-;; uncurry2: Uncurry a curried 2-argument function
-(define (uncurry2 f)
-  (lambda (x y)
-    ((f x) y)))
-
-;; partial1: Partial application for unary functions - fix the first argument
-;; Returns a zero-argument thunk
-(define (partial1 f x)
-  (lambda () (f x)))
-
-;; partial2: Partial application for binary functions
-;; (partial2 + 5) => (lambda (y) (+ 5 y))
-(define (partial2 f x)
-  (lambda (y) (f x y)))
-
-;; partial3: Partial application for ternary functions
-(define (partial3 f x)
-  (lambda (y z) (f x y z)))
-
-;; negate: Negate a predicate
-(define (negate pred)
-  (lambda (x) (not (pred x))))
-
-;;; ============================================================
-;;; Sorting (Merge Sort)
-;;; ============================================================
-
-;; sort: Sort a list using merge sort
-;; (sort '(3 1 4 1 5 9 2 6) <) => (1 1 2 3 4 5 6 9)
-(define (sort lst less?)
-  ;; Merge two sorted lists
-  (define (merge l1 l2)
-    (cond ((null? l1) l2)
-          ((null? l2) l1)
-          ((less? (car l1) (car l2))
-           (cons (car l1) (merge (cdr l1) l2)))
-          (else
-           (cons (car l2) (merge l1 (cdr l2))))))
-
-  ;; Get the length
-  (define (len lst)
-    (if (null? lst) 0 (+ 1 (len (cdr lst)))))
-
-  ;; Take first n elements (local version)
-  (define (take-n n lst)
-    (if (or (<= n 0) (null? lst))
-        '()
-        (cons (car lst) (take-n (- n 1) (cdr lst)))))
-
-  ;; Drop first n elements (local version)
-  (define (drop-n n lst)
-    (if (or (<= n 0) (null? lst))
-        lst
-        (drop-n (- n 1) (cdr lst))))
-
-  ;; Main merge sort - split by counting, not mutating
-  (cond ((null? lst) '())
-        ((null? (cdr lst)) lst)
-        (else
-         (let ((n (len lst)))
-           (let ((mid (quotient n 2)))
-             (merge (sort (take-n mid lst) less?)
-                    (sort (drop-n mid lst) less?)))))))
-
-;;; ============================================================
-;;; List Generation
-;;; ============================================================
-
-;; iota: Generate a list of numbers starting from 0
-;; (iota 5) => (0 1 2 3 4)
-(define (iota count)
-  (define (build n acc)
-    (if (< n 0)
-        acc
-        (build (- n 1) (cons n acc))))
-  (build (- count 1) '()))
-
-;; iota-from: Generate a list of numbers starting from a given value
-;; (iota-from 5 1) => (1 2 3 4 5)
-(define (iota-from count start)
-  (define (build n acc)
-    (if (< n 0)
-        acc
-        (build (- n 1) (cons (+ start n) acc))))
-  (build (- count 1) '()))
-
-;; iota-step: Generate a list of numbers with custom start and step
-;; (iota-step 5 0 2) => (0 2 4 6 8)
-(define (iota-step count start step)
-  (define (build n acc)
-    (if (< n 0)
-        acc
-        (build (- n 1) (cons (+ start (* n step)) acc))))
-  (build (- count 1) '()))
-
-;; repeat: Create a list with n copies of x
-(define (repeat n x)
-  (if (<= n 0)
-      '()
-      (cons x (repeat (- n 1) x))))
-
-;;; ============================================================
-;;; Additional Utilities
-;;; ============================================================
-
-;; unzip: Split a list of pairs into two lists
-;; (unzip '((a 1) (b 2) (c 3))) => ((a b c) (1 2 3))
-(define (unzip pairs)
-  (define (unzip-helper pairs firsts seconds)
-    (if (null? pairs)
-        (list (reverse firsts) (reverse seconds))
-        (let ((pair (car pairs)))
-          (unzip-helper (cdr pairs)
-                        (cons (car pair) firsts)
-                        (cons (cadr pair) seconds)))))
-  (unzip-helper pairs '() '()))
-
-;; partition: Split list into two based on predicate
-(define (partition pred lst)
-  (define (part-helper lst yes no)
-    (cond ((null? lst) (list (reverse yes) (reverse no)))
-          ((pred (car lst))
-           (part-helper (cdr lst) (cons (car lst) yes) no))
-          (else
-           (part-helper (cdr lst) yes (cons (car lst) no)))))
-  (part-helper lst '() '()))
-
-;; all?: Do all elements satisfy the predicate?
-(define (all? pred lst)
-  (or (null? lst)
-      (and (pred (car lst))
-           (all? pred (cdr lst)))))
-
-;; none?: Do no elements satisfy the predicate?
-(define (none? pred lst)
-  (all? (negate pred) lst))
-
-;; count-if: Count elements satisfying predicate
-(define (count-if pred lst)
-  (if (null? lst)
-      0
-      (+ (if (pred (car lst)) 1 0)
-         (count-if pred (cdr lst)))))
+;;; List - generation, transformation, queries, sorting, higher-order, search
+(require core.list.generate)
+(require core.list.transform)
+(require core.list.query)
+(require core.list.sort)
+(require core.list.higher_order)
+(require core.list.search)

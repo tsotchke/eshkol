@@ -1,0 +1,5 @@
+;;; Module A - requires module B
+(require tests.modules.mod_b)
+(provide func-a)
+
+(define (func-a x) (+ x (func-b x)))

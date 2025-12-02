@@ -605,6 +605,90 @@ eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons
     return is_cdr ? cell->cdr : cell->car;
 }
 
+// ===== DEEP EQUALITY COMPARISON =====
+// Runtime helper for deep structural equality of tagged values
+// Takes pointers to avoid struct-by-value ABI issues
+
+bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_value_t* val2) {
+    if (!val1 || !val2) {
+        return val1 == val2;  // Both null -> equal, one null -> not equal
+    }
+
+    uint8_t type1 = val1->type & 0x0F;
+    uint8_t type2 = val2->type & 0x0F;
+
+    // Helper to check if a value represents empty list
+    auto is_empty_list = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
+        if (type == ESHKOL_VALUE_NULL) return true;
+        if (type == ESHKOL_VALUE_CONS_PTR && val->data.ptr_val == 0) return true;
+        return false;
+    };
+
+    bool empty1 = is_empty_list(type1, val1);
+    bool empty2 = is_empty_list(type2, val2);
+
+    // Both empty lists: equal (handles NULL vs CONS_PTR with null pointer)
+    if (empty1 && empty2) {
+        return true;
+    }
+
+    // One empty, one not: not equal
+    if (empty1 || empty2) {
+        return false;
+    }
+
+    // Both cons: recursively compare cars and cdrs
+    if (type1 == ESHKOL_VALUE_CONS_PTR && type2 == ESHKOL_VALUE_CONS_PTR) {
+        arena_tagged_cons_cell_t* cons1 = (arena_tagged_cons_cell_t*)val1->data.ptr_val;
+        arena_tagged_cons_cell_t* cons2 = (arena_tagged_cons_cell_t*)val2->data.ptr_val;
+
+        if (!cons1 || !cons2) {
+            // If both null pointers, equal; if one null, not equal
+            return cons1 == cons2;
+        }
+
+        // Compare cars recursively
+        eshkol_tagged_value_t car1 = arena_tagged_cons_get_tagged_value(cons1, false);
+        eshkol_tagged_value_t car2 = arena_tagged_cons_get_tagged_value(cons2, false);
+        if (!eshkol_deep_equal(&car1, &car2)) {
+            return false;
+        }
+
+        // Compare cdrs recursively
+        eshkol_tagged_value_t cdr1 = arena_tagged_cons_get_tagged_value(cons1, true);
+        eshkol_tagged_value_t cdr2 = arena_tagged_cons_get_tagged_value(cons2, true);
+        return eshkol_deep_equal(&cdr1, &cdr2);
+    }
+
+    // Different types: not equal
+    if (type1 != type2) {
+        return false;
+    }
+
+    // Same types, compare values based on type
+    switch (type1) {
+        case ESHKOL_VALUE_INT64:
+        case ESHKOL_VALUE_BOOL:
+            return val1->data.int_val == val2->data.int_val;
+
+        case ESHKOL_VALUE_DOUBLE:
+            return val1->data.double_val == val2->data.double_val;
+
+        case ESHKOL_VALUE_STRING_PTR:
+            // For symbols/strings, compare pointer addresses (interned symbols)
+            return val1->data.ptr_val == val2->data.ptr_val;
+
+        case ESHKOL_VALUE_CLOSURE_PTR:
+        case ESHKOL_VALUE_LAMBDA_SEXPR:
+            // For closures and lambdas, compare pointer addresses
+            return val1->data.ptr_val == val2->data.ptr_val;
+
+        default:
+            // Unknown types: compare raw int data
+            return val1->data.int_val == val2->data.int_val;
+    }
+}
+
 // ===== AD MEMORY MANAGEMENT IMPLEMENTATION =====
 
 // Dual number allocation
@@ -787,6 +871,390 @@ size_t arena_tape_get_node_count(const ad_tape_t* tape) {
 }
 
 // ===== END AD MEMORY MANAGEMENT IMPLEMENTATION =====
+
+// ===== OALR (Ownership-Aware Lexical Regions) IMPLEMENTATION =====
+
+// Global region stack
+eshkol_region_t* __region_stack[MAX_REGION_DEPTH] = {nullptr};
+uint64_t __region_stack_depth = 0;
+
+// Default global arena for allocations outside of any region
+static arena_t* __global_arena = nullptr;
+
+// Get or create the global arena
+static arena_t* get_global_arena() {
+    if (!__global_arena) {
+        __global_arena = arena_create(65536);  // 64KB default
+    }
+    return __global_arena;
+}
+
+// Region creation
+eshkol_region_t* region_create(const char* name, size_t size_hint) {
+    // Use global arena to allocate the region structure itself
+    arena_t* global = get_global_arena();
+
+    eshkol_region_t* region = (eshkol_region_t*)
+        arena_allocate_aligned(global, sizeof(eshkol_region_t), 8);
+
+    if (!region) {
+        eshkol_error("Failed to allocate region structure");
+        return nullptr;
+    }
+
+    // Determine arena size
+    size_t arena_size = (size_hint > 0) ? size_hint : 8192;
+    if (arena_size < 1024) arena_size = 1024;
+
+    // Create the region's arena
+    region->arena = arena_create(arena_size);
+    if (!region->arena) {
+        eshkol_error("Failed to create region arena");
+        return nullptr;
+    }
+
+    // Copy name if provided
+    if (name) {
+        size_t name_len = strlen(name) + 1;
+        char* name_copy = (char*)arena_allocate(region->arena, name_len);
+        if (name_copy) {
+            strcpy(name_copy, name);
+            region->name = name_copy;
+        } else {
+            region->name = nullptr;
+        }
+    } else {
+        region->name = nullptr;
+    }
+
+    region->parent = nullptr;
+    region->size_hint = size_hint;
+    region->escape_count = 0;
+    region->is_active = 0;
+
+    eshkol_debug("Created region '%s' with size hint %zu",
+                name ? name : "(anonymous)", size_hint);
+
+    return region;
+}
+
+// Region destruction
+void region_destroy(eshkol_region_t* region) {
+    if (!region) return;
+
+    if (region->is_active) {
+        eshkol_warn("Destroying active region '%s' - popping from stack first",
+                   region->name ? region->name : "(anonymous)");
+        region_pop();
+    }
+
+    const char* name = region->name ? region->name : "(anonymous)";
+    size_t used = region->arena ? arena_get_used_memory(region->arena) : 0;
+
+    // Destroy the region's arena
+    if (region->arena) {
+        arena_destroy(region->arena);
+        region->arena = nullptr;
+    }
+
+    eshkol_debug("Destroyed region '%s', freed %zu bytes", name, used);
+}
+
+// Push a region onto the stack
+void region_push(eshkol_region_t* region) {
+    if (!region) {
+        eshkol_error("Cannot push null region");
+        return;
+    }
+
+    if (__region_stack_depth >= MAX_REGION_DEPTH) {
+        eshkol_error("Region stack overflow (max depth: %d)", MAX_REGION_DEPTH);
+        return;
+    }
+
+    // Set parent to current top
+    if (__region_stack_depth > 0) {
+        region->parent = __region_stack[__region_stack_depth - 1];
+    } else {
+        region->parent = nullptr;
+    }
+
+    region->is_active = 1;
+    __region_stack[__region_stack_depth++] = region;
+
+    eshkol_debug("Pushed region '%s' (depth: %llu)",
+                region->name ? region->name : "(anonymous)",
+                __region_stack_depth);
+}
+
+// Pop the current region from the stack
+void region_pop(void) {
+    if (__region_stack_depth == 0) {
+        eshkol_warn("Attempted to pop from empty region stack");
+        return;
+    }
+
+    eshkol_region_t* region = __region_stack[--__region_stack_depth];
+    region->is_active = 0;
+
+    eshkol_debug("Popped region '%s' (depth: %llu)",
+                region->name ? region->name : "(anonymous)",
+                __region_stack_depth);
+
+    // Destroy the region (this frees all its memory)
+    region_destroy(region);
+}
+
+// Get the current active region
+eshkol_region_t* region_current(void) {
+    if (__region_stack_depth == 0) {
+        return nullptr;
+    }
+    return __region_stack[__region_stack_depth - 1];
+}
+
+// Allocate in the current region (or global arena if no region)
+void* region_allocate(size_t size) {
+    eshkol_region_t* region = region_current();
+    if (region && region->arena) {
+        return arena_allocate(region->arena, size);
+    }
+    // Fallback to global arena
+    return arena_allocate(get_global_arena(), size);
+}
+
+void* region_allocate_aligned(size_t size, size_t alignment) {
+    eshkol_region_t* region = region_current();
+    if (region && region->arena) {
+        return arena_allocate_aligned(region->arena, size, alignment);
+    }
+    return arena_allocate_aligned(get_global_arena(), size, alignment);
+}
+
+void* region_allocate_zeroed(size_t size) {
+    eshkol_region_t* region = region_current();
+    if (region && region->arena) {
+        return arena_allocate_zeroed(region->arena, size);
+    }
+    return arena_allocate_zeroed(get_global_arena(), size);
+}
+
+// Region-aware tagged cons cell allocation
+arena_tagged_cons_cell_t* region_allocate_tagged_cons_cell(void) {
+    eshkol_region_t* region = region_current();
+    if (region && region->arena) {
+        return arena_allocate_tagged_cons_cell(region->arena);
+    }
+    return arena_allocate_tagged_cons_cell(get_global_arena());
+}
+
+// Region statistics
+size_t region_get_used_memory(const eshkol_region_t* region) {
+    if (!region || !region->arena) return 0;
+    return arena_get_used_memory(region->arena);
+}
+
+size_t region_get_total_memory(const eshkol_region_t* region) {
+    if (!region || !region->arena) return 0;
+    return arena_get_total_memory(region->arena);
+}
+
+const char* region_get_name(const eshkol_region_t* region) {
+    if (!region) return nullptr;
+    return region->name;
+}
+
+uint64_t region_get_depth(void) {
+    return __region_stack_depth;
+}
+
+// ===== END OALR IMPLEMENTATION =====
+
+// ===== SHARED (REFERENCE-COUNTED) MEMORY MANAGEMENT IMPLEMENTATION =====
+// Reference-counted allocation for values with complex, dynamic lifetimes
+
+// Get the shared header from a user pointer (header is before user data)
+eshkol_shared_header_t* shared_get_header(void* ptr) {
+    if (!ptr) return nullptr;
+    // Header is stored before the user data
+    return (eshkol_shared_header_t*)((uint8_t*)ptr - sizeof(eshkol_shared_header_t));
+}
+
+// Allocate a shared (reference-counted) value
+void* shared_allocate(size_t size, void (*destructor)(void*)) {
+    return shared_allocate_typed(size, ESHKOL_VALUE_NULL, destructor);
+}
+
+void* shared_allocate_typed(size_t size, uint8_t value_type, void (*destructor)(void*)) {
+    // Allocate header + user data
+    size_t total_size = sizeof(eshkol_shared_header_t) + size;
+
+    // Use malloc for shared allocations (they outlive regions)
+    uint8_t* memory = (uint8_t*)malloc(total_size);
+    if (!memory) {
+        eshkol_error("Failed to allocate shared memory of size %zu", size);
+        return nullptr;
+    }
+
+    // Initialize header
+    eshkol_shared_header_t* header = (eshkol_shared_header_t*)memory;
+    header->destructor = destructor;
+    header->ref_count = 1;      // Starts with ref count of 1
+    header->weak_count = 0;
+    header->flags = 0;
+    header->value_type = value_type;
+    header->reserved = 0;
+    header->reserved2 = 0;
+
+    // Return pointer to user data (after header)
+    void* user_data = memory + sizeof(eshkol_shared_header_t);
+
+    eshkol_debug("Allocated shared memory at %p (header at %p), size=%zu, type=%d",
+                user_data, (void*)header, size, value_type);
+
+    return user_data;
+}
+
+// Increment reference count
+void shared_retain(void* ptr) {
+    if (!ptr) return;
+
+    eshkol_shared_header_t* header = shared_get_header(ptr);
+    if (!header) return;
+
+    header->ref_count++;
+
+    eshkol_debug("Retained shared at %p, ref_count now %u", ptr, header->ref_count);
+}
+
+// Decrement reference count, deallocate if zero
+void shared_release(void* ptr) {
+    if (!ptr) return;
+
+    eshkol_shared_header_t* header = shared_get_header(ptr);
+    if (!header) return;
+
+    if (header->ref_count == 0) {
+        eshkol_warn("Releasing shared with zero ref count at %p", ptr);
+        return;
+    }
+
+    header->ref_count--;
+
+    eshkol_debug("Released shared at %p, ref_count now %u", ptr, header->ref_count);
+
+    if (header->ref_count == 0) {
+        // Call destructor if provided
+        if (header->destructor) {
+            eshkol_debug("Calling destructor for shared at %p", ptr);
+            header->destructor(ptr);
+        }
+
+        // If there are no weak references, free immediately
+        if (header->weak_count == 0) {
+            eshkol_debug("Freeing shared memory at %p", ptr);
+            free(header);
+        } else {
+            // Mark as deallocated but keep header for weak refs
+            header->flags |= 0x01;  // DEALLOCATED flag
+            eshkol_debug("Shared at %p deallocated but %u weak refs remain",
+                        ptr, header->weak_count);
+        }
+    }
+}
+
+// Get current reference count (for debugging)
+uint32_t shared_ref_count(void* ptr) {
+    if (!ptr) return 0;
+
+    eshkol_shared_header_t* header = shared_get_header(ptr);
+    if (!header) return 0;
+
+    return header->ref_count;
+}
+
+// Create a weak reference to a shared value
+eshkol_weak_ref_t* weak_ref_create(void* shared_ptr) {
+    if (!shared_ptr) return nullptr;
+
+    eshkol_shared_header_t* header = shared_get_header(shared_ptr);
+    if (!header) return nullptr;
+
+    // Allocate weak ref structure
+    eshkol_weak_ref_t* weak = (eshkol_weak_ref_t*)malloc(sizeof(eshkol_weak_ref_t));
+    if (!weak) {
+        eshkol_error("Failed to allocate weak reference");
+        return nullptr;
+    }
+
+    weak->header = header;
+    weak->data = shared_ptr;
+
+    // Increment weak count
+    header->weak_count++;
+
+    eshkol_debug("Created weak ref at %p to shared %p, weak_count now %u",
+                (void*)weak, shared_ptr, header->weak_count);
+
+    return weak;
+}
+
+// Upgrade weak reference to strong (returns NULL if value was freed)
+void* weak_ref_upgrade(eshkol_weak_ref_t* weak) {
+    if (!weak || !weak->header) return nullptr;
+
+    // Check if the shared value has been deallocated
+    if (weak->header->flags & 0x01) {  // DEALLOCATED flag
+        eshkol_debug("Cannot upgrade weak ref - target deallocated");
+        return nullptr;
+    }
+
+    // Check if ref count is zero (shouldn't happen if not deallocated)
+    if (weak->header->ref_count == 0) {
+        return nullptr;
+    }
+
+    // Increment strong ref count
+    weak->header->ref_count++;
+
+    eshkol_debug("Upgraded weak ref at %p to strong, ref_count now %u",
+                (void*)weak, weak->header->ref_count);
+
+    return weak->data;
+}
+
+// Release a weak reference
+void weak_ref_release(eshkol_weak_ref_t* weak) {
+    if (!weak) return;
+
+    if (weak->header) {
+        weak->header->weak_count--;
+
+        eshkol_debug("Released weak ref at %p, weak_count now %u",
+                    (void*)weak, weak->header->weak_count);
+
+        // If shared value was deallocated and this was last weak ref, free header
+        if ((weak->header->flags & 0x01) && weak->header->weak_count == 0) {
+            eshkol_debug("Freeing shared header at %p (all refs gone)", (void*)weak->header);
+            free(weak->header);
+        }
+    }
+
+    free(weak);
+}
+
+// Check if weak reference target still exists
+bool weak_ref_is_alive(eshkol_weak_ref_t* weak) {
+    if (!weak || !weak->header) return false;
+
+    // Check deallocated flag
+    if (weak->header->flags & 0x01) return false;
+
+    // Check ref count
+    return weak->header->ref_count > 0;
+}
+
+// ===== END SHARED MEMORY MANAGEMENT IMPLEMENTATION =====
 
 #ifdef __cplusplus
 

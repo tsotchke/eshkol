@@ -1,0 +1,10 @@
+;;; core/operators/compare.esk
+;;; First-class wrappers for comparison operators
+
+(provide lt gt le ge eq)
+
+(define (lt x y) (< x y))
+(define (gt x y) (> x y))
+(define (le x y) (<= x y))
+(define (ge x y) (>= x y))
+(define (eq x y) (= x y))

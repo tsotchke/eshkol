@@ -132,6 +132,12 @@ void arena_tagged_cons_set_tagged_value(arena_tagged_cons_cell_t* cell,
 eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons_cell_t* cell,
                                                           bool is_cdr);
 
+// ===== DEEP EQUALITY COMPARISON =====
+// Runtime helper for deep structural equality of tagged values
+// Used by equal? to compare nested lists recursively
+// Takes pointers to avoid struct-by-value ABI issues
+bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_value_t* val2);
+
 // ===== AD MEMORY MANAGEMENT =====
 // Allocation functions for automatic differentiation structures
 
@@ -162,6 +168,50 @@ void arena_tape_reset(ad_tape_t* tape);
 ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index);
 size_t arena_tape_get_node_count(const ad_tape_t* tape);
 
+// ===== OALR (Ownership-Aware Lexical Regions) MEMORY MANAGEMENT =====
+// Region-based memory management for predictable, GC-free allocation
+
+// Forward declaration
+typedef struct eshkol_region eshkol_region_t;
+
+// Region structure - wraps an arena with lexical scoping
+struct eshkol_region {
+    arena_t* arena;                  // Region's dedicated arena
+    const char* name;                // Optional name (NULL for anonymous)
+    eshkol_region_t* parent;         // Parent region (for nesting)
+    size_t size_hint;                // Size hint provided at creation
+    size_t escape_count;             // Track escaping allocations
+    uint8_t is_active;               // Whether this region is currently active
+};
+
+// Global region stack
+#define MAX_REGION_DEPTH 64
+extern eshkol_region_t* __region_stack[MAX_REGION_DEPTH];
+extern uint64_t __region_stack_depth;
+
+// Region lifecycle functions
+eshkol_region_t* region_create(const char* name, size_t size_hint);
+void region_destroy(eshkol_region_t* region);
+
+// Region stack management
+void region_push(eshkol_region_t* region);
+void region_pop(void);
+eshkol_region_t* region_current(void);
+
+// Region allocation - allocates in the current region
+void* region_allocate(size_t size);
+void* region_allocate_aligned(size_t size, size_t alignment);
+void* region_allocate_zeroed(size_t size);
+
+// Region-aware cons cell allocation
+arena_tagged_cons_cell_t* region_allocate_tagged_cons_cell(void);
+
+// Region statistics
+size_t region_get_used_memory(const eshkol_region_t* region);
+size_t region_get_total_memory(const eshkol_region_t* region);
+const char* region_get_name(const eshkol_region_t* region);
+uint64_t region_get_depth(void);
+
 // ===== CLOSURE ENVIRONMENT MEMORY MANAGEMENT =====
 // Allocation functions for lexical closure environments
 
@@ -172,6 +222,51 @@ eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_capt
 eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures, uint64_t sexpr_ptr);
 
 // ===== END CLOSURE ENVIRONMENT MEMORY MANAGEMENT =====
+
+// ===== SHARED (REFERENCE-COUNTED) MEMORY MANAGEMENT =====
+// Reference-counted allocation for values with complex, dynamic lifetimes
+
+// Shared header structure - prepended to all shared allocations
+// Layout optimized for 64-bit: 24 bytes with natural alignment
+typedef struct eshkol_shared_header {
+    void (*destructor)(void*);      // Custom cleanup function (NULL if none) - 8 bytes
+    uint32_t ref_count;             // Strong reference count - 4 bytes
+    uint32_t weak_count;            // Weak reference count - 4 bytes
+    uint8_t flags;                  // Flags (e.g., marked for collection)
+    uint8_t value_type;             // Type of the shared value
+    uint16_t reserved;              // Alignment padding
+    uint32_t reserved2;             // Padding to 24 bytes
+} eshkol_shared_header_t;
+
+// Weak reference structure - points to shared data
+typedef struct eshkol_weak_ref {
+    eshkol_shared_header_t* header; // Pointer to shared header (NULL if deallocated)
+    void* data;                     // Original data pointer (may be invalid)
+} eshkol_weak_ref_t;
+
+// Compile-time size validation
+_Static_assert(sizeof(eshkol_shared_header_t) == 24,
+               "Shared header must be 24 bytes for optimal alignment");
+
+// Shared allocation functions
+void* shared_allocate(size_t size, void (*destructor)(void*));
+void* shared_allocate_typed(size_t size, uint8_t value_type, void (*destructor)(void*));
+
+// Reference counting operations
+void shared_retain(void* ptr);      // Increment ref count
+void shared_release(void* ptr);     // Decrement ref count (deallocates at zero)
+uint32_t shared_ref_count(void* ptr);  // Get current ref count (for debugging)
+
+// Weak reference operations
+eshkol_weak_ref_t* weak_ref_create(void* shared_ptr);   // Create weak ref to shared value
+void* weak_ref_upgrade(eshkol_weak_ref_t* weak);        // Upgrade to strong ref (returns NULL if freed)
+void weak_ref_release(eshkol_weak_ref_t* weak);         // Release the weak reference
+bool weak_ref_is_alive(eshkol_weak_ref_t* weak);        // Check if target still exists
+
+// Get the shared header from a shared pointer
+eshkol_shared_header_t* shared_get_header(void* ptr);
+
+// ===== END SHARED MEMORY MANAGEMENT =====
 
 // ===== END AD MEMORY MANAGEMENT =====
 
