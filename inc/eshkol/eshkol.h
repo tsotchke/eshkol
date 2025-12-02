@@ -155,13 +155,15 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 #define ESHKOL_IS_CHAR_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_CHAR)
 #define ESHKOL_IS_VECTOR_PTR_TYPE(type)  (((type) & 0x0F) == ESHKOL_VALUE_VECTOR_PTR)
 #define ESHKOL_IS_SYMBOL_TYPE(type)      (((type) & 0x0F) == ESHKOL_VALUE_SYMBOL)
+#define ESHKOL_IS_CLOSURE_PTR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_CLOSURE_PTR)
 // General pointer type check: any type that stores a pointer value (not int64 or double)
 #define ESHKOL_IS_ANY_PTR_TYPE(type)     (ESHKOL_IS_CONS_PTR_TYPE(type) || \
                                           ESHKOL_IS_STRING_PTR_TYPE(type) || \
                                           ESHKOL_IS_VECTOR_PTR_TYPE(type) || \
                                           ESHKOL_IS_TENSOR_PTR_TYPE(type) || \
                                           ESHKOL_IS_AD_NODE_PTR_TYPE(type) || \
-                                          ESHKOL_IS_LAMBDA_SEXPR_TYPE(type))
+                                          ESHKOL_IS_LAMBDA_SEXPR_TYPE(type) || \
+                                          ESHKOL_IS_CLOSURE_PTR_TYPE(type))
 
 // Exactness checking macros
 #define ESHKOL_IS_EXACT(type)         (((type) & ESHKOL_VALUE_EXACT_FLAG) != 0)
@@ -246,6 +248,7 @@ _Static_assert(sizeof(eshkol_closure_env_t) == sizeof(size_t),
 typedef struct eshkol_closure {
     uint64_t func_ptr;                    // Pointer to the lambda function
     eshkol_closure_env_t* env;            // Pointer to captured environment (may be NULL for no captures)
+    uint64_t sexpr_ptr;                   // Pointer to S-expression representation for homoiconicity
 } eshkol_closure_t;
 
 // ===== END CLOSURE ENVIRONMENT STRUCTURES =====

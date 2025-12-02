@@ -1,0 +1,11 @@
+;; Minimal debug test
+(display "Starting")
+(newline)
+(define v (vector 1.0))
+(display "Vector created")
+(newline)
+(display "Calling vref...")
+(newline)
+(define elem (vref v 0))
+(display "vref done")
+(newline)

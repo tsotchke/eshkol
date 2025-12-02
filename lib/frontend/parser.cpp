@@ -1157,17 +1157,23 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 then_expr = parse_atom(token);
             }
             
-            // Parse else expression
+            // Parse else expression (optional in Scheme)
             token = tokenizer.nextToken();
-            if (token.type == TOKEN_EOF) {
-                eshkol_error("if requires else-expression as third argument");
+
+            eshkol_ast_t else_expr;
+            bool has_else = false;
+
+            if (token.type == TOKEN_RPAREN) {
+                // No else clause - use null as default (Scheme unspecified value)
+                else_expr.type = ESHKOL_NULL;
+                has_else = false;
+            } else if (token.type == TOKEN_EOF) {
+                eshkol_error("Unexpected end of input in if expression");
                 ast.type = ESHKOL_INVALID;
                 return ast;
-            }
-            
-            eshkol_ast_t else_expr;
-            if (token.type == TOKEN_LPAREN) {
+            } else if (token.type == TOKEN_LPAREN) {
                 else_expr = parse_list(tokenizer);
+                has_else = true;
             } else if (token.type == TOKEN_QUOTE) {
                 // Handle quoted expressions in else-branch
                 eshkol_ast_t quoted = parse_quoted_data(tokenizer);
@@ -1177,16 +1183,20 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 else_expr.operation.call_op.num_vars = 1;
                 else_expr.operation.call_op.variables = new eshkol_ast_t[1];
                 else_expr.operation.call_op.variables[0] = quoted;
+                has_else = true;
             } else {
                 else_expr = parse_atom(token);
+                has_else = true;
             }
-            
-            // Check for closing paren
-            token = tokenizer.nextToken();
-            if (token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing parenthesis after if expression");
-                ast.type = ESHKOL_INVALID;
-                return ast;
+
+            // Check for closing paren (only if we had an else clause)
+            if (has_else) {
+                token = tokenizer.nextToken();
+                if (token.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected closing parenthesis after if expression");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
             }
             
             // Store the if operation as a call operation with 3 arguments
@@ -1417,6 +1427,39 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t val_ast;
                 if (token.type == TOKEN_LPAREN) {
                     val_ast = parse_list(tokenizer);
+                } else if (token.type == TOKEN_VECTOR_START) {
+                    // Handle vector literal #(...) in let binding value
+                    val_ast.type = ESHKOL_OP;
+                    val_ast.operation.op = ESHKOL_TENSOR_OP;
+                    std::vector<eshkol_ast_t> elements;
+                    while (true) {
+                        Token elem_token = tokenizer.nextToken();
+                        if (elem_token.type == TOKEN_RPAREN) break;
+                        if (elem_token.type == TOKEN_EOF) {
+                            eshkol_error("Unexpected end of input in vector literal in let binding");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+                        eshkol_ast_t element;
+                        if (elem_token.type == TOKEN_LPAREN) {
+                            element = parse_list(tokenizer);
+                        } else {
+                            element = parse_atom(elem_token);
+                        }
+                        if (element.type == ESHKOL_INVALID) {
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+                        elements.push_back(element);
+                    }
+                    val_ast.operation.tensor_op.num_dimensions = 1;
+                    val_ast.operation.tensor_op.dimensions = new uint64_t[1];
+                    val_ast.operation.tensor_op.dimensions[0] = elements.size();
+                    val_ast.operation.tensor_op.total_elements = elements.size();
+                    val_ast.operation.tensor_op.elements = new eshkol_ast_t[elements.size()];
+                    for (size_t i = 0; i < elements.size(); i++) {
+                        val_ast.operation.tensor_op.elements[i] = elements[i];
+                    }
                 } else if (token.type == TOKEN_QUOTE) {
                     // Handle quoted expressions in let binding value: (let ((x '())) ...)
                     eshkol_ast_t quoted = parse_quoted_data(tokenizer);
@@ -1486,21 +1529,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            // Create proper body (single expression or sequence)
-            eshkol_ast_t body;
-            if (body_expressions.size() == 1) {
-                body = body_expressions[0];
-            } else {
-                // Multiple expressions: wrap in sequence
-                body.type = ESHKOL_OP;
-                body.operation.op = ESHKOL_SEQUENCE_OP;
-                body.operation.sequence_op.num_expressions = body_expressions.size();
-                body.operation.sequence_op.expressions = new eshkol_ast_t[body_expressions.size()];
-                
-                for (size_t i = 0; i < body_expressions.size(); i++) {
-                    body.operation.sequence_op.expressions[i] = body_expressions[i];
-                }
-            }
+            // Transform internal defines to letrec (same as function and lambda bodies)
+            // This handles: single expression, sequence, and internal defines
+            eshkol_ast_t body = transformInternalDefinesToLetrec(body_expressions);
             
             // Set up let operation
             ast.operation.let_op.num_bindings = bindings.size();

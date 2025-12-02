@@ -1,7 +1,0 @@
-; Session 005: Map with Mixed Type List Test
-; Tests map function with lambda and mixed int/double types
-; Expected output: (2 5.0 6)
-
-(define result (map (lambda (x) (* x 2)) (list 1 2.5 3)))
-(display result)
-(newline)

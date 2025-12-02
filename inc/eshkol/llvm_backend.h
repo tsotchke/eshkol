@@ -29,6 +29,25 @@ typedef struct LLVMOpaqueModule *LLVMModuleRef;
 LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts, const char* module_name);
 
 /*
+ * Generate LLVM IR in library mode (no main function, all functions exported)
+ * Use this for compiling libraries like stdlib.esk that only contain definitions.
+ * @param asts Array of AST nodes to compile
+ * @param num_asts Number of AST nodes in the array
+ * @param module_name Name for the LLVM module
+ * @return LLVM module reference, or NULL on error
+ */
+LLVMModuleRef eshkol_generate_llvm_ir_library(const eshkol_ast_t* asts, size_t num_asts, const char* module_name);
+
+/*
+ * Register external function declarations from ASTs (for linking with pre-compiled libraries)
+ * This extracts function signatures from the ASTs and registers them as external declarations
+ * so the compiler knows about them, but doesn't generate code (code comes from linked library).
+ * @param asts Array of AST nodes containing function definitions
+ * @param num_asts Number of AST nodes in the array
+ */
+void eshkol_register_external_functions(const eshkol_ast_t* asts, size_t num_asts);
+
+/*
  * Write LLVM IR to a file in textual format
  * @param module LLVM module reference
  * @param filename Output filename (should end with .ll)
@@ -124,6 +143,8 @@ void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value);
 
 // Stub implementations when LLVM backend is disabled
 #define eshkol_generate_llvm_ir(asts, num_asts, module_name) (NULL)
+#define eshkol_generate_llvm_ir_library(asts, num_asts, module_name) (NULL)
+#define eshkol_register_external_functions(asts, num_asts) do {} while(0)
 #define eshkol_dump_llvm_ir_to_file(module, filename) (-1)
 #define eshkol_compile_llvm_ir_to_object(module, filename) (-1)
 #define eshkol_compile_llvm_ir_to_executable(module, filename, lib_paths, num_lib_paths, linked_libs, num_linked_libs) (-1)

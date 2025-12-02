@@ -1,0 +1,48 @@
+;; Comprehensive ML/Tensor Test Suite
+(display "=== Comprehensive ML Tests ===") (newline)
+
+;; 1. Tensor creation
+(display "1. Tensor creation:") (newline)
+(display "   zeros 2 3: ") (display (zeros 2 3)) (newline)
+(display "   ones 3 2: ") (display (ones 3 2)) (newline)
+(display "   eye 3: ") (display (eye 3)) (newline)
+(display "   arange 5: ") (display (arange 5)) (newline)
+(display "   linspace 0 10 5: ") (display (linspace 0 10 5)) (newline)
+
+;; 2. Element-wise operations
+(display "2. Element-wise ops:") (newline)
+(define v1 (vector 1.0 2.0 3.0))
+(define v2 (vector 4.0 5.0 6.0))
+(display "   v1: ") (display v1) (newline)
+(display "   v2: ") (display v2) (newline)
+(display "   tensor-add: ") (display (tensor-add v1 v2)) (newline)
+(display "   tensor-sub: ") (display (tensor-sub v1 v2)) (newline)
+(display "   tensor-mul: ") (display (tensor-mul v1 v2)) (newline)
+(display "   tensor-div: ") (display (tensor-div v2 v1)) (newline)
+
+;; 3. Statistics
+(display "3. Statistics:") (newline)
+(display "   tensor-sum v1: ") (display (tensor-sum v1)) (newline)
+(display "   tensor-mean v1: ") (display (tensor-mean v1)) (newline)
+(display "   tensor-sum (arange 10): ") (display (tensor-sum (arange 10))) (newline)
+(display "   tensor-mean (arange 10): ") (display (tensor-mean (arange 10))) (newline)
+
+;; 4. Dot product
+(display "4. Dot product:") (newline)
+(display "   tensor-dot v1 v2: ") (display (tensor-dot v1 v2)) (newline)
+(display "   Expected: 32 (1*4 + 2*5 + 3*6)") (newline)
+
+;; 5. Matrix operations
+(display "5. Matrix operations:") (newline)
+(define A (reshape (arange 6) 2 3))
+(define B (reshape (arange 6) 3 2))
+(display "   A (2x3): ") (display A) (newline)
+(display "   B (3x2): ") (display B) (newline)
+(display "   transpose A: ") (display (transpose A)) (newline)
+(display "   matmul A B: ") (display (matmul A B)) (newline)
+
+;; 6. Flatten and reshape
+(display "6. Flatten:") (newline)
+(display "   flatten A: ") (display (flatten A)) (newline)
+
+(display "All ML tests complete!") (newline)

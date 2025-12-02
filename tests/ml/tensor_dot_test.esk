@@ -1,0 +1,14 @@
+;; tensor-dot test - dot product for vectors
+(display "=== tensor-dot ===") (newline)
+
+;; Test with Scheme vectors
+(display "Scheme vectors (1,2,3) . (4,5,6): ")
+(display (tensor-dot (vector 1.0 2.0 3.0) (vector 4.0 5.0 6.0)))
+(newline)
+(display "Expected: 32 (1*4 + 2*5 + 3*6)") (newline)
+
+;; Test with native tensors
+(display "Native tensors (arange 5) . (arange 5): ")
+(display (tensor-dot (arange 5) (arange 5)))
+(newline)
+(display "Expected: 30 (0+1+4+9+16)") (newline)

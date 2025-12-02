@@ -1,0 +1,30 @@
+;;; Minimal compose test
+
+(define add1 (lambda (x) (+ x 1)))
+(define double (lambda (x) (* x 2)))
+
+(display "add1 5 = ")
+(display (add1 5))
+(newline)
+
+(display "double 5 = ")
+(display (double 5))
+(newline)
+
+;; Now define compose
+(define (compose f g)
+  (lambda (x) (f (g x))))
+
+(display "compose defined")
+(newline)
+
+;; Call compose
+(define add1-then-double (compose double add1))
+
+(display "add1-then-double defined")
+(newline)
+
+;; Now call the composed function
+(display "add1-then-double 5 = ")
+(display (add1-then-double 5))
+(newline)

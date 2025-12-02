@@ -1,0 +1,27 @@
+;; Basic tensor test - using proper vector/matrix syntax
+;; - vector: (vector elem1 elem2 ...) - creates 1D tensor
+;; - matrix: (matrix rows cols elem1 elem2 ...) - creates 2D tensor
+
+(define (main)
+  (printf "Test 1: Creating 1D tensors (vectors)\n")
+
+  ;; Create 1D tensors using vector syntax
+  (define t1 (vector 1.0 2.0 3.0))
+  (printf "t1 created\n")
+
+  (define t2 (vector 4.0 5.0 6.0))
+  (printf "t2 created\n")
+
+  ;; Test vref (tensor 1D access) on vectors
+  (printf "t1[0] = %f\n" (vref t1 0))
+  (printf "t2[0] = %f\n" (vref t2 0))
+
+  (printf "Calling tensor-add...\n")
+  (define sum_t (tensor-add t1 t2))
+  (printf "tensor-add done\n")
+
+  (printf "sum_t[0] = %f (expected 5.0)\n" (vref sum_t 0))
+  (printf "sum_t[1] = %f (expected 7.0)\n" (vref sum_t 1))
+  (printf "sum_t[2] = %f (expected 9.0)\n" (vref sum_t 2))
+
+  0)

@@ -1,0 +1,28 @@
+;; Debug test for Phase 3B
+(display "Test 1: Define int")
+(newline)
+(define int-val 10)
+(display "int-val: ") (display int-val) (newline)
+
+(display "Test 2: Define double")
+(newline)
+(define double-val 2.5)
+(display "double-val: ") (display double-val) (newline)
+
+(display "Test 3: Add two ints")
+(newline)
+(define sum-ints (+ 5 3))
+(display "sum-ints: ") (display sum-ints) (newline)
+
+(display "Test 4: Add two doubles")
+(newline)
+(define sum-doubles (+ 2.5 1.5))
+(display "sum-doubles: ") (display sum-doubles) (newline)
+
+(display "Test 5: Add int and double")
+(newline)
+(define mixed-sum (+ int-val double-val))
+(display "mixed-sum: ") (display mixed-sum) (newline)
+
+(display "=== DEBUG TEST COMPLETE ===")
+(newline)

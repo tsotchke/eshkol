@@ -1,119 +1,155 @@
 #!/bin/bash
 
-# Eshkol Autodiff Test Suite Runner
-# Tests all automatic differentiation functionality
+# Eshkol Autodiff Test Suite
+# Runs all automatic differentiation tests and reports results
 
-set -e  # Exit on first error
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$PROJECT_ROOT"
+set -e
 
 # Colors for output
-GREEN='\033[0;32m'
 RED='\033[0;31m'
+GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Counters
-TOTAL=0
-PASSED=0
-FAILED=0
-COMPILE_FAILED=0
-RUNTIME_FAILED=0
+PASS=0
+FAIL=0
+COMPILE_FAIL=0
 
-# Failed test tracking
+# Results array
 declare -a FAILED_TESTS
+declare -a RUNTIME_ERRORS
 
 echo "========================================="
 echo "  Eshkol Autodiff Test Suite"
 echo "========================================="
 echo ""
-echo "Testing all autodiff tests..."
+
+# Ensure build directory exists
+if [ ! -d "build" ]; then
+    echo -e "${RED}Error: build directory not found. Run cmake first.${NC}"
+    exit 1
+fi
+
+# Check if compiler exists
+if [ ! -f "build/eshkol-run" ]; then
+    echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
+    exit 1
+fi
+
+echo "Testing all files in tests/autodiff/ directory..."
 echo ""
 
-# Test directories
-AUTODIFF_DIR="tests/autodiff"
-AUTODIFF_DEBUG_DIR="tests/autodiff_debug"
+# Run tests in autodiff directory
+for test_file in tests/autodiff/*.esk; do
+    test_name=$(basename "$test_file")
+    printf "Testing %-50s " "$test_name"
 
-# Function to run a single test
-run_test() {
-    local test_file=$1
-    local test_name=$(basename "$test_file")
-    
-    TOTAL=$((TOTAL + 1))
-    
-    printf "Testing %-50s" "$test_name"
-    
-    # Compile test
-    if ! ./build/eshkol-run "$test_file" > /tmp/compile_output.txt 2>&1; then
+    # Try to compile
+    if ./build/eshkol-run --no-stdlib "$test_file" -L./build > /dev/null 2>&1; then
+        # Compilation succeeded, try to run
+        if ./a.out > /tmp/test_output.txt 2>&1; then
+            # Check if there were any errors in output
+            if grep -q "error:" /tmp/test_output.txt; then
+                echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
+                RUNTIME_ERRORS+=("$test_name")
+                ((FAIL++))
+            else
+                echo -e "${GREEN}✅ PASS${NC}"
+                ((PASS++))
+            fi
+        else
+            echo -e "${RED}❌ RUNTIME FAIL${NC}"
+            FAILED_TESTS+=("$test_name")
+            ((FAIL++))
+        fi
+    else
         echo -e "${RED}❌ COMPILE FAIL${NC}"
-        COMPILE_FAILED=$((COMPILE_FAILED + 1))
-        FAILED=$((FAILED + 1))
         FAILED_TESTS+=("$test_name")
-        return
+        ((COMPILE_FAIL++))
+        ((FAIL++))
     fi
-    
-    # Run compiled test
-    if ! ./a.out > /tmp/test_output.txt 2>&1; then
-        echo -e "${RED}❌ RUNTIME FAIL${NC}"
-        RUNTIME_FAILED=$((RUNTIME_FAILED + 1))
-        FAILED=$((FAILED + 1))
-        FAILED_TESTS+=("$test_name")
-        return
-    fi
-    
-    echo -e "${GREEN}✅ PASS${NC}"
-    PASSED=$((PASSED + 1))
-}
+done
 
-# Run all tests in autodiff directory
-if [ -d "$AUTODIFF_DIR" ]; then
-    for test_file in "$AUTODIFF_DIR"/*.esk; do
-        if [ -f "$test_file" ]; then
-            run_test "$test_file"
-        fi
-    done
-fi
+# Run tests in autodiff_debug directory if it exists
+if [ -d "tests/autodiff_debug" ]; then
+    echo ""
+    echo "Testing all files in tests/autodiff_debug/ directory..."
+    echo ""
 
-# Run all tests in autodiff_debug directory
-if [ -d "$AUTODIFF_DEBUG_DIR" ]; then
-    for test_file in "$AUTODIFF_DEBUG_DIR"/*.esk; do
-        if [ -f "$test_file" ]; then
-            run_test "$test_file"
+    for test_file in tests/autodiff_debug/*.esk; do
+        test_name=$(basename "$test_file")
+        printf "Testing %-50s " "$test_name"
+
+        # Try to compile
+        if ./build/eshkol-run --no-stdlib "$test_file" -L./build > /dev/null 2>&1; then
+            # Compilation succeeded, try to run
+            if ./a.out > /tmp/test_output.txt 2>&1; then
+                # Check if there were any errors in output
+                if grep -q "error:" /tmp/test_output.txt; then
+                    echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
+                    RUNTIME_ERRORS+=("$test_name")
+                    ((FAIL++))
+                else
+                    echo -e "${GREEN}✅ PASS${NC}"
+                    ((PASS++))
+                fi
+            else
+                echo -e "${RED}❌ RUNTIME FAIL${NC}"
+                FAILED_TESTS+=("$test_name")
+                ((FAIL++))
+            fi
+        else
+            echo -e "${RED}❌ COMPILE FAIL${NC}"
+            FAILED_TESTS+=("$test_name")
+            ((COMPILE_FAIL++))
+            ((FAIL++))
         fi
     done
 fi
 
 echo ""
 echo "========================================="
-echo "  Autodiff Test Results Summary"
+echo "  Test Results Summary"
 echo "========================================="
-echo "Total Tests:    $TOTAL"
-echo "Passed:         $PASSED"
-echo "Failed:         $FAILED"
-echo "  Compile Failures: $COMPILE_FAILED"
-echo "  Runtime Errors:   $RUNTIME_FAILED"
+echo -e "Total Tests:    $(( PASS + FAIL ))"
+echo -e "${GREEN}Passed:         $PASS${NC}"
+echo -e "${RED}Failed:         $FAIL${NC}"
+echo -e "  Compile Failures: $COMPILE_FAIL"
+echo -e "  Runtime Errors:   ${#RUNTIME_ERRORS[@]}"
 echo ""
 
-if [ $FAILED -gt 0 ]; then
+if [ $FAIL -gt 0 ]; then
     echo "Failed Tests:"
     for test in "${FAILED_TESTS[@]}"; do
         echo "  - $test"
     done
     echo ""
+
+    if [ ${#RUNTIME_ERRORS[@]} -gt 0 ]; then
+        echo "Runtime Errors:"
+        for test in "${RUNTIME_ERRORS[@]}"; do
+            echo "  - $test"
+        done
+        echo ""
+    fi
 fi
 
 # Calculate pass rate
+TOTAL=$(( PASS + FAIL ))
 if [ $TOTAL -gt 0 ]; then
-    PASS_RATE=$((100 * PASSED / TOTAL))
+    PASS_RATE=$(( PASS * 100 / TOTAL ))
     echo "Pass Rate: ${PASS_RATE}%"
-    echo ""
 fi
 
-# Exit with error code if any tests failed
-if [ $FAILED -gt 0 ]; then
+echo ""
+
+# Clean up
+rm -f /tmp/test_output.txt a.out
+
+# Exit with appropriate code
+if [ $FAIL -eq 0 ]; then
+    exit 0
+else
     exit 1
 fi
-
-exit 0

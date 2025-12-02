@@ -282,11 +282,11 @@ SetInsertPoint(elem_done);
 ## Testing Strategy
 
 ### Phase 1: Unit Testing
-1. Test simplest case: [`integer_only_test.esk`](../tests/integer_only_test.esk)
+1. Test simplest case: [`integer_only_test.esk`](../tests/lists/integer_only_test.esk)
    - Just integer list display
    - Should pass immediately after fix
 
-2. Test mixed types: [`debug_member_take.esk`](../tests/debug_member_take.esk)
+2. Test mixed types: [`debug_member_take.esk`](../tests/lists/debug_member_take.esk)
    - List with integers and doubles
    - Tests type preservation
 

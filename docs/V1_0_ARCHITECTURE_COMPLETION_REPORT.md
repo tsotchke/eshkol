@@ -43,9 +43,9 @@ typedef struct arena_tagged_cons_cell {
 ```
 
 **Test Evidence**:
-- [`tests/mixed_type_lists_basic_test.esk`](../tests/mixed_type_lists_basic_test.esk) ✅
-- [`tests/advanced_mixed_type_test.esk`](../tests/advanced_mixed_type_test.esk) ✅
-- [`tests/comprehensive_list_test.esk`](../tests/comprehensive_list_test.esk) ✅
+- [`tests/mixed_type_lists_basic_test.esk`](../tests/lists/mixed_type_lists_basic_test.esk) ✅
+- [`tests/advanced_mixed_type_test.esk`](../tests/lists/advanced_mixed_type_test.esk) ✅
+- [`tests/comprehensive_list_test.esk`](../tests/lists/comprehensive_list_test.esk) ✅
 
 ### 2. Polymorphic Higher-Order Functions - COMPLETE ✅
 
@@ -61,24 +61,24 @@ typedef struct arena_tagged_cons_cell {
 
 | Function | Lines | Status | Test Coverage |
 |----------|-------|--------|---------------|
-| [`codegenMapSingleList`](../lib/backend/llvm_codegen.cpp:5182) | 5182-5273 | ✅ Complete | [`session_005_map_test.esk`](../tests/session_005_map_test.esk) |
-| [`codegenMapMultiList`](../lib/backend/llvm_codegen.cpp:5276) | 5276-5393 | ✅ Complete | [`session_006_multilist_map_test.esk`](../tests/session_006_multilist_map_test.esk) |
-| [`codegenFilter`](../lib/backend/llvm_codegen.cpp:5396) | 5396-5510 | ✅ Complete | [`phase3_filter.esk`](../tests/phase3_filter.esk) |
-| [`codegenFold`](../lib/backend/llvm_codegen.cpp:5513) | 5513-5585 | ✅ Complete | [`phase3_fold.esk`](../tests/phase3_fold.esk) |
-| [`codegenForEachSingleList`](../lib/backend/llvm_codegen.cpp:5759) | 5759-5804 | ✅ Complete | [`for_each_test.esk`](../tests/for_each_test.esk) |
-| [`codegenMember`](../lib/backend/llvm_codegen.cpp:6814) | ~6814-6884 | ✅ Complete | [`higher_order_test.esk`](../tests/higher_order_test.esk) |
-| [`codegenAssoc`](../lib/backend/llvm_codegen.cpp:6887) | ~6887-7006 | ✅ Complete | [`assoc_test.esk`](../tests/assoc_test.esk) |
-| [`codegenTake`](../lib/backend/llvm_codegen.cpp:7062) | ~7062-7172 | ✅ Complete | [`phase_2a_group_a_test.esk`](../tests/phase_2a_group_a_test.esk) |
-| [`codegenFind`](../lib/backend/llvm_codegen.cpp:7231) | ~7231-7333 | ✅ Complete | [`phase_1b_test.esk`](../tests/phase_1b_test.esk) |
-| [`codegenPartition`](../lib/backend/llvm_codegen.cpp:7394) | ~7394-7551 | ✅ Complete | [`phase_1b_test.esk`](../tests/phase_1b_test.esk) |
-| [`codegenSplitAt`](../lib/backend/llvm_codegen.cpp:7554) | ~7554-7614 | ✅ Complete | [`phase_1b_split_at_test.esk`](../tests/phase_1b_split_at_test.esk) |
-| [`codegenRemove`](../lib/backend/llvm_codegen.cpp:7617) | ~7617-7735 | ✅ Complete | [`phase_1c_test.esk`](../tests/phase_1c_test.esk) |
-| [`codegenLast`](../lib/backend/llvm_codegen.cpp:7788) | ~7788-7865 | ✅ Complete | [`phase_2a_group_a_test.esk`](../tests/phase_2a_group_a_test.esk) |
-| [`codegenLastPair`](../lib/backend/llvm_codegen.cpp:7868) | ~7868-7932 | ✅ Complete | [`phase_2a_group_a_test.esk`](../tests/phase_2a_group_a_test.esk) |
-| [`codegenAppend`](../lib/backend/llvm_codegen.cpp:4876) (iterative) | ~4876-4958 | ✅ Complete | [`advanced_mixed_type_test.esk`](../tests/advanced_mixed_type_test.esk) |
-| [`codegenReverse`](../lib/backend/llvm_codegen.cpp:4961) | ~4961-5035 | ✅ Complete | [`advanced_mixed_type_test.esk`](../tests/advanced_mixed_type_test.esk) |
-| [`codegenSetCar`](../lib/backend/llvm_codegen.cpp:3584) | ~3584-3651 | ✅ Complete | [`basic_operations_test.esk`](../tests/basic_operations_test.esk) |
-| [`codegenSetCdr`](../lib/backend/llvm_codegen.cpp:3654) | ~3654-3721 | ✅ Complete | [`basic_operations_test.esk`](../tests/basic_operations_test.esk) |
+| [`codegenMapSingleList`](../lib/backend/llvm_codegen.cpp:5182) | 5182-5273 | ✅ Complete | [`session_005_map_test.esk`](../tests/lists/session_005_map_test.esk) |
+| [`codegenMapMultiList`](../lib/backend/llvm_codegen.cpp:5276) | 5276-5393 | ✅ Complete | [`session_006_multilist_map_test.esk`](../tests/lists/session_006_multilist_map_test.esk) |
+| [`codegenFilter`](../lib/backend/llvm_codegen.cpp:5396) | 5396-5510 | ✅ Complete | [`phase3_filter.esk`](../tests/lists/phase3_filter.esk) |
+| [`codegenFold`](../lib/backend/llvm_codegen.cpp:5513) | 5513-5585 | ✅ Complete | [`phase3_fold.esk`](../tests/lists/phase3_fold.esk) |
+| [`codegenForEachSingleList`](../lib/backend/llvm_codegen.cpp:5759) | 5759-5804 | ✅ Complete | [`for_each_test.esk`](../tests/lists/for_each_test.esk) |
+| [`codegenMember`](../lib/backend/llvm_codegen.cpp:6814) | ~6814-6884 | ✅ Complete | [`higher_order_test.esk`](../tests/lists/higher_order_test.esk) |
+| [`codegenAssoc`](../lib/backend/llvm_codegen.cpp:6887) | ~6887-7006 | ✅ Complete | [`assoc_test.esk`](../tests/lists/assoc_test.esk) |
+| [`codegenTake`](../lib/backend/llvm_codegen.cpp:7062) | ~7062-7172 | ✅ Complete | [`phase_2a_group_a_test.esk`](../tests/lists/phase_2a_group_a_test.esk) |
+| [`codegenFind`](../lib/backend/llvm_codegen.cpp:7231) | ~7231-7333 | ✅ Complete | [`phase_1b_test.esk`](../tests/lists/phase_1b_test.esk) |
+| [`codegenPartition`](../lib/backend/llvm_codegen.cpp:7394) | ~7394-7551 | ✅ Complete | [`phase_1b_test.esk`](../tests/lists/phase_1b_test.esk) |
+| [`codegenSplitAt`](../lib/backend/llvm_codegen.cpp:7554) | ~7554-7614 | ✅ Complete | [`phase_1b_split_at_test.esk`](../tests/lists/phase_1b_split_at_test.esk) |
+| [`codegenRemove`](../lib/backend/llvm_codegen.cpp:7617) | ~7617-7735 | ✅ Complete | [`phase_1c_test.esk`](../tests/lists/phase_1c_test.esk) |
+| [`codegenLast`](../lib/backend/llvm_codegen.cpp:7788) | ~7788-7865 | ✅ Complete | [`phase_2a_group_a_test.esk`](../tests/lists/phase_2a_group_a_test.esk) |
+| [`codegenLastPair`](../lib/backend/llvm_codegen.cpp:7868) | ~7868-7932 | ✅ Complete | [`phase_2a_group_a_test.esk`](../tests/lists/phase_2a_group_a_test.esk) |
+| [`codegenAppend`](../lib/backend/llvm_codegen.cpp:4876) (iterative) | ~4876-4958 | ✅ Complete | [`advanced_mixed_type_test.esk`](../tests/lists/advanced_mixed_type_test.esk) |
+| [`codegenReverse`](../lib/backend/llvm_codegen.cpp:4961) | ~4961-5035 | ✅ Complete | [`advanced_mixed_type_test.esk`](../tests/lists/advanced_mixed_type_test.esk) |
+| [`codegenSetCar`](../lib/backend/llvm_codegen.cpp:3584) | ~3584-3651 | ✅ Complete | [`basic_operations_test.esk`](../tests/lists/basic_operations_test.esk) |
+| [`codegenSetCdr`](../lib/backend/llvm_codegen.cpp:3654) | ~3654-3721 | ✅ Complete | [`basic_operations_test.esk`](../tests/lists/basic_operations_test.esk) |
 
 ### 3. Memory Safety - COMPLETE ✅
 
@@ -128,8 +128,8 @@ typedef struct arena_tagged_cons_cell {
 | Phase Tests | 18 | ✅ 100% | Migration validation |
 
 **Test Scripts**:
-- [`scripts/run_all_tests.sh`](../scripts/run_all_tests.sh) - Batch execution
-- [`scripts/run_tests_with_output.sh`](../scripts/run_tests_with_output.sh) - With output capture
+- [`scripts/run_all_tests.sh`](../scripts/run_list_tests.sh) - Batch execution
+- [`scripts/run_tests_with_output.sh`](../scripts/run_list_tests_with_output.sh) - With output capture
 - [`scripts/verify_all_tests.sh`](../scripts/verify_all_tests.sh) - Verification
 
 ---

@@ -1,8 +1,0 @@
-;; Minimal comparison test
-
-(display "Testing basic comparison")
-(newline)
-
-;; This should work - literals
-(display (< 1 2))
-(newline)

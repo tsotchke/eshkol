@@ -1,0 +1,7 @@
+;; Test fold with builtin
+
+(display "Test 4: Fold with +")
+(newline)
+(define test4 (fold + 0 (list 1 2.0 3)))
+(display test4)
+(newline)

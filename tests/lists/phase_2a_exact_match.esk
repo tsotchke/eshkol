@@ -1,0 +1,30 @@
+;;
+;; Phase 2A Exact Match - Using exact same variable names as working test
+;;
+
+(display "=== PHASE 2A EXACT MATCH ===")
+(newline)
+
+;; Test with exact same variable names as phase_2a_safe_test.esk
+(display "1. Testing multi-list map with addition:")
+(newline)
+(define list1 (list 1 2 3))
+(define list2 (list 4 5 6))
+(display "   List 1: 1 2 3")
+(newline)
+(display "   List 2: 4 5 6")
+(newline)
+
+(define result (map + list1 list2))
+(display "   map + result: ")
+(if (null? result)
+    (display "EMPTY")
+    (begin
+        (display (car result)) (display " ")
+        (display (cadr result)) (display " ")
+        (display (caddr result))
+    ))
+(newline)
+
+(display "=== PHASE 2A EXACT MATCH SUCCESS! ===")
+(newline)

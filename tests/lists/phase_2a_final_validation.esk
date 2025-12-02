@@ -1,0 +1,56 @@
+;;
+;; Phase 2A Final Validation - Complete multi-list map functionality test
+;;
+
+(display "=== PHASE 2A FINAL VALIDATION ===")
+(newline)
+
+;; Test 1: Two-list map
+(display "1. Two-list map:")
+(newline)
+(define nums1 (list 1 2 3))
+(define nums2 (list 4 5 6))
+(define sum-result (map + nums1 nums2))
+(display "   (1 2 3) + (4 5 6) = ")
+(display (car sum-result)) (display " ")
+(display (cadr sum-result)) (display " ")
+(display (caddr sum-result))
+(newline)
+
+;; Test 2: Different length lists (shortest wins)
+(display "2. Different length lists:")
+(newline)
+(define short-nums (list 10 20))
+(define long-nums (list 1 2 3 4 5))
+(define short-result (map + short-nums long-nums))
+(display "   (10 20) + (1 2 3 4 5) = ")
+(display (car short-result)) (display " ")
+(display (cadr short-result))
+(newline)
+
+;; Test 3: Three-list map
+(display "3. Three-list map:")
+(newline)
+(define extra-nums (list 100 200 300))
+(define triple-sum (map + nums1 nums2 extra-nums))
+(display "   (1 2 3) + (4 5 6) + (100 200 300) = ")
+(display (car triple-sum)) (display " ")
+(display (cadr triple-sum)) (display " ")
+(display (caddr triple-sum))
+(newline)
+
+;; Test 4: Multiplication operation  
+(display "4. Multi-list multiplication:")
+(newline)
+(define factors1 (list 2 3))
+(define factors2 (list 4 5))
+(define mult-result (map * factors1 factors2))
+(display "   (2 3) * (4 5) = ")
+(display (car mult-result)) (display " ")
+(display (cadr mult-result))
+(newline)
+
+(display "=== PHASE 2A COMPLETE SUCCESS! ===")
+(newline)
+(display "Multi-list map: FULLY FUNCTIONAL")
+(newline)

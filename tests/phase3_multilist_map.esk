@@ -1,7 +1,0 @@
-;; Test multi-list map with builtin
-
-(display "Test 2: Multi-list map with +")
-(newline)
-(define test2 (map + (list 1 2.0 3) (list 4 5.0 6)))
-(display test2)
-(newline)

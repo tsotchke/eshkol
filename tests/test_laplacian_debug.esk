@@ -1,9 +1,0 @@
-;; Test laplacian
-
-(define (main)
-  (display "Test: Laplacian of x^2\n")
-  (define f-simple (lambda (v) (* (vref v 0) (vref v 0))))
-  (define result (laplacian f-simple (vector 1.0 2.0 3.0)))
-  (display result)
-  (newline)
-  0)

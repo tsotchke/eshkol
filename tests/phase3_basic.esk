@@ -1,7 +1,0 @@
-;; Most basic test - no lambda, just builtin
-
-(display "Test: Map with builtin +")
-(newline)
-(define nums (list 1 2 3))
-(display nums)
-(newline)

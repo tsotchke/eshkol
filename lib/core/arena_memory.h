@@ -168,8 +168,8 @@ size_t arena_tape_get_node_count(const ad_tape_t* tape);
 // Allocate closure environment with space for captured variables
 eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_captures);
 
-// Allocate full closure structure (func_ptr + environment)
-eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures);
+// Allocate full closure structure (func_ptr + environment + sexpr for homoiconicity)
+eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures, uint64_t sexpr_ptr);
 
 // ===== END CLOSURE ENVIRONMENT MEMORY MANAGEMENT =====
 

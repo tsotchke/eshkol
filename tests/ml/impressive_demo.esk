@@ -1,0 +1,220 @@
+;; =============================================================
+;; Eshkol Comprehensive Demo: ML, Autodiff, and Functional Programming
+;; =============================================================
+
+(display "╔═══════════════════════════════════════════════════════════╗") (newline)
+(display "║     ESHKOL: Scientific Computing & Autodiff Demo          ║") (newline)
+(display "╚═══════════════════════════════════════════════════════════╝") (newline)
+(newline)
+
+;; -------------------------------------------------------------
+;; Part 1: Tensor Algebra
+;; -------------------------------------------------------------
+(display "━━━ Part 1: Tensor Algebra ━━━") (newline)
+
+;; Create matrices
+(define W1 (reshape (linspace -1 1 6) 2 3))
+(define W2 (reshape (linspace 0 1 6) 3 2))
+
+(display "Weight matrix W1 (2x3):") (newline)
+(display W1) (newline)
+(display "Weight matrix W2 (3x2):") (newline)
+(display W2) (newline)
+
+;; Matrix multiplication chain
+(display "W1 * W2 (neural layer composition):") (newline)
+(display (matmul W1 W2)) (newline)
+(newline)
+
+;; Identity matrix properties
+(define I3 (eye 3))
+(display "Identity matrix I3:") (newline)
+(display I3) (newline)
+(display "W2 * I3 = W2 (identity property):") (newline)
+(display (matmul W2 I3)) (newline)
+(newline)
+
+;; -------------------------------------------------------------
+;; Part 2: Automatic Differentiation
+;; -------------------------------------------------------------
+(display "━━━ Part 2: Automatic Differentiation ━━━") (newline)
+
+;; Gradient of a simple function
+(define (quadratic v)
+  (+ (* 3.0 (* (vref v 0) (vref v 0)))
+     (* 2.0 (vref v 0))
+     1.0))
+
+(display "f(x) = 3x² + 2x + 1") (newline)
+(display "f(2) = ") (display (quadratic (vector 2.0))) (newline)
+(display "∇f(2) = ") (display (gradient quadratic (vector 2.0))) (newline)
+(display "Expected: 14 (derivative is 6x + 2 = 14 at x=2)") (newline)
+(newline)
+
+;; Multivariate gradient
+(define (rosenbrock v)
+  (let ((x (vref v 0))
+        (y (vref v 1)))
+    (+ (* 100.0 (* (- y (* x x)) (- y (* x x))))
+       (* (- 1.0 x) (- 1.0 x)))))
+
+(display "Rosenbrock function: f(x,y) = 100(y - x²)² + (1-x)²") (newline)
+(display "f(1,1) = ") (display (rosenbrock (vector 1.0 1.0))) (newline)
+(display "∇f(1,1) = ") (display (gradient rosenbrock (vector 1.0 1.0))) (newline)
+(display "At minimum (1,1), gradient should be (0, 0)") (newline)
+(newline)
+
+;; Jacobian of a vector function
+(define (polar-to-cartesian v)
+  (let ((r (vref v 0))
+        (theta (vref v 1)))
+    (vector (* r (cos theta))
+            (* r (sin theta)))))
+
+(display "Polar to Cartesian: (r,θ) → (r·cos(θ), r·sin(θ))") (newline)
+(display "Jacobian at (1, 0):") (newline)
+(display (jacobian polar-to-cartesian (vector 1.0 0.0))) (newline)
+(display "Expected: #((1 0) (0 1)) (identity at θ=0)") (newline)
+(newline)
+
+;; Hessian (second derivatives)
+(define (quadratic-2d v)
+  (+ (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1))))
+
+(display "f(x,y) = x² + y²") (newline)
+(display "Hessian (constant):") (newline)
+(display (hessian quadratic-2d (vector 1.0 1.0))) (newline)
+(display "Expected: #((2 0) (0 2))") (newline)
+(newline)
+
+;; -------------------------------------------------------------
+;; Part 3: Vector Calculus
+;; -------------------------------------------------------------
+(display "━━━ Part 3: Vector Calculus ━━━") (newline)
+
+;; Divergence
+(define (radial-field v)
+  (vector (vref v 0) (vref v 1)))
+
+(display "Vector field F(x,y) = (x, y)") (newline)
+(display "div(F) at (1,1) = ") (display (divergence radial-field (vector 1.0 1.0))) (newline)
+(display "Expected: 2 (∂x/∂x + ∂y/∂y = 1 + 1)") (newline)
+(newline)
+
+;; Curl (3D)
+(define (rotating-field v)
+  (vector (- 0.0 (vref v 1))
+          (vref v 0)
+          0.0))
+
+(display "Vector field F(x,y,z) = (-y, x, 0) [rotation]") (newline)
+(display "curl(F) at (1,1,0) = ") (display (curl rotating-field (vector 1.0 1.0 0.0))) (newline)
+(display "Expected: #(0 0 2) (pure z-component rotation)") (newline)
+(newline)
+
+;; Laplacian
+(define (harmonic v)
+  (+ (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1))))
+
+(display "f(x,y) = x² + y²") (newline)
+(display "∇²f at (1,1) = ") (display (laplacian harmonic (vector 1.0 1.0))) (newline)
+(display "Expected: 4 (∂²f/∂x² + ∂²f/∂y² = 2 + 2)") (newline)
+(newline)
+
+;; -------------------------------------------------------------
+;; Part 4: Higher-Order Functions
+;; -------------------------------------------------------------
+(display "━━━ Part 4: Higher-Order Functions ━━━") (newline)
+
+;; Composition
+(define (double x) (* 2 x))
+(define (square x) (* x x))
+(define double-then-square (compose square double))
+
+(display "compose: (x → x²) ∘ (x → 2x)") (newline)
+(display "(double-then-square 3) = (2*3)² = ") (display (double-then-square 3)) (newline)
+(newline)
+
+;; Currying (using stdlib's `add` wrapper for +)
+(define curried-add (curry2 add))
+(define add5 (curried-add 5))
+(display "curry: add5 = (curry2 add) 5") (newline)
+(display "(add5 10) = ") (display (add5 10)) (newline)
+(newline)
+
+;; Map with closures
+(define nums (list 1 2 3 4 5))
+(define (scale-by n)
+  (lambda (x) (* n x)))
+(define scale-by-3 (scale-by 3))
+
+(display "Closure: scale-by-3 = (scale-by 3)") (newline)
+(display "map scale-by-3 over (1 2 3 4 5):") (newline)
+(display (map scale-by-3 nums)) (newline)
+(newline)
+
+;; Fold/reduce
+(display "fold + over (1 2 3 4 5): ")
+(display (fold + 0 nums)) (newline)
+(display "fold * over (1 2 3 4 5): ")
+(display (fold * 1 nums)) (newline)
+(newline)
+
+;; -------------------------------------------------------------
+;; Part 5: Neural Network Forward Pass (Simulated)
+;; -------------------------------------------------------------
+(display "━━━ Part 5: Mini Neural Network ━━━") (newline)
+
+;; Simple activation function (ReLU-like using max)
+(define (relu x) (if (> x 0) x 0))
+
+;; Input vector
+(define input (vector 1.0 0.5 -0.5))
+(display "Input: ") (display input) (newline)
+
+;; Layer 1: Linear transformation (simulated with dot product)
+(define weights1 (vector 0.5 0.3 0.2))
+(define bias1 0.1)
+(define layer1-out (+ (tensor-dot input weights1) bias1))
+(display "Layer 1 output (wx + b): ") (display layer1-out) (newline)
+
+;; Apply activation
+(define activated (relu layer1-out))
+(display "After ReLU activation: ") (display activated) (newline)
+(newline)
+
+;; -------------------------------------------------------------
+;; Grand Finale: Gradient Descent Step
+;; -------------------------------------------------------------
+(display "━━━ Grand Finale: Gradient Descent ━━━") (newline)
+
+(define (loss v)
+  ;; Simple quadratic loss centered at (3, 4)
+  (+ (* (- (vref v 0) 3.0) (- (vref v 0) 3.0))
+     (* (- (vref v 1) 4.0) (- (vref v 1) 4.0))))
+
+(define start-point (vector 0.0 0.0))
+(define learning-rate 0.1)
+
+(display "Loss function: (x-3)² + (y-4)²") (newline)
+(display "Starting point: ") (display start-point) (newline)
+(display "Initial loss: ") (display (loss start-point)) (newline)
+(display "Gradient at start: ") (display (gradient loss start-point)) (newline)
+
+;; Manual gradient descent step
+(define grad (gradient loss start-point))
+(define new-x (- (vref start-point 0) (* learning-rate (vref grad 0))))
+(define new-y (- (vref start-point 1) (* learning-rate (vref grad 1))))
+(define new-point (vector new-x new-y))
+
+(display "After one gradient step (lr=0.1):") (newline)
+(display "New point: ") (display new-point) (newline)
+(display "New loss: ") (display (loss new-point)) (newline)
+(display "Loss decreased: moving toward minimum (3, 4)!") (newline)
+(newline)
+
+(display "╔═══════════════════════════════════════════════════════════╗") (newline)
+(display "║              Demo Complete! All Systems Go!               ║") (newline)
+(display "╚═══════════════════════════════════════════════════════════╝") (newline)

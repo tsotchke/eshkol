@@ -1,8 +1,0 @@
-;; Test lambda with comparison
-
-(display "Testing lambda with comparison")
-(newline)
-
-(define test-lambda (lambda (x) (> x 5)))
-(display (test-lambda 10))
-(newline)

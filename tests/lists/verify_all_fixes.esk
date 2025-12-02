@@ -1,0 +1,25 @@
+;; Verify all list function fixes
+
+(display "=== MEMBER TEST ===")
+(newline)
+(display "Member 2.0 in (1 2.0 3): ")
+(display (member 2.0 (list 1 2.0 3)))
+(newline)
+
+(display "=== TAKE TEST ===")
+(newline)
+(display "Take 3 from (1 2.0 3 4.0 5): ")
+(display (take (list 1 2.0 3 4.0 5) 3))
+(newline)
+
+(display "=== APPEND TEST ===")
+(newline)
+(display "Append (1 2.5) and (3 4.75): ")
+(display (append (list 1 2.5) (list 3 4.75)))
+(newline)
+
+(display "=== REVERSE TEST ===")
+(newline)
+(display "Reverse (1 2.5 3 4.75 5): ")
+(display (reverse (list 1 2.5 3 4.75 5)))
+(newline)

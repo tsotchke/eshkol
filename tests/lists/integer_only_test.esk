@@ -1,0 +1,27 @@
+;;
+;; Integer Only Test - Validate Phase 0 & 1 with existing functionality
+;;
+
+(display "=== INTEGER ONLY TEST ===")
+(newline)
+
+;; Test basic integer operations that should work
+(define int-pair (cons 42 100))
+(display "Created cons: ") (display int-pair) (newline)
+(display "car: ") (display (car int-pair)) (newline)
+(display "cdr: ") (display (cdr int-pair)) (newline)
+
+;; Test basic integer arithmetic
+(define a 10)
+(define b 5)
+(display "a + b = ") (display (+ a b)) (newline)
+(display "a * b = ") (display (* a b)) (newline)
+
+;; Test integer list
+(define int-list (list 1 2 3 4 5))
+(display "List: ") (display int-list) (newline)
+(display "First: ") (display (car int-list)) (newline)
+(display "Second: ") (display (cadr int-list)) (newline)
+
+(display "=== INTEGER TEST COMPLETE ===")
+(newline)

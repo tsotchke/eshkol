@@ -1,0 +1,45 @@
+;;
+;; Arena-based Cons Cell Test
+;;
+;; This test verifies that our arena memory management system
+;; works correctly with basic cons operations.
+;;
+
+;; Create a simple cons cell using arena allocation
+(define pair (cons 42 100))
+(display "Created pair with arena allocation: ")
+(display (car pair))
+(display " : ")
+(display (cdr pair))
+(newline)
+
+;; Create nested cons cells
+(define nested (cons 1 (cons 2 (cons 3 0))))
+(display "First element of nested: ")
+(display (car nested))
+(newline)
+(display "Second element of nested: ")
+(display (car (cdr nested)))
+(newline)
+(display "Third element of nested: ")
+(display (car (cdr (cdr nested))))
+(newline)
+
+;; Test pair predicates
+(display "Is pair a pair? ")
+(display (pair? pair))
+(newline)
+(display "Is 42 a pair? ")
+(display (pair? 42))
+(newline)
+
+;; Test null checks
+(display "Is 0 null? ")
+(display (null? 0))
+(newline)
+(display "Is pair null? ")
+(display (null? pair))
+(newline)
+
+(display "Arena memory test completed successfully!")
+(newline)

@@ -1,5 +1,0 @@
-;; Test 1: Simple comparison operation
-(display "Test 1: Simple comparison")
-(newline)
-(display (> 5 3))
-(newline)
