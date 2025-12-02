@@ -61,9 +61,11 @@ autodiff_test_outputs/
 neural_test_outputs/
 ml_test_outputs/
 math_test_outputs/
-.o
-a.out
+*.o
+*.s
+*.out
 *.ll
+*.ast
 
 
 compile_commands.json

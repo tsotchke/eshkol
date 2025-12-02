@@ -1,6 +1,8 @@
 ;; Phase 3: Polymorphic Tagged Value System Complete Test
 ;; Tests all higher-order functions with mixed types
 
+(require stdlib)
+
 (display "=== PHASE 3: POLYMORPHIC SYSTEM COMPLETE ===")
 (newline)
 

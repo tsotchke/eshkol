@@ -221,8 +221,8 @@ static eshkol_ast_t parse_atom(const Token& token) {
         }
         
         case TOKEN_BOOLEAN:
-            ast.type = ESHKOL_UINT8;
-            ast.uint8_val = (token.value == "#t") ? 1 : 0;
+            ast.type = ESHKOL_BOOL;
+            ast.int64_val = (token.value == "#t") ? 1 : 0;
             break;
 
         case TOKEN_CHAR:
@@ -265,7 +265,15 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "define") return ESHKOL_DEFINE_OP;
     if (op == "set!") return ESHKOL_SET_OP;
     if (op == "import") return ESHKOL_IMPORT_OP;
-    if (op == "require") return ESHKOL_IMPORT_OP;  // alias for import
+    if (op == "require") return ESHKOL_REQUIRE_OP;  // module system: (require module.name ...)
+    if (op == "provide") return ESHKOL_PROVIDE_OP;  // module system: (provide name1 name2 ...)
+    // Memory management operators (OALR - Ownership-Aware Lexical Regions)
+    if (op == "with-region") return ESHKOL_WITH_REGION_OP;
+    if (op == "owned") return ESHKOL_OWNED_OP;
+    if (op == "move") return ESHKOL_MOVE_OP;
+    if (op == "borrow") return ESHKOL_BORROW_OP;
+    if (op == "shared") return ESHKOL_SHARED_OP;
+    if (op == "weak-ref") return ESHKOL_WEAK_REF_OP;
     if (op == "extern") return ESHKOL_EXTERN_OP;
     if (op == "extern-var") return ESHKOL_EXTERN_VAR_OP;
     if (op == "tensor") return ESHKOL_TENSOR_OP;
@@ -2965,11 +2973,10 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             
             return ast;
         } else if (ast.operation.op == ESHKOL_IMPORT_OP) {
-            // Syntax: (import "path/to/file.esk")
-            // Or:     (require "path/to/file.esk")
+            // Legacy syntax: (import "path/to/file.esk")
             token = tokenizer.nextToken();
             if (token.type != TOKEN_STRING) {
-                eshkol_error("import/require requires a string path as argument");
+                eshkol_error("import requires a string path as argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2980,7 +2987,392 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Expect closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("import/require takes exactly one argument");
+                eshkol_error("import takes exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            return ast;
+        } else if (ast.operation.op == ESHKOL_REQUIRE_OP) {
+            // Module system syntax: (require module.name ...)
+            // Module names are symbolic (e.g., data.json, core.strings)
+            std::vector<std::string> modules;
+
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in require");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                if (token.type != TOKEN_SYMBOL) {
+                    eshkol_error("require expects symbolic module names (e.g., data.json)");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                modules.push_back(token.value);
+            }
+
+            if (modules.empty()) {
+                eshkol_error("require expects at least one module name");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Allocate and copy module names
+            ast.operation.require_op.num_modules = modules.size();
+            ast.operation.require_op.module_names = new char*[modules.size()];
+            for (size_t i = 0; i < modules.size(); i++) {
+                ast.operation.require_op.module_names[i] = new char[modules[i].length() + 1];
+                strcpy(ast.operation.require_op.module_names[i], modules[i].c_str());
+            }
+
+            return ast;
+        } else if (ast.operation.op == ESHKOL_PROVIDE_OP) {
+            // Module system syntax: (provide name1 name2 ...)
+            // Export names are symbols
+            std::vector<std::string> exports;
+
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in provide");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                if (token.type != TOKEN_SYMBOL) {
+                    eshkol_error("provide expects symbol names to export");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                exports.push_back(token.value);
+            }
+
+            if (exports.empty()) {
+                eshkol_error("provide expects at least one export name");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Allocate and copy export names
+            ast.operation.provide_op.num_exports = exports.size();
+            ast.operation.provide_op.export_names = new char*[exports.size()];
+            for (size_t i = 0; i < exports.size(); i++) {
+                ast.operation.provide_op.export_names[i] = new char[exports[i].length() + 1];
+                strcpy(ast.operation.provide_op.export_names[i], exports[i].c_str());
+            }
+
+            return ast;
+        } else if (ast.operation.op == ESHKOL_WITH_REGION_OP) {
+            // Memory management syntax: (with-region body ...)
+            // or: (with-region 'name body ...)
+            // or: (with-region ('name size) body ...)
+            ast.operation.with_region_op.name = nullptr;
+            ast.operation.with_region_op.size_hint = 0;
+
+            token = tokenizer.nextToken();
+
+            // Check for optional region name or (name size) pair
+            if (token.type == TOKEN_QUOTE) {
+                // (with-region 'name body ...)
+                Token name_token = tokenizer.nextToken();
+                if (name_token.type != TOKEN_SYMBOL) {
+                    eshkol_error("with-region name must be a symbol");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                ast.operation.with_region_op.name = strdup(name_token.value.c_str());
+                token = tokenizer.nextToken();
+            } else if (token.type == TOKEN_LPAREN) {
+                // Could be ('name size) or a body expression
+                Token peek = tokenizer.nextToken();
+                if (peek.type == TOKEN_QUOTE) {
+                    // ('name size) - named region with size hint
+                    Token name_token = tokenizer.nextToken();
+                    if (name_token.type != TOKEN_SYMBOL) {
+                        eshkol_error("with-region name must be a symbol");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    ast.operation.with_region_op.name = strdup(name_token.value.c_str());
+
+                    Token size_token = tokenizer.nextToken();
+                    if (size_token.type == TOKEN_NUMBER) {
+                        ast.operation.with_region_op.size_hint = std::stoull(size_token.value);
+                    }
+
+                    Token close = tokenizer.nextToken();
+                    if (close.type != TOKEN_RPAREN) {
+                        eshkol_error("Expected closing paren in with-region name/size spec");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    token = tokenizer.nextToken();
+                } else {
+                    // It's a body expression starting with (, need to reconstruct the list
+                    // We already consumed the opening '(' and got peek as the first element
+                    // We need to build a complete list AST: (operator arg1 arg2 ...)
+
+                    // Build the first body expression as a call/list
+                    eshkol_ast_t first_body;
+                    first_body.type = ESHKOL_OP;
+                    first_body.operation.op = get_operator_type(peek.value);
+
+                    // If it's a call, set up the function and arguments
+                    if (first_body.operation.op == ESHKOL_CALL_OP) {
+                        first_body.operation.call_op.func = new eshkol_ast_t;
+                        first_body.operation.call_op.func->type = ESHKOL_VAR;
+                        first_body.operation.call_op.func->variable.id = strdup(peek.value.c_str());
+                        first_body.operation.call_op.func->variable.data = nullptr;
+
+                        // Parse arguments until we hit the closing paren of this list
+                        std::vector<eshkol_ast_t> args;
+                        while (true) {
+                            Token arg_token = tokenizer.nextToken();
+                            if (arg_token.type == TOKEN_RPAREN) break;
+                            if (arg_token.type == TOKEN_EOF) {
+                                eshkol_error("Unexpected end of input in with-region body list");
+                                ast.type = ESHKOL_INVALID;
+                                return ast;
+                            }
+                            eshkol_ast_t arg;
+                            if (arg_token.type == TOKEN_LPAREN) {
+                                arg = parse_list(tokenizer);
+                            } else {
+                                arg = parse_atom(arg_token);
+                            }
+                            args.push_back(arg);
+                        }
+
+                        first_body.operation.call_op.num_vars = args.size();
+                        if (!args.empty()) {
+                            first_body.operation.call_op.variables = new eshkol_ast_t[args.size()];
+                            for (size_t i = 0; i < args.size(); i++) {
+                                first_body.operation.call_op.variables[i] = args[i];
+                            }
+                        } else {
+                            first_body.operation.call_op.variables = nullptr;
+                        }
+                    }
+
+                    // Now continue parsing more body expressions for with-region
+                    std::vector<eshkol_ast_t> body_elements;
+                    body_elements.push_back(first_body);
+
+                    while (true) {
+                        token = tokenizer.nextToken();
+                        if (token.type == TOKEN_RPAREN) break;  // End of with-region
+                        if (token.type == TOKEN_EOF) {
+                            eshkol_error("Unexpected end of input in with-region");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+                        eshkol_ast_t body_expr;
+                        if (token.type == TOKEN_LPAREN) {
+                            body_expr = parse_list(tokenizer);
+                        } else {
+                            body_expr = parse_atom(token);
+                        }
+                        body_elements.push_back(body_expr);
+                    }
+
+                    ast.operation.with_region_op.num_body_exprs = body_elements.size();
+                    ast.operation.with_region_op.body = new eshkol_ast_t[body_elements.size()];
+                    for (size_t i = 0; i < body_elements.size(); i++) {
+                        ast.operation.with_region_op.body[i] = body_elements[i];
+                    }
+                    return ast;
+                }
+            }
+
+            // Parse body expressions
+            std::vector<eshkol_ast_t> body_exprs;
+            while (token.type != TOKEN_RPAREN) {
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in with-region body");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                eshkol_ast_t body_expr;
+                if (token.type == TOKEN_LPAREN) {
+                    body_expr = parse_list(tokenizer);
+                } else {
+                    body_expr = parse_atom(token);
+                }
+                body_exprs.push_back(body_expr);
+                token = tokenizer.nextToken();
+            }
+
+            if (body_exprs.empty()) {
+                eshkol_error("with-region requires at least one body expression");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            ast.operation.with_region_op.num_body_exprs = body_exprs.size();
+            ast.operation.with_region_op.body = new eshkol_ast_t[body_exprs.size()];
+            for (size_t i = 0; i < body_exprs.size(); i++) {
+                ast.operation.with_region_op.body[i] = body_exprs[i];
+            }
+
+            return ast;
+        } else if (ast.operation.op == ESHKOL_OWNED_OP) {
+            // Memory management syntax: (owned expr)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_RPAREN) {
+                eshkol_error("owned requires exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            eshkol_ast_t value_expr;
+            if (token.type == TOKEN_LPAREN) {
+                value_expr = parse_list(tokenizer);
+            } else {
+                value_expr = parse_atom(token);
+            }
+
+            ast.operation.owned_op.value = new eshkol_ast_t;
+            *ast.operation.owned_op.value = value_expr;
+
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                eshkol_error("owned requires exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            return ast;
+        } else if (ast.operation.op == ESHKOL_MOVE_OP) {
+            // Memory management syntax: (move value)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_RPAREN) {
+                eshkol_error("move requires exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            eshkol_ast_t value_expr;
+            if (token.type == TOKEN_LPAREN) {
+                value_expr = parse_list(tokenizer);
+            } else {
+                value_expr = parse_atom(token);
+            }
+
+            ast.operation.move_op.value = new eshkol_ast_t;
+            *ast.operation.move_op.value = value_expr;
+
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                eshkol_error("move requires exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            return ast;
+        } else if (ast.operation.op == ESHKOL_BORROW_OP) {
+            // Memory management syntax: (borrow value body ...)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_RPAREN) {
+                eshkol_error("borrow requires a value and body expressions");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Parse the value to borrow
+            eshkol_ast_t value_expr;
+            if (token.type == TOKEN_LPAREN) {
+                value_expr = parse_list(tokenizer);
+            } else {
+                value_expr = parse_atom(token);
+            }
+
+            ast.operation.borrow_op.value = new eshkol_ast_t;
+            *ast.operation.borrow_op.value = value_expr;
+
+            // Parse body expressions
+            std::vector<eshkol_ast_t> body_exprs;
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in borrow body");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                eshkol_ast_t body_expr;
+                if (token.type == TOKEN_LPAREN) {
+                    body_expr = parse_list(tokenizer);
+                } else {
+                    body_expr = parse_atom(token);
+                }
+                body_exprs.push_back(body_expr);
+            }
+
+            if (body_exprs.empty()) {
+                eshkol_error("borrow requires at least one body expression");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            ast.operation.borrow_op.num_body_exprs = body_exprs.size();
+            ast.operation.borrow_op.body = new eshkol_ast_t[body_exprs.size()];
+            for (size_t i = 0; i < body_exprs.size(); i++) {
+                ast.operation.borrow_op.body[i] = body_exprs[i];
+            }
+
+            return ast;
+        } else if (ast.operation.op == ESHKOL_SHARED_OP) {
+            // Memory management syntax: (shared expr)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_RPAREN) {
+                eshkol_error("shared requires exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            eshkol_ast_t value_expr;
+            if (token.type == TOKEN_LPAREN) {
+                value_expr = parse_list(tokenizer);
+            } else {
+                value_expr = parse_atom(token);
+            }
+
+            ast.operation.shared_op.value = new eshkol_ast_t;
+            *ast.operation.shared_op.value = value_expr;
+
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                eshkol_error("shared requires exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            return ast;
+        } else if (ast.operation.op == ESHKOL_WEAK_REF_OP) {
+            // Memory management syntax: (weak-ref shared-value)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_RPAREN) {
+                eshkol_error("weak-ref requires exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            eshkol_ast_t value_expr;
+            if (token.type == TOKEN_LPAREN) {
+                value_expr = parse_list(tokenizer);
+            } else {
+                value_expr = parse_atom(token);
+            }
+
+            ast.operation.weak_ref_op.value = new eshkol_ast_t;
+            *ast.operation.weak_ref_op.value = value_expr;
+
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                eshkol_error("weak-ref requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }

@@ -1,0 +1,6 @@
+;;; Test for module loading
+(require test.modules.mod_a)
+
+(display "Testing func-a(5): ")
+(display (func-a 5))
+(newline)

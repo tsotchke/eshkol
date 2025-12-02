@@ -1,0 +1,7 @@
+;;; core/logic/types.esk
+;;; Type-checking predicates
+
+(provide is-null? is-pair?)
+
+(define (is-null? x) (null? x))
+(define (is-pair? x) (pair? x))

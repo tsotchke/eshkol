@@ -68,8 +68,8 @@ for test_file in tests/lists/*.esk; do
     echo "========================================" >> "$output_file"
     echo "" >> "$output_file"
     
-    # Try to compile (--no-stdlib until variadic lambda syntax is supported)
-    if ./build/eshkol-run --no-stdlib "$test_file" -L./build > "${output_file}.compile" 2>&1; then
+    # Try to compile
+    if ./build/eshkol-run "$test_file" -L./build > "${output_file}.compile" 2>&1; then
         # Compilation succeeded, try to run
         echo "COMPILATION: SUCCESS" >> "$output_file"
         echo "" >> "$output_file"

@@ -1,0 +1,6 @@
+;;; Test: Use after move should fail
+;;; Expected: Error - "Use of moved value 'x'"
+
+(define x (owned (cons 1 2)))
+(define y (move x))
+(display x)  ; ERROR: x has been moved

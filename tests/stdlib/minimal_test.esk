@@ -1,0 +1,15 @@
+;;; Minimal test without stdlib
+;;; Test basic length defined inline
+
+(define (my-length lst)
+  (if (null? lst)
+      0
+      (+ 1 (my-length (cdr lst)))))
+
+(display "my-length '(1 2 3 4 5): ")
+(display (my-length '(1 2 3 4 5)))
+(newline)
+
+(display "my-length '(): ")
+(display (my-length '()))
+(newline)

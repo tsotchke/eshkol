@@ -1,0 +1,56 @@
+;;; Debug test 2 for last-pair function
+;;; Testing parameter and return types
+
+(require stdlib)
+
+(display "=== Debugging last-pair 2 ===")
+(newline)
+
+;; Test list
+(define test-list '(1 2 3))
+
+;; Check test-list type BEFORE calling any function
+(display "test-list type check (before): ")
+(display (pair? test-list))
+(newline)
+
+;; Define an inline version with explicit return
+(define (last-pair-inline lst)
+  (begin
+    ;; Check lst type at entry
+    (display "  lst pair? at entry: ")
+    (display (pair? lst))
+    (newline)
+
+    (if (null? (cdr lst))
+        (begin
+          (display "  returning lst, pair?: ")
+          (display (pair? lst))
+          (newline)
+          lst)
+        (last-pair-inline (cdr lst)))))
+
+(display "=== Test inline version ===")
+(newline)
+(define lp-inline (last-pair-inline test-list))
+(display "Result pair?: ")
+(display (pair? lp-inline))
+(newline)
+(display "Result: ")
+(display lp-inline)
+(newline)
+
+(display "=== Test stdlib version ===")
+(newline)
+(display "Calling last-pair on test-list...")
+(newline)
+(define lp-stdlib (last-pair test-list))
+(display "Result pair?: ")
+(display (pair? lp-stdlib))
+(newline)
+(display "Result: ")
+(display lp-stdlib)
+(newline)
+
+(display "=== Done ===")
+(newline)

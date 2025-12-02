@@ -1,0 +1,5 @@
+;;; Module B - requires module A (creates cycle)
+(require tests.modules.mod_a)
+(provide func-b)
+
+(define (func-b x) (* x 2))

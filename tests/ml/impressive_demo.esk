@@ -2,6 +2,8 @@
 ;; Eshkol Comprehensive Demo: ML, Autodiff, and Functional Programming
 ;; =============================================================
 
+(require stdlib)
+
 (display "╔═══════════════════════════════════════════════════════════╗") (newline)
 (display "║     ESHKOL: Scientific Computing & Autodiff Demo          ║") (newline)
 (display "╚═══════════════════════════════════════════════════════════╝") (newline)

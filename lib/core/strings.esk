@@ -1,0 +1,85 @@
+;;; lib/core/strings.esk - Extended String Utilities
+;;; Part of the core library
+
+;; string-join: Join list of strings with delimiter
+;; (string-join '("a" "b" "c") ",") => "a,b,c"
+(define (string-join lst delim)
+  (if (null? lst)
+      ""
+      (fold (lambda (s acc)
+              (string-append acc delim s))
+            (car lst)
+            (cdr lst))))
+
+;; string-trim: Remove leading and trailing whitespace
+(define (string-trim str)
+  (string-trim-right (string-trim-left str)))
+
+;; string-trim-left: Remove leading whitespace
+(define (string-trim-left str)
+  (define (whitespace? c)
+    (or (= c 32) (= c 9) (= c 10) (= c 13)))
+  (define (find-start i)
+    (if (>= i (string-length str))
+        ""
+        (if (whitespace? (string-ref str i))
+            (find-start (+ i 1))
+            (substring str i (string-length str)))))
+  (find-start 0))
+
+;; string-trim-right: Remove trailing whitespace
+(define (string-trim-right str)
+  (define len (string-length str))
+  (define (whitespace? c)
+    (or (= c 32) (= c 9) (= c 10) (= c 13)))
+  (define (find-end i)
+    (if (< i 0)
+        ""
+        (if (whitespace? (string-ref str i))
+            (find-end (- i 1))
+            (substring str 0 (+ i 1)))))
+  (find-end (- len 1)))
+
+;; string-replace: Replace all occurrences of old with new
+;; (string-replace "hello world" "o" "0") => "hell0 w0rld"
+(define (string-replace str old new)
+  (string-join (reverse (string-split str old)) new))
+
+;; string-reverse: Reverse a string
+(define (string-reverse str)
+  (list->string (reverse (string->list str))))
+
+;; string-copy: Create a copy of string
+(define (string-copy str)
+  (substring str 0 (string-length str)))
+
+;; string-repeat: Repeat string n times
+(define (string-repeat str n)
+  (if (<= n 0)
+      ""
+      (string-append str (string-repeat str (- n 1)))))
+
+;; string-starts-with?: Check if string starts with prefix
+(define (string-starts-with? str prefix)
+  (and (>= (string-length str) (string-length prefix))
+       (string=? (substring str 0 (string-length prefix)) prefix)))
+
+;; string-ends-with?: Check if string ends with suffix
+(define (string-ends-with? str suffix)
+  (let ((str-len (string-length str))
+        (suf-len (string-length suffix)))
+    (and (>= str-len suf-len)
+         (string=? (substring str (- str-len suf-len) str-len) suffix))))
+
+;; string-last-index: Find last occurrence of substring
+(define (string-last-index str substr)
+  (define str-len (string-length str))
+  (define sub-len (string-length substr))
+  (define (search i)
+    (if (< i 0)
+        -1
+        (if (and (<= (+ i sub-len) str-len)
+                 (string=? (substring str i (+ i sub-len)) substr))
+            i
+            (search (- i 1)))))
+  (search (- str-len sub-len)))

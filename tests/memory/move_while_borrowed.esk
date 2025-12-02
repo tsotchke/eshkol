@@ -1,0 +1,7 @@
+;;; Test: Move while borrowed should fail
+;;; Expected: Error - "Cannot move 'x' while it is borrowed"
+
+(define x (owned (cons 1 2)))
+(borrow x
+  (define y (move x))  ; ERROR: x is borrowed
+  (display y))

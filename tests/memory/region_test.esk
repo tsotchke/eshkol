@@ -1,0 +1,19 @@
+;;; Test for with-region memory management
+
+;; Simple anonymous region
+(with-region
+  (display "In anonymous region")
+  (newline)
+  (+ 1 2))
+
+;; Named region
+(with-region 'my-region
+  (display "In named region")
+  (newline)
+  (* 3 4))
+
+;; Named region with size hint
+(with-region ('big-region 10000)
+  (display "In big region with size hint")
+  (newline)
+  (- 10 5))

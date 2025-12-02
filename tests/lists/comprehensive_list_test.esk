@@ -3,6 +3,8 @@
 ;; Testing all list functions
 ;;
 
+(require stdlib)
+
 ;; Test list creation and basic access
 (define test-list (list 10 20 30 40 50))
 (display "Test list: ")

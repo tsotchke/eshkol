@@ -1,0 +1,5 @@
+;;; Test for cycle detection
+(require tests.modules.mod_a)
+
+(display (func-a 5))
+(newline)

@@ -3,6 +3,8 @@
 ;; Testing basic functionality without lambdas first
 ;;
 
+(require stdlib)
+
 (display "=== PHASE 1B SIMPLE TEST ===")
 (newline)
 

@@ -1,0 +1,16 @@
+;;; Test: Valid ownership usage should pass
+;;; Expected: No errors, compiles and runs successfully
+
+(define x (owned (cons 1 2)))
+(borrow x
+  (display "x = ")
+  (display x)
+  (newline))
+(define y (move x))  ; consume x by moving to y
+(borrow y
+  (display "y = ")
+  (display y)
+  (newline))
+(define z (move y))  ; consume y
+(display "Ownership test passed!")
+(newline)

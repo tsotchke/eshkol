@@ -1,0 +1,37 @@
+;;; Simple test for with-region memory management
+
+;; Define a simple function first
+(define (add-one x) (+ x 1))
+
+;; Test anonymous region - returns value from within
+(define result1
+  (with-region
+    (+ 10 20)))
+
+;; Display result
+(display "Result 1 (10 + 20): ")
+(display result1)
+(newline)
+
+;; Test named region
+(define result2
+  (with-region 'calc-region
+    (* 5 5)))
+
+(display "Result 2 (5 * 5): ")
+(display result2)
+(newline)
+
+;; Test nested regions
+(define result3
+  (with-region 'outer
+    (+ 100
+       (with-region 'inner
+         (* 3 4)))))
+
+(display "Result 3 (100 + 3*4): ")
+(display result3)
+(newline)
+
+(display "All region tests passed!")
+(newline)

@@ -1,0 +1,16 @@
+;;; Test module symbol visibility
+(require test.modules.math_utils)
+
+(display "Testing exported functions:")
+(newline)
+
+(display "  double-it(5) = ")
+(display (double-it 5))
+(newline)
+
+(display "  square(4) = ")
+(display (square 4))
+(newline)
+
+(display "Symbol visibility test passed!")
+(newline)

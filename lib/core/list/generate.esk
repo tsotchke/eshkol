@@ -1,0 +1,57 @@
+;;; core/list/generate.esk
+;;; List generation functions
+
+(provide iota iota-from iota-step repeat make-list range zip)
+
+;;; iota: Generate a list of numbers starting from 0
+;;; (iota 5) => (0 1 2 3 4)
+(define (iota count)
+  (define (build n acc)
+    (if (< n 0)
+        acc
+        (build (- n 1) (cons n acc))))
+  (build (- count 1) '()))
+
+;;; iota-from: Generate a list of numbers starting from a given value
+;;; (iota-from 5 1) => (1 2 3 4 5)
+(define (iota-from count start)
+  (define (build n acc)
+    (if (< n 0)
+        acc
+        (build (- n 1) (cons (+ start n) acc))))
+  (build (- count 1) '()))
+
+;;; iota-step: Generate a list of numbers with custom start and step
+;;; (iota-step 5 0 2) => (0 2 4 6 8)
+(define (iota-step count start step)
+  (define (build n acc)
+    (if (< n 0)
+        acc
+        (build (- n 1) (cons (+ start (* n step)) acc))))
+  (build (- count 1) '()))
+
+;;; repeat: Create a list with n copies of x
+(define (repeat n x)
+  (if (<= n 0)
+      '()
+      (cons x (repeat (- n 1) x))))
+
+;;; make-list: Create a list with n copies of fill (default #f)
+;;; (make-list 3 'x) => (x x x)
+(define (make-list n fill)
+  (repeat n fill))
+
+;;; range: Generate a list of numbers from start to end (exclusive)
+;;; (range 0 5) => (0 1 2 3 4)
+(define (range start end)
+  (if (>= start end)
+      '()
+      (cons start (range (+ start 1) end))))
+
+;;; zip: Combine two lists into a list of pairs
+;;; (zip '(a b c) '(1 2 3)) => ((a 1) (b 2) (c 3))
+(define (zip lst1 lst2)
+  (if (or (null? lst1) (null? lst2))
+      '()
+      (cons (list (car lst1) (car lst2))
+            (zip (cdr lst1) (cdr lst2)))))

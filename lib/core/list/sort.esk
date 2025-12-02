@@ -1,0 +1,41 @@
+;;; core/list/sort.esk
+;;; Sorting algorithms
+
+(provide sort)
+
+;;; sort: Sort a list using merge sort
+;;; (sort '(3 1 4 1 5 9 2 6) <) => (1 1 2 3 4 5 6 9)
+(define (sort lst less?)
+  ;; Merge two sorted lists
+  (define (merge l1 l2)
+    (cond ((null? l1) l2)
+          ((null? l2) l1)
+          ((less? (car l1) (car l2))
+           (cons (car l1) (merge (cdr l1) l2)))
+          (else
+           (cons (car l2) (merge l1 (cdr l2))))))
+
+  ;; Get the length
+  (define (len lst)
+    (if (null? lst) 0 (+ 1 (len (cdr lst)))))
+
+  ;; Take first n elements (local version)
+  (define (take-n n lst)
+    (if (or (<= n 0) (null? lst))
+        '()
+        (cons (car lst) (take-n (- n 1) (cdr lst)))))
+
+  ;; Drop first n elements (local version)
+  (define (drop-n n lst)
+    (if (or (<= n 0) (null? lst))
+        lst
+        (drop-n (- n 1) (cdr lst))))
+
+  ;; Main merge sort - split by counting, not mutating
+  (cond ((null? lst) '())
+        ((null? (cdr lst)) lst)
+        (else
+         (let ((n (len lst)))
+           (let ((mid (quotient n 2)))
+             (merge (sort (take-n mid lst) less?)
+                    (sort (drop-n mid lst) less?)))))))

@@ -1,0 +1,47 @@
+;;; Simple test of refactored Eshkol stdlib functions
+(require stdlib)
+
+(display "=== Testing Simple Refactored Functions ===")
+(newline)
+
+;;; Test length
+(display "length '(1 2 3 4 5): ")
+(display (length '(1 2 3 4 5)))
+(newline)
+
+(display "length '(): ")
+(display (length '()))
+(newline)
+
+;;; Test take
+(display "take '(1 2 3 4 5) 3: ")
+(display (take '(1 2 3 4 5) 3))
+(newline)
+
+;;; Test drop
+(display "drop '(1 2 3 4 5) 2: ")
+(display (drop '(1 2 3 4 5) 2))
+(newline)
+
+;;; Test append
+(display "append '(1 2 3) '(4 5 6): ")
+(display (append '(1 2 3) '(4 5 6)))
+(newline)
+
+;;; Test reverse
+(display "reverse '(1 2 3 4 5): ")
+(display (reverse '(1 2 3 4 5)))
+(newline)
+
+;;; Test last
+(display "last '(1 2 3 4 5): ")
+(display (last '(1 2 3 4 5)))
+(newline)
+
+;;; Test last-pair
+(display "last-pair '(1 2 3): ")
+(display (last-pair '(1 2 3)))
+(newline)
+
+(display "=== Simple Tests Complete ===")
+(newline)

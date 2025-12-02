@@ -1,0 +1,16 @@
+;;; Test just the query module
+(require core.list.query)
+
+(display "Testing query module")
+(newline)
+
+(display "length '(1 2 3 4 5): ")
+(display (length '(1 2 3 4 5)))
+(newline)
+
+(display "last '(1 2 3 4 5): ")
+(display (last '(1 2 3 4 5)))
+(newline)
+
+(display "Done")
+(newline)

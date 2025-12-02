@@ -29,8 +29,15 @@
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
+#include <filesystem>
+#include <set>
+#include <vector>
+#include <cctype>
 
 using namespace llvm;
+
+// Track already-loaded modules to prevent circular imports
+static std::set<std::string> loaded_modules;
 using namespace llvm::orc;
 
 namespace eshkol {
@@ -374,9 +381,200 @@ void ReplJITContext::injectPreviousSymbols(Module* module) {
     }
 }
 
+// Helper to parse all ASTs from a string content
+// Returns a vector of parsed ASTs
+// Note: Uses ::eshkol_parse_next_ast_from_stream from global namespace (declared in eshkol.h)
+static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& content) {
+    std::vector<eshkol_ast_t> results;
+    std::istringstream stream(content);
+
+    while (stream.good() && !stream.eof()) {
+        // Skip whitespace and comments
+        while (stream.good()) {
+            int c = stream.peek();
+            if (c == EOF) break;
+            if (std::isspace(c)) {
+                stream.get();
+            } else if (c == ';') {
+                // Skip comment line
+                std::string dummy;
+                std::getline(stream, dummy);
+            } else {
+                break;
+            }
+        }
+
+        if (stream.eof() || stream.peek() == EOF) break;
+
+        // Use global namespace function (declared in eshkol.h)
+        eshkol_ast_t ast = ::eshkol_parse_next_ast_from_stream(stream);
+        if (ast.type == ESHKOL_INVALID) break;
+        results.push_back(ast);
+    }
+
+    return results;
+}
+
+// Helper to resolve module path (e.g., "core.functional.compose" -> "lib/core/functional/compose.esk")
+static std::string resolveModulePath(const std::string& module_name) {
+    std::string path = module_name;
+    // Replace dots with path separators
+    for (char& c : path) {
+        if (c == '.') c = '/';
+    }
+
+    // Check common locations
+    std::vector<std::string> search_paths = {
+        "lib/" + path + ".esk",
+        path + ".esk",
+        "../lib/" + path + ".esk",
+    };
+
+    for (const auto& p : search_paths) {
+        if (std::filesystem::exists(p)) {
+            return std::filesystem::canonical(p).string();
+        }
+    }
+    return "";
+}
+
 void* ReplJITContext::execute(eshkol_ast_t* ast) {
     if (!ast) {
         throw std::runtime_error("Cannot execute null AST");
+    }
+
+    // IMPORT/REQUIRE HANDLING: Load and execute imported files
+    if (ast->type == ESHKOL_OP) {
+        // Handle (import "path/to/file.esk")
+        if (ast->operation.op == ESHKOL_IMPORT_OP && ast->operation.import_op.path) {
+            std::string import_path = ast->operation.import_op.path;
+
+            // Resolve relative paths
+            if (!std::filesystem::path(import_path).is_absolute()) {
+                if (!std::filesystem::exists(import_path)) {
+                    // Try relative to lib/
+                    std::string lib_path = "lib/" + import_path;
+                    if (std::filesystem::exists(lib_path)) {
+                        import_path = lib_path;
+                    }
+                }
+            }
+
+            // Check if already loaded
+            std::string canonical_path;
+            try {
+                canonical_path = std::filesystem::canonical(import_path).string();
+            } catch (...) {
+                std::cerr << "Import file not found: " << import_path << std::endl;
+                return nullptr;
+            }
+
+            if (loaded_modules.count(canonical_path)) {
+                // Already loaded, return nil
+                return nullptr;
+            }
+            loaded_modules.insert(canonical_path);
+
+            // Read the file
+            std::ifstream file(canonical_path);
+            if (!file.is_open()) {
+                std::cerr << "Cannot open import file: " << canonical_path << std::endl;
+                return nullptr;
+            }
+
+            std::stringstream buffer;
+            buffer << file.rdbuf();
+            std::string content = buffer.str();
+            file.close();
+
+            // Parse all ASTs from the file
+            std::vector<eshkol_ast_t> file_asts = parseAllAstsFromString(content);
+            if (file_asts.empty()) {
+                // Empty file or parse failed - this is okay for modules that just define things
+                return nullptr;
+            }
+
+            // Execute each AST in the file
+            void* last_result = nullptr;
+            for (auto& ast_item : file_asts) {
+                // Check if this is a define that creates a lambda function
+                // and register it so JIT can find it later
+                if (ast_item.type == ESHKOL_OP && ast_item.operation.op == ESHKOL_DEFINE_OP) {
+                    const char* name = ast_item.operation.define_op.name;
+                    bool is_lambda = ast_item.operation.define_op.is_function ||
+                        (ast_item.operation.define_op.value &&
+                         ast_item.operation.define_op.value->type == ESHKOL_OP &&
+                         ast_item.operation.define_op.value->operation.op == ESHKOL_LAMBDA_OP);
+                    if (name && is_lambda) {
+                        registerLambdaVar(name);
+                    }
+                }
+                last_result = execute(&ast_item);
+                eshkol_ast_clean(&ast_item);
+            }
+
+            return last_result;
+        }
+
+        // Handle (require module.name ...)
+        if (ast->operation.op == ESHKOL_REQUIRE_OP) {
+            void* last_result = nullptr;
+            for (size_t i = 0; i < ast->operation.require_op.num_modules; i++) {
+                std::string module_name = ast->operation.require_op.module_names[i];
+                std::string module_path = resolveModulePath(module_name);
+
+                if (module_path.empty()) {
+                    std::cerr << "Module not found: " << module_name << std::endl;
+                    continue;
+                }
+
+                // Check if already loaded
+                if (loaded_modules.count(module_path)) {
+                    continue;
+                }
+                loaded_modules.insert(module_path);
+
+                // Read the module file
+                std::ifstream module_file(module_path);
+                if (!module_file.is_open()) {
+                    std::cerr << "Cannot open module: " << module_path << std::endl;
+                    continue;
+                }
+
+                std::stringstream buffer;
+                buffer << module_file.rdbuf();
+                std::string content = buffer.str();
+                module_file.close();
+
+                // Parse all ASTs from the module
+                std::vector<eshkol_ast_t> module_asts = parseAllAstsFromString(content);
+
+                // Execute each AST in the module
+                for (auto& ast_item : module_asts) {
+                    // Check if this is a define that creates a lambda function
+                    // and register it so JIT can find it later
+                    if (ast_item.type == ESHKOL_OP && ast_item.operation.op == ESHKOL_DEFINE_OP) {
+                        const char* name = ast_item.operation.define_op.name;
+                        bool is_lambda = ast_item.operation.define_op.is_function ||
+                            (ast_item.operation.define_op.value &&
+                             ast_item.operation.define_op.value->type == ESHKOL_OP &&
+                             ast_item.operation.define_op.value->operation.op == ESHKOL_LAMBDA_OP);
+                        if (name && is_lambda) {
+                            registerLambdaVar(name);
+                        }
+                    }
+                    last_result = execute(&ast_item);
+                    eshkol_ast_clean(&ast_item);
+                }
+            }
+
+            return last_result;
+        }
+
+        // Handle (provide ...) - just return nil, exports are implicit in REPL
+        if (ast->operation.op == ESHKOL_PROVIDE_OP) {
+            return nullptr;
+        }
     }
 
     // Generate LLVM IR using the existing Eshkol compiler
