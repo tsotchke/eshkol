@@ -52,9 +52,9 @@ make -j$(nproc)
 ```
 
 ### Known Working Tests
-- ✅ [`tests/mixed_type_lists_basic_test.esk`](../tests/mixed_type_lists_basic_test.esk)
-- ✅ [`tests/phase_2a_group_a_test.esk`](../tests/phase_2a_group_a_test.esk)
-- ⏳ [`tests/phase_2a_multilist_map_test.esk`](../tests/phase_2a_multilist_map_test.esk) - Pending validation
+- ✅ [`tests/mixed_type_lists_basic_test.esk`](../tests/lists/mixed_type_lists_basic_test.esk)
+- ✅ [`tests/phase_2a_group_a_test.esk`](../tests/lists/phase_2a_group_a_test.esk)
+- ⏳ [`tests/phase_2a_multilist_map_test.esk`](../tests/lists/phase_2a_multilist_map_test.esk) - Pending validation
 
 ---
 
@@ -132,7 +132,7 @@ Milestone: v1.0-architecture tagged
 **Files Modified**: 
 - [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Tagged value system implementation
 - [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) - Tagged cons cell allocation
-- [`tests/phase_2a_group_a_test.esk`](../tests/phase_2a_group_a_test.esk) - Group A validation tests
+- [`tests/phase_2a_group_a_test.esk`](../tests/lists/phase_2a_group_a_test.esk) - Group A validation tests
 - [`docs/BUILD_STATUS.md`](BUILD_STATUS.md) - This file (new)
 - [`docs/MASTER_DEVELOPMENT_PLAN.md`](MASTER_DEVELOPMENT_PLAN.md) - 24-month roadmap (new)
 - [`docs/V1_0_FOUNDATION_RELEASE_PLAN.md`](V1_0_FOUNDATION_RELEASE_PLAN.md) - v1.0 detailed plan (new)
@@ -251,7 +251,7 @@ cd build && ./eshkol-run ../tests/phase_2a_group_a_test.esk
 **Files Modified**:
 - [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Tagged value system implementation
 - [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) - Tagged cons cell allocation
-- [`tests/phase_2a_group_a_test.esk`](../tests/phase_2a_group_a_test.esk) - Group A validation tests
+- [`tests/phase_2a_group_a_test.esk`](../tests/lists/phase_2a_group_a_test.esk) - Group A validation tests
 - [`docs/BUILD_STATUS.md`](BUILD_STATUS.md) - This file (new)
 - [`docs/MASTER_DEVELOPMENT_PLAN.md`](MASTER_DEVELOPMENT_PLAN.md) - 24-month roadmap (new)
 - [`docs/V1_0_FOUNDATION_RELEASE_PLAN.md`](V1_0_FOUNDATION_RELEASE_PLAN.md) - v1.0 detailed plan (new)

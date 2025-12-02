@@ -895,7 +895,7 @@ eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_capt
     return env;
 }
 
-eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures) {
+eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures, uint64_t sexpr_ptr) {
     if (!arena) {
         eshkol_error("Cannot allocate closure: null arena");
         return nullptr;
@@ -911,6 +911,7 @@ eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size
     }
 
     closure->func_ptr = func_ptr;
+    closure->sexpr_ptr = sexpr_ptr;  // Store S-expression for homoiconicity
 
     // Allocate environment if there are captures
     if (num_captures > 0) {
@@ -923,8 +924,8 @@ eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size
         closure->env = nullptr;
     }
 
-    eshkol_debug("Allocated closure at %p with func_ptr=%p, env=%p (%zu captures)",
-                (void*)closure, (void*)func_ptr, (void*)closure->env, num_captures);
+    eshkol_debug("Allocated closure at %p with func_ptr=%p, env=%p (%zu captures), sexpr=%p",
+                (void*)closure, (void*)func_ptr, (void*)closure->env, num_captures, (void*)sexpr_ptr);
 
     return closure;
 }

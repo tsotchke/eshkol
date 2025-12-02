@@ -106,7 +106,7 @@ Review warning messages and add appropriate type checks or conversions.
 
 ## Test Runner
 
-Created [`scripts/run_all_tests.sh`](../scripts/run_all_tests.sh) for systematic validation.
+Created [`scripts/run_all_tests.sh`](../scripts/run_list_tests.sh) for systematic validation.
 
 **Usage:**
 ```bash

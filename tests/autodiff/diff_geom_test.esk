@@ -1,0 +1,48 @@
+(display "=== Differential Geometry Accuracy Tests ===") (newline)
+(newline)
+
+;; Test 1: Simple gradient
+(define (f1 v) (* (vref v 0) (vref v 0)))  ;; f(x) = x^2
+(display "Test 1: f(x) = x²") (newline)
+(display "∇f(3) = ") (display (gradient f1 (vector 3.0))) (newline)
+(display "Expected: #(6)") (newline)
+(newline)
+
+;; Test 2: Multivariate gradient
+(define (f2 v) 
+  (+ (* (vref v 0) (vref v 0)) 
+     (* (vref v 1) (vref v 1))))  ;; f(x,y) = x² + y²
+(display "Test 2: f(x,y) = x² + y²") (newline)
+(display "∇f(3,4) = ") (display (gradient f2 (vector 3.0 4.0))) (newline)
+(display "Expected: #(6 8)") (newline)
+(newline)
+
+;; Test 3: Gradient with trig functions
+(define (f3 v) (sin (vref v 0)))  ;; f(x) = sin(x)
+(display "Test 3: f(x) = sin(x)") (newline)
+(display "∇f(0) = ") (display (gradient f3 (vector 0.0))) (newline)
+(display "Expected: #(1) since cos(0)=1") (newline)
+(newline)
+
+;; Test 4: Jacobian of rotation
+(define (rotation v)
+  (let ((x (vref v 0))
+        (y (vref v 1)))
+    (vector (- (* (cos 0.5) x) (* (sin 0.5) y))
+            (+ (* (sin 0.5) x) (* (cos 0.5) y)))))
+(display "Test 4: 2D rotation by 0.5 rad") (newline)
+(display "J at (1,0):") (newline)
+(display (jacobian rotation (vector 1.0 0.0))) (newline)
+(display "Expected: ~#((0.877 -0.479) (0.479 0.877))") (newline)
+(newline)
+
+;; Test 5: Hessian of quadratic
+(define (f5 v)
+  (+ (* 2.0 (* (vref v 0) (vref v 0)))
+     (* 3.0 (* (vref v 1) (vref v 1)))))  ;; 2x² + 3y²
+(display "Test 5: f(x,y) = 2x² + 3y²") (newline)
+(display "H(1,1) = ") (display (hessian f5 (vector 1.0 1.0))) (newline)
+(display "Expected: #((4 0) (0 6))") (newline)
+(newline)
+
+(display "=== Tests Complete ===") (newline)

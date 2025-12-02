@@ -18,7 +18,7 @@ FAIL=0
 COMPILE_FAIL=0
 
 # Output directory
-OUTPUT_DIR="test_outputs"
+OUTPUT_DIR="list_test_outputs"
 mkdir -p "$OUTPUT_DIR"
 
 # Results file
@@ -48,11 +48,11 @@ if [ ! -f "build/eshkol-run" ]; then
     exit 1
 fi
 
-echo "Testing all files in tests/ directory..."
+echo "Testing all files in tests/lists/ directory..."
 echo ""
 
 # Run each test
-for test_file in tests/*.esk; do
+for test_file in tests/lists/*.esk; do
     test_name=$(basename "$test_file")
     output_file="$OUTPUT_DIR/${test_name%.esk}_output.txt"
     

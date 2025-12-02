@@ -1,0 +1,20 @@
+;; transpose test - matrix transposition
+(display "=== transpose ===") (newline)
+
+;; Create a 2x3 matrix using reshape
+(define m (reshape (arange 6) 2 3))
+(display "Original 2x3 matrix (0-5): ")
+(display m)
+(newline)
+(display "Transposed 3x2 matrix: ")
+(display (transpose m))
+(newline)
+
+;; Create 3x2 matrix
+(define m2 (reshape (arange 6) 3 2))
+(display "Original 3x2 matrix (0-5): ")
+(display m2)
+(newline)
+(display "Transposed 2x3 matrix: ")
+(display (transpose m2))
+(newline)

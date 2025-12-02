@@ -287,6 +287,7 @@ int main(int argc, char **argv)
             if (debug_mode) {
                 eshkol_info("Loading standard library from: %s", stdlib_path.c_str());
             }
+            // Load stdlib ASTs and prepend to main ASTs (inline compilation)
             load_file_asts(stdlib_path, asts, debug_mode);
         } else {
             if (debug_mode) {
@@ -418,56 +419,53 @@ int main(int argc, char **argv)
             } else {
                 obj_filename = module_name + ".o";
             }
-            
+
             eshkol_info("Compiling to object file: %s", obj_filename.c_str());
             if (eshkol_compile_llvm_ir_to_object(llvm_module, obj_filename.c_str()) != 0) {
                 eshkol_error("Object file compilation failed");
                 eshkol_dispose_llvm_module(llvm_module);
                 return 1;
             }
-        } else if (output) {
-            // Compile to executable with specified output name
-            eshkol_info("Compiling to executable: %s", output);
-            
-            // Prepare C-style arrays for library paths and libraries
-            const char** lib_path_ptrs = nullptr;
-            const char** linked_lib_ptrs = nullptr;
-            
-            if (!lib_paths.empty()) {
-                lib_path_ptrs = const_cast<const char**>(lib_paths.data());
-            }
-            if (!linked_libs.empty()) {
-                linked_lib_ptrs = const_cast<const char**>(linked_libs.data());
-            }
-            
-            if (eshkol_compile_llvm_ir_to_executable(llvm_module, output, 
-                                                   lib_path_ptrs, lib_paths.size(),
-                                                   linked_lib_ptrs, linked_libs.size()) != 0) {
-                eshkol_error("Executable compilation failed");
-                eshkol_dispose_llvm_module(llvm_module);
-                return 1;
-            }
         } else if (!compile_only && !dump_ir && !dump_ast) {
-            // Default behavior: compile to a.out
-            eshkol_info("Compiling to executable: a.out");
-            
-            // Prepare C-style arrays for library paths and libraries
-            const char** lib_path_ptrs = nullptr;
-            const char** linked_lib_ptrs = nullptr;
-            
-            if (!lib_paths.empty()) {
-                lib_path_ptrs = const_cast<const char**>(lib_paths.data());
-            }
-            if (!linked_libs.empty()) {
-                linked_lib_ptrs = const_cast<const char**>(linked_libs.data());
-            }
-            
-            if (eshkol_compile_llvm_ir_to_executable(llvm_module, "a.out",
-                                                   lib_path_ptrs, lib_paths.size(),
-                                                   linked_lib_ptrs, linked_libs.size()) != 0) {
-                eshkol_error("Executable compilation failed");
-                eshkol_dispose_llvm_module(llvm_module);
-                return 1;
+            // Default behavior: compile to executable
+            // If we have object files to link (like stdlib.o), compile to temp .o first
+            // then link everything together
+            std::string exe_name = output ? std::string(output) : "a.out";
+
+            if (!compiled_files.empty()) {
+                // Compile main program to temp .o, then link with stdlib.o etc.
+                std::string temp_obj = exe_name + ".tmp.o";
+                eshkol_info("Compiling to temp object: %s", temp_obj.c_str());
+                if (eshkol_compile_llvm_ir_to_object(llvm_module, temp_obj.c_str()) != 0) {
+                    eshkol_error("Object file compilation failed");
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                compiled_files.push_back(strdup(temp_obj.c_str()));
+                // Set output so the linking section runs
+                if (!output) output = strdup(exe_name.c_str());
+            } else {
+                // No object files to link, compile directly to executable
+                eshkol_info("Compiling to executable: %s", exe_name.c_str());
+
+                // Prepare C-style arrays for library paths and libraries
+                const char** lib_path_ptrs = nullptr;
+                const char** linked_lib_ptrs = nullptr;
+
+                if (!lib_paths.empty()) {
+                    lib_path_ptrs = const_cast<const char**>(lib_paths.data());
+                }
+                if (!linked_libs.empty()) {
+                    linked_lib_ptrs = const_cast<const char**>(linked_libs.data());
+                }
+
+                if (eshkol_compile_llvm_ir_to_executable(llvm_module, exe_name.c_str(),
+                                                       lib_path_ptrs, lib_paths.size(),
+                                                       linked_lib_ptrs, linked_libs.size()) != 0) {
+                    eshkol_error("Executable compilation failed");
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
             }
         }
         
@@ -477,34 +475,55 @@ int main(int argc, char **argv)
 
     // Process compiled object files if we have them and an output target
     if (!compiled_files.empty() && output) {
-        std::string link_cmd = "cc";
-        
+        std::string link_cmd = "c++ -fPIE";
+
         // Add all object files
         for (const auto &compiled_file : compiled_files) {
             link_cmd += " " + std::string(compiled_file);
         }
-        
+
         // Add library search paths
         for (const auto &lib_path : lib_paths) {
             link_cmd += " -L" + std::string(lib_path);
         }
-        
+
+        // Add libeshkol-static.a (needed for arena functions)
+        char cwd[4096];
+        if (getcwd(cwd, sizeof(cwd)) != nullptr) {
+            std::string cwd_str = std::string(cwd);
+            std::string lib_path;
+            if (cwd_str.length() >= 5 && cwd_str.substr(cwd_str.length() - 5) == "build") {
+                lib_path = cwd_str + "/libeshkol-static.a";
+            } else {
+                lib_path = cwd_str + "/build/libeshkol-static.a";
+            }
+            link_cmd += " " + lib_path;
+        }
+
         // Add linked libraries
         for (const auto &linked_lib : linked_libs) {
             link_cmd += " -l" + std::string(linked_lib);
         }
-        
+
         // Add output
         link_cmd += " -o " + std::string(output) + " -lm";
         
         eshkol_info("Linking object files: %s", link_cmd.c_str());
         int result = system(link_cmd.c_str());
-        
+
+        // Clean up temp object files
+        for (const auto &compiled_file : compiled_files) {
+            std::string file(compiled_file);
+            if (file.find(".tmp.o") != std::string::npos) {
+                std::remove(file.c_str());
+            }
+        }
+
         if (result != 0) {
             eshkol_error("Linking failed with exit code %d", result);
             return 1;
         }
-        
+
         eshkol_info("Successfully created executable: %s", output);
     } else if (!compiled_files.empty()) {
         eshkol_warn("Object files provided but no output specified. Use -o to specify output executable.");

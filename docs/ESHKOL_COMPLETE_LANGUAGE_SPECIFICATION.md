@@ -1902,110 +1902,205 @@ Eshkol extends the standard Scheme macro system with specialized features for sc
 
 ## 13. Module System
 
-Eshkol provides a comprehensive module system for organizing code into reusable, composable units.
+Eshkol provides a **gradual** module system designed to be minimal and non-intrusive. Module names are inferred from file paths, and files use simple top-level directives rather than wrapping forms.
 
-### 13.1 Module Definitions
+### 13.1 Design Philosophy
 
-Modules are defined using the `define-module` form, which specifies a name, imports, and exports.
+The module system follows Eshkol's core principles:
 
-**Module Definition**:
+1. **Gradual**: Add structure only when needed
+2. **Minimal**: No boilerplate or redundancy
+3. **Inferred**: Module names derived from file paths (like type inference)
+4. **Scheme-compatible**: Alternative syntax for R7RS compatibility
+
+### 13.2 Primary Syntax (Eshkol Style)
+
+The preferred Eshkol syntax uses top-level `require` and `provide` directives without wrapping:
 
 ```scheme
-(define-module name
-  (import module1 module2 ...)
-  (export identifier1 identifier2 ...)
-  
-  ;; Module body
-  definitions-and-expressions)
+;;; lib/math/linalg.esk
+;;; Module: math.linalg (inferred from path)
+
+(require core.operators)          ; Import dependencies
+(provide det inv solve dot cross) ; Export public API
+
+;; Definitions follow directly - no wrapping needed
+(define (det M n) ...)
+(define (inv M n) ...)
+(define (solve A b n) ...)
+(define (dot u v) ...)
+(define (cross u v) ...)
+
+;; Private functions (underscore convention or not in provide)
+(define (_pivot-search M k n) ...)
 ```
 
-**Example**:
+### 13.3 Alternative Syntax (Scheme Compatibility)
+
+For R7RS compatibility, the `define-library` form is also supported:
 
 ```scheme
-(define-module math.vector
-  (import core)
-  (export make-vector vector? vector-ref vector-set!
-          vector-add vector-subtract vector-scale vector-dot)
-  
-  ;; Vector operations implementation
-  (define (vector-add v1 v2) ...)
-  (define (vector-subtract v1 v2) ...)
-  (define (vector-scale v scalar) ...)
-  (define (vector-dot v1 v2) ...))
+(define-library (math linalg)
+  (import (core operators))
+  (export det inv solve dot cross)
+  (begin
+    (define (det M n) ...)
+    (define (inv M n) ...)
+    (define (solve A b n) ...)
+    (define (dot u v) ...)
+    (define (cross u v) ...)))
 ```
 
-### 13.2 Imports and Exports
+Both syntaxes compile to the same internal representation.
 
-Modules control their interface through imports and exports, allowing fine-grained control over visibility.
+### 13.4 Import Forms
 
-**Import Forms**:
+The `require` form imports dependencies:
 
 ```scheme
-(import module-name)               ; Import all exported identifiers
-(import (only module-name id1 id2 ...))  ; Import specific identifiers
-(import (prefix module-name prefix))  ; Add prefix to imported identifiers
-(import (rename module-name (old new) ...))  ; Rename imported identifiers
+;; Basic import
+(require math.linalg)                    ; Import all exports
+
+;; Multiple modules
+(require data.json web.http net.tcp)     ; Import several modules
+
+;; Advanced forms (Scheme-compatible)
+(require (only data.json json-parse json-get))     ; Selective import
+(require (prefix net.tcp tcp:))                    ; Prefixed: tcp:connect
+(require (rename data.csv (csv-parse parse-csv)))  ; Renamed import
 ```
 
-**Export Forms**:
+### 13.5 Export Forms
+
+The `provide` form declares the module's public API:
 
 ```scheme
-(export id1 id2 ...)               ; Export identifiers
-(export (rename (old new) ...))    ; Export with renamed identifiers
+(provide det inv solve)              ; Export specific names
+
+;; With rename
+(provide (rename internal-det det))  ; Export internal-det as det
 ```
 
-**Example**:
+**Visibility Rules**:
+- Only names listed in `provide` are exported
+- Functions prefixed with `_` are private by convention
+- If no `provide` is present:
+  - Library files: Nothing exported (fully private)
+  - Script files: No exports needed
+
+### 13.6 Module Resolution
+
+**Path Resolution Order**:
+
+1. Current directory: `./module/path.esk`
+2. Library path: `$ESHKOL_LIB/module/path.esk` (default: `lib/`)
+3. User paths: `$ESHKOL_PATH` entries (colon-separated)
+
+**Module Name to File Path Mapping**:
+
+| Module Name | File Path |
+|-------------|-----------|
+| `data.json` | `lib/data/json.esk` |
+| `core.strings` | `lib/core/strings.esk` |
+| `ext.ml.nn` | `lib/ext/ml/nn.esk` |
+| `my-app.server` | `./my-app/server.esk` |
+
+### 13.7 Macro Handling
+
+Macros are automatically detected and handled during module loading:
 
 ```scheme
-(define-module geometry
-  (import (prefix math.vector vec:)
-          (only math.matrix matrix-multiply))
-  (export distance area volume)
-  
-  (define (distance p1 p2)
-    (sqrt (vec:vector-dot (vec:vector-subtract p2 p1)
-                         (vec:vector-subtract p2 p1))))
-  
-  (define (area shape) ...)
-  (define (volume shape) ...))
+;;; lib/macros/control.esk
+(provide when unless)
+
+(define-syntax when
+  (syntax-rules ()
+    ((when test body ...)
+     (if test (begin body ...)))))
+
+(define-syntax unless
+  (syntax-rules ()
+    ((unless test body ...)
+     (if (not test) (begin body ...)))))
 ```
 
-### 13.3 Namespace Management
-
-Eshkol provides tools for managing namespaces and resolving naming conflicts.
-
-**Namespace Forms**:
-
 ```scheme
-(namespace-open module-name)       ; Open module namespace
-(namespace-close module-name)      ; Close module namespace
-(namespace-with module-name expr ...)  ; Evaluate with open namespace
+;;; app.esk
+(require macros.control)
+
+;; Macros are expanded at parse time
+(when (> x 0)
+  (display "positive"))
 ```
 
-**Example**:
+The compiler:
+1. Detects `define-syntax` forms during parsing
+2. Loads macros before expanding importing modules
+3. Maintains proper hygiene across module boundaries
+
+### 13.8 Compilation Process
+
+1. **Dependency Scan**: Parse imports, build dependency graph
+2. **Cycle Detection**: Error on circular dependencies
+3. **Topological Sort**: Determine compilation order
+4. **Macro Expansion**: Expand macros in dependency order
+5. **Compilation**: Generate LLVM IR for each module
+6. **Linking**: Combine into final executable
+
+### 13.9 Examples
+
+**Simple Script** (no module declaration needed):
 
 ```scheme
-;; Without namespace management
-(define v1 (math.vector.make-vector 3 0.0))
-(math.vector.vector-set! v1 0 1.0)
+;;; script.esk
+(require data.json)
+(require web.http)
 
-;; With namespace management
-(namespace-with math.vector
-  (define v1 (make-vector 3 0.0))
-  (vector-set! v1 0 1.0))
+(define response (http-get "https://api.example.com/data"))
+(display (json-get (json-parse (http-response-body response)) "name"))
 ```
 
-**Module Aliases**:
+**Library Module**:
 
 ```scheme
-(define-module-alias alias module-name)
+;;; lib/geometry/shapes.esk
+(require math.linalg)
+(provide distance area volume)
+
+(define (distance p1 p2)
+  (sqrt (dot (vector-sub p2 p1) (vector-sub p2 p1))))
+
+(define (area shape) ...)
+(define (volume shape) ...)
 ```
 
-**Example**:
+**Application with Multiple Modules**:
 
 ```scheme
-(define-module-alias vec math.vector)
-(define v1 (vec:make-vector 3 0.0))
+;;; src/server.esk
+(require web.http)
+(require data.json)
+(require app.handlers)      ; Local module
+
+(provide start-server)
+
+(define (start-server port)
+  (http-serve port handle-request))
+```
+
+```scheme
+;;; src/app/handlers.esk
+(require data.json)
+(provide handle-request)
+
+(define (handle-request req)
+  (let ((path (http-request-path req)))
+    (cond
+      ((string=? path "/api/data") (get-data req))
+      (else (not-found req)))))
+
+(define (get-data req) ...)
+(define (not-found req) ...)
 ```
 
 ## 14. Standard Library

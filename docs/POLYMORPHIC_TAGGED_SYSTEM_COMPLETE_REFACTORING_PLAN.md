@@ -886,10 +886,10 @@ if (new_typed.isInt64()) {
 #### Days 3-4: Regression Testing
 
 **Run ALL existing tests:**
-- [`tests/integer_only_test.esk`](../tests/integer_only_test.esk) - Should still pass
-- [`tests/mixed_type_lists_basic_test.esk`](../tests/mixed_type_lists_basic_test.esk) - Should pass now
-- [`tests/phase_2a_multilist_map_test.esk`](../tests/phase_2a_multilist_map_test.esk) - Should pass
-- [`tests/session_006_multilist_map_test.esk`](../tests/session_006_multilist_map_test.esk) - Should pass
+- [`tests/integer_only_test.esk`](../tests/lists/integer_only_test.esk) - Should still pass
+- [`tests/mixed_type_lists_basic_test.esk`](../tests/lists/mixed_type_lists_basic_test.esk) - Should pass now
+- [`tests/phase_2a_multilist_map_test.esk`](../tests/lists/phase_2a_multilist_map_test.esk) - Should pass
+- [`tests/session_006_multilist_map_test.esk`](../tests/lists/session_006_multilist_map_test.esk) - Should pass
 
 #### Day 5: Performance & Memory Validation
 

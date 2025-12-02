@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Eshkol Neural Network Test Suite
-# Runs all neural network tests and reports results
+# Systematic Test Suite Validation Script
+# Runs all tests and reports results
 
 set -e
 
@@ -21,7 +21,7 @@ declare -a FAILED_TESTS
 declare -a RUNTIME_ERRORS
 
 echo "========================================="
-echo "  Eshkol Neural Network Test Suite"
+echo "  Eshkol Test Suite Validation"
 echo "========================================="
 echo ""
 
@@ -37,15 +37,15 @@ if [ ! -f "build/eshkol-run" ]; then
     exit 1
 fi
 
-echo "Testing all files in tests/neural/ directory..."
+echo "Testing all files in tests/lists/ directory..."
 echo ""
 
 # Run each test
-for test_file in tests/neural/*.esk; do
+for test_file in tests/lists/*.esk; do
     test_name=$(basename "$test_file")
     printf "Testing %-50s " "$test_name"
-
-    # Try to compile
+    
+    # Try to compile (--no-stdlib until stdlib environment is improved)
     if ./build/eshkol-run --no-stdlib "$test_file" -L./build > /dev/null 2>&1; then
         # Compilation succeeded, try to run
         if ./a.out > /tmp/test_output.txt 2>&1; then
@@ -88,7 +88,7 @@ if [ $FAIL -gt 0 ]; then
         echo "  - $test"
     done
     echo ""
-
+    
     if [ ${#RUNTIME_ERRORS[@]} -gt 0 ]; then
         echo "Runtime Errors:"
         for test in "${RUNTIME_ERRORS[@]}"; do
