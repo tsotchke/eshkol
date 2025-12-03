@@ -6,6 +6,9 @@
  */
 #include "eshkol/eshkol.h"
 #include <eshkol/llvm_backend.h>
+#include <eshkol/backend/type_system.h>
+#include <eshkol/backend/function_cache.h>
+#include <eshkol/backend/memory_codegen.h>
 #include <eshkol/logger.h>
 #include "../core/arena_memory.h"
 
@@ -145,18 +148,21 @@ private:
     std::unique_ptr<LLVMContext> context;
     std::unique_ptr<Module> module;
     std::unique_ptr<IRBuilder<>> builder;
-    
-    // Tagged value struct type for LLVM IR
+
+    // Type system (manages all LLVM types)
+    std::unique_ptr<eshkol::TypeSystem> types;
+
+    // Function cache (lazy-loaded C library functions)
+    std::unique_ptr<eshkol::FunctionCache> funcs;
+
+    // Memory codegen (arena function declarations)
+    std::unique_ptr<eshkol::MemoryCodegen> mem;
+
+    // Local type pointers (initialized from TypeSystem for backward compatibility)
+    // TODO: Gradually migrate code to use types-> accessors directly
     StructType* tagged_value_type;
-    
-    // Dual number struct type for forward-mode automatic differentiation
     StructType* dual_number_type;
-    
-    // PHASE 3: AD node struct type for reverse-mode automatic differentiation
     StructType* ad_node_type;
-    
-    // JACOBIAN SEGFAULT FIX: Tensor struct type as class member (shared by all functions)
-    // This prevents LLVM IR name conflicts and type mismatches in nested operations
     StructType* tensor_type;
     
     // PHASE 3: Current tape for reverse-mode AD
@@ -208,32 +214,9 @@ private:
     // N-DIMENSIONAL DERIVATIVES: Stack of outer AD nodes for arbitrary depth nesting
     GlobalVariable* outer_ad_node_stack;    // Array of outer AD node pointers [MAX_TAPE_DEPTH]
     GlobalVariable* outer_ad_node_depth;    // Current depth in the outer AD node stack
-    
-    Function* arena_create_func;
-    Function* arena_destroy_func;
-    Function* arena_allocate_func;
-    Function* arena_push_scope_func;
-    Function* arena_pop_scope_func;
-    Function* arena_allocate_cons_cell_func;
 
-    // Closure allocation function
-    Function* arena_allocate_closure_func;
-
-    // Tagged cons cell function declarations
-    Function* arena_allocate_tagged_cons_cell_func;
-    Function* arena_tagged_cons_get_int64_func;
-    Function* arena_tagged_cons_get_double_func;
-    Function* arena_tagged_cons_get_ptr_func;
-    Function* arena_tagged_cons_set_int64_func;
-    Function* arena_tagged_cons_set_double_func;
-    Function* arena_tagged_cons_set_ptr_func;
-    Function* arena_tagged_cons_set_null_func;
-    Function* arena_tagged_cons_get_type_func;
-    Function* arena_tagged_cons_get_flags_func;
-
-    // Phase 3B: Direct tagged_value access functions
-    Function* arena_tagged_cons_set_tagged_value_func;
-    Function* arena_tagged_cons_get_tagged_value_func;
+    // Note: Arena functions are now in MemoryCodegen (mem->)
+    // Forwarding accessors are provided below for backward compatibility
 
     // Deep equality comparison for nested lists
     Function* eshkol_deep_equal_func;
@@ -243,16 +226,6 @@ private:
     Function* eshkol_lambda_registry_init_func;
     Function* eshkol_lambda_registry_add_func;
     Function* eshkol_lambda_registry_lookup_func;
-
-    // Phase 3: Tape management function declarations for reverse-mode AD
-    Function* arena_allocate_tape_func;
-    Function* arena_tape_add_node_func;
-    Function* arena_tape_reset_func;
-    Function* arena_tape_get_node_func;
-    Function* arena_tape_get_node_count_func;
-    
-    // Phase 3: AD node allocation function declarations
-    Function* arena_allocate_ad_node_func;
     
     // List operation function declarations (clean, non-redundant)
     Function* length_impl_func;
@@ -264,19 +237,8 @@ private:
     // Recursive tensor display helper (N-dimensional nested structure)
     Function* display_tensor_recursive_func;
 
-    // Cached C library function pointers (avoid repeated lookups)
-    Function* cached_strlen_func;
-    Function* cached_malloc_func;
-    Function* cached_memcpy_func;
-    Function* cached_memset_func;
-    Function* cached_strcmp_func;
-    Function* cached_strcpy_func;
-    Function* cached_strcat_func;
-    Function* cached_strstr_func;
-    Function* cached_snprintf_func;
-    Function* cached_strtod_func;
-
     // Cached LLVM types (avoid repeated lookups - massive performance win)
+    // Note: C library functions are now in FunctionCache (funcs->)
     IntegerType* int64_type;
     IntegerType* int32_type;
     IntegerType* int16_type;
@@ -304,50 +266,31 @@ public:
         context = std::make_unique<LLVMContext>();
         module = std::make_unique<Module>(module_name, *context);
         builder = std::make_unique<IRBuilder<>>(*context);
+
+        // Initialize type system (creates and caches all LLVM types)
+        types = std::make_unique<eshkol::TypeSystem>(*context);
+
+        // Set local type pointers from TypeSystem for backward compatibility
+        // TODO: Gradually migrate code to use types-> accessors directly
+        int64_type = types->getInt64Type();
+        int32_type = types->getInt32Type();
+        int16_type = types->getInt16Type();
+        int8_type = types->getInt8Type();
+        int1_type = types->getInt1Type();
+        double_type = types->getDoubleType();
+        void_type = types->getVoidType();
+        ptr_type = types->getPtrType();
+        tagged_value_type = types->getTaggedValueType();
+
+        // Initialize function cache (lazy-loaded C library functions)
+        funcs = std::make_unique<eshkol::FunctionCache>(*module, *types);
+
         current_function = nullptr;
         global_arena = nullptr; // Will be created in generateIR()
         arena_scope_depth = 0; // Initialize arena scope tracking
         ad_mode_active = nullptr; // Will be created in generateIR()
         ad_tape_stack = nullptr; // Will be created in generateIR()
         ad_tape_depth = nullptr; // Will be created in generateIR()
-
-        // Initialize cached C library function pointers
-        cached_strlen_func = nullptr;
-        cached_malloc_func = nullptr;
-        cached_memcpy_func = nullptr;
-        cached_memset_func = nullptr;
-        cached_strcmp_func = nullptr;
-        cached_strcpy_func = nullptr;
-        cached_strcat_func = nullptr;
-        cached_strstr_func = nullptr;
-        cached_snprintf_func = nullptr;
-        cached_strtod_func = nullptr;
-
-        // Initialize cached LLVM types (avoid repeated lookups)
-        int64_type = Type::getInt64Ty(*context);
-        int32_type = Type::getInt32Ty(*context);
-        int16_type = Type::getInt16Ty(*context);
-        int8_type = Type::getInt8Ty(*context);
-        int1_type = Type::getInt1Ty(*context);
-        double_type = Type::getDoubleTy(*context);
-        void_type = Type::getVoidTy(*context);
-        ptr_type = PointerType::getUnqual(*context);
-
-        // Initialize tagged value struct type to match C struct exactly:
-        // struct eshkol_tagged_value {
-        //     uint8_t type;        // offset 0
-        //     uint8_t flags;       // offset 1
-        //     uint16_t reserved;   // offset 2
-        //     // implicit 4 bytes padding for 8-byte alignment of data union
-        //     union { int64_t, double, uint64_t } data;  // offset 8
-        // } // Total: 16 bytes
-        std::vector<Type*> tagged_value_fields;
-        tagged_value_fields.push_back(int8_type);   // Field 0: type (offset 0)
-        tagged_value_fields.push_back(int8_type);   // Field 1: flags (offset 1)
-        tagged_value_fields.push_back(int16_type);  // Field 2: reserved (offset 2)
-        tagged_value_fields.push_back(int32_type);  // Field 3: PADDING for 8-byte alignment (offset 4)
-        tagged_value_fields.push_back(int64_type);  // Field 4: data union (offset 8, 8 bytes)
-        tagged_value_type = StructType::create(*context, tagged_value_fields, "eshkol_tagged_value");
 
         // Initialize LLVM targets first (required before creating target machine)
         InitializeAllTargetInfos();
@@ -820,7 +763,7 @@ public:
                         // In REPL mode, s-expressions need to persist across evaluations
                         if (!g_repl_mode_enabled) {
                             Value* arena_to_destroy = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                            builder->CreateCall(arena_destroy_func, {arena_to_destroy});
+                            builder->CreateCall(getArenaDestroyFunc(), {arena_to_destroy});
                             eshkol_debug("Added global arena cleanup before main return (top-level expressions)");
                         } else {
                             eshkol_debug("Skipped arena cleanup in REPL mode to preserve s-expressions (top-level)");
@@ -858,7 +801,7 @@ public:
                     arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), shared_arena_ref);
                 } else {
                     Value* arena_size = ConstantInt::get(int64_type, 8192);
-                    arena_ptr = builder->CreateCall(arena_create_func, {arena_size});
+                    arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
                 }
                 builder->CreateStore(arena_ptr, global_arena);
 
@@ -953,7 +896,7 @@ public:
                 // Step 6: Cleanup arena
                 if (!g_repl_mode_enabled) {
                     Value* arena_to_destroy = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                    builder->CreateCall(arena_destroy_func, {arena_to_destroy});
+                    builder->CreateCall(getArenaDestroyFunc(), {arena_to_destroy});
                 }
 
                 // Step 7: Return
@@ -986,126 +929,17 @@ public:
     }
     
 private:
-    // Cached C library function getters (lazy initialization)
-    Function* getStrlenFunc() {
-        if (!cached_strlen_func) {
-            cached_strlen_func = module->getFunction("strlen");
-            if (!cached_strlen_func) {
-                FunctionType* ft = FunctionType::get(int64_type,
-                    {PointerType::getUnqual(*context)}, false);
-                cached_strlen_func = Function::Create(ft, Function::ExternalLinkage, "strlen", module.get());
-            }
-        }
-        return cached_strlen_func;
-    }
-
-    Function* getMallocFunc() {
-        if (!cached_malloc_func) {
-            cached_malloc_func = module->getFunction("malloc");
-            if (!cached_malloc_func) {
-                FunctionType* ft = FunctionType::get(PointerType::getUnqual(*context),
-                    {int64_type}, false);
-                cached_malloc_func = Function::Create(ft, Function::ExternalLinkage, "malloc", module.get());
-            }
-        }
-        return cached_malloc_func;
-    }
-
-    Function* getMemcpyFunc() {
-        if (!cached_memcpy_func) {
-            cached_memcpy_func = module->getFunction("memcpy");
-            if (!cached_memcpy_func) {
-                FunctionType* ft = FunctionType::get(PointerType::getUnqual(*context),
-                    {PointerType::getUnqual(*context), PointerType::getUnqual(*context), int64_type}, false);
-                cached_memcpy_func = Function::Create(ft, Function::ExternalLinkage, "memcpy", module.get());
-            }
-        }
-        return cached_memcpy_func;
-    }
-
-    Function* getMemsetFunc() {
-        if (!cached_memset_func) {
-            cached_memset_func = module->getFunction("memset");
-            if (!cached_memset_func) {
-                FunctionType* ft = FunctionType::get(PointerType::getUnqual(*context),
-                    {PointerType::getUnqual(*context), int32_type, int64_type}, false);
-                cached_memset_func = Function::Create(ft, Function::ExternalLinkage, "memset", module.get());
-            }
-        }
-        return cached_memset_func;
-    }
-
-    Function* getStrcmpFunc() {
-        if (!cached_strcmp_func) {
-            cached_strcmp_func = module->getFunction("strcmp");
-            if (!cached_strcmp_func) {
-                FunctionType* ft = FunctionType::get(int32_type,
-                    {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false);
-                cached_strcmp_func = Function::Create(ft, Function::ExternalLinkage, "strcmp", module.get());
-            }
-        }
-        return cached_strcmp_func;
-    }
-
-    Function* getStrcpyFunc() {
-        if (!cached_strcpy_func) {
-            cached_strcpy_func = module->getFunction("strcpy");
-            if (!cached_strcpy_func) {
-                FunctionType* ft = FunctionType::get(PointerType::getUnqual(*context),
-                    {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false);
-                cached_strcpy_func = Function::Create(ft, Function::ExternalLinkage, "strcpy", module.get());
-            }
-        }
-        return cached_strcpy_func;
-    }
-
-    Function* getStrcatFunc() {
-        if (!cached_strcat_func) {
-            cached_strcat_func = module->getFunction("strcat");
-            if (!cached_strcat_func) {
-                FunctionType* ft = FunctionType::get(PointerType::getUnqual(*context),
-                    {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false);
-                cached_strcat_func = Function::Create(ft, Function::ExternalLinkage, "strcat", module.get());
-            }
-        }
-        return cached_strcat_func;
-    }
-
-    Function* getStrstrFunc() {
-        if (!cached_strstr_func) {
-            cached_strstr_func = module->getFunction("strstr");
-            if (!cached_strstr_func) {
-                FunctionType* ft = FunctionType::get(PointerType::getUnqual(*context),
-                    {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false);
-                cached_strstr_func = Function::Create(ft, Function::ExternalLinkage, "strstr", module.get());
-            }
-        }
-        return cached_strstr_func;
-    }
-
-    Function* getSnprintfFunc() {
-        if (!cached_snprintf_func) {
-            cached_snprintf_func = module->getFunction("snprintf");
-            if (!cached_snprintf_func) {
-                FunctionType* ft = FunctionType::get(int32_type,
-                    {PointerType::getUnqual(*context), int64_type, PointerType::getUnqual(*context)}, true);
-                cached_snprintf_func = Function::Create(ft, Function::ExternalLinkage, "snprintf", module.get());
-            }
-        }
-        return cached_snprintf_func;
-    }
-
-    Function* getStrtodFunc() {
-        if (!cached_strtod_func) {
-            cached_strtod_func = module->getFunction("strtod");
-            if (!cached_strtod_func) {
-                FunctionType* ft = FunctionType::get(double_type,
-                    {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false);
-                cached_strtod_func = Function::Create(ft, Function::ExternalLinkage, "strtod", module.get());
-            }
-        }
-        return cached_strtod_func;
-    }
+    // C library function getters (forwarding to FunctionCache)
+    Function* getStrlenFunc() { return funcs->getStrlen(); }
+    Function* getMallocFunc() { return funcs->getMalloc(); }
+    Function* getMemcpyFunc() { return funcs->getMemcpy(); }
+    Function* getMemsetFunc() { return funcs->getMemset(); }
+    Function* getStrcmpFunc() { return funcs->getStrcmp(); }
+    Function* getStrcpyFunc() { return funcs->getStrcpy(); }
+    Function* getStrcatFunc() { return funcs->getStrcat(); }
+    Function* getStrstrFunc() { return funcs->getStrstr(); }
+    Function* getSnprintfFunc() { return funcs->getSnprintf(); }
+    Function* getStrtodFunc() { return funcs->getStrtod(); }
 
     void createBuiltinFunctions() {
         // malloc function declaration for dynamic allocation
@@ -1395,439 +1229,13 @@ private:
         declareBinaryMathFunc("fmax");
         declareUnaryMathFunc("cbrt");   // cube root
 
-        // Initialize dual number struct type for forward-mode automatic differentiation
-        std::vector<Type*> dual_fields;
-        dual_fields.push_back(double_type);  // value
-        dual_fields.push_back(double_type);  // derivative
-        dual_number_type = StructType::create(*context, dual_fields, "dual_number");
-        
-        eshkol_debug("Created dual_number LLVM type");
-        
-        // PHASE 3: Initialize AD node struct type for reverse-mode automatic differentiation
-        // Structure: {ad_node_type_t type, double value, double gradient, ad_node* input1, ad_node* input2, size_t id}
-        std::vector<Type*> ad_node_fields;
-        ad_node_fields.push_back(int32_type);  // ad_node_type_t type (enum, 4 bytes)
-        ad_node_fields.push_back(double_type);  // double value
-        ad_node_fields.push_back(double_type);  // double gradient
-        ad_node_fields.push_back(PointerType::getUnqual(*context));  // ad_node* input1
-        ad_node_fields.push_back(PointerType::getUnqual(*context));  // ad_node* input2
-        ad_node_fields.push_back(int64_type);  // size_t id
-        ad_node_type = StructType::create(*context, ad_node_fields, "ad_node");
-        
-        // Initialize tape state
-        current_tape_ptr = nullptr;
-        next_node_id = 0;
-        
-        eshkol_debug("Created ad_node LLVM type for reverse-mode AD");
-        
-        // JACOBIAN SEGFAULT FIX: Create tensor type ONCE as class member
-        // Structure: {dimensions*, num_dimensions, elements*, total_elements}
-        std::vector<Type*> tensor_fields;
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // uint64_t* dimensions
-        tensor_fields.push_back(int64_type);       // uint64_t num_dimensions
-        tensor_fields.push_back(PointerType::getUnqual(*context)); // double* elements
-        tensor_fields.push_back(int64_type);       // uint64_t total_elements
-        tensor_type = StructType::create(*context, tensor_fields, "tensor");
-        
-        eshkol_debug("Created tensor LLVM type (shared by all operations)");
-
-        // Arena management function declarations
-        createArenaFunctions();
-    }
-    
-    void createArenaFunctions() {
-        // arena_create function declaration: arena_t* arena_create(size_t default_block_size)
-        std::vector<Type*> arena_create_args;
-        arena_create_args.push_back(int64_type); // size_t default_block_size
-
-        FunctionType* arena_create_type = FunctionType::get(
-            PointerType::getUnqual(*context), // return arena_t*
-            arena_create_args,
-            false // not varargs
-        );
-
-        arena_create_func = Function::Create(
-            arena_create_type,
-            Function::ExternalLinkage,
-            "arena_create",
-            module.get()
-        );
-
-        function_table["arena_create"] = arena_create_func;
-
-        // arena_destroy function declaration: void arena_destroy(arena_t* arena)
-        std::vector<Type*> arena_destroy_args;
-        arena_destroy_args.push_back(PointerType::getUnqual(*context)); // arena_t* arena
-
-        FunctionType* arena_destroy_type = FunctionType::get(
-            void_type, // return void
-            arena_destroy_args,
-            false // not varargs
-        );
-
-        arena_destroy_func = Function::Create(
-            arena_destroy_type,
-            Function::ExternalLinkage,
-            "arena_destroy",
-            module.get()
-        );
-
-        function_table["arena_destroy"] = arena_destroy_func;
-
-        // arena_allocate function declaration: void* arena_allocate(arena_t* arena, size_t size)
-        std::vector<Type*> arena_allocate_args;
-        arena_allocate_args.push_back(PointerType::getUnqual(*context)); // arena_t* arena
-        arena_allocate_args.push_back(int64_type); // size_t size
-
-        FunctionType* arena_allocate_type = FunctionType::get(
-            PointerType::getUnqual(*context), // return void*
-            arena_allocate_args,
-            false // not varargs
-        );
-
-        arena_allocate_func = Function::Create(
-            arena_allocate_type,
-            Function::ExternalLinkage,
-            "arena_allocate",
-            module.get()
-        );
-
-        function_table["arena_allocate"] = arena_allocate_func;
-
-        // arena_push_scope function declaration: void arena_push_scope(arena_t* arena)
-        std::vector<Type*> arena_push_scope_args;
-        arena_push_scope_args.push_back(PointerType::getUnqual(*context)); // arena_t* arena
-
-        FunctionType* arena_push_scope_type = FunctionType::get(
-            void_type, // return void
-            arena_push_scope_args,
-            false // not varargs
-        );
-
-        arena_push_scope_func = Function::Create(
-            arena_push_scope_type,
-            Function::ExternalLinkage,
-            "arena_push_scope",
-            module.get()
-        );
-
-        function_table["arena_push_scope"] = arena_push_scope_func;
-
-        // arena_pop_scope function declaration: void arena_pop_scope(arena_t* arena)
-        std::vector<Type*> arena_pop_scope_args;
-        arena_pop_scope_args.push_back(PointerType::getUnqual(*context)); // arena_t* arena
-
-        FunctionType* arena_pop_scope_type = FunctionType::get(
-            void_type, // return void
-            arena_pop_scope_args,
-            false // not varargs
-        );
-
-        arena_pop_scope_func = Function::Create(
-            arena_pop_scope_type,
-            Function::ExternalLinkage,
-            "arena_pop_scope",
-            module.get()
-        );
-
-        function_table["arena_pop_scope"] = arena_pop_scope_func;
-
-        // arena_allocate_cons_cell function declaration: arena_cons_cell_t* arena_allocate_cons_cell(arena_t* arena)
-        std::vector<Type*> arena_allocate_cons_cell_args;
-        arena_allocate_cons_cell_args.push_back(PointerType::getUnqual(*context)); // arena_t* arena
-
-        FunctionType* arena_allocate_cons_cell_type = FunctionType::get(
-            PointerType::getUnqual(*context), // return arena_cons_cell_t*
-            arena_allocate_cons_cell_args,
-            false // not varargs
-        );
-
-        arena_allocate_cons_cell_func = Function::Create(
-            arena_allocate_cons_cell_type,
-            Function::ExternalLinkage,
-            "arena_allocate_cons_cell",
-            module.get()
-        );
-
-        function_table["arena_allocate_cons_cell"] = arena_allocate_cons_cell_func;
-
-        // arena_allocate_closure function: eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures, uint64_t sexpr_ptr)
-        std::vector<Type*> arena_allocate_closure_args;
-        arena_allocate_closure_args.push_back(PointerType::getUnqual(*context)); // arena_t* arena
-        arena_allocate_closure_args.push_back(int64_type); // uint64_t func_ptr
-        arena_allocate_closure_args.push_back(int64_type); // size_t num_captures
-        arena_allocate_closure_args.push_back(int64_type); // uint64_t sexpr_ptr
-
-        FunctionType* arena_allocate_closure_type = FunctionType::get(
-            PointerType::getUnqual(*context), // return eshkol_closure_t*
-            arena_allocate_closure_args,
-            false // not varargs
-        );
-
-        arena_allocate_closure_func = Function::Create(
-            arena_allocate_closure_type,
-            Function::ExternalLinkage,
-            "arena_allocate_closure",
-            module.get()
-        );
-
-        function_table["arena_allocate_closure"] = arena_allocate_closure_func;
-
-        // arena_allocate_tagged_cons_cell function: arena_tagged_cons_cell_t* arena_allocate_tagged_cons_cell(arena_t* arena)
-        std::vector<Type*> arena_allocate_tagged_cons_cell_args;
-        arena_allocate_tagged_cons_cell_args.push_back(PointerType::getUnqual(*context)); // arena_t* arena
-
-        FunctionType* arena_allocate_tagged_cons_cell_type = FunctionType::get(
-            PointerType::getUnqual(*context), // return arena_tagged_cons_cell_t*
-            arena_allocate_tagged_cons_cell_args,
-            false // not varargs
-        );
-
-        arena_allocate_tagged_cons_cell_func = Function::Create(
-            arena_allocate_tagged_cons_cell_type,
-            Function::ExternalLinkage,
-            "arena_allocate_tagged_cons_cell",
-            module.get()
-        );
-
-        function_table["arena_allocate_tagged_cons_cell"] = arena_allocate_tagged_cons_cell_func;
-
-        // arena_tagged_cons_get_int64 function: int64_t arena_tagged_cons_get_int64(const arena_tagged_cons_cell_t* cell, bool is_cdr)
-        std::vector<Type*> arena_tagged_cons_get_int64_args;
-        arena_tagged_cons_get_int64_args.push_back(PointerType::getUnqual(*context)); // const arena_tagged_cons_cell_t* cell
-        arena_tagged_cons_get_int64_args.push_back(int1_type); // bool is_cdr
-
-        FunctionType* arena_tagged_cons_get_int64_type = FunctionType::get(
-            int64_type, // return int64_t
-            arena_tagged_cons_get_int64_args,
-            false
-        );
-
-        arena_tagged_cons_get_int64_func = Function::Create(
-            arena_tagged_cons_get_int64_type,
-            Function::ExternalLinkage,
-            "arena_tagged_cons_get_int64",
-            module.get()
-        );
-
-        function_table["arena_tagged_cons_get_int64"] = arena_tagged_cons_get_int64_func;
-
-        // arena_tagged_cons_get_double function: double arena_tagged_cons_get_double(const arena_tagged_cons_cell_t* cell, bool is_cdr)
-        std::vector<Type*> arena_tagged_cons_get_double_args;
-        arena_tagged_cons_get_double_args.push_back(PointerType::getUnqual(*context)); // const arena_tagged_cons_cell_t* cell
-        arena_tagged_cons_get_double_args.push_back(int1_type); // bool is_cdr
-
-        FunctionType* arena_tagged_cons_get_double_type = FunctionType::get(
-            double_type, // return double
-            arena_tagged_cons_get_double_args,
-            false
-        );
-
-        arena_tagged_cons_get_double_func = Function::Create(
-            arena_tagged_cons_get_double_type,
-            Function::ExternalLinkage,
-            "arena_tagged_cons_get_double",
-            module.get()
-        );
-
-        function_table["arena_tagged_cons_get_double"] = arena_tagged_cons_get_double_func;
-
-        // arena_tagged_cons_get_ptr function: uint64_t arena_tagged_cons_get_ptr(const arena_tagged_cons_cell_t* cell, bool is_cdr)
-        std::vector<Type*> arena_tagged_cons_get_ptr_args;
-        arena_tagged_cons_get_ptr_args.push_back(PointerType::getUnqual(*context)); // const arena_tagged_cons_cell_t* cell
-        arena_tagged_cons_get_ptr_args.push_back(int1_type); // bool is_cdr
-
-        FunctionType* arena_tagged_cons_get_ptr_type = FunctionType::get(
-            int64_type, // return uint64_t
-            arena_tagged_cons_get_ptr_args,
-            false
-        );
-
-        arena_tagged_cons_get_ptr_func = Function::Create(
-            arena_tagged_cons_get_ptr_type,
-            Function::ExternalLinkage,
-            "arena_tagged_cons_get_ptr",
-            module.get()
-        );
-
-        function_table["arena_tagged_cons_get_ptr"] = arena_tagged_cons_get_ptr_func;
-
-        // arena_tagged_cons_set_int64 function: void arena_tagged_cons_set_int64(arena_tagged_cons_cell_t* cell, bool is_cdr, int64_t value, uint8_t type)
-        std::vector<Type*> arena_tagged_cons_set_int64_args;
-        arena_tagged_cons_set_int64_args.push_back(PointerType::getUnqual(*context)); // arena_tagged_cons_cell_t* cell
-        arena_tagged_cons_set_int64_args.push_back(int1_type); // bool is_cdr
-        arena_tagged_cons_set_int64_args.push_back(int64_type); // int64_t value
-        arena_tagged_cons_set_int64_args.push_back(int8_type); // uint8_t type
-
-        FunctionType* arena_tagged_cons_set_int64_type = FunctionType::get(
-            void_type,
-            arena_tagged_cons_set_int64_args,
-            false
-        );
-
-        arena_tagged_cons_set_int64_func = Function::Create(
-            arena_tagged_cons_set_int64_type,
-            Function::ExternalLinkage,
-            "arena_tagged_cons_set_int64",
-            module.get()
-        );
-
-        function_table["arena_tagged_cons_set_int64"] = arena_tagged_cons_set_int64_func;
-
-        // arena_tagged_cons_set_double function: void arena_tagged_cons_set_double(arena_tagged_cons_cell_t* cell, bool is_cdr, double value, uint8_t type)
-        std::vector<Type*> arena_tagged_cons_set_double_args;
-        arena_tagged_cons_set_double_args.push_back(PointerType::getUnqual(*context)); // arena_tagged_cons_cell_t* cell
-        arena_tagged_cons_set_double_args.push_back(int1_type); // bool is_cdr
-        arena_tagged_cons_set_double_args.push_back(double_type); // double value
-        arena_tagged_cons_set_double_args.push_back(int8_type); // uint8_t type
-
-        FunctionType* arena_tagged_cons_set_double_type = FunctionType::get(
-            void_type,
-            arena_tagged_cons_set_double_args,
-            false
-        );
-
-        arena_tagged_cons_set_double_func = Function::Create(
-            arena_tagged_cons_set_double_type,
-            Function::ExternalLinkage,
-            "arena_tagged_cons_set_double",
-            module.get()
-        );
-
-        function_table["arena_tagged_cons_set_double"] = arena_tagged_cons_set_double_func;
-
-        // arena_tagged_cons_set_ptr function: void arena_tagged_cons_set_ptr(arena_tagged_cons_cell_t* cell, bool is_cdr, uint64_t value, uint8_t type)
-        std::vector<Type*> arena_tagged_cons_set_ptr_args;
-        arena_tagged_cons_set_ptr_args.push_back(PointerType::getUnqual(*context)); // arena_tagged_cons_cell_t* cell
-        arena_tagged_cons_set_ptr_args.push_back(int1_type); // bool is_cdr
-        arena_tagged_cons_set_ptr_args.push_back(int64_type); // uint64_t value
-        arena_tagged_cons_set_ptr_args.push_back(int8_type); // uint8_t type
-
-        FunctionType* arena_tagged_cons_set_ptr_type = FunctionType::get(
-            void_type,
-            arena_tagged_cons_set_ptr_args,
-            false
-        );
-
-        arena_tagged_cons_set_ptr_func = Function::Create(
-            arena_tagged_cons_set_ptr_type,
-            Function::ExternalLinkage,
-            "arena_tagged_cons_set_ptr",
-            module.get()
-        );
-
-        function_table["arena_tagged_cons_set_ptr"] = arena_tagged_cons_set_ptr_func;
-
-        // arena_tagged_cons_set_null function: void arena_tagged_cons_set_null(arena_tagged_cons_cell_t* cell, bool is_cdr)
-        std::vector<Type*> arena_tagged_cons_set_null_args;
-        arena_tagged_cons_set_null_args.push_back(PointerType::getUnqual(*context)); // arena_tagged_cons_cell_t* cell
-        arena_tagged_cons_set_null_args.push_back(int1_type); // bool is_cdr
-
-        FunctionType* arena_tagged_cons_set_null_type = FunctionType::get(
-            void_type,
-            arena_tagged_cons_set_null_args,
-            false
-        );
-
-        arena_tagged_cons_set_null_func = Function::Create(
-            arena_tagged_cons_set_null_type,
-            Function::ExternalLinkage,
-            "arena_tagged_cons_set_null",
-            module.get()
-        );
-
-        function_table["arena_tagged_cons_set_null"] = arena_tagged_cons_set_null_func;
-
-        // arena_tagged_cons_get_type function: uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is_cdr)
-        std::vector<Type*> arena_tagged_cons_get_type_args;
-        arena_tagged_cons_get_type_args.push_back(PointerType::getUnqual(*context)); // const arena_tagged_cons_cell_t* cell
-        arena_tagged_cons_get_type_args.push_back(int1_type); // bool is_cdr
-
-        FunctionType* arena_tagged_cons_get_type_type = FunctionType::get(
-            int8_type, // return uint8_t
-            arena_tagged_cons_get_type_args,
-            false
-        );
-
-        arena_tagged_cons_get_type_func = Function::Create(
-            arena_tagged_cons_get_type_type,
-            Function::ExternalLinkage,
-            "arena_tagged_cons_get_type",
-            module.get()
-        );
-
-        function_table["arena_tagged_cons_get_type"] = arena_tagged_cons_get_type_func;
-
-        // arena_tagged_cons_get_flags function (for FLAG_INDIRECT)
-        std::vector<Type*> arena_tagged_cons_get_flags_args;
-        arena_tagged_cons_get_flags_args.push_back(PointerType::getUnqual(*context)); // const arena_tagged_cons_cell_t* cell
-        arena_tagged_cons_get_flags_args.push_back(int1_type); // bool is_cdr
-
-        FunctionType* arena_tagged_cons_get_flags_type = FunctionType::get(
-            int8_type, // return uint8_t
-            arena_tagged_cons_get_flags_args,
-            false
-        );
-
-        arena_tagged_cons_get_flags_func = Function::Create(
-            arena_tagged_cons_get_flags_type,
-            Function::ExternalLinkage,
-            "arena_tagged_cons_get_flags",
-            module.get()
-        );
-
-        function_table["arena_tagged_cons_get_flags"] = arena_tagged_cons_get_flags_func;
-
-        // Phase 3B: arena_tagged_cons_set_tagged_value function:
-        // void arena_tagged_cons_set_tagged_value(arena_tagged_cons_cell_t* cell, bool is_cdr, const eshkol_tagged_value_t* value)
-        std::vector<Type*> set_tagged_value_args;
-        set_tagged_value_args.push_back(PointerType::getUnqual(*context)); // arena_tagged_cons_cell_t* cell
-        set_tagged_value_args.push_back(int1_type); // bool is_cdr
-        set_tagged_value_args.push_back(PointerType::getUnqual(*context)); // const eshkol_tagged_value_t* value
-        
-        FunctionType* set_tagged_value_type = FunctionType::get(
-            void_type,
-            set_tagged_value_args,
-            false
-        );
-        
-        arena_tagged_cons_set_tagged_value_func = Function::Create(
-            set_tagged_value_type,
-            Function::ExternalLinkage,
-            "arena_tagged_cons_set_tagged_value",
-            module.get()
-        );
-        
-        function_table["arena_tagged_cons_set_tagged_value"] = arena_tagged_cons_set_tagged_value_func;
-        
-        // Phase 3B: arena_tagged_cons_get_tagged_value function:
-        // eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons_cell_t* cell, bool is_cdr)
-        std::vector<Type*> get_tagged_value_args;
-        get_tagged_value_args.push_back(PointerType::getUnqual(*context)); // const arena_tagged_cons_cell_t* cell
-        get_tagged_value_args.push_back(int1_type); // bool is_cdr
-        
-        FunctionType* get_tagged_value_type = FunctionType::get(
-            tagged_value_type, // return eshkol_tagged_value_t
-            get_tagged_value_args,
-            false
-        );
-        
-        arena_tagged_cons_get_tagged_value_func = Function::Create(
-            get_tagged_value_type,
-            Function::ExternalLinkage,
-            "arena_tagged_cons_get_tagged_value",
-            module.get()
-        );
-        
-        function_table["arena_tagged_cons_get_tagged_value"] = arena_tagged_cons_get_tagged_value_func;
-
         // Deep equality comparison: bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_value_t* val2)
         std::vector<Type*> deep_equal_args;
         deep_equal_args.push_back(PointerType::getUnqual(*context)); // const eshkol_tagged_value_t* val1
         deep_equal_args.push_back(PointerType::getUnqual(*context)); // const eshkol_tagged_value_t* val2
 
         FunctionType* deep_equal_type = FunctionType::get(
-            int1_type, // return bool
+            Type::getInt1Ty(*context), // return bool
             deep_equal_args,
             false
         );
@@ -1850,7 +1258,7 @@ private:
         display_value_args.push_back(PointerType::getUnqual(*context)); // const eshkol_tagged_value_t* value
 
         FunctionType* display_value_type = FunctionType::get(
-            void_type,
+            Type::getVoidTy(*context),
             display_value_args,
             false
         );
@@ -1866,7 +1274,7 @@ private:
 
         // eshkol_lambda_registry_init: void eshkol_lambda_registry_init(void)
         FunctionType* registry_init_type = FunctionType::get(
-            void_type,
+            Type::getVoidTy(*context),
             {},  // no args
             false
         );
@@ -1882,12 +1290,12 @@ private:
 
         // eshkol_lambda_registry_add: void eshkol_lambda_registry_add(uint64_t func_ptr, uint64_t sexpr_ptr, const char* name)
         std::vector<Type*> registry_add_args;
-        registry_add_args.push_back(int64_type);           // uint64_t func_ptr
-        registry_add_args.push_back(int64_type);           // uint64_t sexpr_ptr
+        registry_add_args.push_back(Type::getInt64Ty(*context));           // uint64_t func_ptr
+        registry_add_args.push_back(Type::getInt64Ty(*context));           // uint64_t sexpr_ptr
         registry_add_args.push_back(PointerType::getUnqual(*context));     // const char* name
 
         FunctionType* registry_add_type = FunctionType::get(
-            void_type,
+            Type::getVoidTy(*context),
             registry_add_args,
             false
         );
@@ -1903,10 +1311,10 @@ private:
 
         // eshkol_lambda_registry_lookup: uint64_t eshkol_lambda_registry_lookup(uint64_t func_ptr)
         std::vector<Type*> registry_lookup_args;
-        registry_lookup_args.push_back(int64_type);           // uint64_t func_ptr
+        registry_lookup_args.push_back(Type::getInt64Ty(*context));           // uint64_t func_ptr
 
         FunctionType* registry_lookup_type = FunctionType::get(
-            int64_type,  // return uint64_t (sexpr_ptr or 0)
+            Type::getInt64Ty(*context),  // return uint64_t (sexpr_ptr or 0)
             registry_lookup_args,
             false
         );
@@ -1920,130 +1328,95 @@ private:
 
         function_table["eshkol_lambda_registry_lookup"] = eshkol_lambda_registry_lookup_func;
 
-        // PHASE 3: Tape management function declarations for reverse-mode automatic differentiation
-        
-        // arena_allocate_tape: ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity)
-        std::vector<Type*> allocate_tape_args;
-        allocate_tape_args.push_back(PointerType::getUnqual(*context)); // arena_t* arena
-        allocate_tape_args.push_back(int64_type); // size_t initial_capacity
-        
-        FunctionType* allocate_tape_type = FunctionType::get(
-            PointerType::getUnqual(*context), // return ad_tape_t*
-            allocate_tape_args,
-            false
-        );
-        
-        arena_allocate_tape_func = Function::Create(
-            allocate_tape_type,
-            Function::ExternalLinkage,
-            "arena_allocate_tape",
-            module.get()
-        );
-        
-        function_table["arena_allocate_tape"] = arena_allocate_tape_func;
-        
-        // arena_tape_add_node: void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node)
-        std::vector<Type*> tape_add_node_args;
-        tape_add_node_args.push_back(PointerType::getUnqual(*context)); // ad_tape_t* tape
-        tape_add_node_args.push_back(PointerType::getUnqual(*context)); // ad_node_t* node
-        
-        FunctionType* tape_add_node_type = FunctionType::get(
-            void_type,
-            tape_add_node_args,
-            false
-        );
-        
-        arena_tape_add_node_func = Function::Create(
-            tape_add_node_type,
-            Function::ExternalLinkage,
-            "arena_tape_add_node",
-            module.get()
-        );
-        
-        function_table["arena_tape_add_node"] = arena_tape_add_node_func;
-        
-        // arena_tape_reset: void arena_tape_reset(ad_tape_t* tape)
-        std::vector<Type*> tape_reset_args;
-        tape_reset_args.push_back(PointerType::getUnqual(*context)); // ad_tape_t* tape
-        
-        FunctionType* tape_reset_type = FunctionType::get(
-            void_type,
-            tape_reset_args,
-            false
-        );
-        
-        arena_tape_reset_func = Function::Create(
-            tape_reset_type,
-            Function::ExternalLinkage,
-            "arena_tape_reset",
-            module.get()
-        );
-        
-        function_table["arena_tape_reset"] = arena_tape_reset_func;
-        
-        // arena_allocate_ad_node: ad_node_t* arena_allocate_ad_node(arena_t* arena)
-        std::vector<Type*> allocate_ad_node_args;
-        allocate_ad_node_args.push_back(PointerType::getUnqual(*context)); // arena_t* arena
-        
-        FunctionType* allocate_ad_node_type = FunctionType::get(
-            PointerType::getUnqual(*context), // return ad_node_t*
-            allocate_ad_node_args,
-            false
-        );
-        
-        arena_allocate_ad_node_func = Function::Create(
-            allocate_ad_node_type,
-            Function::ExternalLinkage,
-            "arena_allocate_ad_node",
-            module.get()
-        );
-        
-        function_table["arena_allocate_ad_node"] = arena_allocate_ad_node_func;
-        
-        // arena_tape_get_node: ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index)
-        std::vector<Type*> tape_get_node_args;
-        tape_get_node_args.push_back(PointerType::getUnqual(*context)); // const ad_tape_t* tape
-        tape_get_node_args.push_back(int64_type); // size_t index
-        
-        FunctionType* tape_get_node_type = FunctionType::get(
-            PointerType::getUnqual(*context), // return ad_node_t*
-            tape_get_node_args,
-            false
-        );
-        
-        arena_tape_get_node_func = Function::Create(
-            tape_get_node_type,
-            Function::ExternalLinkage,
-            "arena_tape_get_node",
-            module.get()
-        );
-        
-        function_table["arena_tape_get_node"] = arena_tape_get_node_func;
-        
-        // arena_tape_get_node_count: size_t arena_tape_get_node_count(const ad_tape_t* tape)
-        std::vector<Type*> tape_get_node_count_args;
-        tape_get_node_count_args.push_back(PointerType::getUnqual(*context)); // const ad_tape_t* tape
-        
-        FunctionType* tape_get_node_count_type = FunctionType::get(
-            int64_type, // return size_t
-            tape_get_node_count_args,
-            false
-        );
-        
-        arena_tape_get_node_count_func = Function::Create(
-            tape_get_node_count_type,
-            Function::ExternalLinkage,
-            "arena_tape_get_node_count",
-            module.get()
-        );
-        
-        function_table["arena_tape_get_node_count"] = arena_tape_get_node_count_func;
-        
-        eshkol_debug("Created tape management function declarations for reverse-mode AD");
+        // Get struct types from TypeSystem (types are created once in constructor)
+        dual_number_type = types->getDualNumberType();
+        ad_node_type = types->getAdNodeType();
+        tensor_type = types->getTensorType();
 
-        // Create N-dimensional tensor display helper
+        // Initialize tape state
+        current_tape_ptr = nullptr;
+        next_node_id = 0;
+
+        eshkol_debug("Using TypeSystem-managed struct types (dual_number, ad_node, tensor)");
+
+        // Initialize memory codegen (creates arena function declarations)
+        mem = std::make_unique<eshkol::MemoryCodegen>(*module, *types);
+
+        // Populate function_table for backward compatibility
+        registerArenaFunctions();
+    }
+
+    void registerArenaFunctions() {
+        // Register arena functions in function_table for name-based lookups
+        function_table["arena_create"] = mem->getArenaCreate();
+        function_table["arena_destroy"] = mem->getArenaDestroy();
+        function_table["arena_allocate"] = mem->getArenaAllocate();
+        function_table["arena_push_scope"] = mem->getArenaPushScope();
+        function_table["arena_pop_scope"] = mem->getArenaPopScope();
+        function_table["arena_allocate_cons_cell"] = mem->getArenaAllocateConsCell();
+        function_table["arena_allocate_closure"] = mem->getArenaAllocateClosure();
+        function_table["arena_allocate_tagged_cons_cell"] = mem->getArenaAllocateTaggedConsCell();
+        function_table["arena_tagged_cons_get_int64"] = mem->getTaggedConsGetInt64();
+        function_table["arena_tagged_cons_get_double"] = mem->getTaggedConsGetDouble();
+        function_table["arena_tagged_cons_get_ptr"] = mem->getTaggedConsGetPtr();
+        function_table["arena_tagged_cons_set_int64"] = mem->getTaggedConsSetInt64();
+        function_table["arena_tagged_cons_set_double"] = mem->getTaggedConsSetDouble();
+        function_table["arena_tagged_cons_set_ptr"] = mem->getTaggedConsSetPtr();
+        function_table["arena_tagged_cons_set_null"] = mem->getTaggedConsSetNull();
+        function_table["arena_tagged_cons_get_type"] = mem->getTaggedConsGetType();
+        function_table["arena_tagged_cons_get_flags"] = mem->getTaggedConsGetFlags();
+        function_table["arena_tagged_cons_set_tagged_value"] = mem->getTaggedConsSetTaggedValue();
+        function_table["arena_tagged_cons_get_tagged_value"] = mem->getTaggedConsGetTaggedValue();
+        function_table["arena_allocate_tape"] = mem->getArenaAllocateTape();
+        function_table["arena_tape_add_node"] = mem->getArenaTapeAddNode();
+        function_table["arena_tape_reset"] = mem->getArenaTapeReset();
+        function_table["arena_tape_get_node"] = mem->getArenaTapeGetNode();
+        function_table["arena_tape_get_node_count"] = mem->getArenaTapeGetNodeCount();
+        function_table["arena_allocate_ad_node"] = mem->getArenaAllocateAdNode();
+
+        eshkol_debug("Registered arena functions from MemoryCodegen");
+
+        // Create additional display/utility functions (these need full codegen, not just declarations)
         createDisplayTensorRecursiveFunction();
     }
+
+    // Note: Old createArenaFunctions was ~600 lines - now in MemoryCodegen
+
+    // Arena function accessors (forwarding to MemoryCodegen)
+    Function* getArenaCreateFunc() { return mem->getArenaCreate(); }
+    Function* getArenaDestroyFunc() { return mem->getArenaDestroy(); }
+    Function* getArenaAllocateFunc() { return mem->getArenaAllocate(); }
+    Function* getArenaPushScopeFunc() { return mem->getArenaPushScope(); }
+    Function* getArenaPopScopeFunc() { return mem->getArenaPopScope(); }
+    Function* getArenaAllocateConsCellFunc() { return mem->getArenaAllocateConsCell(); }
+    Function* getArenaAllocateClosureFunc() { return mem->getArenaAllocateClosure(); }
+    Function* getArenaAllocateTaggedConsCellFunc() { return mem->getArenaAllocateTaggedConsCell(); }
+    Function* getTaggedConsGetInt64Func() { return mem->getTaggedConsGetInt64(); }
+    Function* getTaggedConsGetDoubleFunc() { return mem->getTaggedConsGetDouble(); }
+    Function* getTaggedConsGetPtrFunc() { return mem->getTaggedConsGetPtr(); }
+    Function* getTaggedConsSetInt64Func() { return mem->getTaggedConsSetInt64(); }
+    Function* getTaggedConsSetDoubleFunc() { return mem->getTaggedConsSetDouble(); }
+    Function* getTaggedConsSetPtrFunc() { return mem->getTaggedConsSetPtr(); }
+    Function* getTaggedConsSetNullFunc() { return mem->getTaggedConsSetNull(); }
+    Function* getTaggedConsGetTypeFunc() { return mem->getTaggedConsGetType(); }
+    Function* getTaggedConsGetFlagsFunc() { return mem->getTaggedConsGetFlags(); }
+    Function* getTaggedConsSetTaggedValueFunc() { return mem->getTaggedConsSetTaggedValue(); }
+    Function* getTaggedConsGetTaggedValueFunc() { return mem->getTaggedConsGetTaggedValue(); }
+    Function* getArenaAllocateTapeFunc() { return mem->getArenaAllocateTape(); }
+    Function* getArenaTapeAddNodeFunc() { return mem->getArenaTapeAddNode(); }
+    Function* getArenaTapeResetFunc() { return mem->getArenaTapeReset(); }
+    Function* getArenaTapeGetNodeFunc() { return mem->getArenaTapeGetNode(); }
+    Function* getArenaTapeGetNodeCountFunc() { return mem->getArenaTapeGetNodeCount(); }
+    Function* getArenaAllocateAdNodeFunc() { return mem->getArenaAllocateAdNode(); }
+
+    // Legacy code removed - arena functions are now in MemoryCodegen (~600 lines saved)
+    // The old createArenaFunctions() method has been replaced by:
+    //   1. MemoryCodegen construction in generateIR()
+    //   2. registerArenaFunctions() for function_table population
+    //   3. Forwarding accessors above for direct function pointer access
+
+    // ===== OLD ARENA FUNCTION DECLARATIONS REMOVED (see memory_codegen.cpp) =====
+    // Approximately 560 lines of arena function declarations were moved to MemoryCodegen
 
     void createDisplayTensorRecursiveFunction() {
         // Recursive helper function for displaying tensors with proper dimensional nesting
@@ -2607,7 +1980,7 @@ private:
                 } else {
                     // Normal mode: create new arena
                     Value* arena_size = ConstantInt::get(int64_type, 8192);
-                    arena_ptr = builder->CreateCall(arena_create_func, {arena_size});
+                    arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
                     eshkol_debug("Created new arena in main wrapper");
                 }
                 builder->CreateStore(arena_ptr, global_arena);
@@ -2727,7 +2100,7 @@ private:
                 } else {
                     // Normal mode: create new arena
                     Value* arena_size = ConstantInt::get(int64_type, 8192);
-                    arena_ptr = builder->CreateCall(arena_create_func, {arena_size});
+                    arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
                     eshkol_debug("Created new arena in main wrapper");
                 }
                 builder->CreateStore(arena_ptr, global_arena);
@@ -2747,7 +2120,7 @@ private:
             // In REPL mode, s-expressions need to persist across evaluations
             if (!g_repl_mode_enabled) {
                 Value* arena_to_destroy = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                builder->CreateCall(arena_destroy_func, {arena_to_destroy});
+                builder->CreateCall(getArenaDestroyFunc(), {arena_to_destroy});
                 eshkol_debug("Added global arena cleanup before main return");
             } else {
                 eshkol_debug("Skipped arena cleanup in REPL mode to preserve s-expressions");
@@ -2787,7 +2160,7 @@ private:
             } else {
                 // Normal mode: create new arena
                 Value* arena_size = ConstantInt::get(int64_type, 8192);
-                arena_ptr = builder->CreateCall(arena_create_func, {arena_size});
+                arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
                 eshkol_debug("Created new arena in main (top-level expressions case)");
             }
             builder->CreateStore(arena_ptr, global_arena);
@@ -2885,7 +2258,7 @@ private:
     void arenaTrackedPushScope() {
         Value* arena_ptr = getArenaPtr();
         if (arena_ptr) {
-            builder->CreateCall(arena_push_scope_func, {arena_ptr});
+            builder->CreateCall(getArenaPushScopeFunc(), {arena_ptr});
             arena_scope_depth++;
             eshkol_debug("Arena scope pushed (depth: %zu)", arena_scope_depth);
         }
@@ -2895,7 +2268,7 @@ private:
         if (arena_scope_depth > 0) {
             Value* arena_ptr = getArenaPtr();
             if (arena_ptr) {
-                builder->CreateCall(arena_pop_scope_func, {arena_ptr});
+                builder->CreateCall(getArenaPopScopeFunc(), {arena_ptr});
                 arena_scope_depth--;
                 eshkol_debug("Arena scope popped (depth: %zu)", arena_scope_depth);
             }
@@ -2910,7 +2283,7 @@ private:
             Value* arena_ptr = getArenaPtr();
             if (arena_ptr) {
                 while (arena_scope_depth > 0) {
-                    builder->CreateCall(arena_pop_scope_func, {arena_ptr});
+                    builder->CreateCall(getArenaPopScopeFunc(), {arena_ptr});
                     arena_scope_depth--;
                 }
             }
@@ -3385,7 +2758,7 @@ private:
         }
         
         // Allocate cons cell using arena
-        Value* cons_ptr = builder->CreateCall(arena_allocate_cons_cell_func, {arena_ptr});
+        Value* cons_ptr = builder->CreateCall(getArenaAllocateConsCellFunc(), {arena_ptr});
         
         // Store car value - arena_cons_cell_t has car at offset 0
         Value* car_ptr = builder->CreateStructGEP(
@@ -3413,7 +2786,7 @@ private:
         }
         
         // Allocate tagged cons cell (32 bytes in Phase 3B) using arena
-        Value* cons_ptr = builder->CreateCall(arena_allocate_tagged_cons_cell_func, {arena_ptr});
+        Value* cons_ptr = builder->CreateCall(getArenaAllocateTaggedConsCellFunc(), {arena_ptr});
         
         // Convert TypedValue to tagged_value
         Value* car_tagged = typedValueToTaggedValue(car_val);
@@ -3442,8 +2815,8 @@ private:
         builder->CreateStore(cdr_tagged, cdr_ptr);
         
         // Direct struct copy - this is the key optimization of Phase 3B!
-        builder->CreateCall(arena_tagged_cons_set_tagged_value_func, {cons_ptr, is_car, car_ptr});
-        builder->CreateCall(arena_tagged_cons_set_tagged_value_func, {cons_ptr, is_cdr, cdr_ptr});
+        builder->CreateCall(getTaggedConsSetTaggedValueFunc(), {cons_ptr, is_car, car_ptr});
+        builder->CreateCall(getTaggedConsSetTaggedValueFunc(), {cons_ptr, is_cdr, cdr_ptr});
 
         eshkol_debug("Created tagged cons cell (Phase 3B): car_type=%d, cdr_type=%d", car_val.type, cdr_val.type);
 
@@ -3461,7 +2834,7 @@ private:
         }
         
         // Allocate tagged cons cell
-        Value* cons_ptr = builder->CreateCall(arena_allocate_tagged_cons_cell_func, {arena_ptr});
+        Value* cons_ptr = builder->CreateCall(getArenaAllocateTaggedConsCellFunc(), {arena_ptr});
         
         // Extract type from car_tagged
         Value* car_type = getTaggedValueType(car_tagged);
@@ -3512,7 +2885,7 @@ private:
 
         // Store car as null
         builder->SetInsertPoint(car_null);
-        builder->CreateCall(arena_tagged_cons_set_null_func, {cons_ptr, is_car});
+        builder->CreateCall(getTaggedConsSetNullFunc(), {cons_ptr, is_car});
         builder->CreateBr(car_done);
 
         // Check double
@@ -3522,7 +2895,7 @@ private:
         // Store car as double
         builder->SetInsertPoint(car_double);
         Value* car_double_val = unpackDoubleFromTaggedValue(car_tagged);
-        builder->CreateCall(arena_tagged_cons_set_double_func,
+        builder->CreateCall(getTaggedConsSetDoubleFunc(),
             {cons_ptr, is_car, car_double_val, car_type});
         builder->CreateBr(car_done);
 
@@ -3533,14 +2906,14 @@ private:
         // Store car as pointer (string symbols, nested lists, etc.)
         builder->SetInsertPoint(car_ptr);
         Value* car_ptr_val = unpackInt64FromTaggedValue(car_tagged);
-        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+        builder->CreateCall(getTaggedConsSetPtrFunc(),
             {cons_ptr, is_car, car_ptr_val, car_type});
         builder->CreateBr(car_done);
 
         // Store car as int64
         builder->SetInsertPoint(car_int);
         Value* car_int_val = unpackInt64FromTaggedValue(car_tagged);
-        builder->CreateCall(arena_tagged_cons_set_int64_func,
+        builder->CreateCall(getTaggedConsSetInt64Func(),
             {cons_ptr, is_car, car_int_val, car_type});
         builder->CreateBr(car_done);
         
@@ -3592,7 +2965,7 @@ private:
         
         // Cdr is null - use set_null
         builder->SetInsertPoint(cdr_null_block);
-        builder->CreateCall(arena_tagged_cons_set_null_func, {cons_ptr, is_cdr});
+        builder->CreateCall(getTaggedConsSetNullFunc(), {cons_ptr, is_cdr});
         builder->CreateBr(cdr_done_block);
         
         // Check if cdr is double
@@ -3602,7 +2975,7 @@ private:
         // Cdr is double - use set_double
         builder->SetInsertPoint(cdr_double_block);
         Value* cdr_double_val = unpackDoubleFromTaggedValue(cdr_tagged);
-        builder->CreateCall(arena_tagged_cons_set_double_func,
+        builder->CreateCall(getTaggedConsSetDoubleFunc(),
             {cons_ptr, is_cdr, cdr_double_val, cdr_type});
         builder->CreateBr(cdr_done_block);
         
@@ -3613,14 +2986,14 @@ private:
         // Cdr is CONS_PTR - use set_ptr (for nested lists in S-expressions!)
         builder->SetInsertPoint(cdr_ptr_block);
         Value* cdr_ptr_val = unpackInt64FromTaggedValue(cdr_tagged);
-        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+        builder->CreateCall(getTaggedConsSetPtrFunc(),
             {cons_ptr, is_cdr, cdr_ptr_val, cdr_type});
         builder->CreateBr(cdr_done_block);
         
         // Cdr is int64 - use set_int64
         builder->SetInsertPoint(cdr_int_block);
         Value* cdr_int_val = unpackInt64FromTaggedValue(cdr_tagged);
-        builder->CreateCall(arena_tagged_cons_set_int64_func,
+        builder->CreateCall(getTaggedConsSetInt64Func(),
             {cons_ptr, is_cdr, cdr_int_val, cdr_type});
         builder->CreateBr(cdr_done_block);
         
@@ -4084,7 +3457,7 @@ private:
         Value* cons_ptr = builder->CreateIntToPtr(cons_ptr_int, builder->getPtrTy());
 
         Value* is_car = ConstantInt::get(int1_type, 0);
-        Value* car_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_car});
+        Value* car_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car});
 
         Value* car_base_type = builder->CreateAnd(car_type,
             ConstantInt::get(int8_type, 0x0F));
@@ -4136,7 +3509,7 @@ private:
         builder->CreateCondBr(car_is_double, double_car, check_cons_ptr);
 
         builder->SetInsertPoint(double_car);
-        Value* car_double = builder->CreateCall(arena_tagged_cons_get_double_func, {cons_ptr, is_car});
+        Value* car_double = builder->CreateCall(getTaggedConsGetDoubleFunc(), {cons_ptr, is_car});
         Value* tagged_double = packDoubleToTaggedValue(car_double);
         builder->CreateBr(merge_car);
         BasicBlock* double_exit = builder->GetInsertBlock();
@@ -4145,7 +3518,7 @@ private:
         builder->CreateCondBr(car_is_cons_ptr, cons_ptr_car, check_string_ptr);
 
         builder->SetInsertPoint(cons_ptr_car);
-        Value* car_cons_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car});
+        Value* car_cons_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
         Value* tagged_cons_ptr = packPtrToTaggedValue(
             builder->CreateIntToPtr(car_cons_ptr, builder->getPtrTy()),
             ESHKOL_VALUE_CONS_PTR);
@@ -4157,7 +3530,7 @@ private:
         builder->CreateCondBr(car_is_string_ptr, string_ptr_car, check_lambda_sexpr);
 
         builder->SetInsertPoint(string_ptr_car);
-        Value* car_string_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car});
+        Value* car_string_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
         Value* tagged_string_ptr = packPtrToTaggedValue(
             builder->CreateIntToPtr(car_string_ptr, builder->getPtrTy()),
             ESHKOL_VALUE_STRING_PTR);
@@ -4171,9 +3544,9 @@ private:
         builder->SetInsertPoint(lambda_sexpr_car);
         // CRITICAL FIX: Read type, flags, and ptr separately to avoid struct-return ABI issues
         // This is essential for homoiconic lambda display - flags determine if we need to dereference
-        Value* lambda_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_car});
-        Value* lambda_flags = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_car});
-        Value* lambda_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car});
+        Value* lambda_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car});
+        Value* lambda_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car});
+        Value* lambda_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
 
         // Manually build the tagged_value struct with correct type, flags, and ptr
         Value* tagged_lambda_ptr = packPtrToTaggedValueWithFlags(
@@ -4188,9 +3561,9 @@ private:
 
         builder->SetInsertPoint(closure_ptr_car);
         // Extract closure pointer from cons cell and rebuild as CLOSURE_PTR tagged value
-        Value* closure_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_car});
-        Value* closure_flags = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_car});
-        Value* closure_ptr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car});
+        Value* closure_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car});
+        Value* closure_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car});
+        Value* closure_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
         Value* tagged_closure_ptr = packPtrToTaggedValueWithFlags(
             builder->CreateIntToPtr(closure_ptr_val, builder->getPtrTy()),
             closure_type, closure_flags);
@@ -4203,14 +3576,14 @@ private:
 
         builder->SetInsertPoint(bool_car);
         // Extract boolean value and pack as BOOL type
-        Value* car_bool_int = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_car});
+        Value* car_bool_int = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car});
         Value* car_bool_i1 = builder->CreateICmpNE(car_bool_int, ConstantInt::get(int64_type, 0));
         Value* tagged_bool = packBoolToTaggedValue(car_bool_i1);
         builder->CreateBr(merge_car);
         BasicBlock* bool_exit = builder->GetInsertBlock();
 
         builder->SetInsertPoint(int_car);
-        Value* car_int64 = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_car});
+        Value* car_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car});
         Value* tagged_int64 = packInt64ToTaggedValue(car_int64, true);
         builder->CreateBr(merge_car);
         BasicBlock* int_exit = builder->GetInsertBlock();
@@ -4236,7 +3609,7 @@ private:
         Value* cons_ptr = builder->CreateIntToPtr(cons_ptr_int, builder->getPtrTy());
         
         Value* is_cdr = ConstantInt::get(int1_type, 1);
-        Value* cdr_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
+        Value* cdr_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
         
         Value* cdr_base_type = builder->CreateAnd(cdr_type,
             ConstantInt::get(int8_type, 0x0F));
@@ -4266,7 +3639,7 @@ private:
         builder->CreateCondBr(cdr_is_double, double_cdr, check_ptr_cdr);
 
         builder->SetInsertPoint(double_cdr);
-        Value* cdr_double = builder->CreateCall(arena_tagged_cons_get_double_func, {cons_ptr, is_cdr});
+        Value* cdr_double = builder->CreateCall(getTaggedConsGetDoubleFunc(), {cons_ptr, is_cdr});
         Value* tagged_double_cdr = packDoubleToTaggedValue(cdr_double);
         builder->CreateBr(merge_cdr);
         BasicBlock* double_exit = builder->GetInsertBlock();
@@ -4275,7 +3648,7 @@ private:
         builder->CreateCondBr(cdr_is_ptr, ptr_cdr, check_null_cdr);
 
         builder->SetInsertPoint(ptr_cdr);
-        Value* cdr_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* cdr_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         // SYMBOLIC DIFF FIX: Preserve CONS_PTR type for nested lists!
         Value* tagged_ptr_cdr = packPtrToTaggedValue(
             builder->CreateIntToPtr(cdr_ptr, builder->getPtrTy()),
@@ -4296,14 +3669,14 @@ private:
         builder->CreateCondBr(cdr_is_bool, bool_cdr, int_cdr);
 
         builder->SetInsertPoint(bool_cdr);
-        Value* cdr_bool_int = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_cdr});
+        Value* cdr_bool_int = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
         Value* cdr_bool_i1 = builder->CreateICmpNE(cdr_bool_int, ConstantInt::get(int64_type, 0));
         Value* tagged_bool_cdr = packBoolToTaggedValue(cdr_bool_i1);
         builder->CreateBr(merge_cdr);
         BasicBlock* bool_exit = builder->GetInsertBlock();
 
         builder->SetInsertPoint(int_cdr);
-        Value* cdr_int64 = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_cdr});
+        Value* cdr_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
         Value* tagged_int64_cdr = packInt64ToTaggedValue(cdr_int64, true);
         builder->CreateBr(merge_cdr);
         BasicBlock* int_exit = builder->GetInsertBlock();
@@ -4364,7 +3737,7 @@ private:
 
         // Get car type using arena_tagged_cons_get_type(cell, false)
         Value* is_car_flag = ConstantInt::get(int1_type, 0); // false = car
-        Value* car_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_car_flag});
+        Value* car_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_flag});
 
         // Mask out flags to get base type (type & 0x0F)
         Value* car_base_type = builder->CreateAnd(car_type,
@@ -4415,7 +3788,7 @@ private:
 
         // Extract double car and pack into tagged value
         builder->SetInsertPoint(double_block);
-        Value* car_double = builder->CreateCall(arena_tagged_cons_get_double_func, {cons_ptr, is_car_flag});
+        Value* car_double = builder->CreateCall(getTaggedConsGetDoubleFunc(), {cons_ptr, is_car_flag});
         Value* tagged_double = packDoubleToTaggedValue(car_double);
         builder->CreateBr(merge_block);
         BasicBlock* double_exit = builder->GetInsertBlock();
@@ -4424,7 +3797,7 @@ private:
         builder->CreateCondBr(car_is_cons, cons_block, check_string);
 
         builder->SetInsertPoint(cons_block);
-        Value* car_cons = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car_flag});
+        Value* car_cons = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
         Value* tagged_cons = packPtrToTaggedValue(builder->CreateIntToPtr(car_cons, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
         builder->CreateBr(merge_block);
         BasicBlock* cons_exit = builder->GetInsertBlock();
@@ -4434,7 +3807,7 @@ private:
         builder->CreateCondBr(car_is_string, string_block, check_lambda);
 
         builder->SetInsertPoint(string_block);
-        Value* car_string = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car_flag});
+        Value* car_string = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
         Value* tagged_string = packPtrToTaggedValue(builder->CreateIntToPtr(car_string, builder->getPtrTy()), ESHKOL_VALUE_STRING_PTR);
         builder->CreateBr(merge_block);
         BasicBlock* string_exit = builder->GetInsertBlock();
@@ -4444,9 +3817,9 @@ private:
         builder->CreateCondBr(car_is_lambda, lambda_block, check_closure);
 
         builder->SetInsertPoint(lambda_block);
-        Value* lambda_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_car_flag});
-        Value* lambda_flags = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_car_flag});
-        Value* lambda_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car_flag});
+        Value* lambda_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_flag});
+        Value* lambda_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_flag});
+        Value* lambda_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
         Value* tagged_lambda = packPtrToTaggedValueWithFlags(
             builder->CreateIntToPtr(lambda_ptr, builder->getPtrTy()),
             lambda_type, lambda_flags);
@@ -4458,9 +3831,9 @@ private:
         builder->CreateCondBr(car_is_closure, closure_block, int_block);
 
         builder->SetInsertPoint(closure_block);
-        Value* closure_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_car_flag});
-        Value* closure_flags = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_car_flag});
-        Value* closure_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car_flag});
+        Value* closure_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_flag});
+        Value* closure_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_flag});
+        Value* closure_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
         Value* tagged_closure = packPtrToTaggedValueWithFlags(
             builder->CreateIntToPtr(closure_ptr, builder->getPtrTy()),
             closure_type, closure_flags);
@@ -4469,7 +3842,7 @@ private:
 
         // Extract int64 car and pack into tagged value
         builder->SetInsertPoint(int_block);
-        Value* car_int64 = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_car_flag});
+        Value* car_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car_flag});
         Value* tagged_int64 = packInt64ToTaggedValue(car_int64, true);
         builder->CreateBr(merge_block);
         BasicBlock* int_exit = builder->GetInsertBlock();
@@ -10063,7 +9436,7 @@ private:
 
         // Allocate new string using arena_allocate
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        Value* new_str = builder->CreateCall(arena_allocate_func, {arena_ptr, total_len});
+        Value* new_str = builder->CreateCall(getArenaAllocateFunc(), {arena_ptr, total_len});
 
         // Copy first string
         builder->CreateCall(strcpy_func, {new_str, str_ptrs[0]});
@@ -10102,7 +9475,7 @@ private:
 
         // Allocate new string
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        Value* new_str = builder->CreateCall(arena_allocate_func, {arena_ptr, alloc_len});
+        Value* new_str = builder->CreateCall(getArenaAllocateFunc(), {arena_ptr, alloc_len});
 
         // Get memcpy function
         Function* memcpy_func = getMemcpyFunc();
@@ -10169,7 +9542,7 @@ private:
         // Allocate buffer for string (64 bytes should be enough for any number)
         Value* buf_size = ConstantInt::get(int64_type, 64);
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        Value* buf = builder->CreateCall(arena_allocate_func, {arena_ptr, buf_size});
+        Value* buf = builder->CreateCall(getArenaAllocateFunc(), {arena_ptr, buf_size});
 
         // Get snprintf function
         Function* snprintf_func = getSnprintfFunc();
@@ -11012,7 +10385,7 @@ private:
 
         // Allocate from arena
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        Value* vec_ptr = builder->CreateCall(arena_allocate_func, {arena_ptr, total_size});
+        Value* vec_ptr = builder->CreateCall(getArenaAllocateFunc(), {arena_ptr, total_size});
 
         // Store length at beginning
         Value* len_ptr = builder->CreateBitCast(vec_ptr, PointerType::getUnqual(*context));
@@ -11079,7 +10452,7 @@ private:
 
         // Allocate from arena
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        Value* vec_ptr = builder->CreateCall(arena_allocate_func,
+        Value* vec_ptr = builder->CreateCall(getArenaAllocateFunc(),
             {arena_ptr, ConstantInt::get(int64_type, total_size)});
 
         // Store length at beginning
@@ -12462,7 +11835,7 @@ private:
 
             // Get car type using arena_tagged_cons_get_type(cell, false)
             Value* is_cdr = ConstantInt::get(int1_type, 0); // false = car
-            Value* car_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
+            Value* car_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
 
             // Mask out flags to get base type
             Value* car_base_type = builder->CreateAnd(car_type,
@@ -12516,7 +11889,7 @@ private:
             builder->CreateCondBr(car_is_double, double_car, check_cons_ptr);
 
             builder->SetInsertPoint(double_car);
-            Value* car_double = builder->CreateCall(arena_tagged_cons_get_double_func, {cons_ptr, is_cdr});
+            Value* car_double = builder->CreateCall(getTaggedConsGetDoubleFunc(), {cons_ptr, is_cdr});
             Value* tagged_double = packDoubleToTaggedValue(car_double);
             builder->CreateBr(merge_car);
             BasicBlock* double_exit = builder->GetInsertBlock();
@@ -12525,7 +11898,7 @@ private:
             builder->CreateCondBr(car_is_cons_ptr, cons_ptr_car, check_string_ptr);
 
             builder->SetInsertPoint(cons_ptr_car);
-            Value* car_cons = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+            Value* car_cons = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
             Value* tagged_cons = packPtrToTaggedValue(builder->CreateIntToPtr(car_cons, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
             builder->CreateBr(merge_car);
             BasicBlock* cons_exit = builder->GetInsertBlock();
@@ -12535,7 +11908,7 @@ private:
             builder->CreateCondBr(car_is_string_ptr, string_ptr_car, check_lambda);
 
             builder->SetInsertPoint(string_ptr_car);
-            Value* car_string = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+            Value* car_string = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
             Value* tagged_string = packPtrToTaggedValue(builder->CreateIntToPtr(car_string, builder->getPtrTy()), ESHKOL_VALUE_STRING_PTR);
             builder->CreateBr(merge_car);
             BasicBlock* string_exit = builder->GetInsertBlock();
@@ -12545,9 +11918,9 @@ private:
             builder->CreateCondBr(car_is_lambda_sexpr, lambda_car, check_closure);
 
             builder->SetInsertPoint(lambda_car);
-            Value* lambda_type_val = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
-            Value* lambda_flags_val = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_cdr});
-            Value* lambda_ptr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+            Value* lambda_type_val = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
+            Value* lambda_flags_val = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_cdr});
+            Value* lambda_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
             Value* tagged_lambda = packPtrToTaggedValueWithFlags(
                 builder->CreateIntToPtr(lambda_ptr_val, builder->getPtrTy()),
                 lambda_type_val, lambda_flags_val);
@@ -12559,9 +11932,9 @@ private:
             builder->CreateCondBr(car_is_closure_ptr, closure_car, check_bool);
 
             builder->SetInsertPoint(closure_car);
-            Value* closure_type_val = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
-            Value* closure_flags_val = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_cdr});
-            Value* closure_ptr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+            Value* closure_type_val = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
+            Value* closure_flags_val = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_cdr});
+            Value* closure_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
             Value* tagged_closure = packPtrToTaggedValueWithFlags(
                 builder->CreateIntToPtr(closure_ptr_val, builder->getPtrTy()),
                 closure_type_val, closure_flags_val);
@@ -12573,14 +11946,14 @@ private:
             builder->CreateCondBr(car_is_bool, bool_car, int_car);
 
             builder->SetInsertPoint(bool_car);
-            Value* car_bool_int = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_cdr});
+            Value* car_bool_int = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
             Value* car_bool_i1 = builder->CreateICmpNE(car_bool_int, ConstantInt::get(int64_type, 0));
             Value* tagged_bool = packBoolToTaggedValue(car_bool_i1);
             builder->CreateBr(merge_car);
             BasicBlock* bool_exit = builder->GetInsertBlock();
 
             builder->SetInsertPoint(int_car);
-            Value* car_int64 = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_cdr});
+            Value* car_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
             Value* tagged_int64 = packInt64ToTaggedValue(car_int64, true);
             builder->CreateBr(merge_car);
             BasicBlock* int_exit = builder->GetInsertBlock();
@@ -12635,7 +12008,7 @@ private:
         
         // Get car type using arena_tagged_cons_get_type(cell, false)
         Value* is_cdr = ConstantInt::get(int1_type, 0); // false = car
-        Value* car_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
+        Value* car_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
         
         // Mask out flags to get base type (type & 0x0F), matching C macro ESHKOL_GET_BASE_TYPE
         Value* car_base_type = builder->CreateAnd(car_type,
@@ -12675,7 +12048,7 @@ private:
 
         // Extract double car and pack into tagged value
         builder->SetInsertPoint(double_car);
-        Value* car_double = builder->CreateCall(arena_tagged_cons_get_double_func, {cons_ptr, is_cdr});
+        Value* car_double = builder->CreateCall(getTaggedConsGetDoubleFunc(), {cons_ptr, is_cdr});
         Value* tagged_double = packDoubleToTaggedValue(car_double);
         builder->CreateBr(merge_car);
         BasicBlock* double_exit = builder->GetInsertBlock();
@@ -12684,7 +12057,7 @@ private:
         builder->CreateCondBr(car_is_cons_ptr, cons_car, check_string_car);
 
         builder->SetInsertPoint(cons_car);
-        Value* car_cons = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* car_cons = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         Value* tagged_cons = packPtrToTaggedValue(builder->CreateIntToPtr(car_cons, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
         builder->CreateBr(merge_car);
         BasicBlock* cons_exit = builder->GetInsertBlock();
@@ -12694,7 +12067,7 @@ private:
         builder->CreateCondBr(car_is_string_ptr, string_car, check_lambda_car);
 
         builder->SetInsertPoint(string_car);
-        Value* car_string = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* car_string = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         Value* tagged_string = packPtrToTaggedValue(builder->CreateIntToPtr(car_string, builder->getPtrTy()), ESHKOL_VALUE_STRING_PTR);
         builder->CreateBr(merge_car);
         BasicBlock* string_exit = builder->GetInsertBlock();
@@ -12704,9 +12077,9 @@ private:
         builder->CreateCondBr(car_is_lambda_sexpr, lambda_car, check_closure_car);
 
         builder->SetInsertPoint(lambda_car);
-        Value* lambda_type_val = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
-        Value* lambda_flags_val = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_cdr});
-        Value* lambda_ptr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* lambda_type_val = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
+        Value* lambda_flags_val = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_cdr});
+        Value* lambda_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         Value* tagged_lambda = packPtrToTaggedValueWithFlags(
             builder->CreateIntToPtr(lambda_ptr_val, builder->getPtrTy()),
             lambda_type_val, lambda_flags_val);
@@ -12718,9 +12091,9 @@ private:
         builder->CreateCondBr(car_is_closure_ptr, closure_car, check_bool_car);
 
         builder->SetInsertPoint(closure_car);
-        Value* closure_type_val = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
-        Value* closure_flags_val = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_cdr});
-        Value* closure_ptr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* closure_type_val = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
+        Value* closure_flags_val = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_cdr});
+        Value* closure_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         Value* tagged_closure = packPtrToTaggedValueWithFlags(
             builder->CreateIntToPtr(closure_ptr_val, builder->getPtrTy()),
             closure_type_val, closure_flags_val);
@@ -12732,7 +12105,7 @@ private:
         builder->CreateCondBr(car_is_bool, bool_car, int_car);
 
         builder->SetInsertPoint(bool_car);
-        Value* car_bool_int = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_cdr});
+        Value* car_bool_int = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
         Value* car_bool_i1 = builder->CreateICmpNE(car_bool_int, ConstantInt::get(int64_type, 0));
         Value* tagged_bool = packBoolToTaggedValue(car_bool_i1);
         builder->CreateBr(merge_car);
@@ -12740,7 +12113,7 @@ private:
 
         // Extract int64 car and pack into tagged value
         builder->SetInsertPoint(int_car);
-        Value* car_int64 = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_cdr});
+        Value* car_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
         Value* tagged_int64 = packInt64ToTaggedValue(car_int64, true);
         builder->CreateBr(merge_car);
         BasicBlock* int_exit = builder->GetInsertBlock();
@@ -12961,7 +12334,7 @@ private:
 
             // Get cdr type
             Value* is_cdr = ConstantInt::get(int1_type, 1);
-            Value* cdr_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
+            Value* cdr_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
             Value* cdr_base_type = builder->CreateAnd(cdr_type,
                 ConstantInt::get(int8_type, 0x0F));
 
@@ -13001,7 +12374,7 @@ private:
             builder->CreateCondBr(cdr_is_double, double_cdr, check_cons_cdr);
 
             builder->SetInsertPoint(double_cdr);
-            Value* cdr_double = builder->CreateCall(arena_tagged_cons_get_double_func, {cons_ptr, is_cdr});
+            Value* cdr_double = builder->CreateCall(getTaggedConsGetDoubleFunc(), {cons_ptr, is_cdr});
             Value* tagged_double_cdr = packDoubleToTaggedValue(cdr_double);
             builder->CreateBr(merge_cdr);
             BasicBlock* double_exit = builder->GetInsertBlock();
@@ -13010,7 +12383,7 @@ private:
             builder->CreateCondBr(cdr_is_cons_ptr, cons_cdr, check_null_cdr);
 
             builder->SetInsertPoint(cons_cdr);
-            Value* cdr_cons = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+            Value* cdr_cons = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
             Value* tagged_cons_cdr = packPtrToTaggedValue(cdr_cons, ESHKOL_VALUE_CONS_PTR);
             builder->CreateBr(merge_cdr);
             BasicBlock* cons_exit = builder->GetInsertBlock();
@@ -13028,7 +12401,7 @@ private:
             builder->CreateCondBr(cdr_is_string_ptr, string_cdr, check_lambda_cdr);
 
             builder->SetInsertPoint(string_cdr);
-            Value* cdr_string = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+            Value* cdr_string = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
             Value* tagged_string_cdr = packPtrToTaggedValue(builder->CreateIntToPtr(cdr_string, builder->getPtrTy()), ESHKOL_VALUE_STRING_PTR);
             builder->CreateBr(merge_cdr);
             BasicBlock* string_exit = builder->GetInsertBlock();
@@ -13038,9 +12411,9 @@ private:
             builder->CreateCondBr(cdr_is_lambda_sexpr, lambda_cdr, check_closure_cdr);
 
             builder->SetInsertPoint(lambda_cdr);
-            Value* lambda_type_cdr = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
-            Value* lambda_flags_cdr = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_cdr});
-            Value* lambda_ptr_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+            Value* lambda_type_cdr = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
+            Value* lambda_flags_cdr = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_cdr});
+            Value* lambda_ptr_cdr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
             Value* tagged_lambda_cdr = packPtrToTaggedValueWithFlags(
                 builder->CreateIntToPtr(lambda_ptr_cdr, builder->getPtrTy()),
                 lambda_type_cdr, lambda_flags_cdr);
@@ -13052,9 +12425,9 @@ private:
             builder->CreateCondBr(cdr_is_closure_ptr, closure_cdr, check_bool_cdr);
 
             builder->SetInsertPoint(closure_cdr);
-            Value* closure_type_cdr = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
-            Value* closure_flags_cdr = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_cdr});
-            Value* closure_ptr_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+            Value* closure_type_cdr = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
+            Value* closure_flags_cdr = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_cdr});
+            Value* closure_ptr_cdr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
             Value* tagged_closure_cdr = packPtrToTaggedValueWithFlags(
                 builder->CreateIntToPtr(closure_ptr_cdr, builder->getPtrTy()),
                 closure_type_cdr, closure_flags_cdr);
@@ -13066,14 +12439,14 @@ private:
             builder->CreateCondBr(cdr_is_bool, bool_cdr, int_cdr);
 
             builder->SetInsertPoint(bool_cdr);
-            Value* cdr_bool_int = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_cdr});
+            Value* cdr_bool_int = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
             Value* cdr_bool_i1 = builder->CreateICmpNE(cdr_bool_int, ConstantInt::get(int64_type, 0));
             Value* tagged_bool_cdr = packBoolToTaggedValue(cdr_bool_i1);
             builder->CreateBr(merge_cdr);
             BasicBlock* bool_exit = builder->GetInsertBlock();
 
             builder->SetInsertPoint(int_cdr);
-            Value* cdr_int64 = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_cdr});
+            Value* cdr_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
             Value* tagged_int64_cdr = packInt64ToTaggedValue(cdr_int64, true);
             builder->CreateBr(merge_cdr);
             BasicBlock* int_exit = builder->GetInsertBlock();
@@ -13125,7 +12498,7 @@ private:
         
         // Get cdr type using arena_tagged_cons_get_type(cell, true)
         Value* is_cdr = ConstantInt::get(int1_type, 1); // true = cdr
-        Value* cdr_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
+        Value* cdr_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
         
         // Mask out flags to get base type (type & 0x0F), matching C macro ESHKOL_GET_BASE_TYPE
         Value* cdr_base_type = builder->CreateAnd(cdr_type,
@@ -13169,7 +12542,7 @@ private:
 
         // Extract double cdr and pack into tagged value
         builder->SetInsertPoint(double_cdr);
-        Value* cdr_double = builder->CreateCall(arena_tagged_cons_get_double_func, {cons_ptr, is_cdr});
+        Value* cdr_double = builder->CreateCall(getTaggedConsGetDoubleFunc(), {cons_ptr, is_cdr});
         Value* tagged_double_cdr = packDoubleToTaggedValue(cdr_double);
         builder->CreateBr(merge_cdr);
         BasicBlock* double_exit = builder->GetInsertBlock();
@@ -13178,7 +12551,7 @@ private:
         builder->CreateCondBr(cdr_is_cons_ptr, cons_cdr, check_null_cdr);
 
         builder->SetInsertPoint(cons_cdr);
-        Value* cdr_cons = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* cdr_cons = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         Value* tagged_cons_cdr = packPtrToTaggedValue(cdr_cons, ESHKOL_VALUE_CONS_PTR);
         builder->CreateBr(merge_cdr);
         BasicBlock* cons_exit = builder->GetInsertBlock();
@@ -13196,7 +12569,7 @@ private:
         builder->CreateCondBr(cdr_is_string_ptr, string_cdr, check_lambda_cdr);
 
         builder->SetInsertPoint(string_cdr);
-        Value* cdr_string = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* cdr_string = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         Value* tagged_string_cdr = packPtrToTaggedValue(builder->CreateIntToPtr(cdr_string, builder->getPtrTy()), ESHKOL_VALUE_STRING_PTR);
         builder->CreateBr(merge_cdr);
         BasicBlock* string_exit = builder->GetInsertBlock();
@@ -13206,9 +12579,9 @@ private:
         builder->CreateCondBr(cdr_is_lambda_sexpr, lambda_cdr, check_closure_cdr);
 
         builder->SetInsertPoint(lambda_cdr);
-        Value* lambda_type_cdr = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
-        Value* lambda_flags_cdr = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_cdr});
-        Value* lambda_ptr_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* lambda_type_cdr = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
+        Value* lambda_flags_cdr = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_cdr});
+        Value* lambda_ptr_cdr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         Value* tagged_lambda_cdr = packPtrToTaggedValueWithFlags(
             builder->CreateIntToPtr(lambda_ptr_cdr, builder->getPtrTy()),
             lambda_type_cdr, lambda_flags_cdr);
@@ -13220,9 +12593,9 @@ private:
         builder->CreateCondBr(cdr_is_closure_ptr, closure_cdr, check_bool_cdr);
 
         builder->SetInsertPoint(closure_cdr);
-        Value* closure_type_cdr = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_cdr});
-        Value* closure_flags_cdr = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_cdr});
-        Value* closure_ptr_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* closure_type_cdr = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
+        Value* closure_flags_cdr = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_cdr});
+        Value* closure_ptr_cdr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         Value* tagged_closure_cdr = packPtrToTaggedValueWithFlags(
             builder->CreateIntToPtr(closure_ptr_cdr, builder->getPtrTy()),
             closure_type_cdr, closure_flags_cdr);
@@ -13234,7 +12607,7 @@ private:
         builder->CreateCondBr(cdr_is_bool, bool_cdr, int_cdr);
 
         builder->SetInsertPoint(bool_cdr);
-        Value* cdr_bool_int = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_cdr});
+        Value* cdr_bool_int = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
         Value* cdr_bool_i1 = builder->CreateICmpNE(cdr_bool_int, ConstantInt::get(int64_type, 0));
         Value* tagged_bool_cdr = packBoolToTaggedValue(cdr_bool_i1);
         builder->CreateBr(merge_cdr);
@@ -13242,7 +12615,7 @@ private:
 
         // Extract int64 cdr and pack into tagged value
         builder->SetInsertPoint(int_cdr);
-        Value* cdr_int64 = builder->CreateCall(arena_tagged_cons_get_int64_func, {cons_ptr, is_cdr});
+        Value* cdr_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
         Value* tagged_int64_cdr = packInt64ToTaggedValue(cdr_int64, true);
         builder->CreateBr(merge_cdr);
         BasicBlock* int_exit = builder->GetInsertBlock();
@@ -14061,7 +13434,7 @@ private:
             // Allocate closure: arena_allocate_closure(arena, func_ptr, num_captures, sexpr_ptr)
             Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
             Value* num_captures = ConstantInt::get(int64_type, free_vars.size());
-            Value* closure_ptr = builder->CreateCall(arena_allocate_closure_func,
+            Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
                                                      {arena_ptr, func_ptr, num_captures, sexpr_ptr});
 
             // Store captured values into closure environment
@@ -14161,7 +13534,7 @@ private:
         // Allocate closure with 0 captures but with S-expression
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
         Value* num_captures = ConstantInt::get(int64_type, 0);
-        Value* closure_ptr = builder->CreateCall(arena_allocate_closure_func,
+        Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
                                                  {arena_ptr, func_ptr, num_captures, sexpr_ptr});
 
         Value* closure_tagged = packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CLOSURE_PTR);
@@ -15362,7 +14735,7 @@ private:
             builder->CreateMul(length, ConstantInt::get(int64_type, elem_size)));
 
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        Value* result_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, result_size});
+        Value* result_vec = builder->CreateCall(getArenaAllocateFunc(), {arena_ptr, result_size});
 
         // Store length in result
         Value* result_len_ptr = builder->CreateBitCast(result_vec, PointerType::getUnqual(*context));
@@ -18733,7 +18106,7 @@ private:
         // Allocate space for dual number on the heap (arena)
         // dual_number is 16 bytes (two doubles)
         Value* size = ConstantInt::get(int64_type, 16);
-        Value* dual_ptr = builder->CreateCall(arena_allocate_func, {arena_ptr, size});
+        Value* dual_ptr = builder->CreateCall(getArenaAllocateFunc(), {arena_ptr, size});
 
         // Store dual number to heap-allocated memory
         builder->CreateStore(dual, dual_ptr);
@@ -19200,7 +18573,7 @@ private:
 
         // Allocate AD node
         Value* arena_ptr = getArenaPtr();
-        Value* node_ptr = builder->CreateCall(arena_allocate_ad_node_func, {arena_ptr});
+        Value* node_ptr = builder->CreateCall(getArenaAllocateAdNodeFunc(), {arena_ptr});
 
         // Set type = AD_NODE_CONSTANT (0)
         Value* type_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 0);
@@ -19225,7 +18598,7 @@ private:
         builder->CreateStore(ConstantInt::get(int64_type, next_node_id++), id_ptr);
 
         // Add to specified tape
-        builder->CreateCall(arena_tape_add_node_func, {tape_ptr, node_ptr});
+        builder->CreateCall(getArenaTapeAddNodeFunc(), {tape_ptr, node_ptr});
 
         return node_ptr;
     }
@@ -19260,7 +18633,7 @@ private:
 
         // Allocate new AD node
         Value* arena_ptr = getArenaPtr();
-        Value* node_ptr = builder->CreateCall(arena_allocate_ad_node_func, {arena_ptr});
+        Value* node_ptr = builder->CreateCall(getArenaAllocateAdNodeFunc(), {arena_ptr});
 
         // Set operation type
         Value* type_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 0);
@@ -19285,7 +18658,7 @@ private:
         builder->CreateStore(ConstantInt::get(int64_type, next_node_id++), id_ptr);
 
         // Add to specified tape
-        builder->CreateCall(arena_tape_add_node_func, {tape_ptr, node_ptr});
+        builder->CreateCall(getArenaTapeAddNodeFunc(), {tape_ptr, node_ptr});
 
         return node_ptr;
     }
@@ -19304,7 +18677,7 @@ private:
         
         // Allocate AD node
         Value* arena_ptr = getArenaPtr();
-        Value* node_ptr = builder->CreateCall(arena_allocate_ad_node_func, {arena_ptr});
+        Value* node_ptr = builder->CreateCall(getArenaAllocateAdNodeFunc(), {arena_ptr});
 
         // Set type = AD_NODE_CONSTANT (0)
         Value* type_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 0);
@@ -19343,7 +18716,7 @@ private:
         
         // Add node to tape - PHASE 1 FIX: Use global runtime tape pointer
         Value* tape_ptr_runtime = builder->CreateLoad(PointerType::getUnqual(*context), current_ad_tape);
-        builder->CreateCall(arena_tape_add_node_func, {tape_ptr_runtime, node_ptr});
+        builder->CreateCall(getArenaTapeAddNodeFunc(), {tape_ptr_runtime, node_ptr});
         
         return node_ptr;
     }
@@ -19360,7 +18733,7 @@ private:
         // Allocate AD node
         Value* arena_ptr = getArenaPtr();
         
-        Value* node_ptr = builder->CreateCall(arena_allocate_ad_node_func, {arena_ptr});
+        Value* node_ptr = builder->CreateCall(getArenaAllocateAdNodeFunc(), {arena_ptr});
         
         // Set type = AD_NODE_VARIABLE (1)
         Value* type_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 0);
@@ -19438,7 +18811,7 @@ private:
         
         // Allocate new AD node
         Value* arena_ptr = getArenaPtr();
-        Value* node_ptr = builder->CreateCall(arena_allocate_ad_node_func, {arena_ptr});
+        Value* node_ptr = builder->CreateCall(getArenaAllocateAdNodeFunc(), {arena_ptr});
         
         // Set operation type
         Value* type_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 0);
@@ -19468,7 +18841,7 @@ private:
         
         // Add to tape - PHASE 1 FIX: Use global runtime tape pointer
         Value* tape_ptr_runtime_binary = builder->CreateLoad(PointerType::getUnqual(*context), current_ad_tape);
-        builder->CreateCall(arena_tape_add_node_func, {tape_ptr_runtime_binary, node_ptr});
+        builder->CreateCall(getArenaTapeAddNodeFunc(), {tape_ptr_runtime_binary, node_ptr});
         
         return node_ptr;
     }
@@ -19518,7 +18891,7 @@ private:
         
         // Allocate new AD node
         Value* arena_ptr = getArenaPtr();
-        Value* node_ptr = builder->CreateCall(arena_allocate_ad_node_func, {arena_ptr});
+        Value* node_ptr = builder->CreateCall(getArenaAllocateAdNodeFunc(), {arena_ptr});
         
         // Set operation type
         Value* type_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 0);
@@ -19563,7 +18936,7 @@ private:
         builder->CreateCondBr(tape_not_null_unary, add_unary_to_tape, skip_unary_tape);
         
         builder->SetInsertPoint(add_unary_to_tape);
-        builder->CreateCall(arena_tape_add_node_func, {tape_ptr_runtime_unary, node_ptr});
+        builder->CreateCall(getArenaTapeAddNodeFunc(), {tape_ptr_runtime_unary, node_ptr});
         builder->CreateBr(skip_unary_tape);
         
         builder->SetInsertPoint(skip_unary_tape);
@@ -19676,7 +19049,7 @@ private:
         storeNodeGradient(output_node_ptr, ConstantFP::get(double_type, 1.0));
         
         // Get number of nodes in tape (runtime value, not compile-time constant)
-        Value* num_nodes = builder->CreateCall(arena_tape_get_node_count_func, {tape_ptr});
+        Value* num_nodes = builder->CreateCall(getArenaTapeGetNodeCountFunc(), {tape_ptr});
         
         // Allocate loop counter for backward traversal (MUST iterate in reverse order)
         Value* counter = builder->CreateAlloca(int64_type, nullptr, "backward_counter");
@@ -19715,7 +19088,7 @@ private:
         builder->CreateStore(counter_minus_1, counter);
         
         // Get node at index using arena_tape_get_node (may return nullptr)
-        Value* node_ptr = builder->CreateCall(arena_tape_get_node_func,
+        Value* node_ptr = builder->CreateCall(getArenaTapeGetNodeFunc(),
             {tape_ptr, counter_minus_1});
         
         // Null check before propagation (defensive programming)
@@ -20610,7 +19983,7 @@ private:
         // Step 1: Create tape for this partial derivative
         Value* arena_ptr = getArenaPtr();
         Value* tape_capacity = ConstantInt::get(int64_type, 1024);
-        Value* partial_tape = builder->CreateCall(arena_allocate_tape_func,
+        Value* partial_tape = builder->CreateCall(getArenaAllocateTapeFunc(),
             {arena_ptr, tape_capacity});
         
         // Store tape as current (required by recordADNode* functions)
@@ -21093,7 +20466,7 @@ private:
         builder->CreateStore(partial_grad_as_int64, result_elem_ptr);
         
         // Step 9: Reset tape for next iteration (MUST call to zero gradients)
-        builder->CreateCall(arena_tape_reset_func, {partial_tape});
+        builder->CreateCall(getArenaTapeResetFunc(), {partial_tape});
         
         // Restore previous tape
         current_tape_ptr = saved_tape;
@@ -21664,7 +21037,7 @@ private:
 
         Value* arena_ptr = getArenaPtr();
 
-        Value* jac_tape = builder->CreateCall(arena_allocate_tape_func,
+        Value* jac_tape = builder->CreateCall(getArenaAllocateTapeFunc(),
             {arena_ptr, ConstantInt::get(int64_type, 1024)});
         
         // CRITICAL FIX: Use global AD tape pointer, not member variable!
@@ -21905,7 +21278,7 @@ private:
             typed_jac_elems, linear_idx);
         builder->CreateStore(partial_deriv, jac_result_elem_ptr);
         
-        builder->CreateCall(arena_tape_reset_func, {jac_tape});
+        builder->CreateCall(getArenaTapeResetFunc(), {jac_tape});
         
         // CRITICAL FIX: Clear global tape pointer (like gradient does)
         builder->CreateStore(ConstantPointerNull::get(PointerType::getUnqual(*context)), current_ad_tape);
@@ -22085,7 +21458,7 @@ private:
         
         // Move to next row (cdr)
         Value* is_cdr_walker = ConstantInt::get(int1_type, 1);
-        Value* next_walker = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+        Value* next_walker = builder->CreateCall(getTaggedConsGetPtrFunc(),
             {walker_cons_ptr, is_cdr_walker});
         builder->CreateStore(next_walker, list_walker);
         
@@ -22332,7 +21705,7 @@ private:
         
         // Create tape and AD nodes
         Value* arena_ptr = getArenaPtr();
-        Value* bg_tape = builder->CreateCall(arena_allocate_tape_func,
+        Value* bg_tape = builder->CreateCall(getArenaAllocateTapeFunc(),
             {arena_ptr, ConstantInt::get(int64_type, 1024)});
         
         // CRITICAL: Set global tape pointer (runtime Value*, not compile-time member)
@@ -22466,7 +21839,7 @@ private:
             typed_base_grad, bg_i);
         builder->CreateStore(bg_partial, bg_store_ptr);
         
-        builder->CreateCall(arena_tape_reset_func, {bg_tape});
+        builder->CreateCall(getArenaTapeResetFunc(), {bg_tape});
         
         // Clear global tape pointer
         builder->CreateStore(ConstantPointerNull::get(PointerType::getUnqual(*context)), current_ad_tape);
@@ -22545,7 +21918,7 @@ private:
         
         // Step 2: Compute gradient at perturbed point
         // Create tape for perturbed gradient computation
-        Value* pert_tape = builder->CreateCall(arena_allocate_tape_func,
+        Value* pert_tape = builder->CreateCall(getArenaAllocateTapeFunc(),
             {hess_arena_ptr, ConstantInt::get(int64_type, 1024)});
         
         // Create AD variable nodes from perturbed vector
@@ -22742,7 +22115,7 @@ private:
         builder->SetInsertPoint(hess_row_exit);
         
         // Reset tape for next column
-        builder->CreateCall(arena_tape_reset_func, {pert_tape});
+        builder->CreateCall(getArenaTapeResetFunc(), {pert_tape});
         
         // Next column
         Value* hess_j_next = builder->CreateAdd(hess_j, ConstantInt::get(int64_type, 1));
@@ -22861,7 +22234,7 @@ private:
         // Move to cdr
         Value* cons_ptr = builder->CreateIntToPtr(list_ptr, builder->getPtrTy());
         Value* is_cdr = ConstantInt::get(int1_type, 1);
-        Value* next_list = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* next_list = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         builder->CreateStore(next_list, current_list);
         Value* next_col = builder->CreateAdd(col, ConstantInt::get(int64_type, 1));
         builder->CreateStore(next_col, current_col);
@@ -24604,7 +23977,7 @@ private:
                     Value* cons_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
 
                     Value* is_car_op = ConstantInt::get(int1_type, (c == 'a') ? 0 : 1);
-                    Value* field_type = builder->CreateCall(arena_tagged_cons_get_type_func,
+                    Value* field_type = builder->CreateCall(getTaggedConsGetTypeFunc(),
                         {cons_ptr, is_car_op});
 
                     Value* base_type = builder->CreateAnd(field_type,
@@ -24649,7 +24022,7 @@ private:
 
                     // Double path
                     builder->SetInsertPoint(double_block);
-                    Value* double_val = builder->CreateCall(arena_tagged_cons_get_double_func,
+                    Value* double_val = builder->CreateCall(getTaggedConsGetDoubleFunc(),
                         {cons_ptr, is_car_op});
                     Value* tagged_double = packDoubleToTaggedValue(double_val);
                     builder->CreateBr(merge_block);
@@ -24659,7 +24032,7 @@ private:
                     builder->CreateCondBr(is_cons_ptr, cons_block, check_string_block);
 
                     builder->SetInsertPoint(cons_block);
-                    Value* cons_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+                    Value* cons_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                         {cons_ptr, is_car_op});
                     Value* tagged_cons = packPtrToTaggedValue(
                         builder->CreateIntToPtr(cons_val, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
@@ -24670,7 +24043,7 @@ private:
                     builder->CreateCondBr(is_string_ptr, string_block, check_lambda_block);
 
                     builder->SetInsertPoint(string_block);
-                    Value* string_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+                    Value* string_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                         {cons_ptr, is_car_op});
                     Value* tagged_string = packPtrToTaggedValue(
                         builder->CreateIntToPtr(string_val, builder->getPtrTy()), ESHKOL_VALUE_STRING_PTR);
@@ -24681,9 +24054,9 @@ private:
                     builder->CreateCondBr(is_lambda_sexpr, lambda_block, check_closure_block);
 
                     builder->SetInsertPoint(lambda_block);
-                    Value* lambda_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_car_op});
-                    Value* lambda_flags = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_car_op});
-                    Value* lambda_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car_op});
+                    Value* lambda_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
+                    Value* lambda_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
+                    Value* lambda_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
                     Value* tagged_lambda = packPtrToTaggedValueWithFlags(
                         builder->CreateIntToPtr(lambda_ptr, builder->getPtrTy()), lambda_type, lambda_flags);
                     builder->CreateBr(merge_block);
@@ -24693,16 +24066,16 @@ private:
                     builder->CreateCondBr(is_closure_ptr, closure_block, int_block);
 
                     builder->SetInsertPoint(closure_block);
-                    Value* closure_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_car_op});
-                    Value* closure_flags = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_car_op});
-                    Value* closure_ptr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car_op});
+                    Value* closure_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
+                    Value* closure_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
+                    Value* closure_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
                     Value* tagged_closure = packPtrToTaggedValueWithFlags(
                         builder->CreateIntToPtr(closure_ptr_val, builder->getPtrTy()), closure_type, closure_flags);
                     builder->CreateBr(merge_block);
 
                     // Int path (fallback)
                     builder->SetInsertPoint(int_block);
-                    Value* int_val = builder->CreateCall(arena_tagged_cons_get_int64_func,
+                    Value* int_val = builder->CreateCall(getTaggedConsGetInt64Func(),
                         {cons_ptr, is_car_op});
                     Value* tagged_int = packInt64ToTaggedValue(int_val, true);
                     builder->CreateBr(merge_block);
@@ -24770,7 +24143,7 @@ private:
             Value* cons_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
             
             Value* is_car_op = ConstantInt::get(int1_type, (c == 'a') ? 0 : 1);
-            Value* field_type = builder->CreateCall(arena_tagged_cons_get_type_func,
+            Value* field_type = builder->CreateCall(getTaggedConsGetTypeFunc(),
                 {cons_ptr, is_car_op});
             
             // Mask to get base type
@@ -24817,7 +24190,7 @@ private:
 
             // Extract double
             builder->SetInsertPoint(double_block);
-            Value* double_val = builder->CreateCall(arena_tagged_cons_get_double_func,
+            Value* double_val = builder->CreateCall(getTaggedConsGetDoubleFunc(),
                 {cons_ptr, is_car_op});
             Value* tagged_double = packDoubleToTaggedValue(double_val);
             builder->CreateBr(merge_block);
@@ -24828,7 +24201,7 @@ private:
 
             // Extract cons_ptr
             builder->SetInsertPoint(cons_block);
-            Value* cons_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            Value* cons_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                 {cons_ptr, is_car_op});
             Value* tagged_cons = packPtrToTaggedValue(builder->CreateIntToPtr(cons_val, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
             builder->CreateBr(merge_block);
@@ -24839,7 +24212,7 @@ private:
 
             // Extract string_ptr
             builder->SetInsertPoint(string_block);
-            Value* string_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            Value* string_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                 {cons_ptr, is_car_op});
             Value* tagged_string = packPtrToTaggedValue(builder->CreateIntToPtr(string_val, builder->getPtrTy()), ESHKOL_VALUE_STRING_PTR);
             builder->CreateBr(merge_block);
@@ -24850,9 +24223,9 @@ private:
 
             // Extract lambda_sexpr
             builder->SetInsertPoint(lambda_block);
-            Value* lambda_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_car_op});
-            Value* lambda_flags = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_car_op});
-            Value* lambda_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car_op});
+            Value* lambda_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
+            Value* lambda_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
+            Value* lambda_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
             Value* tagged_lambda = packPtrToTaggedValueWithFlags(
                 builder->CreateIntToPtr(lambda_ptr, builder->getPtrTy()),
                 lambda_type, lambda_flags);
@@ -24864,9 +24237,9 @@ private:
 
             // Extract closure_ptr
             builder->SetInsertPoint(closure_block);
-            Value* closure_type = builder->CreateCall(arena_tagged_cons_get_type_func, {cons_ptr, is_car_op});
-            Value* closure_flags = builder->CreateCall(arena_tagged_cons_get_flags_func, {cons_ptr, is_car_op});
-            Value* closure_ptr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_car_op});
+            Value* closure_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
+            Value* closure_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
+            Value* closure_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
             Value* tagged_closure = packPtrToTaggedValueWithFlags(
                 builder->CreateIntToPtr(closure_ptr_val, builder->getPtrTy()),
                 closure_type, closure_flags);
@@ -24874,7 +24247,7 @@ private:
 
             // Extract int64
             builder->SetInsertPoint(int_block);
-            Value* int_val = builder->CreateCall(arena_tagged_cons_get_int64_func,
+            Value* int_val = builder->CreateCall(getTaggedConsGetInt64Func(),
                 {cons_ptr, is_car_op});
             Value* tagged_int = packInt64ToTaggedValue(int_val, true);
             builder->CreateBr(merge_block);
@@ -24987,7 +24360,7 @@ private:
 
         // Move to cdr using tagged helper
         Value* is_cdr_get = ConstantInt::get(int1_type, 1);
-        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+        Value* cdr_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
             {cons_ptr, is_cdr_get});
         builder->CreateStore(cdr_val, current_ptr);
 
@@ -25047,7 +24420,7 @@ private:
         // Get second element (cadr of pair = car of cdr of pair)
         Value* pair_cons_ptr = builder->CreateIntToPtr(pair_data, builder->getPtrTy());
         Value* is_cdr = ConstantInt::get(int1_type, 1);
-        Value* pair_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {pair_cons_ptr, is_cdr});
+        Value* pair_cdr = builder->CreateCall(getTaggedConsGetPtrFunc(), {pair_cons_ptr, is_cdr});
         Value* second_tagged = extractCarAsTaggedValue(pair_cdr);
 
         // Cons first onto firsts list
@@ -25066,7 +24439,7 @@ private:
 
         // Move to next element
         Value* curr_cons_ptr = builder->CreateIntToPtr(curr, builder->getPtrTy());
-        Value* next = builder->CreateCall(arena_tagged_cons_get_ptr_func, {curr_cons_ptr, is_cdr});
+        Value* next = builder->CreateCall(getTaggedConsGetPtrFunc(), {curr_cons_ptr, is_cdr});
         builder->CreateStore(next, curr_ptr);
 
         builder->CreateBr(loop_cond);
@@ -25232,7 +24605,7 @@ private:
             // Get first element as initial accumulator
             acc_tagged = extractCarAsTaggedValue(list);
             // Get rest of list
-            rest = builder->CreateCall(arena_tagged_cons_get_ptr_func, {list_cons, is_cdr});
+            rest = builder->CreateCall(getTaggedConsGetPtrFunc(), {list_cons, is_cdr});
         }
 
         // Now fold over rest
@@ -25264,7 +24637,7 @@ private:
 
         // Move to next
         Value* curr_cons = builder->CreateIntToPtr(curr, builder->getPtrTy());
-        Value* next = builder->CreateCall(arena_tagged_cons_get_ptr_func, {curr_cons, is_cdr});
+        Value* next = builder->CreateCall(getTaggedConsGetPtrFunc(), {curr_cons, is_cdr});
         builder->CreateStore(next, curr_ptr);
 
         builder->CreateBr(fold_cond);
@@ -25353,16 +24726,16 @@ private:
         uint8_t type_tag = new_val_typed.type;
         
         if (new_val_typed.isInt64()) {
-            builder->CreateCall(arena_tagged_cons_set_int64_func,
+            builder->CreateCall(getTaggedConsSetInt64Func(),
                 {cons_ptr, is_car, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         } else if (new_val_typed.isDouble()) {
-            builder->CreateCall(arena_tagged_cons_set_double_func,
+            builder->CreateCall(getTaggedConsSetDoubleFunc(),
                 {cons_ptr, is_car, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         } else {
             // Pointer/other types
-            builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            builder->CreateCall(getTaggedConsSetPtrFunc(),
                 {cons_ptr, is_car, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         }
@@ -25394,16 +24767,16 @@ private:
         uint8_t type_tag = new_val_typed.type;
         
         if (new_val_typed.isInt64()) {
-            builder->CreateCall(arena_tagged_cons_set_int64_func,
+            builder->CreateCall(getTaggedConsSetInt64Func(),
                 {cons_ptr, is_cdr, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         } else if (new_val_typed.isDouble()) {
-            builder->CreateCall(arena_tagged_cons_set_double_func,
+            builder->CreateCall(getTaggedConsSetDoubleFunc(),
                 {cons_ptr, is_cdr, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         } else {
             // Pointer/other types
-            builder->CreateCall(arena_tagged_cons_set_ptr_func,
+            builder->CreateCall(getTaggedConsSetPtrFunc(),
                 {cons_ptr, is_cdr, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         }
@@ -25848,7 +25221,7 @@ private:
 
                 // Get cdr first (is_cdr=true)
                 Value* get_cdr = ConstantInt::get(int1_type, true);
-                Value* cdr_ptr = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, get_cdr});
+                Value* cdr_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, get_cdr});
 
                 // Then get car of cdr using extractCarAsTaggedValue
                 Value* result = extractCarAsTaggedValue(cdr_ptr);
@@ -26318,10 +25691,10 @@ private:
         
         // MIGRATION ISSUE 3: Set cdr using tagged value system
         // Old: CreateStructGEP(arena_cons_type, tail_cons_ptr, 1) + Store
-        // New: arena_tagged_cons_set_ptr_func(tail_cons_ptr, is_cdr=1, value, type)
+        // New: getTaggedConsSetPtrFunc()(tail_cons_ptr, is_cdr=1, value, type)
         Value* is_cdr_set = ConstantInt::get(int1_type, 1);
         Value* ptr_type = ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR);
-        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+        builder->CreateCall(getTaggedConsSetPtrFunc(),
             {tail_cons_ptr, is_cdr_set, new_result_cons, ptr_type});
         builder->CreateStore(new_result_cons, result_tail);
         builder->CreateBr(continue_map);
@@ -26331,10 +25704,10 @@ private:
         
         // MIGRATION ISSUE 2: Get cdr using tagged value system
         // Old: CreateStructGEP(arena_cons_type, input_cons_ptr, 1) + Load
-        // New: arena_tagged_cons_get_ptr_func(input_cons_ptr, is_cdr=1)
+        // New: getTaggedConsGetPtrFunc()(input_cons_ptr, is_cdr=1)
         Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         Value* is_cdr_get = ConstantInt::get(int1_type, 1);
-        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+        Value* input_cdr = builder->CreateCall(getTaggedConsGetPtrFunc(),
             {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
@@ -26513,10 +25886,10 @@ private:
         Value* tail_val = builder->CreateLoad(int64_type, result_tail);
         Value* tail_cons_ptr = builder->CreateIntToPtr(tail_val, builder->getPtrTy());
         
-        // Use arena_tagged_cons_set_ptr_func to set cdr
+        // Use getTaggedConsSetPtrFunc() to set cdr
         Value* is_cdr_set = ConstantInt::get(int1_type, 1);
         Value* ptr_type = ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR);
-        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+        builder->CreateCall(getTaggedConsSetPtrFunc(),
             {tail_cons_ptr, is_cdr_set, new_result_cons, ptr_type});
         builder->CreateStore(new_result_cons, result_tail);
         builder->CreateBr(continue_multimap);
@@ -26527,9 +25900,9 @@ private:
             Value* current_val = builder->CreateLoad(int64_type, current_ptrs[i]);
             Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
             
-            // Use arena_tagged_cons_get_ptr_func to get cdr
+            // Use getTaggedConsGetPtrFunc() to get cdr
             Value* is_cdr_get = ConstantInt::get(int1_type, 1);
-            Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+            Value* cdr_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                 {cons_ptr, is_cdr_get});
             builder->CreateStore(cdr_val, current_ptrs[i]);
         }
@@ -26671,7 +26044,7 @@ private:
         // Use type-safe extraction (avoids ABI issues with returning 16-byte structs)
         Value* first_elem = extractConsCarAsTaggedValue(first_cons);
         Value* is_cdr = ConstantInt::get(int1_type, 1);
-        Value* rest_int = builder->CreateCall(arena_tagged_cons_get_ptr_func, {first_cons, is_cdr});
+        Value* rest_int = builder->CreateCall(getTaggedConsGetPtrFunc(), {first_cons, is_cdr});
 
         // Get second element
         Value* rest_null = builder->CreateICmpEQ(rest_int, ConstantInt::get(int64_type, 0));
@@ -26732,7 +26105,7 @@ private:
         // Use type-safe extraction (avoids ABI issues with returning 16-byte structs)
         Value* first_elem = extractConsCarAsTaggedValue(first_cons);
         Value* is_cdr = ConstantInt::get(int1_type, 1);
-        Value* rest_list = builder->CreateCall(arena_tagged_cons_get_ptr_func, {first_cons, is_cdr});
+        Value* rest_list = builder->CreateCall(getTaggedConsGetPtrFunc(), {first_cons, is_cdr});
 
         // Allocate accumulator and current pointer
         Value* accum_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "apply_accum");
@@ -26770,7 +26143,7 @@ private:
         builder->CreateStore(new_accum, accum_ptr);
 
         // Move to next element
-        Value* next_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* next_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         builder->CreateStore(next_val, current_ptr);
         builder->CreateBr(loop_cond);
 
@@ -26834,7 +26207,7 @@ private:
             // Use type-safe extraction (avoids ABI issues with returning 16-byte structs)
             Value* elem = extractConsCarAsTaggedValue(cons_ptr);
             Value* is_cdr = ConstantInt::get(int1_type, 1);
-            Value* next = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+            Value* next = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
             // Capture ACTUAL block after extractConsCarAsTaggedValue (it may create blocks)
             BasicBlock* has_elem_exit = builder->GetInsertBlock();
             builder->CreateBr(continue_block);
@@ -26922,7 +26295,7 @@ private:
 
         // Get next list element
         Value* is_cdr = ConstantInt::get(int1_type, 1);
-        Value* next_list = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* next_list = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         Value* next_count = builder->CreateAdd(count_phi, ConstantInt::get(int64_type, 1));
 
         // Capture ACTUAL current block (extractConsCarAsTaggedValue may have changed it)
@@ -27255,10 +26628,10 @@ private:
         Value* true_tail_val = builder->CreateLoad(int64_type, true_tail);
         Value* true_tail_cons_ptr = builder->CreateIntToPtr(true_tail_val, builder->getPtrTy());
         
-        // Use arena_tagged_cons_set_ptr_func to set cdr
+        // Use getTaggedConsSetPtrFunc() to set cdr
         Value* is_cdr_set_true = ConstantInt::get(int1_type, 1);
         Value* ptr_type_tag = ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR);
-        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+        builder->CreateCall(getTaggedConsSetPtrFunc(),
             {true_tail_cons_ptr, is_cdr_set_true, new_true_cons, ptr_type_tag});
         builder->CreateStore(new_true_cons, true_tail);
         builder->CreateBr(continue_partition);
@@ -27287,9 +26660,9 @@ private:
         Value* false_tail_val = builder->CreateLoad(int64_type, false_tail);
         Value* false_tail_cons_ptr = builder->CreateIntToPtr(false_tail_val, builder->getPtrTy());
         
-        // Use arena_tagged_cons_set_ptr_func to set cdr
+        // Use getTaggedConsSetPtrFunc() to set cdr
         Value* is_cdr_set_false = ConstantInt::get(int1_type, 1);
-        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+        builder->CreateCall(getTaggedConsSetPtrFunc(),
             {false_tail_cons_ptr, is_cdr_set_false, new_false_cons, ptr_type_tag});
         builder->CreateStore(new_false_cons, false_tail);
         builder->CreateBr(continue_partition);
@@ -27297,7 +26670,7 @@ private:
         // Continue: move to next input element using tagged helper
         builder->SetInsertPoint(continue_partition);
         Value* is_cdr_get = ConstantInt::get(int1_type, 1);
-        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+        Value* input_cdr = builder->CreateCall(getTaggedConsGetPtrFunc(),
             {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
@@ -27401,10 +26774,10 @@ private:
         Value* prefix_tail_val = builder->CreateLoad(int64_type, prefix_tail);
         Value* prefix_tail_cons_ptr = builder->CreateIntToPtr(prefix_tail_val, builder->getPtrTy());
         
-        // Use arena_tagged_cons_set_ptr_func to set cdr
+        // Use getTaggedConsSetPtrFunc() to set cdr
         Value* is_cdr_set = ConstantInt::get(int1_type, 1);
         Value* ptr_type_tag = ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR);
-        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+        builder->CreateCall(getTaggedConsSetPtrFunc(),
             {prefix_tail_cons_ptr, is_cdr_set, new_prefix_cons, ptr_type_tag});
         builder->CreateStore(new_prefix_cons, prefix_tail);
         builder->CreateBr(continue_splitat);
@@ -27412,9 +26785,9 @@ private:
         // Continue: move to next input element and increment counter
         builder->SetInsertPoint(continue_splitat);
         
-        // Use arena_tagged_cons_get_ptr_func to get cdr
+        // Use getTaggedConsGetPtrFunc() to get cdr
         Value* is_cdr_get = ConstantInt::get(int1_type, 1);
-        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+        Value* input_cdr = builder->CreateCall(getTaggedConsGetPtrFunc(),
             {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
@@ -27570,10 +26943,10 @@ private:
         Value* tail_val = builder->CreateLoad(int64_type, result_tail);
         Value* tail_cons_ptr = builder->CreateIntToPtr(tail_val, builder->getPtrTy());
         
-        // Use arena_tagged_cons_set_ptr_func to set cdr
+        // Use getTaggedConsSetPtrFunc() to set cdr
         Value* is_cdr_set = ConstantInt::get(int1_type, 1);
         Value* ptr_type_tag = ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR);
-        builder->CreateCall(arena_tagged_cons_set_ptr_func,
+        builder->CreateCall(getTaggedConsSetPtrFunc(),
             {tail_cons_ptr, is_cdr_set, new_result_cons, ptr_type_tag});
         builder->CreateStore(new_result_cons, result_tail);
         builder->CreateBr(skip_element);
@@ -27581,9 +26954,9 @@ private:
         // Skip element: move to next input element (for both keep and remove cases)
         builder->SetInsertPoint(skip_element);
         
-        // Use arena_tagged_cons_get_ptr_func to get cdr
+        // Use getTaggedConsGetPtrFunc() to get cdr
         Value* is_cdr_get = ConstantInt::get(int1_type, 1);
-        Value* input_cdr = builder->CreateCall(arena_tagged_cons_get_ptr_func,
+        Value* input_cdr = builder->CreateCall(getTaggedConsGetPtrFunc(),
             {input_cons_ptr, is_cdr_get});
         builder->CreateStore(input_cdr, current_input);
         
@@ -27670,7 +27043,7 @@ private:
         
         Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         Value* is_cdr = ConstantInt::get(int1_type, 1);
-        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* cdr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         builder->CreateStore(cdr_val, current_ptr);
         
         builder->CreateBr(loop_condition);
@@ -27738,7 +27111,7 @@ private:
         
         Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         Value* is_cdr = ConstantInt::get(int1_type, 1);
-        Value* cdr_val = builder->CreateCall(arena_tagged_cons_get_ptr_func, {cons_ptr, is_cdr});
+        Value* cdr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         
         // Check if cdr is null (this is the last pair)
         Value* cdr_is_null = builder->CreateICmpEQ(cdr_val, ConstantInt::get(int64_type, 0));
