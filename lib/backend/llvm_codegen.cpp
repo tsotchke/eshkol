@@ -9,6 +9,16 @@
 #include <eshkol/backend/type_system.h>
 #include <eshkol/backend/function_cache.h>
 #include <eshkol/backend/memory_codegen.h>
+#include <eshkol/backend/codegen_context.h>
+#include <eshkol/backend/tagged_value_codegen.h>
+#include <eshkol/backend/builtin_declarations.h>
+#include <eshkol/backend/arithmetic_codegen.h>
+#include <eshkol/backend/control_flow_codegen.h>
+#include <eshkol/backend/string_io_codegen.h>
+#include <eshkol/backend/collection_codegen.h>
+#include <eshkol/backend/function_codegen.h>
+#include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/logger.h>
 #include "../core/arena_memory.h"
 
@@ -157,6 +167,47 @@ private:
 
     // Memory codegen (arena function declarations)
     std::unique_ptr<eshkol::MemoryCodegen> mem;
+
+    // CodegenContext - Shared state for extracted modules
+    // This provides clean access to LLVM infrastructure, symbol tables, and function caches
+    // for modules like TaggedValueCodegen, ArithmeticCodegen, etc.
+    std::unique_ptr<eshkol::CodegenContext> ctx_;
+
+    // TaggedValueCodegen - Pack/unpack operations for tagged values
+    // This module handles the runtime type system's tagged value representation
+    std::unique_ptr<eshkol::TaggedValueCodegen> tagged_;
+
+    // BuiltinDeclarations - External runtime function declarations
+    // Handles deep_equal, display_value, lambda_registry functions
+    std::unique_ptr<eshkol::BuiltinDeclarations> builtins_;
+
+    // ArithmeticCodegen - Polymorphic arithmetic operations
+    // Note: Main polymorphic implementations still in this file; module provides interface
+    std::unique_ptr<eshkol::ArithmeticCodegen> arith_;
+
+    // ControlFlowCodegen - Control flow operations (and, or, if, cond, begin)
+    // Note: Main implementations still in this file; module provides isTruthy helper
+    std::unique_ptr<eshkol::ControlFlowCodegen> flow_;
+
+    // StringIOCodegen - String and I/O operations
+    // Note: Main implementations still in this file; module provides string creation and printf
+    std::unique_ptr<eshkol::StringIOCodegen> strio_;
+
+    // CollectionCodegen - List and vector operations
+    // Note: Main implementations still in this file; module provides allocConsCell helper
+    std::unique_ptr<eshkol::CollectionCodegen> coll_;
+
+    // FunctionCodegen - Lambda and closure operations
+    // Note: Main implementations still in this file; module provides createClosure helper
+    std::unique_ptr<eshkol::FunctionCodegen> func_;
+
+    // TensorCodegen - Tensor operations
+    // Note: Main implementations still in this file; module provides interface
+    std::unique_ptr<eshkol::TensorCodegen> tensor_;
+
+    // AutodiffCodegen - Automatic differentiation operations
+    // Note: Main implementations still in this file; module provides interface
+    std::unique_ptr<eshkol::AutodiffCodegen> autodiff_;
 
     // Local type pointers (initialized from TypeSystem for backward compatibility)
     // TODO: Gradually migrate code to use types-> accessors directly
@@ -1229,104 +1280,9 @@ private:
         declareBinaryMathFunc("fmax");
         declareUnaryMathFunc("cbrt");   // cube root
 
-        // Deep equality comparison: bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_value_t* val2)
-        std::vector<Type*> deep_equal_args;
-        deep_equal_args.push_back(PointerType::getUnqual(*context)); // const eshkol_tagged_value_t* val1
-        deep_equal_args.push_back(PointerType::getUnqual(*context)); // const eshkol_tagged_value_t* val2
-
-        FunctionType* deep_equal_type = FunctionType::get(
-            Type::getInt1Ty(*context), // return bool
-            deep_equal_args,
-            false
-        );
-
-        eshkol_deep_equal_func = Function::Create(
-            deep_equal_type,
-            Function::ExternalLinkage,
-            "eshkol_deep_equal",
-            module.get()
-        );
-
-        function_table["eshkol_deep_equal"] = eshkol_deep_equal_func;
-
-        // ============================================================================
-        // PHASE 4: Unified display system for homoiconicity
-        // ============================================================================
-
-        // eshkol_display_value: void eshkol_display_value(const eshkol_tagged_value_t* value)
-        std::vector<Type*> display_value_args;
-        display_value_args.push_back(PointerType::getUnqual(*context)); // const eshkol_tagged_value_t* value
-
-        FunctionType* display_value_type = FunctionType::get(
-            Type::getVoidTy(*context),
-            display_value_args,
-            false
-        );
-
-        eshkol_display_value_func = Function::Create(
-            display_value_type,
-            Function::ExternalLinkage,
-            "eshkol_display_value",
-            module.get()
-        );
-
-        function_table["eshkol_display_value"] = eshkol_display_value_func;
-
-        // eshkol_lambda_registry_init: void eshkol_lambda_registry_init(void)
-        FunctionType* registry_init_type = FunctionType::get(
-            Type::getVoidTy(*context),
-            {},  // no args
-            false
-        );
-
-        eshkol_lambda_registry_init_func = Function::Create(
-            registry_init_type,
-            Function::ExternalLinkage,
-            "eshkol_lambda_registry_init",
-            module.get()
-        );
-
-        function_table["eshkol_lambda_registry_init"] = eshkol_lambda_registry_init_func;
-
-        // eshkol_lambda_registry_add: void eshkol_lambda_registry_add(uint64_t func_ptr, uint64_t sexpr_ptr, const char* name)
-        std::vector<Type*> registry_add_args;
-        registry_add_args.push_back(Type::getInt64Ty(*context));           // uint64_t func_ptr
-        registry_add_args.push_back(Type::getInt64Ty(*context));           // uint64_t sexpr_ptr
-        registry_add_args.push_back(PointerType::getUnqual(*context));     // const char* name
-
-        FunctionType* registry_add_type = FunctionType::get(
-            Type::getVoidTy(*context),
-            registry_add_args,
-            false
-        );
-
-        eshkol_lambda_registry_add_func = Function::Create(
-            registry_add_type,
-            Function::ExternalLinkage,
-            "eshkol_lambda_registry_add",
-            module.get()
-        );
-
-        function_table["eshkol_lambda_registry_add"] = eshkol_lambda_registry_add_func;
-
-        // eshkol_lambda_registry_lookup: uint64_t eshkol_lambda_registry_lookup(uint64_t func_ptr)
-        std::vector<Type*> registry_lookup_args;
-        registry_lookup_args.push_back(Type::getInt64Ty(*context));           // uint64_t func_ptr
-
-        FunctionType* registry_lookup_type = FunctionType::get(
-            Type::getInt64Ty(*context),  // return uint64_t (sexpr_ptr or 0)
-            registry_lookup_args,
-            false
-        );
-
-        eshkol_lambda_registry_lookup_func = Function::Create(
-            registry_lookup_type,
-            Function::ExternalLinkage,
-            "eshkol_lambda_registry_lookup",
-            module.get()
-        );
-
-        function_table["eshkol_lambda_registry_lookup"] = eshkol_lambda_registry_lookup_func;
+        // Note: Builtin runtime function declarations (eshkol_deep_equal, eshkol_display_value,
+        // eshkol_lambda_registry_*) are now created via BuiltinDeclarations after CodegenContext
+        // is initialized. See the builtins_ initialization below.
 
         // Get struct types from TypeSystem (types are created once in constructor)
         dual_number_type = types->getDualNumberType();
@@ -1341,6 +1297,80 @@ private:
 
         // Initialize memory codegen (creates arena function declarations)
         mem = std::make_unique<eshkol::MemoryCodegen>(*module, *types);
+
+        // Initialize CodegenContext - shared state for extracted modules
+        // This must happen after types, funcs, and mem are all initialized
+        ctx_ = std::make_unique<eshkol::CodegenContext>(
+            *context, *module, *builder, *types, *funcs, *mem
+        );
+        ctx_->setLibraryMode(library_mode);
+        ctx_->setModulePrefix(module_prefix);
+        ctx_->setGlobalArena(global_arena);
+        ctx_->setAdModeActive(ad_mode_active);
+        ctx_->setCurrentAdTape(current_ad_tape);
+        ctx_->setAdTapeStack(ad_tape_stack);
+        ctx_->setAdTapeDepth(ad_tape_depth);
+        ctx_->setOuterAdNodeStorage(outer_ad_node_storage);
+        ctx_->setOuterAdNodeToInner(outer_ad_node_to_inner);
+        ctx_->setOuterGradAccumulator(outer_grad_accumulator);
+        ctx_->setInnerVarNodePtr(inner_var_node_ptr);
+        ctx_->setGradientXDegree(gradient_x_degree);
+        ctx_->setOuterAdNodeStack(outer_ad_node_stack);
+        ctx_->setOuterAdNodeDepth(outer_ad_node_depth);
+        if (g_repl_mode_enabled) {
+            ctx_->setReplMode(true);
+        }
+        eshkol_debug("Created CodegenContext for module '%s'", module_prefix.c_str());
+
+        // Initialize TaggedValueCodegen - pack/unpack operations for tagged values
+        tagged_ = std::make_unique<eshkol::TaggedValueCodegen>(*ctx_);
+        eshkol_debug("Created TaggedValueCodegen");
+
+        // Initialize BuiltinDeclarations - runtime function declarations
+        // Creates: eshkol_deep_equal, eshkol_display_value, eshkol_lambda_registry_*
+        builtins_ = std::make_unique<eshkol::BuiltinDeclarations>(*ctx_);
+        // Update member pointers for backward compatibility
+        eshkol_deep_equal_func = builtins_->getDeepEqual();
+        eshkol_display_value_func = builtins_->getDisplayValue();
+        eshkol_lambda_registry_init_func = builtins_->getLambdaRegistryInit();
+        eshkol_lambda_registry_add_func = builtins_->getLambdaRegistryAdd();
+        eshkol_lambda_registry_lookup_func = builtins_->getLambdaRegistryLookup();
+        eshkol_debug("Created BuiltinDeclarations");
+
+        // Initialize ArithmeticCodegen - polymorphic arithmetic operations
+        // Note: The main polymorphic implementations remain in this file for now
+        arith_ = std::make_unique<eshkol::ArithmeticCodegen>(*ctx_, *tagged_);
+        eshkol_debug("Created ArithmeticCodegen");
+
+        // Initialize ControlFlowCodegen - control flow operations
+        // Note: The main implementations remain in this file for now
+        flow_ = std::make_unique<eshkol::ControlFlowCodegen>(*ctx_, *tagged_);
+        eshkol_debug("Created ControlFlowCodegen");
+
+        // Initialize StringIOCodegen - string and I/O operations
+        // Note: The main implementations remain in this file for now
+        strio_ = std::make_unique<eshkol::StringIOCodegen>(*ctx_, *tagged_);
+        eshkol_debug("Created StringIOCodegen");
+
+        // Initialize CollectionCodegen - list and vector operations
+        // Note: The main implementations remain in this file for now
+        coll_ = std::make_unique<eshkol::CollectionCodegen>(*ctx_, *tagged_, *mem);
+        eshkol_debug("Created CollectionCodegen");
+
+        // Initialize FunctionCodegen - lambda and closure operations
+        // Note: The main implementations remain in this file for now
+        func_ = std::make_unique<eshkol::FunctionCodegen>(*ctx_, *tagged_, *mem);
+        eshkol_debug("Created FunctionCodegen");
+
+        // Initialize TensorCodegen - tensor operations
+        // Note: The main implementations remain in this file for now
+        tensor_ = std::make_unique<eshkol::TensorCodegen>(*ctx_, *tagged_, *mem);
+        eshkol_debug("Created TensorCodegen");
+
+        // Initialize AutodiffCodegen - automatic differentiation operations
+        // Note: The main implementations remain in this file for now
+        autodiff_ = std::make_unique<eshkol::AutodiffCodegen>(*ctx_, *tagged_, *mem);
+        eshkol_debug("Created AutodiffCodegen");
 
         // Populate function_table for backward compatibility
         registerArenaFunctions();
