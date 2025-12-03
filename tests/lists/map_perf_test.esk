@@ -1,0 +1,192 @@
+;;
+;; Performance test: Built-in map vs Pure Eshkol vmap
+;; Tests with larger lists to measure performance difference
+;;
+
+(require stdlib)
+
+(display "=== MAP PERFORMANCE TEST ===")
+(newline)
+
+;; Pure Eshkol vmap
+(define (lists-any-null? lists)
+  (if (null? lists)
+      #f
+      (if (null? (car lists))
+          #t
+          (lists-any-null? (cdr lists)))))
+
+(define (all-cars lists)
+  (if (null? lists)
+      '()
+      (cons (car (car lists))
+            (all-cars (cdr lists)))))
+
+(define (all-cdrs lists)
+  (if (null? lists)
+      '()
+      (cons (cdr (car lists))
+            (all-cdrs (cdr lists)))))
+
+(define (vmap proc . lists)
+  (if (lists-any-null? lists)
+      '()
+      (cons (apply proc (all-cars lists))
+            (apply vmap (cons proc (all-cdrs lists))))))
+
+;; Test functions
+(define (double x) (* x 2))
+(define (square x) (* x x))
+
+;; Build large lists
+(define (build-list n)
+  (if (<= n 0)
+      '()
+      (cons n (build-list (- n 1)))))
+
+;; Count list elements
+(define (count-list lst)
+  (if (null? lst)
+      0
+      (+ 1 (count-list (cdr lst)))))
+
+;; Sum list elements
+(define (sum-list lst)
+  (if (null? lst)
+      0
+      (+ (car lst) (sum-list (cdr lst)))))
+
+;; Generate test lists of various sizes
+(define list-20 (build-list 20))
+(define list-50 (build-list 50))
+(define list-100 (build-list 100))
+
+(display "Lists created: 20, 50, 100 elements")
+(newline)
+(newline)
+
+;; ============================================
+;; TEST 1: Single list operations (20 elements)
+;; ============================================
+
+(display "--- 20 elements, single list ---")
+(newline)
+
+(display "sum(builtin map double): ")
+(display (sum-list (map double list-20)))
+(newline)
+
+(display "sum(vmap double):        ")
+(display (sum-list (vmap double list-20)))
+(newline)
+
+;; ============================================
+;; TEST 2: Single list operations (50 elements)
+;; ============================================
+
+(display "--- 50 elements, single list ---")
+(newline)
+
+(display "sum(builtin map double): ")
+(display (sum-list (map double list-50)))
+(newline)
+
+(display "sum(vmap double):        ")
+(display (sum-list (vmap double list-50)))
+(newline)
+
+;; ============================================
+;; TEST 3: Single list operations (100 elements)
+;; ============================================
+
+(display "--- 100 elements, single list ---")
+(newline)
+
+(display "sum(builtin map double): ")
+(display (sum-list (map double list-100)))
+(newline)
+
+(display "sum(vmap double):        ")
+(display (sum-list (vmap double list-100)))
+(newline)
+
+;; ============================================
+;; TEST 4: Two lists (20 elements each)
+;; ============================================
+
+(display "--- 20 elements, two lists ---")
+(newline)
+
+(display "sum(builtin map +): ")
+(display (sum-list (map + list-20 list-20)))
+(newline)
+
+(display "sum(vmap +):        ")
+(display (sum-list (vmap + list-20 list-20)))
+(newline)
+
+;; ============================================
+;; TEST 5: Two lists (50 elements each)
+;; ============================================
+
+(display "--- 50 elements, two lists ---")
+(newline)
+
+(display "sum(builtin map +): ")
+(display (sum-list (map + list-50 list-50)))
+(newline)
+
+(display "sum(vmap +):        ")
+(display (sum-list (vmap + list-50 list-50)))
+(newline)
+
+;; ============================================
+;; TEST 6: Nested map (double twice)
+;; ============================================
+
+(display "--- Nested map (double twice) on 50 elements ---")
+(newline)
+
+(display "sum(builtin nested): ")
+(display (sum-list (map double (map double list-50))))
+(newline)
+
+(display "sum(vmap nested):    ")
+(display (sum-list (vmap double (vmap double list-50))))
+(newline)
+
+;; ============================================
+;; TEST 7: Complex lambda
+;; ============================================
+
+(display "--- Complex lambda on 50 elements ---")
+(newline)
+
+(display "sum(builtin): ")
+(display (sum-list (map (lambda (x) (+ (* x x) (* x 2) 1)) list-50)))
+(newline)
+
+(display "sum(vmap):    ")
+(display (sum-list (vmap (lambda (x) (+ (* x x) (* x 2) 1)) list-50)))
+(newline)
+
+;; ============================================
+;; TEST 8: Repeated operations
+;; ============================================
+
+(display "--- 5 sequential maps on 20 elements ---")
+(newline)
+
+(define (add1 x) (+ x 1))
+
+(display "builtin: ")
+(display (sum-list (map add1 (map add1 (map add1 (map add1 (map add1 list-20)))))))
+(newline)
+
+(display "vmap:    ")
+(display (sum-list (vmap add1 (vmap add1 (vmap add1 (vmap add1 (vmap add1 list-20)))))))
+(newline)
+
+(newline)
+(display "=== PERFORMANCE TEST COMPLETE ===")
+(newline)

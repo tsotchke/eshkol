@@ -1,7 +1,6 @@
 ;;
 ;; Simple Arena Test - Debug the segfault step by step
 ;;
-
 ;; Test 1: Simple cons cell
 (define simple-pair (cons 42 100))
 (display "Simple pair car: ")

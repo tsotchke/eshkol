@@ -1,4 +1,6 @@
 ;; Debug the exact sequence from the original failing test
+
+
 (display "=== SEQUENTIAL MAP DEBUG ===")
 (newline)
 

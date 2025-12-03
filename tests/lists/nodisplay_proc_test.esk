@@ -1,0 +1,11 @@
+;; Test proc parameter without display
+(require stdlib)
+
+(define (test-func proc x)
+  (proc x))
+
+(display "Starting test")
+(newline)
+(define (double x) (* x 2))
+(display (test-func double 5))
+(newline)

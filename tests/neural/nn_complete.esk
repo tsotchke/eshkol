@@ -1,6 +1,6 @@
 ;;
 ;; Complete Neural Network Implementation in Eshkol
-;; 
+;;
 ;; This example demonstrates:
 ;; - Multi-layer perceptron with backpropagation
 ;; - List operations for managing layers and parameters
@@ -8,6 +8,8 @@
 ;; - Mini-batch gradient descent training
 ;; - Learning XOR function (classic non-linear problem)
 ;;
+
+(require stdlib)
 
 ;; ============================================================================
 ;; ACTIVATION FUNCTIONS

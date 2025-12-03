@@ -1,0 +1,38 @@
+;; Minimal vmap reproduction
+(require stdlib)
+
+(define (lists-any-null? lists)
+  (if (null? lists)
+      #f
+      (if (null? (car lists))
+          #t
+          (lists-any-null? (cdr lists)))))
+
+(define (all-cars lists)
+  (if (null? lists)
+      '()
+      (cons (car (car lists))
+            (all-cars (cdr lists)))))
+
+(define (all-cdrs lists)
+  (if (null? lists)
+      '()
+      (cons (cdr (car lists))
+            (all-cdrs (cdr lists)))))
+
+(define (vmap proc . lists)
+  (if (lists-any-null? lists)
+      '()
+      (begin
+        (define cars (all-cars lists))
+        (define cdrs (all-cdrs lists))
+        (define first-result (apply proc cars))
+        (define rest-args (cons proc cdrs))
+        (cons first-result
+              (apply vmap rest-args)))))
+
+(display "Starting minimal vmap test")
+(newline)
+(define (double x) (* x 2))
+(display (vmap double (list 1 2)))
+(newline)

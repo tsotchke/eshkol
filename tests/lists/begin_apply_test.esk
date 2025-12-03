@@ -1,0 +1,22 @@
+;; Test defines with apply (closer to vmap_simple)
+(require stdlib)
+
+;; Test defines with apply
+(define (test4)
+  (begin
+    (display "before")
+    (newline)
+    (define args (list 1 2))
+    (display "args=")
+    (display args)
+    (newline)
+    (define result (apply + args))
+    (display "result=")
+    (display result)
+    (newline)
+    result))
+
+(display "=== Test 4 (defines with apply) ===")
+(newline)
+(display (test4))
+(newline)

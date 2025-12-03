@@ -1,0 +1,58 @@
+;;
+;; Test apply with variadic functions
+;;
+
+(display "=== APPLY WITH VARIADIC FUNCTIONS ===")
+(newline)
+
+;; Simple variadic function
+(define (sum-all . nums)
+  (if (null? nums)
+      0
+      (+ (car nums) (apply sum-all (cdr nums)))))
+
+;; Test 1: Direct call
+(display "Test 1 - Direct call (sum-all 1 2 3 4): ")
+(display (sum-all 1 2 3 4))
+(newline)
+
+;; Test 2: Apply with list
+(display "Test 2 - Apply (apply sum-all '(1 2 3 4)): ")
+(display (apply sum-all (list 1 2 3 4)))
+(newline)
+
+;; Test 3: Variadic with fixed param
+(define (fixed-and-rest fixed . rest)
+  (display "Fixed: ")
+  (display fixed)
+  (display ", Rest: ")
+  (display rest)
+  (newline)
+  (+ fixed (if (null? rest) 0 (apply + rest))))
+
+(display "Test 3a - Direct: ")
+(display (fixed-and-rest 10 1 2 3))
+(newline)
+
+(display "Test 3b - Apply: ")
+(display (apply fixed-and-rest (list 10 1 2 3)))
+(newline)
+
+;; Test 4: Recursive apply with variadic
+(define (recursive-test proc . args)
+  (display "Args: ")
+  (display args)
+  (newline)
+  (if (null? args)
+      0
+      (+ (proc (car args))
+         (apply recursive-test (cons proc (cdr args))))))
+
+(display "Test 4: ")
+(define (double x) (* x 2))
+(display (recursive-test double 1 2 3))
+(newline)
+;; Expected: (double 1) + (double 2) + (double 3) = 2 + 4 + 6 = 12
+
+(display "=== DONE ===")
+(newline)

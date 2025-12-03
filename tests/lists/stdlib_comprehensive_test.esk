@@ -265,12 +265,12 @@
 (test "drop-then-length" 2 (length (drop '(1 2 3 4 5) 3)))
 
 ;; Fold with complex operations
-(test "fold-max" 5 (fold (lambda (acc x) (if (> x acc) x acc)) 0 '(3 1 4 1 5 9 2 6)))
+(test "fold-max" 9 (fold (lambda (acc x) (if (> x acc) x acc)) 0 '(3 1 4 1 5 9 2 6)))
 (test "fold-min" 1 (fold (lambda (acc x) (if (< x acc) x acc)) 100 '(3 1 4 1 5 9 2 6)))
 
 ;; Map combined with other operations
 (test "map-then-fold" 30 (fold + 0 (map (lambda (x) (* x 2)) '(1 2 3 4 5))))
-(test "filter-then-fold" 6 (fold + 0 (filter (lambda (x) (> x 1)) '(1 2 3))))
+(test "filter-then-fold" 5 (fold + 0 (filter (lambda (x) (> x 1)) '(1 2 3))))
 
 ;; Complex predicate with any/every
 (test-bool "any with member" #t (any (lambda (x) (member x '(a b c))) '(1 2 b 4)))

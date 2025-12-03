@@ -2,6 +2,7 @@
 ;; Phase 2A Safe Test - Testing multi-list with safe access
 ;;
 
+
 (display "=== PHASE 2A SAFE TEST ===")
 (newline)
 

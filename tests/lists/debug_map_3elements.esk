@@ -1,4 +1,6 @@
 ;; Map debugging test with 3 elements (like original failing test)
+
+
 (display "=== MAP 3-ELEMENT DEBUG TEST ===")
 (newline)
 

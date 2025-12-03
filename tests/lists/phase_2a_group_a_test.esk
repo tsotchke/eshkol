@@ -3,6 +3,8 @@
 ;; Testing simple traversal functions with mixed type lists
 ;;
 
+(require stdlib)
+
 (display "=== PHASE 2A GROUP A TEST ===")
 (newline)
 

@@ -2,6 +2,7 @@
 ;; Phase 2A Simple Debug - Testing basic multi-list map step by step
 ;;
 
+
 (display "=== PHASE 2A DEBUG TEST ===")
 (newline)
 

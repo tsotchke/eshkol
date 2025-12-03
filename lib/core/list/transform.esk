@@ -1,7 +1,8 @@
 ;;; core/list/transform.esk
 ;;; List transformation functions
 
-(provide take drop append reverse filter remove unzip partition)
+(provide take drop append reverse filter unzip partition)
+;;; Note: remove is kept as a builtin for performance
 
 ;;; take: Return first n elements of a list
 (define (take lst n)
@@ -34,10 +35,6 @@
   (cond ((null? lst) '())
         ((pred (car lst)) (cons (car lst) (filter pred (cdr lst))))
         (else (filter pred (cdr lst)))))
-
-;;; remove: Remove all elements equal to x
-(define (remove x lst)
-  (filter (lambda (e) (not (equal? e x))) lst))
 
 ;;; unzip: Split a list of pairs into two lists
 ;;; (unzip '((a 1) (b 2) (c 3))) => ((a b c) (1 2 3))

@@ -3,6 +3,7 @@
 ;; Testing: remove/remq/remv, last, last-pair
 ;;
 
+
 (display "=== PHASE 1C TEST: Advanced List Operations ===")
 (newline)
 

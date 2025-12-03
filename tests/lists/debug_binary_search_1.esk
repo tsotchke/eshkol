@@ -2,6 +2,7 @@
 ;; Debug Binary Search 1 - Minimal reproduction attempt
 ;;
 
+
 (display "=== DEBUG BINARY SEARCH 1 ===")
 (newline)
 

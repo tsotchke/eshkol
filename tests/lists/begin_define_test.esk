@@ -1,0 +1,40 @@
+;; Test defines at start of begin vs after expressions
+(require stdlib)
+
+;; Defines at start - should work
+(define (test1)
+  (begin
+    (define myval 42)
+    (define myval2 (+ myval 1))
+    (display "test1 myval=")
+    (display myval)
+    (newline)
+    (display "test1 myval2=")
+    (display myval2)
+    (newline)
+    myval2))
+
+;; Defines after expressions - may fail
+(define (test2)
+  (begin
+    (display "before")
+    (newline)
+    (define myval 42)
+    (define myval2 (+ myval 1))
+    (display "test2 myval=")
+    (display myval)
+    (newline)
+    (display "test2 myval2=")
+    (display myval2)
+    (newline)
+    myval2))
+
+(display "=== Test 1 (defines at start) ===")
+(newline)
+(display (test1))
+(newline)
+
+(display "=== Test 2 (defines after expr) ===")
+(newline)
+(display (test2))
+(newline)

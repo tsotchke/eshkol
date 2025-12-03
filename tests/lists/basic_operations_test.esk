@@ -2,6 +2,8 @@
 ;; Basic Operations Test - Test individual features
 ;;
 
+(require stdlib)
+
 ;; Test compound car/cdr operations  
 (define test-list (list 1 2 3 4))
 (display "cadr: ")

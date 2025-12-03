@@ -1,0 +1,175 @@
+;;
+;; Optimized pure Eshkol map implementations
+;;
+
+(require stdlib)
+
+;; ============================================
+;; ORIGINAL VMAP (baseline)
+;; ============================================
+
+(define (lists-any-null? lists)
+  (if (null? lists)
+      #f
+      (if (null? (car lists))
+          #t
+          (lists-any-null? (cdr lists)))))
+
+(define (all-cars lists)
+  (if (null? lists)
+      '()
+      (cons (car (car lists))
+            (all-cars (cdr lists)))))
+
+(define (all-cdrs lists)
+  (if (null? lists)
+      '()
+      (cons (cdr (car lists))
+            (all-cdrs (cdr lists)))))
+
+(define (vmap proc . lists)
+  (if (lists-any-null? lists)
+      '()
+      (cons (apply proc (all-cars lists))
+            (apply vmap (cons proc (all-cdrs lists))))))
+
+;; ============================================
+;; OPTIMIZATION 1: Specialized single-list map
+;; Avoids all variadic overhead for the common case
+;; ============================================
+
+(define (my-map1 proc lst)
+  (if (null? lst)
+      '()
+      (cons (proc (car lst))
+            (my-map1 proc (cdr lst)))))
+
+;; ============================================
+;; OPTIMIZATION 2: Specialized two-list map
+;; Direct implementation without apply
+;; ============================================
+
+(define (my-map2 proc lst1 lst2)
+  (if (null? lst1)
+      '()
+      (if (null? lst2)
+          '()
+          (cons (proc (car lst1) (car lst2))
+                (my-map2 proc (cdr lst1) (cdr lst2))))))
+
+;; ============================================
+;; OPTIMIZATION 3: Fused single-pass vmap
+;; Combines null-check, car extraction, and cdr in one pass
+;; ============================================
+
+(define (vmap-fused proc . lists)
+  (define (any-null? ls)
+    (if (null? ls) #f
+        (if (null? (car ls)) #t
+            (any-null? (cdr ls)))))
+  (define (step ls cars cdrs)
+    (if (null? ls)
+        (cons cars cdrs)
+        (step (cdr ls)
+              (cons (car (car ls)) cars)
+              (cons (cdr (car ls)) cdrs))))
+  (if (any-null? lists)
+      '()
+      (let ((parts (step lists '() '())))
+        (cons (apply proc (reverse (car parts)))
+              (apply vmap-fused (cons proc (reverse (cdr parts))))))))
+
+;; ============================================
+;; OPTIMIZATION 4: Tail-recursive with accumulator
+;; Uses reverse at end for proper order
+;; ============================================
+
+(define (map1-tail proc lst)
+  (define (loop lst acc)
+    (if (null? lst)
+        (reverse acc)
+        (loop (cdr lst) (cons (proc (car lst)) acc))))
+  (loop lst '()))
+
+;; ============================================
+;; BENCHMARKS
+;; ============================================
+
+(define (double x) (* x 2))
+(define (add2 a b) (+ a b))
+
+(define (build-list n)
+  (if (<= n 0) '() (cons n (build-list (- n 1)))))
+
+(define (sum-list lst)
+  (if (null? lst) 0 (+ (car lst) (sum-list (cdr lst)))))
+
+(define test-list (build-list 50))
+(define test-list2 (build-list 50))
+
+;; Run N iterations
+(define (bench-vmap n lst)
+  (if (<= n 0) 0 (+ (sum-list (vmap double lst)) (bench-vmap (- n 1) lst))))
+
+(define (bench-map1 n lst)
+  (if (<= n 0) 0 (+ (sum-list (my-map1 double lst)) (bench-map1 (- n 1) lst))))
+
+(define (bench-map1-tail n lst)
+  (if (<= n 0) 0 (+ (sum-list (map1-tail double lst)) (bench-map1-tail (- n 1) lst))))
+
+(define (bench-builtin n lst)
+  (if (<= n 0) 0 (+ (sum-list (map double lst)) (bench-builtin (- n 1) lst))))
+
+(define (bench-vmap2 n lst1 lst2)
+  (if (<= n 0) 0 (+ (sum-list (vmap + lst1 lst2)) (bench-vmap2 (- n 1) lst1 lst2))))
+
+(define (bench-map2 n lst1 lst2)
+  (if (<= n 0) 0 (+ (sum-list (my-map2 + lst1 lst2)) (bench-map2 (- n 1) lst1 lst2))))
+
+(define (bench-builtin2 n lst1 lst2)
+  (if (<= n 0) 0 (+ (sum-list (map + lst1 lst2)) (bench-builtin2 (- n 1) lst1 lst2))))
+
+(display "=== MAP OPTIMIZATION BENCHMARK ===")
+(newline)
+(display "50 elements, 2000 iterations each")
+(newline)
+(newline)
+
+(display "--- SINGLE LIST (map double) ---")
+(newline)
+
+(display "builtin map:     ")
+(display (bench-builtin 2000 test-list))
+(newline)
+
+(display "vmap (original): ")
+(display (bench-vmap 2000 test-list))
+(newline)
+
+(display "map1 (special):  ")
+(display (bench-map1 2000 test-list))
+(newline)
+
+(display "map1-tail (TCO): ")
+(display (bench-map1-tail 2000 test-list))
+(newline)
+
+(newline)
+(display "--- TWO LISTS (map +) ---")
+(newline)
+
+(display "builtin map:     ")
+(display (bench-builtin2 2000 test-list test-list2))
+(newline)
+
+(display "vmap (original): ")
+(display (bench-vmap2 2000 test-list test-list2))
+(newline)
+
+(display "map2 (special):  ")
+(display (bench-map2 2000 test-list test-list2))
+(newline)
+
+(newline)
+(display "=== BENCHMARK COMPLETE ===")
+(newline)

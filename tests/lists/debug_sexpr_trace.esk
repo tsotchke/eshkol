@@ -1,0 +1,4 @@
+;; Minimal test - just define and display
+(define (double x) (* x 2))
+(display double)
+(newline)

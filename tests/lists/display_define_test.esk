@@ -1,0 +1,29 @@
+;; Test displaying variadic with define in begin
+(require stdlib)
+
+(define (lists-any-null? lists)
+  (if (null? lists) #f (null? (car lists))))
+
+(define (all-cars lists)
+  (if (null? lists) '() (cons (car (car lists)) (all-cars (cdr lists)))))
+
+(define (vmap proc . lists)
+  (display "lists=")
+  (display lists)
+  (newline)
+  (if (lists-any-null? lists)
+      '()
+      (begin
+        (display "recursive")
+        (newline)
+        (define cars (all-cars lists))
+        (display "cars=")
+        (display cars)
+        (newline)
+        cars)))
+
+(display "Starting test")
+(newline)
+(define (double x) (* x 2))
+(display (vmap double (list 1 2)))
+(newline)

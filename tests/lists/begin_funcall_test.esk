@@ -1,0 +1,25 @@
+;; Test defines with function calls (like in vmap_simple)
+(require stdlib)
+
+;; Helper function
+(define (get-list) (list 1 2 3))
+
+;; Test defines with function call values
+(define (test3)
+  (begin
+    (display "before")
+    (newline)
+    (define mylist (get-list))
+    (display "mylist=")
+    (display mylist)
+    (newline)
+    (define result (cons 0 mylist))
+    (display "result=")
+    (display result)
+    (newline)
+    result))
+
+(display "=== Test 3 (defines with function calls) ===")
+(newline)
+(display (test3))
+(newline)

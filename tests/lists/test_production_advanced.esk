@@ -1,9 +1,12 @@
 ;; Advanced Production Test for v1.0-architecture
+
 ;; Tests: File I/O, nested defines, let bindings, lambdas, vectors, math ops
 
 ;; ============================================
 ;; Part 1: File I/O with nested operations
 ;; ============================================
+(require stdlib)
+
 (display "=== Part 1: File I/O ===")
 (newline)
 

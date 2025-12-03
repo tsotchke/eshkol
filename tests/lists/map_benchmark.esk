@@ -1,0 +1,142 @@
+;;
+;; Benchmark: Built-in map vs Pure Eshkol vmap
+;; Measures execution time of each implementation
+;;
+
+(require stdlib)
+
+;; Pure Eshkol vmap
+(define (lists-any-null? lists)
+  (if (null? lists)
+      #f
+      (if (null? (car lists))
+          #t
+          (lists-any-null? (cdr lists)))))
+
+(define (all-cars lists)
+  (if (null? lists)
+      '()
+      (cons (car (car lists))
+            (all-cars (cdr lists)))))
+
+(define (all-cdrs lists)
+  (if (null? lists)
+      '()
+      (cons (cdr (car lists))
+            (all-cdrs (cdr lists)))))
+
+(define (vmap proc . lists)
+  (if (lists-any-null? lists)
+      '()
+      (cons (apply proc (all-cars lists))
+            (apply vmap (cons proc (all-cdrs lists))))))
+
+;; Test function
+(define (double x) (* x 2))
+(define (add2 a b) (+ a b))
+
+;; Build test list
+(define (build-list n)
+  (if (<= n 0)
+      '()
+      (cons n (build-list (- n 1)))))
+
+;; Sum for verification
+(define (sum-list lst)
+  (if (null? lst)
+      0
+      (+ (car lst) (sum-list (cdr lst)))))
+
+;; Repeat operation N times
+(define (repeat-map-builtin n lst)
+  (if (<= n 0)
+      lst
+      (repeat-map-builtin (- n 1) (map double lst))))
+
+(define (repeat-vmap n lst)
+  (if (<= n 0)
+      lst
+      (repeat-vmap (- n 1) (vmap double lst))))
+
+(define (repeat-map2-builtin n lst1 lst2)
+  (if (<= n 0)
+      lst1
+      (repeat-map2-builtin (- n 1) (map + lst1 lst2) lst2)))
+
+(define (repeat-vmap2 n lst1 lst2)
+  (if (<= n 0)
+      lst1
+      (repeat-vmap2 (- n 1) (vmap + lst1 lst2) lst2)))
+
+;; Test lists
+(define list-100 (build-list 100))
+(define list-50 (build-list 50))
+
+(display "=== MAP BENCHMARK ===")
+(newline)
+(newline)
+
+;; ============================================
+;; BENCHMARK 1: Single list, 1000 iterations
+;; ============================================
+
+(display "--- BENCHMARK 1: map double, 100 elements, 1000 iterations ---")
+(newline)
+
+(display "Running builtin map...")
+(newline)
+(define result-builtin-1 (sum-list (repeat-map-builtin 1000 list-100)))
+(display "  Result: ")
+(display result-builtin-1)
+(newline)
+
+(display "Running vmap...")
+(newline)
+(define result-vmap-1 (sum-list (repeat-vmap 1000 list-100)))
+(display "  Result: ")
+(display result-vmap-1)
+(newline)
+(newline)
+
+;; ============================================
+;; BENCHMARK 2: Two lists, 500 iterations
+;; ============================================
+
+(display "--- BENCHMARK 2: map +, 50 elements x 2 lists, 500 iterations ---")
+(newline)
+
+(display "Running builtin map...")
+(newline)
+(define result-builtin-2 (sum-list (repeat-map2-builtin 500 list-50 list-50)))
+(display "  Result: ")
+(display result-builtin-2)
+(newline)
+
+(display "Running vmap...")
+(newline)
+(define result-vmap-2 (sum-list (repeat-vmap2 500 list-50 list-50)))
+(display "  Result: ")
+(display result-vmap-2)
+(newline)
+(newline)
+
+;; ============================================
+;; BENCHMARK 3: Quick single operations
+;; ============================================
+
+(display "--- BENCHMARK 3: Single map operations for comparison ---")
+(newline)
+
+(define large-list (build-list 500))
+
+(display "Builtin map double on 500 elements: ")
+(display (sum-list (map double large-list)))
+(newline)
+
+(display "Vmap double on 500 elements:        ")
+(display (sum-list (vmap double large-list)))
+(newline)
+
+(newline)
+(display "=== BENCHMARK COMPLETE ===")
+(newline)

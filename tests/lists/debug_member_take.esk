@@ -1,5 +1,4 @@
 ;; Diagnostic test for member and take
-
 (require stdlib)
 
 (display "Testing member function:")

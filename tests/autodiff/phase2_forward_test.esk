@@ -3,6 +3,8 @@
 ; Tests dual number arithmetic and derivative operator
 ; ================================================================
 
+(require stdlib)
+
 ; Test 1: Basic derivative - linear function
 ; f(x) = 2x, f'(x) = 2
 (display "Test 1: Derivative of 2x at x=5... ")

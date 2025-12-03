@@ -1,6 +1,9 @@
 ;;; Eshkol Standard Library
 ;;; Re-exports all core modules for convenience
 
+;;; IO - higher-order wrappers for display, newline, etc.
+(require core.io)
+
 ;;; Operators - first-class wrappers for built-in operators
 (require core.operators.arithmetic)
 (require core.operators.compare)
@@ -15,7 +18,8 @@
 (require core.functional.curry)
 (require core.functional.flip)
 
-;;; List - generation, transformation, queries, sorting, higher-order, search
+;;; List - compound accessors, generation, transformation, queries, sorting, higher-order, search
+(require core.list.compound)
 (require core.list.generate)
 (require core.list.transform)
 (require core.list.query)

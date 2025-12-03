@@ -3,6 +3,8 @@
 ;; Testing all newly implemented functions: for-each, assoc/assq/assv, list*, acons
 ;;
 
+(require stdlib)
+
 (display "=== PHASE 1A COMPLETE TEST ===")
 (newline)
 
@@ -12,8 +14,8 @@
 (define numbers (list 5 10 15))
 (display "   Numbers: ") (display (car numbers)) (display " ") (display (cadr numbers)) (display " ") (display (caddr numbers))
 (newline)
-(display "   for-each display: ")
-(for-each display numbers)
+(display "   for-each print: ")
+(for-each print numbers)
 (newline)
 
 ;; Test 2: Association list functions

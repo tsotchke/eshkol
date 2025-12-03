@@ -1,4 +1,6 @@
 ;; Debug argument tracing for map operations
+
+
 (display "=== ARGUMENT TRACE DEBUG ===")
 (newline)
 

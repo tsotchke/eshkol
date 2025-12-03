@@ -1,7 +1,6 @@
 ;;
 ;; Production Quality Test - No simplified implementations
 ;;
-
 ;; Test proper list creation
 (define my-list (list 1 2 3 4 5))
 (display "List first: ")

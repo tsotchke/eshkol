@@ -1,6 +1,8 @@
 ;; Phase 4 Real Vector Calculus Test
 ;; Tests with actual vector-valued functions for Jacobian computation
 
+(require stdlib)
+
 ;; Test 1: Jacobian of F(x,y) = [xy, x²] at (2,3)
 ;; Expected Jacobian: [[3, 2], [4, 0]]
 (define (test-jacobian-2d)

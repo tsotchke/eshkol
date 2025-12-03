@@ -182,6 +182,26 @@ foreach (exe ${EXE_SRC})
   target_link_libraries(${exename} PUBLIC eshkol-static ${LLVM_LIBS} ${LLVM_SYSTEM_LIBS})
 endforeach ()
 
+# ===== Pre-compiled Standard Library =====
+# Compile stdlib.esk to stdlib.o for faster compilation of user programs
+set(STDLIB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lib/stdlib.esk")
+set(STDLIB_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stdlib.o")
+
+add_custom_command(
+  OUTPUT ${STDLIB_OUTPUT}
+  COMMAND $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
+  DEPENDS eshkol-run ${STDLIB_SOURCE}
+  COMMENT "Compiling standard library to ${STDLIB_OUTPUT}"
+  VERBATIM
+)
+
+add_custom_target(stdlib ALL DEPENDS ${STDLIB_OUTPUT})
+
+# Install stdlib.o to lib directory
+install(FILES ${STDLIB_OUTPUT} DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
+
+message(STATUS "Standard library will be pre-compiled to: ${STDLIB_OUTPUT}")
+
 # ===== REPL Support =====
 # Optional REPL with JIT execution
 

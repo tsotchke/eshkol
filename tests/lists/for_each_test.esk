@@ -2,6 +2,8 @@
 ;; For-Each Function Test
 ;;
 
+(require stdlib)
+
 (display "Testing for-each function:")
 (newline)
 
@@ -14,9 +16,9 @@
 (display (car (cdr (cdr (cdr numbers)))))
 (newline)
 
-;; Test for-each with display (side effects)
-(display "for-each with display: ")
-(for-each display numbers)
+;; Test for-each with print (side effects)
+(display "for-each with print: ")
+(for-each print numbers)
 (newline)
 
 (display "for-each test completed!")

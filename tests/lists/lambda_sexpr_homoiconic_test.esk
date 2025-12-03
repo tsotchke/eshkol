@@ -9,14 +9,14 @@
 (newline)
 
 ; Test 2: Multi-parameter lambda
-(define add (lambda (x y) (+ x y)))
-(display add)
+(define my-add (lambda (x y) (+ x y)))
+(display my-add)
 (newline)
 
 ; Test 3: Lambda execution still works
 (display (square 5))
 (newline)
-(display (add 3 7))
+(display (my-add 3 7))
 (newline)
 
 ; Test 4: Closure with captured variable
@@ -62,7 +62,7 @@
 
 ; SUCCESS CRITERIA:
 ; - square displays as: (lambda (x) (* x x))
-; - add displays as: (lambda (x y) (+ x y))
+; - my-add displays as: (lambda (x y) (+ x y))
 ; - add5 displays as: (lambda (x) (+ x n))  ; capture visible in source
 ; - funcs displays as: ((lambda (x) (* x 2)) (lambda (x) (+ x 1)) (lambda (x) (- x 1)))
 ; - All executions return correct numeric values

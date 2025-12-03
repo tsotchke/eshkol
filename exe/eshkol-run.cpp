@@ -41,6 +41,10 @@ static struct option long_options[] = {
 // Set to track imported files (prevent circular imports)
 static std::set<std::string> imported_files;
 
+// Set to track pre-compiled modules (when linking with .o files like stdlib.o)
+// When a module is in this set, process_requires() will skip loading it
+static std::set<std::string> precompiled_modules;
+
 // ===== MODULE DEPENDENCY RESOLVER =====
 // Provides cycle detection and topological sorting for module loading
 
@@ -1285,6 +1289,64 @@ static std::string find_stdlib()
     return "";  // Not found
 }
 
+// Find the pre-compiled stdlib.o file
+static std::string find_stdlib_object()
+{
+    std::vector<std::string> stdlib_paths = {
+        // Relative to current directory (development)
+        "stdlib.o",
+        "build/stdlib.o",
+        "../build/stdlib.o",
+        // Installation paths
+        "/usr/local/lib/eshkol/stdlib.o",
+        "/usr/lib/eshkol/stdlib.o",
+    };
+
+    // Also check relative to the executable
+    char exe_path[4096];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len == -1) {
+        // Try macOS method
+        uint32_t size = sizeof(exe_path);
+        if (_NSGetExecutablePath(exe_path, &size) == 0) {
+            std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
+            // Check next to the executable (build directory)
+            stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.o").string());
+            // Check in lib subdirectory
+            stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.o").string());
+        }
+    } else {
+        exe_path[len] = '\0';
+        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
+        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.o").string());
+        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.o").string());
+    }
+
+    for (const auto& path : stdlib_paths) {
+        if (std::filesystem::exists(path)) {
+            return std::filesystem::canonical(path).string();
+        }
+    }
+
+    return "";  // Not found
+}
+
+// Check if any AST contains a require for stdlib or core.* modules
+static bool requires_stdlib(const std::vector<eshkol_ast_t>& asts)
+{
+    for (const auto& ast : asts) {
+        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
+            for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
+                std::string module_name = ast.operation.require_op.module_names[i];
+                if (module_name == "stdlib" || module_name.find("core.") == 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 // Find the library base directory (lib/)
 static std::string find_lib_dir()
 {
@@ -1602,6 +1664,66 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
             // Process each required module
             for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
                 std::string module_name = ast.operation.require_op.module_names[i];
+
+                // Check if this module is pre-compiled (e.g., from stdlib.o)
+                bool is_precompiled = precompiled_modules.count(module_name) > 0;
+
+                // Also check if module is covered by a parent pre-compiled module
+                // e.g., if "stdlib" is pre-compiled, skip "core.io" and "core.list.*"
+                if (!is_precompiled) {
+                    for (const auto& precompiled : precompiled_modules) {
+                        if (precompiled == "stdlib" &&
+                            (module_name.find("core.") == 0 || module_name == "stdlib")) {
+                            is_precompiled = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (is_precompiled) {
+                    // For pre-compiled modules, we parse to get function declarations
+                    // but strip the bodies. The actual code comes from the .o file.
+                    std::string module_path = resolve_module_path(module_name, base_dir, g_lib_dir);
+                    if (module_path.empty()) {
+                        if (debug_mode) {
+                            eshkol_warn("Pre-compiled module %s source not found - skipping declarations", module_name.c_str());
+                        }
+                        continue;
+                    }
+
+                    if (debug_mode) {
+                        eshkol_info("Module %s is pre-compiled - loading declarations from %s", module_name.c_str(), module_path.c_str());
+                    }
+
+                    // Load the module to get function declarations
+                    std::vector<eshkol_ast_t> module_asts;
+                    load_file_asts(module_path, module_asts, debug_mode);
+
+                    if (module_asts.empty()) {
+                        continue;
+                    }
+
+                    // Recursively process requires in the module (they're also pre-compiled)
+                    std::string module_dir = std::filesystem::path(module_path).parent_path().string();
+                    process_requires(module_asts, module_dir, debug_mode);
+
+                    // Extract only function definitions (strip bodies for external linkage)
+                    // The actual function code will come from stdlib.o at link time
+                    for (auto& module_ast : module_asts) {
+                        if (module_ast.type == ESHKOL_OP &&
+                            module_ast.operation.op == ESHKOL_DEFINE_OP &&
+                            module_ast.operation.define_op.is_function) {
+                            // Mark as external function (body will come from .o file)
+                            module_ast.operation.define_op.is_external = 1;
+                            required_asts.push_back(module_ast);
+                            if (debug_mode) {
+                                eshkol_info("  External function: %s", module_ast.operation.define_op.name);
+                            }
+                        }
+                    }
+                    continue;
+                }
+
                 std::string module_path = resolve_module_path(module_name, base_dir, g_lib_dir);
 
                 if (module_path.empty()) {
@@ -1699,6 +1821,7 @@ int main(int argc, char **argv)
     uint8_t dump_ast = 0;
     uint8_t dump_ir = 0;
     uint8_t compile_only = 0;
+    uint8_t shared_lib = 0;
     uint8_t no_stdlib = 0;
 
     std::vector<char*> source_files;
@@ -1734,8 +1857,8 @@ int main(int argc, char **argv)
             compile_only = 1;
             break;
         case 's':
-            // TODO: Implement shared library support
-            eshkol_warn("Shared library support not yet implemented");
+            shared_lib = 1;
+            compile_only = 1;  // Library mode implies compile to object file
             break;
         case 'l':
             linked_libs.push_back(optarg);
@@ -1776,15 +1899,54 @@ int main(int argc, char **argv)
     // The old no_stdlib flag is kept for backwards compatibility but does nothing.
     (void)no_stdlib;  // Suppress unused variable warning
 
-    // Load user source files
+    // First pass: Load source files to check for stdlib requirements
+    // (We'll process requires after potentially adding stdlib.o)
     for (const auto &source_file : source_files) {
-        // Get base directory for resolving imports
+        load_file_asts(source_file, asts, debug_mode);
+    }
+
+    // Auto-link stdlib.o if the source requires stdlib and we're not in library mode
+    if (!shared_lib && requires_stdlib(asts)) {
+        // Check if stdlib.o is already in compiled_files
+        bool has_stdlib = false;
+        for (const auto& obj_file : compiled_files) {
+            std::string filename = std::filesystem::path(obj_file).filename().string();
+            if (filename == "stdlib.o" || filename == "libstdlib.o") {
+                has_stdlib = true;
+                break;
+            }
+        }
+
+        if (!has_stdlib) {
+            // Try to find stdlib.o automatically
+            std::string stdlib_path = find_stdlib_object();
+            if (!stdlib_path.empty()) {
+                eshkol_info("Auto-linking pre-compiled stdlib: %s", stdlib_path.c_str());
+                compiled_files.push_back(strdup(stdlib_path.c_str()));
+            }
+        }
+    }
+
+    // Detect pre-compiled libraries to avoid recompiling their modules
+    // If we're linking with stdlib.o, mark stdlib and all core.* modules as pre-compiled
+    for (const auto& obj_file : compiled_files) {
+        std::string filename = std::filesystem::path(obj_file).filename().string();
+        if (filename == "stdlib.o" || filename == "libstdlib.o") {
+            eshkol_info("Detected pre-compiled stdlib: %s", obj_file);
+            precompiled_modules.insert("stdlib");
+            // All core.* modules are included in stdlib
+            // No need to list them individually - the check in process_requires handles it
+            // Tell codegen that stdlib is being used (for homoiconic display support)
+            eshkol_set_uses_stdlib(1);
+        }
+        // Future: detect other pre-compiled libraries by naming convention
+    }
+
+    // Second pass: Process require statements now that we know about precompiled modules
+    for (const auto &source_file : source_files) {
         std::filesystem::path source_path(source_file);
         std::string base_dir = source_path.parent_path().string();
         if (base_dir.empty()) base_dir = ".";
-
-        // Load the file
-        load_file_asts(source_file, asts, debug_mode);
 
         // Process require statements (new module system)
         process_requires(asts, base_dir, debug_mode);
@@ -1880,13 +2042,23 @@ int main(int argc, char **argv)
         }
         
         eshkol_info("Generating LLVM IR for module: %s", module_name.c_str());
-        
-        // Generate LLVM IR
-        LLVMModuleRef llvm_module = eshkol_generate_llvm_ir(
-            asts.data(), 
-            asts.size(), 
-            module_name.c_str()
-        );
+
+        // Generate LLVM IR (use library mode if --shared-lib flag is set)
+        LLVMModuleRef llvm_module;
+        if (shared_lib) {
+            eshkol_info("Using library mode (no main function)");
+            llvm_module = eshkol_generate_llvm_ir_library(
+                asts.data(),
+                asts.size(),
+                module_name.c_str()
+            );
+        } else {
+            llvm_module = eshkol_generate_llvm_ir(
+                asts.data(),
+                asts.size(),
+                module_name.c_str()
+            );
+        }
         
         if (!llvm_module) {
             eshkol_error("Failed to generate LLVM IR");

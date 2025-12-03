@@ -1,0 +1,37 @@
+;;
+;; Test cdr returning empty list
+;;
+
+(display "Test cdr of single-element list:")
+(newline)
+
+(define lst1 (list 2))
+(display "lst1 = ")
+(display lst1)
+(newline)
+
+(define cdr1 (cdr lst1))
+(display "cdr lst1 = ")
+(display cdr1)
+(newline)
+
+(display "null? (cdr lst1) = ")
+(display (null? cdr1))
+(newline)
+
+;; Now test consing the cdr into a list
+(display "consing cdr into list:")
+(newline)
+
+(define result (cons cdr1 '()))
+(display "result = ")
+(display result)
+(newline)
+
+(display "car result = ")
+(display (car result))
+(newline)
+
+(display "null? (car result) = ")
+(display (null? (car result)))
+(newline)

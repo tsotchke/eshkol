@@ -1,7 +1,5 @@
 ;;; Debug test for last-pair function
 
-(require stdlib)
-
 (display "=== Debugging last-pair ===")
 (newline)
 
