@@ -145,7 +145,7 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 }
 
 // Type checking helper macros
-#define ESHKOL_IS_INT64_TYPE(type)       (((type) & 0x0F) == ESHKOL_VALUE_INT64 || ((type) & 0x0F) == ESHKOL_VALUE_CHAR)
+#define ESHKOL_IS_INT64_TYPE(type)       (((type) & 0x0F) == ESHKOL_VALUE_INT64 || ((type) & 0x0F) == ESHKOL_VALUE_CHAR || ((type) & 0x0F) == ESHKOL_VALUE_BOOL)
 #define ESHKOL_IS_DOUBLE_TYPE(type)      (((type) & 0x0F) == ESHKOL_VALUE_DOUBLE)
 #define ESHKOL_IS_CONS_PTR_TYPE(type)    (((type) & 0x0F) == ESHKOL_VALUE_CONS_PTR)
 #define ESHKOL_IS_NULL_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_NULL)
@@ -256,6 +256,75 @@ typedef struct eshkol_closure {
 
 // ===== END CLOSURE ENVIRONMENT STRUCTURES =====
 
+// ===== LAMBDA REGISTRY FOR HOMOICONICITY =====
+// Runtime table mapping function pointers to their S-expression representations
+// This enables full homoiconicity: (display (list double)) shows the lambda source
+
+typedef struct eshkol_lambda_entry {
+    uint64_t func_ptr;      // Function pointer as uint64
+    uint64_t sexpr_ptr;     // Pointer to S-expression cons cell (0 if none)
+    const char* name;       // Function name for debugging (may be NULL)
+} eshkol_lambda_entry_t;
+
+typedef struct eshkol_lambda_registry {
+    eshkol_lambda_entry_t* entries;
+    size_t count;
+    size_t capacity;
+} eshkol_lambda_registry_t;
+
+// Global lambda registry (defined in arena_memory.cpp)
+extern eshkol_lambda_registry_t* g_lambda_registry;
+
+// Lambda registry API
+void eshkol_lambda_registry_init(void);
+void eshkol_lambda_registry_destroy(void);
+void eshkol_lambda_registry_add(uint64_t func_ptr, uint64_t sexpr_ptr, const char* name);
+uint64_t eshkol_lambda_registry_lookup(uint64_t func_ptr);
+
+// ===== END LAMBDA REGISTRY =====
+
+// ===== UNIFIED DISPLAY SYSTEM =====
+// Single source of truth for displaying all Eshkol values
+
+// Forward declaration for tagged cons cell
+struct arena_tagged_cons_cell;
+
+// Display options for customizing output
+typedef struct eshkol_display_opts {
+    int max_depth;          // Maximum recursion depth (default: 100)
+    int current_depth;      // Current depth (internal use)
+    uint8_t quote_strings;  // Quote strings with "" (true for 'write', false for 'display')
+    uint8_t show_types;     // Debug: show type tags
+    void* output;           // Output stream (FILE*, default: stdout)
+} eshkol_display_opts_t;
+
+// Default display options
+static inline eshkol_display_opts_t eshkol_display_default_opts(void) {
+    eshkol_display_opts_t opts;
+    opts.max_depth = 100;
+    opts.current_depth = 0;
+    opts.quote_strings = 0;
+    opts.show_types = 0;
+    opts.output = 0;  // NULL means stdout
+    return opts;
+}
+
+// Main display functions (implemented in arena_memory.cpp)
+void eshkol_display_value(const eshkol_tagged_value_t* value);
+void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_display_opts_t* opts);
+void eshkol_write_value(const eshkol_tagged_value_t* value);  // Scheme 'write' semantics
+
+// Display a list (cons cell chain)
+void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts);
+
+// Display a lambda by looking up its S-expression in the registry
+void eshkol_display_lambda(uint64_t func_ptr, eshkol_display_opts_t* opts);
+
+// Display a closure by extracting its embedded S-expression
+void eshkol_display_closure(uint64_t closure_ptr, eshkol_display_opts_t* opts);
+
+// ===== END UNIFIED DISPLAY SYSTEM =====
+
 // ===== END COMPUTATIONAL GRAPH TYPES =====
 
 typedef enum {
@@ -338,6 +407,7 @@ typedef struct eshkol_operation {
             uint64_t num_params;
             uint8_t is_variadic;      // True if function accepts variable arguments
             char *rest_param;         // Name of rest parameter (for variadic functions)
+            uint8_t is_external;      // True if function is external (body from linked .o)
         } define_op;
         struct {
             struct eshkol_ast *expressions;

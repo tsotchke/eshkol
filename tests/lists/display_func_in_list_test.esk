@@ -1,0 +1,24 @@
+;; Test displaying list containing a function
+(require stdlib)
+
+(define (double x) (* x 2))
+
+(display "Test 1: display function directly")
+(newline)
+(display double)
+(newline)
+
+(display "Test 2: list containing function")
+(newline)
+(define mylist (list double))
+(display mylist)
+(newline)
+
+(display "Test 3: cons function to list")
+(newline)
+(define mylist2 (cons double (list 1 2)))
+(display mylist2)
+(newline)
+
+(display "Done")
+(newline)

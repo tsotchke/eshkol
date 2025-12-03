@@ -1,0 +1,20 @@
+;; Test recursive variadic with apply (closest to vmap_simple)
+(require stdlib)
+
+;; Recursive variadic function with apply
+(define (sum-all . args)
+  (if (null? args)
+      0
+      (begin
+        (display "args=")
+        (display args)
+        (newline)
+        (define first (car args))
+        (define rest (cdr args))
+        (define rest-sum (apply sum-all rest))
+        (+ first rest-sum))))
+
+(display "=== Test 6 (recursive variadic with apply) ===")
+(newline)
+(display (sum-all 1 2 3))
+(newline)

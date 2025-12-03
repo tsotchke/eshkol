@@ -2,6 +2,7 @@
 ;; Debug Static Collision - Test static variable collision theory
 ;;
 
+
 (display "=== DEBUG STATIC COLLISION TEST ===")
 (newline)
 

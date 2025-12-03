@@ -1,0 +1,69 @@
+;;
+;; Debug vmap step by step
+;;
+
+;; Helper: check if any list is null
+(define (lists-any-null? lists)
+  (if (null? lists)
+      #f
+      (if (null? (car lists))
+          #t
+          (lists-any-null? (cdr lists)))))
+
+;; Helper: get all cars
+(define (all-cars lists)
+  (if (null? lists)
+      '()
+      (cons (car (car lists))
+            (all-cars (cdr lists)))))
+
+;; Helper: get all cdrs
+(define (all-cdrs lists)
+  (if (null? lists)
+      '()
+      (cons (cdr (car lists))
+            (all-cdrs (cdr lists)))))
+
+;; Test lists-any-null?
+(display "Test lists-any-null?:")
+(newline)
+(display (lists-any-null? (list (list 1 2) (list 3 4))))
+(newline)
+(display (lists-any-null? (list (list 1 2) '())))
+(newline)
+
+;; Test all-cars
+(display "Test all-cars:")
+(newline)
+(define test-lists (list (list 1 2 3) (list 10 20 30)))
+(display "Input: ")
+(display test-lists)
+(newline)
+(display "Cars: ")
+(display (all-cars test-lists))
+(newline)
+
+;; Test all-cdrs
+(display "Test all-cdrs:")
+(newline)
+(display "Cdrs: ")
+(display (all-cdrs test-lists))
+(newline)
+
+;; Test apply with + on cars
+(display "Test apply + on cars:")
+(newline)
+(display (apply + (all-cars test-lists)))
+(newline)
+
+;; Now test the recursive call construction
+(display "Test recursive call construction:")
+(newline)
+(define (add2 a b) (+ a b))
+(define remaining-lists (all-cdrs test-lists))
+(display "Remaining lists: ")
+(display remaining-lists)
+(newline)
+(display "Cons add2 with remaining: ")
+(display (cons add2 remaining-lists))
+(newline)

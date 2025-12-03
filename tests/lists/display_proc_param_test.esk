@@ -1,0 +1,21 @@
+;; Test displaying variadic proc parameter in list
+(require stdlib)
+
+(define (test-func proc . args)
+  (display "proc=")
+  (display proc)
+  (newline)
+  (display "args=")
+  (display args)
+  (newline)
+  (define mylist (cons proc args))
+  (display "mylist=")
+  (display mylist)
+  (newline)
+  mylist)
+
+(display "Starting test")
+(newline)
+(define (double x) (* x 2))
+(display (test-func double 1 2 3))
+(newline)

@@ -1,8 +1,9 @@
 ;;
 ;; Minimal Test - No append function
 ;;
-
 ;; Test basic list creation
+(require stdlib)
+
 (define simple-list (list 1 2 3))
 (display "First: ")
 (display (car simple-list))

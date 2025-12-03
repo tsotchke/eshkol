@@ -1,3 +1,5 @@
+
+
 ; Session 005: Map with Mixed Type List Test
 ; Tests map function with lambda and mixed int/double types
 ; Expected output: (2 5.0 6)

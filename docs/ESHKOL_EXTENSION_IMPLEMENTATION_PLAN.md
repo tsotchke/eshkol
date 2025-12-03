@@ -69,13 +69,13 @@ Extend Eshkol from a scientific computing language with autodiff capabilities in
 | Automatic Differentiation | 9 | Complete |
 | String Operations | 15 | Basic |
 | I/O Operations | 10 | Basic |
-| Type System | 13 value types | Complete |
+| Type System | 14 value types | Complete |
 
 ### Gaps Identified
 
 | Category | Current | Needed |
 |----------|---------|--------|
-| String Processing | Basic (append, substring) | Full (split, join, regex) |
+| String Processing | **Complete** (split, join, trim, case) | Regex support |
 | Data Formats | None | JSON, CSV, Base64 |
 | Key-Value Storage | Association lists O(n) | Hash tables O(1) |
 | File System | Basic file I/O | Full directory operations |
@@ -83,6 +83,10 @@ Extend Eshkol from a scientific computing language with autodiff capabilities in
 | HTTP | None | Client and server |
 | Concurrency | None | Threads, channels |
 | Error Handling | Basic `error` | Structured exceptions |
+
+**Note**: String processing was implemented in Phase 1 (see `lib/core/strings.esk` and
+builtin functions `string-split`, `string-contains?`, `string-index`, `string-upcase`,
+`string-downcase` in llvm_codegen.cpp).
 
 ### Codebase Statistics
 
@@ -140,28 +144,30 @@ Total                        34,238
 
 ### Value Type Extensions
 
-Current types (13):
+Current types (14):
 ```c
-ESHKOL_VALUE_NULL        = 0
-ESHKOL_VALUE_INT64       = 1
-ESHKOL_VALUE_DOUBLE      = 2
-ESHKOL_VALUE_CONS_PTR    = 3
-ESHKOL_VALUE_DUAL_NUMBER = 4
-ESHKOL_VALUE_AD_NODE_PTR = 5
-ESHKOL_VALUE_TENSOR_PTR  = 6
-ESHKOL_VALUE_LAMBDA_SEXPR = 7
-ESHKOL_VALUE_STRING_PTR  = 8
-ESHKOL_VALUE_CHAR        = 9
-ESHKOL_VALUE_VECTOR_PTR  = 10
-ESHKOL_VALUE_SYMBOL      = 11
-ESHKOL_VALUE_CLOSURE_PTR = 12
+ESHKOL_VALUE_NULL        = 0   // Empty/null value
+ESHKOL_VALUE_INT64       = 1   // 64-bit signed integer
+ESHKOL_VALUE_DOUBLE      = 2   // Double-precision floating point
+ESHKOL_VALUE_CONS_PTR    = 3   // Pointer to cons cell (list)
+ESHKOL_VALUE_DUAL_NUMBER = 4   // Dual number for forward-mode AD
+ESHKOL_VALUE_AD_NODE_PTR = 5   // Pointer to AD computation graph node
+ESHKOL_VALUE_TENSOR_PTR  = 6   // Pointer to tensor structure
+ESHKOL_VALUE_LAMBDA_SEXPR = 7  // Lambda S-expression (homoiconicity)
+ESHKOL_VALUE_STRING_PTR  = 8   // Pointer to string
+ESHKOL_VALUE_CHAR        = 9   // Character (Unicode codepoint)
+ESHKOL_VALUE_VECTOR_PTR  = 10  // Scheme vector (heterogeneous array)
+ESHKOL_VALUE_SYMBOL      = 11  // Symbol (interned string for identifiers)
+ESHKOL_VALUE_CLOSURE_PTR = 12  // Closure (function + environment)
+ESHKOL_VALUE_BOOL        = 13  // Boolean (#t or #f)
+// ESHKOL_VALUE_MAX      = 15  // 4-bit type field limit
 ```
 
-New types to add (3):
+New types to add (2):
 ```c
-ESHKOL_VALUE_HASH_PTR    = 13  // Hash table pointer
-ESHKOL_VALUE_SOCKET_PTR  = 14  // Socket descriptor wrapper
-ESHKOL_VALUE_THREAD_PTR  = 15  // Thread handle (uses MAX slot)
+ESHKOL_VALUE_HASH_PTR    = 14  // Hash table pointer
+ESHKOL_VALUE_SOCKET_PTR  = 15  // Socket descriptor wrapper (uses MAX slot)
+// Note: THREAD_PTR would require expanding beyond 4-bit type field
 ```
 
 ---
@@ -172,9 +178,9 @@ ESHKOL_VALUE_THREAD_PTR  = 15  // Thread handle (uses MAX slot)
 
 ### Phase 1: Enhanced String Processing
 
-**Priority**: Critical
+**Status**: ✅ **COMPLETE**
 **Dependencies**: None
-**Estimated LOC**: 500
+**Implemented LOC**: ~500
 
 #### Functions to Implement
 
@@ -646,7 +652,7 @@ Value* codegenStringUpcase(const eshkol_operations_t* op) {
 
 ```c
 // Add to eshkol_value_type_t enum:
-ESHKOL_VALUE_HASH_PTR = 13,  // Pointer to hash table
+ESHKOL_VALUE_HASH_PTR = 14,  // Pointer to hash table
 ```
 
 ##### Runtime Structures (arena_memory.h)
@@ -853,7 +859,7 @@ declareExternFunction("chdir", i32, {ptr_type});
 
 ```c
 // Add to eshkol_value_type_t:
-ESHKOL_VALUE_SOCKET_PTR = 14,
+ESHKOL_VALUE_SOCKET_PTR = 15,  // Uses last available slot in 4-bit type field
 
 // Socket wrapper structure (arena_memory.h)
 typedef struct eshkol_socket {
@@ -1375,8 +1381,15 @@ builder->CreateStore(argv_arg, g_argv);
 
 ##### New Type Definition
 
+**Note**: With the current 4-bit type field (max value 15), all slots are used once
+HASH_PTR (14) and SOCKET_PTR (15) are added. Thread support has two options:
+
+1. **Expand type field to 5 bits** (max 31 types) - requires runtime struct change
+2. **Encode threads as closures** - threads store a CLOSURE_PTR with thread metadata
+
+For option 1, add to eshkol_value_type_t:
 ```c
-ESHKOL_VALUE_THREAD_PTR = 15,  // Uses last available slot
+ESHKOL_VALUE_THREAD_PTR = 16,  // Requires expanding type field beyond 4 bits
 
 // Thread structure
 typedef struct eshkol_thread {

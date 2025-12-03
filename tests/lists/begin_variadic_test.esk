@@ -1,0 +1,19 @@
+;; Test defines in variadic function (like vmap_simple)
+(require stdlib)
+
+;; Variadic function with defines in begin
+(define (varfunc . args)
+  (begin
+    (display "args=")
+    (display args)
+    (newline)
+    (define first (car args))
+    (display "first=")
+    (display first)
+    (newline)
+    first))
+
+(display "=== Test 5 (variadic with defines) ===")
+(newline)
+(display (varfunc 10 20 30))
+(newline)

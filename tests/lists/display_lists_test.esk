@@ -1,0 +1,14 @@
+;; Test displaying variadic parameter 'lists'
+(require stdlib)
+
+(define (vmap proc . lists)
+  (display "lists=")
+  (display lists)
+  (newline)
+  '())
+
+(display "Starting test")
+(newline)
+(define (double x) (* x 2))
+(display (vmap double (list 1 2)))
+(newline)

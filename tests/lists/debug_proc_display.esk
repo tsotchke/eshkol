@@ -1,0 +1,22 @@
+;; Debug test for proc display
+(require stdlib)
+
+;; Simple function to pass
+(define (double x) (* x 2))
+
+;; Test displaying the function at top level first
+(display "Top level double: ")
+(display double)
+(newline)
+
+;; Now test passing it as parameter
+(define (test-func proc)
+  (display "Inside test-func, proc=")
+  (display proc)
+  (newline)
+  (proc 5))
+
+(display "Calling test-func with double:")
+(newline)
+(display (test-func double))
+(newline)

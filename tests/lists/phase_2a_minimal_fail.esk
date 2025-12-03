@@ -2,6 +2,7 @@
 ;; Phase 2A Minimal Fail - Minimal test that triggers segfault
 ;;
 
+
 (display "=== PHASE 2A MINIMAL FAIL ===")
 (newline)
 

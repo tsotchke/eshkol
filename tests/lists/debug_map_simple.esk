@@ -1,4 +1,6 @@
 ;; Simple map debugging test
+
+
 (display "=== MAP DEBUG TEST ===")
 (newline)
 

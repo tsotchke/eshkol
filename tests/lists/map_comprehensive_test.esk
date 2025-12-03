@@ -1,0 +1,291 @@
+;;
+;; Comprehensive Map Test - Tests ALL map functionality
+;; This test establishes the baseline for map behavior before porting to pure Eshkol
+;;
+
+(require stdlib)
+
+(display "=== COMPREHENSIVE MAP TEST ===")
+(newline)
+
+;; ========================================
+;; TEST 1: Single-list map with lambda
+;; ========================================
+(display "TEST 1: Single-list map with lambda")
+(newline)
+(define test1 (map (lambda (x) (* x 2)) (list 1 2 3 4 5)))
+(display "  (map (lambda (x) (* x 2)) '(1 2 3 4 5)) = ")
+(display (car test1)) (display " ")
+(display (cadr test1)) (display " ")
+(display (caddr test1)) (display " ")
+(display (car (cdddr test1))) (display " ")
+(display (cadr (cdddr test1)))
+(newline)
+;; Expected: 2 4 6 8 10
+
+;; ========================================
+;; TEST 2: Single-list map with named function
+;; ========================================
+(display "TEST 2: Single-list map with named function")
+(newline)
+(define (triple x) (* x 3))
+(define test2 (map triple (list 1 2 3)))
+(display "  (map triple '(1 2 3)) = ")
+(display (car test2)) (display " ")
+(display (cadr test2)) (display " ")
+(display (caddr test2))
+(newline)
+;; Expected: 3 6 9
+
+;; ========================================
+;; TEST 3: Two-list map with builtin operator +
+;; ========================================
+(display "TEST 3: Two-list map with + operator")
+(newline)
+(define test3 (map + (list 1 2 3) (list 10 20 30)))
+(display "  (map + '(1 2 3) '(10 20 30)) = ")
+(display (car test3)) (display " ")
+(display (cadr test3)) (display " ")
+(display (caddr test3))
+(newline)
+;; Expected: 11 22 33
+
+;; ========================================
+;; TEST 4: Two-list map with builtin operator *
+;; ========================================
+(display "TEST 4: Two-list map with * operator")
+(newline)
+(define test4 (map * (list 2 3 4) (list 5 6 7)))
+(display "  (map * '(2 3 4) '(5 6 7)) = ")
+(display (car test4)) (display " ")
+(display (cadr test4)) (display " ")
+(display (caddr test4))
+(newline)
+;; Expected: 10 18 28
+
+;; ========================================
+;; TEST 5: Two-list map with builtin operator -
+;; ========================================
+(display "TEST 5: Two-list map with - operator")
+(newline)
+(define test5 (map - (list 10 20 30) (list 1 2 3)))
+(display "  (map - '(10 20 30) '(1 2 3)) = ")
+(display (car test5)) (display " ")
+(display (cadr test5)) (display " ")
+(display (caddr test5))
+(newline)
+;; Expected: 9 18 27
+
+;; ========================================
+;; TEST 6: Three-list map
+;; ========================================
+(display "TEST 6: Three-list map")
+(newline)
+(define test6 (map + (list 1 2 3) (list 10 20 30) (list 100 200 300)))
+(display "  (map + '(1 2 3) '(10 20 30) '(100 200 300)) = ")
+(display (car test6)) (display " ")
+(display (cadr test6)) (display " ")
+(display (caddr test6))
+(newline)
+;; Expected: 111 222 333
+
+;; ========================================
+;; TEST 7: Closure with captured variable
+;; ========================================
+(display "TEST 7: Closure with captured variable")
+(newline)
+(define scale 5)
+(define test7 (map (lambda (x) (* scale x)) (list 1 2 3)))
+(display "  scale=5, (map (lambda (x) (* scale x)) '(1 2 3)) = ")
+(display (car test7)) (display " ")
+(display (cadr test7)) (display " ")
+(display (caddr test7))
+(newline)
+;; Expected: 5 10 15
+
+;; ========================================
+;; TEST 8: Nested closure capture
+;; ========================================
+(display "TEST 8: Nested closure capture")
+(newline)
+(define a 2)
+(define b 3)
+(define test8 (map (lambda (x) (+ (* a x) b)) (list 1 2 3)))
+(display "  a=2, b=3, (map (lambda (x) (+ (* a x) b)) '(1 2 3)) = ")
+(display (car test8)) (display " ")
+(display (cadr test8)) (display " ")
+(display (caddr test8))
+(newline)
+;; Expected: 5 7 9  (2*1+3=5, 2*2+3=7, 2*3+3=9)
+
+;; ========================================
+;; TEST 9: Empty list
+;; ========================================
+(display "TEST 9: Empty list")
+(newline)
+(define test9 (map (lambda (x) x) '()))
+(display "  (map (lambda (x) x) '()) = ")
+(if (null? test9)
+    (display "'()")
+    (display "NOT EMPTY!"))
+(newline)
+;; Expected: '()
+
+;; ========================================
+;; TEST 10: Different length lists (shorter determines result)
+;; ========================================
+(display "TEST 10: Different length lists")
+(newline)
+(define test10 (map + (list 1 2) (list 10 20 30 40)))
+(display "  (map + '(1 2) '(10 20 30 40)) = ")
+(display (car test10)) (display " ")
+(display (cadr test10))
+(if (null? (cddr test10))
+    (display " [length=2]")
+    (display " [length>2 ERROR]"))
+(newline)
+;; Expected: 11 22 [length=2]
+
+;; ========================================
+;; TEST 11: Floating point numbers
+;; ========================================
+(display "TEST 11: Floating point numbers")
+(newline)
+(define test11 (map (lambda (x) (* x 2.5)) (list 1.0 2.0 3.0)))
+(display "  (map (lambda (x) (* x 2.5)) '(1.0 2.0 3.0)) = ")
+(display (car test11)) (display " ")
+(display (cadr test11)) (display " ")
+(display (caddr test11))
+(newline)
+;; Expected: 2.5 5.0 7.5
+
+;; ========================================
+;; TEST 12: Mixed int/float
+;; ========================================
+(display "TEST 12: Mixed int/float in lists")
+(newline)
+(define test12 (map + (list 1 2.0 3) (list 4 5.0 6)))
+(display "  (map + '(1 2.0 3) '(4 5.0 6)) = ")
+(display (car test12)) (display " ")
+(display (cadr test12)) (display " ")
+(display (caddr test12))
+(newline)
+;; Expected: 5 7.0 9
+
+;; ========================================
+;; TEST 13: Map over result of another map
+;; ========================================
+(display "TEST 13: Map over result of map (composition)")
+(newline)
+(define (square x) (* x x))
+(define (add1 x) (+ x 1))
+(define test13 (map square (map add1 (list 1 2 3))))
+(display "  (map square (map add1 '(1 2 3))) = ")
+(display (car test13)) (display " ")
+(display (cadr test13)) (display " ")
+(display (caddr test13))
+(newline)
+;; Expected: 4 9 16  ((1+1)^2=4, (2+1)^2=9, (3+1)^2=16)
+
+;; ========================================
+;; TEST 14: Map with identity function
+;; ========================================
+(display "TEST 14: Identity function")
+(newline)
+(define test14 (map (lambda (x) x) (list 1 2 3)))
+(display "  (map (lambda (x) x) '(1 2 3)) = ")
+(display (car test14)) (display " ")
+(display (cadr test14)) (display " ")
+(display (caddr test14))
+(newline)
+;; Expected: 1 2 3
+
+;; ========================================
+;; TEST 15: Map producing nested structures (cons cells)
+;; ========================================
+(display "TEST 15: Map producing pairs")
+(newline)
+(define test15 (map (lambda (x) (cons x (* x x))) (list 1 2 3)))
+(display "  (map (lambda (x) (cons x (* x x))) '(1 2 3)) = ")
+(define p1 (car test15))
+(define p2 (cadr test15))
+(define p3 (caddr test15))
+(display "(") (display (car p1)) (display " . ") (display (cdr p1)) (display ") ")
+(display "(") (display (car p2)) (display " . ") (display (cdr p2)) (display ") ")
+(display "(") (display (car p3)) (display " . ") (display (cdr p3)) (display ")")
+(newline)
+;; Expected: (1 . 1) (2 . 4) (3 . 9)
+
+;; ========================================
+;; TEST 16: Higher-order function using map
+;; ========================================
+(display "TEST 16: Higher-order function using map")
+(newline)
+(define (apply-to-all f lst)
+  (map f lst))
+(define test16 (apply-to-all triple (list 1 2 3)))
+(display "  (apply-to-all triple '(1 2 3)) = ")
+(display (car test16)) (display " ")
+(display (cadr test16)) (display " ")
+(display (caddr test16))
+(newline)
+;; Expected: 3 6 9
+
+;; ========================================
+;; TEST 17: Vector operations (dot product building block)
+;; ========================================
+(display "TEST 17: Vector element-wise multiply")
+(newline)
+(define v1 (list 1.0 2.0 3.0))
+(define v2 (list 4.0 5.0 6.0))
+(define test17 (map * v1 v2))
+(display "  (map * '(1.0 2.0 3.0) '(4.0 5.0 6.0)) = ")
+(display (car test17)) (display " ")
+(display (cadr test17)) (display " ")
+(display (caddr test17))
+(newline)
+;; Expected: 4.0 10.0 18.0
+
+;; ========================================
+;; TEST 18: Scaling a vector
+;; ========================================
+(display "TEST 18: Scale vector by constant")
+(newline)
+(define scalar 2.0)
+(define vec (list 1.0 2.0 3.0))
+(define test18 (map (lambda (x) (* scalar x)) vec))
+(display "  scalar=2.0, (map (lambda (x) (* scalar x)) '(1.0 2.0 3.0)) = ")
+(display (car test18)) (display " ")
+(display (cadr test18)) (display " ")
+(display (caddr test18))
+(newline)
+;; Expected: 2.0 4.0 6.0
+
+;; ========================================
+;; TEST 19: Single element list
+;; ========================================
+(display "TEST 19: Single element list")
+(newline)
+(define test19 (map (lambda (x) (* x 10)) (list 5)))
+(display "  (map (lambda (x) (* x 10)) '(5)) = ")
+(display (car test19))
+(if (null? (cdr test19))
+    (display " [length=1]")
+    (display " [length>1 ERROR]"))
+(newline)
+;; Expected: 50 [length=1]
+
+;; ========================================
+;; TEST 20: Combined fold with map
+;; ========================================
+(display "TEST 20: fold after map")
+(newline)
+(define test20 (fold + 0 (map (lambda (x) (* x x)) (list 1 2 3 4))))
+(display "  (fold + 0 (map square '(1 2 3 4))) = ")
+(display test20)
+(newline)
+;; Expected: 30  (1 + 4 + 9 + 16 = 30)
+
+(newline)
+(display "=== ALL MAP TESTS COMPLETED ===")
+(newline)

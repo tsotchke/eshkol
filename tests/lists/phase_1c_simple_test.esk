@@ -2,6 +2,7 @@
 ;; Phase 1C Simple Test - Testing basic functionality
 ;;
 
+
 (display "=== PHASE 1C SIMPLE TEST ===")
 (newline)
 

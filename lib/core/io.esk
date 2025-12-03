@@ -1,0 +1,11 @@
+;;; core/io.esk
+;;; IO function wrappers for higher-order use
+
+(provide print println)
+
+;;; print: Wrapper around display for higher-order use
+;;; (for-each print '(1 2 3)) works because print is a first-class function
+(define (print x) (display x))
+
+;;; println: Display with newline
+(define (println x) (display x) (newline))

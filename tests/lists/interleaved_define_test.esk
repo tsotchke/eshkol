@@ -1,0 +1,21 @@
+;; Test interleaved defines and expressions
+(require stdlib)
+
+(define (test-interleaved)
+  (begin
+    (display "before first define")
+    (newline)
+    (define x 1)
+    (display "after first, x=")
+    (display x)
+    (newline)
+    (define y 2)
+    (display "after second, y=")
+    (display y)
+    (newline)
+    (+ x y)))
+
+(display "=== Test interleaved defines ===")
+(newline)
+(display (test-interleaved))
+(newline)

@@ -1,0 +1,32 @@
+;;
+;; Debug variadic function behavior
+;;
+
+(display "Testing variadic args:")
+(newline)
+
+;; Simple variadic function
+(define (test-variadic . args)
+  (display "Args: ")
+  (display args)
+  (newline)
+  args)
+
+(define result (test-variadic 1 2 3))
+(display "Result: ")
+(display result)
+(newline)
+
+;; Test with list arguments
+(display "Testing with list args:")
+(newline)
+(define (test-lists . lists)
+  (display "Lists: ")
+  (display lists)
+  (newline)
+  (display "First list: ")
+  (display (car lists))
+  (newline)
+  lists)
+
+(test-lists (list 1 2 3) (list 4 5 6))

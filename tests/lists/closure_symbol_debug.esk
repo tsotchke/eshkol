@@ -1,5 +1,4 @@
 ;; Debug test for closure and symbol handling
-
 (require stdlib)
 
 (display "=== Closure Tests ===")

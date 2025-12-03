@@ -1,0 +1,27 @@
+;;
+;; Minimal test for function application in lists
+;;
+
+;; Test apply with a simple function
+(define (add1 x) (+ x 1))
+
+(display "Test 1: Direct call: ")
+(display (add1 5))
+(newline)
+
+(display "Test 2: Apply with list: ")
+(display (apply add1 (list 5)))
+(newline)
+
+;; What happens if we just reference a function?
+(display "Test 3: Function reference: ")
+(display add1)
+(newline)
+
+;; What about using builtin map?
+(display "Test 4: (map add1 '(1 2 3)): ")
+(display (map add1 (list 1 2 3)))
+(newline)
+
+(display "Done.")
+(newline)

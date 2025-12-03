@@ -1,4 +1,5 @@
 ;; Test fold with builtin
+(require stdlib)
 
 (display "Test 4: Fold with +")
 (newline)

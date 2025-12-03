@@ -2,6 +2,8 @@
 ;; Phase 1B Lambda Debug - Testing lambda resolution
 ;;
 
+(require stdlib)
+
 (display "=== LAMBDA DEBUG TEST ===")
 (newline)
 

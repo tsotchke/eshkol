@@ -2,6 +2,7 @@
 ;; Debug Binary Search 2b - Test list creation in isolation
 ;;
 
+
 (display "=== DEBUG BINARY SEARCH 2B ===")
 (newline)
 

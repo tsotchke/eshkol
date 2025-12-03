@@ -1,0 +1,72 @@
+;;
+;; Simplest variadic map test
+;;
+
+;; Helper: check if any list is null
+(define (lists-any-null? lists)
+  (display "  lists-any-null? called with: ")
+  (display lists)
+  (newline)
+  (if (null? lists)
+      #f
+      (if (null? (car lists))
+          #t
+          (lists-any-null? (cdr lists)))))
+
+;; Helper: get all cars
+(define (all-cars lists)
+  (display "  all-cars called with: ")
+  (display lists)
+  (newline)
+  (if (null? lists)
+      '()
+      (cons (car (car lists))
+            (all-cars (cdr lists)))))
+
+;; Helper: get all cdrs
+(define (all-cdrs lists)
+  (display "  all-cdrs called with: ")
+  (display lists)
+  (newline)
+  (if (null? lists)
+      '()
+      (cons (cdr (car lists))
+            (all-cdrs (cdr lists)))))
+
+;; Variadic map
+(define (vmap proc . lists)
+  (display "vmap called, lists=")
+  (display lists)
+  (newline)
+  (if (lists-any-null? lists)
+      (begin
+        (display "  -> returning empty list (base case)")
+        (newline)
+        '())
+      (begin
+        (display "  -> recursive case")
+        (newline)
+        (define cars (all-cars lists))
+        (display "  cars=")
+        (display cars)
+        (newline)
+        (define cdrs (all-cdrs lists))
+        (display "  cdrs=")
+        (display cdrs)
+        (newline)
+        (define first-result (apply proc cars))
+        (display "  first-result=")
+        (display first-result)
+        (newline)
+        (define rest-args (cons proc cdrs))
+        (display "  rest-args=")
+        (display rest-args)
+        (newline)
+        (cons first-result
+              (apply vmap rest-args)))))
+
+(display "Starting simple vmap test")
+(newline)
+(define (double x) (* x 2))
+(display (vmap double (list 1 2)))
+(newline)

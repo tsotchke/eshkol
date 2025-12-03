@@ -1,0 +1,25 @@
+;; Test displaying variadic parameter with if
+(require stdlib)
+
+(define (lists-any-null? lists)
+  (if (null? lists) #f (null? (car lists))))
+
+(define (vmap proc . lists)
+  (display "lists=")
+  (display lists)
+  (newline)
+  (if (lists-any-null? lists)
+      (begin
+        (display "base")
+        (newline)
+        '())
+      (begin
+        (display "recursive")
+        (newline)
+        '())))
+
+(display "Starting test")
+(newline)
+(define (double x) (* x 2))
+(display (vmap double (list 1 2)))
+(newline)

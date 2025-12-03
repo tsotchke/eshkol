@@ -1,0 +1,412 @@
+;;
+;; Stress test: Built-in map vs Pure Eshkol vmap
+;; Ensures both implementations produce identical results
+;;
+
+(require stdlib)
+
+(display "=== MAP STRESS TEST: BUILTIN vs PURE ESHKOL ===")
+(newline)
+(newline)
+
+;; ============================================
+;; PURE ESHKOL MAP IMPLEMENTATION
+;; ============================================
+
+;; Helper: check if any list in a list-of-lists is null
+(define (lists-any-null? lists)
+  (if (null? lists)
+      #f
+      (if (null? (car lists))
+          #t
+          (lists-any-null? (cdr lists)))))
+
+;; Helper: get all cars (first elements)
+(define (all-cars lists)
+  (if (null? lists)
+      '()
+      (cons (car (car lists))
+            (all-cars (cdr lists)))))
+
+;; Helper: get all cdrs (rest of each list)
+(define (all-cdrs lists)
+  (if (null? lists)
+      '()
+      (cons (cdr (car lists))
+            (all-cdrs (cdr lists)))))
+
+;; Variadic map: works with any number of lists
+(define (vmap proc . lists)
+  (if (lists-any-null? lists)
+      '()
+      (cons (apply proc (all-cars lists))
+            (apply vmap (cons proc (all-cdrs lists))))))
+
+;; ============================================
+;; TEST FUNCTIONS
+;; ============================================
+
+(define (double x) (* x 2))
+(define (square x) (* x x))
+(define (add1 x) (+ x 1))
+(define (my-negate x) (- 0 x))
+(define (add2 a b) (+ a b))
+(define (mul2 a b) (* a b))
+(define (sub2 a b) (- a b))
+(define (sum3 a b c) (+ a (+ b c)))
+(define (mul3 a b c) (* a (* b c)))
+
+;; ============================================
+;; TEST 1: SINGLE LIST - BASIC OPERATIONS
+;; ============================================
+
+(display "--- TEST 1: Single list basic operations ---")
+(newline)
+
+(display "double (1 2 3 4 5):")
+(newline)
+(display "  builtin: ")
+(display (map double (list 1 2 3 4 5)))
+(newline)
+(display "  vmap:    ")
+(display (vmap double (list 1 2 3 4 5)))
+(newline)
+
+(display "square (1 2 3 4 5):")
+(newline)
+(display "  builtin: ")
+(display (map square (list 1 2 3 4 5)))
+(newline)
+(display "  vmap:    ")
+(display (vmap square (list 1 2 3 4 5)))
+(newline)
+
+(display "add1 (10 20 30):")
+(newline)
+(display "  builtin: ")
+(display (map add1 (list 10 20 30)))
+(newline)
+(display "  vmap:    ")
+(display (vmap add1 (list 10 20 30)))
+(newline)
+
+(display "my-negate (1 -2 3 -4):")
+(newline)
+(display "  builtin: ")
+(display (map my-negate (list 1 -2 3 -4)))
+(newline)
+(display "  vmap:    ")
+(display (vmap my-negate (list 1 -2 3 -4)))
+(newline)
+
+;; ============================================
+;; TEST 2: TWO LISTS
+;; ============================================
+
+(display "--- TEST 2: Two lists ---")
+(newline)
+
+(display "+ on (1 2 3) (10 20 30):")
+(newline)
+(display "  builtin: ")
+(display (map + (list 1 2 3) (list 10 20 30)))
+(newline)
+(display "  vmap:    ")
+(display (vmap + (list 1 2 3) (list 10 20 30)))
+(newline)
+
+(display "* on (2 3 4) (5 6 7):")
+(newline)
+(display "  builtin: ")
+(display (map * (list 2 3 4) (list 5 6 7)))
+(newline)
+(display "  vmap:    ")
+(display (vmap * (list 2 3 4) (list 5 6 7)))
+(newline)
+
+(display "- on (100 200 300) (1 2 3):")
+(newline)
+(display "  builtin: ")
+(display (map - (list 100 200 300) (list 1 2 3)))
+(newline)
+(display "  vmap:    ")
+(display (vmap - (list 100 200 300) (list 1 2 3)))
+(newline)
+
+;; ============================================
+;; TEST 3: THREE LISTS
+;; ============================================
+
+(display "--- TEST 3: Three lists ---")
+(newline)
+
+(display "sum3 on (1 2) (10 20) (100 200):")
+(newline)
+(display "  builtin: ")
+(display (map sum3 (list 1 2) (list 10 20) (list 100 200)))
+(newline)
+(display "  vmap:    ")
+(display (vmap sum3 (list 1 2) (list 10 20) (list 100 200)))
+(newline)
+
+(display "mul3 on (1 2 3) (2 3 4) (3 4 5):")
+(newline)
+(display "  builtin: ")
+(display (map mul3 (list 1 2 3) (list 2 3 4) (list 3 4 5)))
+(newline)
+(display "  vmap:    ")
+(display (vmap mul3 (list 1 2 3) (list 2 3 4) (list 3 4 5)))
+(newline)
+
+;; ============================================
+;; TEST 4: LAMBDAS
+;; ============================================
+
+(display "--- TEST 4: Lambda functions ---")
+(newline)
+
+(display "lambda (x) (* x 3) on (1 2 3 4):")
+(newline)
+(display "  builtin: ")
+(display (map (lambda (x) (* x 3)) (list 1 2 3 4)))
+(newline)
+(display "  vmap:    ")
+(display (vmap (lambda (x) (* x 3)) (list 1 2 3 4)))
+(newline)
+
+(display "lambda (a b) (+ (* a 2) b) on (1 2 3) (10 20 30):")
+(newline)
+(display "  builtin: ")
+(display (map (lambda (a b) (+ (* a 2) b)) (list 1 2 3) (list 10 20 30)))
+(newline)
+(display "  vmap:    ")
+(display (vmap (lambda (a b) (+ (* a 2) b)) (list 1 2 3) (list 10 20 30)))
+(newline)
+
+;; ============================================
+;; TEST 5: CLOSURES
+;; ============================================
+
+(display "--- TEST 5: Closures ---")
+(newline)
+
+(define factor 10)
+(define (make-scaler n) (lambda (x) (* x n)))
+(define scale10 (make-scaler 10))
+(define scale100 (make-scaler 100))
+
+(display "closure (* x factor) where factor=10 on (1 2 3):")
+(newline)
+(display "  builtin: ")
+(display (map (lambda (x) (* x factor)) (list 1 2 3)))
+(newline)
+(display "  vmap:    ")
+(display (vmap (lambda (x) (* x factor)) (list 1 2 3)))
+(newline)
+
+(display "scale10 on (1 2 3 4 5):")
+(newline)
+(display "  builtin: ")
+(display (map scale10 (list 1 2 3 4 5)))
+(newline)
+(display "  vmap:    ")
+(display (vmap scale10 (list 1 2 3 4 5)))
+(newline)
+
+(display "scale100 on (1 2 3):")
+(newline)
+(display "  builtin: ")
+(display (map scale100 (list 1 2 3)))
+(newline)
+(display "  vmap:    ")
+(display (vmap scale100 (list 1 2 3)))
+(newline)
+
+;; ============================================
+;; TEST 6: EMPTY LISTS
+;; ============================================
+
+(display "--- TEST 6: Empty lists ---")
+(newline)
+
+(display "double on ():")
+(newline)
+(display "  builtin: ")
+(display (map double '()))
+(newline)
+(display "  vmap:    ")
+(display (vmap double '()))
+(newline)
+
+;; ============================================
+;; TEST 7: UNEQUAL LENGTH LISTS
+;; ============================================
+
+(display "--- TEST 7: Unequal length lists ---")
+(newline)
+
+(display "+ on (1 2 3 4 5) (10 20):")
+(newline)
+(display "  builtin: ")
+(display (map + (list 1 2 3 4 5) (list 10 20)))
+(newline)
+(display "  vmap:    ")
+(display (vmap + (list 1 2 3 4 5) (list 10 20)))
+(newline)
+
+(display "+ on (1 2) (10 20 30 40):")
+(newline)
+(display "  builtin: ")
+(display (map + (list 1 2) (list 10 20 30 40)))
+(newline)
+(display "  vmap:    ")
+(display (vmap + (list 1 2) (list 10 20 30 40)))
+(newline)
+
+;; ============================================
+;; TEST 8: LONGER LISTS (STRESS)
+;; ============================================
+
+(display "--- TEST 8: Longer lists ---")
+(newline)
+
+(define long-list (list 1 2 3 4 5 6 7 8 9 10))
+
+(display "double on (1 2 3 4 5 6 7 8 9 10):")
+(newline)
+(display "  builtin: ")
+(display (map double long-list))
+(newline)
+(display "  vmap:    ")
+(display (vmap double long-list))
+(newline)
+
+(display "square on (1 2 3 4 5 6 7 8 9 10):")
+(newline)
+(display "  builtin: ")
+(display (map square long-list))
+(newline)
+(display "  vmap:    ")
+(display (vmap square long-list))
+(newline)
+
+;; ============================================
+;; TEST 9: NESTED OPERATIONS (map of map result)
+;; ============================================
+
+(display "--- TEST 9: Nested operations ---")
+(newline)
+
+(display "double(double(1 2 3)):")
+(newline)
+(display "  builtin: ")
+(display (map double (map double (list 1 2 3))))
+(newline)
+(display "  vmap:    ")
+(display (vmap double (vmap double (list 1 2 3))))
+(newline)
+
+(display "add1(square(1 2 3 4)):")
+(newline)
+(display "  builtin: ")
+(display (map add1 (map square (list 1 2 3 4))))
+(newline)
+(display "  vmap:    ")
+(display (vmap add1 (vmap square (list 1 2 3 4))))
+(newline)
+
+;; ============================================
+;; TEST 10: MIXED WITH OTHER LIST OPS
+;; ============================================
+
+(display "--- TEST 10: Mixed with other list operations ---")
+(newline)
+
+(display "double on (cdr (1 2 3 4 5)):")
+(newline)
+(display "  builtin: ")
+(display (map double (cdr (list 1 2 3 4 5))))
+(newline)
+(display "  vmap:    ")
+(display (vmap double (cdr (list 1 2 3 4 5))))
+(newline)
+
+(display "car of (map double (1 2 3)):")
+(newline)
+(display "  builtin: ")
+(display (car (map double (list 1 2 3))))
+(newline)
+(display "  vmap:    ")
+(display (car (vmap double (list 1 2 3))))
+(newline)
+
+(display "length of (map square (1 2 3 4 5)):")
+(newline)
+(display "  builtin: ")
+(display (length (map square (list 1 2 3 4 5))))
+(newline)
+(display "  vmap:    ")
+(display (length (vmap square (list 1 2 3 4 5))))
+(newline)
+
+;; ============================================
+;; TEST 11: FLOATING POINT
+;; ============================================
+
+(display "--- TEST 11: Floating point ---")
+(newline)
+
+(define (halve x) (/ x 2.0))
+
+(display "halve on (2.0 4.0 6.0 8.0):")
+(newline)
+(display "  builtin: ")
+(display (map halve (list 2.0 4.0 6.0 8.0)))
+(newline)
+(display "  vmap:    ")
+(display (vmap halve (list 2.0 4.0 6.0 8.0)))
+(newline)
+
+(display "+ on (1.5 2.5) (0.5 0.5):")
+(newline)
+(display "  builtin: ")
+(display (map + (list 1.5 2.5) (list 0.5 0.5)))
+(newline)
+(display "  vmap:    ")
+(display (vmap + (list 1.5 2.5) (list 0.5 0.5)))
+(newline)
+
+;; ============================================
+;; TEST 12: NEGATIVE NUMBERS
+;; ============================================
+
+(display "--- TEST 12: Negative numbers ---")
+(newline)
+
+(display "square on (-3 -2 -1 0 1 2 3):")
+(newline)
+(display "  builtin: ")
+(display (map square (list -3 -2 -1 0 1 2 3)))
+(newline)
+(display "  vmap:    ")
+(display (vmap square (list -3 -2 -1 0 1 2 3)))
+(newline)
+
+(display "+ on (-10 -20) (5 10):")
+(newline)
+(display "  builtin: ")
+(display (map + (list -10 -20) (list 5 10)))
+(newline)
+(display "  vmap:    ")
+(display (vmap + (list -10 -20) (list 5 10)))
+(newline)
+
+;; ============================================
+;; SUMMARY
+;; ============================================
+
+(newline)
+(display "=== STRESS TEST COMPLETE ===")
+(newline)
+(display "If all 'builtin' and 'vmap' results match, pure Eshkol map is ready to replace built-in.")
+(newline)

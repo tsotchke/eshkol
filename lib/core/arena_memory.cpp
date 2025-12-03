@@ -417,7 +417,7 @@ int64_t arena_tagged_cons_get_int64(const arena_tagged_cons_cell_t* cell, bool i
         eshkol_error("Cannot get int64 from null tagged cons cell");
         return 0;
     }
-    
+
     // Phase 3B: Access nested tagged_value structure
     const eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
     uint8_t type = tv->type;
@@ -425,7 +425,7 @@ int64_t arena_tagged_cons_get_int64(const arena_tagged_cons_cell_t* cell, bool i
         eshkol_error("Attempted to get int64 from non-int64 cell (type=%d)", type);
         return 0;
     }
-    
+
     return tv->data.int_val;
 }
 
@@ -579,7 +579,7 @@ void arena_tagged_cons_set_tagged_value(arena_tagged_cons_cell_t* cell,
         eshkol_error("Cannot set tagged value: null parameter");
         return;
     }
-    
+
     // Direct struct copy - this is the key optimization of Phase 3B!
     if (is_cdr) {
         cell->cdr = *value;
@@ -1399,4 +1399,380 @@ eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size
 }
 
 // ===== END CLOSURE ENVIRONMENT MEMORY MANAGEMENT IMPLEMENTATION =====
+
+// ===== LAMBDA REGISTRY IMPLEMENTATION =====
+// Runtime table for mapping function pointers to S-expressions (homoiconicity)
+
+eshkol_lambda_registry_t* g_lambda_registry = nullptr;
+
+void eshkol_lambda_registry_init(void) {
+    if (g_lambda_registry) {
+        return;  // Already initialized
+    }
+
+    g_lambda_registry = (eshkol_lambda_registry_t*)malloc(sizeof(eshkol_lambda_registry_t));
+    if (!g_lambda_registry) {
+        eshkol_error("Failed to allocate lambda registry");
+        return;
+    }
+
+    g_lambda_registry->capacity = 64;  // Initial capacity
+    g_lambda_registry->count = 0;
+    g_lambda_registry->entries = (eshkol_lambda_entry_t*)malloc(
+        sizeof(eshkol_lambda_entry_t) * g_lambda_registry->capacity);
+
+    if (!g_lambda_registry->entries) {
+        eshkol_error("Failed to allocate lambda registry entries");
+        free(g_lambda_registry);
+        g_lambda_registry = nullptr;
+        return;
+    }
+
+    eshkol_debug("Lambda registry initialized with capacity %zu", g_lambda_registry->capacity);
+}
+
+void eshkol_lambda_registry_destroy(void) {
+    if (!g_lambda_registry) {
+        return;
+    }
+
+    if (g_lambda_registry->entries) {
+        free(g_lambda_registry->entries);
+    }
+    free(g_lambda_registry);
+    g_lambda_registry = nullptr;
+}
+
+void eshkol_lambda_registry_add(uint64_t func_ptr, uint64_t sexpr_ptr, const char* name) {
+    if (!g_lambda_registry) {
+        eshkol_lambda_registry_init();
+    }
+
+    if (!g_lambda_registry) {
+        return;  // Init failed
+    }
+
+    // Check if already registered (update if so)
+    for (size_t i = 0; i < g_lambda_registry->count; i++) {
+        if (g_lambda_registry->entries[i].func_ptr == func_ptr) {
+            g_lambda_registry->entries[i].sexpr_ptr = sexpr_ptr;
+            g_lambda_registry->entries[i].name = name;
+            eshkol_debug("Updated lambda registry entry for %s at %p -> sexpr %p",
+                        name ? name : "(anonymous)", (void*)func_ptr, (void*)sexpr_ptr);
+            return;
+        }
+    }
+
+    // Grow if needed
+    if (g_lambda_registry->count >= g_lambda_registry->capacity) {
+        size_t new_capacity = g_lambda_registry->capacity * 2;
+        eshkol_lambda_entry_t* new_entries = (eshkol_lambda_entry_t*)realloc(
+            g_lambda_registry->entries,
+            sizeof(eshkol_lambda_entry_t) * new_capacity);
+
+        if (!new_entries) {
+            eshkol_error("Failed to grow lambda registry");
+            return;
+        }
+
+        g_lambda_registry->entries = new_entries;
+        g_lambda_registry->capacity = new_capacity;
+    }
+
+    // Add new entry
+    size_t idx = g_lambda_registry->count++;
+    g_lambda_registry->entries[idx].func_ptr = func_ptr;
+    g_lambda_registry->entries[idx].sexpr_ptr = sexpr_ptr;
+    g_lambda_registry->entries[idx].name = name;
+
+    eshkol_debug("Lambda registry: added %s func=%p sexpr=%p",
+                name ? name : "(anon)", (void*)func_ptr, (void*)sexpr_ptr);
+}
+
+uint64_t eshkol_lambda_registry_lookup(uint64_t func_ptr) {
+    if (!g_lambda_registry) {
+        return 0;
+    }
+
+    for (size_t i = 0; i < g_lambda_registry->count; i++) {
+        if (g_lambda_registry->entries[i].func_ptr == func_ptr) {
+            return g_lambda_registry->entries[i].sexpr_ptr;
+        }
+    }
+
+    return 0;  // Not found
+}
+
+// ===== END LAMBDA REGISTRY IMPLEMENTATION =====
+
+// ===== UNIFIED DISPLAY IMPLEMENTATION =====
+// Single source of truth for displaying all Eshkol values
+
+// Forward declarations for internal helpers
+static void display_atom(const eshkol_tagged_value_t* value, eshkol_display_opts_t* opts);
+static void display_tensor(uint64_t tensor_ptr, eshkol_display_opts_t* opts);
+static void display_vector(uint64_t vector_ptr, eshkol_display_opts_t* opts);
+static void display_char(uint32_t codepoint, eshkol_display_opts_t* opts);
+
+// Get output stream (defaults to stdout)
+static FILE* get_output(eshkol_display_opts_t* opts) {
+    if (opts && opts->output) {
+        return (FILE*)opts->output;
+    }
+    return stdout;
+}
+
+// Display a single tagged value
+void eshkol_display_value(const eshkol_tagged_value_t* value) {
+    eshkol_display_opts_t opts = eshkol_display_default_opts();
+    eshkol_display_value_opts(value, &opts);
+}
+
+void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_display_opts_t* opts) {
+    if (!value) {
+        fprintf(get_output(opts), "()");
+        return;
+    }
+
+    // Check depth limit
+    if (opts->current_depth > opts->max_depth) {
+        fprintf(get_output(opts), "...");
+        return;
+    }
+
+    uint8_t base_type = value->type & 0x0F;
+
+    switch (base_type) {
+        case ESHKOL_VALUE_NULL:
+            fprintf(get_output(opts), "()");
+            break;
+
+        case ESHKOL_VALUE_INT64:
+            fprintf(get_output(opts), "%lld", (long long)value->data.int_val);
+            break;
+
+        case ESHKOL_VALUE_DOUBLE:
+            fprintf(get_output(opts), "%g", value->data.double_val);
+            break;
+
+        case ESHKOL_VALUE_BOOL:
+            fprintf(get_output(opts), "%s", value->data.int_val ? "#t" : "#f");
+            break;
+
+        case ESHKOL_VALUE_CHAR:
+            display_char((uint32_t)value->data.int_val, opts);
+            break;
+
+        case ESHKOL_VALUE_STRING_PTR:
+            if (opts->quote_strings) {
+                fprintf(get_output(opts), "\"%s\"", (const char*)value->data.ptr_val);
+            } else {
+                fprintf(get_output(opts), "%s", (const char*)value->data.ptr_val);
+            }
+            break;
+
+        case ESHKOL_VALUE_SYMBOL:
+            fprintf(get_output(opts), "%s", (const char*)value->data.ptr_val);
+            break;
+
+        case ESHKOL_VALUE_CONS_PTR:
+            eshkol_display_list(value->data.ptr_val, opts);
+            break;
+
+        case ESHKOL_VALUE_LAMBDA_SEXPR:
+            eshkol_display_lambda(value->data.ptr_val, opts);
+            break;
+
+        case ESHKOL_VALUE_CLOSURE_PTR:
+            eshkol_display_closure(value->data.ptr_val, opts);
+            break;
+
+        case ESHKOL_VALUE_TENSOR_PTR:
+            display_tensor(value->data.ptr_val, opts);
+            break;
+
+        case ESHKOL_VALUE_VECTOR_PTR:
+            display_vector(value->data.ptr_val, opts);
+            break;
+
+        case ESHKOL_VALUE_DUAL_NUMBER: {
+            eshkol_dual_number_t* dual = (eshkol_dual_number_t*)value->data.ptr_val;
+            if (dual) {
+                fprintf(get_output(opts), "(dual %g %g)", dual->value, dual->derivative);
+            } else {
+                fprintf(get_output(opts), "(dual 0 0)");
+            }
+            break;
+        }
+
+        case ESHKOL_VALUE_AD_NODE_PTR:
+            fprintf(get_output(opts), "#<ad-node>");
+            break;
+
+        default:
+            if (opts->show_types) {
+                fprintf(get_output(opts), "#<unknown-type-%d:0x%llx>",
+                       base_type, (unsigned long long)value->data.ptr_val);
+            } else {
+                fprintf(get_output(opts), "#<unknown>");
+            }
+            break;
+    }
+}
+
+// Scheme 'write' semantics - quotes strings
+void eshkol_write_value(const eshkol_tagged_value_t* value) {
+    eshkol_display_opts_t opts = eshkol_display_default_opts();
+    opts.quote_strings = 1;
+    eshkol_display_value_opts(value, &opts);
+}
+
+// Display a list (cons cell chain)
+void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts) {
+    FILE* out = get_output(opts);
+
+    if (cons_ptr == 0) {
+        fprintf(out, "()");
+        return;
+    }
+
+    // Check depth limit
+    if (opts->current_depth > opts->max_depth) {
+        fprintf(out, "(...)");
+        return;
+    }
+
+    fprintf(out, "(");
+    opts->current_depth++;
+
+    uint64_t current = cons_ptr;
+    bool first = true;
+
+    while (current != 0) {
+        arena_tagged_cons_cell_t* cell = (arena_tagged_cons_cell_t*)current;
+
+        if (!first) {
+            fprintf(out, " ");
+        }
+        first = false;
+
+        // Display car
+        eshkol_display_value_opts(&cell->car, opts);
+
+        // Check cdr type
+        uint8_t cdr_type = cell->cdr.type & 0x0F;
+
+        if (cdr_type == ESHKOL_VALUE_NULL) {
+            // Proper list end
+            break;
+        } else if (cdr_type == ESHKOL_VALUE_CONS_PTR) {
+            // Continue to next cell
+            current = cell->cdr.data.ptr_val;
+        } else {
+            // Dotted pair - display cdr and break
+            fprintf(out, " . ");
+            eshkol_display_value_opts(&cell->cdr, opts);
+            break;
+        }
+    }
+
+    opts->current_depth--;
+    fprintf(out, ")");
+}
+
+// Display a lambda by looking up its S-expression in the registry
+void eshkol_display_lambda(uint64_t func_ptr, eshkol_display_opts_t* opts) {
+    FILE* out = get_output(opts);
+
+    // Look up S-expression in registry
+    uint64_t sexpr_ptr = eshkol_lambda_registry_lookup(func_ptr);
+
+    if (sexpr_ptr != 0) {
+        // Found S-expression - display it
+        eshkol_display_list(sexpr_ptr, opts);
+    } else {
+        // No S-expression found - display placeholder
+        fprintf(out, "#<procedure>");
+    }
+}
+
+// Display a closure by extracting its embedded S-expression
+void eshkol_display_closure(uint64_t closure_ptr, eshkol_display_opts_t* opts) {
+    FILE* out = get_output(opts);
+
+    if (closure_ptr == 0) {
+        fprintf(out, "#<closure>");
+        return;
+    }
+
+    // Closure struct: { func_ptr (8), env (8), sexpr_ptr (8) }
+    eshkol_closure_t* closure = (eshkol_closure_t*)closure_ptr;
+    uint64_t sexpr = closure->sexpr_ptr;
+
+    if (sexpr != 0) {
+        // Display the embedded S-expression
+        eshkol_display_list(sexpr, opts);
+    } else {
+        // No S-expression - try the registry as fallback
+        uint64_t registry_sexpr = eshkol_lambda_registry_lookup(closure->func_ptr);
+        if (registry_sexpr != 0) {
+            eshkol_display_list(registry_sexpr, opts);
+        } else {
+            fprintf(out, "#<closure>");
+        }
+    }
+}
+
+// Display a character
+static void display_char(uint32_t codepoint, eshkol_display_opts_t* opts) {
+    FILE* out = get_output(opts);
+
+    // Special character names
+    switch (codepoint) {
+        case ' ':  fprintf(out, "#\\space"); break;
+        case '\n': fprintf(out, "#\\newline"); break;
+        case '\t': fprintf(out, "#\\tab"); break;
+        case '\r': fprintf(out, "#\\return"); break;
+        case 0:    fprintf(out, "#\\null"); break;
+        default:
+            if (codepoint < 128 && codepoint >= 32) {
+                // Printable ASCII
+                fprintf(out, "#\\%c", (char)codepoint);
+            } else {
+                // Unicode or non-printable
+                fprintf(out, "#\\x%X", codepoint);
+            }
+            break;
+    }
+}
+
+// Display a tensor (stub - full implementation would need tensor struct)
+static void display_tensor(uint64_t tensor_ptr, eshkol_display_opts_t* opts) {
+    FILE* out = get_output(opts);
+
+    if (tensor_ptr == 0) {
+        fprintf(out, "#()");
+        return;
+    }
+
+    // For now, just print a placeholder
+    // Full implementation would iterate tensor elements
+    fprintf(out, "#<tensor@%p>", (void*)tensor_ptr);
+}
+
+// Display a vector (stub - full implementation would need vector struct)
+static void display_vector(uint64_t vector_ptr, eshkol_display_opts_t* opts) {
+    FILE* out = get_output(opts);
+
+    if (vector_ptr == 0) {
+        fprintf(out, "#()");
+        return;
+    }
+
+    // For now, just print a placeholder
+    fprintf(out, "#<vector@%p>", (void*)vector_ptr);
+}
+
+// ===== END UNIFIED DISPLAY IMPLEMENTATION =====
+
 #endif // __cplusplus

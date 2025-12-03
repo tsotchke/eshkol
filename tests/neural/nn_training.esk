@@ -3,6 +3,8 @@
 ;; This demonstrates real gradient descent optimization!
 ;;
 
+(require stdlib)
+
 ;; ============================================================================
 ;; TRAINING A PERCEPTRON: Learn y = 2x function
 ;; ============================================================================

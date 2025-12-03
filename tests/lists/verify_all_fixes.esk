@@ -1,4 +1,5 @@
 ;; Verify all list function fixes
+(require stdlib)
 
 (display "=== MEMBER TEST ===")
 (newline)

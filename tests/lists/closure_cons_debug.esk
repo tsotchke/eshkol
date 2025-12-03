@@ -1,0 +1,35 @@
+;;
+;; Debug: Storing closures in cons cells
+;;
+
+;; Simple function (becomes a closure)
+(define (double x) (* x 2))
+
+(display "=== CLOSURE CONS DEBUG ===")
+(newline)
+
+;; Test 1: Display the function directly
+(display "Test 1: Display double directly: ")
+(display double)
+(newline)
+
+;; Test 2: Create a simple cons with function in car
+(display "Test 2: (cons double '()): ")
+(define test2 (cons double '()))
+(display test2)
+(newline)
+
+;; Test 3: Create cons with integer in car (should work fine)
+(display "Test 3: (cons 42 '()): ")
+(define test3 (cons 42 '()))
+(display test3)
+(newline)
+
+;; Test 4: Create a list with function (uses list, not cons)
+(display "Test 4: (list double): ")
+(define test4 (list double))
+(display test4)
+(newline)
+
+(display "=== DEBUG COMPLETE ===")
+(newline)

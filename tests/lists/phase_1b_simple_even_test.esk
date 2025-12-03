@@ -2,6 +2,8 @@
 ;; Phase 1B Simple Even Test - Testing simpler even predicate
 ;;
 
+(require stdlib)
+
 (display "=== SIMPLE EVEN TEST ===")
 (newline)
 

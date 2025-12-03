@@ -1,0 +1,67 @@
+;;
+;; Test apply with first-class functions (closures)
+;;
+
+(display "=== APPLY CLOSURE TEST ===")
+(newline)
+
+;; TEST 1: Apply with named function passed as variable
+(display "TEST 1: Apply with named function as variable")
+(newline)
+(define (add2 a b) (+ a b))
+(define my-fn add2)
+(define result1 (apply my-fn (list 3 4)))
+(display result1)
+(newline)
+;; Expected: 7
+
+;; TEST 2: Apply with lambda stored in variable
+(display "TEST 2: Apply with lambda in variable")
+(newline)
+(define my-lambda (lambda (x y) (* x y)))
+(define result2 (apply my-lambda (list 5 6)))
+(display result2)
+(newline)
+;; Expected: 30
+
+;; TEST 3: Apply with function parameter
+(display "TEST 3: Apply with function parameter")
+(newline)
+(define (apply-to-3-4 f)
+  (apply f (list 3 4)))
+(define result3 (apply-to-3-4 add2))
+(display result3)
+(newline)
+;; Expected: 7
+
+;; TEST 4: Apply with closure capturing variable
+(display "TEST 4: Apply with closure capturing variable")
+(newline)
+(define multiplier 10)
+(define scale-fn (lambda (x) (* x multiplier)))
+(define result4 (apply scale-fn (list 5)))
+(display result4)
+(newline)
+;; Expected: 50
+
+;; TEST 5: Apply in higher-order function with proc parameter
+(display "TEST 5: Higher-order apply with proc parameter")
+(newline)
+(define (apply-twice proc val)
+  (apply proc (list (apply proc (list val)))))
+(define result5 (apply-twice (lambda (x) (+ x 1)) 5))
+(display result5)
+(newline)
+;; Expected: 7
+
+;; TEST 6: Apply with direct lambda (not stored in variable)
+(display "TEST 6: Apply with direct lambda")
+(newline)
+(define result6 (apply (lambda (a b c) (+ a (+ b c))) (list 1 2 3)))
+(display result6)
+(newline)
+;; Expected: 6
+
+(newline)
+(display "=== ALL APPLY CLOSURE TESTS COMPLETED ===")
+(newline)

@@ -4,7 +4,6 @@
 ;; This test verifies that our arena memory management system
 ;; works correctly with basic cons operations.
 ;;
-
 ;; Create a simple cons cell using arena allocation
 (define pair (cons 42 100))
 (display "Created pair with arena allocation: ")

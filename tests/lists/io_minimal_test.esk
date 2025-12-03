@@ -1,0 +1,13 @@
+;; Minimal I/O test
+(require stdlib)
+
+(display "Starting I/O test")
+(newline)
+
+(define outfile (open-output-file "/tmp/io_test.txt"))
+(display "File opened")
+(newline)
+
+(write-string "hello\n" outfile)
+(display "Wrote to file")
+(newline)

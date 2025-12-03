@@ -1,7 +1,37 @@
 ;;; core/list/higher_order.esk
 ;;; Higher-order list functions
 
-(provide fold fold-right for-each any every)
+(provide map1 map2 map3 fold fold-right for-each any every)
+
+;;; map1: Apply proc to each element of a single list
+;;; (map1 double '(1 2 3)) => (2 4 6)
+(define (map1 proc lst)
+  (if (null? lst)
+      '()
+      (cons (proc (car lst))
+            (map1 proc (cdr lst)))))
+
+;;; map2: Apply proc to corresponding elements of two lists
+;;; (map2 + '(1 2 3) '(10 20 30)) => (11 22 33)
+(define (map2 proc lst1 lst2)
+  (if (null? lst1)
+      '()
+      (if (null? lst2)
+          '()
+          (cons (proc (car lst1) (car lst2))
+                (map2 proc (cdr lst1) (cdr lst2))))))
+
+;;; map3: Apply proc to corresponding elements of three lists
+;;; (map3 (lambda (a b c) (+ a b c)) '(1 2) '(10 20) '(100 200)) => (111 222)
+(define (map3 proc lst1 lst2 lst3)
+  (if (null? lst1)
+      '()
+      (if (null? lst2)
+          '()
+          (if (null? lst3)
+              '()
+              (cons (proc (car lst1) (car lst2) (car lst3))
+                    (map3 proc (cdr lst1) (cdr lst2) (cdr lst3)))))))
 
 ;;; fold: Left fold (foldl)
 ;;; Applies proc to accumulator and each element from left to right

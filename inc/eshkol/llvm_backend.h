@@ -48,6 +48,13 @@ LLVMModuleRef eshkol_generate_llvm_ir_library(const eshkol_ast_t* asts, size_t n
 void eshkol_register_external_functions(const eshkol_ast_t* asts, size_t num_asts);
 
 /*
+ * Set flag indicating the program uses stdlib (linked with stdlib.o)
+ * When set, the generated code will call __eshkol_lib_init__ for homoiconic display support.
+ * @param uses_stdlib true if linking with stdlib.o
+ */
+void eshkol_set_uses_stdlib(int uses_stdlib);
+
+/*
  * Write LLVM IR to a file in textual format
  * @param module LLVM module reference
  * @param filename Output filename (should end with .ll)

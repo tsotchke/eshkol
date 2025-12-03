@@ -1,0 +1,52 @@
+;;; Test new stdlib functions
+(require stdlib)
+
+(display "=== Testing new stdlib functions ===")
+(newline)
+
+;; Test map
+(display "map (+ 1) '(1 2 3): ")
+(display (map (lambda (x) (+ x 1)) '(1 2 3)))
+(newline)
+
+;; Test map2
+(display "map2 + '(1 2 3) '(10 20 30): ")
+(display (map2 + '(1 2 3) '(10 20 30)))
+(newline)
+
+;; Test cadr
+(display "cadr '(1 2 3): ")
+(display (cadr '(1 2 3)))
+(newline)
+
+;; Test caddr
+(display "caddr '(1 2 3 4): ")
+(display (caddr '(1 2 3 4)))
+(newline)
+
+;; Test caar
+(display "caar '((1 2) 3): ")
+(display (caar '((1 2) 3)))
+(newline)
+
+;; Test first/second/third
+(display "first '(a b c): ")
+(display (first '(a b c)))
+(newline)
+
+(display "second '(a b c): ")
+(display (second '(a b c)))
+(newline)
+
+(display "third '(a b c): ")
+(display (third '(a b c)))
+(newline)
+
+;; Test nested map
+(display "map square (map (+ 1) '(1 2 3)): ")
+(define (square x) (* x x))
+(display (map square (map (lambda (x) (+ x 1)) '(1 2 3))))
+(newline)
+
+(display "=== All tests passed ===")
+(newline)

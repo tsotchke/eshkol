@@ -1,0 +1,23 @@
+;; Test interleaved defines with function calls
+(require stdlib)
+
+(define (get-value) (list 1 2 3))
+
+(define (test-interleaved)
+  (begin
+    (display "before first define")
+    (newline)
+    (define x (get-value))
+    (display "after first, x=")
+    (display x)
+    (newline)
+    (define y (car x))
+    (display "after second, y=")
+    (display y)
+    (newline)
+    y))
+
+(display "=== Test interleaved defines with funcalls ===")
+(newline)
+(display (test-interleaved))
+(newline)

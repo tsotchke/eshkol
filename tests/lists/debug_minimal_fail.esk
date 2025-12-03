@@ -2,6 +2,7 @@
 ;; Minimal failing case - gradually build towards exact failure
 ;;
 
+
 (display "=== DEBUG MINIMAL FAIL TEST ===")
 (newline)
 

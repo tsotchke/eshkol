@@ -1,5 +1,4 @@
 ;; Test filter with comparison
-
 (require stdlib)
 
 (display "Test 3: Filter with comparison lambda")
