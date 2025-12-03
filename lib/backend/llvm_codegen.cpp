@@ -230,9 +230,8 @@ private:
     // For variadic functions, when calling, extra args beyond fixed_param_count are packaged into a list
     std::unordered_map<std::string, std::pair<uint64_t, bool>> variadic_function_info;
 
-    // STRING INTERNING: Map string content to GlobalVariable for symbol identity comparison
-    // This ensures (eq? 'a 'a) returns #t because both point to same interned string
-    std::unordered_map<std::string, GlobalVariable*> string_intern_table;
+    // MIGRATED: String interning moved to CodegenContext::interned_strings_
+    // StringIOCodegen::createString() handles string interning now
 
     // Current function being generated
     Function* current_function;
@@ -3036,234 +3035,39 @@ private:
     // ===== TAGGED VALUE HELPER FUNCTIONS =====
     // Pack/unpack values to/from eshkol_tagged_value_t structs
     
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* packInt64ToTaggedValue(Value* int64_val, bool is_exact = true) {
-        // Save current insertion point
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-        
-        // Create alloca at function entry to ensure dominance
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-        
-        Value* tagged_val_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "tagged_val");
-        
-        // Restore insertion point for the actual stores
-        builder->restoreIP(saved_ip);
-        
-        Value* type_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 0);
-        builder->CreateStore(ConstantInt::get(int8_type, ESHKOL_VALUE_INT64), type_ptr);
-        Value* flags_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 1);
-        uint8_t flags = is_exact ? ESHKOL_VALUE_EXACT_FLAG : 0;
-        builder->CreateStore(ConstantInt::get(int8_type, flags), flags_ptr);
-        Value* reserved_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 2);
-        builder->CreateStore(ConstantInt::get(int16_type, 0), reserved_ptr);
-        Value* data_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 4);
-        builder->CreateStore(int64_val, data_ptr);
-        return builder->CreateLoad(tagged_value_type, tagged_val_ptr);
+        return tagged_->packInt64(int64_val, is_exact);
     }
 
-    // Pack boolean to tagged_value (for comparison results)
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* packBoolToTaggedValue(Value* bool_val) {
-        // Save current insertion point
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-
-        // Create alloca at function entry to ensure dominance
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-
-        Value* tagged_val_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "tagged_bool");
-
-        // Restore insertion point for the actual stores
-        builder->restoreIP(saved_ip);
-
-        // Set type to BOOL
-        Value* type_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 0);
-        builder->CreateStore(ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL), type_ptr);
-        Value* flags_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 1);
-        builder->CreateStore(ConstantInt::get(int8_type, 0), flags_ptr);
-        Value* reserved_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 2);
-        builder->CreateStore(ConstantInt::get(int16_type, 0), reserved_ptr);
-        Value* data_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 4);
-        // Extend boolean to int64 for storage
-        Value* int64_val = builder->CreateZExt(bool_val, int64_type);
-        builder->CreateStore(int64_val, data_ptr);
-        return builder->CreateLoad(tagged_value_type, tagged_val_ptr);
+        return tagged_->packBool(bool_val);
     }
 
-    // Pack int64 to tagged_value with custom type and flags (for car/cdr wrappers)
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* packInt64ToTaggedValueWithTypeAndFlags(Value* int64_val, Value* type_val, Value* flags_val) {
-        // Save current insertion point
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-
-        // Create alloca at function entry to ensure dominance
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-
-        Value* tagged_val_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "tagged_val");
-
-        // Restore insertion point for the actual stores
-        builder->restoreIP(saved_ip);
-
-        Value* type_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 0);
-        builder->CreateStore(type_val, type_ptr);
-        Value* flags_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 1);
-        builder->CreateStore(flags_val, flags_ptr);
-        Value* reserved_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 2);
-        builder->CreateStore(ConstantInt::get(int16_type, 0), reserved_ptr);
-        Value* data_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 4);
-        builder->CreateStore(int64_val, data_ptr);
-        return builder->CreateLoad(tagged_value_type, tagged_val_ptr);
+        return tagged_->packInt64WithTypeAndFlags(int64_val, type_val, flags_val);
     }
 
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* packDoubleToTaggedValue(Value* double_val) {
-        // Save current insertion point
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-        
-        // Create alloca at function entry to ensure dominance
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-        
-        Value* tagged_val_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "tagged_val");
-        
-        // Restore insertion point for the actual stores
-        builder->restoreIP(saved_ip);
-        
-        Value* type_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 0);
-        builder->CreateStore(ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE), type_ptr);
-        Value* flags_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 1);
-        builder->CreateStore(ConstantInt::get(int8_type, ESHKOL_VALUE_INEXACT_FLAG), flags_ptr);
-        Value* reserved_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 2);
-        builder->CreateStore(ConstantInt::get(int16_type, 0), reserved_ptr);
-        Value* data_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 4);
-        Value* double_as_int64 = builder->CreateBitCast(double_val, int64_type);
-        builder->CreateStore(double_as_int64, data_ptr);
-        return builder->CreateLoad(tagged_value_type, tagged_val_ptr);
+        return tagged_->packDouble(double_val);
     }
-    
+
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* packPtrToTaggedValue(Value* ptr_val, eshkol_value_type_t type, uint8_t flags = 0) {
-        // Save current insertion point
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-
-        // Create alloca at function entry to ensure dominance
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-
-        Value* tagged_val_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "tagged_val");
-
-        // Restore insertion point for the actual stores
-        builder->restoreIP(saved_ip);
-
-        Value* type_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 0);
-        builder->CreateStore(ConstantInt::get(int8_type, type), type_ptr);
-        Value* flags_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 1);
-        builder->CreateStore(ConstantInt::get(int8_type, flags), flags_ptr);
-        Value* reserved_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 2);
-        builder->CreateStore(ConstantInt::get(int16_type, 0), reserved_ptr);
-        Value* data_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 4);
-
-        // CRITICAL FIX: ptr_val might already be i64 (from PtrToInt in codegenTensorOperation)
-        // Don't double-convert!
-        Value* ptr_as_int64;
-        if (ptr_val->getType()->isIntegerTy(64)) {
-            // Already i64 - use directly
-            ptr_as_int64 = ptr_val;
-        } else if (ptr_val->getType()->isPointerTy()) {
-            // Is a pointer - convert to i64
-            ptr_as_int64 = builder->CreatePtrToInt(ptr_val, int64_type);
-        } else {
-            // Other type - try to convert
-            eshkol_warn("packPtrToTaggedValue: unexpected type, defaulting to 0");
-            ptr_as_int64 = ConstantInt::get(int64_type, 0);
-        }
-
-        builder->CreateStore(ptr_as_int64, data_ptr);
-        return builder->CreateLoad(tagged_value_type, tagged_val_ptr);
+        return tagged_->packPtr(ptr_val, type, flags);
     }
 
-    // Pack pointer with dynamic (runtime) type and flags values
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* packPtrToTaggedValueWithFlags(Value* ptr_val, Value* type_val, Value* flags_val) {
-        // Save current insertion point
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-
-        // Create alloca at function entry to ensure dominance
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-
-        Value* tagged_val_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "tagged_val_dyn");
-
-        // Restore insertion point for the actual stores
-        builder->restoreIP(saved_ip);
-
-        Value* type_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 0);
-        builder->CreateStore(type_val, type_ptr);
-        Value* flags_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 1);
-        builder->CreateStore(flags_val, flags_ptr);
-        Value* reserved_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 2);
-        builder->CreateStore(ConstantInt::get(int16_type, 0), reserved_ptr);
-        Value* data_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 4);
-
-        // Convert pointer to i64 if needed
-        Value* ptr_as_int64;
-        if (ptr_val->getType()->isIntegerTy(64)) {
-            ptr_as_int64 = ptr_val;
-        } else if (ptr_val->getType()->isPointerTy()) {
-            ptr_as_int64 = builder->CreatePtrToInt(ptr_val, int64_type);
-        } else {
-            eshkol_warn("packPtrToTaggedValueWithFlags: unexpected type, defaulting to 0");
-            ptr_as_int64 = ConstantInt::get(int64_type, 0);
-        }
-
-        builder->CreateStore(ptr_as_int64, data_ptr);
-        return builder->CreateLoad(tagged_value_type, tagged_val_ptr);
+        return tagged_->packPtrWithFlags(ptr_val, type_val, flags_val);
     }
 
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* packNullToTaggedValue() {
-        // Save current insertion point
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-        
-        // Create alloca at function entry to ensure dominance
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-        
-        Value* tagged_val_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "tagged_null");
-        
-        // Restore insertion point for the actual stores
-        builder->restoreIP(saved_ip);
-        
-        // CRITICAL: Set type to ESHKOL_VALUE_NULL (0), not INT64 (1)!
-        Value* type_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 0);
-        builder->CreateStore(ConstantInt::get(int8_type, ESHKOL_VALUE_NULL), type_ptr);
-        
-        Value* flags_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 1);
-        builder->CreateStore(ConstantInt::get(int8_type, 0), flags_ptr);
-        
-        Value* reserved_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 2);
-        builder->CreateStore(ConstantInt::get(int16_type, 0), reserved_ptr);
-        
-        Value* data_ptr = builder->CreateStructGEP(tagged_value_type, tagged_val_ptr, 4);
-        builder->CreateStore(ConstantInt::get(int64_type, 0), data_ptr);
-        
-        return builder->CreateLoad(tagged_value_type, tagged_val_ptr);
+        return tagged_->packNull();
     }
 
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
@@ -3393,91 +3197,29 @@ private:
     }
 
 
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* getTaggedValueType(Value* tagged_val) {
-        // Create alloca at function entry for proper SSA dominance
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-        Value* temp_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "temp_tagged");
-        builder->restoreIP(saved_ip);
-
-        builder->CreateStore(tagged_val, temp_ptr);
-        Value* type_ptr = builder->CreateStructGEP(tagged_value_type, temp_ptr, 0);
-        return builder->CreateLoad(int8_type, type_ptr);
+        return tagged_->getType(tagged_val);
     }
 
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* getTaggedValueFlags(Value* tagged_val) {
-        // Create alloca at function entry for proper SSA dominance
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-        Value* temp_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "temp_tagged_flags");
-        builder->restoreIP(saved_ip);
-
-        builder->CreateStore(tagged_val, temp_ptr);
-        Value* flags_ptr = builder->CreateStructGEP(tagged_value_type, temp_ptr, 1);
-        return builder->CreateLoad(int8_type, flags_ptr);
+        return tagged_->getFlags(tagged_val);
     }
 
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* unpackInt64FromTaggedValue(Value* tagged_val) {
-        // Create alloca at function entry for proper SSA dominance
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-        Value* temp_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "temp_tagged");
-        builder->restoreIP(saved_ip);
-
-        builder->CreateStore(tagged_val, temp_ptr);
-        Value* data_ptr = builder->CreateStructGEP(tagged_value_type, temp_ptr, 4);
-        return builder->CreateLoad(int64_type, data_ptr);
+        return tagged_->unpackInt64(tagged_val);
     }
 
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* unpackDoubleFromTaggedValue(Value* tagged_val) {
-        // Create alloca at function entry for proper SSA dominance
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-        Value* temp_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "temp_tagged");
-        builder->restoreIP(saved_ip);
-
-        builder->CreateStore(tagged_val, temp_ptr);
-        Value* data_ptr = builder->CreateStructGEP(tagged_value_type, temp_ptr, 4);
-        Value* data_as_int64 = builder->CreateLoad(int64_type, data_ptr);
-        return builder->CreateBitCast(data_as_int64, double_type);
+        return tagged_->unpackDouble(tagged_val);
     }
-    
+
+    // MIGRATED: Delegates to TaggedValueCodegen
     Value* unpackPtrFromTaggedValue(Value* tagged_val) {
-        // Save current insertion point
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-        
-        // Create alloca at function entry to ensure dominance
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-        
-        Value* temp_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "temp_tagged");
-        
-        // Restore insertion point for the actual operations
-        builder->restoreIP(saved_ip);
-        
-        builder->CreateStore(tagged_val, temp_ptr);
-        Value* data_ptr = builder->CreateStructGEP(tagged_value_type, temp_ptr, 4);
-        Value* data_as_int64 = builder->CreateLoad(int64_type, data_ptr);
-        return builder->CreateIntToPtr(data_as_int64, builder->getPtrTy());
+        return tagged_->unpackPtr(tagged_val);
     }
 
     Value* extractCarAsTaggedValue(Value* cons_ptr_int) {
@@ -3722,42 +3464,11 @@ private:
         return cdr_tagged_phi;
     }
     
+    // MIGRATED: Delegates to TaggedValueCodegen
     // Helper to safely extract i64 from possibly-tagged values for ICmp operations
     // CRITICAL: This prevents ICmp type mismatch assertions
     Value* safeExtractInt64(Value* val) {
-        if (!val) {
-            return ConstantInt::get(int64_type, 0);
-        }
-        
-        Type* val_type = val->getType();
-        
-        // Already i64 - return as-is
-        if (val_type->isIntegerTy(64)) {
-            return val;
-        }
-        
-        // If it's a tagged_value struct, unpack the i64 data
-        if (val_type == tagged_value_type) {
-            return unpackInt64FromTaggedValue(val);
-        }
-        
-        // Other integer types - extend/truncate to i64
-        if (val_type->isIntegerTy()) {
-            return builder->CreateSExtOrTrunc(val, int64_type);
-        }
-        
-        // Pointer types - convert to i64
-        if (val_type->isPointerTy()) {
-            return builder->CreatePtrToInt(val, int64_type);
-        }
-        
-        // Float types - convert to i64
-        if (val_type->isFloatingPointTy()) {
-            return builder->CreateFPToSI(val, int64_type);
-        }
-        
-        // Fallback - return 0
-        return ConstantInt::get(int64_type, 0);
+        return tagged_->safeExtractInt64(val);
     }
 
     // Helper: Extract car element from cons cell as tagged value (type-safe approach)
@@ -5262,34 +4973,9 @@ private:
         }
     }
     
+    // MIGRATED: Delegates to StringIOCodegen
     Value* codegenString(const char* str) {
-        if (!str) return nullptr;
-
-        std::string str_key(str);
-
-        // SYMBOL INTERNING: Check if this string is already interned
-        auto it = string_intern_table.find(str_key);
-        if (it != string_intern_table.end()) {
-            // Return pointer to the existing interned string
-            return builder->CreatePointerCast(it->second, PointerType::getUnqual(*context));
-        }
-
-        // Create global string constant
-        Constant* str_constant = ConstantDataArray::getString(*context, str, true);
-        GlobalVariable* global_str = new GlobalVariable(
-            *module,
-            str_constant->getType(),
-            true, // isConstant
-            GlobalValue::PrivateLinkage,
-            str_constant,
-            ".str"
-        );
-
-        // Intern the string for future lookups
-        string_intern_table[str_key] = global_str;
-
-        // Return pointer to the string
-        return builder->CreatePointerCast(global_str, PointerType::getUnqual(*context));
+        return strio_->createString(str);
     }
 
     Value* codegenVariable(const eshkol_ast_t* ast) {
@@ -8583,17 +8269,10 @@ private:
         return result;  // Return raw int64
     }
 
+    // MIGRATED: Delegates to ArithmeticCodegen
     // Helper to convert any value to double
     Value* toDouble(Value* val) {
-        if (val->getType()->isDoubleTy()) {
-            return val;
-        } else if (val->getType()->isIntegerTy(64)) {
-            return builder->CreateSIToFP(val, double_type);
-        } else if (val->getType() == tagged_value_type) {
-            return extractDoubleFromTagged(val);
-        }
-        // Default: try to extract as double
-        return extractDoubleFromTagged(val);
+        return arith_->extractAsDouble(val);
     }
 
     // Min/Max - variadic, handles mixed types
@@ -8640,79 +8319,16 @@ private:
         return builder->CreateCall(function_table["pow"], {base_val, exp_val});
     }
 
+    // MIGRATED: Delegates to ArithmeticCodegen
     // Helper to extract double from tagged value (handles both int and double)
     Value* extractDoubleFromTagged(Value* tagged) {
-        if (!tagged) return nullptr;
-
-        // Check if already double
-        if (tagged->getType()->isDoubleTy()) return tagged;
-
-        // Get type tag
-        Value* type = getTaggedValueType(tagged);
-        Value* base_type = builder->CreateAnd(type, ConstantInt::get(int8_type, 0x0F));
-        Value* is_double = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-
-        Value* double_val = unpackDoubleFromTaggedValue(tagged);
-        Value* int_val = unpackInt64FromTaggedValue(tagged);
-        Value* int_as_double = builder->CreateSIToFP(int_val, double_type);
-
-        return builder->CreateSelect(is_double, double_val, int_as_double);
+        return arith_->extractAsDouble(tagged);
     }
 
+    // MIGRATED: Delegates to ControlFlowCodegen
     // Helper to check if a tagged value is "truthy" (non-false, non-null, non-zero)
-    // FIXED: Handle both raw values and tagged values
     Value* isTruthy(Value* val) {
-        if (!val) return ConstantInt::getFalse(*context);
-
-        // Handle raw int64 - truthy if non-zero
-        if (val->getType()->isIntegerTy(64)) {
-            return builder->CreateICmpNE(val, ConstantInt::get(int64_type, 0));
-        }
-
-        // Handle raw double - truthy if non-zero
-        if (val->getType()->isDoubleTy()) {
-            return builder->CreateFCmpONE(val, ConstantFP::get(double_type, 0.0));
-        }
-
-        // Handle tagged_value
-        if (val->getType() == tagged_value_type) {
-            Value* type = getTaggedValueType(val);
-            Value* base_type = builder->CreateAnd(type, ConstantInt::get(int8_type, 0x0F));
-
-            // Check for false/null (type 0 with value 0)
-            Value* is_null_type = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
-            Value* data = unpackInt64FromTaggedValue(val);
-            Value* is_false_val = builder->CreateICmpEQ(data, ConstantInt::get(int64_type, 0));
-            Value* is_null_or_false = builder->CreateAnd(is_null_type, is_false_val);
-
-            // Check for BOOL type with value 0 (#f)
-            Value* is_bool = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL));
-            Value* bool_is_false = builder->CreateICmpEQ(data, ConstantInt::get(int64_type, 0));
-            Value* bool_false = builder->CreateAnd(is_bool, bool_is_false);
-
-            // Check for zero (int or double)
-            Value* is_int = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
-            Value* int_is_zero = builder->CreateICmpEQ(data, ConstantInt::get(int64_type, 0));
-            Value* int_zero = builder->CreateAnd(is_int, int_is_zero);
-
-            Value* is_double = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-            Value* double_val = unpackDoubleFromTaggedValue(val);
-            Value* double_is_zero = builder->CreateFCmpOEQ(double_val, ConstantFP::get(double_type, 0.0));
-            Value* double_zero = builder->CreateAnd(is_double, double_is_zero);
-
-            // Truthy = NOT (null/false OR bool-false OR int-zero OR double-zero)
-            Value* is_falsy = builder->CreateOr(is_null_or_false,
-                builder->CreateOr(bool_false, builder->CreateOr(int_zero, double_zero)));
-            return builder->CreateNot(is_falsy);
-        }
-
-        // Default: assume truthy
-        return ConstantInt::getTrue(*context);
+        return flow_->isTruthy(val);
     }
     // Short-circuit AND: (and a b ...) - returns last truthy value or first falsy value
     Value* codegenAnd(const eshkol_operations_t* op) {

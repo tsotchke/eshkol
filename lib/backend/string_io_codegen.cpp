@@ -32,7 +32,13 @@ llvm::Value* StringIOCodegen::createString(const char* str) {
     if (!str) return nullptr;
 
     // Use context's string interning
-    return ctx_.internString(str);
+    llvm::GlobalVariable* global_str = ctx_.internString(str);
+
+    // Cast to generic pointer for use with printf, etc.
+    return ctx_.builder().CreatePointerCast(
+        global_str,
+        llvm::PointerType::getUnqual(ctx_.context())
+    );
 }
 
 llvm::Value* StringIOCodegen::packString(const char* str) {

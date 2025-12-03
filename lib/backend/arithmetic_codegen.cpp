@@ -163,6 +163,17 @@ llvm::Value* ArithmeticCodegen::doubleToInt(llvm::Value* double_tagged) {
 }
 
 llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
+    if (!tagged_val) return nullptr;
+
+    // Handle raw double - return as-is
+    if (tagged_val->getType()->isDoubleTy()) return tagged_val;
+
+    // Handle raw int64 - convert to double
+    if (tagged_val->getType()->isIntegerTy(64)) {
+        return ctx_.builder().CreateSIToFP(tagged_val, ctx_.doubleType());
+    }
+
+    // Handle tagged value
     llvm::Value* type_tag = tagged_.getType(tagged_val);
     llvm::Value* base_type = ctx_.builder().CreateAnd(type_tag,
         llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
