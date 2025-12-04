@@ -64,6 +64,20 @@ public:
     llvm::Value* getDualTangent(llvm::Value* dual);
 
     /**
+     * Pack dual number to tagged value (heap-allocated).
+     * @param dual The dual number struct
+     * @return Tagged dual number value
+     */
+    llvm::Value* packDualToTagged(llvm::Value* dual);
+
+    /**
+     * Unpack dual number from tagged value.
+     * @param tagged The tagged dual number
+     * @return Dual number struct
+     */
+    llvm::Value* unpackDualFromTagged(llvm::Value* tagged);
+
+    /**
      * Add two dual numbers: (a + b, a' + b')
      * @param left Left dual number
      * @param right Right dual number
@@ -148,10 +162,16 @@ private:
     TaggedValueCodegen& tagged_;
     MemoryCodegen& mem_;
 
+    // Node ID counter for AD graph nodes
+    uint64_t next_node_id_ = 0;
+
     // Callback for AST code generation
     using CodegenASTFunc = llvm::Value* (*)(const void* ast, void* context);
     CodegenASTFunc codegen_ast_callback_ = nullptr;
     void* callback_context_ = nullptr;
+
+    // Helper: Get arena pointer from global
+    llvm::Value* getArenaPtr();
 
 public:
     /**

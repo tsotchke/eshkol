@@ -91,6 +91,42 @@ public:
      */
     llvm::Value* codegenBegin(const eshkol_operations_t* op);
 
+    // === Logical Operations ===
+
+    /**
+     * Logical NOT: (not x)
+     * Returns #t if x is falsy, #f otherwise.
+     * @param op The NOT call operation AST node
+     * @return Result as tagged_value (boolean)
+     */
+    llvm::Value* codegenNot(const eshkol_operations_t* op);
+
+    // === Additional Control Flow ===
+
+    /**
+     * When conditional: (when test expr...)
+     * Evaluates expressions if test is true, returns last result or void.
+     * @param op The WHEN call operation AST node
+     * @return Result value
+     */
+    llvm::Value* codegenWhen(const eshkol_operations_t* op);
+
+    /**
+     * Unless conditional: (unless test expr...)
+     * Evaluates expressions if test is false, returns last result or void.
+     * @param op The UNLESS call operation AST node
+     * @return Result value
+     */
+    llvm::Value* codegenUnless(const eshkol_operations_t* op);
+
+    /**
+     * Case expression: (case key ((datum1 datum2 ...) expr1 ...) ... (else exprN))
+     * Matches key against datums using eqv? semantics.
+     * @param op The CASE call operation AST node
+     * @return Result value
+     */
+    llvm::Value* codegenCase(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
@@ -101,12 +137,16 @@ private:
     using CodegenTypedASTFunc = void* (*)(const void* ast, void* context);  // Returns TypedValue*
     using TypedToTaggedFunc = llvm::Value* (*)(void* typed_value, void* context);
     using CodegenDefineFunc = void (*)(const void* op, void* context);
+    using EqvCompareFunc = llvm::Value* (*)(llvm::Value* a, llvm::Value* b, void* context);
+    using DetectAndPackFunc = llvm::Value* (*)(llvm::Value* val, void* context);  // detectValueType + pack
 
     CodegenASTFunc codegen_ast_callback_ = nullptr;
     CodegenTypedASTFunc codegen_typed_ast_callback_ = nullptr;
     TypedToTaggedFunc typed_to_tagged_callback_ = nullptr;
     CodegenDefineFunc codegen_func_define_callback_ = nullptr;
     CodegenDefineFunc codegen_var_define_callback_ = nullptr;
+    EqvCompareFunc eqv_compare_callback_ = nullptr;
+    DetectAndPackFunc detect_and_pack_callback_ = nullptr;
     void* callback_context_ = nullptr;
 
 public:
@@ -120,6 +160,8 @@ public:
         TypedToTaggedFunc typed_to_tagged,
         CodegenDefineFunc codegen_func_define,
         CodegenDefineFunc codegen_var_define,
+        EqvCompareFunc eqv_compare,
+        DetectAndPackFunc detect_and_pack,
         void* context
     ) {
         codegen_ast_callback_ = codegen_ast;
@@ -127,6 +169,8 @@ public:
         typed_to_tagged_callback_ = typed_to_tagged;
         codegen_func_define_callback_ = codegen_func_define;
         codegen_var_define_callback_ = codegen_var_define;
+        eqv_compare_callback_ = eqv_compare;
+        detect_and_pack_callback_ = detect_and_pack;
         callback_context_ = context;
     }
 };

@@ -7,6 +7,8 @@
 ;; CORE MATH FUNCTIONS (TOP-LEVEL ONLY FOR AUTODIFF)
 ;; ============================================================================
 
+(require stdlib)
+
 (define (square x)
   (* x x))
 
