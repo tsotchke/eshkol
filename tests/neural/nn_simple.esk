@@ -7,6 +7,8 @@
 ;; BASIC MATH FUNCTIONS
 ;; ============================================================================
 
+(require stdlib)
+
 ;; Square function
 (define (square x)
   (* x x))

@@ -55,6 +55,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <deque>
 #include <iostream>
 #include <fstream>
 #include <cstdlib>
@@ -153,7 +154,38 @@ static bool isLetrecLambdaName(const std::string& name) {
            name.find("letrec_lambda_") == 0;
 }
 
+// Forward declaration for callback wrappers
+class EshkolLLVMCodeGen;
+
+// Static callback wrappers for ControlFlowCodegen
+// These allow the extracted module to call back into the main codegen
+namespace ControlFlowCallbacks {
+    // Wrapper for codegenAST - returns LLVM Value*
+    static llvm::Value* codegenASTWrapper(const void* ast, void* context);
+    // Wrapper for codegenTypedAST - returns pointer to TypedValue (caller owns)
+    static void* codegenTypedASTWrapper(const void* ast, void* context);
+    // Wrapper for typedValueToTaggedValue
+    static llvm::Value* typedToTaggedWrapper(void* typed_value, void* context);
+    // Wrapper for codegenNestedFunctionDefinition
+    static void codegenFuncDefineWrapper(const void* op, void* context);
+    // Wrapper for codegenVariableDefinition
+    static void codegenVarDefineWrapper(const void* op, void* context);
+    // Wrapper for callBuiltinEqv
+    static llvm::Value* eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
+    // Wrapper for detectValueType + typedValueToTaggedValue
+    static llvm::Value* detectAndPackWrapper(llvm::Value* val, void* context);
+}
+
 class EshkolLLVMCodeGen {
+    // Friend declarations for ControlFlowCodegen callbacks
+    friend llvm::Value* ControlFlowCallbacks::codegenASTWrapper(const void* ast, void* context);
+    friend void* ControlFlowCallbacks::codegenTypedASTWrapper(const void* ast, void* context);
+    friend llvm::Value* ControlFlowCallbacks::typedToTaggedWrapper(void* typed_value, void* context);
+    friend void ControlFlowCallbacks::codegenFuncDefineWrapper(const void* op, void* context);
+    friend void ControlFlowCallbacks::codegenVarDefineWrapper(const void* op, void* context);
+    friend llvm::Value* ControlFlowCallbacks::eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
+    friend llvm::Value* ControlFlowCallbacks::detectAndPackWrapper(llvm::Value* val, void* context);
+
 private:
     std::unique_ptr<LLVMContext> context;
     std::unique_ptr<Module> module;
@@ -1336,15 +1368,34 @@ private:
         eshkol_lambda_registry_lookup_func = builtins_->getLambdaRegistryLookup();
         eshkol_debug("Created BuiltinDeclarations");
 
+        // Initialize TensorCodegen - tensor operations (needed by ArithmeticCodegen)
+        tensor_ = std::make_unique<eshkol::TensorCodegen>(*ctx_, *tagged_, *mem);
+        eshkol_debug("Created TensorCodegen");
+
+        // Initialize AutodiffCodegen - automatic differentiation operations (needed by ArithmeticCodegen)
+        autodiff_ = std::make_unique<eshkol::AutodiffCodegen>(*ctx_, *tagged_, *mem);
+        eshkol_debug("Created AutodiffCodegen");
+
         // Initialize ArithmeticCodegen - polymorphic arithmetic operations
-        // Note: The main polymorphic implementations remain in this file for now
-        arith_ = std::make_unique<eshkol::ArithmeticCodegen>(*ctx_, *tagged_);
+        // Now fully functional with tensor and autodiff support
+        arith_ = std::make_unique<eshkol::ArithmeticCodegen>(*ctx_, *tagged_, *tensor_, *autodiff_);
         eshkol_debug("Created ArithmeticCodegen");
 
         // Initialize ControlFlowCodegen - control flow operations
-        // Note: The main implementations remain in this file for now
+        // Now fully functional with callback-based AST evaluation
         flow_ = std::make_unique<eshkol::ControlFlowCodegen>(*ctx_, *tagged_);
-        eshkol_debug("Created ControlFlowCodegen");
+        // Set up callbacks for AST evaluation
+        flow_->setCodegenCallbacks(
+            ControlFlowCallbacks::codegenASTWrapper,
+            ControlFlowCallbacks::codegenTypedASTWrapper,
+            ControlFlowCallbacks::typedToTaggedWrapper,
+            ControlFlowCallbacks::codegenFuncDefineWrapper,
+            ControlFlowCallbacks::codegenVarDefineWrapper,
+            ControlFlowCallbacks::eqvCompareWrapper,
+            ControlFlowCallbacks::detectAndPackWrapper,
+            this
+        );
+        eshkol_debug("Created ControlFlowCodegen with callbacks");
 
         // Initialize StringIOCodegen - string and I/O operations
         // Note: The main implementations remain in this file for now
@@ -1360,16 +1411,6 @@ private:
         // Note: The main implementations remain in this file for now
         func_ = std::make_unique<eshkol::FunctionCodegen>(*ctx_, *tagged_, *mem);
         eshkol_debug("Created FunctionCodegen");
-
-        // Initialize TensorCodegen - tensor operations
-        // Note: The main implementations remain in this file for now
-        tensor_ = std::make_unique<eshkol::TensorCodegen>(*ctx_, *tagged_, *mem);
-        eshkol_debug("Created TensorCodegen");
-
-        // Initialize AutodiffCodegen - automatic differentiation operations
-        // Note: The main implementations remain in this file for now
-        autodiff_ = std::make_unique<eshkol::AutodiffCodegen>(*ctx_, *tagged_, *mem);
-        eshkol_debug("Created AutodiffCodegen");
 
         // Populate function_table for backward compatibility
         registerArenaFunctions();
@@ -2502,6 +2543,15 @@ private:
                     Value* val = codegenAST(ast);
                     if (!val) return TypedValue();
                     return TypedValue(val, inner.type, inner.is_exact);
+                }
+
+                // GRADIENT FIX: Handle LAMBDA_OP specially to preserve CLOSURE_PTR type
+                // This is critical for (define f (lambda ...)) inside functions to work with gradient
+                if (ast->operation.op == ESHKOL_LAMBDA_OP) {
+                    Value* val = codegenAST(ast);
+                    if (!val) return TypedValue();
+                    // Lambda returns a closure (even with 0 captures for S-expression support)
+                    return TypedValue(val, ESHKOL_VALUE_CLOSURE_PTR, true);
                 }
 
                 // Check if this is an operation that returns a typed pointer
@@ -3771,885 +3821,24 @@ private:
     // ===== POLYMORPHIC ARITHMETIC FUNCTIONS (Phase 1.3 + Phase 2 Dual Number Support) =====
     // These operate on tagged_value parameters and handle mixed types + dual numbers
     
+    // MIGRATED: Polymorphic addition - delegates to ArithmeticCodegen
     Value* polymorphicAdd(Value* left_tagged, Value* right_tagged) {
-        if (!left_tagged || !right_tagged) {
-            return packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-        }
-
-        // Extract type tags
-        Value* left_type = getTaggedValueType(left_tagged);
-        Value* right_type = getTaggedValueType(right_tagged);
-
-        Value* left_base = builder->CreateAnd(left_type,
-            ConstantInt::get(int8_type, 0x0F));
-        Value* right_base = builder->CreateAnd(right_type,
-            ConstantInt::get(int8_type, 0x0F));
-
-        // Check if either operand is a Scheme vector OR tensor - dispatch to vector/tensor arithmetic
-        Value* left_is_vector = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-        Value* right_is_vector = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-        Value* left_is_tensor = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
-        Value* right_is_tensor = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
-        Value* any_vector = builder->CreateOr(
-            builder->CreateOr(left_is_vector, right_is_vector),
-            builder->CreateOr(left_is_tensor, right_is_tensor));
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* vector_path = BasicBlock::Create(*context, "add_vector_path", current_func);
-        BasicBlock* check_ad = BasicBlock::Create(*context, "add_check_ad", current_func);
-
-        builder->CreateCondBr(any_vector, vector_path, check_ad);
-
-        // Vector/tensor path - use tensor arithmetic (handles both types)
-        builder->SetInsertPoint(vector_path);
-        Value* vec_result = codegenTensorArithmeticInternal(left_tagged, right_tagged, "add");
-        BasicBlock* vector_path_exit = builder->GetInsertBlock();
-
-        // Continue to AD check
-        builder->SetInsertPoint(check_ad);
-
-        // PHASE 3/4: Check if either operand is an AD node (reverse-mode)
-        Value* left_is_ad = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
-        Value* right_is_ad = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
-        Value* any_ad = builder->CreateOr(left_is_ad, right_is_ad);
-        
-        // PHASE 2: Check if either operand is a dual number (forward-mode)
-        Value* left_is_dual = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-        Value* right_is_dual = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-        Value* any_dual = builder->CreateOr(left_is_dual, right_is_dual);
-        
-        // Check if either operand is double
-        Value* left_is_double = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* right_is_double = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* any_double = builder->CreateOr(left_is_double, right_is_double);
-
-        // Create remaining blocks (current_func already declared above)
-        BasicBlock* ad_path = BasicBlock::Create(*context, "add_ad_path", current_func);
-        BasicBlock* check_dual = BasicBlock::Create(*context, "add_check_dual", current_func);
-        BasicBlock* dual_path = BasicBlock::Create(*context, "add_dual_path", current_func);
-        BasicBlock* check_double = BasicBlock::Create(*context, "add_check_double", current_func);
-        BasicBlock* double_path = BasicBlock::Create(*context, "add_double_path", current_func);
-        BasicBlock* int_path = BasicBlock::Create(*context, "add_int_path", current_func);
-        BasicBlock* merge = BasicBlock::Create(*context, "add_merge", current_func);
-
-        // Branch from vector_path to merge
-        builder->SetInsertPoint(vector_path_exit);
-        builder->CreateBr(merge);
-
-        // Continue from check_ad
-        builder->SetInsertPoint(check_ad);
-        builder->CreateCondBr(any_ad, ad_path, check_dual);
-        
-        // PHASE 3/4: AD node path - build computational graph
-        builder->SetInsertPoint(ad_path);
-        
-        // Convert non-AD operands to AD constants
-        BasicBlock* left_is_ad_block = BasicBlock::Create(*context, "add_left_is_ad", current_func);
-        BasicBlock* left_not_ad_block = BasicBlock::Create(*context, "add_left_not_ad", current_func);
-        BasicBlock* left_ad_merge = BasicBlock::Create(*context, "add_left_ad_merge", current_func);
-        
-        builder->CreateCondBr(left_is_ad, left_is_ad_block, left_not_ad_block);
-        
-        builder->SetInsertPoint(left_is_ad_block);
-        Value* left_ad_ptr = unpackPtrFromTaggedValue(left_tagged);
-        builder->CreateBr(left_ad_merge);
-        
-        builder->SetInsertPoint(left_not_ad_block);
-        Value* left_val = builder->CreateSelect(
-            builder->CreateICmpEQ(left_base, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE)),
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* left_ad_const = createADConstant(left_val);
-        builder->CreateBr(left_ad_merge);
-        
-        builder->SetInsertPoint(left_ad_merge);
-        PHINode* left_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
-        left_ad_node->addIncoming(left_ad_ptr, left_is_ad_block);
-        left_ad_node->addIncoming(left_ad_const, left_not_ad_block);
-        
-        // Same for right operand
-        BasicBlock* right_is_ad_block = BasicBlock::Create(*context, "add_right_is_ad", current_func);
-        BasicBlock* right_not_ad_block = BasicBlock::Create(*context, "add_right_not_ad", current_func);
-        BasicBlock* right_ad_merge = BasicBlock::Create(*context, "add_right_ad_merge", current_func);
-        
-        builder->CreateCondBr(right_is_ad, right_is_ad_block, right_not_ad_block);
-        
-        builder->SetInsertPoint(right_is_ad_block);
-        Value* right_ad_ptr = unpackPtrFromTaggedValue(right_tagged);
-        builder->CreateBr(right_ad_merge);
-        
-        builder->SetInsertPoint(right_not_ad_block);
-        Value* right_val = builder->CreateSelect(
-            builder->CreateICmpEQ(right_base, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE)),
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* right_ad_const = createADConstant(right_val);
-        builder->CreateBr(right_ad_merge);
-        
-        builder->SetInsertPoint(right_ad_merge);
-        PHINode* right_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
-        right_ad_node->addIncoming(right_ad_ptr, right_is_ad_block);
-        right_ad_node->addIncoming(right_ad_const, right_not_ad_block);
-        
-        // Record ADD operation in computational graph
-        Value* result_ad_node = recordADNodeBinary(2, left_ad_node, right_ad_node); // AD_NODE_ADD = 2
-        Value* ad_result_tagged = packPtrToTaggedValue(result_ad_node, ESHKOL_VALUE_AD_NODE_PTR);
-        builder->CreateBr(merge);
-        BasicBlock* ad_path_exit = builder->GetInsertBlock();
-        
-        builder->SetInsertPoint(check_dual);
-        builder->CreateCondBr(any_dual, dual_path, check_double);
-        
-        // PHASE 2: Dual number path - use dual arithmetic for automatic differentiation
-        builder->SetInsertPoint(dual_path);
-        
-        // Convert non-dual operands to dual numbers (value, 0.0) - zero derivative for constants
-        // FIX: Replace CreateSelect on struct with branching
-        BasicBlock* left_is_dual_block = BasicBlock::Create(*context, "add_left_is_dual", current_func);
-        BasicBlock* left_not_dual_block = BasicBlock::Create(*context, "add_left_not_dual", current_func);
-        BasicBlock* left_merge_block = BasicBlock::Create(*context, "add_left_merge", current_func);
-        
-        builder->CreateCondBr(left_is_dual, left_is_dual_block, left_not_dual_block);
-        
-        builder->SetInsertPoint(left_is_dual_block);
-        Value* left_dual_value = unpackDualFromTaggedValue(left_tagged);
-        builder->CreateBr(left_merge_block);
-        
-        builder->SetInsertPoint(left_not_dual_block);
-        Value* left_as_double = builder->CreateSelect(left_is_double,
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* left_non_dual_value = packDualNumber(left_as_double, ConstantFP::get(double_type, 0.0));
-        builder->CreateBr(left_merge_block);
-        
-        builder->SetInsertPoint(left_merge_block);
-        PHINode* left_dual = builder->CreatePHI(dual_number_type, 2);
-        left_dual->addIncoming(left_dual_value, left_is_dual_block);
-        left_dual->addIncoming(left_non_dual_value, left_not_dual_block);
-        
-        // Same for right operand
-        BasicBlock* right_is_dual_block = BasicBlock::Create(*context, "add_right_is_dual", current_func);
-        BasicBlock* right_not_dual_block = BasicBlock::Create(*context, "add_right_not_dual", current_func);
-        BasicBlock* right_merge_block = BasicBlock::Create(*context, "add_right_merge", current_func);
-        
-        builder->CreateCondBr(right_is_dual, right_is_dual_block, right_not_dual_block);
-        
-        builder->SetInsertPoint(right_is_dual_block);
-        Value* right_dual_value = unpackDualFromTaggedValue(right_tagged);
-        builder->CreateBr(right_merge_block);
-        
-        builder->SetInsertPoint(right_not_dual_block);
-        Value* right_as_double = builder->CreateSelect(right_is_double,
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* right_non_dual_value = packDualNumber(right_as_double, ConstantFP::get(double_type, 0.0));
-        builder->CreateBr(right_merge_block);
-        
-        builder->SetInsertPoint(right_merge_block);
-        PHINode* right_dual = builder->CreatePHI(dual_number_type, 2);
-        right_dual->addIncoming(right_dual_value, right_is_dual_block);
-        right_dual->addIncoming(right_non_dual_value, right_not_dual_block);
-        
-        Value* dual_result = dualAdd(left_dual, right_dual);
-        Value* tagged_dual_result = packDualToTaggedValue(dual_result);
-        builder->CreateBr(merge);
-        BasicBlock* dual_path_exit = builder->GetInsertBlock();
-        
-        // Check for double (non-dual floating point)
-        builder->SetInsertPoint(check_double);
-        builder->CreateCondBr(any_double, double_path, int_path);
-        
-        // Double path: promote both to double and add
-        builder->SetInsertPoint(double_path);
-        Value* left_double = builder->CreateSelect(left_is_double,
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* right_double = builder->CreateSelect(right_is_double,
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* double_result = builder->CreateFAdd(left_double, right_double);
-        Value* tagged_double_result = packDoubleToTaggedValue(double_result);
-        builder->CreateBr(merge);
-        
-        // Int path: add as int64
-        builder->SetInsertPoint(int_path);
-        Value* left_int = unpackInt64FromTaggedValue(left_tagged);
-        Value* right_int = unpackInt64FromTaggedValue(right_tagged);
-        Value* int_result = builder->CreateAdd(left_int, right_int);
-        Value* tagged_int_result = packInt64ToTaggedValue(int_result, true);
-        builder->CreateBr(merge);
-        
-        // Merge all paths
-        builder->SetInsertPoint(merge);
-        PHINode* add_result_phi = builder->CreatePHI(tagged_value_type, 5);
-        add_result_phi->addIncoming(vec_result, vector_path_exit);
-        add_result_phi->addIncoming(ad_result_tagged, ad_path_exit);
-        add_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
-        add_result_phi->addIncoming(tagged_double_result, double_path);
-        add_result_phi->addIncoming(tagged_int_result, int_path);
-
-        return add_result_phi;
+        return arith_->add(left_tagged, right_tagged);
     }
     
+    // MIGRATED: Polymorphic subtraction - delegates to ArithmeticCodegen
     Value* polymorphicSub(Value* left_tagged, Value* right_tagged) {
-        if (!left_tagged || !right_tagged) {
-            return packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-        }
-
-        Value* left_type = getTaggedValueType(left_tagged);
-        Value* right_type = getTaggedValueType(right_tagged);
-
-        Value* left_base = builder->CreateAnd(left_type,
-            ConstantInt::get(int8_type, 0x0F));
-        Value* right_base = builder->CreateAnd(right_type,
-            ConstantInt::get(int8_type, 0x0F));
-
-        // Check if either operand is a Scheme vector OR tensor - dispatch to vector/tensor arithmetic
-        Value* left_is_vector = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-        Value* right_is_vector = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-        Value* left_is_tensor = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
-        Value* right_is_tensor = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
-        Value* any_vector = builder->CreateOr(
-            builder->CreateOr(left_is_vector, right_is_vector),
-            builder->CreateOr(left_is_tensor, right_is_tensor));
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* vector_path = BasicBlock::Create(*context, "sub_vector_path", current_func);
-        BasicBlock* check_ad = BasicBlock::Create(*context, "sub_check_ad", current_func);
-
-        builder->CreateCondBr(any_vector, vector_path, check_ad);
-
-        // Vector/tensor path - use tensor arithmetic (handles both types)
-        builder->SetInsertPoint(vector_path);
-        Value* vec_result = codegenTensorArithmeticInternal(left_tagged, right_tagged, "sub");
-        BasicBlock* vector_path_exit = builder->GetInsertBlock();
-
-        // Continue to AD check
-        builder->SetInsertPoint(check_ad);
-
-        // PHASE 3/4: Check if either operand is an AD node (reverse-mode)
-        Value* left_is_ad = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
-        Value* right_is_ad = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
-        Value* any_ad = builder->CreateOr(left_is_ad, right_is_ad);
-
-        // PHASE 2: Check if either operand is a dual number (forward-mode)
-        Value* left_is_dual = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-        Value* right_is_dual = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-        Value* any_dual = builder->CreateOr(left_is_dual, right_is_dual);
-
-        Value* left_is_double = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* right_is_double = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* any_double = builder->CreateOr(left_is_double, right_is_double);
-
-        // Create remaining blocks
-        BasicBlock* ad_path = BasicBlock::Create(*context, "sub_ad_path", current_func);
-        BasicBlock* check_dual = BasicBlock::Create(*context, "sub_check_dual", current_func);
-        BasicBlock* dual_path = BasicBlock::Create(*context, "sub_dual_path", current_func);
-        BasicBlock* check_double = BasicBlock::Create(*context, "sub_check_double", current_func);
-        BasicBlock* double_path = BasicBlock::Create(*context, "sub_double_path", current_func);
-        BasicBlock* int_path = BasicBlock::Create(*context, "sub_int_path", current_func);
-        BasicBlock* merge = BasicBlock::Create(*context, "sub_merge", current_func);
-
-        // Branch from vector_path to merge
-        builder->SetInsertPoint(vector_path_exit);
-        builder->CreateBr(merge);
-
-        // Continue from check_ad
-        builder->SetInsertPoint(check_ad);
-        builder->CreateCondBr(any_ad, ad_path, check_dual);
-        
-        // PHASE 3/4: AD node path - build computational graph
-        builder->SetInsertPoint(ad_path);
-        
-        BasicBlock* left_is_ad_block = BasicBlock::Create(*context, "sub_left_is_ad", current_func);
-        BasicBlock* left_not_ad_block = BasicBlock::Create(*context, "sub_left_not_ad", current_func);
-        BasicBlock* left_ad_merge = BasicBlock::Create(*context, "sub_left_ad_merge", current_func);
-        
-        builder->CreateCondBr(left_is_ad, left_is_ad_block, left_not_ad_block);
-        
-        builder->SetInsertPoint(left_is_ad_block);
-        Value* left_ad_ptr = unpackPtrFromTaggedValue(left_tagged);
-        builder->CreateBr(left_ad_merge);
-        
-        builder->SetInsertPoint(left_not_ad_block);
-        Value* left_val = builder->CreateSelect(
-            builder->CreateICmpEQ(left_base, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE)),
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* left_ad_const = createADConstant(left_val);
-        builder->CreateBr(left_ad_merge);
-        
-        builder->SetInsertPoint(left_ad_merge);
-        PHINode* left_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
-        left_ad_node->addIncoming(left_ad_ptr, left_is_ad_block);
-        left_ad_node->addIncoming(left_ad_const, left_not_ad_block);
-        
-        BasicBlock* right_is_ad_block = BasicBlock::Create(*context, "sub_right_is_ad", current_func);
-        BasicBlock* right_not_ad_block = BasicBlock::Create(*context, "sub_right_not_ad", current_func);
-        BasicBlock* right_ad_merge = BasicBlock::Create(*context, "sub_right_ad_merge", current_func);
-        
-        builder->CreateCondBr(right_is_ad, right_is_ad_block, right_not_ad_block);
-        
-        builder->SetInsertPoint(right_is_ad_block);
-        Value* right_ad_ptr = unpackPtrFromTaggedValue(right_tagged);
-        builder->CreateBr(right_ad_merge);
-        
-        builder->SetInsertPoint(right_not_ad_block);
-        Value* right_val = builder->CreateSelect(
-            builder->CreateICmpEQ(right_base, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE)),
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* right_ad_const = createADConstant(right_val);
-        builder->CreateBr(right_ad_merge);
-        
-        builder->SetInsertPoint(right_ad_merge);
-        PHINode* right_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
-        right_ad_node->addIncoming(right_ad_ptr, right_is_ad_block);
-        right_ad_node->addIncoming(right_ad_const, right_not_ad_block);
-        
-        Value* result_ad_node = recordADNodeBinary(3, left_ad_node, right_ad_node); // AD_NODE_SUB = 3
-        Value* ad_result_tagged = packPtrToTaggedValue(result_ad_node, ESHKOL_VALUE_AD_NODE_PTR);
-        builder->CreateBr(merge);
-        BasicBlock* ad_path_exit = builder->GetInsertBlock();
-        
-        builder->SetInsertPoint(check_dual);
-        builder->CreateCondBr(any_dual, dual_path, check_double);
-        
-        // PHASE 2: Dual number path
-        builder->SetInsertPoint(dual_path);
-        
-        // FIX: Replace CreateSelect on struct with branching
-        BasicBlock* left_is_dual_block = BasicBlock::Create(*context, "sub_left_is_dual", current_func);
-        BasicBlock* left_not_dual_block = BasicBlock::Create(*context, "sub_left_not_dual", current_func);
-        BasicBlock* left_merge_block = BasicBlock::Create(*context, "sub_left_merge", current_func);
-        
-        builder->CreateCondBr(left_is_dual, left_is_dual_block, left_not_dual_block);
-        
-        builder->SetInsertPoint(left_is_dual_block);
-        Value* left_dual_value = unpackDualFromTaggedValue(left_tagged);
-        builder->CreateBr(left_merge_block);
-        
-        builder->SetInsertPoint(left_not_dual_block);
-        Value* left_as_double = builder->CreateSelect(left_is_double,
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* left_non_dual_value = packDualNumber(left_as_double, ConstantFP::get(double_type, 0.0));
-        builder->CreateBr(left_merge_block);
-        
-        builder->SetInsertPoint(left_merge_block);
-        PHINode* left_dual = builder->CreatePHI(dual_number_type, 2);
-        left_dual->addIncoming(left_dual_value, left_is_dual_block);
-        left_dual->addIncoming(left_non_dual_value, left_not_dual_block);
-        
-        // Same for right operand
-        BasicBlock* right_is_dual_block = BasicBlock::Create(*context, "sub_right_is_dual", current_func);
-        BasicBlock* right_not_dual_block = BasicBlock::Create(*context, "sub_right_not_dual", current_func);
-        BasicBlock* right_merge_block = BasicBlock::Create(*context, "sub_right_merge", current_func);
-        
-        builder->CreateCondBr(right_is_dual, right_is_dual_block, right_not_dual_block);
-        
-        builder->SetInsertPoint(right_is_dual_block);
-        Value* right_dual_value = unpackDualFromTaggedValue(right_tagged);
-        builder->CreateBr(right_merge_block);
-        
-        builder->SetInsertPoint(right_not_dual_block);
-        Value* right_as_double = builder->CreateSelect(right_is_double,
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* right_non_dual_value = packDualNumber(right_as_double, ConstantFP::get(double_type, 0.0));
-        builder->CreateBr(right_merge_block);
-        
-        builder->SetInsertPoint(right_merge_block);
-        PHINode* right_dual = builder->CreatePHI(dual_number_type, 2);
-        right_dual->addIncoming(right_dual_value, right_is_dual_block);
-        right_dual->addIncoming(right_non_dual_value, right_not_dual_block);
-        
-        Value* dual_result = dualSub(left_dual, right_dual);
-        Value* tagged_dual_result = packDualToTaggedValue(dual_result);
-        builder->CreateBr(merge);
-        BasicBlock* dual_path_exit = builder->GetInsertBlock();
-        
-        builder->SetInsertPoint(check_double);
-        builder->CreateCondBr(any_double, double_path, int_path);
-        
-        builder->SetInsertPoint(double_path);
-        Value* left_double = builder->CreateSelect(left_is_double,
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* right_double = builder->CreateSelect(right_is_double,
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* double_result = builder->CreateFSub(left_double, right_double);
-        Value* tagged_double_result = packDoubleToTaggedValue(double_result);
-        builder->CreateBr(merge);
-        
-        builder->SetInsertPoint(int_path);
-        Value* left_int = unpackInt64FromTaggedValue(left_tagged);
-        Value* right_int = unpackInt64FromTaggedValue(right_tagged);
-        Value* int_result = builder->CreateSub(left_int, right_int);
-        Value* tagged_int_result = packInt64ToTaggedValue(int_result, true);
-        builder->CreateBr(merge);
-        
-        // Merge all paths
-        builder->SetInsertPoint(merge);
-        PHINode* sub_result_phi = builder->CreatePHI(tagged_value_type, 5);
-        sub_result_phi->addIncoming(vec_result, vector_path_exit);
-        sub_result_phi->addIncoming(ad_result_tagged, ad_path_exit);
-        sub_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
-        sub_result_phi->addIncoming(tagged_double_result, double_path);
-        sub_result_phi->addIncoming(tagged_int_result, int_path);
-
-        return sub_result_phi;
+        return arith_->sub(left_tagged, right_tagged);
     }
 
+    // MIGRATED: Polymorphic multiplication - delegates to ArithmeticCodegen
     Value* polymorphicMul(Value* left_tagged, Value* right_tagged) {
-        if (!left_tagged || !right_tagged) {
-            return packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-        }
-
-        Value* left_type = getTaggedValueType(left_tagged);
-        Value* right_type = getTaggedValueType(right_tagged);
-
-        Value* left_base = builder->CreateAnd(left_type,
-            ConstantInt::get(int8_type, 0x0F));
-        Value* right_base = builder->CreateAnd(right_type,
-            ConstantInt::get(int8_type, 0x0F));
-
-        // Check if either operand is a Scheme vector OR tensor - dispatch to vector/tensor arithmetic
-        Value* left_is_vector = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-        Value* right_is_vector = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-        Value* left_is_tensor = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
-        Value* right_is_tensor = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
-        Value* any_vector = builder->CreateOr(
-            builder->CreateOr(left_is_vector, right_is_vector),
-            builder->CreateOr(left_is_tensor, right_is_tensor));
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* vector_path = BasicBlock::Create(*context, "mul_vector_path", current_func);
-        BasicBlock* check_ad = BasicBlock::Create(*context, "mul_check_ad", current_func);
-
-        builder->CreateCondBr(any_vector, vector_path, check_ad);
-
-        // Vector/tensor path - use tensor arithmetic (handles both types)
-        builder->SetInsertPoint(vector_path);
-        Value* vec_result = codegenTensorArithmeticInternal(left_tagged, right_tagged, "mul");
-        BasicBlock* vector_path_exit = builder->GetInsertBlock();
-
-        // Continue to AD check
-        builder->SetInsertPoint(check_ad);
-
-        // PHASE 3/4: Check if either operand is an AD node (reverse-mode)
-        Value* left_is_ad = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
-        Value* right_is_ad = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
-        Value* any_ad = builder->CreateOr(left_is_ad, right_is_ad);
-
-        // PHASE 2: Check if either operand is a dual number (forward-mode)
-        Value* left_is_dual = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-        Value* right_is_dual = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-        Value* any_dual = builder->CreateOr(left_is_dual, right_is_dual);
-
-        Value* left_is_double = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* right_is_double = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* any_double = builder->CreateOr(left_is_double, right_is_double);
-
-        // Create remaining blocks
-        BasicBlock* ad_path = BasicBlock::Create(*context, "mul_ad_path", current_func);
-        BasicBlock* check_dual = BasicBlock::Create(*context, "mul_check_dual", current_func);
-        BasicBlock* dual_path = BasicBlock::Create(*context, "mul_dual_path", current_func);
-        BasicBlock* check_double = BasicBlock::Create(*context, "mul_check_double", current_func);
-        BasicBlock* double_path = BasicBlock::Create(*context, "mul_double_path", current_func);
-        BasicBlock* int_path = BasicBlock::Create(*context, "mul_int_path", current_func);
-        BasicBlock* merge = BasicBlock::Create(*context, "mul_merge", current_func);
-
-        // Branch from vector_path to merge
-        builder->SetInsertPoint(vector_path_exit);
-        builder->CreateBr(merge);
-
-        // Continue from check_ad
-        builder->SetInsertPoint(check_ad);
-        builder->CreateCondBr(any_ad, ad_path, check_dual);
-        
-        // PHASE 3/4: AD node path - build computational graph
-        builder->SetInsertPoint(ad_path);
-        
-        BasicBlock* left_is_ad_block = BasicBlock::Create(*context, "mul_left_is_ad", current_func);
-        BasicBlock* left_not_ad_block = BasicBlock::Create(*context, "mul_left_not_ad", current_func);
-        BasicBlock* left_ad_merge = BasicBlock::Create(*context, "mul_left_ad_merge", current_func);
-        
-        builder->CreateCondBr(left_is_ad, left_is_ad_block, left_not_ad_block);
-        
-        builder->SetInsertPoint(left_is_ad_block);
-        Value* left_ad_ptr = unpackPtrFromTaggedValue(left_tagged);
-        builder->CreateBr(left_ad_merge);
-        
-        builder->SetInsertPoint(left_not_ad_block);
-        Value* left_val = builder->CreateSelect(
-            builder->CreateICmpEQ(left_base, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE)),
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* left_ad_const = createADConstant(left_val);
-        builder->CreateBr(left_ad_merge);
-        
-        builder->SetInsertPoint(left_ad_merge);
-        PHINode* left_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
-        left_ad_node->addIncoming(left_ad_ptr, left_is_ad_block);
-        left_ad_node->addIncoming(left_ad_const, left_not_ad_block);
-        
-        BasicBlock* right_is_ad_block = BasicBlock::Create(*context, "mul_right_is_ad", current_func);
-        BasicBlock* right_not_ad_block = BasicBlock::Create(*context, "mul_right_not_ad", current_func);
-        BasicBlock* right_ad_merge = BasicBlock::Create(*context, "mul_right_ad_merge", current_func);
-        
-        builder->CreateCondBr(right_is_ad, right_is_ad_block, right_not_ad_block);
-        
-        builder->SetInsertPoint(right_is_ad_block);
-        Value* right_ad_ptr = unpackPtrFromTaggedValue(right_tagged);
-        builder->CreateBr(right_ad_merge);
-        
-        builder->SetInsertPoint(right_not_ad_block);
-        Value* right_val = builder->CreateSelect(
-            builder->CreateICmpEQ(right_base, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE)),
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* right_ad_const = createADConstant(right_val);
-        builder->CreateBr(right_ad_merge);
-        
-        builder->SetInsertPoint(right_ad_merge);
-        PHINode* right_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
-        right_ad_node->addIncoming(right_ad_ptr, right_is_ad_block);
-        right_ad_node->addIncoming(right_ad_const, right_not_ad_block);
-        
-        Value* result_ad_node = recordADNodeBinary(4, left_ad_node, right_ad_node); // AD_NODE_MUL = 4
-        Value* ad_result_tagged = packPtrToTaggedValue(result_ad_node, ESHKOL_VALUE_AD_NODE_PTR);
-        builder->CreateBr(merge);
-        BasicBlock* ad_path_exit = builder->GetInsertBlock();
-        
-        builder->SetInsertPoint(check_dual);
-        builder->CreateCondBr(any_dual, dual_path, check_double);
-        
-        // PHASE 2: Dual number path - use dual multiplication (product rule)
-        builder->SetInsertPoint(dual_path);
-        
-        // FIX: Replace CreateSelect on struct with branching
-        BasicBlock* left_is_dual_block = BasicBlock::Create(*context, "mul_left_is_dual", current_func);
-        BasicBlock* left_not_dual_block = BasicBlock::Create(*context, "mul_left_not_dual", current_func);
-        BasicBlock* left_merge_block = BasicBlock::Create(*context, "mul_left_merge", current_func);
-        
-        builder->CreateCondBr(left_is_dual, left_is_dual_block, left_not_dual_block);
-        
-        builder->SetInsertPoint(left_is_dual_block);
-        Value* left_dual_value = unpackDualFromTaggedValue(left_tagged);
-        builder->CreateBr(left_merge_block);
-        
-        builder->SetInsertPoint(left_not_dual_block);
-        Value* left_as_double = builder->CreateSelect(left_is_double,
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* left_non_dual_value = packDualNumber(left_as_double, ConstantFP::get(double_type, 0.0));
-        builder->CreateBr(left_merge_block);
-        
-        builder->SetInsertPoint(left_merge_block);
-        PHINode* left_dual = builder->CreatePHI(dual_number_type, 2);
-        left_dual->addIncoming(left_dual_value, left_is_dual_block);
-        left_dual->addIncoming(left_non_dual_value, left_not_dual_block);
-        
-        // Same for right operand
-        BasicBlock* right_is_dual_block = BasicBlock::Create(*context, "mul_right_is_dual", current_func);
-        BasicBlock* right_not_dual_block = BasicBlock::Create(*context, "mul_right_not_dual", current_func);
-        BasicBlock* right_merge_block = BasicBlock::Create(*context, "mul_right_merge", current_func);
-        
-        builder->CreateCondBr(right_is_dual, right_is_dual_block, right_not_dual_block);
-        
-        builder->SetInsertPoint(right_is_dual_block);
-        Value* right_dual_value = unpackDualFromTaggedValue(right_tagged);
-        builder->CreateBr(right_merge_block);
-        
-        builder->SetInsertPoint(right_not_dual_block);
-        Value* right_as_double = builder->CreateSelect(right_is_double,
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* right_non_dual_value = packDualNumber(right_as_double, ConstantFP::get(double_type, 0.0));
-        builder->CreateBr(right_merge_block);
-        
-        builder->SetInsertPoint(right_merge_block);
-        PHINode* right_dual = builder->CreatePHI(dual_number_type, 2);
-        right_dual->addIncoming(right_dual_value, right_is_dual_block);
-        right_dual->addIncoming(right_non_dual_value, right_not_dual_block);
-        
-        Value* dual_result = dualMul(left_dual, right_dual);
-        Value* tagged_dual_result = packDualToTaggedValue(dual_result);
-        builder->CreateBr(merge);
-        BasicBlock* dual_path_exit = builder->GetInsertBlock();
-        
-        builder->SetInsertPoint(check_double);
-        builder->CreateCondBr(any_double, double_path, int_path);
-        
-        builder->SetInsertPoint(double_path);
-        Value* left_double = builder->CreateSelect(left_is_double,
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* right_double = builder->CreateSelect(right_is_double,
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* double_result = builder->CreateFMul(left_double, right_double);
-        Value* tagged_double_result = packDoubleToTaggedValue(double_result);
-        builder->CreateBr(merge);
-        
-        builder->SetInsertPoint(int_path);
-        Value* left_int = unpackInt64FromTaggedValue(left_tagged);
-        Value* right_int = unpackInt64FromTaggedValue(right_tagged);
-        Value* int_result = builder->CreateMul(left_int, right_int);
-        Value* tagged_int_result = packInt64ToTaggedValue(int_result, true);
-        builder->CreateBr(merge);
-        
-        // Merge all paths
-        builder->SetInsertPoint(merge);
-        PHINode* mul_result_phi = builder->CreatePHI(tagged_value_type, 5);
-        mul_result_phi->addIncoming(vec_result, vector_path_exit);
-        mul_result_phi->addIncoming(ad_result_tagged, ad_path_exit);
-        mul_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
-        mul_result_phi->addIncoming(tagged_double_result, double_path);
-        mul_result_phi->addIncoming(tagged_int_result, int_path);
-
-        return mul_result_phi;
+        return arith_->mul(left_tagged, right_tagged);
     }
 
+    // MIGRATED: Polymorphic division - delegates to ArithmeticCodegen
     Value* polymorphicDiv(Value* left_tagged, Value* right_tagged) {
-        if (!left_tagged || !right_tagged) {
-            return packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-        }
-
-        // Division always promotes to double per Scheme semantics
-        Value* left_type = getTaggedValueType(left_tagged);
-        Value* right_type = getTaggedValueType(right_tagged);
-
-        Value* left_base = builder->CreateAnd(left_type,
-            ConstantInt::get(int8_type, 0x0F));
-        Value* right_base = builder->CreateAnd(right_type,
-            ConstantInt::get(int8_type, 0x0F));
-
-        // Check if either operand is a Scheme vector OR tensor - dispatch to vector/tensor arithmetic
-        Value* left_is_vector = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-        Value* right_is_vector = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-        Value* left_is_tensor = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
-        Value* right_is_tensor = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
-        Value* any_vector = builder->CreateOr(
-            builder->CreateOr(left_is_vector, right_is_vector),
-            builder->CreateOr(left_is_tensor, right_is_tensor));
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* vector_path = BasicBlock::Create(*context, "div_vector_path", current_func);
-        BasicBlock* check_ad = BasicBlock::Create(*context, "div_check_ad", current_func);
-
-        builder->CreateCondBr(any_vector, vector_path, check_ad);
-
-        // Vector/tensor path - use tensor arithmetic (handles both types)
-        builder->SetInsertPoint(vector_path);
-        Value* vec_result = codegenTensorArithmeticInternal(left_tagged, right_tagged, "div");
-        BasicBlock* vector_path_exit = builder->GetInsertBlock();
-
-        // Continue to AD check
-        builder->SetInsertPoint(check_ad);
-
-        // PHASE 3/4: Check if either operand is an AD node (reverse-mode)
-        Value* left_is_ad = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
-        Value* right_is_ad = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
-        Value* any_ad = builder->CreateOr(left_is_ad, right_is_ad);
-
-        // PHASE 2: Check if either operand is a dual number (forward-mode)
-        Value* left_is_dual = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-        Value* right_is_dual = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-        Value* any_dual = builder->CreateOr(left_is_dual, right_is_dual);
-
-        Value* left_is_double = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* right_is_double = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-
-        // Create remaining blocks
-        BasicBlock* ad_path = BasicBlock::Create(*context, "div_ad_path", current_func);
-        BasicBlock* check_dual = BasicBlock::Create(*context, "div_check_dual", current_func);
-        BasicBlock* dual_path = BasicBlock::Create(*context, "div_dual_path", current_func);
-        BasicBlock* regular_path = BasicBlock::Create(*context, "div_regular_path", current_func);
-        BasicBlock* merge = BasicBlock::Create(*context, "div_merge", current_func);
-
-        // Branch from vector_path to merge
-        builder->SetInsertPoint(vector_path_exit);
-        builder->CreateBr(merge);
-
-        // Continue from check_ad
-        builder->SetInsertPoint(check_ad);
-        builder->CreateCondBr(any_ad, ad_path, check_dual);
-        
-        // PHASE 3/4: AD node path - build computational graph
-        builder->SetInsertPoint(ad_path);
-        
-        BasicBlock* left_is_ad_block = BasicBlock::Create(*context, "div_left_is_ad", current_func);
-        BasicBlock* left_not_ad_block = BasicBlock::Create(*context, "div_left_not_ad", current_func);
-        BasicBlock* left_ad_merge = BasicBlock::Create(*context, "div_left_ad_merge", current_func);
-        
-        builder->CreateCondBr(left_is_ad, left_is_ad_block, left_not_ad_block);
-        
-        builder->SetInsertPoint(left_is_ad_block);
-        Value* left_ad_ptr = unpackPtrFromTaggedValue(left_tagged);
-        builder->CreateBr(left_ad_merge);
-        
-        builder->SetInsertPoint(left_not_ad_block);
-        Value* left_val = builder->CreateSelect(
-            builder->CreateICmpEQ(left_base, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE)),
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* left_ad_const = createADConstant(left_val);
-        builder->CreateBr(left_ad_merge);
-        
-        builder->SetInsertPoint(left_ad_merge);
-        PHINode* left_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
-        left_ad_node->addIncoming(left_ad_ptr, left_is_ad_block);
-        left_ad_node->addIncoming(left_ad_const, left_not_ad_block);
-        
-        BasicBlock* right_is_ad_block = BasicBlock::Create(*context, "div_right_is_ad", current_func);
-        BasicBlock* right_not_ad_block = BasicBlock::Create(*context, "div_right_not_ad", current_func);
-        BasicBlock* right_ad_merge = BasicBlock::Create(*context, "div_right_ad_merge", current_func);
-        
-        builder->CreateCondBr(right_is_ad, right_is_ad_block, right_not_ad_block);
-        
-        builder->SetInsertPoint(right_is_ad_block);
-        Value* right_ad_ptr = unpackPtrFromTaggedValue(right_tagged);
-        builder->CreateBr(right_ad_merge);
-        
-        builder->SetInsertPoint(right_not_ad_block);
-        Value* right_val = builder->CreateSelect(
-            builder->CreateICmpEQ(right_base, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE)),
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* right_ad_const = createADConstant(right_val);
-        builder->CreateBr(right_ad_merge);
-        
-        builder->SetInsertPoint(right_ad_merge);
-        PHINode* right_ad_node = builder->CreatePHI(PointerType::getUnqual(*context), 2);
-        right_ad_node->addIncoming(right_ad_ptr, right_is_ad_block);
-        right_ad_node->addIncoming(right_ad_const, right_not_ad_block);
-        
-        Value* result_ad_node = recordADNodeBinary(5, left_ad_node, right_ad_node); // AD_NODE_DIV = 5
-        Value* ad_result_tagged = packPtrToTaggedValue(result_ad_node, ESHKOL_VALUE_AD_NODE_PTR);
-        builder->CreateBr(merge);
-        BasicBlock* ad_path_exit = builder->GetInsertBlock();
-        
-        builder->SetInsertPoint(check_dual);
-        builder->CreateCondBr(any_dual, dual_path, regular_path);
-        
-        // PHASE 2: Dual number path - use dual division (quotient rule)
-        builder->SetInsertPoint(dual_path);
-        
-        // FIX: Replace CreateSelect on struct with branching
-        BasicBlock* left_is_dual_block = BasicBlock::Create(*context, "div_left_is_dual", current_func);
-        BasicBlock* left_not_dual_block = BasicBlock::Create(*context, "div_left_not_dual", current_func);
-        BasicBlock* left_merge_block = BasicBlock::Create(*context, "div_left_merge", current_func);
-        
-        builder->CreateCondBr(left_is_dual, left_is_dual_block, left_not_dual_block);
-        
-        builder->SetInsertPoint(left_is_dual_block);
-        Value* left_dual_value = unpackDualFromTaggedValue(left_tagged);
-        builder->CreateBr(left_merge_block);
-        
-        builder->SetInsertPoint(left_not_dual_block);
-        Value* left_as_double = builder->CreateSelect(left_is_double,
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* left_non_dual_value = packDualNumber(left_as_double, ConstantFP::get(double_type, 0.0));
-        builder->CreateBr(left_merge_block);
-        
-        builder->SetInsertPoint(left_merge_block);
-        PHINode* left_dual = builder->CreatePHI(dual_number_type, 2);
-        left_dual->addIncoming(left_dual_value, left_is_dual_block);
-        left_dual->addIncoming(left_non_dual_value, left_not_dual_block);
-        
-        // Same for right operand
-        BasicBlock* right_is_dual_block = BasicBlock::Create(*context, "div_right_is_dual", current_func);
-        BasicBlock* right_not_dual_block = BasicBlock::Create(*context, "div_right_not_dual", current_func);
-        BasicBlock* right_merge_block = BasicBlock::Create(*context, "div_right_merge", current_func);
-        
-        builder->CreateCondBr(right_is_dual, right_is_dual_block, right_not_dual_block);
-        
-        builder->SetInsertPoint(right_is_dual_block);
-        Value* right_dual_value = unpackDualFromTaggedValue(right_tagged);
-        builder->CreateBr(right_merge_block);
-        
-        builder->SetInsertPoint(right_not_dual_block);
-        Value* right_as_double = builder->CreateSelect(right_is_double,
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* right_non_dual_value = packDualNumber(right_as_double, ConstantFP::get(double_type, 0.0));
-        builder->CreateBr(right_merge_block);
-        
-        builder->SetInsertPoint(right_merge_block);
-        PHINode* right_dual = builder->CreatePHI(dual_number_type, 2);
-        right_dual->addIncoming(right_dual_value, right_is_dual_block);
-        right_dual->addIncoming(right_non_dual_value, right_not_dual_block);
-        
-        Value* dual_result = dualDiv(left_dual, right_dual);
-        Value* tagged_dual_result = packDualToTaggedValue(dual_result);
-        builder->CreateBr(merge);
-        BasicBlock* dual_path_exit = builder->GetInsertBlock();
-        
-        // Regular path: Always convert to double for division
-        builder->SetInsertPoint(regular_path);
-        Value* left_double = builder->CreateSelect(left_is_double,
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* right_double = builder->CreateSelect(right_is_double,
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-        Value* result = builder->CreateFDiv(left_double, right_double);
-        Value* tagged_regular_result = packDoubleToTaggedValue(result);
-        builder->CreateBr(merge);
-        
-        // Merge paths
-        builder->SetInsertPoint(merge);
-        PHINode* div_result_phi = builder->CreatePHI(tagged_value_type, 4);
-        div_result_phi->addIncoming(vec_result, vector_path_exit);
-        div_result_phi->addIncoming(ad_result_tagged, ad_path_exit);
-        div_result_phi->addIncoming(tagged_dual_result, dual_path_exit);
-        div_result_phi->addIncoming(tagged_regular_result, regular_path);
-
-        return div_result_phi;
+        return arith_->div(left_tagged, right_tagged);
     }
     
     // ===== POLYMORPHIC COMPARISON FUNCTIONS (Phase 3 Fix) =====
@@ -5692,8 +4881,12 @@ private:
             // HOMOICONIC FIX: Check if this is a lambda that was pre-generated
             // If so, reuse the pre-generated lambda instead of creating a new one
             // BUT: For lambdas with captures, we MUST regenerate to create the closure
+            // SCOPED LAMBDA FIX: Only check pre-generation for TOP-LEVEL defines (current_function == nullptr)
+            // For nested defines inside functions, we must always generate a new lambda to avoid
+            // incorrectly reusing a lambda from a different function with the same local variable name
             bool use_pregenerated = false;
-            if (op->define_op.value->type == ESHKOL_OP &&
+            if (!current_function &&  // CRITICAL: Only for top-level defines!
+                op->define_op.value->type == ESHKOL_OP &&
                 op->define_op.value->operation.op == ESHKOL_LAMBDA_OP) {
                 std::string func_key = std::string(var_name) + "_func";
                 auto it = global_symbol_table.find(func_key);
@@ -5780,6 +4973,14 @@ private:
                 // CRITICAL: Store in BOTH tables to ensure retrieval works
                 symbol_table[std::string(var_name) + "_func"] = func;
                 global_symbol_table[std::string(var_name) + "_func"] = func;
+                // SCOPED KEY FIX: Also store with scoped key for proper resolution of local lambdas
+                if (current_function) {
+                    std::string scoped_key = current_function->getName().str() + "." + var_name + "_func";
+                    symbol_table[scoped_key] = func;
+                    global_symbol_table[scoped_key] = func;
+                    eshkol_debug("Stored SCOPED lambda function reference: %s -> %s",
+                                scoped_key.c_str(), func->getName().str().c_str());
+                }
                 eshkol_debug("Stored lambda function reference: %s_func -> %s (in both symbol tables)",
                             var_name, func->getName().str().c_str());
 
@@ -5903,6 +5104,14 @@ private:
                     // Store function reference for lambda resolution
                     symbol_table[std::string(var_name) + "_func"] = matching_lambda;
                     global_symbol_table[std::string(var_name) + "_func"] = matching_lambda;
+                    // SCOPED KEY FIX: Also store with scoped key for proper resolution of local lambdas
+                    if (current_function) {
+                        std::string scoped_key = current_function->getName().str() + "." + var_name + "_func";
+                        symbol_table[scoped_key] = matching_lambda;
+                        global_symbol_table[scoped_key] = matching_lambda;
+                        eshkol_debug("Stored SCOPED lambda function reference: %s -> %s",
+                                    scoped_key.c_str(), lambda_name.c_str());
+                    }
                     eshkol_debug("Stored lambda function reference: %s_func -> %s",
                                 var_name, lambda_name.c_str());
 
@@ -5952,6 +5161,18 @@ private:
                     }
                 }
 
+                // GRADIENT FIX: Use last_generated_lambda_name for inline lambdas
+                // This handles (define f (lambda ...)) inside a function where
+                // the lambda was just generated and is tracked via last_generated_lambda_name
+                if (!matching_lambda && !last_generated_lambda_name.empty()) {
+                    auto func_it = function_table.find(last_generated_lambda_name);
+                    if (func_it != function_table.end()) {
+                        matching_lambda = func_it->second;
+                        eshkol_debug("CLOSURE_PTR: matched %s_func to %s via last_generated_lambda_name",
+                                   var_name, last_generated_lambda_name.c_str());
+                    }
+                }
+
                 // Fallback: find the most recent lambda with captures
                 if (!matching_lambda) {
                     int highest_lambda_num = -1;
@@ -5978,6 +5199,14 @@ private:
                     // Store function reference for closure resolution
                     symbol_table[std::string(var_name) + "_func"] = matching_lambda;
                     global_symbol_table[std::string(var_name) + "_func"] = matching_lambda;
+                    // SCOPED KEY FIX: Also store with scoped key for proper resolution of local closures
+                    if (current_function) {
+                        std::string scoped_key = current_function->getName().str() + "." + var_name + "_func";
+                        symbol_table[scoped_key] = matching_lambda;
+                        global_symbol_table[scoped_key] = matching_lambda;
+                        eshkol_debug("Stored SCOPED closure function reference: %s -> %s",
+                                    scoped_key.c_str(), lambda_name.c_str());
+                    }
                     eshkol_debug("Stored closure function reference: %s_func -> %s",
                                 var_name, lambda_name.c_str());
                 }
@@ -8330,211 +7559,19 @@ private:
     Value* isTruthy(Value* val) {
         return flow_->isTruthy(val);
     }
-    // Short-circuit AND: (and a b ...) - returns last truthy value or first falsy value
+    // MIGRATED: Short-circuit AND - delegates to ControlFlowCodegen
     Value* codegenAnd(const eshkol_operations_t* op) {
-        // ESHKOL_AND_OP uses sequence_op, ESHKOL_CALL_OP uses call_op
-        uint64_t num_args = (op->op == ESHKOL_AND_OP) ?
-            op->sequence_op.num_expressions : op->call_op.num_vars;
-        const eshkol_ast_t* args = (op->op == ESHKOL_AND_OP) ?
-            op->sequence_op.expressions : op->call_op.variables;
-
-        if (num_args == 0) {
-            // (and) with no args returns #t
-            return packBoolToTaggedValue(ConstantInt::getTrue(*context));
-        }
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* merge_block = BasicBlock::Create(*context, "and_merge", current_func);
-
-        // For collecting PHI inputs - only add when we actually branch to merge!
-        std::vector<std::pair<Value*, BasicBlock*>> phi_inputs;
-
-        // Evaluate each argument with short-circuit
-        for (uint64_t i = 0; i < num_args; i++) {
-            // CRITICAL FIX: Use codegenTypedAST + typedValueToTaggedValue to get proper tagged values
-            TypedValue tv = codegenTypedAST(&args[i]);
-            if (!tv.llvm_value) return nullptr;
-            Value* arg = typedValueToTaggedValue(tv);
-
-            BasicBlock* current_block = builder->GetInsertBlock();
-
-            if (i == num_args - 1) {
-                // Last argument - always return its value
-                phi_inputs.push_back({arg, current_block});
-                builder->CreateBr(merge_block);
-            } else {
-                // Check if truthy
-                Value* is_truthy = isTruthy(arg);
-                BasicBlock* next_block = BasicBlock::Create(*context, "and_next", current_func);
-                BasicBlock* short_circuit_block = BasicBlock::Create(*context, "and_short", current_func);
-
-                // If truthy, continue to next arg; if falsy, short-circuit
-                builder->CreateCondBr(is_truthy, next_block, short_circuit_block);
-
-                // Short-circuit: return this falsy value
-                builder->SetInsertPoint(short_circuit_block);
-                phi_inputs.push_back({arg, short_circuit_block});
-                builder->CreateBr(merge_block);
-
-                // Continue evaluation with next arg
-                builder->SetInsertPoint(next_block);
-            }
-        }
-
-        // Merge block with PHI
-        builder->SetInsertPoint(merge_block);
-        PHINode* result = builder->CreatePHI(tagged_value_type, phi_inputs.size(), "and_result");
-        for (auto& [val, block] : phi_inputs) {
-            result->addIncoming(val, block);
-        }
-
-        return result;
+        return flow_->codegenAnd(op);
     }
 
-    // Short-circuit OR: (or a b ...) - returns first truthy value or last falsy value
+    // MIGRATED: Short-circuit OR - delegates to ControlFlowCodegen
     Value* codegenOr(const eshkol_operations_t* op) {
-        // ESHKOL_OR_OP uses sequence_op, ESHKOL_CALL_OP uses call_op
-        uint64_t num_args = (op->op == ESHKOL_OR_OP) ?
-            op->sequence_op.num_expressions : op->call_op.num_vars;
-        const eshkol_ast_t* args = (op->op == ESHKOL_OR_OP) ?
-            op->sequence_op.expressions : op->call_op.variables;
-
-        if (num_args == 0) {
-            // (or) with no args returns #f
-            return packBoolToTaggedValue(ConstantInt::getFalse(*context));
-        }
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* merge_block = BasicBlock::Create(*context, "or_merge", current_func);
-
-        std::vector<std::pair<Value*, BasicBlock*>> phi_inputs;
-
-        for (uint64_t i = 0; i < num_args; i++) {
-            // CRITICAL FIX: Use codegenTypedAST + typedValueToTaggedValue to get proper tagged values
-            TypedValue tv = codegenTypedAST(&args[i]);
-            if (!tv.llvm_value) return nullptr;
-            Value* arg = typedValueToTaggedValue(tv);
-
-            BasicBlock* current_block = builder->GetInsertBlock();
-
-            if (i == num_args - 1) {
-                // Last arg - just branch to merge with this value
-                phi_inputs.push_back({arg, current_block});
-                builder->CreateBr(merge_block);
-            } else {
-                Value* is_truthy = isTruthy(arg);
-                BasicBlock* next_block = BasicBlock::Create(*context, "or_next", current_func);
-                BasicBlock* short_circuit_block = BasicBlock::Create(*context, "or_short", current_func);
-
-                // If truthy, go to short_circuit_block; otherwise continue to next_block
-                builder->CreateCondBr(is_truthy, short_circuit_block, next_block);
-
-                // Short circuit block - branch to merge with the truthy value
-                builder->SetInsertPoint(short_circuit_block);
-                phi_inputs.push_back({arg, short_circuit_block});
-                builder->CreateBr(merge_block);
-
-                // Continue evaluation in next_block
-                builder->SetInsertPoint(next_block);
-            }
-        }
-
-        builder->SetInsertPoint(merge_block);
-        PHINode* result = builder->CreatePHI(tagged_value_type, phi_inputs.size(), "or_result");
-        for (auto& [val, block] : phi_inputs) {
-            result->addIncoming(val, block);
-        }
-
-        return result;
+        return flow_->codegenOr(op);
     }
 
-    // Cond expression: (cond (test1 expr1) (test2 expr2) ... (else exprN))
+    // MIGRATED: Cond expression - delegates to ControlFlowCodegen
     Value* codegenCond(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars == 0) {
-            eshkol_warn("cond requires at least one clause");
-            return nullptr;
-        }
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* done_block = BasicBlock::Create(*context, "cond_done", current_func);
-
-        std::vector<std::pair<Value*, BasicBlock*>> phi_inputs;
-
-        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-            const eshkol_ast_t* clause = &op->call_op.variables[i];
-
-            // Each clause should be a list (test expr...)
-            if (clause->type != ESHKOL_OP || clause->operation.op != ESHKOL_CALL_OP) {
-                eshkol_warn("cond clause must be a list");
-                continue;
-            }
-
-            // Check if this is an 'else' clause (just evaluate the expression)
-            bool is_else = false;
-            if (clause->operation.call_op.func &&
-                clause->operation.call_op.func->type == ESHKOL_VAR &&
-                clause->operation.call_op.func->variable.id) {
-                const char* sym = clause->operation.call_op.func->variable.id;
-                is_else = (strcmp(sym, "else") == 0);
-            }
-
-            if (is_else) {
-                // else clause - evaluate expressions and we're done
-                Value* result = nullptr;
-                for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
-                    TypedValue tv = codegenTypedAST(&clause->operation.call_op.variables[j]);
-                    if (tv.llvm_value) result = typedValueToTaggedValue(tv);
-                }
-                if (result) {
-                    phi_inputs.push_back({result, builder->GetInsertBlock()});
-                }
-                builder->CreateBr(done_block);
-                break;
-            } else {
-                // Regular clause - evaluate test (func is the test condition)
-                TypedValue test_tv = codegenTypedAST(clause->operation.call_op.func);
-                if (!test_tv.llvm_value) continue;
-                Value* test = typedValueToTaggedValue(test_tv);
-
-                Value* is_true = isTruthy(test);
-                BasicBlock* then_block = BasicBlock::Create(*context, "cond_then", current_func);
-                BasicBlock* next_block = BasicBlock::Create(*context, "cond_next", current_func);
-
-                builder->CreateCondBr(is_true, then_block, next_block);
-
-                // Then block - evaluate expressions (clause body)
-                builder->SetInsertPoint(then_block);
-                Value* result = nullptr;
-                for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
-                    TypedValue tv = codegenTypedAST(&clause->operation.call_op.variables[j]);
-                    if (tv.llvm_value) result = typedValueToTaggedValue(tv);
-                }
-                if (result) {
-                    phi_inputs.push_back({result, builder->GetInsertBlock()});
-                }
-                builder->CreateBr(done_block);
-
-                // Continue to next clause
-                builder->SetInsertPoint(next_block);
-            }
-        }
-
-        // If no clause matched, return false
-        if (phi_inputs.empty() || builder->GetInsertBlock()->getTerminator() == nullptr) {
-            phi_inputs.push_back({packBoolToTaggedValue(ConstantInt::getFalse(*context)), builder->GetInsertBlock()});
-            builder->CreateBr(done_block);
-        }
-
-        builder->SetInsertPoint(done_block);
-        if (phi_inputs.size() == 1) {
-            return phi_inputs[0].first;
-        }
-        PHINode* result = builder->CreatePHI(tagged_value_type, phi_inputs.size(), "cond_result");
-        for (auto& [val, block] : phi_inputs) {
-            result->addIncoming(val, block);
-        }
-
-        return result;
+        return flow_->codegenCond(op);
     }
 
     // Helper function to compare two tagged values using eqv? semantics
@@ -8602,114 +7639,9 @@ private:
         return result;
     }
 
-    // Case expression: (case key ((datum1 datum2 ...) expr1 ...) ... (else exprN))
-    // Parser structure: call_op.func = key, call_op.variables = CONS clauses
-    // Each clause is a CONS: car = datums (CALL_OP) or else marker (VAR), cdr = body (CALL_OP)
+    // MIGRATED: Case expression - delegates to ControlFlowCodegen
     Value* codegenCase(const eshkol_operations_t* op) {
-        if (!op->call_op.func) {
-            eshkol_warn("case requires a key expression");
-            return nullptr;
-        }
-
-        // Evaluate the key expression once
-        TypedValue key_tv = codegenTypedAST(op->call_op.func);
-        if (!key_tv.llvm_value) return nullptr;
-        Value* key = typedValueToTaggedValue(key_tv);
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* done_block = BasicBlock::Create(*context, "case_done", current_func);
-
-        std::vector<std::pair<Value*, BasicBlock*>> phi_inputs;
-
-        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-            const eshkol_ast_t* clause = &op->call_op.variables[i];
-
-            // Each clause is a CONS: car = datums, cdr = body
-            if (clause->type != ESHKOL_CONS) {
-                eshkol_warn("case clause must be a cons cell");
-                continue;
-            }
-
-            const eshkol_ast_t* datums_ast = clause->cons_cell.car;
-            const eshkol_ast_t* body_ast = clause->cons_cell.cdr;
-
-            // Check if this is an 'else' clause
-            bool is_else = false;
-            if (datums_ast && datums_ast->type == ESHKOL_VAR && datums_ast->variable.id) {
-                is_else = (strcmp(datums_ast->variable.id, "else") == 0);
-            }
-
-            if (is_else) {
-                // else clause - evaluate body expressions and we're done
-                Value* result = nullptr;
-                if (body_ast && body_ast->type == ESHKOL_OP &&
-                    body_ast->operation.op == ESHKOL_CALL_OP) {
-                    for (uint64_t j = 0; j < body_ast->operation.call_op.num_vars; j++) {
-                        TypedValue tv = codegenTypedAST(&body_ast->operation.call_op.variables[j]);
-                        if (tv.llvm_value) result = typedValueToTaggedValue(tv);
-                    }
-                }
-                if (result) {
-                    phi_inputs.push_back({result, builder->GetInsertBlock()});
-                }
-                builder->CreateBr(done_block);
-                break;
-            } else {
-                // Regular clause - datums_ast is a CALL_OP with variables containing datums
-                BasicBlock* then_block = BasicBlock::Create(*context, "case_then", current_func);
-                BasicBlock* next_block = BasicBlock::Create(*context, "case_next", current_func);
-
-                Value* any_match = ConstantInt::getFalse(*context);
-
-                if (datums_ast && datums_ast->type == ESHKOL_OP &&
-                    datums_ast->operation.op == ESHKOL_CALL_OP) {
-                    // Check all datums
-                    for (uint64_t d = 0; d < datums_ast->operation.call_op.num_vars; d++) {
-                        TypedValue datum_tv = codegenTypedAST(&datums_ast->operation.call_op.variables[d]);
-                        if (!datum_tv.llvm_value) continue;
-                        Value* datum = typedValueToTaggedValue(datum_tv);
-                        Value* is_match = callBuiltinEqv(key, datum);
-                        any_match = builder->CreateOr(any_match, is_match);
-                    }
-                }
-
-                builder->CreateCondBr(any_match, then_block, next_block);
-
-                // Then block - evaluate body expressions
-                builder->SetInsertPoint(then_block);
-                Value* result = nullptr;
-                if (body_ast && body_ast->type == ESHKOL_OP &&
-                    body_ast->operation.op == ESHKOL_CALL_OP) {
-                    for (uint64_t j = 0; j < body_ast->operation.call_op.num_vars; j++) {
-                        TypedValue tv = codegenTypedAST(&body_ast->operation.call_op.variables[j]);
-                        if (tv.llvm_value) result = typedValueToTaggedValue(tv);
-                    }
-                }
-                if (result) {
-                    phi_inputs.push_back({result, builder->GetInsertBlock()});
-                }
-                builder->CreateBr(done_block);
-
-                builder->SetInsertPoint(next_block);
-            }
-        }
-
-        // If no clause matched, return unspecified (false)
-        if (phi_inputs.empty() || builder->GetInsertBlock()->getTerminator() == nullptr) {
-            phi_inputs.push_back({packBoolToTaggedValue(ConstantInt::getFalse(*context)), builder->GetInsertBlock()});
-            builder->CreateBr(done_block);
-        }
-
-        builder->SetInsertPoint(done_block);
-        if (phi_inputs.size() == 1) {
-            return phi_inputs[0].first;
-        }
-        PHINode* result = builder->CreatePHI(tagged_value_type, phi_inputs.size(), "case_result");
-        for (auto& [val, block] : phi_inputs) {
-            result->addIncoming(val, block);
-        }
-
-        return result;
+        return flow_->codegenCase(op);
     }
 
     // Do loop: (do ((var init step) ...) ((test) result ...) body ...)
@@ -8861,109 +7793,19 @@ private:
         return result;
     }
 
-    // Logical NOT: (not x)
+    // MIGRATED: Logical NOT - delegates to ControlFlowCodegen
     Value* codegenNot(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars != 1) {
-            eshkol_warn("not requires exactly 1 argument");
-            return nullptr;
-        }
-
-        // CRITICAL FIX: Use codegenTypedAST + typedValueToTaggedValue for proper type handling
-        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-        if (!tv.llvm_value) return nullptr;
-        Value* arg = typedValueToTaggedValue(tv);
-
-        Value* is_truthy_val = isTruthy(arg);
-        Value* is_false = builder->CreateNot(is_truthy_val);
-        return packBoolToTaggedValue(is_false);
+        return flow_->codegenNot(op);
     }
 
-    // when: (when test expr...) - evaluates expressions if test is true, returns last result or void
+    // MIGRATED: When conditional - delegates to ControlFlowCodegen
     Value* codegenWhen(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 1) {
-            eshkol_warn("when requires at least a test expression");
-            return nullptr;
-        }
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* entry_block = builder->GetInsertBlock();
-        BasicBlock* then_block = BasicBlock::Create(*context, "when_then", current_func);
-        BasicBlock* done_block = BasicBlock::Create(*context, "when_done", current_func);
-
-        // Evaluate test condition
-        TypedValue test_tv = codegenTypedAST(&op->call_op.variables[0]);
-        if (!test_tv.llvm_value) return nullptr;
-        Value* test = typedValueToTaggedValue(test_tv);
-        Value* is_true = isTruthy(test);
-
-        // Create the false result before branching (in entry block)
-        Value* false_result = packBoolToTaggedValue(ConstantInt::getFalse(*context));
-        BasicBlock* branch_block = builder->GetInsertBlock();  // Block containing the branch
-
-        builder->CreateCondBr(is_true, then_block, done_block);
-
-        // Then block - evaluate body expressions
-        builder->SetInsertPoint(then_block);
-        Value* result = nullptr;
-        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
-            if (tv.llvm_value) result = typedValueToTaggedValue(tv);
-        }
-        if (!result) result = packBoolToTaggedValue(ConstantInt::getTrue(*context));
-        BasicBlock* then_exit = builder->GetInsertBlock();
-        builder->CreateBr(done_block);
-
-        // Done block - PHI for result
-        builder->SetInsertPoint(done_block);
-        PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "when_result");
-        phi->addIncoming(result, then_exit);
-        phi->addIncoming(false_result, branch_block);
-
-        return phi;
+        return flow_->codegenWhen(op);
     }
 
-    // unless: (unless test expr...) - evaluates expressions if test is false
+    // MIGRATED: Unless conditional - delegates to ControlFlowCodegen
     Value* codegenUnless(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 1) {
-            eshkol_warn("unless requires at least a test expression");
-            return nullptr;
-        }
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* else_block = BasicBlock::Create(*context, "unless_else", current_func);
-        BasicBlock* done_block = BasicBlock::Create(*context, "unless_done", current_func);
-
-        // Evaluate test condition
-        TypedValue test_tv = codegenTypedAST(&op->call_op.variables[0]);
-        if (!test_tv.llvm_value) return nullptr;
-        Value* test = typedValueToTaggedValue(test_tv);
-        Value* is_true = isTruthy(test);
-
-        // Create the false result before branching (in current block)
-        Value* false_result = packBoolToTaggedValue(ConstantInt::getFalse(*context));
-        BasicBlock* branch_block = builder->GetInsertBlock();
-
-        // Branch to else block if test is FALSE
-        builder->CreateCondBr(is_true, done_block, else_block);
-
-        // Else block - evaluate body expressions (when test is false)
-        builder->SetInsertPoint(else_block);
-        Value* result = nullptr;
-        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
-            if (tv.llvm_value) result = typedValueToTaggedValue(tv);
-        }
-        if (!result) result = packBoolToTaggedValue(ConstantInt::getTrue(*context));
-        BasicBlock* else_exit = builder->GetInsertBlock();
-        builder->CreateBr(done_block);
-
-        // Done block - PHI for result
-        builder->SetInsertPoint(done_block);
-        PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "unless_result");
-        phi->addIncoming(result, else_exit);
-        phi->addIncoming(false_result, branch_block);
-
-        return phi;
+        return flow_->codegenUnless(op);
     }
 
     // Type predicates
@@ -11117,173 +9959,14 @@ private:
         return nullptr;
     }
     
+    // If expression - delegate to control flow module
     Value* codegenIfCall(const eshkol_operations_t* op) {
-        // Handle if as a function call: (if condition then-expr else-expr)
-        if (op->call_op.num_vars != 3) {
-            eshkol_warn("if requires exactly 3 arguments: condition, then-expr, else-expr");
-            return nullptr;
-        }
-        
-        // Generate condition
-        Value* condition = codegenAST(&op->call_op.variables[0]);
-        if (!condition) return nullptr;
-        
-        // CRITICAL FIX: Safely extract i64 from possibly-tagged value
-        Value* condition_int = safeExtractInt64(condition);
-        
-        // Convert condition to boolean (non-zero is true)
-        Value* cond_bool = builder->CreateICmpNE(condition_int,
-            ConstantInt::get(int64_type, 0));
-        
-        // Get current function for creating basic blocks
-        Function* function = builder->GetInsertBlock()->getParent();
-        
-        // Create basic blocks for then, else, and merge
-        BasicBlock* then_block = BasicBlock::Create(*context, "then", function);
-        BasicBlock* else_block = BasicBlock::Create(*context, "else", function);
-        BasicBlock* merge_block = BasicBlock::Create(*context, "ifcont", function);
-        
-        // Create conditional branch
-        builder->CreateCondBr(cond_bool, then_block, else_block);
-        
-        // Generate then block
-        builder->SetInsertPoint(then_block);
-        Value* then_value = codegenAST(&op->call_op.variables[1]);
-        if (!then_value) {
-            then_value = ConstantInt::get(int64_type, 0);
-        }
-
-        builder->CreateBr(merge_block);
-        then_block = builder->GetInsertBlock(); // Update in case of nested blocks
-
-        // Generate else block
-        builder->SetInsertPoint(else_block);
-        Value* else_value = codegenAST(&op->call_op.variables[2]);
-        if (!else_value) {
-            else_value = ConstantInt::get(int64_type, 0);
-        }
-
-        builder->CreateBr(merge_block);
-        else_block = builder->GetInsertBlock(); // Update in case of nested blocks
-
-        // Determine result type - prefer tagged_value_type to preserve type info
-        Type* result_type;
-        if (then_value->getType() == tagged_value_type || else_value->getType() == tagged_value_type) {
-            result_type = tagged_value_type;
-        } else {
-            result_type = int64_type;
-        }
-
-        // Convert values to result_type if needed
-        auto convertToResultType = [&](Value* val, BasicBlock* block) -> Value* {
-            if (val->getType() == result_type) return val;
-
-            // Need to insert conversion at the end of the original block (before the branch)
-            BasicBlock* current_block = builder->GetInsertBlock();
-            builder->SetInsertPoint(block->getTerminator());
-
-            Value* converted;
-            if (result_type == tagged_value_type) {
-                // Convert to tagged_value
-                if (val->getType()->isIntegerTy(64)) {
-                    // CRITICAL FIX: Use detectValueType to correctly identify CONS_PTR from PtrToInt
-                    TypedValue tv = detectValueType(val);
-                    converted = typedValueToTaggedValue(tv);
-                } else if (val->getType()->isDoubleTy()) {
-                    converted = packDoubleToTaggedValue(val);
-                } else if (val->getType()->isIntegerTy()) {
-                    Value* extended = builder->CreateSExt(val, int64_type);
-                    converted = packInt64ToTaggedValue(extended, true);
-                } else {
-                    converted = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-                }
-            } else {
-                // Convert to i64
-                if (val->getType() == tagged_value_type) {
-                    converted = safeExtractInt64(val);
-                } else if (val->getType()->isIntegerTy()) {
-                    if (val->getType()->getIntegerBitWidth() < 64) {
-                        converted = builder->CreateSExt(val, result_type);
-                    } else {
-                        converted = builder->CreateTrunc(val, result_type);
-                    }
-                } else {
-                    converted = ConstantInt::get(result_type, 0);
-                }
-            }
-
-            builder->SetInsertPoint(current_block);
-            return converted;
-        };
-
-        then_value = convertToResultType(then_value, then_block);
-        else_value = convertToResultType(else_value, else_block);
-
-        // Generate merge block with PHI node
-        builder->SetInsertPoint(merge_block);
-        PHINode* phi = builder->CreatePHI(result_type, 2, "iftmp");
-        phi->addIncoming(then_value, then_block);
-        phi->addIncoming(else_value, else_block);
-
-        return phi;
+        return flow_->codegenIf(op);
     }
-    
+
+    // Begin sequence - delegate to control flow module
     Value* codegenBegin(const eshkol_operations_t* op) {
-        // Handle begin sequence: (begin expr1 expr2 ... exprN)
-        // Execute all expressions and return the value of the last one
-        // CRITICAL: Handle internal defines by treating them as letrec
-        if (op->call_op.num_vars == 0) {
-            eshkol_warn("begin requires at least 1 expression");
-            return ConstantInt::get(int64_type, 0);
-        }
-
-        // Check if any expressions are defines - if so, transform to letrec-like behavior
-        std::vector<const eshkol_ast_t*> defines;
-        size_t first_non_define = 0;
-
-        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-            const eshkol_ast_t* expr = &op->call_op.variables[i];
-            if (expr->type == ESHKOL_OP && expr->operation.op == ESHKOL_DEFINE_OP) {
-                defines.push_back(expr);
-                first_non_define = i + 1;
-            } else {
-                break;  // Stop at first non-define
-            }
-        }
-
-        // If there are internal defines, handle them specially
-        if (!defines.empty()) {
-            eshkol_debug("begin has %zu internal defines, processing as letrec", defines.size());
-
-            // Process each define and add to symbol table
-            // Note: We don't restore symbol_table afterward because defines in begin
-            // should remain visible for the rest of begin's expressions
-            for (const eshkol_ast_t* def : defines) {
-                if (def->operation.define_op.is_function) {
-                    // Generate nested function
-                    codegenNestedFunctionDefinition(&def->operation);
-                } else {
-                    // Generate variable
-                    codegenVariableDefinition(&def->operation);
-                }
-            }
-
-            // Execute remaining expressions
-            Value* last_value = nullptr;
-            for (uint64_t i = first_non_define; i < op->call_op.num_vars; i++) {
-                last_value = codegenAST(&op->call_op.variables[i]);
-            }
-
-            return last_value ? last_value : packNullToTaggedValue();
-        }
-
-        // No internal defines - just execute expressions in sequence
-        Value* last_value = nullptr;
-        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-            last_value = codegenAST(&op->call_op.variables[i]);
-        }
-
-        return last_value ? last_value : ConstantInt::get(int64_type, 0);
+        return flow_->codegenBegin(op);
     }
     
     Value* codegenCons(const eshkol_operations_t* op) {
@@ -14353,8 +13036,21 @@ private:
         return tensor_ptr_int; // Return the tensor
     }
 
-    // Helper for scheme vector arithmetic (used by tensor-add etc. when given scheme vectors)
+    // MIGRATED: Helper for scheme vector arithmetic - now internal to TensorCodegen
+    // Kept here only if something still references it directly
     Value* codegenSchemeVectorArithmetic(Value* vec1_tagged, Value* vec2_tagged, const std::string& operation) {
+        // Delegate to TensorCodegen's internal implementation
+        return tensor_->tensorArithmeticInternal(vec1_tagged, vec2_tagged, operation);
+    }
+
+    // MIGRATED: Internal tensor arithmetic - delegates to TensorCodegen
+    Value* codegenTensorArithmeticInternal(Value* arg1, Value* arg2, const std::string& operation) {
+        return tensor_->tensorArithmeticInternal(arg1, arg2, operation);
+    }
+
+    // Original implementations below are now dead code but kept for reference
+    // TODO: Remove after validation
+    Value* codegenSchemeVectorArithmeticOLD_UNUSED(Value* vec1_tagged, Value* vec2_tagged, const std::string& operation) {
         // Scheme vector layout: [length:i64][elem0:tagged_value][elem1:tagged_value]...
 
         // Extract pointers from tagged values
@@ -14456,9 +13152,8 @@ private:
         return packPtrToTaggedValue(result_vec, ESHKOL_VALUE_VECTOR_PTR);
     }
 
-    // Internal helper for tensor/vector arithmetic that accepts tagged values directly
-    // Used by both codegenTensorArithmetic and polymorphicAdd/Sub/Mul/Div
-    Value* codegenTensorArithmeticInternal(Value* arg1, Value* arg2, const std::string& operation) {
+    // DEAD CODE - keeping for reference, will be removed
+    Value* codegenTensorArithmeticInternalOLD_UNUSED(Value* arg1, Value* arg2, const std::string& operation) {
         if (!arg1 || !arg2) return packNullToTaggedValue();
 
         // Ensure they're tagged values so we can check type at runtime
@@ -17688,179 +16383,50 @@ private:
     
     // ===== DUAL NUMBER LLVM IR HELPER FUNCTIONS =====
     
-    // Pack value and derivative into dual number struct
+    // MIGRATED: Pack value and derivative into dual number struct - delegates to AutodiffCodegen
     Value* packDualNumber(Value* value, Value* derivative) {
-        if (!value || !derivative) return nullptr;
-        
-        // Create alloca for dual number at function entry
-        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            builder->SetInsertPoint(&entry, entry.begin());
-        }
-        
-        Value* dual_ptr = builder->CreateAlloca(dual_number_type, nullptr, "dual");
-        
-        // Restore insertion point for the actual stores
-        builder->restoreIP(saved_ip);
-        
-        // Store value in field 0
-        Value* value_ptr = builder->CreateStructGEP(dual_number_type, dual_ptr, 0);
-        builder->CreateStore(value, value_ptr);
-        
-        // Store derivative in field 1
-        Value* deriv_ptr = builder->CreateStructGEP(dual_number_type, dual_ptr, 1);
-        builder->CreateStore(derivative, deriv_ptr);
-        
-        // Load and return the dual number struct
-        return builder->CreateLoad(dual_number_type, dual_ptr);
+        return autodiff_->createDualNumber(value, derivative);
     }
-    
-    // Unpack dual number into value and derivative components
+
+    // MIGRATED: Unpack dual number into value and derivative components - uses AutodiffCodegen
     std::pair<Value*, Value*> unpackDualNumber(Value* dual) {
         if (!dual) return {nullptr, nullptr};
-        
-        // Store dual to temporary alloca
-        Value* dual_ptr = builder->CreateAlloca(dual_number_type, nullptr, "temp_dual");
-        builder->CreateStore(dual, dual_ptr);
-        
-        // Extract value (field 0)
-        Value* value_ptr = builder->CreateStructGEP(dual_number_type, dual_ptr, 0);
-        Value* value = builder->CreateLoad(double_type, value_ptr);
-        
-        // Extract derivative (field 1)
-        Value* deriv_ptr = builder->CreateStructGEP(dual_number_type, dual_ptr, 1);
-        Value* deriv = builder->CreateLoad(double_type, deriv_ptr);
-        
-        return {value, deriv};
+        return {autodiff_->getDualPrimal(dual), autodiff_->getDualTangent(dual)};
     }
     
-    // Pack dual number into tagged value for storage
+    // MIGRATED: Pack dual number into tagged value for storage - delegates to AutodiffCodegen
     Value* packDualToTaggedValue(Value* dual) {
-        if (!dual) return nullptr;
-
-        // CRITICAL FIX: Use HEAP allocation via arena instead of stack allocation.
-        // Stack-allocated dual numbers become invalid when the function returns,
-        // causing use-after-free when the tagged_value is passed across function boundaries.
-
-        // Get global arena pointer
-        Value* arena_ptr = builder->CreateLoad(
-            PointerType::getUnqual(*context),
-            module->getNamedGlobal("__global_arena"));
-
-        // Allocate space for dual number on the heap (arena)
-        // dual_number is 16 bytes (two doubles)
-        Value* size = ConstantInt::get(int64_type, 16);
-        Value* dual_ptr = builder->CreateCall(getArenaAllocateFunc(), {arena_ptr, size});
-
-        // Store dual number to heap-allocated memory
-        builder->CreateStore(dual, dual_ptr);
-
-        // Cast pointer to uint64 for storage in tagged value
-        Value* dual_as_int = builder->CreatePtrToInt(dual_ptr, int64_type);
-
-        // Pack as pointer type tagged value with DUAL_NUMBER type
-        return packPtrToTaggedValue(
-            builder->CreateIntToPtr(dual_as_int, builder->getPtrTy()),
-            ESHKOL_VALUE_DUAL_NUMBER
-        );
+        return autodiff_->packDualToTagged(dual);
     }
-    
-    // Unpack dual number from tagged value
+
+    // MIGRATED: Unpack dual number from tagged value - delegates to AutodiffCodegen
     Value* unpackDualFromTaggedValue(Value* tagged) {
-        if (!tagged) return nullptr;
-        
-        // Verify type is dual number
-        Value* type = getTaggedValueType(tagged);
-        Value* base_type = builder->CreateAnd(type,
-            ConstantInt::get(int8_type, 0x0F));
-        
-        // Extract pointer
-        Value* ptr_val = unpackPtrFromTaggedValue(tagged);
-        Value* dual_ptr = builder->CreateBitCast(ptr_val,
-            PointerType::getUnqual(*context));
-        
-        // Load and return dual number
-        return builder->CreateLoad(dual_number_type, dual_ptr);
+        return autodiff_->unpackDualFromTagged(tagged);
     }
     
     // ===== END DUAL NUMBER HELPERS =====
     
     // ===== PHASE 2: DUAL NUMBER ARITHMETIC OPERATIONS =====
-    // Forward-mode automatic differentiation via dual numbers
-    // Each operation propagates derivatives using automatic differentiation rules
-    
-    // Addition: (a, a') + (b, b') = (a+b, a'+b')
+    // MIGRATED: These all delegate to AutodiffCodegen
+
+    // MIGRATED: Addition: (a, a') + (b, b') = (a+b, a'+b')
     Value* dualAdd(Value* dual_a, Value* dual_b) {
-        if (!dual_a || !dual_b) return nullptr;
-        
-        auto [a, a_prime] = unpackDualNumber(dual_a);
-        auto [b, b_prime] = unpackDualNumber(dual_b);
-        
-        // Value: a + b
-        Value* value = builder->CreateFAdd(a, b);
-        
-        // Derivative: a' + b'
-        Value* deriv = builder->CreateFAdd(a_prime, b_prime);
-        
-        return packDualNumber(value, deriv);
+        return autodiff_->dualAdd(dual_a, dual_b);
     }
-    
-    // Subtraction: (a, a') - (b, b') = (a-b, a'-b')
+
+    // MIGRATED: Subtraction: (a, a') - (b, b') = (a-b, a'-b')
     Value* dualSub(Value* dual_a, Value* dual_b) {
-        if (!dual_a || !dual_b) return nullptr;
-        
-        auto [a, a_prime] = unpackDualNumber(dual_a);
-        auto [b, b_prime] = unpackDualNumber(dual_b);
-        
-        // Value: a - b
-        Value* value = builder->CreateFSub(a, b);
-        
-        // Derivative: a' - b'
-        Value* deriv = builder->CreateFSub(a_prime, b_prime);
-        
-        return packDualNumber(value, deriv);
+        return autodiff_->dualSub(dual_a, dual_b);
     }
-    
-    // Multiplication: (a, a') * (b, b') = (a*b, a'*b + a*b')
-    // This is the product rule for automatic differentiation
+
+    // MIGRATED: Multiplication: (a, a') * (b, b') = (a*b, a'*b + a*b')
     Value* dualMul(Value* dual_a, Value* dual_b) {
-        if (!dual_a || !dual_b) return nullptr;
-        
-        auto [a, a_prime] = unpackDualNumber(dual_a);
-        auto [b, b_prime] = unpackDualNumber(dual_b);
-        
-        // Value: a * b
-        Value* value = builder->CreateFMul(a, b);
-        
-        // Derivative: a' * b + a * b' (product rule)
-        Value* term1 = builder->CreateFMul(a_prime, b);
-        Value* term2 = builder->CreateFMul(a, b_prime);
-        Value* deriv = builder->CreateFAdd(term1, term2);
-        
-        return packDualNumber(value, deriv);
+        return autodiff_->dualMul(dual_a, dual_b);
     }
-    
-    // Division: (a, a') / (b, b') = (a/b, (a'*b - a*b')/b²)
-    // This is the quotient rule for automatic differentiation
+
+    // MIGRATED: Division: (a, a') / (b, b') = (a/b, (a'*b - a*b')/b²)
     Value* dualDiv(Value* dual_a, Value* dual_b) {
-        if (!dual_a || !dual_b) return nullptr;
-        
-        auto [a, a_prime] = unpackDualNumber(dual_a);
-        auto [b, b_prime] = unpackDualNumber(dual_b);
-        
-        // Value: a / b
-        Value* value = builder->CreateFDiv(a, b);
-        
-        // Derivative: (a' * b - a * b') / b²
-        Value* numerator_term1 = builder->CreateFMul(a_prime, b);
-        Value* numerator_term2 = builder->CreateFMul(a, b_prime);
-        Value* numerator = builder->CreateFSub(numerator_term1, numerator_term2);
-        Value* denominator = builder->CreateFMul(b, b);
-        Value* deriv = builder->CreateFDiv(numerator, denominator);
-        
-        return packDualNumber(value, deriv);
+        return autodiff_->dualDiv(dual_a, dual_b);
     }
     
     // Sine: sin(a, a') = (sin(a), a' * cos(a))
@@ -18312,59 +16878,9 @@ private:
     // ===== PHASE 3: AD NODE HELPER FUNCTIONS =====
     // Computational graph construction for reverse-mode automatic differentiation
     
-    // Create AD node for a constant value (gradient = 0)
+    // MIGRATED: Create AD node for a constant value - delegates to AutodiffCodegen
     Value* createADConstant(Value* value) {
-        if (!value) return nullptr;
-        
-        // Convert value to double if needed
-        if (value->getType()->isIntegerTy()) {
-            value = builder->CreateSIToFP(value, double_type);
-        }
-        
-        // Allocate AD node
-        Value* arena_ptr = getArenaPtr();
-        Value* node_ptr = builder->CreateCall(getArenaAllocateAdNodeFunc(), {arena_ptr});
-
-        // Set type = AD_NODE_CONSTANT (0)
-        Value* type_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 0);
-        builder->CreateStore(
-            ConstantInt::get(int32_type, 0), // AD_NODE_CONSTANT
-            type_ptr
-        );
-        
-        // Set value
-        Value* value_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 1);
-        builder->CreateStore(value, value_ptr);
-        
-        // Initialize gradient = 0.0
-        Value* grad_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 2);
-        builder->CreateStore(ConstantFP::get(double_type, 0.0), grad_ptr);
-        
-        // Set input pointers to null
-        Value* input1_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 3);
-        builder->CreateStore(
-            ConstantPointerNull::get(PointerType::getUnqual(*context)),
-            input1_ptr
-        );
-        
-        Value* input2_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 4);
-        builder->CreateStore(
-            ConstantPointerNull::get(PointerType::getUnqual(*context)),
-            input2_ptr
-        );
-        
-        // Set node ID
-        Value* id_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 5);
-        builder->CreateStore(
-            ConstantInt::get(int64_type, next_node_id++),
-            id_ptr
-        );
-        
-        // Add node to tape - PHASE 1 FIX: Use global runtime tape pointer
-        Value* tape_ptr_runtime = builder->CreateLoad(PointerType::getUnqual(*context), current_ad_tape);
-        builder->CreateCall(getArenaTapeAddNodeFunc(), {tape_ptr_runtime, node_ptr});
-        
-        return node_ptr;
+        return autodiff_->createADConstant(value);
     }
     
     // Create AD node for an input variable (this is where gradients flow back to)
@@ -18421,75 +16937,9 @@ private:
         return node_ptr;
     }
     
-    // Record binary operation node (add, sub, mul, div) in computational graph
+    // MIGRATED: Record binary operation node - delegates to AutodiffCodegen
     Value* recordADNodeBinary(uint32_t op_type, Value* left_node, Value* right_node) {
-        if (!left_node || !right_node) return nullptr;
-
-        // Load values from input nodes
-        Value* left_value_ptr = builder->CreateStructGEP(ad_node_type, left_node, 1);
-        Value* left_value = builder->CreateLoad(double_type, left_value_ptr);
-        
-        Value* right_value_ptr = builder->CreateStructGEP(ad_node_type, right_node, 1);
-        Value* right_value = builder->CreateLoad(double_type, right_value_ptr);
-        
-        // Compute result value based on operation
-        Value* result_value = nullptr;
-        switch (op_type) {
-            case 2: // AD_NODE_ADD
-                result_value = builder->CreateFAdd(left_value, right_value);
-                break;
-            case 3: // AD_NODE_SUB
-                result_value = builder->CreateFSub(left_value, right_value);
-                break;
-            case 4: // AD_NODE_MUL
-                result_value = builder->CreateFMul(left_value, right_value);
-                break;
-            case 5: // AD_NODE_DIV
-                result_value = builder->CreateFDiv(left_value, right_value);
-                break;
-            case 10: // AD_NODE_POW
-                result_value = builder->CreateCall(function_table["pow"], {left_value, right_value});
-                break;
-            default:
-                eshkol_error("Unknown binary AD operation type: %u", op_type);
-                return nullptr;
-        }
-        
-        // Allocate new AD node
-        Value* arena_ptr = getArenaPtr();
-        Value* node_ptr = builder->CreateCall(getArenaAllocateAdNodeFunc(), {arena_ptr});
-        
-        // Set operation type
-        Value* type_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 0);
-        builder->CreateStore(ConstantInt::get(int32_type, op_type), type_ptr);
-        
-        // Set computed value
-        Value* value_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 1);
-        builder->CreateStore(result_value, value_ptr);
-        
-        // Initialize gradient = 0.0
-        Value* grad_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 2);
-        builder->CreateStore(ConstantFP::get(double_type, 0.0), grad_ptr);
-        
-        // Set input pointers
-        Value* input1_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 3);
-        builder->CreateStore(left_node, input1_ptr);
-        
-        Value* input2_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 4);
-        builder->CreateStore(right_node, input2_ptr);
-        
-        // Set node ID
-        Value* id_ptr = builder->CreateStructGEP(ad_node_type, node_ptr, 5);
-        builder->CreateStore(
-            ConstantInt::get(int64_type, next_node_id++),
-            id_ptr
-        );
-        
-        // Add to tape - PHASE 1 FIX: Use global runtime tape pointer
-        Value* tape_ptr_runtime_binary = builder->CreateLoad(PointerType::getUnqual(*context), current_ad_tape);
-        builder->CreateCall(getArenaTapeAddNodeFunc(), {tape_ptr_runtime_binary, node_ptr});
-        
-        return node_ptr;
+        return autodiff_->recordADNodeBinary(op_type, left_node, right_node);
     }
     
     // Record unary operation node (sin, cos, exp, log, neg) in computational graph
@@ -20939,10 +19389,58 @@ private:
         builder->CreateBr(outer_cond);
         
         builder->SetInsertPoint(outer_exit);
-        
-        // JACOBIAN NESTED LIST FIX: Convert m×n tensor to nested list structure ((row1) (row2) ...)
-        // This allows existing display() to show proper matrix structure without modifications
-        
+
+        // FIX: Return 2D tensor directly (like Hessian does) instead of converting to nested lists
+        // The tensor display now handles N-dimensional tensors correctly
+        // Tensor elements are stored as doubles (int64 bit representation)
+        // We need to convert from double to int64 bit pattern for proper storage
+
+        // The elements in typed_jac_elems were stored as double type - convert to int64 bit pattern
+        BasicBlock* jac_convert_cond = BasicBlock::Create(*context, "jac_convert_cond", current_func);
+        BasicBlock* jac_convert_body = BasicBlock::Create(*context, "jac_convert_body", current_func);
+        BasicBlock* jac_convert_exit = BasicBlock::Create(*context, "jac_convert_exit", current_func);
+
+        Value* jac_convert_idx = builder->CreateAlloca(int64_type, nullptr, "jac_convert_idx");
+        builder->CreateStore(ConstantInt::get(int64_type, 0), jac_convert_idx);
+        builder->CreateBr(jac_convert_cond);
+
+        builder->SetInsertPoint(jac_convert_cond);
+        Value* jac_cvt_i = builder->CreateLoad(int64_type, jac_convert_idx);
+        Value* jac_cvt_less = builder->CreateICmpULT(jac_cvt_i, total_elems);
+        builder->CreateCondBr(jac_cvt_less, jac_convert_body, jac_convert_exit);
+
+        builder->SetInsertPoint(jac_convert_body);
+        // Load as double, convert to int64 bits, store back
+        Value* jac_cvt_elem_ptr = builder->CreateGEP(double_type, typed_jac_elems, jac_cvt_i);
+        Value* jac_cvt_elem_double = builder->CreateLoad(double_type, jac_cvt_elem_ptr);
+        Value* jac_cvt_elem_bits = builder->CreateBitCast(jac_cvt_elem_double, int64_type);
+        // Store as int64 (tensor elements are stored as int64 bit patterns)
+        Value* jac_cvt_store_ptr = builder->CreateGEP(int64_type, typed_jac_elems, jac_cvt_i);
+        builder->CreateStore(jac_cvt_elem_bits, jac_cvt_store_ptr);
+        Value* jac_cvt_next = builder->CreateAdd(jac_cvt_i, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(jac_cvt_next, jac_convert_idx);
+        builder->CreateBr(jac_convert_cond);
+
+        builder->SetInsertPoint(jac_convert_exit);
+
+        // Return the 2D Jacobian tensor directly
+        Value* jac_result_int = builder->CreatePtrToInt(typed_jac_ptr, int64_type);
+        Value* jac_result = packPtrToTaggedValue(jac_result_int, ESHKOL_VALUE_TENSOR_PTR);
+        builder->CreateBr(jac_return_block);
+
+        // Merge null and valid results
+        builder->SetInsertPoint(jac_return_block);
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, "jac_result");
+        result_phi->addIncoming(null_jac_tagged, output_invalid_block);
+        result_phi->addIncoming(jac_result, jac_convert_exit);
+
+        return result_phi;
+    }
+
+    // Dead code below - kept temporarily for reference during cleanup
+    // TODO: Remove after validation that 2D tensor return works correctly
+    #if 0
+    // OLD NESTED LIST CONVERSION CODE (BROKEN - treated list pointers as doubles)
         // Get Jacobian elements for conversion
         Value* jac_convert_elems_field = builder->CreateStructGEP(tensor_type, typed_jac_ptr, 2);
         Value* jac_convert_elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), jac_convert_elems_field);
@@ -21125,9 +19623,7 @@ private:
         result_phi->addIncoming(null_jac_tagged, output_invalid_block);
         result_phi->addIncoming(jac_result, fill_tensor_exit);
         
-        return result_phi;
-    }
-    
+#endif
     // ===== PHASE 3: HESSIAN OPERATOR IMPLEMENTATION =====
     // Matrix of second derivatives (Jacobian of gradient)
     
@@ -21846,80 +20342,55 @@ private:
     
     // Helper: Extract J[row,col] from Jacobian's nested list structure
     // Jacobian tensor elements are int64 list pointers (rows), not doubles!
+    // Extract element from N-dimensional tensor at given indices
+    // For 2D (Jacobian): indices = [row_idx, col_idx]
+    // For ND: computes linear index using row-major ordering
+    Value* extractTensorElement(Value* tensor_ptr, std::vector<Value*> indices) {
+        // Get tensor dimensions
+        Value* dims_field = builder->CreateStructGEP(tensor_type, tensor_ptr, 0);
+        Value* dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dims_field);
+        Value* typed_dims = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
+
+        Value* num_dims_field = builder->CreateStructGEP(tensor_type, tensor_ptr, 1);
+        Value* num_dims = builder->CreateLoad(int64_type, num_dims_field);
+
+        // Get elements array
+        Value* elements_field = builder->CreateStructGEP(tensor_type, tensor_ptr, 2);
+        Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field);
+        Value* typed_elements = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
+
+        // Compute linear index using row-major ordering
+        // linear_idx = idx[0] * (dims[1] * dims[2] * ...) + idx[1] * (dims[2] * ...) + ... + idx[n-1]
+        Value* linear_idx = ConstantInt::get(int64_type, 0);
+
+        for (size_t i = 0; i < indices.size(); i++) {
+            // Compute stride for dimension i (product of all subsequent dimensions)
+            Value* stride = ConstantInt::get(int64_type, 1);
+            for (size_t j = i + 1; j < indices.size(); j++) {
+                Value* dim_j_ptr = builder->CreateGEP(int64_type, typed_dims,
+                    ConstantInt::get(int64_type, j));
+                Value* dim_j = builder->CreateLoad(int64_type, dim_j_ptr);
+                stride = builder->CreateMul(stride, dim_j);
+            }
+            // Add idx[i] * stride to linear index
+            Value* contribution = builder->CreateMul(indices[i], stride);
+            linear_idx = builder->CreateAdd(linear_idx, contribution);
+        }
+
+        // Load element as int64 (bit pattern of double)
+        Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements, linear_idx);
+        Value* elem_bits = builder->CreateLoad(int64_type, elem_ptr);
+
+        // Convert int64 bit pattern back to double
+        Value* elem_double = builder->CreateBitCast(elem_bits, double_type);
+
+        return elem_double;
+    }
+
+    // Convenience wrapper for 2D tensors (Jacobian, Hessian)
     Value* extractJacobianElement(Value* jacobian_ptr, Value* row_idx, Value* col_idx, Value* n) {
-        // Get Jacobian elements array (contains list pointers)
-        Value* jac_elements_field = builder->CreateStructGEP(tensor_type, jacobian_ptr, 2);
-        Value* jac_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), jac_elements_field);
-        Value* typed_jac_elements = builder->CreatePointerCast(jac_elements_ptr, builder->getPtrTy());
-        
-        // Load row list pointer at row_idx
-        Value* row_ptr_slot = builder->CreateGEP(int64_type, typed_jac_elements, row_idx);
-        Value* row_list_int = builder->CreateLoad(int64_type, row_ptr_slot);
-        
-        // Traverse row list to column position col_idx
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* traverse_cond = BasicBlock::Create(*context, "jac_traverse_cond", current_func);
-        BasicBlock* traverse_body = BasicBlock::Create(*context, "jac_traverse_body", current_func);
-        BasicBlock* traverse_exit = BasicBlock::Create(*context, "jac_traverse_exit", current_func);
-        
-        Value* current_list = builder->CreateAlloca(int64_type, nullptr, "current_list");
-        Value* current_col = builder->CreateAlloca(int64_type, nullptr, "current_col");
-        builder->CreateStore(row_list_int, current_list);
-        builder->CreateStore(ConstantInt::get(int64_type, 0), current_col);
-        builder->CreateBr(traverse_cond);
-        
-        builder->SetInsertPoint(traverse_cond);
-        Value* col = builder->CreateLoad(int64_type, current_col);
-        Value* list_ptr = builder->CreateLoad(int64_type, current_list);
-        Value* col_matches = builder->CreateICmpEQ(col, col_idx);
-        Value* list_not_null = builder->CreateICmpNE(list_ptr, ConstantInt::get(int64_type, 0));
-        Value* continue_traverse = builder->CreateAnd(builder->CreateNot(col_matches), list_not_null);
-        builder->CreateCondBr(continue_traverse, traverse_body, traverse_exit);
-        
-        builder->SetInsertPoint(traverse_body);
-        // Move to cdr
-        Value* cons_ptr = builder->CreateIntToPtr(list_ptr, builder->getPtrTy());
-        Value* is_cdr = ConstantInt::get(int1_type, 1);
-        Value* next_list = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
-        builder->CreateStore(next_list, current_list);
-        Value* next_col = builder->CreateAdd(col, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_col, current_col);
-        builder->CreateBr(traverse_cond);
-        
-        builder->SetInsertPoint(traverse_exit);
-        Value* final_list = builder->CreateLoad(int64_type, current_list);
-
-        // CRITICAL FIX: Check if final_list is NULL (list was shorter than expected)
-        // This can happen if the Jacobian row has fewer elements than the column index
-        Value* final_list_is_null = builder->CreateICmpEQ(final_list,
-            ConstantInt::get(int64_type, 0));
-
-        BasicBlock* extract_valid = BasicBlock::Create(*context, "jac_extract_valid", current_func);
-        BasicBlock* extract_null = BasicBlock::Create(*context, "jac_extract_null", current_func);
-        BasicBlock* extract_merge = BasicBlock::Create(*context, "jac_extract_merge", current_func);
-
-        builder->CreateCondBr(final_list_is_null, extract_null, extract_valid);
-
-        // NULL case: return 0.0 as a safe default
-        builder->SetInsertPoint(extract_null);
-        Value* zero_elem = ConstantFP::get(double_type, 0.0);
-        builder->CreateBr(extract_merge);
-        BasicBlock* null_exit = builder->GetInsertBlock();
-
-        // Valid case: extract car from the cons cell
-        builder->SetInsertPoint(extract_valid);
-        Value* elem_tagged = extractCarAsTaggedValue(final_list);
-        Value* elem_double = unpackDoubleFromTaggedValue(elem_tagged);
-        builder->CreateBr(extract_merge);
-        BasicBlock* valid_exit = builder->GetInsertBlock();
-
-        // Merge: return extracted value or 0.0
-        builder->SetInsertPoint(extract_merge);
-        PHINode* result_phi = builder->CreatePHI(double_type, 2, "jac_elem_result");
-        result_phi->addIncoming(zero_elem, null_exit);
-        result_phi->addIncoming(elem_double, valid_exit);
-
-        return result_phi;
+        // Use the general N-dimensional extractor with 2 indices
+        return extractTensorElement(jacobian_ptr, {row_idx, col_idx});
     }
     
     // ===== END PHASE 3 OPERATORS =====
@@ -23926,19 +22397,42 @@ private:
 
     // Random number generation: (random) returns double in [0.0, 1.0)
     Value* codegenRandom(const eshkol_operations_t* op) {
-        // Initialize random seed if not done (use static flag via global)
-        static bool random_initialized = false;
-        if (!random_initialized) {
-            // Seed with time on first call
-            Function* time_func = function_table["time"];
-            Function* srand48_func = function_table["srand48"];
-            if (time_func && srand48_func) {
-                Value* time_val = builder->CreateCall(time_func,
-                    {ConstantPointerNull::get(PointerType::get(*context, 0))});
-                builder->CreateCall(srand48_func, {time_val});
-            }
-            random_initialized = true;
+        // Get or create global flag for random seed initialization
+        // This is a RUNTIME flag, not a compile-time flag
+        GlobalVariable* random_seeded = module->getNamedGlobal("__random_seeded__");
+        if (!random_seeded) {
+            random_seeded = new GlobalVariable(
+                *module, int8_type, false,
+                GlobalValue::InternalLinkage,
+                ConstantInt::get(int8_type, 0),  // Initially not seeded
+                "__random_seeded__"
+            );
         }
+
+        // Check at runtime if we need to seed
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* seed_block = BasicBlock::Create(*context, "random_seed", current_func);
+        BasicBlock* continue_block = BasicBlock::Create(*context, "random_continue", current_func);
+
+        Value* is_seeded = builder->CreateLoad(int8_type, random_seeded);
+        Value* need_seed = builder->CreateICmpEQ(is_seeded, ConstantInt::get(int8_type, 0));
+        builder->CreateCondBr(need_seed, seed_block, continue_block);
+
+        // Seed block - only executed once per program run
+        builder->SetInsertPoint(seed_block);
+        Function* time_func = function_table["time"];
+        Function* srand48_func = function_table["srand48"];
+        if (time_func && srand48_func) {
+            Value* time_val = builder->CreateCall(time_func,
+                {ConstantPointerNull::get(PointerType::get(*context, 0))});
+            builder->CreateCall(srand48_func, {time_val});
+        }
+        // Mark as seeded
+        builder->CreateStore(ConstantInt::get(int8_type, 1), random_seeded);
+        builder->CreateBr(continue_block);
+
+        // Continue block - generate random number
+        builder->SetInsertPoint(continue_block);
 
         // Call drand48() to get random double
         Function* drand48_func = function_table["drand48"];
@@ -24740,8 +23234,29 @@ private:
                 return direct_it->second;
             }
 
-            // Strategy 1: Try to find lambda function directly with _func suffix in LOCAL table
+            // SCOPED LOOKUP FIX: Try scoped key FIRST to resolve local lambdas correctly
+            // This prevents conflicts when multiple functions define local variables with the same name
+            // (e.g., each test function defining a local 'f' lambda)
             std::string func_key = func_name + "_func";
+            if (current_function) {
+                std::string scoped_func_key = current_function->getName().str() + "." + func_key;
+                auto scoped_it = symbol_table.find(scoped_func_key);
+                if (scoped_it != symbol_table.end() && scoped_it->second) {
+                    eshkol_debug("resolveLambdaFunction: found '%s' in symbol_table (scoped)", scoped_func_key.c_str());
+                    if (isa<Function>(scoped_it->second)) {
+                        return scoped_it->second;
+                    }
+                }
+                scoped_it = global_symbol_table.find(scoped_func_key);
+                if (scoped_it != global_symbol_table.end() && scoped_it->second) {
+                    eshkol_debug("resolveLambdaFunction: found '%s' in global_symbol_table (scoped)", scoped_func_key.c_str());
+                    if (isa<Function>(scoped_it->second)) {
+                        return scoped_it->second;
+                    }
+                }
+            }
+
+            // Strategy 1: Try to find lambda function directly with _func suffix in LOCAL table
             auto func_it = symbol_table.find(func_key);
             if (func_it != symbol_table.end() && func_it->second) {
                 eshkol_debug("resolveLambdaFunction: found '%s' in symbol_table", func_key.c_str());
@@ -25282,7 +23797,7 @@ private:
                 // Construct capture storage key
                 std::string capture_key = lambda_name + "_capture_" + var_name;
 
-                // First try local symbol tables
+                // First try capture-specific storage (for top-level lambdas)
                 auto it = global_symbol_table.find(capture_key);
                 bool found_in_global = (it != global_symbol_table.end());
                 if (!found_in_global) {
@@ -25296,11 +23811,42 @@ private:
                     Value* captured_val = builder->CreateLoad(tagged_value_type, storage);
                     proc_args.push_back(captured_val);
                 } else {
-                    // Fallback to zero if capture not found
-                    proc_args.push_back(packInt64ToTaggedValue(
-                        ConstantInt::get(int64_type, 0), true));
-                    eshkol_warn("Map: capture '%s' not found for lambda '%s', using 0",
-                                var_name.c_str(), lambda_name.c_str());
+                    // NESTED LAMBDA FIX: For lambdas inside functions, capture globals aren't created.
+                    // Fall back to looking up the original variable name in the current scope.
+                    Value* captured_val = nullptr;
+                    auto var_it = symbol_table.find(var_name);
+                    if (var_it != symbol_table.end() && var_it->second) {
+                        Value* storage = var_it->second;
+                        if (isa<AllocaInst>(storage)) {
+                            captured_val = builder->CreateLoad(
+                                dyn_cast<AllocaInst>(storage)->getAllocatedType(), storage);
+                        } else if (isa<GlobalVariable>(storage)) {
+                            captured_val = builder->CreateLoad(
+                                dyn_cast<GlobalVariable>(storage)->getValueType(), storage);
+                        } else {
+                            captured_val = storage;
+                        }
+                        // Ensure tagged_value type
+                        if (captured_val && captured_val->getType() != tagged_value_type) {
+                            if (captured_val->getType()->isIntegerTy(64)) {
+                                captured_val = packInt64ToTaggedValue(captured_val, true);
+                            } else if (captured_val->getType()->isDoubleTy()) {
+                                captured_val = packDoubleToTaggedValue(captured_val);
+                            }
+                        }
+                    }
+
+                    if (captured_val) {
+                        proc_args.push_back(captured_val);
+                        eshkol_debug("Map: resolved capture '%s' from current scope for lambda '%s'",
+                                    var_name.c_str(), lambda_name.c_str());
+                    } else {
+                        // Fallback to zero if capture not found
+                        proc_args.push_back(packInt64ToTaggedValue(
+                            ConstantInt::get(int64_type, 0), true));
+                        eshkol_warn("Map: capture '%s' not found for lambda '%s', using 0",
+                                    var_name.c_str(), lambda_name.c_str());
+                    }
                 }
             }
         }
@@ -25475,7 +24021,7 @@ private:
                 // Construct capture storage key
                 std::string capture_key = lambda_name + "_capture_" + var_name;
 
-                // First try global symbol table, then local
+                // First try capture-specific storage (for top-level lambdas)
                 auto it = global_symbol_table.find(capture_key);
                 bool found_in_global = (it != global_symbol_table.end());
                 if (!found_in_global) {
@@ -25489,11 +24035,42 @@ private:
                     Value* captured_val = builder->CreateLoad(tagged_value_type, storage);
                     proc_args.push_back(captured_val);
                 } else {
-                    // Fallback to zero if capture not found
-                    proc_args.push_back(packInt64ToTaggedValue(
-                        ConstantInt::get(int64_type, 0), true));
-                    eshkol_warn("MultiMap: capture '%s' not found for lambda '%s', using 0",
-                                var_name.c_str(), lambda_name.c_str());
+                    // NESTED LAMBDA FIX: For lambdas inside functions, capture globals aren't created.
+                    // Fall back to looking up the original variable name in the current scope.
+                    Value* captured_val = nullptr;
+                    auto var_it = symbol_table.find(var_name);
+                    if (var_it != symbol_table.end() && var_it->second) {
+                        Value* storage = var_it->second;
+                        if (isa<AllocaInst>(storage)) {
+                            captured_val = builder->CreateLoad(
+                                dyn_cast<AllocaInst>(storage)->getAllocatedType(), storage);
+                        } else if (isa<GlobalVariable>(storage)) {
+                            captured_val = builder->CreateLoad(
+                                dyn_cast<GlobalVariable>(storage)->getValueType(), storage);
+                        } else {
+                            captured_val = storage;
+                        }
+                        // Ensure tagged_value type
+                        if (captured_val && captured_val->getType() != tagged_value_type) {
+                            if (captured_val->getType()->isIntegerTy(64)) {
+                                captured_val = packInt64ToTaggedValue(captured_val, true);
+                            } else if (captured_val->getType()->isDoubleTy()) {
+                                captured_val = packDoubleToTaggedValue(captured_val);
+                            }
+                        }
+                    }
+
+                    if (captured_val) {
+                        proc_args.push_back(captured_val);
+                        eshkol_debug("MultiMap: resolved capture '%s' from current scope for lambda '%s'",
+                                    var_name.c_str(), lambda_name.c_str());
+                    } else {
+                        // Fallback to zero if capture not found
+                        proc_args.push_back(packInt64ToTaggedValue(
+                            ConstantInt::get(int64_type, 0), true));
+                        eshkol_warn("MultiMap: capture '%s' not found for lambda '%s', using 0",
+                                    var_name.c_str(), lambda_name.c_str());
+                    }
                 }
             }
         }
@@ -27067,6 +25644,66 @@ private:
         return builtin_func;
     }
 };
+
+// ============================================================================
+// ControlFlowCodegen Callback Implementations
+// ============================================================================
+
+namespace ControlFlowCallbacks {
+    // Thread-local storage for TypedValue to handle reentrant calls
+    // When control flow operations are nested (e.g., begin inside cond inside and),
+    // each level needs its own TypedValue storage
+    // CRITICAL: Using std::deque instead of std::vector because deque does NOT
+    // invalidate pointers to existing elements when push_back is called.
+    // This prevents pointer invalidation during nested control flow operations.
+    static thread_local std::deque<TypedValue> typed_value_stack;
+
+    llvm::Value* codegenASTWrapper(const void* ast, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->codegenAST(static_cast<const eshkol_ast_t*>(ast));
+    }
+
+    void* codegenTypedASTWrapper(const void* ast, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        // Push a new TypedValue onto the stack to handle reentrancy
+        typed_value_stack.push_back(codegen->codegenTypedAST(static_cast<const eshkol_ast_t*>(ast)));
+        return &typed_value_stack.back();
+    }
+
+    llvm::Value* typedToTaggedWrapper(void* typed_value, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        auto* tv = static_cast<TypedValue*>(typed_value);
+        llvm::Value* result = codegen->typedValueToTaggedValue(*tv);
+        // Pop the TypedValue we pushed in codegenTypedASTWrapper
+        // Only pop if the pointer matches the top (safety check)
+        if (!typed_value_stack.empty() && tv == &typed_value_stack.back()) {
+            typed_value_stack.pop_back();
+        }
+        return result;
+    }
+
+    void codegenFuncDefineWrapper(const void* op, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        codegen->codegenNestedFunctionDefinition(static_cast<const eshkol_operations_t*>(op));
+    }
+
+    void codegenVarDefineWrapper(const void* op, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        codegen->codegenVariableDefinition(static_cast<const eshkol_operations_t*>(op));
+    }
+
+    llvm::Value* eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->callBuiltinEqv(a, b);
+    }
+
+    llvm::Value* detectAndPackWrapper(llvm::Value* val, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        // Use detectValueType to properly identify CONS_PTR from PtrToInt values
+        TypedValue tv = codegen->detectValueType(val);
+        return codegen->typedValueToTaggedValue(tv);
+    }
+}
 
 extern "C" {
 

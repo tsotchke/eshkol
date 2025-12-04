@@ -20,6 +20,8 @@
 
 #include <eshkol/backend/codegen_context.h>
 #include <eshkol/backend/tagged_value_codegen.h>
+#include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/autodiff_codegen.h>
 #include <llvm/IR/Value.h>
 
 namespace eshkol {
@@ -39,9 +41,14 @@ namespace eshkol {
 class ArithmeticCodegen {
 public:
     /**
-     * Construct ArithmeticCodegen with context and tagged value helper.
+     * Construct ArithmeticCodegen with all dependencies.
+     * @param ctx The shared codegen context
+     * @param tagged Tagged value operations helper
+     * @param tensor Tensor operations helper
+     * @param autodiff Automatic differentiation helper
      */
-    ArithmeticCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged);
+    ArithmeticCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged,
+                      TensorCodegen& tensor, AutodiffCodegen& autodiff);
 
     // === Binary Arithmetic Operations ===
 
@@ -130,29 +137,28 @@ public:
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
+    TensorCodegen& tensor_;
+    AutodiffCodegen& autodiff_;
 
-    // Implementation callback type for tensor/AD operations
-    // These are set by the main codegen to avoid circular dependencies
-    using TensorArithFunc = llvm::Value* (*)(llvm::Value*, llvm::Value*, const std::string&, void*);
-    using ADNodeCreateFunc = llvm::Value* (*)(llvm::Value*, void*);
+    // === Internal Helpers ===
 
-    TensorArithFunc tensor_arith_callback_ = nullptr;
-    ADNodeCreateFunc ad_const_callback_ = nullptr;
-    void* callback_context_ = nullptr;
-
-public:
     /**
-     * Set callbacks for tensor and AD operations.
-     * Called by EshkolLLVMCodeGen to inject dependencies.
+     * Convert operand to dual number (promote constants to dual with zero tangent).
+     * @param operand Tagged value operand
+     * @param is_dual Whether operand is already a dual number
+     * @param is_double Whether operand is a double
+     * @return Dual number struct
      */
-    void setTensorArithCallback(TensorArithFunc func, void* context) {
-        tensor_arith_callback_ = func;
-        callback_context_ = context;
-    }
+    llvm::Value* convertToDual(llvm::Value* operand, llvm::Value* is_dual, llvm::Value* is_double);
 
-    void setADConstCallback(ADNodeCreateFunc func) {
-        ad_const_callback_ = func;
-    }
+    /**
+     * Convert operand to AD node (promote constants to constant AD nodes).
+     * @param operand Tagged value operand
+     * @param is_ad Whether operand is already an AD node
+     * @param base_type The base type of the operand
+     * @return AD node pointer
+     */
+    llvm::Value* convertToADNode(llvm::Value* operand, llvm::Value* is_ad, llvm::Value* base_type);
 };
 
 } // namespace eshkol

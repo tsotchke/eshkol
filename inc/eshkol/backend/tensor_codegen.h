@@ -168,6 +168,28 @@ private:
     CodegenASTFunc codegen_ast_callback_ = nullptr;
     void* callback_context_ = nullptr;
 
+    // === Internal Helpers ===
+
+    /**
+     * Scheme vector arithmetic (VECTOR_PTR type).
+     * Vectors use tagged_value elements after an 8-byte length field.
+     * @param vec1 First vector (tagged)
+     * @param vec2 Second vector (tagged)
+     * @param operation One of "add", "sub", "mul", "div"
+     * @return Result vector (tagged)
+     */
+    llvm::Value* schemeVectorArithmetic(llvm::Value* vec1, llvm::Value* vec2, const std::string& operation);
+
+    /**
+     * Tensor arithmetic for TENSOR_PTR type.
+     * Tensors use double elements in a contiguous array.
+     * @param tensor1 First tensor (tagged)
+     * @param tensor2 Second tensor (tagged)
+     * @param operation One of "add", "sub", "mul", "div"
+     * @return Result tensor (tagged)
+     */
+    llvm::Value* rawTensorArithmetic(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
+
 public:
     /**
      * Set callback for AST code generation.

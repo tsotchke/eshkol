@@ -1746,7 +1746,60 @@ static void display_char(uint32_t codepoint, eshkol_display_opts_t* opts) {
     }
 }
 
-// Display a tensor (stub - full implementation would need tensor struct)
+// Tensor struct layout (must match LLVM TypeSystem tensor_type):
+// struct Tensor {
+//     uint64_t* dimensions;      // idx 0: array of dimension sizes
+//     uint64_t  num_dimensions;  // idx 1: number of dimensions
+//     int64_t*  elements;        // idx 2: element data (doubles stored as int64 bits)
+//     uint64_t  total_elements;  // idx 3: total number of elements
+// };
+typedef struct {
+    uint64_t* dimensions;
+    uint64_t  num_dimensions;
+    int64_t*  elements;
+    uint64_t  total_elements;
+} eshkol_tensor_t;
+
+// Recursive helper for displaying N-dimensional tensors
+static void display_tensor_recursive(FILE* out, const eshkol_tensor_t* tensor,
+                                      uint64_t current_dim, uint64_t offset) {
+    if (tensor->num_dimensions == 0) {
+        fprintf(out, "#()");
+        return;
+    }
+
+    uint64_t dim_size = tensor->dimensions[current_dim];
+
+    // Base case: innermost dimension - print actual elements
+    if (current_dim == tensor->num_dimensions - 1) {
+        fprintf(out, "(");
+        for (uint64_t i = 0; i < dim_size; i++) {
+            if (i > 0) fprintf(out, " ");
+            // Elements stored as int64 bit pattern of double
+            int64_t bits = tensor->elements[offset + i];
+            double value;
+            memcpy(&value, &bits, sizeof(double));
+            fprintf(out, "%g", value);
+        }
+        fprintf(out, ")");
+        return;
+    }
+
+    // Recursive case: compute stride and iterate over slices
+    uint64_t stride = 1;
+    for (uint64_t k = current_dim + 1; k < tensor->num_dimensions; k++) {
+        stride *= tensor->dimensions[k];
+    }
+
+    fprintf(out, "(");
+    for (uint64_t i = 0; i < dim_size; i++) {
+        if (i > 0) fprintf(out, " ");
+        display_tensor_recursive(out, tensor, current_dim + 1, offset + i * stride);
+    }
+    fprintf(out, ")");
+}
+
+// Display a tensor with proper N-dimensional structure
 static void display_tensor(uint64_t tensor_ptr, eshkol_display_opts_t* opts) {
     FILE* out = get_output(opts);
 
@@ -1755,12 +1808,31 @@ static void display_tensor(uint64_t tensor_ptr, eshkol_display_opts_t* opts) {
         return;
     }
 
-    // For now, just print a placeholder
-    // Full implementation would iterate tensor elements
-    fprintf(out, "#<tensor@%p>", (void*)tensor_ptr);
+    const eshkol_tensor_t* tensor = (const eshkol_tensor_t*)tensor_ptr;
+
+    // Validate tensor structure
+    if (tensor->num_dimensions == 0 || tensor->total_elements == 0) {
+        fprintf(out, "#()");
+        return;
+    }
+
+    if (tensor->dimensions == NULL || tensor->elements == NULL) {
+        fprintf(out, "#<invalid-tensor>");
+        return;
+    }
+
+    // Print tensor prefix then contents
+    fprintf(out, "#");
+    display_tensor_recursive(out, tensor, 0, 0);
 }
 
-// Display a vector (stub - full implementation would need vector struct)
+// Scheme vector structure:
+// [length: i64] at offset 0 (8 bytes)
+// [elem0: tagged_value] at offset 8 (16 bytes each)
+// [elem1: tagged_value] at offset 24
+// etc.
+
+// Display a Scheme vector with proper element formatting
 static void display_vector(uint64_t vector_ptr, eshkol_display_opts_t* opts) {
     FILE* out = get_output(opts);
 
@@ -1769,8 +1841,33 @@ static void display_vector(uint64_t vector_ptr, eshkol_display_opts_t* opts) {
         return;
     }
 
-    // For now, just print a placeholder
-    fprintf(out, "#<vector@%p>", (void*)vector_ptr);
+    // Read length from start of vector
+    uint64_t* len_ptr = (uint64_t*)vector_ptr;
+    uint64_t length = *len_ptr;
+
+    // Validate length (sanity check)
+    if (length > 10000) {
+        fprintf(out, "#<invalid-vector>");
+        return;
+    }
+
+    fprintf(out, "#(");
+
+    // Elements start after the 8-byte length field
+    // Each element is a tagged_value (16 bytes)
+    uint8_t* elem_base = (uint8_t*)vector_ptr + 8;
+
+    for (uint64_t i = 0; i < length; i++) {
+        if (i > 0) fprintf(out, " ");
+
+        // Get pointer to i-th tagged_value element
+        eshkol_tagged_value_t* elem = (eshkol_tagged_value_t*)(elem_base + i * sizeof(eshkol_tagged_value_t));
+
+        // Recursively display the element
+        eshkol_display_value_opts(elem, opts);
+    }
+
+    fprintf(out, ")");
 }
 
 // ===== END UNIFIED DISPLAY IMPLEMENTATION =====
