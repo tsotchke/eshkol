@@ -556,29 +556,72 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
 
 // Transform internal defines to letrec
 // Takes a vector of body expressions and returns a transformed AST
-// Internal defines at the start of the body are converted to letrec bindings
+// ALL internal defines are collected into a letrec, regardless of position
 //
 // Example:
+//   (display "before")
 //   (define a 1)
 //   (define (helper x) (+ x 1))
 //   (+ a (helper 2))
 // Becomes:
 //   (letrec ((a 1) (helper (lambda (x) (+ x 1))))
-//     (+ a (helper 2)))
+//     (begin (display "before") (+ a (helper 2))))
 static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_ast_t>& body_expressions) {
     eshkol_ast_t result;
 
-    // Find all internal defines (they must be at the beginning per Scheme semantics)
-    std::vector<eshkol_ast_t> defines;
-    size_t first_non_define = 0;
+    // PROPER EVALUATION ORDER FIX:
+    // - Statements BEFORE defines should execute first
+    // - Consecutive defines (starting from first define) are collected into letrec
+    // - Statements AFTER the define block become the letrec body
+    //
+    // Example: (display "before") (define x 1) (define y 2) (display "after") (+ x y)
+    // Becomes: (begin (display "before") (letrec ((x 1) (y 2)) (display "after") (+ x y)))
 
+    std::vector<eshkol_ast_t> before_defines;  // Statements before first define
+    std::vector<eshkol_ast_t> defines;          // Consecutive defines
+    std::vector<eshkol_ast_t> after_defines;    // Everything after defines
+
+    // Find first define
+    size_t first_define_idx = body_expressions.size();
     for (size_t i = 0; i < body_expressions.size(); i++) {
+        if (body_expressions[i].type == ESHKOL_OP &&
+            body_expressions[i].operation.op == ESHKOL_DEFINE_OP) {
+            first_define_idx = i;
+            break;
+        }
+    }
+
+    // Collect statements before first define
+    for (size_t i = 0; i < first_define_idx; i++) {
+        before_defines.push_back(body_expressions[i]);
+    }
+
+    // Collect consecutive defines starting from first_define_idx
+    size_t define_end_idx = first_define_idx;
+    for (size_t i = first_define_idx; i < body_expressions.size(); i++) {
+        if (body_expressions[i].type == ESHKOL_OP &&
+            body_expressions[i].operation.op == ESHKOL_DEFINE_OP) {
+            defines.push_back(body_expressions[i]);
+            define_end_idx = i + 1;
+        } else {
+            // Non-define encountered - stop collecting defines
+            // But continue to check for more defines (allow interleaved for now)
+            // Actually, for strict behavior we'd break here. For Eshkol extension,
+            // collect ALL remaining defines but preserve non-define positions
+            after_defines.push_back(body_expressions[i]);
+        }
+    }
+
+    // Simplified: Collect ALL defines, put all non-defines after
+    // But statements before FIRST define execute before letrec
+    defines.clear();
+    after_defines.clear();
+    for (size_t i = first_define_idx; i < body_expressions.size(); i++) {
         const auto& expr = body_expressions[i];
         if (expr.type == ESHKOL_OP && expr.operation.op == ESHKOL_DEFINE_OP) {
             defines.push_back(expr);
-            first_non_define = i + 1;
         } else {
-            break;  // Stop at first non-define expression
+            after_defines.push_back(expr);
         }
     }
 
@@ -658,30 +701,48 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
         *result.operation.let_op.bindings[i].cons_cell.cdr = val_ast;
     }
 
-    // Create body from remaining expressions
+    // Create body from expressions after defines
     eshkol_ast_t body;
-    size_t remaining = body_expressions.size() - first_non_define;
 
-    if (remaining == 0) {
+    if (after_defines.empty()) {
         // No body expressions after defines - this is an error
-        // But for robustness, return the last define's value
+        // But for robustness, return null
         eshkol_error("Internal defines must be followed by at least one expression");
         body.type = ESHKOL_NULL;
-    } else if (remaining == 1) {
-        body = body_expressions[first_non_define];
+    } else if (after_defines.size() == 1) {
+        body = after_defines[0];
     } else {
         // Multiple expressions - wrap in sequence
         body.type = ESHKOL_OP;
         body.operation.op = ESHKOL_SEQUENCE_OP;
-        body.operation.sequence_op.num_expressions = remaining;
-        body.operation.sequence_op.expressions = new eshkol_ast_t[remaining];
-        for (size_t i = 0; i < remaining; i++) {
-            body.operation.sequence_op.expressions[i] = body_expressions[first_non_define + i];
+        body.operation.sequence_op.num_expressions = after_defines.size();
+        body.operation.sequence_op.expressions = new eshkol_ast_t[after_defines.size()];
+        for (size_t i = 0; i < after_defines.size(); i++) {
+            body.operation.sequence_op.expressions[i] = after_defines[i];
         }
     }
 
     result.operation.let_op.body = new eshkol_ast_t;
     *result.operation.let_op.body = body;
+
+    // If there are statements before the first define, wrap in sequence
+    // (begin before1 before2 ... (letrec ...))
+    if (!before_defines.empty()) {
+        eshkol_ast_t final_result;
+        final_result.type = ESHKOL_OP;
+        final_result.operation.op = ESHKOL_SEQUENCE_OP;
+        final_result.operation.sequence_op.num_expressions = before_defines.size() + 1;
+        final_result.operation.sequence_op.expressions = new eshkol_ast_t[before_defines.size() + 1];
+
+        // Copy before_defines statements first
+        for (size_t i = 0; i < before_defines.size(); i++) {
+            final_result.operation.sequence_op.expressions[i] = before_defines[i];
+        }
+        // Then the letrec
+        final_result.operation.sequence_op.expressions[before_defines.size()] = result;
+
+        return final_result;
+    }
 
     return result;
 }

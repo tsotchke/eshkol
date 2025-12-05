@@ -24,8 +24,10 @@
 #include <llvm/IR/GlobalVariable.h>
 #include <cstdint>
 #include <string>
+#include <vector>
 #include <unordered_map>
 #include <utility>
+#include <mutex>
 
 namespace eshkol {
 
@@ -420,6 +422,27 @@ private:
     using PackInt64Callback = llvm::Value* (*)(llvm::Value*, bool, void*);
     PackInt64Callback pack_int64_callback_ = nullptr;
 
+    // TypedValue conversion callback - converts raw LLVM values to tagged
+    using TypedValueToTaggedCallback = llvm::Value* (*)(llvm::Value*, void*);
+    TypedValueToTaggedCallback typed_value_to_tagged_callback_ = nullptr;
+
+    // Closure captures loading callback for autodiff functions
+    using LoadCapturesCallback = void (*)(llvm::Function*, const std::string&,
+                                          std::vector<llvm::Value*>&, void*);
+    LoadCapturesCallback load_captures_callback_ = nullptr;
+
+    // Backward pass codegen callback (for recursive gradient)
+    using BackwardCallback = void (*)(llvm::Value*, llvm::Value*, void*);
+    BackwardCallback backward_callback_ = nullptr;
+
+    // REPL state references (for cross-evaluation function resolution)
+    std::mutex* repl_mutex_ = nullptr;
+    std::unordered_map<std::string, std::vector<std::string>>* repl_lambda_captures_ = nullptr;
+    std::unordered_map<std::string, uint64_t>* repl_symbol_addresses_ = nullptr;
+
+    // Current tape pointer for AD operations (runtime state)
+    llvm::Value* current_tape_ptr_ = nullptr;
+
 public:
     /**
      * Set function table reference (for math functions).
@@ -477,6 +500,46 @@ public:
         unpack_dual_from_tagged_callback_ = unpack_dual_from_tagged;
         pack_int64_callback_ = pack_int64;
     }
+
+    /**
+     * Set typed value conversion callback.
+     */
+    void setTypedValueCallback(TypedValueToTaggedCallback callback) {
+        typed_value_to_tagged_callback_ = callback;
+    }
+
+    /**
+     * Set closure captures loading callback.
+     */
+    void setLoadCapturesCallback(LoadCapturesCallback callback) {
+        load_captures_callback_ = callback;
+    }
+
+    /**
+     * Set backward pass callback for recursive gradient.
+     */
+    void setBackwardCallback(BackwardCallback callback) {
+        backward_callback_ = callback;
+    }
+
+    /**
+     * Set REPL state references for cross-evaluation function resolution.
+     */
+    void setReplState(
+        std::mutex* mutex,
+        std::unordered_map<std::string, std::vector<std::string>>* lambda_captures,
+        std::unordered_map<std::string, uint64_t>* symbol_addresses
+    ) {
+        repl_mutex_ = mutex;
+        repl_lambda_captures_ = lambda_captures;
+        repl_symbol_addresses_ = symbol_addresses;
+    }
+
+    /**
+     * Set/get current tape pointer for AD operations.
+     */
+    void setCurrentTapePtr(llvm::Value* tape) { current_tape_ptr_ = tape; }
+    llvm::Value* getCurrentTapePtr() const { return current_tape_ptr_; }
 };
 
 } // namespace eshkol

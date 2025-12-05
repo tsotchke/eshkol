@@ -16,6 +16,7 @@
 
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
+#include <vector>
 
 namespace eshkol {
 
@@ -853,22 +854,35 @@ llvm::Value* CollectionCodegen::list(const eshkol_operations_t* op) {
         return tagged_.packNull();
     }
 
-    // Build list from right to left (cons chain)
-    // Start with empty list (null)
-    llvm::Value* result = tagged_.packNull();
+    // SCHEME EVALUATION ORDER FIX: Evaluate arguments left-to-right FIRST
+    // Then build list right-to-left using the stored results.
+    // This ensures side effects happen in left-to-right order.
+    std::vector<llvm::Value*> evaluated_args;
+    evaluated_args.reserve(op->call_op.num_vars);
 
-    // Build list from last element to first (right-associative)
-    for (int64_t i = op->call_op.num_vars - 1; i >= 0; i--) {
+    // Phase 1: Evaluate all arguments LEFT-TO-RIGHT
+    for (size_t i = 0; i < op->call_op.num_vars; i++) {
         // Generate element via callback
         void* typed_elem = codegen_typed_ast_callback_(&op->call_op.variables[i], callback_context_);
-        if (!typed_elem) continue;
+        if (!typed_elem) {
+            evaluated_args.push_back(tagged_.packNull());
+            continue;
+        }
 
         // Convert to tagged value
         llvm::Value* tagged_elem = typed_to_tagged_callback_(typed_elem, callback_context_);
-        if (!tagged_elem) continue;
+        if (!tagged_elem) {
+            evaluated_args.push_back(tagged_.packNull());
+            continue;
+        }
+        evaluated_args.push_back(tagged_elem);
+    }
 
+    // Phase 2: Build list from right to left using already-evaluated values
+    llvm::Value* result = tagged_.packNull();
+    for (int64_t i = evaluated_args.size() - 1; i >= 0; i--) {
         // Create cons cell: (element . result)
-        result = allocConsCell(tagged_elem, result);
+        result = allocConsCell(evaluated_args[i], result);
     }
 
     return result;

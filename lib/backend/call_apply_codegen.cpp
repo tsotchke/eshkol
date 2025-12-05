@@ -98,11 +98,24 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
         }
 
         // FIRST-CLASS FUNCTION FIX: Check for function pointer stored with _func suffix
+        // MUTABLE CAPTURE FIX: Skip this path if function has capture parameters (ptr types)
+        // because applyUserFunction doesn't handle captures - use closure path instead
         if (symbol_table_) {
             auto func_it = symbol_table_->find(func_name + "_func");
             if (func_it != symbol_table_->end()) {
                 if (auto* stored_func = dyn_cast<Function>(func_it->second)) {
-                    return applyUserFunction(stored_func, list_int);
+                    // Check if function has capture parameters (ptr type params after regular params)
+                    bool has_captures = false;
+                    for (auto& arg : stored_func->args()) {
+                        if (arg.getType()->isPointerTy()) {
+                            has_captures = true;
+                            break;
+                        }
+                    }
+                    if (!has_captures) {
+                        return applyUserFunction(stored_func, list_int);
+                    }
+                    // Has captures - fall through to closure path below
                 }
             }
         }
@@ -124,8 +137,19 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
 
         if (func_value) {
             // Check if it's a Function* directly
+            // MUTABLE CAPTURE FIX: Only use applyUserFunction for functions without captures
             if (auto* direct_func = dyn_cast<Function>(func_value)) {
-                return applyUserFunction(direct_func, list_int);
+                bool has_captures = false;
+                for (auto& arg : direct_func->args()) {
+                    if (arg.getType()->isPointerTy()) {
+                        has_captures = true;
+                        break;
+                    }
+                }
+                if (!has_captures) {
+                    return applyUserFunction(direct_func, list_int);
+                }
+                // Has captures - fall through to closure path
             }
 
             // Load from storage if needed
@@ -554,14 +578,23 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
                      ConstantInt::get(ctx_.int64Type(), i)});
                 call_args.push_back(ctx_.builder().CreateLoad(ctx_.taggedValueType(), arg_ptr));
             }
+            // MUTABLE CAPTURE FIX: Pass pointers to captures, not loaded values
+            // This matches the updated lambda signature that expects ptr types for captures
             for (int i = 0; i < cc; i++) {
                 Value* cap_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), captures_typed,
                     ConstantInt::get(ctx_.int64Type(), i));
-                call_args.push_back(ctx_.builder().CreateLoad(ctx_.taggedValueType(), cap_ptr));
+                call_args.push_back(cap_ptr);  // Pass pointer, not loaded value
             }
 
             // Create function type and call
-            std::vector<Type*> param_types(ac + cc, ctx_.taggedValueType());
+            // MUTABLE CAPTURE FIX: Capture params use pointer type, not tagged_value
+            std::vector<Type*> param_types;
+            for (int i = 0; i < ac; i++) {
+                param_types.push_back(ctx_.taggedValueType());
+            }
+            for (int i = 0; i < cc; i++) {
+                param_types.push_back(ctx_.ptrType());  // Pointer type for captures
+            }
             FunctionType* func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
             Value* result = ctx_.builder().CreateCall(func_type, actual_func_ptr, call_args);
             ctx_.builder().CreateBr(merge_bb);

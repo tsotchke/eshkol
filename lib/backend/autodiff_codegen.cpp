@@ -893,9 +893,183 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
 }
 
 llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
-    // Forward-mode AD using dual numbers - requires AST codegen callback
-    eshkol_warn("AutodiffCodegen::derivative requires AST codegen - using fallback");
-    return tagged_.packNull();
+    using namespace llvm;
+
+    if (!op->derivative_op.function || !op->derivative_op.point) {
+        eshkol_error("Invalid derivative operation - missing function or point");
+        return nullptr;
+    }
+
+    if (!resolve_lambda_callback_ || !codegen_ast_callback_) {
+        eshkol_error("derivative: Required callbacks not set");
+        return tagged_.packNull();
+    }
+
+    eshkol_info("Computing derivative using forward-mode AD (dual numbers)");
+
+    // Get the function to differentiate
+    Value* func = resolve_lambda_callback_(op->derivative_op.function, 1, callback_context_);
+    if (!func) {
+        eshkol_error("Failed to resolve function for derivative");
+        return nullptr;
+    }
+
+    Function* func_ptr = dyn_cast<Function>(func);
+    if (!func_ptr) {
+        eshkol_error("derivative operator requires a function");
+        return nullptr;
+    }
+
+    // Get evaluation point - must be a scalar double
+    Value* x = codegen_ast_callback_(op->derivative_op.point, callback_context_);
+    if (!x) {
+        eshkol_error("Failed to evaluate derivative point");
+        return nullptr;
+    }
+
+    // Convert x to double if it's an integer or tagged_value
+    if (x->getType()->isIntegerTy()) {
+        x = ctx_.builder().CreateSIToFP(x, ctx_.doubleType());
+    } else if (x->getType() == ctx_.taggedValueType()) {
+        // Handle computed values that return tagged_value_t
+        x = tagged_.unpackDouble(x);
+    } else if (!x->getType()->isDoubleTy()) {
+        eshkol_error("derivative point must be numeric (int64 or double)");
+        return nullptr;
+    }
+
+    // Create dual number with seed derivative = 1.0
+    Value* one = ConstantFP::get(ctx_.doubleType(), 1.0);
+    Value* x_dual = createDualNumber(x, one);
+
+    // Pack dual number into tagged_value for function call
+    Value* x_dual_tagged = packDualToTagged(x_dual);
+
+    // Build arguments for derivative lambda call
+    std::vector<Value*> deriv_call_args = {x_dual_tagged};
+
+    // CLOSURE FIX: Load captures from STORAGE
+    FunctionType* deriv_func_type = func_ptr->getFunctionType();
+    if (deriv_func_type->getNumParams() > 1) {
+        size_t num_captures = deriv_func_type->getNumParams() - 1;
+        std::string lambda_name = func_ptr->getName().str();
+
+        // REPL MODE: Get capture names from registry
+        std::vector<std::string> capture_names;
+        if (repl_mode_enabled_ && *repl_mode_enabled_ && repl_mutex_ && repl_lambda_captures_) {
+            std::lock_guard<std::mutex> lock(*repl_mutex_);
+            auto captures_it = repl_lambda_captures_->find(lambda_name);
+            if (captures_it != repl_lambda_captures_->end()) {
+                capture_names = captures_it->second;
+            }
+        }
+
+        for (size_t i = 0; i < num_captures; i++) {
+            std::string var_name;
+            if (i < capture_names.size()) {
+                var_name = capture_names[i];
+            } else {
+                // Fallback to LLVM parameter names (for non-REPL mode)
+                auto arg_it = func_ptr->arg_begin();
+                std::advance(arg_it, i + 1);  // Skip first parameter
+                if (arg_it != func_ptr->arg_end()) {
+                    var_name = arg_it->getName().str();
+                    if (var_name.find("captured_") == 0) {
+                        var_name = var_name.substr(9);
+                    }
+                }
+            }
+
+            std::string capture_key = lambda_name + "_capture_" + var_name;
+
+            // First try local symbol tables with capture_key
+            bool found = false;
+            Value* storage = nullptr;
+
+            if (global_symbol_table_) {
+                auto it = global_symbol_table_->find(capture_key);
+                if (it != global_symbol_table_->end()) {
+                    found = true;
+                    storage = it->second;
+                }
+            }
+            if (!found && symbol_table_) {
+                auto it = symbol_table_->find(capture_key);
+                if (it != symbol_table_->end()) {
+                    found = true;
+                    storage = it->second;
+                }
+            }
+
+            // INNER FUNCTION FIX: If capture_key not found, try plain variable name
+            // This handles lambdas inside functions where captures are function parameters
+            // (not stored as GlobalVariables with _capture_ keys)
+            if (!found && symbol_table_) {
+                auto it = symbol_table_->find(var_name);
+                if (it != symbol_table_->end()) {
+                    found = true;
+                    storage = it->second;
+                    eshkol_debug("Derivative: found capture '%s' via plain variable name", var_name.c_str());
+                }
+            }
+
+            // REPL MODE: Try creating external declaration for capture global
+            if (!found && repl_mode_enabled_ && *repl_mode_enabled_ &&
+                repl_mutex_ && repl_symbol_addresses_) {
+                std::lock_guard<std::mutex> lock(*repl_mutex_);
+                auto sym_it = repl_symbol_addresses_->find(capture_key);
+                if (sym_it != repl_symbol_addresses_->end()) {
+                    GlobalVariable* capture_global = ctx_.module().getGlobalVariable(capture_key);
+                    if (!capture_global) {
+                        capture_global = new GlobalVariable(
+                            ctx_.module(),
+                            ctx_.taggedValueType(),
+                            false,
+                            GlobalValue::ExternalLinkage,
+                            nullptr,
+                            capture_key
+                        );
+                    }
+                    // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+                    deriv_call_args.push_back(capture_global);
+                    continue;
+                }
+            }
+
+            if (found && storage) {
+                // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+                // But first check if we need to create a temporary storage for pass-by-value
+                if (storage->getType()->isPointerTy()) {
+                    deriv_call_args.push_back(storage);
+                } else {
+                    // Value is not a pointer - need to create temporary storage
+                    // This happens when capturing function parameters (pass-by-value)
+                    Value* temp_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "capture_temp");
+                    ctx_.builder().CreateStore(storage, temp_storage);
+                    deriv_call_args.push_back(temp_storage);
+                    eshkol_debug("Derivative: created temp storage for capture '%s'", var_name.c_str());
+                }
+            } else {
+                // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
+                deriv_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
+                eshkol_warn("Derivative: capture '%s' not found, using null pointer", var_name.c_str());
+            }
+        }
+    }
+
+    // Call function with dual number input and captures
+    Value* result_tagged = ctx_.builder().CreateCall(func_ptr, deriv_call_args);
+
+    // Unpack result from tagged_value
+    Value* result_dual = unpackDualFromTagged(result_tagged);
+
+    // Extract derivative component from result
+    Value* derivative_val = getDualTangent(result_dual);
+
+    eshkol_debug("Derivative operator: extracted derivative component");
+
+    // Return derivative as tagged_value for consistent handling in arithmetic
+    return tagged_.packDouble(derivative_val);
 }
 
 llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
