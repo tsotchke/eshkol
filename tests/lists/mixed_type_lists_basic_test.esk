@@ -3,6 +3,7 @@
 ;; Testing tagged cons cell allocation and basic operations
 ;;
 
+(require stdlib)
 
 (display "=== MIXED TYPE LISTS BASIC TEST ===")
 (newline)

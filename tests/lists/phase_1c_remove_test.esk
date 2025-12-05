@@ -2,6 +2,7 @@
 ;; Phase 1C Remove Test - Testing remove function only
 ;;
 
+(require stdlib)
 
 (display "=== PHASE 1C REMOVE TEST ===")
 (newline)

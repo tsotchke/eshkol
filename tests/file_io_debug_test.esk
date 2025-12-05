@@ -1,0 +1,31 @@
+; Debug File I/O Test
+
+(define filename "debug_test.txt")
+
+; Write test
+(define out (open-output-file filename))
+(display "Output port: ")
+(display out)
+(newline)
+(write-line "Test line 1" out)
+(write-line "Test line 2" out)
+(close-port out)
+
+; Read test
+(define in (open-input-file filename))
+(display "Input port: ")
+(display in)
+(newline)
+
+; Try reading
+(define r1 (read-line in))
+(display "Read 1 type check - is eof? ")
+(display (eof-object? r1))
+(newline)
+(display "Read 1 value: ")
+(display r1)
+(newline)
+
+(close-port in)
+(display "Done")
+(newline)

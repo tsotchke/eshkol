@@ -5,6 +5,8 @@
 ;; works correctly with basic cons operations.
 ;;
 ;; Create a simple cons cell using arena allocation
+()
+
 (define pair (cons 42 100))
 (display "Created pair with arena allocation: ")
 (display (car pair))

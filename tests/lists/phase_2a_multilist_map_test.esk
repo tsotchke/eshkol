@@ -2,6 +2,7 @@
 ;; Phase 2A Multi-List Map Test - Testing multi-list higher-order functions
 ;;
 
+(require stdlib)
 
 (display "=== PHASE 2A MULTI-LIST MAP TEST ===")
 (newline)

@@ -1,0 +1,39 @@
+; Simple File I/O Test
+
+; Test 1: Basic write and read
+(define filename "simple_test.txt")
+
+(display "Writing to file...")
+(newline)
+
+(define out (open-output-file filename))
+(write-line "Hello" out)
+(close-port out)
+
+(display "Reading from file...")
+(newline)
+
+(define in (open-input-file filename))
+(define line (read-line in))
+
+(display "Type check: ")
+(display (string? "test"))  ; Should be #t
+(newline)
+
+(display "Line read: ")
+(display line)
+(newline)
+
+(display "Is EOF? ")
+(display (eof-object? line))
+(newline)
+
+(define line2 (read-line in))
+(display "Second read (should be EOF): ")
+(display (eof-object? line2))
+(newline)
+
+(close-port in)
+
+(display "Done")
+(newline)

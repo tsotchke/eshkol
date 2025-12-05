@@ -2,6 +2,7 @@
 ;; Debug Binary Search 2d - Test exact begin block pattern
 ;;
 
+(require stdlib)
 
 (display "=== DEBUG BINARY SEARCH 2D ===")
 (newline)

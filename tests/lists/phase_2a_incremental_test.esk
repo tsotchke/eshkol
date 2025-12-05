@@ -2,6 +2,7 @@
 ;; Phase 2A Incremental Test - Testing each section separately
 ;;
 
+(require stdlib)
 
 (display "=== PHASE 2A INCREMENTAL TEST ===")
 (newline)

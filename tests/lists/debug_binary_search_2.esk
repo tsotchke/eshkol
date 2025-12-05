@@ -2,6 +2,7 @@
 ;; Debug Binary Search 2 - Add second test section
 ;;
 
+(require stdlib)
 
 (display "=== DEBUG BINARY SEARCH 2 ===")
 (newline)

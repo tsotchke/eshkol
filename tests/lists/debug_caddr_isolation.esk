@@ -2,6 +2,7 @@
 ;; Debug Caddr Isolation - Test if caddr is the specific trigger
 ;;
 
+(require stdlib)
 
 (display "=== DEBUG CADDR ISOLATION TEST ===")
 (newline)

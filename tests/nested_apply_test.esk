@@ -1,0 +1,31 @@
+; Test nested apply
+(display "=== Nested Apply Test ===")
+(newline)
+
+; Simple apply
+(display "Simple apply: ")
+(display (apply + (list 1 2)))
+(newline)
+
+; Nested apply with lambda
+(define (apply-once proc val)
+  (apply proc (list val)))
+
+(display "Apply once: ")
+(display (apply-once (lambda (x) (+ x 1)) 5))
+(newline)
+
+; Double nested apply
+(define (apply-twice proc val)
+  (define inner-result (apply proc (list val)))
+  (display "Inner result: ")
+  (display inner-result)
+  (newline)
+  (apply proc (list inner-result)))
+
+(display "Apply twice: ")
+(display (apply-twice (lambda (x) (+ x 1)) 5))
+(newline)
+
+(display "Done")
+(newline)

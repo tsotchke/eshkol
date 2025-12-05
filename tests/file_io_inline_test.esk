@@ -1,0 +1,19 @@
+; Test file I/O without storing in variables
+
+(display "Test 1: Inline write and close")
+(newline)
+(close-port (let ((p (open-output-file "inline_test.txt")))
+              (write-line "Hello inline" p)
+              p))
+
+(display "Test 2: Inline read")
+(newline)
+(let ((p (open-input-file "inline_test.txt")))
+  (let ((line (read-line p)))
+    (display "Read: ")
+    (display line)
+    (newline)
+    (close-port p)))
+
+(display "Done")
+(newline)

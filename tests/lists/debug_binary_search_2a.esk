@@ -1,6 +1,8 @@
 ;;
-;; Debug Binary Search 2a - Add only variable definitions from test 2 
+;; Debug Binary Search 2a - Add only variable definitions from test 2
 ;;
+
+(require stdlib)
 
 (display "=== DEBUG BINARY SEARCH 2A ===")
 (newline)

@@ -58,6 +58,19 @@ public:
     llvm::Value* packInt64(llvm::Value* int64_val, bool is_exact = true);
 
     /**
+     * Pack an i64 with explicit type tag.
+     * Used for values like ports where the i64 represents a pointer
+     * but we need a specific type tag (not INT64).
+     * @param int64_val The LLVM i64 value to pack
+     * @param type The value type (e.g., ESHKOL_VALUE_CONS_PTR | 0x10 for input port)
+     * @param flags Optional flags (default 0)
+     * @return A tagged_value struct
+     */
+    llvm::Value* packInt64WithType(llvm::Value* int64_val,
+                                    eshkol_value_type_t type,
+                                    uint8_t flags = 0);
+
+    /**
      * Pack a boolean into a tagged value.
      * @param bool_val The LLVM i1 value to pack
      * @return A tagged_value struct containing the boolean

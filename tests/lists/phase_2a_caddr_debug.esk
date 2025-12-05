@@ -2,6 +2,7 @@
 ;; Phase 2A Caddr Debug - Testing compound car/cdr access patterns
 ;;
 
+(require stdlib)
 
 (display "=== PHASE 2A CADDR DEBUG ===")
 (newline)

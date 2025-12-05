@@ -2,6 +2,8 @@
 ;; Debug Exact Repro 1 - Copy failing test exactly, step by step
 ;;
 
+(require stdlib)
+
 (display "=== PHASE 2A MULTI-LIST MAP TEST ===")
 (newline)
 

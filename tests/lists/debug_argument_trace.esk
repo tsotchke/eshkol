@@ -1,5 +1,6 @@
 ;; Debug argument tracing for map operations
 
+(require stdlib)
 
 (display "=== ARGUMENT TRACE DEBUG ===")
 (newline)

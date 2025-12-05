@@ -385,6 +385,36 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
     return tagged_.packNull();
 }
 
+llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
+    eshkol_warn("TensorCodegen::reshape called - using fallback");
+    return tagged_.packNull();
+}
+
+llvm::Value* TensorCodegen::zeros(const eshkol_operations_t* op) {
+    eshkol_warn("TensorCodegen::zeros called - using fallback");
+    return tagged_.packNull();
+}
+
+llvm::Value* TensorCodegen::ones(const eshkol_operations_t* op) {
+    eshkol_warn("TensorCodegen::ones called - using fallback");
+    return tagged_.packNull();
+}
+
+llvm::Value* TensorCodegen::eye(const eshkol_operations_t* op) {
+    eshkol_warn("TensorCodegen::eye called - using fallback");
+    return tagged_.packNull();
+}
+
+llvm::Value* TensorCodegen::arange(const eshkol_operations_t* op) {
+    eshkol_warn("TensorCodegen::arange called - using fallback");
+    return tagged_.packNull();
+}
+
+llvm::Value* TensorCodegen::linspace(const eshkol_operations_t* op) {
+    eshkol_warn("TensorCodegen::linspace called - using fallback");
+    return tagged_.packNull();
+}
+
 } // namespace eshkol
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED
