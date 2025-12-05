@@ -506,64 +506,95 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         // which correctly handles captures.
     }
 
-    // Phase 2: Evaluate all values
-    // Recursive calls will go through codegenClosureCall using the GlobalVariable.
-    // NOTE: We do NOT register lambda bindings here - we want recursive calls inside
-    // the lambda to use closure calls, not direct function calls.
-    std::vector<Value*> values;
+    // Phase 2: Evaluate and store values
+    // CRITICAL FIX: Lambda bindings must be evaluated and stored FIRST (for mutual recursion),
+    // then non-lambda bindings are evaluated (which may reference the lambdas).
+    //
+    // Order matters because:
+    // 1. Lambda bindings may call each other (mutual recursion via GlobalVariable lookup)
+    // 2. Non-lambda bindings may contain lambdas that capture/call the lambda bindings
+    //    (e.g., (define result (map (lambda (i) (sibling)) list)) where sibling is a lambda)
+    // 3. Non-lambda bindings need to be stored immediately so subsequent bindings can reference them
+
+    std::vector<Value*> lambda_values;
     std::vector<std::string> lambda_names;
+    std::vector<size_t> lambda_indices;
+
+    // Phase 2a: Evaluate ALL lambda bindings first
     for (size_t i = 0; i < var_names.size(); i++) {
+        if (!is_lambda[i]) continue;  // Skip non-lambda bindings for now
+
         const eshkol_ast_t* val_ast = val_asts[i];
+        if (!val_ast) continue;
 
-        if (!val_ast) {
-            values.push_back(nullptr);
-            lambda_names.push_back("");
-            continue;
-        }
-
-        // Evaluate value
+        // Evaluate lambda
         void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
         if (!typed_ptr) {
-            eshkol_warn("letrec: failed to evaluate binding for %s", var_names[i].c_str());
-            values.push_back(nullptr);
-            lambda_names.push_back("");
+            eshkol_warn("letrec: failed to evaluate lambda binding for %s", var_names[i].c_str());
             continue;
         }
 
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
-        values.push_back(tagged_val);
-
-        // Track lambda name for later registration
-        if (is_lambda[i] && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
+        lambda_values.push_back(tagged_val);
+        lambda_indices.push_back(i);
+        if (last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
             lambda_names.push_back(*last_generated_lambda_name_);
         } else {
             lambda_names.push_back("");
         }
     }
 
-    // Phase 3: Clear exclusion set and store all values
+    // Phase 2b: Store ALL lambda values (before evaluating non-lambdas)
+    // This ensures non-lambda bindings that contain lambdas calling these lambdas work correctly
+    for (size_t j = 0; j < lambda_values.size(); j++) {
+        size_t i = lambda_indices[j];
+        ctx_.builder().CreateStore(lambda_values[j], globals[i]);
+        eshkol_debug("letrec: stored lambda %s", var_names[i].c_str());
+    }
+
+    // CRITICAL: Register lambda bindings IMMEDIATELY after storing values
+    // This must happen BEFORE evaluating non-lambda bindings because those bindings
+    // may contain operations (like gradient/derivative) that need to resolve the lambda functions.
+    // Example: (define f (lambda ...)) (define grad (gradient f point))
+    // When evaluating grad, resolveLambdaFunction needs f_func to be registered.
+    for (size_t j = 0; j < lambda_indices.size(); j++) {
+        size_t i = lambda_indices[j];
+        if (!lambda_names[j].empty()) {
+            registerLambdaBinding(var_names[i], lambda_names[j]);
+            eshkol_debug("letrec: registered lambda binding %s -> %s", var_names[i].c_str(), lambda_names[j].c_str());
+        }
+    }
+
+    // Phase 2c: Now evaluate and store non-lambda bindings
+    // They can safely reference the already-stored lambda bindings
+    for (size_t i = 0; i < var_names.size(); i++) {
+        if (is_lambda[i]) continue;  // Already handled in phase 2a/2b
+
+        const eshkol_ast_t* val_ast = val_asts[i];
+        if (!val_ast) continue;
+
+        // Evaluate value
+        void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
+        if (!typed_ptr) {
+            eshkol_warn("letrec: failed to evaluate binding for %s", var_names[i].c_str());
+            continue;
+        }
+
+        Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
+
+        // Store immediately so subsequent non-lambda bindings can reference it
+        ctx_.builder().CreateStore(tagged_val, globals[i]);
+        eshkol_debug("letrec: stored non-lambda %s", var_names[i].c_str());
+    }
+
+    // Phase 4: Clear exclusion set
     if (letrec_excluded_capture_names_) {
         for (const std::string& name : var_names) {
             letrec_excluded_capture_names_->erase(name);
         }
     }
 
-    // Store values in globals
-    for (size_t i = 0; i < var_names.size(); i++) {
-        if (values[i]) {
-            ctx_.builder().CreateStore(values[i], globals[i]);
-        }
-        eshkol_debug("letrec: bound %s", var_names[i].c_str());
-    }
-
-    // Register lambda bindings AFTER storing values
-    // Now it's safe to register because recursive calls in the body (after this point)
-    // will have the closure properly stored in the GlobalVariable
-    for (size_t i = 0; i < var_names.size(); i++) {
-        if (is_lambda[i] && !lambda_names[i].empty()) {
-            registerLambdaBinding(var_names[i], lambda_names[i]);
-        }
-    }
+    // Note: Lambda bindings were already registered in Phase 2b (before non-lambda evaluation)
 
     // Evaluate body
     Value* body_result = nullptr;

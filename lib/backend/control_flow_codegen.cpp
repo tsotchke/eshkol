@@ -674,23 +674,24 @@ llvm::Value* ControlFlowCodegen::codegenBegin(const eshkol_operations_t* op) {
         return llvm::ConstantInt::get(ctx_.int64Type(), 0);
     }
 
-    // Check if any expressions are defines - if so, transform to letrec-like behavior
+    // ESHKOL EXTENSION: Collect ALL defines from anywhere in the body
+    // This allows statements before/between defines (unlike strict R5RS Scheme)
     std::vector<const eshkol_ast_t*> defines;
-    size_t first_non_define = 0;
+    std::vector<const eshkol_ast_t*> non_defines;
 
     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
         const eshkol_ast_t* expr = &op->call_op.variables[i];
         if (expr->type == ESHKOL_OP && expr->operation.op == ESHKOL_DEFINE_OP) {
             defines.push_back(expr);
-            first_non_define = i + 1;
         } else {
-            break;  // Stop at first non-define
+            non_defines.push_back(expr);
         }
     }
 
     // If there are internal defines, handle them specially
     if (!defines.empty() && codegen_func_define_callback_ && codegen_var_define_callback_) {
 
+        // First process ALL defines (letrec-like: all bindings visible to all)
         for (const eshkol_ast_t* def : defines) {
             if (def->operation.define_op.is_function) {
                 codegen_func_define_callback_(&def->operation, callback_context_);
@@ -699,10 +700,10 @@ llvm::Value* ControlFlowCodegen::codegenBegin(const eshkol_operations_t* op) {
             }
         }
 
-        // Execute remaining expressions
+        // Then execute non-define expressions
         llvm::Value* last_value = nullptr;
-        for (uint64_t i = first_non_define; i < op->call_op.num_vars; i++) {
-            last_value = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+        for (const eshkol_ast_t* expr : non_defines) {
+            last_value = codegen_ast_callback_(expr, callback_context_);
         }
 
         return last_value ? last_value : tagged_.packNull();

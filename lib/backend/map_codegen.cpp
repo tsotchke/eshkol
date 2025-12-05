@@ -50,18 +50,6 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
     // Calculate required arity for builtin functions (number of lists)
     size_t num_lists = op->call_op.num_vars - 1;
 
-    // Debug output
-    printf("[DEBUG] codegenMap: proc arg type=%d, num_lists=%zu\n",
-           (int)op->call_op.variables[0].type, num_lists);
-    fflush(stdout);
-    if (op->call_op.variables[0].type == ESHKOL_VAR) {
-        printf("[DEBUG] codegenMap: proc is VAR, id=%s\n", op->call_op.variables[0].variable.id);
-        fflush(stdout);
-    } else if (op->call_op.variables[0].type == ESHKOL_OP) {
-        printf("[DEBUG] codegenMap: proc is OP, op=%d\n", (int)op->call_op.variables[0].operation.op);
-        fflush(stdout);
-    }
-
     // CLOSURE FIX: Check if the variable contains a closure (CLOSURE_PTR)
     // If so, we need to use mapWithClosure to properly extract captured values
     if (op->call_op.variables[0].type == ESHKOL_VAR && global_symbol_table_ && nested_function_captures_) {
@@ -414,43 +402,51 @@ void MapCodegen::loadCapturedValues(
         }
 
         if (found && storage) {
-            Value* captured_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), storage);
-            args.push_back(captured_val);
+            // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+            // But check if storage is an Argument with non-pointer type (needs temp alloca)
+            if (isa<Argument>(storage) && !storage->getType()->isPointerTy()) {
+                // Create temp alloca for this value parameter
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+                IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+                AllocaInst* temp_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, var_name + "_temp_storage");
+                ctx_.builder().CreateStore(storage, temp_alloca);
+                args.push_back(temp_alloca);
+                eshkol_debug("Map: created temp storage for Argument capture '%s' for lambda '%s'",
+                            var_name.c_str(), lambda_name.c_str());
+            } else {
+                args.push_back(storage);
+            }
         } else {
             // Fall back to looking up the original variable name in current scope
-            Value* captured_val = nullptr;
+            Value* var_storage = nullptr;
             if (symbol_table_) {
                 auto var_it = symbol_table_->find(var_name);
                 if (var_it != symbol_table_->end() && var_it->second) {
-                    Value* var_storage = var_it->second;
-                    if (isa<AllocaInst>(var_storage)) {
-                        captured_val = ctx_.builder().CreateLoad(
-                            dyn_cast<AllocaInst>(var_storage)->getAllocatedType(), var_storage);
-                    } else if (isa<GlobalVariable>(var_storage)) {
-                        captured_val = ctx_.builder().CreateLoad(
-                            dyn_cast<GlobalVariable>(var_storage)->getValueType(), var_storage);
-                    } else {
-                        captured_val = var_storage;
-                    }
-                    // Ensure tagged_value type
-                    if (captured_val && captured_val->getType() != ctx_.taggedValueType()) {
-                        if (captured_val->getType()->isIntegerTy(64)) {
-                            captured_val = tagged_.packInt64(captured_val, true);
-                        } else if (captured_val->getType()->isDoubleTy()) {
-                            captured_val = tagged_.packDouble(captured_val);
-                        }
-                    }
+                    var_storage = var_it->second;
                 }
             }
 
-            if (captured_val) {
-                args.push_back(captured_val);
-                eshkol_debug("Map: resolved capture '%s' from current scope for lambda '%s'",
-                            var_name.c_str(), lambda_name.c_str());
+            if (var_storage) {
+                // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+                // But check if var_storage is an Argument with non-pointer type (needs temp alloca)
+                if (isa<Argument>(var_storage) && !var_storage->getType()->isPointerTy()) {
+                    // Create temp alloca for this value parameter
+                    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+                    IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+                    AllocaInst* temp_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, var_name + "_temp_storage");
+                    ctx_.builder().CreateStore(var_storage, temp_alloca);
+                    args.push_back(temp_alloca);
+                    eshkol_debug("Map: created temp storage for Argument var '%s' for lambda '%s'",
+                                var_name.c_str(), lambda_name.c_str());
+                } else {
+                    args.push_back(var_storage);
+                    eshkol_debug("Map: resolved capture '%s' from current scope for lambda '%s'",
+                                var_name.c_str(), lambda_name.c_str());
+                }
             } else {
-                // Fallback to zero
-                args.push_back(tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 0), true));
-                eshkol_warn("Map: capture '%s' not found for lambda '%s', using 0",
+                // MUTABLE CAPTURE FIX: Fallback to null pointer instead of packed zero
+                args.push_back(ConstantPointerNull::get(ctx_.ptrType()));
+                eshkol_warn("Map: capture '%s' not found for lambda '%s', using null pointer",
                             var_name.c_str(), lambda_name.c_str());
             }
         }

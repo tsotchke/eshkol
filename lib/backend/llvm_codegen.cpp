@@ -1420,7 +1420,17 @@ private:
         autodiff_ = std::make_unique<eshkol::AutodiffCodegen>(*ctx_, *tagged_, *mem);
         // Set up function table reference for math operations (sin, cos, exp, etc.)
         autodiff_->setFunctionTable(&function_table);
-        eshkol_debug("Created AutodiffCodegen with function table");
+        // Set up symbol tables for variable/capture lookup
+        autodiff_->setSymbolTables(&symbol_table, &global_symbol_table);
+        // Set up REPL mode flag
+        autodiff_->setReplMode(&g_repl_mode_enabled);
+        // Set up REPL state for cross-evaluation function resolution
+        autodiff_->setReplState(&g_repl_mutex, &g_repl_lambda_captures, &g_repl_symbol_addresses);
+        // Set up AST codegen callback
+        autodiff_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
+        // Set up lambda resolution callback
+        autodiff_->setResolveLambdaCallback(ControlFlowCallbacks::resolveLambdaWrapper);
+        eshkol_debug("Created AutodiffCodegen with function table and callbacks");
 
         // Initialize ArithmeticCodegen - polymorphic arithmetic operations
         // Now fully functional with tensor and autodiff support
@@ -3310,17 +3320,25 @@ private:
 
             builder->SetInsertPoint(case_bb);
 
-            // Build args with this many captures
+            // MUTABLE CAPTURE FIX: Pass capture pointers instead of values
+            // Build args with this many captures (as pointers to closure env slots)
             std::vector<Value*> full_args = call_args;
             for (int i = 0; i < cap_count; i++) {
                 Value* cap_ptr = builder->CreateGEP(tagged_value_type, captures_typed,
                     ConstantInt::get(int64_type, i));
-                Value* cap_val = builder->CreateLoad(tagged_value_type, cap_ptr);
-                full_args.push_back(cap_val);
+                // Pass pointer to capture slot, not the loaded value
+                full_args.push_back(cap_ptr);
             }
 
             // Build function type for this capture count
-            std::vector<Type*> param_types(call_args.size() + cap_count, tagged_value_type);
+            // Regular args are tagged_value, captures are pointer
+            std::vector<Type*> param_types;
+            for (size_t i = 0; i < call_args.size(); i++) {
+                param_types.push_back(tagged_value_type);
+            }
+            for (int i = 0; i < cap_count; i++) {
+                param_types.push_back(PointerType::getUnqual(*context));
+            }
             FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
 
             Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
@@ -4364,7 +4382,13 @@ private:
                 GlobalVariable* global = dyn_cast<GlobalVariable>(var_ptr);
                 return builder->CreateLoad(global->getValueType(), var_ptr);
             }
-            // Otherwise return as-is (for function arguments, etc.)
+            // MUTABLE CAPTURE FIX: If it's an Argument with pointer type (closure capture storage),
+            // load the value from the pointed-to storage
+            else if (isa<Argument>(var_ptr) && var_ptr->getType()->isPointerTy()) {
+                // This is a closure capture pointer - load the tagged_value from it
+                return builder->CreateLoad(tagged_value_type, var_ptr);
+            }
+            // Otherwise return as-is (for function arguments with value type, etc.)
             else {
                 return var_ptr;
             }
@@ -4483,7 +4507,7 @@ private:
                 return codegenDiff(op);
                 
             case ESHKOL_DERIVATIVE_OP:
-                return codegenDerivative(op);
+                return autodiff_->derivative(op);
                 
             case ESHKOL_GRADIENT_OP:
                 return codegenGradient(op);
@@ -4730,16 +4754,9 @@ private:
         // RECURSIVE FUNCTION FIX: Remove the function's own name from free_vars
         // Recursive calls to the function should not be captured as free variables -
         // the function will be directly called, not passed as a closure capture.
-        fprintf(stderr, "DEBUG: Looking for self '%s' in free_vars (size=%zu)\n", orig_name.c_str(), free_vars.size());
-        for (const auto& fv : free_vars) {
-            fprintf(stderr, "DEBUG:   free_var: '%s'\n", fv.c_str());
-        }
         auto self_it = std::find(free_vars.begin(), free_vars.end(), orig_name);
         if (self_it != free_vars.end()) {
-            fprintf(stderr, "DEBUG: FOUND! Removing self-reference '%s' from free variables\n", orig_name.c_str());
             free_vars.erase(self_it);
-        } else {
-            fprintf(stderr, "DEBUG: NOT FOUND - '%s' not in free_vars\n", orig_name.c_str());
         }
 
         eshkol_debug("Nested function %s found %zu free variables", func_name.c_str(), free_vars.size());
@@ -4827,6 +4844,10 @@ private:
                 symbol_table[capture_key] = storage;
                 global_symbol_table[capture_key] = storage;
 
+                // SIBLING CAPTURE FIX: Also update the original variable name to point to this GlobalVariable
+                // This ensures that sibling nested functions (defined later) will see and share
+                // the same capture storage, rather than creating their own separate storage.
+                symbol_table[var_name] = storage;
                 eshkol_debug("Stored capture: %s -> %s", var_name.c_str(), capture_key.c_str());
             }
         }
@@ -4835,12 +4856,13 @@ private:
         nested_function_captures[func_name] = free_vars;
 
         // Create polymorphic function type with extra params for captures
+        // MUTABLE CAPTURE FIX: Use pointer type for captures (same as codegenLambda)
         std::vector<Type*> param_types;
         for (uint64_t i = 0; i < op->define_op.num_params; i++) {
             param_types.push_back(tagged_value_type);
         }
         for (size_t i = 0; i < free_vars.size(); i++) {
-            param_types.push_back(tagged_value_type);
+            param_types.push_back(PointerType::getUnqual(*context));  // Pointer to tagged_value
         }
 
         FunctionType* func_type = FunctionType::get(
@@ -4974,12 +4996,10 @@ private:
                 symbol_table[free_vars[i]] = capture_storage;
                 eshkol_debug("Using global capture storage for %s: %s", free_vars[i].c_str(), capture_key.c_str());
             } else {
-                // Fallback: create local alloca (shouldn't happen, but be safe)
-                AllocaInst* capture_alloca = builder->CreateAlloca(
-                    arg_it->getType(), nullptr, free_vars[i] + "_local");
-                builder->CreateStore(&(*arg_it), capture_alloca);
-                symbol_table[free_vars[i]] = capture_alloca;
-                eshkol_debug("Using local alloca for capture %s (global not found)", free_vars[i].c_str());
+                // MUTABLE CAPTURE FIX: Use the passed pointer directly (same as codegenLambda)
+                // The argument is a pointer to the capture storage, use it directly
+                symbol_table[free_vars[i]] = &(*arg_it);
+                eshkol_debug("Using passed pointer for capture %s (global not found)", free_vars[i].c_str());
             }
         }
 
@@ -5938,15 +5958,20 @@ private:
         }
 
         // Determine if var_ptr is a pointer we can store to
-        // It should be either a GlobalVariable or an AllocaInst
-        if (isa<GlobalVariable>(var_ptr) || isa<AllocaInst>(var_ptr)) {
+        // MUTABLE CAPTURE FIX: Also accept Argument pointers (for closure capture storage)
+        // Valid storage types: GlobalVariable, AllocaInst, or Argument (pointer to closure env slot)
+        bool is_valid_storage = isa<GlobalVariable>(var_ptr) || isa<AllocaInst>(var_ptr) ||
+                                (isa<Argument>(var_ptr) && var_ptr->getType()->isPointerTy());
+
+        if (is_valid_storage) {
             // Get the storage type
-            Type* store_type = nullptr;
+            Type* store_type = tagged_value_type;  // Default for Argument pointers
             if (GlobalVariable* gv = dyn_cast<GlobalVariable>(var_ptr)) {
                 store_type = gv->getValueType();
             } else if (AllocaInst* ai = dyn_cast<AllocaInst>(var_ptr)) {
                 store_type = ai->getAllocatedType();
             }
+            // For Argument pointers (closure captures), assume tagged_value_type
 
             // Pack value to tagged_value if storage is tagged_value type
             Value* store_value = new_value;
@@ -5972,7 +5997,7 @@ private:
             return new_value->getType() == tagged_value_type ? new_value : typedValueToTaggedValue(typed);
         } else {
             // Variable is not mutable (might be a function argument passed by value)
-            eshkol_error("set!: variable '%s' is not mutable (not an alloca or global)", var_name);
+            eshkol_error("set!: variable '%s' is not mutable (not an alloca, global, or capture pointer)", var_name);
             return packNullToTaggedValue();
         }
     }
@@ -6644,6 +6669,35 @@ private:
                     // Use codegenClosureCall which properly handles captured values
                     return codegenClosureCall(func_val, call_args);
                 }
+                // MUTABLE CAPTURE FIX: Handle function parameter (Argument) which is a pointer to closure
+                // This happens when a function is captured in a closure using the pointer-passing scheme
+                if (isa<Argument>(func_val) && func_val->getType()->isPointerTy()) {
+                    // Load the closure value from the pointer
+                    Value* loaded_val = builder->CreateLoad(tagged_value_type, func_val);
+
+                    // Generate all arguments first
+                    std::vector<Value*> call_args;
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        if (!arg) continue;
+
+                        // Pack to tagged_value if needed
+                        if (arg->getType() != tagged_value_type) {
+                            if (arg->getType()->isIntegerTy(64)) {
+                                arg = packInt64ToTaggedValue(arg, true);
+                            } else if (arg->getType()->isDoubleTy()) {
+                                arg = packDoubleToTaggedValue(arg);
+                            } else {
+                                TypedValue tv = detectValueType(arg);
+                                arg = typedValueToTaggedValue(tv);
+                            }
+                        }
+                        call_args.push_back(arg);
+                    }
+
+                    // Use codegenClosureCall which properly handles captured values
+                    return codegenClosureCall(loaded_val, call_args);
+                }
                 // LETREC CAPTURE FIX: Handle GlobalVariable containing a captured function
                 // This is used when a letrec lambda captures a function from outer scope
                 // (e.g., merge capturing less? in sort's internal define)
@@ -7056,8 +7110,15 @@ private:
                     closure_tagged = builder->CreateLoad(
                         dyn_cast<GlobalVariable>(closure_var)->getValueType(), closure_var);
                 } else if (isa<Argument>(closure_var)) {
-                    // Function parameters (captures) are already loaded values
-                    closure_tagged = closure_var;
+                    // MUTABLE CAPTURE FIX: Handle Argument which may be pointer to closure or direct value
+                    if (closure_var->getType()->isPointerTy()) {
+                        // This is a pointer to a captured closure (from mutable capture fix)
+                        // Load the tagged value from the pointer
+                        closure_tagged = builder->CreateLoad(tagged_value_type, closure_var);
+                    } else {
+                        // Function parameters (captures) are already loaded values
+                        closure_tagged = closure_var;
+                    }
                 } else if (isa<Function>(closure_var)) {
                     // This is a nested function definition - load captures from global variables
                     // Captures are stored with naming convention: lambda_name + "_capture_" + var_name
@@ -7065,28 +7126,28 @@ private:
                     auto captures_it = nested_function_captures.find(lambda_name);
                     if (captures_it != nested_function_captures.end()) {
                         const std::vector<std::string>& capture_names = captures_it->second;
+                        // MUTABLE CAPTURE FIX: Pass pointers to capture storage instead of values
                         for (const std::string& cap_name : capture_names) {
                             std::string capture_key = lambda_name + "_capture_" + cap_name;
                             auto cap_it = global_symbol_table.find(capture_key);
                             if (cap_it != global_symbol_table.end() && cap_it->second) {
-                                Value* captured_val = builder->CreateLoad(tagged_value_type, cap_it->second);
-                                args.push_back(captured_val);
-                                eshkol_debug("Loaded nested function capture %s from global %s",
+                                // Pass pointer to storage, not the loaded value
+                                args.push_back(cap_it->second);
+                                eshkol_debug("Passing nested function capture pointer %s from global %s",
                                            cap_name.c_str(), capture_key.c_str());
                             } else {
                                 eshkol_warn("Missing capture global: %s", capture_key.c_str());
-                                args.push_back(packInt64ToTaggedValue(
-                                    ConstantInt::get(int64_type, 0), true));
+                                // Create a null pointer for the capture slot
+                                args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
                             }
                         }
                         // Successfully handled captures for nested function - skip all fallback paths
                         closure_tagged = (Value*)-1;  // Non-null sentinel to skip fallback
                     } else {
                         // No captures registered - this might be a no-capture nested function
-                        // Push the expected number of captures as null (function signature expects them)
+                        // MUTABLE CAPTURE FIX: Push null pointers (function signature expects pointers)
                         for (size_t i = 0; i < num_captures; i++) {
-                            args.push_back(packInt64ToTaggedValue(
-                                ConstantInt::get(int64_type, 0), true));
+                            args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
                         }
                         closure_tagged = (Value*)-1;  // Non-null sentinel to skip fallback
                     }
@@ -7110,7 +7171,8 @@ private:
                             ConstantInt::get(int64_type, 8));
                         Value* env_ptr = builder->CreateLoad(PointerType::getUnqual(*context), env_ptr_ptr);
 
-                        // Load each captured value from the environment
+                        // MUTABLE CAPTURE FIX: Pass pointers to capture slots instead of values
+                        // This allows the lambda to modify captures via set!
                         for (size_t i = 0; i < num_captures; i++) {
                             // Calculate offset: 8 (header) + i * 16 (sizeof tagged_value)
                             size_t offset = 8 + i * 16;
@@ -7119,49 +7181,49 @@ private:
                                 ConstantInt::get(int64_type, offset));
                             Value* capture_slot_typed = builder->CreateBitCast(
                                 capture_slot, PointerType::getUnqual(*context));
-                            Value* captured_val = builder->CreateLoad(tagged_value_type, capture_slot_typed);
-                            args.push_back(captured_val);
-                            eshkol_debug("Loaded capture %zu from closure at offset %zu", i, offset);
+                            // Pass pointer to slot, not the value
+                            args.push_back(capture_slot_typed);
+                            eshkol_debug("Passing capture slot pointer %zu at offset %zu", i, offset);
                         }
                     } else {
                         // This is a plain function or parameter - no captures to load
                         // The caller function expects captures but the callee doesn't have them
-                        // This happens when calling a captured function that itself has no captures
-                        eshkol_debug("Calling non-closure function %s, pushing null captures", func_name.c_str());
+                        // MUTABLE CAPTURE FIX: Push null pointers
+                        eshkol_debug("Calling non-closure function %s, pushing null capture pointers", func_name.c_str());
                         for (size_t i = 0; i < num_captures; i++) {
-                            args.push_back(packInt64ToTaggedValue(
-                                ConstantInt::get(int64_type, 0), true));
+                            args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
                         }
                     }
                 } else if (closure_tagged != (Value*)-1) {
-                    // Fallback: push null values (only if not already handled by Function* path)
-                    eshkol_warn("Could not unpack closure for %s, using null captures", func_name.c_str());
+                    // Fallback: push null pointers (only if not already handled by Function* path)
+                    eshkol_warn("Could not unpack closure for %s, using null capture pointers", func_name.c_str());
                     for (size_t i = 0; i < num_captures; i++) {
-                        args.push_back(packInt64ToTaggedValue(
-                            ConstantInt::get(int64_type, 0), true));
+                        args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
                     }
                 }
             } else {
                 // Fallback to old behavior for non-closure calls
+                // MUTABLE CAPTURE FIX: Pass storage pointers, not values
                 std::string lambda_name = callee->getName().str();
                 for (size_t i = 0; i < num_captures; i++) {
                     std::string capture_key = lambda_name + "_capture_" + std::to_string(i);
                     auto it = global_symbol_table.find(capture_key);
                     if (it != global_symbol_table.end() && it->second) {
-                        Value* storage = it->second;
-                        Value* captured_val = builder->CreateLoad(tagged_value_type, storage);
-                        args.push_back(captured_val);
+                        // Pass pointer to storage
+                        args.push_back(it->second);
                     } else {
                         eshkol_error("Missing capture: %s", capture_key.c_str());
-                        args.push_back(packInt64ToTaggedValue(
-                            ConstantInt::get(int64_type, 0), true));
+                        args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
                     }
                 }
             }
         }
 
         // Dereference global variables before passing them
-        for (size_t i = 0; i < args.size(); ++i) {
+        // MUTABLE CAPTURE FIX: Skip capture arguments - they're already pointers that should be passed as-is
+        // Regular args are the first op->call_op.num_vars arguments; captures (if any) come after
+        size_t regular_arg_count = op->call_op.num_vars;
+        for (size_t i = 0; i < regular_arg_count && i < args.size(); ++i) {
             if (args[i]->getType()->isPointerTy()) {
                 Value *pointed_value = args[i];
                 if (auto* global_value = dyn_cast<GlobalValue>(pointed_value)) {
@@ -7180,6 +7242,7 @@ private:
                 }
             }
         }
+        // Note: Capture arguments (last num_captures args) are NOT dereferenced - they're storage pointers
 
         return builder->CreateCall(callee, args);
     }
@@ -7401,8 +7464,8 @@ private:
         Value* arg2 = codegenAST(&op->call_op.variables[1]);
         if (!arg1 || !arg2) return nullptr;
 
-        // FIXED: Use compile-time LLVM type checking instead of runtime type tags
-        // Raw values from literals don't have tagged_value type
+        // SCHEME SEMANTICS: modulo is defined for integers only
+        // Convert all values to integers (truncate floats) and return integer result
         bool arg1_is_int64 = arg1->getType()->isIntegerTy(64);
         bool arg2_is_int64 = arg2->getType()->isIntegerTy(64);
         bool arg1_is_double = arg1->getType()->isDoubleTy();
@@ -7410,34 +7473,53 @@ private:
         bool arg1_is_tagged = arg1->getType() == tagged_value_type;
         bool arg2_is_tagged = arg2->getType() == tagged_value_type;
 
-        // Both raw integers - use direct integer modulo
-        if (arg1_is_int64 && arg2_is_int64) {
-            Value* result = builder->CreateSRem(arg1, arg2);
-            return result;  // Return raw int64
-        }
+        // Convert all values to int64 for integer modulo
+        Value* int_val1 = nullptr;
+        Value* int_val2 = nullptr;
 
-        // Both raw doubles - use fmod
-        if (arg1_is_double && arg2_is_double) {
-            return builder->CreateCall(function_table["fmod"], {arg1, arg2});
-        }
-
-        // Mixed types or tagged values - convert to double and use fmod
-        Value* val1 = arg1;
-        Value* val2 = arg2;
-
+        // Convert arg1 to int64
         if (arg1_is_int64) {
-            val1 = builder->CreateSIToFP(arg1, double_type);
+            int_val1 = arg1;
+        } else if (arg1_is_double) {
+            int_val1 = builder->CreateFPToSI(arg1, int64_type);
         } else if (arg1_is_tagged) {
-            val1 = extractDoubleFromTagged(arg1);
+            // Extract as double first, then truncate to int
+            Value* dval = extractDoubleFromTagged(arg1);
+            int_val1 = builder->CreateFPToSI(dval, int64_type);
         }
 
+        // Convert arg2 to int64
         if (arg2_is_int64) {
-            val2 = builder->CreateSIToFP(arg2, double_type);
+            int_val2 = arg2;
+        } else if (arg2_is_double) {
+            int_val2 = builder->CreateFPToSI(arg2, int64_type);
         } else if (arg2_is_tagged) {
-            val2 = extractDoubleFromTagged(arg2);
+            // Extract as double first, then truncate to int
+            Value* dval = extractDoubleFromTagged(arg2);
+            int_val2 = builder->CreateFPToSI(dval, int64_type);
         }
 
-        return builder->CreateCall(function_table["fmod"], {val1, val2});
+        if (!int_val1 || !int_val2) {
+            eshkol_warn("modulo: failed to convert arguments to integers");
+            return nullptr;
+        }
+
+        // Use integer SRem for modulo (Scheme modulo follows sign of divisor)
+        // First compute remainder
+        Value* rem = builder->CreateSRem(int_val1, int_val2, "rem");
+
+        // Scheme's modulo: result has same sign as divisor
+        // If signs differ and remainder is non-zero, add divisor
+        Value* zero = ConstantInt::get(int64_type, 0);
+        Value* rem_neg = builder->CreateICmpSLT(rem, zero);
+        Value* div_neg = builder->CreateICmpSLT(int_val2, zero);
+        Value* signs_differ = builder->CreateXor(rem_neg, div_neg);
+        Value* rem_nonzero = builder->CreateICmpNE(rem, zero);
+        Value* need_adjust = builder->CreateAnd(signs_differ, rem_nonzero);
+        Value* adjusted = builder->CreateAdd(rem, int_val2);
+        Value* result = builder->CreateSelect(need_adjust, adjusted, rem);
+
+        return result;  // Return raw int64
     }
 
     // Remainder operation - handles both integer and floating point
@@ -8648,11 +8730,10 @@ private:
 
     Value* codegenSequence(const eshkol_operations_t* op) {
         Value* last_value = nullptr;
-        
         for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-            last_value = codegenAST(&op->sequence_op.expressions[i]);
+            const eshkol_ast_t* expr = &op->sequence_op.expressions[i];
+            last_value = codegenAST(expr);
         }
-        
         return last_value;
     }
 
@@ -8991,6 +9072,15 @@ private:
                         // Handle set! - the variable being mutated may be a free variable
                         std::string set_var_name = op->set_op.name;
 
+                        // LETREC REFACTOR: Skip names that are letrec-bound (they're accessed via globals, not captures)
+                        if (letrec_excluded_capture_names.find(set_var_name) != letrec_excluded_capture_names.end()) {
+                            // This is a letrec-bound name - don't capture it, just process the value
+                            if (op->set_op.value) {
+                                findFreeVariables(op->set_op.value, current_scope, parameters, num_params, free_vars);
+                            }
+                            break;
+                        }
+
                         // Check if the variable being set is from outer scope
                         bool is_parameter = false;
                         if (parameters) {
@@ -9220,9 +9310,10 @@ private:
             eshkol_debug("Lambda %s is variadic with rest param: %s",
                         lambda_name.c_str(), op->lambda_op.rest_param);
         }
-        // Add capture parameters
+        // Add capture parameters - MUTABLE CAPTURE FIX: Use pointer type for captures
+        // so set! can modify the closure environment directly
         for (size_t i = 0; i < free_vars.size(); i++) {
-            param_types.push_back(tagged_value_type);
+            param_types.push_back(PointerType::getUnqual(*context));  // Pointer to tagged_value
         }
 
         FunctionType* func_type = FunctionType::get(
@@ -9295,50 +9386,30 @@ private:
             ++arg_it;
         }
 
-        // CLOSURE CAPTURE FIX: Handle captured variables from closure environment
-        // REPL MODE: Always use the passed parameter from the closure environment
-        //   - Each closure instance has its own environment with captured values
-        //   - Using global storage would cause all instances to share the same value
-        // COMPILE MODE: Can use GlobalVariable for set! mutation support
-        //   - Only one closure instance exists per lambda in compiled code
+        // MUTABLE CAPTURE FIX: Handle captured variables from closure environment
+        // The capture parameter is now a POINTER to the closure environment slot.
+        // Using it directly allows set! to modify the closure environment.
         for (const std::string& var_name : free_vars) {
             if (arg_it != lambda_func->arg_end()) {
-                if (g_repl_mode_enabled) {
-                    // REPL MODE: Always use local alloca from the passed parameter
-                    // This ensures each closure instance uses its own captured values
-                    AllocaInst* capture_alloca = builder->CreateAlloca(
-                        arg_it->getType(), nullptr, var_name + "_local");
-                    builder->CreateStore(&(*arg_it), capture_alloca);
-                    symbol_table[var_name] = capture_alloca;
-                    eshkol_debug("REPL: Lambda using passed capture parameter for %s", var_name.c_str());
+                // MUTABLE CAPTURE FIX: The argument is a pointer to the capture slot
+                // in the closure environment. Use it directly as the storage location.
+                // This allows set! to modify the value in the closure environment,
+                // making changes persist across calls.
+
+                // For top-level lambdas with GlobalVariable storage, prefer that
+                std::string capture_key = lambda_name + "_capture_" + var_name;
+                GlobalVariable* capture_storage = dyn_cast_or_null<GlobalVariable>(
+                    module->getNamedGlobal(capture_key));
+
+                if (capture_storage) {
+                    // Top-level lambda with GlobalVariable - use it for set! support
+                    symbol_table[var_name] = capture_storage;
+                    eshkol_debug("Lambda using GlobalVariable capture storage for %s", var_name.c_str());
                 } else {
-                    // COMPILE MODE: Use the passed capture parameter
-                    //
-                    // CRITICAL FIX: We MUST use the passed parameter, not search for a global
-                    // with the same name. A global with the same name might be an unrelated
-                    // variable (e.g., a parameter `f` shadowing a global `f`).
-                    // The capture mechanism already correctly captured the right value.
-                    //
-                    // For set! mutation support on globals, the capture storage global
-                    // (lambda_N_capture_var) handles this correctly.
-
-                    // Try capture storage first (for set! mutation support)
-                    // Use getNamedGlobal instead of getGlobalVariable - it finds internal linkage globals
-                    std::string capture_key = lambda_name + "_capture_" + var_name;
-                    GlobalVariable* capture_storage = dyn_cast_or_null<GlobalVariable>(
-                        module->getNamedGlobal(capture_key));
-
-                    if (capture_storage) {
-                        symbol_table[var_name] = capture_storage;
-                        eshkol_debug("Lambda using capture storage for %s", var_name.c_str());
-                    } else {
-                        // Use local alloca from the passed parameter
-                        AllocaInst* capture_alloca = builder->CreateAlloca(
-                            arg_it->getType(), nullptr, var_name + "_local");
-                        builder->CreateStore(&(*arg_it), capture_alloca);
-                        symbol_table[var_name] = capture_alloca;
-                        eshkol_debug("Lambda using local alloca for capture %s", var_name.c_str());
-                    }
+                    // Non-top-level lambda - use the passed pointer directly
+                    // The argument is a pointer to tagged_value storage in the closure env
+                    symbol_table[var_name] = &(*arg_it);
+                    eshkol_debug("Lambda using closure env pointer for capture %s", var_name.c_str());
                 }
                 ++arg_it;
             } else {
@@ -9508,8 +9579,15 @@ private:
                         captured_val = builder->CreateLoad(
                             dyn_cast<GlobalVariable>(var_value)->getValueType(), var_value);
                     } else if (isa<Argument>(var_value)) {
-                        // Function parameters are already loaded
-                        captured_val = var_value;
+                        // MUTABLE CAPTURE FIX: Handle Argument which may be pointer to capture or direct value
+                        if (var_value->getType()->isPointerTy()) {
+                            // This is a pointer to a captured variable (from mutable capture fix)
+                            // Load the tagged value from the pointer
+                            captured_val = builder->CreateLoad(tagged_value_type, var_value);
+                        } else {
+                            // Function parameters are already loaded
+                            captured_val = var_value;
+                        }
                     } else {
                         captured_val = var_value;
                     }
@@ -14098,20 +14176,20 @@ private:
                             capture_key
                         );
                     }
-                    Value* captured_val = builder->CreateLoad(tagged_value_type, capture_global);
-                    capture_args.push_back(captured_val);
+                    // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+                    capture_args.push_back(capture_global);
                     continue;
                 }
             }
 
             if (found && it->second) {
                 Value* storage = it->second;
-                Value* captured_val = builder->CreateLoad(tagged_value_type, storage);
-                capture_args.push_back(captured_val);
+                // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+                capture_args.push_back(storage);
             } else {
-                capture_args.push_back(packInt64ToTaggedValue(
-                    ConstantInt::get(int64_type, 0), true));
-                eshkol_warn("%s: capture '%s' not found, using 0", context_name.c_str(), var_name.c_str());
+                // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
+                capture_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
+                eshkol_warn("%s: capture '%s' not found, using null pointer", context_name.c_str(), var_name.c_str());
             }
         }
 
@@ -14204,7 +14282,7 @@ private:
 
                 std::string capture_key = lambda_name + "_capture_" + var_name;
 
-                // First try local symbol tables
+                // First try local symbol tables with capture_key
                 auto it = global_symbol_table.find(capture_key);
                 bool found_in_global = (it != global_symbol_table.end());
                 if (!found_in_global) {
@@ -14212,6 +14290,17 @@ private:
                 }
 
                 bool found = found_in_global ? (it != global_symbol_table.end()) : (it != symbol_table.end());
+
+                // INNER FUNCTION FIX: If capture_key not found, try plain variable name
+                // This handles lambdas inside functions where captures are function parameters
+                // (not stored as GlobalVariables with _capture_ keys)
+                if (!found) {
+                    it = symbol_table.find(var_name);
+                    found = (it != symbol_table.end());
+                    if (found) {
+                        eshkol_debug("Derivative: found capture '%s' via plain variable name", var_name.c_str());
+                    }
+                }
 
                 // REPL MODE: Try creating external declaration for capture global
                 if (!found && g_repl_mode_enabled) {
@@ -14230,20 +14319,30 @@ private:
                                 capture_key
                             );
                         }
-                        Value* captured_val = builder->CreateLoad(tagged_value_type, capture_global);
-                        deriv_call_args.push_back(captured_val);
+                        // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+                        deriv_call_args.push_back(capture_global);
                         continue;
                     }
                 }
 
                 if (found && it->second) {
                     Value* storage = it->second;
-                    Value* captured_val = builder->CreateLoad(tagged_value_type, storage);
-                    deriv_call_args.push_back(captured_val);
+                    // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+                    // But first check if we need to create a temporary storage for pass-by-value
+                    if (storage->getType()->isPointerTy()) {
+                        deriv_call_args.push_back(storage);
+                    } else {
+                        // Value is not a pointer - need to create temporary storage
+                        // This happens when capturing function parameters (pass-by-value)
+                        Value* temp_storage = builder->CreateAlloca(tagged_value_type, nullptr, "capture_temp");
+                        builder->CreateStore(storage, temp_storage);
+                        deriv_call_args.push_back(temp_storage);
+                        eshkol_debug("Derivative: created temp storage for capture '%s'", var_name.c_str());
+                    }
                 } else {
-                    deriv_call_args.push_back(packInt64ToTaggedValue(
-                        ConstantInt::get(int64_type, 0), true));
-                    eshkol_warn("Derivative: capture '%s' not found, using 0", var_name.c_str());
+                    // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
+                    deriv_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
+                    eshkol_warn("Derivative: capture '%s' not found, using null pointer", var_name.c_str());
                 }
             }
         }
@@ -14966,20 +15065,20 @@ private:
                                 scalar_capture_key
                             );
                         }
-                        Value* scalar_captured_val = builder->CreateLoad(tagged_value_type, capture_global);
-                        scalar_args.push_back(scalar_captured_val);
+                        // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+                        scalar_args.push_back(capture_global);
                         continue;
                     }
                 }
 
                 if (found && scalar_it->second) {
                     Value* scalar_storage = scalar_it->second;
-                    Value* scalar_captured_val = builder->CreateLoad(tagged_value_type, scalar_storage);
-                    scalar_args.push_back(scalar_captured_val);
+                    // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+                    scalar_args.push_back(scalar_storage);
                 } else {
-                    scalar_args.push_back(packInt64ToTaggedValue(
-                        ConstantInt::get(int64_type, 0), true));
-                    eshkol_warn("Gradient (scalar): capture '%s' not found, using 0", scalar_var_name.c_str());
+                    // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
+                    scalar_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
+                    eshkol_warn("Gradient (scalar): capture '%s' not found, using null pointer", scalar_var_name.c_str());
                 }
             }
         }
@@ -15068,20 +15167,20 @@ private:
                                 capture_key
                             );
                         }
-                        Value* captured_val = builder->CreateLoad(tagged_value_type, capture_global);
-                        grad_call_args.push_back(captured_val);
+                        // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+                        grad_call_args.push_back(capture_global);
                         continue;
                     }
                 }
 
                 if (found && it->second) {
                     Value* storage = it->second;
-                    Value* captured_val = builder->CreateLoad(tagged_value_type, storage);
-                    grad_call_args.push_back(captured_val);
+                    // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
+                    grad_call_args.push_back(storage);
                 } else {
-                    grad_call_args.push_back(packInt64ToTaggedValue(
-                        ConstantInt::get(int64_type, 0), true));
-                    eshkol_warn("Gradient: capture '%s' not found, using 0", var_name.c_str());
+                    // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
+                    grad_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
+                    eshkol_warn("Gradient: capture '%s' not found, using null pointer", var_name.c_str());
                 }
             }
         }
