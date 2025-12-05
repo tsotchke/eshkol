@@ -64,6 +64,48 @@ llvm::Value* TaggedValueCodegen::packInt64(llvm::Value* int64_val, bool is_exact
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
 }
 
+llvm::Value* TaggedValueCodegen::packInt64WithType(
+    llvm::Value* int64_val,
+    eshkol_value_type_t type,
+    uint8_t flags) {
+
+    llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_val_typed");
+
+    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
+        ctx_.taggedValueType(), tagged_val_ptr, 0);
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int8Type(), type), type_ptr);
+
+    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
+        ctx_.taggedValueType(), tagged_val_ptr, 1);
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int8Type(), flags), flags_ptr);
+
+    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
+        ctx_.taggedValueType(), tagged_val_ptr, 2);
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
+
+    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
+        ctx_.taggedValueType(), tagged_val_ptr, 4);
+
+    // Ensure value is i64
+    llvm::Value* val_as_i64;
+    if (int64_val->getType()->isIntegerTy(64)) {
+        val_as_i64 = int64_val;
+    } else if (int64_val->getType()->isPointerTy()) {
+        val_as_i64 = ctx_.builder().CreatePtrToInt(int64_val, ctx_.int64Type());
+    } else if (int64_val->getType()->isIntegerTy()) {
+        val_as_i64 = ctx_.builder().CreateZExtOrTrunc(int64_val, ctx_.int64Type());
+    } else {
+        eshkol_warn("packInt64WithType: unexpected type, defaulting to 0");
+        val_as_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    }
+
+    ctx_.builder().CreateStore(val_as_i64, data_ptr);
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+}
+
 llvm::Value* TaggedValueCodegen::packBool(llvm::Value* bool_val) {
     llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_bool");
 

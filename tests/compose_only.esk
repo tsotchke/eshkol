@@ -1,0 +1,16 @@
+;; compose
+(define (compose f g)
+  (lambda (x) (f (g x))))
+
+;; Test compose
+(define add1 (lambda (x) (+ x 1)))
+(define double (lambda (x) (* x 2)))
+(define add1-then-double (compose double add1))
+
+(display "Testing compose:")
+(newline)
+(display "add1-then-double 5 = ")
+(display (add1-then-double 5))  ; (5+1)*2 = 12
+(newline)
+(display "Done")
+(newline)

@@ -2,6 +2,8 @@
 ;; Association List Functions Test
 ;;
 
+(require stdlib)
+
 (display "Testing association list functions:")
 (newline)
 

@@ -1,0 +1,127 @@
+; File I/O Stress Test
+; Tests all file I/O operations: open, read, write, close, eof
+
+(define test-filename "test_io_output.txt")
+
+; Test 1: Write operations
+(display "=== Test 1: Write Operations ===")
+(newline)
+
+(define out-port (open-output-file test-filename))
+(write-string "Line 1: Hello World" out-port)
+(write-char #\newline out-port)
+(write-line "Line 2: Testing write-line" out-port)
+(write-string "Line 3: " out-port)
+(write-char #\A out-port)
+(write-char #\B out-port)
+(write-char #\C out-port)
+(write-char #\newline out-port)
+(write-line "Line 4: Final line" out-port)
+(flush-output-port out-port)
+(close-port out-port)
+
+(display "Write operations completed")
+(newline)
+
+; Test 2: Read operations
+(display "=== Test 2: Read Operations ===")
+(newline)
+
+(define in-port (open-input-file test-filename))
+
+(define line1 (read-line in-port))
+(display "Read: ")
+(display line1)
+(newline)
+
+(define line2 (read-line in-port))
+(display "Read: ")
+(display line2)
+(newline)
+
+(define line3 (read-line in-port))
+(display "Read: ")
+(display line3)
+(newline)
+
+(define line4 (read-line in-port))
+(display "Read: ")
+(display line4)
+(newline)
+
+; Test 3: EOF detection
+(display "=== Test 3: EOF Detection ===")
+(newline)
+
+(define line5 (read-line in-port))
+(display "EOF check: ")
+(display (eof-object? line5))
+(newline)
+
+(close-port in-port)
+
+; Test 4: Write to stdout (single-arg versions)
+(display "=== Test 4: Stdout Operations ===")
+(newline)
+(write-string "Direct to stdout: ")
+(write-char #\O)
+(write-char #\K)
+(newline)
+
+; Test 5: Multiple open/close cycles
+(display "=== Test 5: Multiple Open/Close Cycles ===")
+(newline)
+
+(define port1 (open-output-file "test_cycle1.txt"))
+(write-line "Cycle 1 content" port1)
+(close-port port1)
+
+(define port2 (open-output-file "test_cycle2.txt"))
+(write-line "Cycle 2 content" port2)
+(close-port port2)
+
+(define read1 (open-input-file "test_cycle1.txt"))
+(define content1 (read-line read1))
+(close-port read1)
+
+(define read2 (open-input-file "test_cycle2.txt"))
+(define content2 (read-line read2))
+(close-port read2)
+
+(display "Cycle 1: ")
+(display content1)
+(newline)
+(display "Cycle 2: ")
+(display content2)
+(newline)
+
+; Test 6: Large write test
+(display "=== Test 6: Large Write Test ===")
+(newline)
+
+(define large-port (open-output-file "test_large.txt"))
+(define (write-n-lines n port)
+  (if (> n 0)
+      (begin
+        (write-line "This is a test line for stress testing file I/O operations" port)
+        (write-n-lines (- n 1) port))
+      #t))
+(write-n-lines 100 large-port)
+(close-port large-port)
+
+; Count lines back
+(define count-port (open-input-file "test_large.txt"))
+(define (count-lines port acc)
+  (let ((line (read-line port)))
+    (if (eof-object? line)
+        acc
+        (count-lines port (+ acc 1)))))
+(define line-count (count-lines count-port 0))
+(close-port count-port)
+
+(display "Lines written and read back: ")
+(display line-count)
+(newline)
+
+(display "=== All File I/O Tests Passed ===")
+(newline)

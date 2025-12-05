@@ -2,6 +2,7 @@
 ;; Phase 2A Multi-list Debug - Testing actual multi-list functionality
 ;;
 
+(require stdlib)
 
 (display "=== PHASE 2A MULTI-LIST DEBUG ===")
 (newline)

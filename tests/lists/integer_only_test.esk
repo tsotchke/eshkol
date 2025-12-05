@@ -2,6 +2,7 @@
 ;; Integer Only Test - Validate Phase 0 & 1 with existing functionality
 ;;
 
+(require stdlib)
 
 (display "=== INTEGER ONLY TEST ===")
 (newline)

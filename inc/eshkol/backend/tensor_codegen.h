@@ -158,6 +158,50 @@ public:
      */
     llvm::Value* transpose(const eshkol_operations_t* op);
 
+    /**
+     * Reshape tensor: (reshape tensor new-dims...)
+     * @param op The operation AST node
+     * @return Reshaped tensor (shares data with original)
+     */
+    llvm::Value* reshape(const eshkol_operations_t* op);
+
+    // === Tensor Creation Functions ===
+
+    /**
+     * Create zero-filled tensor: (zeros dim1 dim2 ...)
+     * @param op The operation AST node
+     * @return Tensor filled with zeros
+     */
+    llvm::Value* zeros(const eshkol_operations_t* op);
+
+    /**
+     * Create one-filled tensor: (ones dim1 dim2 ...)
+     * @param op The operation AST node
+     * @return Tensor filled with ones
+     */
+    llvm::Value* ones(const eshkol_operations_t* op);
+
+    /**
+     * Create identity matrix: (eye n) or (eye rows cols)
+     * @param op The operation AST node
+     * @return Identity matrix
+     */
+    llvm::Value* eye(const eshkol_operations_t* op);
+
+    /**
+     * Create range tensor: (arange stop) or (arange start stop) or (arange start stop step)
+     * @param op The operation AST node
+     * @return Range tensor
+     */
+    llvm::Value* arange(const eshkol_operations_t* op);
+
+    /**
+     * Create linspace tensor: (linspace start stop num)
+     * @param op The operation AST node
+     * @return Evenly spaced tensor
+     */
+    llvm::Value* linspace(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;

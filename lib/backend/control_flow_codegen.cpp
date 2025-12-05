@@ -690,7 +690,6 @@ llvm::Value* ControlFlowCodegen::codegenBegin(const eshkol_operations_t* op) {
 
     // If there are internal defines, handle them specially
     if (!defines.empty() && codegen_func_define_callback_ && codegen_var_define_callback_) {
-        eshkol_debug("begin has %zu internal defines, processing as letrec", defines.size());
 
         for (const eshkol_ast_t* def : defines) {
             if (def->operation.define_op.is_function) {

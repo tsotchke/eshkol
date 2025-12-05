@@ -2,6 +2,7 @@
 ;; Debug Binary Search 1 - Minimal reproduction attempt
 ;;
 
+(require stdlib)
 
 (display "=== DEBUG BINARY SEARCH 1 ===")
 (newline)

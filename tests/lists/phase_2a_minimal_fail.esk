@@ -2,6 +2,7 @@
 ;; Phase 2A Minimal Fail - Minimal test that triggers segfault
 ;;
 
+(require stdlib)
 
 (display "=== PHASE 2A MINIMAL FAIL ===")
 (newline)

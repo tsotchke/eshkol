@@ -2,6 +2,7 @@
 ;; Phase 2A Exact Match - Using exact same variable names as working test
 ;;
 
+(require stdlib)
 
 (display "=== PHASE 2A EXACT MATCH ===")
 (newline)

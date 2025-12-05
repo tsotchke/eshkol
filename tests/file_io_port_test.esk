@@ -1,0 +1,27 @@
+; Test if port type is preserved with define
+
+; Create test file
+(let ((out (open-output-file "port_test.txt")))
+  (write-string "Hello" out)
+  (close-port out))
+
+; Test 1: With let - should work
+(display "Test 1: let")
+(newline)
+(let ((port (open-input-file "port_test.txt")))
+  (display "Port type with let: ")
+  (display port)
+  (newline)
+  (close-port port))
+
+; Test 2: With define - may fail
+(display "Test 2: define")
+(newline)
+(define my-port (open-input-file "port_test.txt"))
+(display "Port type with define: ")
+(display my-port)
+(newline)
+(close-port my-port)
+
+(display "Done")
+(newline)

@@ -1,0 +1,42 @@
+; Trace test - trying to understand the define vs let issue
+
+; Test 1: Write a file (this works in both cases)
+(let ((out (open-output-file "trace_test.txt")))
+  (write-line "Test content" out)
+  (close-port out))
+
+; Test 2: Read with let - works
+(display "Let read: ")
+(let ((in (open-input-file "trace_test.txt")))
+  (let ((line (read-line in)))
+    (display line)
+    (newline)
+    (close-port in)))
+
+; Test 3: Immediate read without variable - should work
+(display "Immediate read: ")
+(let ((in (open-input-file "trace_test.txt")))
+  (display (read-line in))
+  (newline)
+  (close-port in))
+
+; Test 4: Function that returns port
+(define (open-test-file)
+  (open-input-file "trace_test.txt"))
+
+(display "Function return port: ")
+(let ((in (open-test-file)))
+  (display (read-line in))
+  (newline)
+  (close-port in))
+
+; Test 5: The failing case - define with top-level port
+(display "Define port: ")
+(define my-port (open-input-file "trace_test.txt"))
+(define my-line (read-line my-port))
+(display my-line)
+(newline)
+(close-port my-port)
+
+(display "Done")
+(newline)

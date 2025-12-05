@@ -2,6 +2,7 @@
 ;; Debug Binary Search 2c - Test result access patterns
 ;;
 
+(require stdlib)
 
 (display "=== DEBUG BINARY SEARCH 2C ===")
 (newline)

@@ -2,6 +2,7 @@
 ;; List* (Improper List Constructor) Test
 ;;
 
+(require stdlib)
 
 (display "Testing list* function:")
 (newline)

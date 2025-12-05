@@ -1540,7 +1540,24 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
         return;
     }
 
-    uint8_t base_type = value->type & 0x0F;
+    uint8_t full_type = value->type;
+    uint8_t base_type = full_type & 0x0F;
+
+    // Check for port types BEFORE the switch (they use CONS_PTR as base with flags)
+    if (base_type == ESHKOL_VALUE_CONS_PTR) {
+        if (full_type & 0x10) {
+            FILE* fp = (FILE*)value->data.ptr_val;
+            int fd = fp ? fileno(fp) : -1;
+            fprintf(get_output(opts), "#<input-port fd:%d>", fd);
+            return;
+        }
+        if (full_type & 0x20) {
+            FILE* fp = (FILE*)value->data.ptr_val;
+            int fd = fp ? fileno(fp) : -1;
+            fprintf(get_output(opts), "#<output-port fd:%d>", fd);
+            return;
+        }
+    }
 
     switch (base_type) {
         case ESHKOL_VALUE_NULL:
