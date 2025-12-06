@@ -973,28 +973,282 @@ llvm::Value* CollectionCodegen::isPair(const eshkol_operations_t* op) {
 }
 
 llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
-    eshkol_warn("CollectionCodegen::makeVector called - using fallback");
-    return tagged_.packNull();
+    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("CollectionCodegen::makeVector - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_warn("make-vector requires 1 or 2 arguments");
+        return nullptr;
+    }
+
+    // Get length via callback
+    void* len_typed = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!len_typed) return nullptr;
+    llvm::Value* len_tagged = typed_to_tagged_callback_(len_typed, callback_context_);
+    if (!len_tagged) return nullptr;
+
+    // Extract length as i64
+    llvm::Value* length = tagged_.unpackInt64(len_tagged);
+
+    // Calculate allocation size: 8 (length field) + sizeof(tagged_value) * length
+    uint64_t tagged_value_size = ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType());
+    llvm::Value* elem_size = llvm::ConstantInt::get(ctx_.int64Type(), tagged_value_size);
+    llvm::Value* data_size = ctx_.builder().CreateMul(length, elem_size);
+    llvm::Value* total_size = ctx_.builder().CreateAdd(data_size,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+
+    // Allocate from arena
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, total_size});
+
+    // Store length at beginning
+    llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
+    ctx_.builder().CreateStore(length, len_ptr);
+
+    // Get fill value (default to 0 if not provided)
+    llvm::Value* fill_val;
+    if (op->call_op.num_vars == 2) {
+        void* fill_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!fill_typed) {
+            fill_val = tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
+        } else {
+            fill_val = typed_to_tagged_callback_(fill_typed, callback_context_);
+            if (!fill_val) {
+                fill_val = tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
+            }
+        }
+    } else {
+        fill_val = tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
+    }
+
+    // Fill loop
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_header = llvm::BasicBlock::Create(ctx_.context(), "vec_fill_header", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "vec_fill_body", current_func);
+    llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(ctx_.context(), "vec_fill_exit", current_func);
+
+    // Get pointer to elements (after length field)
+    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
+
+    ctx_.builder().CreateBr(loop_header);
+
+    ctx_.builder().SetInsertPoint(loop_header);
+    llvm::PHINode* i = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "fill_i");
+    i->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0),
+        loop_header->getSinglePredecessor());
+    llvm::Value* done = ctx_.builder().CreateICmpUGE(i, length);
+    ctx_.builder().CreateCondBr(done, loop_exit, loop_body);
+
+    ctx_.builder().SetInsertPoint(loop_body);
+    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base_typed, i);
+    ctx_.builder().CreateStore(fill_val, elem_ptr);
+    llvm::Value* next_i = ctx_.builder().CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    i->addIncoming(next_i, loop_body);
+    ctx_.builder().CreateBr(loop_header);
+
+    ctx_.builder().SetInsertPoint(loop_exit);
+    return tagged_.packPtr(vec_ptr, ESHKOL_VALUE_VECTOR_PTR);
 }
 
 llvm::Value* CollectionCodegen::vector(const eshkol_operations_t* op) {
-    eshkol_warn("CollectionCodegen::vector called - using fallback");
-    return tagged_.packNull();
+    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("CollectionCodegen::vector - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    uint64_t num_elems = op->call_op.num_vars;
+
+    // Calculate allocation size: 8 (length) + sizeof(tagged_value) * num_elems
+    uint64_t tagged_value_size = ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType());
+    uint64_t total_size = 8 + tagged_value_size * num_elems;
+
+    // Allocate from arena
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
+        {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), total_size)});
+
+    // Store length at beginning
+    llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
+    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), num_elems), len_ptr);
+
+    // Get pointer to elements (after length field)
+    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
+
+    // Store each element
+    for (uint64_t i = 0; i < num_elems; i++) {
+        void* elem_typed = codegen_typed_ast_callback_(&op->call_op.variables[i], callback_context_);
+        if (!elem_typed) return nullptr;
+
+        llvm::Value* tagged_elem = typed_to_tagged_callback_(elem_typed, callback_context_);
+        if (!tagged_elem) return nullptr;
+
+        llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base_typed,
+            llvm::ConstantInt::get(ctx_.int64Type(), i));
+        ctx_.builder().CreateStore(tagged_elem, elem_ptr);
+    }
+
+    return tagged_.packPtr(vec_ptr, ESHKOL_VALUE_VECTOR_PTR);
 }
 
 llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
-    eshkol_warn("CollectionCodegen::vectorLength called - using fallback");
-    return tagged_.packNull();
+    if (!codegen_ast_callback_) {
+        eshkol_warn("CollectionCodegen::vectorLength - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars != 1) {
+        eshkol_warn("vector-length requires exactly 1 argument");
+        return nullptr;
+    }
+
+    llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!vec_arg) return nullptr;
+
+    llvm::Value* length = nullptr;
+
+    if (vec_arg->getType() == ctx_.taggedValueType()) {
+        // Get the type tag to distinguish vector vs tensor
+        llvm::Value* type_tag = tagged_.getType(vec_arg);
+        llvm::Value* base_type = ctx_.builder().CreateAnd(type_tag,
+            llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+
+        llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+
+        llvm::Value* ptr_int = tagged_.unpackInt64(vec_arg);
+        llvm::Value* ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
+
+        llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* tensor_block = llvm::BasicBlock::Create(ctx_.context(), "tensor_len", current_func);
+        llvm::BasicBlock* vector_block = llvm::BasicBlock::Create(ctx_.context(), "vector_len", current_func);
+        llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "len_merge", current_func);
+
+        ctx_.builder().CreateCondBr(is_tensor, tensor_block, vector_block);
+
+        // Tensor path: load total_elements from field 3
+        ctx_.builder().SetInsertPoint(tensor_block);
+        llvm::Value* total_elem_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), ptr, 3);
+        llvm::Value* tensor_len = ctx_.builder().CreateLoad(ctx_.int64Type(), total_elem_ptr);
+        ctx_.builder().CreateBr(merge_block);
+
+        // Vector path: load length from beginning
+        ctx_.builder().SetInsertPoint(vector_block);
+        llvm::Value* vec_len_ptr = ctx_.builder().CreatePointerCast(ptr, ctx_.ptrType());
+        llvm::Value* vec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_len_ptr);
+        ctx_.builder().CreateBr(merge_block);
+
+        // Merge
+        ctx_.builder().SetInsertPoint(merge_block);
+        llvm::PHINode* len_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "length");
+        len_phi->addIncoming(tensor_len, tensor_block);
+        len_phi->addIncoming(vec_len, vector_block);
+        length = len_phi;
+    } else if (vec_arg->getType()->isIntegerTy(64)) {
+        // Raw i64 pointer (likely a tensor)
+        llvm::Value* ptr = ctx_.builder().CreateIntToPtr(vec_arg, ctx_.ptrType());
+        llvm::Value* total_elem_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), ptr, 3);
+        length = ctx_.builder().CreateLoad(ctx_.int64Type(), total_elem_ptr);
+    } else {
+        eshkol_warn("vector-length: unexpected argument type");
+        return nullptr;
+    }
+
+    return tagged_.packInt64(length, true);
 }
 
 llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
-    eshkol_warn("CollectionCodegen::vectorRef called - using fallback");
-    return tagged_.packNull();
+    if (!codegen_ast_callback_ || !codegen_typed_ast_callback_) {
+        eshkol_warn("CollectionCodegen::vectorRef - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars != 2) {
+        eshkol_warn("vector-ref requires exactly 2 arguments");
+        return nullptr;
+    }
+
+    llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    void* idx_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+    if (!vec_arg || !idx_typed) return nullptr;
+
+    llvm::Value* idx_tagged = typed_to_tagged_callback_(idx_typed, callback_context_);
+    if (!idx_tagged) return nullptr;
+
+    // Extract vector pointer
+    llvm::Value* vec_ptr_int = tagged_.unpackInt64(vec_arg);
+    llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(vec_ptr_int, ctx_.ptrType());
+
+    // Get pointer to elements (after length field)
+    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
+
+    // Extract index - handle both raw i64 and tagged values
+    llvm::Value* idx = idx_tagged;
+    if (idx->getType() == ctx_.taggedValueType()) {
+        idx = tagged_.unpackInt64(idx);
+    } else if (idx->getType() != ctx_.int64Type()) {
+        if (idx->getType()->isIntegerTy()) {
+            idx = ctx_.builder().CreateSExtOrTrunc(idx, ctx_.int64Type());
+        }
+    }
+
+    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base_typed, idx);
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem_ptr);
 }
 
 llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
-    eshkol_warn("CollectionCodegen::vectorSet called - using fallback");
-    return tagged_.packNull();
+    if (!codegen_ast_callback_ || !codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("CollectionCodegen::vectorSet - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars != 3) {
+        eshkol_warn("vector-set! requires exactly 3 arguments");
+        return nullptr;
+    }
+
+    llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    void* idx_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+    void* val_typed = codegen_typed_ast_callback_(&op->call_op.variables[2], callback_context_);
+    if (!vec_arg || !idx_typed || !val_typed) return nullptr;
+
+    llvm::Value* idx_tagged = typed_to_tagged_callback_(idx_typed, callback_context_);
+    llvm::Value* tagged_val = typed_to_tagged_callback_(val_typed, callback_context_);
+    if (!idx_tagged || !tagged_val) return nullptr;
+
+    // Extract vector pointer
+    llvm::Value* vec_ptr_int = tagged_.unpackInt64(vec_arg);
+    llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(vec_ptr_int, ctx_.ptrType());
+
+    // Get pointer to elements (after length field)
+    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
+
+    // Extract index
+    llvm::Value* idx = idx_tagged;
+    if (idx->getType() == ctx_.taggedValueType()) {
+        idx = tagged_.unpackInt64(idx);
+    } else if (idx->getType() != ctx_.int64Type()) {
+        if (idx->getType()->isIntegerTy()) {
+            idx = ctx_.builder().CreateSExtOrTrunc(idx, ctx_.int64Type());
+        } else if (idx->getType()->isFloatingPointTy()) {
+            idx = ctx_.builder().CreateFPToSI(idx, ctx_.int64Type());
+        }
+    }
+
+    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base_typed, idx);
+    ctx_.builder().CreateStore(tagged_val, elem_ptr);
+
+    // Return the vector
+    return vec_arg;
 }
 
 } // namespace eshkol

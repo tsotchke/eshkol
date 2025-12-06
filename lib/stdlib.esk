@@ -18,6 +18,9 @@
 (require core.functional.curry)
 (require core.functional.flip)
 
+;;; Control - trampolining for deep recursion
+(require core.control.trampoline)
+
 ;;; List - compound accessors, generation, transformation, queries, sorting, higher-order, search
 (require core.list.compound)
 (require core.list.generate)

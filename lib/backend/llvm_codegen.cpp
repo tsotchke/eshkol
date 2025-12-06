@@ -23,6 +23,7 @@
 #include <eshkol/backend/homoiconic_codegen.h>
 #include <eshkol/backend/call_apply_codegen.h>
 #include <eshkol/backend/map_codegen.h>
+#include <eshkol/backend/tail_call_codegen.h>
 #include <eshkol/logger.h>
 #include "../core/arena_memory.h"
 
@@ -293,6 +294,9 @@ private:
 
     // HomoiconicCodegen - Quote and S-expression operations
     std::unique_ptr<eshkol::HomoiconicCodegen> homoiconic_;
+
+    // TailCallCodegen - Tail call optimization support
+    std::unique_ptr<eshkol::TailCallCodegen> tailcall_;
 
     // Local type pointers (initialized from TypeSystem for backward compatibility)
     // TODO: Gradually migrate code to use types-> accessors directly
@@ -1414,7 +1418,14 @@ private:
 
         // Initialize TensorCodegen - tensor operations (needed by ArithmeticCodegen)
         tensor_ = std::make_unique<eshkol::TensorCodegen>(*ctx_, *tagged_, *mem);
-        eshkol_debug("Created TensorCodegen");
+        // Set up callbacks for AST evaluation (uses same pattern as other modules)
+        tensor_->setCodegenCallbacks(
+            ControlFlowCallbacks::codegenASTWrapper,
+            ControlFlowCallbacks::codegenTypedASTWrapper,
+            ControlFlowCallbacks::typedToTaggedWrapper,
+            this
+        );
+        eshkol_debug("Created TensorCodegen with callbacks");
 
         // Initialize AutodiffCodegen - automatic differentiation operations (needed by ArithmeticCodegen)
         autodiff_ = std::make_unique<eshkol::AutodiffCodegen>(*ctx_, *tagged_, *mem);
@@ -1527,6 +1538,11 @@ private:
         // Initialize HomoiconicCodegen - quote and S-expression operations
         homoiconic_ = std::make_unique<eshkol::HomoiconicCodegen>(*ctx_, *tagged_, *coll_, *strio_);
         eshkol_debug("Created HomoiconicCodegen");
+
+        // Initialize TailCallCodegen - tail call optimization support
+        tailcall_ = std::make_unique<eshkol::TailCallCodegen>(*ctx_, *tagged_, *mem);
+        tailcall_->generateTrampolineRuntime();
+        eshkol_debug("Created TailCallCodegen with trampoline runtime");
 
         // Initialize FunctionCodegen - lambda and closure operations
         // Note: The main implementations remain in this file for now
@@ -3970,125 +3986,10 @@ private:
         return arith_->div(left_tagged, right_tagged);
     }
     
-    // ===== POLYMORPHIC COMPARISON FUNCTIONS (Phase 3 Fix) =====
-    // Handle mixed-type comparisons with runtime type detection
-    
+    // MIGRATED: Polymorphic comparison - delegates to ArithmeticCodegen
     Value* polymorphicCompare(Value* left_tagged, Value* right_tagged,
                              const std::string& operation) {
-        if (!left_tagged || !right_tagged) {
-            return packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-        }
-
-        // Extract type tags
-        Value* left_type = getTaggedValueType(left_tagged);
-        Value* right_type = getTaggedValueType(right_tagged);
-
-        Value* left_base = builder->CreateAnd(left_type,
-            ConstantInt::get(int8_type, 0x0F));
-        Value* right_base = builder->CreateAnd(right_type,
-            ConstantInt::get(int8_type, 0x0F));
-
-        // Check if either operand is double
-        Value* left_is_double = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* right_is_double = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* any_double = builder->CreateOr(left_is_double, right_is_double);
-
-        // SYMBOL FIX: Check if either operand is a STRING_PTR (symbol)
-        Value* left_is_string = builder->CreateICmpEQ(left_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
-        Value* right_is_string = builder->CreateICmpEQ(right_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
-        Value* both_strings = builder->CreateAnd(left_is_string, right_is_string);
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* double_path = BasicBlock::Create(*context, "cmp_double_path", current_func);
-        BasicBlock* check_string = BasicBlock::Create(*context, "cmp_check_string", current_func);
-        BasicBlock* string_path = BasicBlock::Create(*context, "cmp_string_path", current_func);
-        BasicBlock* int_path = BasicBlock::Create(*context, "cmp_int_path", current_func);
-        BasicBlock* merge = BasicBlock::Create(*context, "cmp_merge", current_func);
-
-        builder->CreateCondBr(any_double, double_path, check_string);
-
-        // Double path: promote both to double and compare
-        builder->SetInsertPoint(double_path);
-        Value* left_double = builder->CreateSelect(left_is_double,
-            unpackDoubleFromTaggedValue(left_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(left_tagged), double_type));
-        Value* right_double = builder->CreateSelect(right_is_double,
-            unpackDoubleFromTaggedValue(right_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(right_tagged), double_type));
-
-        Value* double_cmp = nullptr;
-        if (operation == "lt") {
-            double_cmp = builder->CreateFCmpOLT(left_double, right_double);
-        } else if (operation == "gt") {
-            double_cmp = builder->CreateFCmpOGT(left_double, right_double);
-        } else if (operation == "eq") {
-            double_cmp = builder->CreateFCmpOEQ(left_double, right_double);
-        } else if (operation == "le") {
-            double_cmp = builder->CreateFCmpOLE(left_double, right_double);
-        } else if (operation == "ge") {
-            double_cmp = builder->CreateFCmpOGE(left_double, right_double);
-        }
-        // Use BOOL type for comparison results
-        Value* tagged_double_result = packBoolToTaggedValue(double_cmp);
-        builder->CreateBr(merge);
-        BasicBlock* double_exit = builder->GetInsertBlock();
-
-        // Check if both are strings/symbols
-        builder->SetInsertPoint(check_string);
-        builder->CreateCondBr(both_strings, string_path, int_path);
-
-        // String/symbol path: compare string pointers (eq?) or content (equal?)
-        builder->SetInsertPoint(string_path);
-        // For symbols, compare the pointer values (interned symbols with same name have same pointer)
-        Value* left_ptr = unpackPtrFromTaggedValue(left_tagged);
-        Value* right_ptr = unpackPtrFromTaggedValue(right_tagged);
-
-        Value* string_cmp = nullptr;
-        if (operation == "eq") {
-            // For eq?, compare pointers directly (symbols are interned)
-            string_cmp = builder->CreateICmpEQ(left_ptr, right_ptr);
-        } else {
-            // For other comparisons on strings, compare pointers (same as eq?)
-            string_cmp = builder->CreateICmpEQ(left_ptr, right_ptr);
-        }
-        Value* tagged_string_result = packBoolToTaggedValue(string_cmp);
-        builder->CreateBr(merge);
-        BasicBlock* string_exit = builder->GetInsertBlock();
-
-        // Int path: compare as int64
-        builder->SetInsertPoint(int_path);
-        Value* left_int = unpackInt64FromTaggedValue(left_tagged);
-        Value* right_int = unpackInt64FromTaggedValue(right_tagged);
-
-        Value* int_cmp = nullptr;
-        if (operation == "lt") {
-            int_cmp = builder->CreateICmpSLT(left_int, right_int);
-        } else if (operation == "gt") {
-            int_cmp = builder->CreateICmpSGT(left_int, right_int);
-        } else if (operation == "ge") {
-            int_cmp = builder->CreateICmpSGE(left_int, right_int);
-        } else if (operation == "le") {
-            int_cmp = builder->CreateICmpSLE(left_int, right_int);
-        } else if (operation == "eq") {
-            int_cmp = builder->CreateICmpEQ(left_int, right_int);
-        }
-        // Use BOOL type for comparison results
-        Value* tagged_int_result = packBoolToTaggedValue(int_cmp);
-        builder->CreateBr(merge);
-        BasicBlock* int_exit = builder->GetInsertBlock();
-
-        // Merge results
-        builder->SetInsertPoint(merge);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3);
-        result_phi->addIncoming(tagged_double_result, double_exit);
-        result_phi->addIncoming(tagged_string_result, string_exit);
-        result_phi->addIncoming(tagged_int_result, int_exit);
-
-        return result_phi;
+        return arith_->compare(left_tagged, right_tagged, operation);
     }
     
     
@@ -4458,7 +4359,12 @@ private:
                 return codegenLambda(op);
                 
             case ESHKOL_LET_OP:
-                // REFACTOR: Delegate to BindingCodegen
+                // Handle named let: (let loop ((var init) ...) body)
+                // Named let needs special handling that codegenNamedLet provides
+                if (op->let_op.name != nullptr) {
+                    return codegenNamedLet(op);
+                }
+                // REFACTOR: Delegate regular let to BindingCodegen
                 return binding_->let(op);
 
             case ESHKOL_LET_STAR_OP:
@@ -4501,7 +4407,7 @@ private:
                 return codegenSet(op);
 
             case ESHKOL_TENSOR_OP:
-                return codegenTensorOperation(op);
+                return tensor_->tensorOperation(op);
                 
             case ESHKOL_DIFF_OP:
                 return codegenDiff(op);
@@ -6373,45 +6279,49 @@ private:
         if (func_name == "last") return codegenLast(op);
         if (func_name == "last-pair") return codegenLastPair(op);
         
-        // Handle tensor operations (numerical arrays)
-        if (func_name == "tensor-get") return codegenTensorGet(op);
-        if (func_name == "vref") return codegenTensorVectorRef(op);  // Tensor 1D access (AD-aware)
-        if (func_name == "tensor-set") return codegenTensorSet(op);
+        // Handle tensor operations (numerical arrays) - MIGRATED to TensorCodegen
+        if (func_name == "tensor-get") return tensor_->tensorGet(op);
+        if (func_name == "vref") return codegenTensorVectorRef(op);  // Tensor 1D access (AD-aware, stays here)
+        if (func_name == "tensor-set") return tensor_->tensorSet(op);
 
-        // Scheme vectors (heterogeneous - can hold any type)
+        // Scheme vectors (heterogeneous - can hold any type) - MIGRATED to CollectionCodegen
         if (func_name == "vector?") return codegenTypePredicate(op, ESHKOL_VALUE_VECTOR_PTR);
-        if (func_name == "make-vector") return codegenMakeVector(op);
-        if (func_name == "vector") return codegenVector(op);
-        if (func_name == "vector-ref") return codegenSchemeVectorRef(op);
-        if (func_name == "vector-set!") return codegenSchemeVectorSet(op);
-        if (func_name == "vector-length") return codegenVectorLength(op);
-        if (func_name == "tensor-add") return codegenTensorArithmetic(op, "add");
-        if (func_name == "tensor-sub") return codegenTensorArithmetic(op, "sub");
-        if (func_name == "tensor-mul") return codegenTensorArithmetic(op, "mul");
-        if (func_name == "tensor-div") return codegenTensorArithmetic(op, "div");
-        if (func_name == "tensor-dot") return codegenTensorDot(op);
-        if (func_name == "tensor-shape") return codegenTensorShape(op);
-        if (func_name == "tensor-apply") return codegenTensorApply(op);
+        if (func_name == "make-vector") return coll_->makeVector(op);
+        if (func_name == "vector") return coll_->vector(op);
+        if (func_name == "vector-ref") return coll_->vectorRef(op);
+        if (func_name == "vector-set!") return coll_->vectorSet(op);
+        if (func_name == "vector-length") return coll_->vectorLength(op);
+        // MIGRATED: Tensor arithmetic - now delegated to TensorCodegen
+        if (func_name == "tensor-add") return tensor_->tensorArithmetic(op, "add");
+        if (func_name == "tensor-sub") return tensor_->tensorArithmetic(op, "sub");
+        if (func_name == "tensor-mul") return tensor_->tensorArithmetic(op, "mul");
+        if (func_name == "tensor-div") return tensor_->tensorArithmetic(op, "div");
+        if (func_name == "tensor-dot") return tensor_->tensorDot(op);
+        // MIGRATED: tensor-shape - now delegated to TensorCodegen
+        if (func_name == "tensor-shape") return tensor_->tensorShape(op);
+        // MIGRATED: tensor-apply and tensor-reduce - now delegated to TensorCodegen
+        if (func_name == "tensor-apply") return tensor_->tensorApply(op);
         if (func_name == "tensor-reduce") {
             // Support both 3-arg (reduce all) and 4-arg (reduce with dimension) versions
             if (op->call_op.num_vars == 3) {
-                return codegenTensorReduceAll(op);
+                return tensor_->tensorReduceAll(op);
             } else {
-                return codegenTensorReduceWithDim(op);
+                return tensor_->tensorReduceWithDim(op);
             }
         }
-        if (func_name == "tensor-reduce-all") return codegenTensorReduceAll(op);
+        if (func_name == "tensor-reduce-all") return tensor_->tensorReduceAll(op);
 
-        // ML tensor creation functions
-        if (func_name == "zeros") return codegenZeros(op);
-        if (func_name == "ones") return codegenOnes(op);
-        if (func_name == "eye") return codegenEye(op);
-        if (func_name == "arange") return codegenArange(op);
-        if (func_name == "linspace") return codegenLinspace(op);
+        // MIGRATED: ML tensor creation functions - now delegated to TensorCodegen
+        if (func_name == "zeros") return tensor_->zeros(op);
+        if (func_name == "ones") return tensor_->ones(op);
+        if (func_name == "eye") return tensor_->eye(op);
+        if (func_name == "arange") return tensor_->arange(op);
+        if (func_name == "linspace") return tensor_->linspace(op);
 
-        // ML tensor manipulation functions
-        if (func_name == "reshape") return codegenReshape(op);
-        if (func_name == "transpose") return codegenTranspose(op);
+        // MIGRATED: ML tensor manipulation functions - reshape now delegated to TensorCodegen
+        if (func_name == "reshape") return tensor_->reshape(op);
+        // MIGRATED: transpose - now delegated to TensorCodegen
+        if (func_name == "transpose") return tensor_->transpose(op);
         if (func_name == "flatten") return codegenFlatten(op);
 
         // ML linear algebra
@@ -6422,9 +6332,9 @@ private:
         if (func_name == "norm") return codegenNorm(op);
         if (func_name == "outer") return codegenOuterProduct(op);
 
-        // ML statistics with axis support
-        if (func_name == "tensor-sum") return codegenTensorSum(op);
-        if (func_name == "tensor-mean") return codegenTensorMean(op);
+        // MIGRATED: ML statistics - now delegated to TensorCodegen
+        if (func_name == "tensor-sum") return tensor_->tensorSum(op);
+        if (func_name == "tensor-mean") return tensor_->tensorMean(op);
 
         // Handle tensor-to-string conversions
         if (func_name == "vector-to-string") return codegenVectorToString(op);
@@ -7248,6 +7158,24 @@ private:
     }
     
     Value* codegenArithmetic(const eshkol_operations_t* op, const std::string& operation) {
+        // Handle unary minus: (- x) => negation
+        if (op->call_op.num_vars == 1 && operation == "sub") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* tagged = typedValueToTaggedValue(tv);
+            // Create zero tagged value
+            Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
+            // Return 0 - x
+            return polymorphicSub(zero, tagged);
+        }
+
+        // Handle unary plus: (+ x) => identity
+        if (op->call_op.num_vars == 1 && operation == "add") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            return typedValueToTaggedValue(tv);
+        }
+
         if (op->call_op.num_vars < 2) {
             eshkol_warn("Arithmetic operation requires at least 2 arguments");
             return nullptr;
@@ -9655,10 +9583,16 @@ private:
             eshkol_error("Invalid let expression - missing body");
             return nullptr;
         }
-        
+
+        // Handle named let: (let loop ((var init) ...) body)
+        // This is equivalent to: (letrec ((loop (lambda (var ...) body))) (loop init ...))
+        if (op->let_op.name != nullptr) {
+            return codegenNamedLet(op);
+        }
+
         eshkol_debug("Processing let expression with %llu bindings",
                     (unsigned long long)op->let_op.num_bindings);
-        
+
         // Save current symbol table state
         std::unordered_map<std::string, Value*> prev_symbols = symbol_table;
         
@@ -9956,6 +9890,143 @@ private:
                     func_refs_to_preserve.size());
 
         return body_result ? body_result : ConstantInt::get(int64_type, 0);
+    }
+
+    // Named let: (let loop ((var init) ...) body)
+    // Transforms to: (letrec ((loop (lambda (var ...) body))) (loop init ...))
+    Value* codegenNamedLet(const eshkol_operations_t* op) {
+        std::string loop_name = op->let_op.name;
+        eshkol_debug("Processing named let '%s' with %llu bindings",
+                    loop_name.c_str(), (unsigned long long)op->let_op.num_bindings);
+
+        // Save current symbol table state
+        std::unordered_map<std::string, Value*> prev_symbols = symbol_table;
+
+        // Extract parameter names and initial values from bindings
+        std::vector<std::string> param_names;
+        std::vector<Value*> init_values;
+
+        for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+            const eshkol_ast_t* binding = &op->let_op.bindings[i];
+
+            if (binding->type != ESHKOL_CONS || !binding->cons_cell.car || !binding->cons_cell.cdr) {
+                eshkol_error("Invalid named let binding at index %llu", (unsigned long long)i);
+                continue;
+            }
+
+            // Extract parameter name
+            const eshkol_ast_t* var_ast = binding->cons_cell.car;
+            if (var_ast->type != ESHKOL_VAR || !var_ast->variable.id) {
+                eshkol_error("Named let binding must have variable name");
+                continue;
+            }
+            param_names.push_back(var_ast->variable.id);
+
+            // Evaluate initial value
+            Value* init_val = codegenAST(binding->cons_cell.cdr);
+            if (!init_val) {
+                eshkol_error("Failed to evaluate initial value for named let parameter '%s'",
+                            var_ast->variable.id);
+                init_val = ConstantInt::get(int64_type, 0);
+            }
+            init_values.push_back(init_val);
+        }
+
+        // Create the loop function: (lambda (param1 param2 ...) body)
+        // Function signature: all parameters are tagged_value, returns tagged_value
+        std::vector<Type*> param_types(param_names.size(), tagged_value_type);
+        FunctionType* loop_func_type = FunctionType::get(tagged_value_type, param_types, false);
+
+        static int named_let_counter = 0;
+        std::string func_name = "named_let_" + loop_name + "_" + std::to_string(named_let_counter++);
+        Function* loop_func = Function::Create(
+            loop_func_type,
+            Function::ExternalLinkage,
+            func_name,
+            module.get()
+        );
+
+        // Set parameter names
+        auto arg_it = loop_func->arg_begin();
+        for (size_t i = 0; i < param_names.size(); i++, ++arg_it) {
+            arg_it->setName(param_names[i]);
+        }
+
+        // Register function so it can be called recursively
+        function_table[loop_name] = loop_func;
+        symbol_table[loop_name + "_func"] = loop_func;
+        global_symbol_table[loop_name + "_func"] = loop_func;
+
+        // Save current context
+        Function* prev_function = current_function;
+        BasicBlock* prev_block = builder->GetInsertBlock();
+
+        // Create entry block for loop function
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", loop_func);
+        builder->SetInsertPoint(entry);
+        current_function = loop_func;
+
+        // Clear symbol table for function scope but keep the loop function visible
+        symbol_table.clear();
+        symbol_table[loop_name + "_func"] = loop_func;
+        function_table[loop_name] = loop_func;
+
+        // Add parameters to symbol table
+        arg_it = loop_func->arg_begin();
+        for (size_t i = 0; i < param_names.size(); i++, ++arg_it) {
+            // Create alloca for parameter
+            AllocaInst* param_alloca = builder->CreateAlloca(tagged_value_type, nullptr,
+                                                              param_names[i] + "_storage");
+            builder->CreateStore(&*arg_it, param_alloca);
+            symbol_table[param_names[i]] = param_alloca;
+        }
+
+        // Generate body
+        Value* body_result = codegenAST(op->let_op.body);
+        if (!body_result) {
+            body_result = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
+        }
+        // Ensure body result is tagged_value type
+        if (body_result->getType() != tagged_value_type) {
+            if (body_result->getType()->isDoubleTy()) {
+                body_result = packDoubleToTaggedValue(body_result);
+            } else if (body_result->getType()->isIntegerTy(64)) {
+                body_result = packInt64ToTaggedValue(body_result, true);
+            }
+        }
+        builder->CreateRet(body_result);
+
+        // Restore context
+        current_function = prev_function;
+        if (prev_block) {
+            builder->SetInsertPoint(prev_block);
+        }
+
+        // Restore symbol table (but keep loop function registered)
+        symbol_table = prev_symbols;
+        symbol_table[loop_name + "_func"] = loop_func;
+        function_table[loop_name] = loop_func;
+
+        // Call the loop function with initial values
+        // Ensure initial values are tagged_value type
+        std::vector<Value*> call_args;
+        for (Value* init_val : init_values) {
+            if (init_val->getType() != tagged_value_type) {
+                if (init_val->getType()->isDoubleTy()) {
+                    init_val = packDoubleToTaggedValue(init_val);
+                } else if (init_val->getType()->isIntegerTy(64)) {
+                    init_val = packInt64ToTaggedValue(init_val, true);
+                } else if (init_val->getType()->isPointerTy()) {
+                    // Load the value if it's a pointer
+                    init_val = builder->CreateLoad(tagged_value_type, init_val);
+                }
+            }
+            call_args.push_back(init_val);
+        }
+
+        Value* result = builder->CreateCall(loop_func, call_args);
+        eshkol_debug("Named let '%s' completed", loop_name.c_str());
+        return result;
     }
 
     // letrec - Recursive bindings (all bindings visible to all values)
@@ -10418,143 +10489,6 @@ private:
         return builder->CreatePtrToInt(typed_tensor_ptr, int64_type);
     }
     
-    Value* codegenTensorOperation(const eshkol_operations_t* op) {
-        if (!op || op->op != ESHKOL_TENSOR_OP) return nullptr;
-
-        // Use class member tensor_type (shared by all tensor operations)
-
-
-        // Allocate memory for tensor structure
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc function not found");
-            return nullptr;
-        }
-
-        Value* tensor_size = ConstantInt::get(int64_type,
-                                            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* tensor_ptr = builder->CreateCall(malloc_func, {tensor_size});
-
-        Value* typed_tensor_ptr = builder->CreatePointerCast(tensor_ptr, builder->getPtrTy());
-        
-        // Allocate and populate dimensions array
-        Value* dims_size = ConstantInt::get(int64_type, 
-                                          op->tensor_op.num_dimensions * sizeof(uint64_t));
-        Value* dims_ptr = builder->CreateCall(malloc_func, {dims_size});
-        Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
-        
-        for (uint64_t i = 0; i < op->tensor_op.num_dimensions; i++) {
-            Value* dim_ptr = builder->CreateGEP(int64_type, typed_dims_ptr, 
-                                              ConstantInt::get(int64_type, i));
-            builder->CreateStore(ConstantInt::get(int64_type, op->tensor_op.dimensions[i]), dim_ptr);
-        }
-        
-        // Allocate and populate elements array
-        Value* elements_size = ConstantInt::get(int64_type, 
-                                             op->tensor_op.total_elements * sizeof(int64_t));
-        Value* elements_ptr = builder->CreateCall(malloc_func, {elements_size});
-        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
-        
-        for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
-            Value* element_val = codegenAST(&op->tensor_op.elements[i]);
-            if (element_val) {
-                // CRITICAL FIX: Extract i64 from tagged_value (preserves AD node pointers!)
-                if (element_val->getType() == tagged_value_type) {
-                    element_val = safeExtractInt64(element_val);
-                }
-                
-                // CRITICAL FIX: Store elements as int64, but preserve double bit patterns
-                if (element_val->getType() != int64_type) {
-                    if (element_val->getType()->isIntegerTy()) {
-                        element_val = builder->CreateSExtOrTrunc(element_val, int64_type);
-                    } else if (element_val->getType()->isFloatingPointTy()) {
-                        // Use BitCast for doubles, NOT FPToSI (which truncates to integer!)
-                        element_val = builder->CreateBitCast(element_val, int64_type);
-                    } else {
-                        element_val = ConstantInt::get(int64_type, 0);
-                    }
-                }
-                
-                Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr,
-                                                   ConstantInt::get(int64_type, i));
-                builder->CreateStore(element_val, elem_ptr);
-            }
-        }
-        
-        // Store fields in tensor structure
-        Value* dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 0);
-        builder->CreateStore(typed_dims_ptr, dims_field_ptr);
-
-        Value* num_dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 1);
-        builder->CreateStore(ConstantInt::get(int64_type, op->tensor_op.num_dimensions), num_dims_field_ptr);
-
-        Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 2);
-        builder->CreateStore(typed_elements_ptr, elements_field_ptr);
-
-        Value* total_elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 3);
-        builder->CreateStore(ConstantInt::get(int64_type, op->tensor_op.total_elements), total_elements_field_ptr);
-
-        // Return pointer to tensor as tagged value with TENSOR_PTR type tag
-        Value* tensor_int = builder->CreatePtrToInt(typed_tensor_ptr, int64_type);
-        // packPtrToTaggedValue handles i64 directly - no need to convert back to ptr
-        return packPtrToTaggedValue(tensor_int, ESHKOL_VALUE_TENSOR_PTR);
-    }
-    
-    Value* codegenTensorGet(const eshkol_operations_t* op) {
-        // tensor-get: (tensor-get tensor index1 index2 ...)
-        if (op->call_op.num_vars < 2) {
-            eshkol_error("tensor-get requires at least tensor and one index");
-            return nullptr;
-        }
-
-        Value* tensor_val = codegenAST(&op->call_op.variables[0]);
-        if (!tensor_val) return nullptr;
-
-        // Use safeExtractInt64 to handle all value types (matching vref pattern)
-        Value* tensor_ptr_int = safeExtractInt64(tensor_val);
-        Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
-
-        // Calculate linear index from multi-dimensional indices
-        Value* linear_index = ConstantInt::get(int64_type, 0);
-
-        // Load dimensions and elements (matching vref pattern with PointerCast)
-        Value* dims_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 0);
-        Value* dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dims_field_ptr);
-
-        Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 2);
-        Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field_ptr);
-        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
-
-        // Calculate linear index using row-major order
-        Value* stride = ConstantInt::get(int64_type, 1);
-        for (int64_t i = op->call_op.num_vars - 2; i >= 0; i--) {
-            Value* index = codegenAST(&op->call_op.variables[i + 1]);
-            if (index) {
-                // Use safeExtractInt64 for indices too
-                Value* index_int = safeExtractInt64(index);
-
-                Value* contribution = builder->CreateMul(index_int, stride);
-                linear_index = builder->CreateAdd(linear_index, contribution);
-
-                // Update stride for next dimension
-                if (i > 0) {
-                    Value* dim_ptr = builder->CreateGEP(int64_type, dims_ptr,
-                                                      ConstantInt::get(int64_type, i));
-                    Value* dim = builder->CreateLoad(int64_type, dim_ptr);
-                    stride = builder->CreateMul(stride, dim);
-                }
-            }
-        }
-
-        // Load element at linear index (matching vref pattern)
-        Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr, linear_index);
-        Value* elem_as_int64 = builder->CreateLoad(int64_type, elem_ptr);
-
-        // Tensors store doubles as bitcast i64 - convert back to double and pack as tagged_value
-        Value* elem_as_double = builder->CreateBitCast(elem_as_int64, double_type);
-        return packDoubleToTaggedValue(elem_as_double);
-    }
-    
     Value* codegenTensorVectorRef(const eshkol_operations_t* op) {
         // vref: (vref tensor index) - shorthand for (tensor-get tensor index)
         // Simplified 1D tensor access for numerical arrays
@@ -10762,1387 +10696,6 @@ private:
 
         return final_result;
     }
-    
-    Value* codegenTensorSet(const eshkol_operations_t* op) {
-        // tensor-set: (tensor-set tensor value index1 index2 ...)
-        if (op->call_op.num_vars < 3) {
-            eshkol_error("tensor-set requires at least tensor, value, and one index");
-            return nullptr;
-        }
-        
-        Value* tensor_var_ptr = codegenAST(&op->call_op.variables[0]);
-        Value* new_value = codegenAST(&op->call_op.variables[1]);
-        if (!tensor_var_ptr || !new_value) return nullptr;
-        
-        // Load the tensor pointer value from the variable
-        Value* tensor_ptr_int = builder->CreateLoad(int64_type, tensor_var_ptr);
-        
-        // Use class member tensor_type (shared by all tensor operations)
-        
-        Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
-        
-        // Calculate linear index from multi-dimensional indices (similar to tensor-get)
-        Value* linear_index = ConstantInt::get(int64_type, 0);
-        
-        Value* dims_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 0);
-        Value* dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dims_field_ptr);
-        Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
-        
-        Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 2);
-        Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field_ptr);
-        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
-        
-        // Calculate linear index
-        Value* stride = ConstantInt::get(int64_type, 1);
-        for (int64_t i = op->call_op.num_vars - 3; i >= 0; i--) {
-            Value* index = codegenAST(&op->call_op.variables[i + 2]);
-            if (index) {
-                Value* contribution = builder->CreateMul(index, stride);
-                linear_index = builder->CreateAdd(linear_index, contribution);
-                
-                if (i > 0) {
-                    Value* dim_ptr = builder->CreateGEP(int64_type, typed_dims_ptr, 
-                                                      ConstantInt::get(int64_type, i));
-                    Value* dim = builder->CreateLoad(int64_type, dim_ptr);
-                    stride = builder->CreateMul(stride, dim);
-                }
-            }
-        }
-        
-        // Store new value at linear index
-        Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr, linear_index);
-        builder->CreateStore(new_value, elem_ptr);
-        
-        return tensor_ptr_int; // Return the tensor
-    }
-
-    // MIGRATED: Helper for scheme vector arithmetic - now internal to TensorCodegen
-    // Kept here only if something still references it directly
-    Value* codegenSchemeVectorArithmetic(Value* vec1_tagged, Value* vec2_tagged, const std::string& operation) {
-        // Delegate to TensorCodegen's internal implementation
-        return tensor_->tensorArithmeticInternal(vec1_tagged, vec2_tagged, operation);
-    }
-
-    // MIGRATED: Internal tensor arithmetic - delegates to TensorCodegen
-    Value* codegenTensorArithmeticInternal(Value* arg1, Value* arg2, const std::string& operation) {
-        return tensor_->tensorArithmeticInternal(arg1, arg2, operation);
-    }
-    Value* codegenTensorArithmetic(const eshkol_operations_t* op, const std::string& operation) {
-        // tensor-add/sub/mul/div: (tensor-op arg1 arg2)
-        // Supports both scheme vectors (VECTOR_PTR) and tensors (TENSOR_PTR)
-        if (op->call_op.num_vars != 2) {
-            eshkol_error("tensor arithmetic requires exactly 2 arguments");
-            return nullptr;
-        }
-
-        // Get values - they will be tagged values containing type info at runtime
-        Value* arg1 = codegenAST(&op->call_op.variables[0]);
-        Value* arg2 = codegenAST(&op->call_op.variables[1]);
-        if (!arg1 || !arg2) return nullptr;
-
-        // Delegate to internal helper
-        return codegenTensorArithmeticInternal(arg1, arg2, operation);
-    }
-    
-    Value* codegenTensorDot(const eshkol_operations_t* op) {
-        // tensor-dot: (tensor-dot A B) - Dot product for 1D vectors, matrix multiplication for 2D
-        if (op->call_op.num_vars != 2) {
-            eshkol_error("tensor-dot requires exactly 2 arguments: tensor A and tensor B");
-            return nullptr;
-        }
-
-        Value* val_a = codegenAST(&op->call_op.variables[0]);
-        Value* val_b = codegenAST(&op->call_op.variables[1]);
-        if (!val_a || !val_b) return nullptr;
-
-        // Check type of first argument: Scheme vector (VECTOR_PTR=4) vs Tensor (TENSOR_PTR=6)
-        Value* val_type = getTaggedValueType(val_a);
-        Value* is_scheme_vector = builder->CreateICmpEQ(val_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* scheme_vec_block = BasicBlock::Create(*context, "dot_scheme_vec", current_func);
-        BasicBlock* tensor_block = BasicBlock::Create(*context, "dot_tensor", current_func);
-        BasicBlock* final_merge = BasicBlock::Create(*context, "dot_final_merge", current_func);
-
-        builder->CreateCondBr(is_scheme_vector, scheme_vec_block, tensor_block);
-
-        // === SCHEME VECTOR PATH ===
-        builder->SetInsertPoint(scheme_vec_block);
-        Value* svec_a_ptr_int = unpackInt64FromTaggedValue(val_a);
-        Value* svec_a_ptr = builder->CreateIntToPtr(svec_a_ptr_int, builder->getPtrTy());
-        Value* svec_b_ptr_int = unpackInt64FromTaggedValue(val_b);
-        Value* svec_b_ptr = builder->CreateIntToPtr(svec_b_ptr_int, builder->getPtrTy());
-
-        // Scheme vector: [length:i64, element0:tagged_value, element1:tagged_value, ...]
-        Value* svec_len = builder->CreateLoad(int64_type, svec_a_ptr);
-
-        // Dot product loop for Scheme vectors
-        BasicBlock* svec_loop_cond = BasicBlock::Create(*context, "svec_dot_cond", current_func);
-        BasicBlock* svec_loop_body = BasicBlock::Create(*context, "svec_dot_body", current_func);
-        BasicBlock* svec_loop_exit = BasicBlock::Create(*context, "svec_dot_exit", current_func);
-
-        Value* svec_sum = builder->CreateAlloca(double_type, nullptr, "svec_dot_acc");
-        Value* svec_counter = builder->CreateAlloca(int64_type, nullptr, "svec_dot_i");
-        builder->CreateStore(ConstantFP::get(double_type, 0.0), svec_sum);
-        builder->CreateStore(ConstantInt::get(int64_type, 0), svec_counter);
-        builder->CreateBr(svec_loop_cond);
-
-        builder->SetInsertPoint(svec_loop_cond);
-        Value* svec_i = builder->CreateLoad(int64_type, svec_counter);
-        Value* svec_cmp = builder->CreateICmpULT(svec_i, svec_len);
-        builder->CreateCondBr(svec_cmp, svec_loop_body, svec_loop_exit);
-
-        builder->SetInsertPoint(svec_loop_body);
-        // Elements start after 8-byte length field, then index by tagged_value size
-        Value* svec_a_elems_base = builder->CreateGEP(int8_type, svec_a_ptr,
-            ConstantInt::get(int64_type, 8));
-        Value* svec_a_elems_typed = builder->CreatePointerCast(svec_a_elems_base,
-            PointerType::getUnqual(*context));
-        Value* svec_a_elem_ptr = builder->CreateGEP(tagged_value_type, svec_a_elems_typed, svec_i);
-        Value* svec_a_elem_tagged = builder->CreateLoad(tagged_value_type, svec_a_elem_ptr);
-        Value* svec_a_val = unpackDoubleFromTaggedValue(svec_a_elem_tagged);
-
-        Value* svec_b_elems_base = builder->CreateGEP(int8_type, svec_b_ptr,
-            ConstantInt::get(int64_type, 8));
-        Value* svec_b_elems_typed = builder->CreatePointerCast(svec_b_elems_base,
-            PointerType::getUnqual(*context));
-        Value* svec_b_elem_ptr = builder->CreateGEP(tagged_value_type, svec_b_elems_typed, svec_i);
-        Value* svec_b_elem_tagged = builder->CreateLoad(tagged_value_type, svec_b_elem_ptr);
-        Value* svec_b_val = unpackDoubleFromTaggedValue(svec_b_elem_tagged);
-
-        // Multiply and accumulate
-        Value* svec_product = builder->CreateFMul(svec_a_val, svec_b_val);
-        Value* svec_current_sum = builder->CreateLoad(double_type, svec_sum);
-        Value* svec_new_sum = builder->CreateFAdd(svec_current_sum, svec_product);
-        builder->CreateStore(svec_new_sum, svec_sum);
-        Value* svec_next_i = builder->CreateAdd(svec_i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(svec_next_i, svec_counter);
-        builder->CreateBr(svec_loop_cond);
-
-        builder->SetInsertPoint(svec_loop_exit);
-        Value* svec_result = builder->CreateLoad(double_type, svec_sum);
-        builder->CreateBr(final_merge);
-        BasicBlock* svec_exit_block = builder->GetInsertBlock();
-
-        // === TENSOR PATH ===
-        builder->SetInsertPoint(tensor_block);
-        Value* tensor_a_ptr_int = unpackInt64FromTaggedValue(val_a);
-        Value* tensor_a_ptr = builder->CreateIntToPtr(tensor_a_ptr_int, builder->getPtrTy());
-        Value* tensor_b_ptr_int = unpackInt64FromTaggedValue(val_b);
-        Value* tensor_b_ptr = builder->CreateIntToPtr(tensor_b_ptr_int, builder->getPtrTy());
-
-        // Get tensor A properties
-        Value* a_num_dims_field_ptr = builder->CreateStructGEP(tensor_type, tensor_a_ptr, 1);
-        Value* a_num_dims = builder->CreateLoad(int64_type, a_num_dims_field_ptr);
-
-        Value* a_total_field_ptr = builder->CreateStructGEP(tensor_type, tensor_a_ptr, 3);
-        Value* a_total = builder->CreateLoad(int64_type, a_total_field_ptr);
-
-        Value* a_elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_a_ptr, 2);
-        Value* a_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), a_elements_field_ptr);
-        Value* typed_a_elements_ptr = builder->CreatePointerCast(a_elements_ptr, builder->getPtrTy());
-
-        // Get tensor B properties
-        Value* b_elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_b_ptr, 2);
-        Value* b_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), b_elements_field_ptr);
-        Value* typed_b_elements_ptr = builder->CreatePointerCast(b_elements_ptr, builder->getPtrTy());
-
-        // Check if 1D vectors - use simple dot product
-        Value* is_1d = builder->CreateICmpEQ(a_num_dims, ConstantInt::get(int64_type, 1));
-
-        BasicBlock* dot_1d_block = BasicBlock::Create(*context, "dot_1d", current_func);
-        BasicBlock* dot_2d_block = BasicBlock::Create(*context, "dot_2d", current_func);
-        BasicBlock* tensor_merge = BasicBlock::Create(*context, "tensor_dot_merge", current_func);
-
-        builder->CreateCondBr(is_1d, dot_1d_block, dot_2d_block);
-
-        // 1D Vector Dot Product: sum(a[i] * b[i])
-        builder->SetInsertPoint(dot_1d_block);
-
-        // Initialize accumulator
-        Value* sum_alloca = builder->CreateAlloca(double_type, nullptr, "dot_sum");
-        builder->CreateStore(ConstantFP::get(double_type, 0.0), sum_alloca);
-
-        // Create loop
-        BasicBlock* loop_cond_1d = BasicBlock::Create(*context, "dot1d_cond", current_func);
-        BasicBlock* loop_body_1d = BasicBlock::Create(*context, "dot1d_body", current_func);
-        BasicBlock* loop_exit_1d = BasicBlock::Create(*context, "dot1d_exit", current_func);
-
-        Value* counter_1d = builder->CreateAlloca(int64_type, nullptr, "dot1d_i");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), counter_1d);
-        builder->CreateBr(loop_cond_1d);
-
-        builder->SetInsertPoint(loop_cond_1d);
-        Value* i_1d = builder->CreateLoad(int64_type, counter_1d);
-        Value* cond_1d = builder->CreateICmpULT(i_1d, a_total);
-        builder->CreateCondBr(cond_1d, loop_body_1d, loop_exit_1d);
-
-        builder->SetInsertPoint(loop_body_1d);
-        Value* a_elem_ptr = builder->CreateGEP(double_type, typed_a_elements_ptr, i_1d);
-        Value* b_elem_ptr = builder->CreateGEP(double_type, typed_b_elements_ptr, i_1d);
-        Value* a_elem = builder->CreateLoad(double_type, a_elem_ptr);
-        Value* b_elem = builder->CreateLoad(double_type, b_elem_ptr);
-        Value* product = builder->CreateFMul(a_elem, b_elem);
-        Value* old_sum = builder->CreateLoad(double_type, sum_alloca);
-        Value* new_sum = builder->CreateFAdd(old_sum, product);
-        builder->CreateStore(new_sum, sum_alloca);
-
-        Value* next_i_1d = builder->CreateAdd(i_1d, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_i_1d, counter_1d);
-        builder->CreateBr(loop_cond_1d);
-
-        builder->SetInsertPoint(loop_exit_1d);
-        Value* dot_result_1d = builder->CreateLoad(double_type, sum_alloca);
-        builder->CreateBr(tensor_merge);
-
-        // 2D Matrix Multiplication (simplified - just return 0 for now)
-        builder->SetInsertPoint(dot_2d_block);
-        Value* dot_result_2d = ConstantFP::get(double_type, 0.0);
-        // TODO: Implement proper matrix multiplication
-        builder->CreateBr(tensor_merge);
-
-        // Tensor merge
-        builder->SetInsertPoint(tensor_merge);
-        PHINode* tensor_result_phi = builder->CreatePHI(double_type, 2, "tensor_dot_result");
-        tensor_result_phi->addIncoming(dot_result_1d, loop_exit_1d);
-        tensor_result_phi->addIncoming(dot_result_2d, dot_2d_block);
-        builder->CreateBr(final_merge);
-        BasicBlock* tensor_exit_block = builder->GetInsertBlock();
-
-        // === FINAL MERGE ===
-        builder->SetInsertPoint(final_merge);
-        PHINode* result_phi = builder->CreatePHI(double_type, 2, "dot_result");
-        result_phi->addIncoming(svec_result, svec_exit_block);
-        result_phi->addIncoming(tensor_result_phi, tensor_exit_block);
-
-        return packDoubleToTaggedValue(result_phi);
-    }
-
-    Value* codegenTensorShape(const eshkol_operations_t* op) {
-        // tensor-shape: (tensor-shape tensor) -> returns dimensions as vector
-        if (op->call_op.num_vars != 1) {
-            eshkol_error("tensor-shape requires exactly 1 tensor argument");
-            return nullptr;
-        }
-        
-        Value* tensor_ptr_int = codegenAST(&op->call_op.variables[0]);
-        if (!tensor_ptr_int) return nullptr;
-        
-        // Use class member tensor_type (shared by all tensor operations)
-        
-        Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
-        
-        // Load num_dimensions
-        Value* num_dims_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 1);
-        Value* num_dims = builder->CreateLoad(int64_type, num_dims_field_ptr);
-        
-        // For simplicity, return the num_dimensions as int64
-        // A full implementation would return the actual dimensions array as a vector
-        eshkol_warn("tensor-shape implementation simplified - returning number of dimensions only");
-        return num_dims;
-    }
-    
-    Value* codegenTensorApply(const eshkol_operations_t* op) {
-        // tensor-apply: (tensor-apply tensor function)
-        // Applies a function to each element of a tensor, returning a new tensor
-        if (op->call_op.num_vars != 2) {
-            eshkol_error("tensor-apply requires exactly 2 arguments: tensor and function");
-            return nullptr;
-        }
-        
-        Value* tensor_var_ptr = codegenAST(&op->call_op.variables[0]);
-        if (!tensor_var_ptr) return nullptr;
-        
-        // Load the tensor pointer value from the variable
-        Value* tensor_ptr_int = builder->CreateLoad(int64_type, tensor_var_ptr);
-        
-        // Get function to apply - for now we'll support simple arithmetic functions
-        // In a full implementation, this would handle lambda expressions and function references
-        eshkol_ast_t* func_ast = &op->call_op.variables[1];
-        if (func_ast->type != ESHKOL_VAR) {
-            eshkol_error("tensor-apply currently only supports simple function names");
-            return nullptr;
-        }
-        
-        std::string func_name = func_ast->variable.id;
-        
-        // Convert int64 back to tensor pointer
-        // Use class member tensor_type (shared by all tensor operations)
-        
-        Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
-        
-        // Create result tensor with same dimensions
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc function not found");
-            return nullptr;
-        }
-        
-        Value* result_tensor_size = ConstantInt::get(int64_type, 
-                                                   module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* result_tensor_ptr = builder->CreateCall(malloc_func, {result_tensor_size});
-        Value* typed_result_tensor_ptr = builder->CreatePointerCast(result_tensor_ptr, builder->getPtrTy());
-        
-        // Copy tensor structure (dimensions, num_dimensions, total_elements)
-        Value* dims_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 0);
-        Value* dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dims_field_ptr);
-        Value* result_dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_result_tensor_ptr, 0);
-        builder->CreateStore(dims_ptr, result_dims_field_ptr);
-        
-        Value* num_dims_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 1);
-        Value* num_dims = builder->CreateLoad(int64_type, num_dims_field_ptr);
-        Value* result_num_dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_result_tensor_ptr, 1);
-        builder->CreateStore(num_dims, result_num_dims_field_ptr);
-        
-        Value* total_elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 3);
-        Value* total_elements = builder->CreateLoad(int64_type, total_elements_field_ptr);
-        Value* result_total_elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_result_tensor_ptr, 3);
-        builder->CreateStore(total_elements, result_total_elements_field_ptr);
-        
-        // Allocate result elements array
-        Value* elements_size = builder->CreateMul(total_elements, 
-                                                ConstantInt::get(int64_type, sizeof(int64_t)));
-        Value* result_elements_ptr = builder->CreateCall(malloc_func, {elements_size});
-        Value* typed_result_elements_ptr = builder->CreatePointerCast(result_elements_ptr, builder->getPtrTy());
-        
-        Value* result_elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_result_tensor_ptr, 2);
-        builder->CreateStore(typed_result_elements_ptr, result_elements_field_ptr);
-        
-        // Get source elements
-        Value* src_elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 2);
-        Value* src_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), src_elements_field_ptr);
-        Value* typed_src_elements_ptr = builder->CreatePointerCast(src_elements_ptr, builder->getPtrTy());
-        
-        // Apply function to each element (FULL implementation with loops)
-        
-        // Create basic blocks for loop
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* loop_condition = BasicBlock::Create(*context, "apply_loop_cond", current_func);
-        BasicBlock* loop_body = BasicBlock::Create(*context, "apply_loop_body", current_func);
-        BasicBlock* loop_exit = BasicBlock::Create(*context, "apply_loop_exit", current_func);
-        
-        // Initialize loop counter
-        Value* loop_counter = builder->CreateAlloca(int64_type, nullptr, "loop_counter");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), loop_counter);
-        
-        // Jump to loop condition
-        builder->CreateBr(loop_condition);
-        
-        // Loop condition: check if counter < total_elements
-        builder->SetInsertPoint(loop_condition);
-        Value* current_index = builder->CreateLoad(int64_type, loop_counter);
-        Value* loop_cmp = builder->CreateICmpULT(current_index, total_elements);
-        builder->CreateCondBr(loop_cmp, loop_body, loop_exit);
-        
-        // Loop body: apply function to current element
-        builder->SetInsertPoint(loop_body);
-        
-        // Load source element at current index
-        Value* src_elem_ptr = builder->CreateGEP(int64_type, typed_src_elements_ptr, current_index);
-        Value* src_elem = builder->CreateLoad(int64_type, src_elem_ptr);
-        
-        // Apply function based on function name
-        Value* result_elem = nullptr;
-        if (func_name == "double") {
-            result_elem = builder->CreateMul(src_elem, ConstantInt::get(int64_type, 2));
-        } else if (func_name == "square") {
-            result_elem = builder->CreateMul(src_elem, src_elem);
-        } else if (func_name == "increment") {
-            result_elem = builder->CreateAdd(src_elem, ConstantInt::get(int64_type, 1));
-        } else if (func_name == "negate") {
-            result_elem = builder->CreateNeg(src_elem);
-        } else if (func_name == "abs") {
-            // abs(x) = x < 0 ? -x : x
-            Value* is_negative = builder->CreateICmpSLT(src_elem, ConstantInt::get(int64_type, 0));
-            Value* negated = builder->CreateNeg(src_elem);
-            result_elem = builder->CreateSelect(is_negative, negated, src_elem);
-        } else if (func_name == "identity") {
-            result_elem = src_elem;
-        } else {
-            eshkol_warn("Unknown function in tensor-apply: %s, using identity", func_name.c_str());
-            result_elem = src_elem;
-        }
-        
-        // Store result element at current index
-        Value* result_elem_ptr = builder->CreateGEP(int64_type, typed_result_elements_ptr, current_index);
-        builder->CreateStore(result_elem, result_elem_ptr);
-        
-        // Increment loop counter
-        Value* next_index = builder->CreateAdd(current_index, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_index, loop_counter);
-        
-        // Jump back to condition check
-        builder->CreateBr(loop_condition);
-        
-        // Loop exit: continue with rest of function
-        builder->SetInsertPoint(loop_exit);
-        
-        return builder->CreatePtrToInt(typed_result_tensor_ptr, int64_type);
-    }
-    
-    Value* codegenTensorReduceAll(const eshkol_operations_t* op) {
-        // tensor-reduce-all: (tensor-reduce-all tensor function initial-value)
-        // Reduces entire tensor to a single value by applying a binary function
-        if (op->call_op.num_vars != 3) {
-            eshkol_error("tensor-reduce requires exactly 3 arguments: tensor, function, and initial value");
-            return nullptr;
-        }
-        
-        Value* tensor_var_ptr = codegenAST(&op->call_op.variables[0]);
-        Value* initial_value = codegenAST(&op->call_op.variables[2]);
-        if (!tensor_var_ptr || !initial_value) return nullptr;
-        
-        // Load the tensor pointer value from the variable
-        Value* tensor_ptr_int = builder->CreateLoad(int64_type, tensor_var_ptr);
-        
-        // Get function to apply
-        eshkol_ast_t* func_ast = &op->call_op.variables[1];
-        if (func_ast->type != ESHKOL_VAR) {
-            eshkol_error("tensor-reduce currently only supports simple function names");
-            return nullptr;
-        }
-        
-        std::string func_name = func_ast->variable.id;
-        
-        // Use class member tensor_type (shared by all tensor operations)
-        
-        Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
-        
-        // Get tensor elements
-        Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 2);
-        Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field_ptr);
-        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
-        
-        Value* total_elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 3);
-        Value* total_elements = builder->CreateLoad(int64_type, total_elements_field_ptr);
-        
-        // FULL implementation: reduce all elements with loop
-        
-        // Create accumulator variable initialized with initial_value
-        Value* accumulator = builder->CreateAlloca(int64_type, nullptr, "accumulator");
-        builder->CreateStore(initial_value, accumulator);
-        
-        // Create basic blocks for loop
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* loop_condition = BasicBlock::Create(*context, "reduce_loop_cond", current_func);
-        BasicBlock* loop_body = BasicBlock::Create(*context, "reduce_loop_body", current_func);
-        BasicBlock* loop_exit = BasicBlock::Create(*context, "reduce_loop_exit", current_func);
-        
-        // Initialize loop counter
-        Value* loop_counter = builder->CreateAlloca(int64_type, nullptr, "loop_counter");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), loop_counter);
-        
-        // Jump to loop condition
-        builder->CreateBr(loop_condition);
-        
-        // Loop condition: check if counter < total_elements
-        builder->SetInsertPoint(loop_condition);
-        Value* current_index = builder->CreateLoad(int64_type, loop_counter);
-        Value* loop_cmp = builder->CreateICmpULT(current_index, total_elements);
-        builder->CreateCondBr(loop_cmp, loop_body, loop_exit);
-        
-        // Loop body: apply reduction function to current element
-        builder->SetInsertPoint(loop_body);
-        
-        // Load current element
-        Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr, current_index);
-        Value* current_elem = builder->CreateLoad(int64_type, elem_ptr);
-        
-        // Load current accumulator value
-        Value* current_acc = builder->CreateLoad(int64_type, accumulator);
-        
-        // Apply reduction function
-        Value* new_acc = nullptr;
-        if (func_name == "+") {
-            new_acc = builder->CreateAdd(current_acc, current_elem);
-        } else if (func_name == "*") {
-            new_acc = builder->CreateMul(current_acc, current_elem);
-        } else if (func_name == "max") {
-            Value* cmp = builder->CreateICmpSGT(current_acc, current_elem);
-            new_acc = builder->CreateSelect(cmp, current_acc, current_elem);
-        } else if (func_name == "min") {
-            Value* cmp = builder->CreateICmpSLT(current_acc, current_elem);
-            new_acc = builder->CreateSelect(cmp, current_acc, current_elem);
-        } else if (func_name == "and") {
-            new_acc = builder->CreateAnd(current_acc, current_elem);
-        } else if (func_name == "or") {
-            new_acc = builder->CreateOr(current_acc, current_elem);
-        } else if (func_name == "xor") {
-            new_acc = builder->CreateXor(current_acc, current_elem);
-        } else {
-            eshkol_warn("Unknown reduction function: %s, using addition", func_name.c_str());
-            new_acc = builder->CreateAdd(current_acc, current_elem);
-        }
-        
-        // Store updated accumulator
-        builder->CreateStore(new_acc, accumulator);
-        
-        // Increment loop counter
-        Value* next_index = builder->CreateAdd(current_index, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_index, loop_counter);
-        
-        // Jump back to condition check
-        builder->CreateBr(loop_condition);
-        
-        // Loop exit: return final accumulator value
-        builder->SetInsertPoint(loop_exit);
-        Value* result = builder->CreateLoad(int64_type, accumulator);
-        
-        return result;
-    }
-    
-    Value* codegenTensorReduceWithDim(const eshkol_operations_t* op) {
-        // tensor-reduce: (tensor-reduce tensor function initial-value dimension)
-        // Reduces tensor along specified dimension, returning tensor with reduced dimensionality
-        if (op->call_op.num_vars != 4) {
-            eshkol_error("tensor-reduce requires exactly 4 arguments: tensor, function, initial-value, dimension");
-            return nullptr;
-        }
-        
-        Value* tensor_var_ptr = codegenAST(&op->call_op.variables[0]);
-        Value* initial_value = codegenAST(&op->call_op.variables[2]);
-        Value* dimension_value = codegenAST(&op->call_op.variables[3]);
-        if (!tensor_var_ptr || !initial_value || !dimension_value) return nullptr;
-        
-        // Load the tensor pointer value from the variable
-        Value* tensor_ptr_int = builder->CreateLoad(int64_type, tensor_var_ptr);
-        
-        // Get function to apply
-        eshkol_ast_t* func_ast = &op->call_op.variables[1];
-        if (func_ast->type != ESHKOL_VAR) {
-            eshkol_error("tensor-reduce currently only supports simple function names");
-            return nullptr;
-        }
-        
-        std::string func_name = func_ast->variable.id;
-        
-        // Use class member tensor_type (shared by all tensor operations)
-        
-        Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
-        
-        // Get source tensor properties
-        Value* src_dims_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 0);
-        Value* src_dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), src_dims_field_ptr);
-        Value* typed_src_dims_ptr = builder->CreatePointerCast(src_dims_ptr, builder->getPtrTy());
-
-        Value* src_num_dims_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 1);
-        Value* src_num_dims = builder->CreateLoad(int64_type, src_num_dims_field_ptr);
-        
-        Value* src_elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 2);
-        Value* src_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), src_elements_field_ptr);
-        Value* typed_src_elements_ptr = builder->CreatePointerCast(src_elements_ptr, builder->getPtrTy());
-        
-        // Create result tensor with one less dimension
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc function not found");
-            return nullptr;
-        }
-        
-        Value* result_tensor_size = ConstantInt::get(int64_type, 
-                                                   module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* result_tensor_ptr = builder->CreateCall(malloc_func, {result_tensor_size});
-        Value* typed_result_tensor_ptr = builder->CreatePointerCast(result_tensor_ptr, builder->getPtrTy());
-        
-        // Calculate result dimensions (all dimensions except the reduced one)
-        // For simplicity, let's assume we're reducing dimension 0 and create a 1D result
-        Value* result_num_dims = builder->CreateSub(src_num_dims, ConstantInt::get(int64_type, 1));
-        
-        // Handle special case where result becomes scalar (0 dimensions)
-        Value* is_scalar = builder->CreateICmpEQ(result_num_dims, ConstantInt::get(int64_type, 0));
-        Value* final_num_dims = builder->CreateSelect(is_scalar, ConstantInt::get(int64_type, 1), result_num_dims);
-        
-        // Allocate result dimensions array
-        Value* result_dims_size = builder->CreateMul(final_num_dims, 
-                                                   ConstantInt::get(int64_type, sizeof(uint64_t)));
-        Value* result_dims_ptr = builder->CreateCall(malloc_func, {result_dims_size});
-        Value* typed_result_dims_ptr = builder->CreatePointerCast(result_dims_ptr, builder->getPtrTy());
-        
-        // For simplified implementation: create result with single dimension of size 1 (scalar result)
-        builder->CreateStore(ConstantInt::get(int64_type, 1), typed_result_dims_ptr);
-        
-        // Set result tensor properties
-        Value* result_dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_result_tensor_ptr, 0);
-        builder->CreateStore(typed_result_dims_ptr, result_dims_field_ptr);
-        
-        Value* result_num_dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_result_tensor_ptr, 1);
-        builder->CreateStore(final_num_dims, result_num_dims_field_ptr);
-        
-        Value* result_total_elements = ConstantInt::get(int64_type, 1); // Single result element
-        Value* result_total_elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_result_tensor_ptr, 3);
-        builder->CreateStore(result_total_elements, result_total_elements_field_ptr);
-        
-        // Allocate result elements array (single element for simplified version)
-        Value* result_elements_size = ConstantInt::get(int64_type, sizeof(int64_t));
-        Value* result_elements_ptr = builder->CreateCall(malloc_func, {result_elements_size});
-        Value* typed_result_elements_ptr = builder->CreatePointerCast(result_elements_ptr, builder->getPtrTy());
-        
-        Value* result_elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_result_tensor_ptr, 2);
-        builder->CreateStore(typed_result_elements_ptr, result_elements_field_ptr);
-        
-        // IMPROVED implementation: Handle common dimensional reductions
-        
-        // For now, implement a basic version that works for vectors (1D) and matrices (2D)
-        // This reduces along the specified dimension with proper element iteration
-        
-        // Create accumulator for result
-        Value* accumulator = builder->CreateAlloca(int64_type, nullptr, "dim_accumulator");
-        builder->CreateStore(initial_value, accumulator);
-        
-        // Get total elements for the reduction
-        Value* src_total_elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 3);
-        Value* src_total_elements = builder->CreateLoad(int64_type, src_total_elements_field_ptr);
-        
-        // For simplified implementation, handle dimension 0 reduction properly
-        // This will reduce over the first dimension of any tensor
-        
-        // Calculate stride for dimension 0 (how many elements to skip)
-        Value* dim0_size = builder->CreateGEP(int64_type, typed_src_dims_ptr, 
-                                            ConstantInt::get(int64_type, 0));
-        Value* first_dim = builder->CreateLoad(int64_type, dim0_size);
-        
-        // Get total elements divided by first dimension = elements to reduce over
-        Value* elements_to_reduce = builder->CreateUDiv(src_total_elements, first_dim);
-        
-        // PROPER DIMENSIONAL REDUCTION IMPLEMENTATION
-        // For a 2D matrix [rows x cols], dimension 0 reduces over rows, dimension 1 reduces over columns
-        
-        // Check which dimension we're reducing
-        Value* dim_is_zero = builder->CreateICmpEQ(dimension_value, ConstantInt::get(int64_type, 0));
-        
-        // Get matrix dimensions (assuming 2D for now)
-        Value* dim0_ptr = builder->CreateGEP(int64_type, typed_src_dims_ptr, 
-                                            ConstantInt::get(int64_type, 0));
-        Value* rows = builder->CreateLoad(int64_type, dim0_ptr);
-        
-        Value* dim1_ptr = builder->CreateGEP(int64_type, typed_src_dims_ptr, 
-                                            ConstantInt::get(int64_type, 1));
-        Value* cols = builder->CreateLoad(int64_type, dim1_ptr);
-        
-        // Calculate result dimensions and size
-        // If reducing dim 0: result is [1 x cols]  
-        // If reducing dim 1: result is [rows x 1]
-        Value* result_rows = builder->CreateSelect(dim_is_zero, ConstantInt::get(int64_type, 1), rows);
-        Value* result_cols = builder->CreateSelect(dim_is_zero, cols, ConstantInt::get(int64_type, 1));
-        Value* result_elements = builder->CreateMul(result_rows, result_cols);
-        
-        // Update result tensor dimensions
-        builder->CreateStore(result_rows, typed_result_dims_ptr);
-        Value* result_dim1_ptr = builder->CreateGEP(int64_type, typed_result_dims_ptr, 
-                                                    ConstantInt::get(int64_type, 1));
-        builder->CreateStore(result_cols, result_dim1_ptr);
-        
-        // Update result tensor total elements
-        builder->CreateStore(result_elements, result_total_elements_field_ptr);
-        
-        // Allocate result elements array  
-        Value* result_elem_size = builder->CreateMul(result_elements, ConstantInt::get(int64_type, sizeof(int64_t)));
-        Value* new_result_elements_ptr = builder->CreateCall(malloc_func, {result_elem_size});
-        Value* typed_new_result_elements_ptr = builder->CreatePointerCast(new_result_elements_ptr, builder->getPtrTy());
-        builder->CreateStore(typed_new_result_elements_ptr, result_elements_field_ptr);
-        
-        // Create loops based on dimension
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* outer_loop_cond = BasicBlock::Create(*context, "dim_outer_cond", current_func);
-        BasicBlock* outer_loop_body = BasicBlock::Create(*context, "dim_outer_body", current_func);
-        BasicBlock* inner_loop_cond = BasicBlock::Create(*context, "dim_inner_cond", current_func);
-        BasicBlock* inner_loop_body = BasicBlock::Create(*context, "dim_inner_body", current_func);
-        BasicBlock* inner_loop_exit = BasicBlock::Create(*context, "dim_inner_exit", current_func);
-        BasicBlock* outer_loop_exit = BasicBlock::Create(*context, "dim_outer_exit", current_func);
-        
-        // Initialize result index counter
-        Value* result_idx = builder->CreateAlloca(int64_type, nullptr, "result_idx");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), result_idx);
-        
-        // Initialize outer loop counter
-        Value* outer_counter = builder->CreateAlloca(int64_type, nullptr, "outer_counter");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), outer_counter);
-        
-        // Jump to outer loop
-        builder->CreateBr(outer_loop_cond);
-        
-        // Outer loop condition
-        builder->SetInsertPoint(outer_loop_cond);
-        Value* current_outer = builder->CreateLoad(int64_type, outer_counter);
-        Value* outer_limit = builder->CreateSelect(dim_is_zero, cols, rows);  // dim0: iterate cols, dim1: iterate rows
-        Value* outer_cmp = builder->CreateICmpULT(current_outer, outer_limit);
-        builder->CreateCondBr(outer_cmp, outer_loop_body, outer_loop_exit);
-        
-        // Outer loop body: initialize accumulator for this dimension
-        builder->SetInsertPoint(outer_loop_body);
-        Value* dim_accumulator = builder->CreateAlloca(int64_type, nullptr, "dim_acc");
-        builder->CreateStore(initial_value, dim_accumulator);
-        
-        // Initialize inner loop counter  
-        Value* inner_counter = builder->CreateAlloca(int64_type, nullptr, "inner_counter");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), inner_counter);
-        
-        // Jump to inner loop
-        builder->CreateBr(inner_loop_cond);
-        
-        // Inner loop condition
-        builder->SetInsertPoint(inner_loop_cond);
-        Value* current_inner = builder->CreateLoad(int64_type, inner_counter);
-        Value* inner_limit = builder->CreateSelect(dim_is_zero, rows, cols);  // dim0: iterate rows, dim1: iterate cols
-        Value* inner_cmp = builder->CreateICmpULT(current_inner, inner_limit);
-        builder->CreateCondBr(inner_cmp, inner_loop_body, inner_loop_exit);
-        
-        // Inner loop body: calculate element index and apply reduction
-        builder->SetInsertPoint(inner_loop_body);
-        
-        // Calculate source element index: row * cols + col
-        Value* src_row = builder->CreateSelect(dim_is_zero, current_inner, current_outer);
-        Value* src_col = builder->CreateSelect(dim_is_zero, current_outer, current_inner);
-        Value* src_linear_idx = builder->CreateMul(src_row, cols);
-        src_linear_idx = builder->CreateAdd(src_linear_idx, src_col);
-        
-        // Load source element
-        Value* src_elem_ptr = builder->CreateGEP(int64_type, typed_src_elements_ptr, src_linear_idx);
-        Value* src_elem = builder->CreateLoad(int64_type, src_elem_ptr);
-        
-        // Load current accumulator
-        Value* current_acc = builder->CreateLoad(int64_type, dim_accumulator);
-        
-        // Apply reduction function
-        Value* new_acc = nullptr;
-        if (func_name == "+") {
-            new_acc = builder->CreateAdd(current_acc, src_elem);
-        } else if (func_name == "*") {
-            new_acc = builder->CreateMul(current_acc, src_elem);
-        } else if (func_name == "max") {
-            Value* cmp = builder->CreateICmpSGT(current_acc, src_elem);
-            new_acc = builder->CreateSelect(cmp, current_acc, src_elem);
-        } else if (func_name == "min") {
-            Value* cmp = builder->CreateICmpSLT(current_acc, src_elem);
-            new_acc = builder->CreateSelect(cmp, current_acc, src_elem);
-        } else if (func_name == "mean") {
-            new_acc = builder->CreateAdd(current_acc, src_elem);
-        } else {
-            eshkol_warn("Unknown reduction function: %s, using addition", func_name.c_str());
-            new_acc = builder->CreateAdd(current_acc, src_elem);
-        }
-        
-        // Store updated accumulator
-        builder->CreateStore(new_acc, dim_accumulator);
-        
-        // Increment inner counter
-        Value* next_inner = builder->CreateAdd(current_inner, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_inner, inner_counter);
-        
-        // Jump back to inner condition
-        builder->CreateBr(inner_loop_cond);
-        
-        // Inner loop exit: store result and move to next outer iteration
-        builder->SetInsertPoint(inner_loop_exit);
-        Value* final_acc = builder->CreateLoad(int64_type, dim_accumulator);
-        
-        // For mean, divide by the dimension size
-        if (func_name == "mean") {
-            final_acc = builder->CreateSDiv(final_acc, inner_limit);
-        }
-        
-        // Store result in result array
-        Value* current_result_idx = builder->CreateLoad(int64_type, result_idx);
-        Value* result_elem_ptr = builder->CreateGEP(int64_type, typed_new_result_elements_ptr, current_result_idx);
-        builder->CreateStore(final_acc, result_elem_ptr);
-        
-        // Increment result index and outer counter
-        Value* next_result_idx = builder->CreateAdd(current_result_idx, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_result_idx, result_idx);
-        
-        Value* next_outer = builder->CreateAdd(current_outer, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_outer, outer_counter);
-        
-        // Jump back to outer condition
-        builder->CreateBr(outer_loop_cond);
-        
-        // Outer loop exit
-        builder->SetInsertPoint(outer_loop_exit);
-        
-        return builder->CreatePtrToInt(typed_result_tensor_ptr, int64_type);
-    }
-
-    // ===== PHASE 1: ML TENSOR OPERATIONS =====
-
-    // Helper: Create a tensor with given dimensions, returns pointer to tensor struct
-    Value* createTensorWithDims(const std::vector<Value*>& dims, Value* fill_value = nullptr, bool use_memset_zero = false) {
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc function not found");
-            return nullptr;
-        }
-
-        // Calculate total elements
-        Value* total_elements = dims[0];
-        for (size_t i = 1; i < dims.size(); i++) {
-            total_elements = builder->CreateMul(total_elements, dims[i]);
-        }
-
-        // Allocate tensor structure
-        Value* tensor_size = ConstantInt::get(int64_type,
-                                             module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* tensor_ptr = builder->CreateCall(malloc_func, {tensor_size});
-        Value* typed_tensor_ptr = builder->CreatePointerCast(tensor_ptr, builder->getPtrTy());
-
-        // Allocate dimensions array
-        Value* dims_size = ConstantInt::get(int64_type, dims.size() * sizeof(uint64_t));
-        Value* dims_ptr = builder->CreateCall(malloc_func, {dims_size});
-        Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
-
-        // Store dimensions
-        for (size_t i = 0; i < dims.size(); i++) {
-            Value* dim_ptr = builder->CreateGEP(int64_type, typed_dims_ptr,
-                                               ConstantInt::get(int64_type, i));
-            builder->CreateStore(dims[i], dim_ptr);
-        }
-
-        // Allocate elements array
-        Value* elements_size = builder->CreateMul(total_elements,
-                                                  ConstantInt::get(int64_type, sizeof(int64_t)));
-        Value* elements_ptr = builder->CreateCall(malloc_func, {elements_size});
-        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
-
-        // Fill elements if requested
-        if (use_memset_zero) {
-            // Use memset for efficient zero-fill
-            Function* memset_func = getMemsetFunc();
-            builder->CreateCall(memset_func, {typed_elements_ptr,
-                                              ConstantInt::get(int32_type, 0),
-                                              elements_size});
-        } else if (fill_value) {
-            // Fill with specified value using loop
-            Function* current_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* loop_cond = BasicBlock::Create(*context, "fill_cond", current_func);
-            BasicBlock* loop_body = BasicBlock::Create(*context, "fill_body", current_func);
-            BasicBlock* loop_exit = BasicBlock::Create(*context, "fill_exit", current_func);
-
-            Value* counter = builder->CreateAlloca(int64_type, nullptr, "fill_i");
-            builder->CreateStore(ConstantInt::get(int64_type, 0), counter);
-            builder->CreateBr(loop_cond);
-
-            builder->SetInsertPoint(loop_cond);
-            Value* i = builder->CreateLoad(int64_type, counter);
-            Value* cmp = builder->CreateICmpULT(i, total_elements);
-            builder->CreateCondBr(cmp, loop_body, loop_exit);
-
-            builder->SetInsertPoint(loop_body);
-            Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr, i);
-            builder->CreateStore(fill_value, elem_ptr);
-            Value* next_i = builder->CreateAdd(i, ConstantInt::get(int64_type, 1));
-            builder->CreateStore(next_i, counter);
-            builder->CreateBr(loop_cond);
-
-            builder->SetInsertPoint(loop_exit);
-        }
-
-        // Store tensor fields
-        Value* dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 0);
-        builder->CreateStore(typed_dims_ptr, dims_field_ptr);
-
-        Value* num_dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 1);
-        builder->CreateStore(ConstantInt::get(int64_type, dims.size()), num_dims_field_ptr);
-
-        Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 2);
-        builder->CreateStore(typed_elements_ptr, elements_field_ptr);
-
-        Value* total_elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 3);
-        builder->CreateStore(total_elements, total_elements_field_ptr);
-
-        return typed_tensor_ptr;
-    }
-
-    // zeros: (zeros dim1 dim2 ...) - Create tensor filled with zeros
-    Value* codegenZeros(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 1) {
-            eshkol_error("zeros requires at least 1 dimension argument");
-            return nullptr;
-        }
-
-        std::vector<Value*> dims;
-        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-            Value* dim = codegenAST(&op->call_op.variables[i]);
-            if (!dim) return nullptr;
-            // Extract int64 from tagged value if needed
-            if (dim->getType() == tagged_value_type) {
-                dim = unpackInt64FromTaggedValue(dim);
-            }
-            dims.push_back(dim);
-        }
-
-        Value* tensor_ptr = createTensorWithDims(dims, nullptr, true);  // use_memset_zero = true
-        if (!tensor_ptr) return nullptr;
-
-        return packPtrToTaggedValue(tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
-    }
-
-    // ones: (ones dim1 dim2 ...) - Create tensor filled with ones (as doubles)
-    Value* codegenOnes(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 1) {
-            eshkol_error("ones requires at least 1 dimension argument");
-            return nullptr;
-        }
-
-        std::vector<Value*> dims;
-        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-            Value* dim = codegenAST(&op->call_op.variables[i]);
-            if (!dim) return nullptr;
-            if (dim->getType() == tagged_value_type) {
-                dim = unpackInt64FromTaggedValue(dim);
-            }
-            dims.push_back(dim);
-        }
-
-        // Create fill value: 1.0 as double, stored as int64 bit pattern
-        Value* one_double = ConstantFP::get(double_type, 1.0);
-        Value* one_bits = builder->CreateBitCast(one_double, int64_type);
-
-        Value* tensor_ptr = createTensorWithDims(dims, one_bits, false);
-        if (!tensor_ptr) return nullptr;
-
-        return packPtrToTaggedValue(tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
-    }
-
-    // eye: (eye n) or (eye rows cols) - Create identity matrix
-    Value* codegenEye(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
-            eshkol_error("eye requires 1 or 2 arguments");
-            return nullptr;
-        }
-
-        Value* rows = codegenAST(&op->call_op.variables[0]);
-        if (!rows) return nullptr;
-        if (rows->getType() == tagged_value_type) {
-            rows = unpackInt64FromTaggedValue(rows);
-        }
-
-        Value* cols = rows;  // Default: square matrix
-        if (op->call_op.num_vars == 2) {
-            cols = codegenAST(&op->call_op.variables[1]);
-            if (!cols) return nullptr;
-            if (cols->getType() == tagged_value_type) {
-                cols = unpackInt64FromTaggedValue(cols);
-            }
-        }
-
-        // Create zero-filled tensor first
-        std::vector<Value*> dims = {rows, cols};
-        Value* tensor_ptr = createTensorWithDims(dims, nullptr, true);  // Zero fill
-        if (!tensor_ptr) return nullptr;
-
-        // Get elements pointer
-        Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 2);
-        Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field_ptr);
-        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
-
-        // Set diagonal to 1.0
-        Value* one_double = ConstantFP::get(double_type, 1.0);
-        Value* one_bits = builder->CreateBitCast(one_double, int64_type);
-
-        // Loop to set diagonal
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* loop_cond = BasicBlock::Create(*context, "eye_cond", current_func);
-        BasicBlock* loop_body = BasicBlock::Create(*context, "eye_body", current_func);
-        BasicBlock* loop_exit = BasicBlock::Create(*context, "eye_exit", current_func);
-
-        Value* min_dim = builder->CreateSelect(builder->CreateICmpULT(rows, cols), rows, cols);
-        Value* counter = builder->CreateAlloca(int64_type, nullptr, "eye_i");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), counter);
-        builder->CreateBr(loop_cond);
-
-        builder->SetInsertPoint(loop_cond);
-        Value* i = builder->CreateLoad(int64_type, counter);
-        Value* cmp = builder->CreateICmpULT(i, min_dim);
-        builder->CreateCondBr(cmp, loop_body, loop_exit);
-
-        builder->SetInsertPoint(loop_body);
-        // Diagonal index: i * cols + i
-        Value* diag_idx = builder->CreateMul(i, cols);
-        diag_idx = builder->CreateAdd(diag_idx, i);
-        Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr, diag_idx);
-        builder->CreateStore(one_bits, elem_ptr);
-        Value* next_i = builder->CreateAdd(i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_i, counter);
-        builder->CreateBr(loop_cond);
-
-        builder->SetInsertPoint(loop_exit);
-
-        return packPtrToTaggedValue(tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
-    }
-
-    // arange: (arange n) or (arange start end) or (arange start end step)
-    Value* codegenArange(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 1 || op->call_op.num_vars > 3) {
-            eshkol_error("arange requires 1-3 arguments");
-            return nullptr;
-        }
-
-        Value* start = ConstantInt::get(int64_type, 0);
-        Value* end;
-        Value* step = ConstantInt::get(int64_type, 1);
-
-        if (op->call_op.num_vars == 1) {
-            // (arange n) -> 0 to n-1
-            end = codegenAST(&op->call_op.variables[0]);
-            if (!end) return nullptr;
-            if (end->getType() == tagged_value_type) {
-                end = unpackInt64FromTaggedValue(end);
-            }
-        } else {
-            // (arange start end) or (arange start end step)
-            start = codegenAST(&op->call_op.variables[0]);
-            end = codegenAST(&op->call_op.variables[1]);
-            if (!start || !end) return nullptr;
-            if (start->getType() == tagged_value_type) {
-                start = unpackInt64FromTaggedValue(start);
-            }
-            if (end->getType() == tagged_value_type) {
-                end = unpackInt64FromTaggedValue(end);
-            }
-            if (op->call_op.num_vars == 3) {
-                step = codegenAST(&op->call_op.variables[2]);
-                if (!step) return nullptr;
-                if (step->getType() == tagged_value_type) {
-                    step = unpackInt64FromTaggedValue(step);
-                }
-            }
-        }
-
-        // Calculate number of elements: (end - start) / step
-        Value* range = builder->CreateSub(end, start);
-        Value* num_elements = builder->CreateSDiv(range, step);
-
-        // Create tensor
-        std::vector<Value*> dims = {num_elements};
-        Value* tensor_ptr = createTensorWithDims(dims, nullptr, false);
-        if (!tensor_ptr) return nullptr;
-
-        // Get elements pointer
-        Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 2);
-        Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field_ptr);
-        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
-
-        // Fill with range values
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* loop_cond = BasicBlock::Create(*context, "arange_cond", current_func);
-        BasicBlock* loop_body = BasicBlock::Create(*context, "arange_body", current_func);
-        BasicBlock* loop_exit = BasicBlock::Create(*context, "arange_exit", current_func);
-
-        Value* counter = builder->CreateAlloca(int64_type, nullptr, "arange_i");
-        Value* current_val = builder->CreateAlloca(int64_type, nullptr, "arange_val");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), counter);
-        builder->CreateStore(start, current_val);
-        builder->CreateBr(loop_cond);
-
-        builder->SetInsertPoint(loop_cond);
-        Value* i = builder->CreateLoad(int64_type, counter);
-        Value* cmp = builder->CreateICmpULT(i, num_elements);
-        builder->CreateCondBr(cmp, loop_body, loop_exit);
-
-        builder->SetInsertPoint(loop_body);
-        Value* val = builder->CreateLoad(int64_type, current_val);
-        // Store as double bit pattern for consistency
-        Value* val_double = builder->CreateSIToFP(val, double_type);
-        Value* val_bits = builder->CreateBitCast(val_double, int64_type);
-        Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr, i);
-        builder->CreateStore(val_bits, elem_ptr);
-
-        Value* next_val = builder->CreateAdd(val, step);
-        builder->CreateStore(next_val, current_val);
-        Value* next_i = builder->CreateAdd(i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_i, counter);
-        builder->CreateBr(loop_cond);
-
-        builder->SetInsertPoint(loop_exit);
-
-        return packPtrToTaggedValue(tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
-    }
-
-    // linspace: (linspace start end num) - num evenly spaced values from start to end
-    Value* codegenLinspace(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars != 3) {
-            eshkol_error("linspace requires exactly 3 arguments: start, end, num");
-            return nullptr;
-        }
-
-        Value* start = codegenAST(&op->call_op.variables[0]);
-        Value* end = codegenAST(&op->call_op.variables[1]);
-        Value* num = codegenAST(&op->call_op.variables[2]);
-        if (!start || !end || !num) return nullptr;
-
-        // Extract values - convert to double for computation
-        if (start->getType() == tagged_value_type) {
-            start = unpackDoubleFromTaggedValue(start);
-        } else if (start->getType()->isIntegerTy(64)) {
-            start = builder->CreateSIToFP(start, double_type);
-        }
-        if (end->getType() == tagged_value_type) {
-            end = unpackDoubleFromTaggedValue(end);
-        } else if (end->getType()->isIntegerTy(64)) {
-            end = builder->CreateSIToFP(end, double_type);
-        }
-        if (num->getType() == tagged_value_type) {
-            num = unpackInt64FromTaggedValue(num);
-        }
-
-        // Create tensor
-        std::vector<Value*> dims = {num};
-        Value* tensor_ptr = createTensorWithDims(dims, nullptr, false);
-        if (!tensor_ptr) return nullptr;
-
-        // Get elements pointer
-        Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, tensor_ptr, 2);
-        Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field_ptr);
-        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
-
-        // Calculate step: (end - start) / (num - 1)
-        Value* range = builder->CreateFSub(end, start);
-        Value* num_minus_1 = builder->CreateSub(num, ConstantInt::get(int64_type, 1));
-        Value* num_minus_1_fp = builder->CreateSIToFP(num_minus_1, double_type);
-        Value* step = builder->CreateFDiv(range, num_minus_1_fp);
-
-        // Fill with linspace values
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* loop_cond = BasicBlock::Create(*context, "linspace_cond", current_func);
-        BasicBlock* loop_body = BasicBlock::Create(*context, "linspace_body", current_func);
-        BasicBlock* loop_exit = BasicBlock::Create(*context, "linspace_exit", current_func);
-
-        Value* counter = builder->CreateAlloca(int64_type, nullptr, "ls_i");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), counter);
-        builder->CreateBr(loop_cond);
-
-        builder->SetInsertPoint(loop_cond);
-        Value* i = builder->CreateLoad(int64_type, counter);
-        Value* cmp = builder->CreateICmpULT(i, num);
-        builder->CreateCondBr(cmp, loop_body, loop_exit);
-
-        builder->SetInsertPoint(loop_body);
-        // val = start + i * step
-        Value* i_fp = builder->CreateSIToFP(i, double_type);
-        Value* offset = builder->CreateFMul(i_fp, step);
-        Value* val = builder->CreateFAdd(start, offset);
-        Value* val_bits = builder->CreateBitCast(val, int64_type);
-        Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr, i);
-        builder->CreateStore(val_bits, elem_ptr);
-
-        Value* next_i = builder->CreateAdd(i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_i, counter);
-        builder->CreateBr(loop_cond);
-
-        builder->SetInsertPoint(loop_exit);
-
-        return packPtrToTaggedValue(tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
-    }
-
-    // reshape: (reshape tensor dim1 dim2 ...) - Change tensor shape (must preserve total elements)
-    Value* codegenReshape(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 2) {
-            eshkol_error("reshape requires tensor and at least 1 dimension");
-            return nullptr;
-        }
-
-        // Get source tensor
-        Value* src_tensor = codegenAST(&op->call_op.variables[0]);
-        if (!src_tensor) return nullptr;
-
-        // Extract tensor pointer
-        Value* src_ptr;
-        if (src_tensor->getType() == tagged_value_type) {
-            Value* ptr_int = unpackInt64FromTaggedValue(src_tensor);
-            src_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
-        } else {
-            src_ptr = builder->CreateIntToPtr(src_tensor, builder->getPtrTy());
-        }
-
-        // Get new dimensions
-        std::vector<Value*> new_dims;
-        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-            Value* dim = codegenAST(&op->call_op.variables[i]);
-            if (!dim) return nullptr;
-            if (dim->getType() == tagged_value_type) {
-                dim = unpackInt64FromTaggedValue(dim);
-            }
-            new_dims.push_back(dim);
-        }
-
-        // Get source tensor properties
-        Value* src_elements_field_ptr = builder->CreateStructGEP(tensor_type, src_ptr, 2);
-        Value* src_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), src_elements_field_ptr);
-        Value* src_total_field_ptr = builder->CreateStructGEP(tensor_type, src_ptr, 3);
-        Value* src_total = builder->CreateLoad(int64_type, src_total_field_ptr);
-
-        // Create new tensor structure (reuse elements - no copy needed for reshape)
-        Function* malloc_func = function_table["malloc"];
-        Value* tensor_size = ConstantInt::get(int64_type,
-                                             module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* new_tensor_ptr = builder->CreateCall(malloc_func, {tensor_size});
-        Value* typed_new_tensor_ptr = builder->CreatePointerCast(new_tensor_ptr, builder->getPtrTy());
-
-        // Allocate new dimensions array
-        Value* dims_size = ConstantInt::get(int64_type, new_dims.size() * sizeof(uint64_t));
-        Value* dims_ptr = builder->CreateCall(malloc_func, {dims_size});
-        Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
-
-        // Store new dimensions and compute new total
-        Value* new_total = new_dims[0];
-        for (size_t i = 0; i < new_dims.size(); i++) {
-            Value* dim_ptr = builder->CreateGEP(int64_type, typed_dims_ptr,
-                                               ConstantInt::get(int64_type, i));
-            builder->CreateStore(new_dims[i], dim_ptr);
-            if (i > 0) {
-                new_total = builder->CreateMul(new_total, new_dims[i]);
-            }
-        }
-
-        // Store tensor fields (reuse source elements pointer - zero-copy reshape)
-        Value* dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_new_tensor_ptr, 0);
-        builder->CreateStore(typed_dims_ptr, dims_field_ptr);
-
-        Value* num_dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_new_tensor_ptr, 1);
-        builder->CreateStore(ConstantInt::get(int64_type, new_dims.size()), num_dims_field_ptr);
-
-        Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_new_tensor_ptr, 2);
-        builder->CreateStore(src_elements_ptr, elements_field_ptr);  // Reuse source elements!
-
-        Value* total_elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_new_tensor_ptr, 3);
-        builder->CreateStore(new_total, total_elements_field_ptr);
-
-        return packPtrToTaggedValue(typed_new_tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
-    }
-
-    // transpose: (transpose tensor) - Transpose 2D matrix (swap rows and cols)
-    Value* codegenTranspose(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars != 1) {
-            eshkol_error("transpose requires exactly 1 argument");
-            return nullptr;
-        }
-
-        Value* src_tensor = codegenAST(&op->call_op.variables[0]);
-        if (!src_tensor) return nullptr;
-
-        // Check type - transpose only works with native tensors (TENSOR_PTR=6), not Scheme vectors
-        Value* val_type = getTaggedValueType(src_tensor);
-        Value* is_tensor = builder->CreateICmpEQ(val_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* tensor_block = BasicBlock::Create(*context, "transpose_tensor", current_func);
-        BasicBlock* error_block = BasicBlock::Create(*context, "transpose_error", current_func);
-        BasicBlock* exit_block = BasicBlock::Create(*context, "transpose_exit", current_func);
-
-        builder->CreateCondBr(is_tensor, tensor_block, error_block);
-
-        // Error path - print message and return nil for non-tensor inputs
-        builder->SetInsertPoint(error_block);
-        // Create error message string
-        std::string error_msg = "Error: transpose requires a native tensor (use zeros, ones, arange, etc.)\n";
-        Value* error_str = builder->CreateGlobalStringPtr(error_msg, "transpose_error_msg");
-        // Call printf
-        std::vector<Type*> printf_args = {builder->getPtrTy()};
-        FunctionType* printf_type = FunctionType::get(int32_type, printf_args, true);
-        FunctionCallee printf_callee = module->getOrInsertFunction("printf", printf_type);
-        builder->CreateCall(printf_callee, {error_str});
-        // Return null
-        Value* error_result = packNullToTaggedValue();
-        builder->CreateBr(exit_block);
-        BasicBlock* error_exit = builder->GetInsertBlock();
-
-        // Tensor path - proceed with normal transpose
-        builder->SetInsertPoint(tensor_block);
-        Value* ptr_int = unpackInt64FromTaggedValue(src_tensor);
-        Value* src_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
-
-        // Get source tensor properties
-        Value* src_dims_field_ptr = builder->CreateStructGEP(tensor_type, src_ptr, 0);
-        Value* src_dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), src_dims_field_ptr);
-        Value* typed_src_dims_ptr = builder->CreatePointerCast(src_dims_ptr, builder->getPtrTy());
-
-        Value* src_elements_field_ptr = builder->CreateStructGEP(tensor_type, src_ptr, 2);
-        Value* src_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), src_elements_field_ptr);
-        Value* typed_src_elements_ptr = builder->CreatePointerCast(src_elements_ptr, builder->getPtrTy());
-
-        Value* src_total_field_ptr = builder->CreateStructGEP(tensor_type, src_ptr, 3);
-        Value* src_total = builder->CreateLoad(int64_type, src_total_field_ptr);
-
-        // Get rows and cols
-        Value* rows = builder->CreateLoad(int64_type, typed_src_dims_ptr);
-        Value* dim1_ptr = builder->CreateGEP(int64_type, typed_src_dims_ptr,
-                                            ConstantInt::get(int64_type, 1));
-        Value* cols = builder->CreateLoad(int64_type, dim1_ptr);
-
-        // Create result tensor with swapped dimensions [cols, rows]
-        std::vector<Value*> new_dims = {cols, rows};
-        Value* result_ptr = createTensorWithDims(new_dims, nullptr, false);
-        if (!result_ptr) return nullptr;
-
-        // Get result elements pointer
-        Value* result_elements_field_ptr = builder->CreateStructGEP(tensor_type, result_ptr, 2);
-        Value* result_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), result_elements_field_ptr);
-        Value* typed_result_elements_ptr = builder->CreatePointerCast(result_elements_ptr, builder->getPtrTy());
-
-        // Transpose: result[j][i] = src[i][j]
-        // Optimized loop: iterate linearly over source, compute destination index
-        BasicBlock* row_cond = BasicBlock::Create(*context, "trans_row_cond", current_func);
-        BasicBlock* row_body = BasicBlock::Create(*context, "trans_row_body", current_func);
-        BasicBlock* col_cond = BasicBlock::Create(*context, "trans_col_cond", current_func);
-        BasicBlock* col_body = BasicBlock::Create(*context, "trans_col_body", current_func);
-        BasicBlock* col_exit = BasicBlock::Create(*context, "trans_col_exit", current_func);
-        BasicBlock* row_exit = BasicBlock::Create(*context, "trans_row_exit", current_func);
-
-        Value* row_counter = builder->CreateAlloca(int64_type, nullptr, "trans_i");
-        Value* col_counter = builder->CreateAlloca(int64_type, nullptr, "trans_j");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), row_counter);
-        builder->CreateBr(row_cond);
-
-        builder->SetInsertPoint(row_cond);
-        Value* i = builder->CreateLoad(int64_type, row_counter);
-        Value* row_cmp = builder->CreateICmpULT(i, rows);
-        builder->CreateCondBr(row_cmp, row_body, row_exit);
-
-        builder->SetInsertPoint(row_body);
-        builder->CreateStore(ConstantInt::get(int64_type, 0), col_counter);
-        builder->CreateBr(col_cond);
-
-        builder->SetInsertPoint(col_cond);
-        Value* j = builder->CreateLoad(int64_type, col_counter);
-        Value* col_cmp = builder->CreateICmpULT(j, cols);
-        builder->CreateCondBr(col_cmp, col_body, col_exit);
-
-        builder->SetInsertPoint(col_body);
-        // src_idx = i * cols + j
-        Value* src_idx = builder->CreateMul(i, cols);
-        src_idx = builder->CreateAdd(src_idx, j);
-        // dst_idx = j * rows + i
-        Value* dst_idx = builder->CreateMul(j, rows);
-        dst_idx = builder->CreateAdd(dst_idx, i);
-
-        Value* src_elem_ptr = builder->CreateGEP(int64_type, typed_src_elements_ptr, src_idx);
-        Value* elem = builder->CreateLoad(int64_type, src_elem_ptr);
-        Value* dst_elem_ptr = builder->CreateGEP(int64_type, typed_result_elements_ptr, dst_idx);
-        builder->CreateStore(elem, dst_elem_ptr);
-
-        Value* next_j = builder->CreateAdd(j, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_j, col_counter);
-        builder->CreateBr(col_cond);
-
-        builder->SetInsertPoint(col_exit);
-        Value* next_i = builder->CreateAdd(i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_i, row_counter);
-        builder->CreateBr(row_cond);
-
-        builder->SetInsertPoint(row_exit);
-        Value* tensor_result = packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_TENSOR_PTR);
-        builder->CreateBr(exit_block);
-        BasicBlock* tensor_exit = builder->GetInsertBlock();
-
-        // Merge results
-        builder->SetInsertPoint(exit_block);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, "transpose_result");
-        result_phi->addIncoming(error_result, error_exit);
-        result_phi->addIncoming(tensor_result, tensor_exit);
-
-        return result_phi;
-    }
 
     // flatten: (flatten tensor) - Return 1D view of tensor
     Value* codegenFlatten(const eshkol_operations_t* op) {
@@ -12255,7 +10808,7 @@ private:
 
         // Create result tensor [M x N]
         std::vector<Value*> result_dims = {M, N};
-        Value* result_ptr = createTensorWithDims(result_dims, nullptr, true);  // Zero-fill
+        Value* result_ptr = tensor_->createTensorWithDims(result_dims, nullptr, true);  // Zero-fill
         if (!result_ptr) return nullptr;
 
         Value* result_elements_field_ptr = builder->CreateStructGEP(tensor_type, result_ptr, 2);
@@ -12357,271 +10910,9 @@ private:
 
         // i exit
         builder->SetInsertPoint(i_exit);
-
         return packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_TENSOR_PTR);
     }
 
-    // tensor-sum: (tensor-sum tensor) or (tensor-sum tensor axis) - Sum elements
-    Value* codegenTensorSum(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
-            eshkol_error("tensor-sum requires 1 or 2 arguments");
-            return nullptr;
-        }
-
-        Value* src_val = codegenAST(&op->call_op.variables[0]);
-        if (!src_val) return nullptr;
-
-        // Check type: Scheme vector (VECTOR_PTR=4) vs Tensor (TENSOR_PTR=6)
-        Value* val_type = getTaggedValueType(src_val);
-        Value* is_scheme_vector = builder->CreateICmpEQ(val_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* scheme_vec_block = BasicBlock::Create(*context, "sum_scheme_vec", current_func);
-        BasicBlock* tensor_block = BasicBlock::Create(*context, "sum_tensor", current_func);
-        BasicBlock* sum_merge = BasicBlock::Create(*context, "sum_merge", current_func);
-
-        builder->CreateCondBr(is_scheme_vector, scheme_vec_block, tensor_block);
-
-        // === SCHEME VECTOR PATH ===
-        builder->SetInsertPoint(scheme_vec_block);
-        Value* svec_ptr_int = unpackInt64FromTaggedValue(src_val);
-        Value* svec_ptr = builder->CreateIntToPtr(svec_ptr_int, builder->getPtrTy());
-
-        // Scheme vector: [length:i64, element0:tagged_value, element1:tagged_value, ...]
-        Value* svec_len = builder->CreateLoad(int64_type, svec_ptr);
-
-        // Sum loop for Scheme vector
-        BasicBlock* svec_loop_cond = BasicBlock::Create(*context, "svec_sum_cond", current_func);
-        BasicBlock* svec_loop_body = BasicBlock::Create(*context, "svec_sum_body", current_func);
-        BasicBlock* svec_loop_exit = BasicBlock::Create(*context, "svec_sum_exit", current_func);
-
-        Value* svec_sum = builder->CreateAlloca(double_type, nullptr, "svec_sum_acc");
-        Value* svec_counter = builder->CreateAlloca(int64_type, nullptr, "svec_sum_i");
-        builder->CreateStore(ConstantFP::get(double_type, 0.0), svec_sum);
-        builder->CreateStore(ConstantInt::get(int64_type, 0), svec_counter);
-        builder->CreateBr(svec_loop_cond);
-
-        builder->SetInsertPoint(svec_loop_cond);
-        Value* svec_i = builder->CreateLoad(int64_type, svec_counter);
-        Value* svec_cmp = builder->CreateICmpULT(svec_i, svec_len);
-        builder->CreateCondBr(svec_cmp, svec_loop_body, svec_loop_exit);
-
-        builder->SetInsertPoint(svec_loop_body);
-        // Elements start after 8-byte length field, then index by tagged_value size
-        Value* svec_elems_base = builder->CreateGEP(int8_type, svec_ptr,
-            ConstantInt::get(int64_type, 8));
-        Value* svec_elems_typed = builder->CreatePointerCast(svec_elems_base,
-            PointerType::getUnqual(*context));
-        Value* svec_elem_ptr = builder->CreateGEP(tagged_value_type, svec_elems_typed, svec_i);
-        Value* svec_elem_tagged = builder->CreateLoad(tagged_value_type, svec_elem_ptr);
-        Value* svec_elem_val = unpackDoubleFromTaggedValue(svec_elem_tagged);
-        Value* svec_current_sum = builder->CreateLoad(double_type, svec_sum);
-        Value* svec_new_sum = builder->CreateFAdd(svec_current_sum, svec_elem_val);
-        builder->CreateStore(svec_new_sum, svec_sum);
-        Value* svec_next_i = builder->CreateAdd(svec_i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(svec_next_i, svec_counter);
-        builder->CreateBr(svec_loop_cond);
-
-        builder->SetInsertPoint(svec_loop_exit);
-        Value* svec_result = builder->CreateLoad(double_type, svec_sum);
-        builder->CreateBr(sum_merge);
-        BasicBlock* svec_exit_block = builder->GetInsertBlock();
-
-        // === TENSOR PATH ===
-        builder->SetInsertPoint(tensor_block);
-        Value* src_ptr_int = unpackInt64FromTaggedValue(src_val);
-        Value* src_ptr = builder->CreateIntToPtr(src_ptr_int, builder->getPtrTy());
-
-        Value* src_elements_field_ptr = builder->CreateStructGEP(tensor_type, src_ptr, 2);
-        Value* src_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), src_elements_field_ptr);
-        Value* typed_src_elements = builder->CreatePointerCast(src_elements_ptr, builder->getPtrTy());
-
-        Value* src_total_field_ptr = builder->CreateStructGEP(tensor_type, src_ptr, 3);
-        Value* src_total = builder->CreateLoad(int64_type, src_total_field_ptr);
-
-        // If no axis, sum all elements
-        if (op->call_op.num_vars == 1) {
-            // Sum all elements
-            Function* current_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* loop_cond = BasicBlock::Create(*context, "sum_cond", current_func);
-            BasicBlock* loop_body = BasicBlock::Create(*context, "sum_body", current_func);
-            BasicBlock* loop_exit = BasicBlock::Create(*context, "sum_exit", current_func);
-
-            Value* sum = builder->CreateAlloca(double_type, nullptr, "sum_acc");
-            Value* counter = builder->CreateAlloca(int64_type, nullptr, "sum_i");
-            builder->CreateStore(ConstantFP::get(double_type, 0.0), sum);
-            builder->CreateStore(ConstantInt::get(int64_type, 0), counter);
-            builder->CreateBr(loop_cond);
-
-            builder->SetInsertPoint(loop_cond);
-            Value* i = builder->CreateLoad(int64_type, counter);
-            Value* cmp = builder->CreateICmpULT(i, src_total);
-            builder->CreateCondBr(cmp, loop_body, loop_exit);
-
-            builder->SetInsertPoint(loop_body);
-            Value* elem_ptr = builder->CreateGEP(int64_type, typed_src_elements, i);
-            Value* elem_bits = builder->CreateLoad(int64_type, elem_ptr);
-            Value* elem_val = builder->CreateBitCast(elem_bits, double_type);
-            Value* current_sum = builder->CreateLoad(double_type, sum);
-            Value* new_sum = builder->CreateFAdd(current_sum, elem_val);
-            builder->CreateStore(new_sum, sum);
-
-            Value* next_i = builder->CreateAdd(i, ConstantInt::get(int64_type, 1));
-            builder->CreateStore(next_i, counter);
-            builder->CreateBr(loop_cond);
-
-            builder->SetInsertPoint(loop_exit);
-            Value* tensor_result = builder->CreateLoad(double_type, sum);
-            builder->CreateBr(sum_merge);
-            BasicBlock* tensor_exit_block = builder->GetInsertBlock();
-
-            // === MERGE RESULTS ===
-            builder->SetInsertPoint(sum_merge);
-            PHINode* result_phi = builder->CreatePHI(double_type, 2, "sum_result");
-            result_phi->addIncoming(svec_result, svec_exit_block);
-            result_phi->addIncoming(tensor_result, tensor_exit_block);
-
-            return packDoubleToTaggedValue(result_phi);
-        }
-
-        // TODO: Axis-specific sum (returns tensor)
-        eshkol_warn("tensor-sum with axis not yet implemented, returning total sum");
-        builder->CreateBr(sum_merge);
-
-        builder->SetInsertPoint(sum_merge);
-        return packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0));
-    }
-
-    // tensor-mean: (tensor-mean tensor) or (tensor-mean tensor axis) - Mean of elements
-    Value* codegenTensorMean(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
-            eshkol_error("tensor-mean requires 1 or 2 arguments");
-            return nullptr;
-        }
-
-        Value* src_val = codegenAST(&op->call_op.variables[0]);
-        if (!src_val) return nullptr;
-
-        // Check type: Scheme vector (VECTOR_PTR=4) vs Tensor (TENSOR_PTR=6)
-        Value* val_type = getTaggedValueType(src_val);
-        Value* is_scheme_vector = builder->CreateICmpEQ(val_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* scheme_vec_block = BasicBlock::Create(*context, "mean_scheme_vec", current_func);
-        BasicBlock* tensor_block = BasicBlock::Create(*context, "mean_tensor", current_func);
-        BasicBlock* mean_merge = BasicBlock::Create(*context, "mean_merge", current_func);
-
-        builder->CreateCondBr(is_scheme_vector, scheme_vec_block, tensor_block);
-
-        // === SCHEME VECTOR PATH ===
-        builder->SetInsertPoint(scheme_vec_block);
-        Value* svec_ptr_int = unpackInt64FromTaggedValue(src_val);
-        Value* svec_ptr = builder->CreateIntToPtr(svec_ptr_int, builder->getPtrTy());
-        Value* svec_len = builder->CreateLoad(int64_type, svec_ptr);
-
-        BasicBlock* svec_loop_cond = BasicBlock::Create(*context, "svec_mean_cond", current_func);
-        BasicBlock* svec_loop_body = BasicBlock::Create(*context, "svec_mean_body", current_func);
-        BasicBlock* svec_loop_exit = BasicBlock::Create(*context, "svec_mean_exit", current_func);
-
-        Value* svec_sum = builder->CreateAlloca(double_type, nullptr, "svec_mean_acc");
-        Value* svec_counter = builder->CreateAlloca(int64_type, nullptr, "svec_mean_i");
-        builder->CreateStore(ConstantFP::get(double_type, 0.0), svec_sum);
-        builder->CreateStore(ConstantInt::get(int64_type, 0), svec_counter);
-        builder->CreateBr(svec_loop_cond);
-
-        builder->SetInsertPoint(svec_loop_cond);
-        Value* svec_i = builder->CreateLoad(int64_type, svec_counter);
-        Value* svec_cmp = builder->CreateICmpULT(svec_i, svec_len);
-        builder->CreateCondBr(svec_cmp, svec_loop_body, svec_loop_exit);
-
-        builder->SetInsertPoint(svec_loop_body);
-        Value* svec_elems_base = builder->CreateGEP(int8_type, svec_ptr,
-            ConstantInt::get(int64_type, 8));
-        Value* svec_elems_typed = builder->CreatePointerCast(svec_elems_base,
-            PointerType::getUnqual(*context));
-        Value* svec_elem_ptr = builder->CreateGEP(tagged_value_type, svec_elems_typed, svec_i);
-        Value* svec_elem_tagged = builder->CreateLoad(tagged_value_type, svec_elem_ptr);
-        Value* svec_elem_val = unpackDoubleFromTaggedValue(svec_elem_tagged);
-        Value* svec_current_sum = builder->CreateLoad(double_type, svec_sum);
-        Value* svec_new_sum = builder->CreateFAdd(svec_current_sum, svec_elem_val);
-        builder->CreateStore(svec_new_sum, svec_sum);
-        Value* svec_next_i = builder->CreateAdd(svec_i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(svec_next_i, svec_counter);
-        builder->CreateBr(svec_loop_cond);
-
-        builder->SetInsertPoint(svec_loop_exit);
-        Value* svec_total_sum = builder->CreateLoad(double_type, svec_sum);
-        Value* svec_count_fp = builder->CreateSIToFP(svec_len, double_type);
-        Value* svec_result = builder->CreateFDiv(svec_total_sum, svec_count_fp);
-        builder->CreateBr(mean_merge);
-        BasicBlock* svec_exit_block = builder->GetInsertBlock();
-
-        // === TENSOR PATH ===
-        builder->SetInsertPoint(tensor_block);
-        Value* src_ptr_int = unpackInt64FromTaggedValue(src_val);
-        Value* src_ptr = builder->CreateIntToPtr(src_ptr_int, builder->getPtrTy());
-
-        Value* src_elements_field_ptr = builder->CreateStructGEP(tensor_type, src_ptr, 2);
-        Value* src_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), src_elements_field_ptr);
-        Value* typed_src_elements = builder->CreatePointerCast(src_elements_ptr, builder->getPtrTy());
-
-        Value* src_total_field_ptr = builder->CreateStructGEP(tensor_type, src_ptr, 3);
-        Value* src_total = builder->CreateLoad(int64_type, src_total_field_ptr);
-
-        // If no axis, mean all elements
-        if (op->call_op.num_vars == 1) {
-            BasicBlock* loop_cond = BasicBlock::Create(*context, "mean_cond", current_func);
-            BasicBlock* loop_body = BasicBlock::Create(*context, "mean_body", current_func);
-            BasicBlock* loop_exit = BasicBlock::Create(*context, "mean_exit", current_func);
-
-            Value* sum = builder->CreateAlloca(double_type, nullptr, "mean_acc");
-            Value* counter = builder->CreateAlloca(int64_type, nullptr, "mean_i");
-            builder->CreateStore(ConstantFP::get(double_type, 0.0), sum);
-            builder->CreateStore(ConstantInt::get(int64_type, 0), counter);
-            builder->CreateBr(loop_cond);
-
-            builder->SetInsertPoint(loop_cond);
-            Value* i = builder->CreateLoad(int64_type, counter);
-            Value* cmp = builder->CreateICmpULT(i, src_total);
-            builder->CreateCondBr(cmp, loop_body, loop_exit);
-
-            builder->SetInsertPoint(loop_body);
-            Value* elem_ptr = builder->CreateGEP(int64_type, typed_src_elements, i);
-            Value* elem_bits = builder->CreateLoad(int64_type, elem_ptr);
-            Value* elem_val = builder->CreateBitCast(elem_bits, double_type);
-            Value* current_sum = builder->CreateLoad(double_type, sum);
-            Value* new_sum = builder->CreateFAdd(current_sum, elem_val);
-            builder->CreateStore(new_sum, sum);
-
-            Value* next_i = builder->CreateAdd(i, ConstantInt::get(int64_type, 1));
-            builder->CreateStore(next_i, counter);
-            builder->CreateBr(loop_cond);
-
-            builder->SetInsertPoint(loop_exit);
-            Value* total_sum = builder->CreateLoad(double_type, sum);
-            Value* count_fp = builder->CreateSIToFP(src_total, double_type);
-            Value* tensor_result = builder->CreateFDiv(total_sum, count_fp);
-            builder->CreateBr(mean_merge);
-            BasicBlock* tensor_exit_block = builder->GetInsertBlock();
-
-            // === MERGE RESULTS ===
-            builder->SetInsertPoint(mean_merge);
-            PHINode* result_phi = builder->CreatePHI(double_type, 2, "mean_result");
-            result_phi->addIncoming(svec_result, svec_exit_block);
-            result_phi->addIncoming(tensor_result, tensor_exit_block);
-
-            return packDoubleToTaggedValue(result_phi);
-        }
-
-        // TODO: Axis-specific mean (returns tensor)
-        eshkol_warn("tensor-mean with axis not yet implemented, returning total mean");
-        builder->CreateBr(mean_merge);
-
-        builder->SetInsertPoint(mean_merge);
-        return packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0));
-    }
 
     // trace: (trace matrix) - Sum of diagonal elements
     Value* codegenTrace(const eshkol_operations_t* op) {
@@ -19976,6 +18267,14 @@ private:
                 return createBuiltinPredicateFunction(func_name);
             }
 
+            // Handle unary math functions as first-class functions (for map, etc.)
+            if (func_name == "abs" || func_name == "sin" || func_name == "cos" ||
+                func_name == "tan" || func_name == "exp" || func_name == "log" ||
+                func_name == "sqrt" || func_name == "floor" || func_name == "ceiling" ||
+                func_name == "truncate" || func_name == "round") {
+                return createBuiltinUnaryMathFunction(func_name);
+            }
+
             // Handle car builtin function (for use with map)
             if (func_name == "car") {
                 static int car_counter = 0;
@@ -20981,22 +19280,34 @@ private:
         // Apply polymorphic operation to all arguments (binary reduction)
         auto arg_it = builtin_func->arg_begin();
         Value* result = &*arg_it++;
-        
-        for (size_t i = 1; i < arity && arg_it != builtin_func->arg_end(); ++i, ++arg_it) {
-            Value* operand = &*arg_it;
-            
-            if (operation == "+") {
-                result = polymorphicAdd(result, operand);
-            } else if (operation == "-") {
-                result = polymorphicSub(result, operand);
-            } else if (operation == "*") {
-                result = polymorphicMul(result, operand);
-            } else if (operation == "/") {
-                result = polymorphicDiv(result, operand);
-            } else {
-                eshkol_error("Unknown arithmetic operation: %s", operation.c_str());
-                result = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-                break;
+
+        // Handle unary minus: (- x) => 0 - x
+        if (arity == 1 && operation == "-") {
+            Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
+            result = polymorphicSub(zero, &*builtin_func->arg_begin());
+        }
+        // Handle unary plus: (+ x) => x (identity, result is already set)
+        else if (arity == 1 && operation == "+") {
+            // result is already the single argument, just return it
+        }
+        // Binary and n-ary operations
+        else {
+            for (size_t i = 1; i < arity && arg_it != builtin_func->arg_end(); ++i, ++arg_it) {
+                Value* operand = &*arg_it;
+
+                if (operation == "+") {
+                    result = polymorphicAdd(result, operand);
+                } else if (operation == "-") {
+                    result = polymorphicSub(result, operand);
+                } else if (operation == "*") {
+                    result = polymorphicMul(result, operand);
+                } else if (operation == "/") {
+                    result = polymorphicDiv(result, operand);
+                } else {
+                    eshkol_error("Unknown arithmetic operation: %s", operation.c_str());
+                    result = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
+                    break;
+                }
             }
         }
         
