@@ -1,0 +1,30 @@
+;;; core.control.trampoline - Trampoline for bounded-stack recursion
+;;;
+;;; This module provides a trampoline function that enables unbounded
+;;; recursion with constant stack space. It works by converting recursive
+;;; calls into a loop that evaluates thunks.
+;;;
+;;; Usage:
+;;;   (trampoline (lambda () (cps-fib 100 identity)))
+;;;
+;;; For CPS-style recursion, wrap the initial call in a thunk and pass
+;;; to trampoline. The function will loop until a non-procedure value
+;;; is returned.
+
+(provide trampoline bounce done)
+
+;;; trampoline: Evaluate thunks until a final value is reached
+;;; This uses a do loop for constant stack space
+(define (trampoline thunk)
+  (do ((result (thunk) (if (procedure? result) (result) result)))
+      ((not (procedure? result)) result)))
+
+;;; bounce: Create a thunk that will be evaluated by trampoline
+;;; Use this in tail position instead of direct calls
+(define (bounce thunk)
+  thunk)
+
+;;; done: Wrap a value to signal completion
+;;; Equivalent to returning the value directly
+(define (done value)
+  value)

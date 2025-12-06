@@ -437,6 +437,7 @@ typedef struct eshkol_operation {
 	           struct eshkol_ast *bindings;      // Array of (variable value) pairs
 	           uint64_t num_bindings;
 	           struct eshkol_ast *body;
+	           char *name;                       // Named let: loop name (NULL for regular let)
 	       } let_op;
 	       struct {
 	           char *name;                       // Variable name to mutate

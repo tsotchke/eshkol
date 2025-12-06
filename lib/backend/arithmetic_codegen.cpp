@@ -764,6 +764,362 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     return ctx_.builder().CreateSelect(is_double, dbl_val, int_as_dbl, "as_double");
 }
 
+// === Polymorphic Comparison ===
+
+llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
+                                         const std::string& operation) {
+    if (!left || !right) {
+        return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
+    }
+
+    // Extract type tags
+    llvm::Value* left_type = tagged_.getType(left);
+    llvm::Value* right_type = tagged_.getType(right);
+
+    llvm::Value* left_base = ctx_.builder().CreateAnd(left_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* right_base = ctx_.builder().CreateAnd(right_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+
+    // Check if either operand is double
+    llvm::Value* left_is_double = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* right_is_double = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* any_double = ctx_.builder().CreateOr(left_is_double, right_is_double);
+
+    // Check if either operand is a STRING_PTR (symbol)
+    llvm::Value* left_is_string = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_STRING_PTR));
+    llvm::Value* right_is_string = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_STRING_PTR));
+    llvm::Value* both_strings = ctx_.builder().CreateAnd(left_is_string, right_is_string);
+
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_double_path", func);
+    llvm::BasicBlock* check_string = llvm::BasicBlock::Create(ctx_.context(), "cmp_check_string", func);
+    llvm::BasicBlock* string_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_string_path", func);
+    llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_int_path", func);
+    llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "cmp_merge", func);
+
+    ctx_.builder().CreateCondBr(any_double, double_path, check_string);
+
+    // Double path: promote both to double and compare
+    ctx_.builder().SetInsertPoint(double_path);
+    llvm::Value* left_double = ctx_.builder().CreateSelect(left_is_double,
+        tagged_.unpackDouble(left),
+        ctx_.builder().CreateSIToFP(tagged_.unpackInt64(left), ctx_.doubleType()));
+    llvm::Value* right_double = ctx_.builder().CreateSelect(right_is_double,
+        tagged_.unpackDouble(right),
+        ctx_.builder().CreateSIToFP(tagged_.unpackInt64(right), ctx_.doubleType()));
+
+    llvm::Value* double_cmp = nullptr;
+    if (operation == "lt") {
+        double_cmp = ctx_.builder().CreateFCmpOLT(left_double, right_double);
+    } else if (operation == "gt") {
+        double_cmp = ctx_.builder().CreateFCmpOGT(left_double, right_double);
+    } else if (operation == "eq") {
+        double_cmp = ctx_.builder().CreateFCmpOEQ(left_double, right_double);
+    } else if (operation == "le") {
+        double_cmp = ctx_.builder().CreateFCmpOLE(left_double, right_double);
+    } else if (operation == "ge") {
+        double_cmp = ctx_.builder().CreateFCmpOGE(left_double, right_double);
+    }
+    llvm::Value* tagged_double_result = tagged_.packBool(double_cmp);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
+
+    // Check if both are strings/symbols
+    ctx_.builder().SetInsertPoint(check_string);
+    ctx_.builder().CreateCondBr(both_strings, string_path, int_path);
+
+    // String/symbol path: compare pointers (interned symbols)
+    ctx_.builder().SetInsertPoint(string_path);
+    llvm::Value* left_ptr = tagged_.unpackPtr(left);
+    llvm::Value* right_ptr = tagged_.unpackPtr(right);
+
+    llvm::Value* string_cmp = nullptr;
+    if (operation == "eq") {
+        string_cmp = ctx_.builder().CreateICmpEQ(left_ptr, right_ptr);
+    } else {
+        // For other comparisons on strings, compare pointers (same as eq?)
+        string_cmp = ctx_.builder().CreateICmpEQ(left_ptr, right_ptr);
+    }
+    llvm::Value* tagged_string_result = tagged_.packBool(string_cmp);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* string_exit = ctx_.builder().GetInsertBlock();
+
+    // Int path: compare as int64
+    ctx_.builder().SetInsertPoint(int_path);
+    llvm::Value* left_int = tagged_.unpackInt64(left);
+    llvm::Value* right_int = tagged_.unpackInt64(right);
+
+    llvm::Value* int_cmp = nullptr;
+    if (operation == "lt") {
+        int_cmp = ctx_.builder().CreateICmpSLT(left_int, right_int);
+    } else if (operation == "gt") {
+        int_cmp = ctx_.builder().CreateICmpSGT(left_int, right_int);
+    } else if (operation == "ge") {
+        int_cmp = ctx_.builder().CreateICmpSGE(left_int, right_int);
+    } else if (operation == "le") {
+        int_cmp = ctx_.builder().CreateICmpSLE(left_int, right_int);
+    } else if (operation == "eq") {
+        int_cmp = ctx_.builder().CreateICmpEQ(left_int, right_int);
+    }
+    llvm::Value* tagged_int_result = tagged_.packBool(int_cmp);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge results
+    ctx_.builder().SetInsertPoint(merge);
+    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3);
+    result_phi->addIncoming(tagged_double_result, double_exit);
+    result_phi->addIncoming(tagged_string_result, string_exit);
+    result_phi->addIncoming(tagged_int_result, int_exit);
+
+    return result_phi;
+}
+
+// === Power Function ===
+
+llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
+    if (!base || !exponent) {
+        return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+    }
+
+    // Extract both operands as doubles
+    llvm::Value* base_dbl = extractAsDouble(base);
+    llvm::Value* exp_dbl = extractAsDouble(exponent);
+
+    // Call pow intrinsic
+    llvm::Function* pow_func = ctx_.module().getFunction("pow");
+    if (!pow_func) {
+        // Declare pow if not already declared
+        llvm::FunctionType* pow_type = llvm::FunctionType::get(
+            ctx_.doubleType(),
+            {ctx_.doubleType(), ctx_.doubleType()},
+            false);
+        pow_func = llvm::Function::Create(pow_type, llvm::Function::ExternalLinkage,
+                                          "pow", &ctx_.module());
+    }
+
+    llvm::Value* result = ctx_.builder().CreateCall(pow_func, {base_dbl, exp_dbl}, "pow_result");
+    return tagged_.packDouble(result);
+}
+
+// === Min/Max Functions ===
+
+llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
+    if (!left || !right) {
+        return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+    }
+
+    // Extract both operands as doubles
+    llvm::Value* left_dbl = extractAsDouble(left);
+    llvm::Value* right_dbl = extractAsDouble(right);
+
+    // Call fmin intrinsic
+    llvm::Function* fmin_func = ctx_.module().getFunction("fmin");
+    if (!fmin_func) {
+        llvm::FunctionType* fmin_type = llvm::FunctionType::get(
+            ctx_.doubleType(),
+            {ctx_.doubleType(), ctx_.doubleType()},
+            false);
+        fmin_func = llvm::Function::Create(fmin_type, llvm::Function::ExternalLinkage,
+                                           "fmin", &ctx_.module());
+    }
+
+    llvm::Value* result = ctx_.builder().CreateCall(fmin_func, {left_dbl, right_dbl}, "min_result");
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
+    if (!left || !right) {
+        return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+    }
+
+    // Extract both operands as doubles
+    llvm::Value* left_dbl = extractAsDouble(left);
+    llvm::Value* right_dbl = extractAsDouble(right);
+
+    // Call fmax intrinsic
+    llvm::Function* fmax_func = ctx_.module().getFunction("fmax");
+    if (!fmax_func) {
+        llvm::FunctionType* fmax_type = llvm::FunctionType::get(
+            ctx_.doubleType(),
+            {ctx_.doubleType(), ctx_.doubleType()},
+            false);
+        fmax_func = llvm::Function::Create(fmax_type, llvm::Function::ExternalLinkage,
+                                           "fmax", &ctx_.module());
+    }
+
+    llvm::Value* result = ctx_.builder().CreateCall(fmax_func, {left_dbl, right_dbl}, "max_result");
+    return tagged_.packDouble(result);
+}
+
+// === Remainder Function ===
+
+llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* divisor) {
+    if (!dividend || !divisor) {
+        return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
+    }
+
+    // Extract type information
+    llvm::Value* dividend_type = tagged_.getType(dividend);
+    llvm::Value* divisor_type = tagged_.getType(divisor);
+
+    llvm::Value* dividend_base = ctx_.builder().CreateAnd(dividend_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* divisor_base = ctx_.builder().CreateAnd(divisor_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+
+    // Check if both are integers
+    llvm::Value* dividend_is_int = ctx_.builder().CreateICmpEQ(dividend_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    llvm::Value* divisor_is_int = ctx_.builder().CreateICmpEQ(divisor_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    llvm::Value* both_int = ctx_.builder().CreateAnd(dividend_is_int, divisor_is_int);
+
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "rem_int", func);
+    llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "rem_double", func);
+    llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "rem_merge", func);
+
+    ctx_.builder().CreateCondBr(both_int, int_path, double_path);
+
+    // Integer path: use srem
+    ctx_.builder().SetInsertPoint(int_path);
+    llvm::Value* a_int = tagged_.unpackInt64(dividend);
+    llvm::Value* b_int = tagged_.unpackInt64(divisor);
+    llvm::Value* int_result = ctx_.builder().CreateSRem(a_int, b_int, "srem_result");
+    llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
+
+    // Double path: use C's remainder function
+    ctx_.builder().SetInsertPoint(double_path);
+    llvm::Value* a_dbl = extractAsDouble(dividend);
+    llvm::Value* b_dbl = extractAsDouble(divisor);
+
+    llvm::Function* rem_func = ctx_.module().getFunction("remainder");
+    if (!rem_func) {
+        llvm::FunctionType* rem_type = llvm::FunctionType::get(
+            ctx_.doubleType(),
+            {ctx_.doubleType(), ctx_.doubleType()},
+            false);
+        rem_func = llvm::Function::Create(rem_type, llvm::Function::ExternalLinkage,
+                                          "remainder", &ctx_.module());
+    }
+
+    llvm::Value* dbl_result = ctx_.builder().CreateCall(rem_func, {a_dbl, b_dbl}, "rem_result");
+    llvm::Value* dbl_tagged = tagged_.packDouble(dbl_result);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* dbl_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge
+    ctx_.builder().SetInsertPoint(merge);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "remainder_result");
+    phi->addIncoming(int_tagged, int_exit);
+    phi->addIncoming(dbl_tagged, dbl_exit);
+
+    return phi;
+}
+
+// === Quotient Function ===
+
+llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* divisor) {
+    if (!dividend || !divisor) {
+        return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
+    }
+
+    // Extract type information
+    llvm::Value* dividend_type = tagged_.getType(dividend);
+    llvm::Value* divisor_type = tagged_.getType(divisor);
+
+    llvm::Value* dividend_base = ctx_.builder().CreateAnd(dividend_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* divisor_base = ctx_.builder().CreateAnd(divisor_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+
+    // Check if both are integers
+    llvm::Value* dividend_is_int = ctx_.builder().CreateICmpEQ(dividend_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    llvm::Value* divisor_is_int = ctx_.builder().CreateICmpEQ(divisor_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    llvm::Value* both_int = ctx_.builder().CreateAnd(dividend_is_int, divisor_is_int);
+
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "quot_int", func);
+    llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "quot_double", func);
+    llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "quot_merge", func);
+
+    ctx_.builder().CreateCondBr(both_int, int_path, double_path);
+
+    // Integer path: use sdiv (truncates toward zero)
+    ctx_.builder().SetInsertPoint(int_path);
+    llvm::Value* a_int = tagged_.unpackInt64(dividend);
+    llvm::Value* b_int = tagged_.unpackInt64(divisor);
+    llvm::Value* int_result = ctx_.builder().CreateSDiv(a_int, b_int, "sdiv_result");
+    llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
+
+    // Double path: divide and truncate
+    ctx_.builder().SetInsertPoint(double_path);
+    llvm::Value* a_dbl = extractAsDouble(dividend);
+    llvm::Value* b_dbl = extractAsDouble(divisor);
+    llvm::Value* div_result = ctx_.builder().CreateFDiv(a_dbl, b_dbl, "fdiv_result");
+
+    llvm::Function* trunc_func = ctx_.module().getFunction("trunc");
+    if (!trunc_func) {
+        llvm::FunctionType* trunc_type = llvm::FunctionType::get(
+            ctx_.doubleType(),
+            {ctx_.doubleType()},
+            false);
+        trunc_func = llvm::Function::Create(trunc_type, llvm::Function::ExternalLinkage,
+                                            "trunc", &ctx_.module());
+    }
+
+    llvm::Value* truncated = ctx_.builder().CreateCall(trunc_func, {div_result}, "trunc_result");
+    llvm::Value* dbl_as_int = ctx_.builder().CreateFPToSI(truncated, ctx_.int64Type(), "quot_int");
+    llvm::Value* dbl_tagged = tagged_.packInt64(dbl_as_int, true);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* dbl_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge
+    ctx_.builder().SetInsertPoint(merge);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "quotient_result");
+    phi->addIncoming(int_tagged, int_exit);
+    phi->addIncoming(dbl_tagged, dbl_exit);
+
+    return phi;
+}
+
+// === Unary Math Functions ===
+
+llvm::Value* ArithmeticCodegen::mathFunc(llvm::Value* operand, const std::string& func_name) {
+    if (!operand) {
+        return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+    }
+
+    // Extract operand as double
+    llvm::Value* val = extractAsDouble(operand);
+
+    // Get or declare the math function
+    llvm::Function* math_fn = ctx_.module().getFunction(func_name);
+    if (!math_fn) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            ctx_.doubleType(),
+            {ctx_.doubleType()},
+            false);
+        math_fn = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage,
+                                         func_name, &ctx_.module());
+    }
+
+    llvm::Value* result = ctx_.builder().CreateCall(math_fn, {val}, func_name + "_result");
+    return tagged_.packDouble(result);
+}
+
 } // namespace eshkol
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED

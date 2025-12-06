@@ -202,17 +202,45 @@ public:
      */
     llvm::Value* linspace(const eshkol_operations_t* op);
 
+    // === Tensor Utility (Public for use by other codegen modules) ===
+
+    /**
+     * Create a tensor with given dimensions.
+     * @param dims Vector of dimension values
+     * @param fill_value Optional fill value (as i64 bit pattern)
+     * @param use_memset_zero If true, use memset for efficient zero-fill
+     * @return Pointer to tensor struct
+     */
+    llvm::Value* createTensorWithDims(const std::vector<llvm::Value*>& dims,
+                                       llvm::Value* fill_value = nullptr,
+                                       bool use_memset_zero = false);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
     MemoryCodegen& mem_;
 
-    // Callback for AST code generation
+    // Callback for AST code generation (matches other codegen modules)
     using CodegenASTFunc = llvm::Value* (*)(const void* ast, void* context);
+    using CodegenTypedASTFunc = void* (*)(const void* ast, void* context);
+    using TypedToTaggedFunc = llvm::Value* (*)(void* typed_value, void* context);
+
     CodegenASTFunc codegen_ast_callback_ = nullptr;
+    CodegenTypedASTFunc codegen_typed_ast_callback_ = nullptr;
+    TypedToTaggedFunc typed_to_tagged_callback_ = nullptr;
     void* callback_context_ = nullptr;
 
     // === Internal Helpers ===
+
+    /**
+     * Call codegenAST via callback.
+     */
+    llvm::Value* codegenAST(const eshkol_ast_t* ast) {
+        if (codegen_ast_callback_ && ast) {
+            return codegen_ast_callback_(ast, callback_context_);
+        }
+        return nullptr;
+    }
 
     /**
      * Scheme vector arithmetic (VECTOR_PTR type).
@@ -234,12 +262,26 @@ private:
      */
     llvm::Value* rawTensorArithmetic(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
 
+    /**
+     * Extract a tagged value as double, handling both int64 and double types.
+     * @param tagged_val The tagged value
+     * @return The extracted double value
+     */
+    llvm::Value* extractAsDouble(llvm::Value* tagged_val);
+
 public:
     /**
-     * Set callback for AST code generation.
+     * Set callbacks for AST code generation.
      */
-    void setCodegenCallback(CodegenASTFunc callback, void* context) {
-        codegen_ast_callback_ = callback;
+    void setCodegenCallbacks(
+        CodegenASTFunc codegen_ast,
+        CodegenTypedASTFunc codegen_typed_ast,
+        TypedToTaggedFunc typed_to_tagged,
+        void* context
+    ) {
+        codegen_ast_callback_ = codegen_ast;
+        codegen_typed_ast_callback_ = codegen_typed_ast;
+        typed_to_tagged_callback_ = typed_to_tagged;
         callback_context_ = context;
     }
 };

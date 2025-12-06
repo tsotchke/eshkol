@@ -1445,9 +1445,21 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         // We use the same parsing - codegen handles the difference
         if (ast.operation.op == ESHKOL_LET_OP || ast.operation.op == ESHKOL_LET_STAR_OP || ast.operation.op == ESHKOL_LETREC_OP) {
             // Syntax: (let ((var1 val1) (var2 val2) ...) body)
-            
-            // Parse bindings list
+            // Named let: (let name ((var1 init1) ...) body)
+
+            // Parse bindings list (or name for named let)
             token = tokenizer.nextToken();
+
+            // Check for named let: (let name ((var init) ...) body)
+            // Named let is only valid for regular let, not let* or letrec
+            std::string named_let_name;
+            if (ast.operation.op == ESHKOL_LET_OP && token.type == TOKEN_SYMBOL) {
+                // This is a named let - save the name and get the bindings
+                named_let_name = token.value;
+                eshkol_debug("Parsing named let with name '%s'", named_let_name.c_str());
+                token = tokenizer.nextToken();
+            }
+
             if (token.type != TOKEN_LPAREN) {
                 eshkol_error("let requires bindings list as first argument");
                 ast.type = ESHKOL_INVALID;
@@ -1615,7 +1627,17 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             
             ast.operation.let_op.body = new eshkol_ast_t;
             *ast.operation.let_op.body = body;
-            
+
+            // Set named let name (NULL for regular let)
+            if (!named_let_name.empty()) {
+                ast.operation.let_op.name = new char[named_let_name.length() + 1];
+                strcpy(ast.operation.let_op.name, named_let_name.c_str());
+                eshkol_debug("Created named let '%s' with %zu bindings",
+                            named_let_name.c_str(), bindings.size());
+            } else {
+                ast.operation.let_op.name = nullptr;
+            }
+
             return ast;
         }
 

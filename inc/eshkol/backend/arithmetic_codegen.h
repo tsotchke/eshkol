@@ -108,6 +108,68 @@ public:
      */
     llvm::Value* abs(llvm::Value* operand);
 
+    // === Comparison Operations ===
+
+    /**
+     * Polymorphic comparison: a <op> b
+     * Handles int/double/string comparisons with type promotion.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @param operation One of: "lt", "gt", "eq", "le", "ge"
+     * @return Boolean result as tagged_value
+     */
+    llvm::Value* compare(llvm::Value* left, llvm::Value* right, const std::string& operation);
+
+    // === Math Functions ===
+
+    /**
+     * Unary math function with dual number and AD node support.
+     * @param operand Operand (tagged_value)
+     * @param func_name Function name (sin, cos, exp, log, etc.)
+     * @return Result as tagged_value
+     */
+    llvm::Value* mathFunc(llvm::Value* operand, const std::string& func_name);
+
+    /**
+     * Power function: base^exponent
+     * @param base Base value (tagged_value)
+     * @param exponent Exponent value (tagged_value)
+     * @return Result as tagged_value
+     */
+    llvm::Value* pow(llvm::Value* base, llvm::Value* exponent);
+
+    /**
+     * Minimum of two values.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @return Minimum as tagged_value
+     */
+    llvm::Value* min(llvm::Value* left, llvm::Value* right);
+
+    /**
+     * Maximum of two values.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @return Maximum as tagged_value
+     */
+    llvm::Value* max(llvm::Value* left, llvm::Value* right);
+
+    /**
+     * Integer remainder (Scheme remainder semantics).
+     * @param dividend Dividend (tagged_value)
+     * @param divisor Divisor (tagged_value)
+     * @return Remainder as tagged_value
+     */
+    llvm::Value* remainder(llvm::Value* dividend, llvm::Value* divisor);
+
+    /**
+     * Integer quotient (truncated division).
+     * @param dividend Dividend (tagged_value)
+     * @param divisor Divisor (tagged_value)
+     * @return Quotient as tagged_value
+     */
+    llvm::Value* quotient(llvm::Value* dividend, llvm::Value* divisor);
+
     // === Type Coercion ===
 
     /**

@@ -1,6 +1,9 @@
 ;;; core/list/generate.esk
 ;;; List generation functions
 
+;;; Need length for make-list's dual-mode detection
+(require core.list.query)
+
 (provide iota iota-from iota-step repeat make-list range zip)
 
 ;;; iota: Generate a list of numbers starting from 0
@@ -36,10 +39,19 @@
       '()
       (cons x (repeat (- n 1) x))))
 
-;;; make-list: Create a list with n copies of fill (default #f)
-;;; (make-list 3 'x) => (x x x)
-(define (make-list n fill)
-  (repeat n fill))
+;;; make-list: Dual-mode list constructor
+;;; Mode 1 (2 args, first is positive integer): Create n copies of fill
+;;;   (make-list 3 'x) => (x x x)
+;;; Mode 2 (variadic): Create list from all arguments
+;;;   (make-list 1 2 3) => (1 2 3)
+(define (make-list . args)
+  (if (and (= (length args) 2)
+           (integer? (car args))
+           (>= (car args) 0))
+      ;; Mode 1: (make-list n fill)
+      (repeat (car args) (car (cdr args)))
+      ;; Mode 2: variadic
+      args))
 
 ;;; range: Generate a list of numbers from start to end (exclusive)
 ;;; (range 0 5) => (0 1 2 3 4)
