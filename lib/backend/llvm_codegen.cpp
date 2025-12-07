@@ -113,20 +113,29 @@ struct TypedValue {
     uint8_t flags;                  // Additional flags (e.g., indirect reference flag)
     eshkol::hott::TypeId hott_type; // HoTT compile-time type (for gradual typing)
 
+    // HoTT PARAMETERIZED TYPE: For tracking List<Int64>, Vector<Float64>, etc.
+    // This is optional - only set for collection types with known element types
+    std::optional<eshkol::hott::ParameterizedType> param_type;
+
     // Flag constants
     static constexpr uint8_t FLAG_INDIRECT = 0x01;  // Value is address of global to load from
 
     TypedValue()
         : llvm_value(nullptr), type(ESHKOL_VALUE_NULL), is_exact(true), flags(0),
-          hott_type(eshkol::hott::BuiltinTypes::Null) {}
+          hott_type(eshkol::hott::BuiltinTypes::Null), param_type(std::nullopt) {}
 
     TypedValue(Value* val, eshkol_value_type_t t, bool exact = true, uint8_t f = 0)
         : llvm_value(val), type(t), is_exact(exact), flags(f),
-          hott_type(eshkol::hott::BuiltinTypes::Value) {}
+          hott_type(eshkol::hott::BuiltinTypes::Value), param_type(std::nullopt) {}
 
     // Constructor with explicit HoTT type
     TypedValue(Value* val, eshkol_value_type_t t, eshkol::hott::TypeId hott_t, bool exact = true, uint8_t f = 0)
-        : llvm_value(val), type(t), is_exact(exact), flags(f), hott_type(hott_t) {}
+        : llvm_value(val), type(t), is_exact(exact), flags(f), hott_type(hott_t), param_type(std::nullopt) {}
+
+    // Constructor with parameterized type (for List<T>, Vector<T>, etc.)
+    TypedValue(Value* val, eshkol_value_type_t t, eshkol::hott::TypeId hott_t,
+               const eshkol::hott::ParameterizedType& ptype, bool exact = true, uint8_t f = 0)
+        : llvm_value(val), type(t), is_exact(exact), flags(f), hott_type(hott_t), param_type(ptype) {}
 
     // Helper methods
     bool isInt64() const { return type == ESHKOL_VALUE_INT64; }
@@ -145,6 +154,17 @@ struct TypedValue {
                hott_type == eshkol::hott::BuiltinTypes::Real ||
                hott_type == eshkol::hott::BuiltinTypes::Number;
     }
+
+    // HoTT parameterized type helpers
+    bool hasParameterizedType() const { return param_type.has_value(); }
+    eshkol::hott::TypeId elementType() const {
+        if (param_type.has_value()) {
+            return param_type->elementType();
+        }
+        return eshkol::hott::BuiltinTypes::Value;
+    }
+    bool isList() const { return type == ESHKOL_VALUE_CONS_PTR; }
+    bool isVector() const { return type == ESHKOL_VALUE_VECTOR_PTR; }
 };
 
 // OPTION 3: Deferred Lambda S-Expression Generation
@@ -339,6 +359,20 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> nested_function_captures; // Free vars for nested defines
     std::unordered_map<std::string, std::string> functions_returning_lambda; // Maps function name -> lambda name it returns
 
+    // HoTT TYPE TRACKING: Maps variable names to their compile-time HoTT types
+    // This enables type-directed optimizations when both operand types are known
+    std::unordered_map<std::string, eshkol::hott::TypeId> symbol_hott_types;
+    std::unordered_map<std::string, eshkol::hott::TypeId> global_symbol_hott_types;
+
+    // HoTT PARAMETERIZED TYPE TRACKING: Maps variable names to parameterized types (List<T>, Vector<T>)
+    // This enables element type propagation through car/cdr, vector-ref, etc.
+    std::unordered_map<std::string, eshkol::hott::ParameterizedType> symbol_param_types;
+    std::unordered_map<std::string, eshkol::hott::ParameterizedType> global_symbol_param_types;
+
+    // HoTT FUNCTION RETURN TYPE TRACKING: Maps function names to their return types
+    // Enables type-directed optimization for function call results
+    std::unordered_map<std::string, eshkol::hott::TypeId> function_return_types;
+
     // LETREC REFACTOR: Set of names to exclude from free variable capture (letrec-bound names)
     // This is set by BindingCodegen::letrec before generating lambda bindings and cleared after
     std::set<std::string> letrec_excluded_capture_names;
@@ -484,6 +518,76 @@ public:
                 eshkol_debug("Set data layout for target: %s", target_triple_str.c_str());
             }
         }
+
+        // Register HoTT return types for builtin functions
+        registerBuiltinReturnTypes();
+    }
+
+    // Register return types for builtin functions
+    void registerBuiltinReturnTypes() {
+        using namespace eshkol::hott;
+
+        // Arithmetic functions return Number (polymorphic)
+        function_return_types["+"] = BuiltinTypes::Number;
+        function_return_types["-"] = BuiltinTypes::Number;
+        function_return_types["*"] = BuiltinTypes::Number;
+        function_return_types["/"] = BuiltinTypes::Real;  // Division always returns real
+
+        // Comparison functions return Boolean
+        function_return_types["<"] = BuiltinTypes::Boolean;
+        function_return_types[">"] = BuiltinTypes::Boolean;
+        function_return_types["<="] = BuiltinTypes::Boolean;
+        function_return_types[">="] = BuiltinTypes::Boolean;
+        function_return_types["="] = BuiltinTypes::Boolean;
+        function_return_types["eq?"] = BuiltinTypes::Boolean;
+        function_return_types["equal?"] = BuiltinTypes::Boolean;
+        function_return_types["null?"] = BuiltinTypes::Boolean;
+        function_return_types["pair?"] = BuiltinTypes::Boolean;
+        function_return_types["list?"] = BuiltinTypes::Boolean;
+        function_return_types["number?"] = BuiltinTypes::Boolean;
+        function_return_types["zero?"] = BuiltinTypes::Boolean;
+        function_return_types["positive?"] = BuiltinTypes::Boolean;
+        function_return_types["negative?"] = BuiltinTypes::Boolean;
+        function_return_types["even?"] = BuiltinTypes::Boolean;
+        function_return_types["odd?"] = BuiltinTypes::Boolean;
+
+        // Math functions return Float64
+        function_return_types["sin"] = BuiltinTypes::Float64;
+        function_return_types["cos"] = BuiltinTypes::Float64;
+        function_return_types["tan"] = BuiltinTypes::Float64;
+        function_return_types["exp"] = BuiltinTypes::Float64;
+        function_return_types["log"] = BuiltinTypes::Float64;
+        function_return_types["sqrt"] = BuiltinTypes::Float64;
+        function_return_types["abs"] = BuiltinTypes::Number;
+        function_return_types["fabs"] = BuiltinTypes::Float64;
+
+        // List functions
+        function_return_types["list"] = BuiltinTypes::List;
+        function_return_types["cons"] = BuiltinTypes::List;
+        function_return_types["car"] = BuiltinTypes::Value;  // Can be any type
+        function_return_types["cdr"] = BuiltinTypes::List;
+        function_return_types["length"] = BuiltinTypes::Int64;
+        function_return_types["append"] = BuiltinTypes::List;
+        function_return_types["reverse"] = BuiltinTypes::List;
+        function_return_types["map"] = BuiltinTypes::List;
+        function_return_types["filter"] = BuiltinTypes::List;
+        function_return_types["take"] = BuiltinTypes::List;
+        function_return_types["drop"] = BuiltinTypes::List;
+        function_return_types["range"] = BuiltinTypes::List;
+
+        // Vector functions
+        function_return_types["vector"] = BuiltinTypes::Vector;
+        function_return_types["make-vector"] = BuiltinTypes::Vector;
+        function_return_types["vector-length"] = BuiltinTypes::Int64;
+        function_return_types["vector-ref"] = BuiltinTypes::Value;
+
+        // Type conversions
+        function_return_types["exact->inexact"] = BuiltinTypes::Float64;
+        function_return_types["inexact->exact"] = BuiltinTypes::Int64;
+
+        // IO returns Null
+        function_return_types["display"] = BuiltinTypes::Null;
+        function_return_types["newline"] = BuiltinTypes::Null;
     }
     
     std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts) {
@@ -2730,31 +2834,174 @@ private:
                     ast->operation.call_op.func->type == ESHKOL_VAR && ast->operation.call_op.func->variable.id) {
                     std::string func_name = ast->operation.call_op.func->variable.id;
 
+                    // HoTT TYPE TRACKING: Look up return type for builtin functions
+                    eshkol::hott::TypeId return_hott_type = eshkol::hott::BuiltinTypes::Value;
+                    auto return_type_it = function_return_types.find(func_name);
+                    if (return_type_it != function_return_types.end()) {
+                        return_hott_type = return_type_it->second;
+                    }
+
                     // Operations that return cons pointers (or null for empty list)
-                    if (func_name == "list" || func_name == "cons" || func_name == "cdr") {
+                    // HoTT PARAMETERIZED TYPES: Track element types for List<T>
+                    if (func_name == "list") {
+                        // Infer element type from list arguments
+                        std::vector<eshkol::hott::TypeId> element_types;
+                        for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
+                            TypedValue arg_typed = codegenTypedAST(&ast->operation.call_op.variables[i]);
+                            element_types.push_back(arg_typed.hott_type);
+                        }
+                        eshkol::hott::TypeId elem_type = ctx_->hottTypes().inferListElementType(element_types);
+                        auto list_type = ctx_->hottTypes().makeListType(elem_type);
+
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
-                        // Check if it's a null pointer (empty list)
                         if (ConstantInt* ci = dyn_cast<ConstantInt>(val)) {
                             if (ci->isZero()) {
-                                return TypedValue(val, ESHKOL_VALUE_NULL, true);
+                                return TypedValue(val, ESHKOL_VALUE_NULL,
+                                                 eshkol::hott::BuiltinTypes::Null, true);
                             }
                         }
-                        return TypedValue(val, ESHKOL_VALUE_CONS_PTR, true);
+                        return TypedValue(val, ESHKOL_VALUE_CONS_PTR,
+                                         eshkol::hott::BuiltinTypes::List, list_type, true);
+                    }
+
+                    if (func_name == "cons") {
+                        // For cons, first arg determines element type
+                        eshkol::hott::TypeId elem_type = eshkol::hott::BuiltinTypes::Value;
+                        if (ast->operation.call_op.num_vars > 0) {
+                            TypedValue first_arg = codegenTypedAST(&ast->operation.call_op.variables[0]);
+                            elem_type = first_arg.hott_type;
+                        }
+                        auto list_type = ctx_->hottTypes().makeListType(elem_type);
+
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        if (ConstantInt* ci = dyn_cast<ConstantInt>(val)) {
+                            if (ci->isZero()) {
+                                return TypedValue(val, ESHKOL_VALUE_NULL,
+                                                 eshkol::hott::BuiltinTypes::Null, true);
+                            }
+                        }
+                        return TypedValue(val, ESHKOL_VALUE_CONS_PTR,
+                                         eshkol::hott::BuiltinTypes::List, list_type, true);
+                    }
+
+                    if (func_name == "cdr") {
+                        // Preserve element type from the input list
+                        eshkol::hott::TypeId elem_type = eshkol::hott::BuiltinTypes::Value;
+                        if (ast->operation.call_op.num_vars > 0) {
+                            TypedValue list_arg = codegenTypedAST(&ast->operation.call_op.variables[0]);
+                            if (list_arg.hasParameterizedType()) {
+                                elem_type = list_arg.elementType();
+                            }
+                        }
+                        auto list_type = ctx_->hottTypes().makeListType(elem_type);
+
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        if (ConstantInt* ci = dyn_cast<ConstantInt>(val)) {
+                            if (ci->isZero()) {
+                                return TypedValue(val, ESHKOL_VALUE_NULL,
+                                                 eshkol::hott::BuiltinTypes::Null, true);
+                            }
+                        }
+                        return TypedValue(val, ESHKOL_VALUE_CONS_PTR,
+                                         eshkol::hott::BuiltinTypes::List, list_type, true);
+                    }
+
+                    if (func_name == "car") {
+                        // car returns the element type from the list
+                        eshkol::hott::TypeId elem_type = eshkol::hott::BuiltinTypes::Value;
+                        if (ast->operation.call_op.num_vars > 0) {
+                            TypedValue list_arg = codegenTypedAST(&ast->operation.call_op.variables[0]);
+                            if (list_arg.hasParameterizedType()) {
+                                elem_type = list_arg.elementType();
+                            }
+                        }
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        // Return the element type (could be any type)
+                        // For unknown element type, default to tagged_value type
+                        eshkol_value_type_t runtime_type = static_cast<eshkol_value_type_t>(ctx_->hottTypes().toRuntimeType(elem_type));
+                        return TypedValue(val, runtime_type, elem_type, true);
                     }
 
                     // Operations that return scheme vector pointers
-                    if (func_name == "vector" || func_name == "make-vector") {
+                    // HoTT PARAMETERIZED TYPES: Track element types for Vector<T>
+                    if (func_name == "vector") {
+                        // Infer element type from vector arguments
+                        std::vector<eshkol::hott::TypeId> element_types;
+                        for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
+                            TypedValue arg_typed = codegenTypedAST(&ast->operation.call_op.variables[i]);
+                            element_types.push_back(arg_typed.hott_type);
+                        }
+                        eshkol::hott::TypeId elem_type = ctx_->hottTypes().inferListElementType(element_types);
+                        auto vec_type = ctx_->hottTypes().makeVectorType(elem_type);
+
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_VECTOR_PTR, true);
+                        return TypedValue(val, ESHKOL_VALUE_VECTOR_PTR,
+                                         eshkol::hott::BuiltinTypes::Vector, vec_type, true);
+                    }
+
+                    if (func_name == "make-vector") {
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_VECTOR_PTR,
+                                         eshkol::hott::BuiltinTypes::Vector, true);
+                    }
+
+                    if (func_name == "vector-ref") {
+                        // vector-ref returns the element type from the vector
+                        eshkol::hott::TypeId elem_type = eshkol::hott::BuiltinTypes::Value;
+                        if (ast->operation.call_op.num_vars > 0) {
+                            TypedValue vec_arg = codegenTypedAST(&ast->operation.call_op.variables[0]);
+                            if (vec_arg.hasParameterizedType()) {
+                                elem_type = vec_arg.elementType();
+                            }
+                        }
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        eshkol_value_type_t runtime_type = static_cast<eshkol_value_type_t>(ctx_->hottTypes().toRuntimeType(elem_type));
+                        return TypedValue(val, runtime_type, elem_type, true);
                     }
 
                     // Operations that return tensor pointers
                     if (func_name == "gradient" || func_name == "jacobian") {
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_TENSOR_PTR, true);
+                        return TypedValue(val, ESHKOL_VALUE_TENSOR_PTR,
+                                         eshkol::hott::BuiltinTypes::Tensor, true);
+                    }
+
+                    // Comparison functions return Boolean
+                    if (func_name == "<" || func_name == ">" || func_name == "<=" ||
+                        func_name == ">=" || func_name == "=" || func_name == "null?" ||
+                        func_name == "pair?" || func_name == "list?" || func_name == "number?" ||
+                        func_name == "zero?" || func_name == "positive?" || func_name == "negative?" ||
+                        func_name == "even?" || func_name == "odd?" || func_name == "eq?" || func_name == "equal?") {
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_BOOL,
+                                         eshkol::hott::BuiltinTypes::Boolean, true);
+                    }
+
+                    // Math functions return Float64
+                    if (func_name == "sin" || func_name == "cos" || func_name == "tan" ||
+                        func_name == "exp" || func_name == "log" || func_name == "sqrt" ||
+                        func_name == "fabs") {
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_DOUBLE,
+                                         eshkol::hott::BuiltinTypes::Float64, false);
+                    }
+
+                    // Length returns Int64
+                    if (func_name == "length" || func_name == "vector-length") {
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_INT64,
+                                         eshkol::hott::BuiltinTypes::Int64, true);
                     }
 
                     // CLOSURE FIX: Check if callee returns a lambda
@@ -2826,19 +3073,42 @@ private:
                 Value* val = codegenAST(ast);
                 if (!val) return TypedValue();
 
-                // HOMOICONIC FIX: Check if this is a lambda variable by looking for _func entry
-                // This handles variables like l1 where symbol_table["l1_func"] exists
+                // HoTT TYPE TRACKING: Look up compile-time type for variables
+                eshkol::hott::TypeId hott_type = eshkol::hott::BuiltinTypes::Value;  // Default to unknown
+                std::optional<eshkol::hott::ParameterizedType> param_type = std::nullopt;
                 if (ast->type == ESHKOL_VAR && ast->variable.id) {
                     std::string var_name = ast->variable.id;
+
+                    // Look up HoTT type from symbol tables
+                    auto hott_it = symbol_hott_types.find(var_name);
+                    if (hott_it != symbol_hott_types.end()) {
+                        hott_type = hott_it->second;
+                    } else {
+                        auto global_hott_it = global_symbol_hott_types.find(var_name);
+                        if (global_hott_it != global_symbol_hott_types.end()) {
+                            hott_type = global_hott_it->second;
+                        }
+                    }
+
+                    // Look up parameterized type (List<T>, Vector<T>) from symbol tables
+                    auto param_it = symbol_param_types.find(var_name);
+                    if (param_it != symbol_param_types.end()) {
+                        param_type = param_it->second;
+                    } else {
+                        auto global_param_it = global_symbol_param_types.find(var_name);
+                        if (global_param_it != global_symbol_param_types.end()) {
+                            param_type = global_param_it->second;
+                        }
+                    }
+
+                    // HOMOICONIC FIX: Check if this is a lambda variable by looking for _func entry
                     std::string func_key = var_name + "_func";
-                    // FIX: Properly check both tables without mixing iterators
                     bool found_in_symbol_table = (symbol_table.find(func_key) != symbol_table.end());
                     bool found_in_global = (global_symbol_table.find(func_key) != global_symbol_table.end());
                     if (found_in_symbol_table || found_in_global) {
                         // This variable is a lambda - return with LAMBDA_SEXPR type
-                        // The value is an i64 function pointer, which is correct for execution
-                        // The type tells list/display to look up the S-expression
-                        return TypedValue(val, ESHKOL_VALUE_LAMBDA_SEXPR, true);
+                        return TypedValue(val, ESHKOL_VALUE_LAMBDA_SEXPR,
+                                         eshkol::hott::BuiltinTypes::Function, true);
                     }
                 }
 
@@ -2848,26 +3118,45 @@ private:
                 // Special handling for tagged_value: return it as-is, type info is in the tagged_value itself
                 if (llvm_type == tagged_value_type) {
                     // For tagged_value, we can't extract type at compile time
-                    // Return the tagged_value wrapped in TypedValue
-                    // The caller must handle this by checking if llvm_value->getType() == tagged_value_type
-                    return TypedValue(val, ESHKOL_VALUE_INT64, true);  // Type info is in tagged_value itself
+                    // But we may have HoTT type from symbol table
+                    if (param_type.has_value()) {
+                        return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, *param_type, true);
+                    }
+                    return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, true);
                 } else if (llvm_type->isIntegerTy(64)) {
-                    return TypedValue(val, ESHKOL_VALUE_INT64, true);
+                    // Use tracked HoTT type if known, otherwise Int64
+                    if (hott_type == eshkol::hott::BuiltinTypes::Value) {
+                        hott_type = eshkol::hott::BuiltinTypes::Int64;
+                    }
+                    if (param_type.has_value()) {
+                        return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, *param_type, true);
+                    }
+                    return TypedValue(val, ESHKOL_VALUE_INT64, hott_type, true);
                 } else if (llvm_type->isDoubleTy()) {
-                    return TypedValue(val, ESHKOL_VALUE_DOUBLE, false);
+                    if (hott_type == eshkol::hott::BuiltinTypes::Value) {
+                        hott_type = eshkol::hott::BuiltinTypes::Float64;
+                    }
+                    return TypedValue(val, ESHKOL_VALUE_DOUBLE, hott_type, false);
                 } else if (llvm_type->isPointerTy()) {
                     // HOMOICONIC FIX: Handle Function* (lambdas) properly
                     if (isa<Function>(val)) {
-                        // Return FUNCTION POINTER (for execution) with LAMBDA_SEXPR type (for display lookup)
                         Value* as_int = builder->CreatePtrToInt(val, int64_type);
-                        return TypedValue(as_int, ESHKOL_VALUE_LAMBDA_SEXPR, true);
+                        return TypedValue(as_int, ESHKOL_VALUE_LAMBDA_SEXPR,
+                                         eshkol::hott::BuiltinTypes::Function, true);
                     }
                     // Other pointer types - convert to CONS_PTR
                     Value* as_int = builder->CreatePtrToInt(val, int64_type);
-                    return TypedValue(as_int, ESHKOL_VALUE_CONS_PTR, true);
+                    if (hott_type == eshkol::hott::BuiltinTypes::Value) {
+                        hott_type = eshkol::hott::BuiltinTypes::List;
+                    }
+                    // Include parameterized type if available
+                    if (param_type.has_value()) {
+                        return TypedValue(as_int, ESHKOL_VALUE_CONS_PTR, hott_type, *param_type, true);
+                    }
+                    return TypedValue(as_int, ESHKOL_VALUE_CONS_PTR, hott_type, true);
                 } else {
                     // Non-numeric type (unknown)
-                    return TypedValue(val, ESHKOL_VALUE_NULL, true);
+                    return TypedValue(val, ESHKOL_VALUE_NULL, hott_type, true);
                 }
             }
         }
@@ -5321,6 +5610,8 @@ private:
         const char* var_name = op->define_op.name;
         Value* value = nullptr;
         eshkol_value_type_t value_type = ESHKOL_VALUE_INT64;  // Default type
+        eshkol::hott::TypeId hott_type = eshkol::hott::BuiltinTypes::Value;  // HoTT type tracking
+        std::optional<eshkol::hott::ParameterizedType> param_type = std::nullopt;  // HoTT parameterized type
 
         if (op->define_op.value) {
             // HOMOICONIC FIX: Check if this is a lambda that was pre-generated
@@ -5347,6 +5638,7 @@ private:
                     } else {
                         value = builder->CreatePtrToInt(pregenerated, int64_type);
                         value_type = ESHKOL_VALUE_LAMBDA_SEXPR;
+                        hott_type = eshkol::hott::BuiltinTypes::Function;  // Lambda is a function
                         use_pregenerated = true;
                         eshkol_debug("Reusing pre-generated lambda %s for %s (no captures)",
                                     lambda_name.c_str(), var_name);
@@ -5359,6 +5651,8 @@ private:
                 TypedValue typed = codegenTypedAST(op->define_op.value);
                 value = typed.llvm_value;
                 value_type = typed.type;
+                hott_type = typed.hott_type;  // Capture HoTT type from expression
+                param_type = typed.param_type;  // Capture parameterized type (List<T>, Vector<T>)
             }
 
             // DEFINE LIST FIX: Explicitly check if this is a list operation and force CONS_PTR type
@@ -5800,6 +6094,14 @@ private:
 
                     symbol_table[var_name] = global_var;
                     global_symbol_table[var_name] = global_var;
+                    // HoTT TYPE TRACKING: Store the compile-time type
+                    symbol_hott_types[var_name] = hott_type;
+                    global_symbol_hott_types[var_name] = hott_type;
+                    // HoTT PARAMETERIZED TYPE: Store element type for List<T>, Vector<T>
+                    if (param_type.has_value()) {
+                        symbol_param_types[var_name] = *param_type;
+                        global_symbol_param_types[var_name] = *param_type;
+                    }
 
                     // HOMOICONIC FIX: Handle returned lambdas (value is tagged_value or not a Function*)
                     // Find the most recently created lambda or nested function and create S-expression alias
@@ -5948,6 +6250,12 @@ private:
                     }
                     builder->CreateStore(store_value, variable);
                     symbol_table[var_name] = variable;
+                    // HoTT TYPE TRACKING: Store the compile-time type
+                    symbol_hott_types[var_name] = hott_type;
+                    // HoTT PARAMETERIZED TYPE: Store element type for List<T>, Vector<T>
+                    if (param_type.has_value()) {
+                        symbol_param_types[var_name] = *param_type;
+                    }
                 }
 
                 // HOMOICONIC FIX: For returned lambdas/closures in function context, find the matching lambda
@@ -6046,7 +6354,10 @@ private:
                 );
                 symbol_table[var_name] = variable;
                 global_symbol_table[var_name] = variable; // Also store in global table
-                
+                // HoTT TYPE TRACKING: Functions have Function type
+                symbol_hott_types[var_name] = eshkol::hott::BuiltinTypes::Function;
+                global_symbol_hott_types[var_name] = eshkol::hott::BuiltinTypes::Function;
+
                 eshkol_debug("Created global lambda variable: %s", var_name);
             } else {
                 // CRITICAL FIX: GlobalVariable requires Constant initializer
@@ -6068,6 +6379,14 @@ private:
                 );
                 symbol_table[var_name] = variable;
                 global_symbol_table[var_name] = variable; // Also store in global table
+                // HoTT TYPE TRACKING: Store the compile-time type
+                symbol_hott_types[var_name] = hott_type;
+                global_symbol_hott_types[var_name] = hott_type;
+                // HoTT PARAMETERIZED TYPE: Store element type for List<T>, Vector<T>
+                if (param_type.has_value()) {
+                    symbol_param_types[var_name] = *param_type;
+                    global_symbol_param_types[var_name] = *param_type;
+                }
 
                 // CRITICAL FIX: Handle returned lambdas stored in global variables
                 // When (define curried-add (curry2 add)) is evaluated, we need to track
@@ -6458,7 +6777,7 @@ private:
         if (func_name == "sqrt") return codegenMathFunction(op, "sqrt");
 
         // Numeric/rounding functions
-        if (func_name == "abs") return codegenMathFunction(op, "fabs");
+        if (func_name == "abs") return codegenAbs(op);  // Polymorphic abs preserves int type
         if (func_name == "fabs") return codegenMathFunction(op, "fabs");
         if (func_name == "floor") return codegenMathFunction(op, "floor");
         if (func_name == "ceiling") return codegenMathFunction(op, "ceil");
@@ -6524,6 +6843,14 @@ private:
         if (func_name == "boolean?") return codegenBooleanPredicate(op);
         if (func_name == "symbol?") return codegenTypePredicate(op, ESHKOL_VALUE_SYMBOL);
         if (func_name == "procedure?") return codegenProcedurePredicate(op);
+
+        // HoTT TYPE INTROSPECTION: type-of returns the type tag as an integer
+        if (func_name == "type-of") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            return tagged_->typeOf(arg);
+        }
 
         // String functions (dispatched to StringIOCodegen)
         if (func_name == "string-length") return strio_->stringLength(op);
@@ -7706,6 +8033,13 @@ private:
             return nullptr;
         }
 
+        // SAFETY CHECK: Don't optimize if values are tagged_value structs
+        // These require runtime dispatch to extract the actual value
+        if (left.llvm_value->getType() == tagged_value_type ||
+            right.llvm_value->getType() == tagged_value_type) {
+            return nullptr;  // Fall back to polymorphic
+        }
+
         // Use HoTT type system for promotion
         TypeId result_type = ctx_->hottTypes().promoteForArithmetic(
             left.hott_type, right.hott_type);
@@ -7884,19 +8218,128 @@ private:
             eshkol_warn("Comparison operation requires exactly 2 arguments");
             return nullptr;
         }
-        
+
         // Generate operands with type information
         TypedValue left_tv = codegenTypedAST(&op->call_op.variables[0]);
         TypedValue right_tv = codegenTypedAST(&op->call_op.variables[1]);
-        
+
         if (!left_tv.llvm_value || !right_tv.llvm_value) return nullptr;
-        
-        // Convert to tagged_value for runtime polymorphism
+
+        // HoTT TYPE-DIRECTED OPTIMIZATION: If both operands have known types,
+        // use direct LLVM compare instructions instead of runtime dispatch
+        Value* hott_result = hottOptimizedComparison(left_tv, right_tv, operation);
+        if (hott_result) {
+            return hott_result;  // Optimized path succeeded
+        }
+
+        // Fallback: Convert to tagged_value for runtime polymorphism
         Value* left_tagged = typedValueToTaggedValue(left_tv);
         Value* right_tagged = typedValueToTaggedValue(right_tv);
-        
+
         // Call polymorphic comparison that handles runtime type detection
         return polymorphicCompare(left_tagged, right_tagged, operation);
+    }
+
+    // HoTT type-directed comparison optimization
+    // Returns optimized result if both types are known, nullptr to fall back to polymorphic
+    Value* hottOptimizedComparison(const TypedValue& left, const TypedValue& right,
+                                    const std::string& operation) {
+        using namespace eshkol::hott;
+
+        // Only optimize if both types are known
+        if (!left.hasKnownType() || !right.hasKnownType()) {
+            return nullptr;
+        }
+
+        // SAFETY CHECK: Don't optimize if values are tagged_value structs
+        // These require runtime dispatch to extract the actual value
+        if (left.llvm_value->getType() == tagged_value_type ||
+            right.llvm_value->getType() == tagged_value_type) {
+            return nullptr;  // Fall back to polymorphic
+        }
+
+        // Get promoted type for comparison
+        TypeId result_type = ctx_->hottTypes().promoteForArithmetic(
+            left.hott_type, right.hott_type);
+
+        Value* left_val = left.llvm_value;
+        Value* right_val = right.llvm_value;
+
+        // Integer comparison path
+        if (result_type == BuiltinTypes::Int64 || result_type == BuiltinTypes::Integer ||
+            result_type == BuiltinTypes::Natural) {
+            // Ensure both are i64
+            if (!left_val->getType()->isIntegerTy(64)) {
+                if (left_val->getType()->isDoubleTy()) {
+                    left_val = builder->CreateFPToSI(left_val, int64_type, "hott_ftoi_l");
+                } else {
+                    return nullptr;  // Can't convert this type
+                }
+            }
+            if (!right_val->getType()->isIntegerTy(64)) {
+                if (right_val->getType()->isDoubleTy()) {
+                    right_val = builder->CreateFPToSI(right_val, int64_type, "hott_ftoi_r");
+                } else {
+                    return nullptr;  // Can't convert this type
+                }
+            }
+
+            Value* cmp_result = nullptr;
+            if (operation == "lt") {
+                cmp_result = builder->CreateICmpSLT(left_val, right_val, "hott_icmp_lt");
+            } else if (operation == "gt") {
+                cmp_result = builder->CreateICmpSGT(left_val, right_val, "hott_icmp_gt");
+            } else if (operation == "le") {
+                cmp_result = builder->CreateICmpSLE(left_val, right_val, "hott_icmp_le");
+            } else if (operation == "ge") {
+                cmp_result = builder->CreateICmpSGE(left_val, right_val, "hott_icmp_ge");
+            } else if (operation == "eq") {
+                cmp_result = builder->CreateICmpEQ(left_val, right_val, "hott_icmp_eq");
+            }
+
+            if (cmp_result) {
+                // Pack boolean result into tagged_value
+                return packBoolToTaggedValue(cmp_result);
+            }
+        }
+
+        // Float comparison path
+        if (result_type == BuiltinTypes::Float64 || result_type == BuiltinTypes::Real) {
+            // Promote both to double
+            Value* left_d = left_val;
+            Value* right_d = right_val;
+            if (left_d->getType()->isIntegerTy(64)) {
+                left_d = builder->CreateSIToFP(left_d, double_type, "hott_itof_l");
+            } else if (!left_d->getType()->isDoubleTy()) {
+                return nullptr;  // Can't convert this type
+            }
+            if (right_d->getType()->isIntegerTy(64)) {
+                right_d = builder->CreateSIToFP(right_d, double_type, "hott_itof_r");
+            } else if (!right_d->getType()->isDoubleTy()) {
+                return nullptr;  // Can't convert this type
+            }
+
+            Value* cmp_result = nullptr;
+            if (operation == "lt") {
+                cmp_result = builder->CreateFCmpOLT(left_d, right_d, "hott_fcmp_lt");
+            } else if (operation == "gt") {
+                cmp_result = builder->CreateFCmpOGT(left_d, right_d, "hott_fcmp_gt");
+            } else if (operation == "le") {
+                cmp_result = builder->CreateFCmpOLE(left_d, right_d, "hott_fcmp_le");
+            } else if (operation == "ge") {
+                cmp_result = builder->CreateFCmpOGE(left_d, right_d, "hott_fcmp_ge");
+            } else if (operation == "eq") {
+                cmp_result = builder->CreateFCmpOEQ(left_d, right_d, "hott_fcmp_eq");
+            }
+
+            if (cmp_result) {
+                // Pack boolean result into tagged_value
+                return packBoolToTaggedValue(cmp_result);
+            }
+        }
+
+        // Unknown type combination, fall back to polymorphic
+        return nullptr;
     }
     
     
@@ -8024,6 +8467,101 @@ private:
         result_phi->addIncoming(tagged_ad_result, ad_node_exit);  // AD node path (reverse-mode AD)
         result_phi->addIncoming(tagged_dual_result, dual_path);   // Dual number path (forward-mode AD)
         result_phi->addIncoming(tagged_regular_result, regular_path);  // Regular computation
+
+        return result_phi;
+    }
+
+    // Polymorphic abs - preserves integer type for integers, uses fabs for doubles
+    // HoTT TYPE SYSTEM: abs(Int64) -> Int64, abs(Float64) -> Float64
+    Value* codegenAbs(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("abs requires exactly 1 argument");
+            return nullptr;
+        }
+
+        // Get argument with type information
+        TypedValue arg_tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!arg_tv.llvm_value) return nullptr;
+
+        // Convert to tagged_value for runtime type detection
+        Value* arg_tagged = typedValueToTaggedValue(arg_tv);
+
+        // Extract type tag
+        Value* arg_type = getTaggedValueType(arg_tagged);
+        Value* arg_base_type = builder->CreateAnd(arg_type,
+            ConstantInt::get(int8_type, 0x0F));
+
+        // Check type conditions
+        Value* arg_is_dual = builder->CreateICmpEQ(arg_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+        Value* arg_is_ad_node = builder->CreateICmpEQ(arg_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
+        Value* arg_is_int = builder->CreateICmpEQ(arg_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* ad_node_path = BasicBlock::Create(*context, "abs_ad_node", current_func);
+        BasicBlock* check_dual = BasicBlock::Create(*context, "abs_check_dual", current_func);
+        BasicBlock* dual_path = BasicBlock::Create(*context, "abs_dual", current_func);
+        BasicBlock* check_int = BasicBlock::Create(*context, "abs_check_int", current_func);
+        BasicBlock* int_path = BasicBlock::Create(*context, "abs_int", current_func);
+        BasicBlock* double_path = BasicBlock::Create(*context, "abs_double", current_func);
+        BasicBlock* merge = BasicBlock::Create(*context, "abs_merge", current_func);
+
+        // First check for AD node
+        builder->CreateCondBr(arg_is_ad_node, ad_node_path, check_dual);
+
+        // AD NODE PATH
+        builder->SetInsertPoint(ad_node_path);
+        Value* ad_node_ptr_int = unpackInt64FromTaggedValue(arg_tagged);
+        Value* ad_node_ptr = builder->CreateIntToPtr(ad_node_ptr_int, PointerType::getUnqual(*context));
+        Value* new_ad_node = recordADNodeUnary(12, ad_node_ptr);  // 12 = AD_NODE_ABS
+        Value* new_ad_node_int = builder->CreatePtrToInt(new_ad_node, int64_type);
+        Value* ad_result = packPtrToTaggedValue(new_ad_node_int, ESHKOL_VALUE_AD_NODE_PTR);
+        builder->CreateBr(merge);
+        BasicBlock* ad_node_exit = builder->GetInsertBlock();
+
+        // Check for dual number
+        builder->SetInsertPoint(check_dual);
+        builder->CreateCondBr(arg_is_dual, dual_path, check_int);
+
+        // DUAL PATH
+        builder->SetInsertPoint(dual_path);
+        Value* arg_dual = unpackDualFromTaggedValue(arg_tagged);
+        Value* dual_result = dualAbs(arg_dual);
+        Value* tagged_dual_result = packDualToTaggedValue(dual_result);
+        builder->CreateBr(merge);
+        BasicBlock* dual_exit = builder->GetInsertBlock();
+
+        // Check for integer
+        builder->SetInsertPoint(check_int);
+        builder->CreateCondBr(arg_is_int, int_path, double_path);
+
+        // INT PATH - compute integer absolute value: x < 0 ? -x : x
+        builder->SetInsertPoint(int_path);
+        Value* int_val = unpackInt64FromTaggedValue(arg_tagged);
+        Value* is_negative = builder->CreateICmpSLT(int_val, ConstantInt::get(int64_type, 0));
+        Value* neg_val = builder->CreateNeg(int_val);
+        Value* abs_int = builder->CreateSelect(is_negative, neg_val, int_val);
+        Value* tagged_int_result = packInt64ToTaggedValue(abs_int, true);  // exact
+        builder->CreateBr(merge);
+        BasicBlock* int_exit = builder->GetInsertBlock();
+
+        // DOUBLE PATH - use fabs
+        builder->SetInsertPoint(double_path);
+        Value* double_val = unpackDoubleFromTaggedValue(arg_tagged);
+        Value* abs_double = builder->CreateCall(function_table["fabs"], {double_val});
+        Value* tagged_double_result = packDoubleToTaggedValue(abs_double);
+        builder->CreateBr(merge);
+        BasicBlock* double_exit = builder->GetInsertBlock();
+
+        // Merge paths
+        builder->SetInsertPoint(merge);
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 4, "abs_result");
+        result_phi->addIncoming(ad_result, ad_node_exit);
+        result_phi->addIncoming(tagged_dual_result, dual_exit);
+        result_phi->addIncoming(tagged_int_result, int_exit);
+        result_phi->addIncoming(tagged_double_result, double_exit);
 
         return result_phi;
     }
@@ -10766,7 +11304,10 @@ private:
 
         // Save current symbol table state
         std::unordered_map<std::string, Value*> prev_symbols = symbol_table;
-        
+        // HoTT TYPE TRACKING: Also save HoTT type maps for proper scoping
+        std::unordered_map<std::string, eshkol::hott::TypeId> prev_hott_types = symbol_hott_types;
+        std::unordered_map<std::string, eshkol::hott::ParameterizedType> prev_param_types = symbol_param_types;
+
         // Process all bindings: evaluate values and add to symbol table
         for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
             const eshkol_ast_t* binding = &op->let_op.bindings[i];
@@ -11023,12 +11564,24 @@ private:
                 builder->CreateStore(val_to_store, var_alloca);
                 symbol_table[var_name] = var_alloca;
 
+                // HoTT TYPE TRACKING: Store compile-time type for let bindings
+                symbol_hott_types[var_name] = typed_val.hott_type;
+                // HoTT PARAMETERIZED TYPE: Store element type for List<T>, Vector<T>
+                if (typed_val.param_type.has_value()) {
+                    symbol_param_types[var_name] = *typed_val.param_type;
+                }
+
                 eshkol_debug("Let binding: %s = <value> (stored as %s)",
                            var_name.c_str(),
                            actual_storage_type == tagged_value_type ? "tagged_value" : "raw");
             } else {
                 eshkol_warn("Let expression outside function context - creating temporary binding");
                 symbol_table[var_name] = val;
+                // HoTT TYPE TRACKING: Store compile-time type even outside function context
+                symbol_hott_types[var_name] = typed_val.hott_type;
+                if (typed_val.param_type.has_value()) {
+                    symbol_param_types[var_name] = *typed_val.param_type;
+                }
             }
         }
         
@@ -11062,6 +11615,9 @@ private:
 
         // Restore previous symbol table state
         symbol_table = prev_symbols;
+        // HoTT TYPE TRACKING: Also restore HoTT type maps
+        symbol_hott_types = prev_hott_types;
+        symbol_param_types = prev_param_types;
 
         // Re-add preserved function references and GlobalVariable captures
         for (auto& entry : func_refs_to_preserve) {

@@ -146,9 +146,9 @@ llvm::Value* StringIOCodegen::stringRef(const eshkol_operations_t* op) {
     // Get character at index
     llvm::Value* char_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, idx);
     llvm::Value* char_val = ctx_.builder().CreateLoad(ctx_.int8Type(), char_ptr);
-    llvm::Value* char_int = ctx_.builder().CreateZExt(char_val, ctx_.int64Type());
 
-    return tagged_.packInt64(char_int, true);
+    // HoTT TYPE SYSTEM: string-ref returns CHAR type, not INT64
+    return tagged_.packChar(char_val);
 }
 
 llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {

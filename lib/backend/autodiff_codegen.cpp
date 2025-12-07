@@ -754,6 +754,13 @@ llvm::Value* AutodiffCodegen::recordADNodeUnary(uint32_t op_type, llvm::Value* i
         case 11: // AD_NODE_NEG
             result_value = ctx_.builder().CreateFNeg(input_value);
             break;
+        case 12: // AD_NODE_ABS
+            {
+                llvm::Function* fabs_func = getMathFunc("fabs");
+                if (!fabs_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(fabs_func, {input_value});
+            }
+            break;
         default:
             eshkol_warn("Unknown unary AD operation type: %u", op_type);
             return nullptr;

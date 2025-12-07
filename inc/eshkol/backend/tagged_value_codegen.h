@@ -179,6 +179,17 @@ public:
      */
     llvm::Value* safeExtractInt64(llvm::Value* val);
 
+    // === Type Introspection ===
+
+    /**
+     * Return a symbol representing the runtime type of a value.
+     * HoTT TYPE SYSTEM: Provides runtime type inspection for gradual typing.
+     * Returns symbols like: 'integer, 'float, 'list, 'vector, 'function, etc.
+     * @param tagged_val The tagged_value struct
+     * @return A tagged_value struct containing a symbol for the type
+     */
+    llvm::Value* typeOf(llvm::Value* tagged_val);
+
     /**
      * Check if a value is a tagged_value struct type.
      * @param val The LLVM value to check

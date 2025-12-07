@@ -139,14 +139,14 @@ The key insight is organizing types into a hierarchy with **supertypes** that su
             ▼               ▼               ▼
          Value          Resource        Proposition
             │               │               │
-     ┌──────┼──────┐       │           ┌───┴───┐
-     │      │      │       │           │       │
-     ▼      ▼      ▼       ▼           ▼       ▼
+     ┌──────┼──────┐        │           ┌───┴───┐
+     │      │      │        │           │       │
+     ▼      ▼      ▼        ▼           ▼       ▼
   Number  Text  Collection Handle    Proof   Witness
-     │      │      │       │
-  ┌──┴──┐   │   ┌──┴──┐    │
-  │     │   │   │     │    │
-  ▼     ▼   ▼   ▼     ▼    ▼
+     │      │      │        │
+  ┌──┴──┐   │   ┌──┴──┐     │
+  │     │   │   │     │     │
+  ▼     ▼   ▼   ▼     ▼     ▼
 Int64 Float64 String List Vector Window
 ```
 
