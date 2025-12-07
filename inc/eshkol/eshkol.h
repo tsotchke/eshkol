@@ -342,6 +342,91 @@ void eshkol_display_closure(uint64_t closure_ptr, eshkol_display_opts_t* opts);
 
 // ===== END COMPUTATIONAL GRAPH TYPES =====
 
+// ===== HoTT TYPE SYSTEM =====
+// Homotopy Type Theory inspired type expressions for static type checking
+
+// Type expression kinds
+typedef enum {
+    HOTT_TYPE_INVALID,
+    // Primitive types
+    HOTT_TYPE_INTEGER,      // integer
+    HOTT_TYPE_REAL,         // real (double)
+    HOTT_TYPE_BOOLEAN,      // boolean
+    HOTT_TYPE_STRING,       // string
+    HOTT_TYPE_CHAR,         // char
+    HOTT_TYPE_SYMBOL,       // symbol
+    HOTT_TYPE_NULL,         // null (empty list)
+    HOTT_TYPE_ANY,          // any (top type)
+    HOTT_TYPE_NOTHING,      // nothing (bottom type)
+    // Compound types
+    HOTT_TYPE_ARROW,        // (-> a b) function type
+    HOTT_TYPE_PRODUCT,      // (* a b) product type
+    HOTT_TYPE_SUM,          // (+ a b) sum type (either)
+    HOTT_TYPE_LIST,         // (list a) list type
+    HOTT_TYPE_VECTOR,       // (vector a) vector type
+    HOTT_TYPE_PAIR,         // (pair a b) cons pair type
+    // Polymorphic types
+    HOTT_TYPE_VAR,          // type variable (e.g., 'a in forall)
+    HOTT_TYPE_FORALL,       // (forall (a b ...) type) universal quantification
+    // Advanced types (future)
+    HOTT_TYPE_DEPENDENT,    // dependent type (Pi type)
+    HOTT_TYPE_PATH,         // path type (identity type)
+    HOTT_TYPE_UNIVERSE      // universe level
+} hott_type_kind_t;
+
+// Forward declaration
+struct hott_type_expr;
+
+// Type expression structure
+typedef struct hott_type_expr {
+    hott_type_kind_t kind;
+    union {
+        // For type variables: the variable name
+        char* var_name;
+
+        // For arrow types: domain -> codomain
+        struct {
+            struct hott_type_expr** param_types;  // Array of parameter types
+            uint64_t num_params;
+            struct hott_type_expr* return_type;
+        } arrow;
+
+        // For forall types: quantified variables and body
+        struct {
+            char** type_vars;           // Array of type variable names
+            uint64_t num_vars;
+            struct hott_type_expr* body;
+        } forall;
+
+        // For compound types: list, vector, etc.
+        struct {
+            struct hott_type_expr* element_type;
+        } container;
+
+        // For pair/product types
+        struct {
+            struct hott_type_expr* left;
+            struct hott_type_expr* right;
+        } pair;
+
+        // For sum types
+        struct {
+            struct hott_type_expr* left;
+            struct hott_type_expr* right;
+        } sum;
+
+        // For universe types
+        struct {
+            uint32_t level;  // Universe level (U0, U1, U2, ...)
+        } universe;
+    };
+} hott_type_expr_t;
+
+// Helper macros for type construction
+#define HOTT_MAKE_PRIMITIVE(kind) ((hott_type_expr_t){.kind = (kind)})
+
+// ===== END HoTT TYPE SYSTEM =====
+
 typedef enum {
     ESHKOL_INVALID_OP,
     ESHKOL_COMPOSE_OP,
@@ -388,7 +473,10 @@ typedef enum {
     ESHKOL_DIVERGENCE_OP,
     ESHKOL_CURL_OP,
     ESHKOL_LAPLACIAN_OP,
-    ESHKOL_DIRECTIONAL_DERIV_OP
+    ESHKOL_DIRECTIONAL_DERIV_OP,
+    // HoTT Type System operators
+    ESHKOL_TYPE_ANNOTATION_OP,  // (: name type) - standalone type declaration
+    ESHKOL_FORALL_OP            // (forall (a b) type) - polymorphic type
 } eshkol_op_t;
 
 struct eshkol_ast;
@@ -423,6 +511,9 @@ typedef struct eshkol_operation {
             uint8_t is_variadic;      // True if function accepts variable arguments
             char *rest_param;         // Name of rest parameter (for variadic functions)
             uint8_t is_external;      // True if function is external (body from linked .o)
+            // HoTT type annotations
+            hott_type_expr_t *return_type;    // Return type annotation (NULL if not annotated)
+            hott_type_expr_t **param_types;   // Array of parameter type annotations (NULL entries for unannotated)
         } define_op;
         struct {
             struct eshkol_ast *expressions;
@@ -447,6 +538,9 @@ typedef struct eshkol_operation {
 	           uint64_t num_captured;
 	           uint8_t is_variadic;       // True if lambda accepts variable arguments
 	           char *rest_param;          // Name of rest parameter (for variadic lambdas)
+	           // HoTT type annotations
+	           hott_type_expr_t *return_type;    // Return type annotation (NULL if not annotated)
+	           hott_type_expr_t **param_types;   // Array of parameter type annotations (NULL entries for unannotated)
 	       } lambda_op;
 	       struct {
 	           struct eshkol_ast *bindings;      // Array of (variable value) pairs
@@ -538,6 +632,16 @@ typedef struct eshkol_operation {
             struct eshkol_ast *point;       // Point to evaluate directional derivative at
             struct eshkol_ast *direction;   // Direction vector
         } directional_deriv_op;
+        // ===== HoTT Type System Operations =====
+        struct {
+            char *name;                     // Name being annotated
+            hott_type_expr_t *type_expr;    // The type expression
+        } type_annotation_op;
+        struct {
+            char **type_vars;               // Quantified type variable names
+            uint64_t num_vars;
+            hott_type_expr_t *body;         // Body type expression
+        } forall_op;
     };
 } eshkol_operations_t;
 
@@ -567,6 +671,9 @@ typedef struct eshkol_ast {
             uint64_t size;
             uint8_t is_variadic;      // True if function accepts variable arguments
             char *rest_param;         // Name of rest parameter (for variadic functions)
+            // HoTT type annotations (for inline annotations like (x : int))
+            hott_type_expr_t **param_types;   // Array of parameter type annotations
+            hott_type_expr_t *return_type;    // Return type annotation (optional)
         } eshkol_func;
         struct {
             char *id;
@@ -600,6 +707,37 @@ eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast);
 
 // REPL display helper
 eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr);
+
+// ===== HoTT Type Expression Helpers =====
+// Create primitive type expressions
+hott_type_expr_t* hott_make_integer_type(void);
+hott_type_expr_t* hott_make_real_type(void);
+hott_type_expr_t* hott_make_boolean_type(void);
+hott_type_expr_t* hott_make_string_type(void);
+hott_type_expr_t* hott_make_char_type(void);
+hott_type_expr_t* hott_make_symbol_type(void);
+hott_type_expr_t* hott_make_null_type(void);
+hott_type_expr_t* hott_make_any_type(void);
+hott_type_expr_t* hott_make_nothing_type(void);
+
+// Create type variables
+hott_type_expr_t* hott_make_type_var(const char* name);
+
+// Create compound types
+hott_type_expr_t* hott_make_arrow_type(hott_type_expr_t** param_types, uint64_t num_params, hott_type_expr_t* return_type);
+hott_type_expr_t* hott_make_list_type(hott_type_expr_t* element_type);
+hott_type_expr_t* hott_make_vector_type(hott_type_expr_t* element_type);
+hott_type_expr_t* hott_make_pair_type(hott_type_expr_t* left, hott_type_expr_t* right);
+hott_type_expr_t* hott_make_product_type(hott_type_expr_t* left, hott_type_expr_t* right);
+hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* right);
+hott_type_expr_t* hott_make_forall_type(char** type_vars, uint64_t num_vars, hott_type_expr_t* body);
+
+// Copy and free type expressions
+hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type);
+void hott_free_type_expr(hott_type_expr_t* type);
+
+// Type expression to string (for display/error messages)
+char* hott_type_to_string(const hott_type_expr_t* type);
 
 #ifdef __cplusplus
 };

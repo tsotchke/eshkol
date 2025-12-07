@@ -1,0 +1,272 @@
+;;
+;; HoTT Type System - Comprehensive Test
+;;
+;; Tests type annotations with builtins, autodiff, and lambdas
+;;
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(define (check-approx name expected actual tolerance)
+  (if (< (abs (- expected actual)) tolerance)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(display "╔══════════════════════════════════════════════════════════════════╗\n")
+(display "║        COMPREHENSIVE TYPE ANNOTATION TESTS                       ║\n")
+(display "╚══════════════════════════════════════════════════════════════════╝\n\n")
+
+;; ============================================================================
+;; Section 1: Arithmetic Builtins with Types
+;; ============================================================================
+(display "═══ Section 1: Arithmetic Builtins ═══\n")
+
+(: typed-add (-> integer integer integer))
+(define (typed-add (a : integer) (b : integer))
+  (+ a b))
+(check "typed + builtin" 15 (typed-add 7 8))
+
+(: typed-sub (-> integer integer integer))
+(define (typed-sub (a : integer) (b : integer))
+  (- a b))
+(check "typed - builtin" 3 (typed-sub 10 7))
+
+(: typed-mul (-> real real real))
+(define (typed-mul (x : real) (y : real))
+  (* x y))
+(check-approx "typed * builtin" 6.28 (typed-mul 2.0 3.14) 0.01)
+
+(: typed-div (-> real real real))
+(define (typed-div (x : real) (y : real))
+  (/ x y))
+(check-approx "typed / builtin" 2.5 (typed-div 5.0 2.0) 0.01)
+
+;; ============================================================================
+;; Section 2: Comparison Builtins with Types
+;; ============================================================================
+(display "\n═══ Section 2: Comparison Builtins ═══\n")
+
+(: typed-less (-> integer integer boolean))
+(define (typed-less (a : integer) (b : integer))
+  (< a b))
+(check "typed < builtin" #t (typed-less 3 5))
+(check "typed < false" #f (typed-less 5 3))
+
+(: typed-equal (-> integer integer boolean))
+(define (typed-equal (a : integer) (b : integer))
+  (= a b))
+(check "typed = builtin" #t (typed-equal 42 42))
+
+;; ============================================================================
+;; Section 3: List Builtins with Types
+;; ============================================================================
+(display "\n═══ Section 3: List Builtins ═══\n")
+
+(: typed-cons (-> integer (list integer) (list integer)))
+(define (typed-cons (x : integer) (xs : (list integer)))
+  (cons x xs))
+(check "typed cons" (list 1 2 3) (typed-cons 1 (list 2 3)))
+
+(: typed-car (-> (list integer) integer))
+(define (typed-car (xs : (list integer)))
+  (car xs))
+(check "typed car" 1 (typed-car (list 1 2 3)))
+
+(: typed-cdr (-> (list integer) (list integer)))
+(define (typed-cdr (xs : (list integer)))
+  (cdr xs))
+(check "typed cdr" (list 2 3) (typed-cdr (list 1 2 3)))
+
+;; ============================================================================
+;; Section 4: Higher-Order Functions with Types
+;; ============================================================================
+(display "\n═══ Section 4: Higher-Order Functions ═══\n")
+
+(: typed-map (-> (-> integer integer) (list integer) (list integer)))
+(define (typed-map (f : (-> integer integer)) (xs : (list integer)))
+  (map f xs))
+(check "typed map" (list 2 4 6) (typed-map (lambda (x) (* x 2)) (list 1 2 3)))
+
+(: typed-filter (-> (-> integer boolean) (list integer) (list integer)))
+(define (typed-filter (pred : (-> integer boolean)) (xs : (list integer)))
+  (filter pred xs))
+(check "typed filter" (list 2 4) (typed-filter (lambda (x) (= 0 (modulo x 2))) (list 1 2 3 4 5)))
+
+(: typed-fold (-> (-> integer integer integer) integer (list integer) integer))
+(define (typed-fold (f : (-> integer integer integer)) (init : integer) (xs : (list integer)))
+  (fold f init xs))
+(check "typed fold" 15 (typed-fold + 0 (list 1 2 3 4 5)))
+
+;; ============================================================================
+;; Section 5: Lambda Expressions with Types
+;; ============================================================================
+(display "\n═══ Section 5: Lambda Expressions ═══\n")
+
+;; Simple typed lambda
+(define typed-square (lambda ((x : integer)) (* x x)))
+(check "typed lambda square" 25 (typed-square 5))
+
+;; Multi-param typed lambda
+(define typed-add-lambda (lambda ((a : integer) (b : integer)) (+ a b)))
+(check "typed lambda add" 11 (typed-add-lambda 5 6))
+
+;; Nested lambda with types
+(define typed-curried-add
+  (lambda ((x : integer))
+    (lambda ((y : integer))
+      (+ x y))))
+(check "typed curried lambda" 15 ((typed-curried-add 7) 8))
+
+;; Lambda capturing typed variables
+(: multiplier integer)
+(define multiplier 3)
+(define typed-closure (lambda ((x : integer)) (* x multiplier)))
+(check "typed closure" 12 (typed-closure 4))
+
+;; ============================================================================
+;; Section 6: Autodiff with Types
+;; ============================================================================
+(display "\n═══ Section 6: Autodiff ═══\n")
+
+;; Simple derivative - d/dx(x^2) = 2x, at x=3 should be 6
+(: f-square (-> real real))
+(define (f-square (x : real)) (* x x))
+(check-approx "autodiff square" 6.0 (derivative f-square 3.0) 0.001)
+
+;; Derivative of more complex function - d/dx(x^3) = 3x^2, at x=2 should be 12
+(: f-cubic (-> real real))
+(define (f-cubic (x : real)) (* x (* x x)))
+(check-approx "autodiff cubic at 2" 12.0 (derivative f-cubic 2.0) 0.001)
+
+;; Gradient with typed function: f(x,y) = x^2 + y^2, grad = (2x, 2y)
+(: f-sum-squares (-> (vector real) real))
+(define (f-sum-squares v)
+  (+ (* (vector-ref v 0) (vector-ref v 0))
+     (* (vector-ref v 1) (vector-ref v 1))))
+
+(define grad-result (gradient f-sum-squares (vector 3.0 4.0)))
+(check-approx "gradient x-component" 6.0 (vector-ref grad-result 0) 0.001)
+(check-approx "gradient y-component" 8.0 (vector-ref grad-result 1) 0.001)
+
+;; Jacobian with typed function: f(x,y) = (x*y, x^2), Jacobian = [[y, x], [2x, 0]]
+(: f-jacobian-test (-> (vector real) (vector real)))
+(define (f-jacobian-test v)
+  (vector (* (vector-ref v 0) (vector-ref v 1))
+          (* (vector-ref v 0) (vector-ref v 0))))
+
+(define jac-result (jacobian f-jacobian-test (vector 2.0 3.0)))
+;; At (2,3): Jacobian = [[3, 2], [4, 0]]
+(check-approx "jacobian [0,0]" 3.0 (vector-ref (vector-ref jac-result 0) 0) 0.001)
+(check-approx "jacobian [0,1]" 2.0 (vector-ref (vector-ref jac-result 0) 1) 0.001)
+
+;; Hessian with typed function: f(x,y) = x^2 + y^2, Hessian = [[2, 0], [0, 2]]
+(define hess-result (hessian f-sum-squares (vector 1.0 1.0)))
+(check-approx "hessian [0,0]" 2.0 (vector-ref (vector-ref hess-result 0) 0) 0.001)
+(check-approx "hessian [1,1]" 2.0 (vector-ref (vector-ref hess-result 1) 1) 0.001)
+
+;; Laplacian with typed function: f(x,y,z) = x^2 + y^2 + z^2, laplacian = 6
+(: f-laplacian-test (-> (vector real) real))
+(define (f-laplacian-test v)
+  (+ (* (vector-ref v 0) (vector-ref v 0))
+     (+ (* (vector-ref v 1) (vector-ref v 1))
+        (* (vector-ref v 2) (vector-ref v 2)))))
+(check-approx "laplacian" 6.0 (laplacian f-laplacian-test (vector 1.0 2.0 3.0)) 0.001)
+
+;; Divergence with typed function: f(x,y,z) = (x, y, z), div = 3
+(: f-divergence-test (-> (vector real) (vector real)))
+(define (f-divergence-test v) v)
+(check-approx "divergence" 3.0 (divergence f-divergence-test (vector 1.0 2.0 3.0)) 0.001)
+
+;; ============================================================================
+;; Section 7: String/IO Builtins with Types
+;; ============================================================================
+(display "\n═══ Section 7: String/IO Builtins ═══\n")
+
+(: typed-string-length (-> string integer))
+(define (typed-string-length (s : string))
+  (string-length s))
+(check "typed string-length" 5 (typed-string-length "hello"))
+
+(: typed-string-append (-> string string string))
+(define (typed-string-append (a : string) (b : string))
+  (string-append a b))
+(check "typed string-append" "helloworld" (typed-string-append "hello" "world"))
+
+;; ============================================================================
+;; Section 8: Vector Operations with Types
+;; ============================================================================
+(display "\n═══ Section 8: Vector Operations ═══\n")
+
+(: typed-vector-ref (-> (vector real) integer real))
+(define (typed-vector-ref (v : (vector real)) (i : integer))
+  (vector-ref v i))
+(check-approx "typed vector-ref" 2.5 (typed-vector-ref (vector 1.0 2.5 3.0) 1) 0.001)
+
+(: typed-vector-length (-> (vector integer) integer))
+(define (typed-vector-length (v : (vector integer)))
+  (vector-length v))
+(check "typed vector-length" 4 (typed-vector-length (vector 1 2 3 4)))
+
+;; ============================================================================
+;; Section 9: Recursive Functions with Types
+;; ============================================================================
+(display "\n═══ Section 9: Recursive Functions ═══\n")
+
+(: typed-factorial (-> integer integer))
+(define (typed-factorial (n : integer))
+  (if (<= n 1)
+      1
+      (* n (typed-factorial (- n 1)))))
+(check "typed factorial" 120 (typed-factorial 5))
+
+(: typed-fib (-> integer integer))
+(define (typed-fib (n : integer))
+  (if (<= n 1)
+      n
+      (+ (typed-fib (- n 1)) (typed-fib (- n 2)))))
+(check "typed fibonacci" 55 (typed-fib 10))
+
+;; ============================================================================
+;; Section 10: Polymorphic Types
+;; ============================================================================
+(display "\n═══ Section 10: Polymorphic Types ═══\n")
+
+(: my-identity (forall (a) (-> a a)))
+(define (my-identity x) x)
+(check "polymorphic identity int" 42 (my-identity 42))
+(check "polymorphic identity string" "test" (my-identity "test"))
+(check "polymorphic identity list" (list 1 2) (my-identity (list 1 2)))
+
+(: my-const (forall (a b) (-> a b a)))
+(define (my-const x y) x)
+(check "polymorphic const" 5 (my-const 5 "ignored"))
+
+;; ============================================================================
+;; SUMMARY
+;; ============================================================================
+(display "\n═══════════════════════════════════════════════════════════════\n")
+(display "RESULTS: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed\n")
+(display "═══════════════════════════════════════════════════════════════\n")
+
+(if (= tests-failed 0)
+    (display "ALL TESTS PASSED!\n")
+    (display "SOME TESTS FAILED!\n"))

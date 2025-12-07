@@ -4981,6 +4981,13 @@ private:
                 // These are handled at parse/load time, return nil at runtime
                 return packNullToTaggedValue();
 
+            // HoTT Type System operations (compile-time only, no runtime code)
+            case ESHKOL_TYPE_ANNOTATION_OP:
+            case ESHKOL_FORALL_OP:
+                // Type annotations are compile-time only - they affect type checking
+                // but generate no runtime code (proof erasure)
+                return packNullToTaggedValue();
+
             default:
                 eshkol_warn("Unhandled operation type: %d", op->op);
                 return nullptr;
@@ -11158,10 +11165,29 @@ private:
                         is_let_alloca = alloca_name.length() < 4 || alloca_name.substr(alloca_name.length() - 4) != "_tco";
                     }
                     if (is_let_alloca) {
-                        // Store pointer to alloca as an integer in tagged_value
-                        // The lambda will unpack this and use it as a pointer
-                        Value* alloca_ptr_int = builder->CreatePtrToInt(var_value, int64_type);
-                        captured_val = packInt64ToTaggedValue(alloca_ptr_int, true);
+                        // CLOSURE ESCAPE FIX: The stack alloca will be deallocated when
+                        // the outer function returns, but the closure may outlive that.
+                        // Solution: Allocate storage on the arena (heap) and use that.
+                        // Both the outer scope and the closure will share this arena storage.
+
+                        // 1. Allocate space for tagged_value on the arena (16 bytes)
+                        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                        Value* alloc_size = ConstantInt::get(int64_type, 16);  // sizeof(eshkol_tagged_value_t)
+                        Value* arena_storage = builder->CreateCall(getArenaAllocateFunc(), {arena_ptr, alloc_size});
+
+                        // 2. Copy current value from stack alloca to arena storage
+                        Value* current_val = builder->CreateLoad(tagged_value_type, var_value, var_name + "_val");
+                        builder->CreateStore(current_val, arena_storage);
+
+                        // 3. Update symbol table to point to arena storage (so outer scope uses it too)
+                        // This ensures set! in both outer scope and lambda modify the same storage
+                        symbol_table[var_name] = arena_storage;
+
+                        // 4. Store arena pointer as int64 in closure environment
+                        Value* arena_ptr_int = builder->CreatePtrToInt(arena_storage, int64_type);
+                        captured_val = packInt64ToTaggedValue(arena_ptr_int, true);
+
+                        eshkol_debug("Closure escape fix: moved %s from stack to arena", var_name.c_str());
                     } else if (isa<AllocaInst>(var_value)) {
                         // TCO alloca - load the value and capture it (not pointer)
                         captured_val = builder->CreateLoad(tagged_value_type, var_value, var_name + "_val");
@@ -14344,16 +14370,20 @@ private:
 
             if (found && it->second) {
                 Value* storage = it->second;
-                // MUTABLE CAPTURE FIX: For let-bound allocas, pack the address
+                // MUTABLE CAPTURE FIX: For let-bound allocas or arena pointers, pack the address
                 // as int64 in a tagged_value, store in temp, pass pointer to temp
-                if (isa<AllocaInst>(storage)) {
+                // CLOSURE ESCAPE FIX: Also handle arena pointers (from escaped closure captures)
+                bool needs_ptr_packing = isa<AllocaInst>(storage) ||
+                    (storage->getType()->isPointerTy() && !isa<GlobalVariable>(storage) && !isa<Argument>(storage));
+
+                if (needs_ptr_packing) {
                     Function* current_func = builder->GetInsertBlock()->getParent();
                     IRBuilder<> entry_builder(&current_func->getEntryBlock(),
                                               current_func->getEntryBlock().begin());
                     AllocaInst* temp_alloca = entry_builder.CreateAlloca(
                         tagged_value_type, nullptr, var_name + "_autodiff_capture_storage");
 
-                    // Pack the alloca address as an int64 in a tagged_value
+                    // Pack the storage address as an int64 in a tagged_value
                     Value* ptr_as_int = builder->CreatePtrToInt(storage, int64_type);
                     Value* packed_ptr = packInt64ToTaggedValue(ptr_as_int, true);
                     builder->CreateStore(packed_ptr, temp_alloca);
@@ -16532,16 +16562,20 @@ private:
                     }
 
                     if (storage) {
-                        // MUTABLE CAPTURE FIX: For let-bound allocas, pack the address
+                        // MUTABLE CAPTURE FIX: For let-bound allocas or arena pointers, pack the address
                         // as int64 in a tagged_value, store in temp, pass pointer to temp
-                        if (isa<AllocaInst>(storage)) {
+                        // CLOSURE ESCAPE FIX: Also handle arena pointers (from escaped closure captures)
+                        bool needs_ptr_packing = isa<AllocaInst>(storage) ||
+                            (storage->getType()->isPointerTy() && !isa<GlobalVariable>(storage) && !isa<Argument>(storage));
+
+                        if (needs_ptr_packing) {
                             Function* svec_current_func = builder->GetInsertBlock()->getParent();
                             IRBuilder<> entry_builder(&svec_current_func->getEntryBlock(),
                                                       svec_current_func->getEntryBlock().begin());
                             AllocaInst* temp_alloca = entry_builder.CreateAlloca(
                                 tagged_value_type, nullptr, var_name + "_svec_capture_storage");
 
-                            // Pack the alloca address as an int64 in a tagged_value
+                            // Pack the storage address as an int64 in a tagged_value
                             Value* ptr_as_int = builder->CreatePtrToInt(storage, int64_type);
                             Value* packed_ptr = packInt64ToTaggedValue(ptr_as_int, true);
                             builder->CreateStore(packed_ptr, temp_alloca);
