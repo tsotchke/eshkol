@@ -234,6 +234,63 @@ struct ParameterizedType {
 };
 
 // ============================================================================
+// DEPENDENT FUNCTION TYPE (Π-TYPE)
+// ============================================================================
+
+/**
+ * Represents a dependent function type (Π-type).
+ *
+ * A Π-type is a function where the return type can depend on the input value.
+ * Examples:
+ *   - (Π (n : Nat) (Vector Float64 n)) - function returning n-dimensional vector
+ *   - (Π (T : Type) (T -> T)) - polymorphic identity function
+ *
+ * In HoTT, Π-types are more general than simple function types (->).
+ * When the return type doesn't depend on the input, it degenerates to (A -> B).
+ */
+struct PiType {
+    struct Parameter {
+        std::string name;      // Parameter name (for dependent references)
+        TypeId type;           // Parameter type
+        bool is_value_param;   // True if this is a value parameter (for dimensions)
+    };
+
+    std::vector<Parameter> params;  // Input parameters (can be multiple for curried form)
+    TypeId return_type;             // Return type (may reference param names)
+    bool is_dependent;              // True if return type references params
+
+    PiType() : return_type(BuiltinTypes::Value), is_dependent(false) {}
+
+    PiType(std::vector<Parameter> p, TypeId ret, bool dep = false)
+        : params(std::move(p)), return_type(ret), is_dependent(dep) {}
+
+    // Create a simple non-dependent function type (A -> B)
+    static PiType makeSimple(TypeId input, TypeId output) {
+        return PiType({{std::string(), input, false}}, output, false);
+    }
+
+    // Create a multi-argument function type ((A, B) -> C)
+    static PiType makeMulti(std::vector<TypeId> inputs, TypeId output) {
+        std::vector<Parameter> params;
+        for (auto& t : inputs) {
+            params.push_back({std::string(), t, false});
+        }
+        return PiType(params, output, false);
+    }
+
+    // Get arity (number of parameters)
+    size_t arity() const { return params.size(); }
+
+    // Check if this is a simple (non-dependent) function type
+    bool isSimpleFunction() const { return !is_dependent; }
+
+    // Get first parameter type (for unary functions)
+    TypeId inputType() const {
+        return params.empty() ? BuiltinTypes::Value : params[0].type;
+    }
+};
+
+// ============================================================================
 // TYPE ENVIRONMENT
 // ============================================================================
 

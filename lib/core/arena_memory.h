@@ -219,7 +219,9 @@ uint64_t region_get_depth(void);
 eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_captures);
 
 // Allocate full closure structure (func_ptr + environment + sexpr for homoiconicity)
-eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures, uint64_t sexpr_ptr);
+// return_type_info: packed return type metadata (return_type | (input_arity << 8) | (hott_type_id << 16))
+eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures,
+                                         uint64_t sexpr_ptr, uint64_t return_type_info);
 
 // ===== END CLOSURE ENVIRONMENT MEMORY MANAGEMENT =====
 

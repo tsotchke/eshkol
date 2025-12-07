@@ -16,22 +16,26 @@ using namespace eshkol::hott;
 // Test counter
 static int tests_passed = 0;
 static int tests_failed = 0;
+static bool current_test_failed = false;
+static const char* current_test_error = nullptr;
 
 #define TEST(name) void test_##name()
 #define RUN_TEST(name) do { \
     std::cout << "Running " #name "... "; \
-    try { \
-        test_##name(); \
+    current_test_failed = false; \
+    current_test_error = nullptr; \
+    test_##name(); \
+    if (!current_test_failed) { \
         std::cout << "PASS" << std::endl; \
         tests_passed++; \
-    } catch (const std::exception& e) { \
-        std::cout << "FAIL: " << e.what() << std::endl; \
+    } else { \
+        std::cout << "FAIL: " << (current_test_error ? current_test_error : "unknown") << std::endl; \
         tests_failed++; \
     } \
 } while(0)
 
 #define ASSERT_TRUE(cond) do { \
-    if (!(cond)) throw std::runtime_error("Assertion failed: " #cond); \
+    if (!(cond)) { current_test_failed = true; current_test_error = "Assertion failed: " #cond; return; } \
 } while(0)
 
 #define ASSERT_FALSE(cond) ASSERT_TRUE(!(cond))

@@ -224,6 +224,12 @@ hott_type_expr_t* hott_make_vector_type(hott_type_expr_t* element_type) {
     return type;
 }
 
+hott_type_expr_t* hott_make_tensor_type(hott_type_expr_t* element_type) {
+    hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_TENSOR);
+    type->container.element_type = hott_copy_type_expr(element_type);
+    return type;
+}
+
 // Pair and product types
 hott_type_expr_t* hott_make_pair_type(hott_type_expr_t* left, hott_type_expr_t* right) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_PAIR);
