@@ -117,15 +117,26 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
 
     if (!proc) {
         // Try to get procedure as a function parameter (higher-order function support)
+        // CLOSURE FIX: Function parameters are runtime closures, not raw function pointers.
+        // We need to use mapWithClosure to properly handle the closure's environment.
         if (op->call_op.variables[0].type == ESHKOL_VAR && current_function_ && *current_function_) {
             std::string func_name = op->call_op.variables[0].variable.id;
             for (auto& arg : (*current_function_)->args()) {
                 if (arg.getName() == func_name) {
-                    if (indirect_call_callback_) {
-                        proc = indirect_call_callback_(&arg, num_lists, callback_context_);
-                        if (proc) {
-                            proc_func = dyn_cast<Function>(proc);
+                    // Function parameter is a tagged_value containing a CLOSURE_PTR
+                    // Use mapWithClosure for proper closure dispatch
+                    eshkol_debug("Map: function parameter '%s' detected, using closure dispatch",
+                                func_name.c_str());
+                    if (codegen_ast_callback_) {
+                        Value* list = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+                        if (!list) {
+                            if (pop_function_context_) pop_function_context_(callback_context_);
+                            return nullptr;
                         }
+                        // The Argument itself IS the closure value (tagged_value)
+                        Value* result = mapWithClosure(&arg, list);
+                        if (pop_function_context_) pop_function_context_(callback_context_);
+                        return result;
                     }
                     break;
                 }
@@ -402,15 +413,19 @@ void MapCodegen::loadCapturedValues(
         }
 
         if (found && storage) {
-            // MUTABLE CAPTURE FIX: For let-bound allocas in capture storage, we need to:
-            // 1. Pack the alloca's address as an int64 in a tagged_value
+            // MUTABLE CAPTURE FIX: For let-bound allocas or arena pointers, we need to:
+            // 1. Pack the storage address as an int64 in a tagged_value
             // 2. Store in temp storage and pass pointer to temp storage
-            if (isa<AllocaInst>(storage)) {
+            // CLOSURE ESCAPE FIX: Also handle arena pointers (from escaped closure captures)
+            bool needs_ptr_packing = isa<AllocaInst>(storage) ||
+                (storage->getType()->isPointerTy() && !isa<GlobalVariable>(storage) && !isa<Argument>(storage));
+
+            if (needs_ptr_packing) {
                 Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
                 IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
                 AllocaInst* temp_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, var_name + "_capture_storage");
 
-                // Pack the alloca address as an int64 in a tagged_value
+                // Pack the storage address as an int64 in a tagged_value
                 Value* ptr_as_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
                 Value* packed_ptr = tagged_.packInt64(ptr_as_int, true);
                 ctx_.builder().CreateStore(packed_ptr, temp_alloca);
@@ -441,24 +456,27 @@ void MapCodegen::loadCapturedValues(
             }
 
             if (var_storage) {
-                // MUTABLE CAPTURE FIX: For let-bound allocas, we need to:
-                // 1. Pack the alloca's address as an int64
+                // MUTABLE CAPTURE FIX: For let-bound allocas or arena pointers, we need to:
+                // 1. Pack the storage address as an int64
                 // 2. Wrap that in a tagged_value
                 // 3. Store in temp storage
                 // 4. Pass pointer to temp storage
-                // This matches what the lambda body expects for pointer-passing captures.
-                if (isa<AllocaInst>(var_storage)) {
+                // CLOSURE ESCAPE FIX: Also handle arena pointers (from escaped closure captures)
+                bool needs_ptr_packing = isa<AllocaInst>(var_storage) ||
+                    (var_storage->getType()->isPointerTy() && !isa<GlobalVariable>(var_storage) && !isa<Argument>(var_storage));
+
+                if (needs_ptr_packing) {
                     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
                     IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
                     AllocaInst* temp_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, var_name + "_capture_storage");
 
-                    // Pack the alloca address as an int64 in a tagged_value
+                    // Pack the storage address as an int64 in a tagged_value
                     Value* ptr_as_int = ctx_.builder().CreatePtrToInt(var_storage, ctx_.int64Type());
                     Value* packed_ptr = tagged_.packInt64(ptr_as_int, true);  // Use boxed int representation
                     ctx_.builder().CreateStore(packed_ptr, temp_alloca);
 
                     args.push_back(temp_alloca);
-                    eshkol_debug("Map: created pointer-passing storage for let-bound '%s' for lambda '%s'",
+                    eshkol_debug("Map: created pointer-passing storage for '%s' for lambda '%s'",
                                 var_name.c_str(), lambda_name.c_str());
                 } else if (isa<Argument>(var_storage) && !var_storage->getType()->isPointerTy()) {
                     // Create temp alloca for this value parameter

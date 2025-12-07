@@ -281,10 +281,16 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
                 void* tv_ptr = codegen_typed_ast_callback_(&clause->operation.call_op.variables[j], callback_context_);
                 if (tv_ptr) result = typed_to_tagged_callback_(tv_ptr, callback_context_);
             }
+            // TCO FIX: Check if block is already terminated
+            llvm::BasicBlock* else_block = ctx_.builder().GetInsertBlock();
+            bool else_terminated = else_block->getTerminator() != nullptr;
             if (result) {
-                phi_inputs.push_back({result, ctx_.builder().GetInsertBlock()});
+                phi_inputs.push_back({result, else_block});
             }
-            ctx_.builder().CreateBr(done_block);
+            // TCO FIX: Only add branch if block isn't already terminated
+            if (!else_terminated) {
+                ctx_.builder().CreateBr(done_block);
+            }
             break;
         } else {
             // Regular clause - evaluate test (func is the test condition)
@@ -305,10 +311,16 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
                 void* tv_ptr = codegen_typed_ast_callback_(&clause->operation.call_op.variables[j], callback_context_);
                 if (tv_ptr) result = typed_to_tagged_callback_(tv_ptr, callback_context_);
             }
+            // TCO FIX: Update then_block to current block (code gen may have created new blocks)
+            then_block = ctx_.builder().GetInsertBlock();
+            bool then_terminated = then_block->getTerminator() != nullptr;
             if (result) {
-                phi_inputs.push_back({result, ctx_.builder().GetInsertBlock()});
+                phi_inputs.push_back({result, then_block});
             }
-            ctx_.builder().CreateBr(done_block);
+            // TCO FIX: Only add branch if block isn't already terminated
+            if (!then_terminated) {
+                ctx_.builder().CreateBr(done_block);
+            }
 
             // Continue to next clause
             ctx_.builder().SetInsertPoint(next_block);

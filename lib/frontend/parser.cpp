@@ -23,6 +23,8 @@ enum TokenType {
     TOKEN_BOOLEAN,
     TOKEN_CHAR,
     TOKEN_VECTOR_START,  // #( for vector literals
+    TOKEN_COLON,         // : for type annotations
+    TOKEN_ARROW,         // -> for function types
     TOKEN_EOF
 };
 
@@ -37,11 +39,31 @@ private:
     std::string input;
     size_t pos;
     size_t length;
-    
+    std::vector<Token> pushback_buffer;  // Buffer for pushed back tokens
+
 public:
     SchemeTokenizer(const std::string& text) : input(text), pos(0), length(text.length()) {}
-    
+
+    // Push a token back to be returned by the next nextToken() call
+    void pushBack(const Token& token) {
+        pushback_buffer.push_back(token);
+    }
+
+    // Peek at the next token without consuming it
+    Token peekToken() {
+        Token t = nextToken();
+        pushBack(t);
+        return t;
+    }
+
     Token nextToken() {
+        // First check pushback buffer
+        if (!pushback_buffer.empty()) {
+            Token t = pushback_buffer.back();
+            pushback_buffer.pop_back();
+            return t;
+        }
+
         skipWhitespace();
         
         if (pos >= length) {
@@ -60,9 +82,17 @@ public:
             case '\'':
                 pos++;
                 return {TOKEN_QUOTE, "'", pos - 1};
+            case ':':
+                pos++;
+                return {TOKEN_COLON, ":", pos - 1};
             case '"':
                 return readString();
             default:
+                // Check for arrow type: ->
+                if (ch == '-' && pos + 1 < length && input[pos + 1] == '>') {
+                    pos += 2;
+                    return {TOKEN_ARROW, "->", pos - 2};
+                }
                 if (std::isdigit(ch) || (ch == '-' && pos + 1 < length && std::isdigit(input[pos + 1]))) {
                     return readNumber();
                 } else if (ch == '#') {
@@ -182,13 +212,16 @@ private:
     Token readSymbol() {
         size_t start = pos;
         std::string value;
-        
-        while (pos < length && !std::isspace(input[pos]) && 
-               input[pos] != '(' && input[pos] != ')' && 
-               input[pos] != '\'' && input[pos] != '"') {
+
+        while (pos < length && !std::isspace(input[pos]) &&
+               input[pos] != '(' && input[pos] != ')' &&
+               input[pos] != '\'' && input[pos] != '"' &&
+               input[pos] != ':') {  // Stop at colon for type annotations
+            // Note: We allow '->' within symbols (e.g., number->string)
+            // The TOKEN_ARROW is only recognized at the start of a new token
             value += input[pos++];
         }
-        
+
         return {TOKEN_SYMBOL, value, start};
     }
 };
@@ -299,6 +332,254 @@ static eshkol_op_t get_operator_type(const std::string& op) {
 static eshkol_ast_t parse_quoted_data(SchemeTokenizer& tokenizer);
 static eshkol_ast_t parse_quoted_data_with_token(SchemeTokenizer& tokenizer, Token token);
 static eshkol_ast_t parse_quoted_list_internal(SchemeTokenizer& tokenizer);
+static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer);
+
+// ===== HoTT TYPE EXPRESSION PARSING =====
+// Parse type expressions for the HoTT type system
+// Supports: primitive types, arrow types, container types, forall, etc.
+
+// Parse a primitive type name and return the corresponding type expression
+static hott_type_expr_t* parsePrimitiveType(const std::string& name) {
+    // Check for primitive types (case-insensitive)
+    std::string lower = name;
+    for (auto& c : lower) c = std::tolower(c);
+
+    if (lower == "integer" || lower == "int" || lower == "int64") {
+        return hott_make_integer_type();
+    } else if (lower == "real" || lower == "float" || lower == "double" || lower == "float64") {
+        return hott_make_real_type();
+    } else if (lower == "boolean" || lower == "bool") {
+        return hott_make_boolean_type();
+    } else if (lower == "string" || lower == "str") {
+        return hott_make_string_type();
+    } else if (lower == "char" || lower == "character") {
+        return hott_make_char_type();
+    } else if (lower == "symbol") {
+        return hott_make_symbol_type();
+    } else if (lower == "null" || lower == "nil") {
+        return hott_make_null_type();
+    } else if (lower == "any") {
+        return hott_make_any_type();
+    } else if (lower == "nothing" || lower == "never") {
+        return hott_make_nothing_type();
+    } else {
+        // Treat as type variable (lowercase letters starting with a-z)
+        return hott_make_type_var(name.c_str());
+    }
+}
+
+// Parse a type expression from the tokenizer
+// Handles: primitive types, arrow types, list/vector types, forall, etc.
+static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
+    Token token = tokenizer.nextToken();
+
+    if (token.type == TOKEN_SYMBOL) {
+        // Simple type name or type variable
+        return parsePrimitiveType(token.value);
+    }
+
+    if (token.type == TOKEN_ARROW) {
+        // Shorthand: -> without parens is a type constructor
+        // This shouldn't happen in well-formed input, treat as error
+        eshkol_error("Unexpected -> in type expression");
+        return nullptr;
+    }
+
+    if (token.type == TOKEN_LPAREN) {
+        // Compound type expression
+        Token first = tokenizer.nextToken();
+
+        if (first.type == TOKEN_RPAREN) {
+            // Empty parens () - treat as null/unit type
+            return hott_make_null_type();
+        }
+
+        if (first.type == TOKEN_ARROW) {
+            // Arrow type: (-> param1 param2 ... return)
+            std::vector<hott_type_expr_t*> param_types;
+
+            while (true) {
+                Token peek = tokenizer.peekToken();
+                if (peek.type == TOKEN_RPAREN) {
+                    tokenizer.nextToken();  // consume the )
+                    // End of arrow type - last element was return type
+                    if (param_types.empty()) {
+                        eshkol_error("Arrow type requires at least a return type");
+                        return nullptr;
+                    }
+                    // Pop last as return type
+                    hott_type_expr_t* return_type = param_types.back();
+                    param_types.pop_back();
+
+                    hott_type_expr_t* result = hott_make_arrow_type(
+                        param_types.data(), param_types.size(), return_type);
+
+                    // Free temporary param types and return type
+                    for (auto* p : param_types) hott_free_type_expr(p);
+                    hott_free_type_expr(return_type);
+
+                    return result;
+                }
+                if (peek.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in arrow type");
+                    for (auto* p : param_types) hott_free_type_expr(p);
+                    return nullptr;
+                }
+
+                // Parse next type in the arrow (recursive call handles all cases)
+                hott_type_expr_t* next_type = parseTypeExpression(tokenizer);
+                if (!next_type) {
+                    for (auto* p : param_types) hott_free_type_expr(p);
+                    return nullptr;
+                }
+                param_types.push_back(next_type);
+            }
+        }
+
+        if (first.type == TOKEN_SYMBOL) {
+            std::string type_name = first.value;
+            std::string lower = type_name;
+            for (auto& c : lower) c = std::tolower(c);
+
+            if (lower == "list") {
+                // (list element-type)
+                hott_type_expr_t* elem = parseTypeExpression(tokenizer);
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected ) after list element type");
+                    hott_free_type_expr(elem);
+                    return nullptr;
+                }
+                hott_type_expr_t* result = hott_make_list_type(elem);
+                hott_free_type_expr(elem);
+                return result;
+            }
+
+            if (lower == "vector") {
+                // (vector element-type)
+                hott_type_expr_t* elem = parseTypeExpression(tokenizer);
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected ) after vector element type");
+                    hott_free_type_expr(elem);
+                    return nullptr;
+                }
+                hott_type_expr_t* result = hott_make_vector_type(elem);
+                hott_free_type_expr(elem);
+                return result;
+            }
+
+            if (lower == "pair") {
+                // (pair left right)
+                hott_type_expr_t* left = parseTypeExpression(tokenizer);
+                hott_type_expr_t* right = parseTypeExpression(tokenizer);
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected ) after pair types");
+                    hott_free_type_expr(left);
+                    hott_free_type_expr(right);
+                    return nullptr;
+                }
+                hott_type_expr_t* result = hott_make_pair_type(left, right);
+                hott_free_type_expr(left);
+                hott_free_type_expr(right);
+                return result;
+            }
+
+            if (lower == "*" || lower == "product") {
+                // (* left right)
+                hott_type_expr_t* left = parseTypeExpression(tokenizer);
+                hott_type_expr_t* right = parseTypeExpression(tokenizer);
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected ) after product types");
+                    hott_free_type_expr(left);
+                    hott_free_type_expr(right);
+                    return nullptr;
+                }
+                hott_type_expr_t* result = hott_make_product_type(left, right);
+                hott_free_type_expr(left);
+                hott_free_type_expr(right);
+                return result;
+            }
+
+            if (lower == "+" || lower == "sum" || lower == "either") {
+                // (+ left right)
+                hott_type_expr_t* left = parseTypeExpression(tokenizer);
+                hott_type_expr_t* right = parseTypeExpression(tokenizer);
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected ) after sum types");
+                    hott_free_type_expr(left);
+                    hott_free_type_expr(right);
+                    return nullptr;
+                }
+                hott_type_expr_t* result = hott_make_sum_type(left, right);
+                hott_free_type_expr(left);
+                hott_free_type_expr(right);
+                return result;
+            }
+
+            if (lower == "forall") {
+                // (forall (a b ...) body-type)
+                Token vars_start = tokenizer.nextToken();
+                if (vars_start.type != TOKEN_LPAREN) {
+                    eshkol_error("Expected ( after forall");
+                    return nullptr;
+                }
+
+                std::vector<char*> type_vars;
+                while (true) {
+                    Token var = tokenizer.nextToken();
+                    if (var.type == TOKEN_RPAREN) break;
+                    if (var.type != TOKEN_SYMBOL) {
+                        eshkol_error("Expected type variable name in forall");
+                        for (auto* v : type_vars) free(v);
+                        return nullptr;
+                    }
+                    type_vars.push_back(strdup(var.value.c_str()));
+                }
+
+                hott_type_expr_t* body = parseTypeExpression(tokenizer);
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected ) after forall body");
+                    for (auto* v : type_vars) free(v);
+                    hott_free_type_expr(body);
+                    return nullptr;
+                }
+
+                hott_type_expr_t* result = hott_make_forall_type(
+                    type_vars.data(), type_vars.size(), body);
+
+                for (auto* v : type_vars) free(v);
+                hott_free_type_expr(body);
+                return result;
+            }
+
+            // Unknown type constructor - treat as type application or just type name
+            // Skip remaining tokens until )
+            int depth = 1;
+            while (depth > 0) {
+                Token t = tokenizer.nextToken();
+                if (t.type == TOKEN_LPAREN) depth++;
+                else if (t.type == TOKEN_RPAREN) depth--;
+                else if (t.type == TOKEN_EOF) break;
+            }
+            return parsePrimitiveType(type_name);
+        }
+
+        // Unexpected token in type expression
+        eshkol_error("Unexpected token in type expression");
+        return nullptr;
+    }
+
+    // Unexpected token
+    eshkol_error("Expected type expression");
+    return nullptr;
+}
+
+// ===== END HoTT TYPE EXPRESSION PARSING =====
 
 // Parse quoted data - allows any expression including data lists like (1 2 3)
 // This is called AFTER consuming the opening token (QUOTE or first element of quote form)
@@ -805,13 +1086,17 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer);
 static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
     // Parse function signature: (func-name param1 param2 ...)
     // Or:                       (func-name param1 . rest)  - with rest parameter
+    // Or:                       (func-name (x : int) (y : real))  - with inline type annotations
     // Returns an AST with function name and parameters
     eshkol_ast_t signature = {.type = ESHKOL_FUNC};
     std::vector<eshkol_ast_t> params;
+    std::vector<hott_type_expr_t*> param_types;
 
     // Initialize variadic fields
     signature.eshkol_func.is_variadic = 0;
     signature.eshkol_func.rest_param = nullptr;
+    signature.eshkol_func.param_types = nullptr;
+    signature.eshkol_func.return_type = nullptr;
 
     Token token = tokenizer.nextToken();
 
@@ -860,12 +1145,61 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             break;
         }
 
+        // Check for inline type annotation: (param-name : type)
+        if (token.type == TOKEN_LPAREN) {
+            // Parse (param-name : type)
+            Token param_token = tokenizer.nextToken();
+            if (param_token.type != TOKEN_SYMBOL) {
+                eshkol_error("Expected parameter name in typed parameter");
+                signature.type = ESHKOL_INVALID;
+                return signature;
+            }
+
+            // Create parameter AST
+            eshkol_ast_t param = {.type = ESHKOL_VAR};
+            param.variable.id = new char[param_token.value.length() + 1];
+            strcpy(param.variable.id, param_token.value.c_str());
+            param.variable.data = nullptr;
+
+            // Expect colon
+            Token colon = tokenizer.nextToken();
+            if (colon.type != TOKEN_COLON) {
+                eshkol_error("Expected ':' after parameter name in typed parameter");
+                signature.type = ESHKOL_INVALID;
+                return signature;
+            }
+
+            // Parse type expression
+            hott_type_expr_t* type_expr = parseTypeExpression(tokenizer);
+            if (!type_expr) {
+                eshkol_error("Failed to parse type in typed parameter");
+                signature.type = ESHKOL_INVALID;
+                return signature;
+            }
+
+            // Expect closing paren
+            Token rparen = tokenizer.nextToken();
+            if (rparen.type != TOKEN_RPAREN) {
+                eshkol_error("Expected ')' after type in typed parameter");
+                hott_free_type_expr(type_expr);
+                signature.type = ESHKOL_INVALID;
+                return signature;
+            }
+
+            params.push_back(param);
+            param_types.push_back(type_expr);
+
+            eshkol_debug("Parsed typed parameter '%s'", param_token.value.c_str());
+            continue;
+        }
+
         if (token.type == TOKEN_SYMBOL) {
             eshkol_ast_t param = {.type = ESHKOL_VAR};
             param.variable.id = new char[token.value.length() + 1];
             strcpy(param.variable.id, token.value.c_str());
             param.variable.data = nullptr;
             params.push_back(param);
+            param_types.push_back(nullptr);  // No type annotation
         } else {
             eshkol_error("Expected parameter name in function signature");
             signature.type = ESHKOL_INVALID;
@@ -877,11 +1211,14 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
     signature.eshkol_func.num_variables = params.size();
     if (signature.eshkol_func.num_variables > 0) {
         signature.eshkol_func.variables = new eshkol_ast_t[signature.eshkol_func.num_variables];
+        signature.eshkol_func.param_types = new hott_type_expr_t*[signature.eshkol_func.num_variables];
         for (size_t i = 0; i < signature.eshkol_func.num_variables; i++) {
             signature.eshkol_func.variables[i] = params[i];
+            signature.eshkol_func.param_types[i] = param_types[i];  // Transfer ownership
         }
     } else {
         signature.eshkol_func.variables = nullptr;
+        signature.eshkol_func.param_types = nullptr;
     }
 
     return signature;
@@ -953,12 +1290,47 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         
         return ast;
     }
-    
+
+    // Handle type annotation: (: name type)
+    if (token.type == TOKEN_COLON) {
+        // Parse: (: name type-expression)
+        Token name_token = tokenizer.nextToken();
+        if (name_token.type != TOKEN_SYMBOL) {
+            eshkol_error("Expected identifier after : in type annotation");
+            ast.type = ESHKOL_INVALID;
+            return ast;
+        }
+
+        hott_type_expr_t* type_expr = parseTypeExpression(tokenizer);
+        if (!type_expr) {
+            eshkol_error("Failed to parse type expression in type annotation");
+            ast.type = ESHKOL_INVALID;
+            return ast;
+        }
+
+        Token rparen = tokenizer.nextToken();
+        if (rparen.type != TOKEN_RPAREN) {
+            eshkol_error("Expected ) after type annotation");
+            hott_free_type_expr(type_expr);
+            ast.type = ESHKOL_INVALID;
+            return ast;
+        }
+
+        // Set up type annotation operation
+        ast.operation.op = ESHKOL_TYPE_ANNOTATION_OP;
+        ast.operation.type_annotation_op.name = new char[name_token.value.length() + 1];
+        strcpy(ast.operation.type_annotation_op.name, name_token.value.c_str());
+        ast.operation.type_annotation_op.type_expr = type_expr;
+
+        eshkol_debug("Parsed type annotation for '%s'", name_token.value.c_str());
+        return ast;
+    }
+
     // First element should determine the operation
     if (token.type == TOKEN_SYMBOL) {
         std::string first_symbol = token.value;  // Store the function name
         ast.operation.op = get_operator_type(token.value);
-        
+
         // Special handling for define - we need to check if next token is LPAREN for function definitions
         if (ast.operation.op == ESHKOL_DEFINE_OP) {
             token = tokenizer.nextToken();
@@ -1034,6 +1406,19 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 } else {
                     ast.operation.define_op.rest_param = nullptr;
                 }
+
+                // Copy HoTT type annotations from function signature
+                if (func_signature.eshkol_func.param_types && ast.operation.define_op.num_params > 0) {
+                    ast.operation.define_op.param_types = new hott_type_expr_t*[ast.operation.define_op.num_params];
+                    for (size_t i = 0; i < ast.operation.define_op.num_params; i++) {
+                        // Transfer ownership of type expressions
+                        ast.operation.define_op.param_types[i] = func_signature.eshkol_func.param_types[i];
+                    }
+                    delete[] func_signature.eshkol_func.param_types;  // Free the array but not the elements
+                } else {
+                    ast.operation.define_op.param_types = nullptr;
+                }
+                ast.operation.define_op.return_type = func_signature.eshkol_func.return_type;
 
                 return ast;
                 
@@ -1294,15 +1679,19 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Syntax: (lambda (param1 param2 ...) body)
             // Or:     (lambda (param1 param2 . rest) body)  - with rest parameter
             // Or:     (lambda args body)                     - variadic, all args as list
+            // Or:     (lambda ((x : int) (y : real)) body)   - with inline type annotations
 
             // Initialize variadic fields
             ast.operation.lambda_op.is_variadic = 0;
             ast.operation.lambda_op.rest_param = nullptr;
+            ast.operation.lambda_op.param_types = nullptr;
+            ast.operation.lambda_op.return_type = nullptr;
 
             // Parse parameter list or single symbol
             token = tokenizer.nextToken();
 
             std::vector<eshkol_ast_t> params;
+            std::vector<hott_type_expr_t*> param_types;
 
             if (token.type == TOKEN_SYMBOL) {
                 // Variadic lambda: (lambda args body)
@@ -1345,12 +1734,54 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         break;
                     }
 
+                    // Check for inline type annotation: (param-name : type)
+                    if (token.type == TOKEN_LPAREN) {
+                        Token param_token = tokenizer.nextToken();
+                        if (param_token.type != TOKEN_SYMBOL) {
+                            eshkol_error("Expected parameter name in typed lambda parameter");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+
+                        eshkol_ast_t param = {.type = ESHKOL_VAR};
+                        param.variable.id = new char[param_token.value.length() + 1];
+                        strcpy(param.variable.id, param_token.value.c_str());
+                        param.variable.data = nullptr;
+
+                        Token colon = tokenizer.nextToken();
+                        if (colon.type != TOKEN_COLON) {
+                            eshkol_error("Expected ':' after parameter name in typed lambda parameter");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+
+                        hott_type_expr_t* type_expr = parseTypeExpression(tokenizer);
+                        if (!type_expr) {
+                            eshkol_error("Failed to parse type in typed lambda parameter");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+
+                        Token rparen = tokenizer.nextToken();
+                        if (rparen.type != TOKEN_RPAREN) {
+                            eshkol_error("Expected ')' after type in typed lambda parameter");
+                            hott_free_type_expr(type_expr);
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+
+                        params.push_back(param);
+                        param_types.push_back(type_expr);
+                        continue;
+                    }
+
                     if (token.type == TOKEN_SYMBOL) {
                         eshkol_ast_t param = {.type = ESHKOL_VAR};
                         param.variable.id = new char[token.value.length() + 1];
                         strcpy(param.variable.id, token.value.c_str());
                         param.variable.data = nullptr;
                         params.push_back(param);
+                        param_types.push_back(nullptr);  // No type annotation
                     } else {
                         eshkol_error("Expected parameter name in lambda");
                         ast.type = ESHKOL_INVALID;
@@ -1397,11 +1828,14 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.lambda_op.num_params = params.size();
             if (ast.operation.lambda_op.num_params > 0) {
                 ast.operation.lambda_op.parameters = new eshkol_ast_t[ast.operation.lambda_op.num_params];
+                ast.operation.lambda_op.param_types = new hott_type_expr_t*[ast.operation.lambda_op.num_params];
                 for (size_t i = 0; i < ast.operation.lambda_op.num_params; i++) {
                     ast.operation.lambda_op.parameters[i] = params[i];
+                    ast.operation.lambda_op.param_types[i] = param_types[i];  // Transfer ownership
                 }
             } else {
                 ast.operation.lambda_op.parameters = nullptr;
+                ast.operation.lambda_op.param_types = nullptr;
             }
             
             ast.operation.lambda_op.body = new eshkol_ast_t;

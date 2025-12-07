@@ -1,0 +1,119 @@
+;;
+;; HoTT Type System Tests - Type Annotations
+;;
+;; Tests the (: name type) type annotation syntax
+;;
+
+(require stdlib)
+
+;; Test framework
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(display "╔══════════════════════════════════════════════════════════════════╗\n")
+(display "║             HoTT TYPE ANNOTATION TESTS                          ║\n")
+(display "╚══════════════════════════════════════════════════════════════════╝\n\n")
+
+;; ============================================================================
+;; Section 1: Simple type annotations
+;; ============================================================================
+(display "═══ Section 1: Simple type annotations ═══\n")
+
+;; Type annotation followed by definition
+(: x integer)
+(define x 42)
+(check "integer annotation" 42 x)
+
+(: y real)
+(define y 3.14)
+(check "real annotation" 3.14 y)
+
+(: greeting string)
+(define greeting "Hello, typed Eshkol!")
+(check "string annotation" "Hello, typed Eshkol!" greeting)
+
+;; ============================================================================
+;; Section 2: Function type annotations
+;; ============================================================================
+(display "\n═══ Section 2: Function type annotations ═══\n")
+
+(: add-numbers (-> integer integer integer))
+(define (add-numbers a b)
+  (+ a b))
+(check "function with type annotation" 7 (add-numbers 3 4))
+
+(: double (-> integer integer))
+(define (double n)
+  (* n 2))
+(check "simple function type" 10 (double 5))
+
+;; ============================================================================
+;; Section 3: Container type annotations
+;; ============================================================================
+(display "\n═══ Section 3: Container type annotations ═══\n")
+
+(: numbers (list integer))
+(define numbers (list 1 2 3 4 5))
+(check "list type annotation" (list 1 2 3 4 5) numbers)
+
+(: coords (vector real))
+(define coords (vector 1.0 2.0 3.0))
+;; Vector comparison - check first element
+(check "vector type annotation" 1.0 (vector-ref coords 0))
+
+;; ============================================================================
+;; Section 4: Polymorphic type annotations
+;; ============================================================================
+(display "\n═══ Section 4: Polymorphic type annotations ═══\n")
+
+(: my-id (forall (a) (-> a a)))
+(define (my-id x) x)
+(check "polymorphic my-id int" 42 (my-id 42))
+(check "polymorphic my-id string" "hello" (my-id "hello"))
+
+;; ============================================================================
+;; Section 5: Inline type annotations
+;; ============================================================================
+(display "\n═══ Section 5: Inline type annotations ═══\n")
+
+;; Function with inline typed parameters
+(define (typed-add (a : integer) (b : integer))
+  (+ a b))
+(check "inline typed define" 15 (typed-add 7 8))
+
+;; Mixed: some typed, some untyped
+(define (mixed-params (x : real) y)
+  (+ x y))
+(check "mixed typed params" 5.5 (mixed-params 2.5 3))
+
+;; Lambda with inline type annotations
+(define typed-lambda (lambda ((x : integer) (y : integer)) (* x y)))
+(check "inline typed lambda" 24 (typed-lambda 4 6))
+
+;; Higher-order function with typed lambda
+(define (apply-twice f (x : integer))
+  (f (f x)))
+(check "higher-order with typed param" 16 (apply-twice (lambda (n) (* n 2)) 4))
+
+;; ============================================================================
+;; SUMMARY
+;; ============================================================================
+(display "\n═══════════════════════════════════════════════════════════════\n")
+(display "RESULTS: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed\n")
+(display "═══════════════════════════════════════════════════════════════\n")
+
+(if (= tests-failed 0)
+    (display "ALL TESTS PASSED!\n")
+    (display "SOME TESTS FAILED!\n"))
