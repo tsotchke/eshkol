@@ -684,8 +684,11 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_va
             return val1->data.double_val == val2->data.double_val;
 
         case ESHKOL_VALUE_STRING_PTR:
-            // For symbols/strings, compare pointer addresses (interned symbols)
-            return val1->data.ptr_val == val2->data.ptr_val;
+            // Compare string content using strcmp
+            // Dynamic strings (e.g., from string-append) may have same content but different addresses
+            if (val1->data.ptr_val == val2->data.ptr_val) return true;  // Same pointer = equal
+            if (!val1->data.ptr_val || !val2->data.ptr_val) return false;  // One null = not equal
+            return strcmp((const char*)val1->data.ptr_val, (const char*)val2->data.ptr_val) == 0;
 
         case ESHKOL_VALUE_CLOSURE_PTR:
         case ESHKOL_VALUE_LAMBDA_SEXPR:
