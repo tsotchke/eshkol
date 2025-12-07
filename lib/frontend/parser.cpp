@@ -2438,26 +2438,37 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            // Parse the evaluation point
+            // Parse the evaluation point (optional for higher-order usage)
             token = tokenizer.nextToken();
+
+            // Check if this is the 1-argument form (derivative f) - returns a closure
+            if (token.type == TOKEN_RPAREN) {
+                // Higher-order form: (derivative f) returns a function that computes derivatives
+                ast.operation.derivative_op.function = new eshkol_ast_t;
+                *ast.operation.derivative_op.function = function;
+                ast.operation.derivative_op.point = nullptr;  // No point = higher-order form
+                ast.operation.derivative_op.mode = 0; // Forward-mode by default
+                return ast;
+            }
+
             if (token.type == TOKEN_EOF) {
                 eshkol_error("derivative requires evaluation point as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
+
             eshkol_ast_t point;
             if (token.type == TOKEN_LPAREN) {
                 point = parse_list(tokenizer);
             } else {
                 point = parse_atom(token);
             }
-            
+
             if (point.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
+
             // Check for closing paren
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
@@ -2465,16 +2476,16 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
-            // Set up derivative operation
+
+            // Set up derivative operation (2-argument form)
             ast.operation.derivative_op.function = new eshkol_ast_t;
             *ast.operation.derivative_op.function = function;
-            
+
             ast.operation.derivative_op.point = new eshkol_ast_t;
             *ast.operation.derivative_op.point = point;
-            
+
             ast.operation.derivative_op.mode = 0; // Forward-mode by default
-            
+
             return ast;
         }
         
@@ -2503,26 +2514,36 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            // Parse the evaluation point (vector)
+            // Parse the evaluation point (optional for higher-order usage)
             token = tokenizer.nextToken();
+
+            // Check if this is the 1-argument form (gradient f) - returns a closure
+            if (token.type == TOKEN_RPAREN) {
+                // Higher-order form: (gradient f) returns a function that computes gradients
+                ast.operation.gradient_op.function = new eshkol_ast_t;
+                *ast.operation.gradient_op.function = function;
+                ast.operation.gradient_op.point = nullptr;  // No point = higher-order form
+                return ast;
+            }
+
             if (token.type == TOKEN_EOF) {
                 eshkol_error("gradient requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
+
             eshkol_ast_t point;
             if (token.type == TOKEN_LPAREN) {
                 point = parse_list(tokenizer);
             } else {
                 point = parse_atom(token);
             }
-            
+
             if (point.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
+
             // Check for closing paren
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
@@ -2530,8 +2551,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
-            // Set up gradient operation
+
+            // Set up gradient operation (2-argument form)
             ast.operation.gradient_op.function = new eshkol_ast_t;
             *ast.operation.gradient_op.function = function;
             

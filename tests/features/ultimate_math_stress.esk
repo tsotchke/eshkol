@@ -1,0 +1,566 @@
+;; =============================================================================
+;; ULTIMATE MATHEMATICAL STRESS TEST
+;; =============================================================================
+;; Tests: autodiff, tensors, higher-order functions, closures, recursion,
+;; numerical methods, optimization, and complex mathematical computations
+;; =============================================================================
+
+(require stdlib)
+
+(display "╔══════════════════════════════════════════════════════════════════╗\n")
+(display "║           ULTIMATE MATHEMATICAL STRESS TEST                      ║\n")
+(display "║   Testing the full power of the Eshkol compiler system           ║\n")
+(display "╚══════════════════════════════════════════════════════════════════╝\n\n")
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check-approx name expected actual tolerance)
+  (define diff (abs (- expected actual)))
+  (if (< diff tolerance)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS (")
+        (display actual) (display ")\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+;; =============================================================================
+;; SECTION 1: NEWTON-RAPHSON ROOT FINDING WITH AUTODIFF
+;; =============================================================================
+(display "\n═══ Section 1: Newton-Raphson Root Finding ═══\n")
+
+;; Find sqrt(2) by solving x² - 2 = 0 using Newton's method with autodiff
+;; Newton-Raphson: x_{n+1} = x_n - f(x_n)/f'(x_n)
+
+;; Generic Newton iterator using autodiff
+(define (newton-solve f x0 iterations)
+  (define (iterate x n)
+    (if (= n 0) x
+        (iterate (- x (/ (f x) (derivative f x))) (- n 1))))
+  (iterate x0 iterations))
+
+;; sqrt(2): solve x² - 2 = 0
+(define sqrt2-approx (newton-solve (lambda (x) (- (pow x 2) 2)) 1.5 10))
+(check-approx "Newton sqrt(2)" 1.41421356 sqrt2-approx 0.0001)
+
+;; cbrt(27): solve x³ - 27 = 0
+(define cbrt27-approx (newton-solve (lambda (x) (- (pow x 3) 27)) 2.0 10))
+(check-approx "Newton cbrt(27)" 3.0 cbrt27-approx 0.0001)
+
+;; arcsin(0.5): solve sin(x) - 0.5 = 0
+(define arcsin-approx (newton-solve (lambda (x) (- (sin x) 0.5)) 0.5 10))
+(check-approx "Newton arcsin(0.5)" 0.5236 arcsin-approx 0.001)
+
+;; =============================================================================
+;; SECTION 2: NUMERICAL INTEGRATION WITH HIGHER-ORDER FUNCTIONS
+;; =============================================================================
+(display "\n═══ Section 2: Numerical Integration (Simpson's Rule) ═══\n")
+
+;; Simpson's 1/3 rule: ∫f(x)dx ≈ (h/3)[f(a) + 4f(a+h) + 2f(a+2h) + ... + f(b)]
+(define (simpson-integrate f a b n)
+  (let* ((h (/ (- b a) n))
+         (indices (iota (+ n 1)))
+         (coeffs (map (lambda (i)
+                        (cond ((= i 0) 1)
+                              ((= i n) 1)
+                              ((= (modulo i 2) 1) 4)
+                              (else 2)))
+                      indices))
+         (xs (map (lambda (i) (+ a (* i h))) indices))
+         (terms (map (lambda (c x) (* c (f x))) coeffs xs)))
+    (* (/ h 3) (fold-right + 0 terms))))
+
+;; ∫₀^π sin(x) dx = 2
+(define integral-sin (simpson-integrate sin 0.0 3.14159265 100))
+(check-approx "∫sin(x) from 0 to π" 2.0 integral-sin 0.001)
+
+;; ∫₀^1 x² dx = 1/3
+(define (square x) (* x x))
+(define integral-x2 (simpson-integrate square 0.0 1.0 100))
+(check-approx "∫x² from 0 to 1" 0.3333 integral-x2 0.001)
+
+;; ∫₀^1 e^x dx = e - 1 ≈ 1.71828
+(define integral-exp (simpson-integrate exp 0.0 1.0 100))
+(check-approx "∫eˣ from 0 to 1" 1.71828 integral-exp 0.001)
+
+;; =============================================================================
+;; SECTION 3: TAYLOR SERIES WITH SYMBOLIC DIFFERENTIATION
+;; =============================================================================
+(display "\n═══ Section 3: Taylor Series Expansion ═══\n")
+
+;; Compute factorial
+(define (factorial n)
+  (if (<= n 1) 1 (* n (factorial (- n 1)))))
+
+;; Taylor series: f(x) ≈ Σ f⁽ⁿ⁾(a)/n! * (x-a)ⁿ
+;; For e^x around a=0: e^x ≈ 1 + x + x²/2! + x³/3! + ...
+(define (taylor-exp x terms)
+  (fold-right + 0
+    (map (lambda (n) (/ (pow x n) (factorial n)))
+         (iota terms))))
+
+(check-approx "Taylor e^1 (10 terms)" 2.71828 (taylor-exp 1.0 10) 0.0001)
+(check-approx "Taylor e^2 (15 terms)" 7.38906 (taylor-exp 2.0 15) 0.001)
+
+;; Taylor series for sin(x): x - x³/3! + x⁵/5! - x⁷/7! + ...
+(define (taylor-sin x terms)
+  (fold-right + 0
+    (map (lambda (n)
+           (let ((k (+ (* 2 n) 1)))
+             (* (pow -1 n) (/ (pow x k) (factorial k)))))
+         (iota terms))))
+
+(check-approx "Taylor sin(π/6)" 0.5 (taylor-sin 0.5236 10) 0.001)
+(check-approx "Taylor sin(π/4)" 0.7071 (taylor-sin 0.7854 10) 0.001)
+
+;; =============================================================================
+;; SECTION 4: GRADIENT DESCENT OPTIMIZATION
+;; =============================================================================
+(display "\n═══ Section 4: Gradient Descent Optimization ═══\n")
+
+;; Minimize f(x,y) = (x-3)² + (y-2)² using gradient descent
+;; Minimum at (3, 2) with value 0
+(define (rosenbrock-simple v)
+  (let ((x (vector-ref v 0))
+        (y (vector-ref v 1)))
+    (+ (* (- x 3) (- x 3))
+       (* (- y 2) (- y 2)))))
+
+(define (gradient-descent f start learning-rate iterations)
+  (define (step point)
+    (let* ((grad (gradient f point))
+           (gx (tensor-get grad 0))
+           (gy (tensor-get grad 1))
+           (x (vector-ref point 0))
+           (y (vector-ref point 1)))
+      (vector (- x (* learning-rate gx))
+              (- y (* learning-rate gy)))))
+  (define (iterate point n)
+    (if (= n 0)
+        point
+        (iterate (step point) (- n 1))))
+  (iterate start iterations))
+
+(define optimum (gradient-descent rosenbrock-simple (vector 0.0 0.0) 0.1 100))
+(check-approx "GD finds x=3" 3.0 (vector-ref optimum 0) 0.01)
+(check-approx "GD finds y=2" 2.0 (vector-ref optimum 1) 0.01)
+
+;; =============================================================================
+;; SECTION 5: CONTINUED FRACTIONS
+;; =============================================================================
+(display "\n═══ Section 5: Continued Fractions ═══\n")
+
+;; Golden ratio φ = 1 + 1/(1 + 1/(1 + 1/...)) = (1 + √5)/2 ≈ 1.618
+(define (continued-fraction-golden depth)
+  (if (= depth 0)
+      1.0
+      (+ 1.0 (/ 1.0 (continued-fraction-golden (- depth 1))))))
+
+(define golden-approx (continued-fraction-golden 30))
+(check-approx "Golden ratio φ" 1.61803 golden-approx 0.0001)
+
+;; e = 2 + 1/(1 + 1/(2 + 2/(3 + 3/(4 + ...)))) - Euler's continued fraction
+;; Simpler: e ≈ 2 + 1/(1 + 1/(2 + 1/(1 + 1/(1 + 1/(4 + 1/(1 + ...))))))
+;; Using convergents instead
+(define (euler-continued-fraction n)
+  (define (a-seq k)
+    (if (= k 0) 2
+        (if (= (modulo k 3) 2)
+            (* 2 (+ (quotient k 3) 1))
+            1)))
+  (define (eval-cf depth)
+    (if (= depth 0)
+        (a-seq 0)
+        (+ (a-seq 0)
+           (/ 1.0 (eval-cf-helper 1 depth)))))
+  (define (eval-cf-helper k max-depth)
+    (if (= k max-depth)
+        (a-seq k)
+        (+ (a-seq k) (/ 1.0 (eval-cf-helper (+ k 1) max-depth)))))
+  (eval-cf n))
+
+(define e-approx (euler-continued-fraction 15))
+(check-approx "Euler's e (CF)" 2.71828 e-approx 0.001)
+
+;; =============================================================================
+;; SECTION 6: MATRIX DETERMINANT (RECURSIVE COFACTOR EXPANSION)
+;; =============================================================================
+(display "\n═══ Section 6: Matrix Operations ═══\n")
+
+;; Represent matrix as list of lists
+(define (matrix-get M i j)
+  (list-ref (list-ref M i) j))
+
+(define (matrix-minor M row col)
+  (map (lambda (indexed-row)
+         (let* ((r (cadr indexed-row))  ;; Extract actual row from (index row-data) pair
+                (filtered-row
+                 (filter (lambda (pair) (not (= (car pair) col)))
+                         (zip (iota (length r)) r))))
+           (map cadr filtered-row)))
+       (filter (lambda (pair) (not (= (car pair) row)))
+               (zip (iota (length M)) M))))
+
+(define (determinant M)
+  (let ((n (length M)))
+    (if (= n 1)
+        (matrix-get M 0 0)
+        (if (= n 2)
+            (- (* (matrix-get M 0 0) (matrix-get M 1 1))
+               (* (matrix-get M 0 1) (matrix-get M 1 0)))
+            (fold-right + 0
+              (map (lambda (j)
+                     (* (pow -1 j)
+                        (matrix-get M 0 j)
+                        (determinant (matrix-minor M 0 j))))
+                   (iota n)))))))
+
+;; 2x2 matrix: [[1,2],[3,4]], det = 1*4 - 2*3 = -2
+(define mat2x2 '((1 2) (3 4)))
+(check "Det 2x2 matrix, expecting -2" -2 (determinant mat2x2))
+
+;; 3x3 matrix: [[1,2,3],[4,5,6],[7,8,9]], det = 0
+(define mat3x3 '((1 2 3) (4 5 6) (7 8 9)))
+(check "Det 3x3 singular, expecting 0" 0 (determinant mat3x3))
+
+;; 3x3 matrix: [[1,2,3],[0,1,4],[5,6,0]], det = 1(0-24) - 2(0-20) + 3(0-5) = -24+40-15 = 1
+(define mat3x3b '((1 2 3) (0 1 4) (5 6 0)))
+(check "Det 3x3 non-singular, expecting 1" 1 (determinant mat3x3b))
+
+;; =============================================================================
+;; SECTION 7: RUNGE-KUTTA DIFFERENTIAL EQUATION SOLVER
+;; =============================================================================
+(display "\n═══ Section 7: ODE Solver (Runge-Kutta 4) ═══\n")
+
+;; Solve dy/dx = f(x,y) using RK4
+(define (rk4-step f x y h)
+  (let* ((k1 (* h (f x y)))
+         (k2 (* h (f (+ x (/ h 2)) (+ y (/ k1 2)))))
+         (k3 (* h (f (+ x (/ h 2)) (+ y (/ k2 2)))))
+         (k4 (* h (f (+ x h) (+ y k3)))))
+    (+ y (/ (+ k1 (* 2 k2) (* 2 k3) k4) 6))))
+
+(define (rk4-solve f x0 y0 xf steps)
+  (let ((h (/ (- xf x0) steps)))
+    (define (iterate x y n)
+      (if (= n 0)
+          y
+          (iterate (+ x h) (rk4-step f x y h) (- n 1))))
+    (iterate x0 y0 steps)))
+
+;; Solve dy/dx = y with y(0) = 1 → y = e^x
+;; At x=1, y should be e ≈ 2.71828
+(define (ode-exp x y) y)
+(define exp-at-1 (rk4-solve ode-exp 0.0 1.0 1.0 100))
+(check-approx "RK4: dy/dx=y, y(1)" 2.71828 exp-at-1 0.0001)
+
+;; Solve dy/dx = cos(x) with y(0) = 0 → y = sin(x)
+;; At x=π/2, y should be 1
+(define (ode-cos x y) (cos x))
+(define sin-at-pi2 (rk4-solve ode-cos 0.0 0.0 1.5708 100))
+(check-approx "RK4: dy/dx=cos(x), y(π/2)" 1.0 sin-at-pi2 0.001)
+
+;; =============================================================================
+;; SECTION 8: POLYNOMIAL INTERPOLATION (LAGRANGE)
+;; =============================================================================
+(display "\n═══ Section 8: Lagrange Interpolation ═══\n")
+
+;; Lagrange interpolation: given points, find polynomial and evaluate at x
+(define (lagrange-basis points i x)
+  (let* ((xi (car (list-ref points i)))
+         (other-indices (filter (lambda (j) (not (= j i))) (iota (length points)))))
+    (fold-right * 1.0
+      (map (lambda (j)
+             (let ((xj (car (list-ref points j))))
+               (/ (- x xj) (- xi xj))))
+           other-indices))))
+
+(define (lagrange-interpolate points x)
+  (fold-right + 0.0
+    (map (lambda (i)
+           (let ((yi (cadr (list-ref points i))))
+             (* yi (lagrange-basis points i x))))
+         (iota (length points)))))
+
+;; Interpolate through (0,0), (1,1), (2,4) - should give y = x²
+(define quad-points '((0 0) (1 1) (2 4)))
+(check-approx "Lagrange x² at 0.5" 0.25 (lagrange-interpolate quad-points 0.5) 0.001)
+(check-approx "Lagrange x² at 1.5" 2.25 (lagrange-interpolate quad-points 1.5) 0.001)
+
+;; Interpolate cos(x) with more points for higher precision
+;; Points: (0, cos(0)), (π/4, cos(π/4)), (π/2, cos(π/2)), (3π/4, cos(3π/4)), (π, cos(π))
+(define cos-points '((0 1) (0.7854 0.7071) (1.5708 0) (2.3562 -0.7071) (3.1416 -1)))
+(check-approx "Lagrange cos at π/6" 0.8660 (lagrange-interpolate cos-points 0.5236) 0.01)
+
+;; =============================================================================
+;; SECTION 9: COMPLEX NUMBER OPERATIONS (USING PAIRS)
+;; =============================================================================
+(display "\n═══ Section 9: Complex Number Arithmetic ═══\n")
+
+;; Complex numbers as (real . imag)
+(define (make-complex r i) (cons r i))
+(define (complex-real z) (car z))
+(define (complex-imag z) (cdr z))
+
+(define (complex-add z1 z2)
+  (make-complex (+ (complex-real z1) (complex-real z2))
+                (+ (complex-imag z1) (complex-imag z2))))
+
+(define (complex-mul z1 z2)
+  (let ((a (complex-real z1)) (b (complex-imag z1))
+        (c (complex-real z2)) (d (complex-imag z2)))
+    (make-complex (- (* a c) (* b d))
+                  (+ (* a d) (* b c)))))
+
+(define (complex-abs z)
+  (sqrt (+ (* (complex-real z) (complex-real z))
+           (* (complex-imag z) (complex-imag z)))))
+
+;; Euler's identity: e^(iπ) = -1
+;; Approximate using e^(ix) = cos(x) + i*sin(x)
+(define (complex-exp-i theta)
+  (make-complex (cos theta) (sin theta)))
+
+(define euler-result (complex-exp-i 3.14159265))
+(check-approx "Euler e^(iπ) real" -1.0 (complex-real euler-result) 0.0001)
+(check-approx "Euler e^(iπ) imag" 0.0 (complex-imag euler-result) 0.0001)
+
+;; (1+i)² = 2i
+(define z1 (make-complex 1 1))
+(define z1-squared (complex-mul z1 z1))
+(check-approx "(1+i)² real" 0.0 (complex-real z1-squared) 0.0001)
+(check-approx "(1+i)² imag" 2.0 (complex-imag z1-squared) 0.0001)
+
+;; |3+4i| = 5
+(define z2 (make-complex 3 4))
+(check-approx "|3+4i|" 5.0 (complex-abs z2) 0.0001)
+
+;; =============================================================================
+;; SECTION 10: MONTE CARLO π ESTIMATION
+;; =============================================================================
+(display "\n═══ Section 10: Monte Carlo π Estimation ═══\n")
+
+;; Simple LCG random number generator
+(define (make-rng seed)
+  (let ((state seed))
+    (lambda ()
+      (set! state (modulo (+ (* state 1103515245) 12345) 2147483648))
+      (/ state 2147483648.0))))
+
+;; Estimate π by ratio of points inside unit circle
+(define (monte-carlo-pi samples rng)
+  (define (inside-circle? x y)
+    (<= (+ (* x x) (* y y)) 1.0))
+  (define (count-inside n acc)
+    (if (= n 0)
+        acc
+        (let ((x (- (* 2 (rng)) 1))
+              (y (- (* 2 (rng)) 1)))
+          (count-inside (- n 1)
+                        (if (inside-circle? x y) (+ acc 1) acc)))))
+  (* 4.0 (/ (count-inside samples 0) samples)))
+
+(define rng1 (make-rng 42))
+(define pi-estimate (monte-carlo-pi 10000 rng1))
+(check-approx "Monte Carlo π" 3.14159 pi-estimate 0.1)
+
+;; =============================================================================
+;; SECTION 11: FOURIER COEFFICIENTS
+;; =============================================================================
+(display "\n═══ Section 11: Discrete Fourier Transform ═══\n")
+
+;; DFT: X[k] = Σ x[n] * e^(-2πikn/N)
+(define (dft-coefficient signal k)
+  (let* ((N (length signal))
+         (indices (iota N)))
+    (fold-right + 0.0
+      (map (lambda (n)
+             (let* ((xn (list-ref signal n))
+                    (angle (* -2 3.14159265 k n (/ 1.0 N))))
+               (* xn (cos angle))))  ; Real part only for simplicity
+           indices))))
+
+;; DFT of constant signal [1,1,1,1] should have X[0]=4, X[k≠0]=0
+(define const-signal '(1 1 1 1))
+(check-approx "DFT const X[0]" 4.0 (dft-coefficient const-signal 0) 0.001)
+(check-approx "DFT const X[1]" 0.0 (dft-coefficient const-signal 1) 0.001)
+
+;; DFT of alternating signal [1,-1,1,-1] should have X[0]=0, X[2]=4
+(define alt-signal '(1 -1 1 -1))
+(check-approx "DFT alt X[0]" 0.0 (dft-coefficient alt-signal 0) 0.001)
+(check-approx "DFT alt X[2]" 4.0 (dft-coefficient alt-signal 2) 0.001)
+
+;; =============================================================================
+;; SECTION 12: NEURAL NETWORK FORWARD PASS WITH GRADIENT
+;; =============================================================================
+(display "\n═══ Section 12: Neural Network with Backprop ═══\n")
+
+;; Sigmoid activation
+(define (sigmoid x)
+  (/ 1.0 (+ 1.0 (exp (- x)))))
+
+;; Simple 2-input, 1-hidden (2 neurons), 1-output network
+;; Forward: h = sigmoid(w1*x1 + w2*x2 + b1), out = sigmoid(w3*h + b2)
+(define (nn-forward input)
+  (let* ((x1 (vector-ref input 0))
+         (x2 (vector-ref input 1))
+         ;; Hidden layer (weights hardcoded for testing)
+         (h1 (sigmoid (+ (* 0.5 x1) (* 0.3 x2) 0.1)))
+         (h2 (sigmoid (+ (* 0.2 x1) (* 0.7 x2) -0.1)))
+         ;; Output layer
+         (out (sigmoid (+ (* 0.4 h1) (* 0.6 h2) 0.0))))
+    out))
+
+;; Test forward pass
+(define nn-out (nn-forward (vector 1.0 0.5)))
+(check-approx "NN forward pass" 0.6 nn-out 0.1)
+
+;; Compute gradient of output w.r.t. inputs (sensitivity analysis)
+(define nn-grad (gradient nn-forward (vector 1.0 0.5)))
+(display "NN gradient: ") (display nn-grad) (newline)
+;; Corrected expected values based on manual calculation
+(check-approx "NN ∂out/∂x1 > 0" 0.016 (tensor-get nn-grad 0) 0.005)
+(check-approx "NN ∂out/∂x2 > 0" 0.028 (tensor-get nn-grad 1) 0.005)
+
+;; =============================================================================
+;; SECTION 13: RECURSIVE POWER SERIES
+;; =============================================================================
+(display "\n═══ Section 13: Power Series Composition ═══\n")
+
+;; Compute 1/(1-x) = 1 + x + x² + x³ + ... for |x| < 1
+(define (geometric-series x terms)
+  (fold-right + 0.0
+    (map (lambda (n) (pow x n)) (iota terms))))
+
+(check-approx "1/(1-0.5) = 2" 2.0 (geometric-series 0.5 20) 0.0001)
+(check-approx "1/(1-0.1) = 1.111" 1.1111 (geometric-series 0.1 20) 0.0001)
+
+;; Compute ln(1+x) = x - x²/2 + x³/3 - x⁴/4 + ...
+(define (ln-series x terms)
+  (fold-right + 0.0
+    (map (lambda (n)
+           (let ((k (+ n 1)))
+             (* (pow -1 n) (/ (pow x k) k))))
+         (iota terms))))
+
+(check-approx "ln(1.5)" 0.4055 (ln-series 0.5 50) 0.001)
+(check-approx "ln(2) = ln(1+1)" 0.6931 (ln-series 1.0 1000) 0.01)
+
+;; =============================================================================
+;; SECTION 14: EIGENVALUE ESTIMATION (POWER ITERATION)
+;; =============================================================================
+(display "\n═══ Section 14: Eigenvalue via Power Iteration ═══\n")
+
+;; Power iteration to find dominant eigenvalue
+;; For matrix [[2,1],[1,2]], dominant eigenvalue is 3
+
+(define (mat-vec-mul M v)
+  (map (lambda (row)
+         (fold-right + 0.0
+           (map (lambda (pair) (* (car pair) (cadr pair)))
+                (zip row v))))
+       M))
+
+(define (vec-norm v)
+  (sqrt (fold-right + 0.0 (map (lambda (x) (* x x)) v))))
+
+(define (vec-scale v s)
+  (map (lambda (x) (* x s)) v))
+
+(define (power-iteration M v0 iterations)
+  (define (iterate v n)
+    (if (= n 0)
+        v
+        (let* ((Mv (mat-vec-mul M v))
+               (norm (vec-norm Mv))
+               (v-new (vec-scale Mv (/ 1.0 norm))))
+          (iterate v-new (- n 1)))))
+  (iterate v0 iterations))
+
+(define (rayleigh-quotient M v)
+  (let ((Mv (mat-vec-mul M v))
+        (dot-Mv-v (fold-right + 0.0 (map (lambda (pair) (* (car pair) (cadr pair))) (zip Mv v))))
+        (dot-v-v (fold-right + 0.0 (map (lambda (x) (* x x)) v))))
+    (/ dot-Mv-v dot-v-v)))
+
+(define test-matrix '((2 1) (1 2)))
+(define eigenvec (power-iteration test-matrix '(1.0 0.0) 50))
+(define eigenval (rayleigh-quotient test-matrix eigenvec))
+(check-approx "Dominant eigenvalue" 3.0 eigenval 0.0001)
+
+;; =============================================================================
+;; SECTION 15: NUMERICAL HESSIAN VERIFICATION
+;; =============================================================================
+(display "\n═══ Section 15: Hessian Matrix Computation ═══\n")
+
+;; f(x,y) = x²y + y³
+;; ∂f/∂x = 2xy, ∂f/∂y = x² + 3y²
+;; ∂²f/∂x² = 2y, ∂²f/∂x∂y = 2x, ∂²f/∂y² = 6y
+;; At (1,2): H = [[4, 2], [2, 12]]
+
+(define (f-hessian-test v)
+  (let ((x (vector-ref v 0))
+        (y (vector-ref v 1)))
+    (+ (* x x y) (* y y y))))
+
+(define H (hessian f-hessian-test (vector 1.0 2.0)))
+(display "Hessian at (1,2): ") (display H) (newline)
+
+;; Check Hessian elements
+(check-approx "H[0,0] = 4" 4.0 (tensor-get (tensor-get H 0) 0) 0.1)
+(check-approx "H[0,1] = 2" 2.0 (tensor-get (tensor-get H 0) 1) 0.1)
+(check-approx "H[1,1] = 12" 12.0 (tensor-get (tensor-get H 1) 1) 0.1)
+
+;; =============================================================================
+;; SECTION 16: FIXED POINT ITERATION
+;; =============================================================================
+(display "\n═══ Section 16: Fixed Point Iteration ═══\n")
+
+;; Find fixed point of cos(x) ≈ 0.7390851332 (Dottie number)
+(define (fixed-point f guess tolerance max-iter)
+  (define (close-enough? v1 v2)
+    (< (abs (- v1 v2)) tolerance))
+  (define (try guess n)
+    (if (= n 0)
+        guess
+        (let ((next (f guess)))
+          (if (close-enough? guess next)
+              next
+              (try next (- n 1))))))
+  (try guess max-iter))
+
+(define dottie (fixed-point cos 1.0 0.0000001 100))
+(check-approx "Dottie number" 0.7390851 dottie 0.00001)
+
+;; Fixed point of sqrt(x+2) starting at 2 should give (1+√5)/2 ≈ 1.618
+(define golden-fp (fixed-point (lambda (x) (sqrt (+ x 1))) 1.0 0.0000001 100))
+(check-approx "Golden ratio (FP)" 1.61803 golden-fp 0.0001)
+
+;; =============================================================================
+;; FINAL SUMMARY
+;; =============================================================================
+(display "\n╔══════════════════════════════════════════════════════════════════╗\n")
+(display "║                      FINAL RESULTS                               ║\n")
+(display "╚══════════════════════════════════════════════════════════════════╝\n")
+(display "Tests passed: ") (display tests-passed) (newline)
+(display "Tests failed: ") (display tests-failed) (newline)
+(display "Total tests: ") (display (+ tests-passed tests-failed)) (newline)
+
+(if (= tests-failed 0)
+    (display "\n★★★ ALL MATHEMATICAL TESTS PASSED - SYSTEM FULLY OPERATIONAL ★★★\n")
+    (display "\n⚠ SOME TESTS FAILED - INVESTIGATION NEEDED ⚠\n"))
+
+0

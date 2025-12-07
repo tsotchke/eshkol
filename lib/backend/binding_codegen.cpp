@@ -379,12 +379,35 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
         }
 
         // Create alloca and store
-        AllocaInst* alloca = ctx_.builder().CreateAlloca(
-            ctx_.taggedValueType(),
-            nullptr,
-            var_name
-        );
-        alloca->setAlignment(Align(16));
+        // TCO FIX: When TCO is enabled, allocas MUST be in entry block to avoid
+        // stack growth on each loop iteration. This is safe because:
+        // 1. The alloca is just stack space - it doesn't capture any value
+        // 2. The store happens at the current position with the correct value
+        // 3. Closure captures work because we fixed codegenVariable to load from pointers
+        AllocaInst* alloca = nullptr;
+        if (tco_context_.enabled) {
+            // TCO path: Insert alloca in entry block
+            Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+            BasicBlock& entry_block = current_func->getEntryBlock();
+            IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
+            ctx_.builder().SetInsertPoint(&entry_block, entry_block.begin());
+            alloca = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(),
+                nullptr,
+                var_name
+            );
+            alloca->setAlignment(Align(16));
+            ctx_.builder().restoreIP(saved_ip);
+        } else {
+            // Non-TCO path: Create alloca at current position (original behavior)
+            alloca = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(),
+                nullptr,
+                var_name
+            );
+            alloca->setAlignment(Align(16));
+        }
+        // Store happens at current position regardless of where alloca is
         ctx_.builder().CreateStore(tagged_val, alloca);
 
         (*symbol_table_)[var_name] = alloca;
@@ -403,23 +426,36 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
         body_result = static_cast<Value*>(codegen_ast_callback_(op->let_op.body, callback_context_));
     }
 
-    // Preserve _func entries before restoring
-    std::unordered_map<std::string, Value*> func_refs;
+    // Preserve _func entries and GlobalVariable captures before restoring
+    // GlobalVariable captures are created by codegenLambda when a lambda captures a variable.
+    // The lambda updates symbol_table[var_name] = GlobalVariable, and we must preserve this
+    // so that the enclosing scope sees the modified value after set! inside the lambda.
+    std::unordered_map<std::string, Value*> entries_to_preserve;
     for (auto& entry : *symbol_table_) {
+        // Preserve function references (_func entries)
         if (entry.first.length() > 5 &&
             entry.first.substr(entry.first.length() - 5) == "_func") {
-            func_refs[entry.first] = entry.second;
+            entries_to_preserve[entry.first] = entry.second;
             if (global_symbol_table_) {
                 (*global_symbol_table_)[entry.first] = entry.second;
             }
+        }
+        // MUTABLE CAPTURE FIX: Preserve GlobalVariable entries for actual variables
+        // These are variables that were upgraded to GlobalVariables when captured by lambdas
+        // We need to preserve them so set! mutations are visible in the enclosing scope
+        // IMPORTANT: Skip entries with "_capture_" in the name - those are internal capture storage
+        // (e.g., "lambda_0_capture_x") and should NOT be preserved in the outer scope
+        if (entry.second && isa<GlobalVariable>(entry.second) &&
+            entry.first.find("_capture_") == std::string::npos) {
+            entries_to_preserve[entry.first] = entry.second;
         }
     }
 
     // Restore symbol table
     *symbol_table_ = saved_symbols;
 
-    // Re-add function references
-    for (auto& entry : func_refs) {
+    // Re-add preserved entries (function references and GlobalVariable captures)
+    for (auto& entry : entries_to_preserve) {
         (*symbol_table_)[entry.first] = entry.second;
     }
 
@@ -527,8 +563,30 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         const eshkol_ast_t* val_ast = val_asts[i];
         if (!val_ast) continue;
 
-        // Evaluate lambda
+        // TCO SETUP: Check if this lambda is self-tail-recursive
+        bool use_tco = false;
+        if (is_tail_recursive_callback_) {
+            use_tco = is_tail_recursive_callback_(&val_ast->operation, var_names[i].c_str(), callback_context_);
+            if (use_tco) {
+                eshkol_debug("TCO: Enabling tail call optimization for letrec lambda %s", var_names[i].c_str());
+                // Set up TCO context - the main codegen will use this during lambda generation
+                tco_context_.func_name = var_names[i];
+                tco_context_.enabled = true;
+                tco_context_.param_allocas.clear();
+                tco_context_.param_names.clear();
+                tco_context_.loop_header = nullptr;  // Will be set during lambda body generation
+            }
+        }
+
+        // Evaluate lambda (codegen will check TCO context)
         void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
+
+        // Clear TCO context after lambda generation
+        if (use_tco) {
+            tco_context_.enabled = false;
+            tco_context_.func_name = "";
+        }
+
         if (!typed_ptr) {
             eshkol_warn("letrec: failed to evaluate lambda binding for %s", var_names[i].c_str());
             continue;
@@ -602,23 +660,30 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         body_result = static_cast<Value*>(codegen_ast_callback_(op->let_op.body, callback_context_));
     }
 
-    // Preserve _func entries
-    std::unordered_map<std::string, Value*> func_refs;
+    // Preserve _func entries and GlobalVariable captures
+    std::unordered_map<std::string, Value*> entries_to_preserve;
     for (auto& entry : *symbol_table_) {
+        // Preserve function references (_func entries)
         if (entry.first.length() > 5 &&
             entry.first.substr(entry.first.length() - 5) == "_func") {
-            func_refs[entry.first] = entry.second;
+            entries_to_preserve[entry.first] = entry.second;
             if (global_symbol_table_) {
                 (*global_symbol_table_)[entry.first] = entry.second;
             }
+        }
+        // MUTABLE CAPTURE FIX: Preserve GlobalVariable entries for actual variables
+        // Skip entries with "_capture_" in the name - those are internal capture storage
+        if (entry.second && isa<GlobalVariable>(entry.second) &&
+            entry.first.find("_capture_") == std::string::npos) {
+            entries_to_preserve[entry.first] = entry.second;
         }
     }
 
     // Restore symbol table
     *symbol_table_ = saved_symbols;
 
-    // Re-add function references
-    for (auto& entry : func_refs) {
+    // Re-add preserved entries
+    for (auto& entry : entries_to_preserve) {
         (*symbol_table_)[entry.first] = entry.second;
     }
 
@@ -702,23 +767,30 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
         body_result = static_cast<Value*>(codegen_ast_callback_(op->let_op.body, callback_context_));
     }
 
-    // Preserve _func entries
-    std::unordered_map<std::string, Value*> func_refs;
+    // Preserve _func entries and GlobalVariable captures
+    std::unordered_map<std::string, Value*> entries_to_preserve;
     for (auto& entry : *symbol_table_) {
+        // Preserve function references (_func entries)
         if (entry.first.length() > 5 &&
             entry.first.substr(entry.first.length() - 5) == "_func") {
-            func_refs[entry.first] = entry.second;
+            entries_to_preserve[entry.first] = entry.second;
             if (global_symbol_table_) {
                 (*global_symbol_table_)[entry.first] = entry.second;
             }
+        }
+        // MUTABLE CAPTURE FIX: Preserve GlobalVariable entries for actual variables
+        // Skip entries with "_capture_" in the name - those are internal capture storage
+        if (entry.second && isa<GlobalVariable>(entry.second) &&
+            entry.first.find("_capture_") == std::string::npos) {
+            entries_to_preserve[entry.first] = entry.second;
         }
     }
 
     // Restore symbol table
     *symbol_table_ = saved_symbols;
 
-    // Re-add function references
-    for (auto& entry : func_refs) {
+    // Re-add preserved entries
+    for (auto& entry : entries_to_preserve) {
         (*symbol_table_)[entry.first] = entry.second;
     }
 

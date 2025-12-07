@@ -262,6 +262,44 @@ public:
     void setLetrecExcludedCaptureNames(std::set<std::string>* names) {
         letrec_excluded_capture_names_ = names;
     }
+
+    // === Tail Call Optimization ===
+
+    /**
+     * TCO context for tracking tail-recursive function generation.
+     */
+    struct TailCallContext {
+        std::string func_name = "";           // Name of function being compiled
+        llvm::BasicBlock* loop_header = nullptr;    // Loop header for tail call transformation
+        std::vector<llvm::AllocaInst*> param_allocas;  // Allocas for mutable parameters
+        std::vector<std::string> param_names;    // Parameter names for lookup
+        bool enabled = false;                 // Whether TCO is enabled for current lambda
+    };
+
+    /**
+     * Get the current TCO context.
+     */
+    TailCallContext& getTCOContext() { return tco_context_; }
+
+    /**
+     * Check if TCO is currently active for a given function name.
+     */
+    bool isTCOActive(const std::string& func_name) const {
+        return tco_context_.enabled && tco_context_.func_name == func_name;
+    }
+
+    /**
+     * Set TCO callback for checking if a lambda is self-tail-recursive.
+     * Signature: bool (*)(const eshkol_operations_t* lambda_op, const char* func_name, void* context)
+     */
+    using IsTailRecursiveFunc = bool (*)(const void* lambda_op, const char* func_name, void* context);
+    void setTCOCallbacks(IsTailRecursiveFunc is_tail_recursive) {
+        is_tail_recursive_callback_ = is_tail_recursive;
+    }
+
+private:
+    TailCallContext tco_context_ = {};
+    IsTailRecursiveFunc is_tail_recursive_callback_ = nullptr;
 };
 
 } // namespace eshkol

@@ -237,8 +237,23 @@ typedef struct ad_tape {
 
 // Closure environment structure (arena-allocated)
 // Holds captured variables from parent scope for nested functions
+//
+// VARIADIC ENCODING: The num_captures field encodes both capture count and variadic info:
+//   - Bits 0-15:  num_captures (up to 65535 captures)
+//   - Bits 16-31: fixed_param_count (up to 65535 fixed params)
+//   - Bit 63:     is_variadic flag (1 = variadic, 0 = not variadic)
+//
+// Use the macros below to extract/encode these values:
+#define CLOSURE_ENV_GET_NUM_CAPTURES(packed) ((packed) & 0xFFFF)
+#define CLOSURE_ENV_GET_FIXED_PARAMS(packed) (((packed) >> 16) & 0xFFFF)
+#define CLOSURE_ENV_IS_VARIADIC(packed) (((packed) >> 63) & 1)
+#define CLOSURE_ENV_PACK(num_caps, fixed_params, is_var) \
+    (((size_t)(num_caps) & 0xFFFF) | \
+     (((size_t)(fixed_params) & 0xFFFF) << 16) | \
+     ((size_t)(is_var) << 63))
+
 typedef struct eshkol_closure_env {
-    size_t num_captures;                  // Number of captured variables
+    size_t num_captures;                  // Packed: num_captures | (fixed_params << 16) | (is_variadic << 63)
     eshkol_tagged_value_t captures[];     // Flexible array of captured values
 } eshkol_closure_env_t;
 

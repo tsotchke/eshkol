@@ -402,9 +402,23 @@ void MapCodegen::loadCapturedValues(
         }
 
         if (found && storage) {
-            // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
-            // But check if storage is an Argument with non-pointer type (needs temp alloca)
-            if (isa<Argument>(storage) && !storage->getType()->isPointerTy()) {
+            // MUTABLE CAPTURE FIX: For let-bound allocas in capture storage, we need to:
+            // 1. Pack the alloca's address as an int64 in a tagged_value
+            // 2. Store in temp storage and pass pointer to temp storage
+            if (isa<AllocaInst>(storage)) {
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+                IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+                AllocaInst* temp_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, var_name + "_capture_storage");
+
+                // Pack the alloca address as an int64 in a tagged_value
+                Value* ptr_as_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
+                Value* packed_ptr = tagged_.packInt64(ptr_as_int, true);
+                ctx_.builder().CreateStore(packed_ptr, temp_alloca);
+
+                args.push_back(temp_alloca);
+                eshkol_debug("Map: created pointer-passing storage for capture '%s' for lambda '%s'",
+                            var_name.c_str(), lambda_name.c_str());
+            } else if (isa<Argument>(storage) && !storage->getType()->isPointerTy()) {
                 // Create temp alloca for this value parameter
                 Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
                 IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
@@ -427,9 +441,26 @@ void MapCodegen::loadCapturedValues(
             }
 
             if (var_storage) {
-                // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
-                // But check if var_storage is an Argument with non-pointer type (needs temp alloca)
-                if (isa<Argument>(var_storage) && !var_storage->getType()->isPointerTy()) {
+                // MUTABLE CAPTURE FIX: For let-bound allocas, we need to:
+                // 1. Pack the alloca's address as an int64
+                // 2. Wrap that in a tagged_value
+                // 3. Store in temp storage
+                // 4. Pass pointer to temp storage
+                // This matches what the lambda body expects for pointer-passing captures.
+                if (isa<AllocaInst>(var_storage)) {
+                    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+                    IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+                    AllocaInst* temp_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, var_name + "_capture_storage");
+
+                    // Pack the alloca address as an int64 in a tagged_value
+                    Value* ptr_as_int = ctx_.builder().CreatePtrToInt(var_storage, ctx_.int64Type());
+                    Value* packed_ptr = tagged_.packInt64(ptr_as_int, true);  // Use boxed int representation
+                    ctx_.builder().CreateStore(packed_ptr, temp_alloca);
+
+                    args.push_back(temp_alloca);
+                    eshkol_debug("Map: created pointer-passing storage for let-bound '%s' for lambda '%s'",
+                                var_name.c_str(), lambda_name.c_str());
+                } else if (isa<Argument>(var_storage) && !var_storage->getType()->isPointerTy()) {
                     // Create temp alloca for this value parameter
                     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
                     IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
@@ -437,6 +468,11 @@ void MapCodegen::loadCapturedValues(
                     ctx_.builder().CreateStore(var_storage, temp_alloca);
                     args.push_back(temp_alloca);
                     eshkol_debug("Map: created temp storage for Argument var '%s' for lambda '%s'",
+                                var_name.c_str(), lambda_name.c_str());
+                } else if (isa<GlobalVariable>(var_storage)) {
+                    // Global variables can be passed directly - the lambda will load from them
+                    args.push_back(var_storage);
+                    eshkol_debug("Map: using GlobalVariable '%s' directly for lambda '%s'",
                                 var_name.c_str(), lambda_name.c_str());
                 } else {
                     args.push_back(var_storage);

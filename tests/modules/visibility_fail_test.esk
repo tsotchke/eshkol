@@ -1,4 +1,5 @@
 ;;; Test that private symbols are not accessible
+;;; Expected: Error - "Unknown function: helper"
 (require test.modules.math_utils)
 
 ;;; This should fail - helper is private

@@ -1,4 +1,6 @@
 ;;; Test reorganized stdlib
+(require stdlib)
+
 (display "Testing reorganized stdlib:")
 (newline)
 

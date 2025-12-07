@@ -2,6 +2,7 @@
 
 # Modules Test Suite with Full Output Capture
 # Shows complete compilation and runtime output for all tests
+# Supports negative tests (expected to fail) via ";;; Expected: Error" comment
 
 set +e  # Don't exit on error, we want to see all failures
 
@@ -65,6 +66,72 @@ run_test_verbose() {
     echo "========================================" >> "$output_file"
     echo "" >> "$output_file"
 
+    # Check if this is a negative test (expected to fail)
+    if grep -q ";;; Expected: Error" "$test_file"; then
+        echo "TEST TYPE: Negative test (expected to fail)" >> "$output_file"
+        echo "" >> "$output_file"
+
+        # Try to compile and run with full output
+        echo "COMPILATION OUTPUT:" >> "$output_file"
+        echo "----------------------------------------" >> "$output_file"
+        ./build/eshkol-run "$test_file" >> "$output_file" 2>&1
+        COMPILE_EXIT=$?
+
+        if [ $COMPILE_EXIT -eq 0 ]; then
+            # Compilation succeeded, try runtime
+            echo "RUNTIME OUTPUT:" >> "$output_file"
+            echo "----------------------------------------" >> "$output_file"
+            ./a.out >> "$output_file" 2>&1
+            RUNTIME_EXIT=$?
+
+            if [ $RUNTIME_EXIT -ne 0 ]; then
+                # Runtime failed as expected
+                echo "----------------------------------------" >> "$output_file"
+                echo "RUNTIME: FAILED AS EXPECTED (exit code: $RUNTIME_EXIT)" >> "$output_file"
+                echo "FINAL STATUS: PASS (expected error)" >> "$output_file"
+
+                echo -e "${GREEN}  ✅ Runtime failed as expected${NC}"
+                echo -e "${GREEN}  ✅ OVERALL: PASS (expected error)${NC}"
+                ((PASS++))
+
+                # Show the error message
+                echo ""
+                echo "Expected error output:"
+                tail -20 "$output_file" | grep -v "^========" | grep -v "^TEST TYPE" | grep -v "^COMPILATION" | grep -v "^RUNTIME"
+            else
+                # Runtime succeeded but should have failed
+                echo "----------------------------------------" >> "$output_file"
+                echo "RUNTIME: SUCCESS (BUT SHOULD HAVE FAILED)" >> "$output_file"
+                echo "FINAL STATUS: FAIL" >> "$output_file"
+
+                echo -e "${RED}  ❌ Runtime succeeded but should have failed${NC}"
+                echo -e "${RED}  ❌ OVERALL: FAIL${NC}"
+                ((FAIL++))
+                FAILED_TESTS+=("$test_name (expected runtime error)")
+            fi
+        else
+            # Compilation failed as expected
+            echo "----------------------------------------" >> "$output_file"
+            echo "COMPILATION: FAILED AS EXPECTED" >> "$output_file"
+            echo "FINAL STATUS: PASS (expected error)" >> "$output_file"
+
+            echo -e "${GREEN}  ✅ Compilation failed as expected${NC}"
+            echo -e "${GREEN}  ✅ OVERALL: PASS (expected error)${NC}"
+            ((PASS++))
+
+            # Show the error message
+            echo ""
+            echo "Expected error output:"
+            tail -20 "$output_file" | grep -v "^========" | grep -v "^TEST TYPE" | grep -v "^COMPILATION"
+        fi
+
+        echo ""
+        echo "Full output saved to: $output_file"
+        echo ""
+        return
+    fi
+
+    # Regular test (not expected to fail)
     # Try to compile with full output
     echo "COMPILATION OUTPUT:" >> "$output_file"
     echo "----------------------------------------" >> "$output_file"

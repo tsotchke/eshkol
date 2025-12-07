@@ -199,6 +199,8 @@ namespace ControlFlowCallbacks {
     static llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
     static void pushFunctionContextWrapper(void* context);
     static void popFunctionContextWrapper(void* context);
+    // TCO callback for checking self-tail-recursion
+    static bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
 }
 
 class EshkolLLVMCodeGen {
@@ -225,6 +227,7 @@ class EshkolLLVMCodeGen {
     friend llvm::Value* ControlFlowCallbacks::indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
     friend void ControlFlowCallbacks::pushFunctionContextWrapper(void* context);
     friend void ControlFlowCallbacks::popFunctionContextWrapper(void* context);
+    friend bool ControlFlowCallbacks::isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
 
 private:
     std::unique_ptr<LLVMContext> context;
@@ -1343,7 +1346,11 @@ private:
         declareUnaryMathFunc("acosh");
         declareUnaryMathFunc("atanh");
 
+        // Exponential
+        declareUnaryMathFunc("exp2");
+
         // Logarithmic
+        declareUnaryMathFunc("log");  // natural log
         declareUnaryMathFunc("log10");
         declareUnaryMathFunc("log2");
 
@@ -1522,7 +1529,9 @@ private:
         binding_->setReplMode(&g_repl_mode_enabled);
         binding_->setLambdaTracking(&last_generated_lambda_name, &function_table);
         binding_->setLetrecExcludedCaptureNames(&letrec_excluded_capture_names);
-        eshkol_debug("Created BindingCodegen with callbacks");
+        // Set up TCO callbacks for tail call optimization
+        binding_->setTCOCallbacks(ControlFlowCallbacks::isSelfTailRecursiveWrapper);
+        eshkol_debug("Created BindingCodegen with callbacks and TCO support");
 
         // Initialize CollectionCodegen - list and vector operations
         coll_ = std::make_unique<eshkol::CollectionCodegen>(*ctx_, *tagged_, *mem);
@@ -3302,29 +3311,130 @@ private:
         Value* zero_captures = ConstantInt::get(int64_type, 0);
         builder->CreateBr(env_checked);
 
-        // Valid env path - load num_captures from env (offset 0)
+        // Valid env path - load packed_info from env (offset 0)
+        // Packed format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic
         builder->SetInsertPoint(env_valid);
-        Value* loaded_captures = builder->CreateLoad(int64_type, env_ptr);
+        Value* packed_info = builder->CreateLoad(int64_type, env_ptr);
         builder->CreateBr(env_checked);
 
         // Merge paths with phi node
         builder->SetInsertPoint(env_checked);
-        PHINode* num_captures = builder->CreatePHI(int64_type, 2, "num_captures");
-        num_captures->addIncoming(zero_captures, env_null);
-        num_captures->addIncoming(loaded_captures, env_valid);
+        PHINode* packed_phi = builder->CreatePHI(int64_type, 2, "packed_info");
+        packed_phi->addIncoming(zero_captures, env_null);
+        packed_phi->addIncoming(packed_info, env_valid);
 
-        // Load captures base (at offset 8 in env, after num_captures)
+        // Unpack the fields
+        Value* num_captures = builder->CreateAnd(packed_phi,
+            ConstantInt::get(int64_type, 0xFFFF), "num_captures");
+        Value* fixed_params = builder->CreateAnd(
+            builder->CreateLShr(packed_phi, ConstantInt::get(int64_type, 16)),
+            ConstantInt::get(int64_type, 0xFFFF), "fixed_params");
+        Value* is_variadic = builder->CreateAnd(
+            builder->CreateLShr(packed_phi, ConstantInt::get(int64_type, 63)),
+            ConstantInt::get(int64_type, 1), "is_variadic");
+
+        // Load captures base (at offset 8 in env, after packed_info field)
         Value* captures_base = builder->CreateGEP(int8_type, env_ptr,
             ConstantInt::get(int64_type, 8));
         Value* captures_typed = builder->CreateBitCast(captures_base,
             PointerType::getUnqual(*context));
 
-        // Generate switch for different capture counts (0-32)
-        // This supports N-dimensional operations with many captures
-        // 32 captures allows for complex multi-dimensional AD, neural networks, etc.
+        // VARIADIC CLOSURE FIX: Check if this is a variadic closure
+        Value* is_variadic_cond = builder->CreateICmpNE(is_variadic,
+            ConstantInt::get(int64_type, 0));
+        BasicBlock* variadic_bb = BasicBlock::Create(*context, "variadic_closure", current_func);
+        BasicBlock* non_variadic_bb = BasicBlock::Create(*context, "non_variadic_closure", current_func);
+        builder->CreateCondBr(is_variadic_cond, variadic_bb, non_variadic_bb);
+
+        // ===== VARIADIC PATH: Package extra args into rest list =====
+
+        // Pre-allocate allocas at function entry to ensure dominance
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        BasicBlock& entry_block = current_func->getEntryBlock();
+        builder->SetInsertPoint(&entry_block, entry_block.begin());
+
+        // Create allocas for each arg's car and cdr storage
+        std::vector<Value*> arg_ptrs;
+        std::vector<Value*> rest_ptrs;
+        for (size_t i = 0; i < call_args.size(); i++) {
+            arg_ptrs.push_back(builder->CreateAlloca(tagged_value_type, nullptr, "var_arg_ptr"));
+            rest_ptrs.push_back(builder->CreateAlloca(tagged_value_type, nullptr, "var_rest_ptr"));
+        }
+
+        // Restore insertion point
+        builder->restoreIP(saved_ip);
+        builder->SetInsertPoint(variadic_bb);
+
+        // Build rest list from call_args starting after fixed_params
+        // We need to iterate and cons each arg. Start with null, then cons each from right to left
+        Value* rest_list = packPtrToTaggedValue(
+            ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+
+        // For now, we build the list by consing all args (no fixed params handling yet)
+        // This is a simplification - full implementation would handle fixed params
+        for (int64_t i = call_args.size() - 1; i >= 0; i--) {
+            // Allocate cons cell
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* cons_cell = builder->CreateCall(getArenaAllocateTaggedConsCellFunc(), {arena_ptr});
+
+            // Set car to arg, cdr to rest_list using pre-allocated allocas
+            Value* arg_val = call_args[i];
+            builder->CreateStore(arg_val, arg_ptrs[i]);
+            builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                {cons_cell, ConstantInt::get(int1_type, 0), arg_ptrs[i]}); // car
+
+            builder->CreateStore(rest_list, rest_ptrs[i]);
+            builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[i]}); // cdr
+
+            // Update rest_list to point to new cons cell
+            Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
+            rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_CONS_PTR);
+        }
+
+        // Now generate switch for variadic closure call (with captures)
         const int MAX_CAPTURES = 32;
-        BasicBlock* switch_default = BasicBlock::Create(*context, "cap_default", current_func);
-        SwitchInst* sw = builder->CreateSwitch(num_captures, switch_default, MAX_CAPTURES + 1);
+        BasicBlock* variadic_switch_default = BasicBlock::Create(*context, "var_cap_default", current_func);
+        SwitchInst* var_sw = builder->CreateSwitch(num_captures, variadic_switch_default, MAX_CAPTURES + 1);
+        std::vector<std::pair<BasicBlock*, Value*>> variadic_results;
+
+        for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
+            BasicBlock* case_bb = BasicBlock::Create(*context,
+                "var_cap_" + std::to_string(cap_count), current_func);
+            var_sw->addCase(ConstantInt::get(int64_type, cap_count), case_bb);
+            builder->SetInsertPoint(case_bb);
+
+            // For variadic: args are (rest_list, captures...)
+            std::vector<Value*> full_args;
+            full_args.push_back(rest_list);  // The packaged rest list
+            for (int i = 0; i < cap_count; i++) {
+                Value* cap_ptr = builder->CreateGEP(tagged_value_type, captures_typed,
+                    ConstantInt::get(int64_type, i));
+                full_args.push_back(cap_ptr);
+            }
+
+            // Function type: (tagged_value, pointer...) -> tagged_value
+            std::vector<Type*> param_types;
+            param_types.push_back(tagged_value_type);  // rest list
+            for (int i = 0; i < cap_count; i++) {
+                param_types.push_back(PointerType::getUnqual(*context));
+            }
+            FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+
+            Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
+            builder->CreateBr(merge_bb);
+            variadic_results.push_back({builder->GetInsertBlock(), result});
+        }
+
+        builder->SetInsertPoint(variadic_switch_default);
+        Value* var_default_result = packNullToTaggedValue();
+        builder->CreateBr(merge_bb);
+        variadic_results.push_back({variadic_switch_default, var_default_result});
+
+        // ===== NON-VARIADIC PATH: Call as before =====
+        builder->SetInsertPoint(non_variadic_bb);
+        BasicBlock* nonvar_switch_default = BasicBlock::Create(*context, "cap_default", current_func);
+        SwitchInst* sw = builder->CreateSwitch(num_captures, nonvar_switch_default, MAX_CAPTURES + 1);
 
         std::vector<std::pair<BasicBlock*, Value*>> results;
 
@@ -3363,13 +3473,41 @@ private:
         }
 
         // Default case (more than MAX_CAPTURES - shouldn't happen but handle gracefully)
-        builder->SetInsertPoint(switch_default);
+        builder->SetInsertPoint(nonvar_switch_default);
         Value* default_result = packNullToTaggedValue();
         builder->CreateBr(merge_bb);
-        results.push_back({switch_default, default_result});
+        results.push_back({nonvar_switch_default, default_result});
 
-        // DIRECT PATH: Simple function pointer call (no captures)
+        // Combine variadic_results with results for the merge
+        for (auto& p : variadic_results) {
+            results.push_back(p);
+        }
+
+        // DIRECT PATH: Check if callable, otherwise return value as-is
+        // This handles Y combinator patterns where non-functions may be "called"
         builder->SetInsertPoint(direct_bb);
+
+        // NON-CALLABLE FIX: Check if this is actually a callable type
+        // Only INT64 (function pointer) and LAMBDA_SEXPR should be called directly
+        // CONS_PTR, STRING_PTR, NULL, BOOL, DOUBLE etc. should be returned as-is
+        Value* is_lambda_sexpr = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_LAMBDA_SEXPR));
+        Value* is_int64 = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        Value* is_callable = builder->CreateOr(is_lambda_sexpr, is_int64);
+
+        BasicBlock* do_direct_call = BasicBlock::Create(*context, "do_direct_call", current_func);
+        BasicBlock* return_as_is = BasicBlock::Create(*context, "return_as_is", current_func);
+        builder->CreateCondBr(is_callable, do_direct_call, return_as_is);
+
+        // Return non-callable value as-is (e.g., cons pair from Y combinator)
+        builder->SetInsertPoint(return_as_is);
+        Value* as_is_result = func_result;
+        builder->CreateBr(merge_bb);
+        BasicBlock* as_is_exit_bb = builder->GetInsertBlock();
+
+        // Actually call the function pointer
+        builder->SetInsertPoint(do_direct_call);
         Value* direct_func_ptr_i64 = unpackInt64FromTaggedValue(func_result);
         Value* direct_func_ptr = builder->CreateIntToPtr(direct_func_ptr_i64, PointerType::getUnqual(*context));
 
@@ -3382,11 +3520,12 @@ private:
 
         // MERGE: PHI node to select result from all paths
         builder->SetInsertPoint(merge_bb);
-        PHINode* phi = builder->CreatePHI(tagged_value_type, results.size() + 1, "call_result");
+        PHINode* phi = builder->CreatePHI(tagged_value_type, results.size() + 2, "call_result");
         for (auto& [bb, val] : results) {
             phi->addIncoming(val, bb);
         }
         phi->addIncoming(direct_result, direct_exit_bb);
+        phi->addIncoming(as_is_result, as_is_exit_bb);
 
         return phi;
     }
@@ -4202,6 +4341,33 @@ private:
 
         std::string var_name = ast->variable.id;
 
+        // TCO FIX: Check symbol_table FIRST for parameters that might be overridden with allocas
+        // This is essential for TCO where we need to load from allocas, not use the original arguments
+        auto sym_it = symbol_table.find(var_name);
+        if (sym_it != symbol_table.end() && sym_it->second) {
+            Value* sym_val = sym_it->second;
+            // If it's an alloca (TCO parameter), load from it
+            if (isa<AllocaInst>(sym_val)) {
+                return builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+            }
+            // If it's a GlobalVariable, load from it
+            if (isa<GlobalVariable>(sym_val)) {
+                return builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+            }
+            // MUTABLE CAPTURE FIX: If it's an Argument with pointer type (closure capture storage),
+            // load the value from the pointed-to storage
+            if (isa<Argument>(sym_val) && sym_val->getType()->isPointerTy()) {
+                return builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+            }
+            // MUTABLE CAPTURE FIX: If it's any other pointer (e.g., IntToPtr result from
+            // unpacking an alloca pointer stored in closure env), load from it
+            if (sym_val->getType()->isPointerTy()) {
+                return builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+            }
+            // Otherwise return the value directly (might be a direct Argument or other value)
+            return sym_val;
+        }
+
         if (current_function) {
             for (auto& arg : current_function->args()) {
                 if (arg.getName() == var_name) {
@@ -4210,7 +4376,43 @@ private:
             }
         }
 
+        // BUILTIN FIRST-CLASS FIX: Check math builtins FIRST before function_table lookup
+        // This prevents returning raw C functions (double->double) which cause ABI mismatch
+        // when called through closure dispatch (tagged_value->tagged_value)
+        static const std::set<std::string> math_builtins = {
+            // Exponential/Logarithmic
+            "exp", "exp2", "log", "log2", "log10",
+            // Trigonometric
+            "sin", "cos", "tan", "asin", "acos", "atan",
+            // Hyperbolic
+            "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+            // Power/Root
+            "sqrt", "cbrt",
+            // Absolute/Rounding
+            "abs", "fabs", "floor", "ceil", "round", "trunc",
+            // Scheme-style names
+            "ceiling", "truncate"
+        };
+
+        if (math_builtins.count(var_name)) {
+            // Use createBuiltinUnaryMathFunction which creates a wrapper with proper ABI
+            // (tagged_value -> tagged_value) that internally unpacks, calls C function, repacks
+            Function* wrapper_func = createBuiltinUnaryMathFunction(var_name);
+            if (wrapper_func) {
+                // Create closure for the wrapper function
+                Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, int64_type);
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* packed_info = ConstantInt::get(int64_type, 0);  // No captures
+                Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+                                                         {arena_ptr, func_ptr_int, packed_info, sexpr_ptr});
+                Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
+                return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
+            }
+        }
+
         // Check function_table for function names being used as values (first-class functions)
+        // NOTE: Math builtins are handled above to avoid returning raw C functions
         auto func_it = function_table.find(var_name);
         if (func_it != function_table.end() && func_it->second) {
             // Return function pointer as a value
@@ -4245,13 +4447,8 @@ private:
             }
         }
 
-        // Unary math functions as first-class functions
-        if (var_name == "abs") {
-            Function* builtin_func = createBuiltinUnaryMathFunction(var_name);
-            if (builtin_func) {
-                return builtin_func;
-            }
-        }
+        // NOTE: abs and other unary math functions are now handled at the top of this function
+        // with proper closure wrapping (before function_table check)
 
         // List operations as first-class functions (for fold-right, map, etc.)
         // Note: cadr is handled by stdlib (lib/core/list/compound.esk), not as a builtin
@@ -4330,10 +4527,13 @@ private:
             }
         }
 
+        // NOTE: math_builtins are now handled at the top of this function
+        // (before function_table check) with proper closure wrapping
+
         eshkol_warn("Undefined variable: %s", var_name.c_str());
         return nullptr;
     }
-    
+
     Value* codegenOperation(const eshkol_operations_t* op) {
         switch (op->op) {
             case ESHKOL_INVALID_OP:
@@ -4412,8 +4612,13 @@ private:
             case ESHKOL_DIFF_OP:
                 return codegenDiff(op);
                 
-            case ESHKOL_DERIVATIVE_OP:
-                return autodiff_->derivative(op);
+            case ESHKOL_DERIVATIVE_OP: {
+                // Try autodiff first (handles 2-arg form)
+                Value* result = autodiff_->derivative(op);
+                if (result) return result;
+                // Fall back to local codegen (handles higher-order 1-arg form)
+                return codegenDerivative(op);
+            }
                 
             case ESHKOL_GRADIENT_OP:
                 return codegenGradient(op);
@@ -4529,19 +4734,83 @@ private:
             eshkol_debug("Function %s uses rest parameter: %s", func_name, op->define_op.rest_param);
         }
 
+        // TCO SETUP: Check if this function is self-tail-recursive
+        bool use_tco = false;
+        BasicBlock* tco_loop_bb = nullptr;
+
+        bool is_tail_rec = op->define_op.value && isSelfTailRecursive(op, func_name);
+        if (is_tail_rec) {
+            use_tco = true;
+            eshkol_debug("TCO: Enabling tail call optimization for define %s", func_name);
+
+            // Set up TCO context in binding module
+            auto& tco_ctx = binding_->getTCOContext();
+            tco_ctx.func_name = func_name;
+            tco_ctx.enabled = true;
+            tco_ctx.param_allocas.clear();
+            tco_ctx.param_names.clear();
+
+            // Convert parameters to allocas for mutability
+            arg_it = function->arg_begin();
+            if (op->define_op.parameters) {
+                for (uint64_t i = 0; i < op->define_op.num_params && arg_it != function->arg_end(); ++i, ++arg_it) {
+                    if (op->define_op.parameters[i].type == ESHKOL_VAR &&
+                        op->define_op.parameters[i].variable.id) {
+                        std::string param_name = op->define_op.parameters[i].variable.id;
+
+                        // Create alloca for this parameter
+                        AllocaInst* param_alloca = builder->CreateAlloca(
+                            tagged_value_type, nullptr, param_name + "_tco");
+
+                        // Store initial argument value
+                        builder->CreateStore(&(*arg_it), param_alloca);
+
+                        tco_ctx.param_allocas.push_back(param_alloca);
+                        tco_ctx.param_names.push_back(param_name);
+                        symbol_table[param_name] = param_alloca;  // Override with alloca
+                    }
+                }
+            }
+
+            // Create loop header block
+            tco_loop_bb = BasicBlock::Create(*context, "tco_loop", function);
+            tco_ctx.loop_header = tco_loop_bb;
+
+            // Branch to loop header
+            builder->CreateBr(tco_loop_bb);
+            builder->SetInsertPoint(tco_loop_bb);
+        }
+
         // Generate function body
         Value* body_result = nullptr;
         if (op->define_op.value) {
             body_result = codegenAST(op->define_op.value);
         }
+
+        // Clear TCO context after body generation
+        if (use_tco) {
+            binding_->getTCOContext().enabled = false;
+            binding_->getTCOContext().func_name = "";
+            binding_->getTCOContext().loop_header = nullptr;
+        }
         eshkol_debug("Function %s body_result: %p", func_name, body_result);
-        
-        // Ensure we're still in the correct insertion point
-        if (!builder->GetInsertBlock() || builder->GetInsertBlock()->getTerminator()) {
-            eshkol_error("Invalid insertion point in function %s", func_name);
+
+        // TCO FIX: Check if block is already terminated (tail call path)
+        BasicBlock* current_bb = builder->GetInsertBlock();
+        if (!current_bb) {
+            eshkol_error("No insertion block in function %s", func_name);
             return nullptr;
         }
-        
+
+        // If block is already terminated (TCO tail call), skip return generation
+        if (current_bb->getTerminator()) {
+            // Block was terminated by a tail call jump - this is expected for TCO
+            eshkol_debug("Function %s: block already terminated (TCO path)", func_name);
+            symbol_table = prev_symbols;
+            current_function = prev_function;
+            return function;
+        }
+
         // Return the result - pack to tagged_value since functions now return tagged_value
         if (body_result) {
             // If body_result is already a tagged_value, return it directly
@@ -4689,10 +4958,49 @@ private:
                     captured_val = builder->CreateLoad(
                         dyn_cast<GlobalVariable>(var_value)->getValueType(), var_value);
                 } else if (isa<Argument>(var_value)) {
-                    // Function parameters are stored as Argument values directly
-                    // They are already loaded values, use them as-is
-                    captured_val = var_value;
-                    eshkol_debug("Capturing function parameter: %s", var_name.c_str());
+                    // NESTED FUNCTION FIX: Check if the Argument belongs to the current function
+                    Argument* arg = cast<Argument>(var_value);
+                    Function* arg_parent = arg->getParent();
+                    Function* current_func = builder->GetInsertBlock()->getParent();
+
+                    if (arg_parent != current_func) {
+                        // The Argument is from a different function (e.g., grandparent function)
+                        // We need to find it in our function's capture parameters
+                        bool found_in_captures = false;
+                        for (auto& curr_arg : current_func->args()) {
+                            std::string arg_name = curr_arg.getName().str();
+                            if (arg_name == "captured_" + var_name) {
+                                // Found the capture parameter in current function
+                                if (curr_arg.getType()->isPointerTy()) {
+                                    captured_val = builder->CreateLoad(tagged_value_type, &curr_arg);
+                                } else {
+                                    captured_val = &curr_arg;
+                                }
+                                found_in_captures = true;
+                                eshkol_debug("Using current function's capture for %s (instead of outer arg)", var_name.c_str());
+                                break;
+                            }
+                        }
+                        if (!found_in_captures) {
+                            // Check GlobalVariable captures
+                            std::string capture_key = current_func->getName().str() + "_capture_" + var_name;
+                            auto cap_it = global_symbol_table.find(capture_key);
+                            if (cap_it != global_symbol_table.end() && isa<GlobalVariable>(cap_it->second)) {
+                                captured_val = builder->CreateLoad(tagged_value_type, cap_it->second);
+                                eshkol_debug("Using GlobalVariable capture for %s", var_name.c_str());
+                            } else {
+                                eshkol_warn("Cannot capture %s from outer function - not found in current function", var_name.c_str());
+                                captured_val = nullptr;
+                            }
+                        }
+                    } else if (var_value->getType()->isPointerTy()) {
+                        // This is a pointer to a captured variable
+                        captured_val = builder->CreateLoad(tagged_value_type, var_value);
+                    } else {
+                        // Function parameters are already loaded
+                        captured_val = var_value;
+                        eshkol_debug("Capturing function parameter: %s", var_name.c_str());
+                    }
                 }
             }
 
@@ -5864,10 +6172,11 @@ private:
         }
 
         // Determine if var_ptr is a pointer we can store to
-        // MUTABLE CAPTURE FIX: Also accept Argument pointers (for closure capture storage)
-        // Valid storage types: GlobalVariable, AllocaInst, or Argument (pointer to closure env slot)
+        // MUTABLE CAPTURE FIX: Also accept any pointer type (for closure capture storage)
+        // Valid storage types: GlobalVariable, AllocaInst, Argument pointer, or any pointer value
+        // (e.g., IntToPtr result from unpacking an alloca pointer stored in closure env)
         bool is_valid_storage = isa<GlobalVariable>(var_ptr) || isa<AllocaInst>(var_ptr) ||
-                                (isa<Argument>(var_ptr) && var_ptr->getType()->isPointerTy());
+                                var_ptr->getType()->isPointerTy();
 
         if (is_valid_storage) {
             // Get the storage type
@@ -5986,6 +6295,45 @@ private:
             return codegenClosureCall(func_result, call_args);
         }
 
+        // Handle operation-result-as-function: ((derivative f) x), ((gradient f) p), ((lambda ...) x), etc.
+        // Operations like derivative/gradient/lambda return closures that can be called
+        if (op->call_op.func->type == ESHKOL_OP) {
+            eshkol_op_t inner_op = op->call_op.func->operation.op;
+            // Check if this is an operation that returns a callable closure
+            if (inner_op == ESHKOL_DERIVATIVE_OP || inner_op == ESHKOL_GRADIENT_OP ||
+                inner_op == ESHKOL_LAMBDA_OP || inner_op == ESHKOL_JACOBIAN_OP) {
+                // Evaluate the operation to get the closure value
+                Value* func_result = codegenAST(op->call_op.func);
+                if (!func_result) {
+                    eshkol_error("Failed to evaluate function-returning operation");
+                    return nullptr;
+                }
+
+                // Generate all arguments
+                std::vector<Value*> call_args;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    Value* arg = codegenAST(&op->call_op.variables[i]);
+                    if (!arg) continue;
+
+                    // Pack to tagged_value if needed
+                    if (arg->getType() != tagged_value_type) {
+                        if (arg->getType()->isIntegerTy(64)) {
+                            arg = packInt64ToTaggedValue(arg, true);
+                        } else if (arg->getType()->isDoubleTy()) {
+                            arg = packDoubleToTaggedValue(arg);
+                        } else {
+                            TypedValue tv = detectValueType(arg);
+                            arg = typedValueToTaggedValue(tv);
+                        }
+                    }
+                    call_args.push_back(arg);
+                }
+
+                // Call the returned closure with the arguments
+                return codegenClosureCall(func_result, call_args);
+            }
+        }
+
         // Handle variable function references (existing code)
         if (op->call_op.func->type != ESHKOL_VAR || !op->call_op.func->variable.id) {
             eshkol_error("Call expression requires variable or inline lambda");
@@ -5993,6 +6341,17 @@ private:
         }
         
         std::string func_name = op->call_op.func->variable.id;
+
+        // TCO CHECK: If TCO is active and this is a self-recursive call, use tail call jump
+        // Check the binding module's TCO context (set by letrec during lambda generation)
+        if (binding_ && binding_->isTCOActive(func_name)) {
+            auto& tco_ctx = binding_->getTCOContext();
+            Value* tco_result = codegenTailCallFromContext(op, tco_ctx);
+            if (tco_result) {
+                return tco_result;  // Tail call generated as jump
+            }
+            // If codegenTailCall returns nullptr, fall through to normal call
+        }
 
         // USER-DEFINED FUNCTION SHADOWING: Check if this function name is user-defined
         // before checking builtins. User-defined functions should shadow builtins.
@@ -6048,6 +6407,7 @@ private:
         if (func_name == "sin") return codegenMathFunction(op, "sin");
         if (func_name == "cos") return codegenMathFunction(op, "cos");
         if (func_name == "exp") return codegenMathFunction(op, "exp");
+        if (func_name == "exp2") return codegenMathFunction(op, "exp2");
         if (func_name == "log") return codegenMathFunction(op, "log");
 
         // Additional trigonometric functions
@@ -6068,6 +6428,9 @@ private:
         // Logarithmic functions
         if (func_name == "log10") return codegenMathFunction(op, "log10");
         if (func_name == "log2") return codegenMathFunction(op, "log2");
+
+        // Root functions (also need dual number support for autodiff)
+        if (func_name == "sqrt") return codegenMathFunction(op, "sqrt");
 
         // Numeric/rounding functions
         if (func_name == "abs") return codegenMathFunction(op, "fabs");
@@ -6092,8 +6455,20 @@ private:
         if (func_name == "min") return codegenMinMax(op, true);
         if (func_name == "max") return codegenMinMax(op, false);
 
-        // Expt is an alias for pow
-        if (func_name == "expt") return codegenPow(op);
+        // Power function with dual number support for autodiff
+        if (func_name == "pow" || func_name == "expt") {
+            if (op->call_op.num_vars != 2) {
+                eshkol_warn("pow/expt requires exactly 2 arguments");
+                return nullptr;
+            }
+            // Use codegenTypedAST and convert to tagged_value like other arithmetic ops
+            TypedValue tv_base = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue tv_exp = codegenTypedAST(&op->call_op.variables[1]);
+            if (!tv_base.llvm_value || !tv_exp.llvm_value) return nullptr;
+            Value* base = typedValueToTaggedValue(tv_base);
+            Value* exp = typedValueToTaggedValue(tv_exp);
+            return arith_->pow(base, exp);
+        }
 
         // Logical operators (short-circuit)
         if (func_name == "and") return codegenAnd(op);
@@ -6640,6 +7015,39 @@ private:
                     // Use codegenClosureCall which properly handles captured values
                     return codegenClosureCall(loaded_val, call_args);
                 }
+                // MUTABLE CAPTURE FIX: Handle IntToPtrInst - this is a pointer to the outer scope's alloca
+                // Created by the pointer-passing scheme for captured let-bound variables
+                // The pointer points to an alloca containing a tagged_value (closure)
+                if (isa<IntToPtrInst>(func_val) ||
+                    (func_val->getType()->isPointerTy() && !isa<AllocaInst>(func_val) &&
+                     !isa<GlobalVariable>(func_val) && !isa<Argument>(func_val))) {
+                    // Load the closure from the pointed-to location
+                    Value* loaded_val = builder->CreateLoad(tagged_value_type, func_val, "load_captured_func");
+
+                    // Generate all arguments first
+                    std::vector<Value*> call_args;
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        if (!arg) continue;
+
+                        // Pack to tagged_value if needed
+                        if (arg->getType() != tagged_value_type) {
+                            if (arg->getType()->isIntegerTy(64)) {
+                                arg = packInt64ToTaggedValue(arg, true);
+                            } else if (arg->getType()->isDoubleTy()) {
+                                arg = packDoubleToTaggedValue(arg);
+                            } else {
+                                TypedValue tv = detectValueType(arg);
+                                arg = typedValueToTaggedValue(tv);
+                            }
+                        }
+                        call_args.push_back(arg);
+                    }
+
+                    eshkol_debug("Calling captured function from pointer (IntToPtrInst): %s", func_name.c_str());
+                    // Use codegenClosureCall which properly handles captured values
+                    return codegenClosureCall(loaded_val, call_args);
+                }
             }
 
             if (var_value) {
@@ -6716,8 +7124,23 @@ private:
                 }
 
                 if (!callee) {
-                    eshkol_warn("Could not resolve closure function for: %s", func_name.c_str());
-                    return ConstantInt::get(int64_type, 0); // Return 0 as placeholder
+                    // Could not resolve closure - generate runtime error
+                    eshkol_error("Could not resolve closure function for: %s", func_name.c_str());
+
+                    Function* printf_func = function_table["printf"];
+                    Function* exit_func = function_table["exit"];
+                    if (printf_func && exit_func) {
+                        std::string error_msg = "Error: Could not resolve function '" + func_name + "'\n";
+                        Value* error_str = builder->CreateGlobalStringPtr(error_msg, "unresolved_func_error");
+                        builder->CreateCall(printf_func, {error_str});
+                        builder->CreateCall(exit_func, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
+                        builder->CreateUnreachable();
+                        // Create a new block for any code that might follow (won't be reached)
+                        Function* current_func = builder->GetInsertBlock()->getParent();
+                        BasicBlock* dead_block = BasicBlock::Create(*context, "unreachable_continue", current_func);
+                        builder->SetInsertPoint(dead_block);
+                    }
+                    return packNullToTaggedValue();
                 }
             } else {
                 // REPL FIX: Check if symbol exists in REPL registry (from previous evaluation)
@@ -6768,8 +7191,26 @@ private:
                 }
 
                 // Not in symbol_table at all - truly unknown function
-                eshkol_warn("Unknown function: %s", func_name.c_str());
-                return nullptr;
+                // Generate runtime error instead of silently returning null
+                eshkol_error("Unknown function: %s", func_name.c_str());
+
+                // Generate code to print error and exit at runtime
+                Function* printf_func = function_table["printf"];
+                Function* exit_func = function_table["exit"];
+                if (printf_func && exit_func) {
+                    // Create error message string
+                    std::string error_msg = "Error: Unknown function '" + func_name + "'\n";
+                    Value* error_str = builder->CreateGlobalStringPtr(error_msg, "unknown_func_error");
+                    builder->CreateCall(printf_func, {error_str});
+                    builder->CreateCall(exit_func, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
+                    // Create unreachable and continue block for LLVM
+                    builder->CreateUnreachable();
+                    // Create a new block for any code that might follow (won't be reached)
+                    Function* current_func = builder->GetInsertBlock()->getParent();
+                    BasicBlock* dead_block = BasicBlock::Create(*context, "unreachable_continue", current_func);
+                    builder->SetInsertPoint(dead_block);
+                }
+                return packNullToTaggedValue();
             }
         }
 
@@ -6858,7 +7299,49 @@ private:
 
             eshkol_debug("Variadic call: %zu fixed args + rest list", call_args.size() - 1);
 
-            // Make the call
+            // VARIADIC CLOSURE FIX: Check if this function has captures
+            // For variadic functions, the signature is (fixed_params..., rest_list, captures...)
+            // If func has more params than fixed_params + 1 (rest list), it has captures
+            size_t expected_params_without_captures = fixed_params + 1;  // fixed params + rest list
+            FunctionType* vfunc_type = callee->getFunctionType();
+            if (vfunc_type->getNumParams() > expected_params_without_captures) {
+                // This is a variadic closure - need to go through codegenClosureCall
+                // First, find the closure value for this function
+                std::string func_name = op->call_op.func->variable.id;
+                Value* closure_val = nullptr;
+
+                // Try symbol_table first
+                auto sit = symbol_table.find(func_name);
+                if (sit != symbol_table.end()) {
+                    Value* val = sit->second;
+                    if (isa<AllocaInst>(val)) {
+                        closure_val = builder->CreateLoad(tagged_value_type, val);
+                    } else if (val->getType() == tagged_value_type) {
+                        closure_val = val;
+                    }
+                }
+
+                // Try global_symbol_table
+                if (!closure_val) {
+                    auto git = global_symbol_table.find(func_name);
+                    if (git != global_symbol_table.end()) {
+                        Value* val = git->second;
+                        if (isa<GlobalVariable>(val)) {
+                            closure_val = builder->CreateLoad(tagged_value_type, val);
+                        } else if (val->getType() == tagged_value_type) {
+                            closure_val = val;
+                        }
+                    }
+                }
+
+                if (closure_val) {
+                    eshkol_debug("Variadic closure call to %s - routing through codegenClosureCall",
+                                callee_name.c_str());
+                    return codegenClosureCall(closure_val, call_args);
+                }
+            }
+
+            // Make the call (no captures)
             return builder->CreateCall(callee, call_args);
         }
 
@@ -6990,7 +7473,37 @@ private:
         
         // Add captured arguments for closure calls
         if (is_closure_call) {
-            size_t num_captures = func_type->getNumParams() - op->call_op.num_vars;
+            // ARITY FIX: Use actual capture count from nested_function_captures, not the difference
+            // The old code `func_type->getNumParams() - op->call_op.num_vars` is wrong when
+            // a function is called with fewer arguments than expected (arity mismatch)
+            size_t actual_captures = 0;
+            auto captures_it = nested_function_captures.find(func_name);
+            if (captures_it != nested_function_captures.end()) {
+                actual_captures = captures_it->second.size();
+            } else {
+                // LETREC FIX: For letrec bindings, func_name is "process" but captures
+                // are registered under the actual lambda name (callee->getName()).
+                // Try looking up by the lambda function's actual name.
+                std::string lambda_name = callee->getName().str();
+                captures_it = nested_function_captures.find(lambda_name);
+                if (captures_it != nested_function_captures.end()) {
+                    actual_captures = captures_it->second.size();
+                    eshkol_debug("Found captures for %s under lambda name %s",
+                                func_name.c_str(), lambda_name.c_str());
+                }
+            }
+
+            // Calculate expected regular parameters (total params - captures)
+            size_t expected_params = func_type->getNumParams() - actual_captures;
+
+            // Check for arity mismatch
+            if (op->call_op.num_vars != expected_params) {
+                eshkol_error("Arity mismatch: %s expects %zu arguments but got %llu",
+                            func_name.c_str(), expected_params, (unsigned long long)op->call_op.num_vars);
+                return nullptr;
+            }
+
+            size_t num_captures = actual_captures;
 
             eshkol_debug("Closure call to %s needs %zu captured arguments",
                         func_name.c_str(), num_captures);
@@ -8807,6 +9320,264 @@ private:
         return codegenArenaConsCell(car_val, cdr_val);
     }
 
+    // ===== TAIL CALL OPTIMIZATION SUPPORT =====
+    // These functions detect and handle tail-recursive patterns to prevent stack overflow
+
+    // State for tail call optimization during lambda codegen
+    struct TailCallContext {
+        std::string func_name = "";           // Name of function being compiled
+        BasicBlock* loop_header = nullptr;    // Loop header for tail call transformation
+        std::vector<AllocaInst*> param_allocas;  // Allocas for mutable parameters
+        std::vector<std::string> param_names;    // Parameter names for lookup
+        bool enabled = false;                 // Whether TCO is enabled for current lambda
+    };
+    TailCallContext tco_context = {};
+
+    // Check if an AST node is in tail position within its parent
+    // Note: IF_OP uses call_op structure with variables[0]=cond, [1]=then, [2]=else
+    bool isInTailPosition(const eshkol_ast_t* expr, const eshkol_ast_t* body) {
+        if (!expr || !body) return false;
+
+        // Direct match - expr IS the body
+        if (expr == body) return true;
+
+        // Handle operations
+        if (body->type == ESHKOL_OP) {
+            const eshkol_operations_t* op = &body->operation;
+
+            switch (op->op) {
+                case ESHKOL_CALL_OP: {
+                    // PARSER QUIRK: "if" is stored as CALL_OP with func name "if"
+                    std::string call_name = (op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
+                                            op->call_op.func->variable.id) ?
+                                            op->call_op.func->variable.id : "";
+                    if (call_name == "if") {
+                        // IF is stored as CALL_OP: variables[0]=cond, [1]=then, [2]=else
+                        // Both branches (then/else) are in tail position
+                        if (op->call_op.num_vars >= 2 &&
+                            isInTailPosition(expr, &op->call_op.variables[1])) {
+                            return true;
+                        }
+                        if (op->call_op.num_vars >= 3 &&
+                            isInTailPosition(expr, &op->call_op.variables[2])) {
+                            return true;
+                        }
+                        return false;
+                    }
+                    // Regular call: check if expr IS this call
+                    return (expr->type == ESHKOL_OP && &expr->operation == op);
+                }
+
+                case ESHKOL_IF_OP:
+                    // IF_OP uses call_op: variables[0]=cond, [1]=then, [2]=else
+                    // Both branches (then/else) are in tail position
+                    if (op->call_op.num_vars >= 2 &&
+                        isInTailPosition(expr, &op->call_op.variables[1])) {
+                        return true;
+                    }
+                    if (op->call_op.num_vars >= 3 &&
+                        isInTailPosition(expr, &op->call_op.variables[2])) {
+                        return true;
+                    }
+                    return false;
+
+                case ESHKOL_LET_OP:
+                case ESHKOL_LET_STAR_OP:
+                case ESHKOL_LETREC_OP:
+                    // Body of let is in tail position
+                    return isInTailPosition(expr, op->let_op.body);
+
+                case ESHKOL_SEQUENCE_OP:
+                    // Last expression in sequence is in tail position
+                    if (op->sequence_op.num_expressions > 0) {
+                        return isInTailPosition(expr,
+                            &op->sequence_op.expressions[op->sequence_op.num_expressions - 1]);
+                    }
+                    return false;
+
+                default:
+                    return false;
+            }
+        }
+
+        return false;
+    }
+
+    // Find all tail calls to a specific function name in an AST
+    // Note: IF_OP uses call_op structure with variables[0]=cond, [1]=then, [2]=else
+    void findTailCalls(const eshkol_ast_t* ast, const eshkol_ast_t* body,
+                       const std::string& func_name,
+                       std::vector<const eshkol_operations_t*>& tail_calls) {
+        if (!ast) return;
+
+        if (ast->type == ESHKOL_OP) {
+            const eshkol_operations_t* op = &ast->operation;
+
+            switch (op->op) {
+                case ESHKOL_CALL_OP: {
+                    // Check if this is a call to the function we're looking for
+                    std::string call_name = (op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
+                                            op->call_op.func->variable.id) ?
+                                            op->call_op.func->variable.id : "(unknown)";
+
+                    // PARSER QUIRK: "if" is stored as CALL_OP with func name "if"
+                    // Handle it specially as an if expression
+                    if (call_name == "if") {
+                        // IF is stored as CALL_OP: variables[0]=cond, [1]=then, [2]=else
+                        // Both branches (then/else) are in tail position
+                        if (op->call_op.num_vars >= 1) {
+                            findTailCalls(&op->call_op.variables[0], body, func_name, tail_calls);
+                        }
+                        if (op->call_op.num_vars >= 2) {
+                            findTailCalls(&op->call_op.variables[1], body, func_name, tail_calls);
+                        }
+                        if (op->call_op.num_vars >= 3) {
+                            findTailCalls(&op->call_op.variables[2], body, func_name, tail_calls);
+                        }
+                        break;
+                    }
+
+                    if (op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
+                        op->call_op.func->variable.id &&
+                        std::string(op->call_op.func->variable.id) == func_name) {
+                        // Check if this call is in tail position
+                        bool in_tail = isInTailPosition(ast, body);
+                        if (in_tail) {
+                            tail_calls.push_back(op);
+                        }
+                    }
+                    // Recurse into arguments
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        findTailCalls(&op->call_op.variables[i], body, func_name, tail_calls);
+                    }
+                    break;
+                }
+
+                case ESHKOL_IF_OP:
+                    // IF_OP uses call_op: variables[0]=cond, [1]=then, [2]=else
+                    // Search condition and both branches
+                    if (op->call_op.num_vars >= 1) {
+                        findTailCalls(&op->call_op.variables[0], body, func_name, tail_calls);
+                    }
+                    if (op->call_op.num_vars >= 2) {
+                        findTailCalls(&op->call_op.variables[1], body, func_name, tail_calls);
+                    }
+                    if (op->call_op.num_vars >= 3) {
+                        findTailCalls(&op->call_op.variables[2], body, func_name, tail_calls);
+                    }
+                    break;
+
+                case ESHKOL_LET_OP:
+                case ESHKOL_LET_STAR_OP:
+                case ESHKOL_LETREC_OP:
+                    // Search bindings
+                    for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                        const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                        if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
+                            findTailCalls(binding->cons_cell.cdr, body, func_name, tail_calls);
+                        }
+                    }
+                    findTailCalls(op->let_op.body, body, func_name, tail_calls);
+                    break;
+
+                case ESHKOL_SEQUENCE_OP:
+                    for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                        findTailCalls(&op->sequence_op.expressions[i], body, func_name, tail_calls);
+                    }
+                    break;
+
+                case ESHKOL_LAMBDA_OP:
+                    // Don't recurse into nested lambdas - they have their own scope
+                    break;
+
+                default:
+                    break;
+            }
+        }
+    }
+
+    // Check if a lambda/function is self-tail-recursive (calls itself only in tail position)
+    bool isSelfTailRecursive(const eshkol_operations_t* op, const std::string& func_name) {
+        if (!op) return false;
+
+        // Get the body based on operation type
+        const eshkol_ast_t* body = nullptr;
+        if (op->op == ESHKOL_LAMBDA_OP) {
+            body = op->lambda_op.body;
+        } else if (op->op == ESHKOL_DEFINE_OP && op->define_op.is_function) {
+            body = op->define_op.value;
+        } else {
+            return false;
+        }
+
+        if (!body) return false;
+
+        std::vector<const eshkol_operations_t*> tail_calls;
+        findTailCalls(body, body, func_name, tail_calls);
+
+        // Require at least one tail call to enable TCO
+        return !tail_calls.empty();
+    }
+
+    // Generate a tail call as a jump back to loop header (TCO transformation)
+    // Uses the binding module's TCO context
+    Value* codegenTailCallFromContext(const eshkol_operations_t* call_op,
+                                       eshkol::BindingCodegen::TailCallContext& tco_ctx) {
+        eshkol_debug("TCO: codegenTailCallFromContext called, enabled=%d, loop_header=%p",
+                     tco_ctx.enabled, (void*)tco_ctx.loop_header);
+
+        if (!tco_ctx.enabled || !tco_ctx.loop_header) {
+            return nullptr;  // TCO not active, caller should use normal call
+        }
+
+        // Check arity matches
+        if (call_op->call_op.num_vars != tco_ctx.param_allocas.size()) {
+            eshkol_warn("TCO: arity mismatch in tail call to %s (expected %zu, got %llu)",
+                       tco_ctx.func_name.c_str(), tco_ctx.param_allocas.size(),
+                       (unsigned long long)call_op->call_op.num_vars);
+            return nullptr;
+        }
+
+        eshkol_debug("TCO: Generating tail call jump for %s", tco_ctx.func_name.c_str());
+
+        // Evaluate all arguments first (to temporaries)
+        std::vector<Value*> new_values;
+        for (uint64_t i = 0; i < call_op->call_op.num_vars; i++) {
+            Value* arg = codegenAST(&call_op->call_op.variables[i]);
+            if (!arg) {
+                eshkol_error("TCO: Failed to evaluate argument %llu", (unsigned long long)i);
+                return nullptr;
+            }
+            // Pack to tagged_value if needed
+            if (arg->getType() != tagged_value_type) {
+                if (arg->getType()->isIntegerTy(64)) {
+                    arg = packInt64ToTaggedValue(arg, true);
+                } else if (arg->getType()->isDoubleTy()) {
+                    arg = packDoubleToTaggedValue(arg);
+                } else {
+                    TypedValue tv = detectValueType(arg);
+                    arg = typedValueToTaggedValue(tv);
+                }
+            }
+            new_values.push_back(arg);
+        }
+
+        // Store all new values to parameter allocas
+        for (size_t i = 0; i < new_values.size(); i++) {
+            builder->CreateStore(new_values[i], tco_ctx.param_allocas[i]);
+        }
+
+        // Create dummy value BEFORE the branch (can't add instructions after terminator)
+        Value* dummy = packNullToTaggedValue();
+
+        // Jump back to loop header
+        builder->CreateBr(tco_ctx.loop_header);
+
+        // Return the dummy value (this block is now terminated, caller won't use the value)
+        return dummy;
+    }
+    // ===== END TAIL CALL OPTIMIZATION SUPPORT =====
+
     // Helper function to find free variables in a lambda body
     void findFreeVariables(const eshkol_ast_t* ast,
                           const std::unordered_map<std::string, Value*>& current_scope,
@@ -9038,6 +9809,36 @@ private:
                         }
                         break;
                     }
+                    case ESHKOL_GRADIENT_OP:
+                        // GRADIENT FREE VARS FIX: Search both function and point expressions
+                        if (op->gradient_op.function) {
+                            findFreeVariables(op->gradient_op.function, current_scope, parameters, num_params, free_vars);
+                        }
+                        if (op->gradient_op.point) {
+                            findFreeVariables(op->gradient_op.point, current_scope, parameters, num_params, free_vars);
+                        }
+                        break;
+                    case ESHKOL_DERIVATIVE_OP:
+                        // DERIVATIVE FREE VARS FIX: Search both function and point expressions
+                        if (op->derivative_op.function) {
+                            findFreeVariables(op->derivative_op.function, current_scope, parameters, num_params, free_vars);
+                        }
+                        if (op->derivative_op.point) {
+                            findFreeVariables(op->derivative_op.point, current_scope, parameters, num_params, free_vars);
+                        }
+                        break;
+                    case ESHKOL_DIRECTIONAL_DERIV_OP:
+                        // DIRECTIONAL_DERIV FREE VARS FIX: Search function, point, and direction
+                        if (op->directional_deriv_op.function) {
+                            findFreeVariables(op->directional_deriv_op.function, current_scope, parameters, num_params, free_vars);
+                        }
+                        if (op->directional_deriv_op.point) {
+                            findFreeVariables(op->directional_deriv_op.point, current_scope, parameters, num_params, free_vars);
+                        }
+                        if (op->directional_deriv_op.direction) {
+                            findFreeVariables(op->directional_deriv_op.direction, current_scope, parameters, num_params, free_vars);
+                        }
+                        break;
                     default:
                         break;
                 }
@@ -9097,11 +9898,19 @@ private:
         for (const std::string& var_name : free_vars) {
             Value* var_value = nullptr;
             Value* captured_val = nullptr;
+            bool was_alloca = false;  // Track if original was let-bound (alloca)
 
             // Try local symbol table first, then global symbol table
             auto var_it = symbol_table.find(var_name);
             if (var_it != symbol_table.end() && var_it->second) {
                 var_value = var_it->second;
+                // Check if this is a let-bound alloca (not a TCO parameter alloca)
+                // TCO converts parameters to allocas with names ending in "_tco"
+                // We only want to create GlobalVariables for true let-bound variables
+                if (isa<AllocaInst>(var_value)) {
+                    std::string alloca_name = var_value->getName().str();
+                    was_alloca = (alloca_name.find("_tco") == std::string::npos);
+                }
             } else {
                 // GLOBAL CAPTURE FIX: Also check global_symbol_table for global variables
                 auto global_it = global_symbol_table.find(var_name);
@@ -9121,10 +9930,49 @@ private:
                     captured_val = builder->CreateLoad(
                         dyn_cast<GlobalVariable>(var_value)->getValueType(), var_value);
                 } else if (isa<Argument>(var_value)) {
-                    // Function parameters are stored as Argument values directly
-                    // They are already loaded values, use them as-is
-                    captured_val = var_value;
-                    eshkol_debug("Capturing function parameter: %s", var_name.c_str());
+                    // NESTED FUNCTION FIX: Check if the Argument belongs to the current function
+                    Argument* arg = cast<Argument>(var_value);
+                    Function* arg_parent = arg->getParent();
+                    Function* current_func = builder->GetInsertBlock()->getParent();
+
+                    if (arg_parent != current_func) {
+                        // The Argument is from a different function (e.g., grandparent function)
+                        // We need to find it in our function's capture parameters
+                        bool found_in_captures = false;
+                        for (auto& curr_arg : current_func->args()) {
+                            std::string arg_name = curr_arg.getName().str();
+                            if (arg_name == "captured_" + var_name) {
+                                // Found the capture parameter in current function
+                                if (curr_arg.getType()->isPointerTy()) {
+                                    captured_val = builder->CreateLoad(tagged_value_type, &curr_arg);
+                                } else {
+                                    captured_val = &curr_arg;
+                                }
+                                found_in_captures = true;
+                                eshkol_debug("Using current function's capture for %s (instead of outer arg)", var_name.c_str());
+                                break;
+                            }
+                        }
+                        if (!found_in_captures) {
+                            // Check GlobalVariable captures
+                            std::string capture_key = current_func->getName().str() + "_capture_" + var_name;
+                            auto cap_it = global_symbol_table.find(capture_key);
+                            if (cap_it != global_symbol_table.end() && isa<GlobalVariable>(cap_it->second)) {
+                                captured_val = builder->CreateLoad(tagged_value_type, cap_it->second);
+                                eshkol_debug("Using GlobalVariable capture for %s", var_name.c_str());
+                            } else {
+                                eshkol_warn("Cannot capture %s from outer function - not found in current function", var_name.c_str());
+                                captured_val = nullptr;
+                            }
+                        }
+                    } else if (var_value->getType()->isPointerTy()) {
+                        // This is a pointer to a captured variable
+                        captured_val = builder->CreateLoad(tagged_value_type, var_value);
+                    } else {
+                        // Function parameters are already loaded
+                        captured_val = var_value;
+                        eshkol_debug("Capturing function parameter: %s", var_name.c_str());
+                    }
                 }
             }
             // REPL MODE: Check REPL registry for cross-module captures
@@ -9183,43 +10031,21 @@ private:
                 }
             }
 
-            // HIGHER-ORDER FUNCTION FIX: Only use GlobalVariables for top-level lambdas
-            // For lambdas inside functions (like compose), GlobalVariables are shared across
-            // all calls which breaks closure semantics. Only use GlobalVariables when:
-            // 1. At top level (__lambda_init__, main) - single execution
-            // 2. In REPL mode - needs cross-module access
-            std::string curr_func_name = current_function ? current_function->getName().str() : "";
-            bool is_top_level = (curr_func_name == "__lambda_init__" ||
-                                 curr_func_name == "main" ||
-                                 curr_func_name.find("__anon_init") == 0);
+            // CLOSURE FIX: Don't create GlobalVariables for captures in Phase 1.
+            // All captures are stored in the closure environment (created in the
+            // closure allocation code below). This ensures:
+            // 1. Each closure instance has its own captured values
+            // 2. Recursive functions work correctly (no value overwriting)
+            // 3. Higher-order functions work correctly
+            //
+            // The lambda body will access captures via capture parameters that
+            // point to slots in the closure environment. set! inside the lambda
+            // will modify those slots, allowing mutations to persist across calls.
+            //
+            // Note: This means the outer scope won't see set! mutations made inside
+            // the lambda (the outer scope uses its original alloca). This is a
+            // trade-off to make recursive functions and higher-order functions work.
 
-            std::string capture_key = lambda_name + "_capture_" + var_name;
-
-            if (is_top_level || g_repl_mode_enabled) {
-                // Top-level: create GlobalVariable for persistent storage
-                GlobalValue::LinkageTypes linkage = g_repl_mode_enabled ?
-                    GlobalValue::ExternalLinkage : GlobalValue::InternalLinkage;
-                GlobalVariable* storage = new GlobalVariable(
-                    *module,
-                    tagged_value_type,
-                    false, // not constant
-                    linkage,
-                    UndefValue::get(tagged_value_type), // Initial value
-                    capture_key
-                );
-
-                builder->CreateStore(captured_val, storage);
-                // Register in both symbol tables for cross-scope access
-                symbol_table[capture_key] = storage;
-                global_symbol_table[capture_key] = storage;
-                eshkol_debug("Stored capture (GlobalVariable, top-level): %s -> %s", var_name.c_str(), capture_key.c_str());
-            } else {
-                // Inside a function: don't create GlobalVariable
-                // The captured values will be passed as arguments at call time
-                // and stored in local allocas (lambda body codegen fallback path)
-                eshkol_debug("Skipped GlobalVariable (inside function %s): %s",
-                            curr_func_name.c_str(), var_name.c_str());
-            }
         }
         
         // ===== END PHASE 1 =====
@@ -9315,27 +10141,51 @@ private:
         }
 
         // MUTABLE CAPTURE FIX: Handle captured variables from closure environment
-        // The capture parameter is now a POINTER to the closure environment slot.
-        // Using it directly allows set! to modify the closure environment.
+        // For let-bound variables (allocas), the closure env contains a POINTER to the
+        // original alloca (packed as int64). We unpack it and use it directly, so both
+        // the lambda and the outer scope access the same storage.
+        // For other captures (function params, globals), the closure env contains the
+        // VALUE directly, and we use the closure env slot for storage.
+        // IMPORTANT: TCO allocas (named *_tco) are function parameters, not let-bound.
+        // They get new stack frames on each call, so we can't use pointer-passing for them.
         for (const std::string& var_name : free_vars) {
             if (arg_it != lambda_func->arg_end()) {
-                // MUTABLE CAPTURE FIX: The argument is a pointer to the capture slot
-                // in the closure environment. Use it directly as the storage location.
-                // This allows set! to modify the value in the closure environment,
-                // making changes persist across calls.
+                // Check if the outer scope had an alloca for this variable
+                // We detect this by checking prev_symbols
+                auto outer_it = prev_symbols.find(var_name);
+                bool was_alloca_capture = false;
+                if (outer_it != prev_symbols.end() && outer_it->second) {
+                    if (isa<AllocaInst>(outer_it->second)) {
+                        // Check if this is a TCO alloca (function parameter) - these should NOT use pointer-passing
+                        AllocaInst* alloca = cast<AllocaInst>(outer_it->second);
+                        std::string alloca_name = alloca->getName().str();
+                        // TCO allocas end with "_tco" - treat them like regular parameters
+                        if (alloca_name.length() < 4 || alloca_name.substr(alloca_name.length() - 4) != "_tco") {
+                            was_alloca_capture = true;
+                        }
+                    } else if (isa<IntToPtrInst>(outer_it->second)) {
+                        // NESTED MUTABLE CAPTURE: IntToPtrInst means the outer scope is itself
+                        // a lambda that captured a mutable variable via pointer-passing.
+                        // We need to continue the pointer-passing chain.
+                        was_alloca_capture = true;
+                        eshkol_debug("Nested mutable capture detected for %s (outer is IntToPtrInst)", var_name.c_str());
+                    }
+                }
 
-                // For top-level lambdas with GlobalVariable storage, prefer that
-                std::string capture_key = lambda_name + "_capture_" + var_name;
-                GlobalVariable* capture_storage = dyn_cast_or_null<GlobalVariable>(
-                    module->getNamedGlobal(capture_key));
-
-                if (capture_storage) {
-                    // Top-level lambda with GlobalVariable - use it for set! support
-                    symbol_table[var_name] = capture_storage;
-                    eshkol_debug("Lambda using GlobalVariable capture storage for %s", var_name.c_str());
+                if (was_alloca_capture) {
+                    // The capture argument contains a pointer to the outer scope's alloca
+                    // (packed as int64 in tagged_value). Unpack and use directly.
+                    // This allows set! to modify the original alloca.
+                    Value* tagged_ptr = &(*arg_it);
+                    if (tagged_ptr->getType()->isPointerTy()) {
+                        tagged_ptr = builder->CreateLoad(tagged_value_type, tagged_ptr, "load_cap");
+                    }
+                    Value* ptr_int = unpackInt64FromTaggedValue(tagged_ptr);
+                    Value* alloca_ptr = builder->CreateIntToPtr(ptr_int, PointerType::getUnqual(*context), var_name + "_ptr");
+                    symbol_table[var_name] = alloca_ptr;
+                    eshkol_debug("Lambda using alloca pointer for mutable capture %s", var_name.c_str());
                 } else {
-                    // Non-top-level lambda - use the passed pointer directly
-                    // The argument is a pointer to tagged_value storage in the closure env
+                    // Non-alloca capture - use the closure env slot directly
                     symbol_table[var_name] = &(*arg_it);
                     eshkol_debug("Lambda using closure env pointer for capture %s", var_name.c_str());
                 }
@@ -9344,36 +10194,125 @@ private:
                 eshkol_warn("Missing capture parameter for %s", var_name.c_str());
             }
         }
-        
+
+        // TCO SETUP: Determine whether to use TCO for this lambda
+        // Key insight: When letrec sets up TCO for a lambda:
+        //   - tco_context.enabled = true
+        //   - tco_context.loop_header = nullptr (not yet created)
+        // When we're INSIDE a function that has TCO active (generating nested lambdas):
+        //   - tco_context.enabled = true
+        //   - tco_context.loop_header != nullptr (already created for outer function)
+        //
+        // So: Use TCO if enabled AND loop_header is null (this is the primary lambda)
+        //     Save/clear/restore if loop_header is already set (nested lambda inside TCO function)
+        eshkol::BindingCodegen::TailCallContext saved_tco_context;
+        bool had_tco_active = binding_ && binding_->getTCOContext().enabled;
+        bool is_nested_in_tco_func = had_tco_active && binding_->getTCOContext().loop_header != nullptr;
+
+        if (is_nested_in_tco_func) {
+            // Nested lambda inside a TCO function - save/clear/restore to prevent interference
+            saved_tco_context = binding_->getTCOContext();
+            binding_->getTCOContext().enabled = false;
+            binding_->getTCOContext().loop_header = nullptr;
+            eshkol_debug("TCO: Saving and clearing TCO context while generating nested lambda %s", lambda_name.c_str());
+        }
+
+        // Use TCO if letrec set it up for THIS lambda (enabled=true, loop_header=null)
+        bool use_binding_tco = had_tco_active && !is_nested_in_tco_func;
+        BasicBlock* tco_loop_bb = nullptr;
+
+        if (use_binding_tco) {
+            auto& tco_ctx = binding_->getTCOContext();
+            eshkol_debug("TCO: Setting up loop structure for lambda (binding func=%s)", tco_ctx.func_name.c_str());
+
+            // Convert parameters from Argument* to AllocaInst* for mutability
+            tco_ctx.param_allocas.clear();
+            tco_ctx.param_names.clear();
+
+            // Re-iterate through parameters, create allocas, and update symbol table
+            arg_it = lambda_func->arg_begin();
+            if (op->lambda_op.parameters) {
+                for (uint64_t i = 0; i < op->lambda_op.num_params && arg_it != lambda_func->arg_end(); ++i, ++arg_it) {
+                    if (op->lambda_op.parameters[i].type == ESHKOL_VAR &&
+                        op->lambda_op.parameters[i].variable.id) {
+                        std::string param_name = op->lambda_op.parameters[i].variable.id;
+
+                        // Create alloca for this parameter
+                        AllocaInst* param_alloca = builder->CreateAlloca(
+                            tagged_value_type, nullptr, param_name + "_tco");
+
+                        // Store initial argument value
+                        builder->CreateStore(&(*arg_it), param_alloca);
+
+                        tco_ctx.param_allocas.push_back(param_alloca);
+                        tco_ctx.param_names.push_back(param_name);
+                        symbol_table[param_name] = param_alloca;  // Override with alloca
+                    }
+                }
+            }
+
+            // Create loop header block for tail calls to jump to
+            tco_loop_bb = BasicBlock::Create(*context, "tco_loop", lambda_func);
+            tco_ctx.loop_header = tco_loop_bb;
+
+            // Branch from entry to loop body
+            builder->CreateBr(tco_loop_bb);
+            builder->SetInsertPoint(tco_loop_bb);
+        }
+
         // Generate lambda body
         Value* body_result = nullptr;
         if (op->lambda_op.body) {
             body_result = codegenAST(op->lambda_op.body);
         }
 
-        // Pack return value to tagged_value (lambdas now return tagged_value)
-        if (body_result) {
-            // If body_result is already a tagged_value, return it directly
-            if (body_result->getType() == tagged_value_type) {
-                builder->CreateRet(body_result);
+        // Handle return based on TCO mode
+        if (use_binding_tco) {
+            // TCO mode: current block might be terminated by a tail call jump
+            BasicBlock* current_bb = builder->GetInsertBlock();
+            if (!current_bb->getTerminator()) {
+                // Body didn't end with tail call, needs a return
+                if (body_result) {
+                    if (body_result->getType() == tagged_value_type) {
+                        builder->CreateRet(body_result);
+                    } else {
+                        TypedValue typed = detectValueType(body_result);
+                        Value* tagged = typedValueToTaggedValue(typed);
+                        builder->CreateRet(tagged);
+                    }
+                } else {
+                    builder->CreateRet(packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true));
+                }
             }
-            // Otherwise, detect type and pack to tagged_value
-            else {
-                TypedValue typed = detectValueType(body_result);
-                Value* tagged = typedValueToTaggedValue(typed);
-                builder->CreateRet(tagged);
-            }
+            // Clear TCO context after lambda generation
+            binding_->getTCOContext().loop_header = nullptr;
         } else {
-            // Return null tagged value as default
-            Value* null_tagged = packInt64ToTaggedValue(
-                ConstantInt::get(int64_type, 0), true);
-            builder->CreateRet(null_tagged);
+            // Non-TCO: normal return handling
+            if (body_result) {
+                if (body_result->getType() == tagged_value_type) {
+                    builder->CreateRet(body_result);
+                } else {
+                    TypedValue typed = detectValueType(body_result);
+                    Value* tagged = typedValueToTaggedValue(typed);
+                    builder->CreateRet(tagged);
+                }
+            } else {
+                Value* null_tagged = packInt64ToTaggedValue(
+                    ConstantInt::get(int64_type, 0), true);
+                builder->CreateRet(null_tagged);
+            }
         }
         
         // Restore previous state
         symbol_table = prev_symbols;
         current_function = prev_function;
-        
+
+        // TCO RESTORE: Restore the saved TCO context if we cleared it (for nested lambdas)
+        if (is_nested_in_tco_func) {
+            binding_->getTCOContext() = saved_tco_context;
+            eshkol_debug("TCO: Restored TCO context after nested lambda %s", lambda_name.c_str());
+        }
+
         // Add lambda function to function table so it can be called
         registerContextFunction(lambda_name, lambda_func);
         
@@ -9461,11 +10400,23 @@ private:
                 builder->CreateStore(sexpr_ptr, closure_sexpr_global);
             }
 
-            // Allocate closure: arena_allocate_closure(arena, func_ptr, num_captures, sexpr_ptr)
+            // Allocate closure: arena_allocate_closure(arena, func_ptr, packed_info, sexpr_ptr)
+            // Pack variadic info into the num_captures field:
+            //   - Bits 0-15:  num_captures
+            //   - Bits 16-31: fixed_param_count
+            //   - Bit 63:     is_variadic flag
             Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            Value* num_captures = ConstantInt::get(int64_type, free_vars.size());
+            uint64_t packed_info = free_vars.size() & 0xFFFF;
+            packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 16;
+            if (is_variadic) {
+                packed_info |= (1ULL << 63);
+            }
+            Value* packed_captures = ConstantInt::get(int64_type, packed_info);
+            eshkol_debug("Closure %s: packed_info=0x%llx (captures=%zu, fixed_params=%llu, variadic=%d)",
+                        lambda_name.c_str(), (unsigned long long)packed_info,
+                        free_vars.size(), (unsigned long long)op->lambda_op.num_params, is_variadic ? 1 : 0);
             Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
-                                                     {arena_ptr, func_ptr, num_captures, sexpr_ptr});
+                                                     {arena_ptr, func_ptr, packed_captures, sexpr_ptr});
 
             // Store captured values into closure environment
             // The closure struct is: { uint64_t func_ptr, eshkol_closure_env_t* env }
@@ -9499,16 +10450,72 @@ private:
                 }
 
                 if (var_value) {
-                    // Load if needed
+                    // MUTABLE CAPTURE FIX: For let-bound variables (allocas), store a POINTER
+                    // to the alloca in the closure environment instead of the VALUE.
+                    // This ensures both the lambda and the outer scope access the same storage,
+                    // making set! mutations visible to both.
+                    // For other capture types (Arguments, GlobalVariables), store the value.
+                    // IMPORTANT: TCO allocas (named *_tco) are function parameters, not let-bound.
+                    // They get new stack frames on each call, so store the value, not pointer.
+                    bool is_let_alloca = false;
                     if (isa<AllocaInst>(var_value)) {
-                        captured_val = builder->CreateLoad(
-                            dyn_cast<AllocaInst>(var_value)->getAllocatedType(), var_value);
+                        AllocaInst* alloca = cast<AllocaInst>(var_value);
+                        std::string alloca_name = alloca->getName().str();
+                        // TCO allocas end with "_tco" - treat them like regular parameters
+                        is_let_alloca = alloca_name.length() < 4 || alloca_name.substr(alloca_name.length() - 4) != "_tco";
+                    }
+                    if (is_let_alloca) {
+                        // Store pointer to alloca as an integer in tagged_value
+                        // The lambda will unpack this and use it as a pointer
+                        Value* alloca_ptr_int = builder->CreatePtrToInt(var_value, int64_type);
+                        captured_val = packInt64ToTaggedValue(alloca_ptr_int, true);
+                    } else if (isa<AllocaInst>(var_value)) {
+                        // TCO alloca - load the value and capture it (not pointer)
+                        captured_val = builder->CreateLoad(tagged_value_type, var_value, var_name + "_val");
                     } else if (isa<GlobalVariable>(var_value)) {
                         captured_val = builder->CreateLoad(
                             dyn_cast<GlobalVariable>(var_value)->getValueType(), var_value);
                     } else if (isa<Argument>(var_value)) {
                         // MUTABLE CAPTURE FIX: Handle Argument which may be pointer to capture or direct value
-                        if (var_value->getType()->isPointerTy()) {
+                        Argument* arg = cast<Argument>(var_value);
+                        Function* arg_parent = arg->getParent();
+
+                        // NESTED FUNCTION FIX: Check if the Argument belongs to the current function
+                        // If it's from a different function, we can't use it directly - we need to
+                        // get it through the current function's captures instead
+                        Function* current_func = builder->GetInsertBlock()->getParent();
+                        if (arg_parent != current_func) {
+                            // The Argument is from a different function (e.g., grandparent function)
+                            // We need to find it in our function's capture parameters
+                            // Look for a capture parameter with the same name in current function
+                            bool found_in_captures = false;
+                            for (auto& curr_arg : current_func->args()) {
+                                std::string arg_name = curr_arg.getName().str();
+                                if (arg_name == "captured_" + var_name) {
+                                    // Found the capture parameter in current function
+                                    if (curr_arg.getType()->isPointerTy()) {
+                                        captured_val = builder->CreateLoad(tagged_value_type, &curr_arg);
+                                    } else {
+                                        captured_val = &curr_arg;
+                                    }
+                                    found_in_captures = true;
+                                    eshkol_debug("Using current function's capture for %s (instead of outer arg)", var_name.c_str());
+                                    break;
+                                }
+                            }
+                            if (!found_in_captures) {
+                                // Couldn't find in captures - check global symbol table for GlobalVariable
+                                std::string capture_key = current_func->getName().str() + "_capture_" + var_name;
+                                auto cap_it = global_symbol_table.find(capture_key);
+                                if (cap_it != global_symbol_table.end() && isa<GlobalVariable>(cap_it->second)) {
+                                    captured_val = builder->CreateLoad(tagged_value_type, cap_it->second);
+                                    eshkol_debug("Using GlobalVariable capture for %s", var_name.c_str());
+                                } else {
+                                    eshkol_warn("Cannot capture %s from outer function - not found in current function", var_name.c_str());
+                                    captured_val = nullptr;
+                                }
+                            }
+                        } else if (var_value->getType()->isPointerTy()) {
                             // This is a pointer to a captured variable (from mutable capture fix)
                             // Load the tagged value from the pointer
                             captured_val = builder->CreateLoad(tagged_value_type, var_value);
@@ -9516,6 +10523,15 @@ private:
                             // Function parameters are already loaded
                             captured_val = var_value;
                         }
+                    } else if (isa<IntToPtrInst>(var_value)) {
+                        // NESTED MUTABLE CAPTURE FIX: IntToPtrInst is a pointer from an
+                        // outer lambda's mutable capture. This pointer points to the original
+                        // let alloca. We need to re-capture this pointer so the inner lambda
+                        // can also access the shared mutable storage.
+                        // Convert the pointer back to int64 and store it as a tagged value.
+                        Value* ptr_as_int = builder->CreatePtrToInt(var_value, int64_type);
+                        captured_val = packInt64ToTaggedValue(ptr_as_int, true);
+                        eshkol_debug("Re-capturing mutable pointer for nested lambda: %s", var_name.c_str());
                     } else {
                         captured_val = var_value;
                     }
@@ -9867,7 +10883,11 @@ private:
         // CRITICAL FIX (Bug #2): Preserve _func entries before restoring symbol table
         // Local functions defined in let bindings must be accessible for autodiff
         std::unordered_map<std::string, Value*> func_refs_to_preserve;
+        fprintf(stderr, "DEBUG LET: scanning symbol_table with %zu entries\n", symbol_table.size());
         for (auto& entry : symbol_table) {
+            fprintf(stderr, "DEBUG LET SCAN: %s -> %p (is_global=%d)\n",
+                    entry.first.c_str(), (void*)entry.second,
+                    entry.second ? (isa<GlobalVariable>(entry.second) ? 1 : 0) : -1);
             // Preserve all entries ending with "_func" (function references for autodiff)
             if (entry.first.length() > 5 &&
                 entry.first.substr(entry.first.length() - 5) == "_func") {
@@ -9876,18 +10896,27 @@ private:
                 global_symbol_table[entry.first] = entry.second;
                 eshkol_debug("Let: preserving function reference: %s", entry.first.c_str());
             }
+            // MUTABLE CAPTURE FIX: Also preserve GlobalVariable captures
+            // These are variables that were moved to GlobalVariables when captured by lambdas
+            if (entry.second && isa<GlobalVariable>(entry.second)) {
+                func_refs_to_preserve[entry.first] = entry.second;
+                fprintf(stderr, "DEBUG LET PRESERVE: preserving GlobalVariable %s -> %p\n",
+                        entry.first.c_str(), (void*)entry.second);
+            }
         }
-        
+
         // Restore previous symbol table state
         symbol_table = prev_symbols;
-        
-        // Re-add preserved function references to local symbol table
+
+        // Re-add preserved function references and GlobalVariable captures
         for (auto& entry : func_refs_to_preserve) {
             symbol_table[entry.first] = entry.second;
+            fprintf(stderr, "DEBUG LET RESTORE: re-adding %s -> %p\n",
+                    entry.first.c_str(), (void*)entry.second);
         }
-        
-        eshkol_debug("Let expression completed, scope restored (preserved %zu function refs)",
-                    func_refs_to_preserve.size());
+
+        fprintf(stderr, "DEBUG LET: expression completed, preserved %zu refs\n",
+                func_refs_to_preserve.size());
 
         return body_result ? body_result : ConstantInt::get(int64_type, 0);
     }
@@ -10002,10 +11031,23 @@ private:
             builder->SetInsertPoint(prev_block);
         }
 
+        // MUTABLE CAPTURE FIX: Preserve GlobalVariable captures before restoring
+        std::unordered_map<std::string, Value*> globals_to_preserve;
+        for (auto& entry : symbol_table) {
+            if (isa<GlobalVariable>(entry.second)) {
+                globals_to_preserve[entry.first] = entry.second;
+            }
+        }
+
         // Restore symbol table (but keep loop function registered)
         symbol_table = prev_symbols;
         symbol_table[loop_name + "_func"] = loop_func;
         function_table[loop_name] = loop_func;
+
+        // Re-add preserved GlobalVariable captures
+        for (auto& entry : globals_to_preserve) {
+            symbol_table[entry.first] = entry.second;
+        }
 
         // Call the loop function with initial values
         // Ensure initial values are tagged_value type
@@ -10032,11 +11074,15 @@ private:
     // letrec - Recursive bindings (all bindings visible to all values)
     // Used for mutually recursive function definitions
     Value* codegenLetrec(const eshkol_operations_t* op) {
+        fprintf(stderr, "TCO DEBUG: codegenLetrec called\n");
+
         if (!op || !op->let_op.body) {
             eshkol_error("Invalid letrec expression - missing body");
             return nullptr;
         }
 
+        fprintf(stderr, "TCO DEBUG: codegenLetrec with %llu bindings\n",
+                (unsigned long long)op->let_op.num_bindings);
         eshkol_debug("Processing letrec expression with %llu bindings",
                     (unsigned long long)op->let_op.num_bindings);
 
@@ -10243,7 +11289,12 @@ private:
                     builder->CreateStore(captured_val, capture_global);
                     symbol_table[capture_key] = capture_global;
 
-                    eshkol_debug("Letrec phase 3: stored capture '%s' for lambda '%s'", fv.c_str(), var_names[i].c_str());
+                    // MUTABLE CAPTURE FIX: Also update the original variable's storage to use
+                    // this GlobalVariable. This ensures set! inside the lambda and access from
+                    // the enclosing scope use the same storage.
+                    symbol_table[fv] = capture_global;
+
+                    eshkol_debug("Letrec phase 3: stored capture '%s' for lambda '%s' (updated outer scope)", fv.c_str(), var_names[i].c_str());
                 }
                 capture_globals[fv] = capture_global;
             }
@@ -10276,15 +11327,65 @@ private:
                     current_function = forward_func;
                     std::unordered_map<std::string, Value*> lambda_scope = symbol_table;
 
-                    // Add regular parameters to symbol table
-                    auto arg_it = forward_func->arg_begin();
-                    if (lambda_op->lambda_op.parameters) {
-                        for (uint64_t j = 0; j < lambda_op->lambda_op.num_params && arg_it != forward_func->arg_end(); ++j, ++arg_it) {
-                            if (lambda_op->lambda_op.parameters[j].type == ESHKOL_VAR &&
-                                lambda_op->lambda_op.parameters[j].variable.id) {
-                                std::string param_name = lambda_op->lambda_op.parameters[j].variable.id;
-                                arg_it->setName(param_name);
-                                symbol_table[param_name] = &(*arg_it);
+                    // TCO SETUP: Check if this lambda is self-tail-recursive
+                    bool use_tco = isSelfTailRecursive(lambda_op, var_name);
+                    TailCallContext prev_tco_context = tco_context;
+                    BasicBlock* loop_body_bb = nullptr;
+                    BasicBlock* return_bb = nullptr;
+
+                    if (use_tco) {
+                        eshkol_debug("TCO: Enabling tail call optimization for letrec lambda %s", var_name.c_str());
+
+                        // Set up TCO context
+                        tco_context.func_name = var_name;
+                        tco_context.enabled = true;
+                        tco_context.param_allocas.clear();
+                        tco_context.param_names.clear();
+
+                        // Create allocas for all parameters in entry block
+                        auto arg_it_tco = forward_func->arg_begin();
+                        if (lambda_op->lambda_op.parameters) {
+                            for (uint64_t j = 0; j < lambda_op->lambda_op.num_params && arg_it_tco != forward_func->arg_end(); ++j, ++arg_it_tco) {
+                                if (lambda_op->lambda_op.parameters[j].type == ESHKOL_VAR &&
+                                    lambda_op->lambda_op.parameters[j].variable.id) {
+                                    std::string param_name = lambda_op->lambda_op.parameters[j].variable.id;
+                                    arg_it_tco->setName(param_name + "_arg");
+
+                                    // Create alloca for this parameter
+                                    AllocaInst* param_alloca = builder->CreateAlloca(
+                                        tagged_value_type, nullptr, param_name + "_tco");
+
+                                    // Store initial argument value
+                                    builder->CreateStore(&(*arg_it_tco), param_alloca);
+
+                                    tco_context.param_allocas.push_back(param_alloca);
+                                    tco_context.param_names.push_back(param_name);
+                                    symbol_table[param_name] = param_alloca;
+                                }
+                            }
+                        }
+
+                        // Create loop header block
+                        loop_body_bb = BasicBlock::Create(*context, "tco_loop", forward_func);
+                        return_bb = BasicBlock::Create(*context, "tco_return", forward_func);
+                        tco_context.loop_header = loop_body_bb;
+
+                        // Branch from entry to loop body
+                        builder->CreateBr(loop_body_bb);
+
+                        // Generate body in loop block
+                        builder->SetInsertPoint(loop_body_bb);
+                    } else {
+                        // Non-TCO path: add parameters directly to symbol table
+                        auto arg_it = forward_func->arg_begin();
+                        if (lambda_op->lambda_op.parameters) {
+                            for (uint64_t j = 0; j < lambda_op->lambda_op.num_params && arg_it != forward_func->arg_end(); ++j, ++arg_it) {
+                                if (lambda_op->lambda_op.parameters[j].type == ESHKOL_VAR &&
+                                    lambda_op->lambda_op.parameters[j].variable.id) {
+                                    std::string param_name = lambda_op->lambda_op.parameters[j].variable.id;
+                                    arg_it->setName(param_name);
+                                    symbol_table[param_name] = &(*arg_it);
+                                }
                             }
                         }
                     }
@@ -10303,27 +11404,65 @@ private:
                     // Generate lambda body
                     Value* body_result = codegenAST(lambda_op->lambda_op.body);
 
-                    // Create return
-                    if (body_result) {
-                        if (body_result->getType() != tagged_value_type) {
-                            if (body_result->getType()->isDoubleTy()) {
-                                body_result = packDoubleToTaggedValue(body_result);
-                            } else if (body_result->getType()->isIntegerTy(64)) {
-                                body_result = packInt64ToTaggedValue(body_result, ESHKOL_VALUE_INT64);
-                            } else if (body_result->getType()->isIntegerTy(32)) {
-                                // Handle i32 returns (e.g., from printf/newline)
-                                body_result = packInt64ToTaggedValue(
-                                    builder->CreateSExt(body_result, int64_type),
-                                    ESHKOL_VALUE_INT64);
-                            } else if (body_result->getType()->isIntegerTy(1)) {
-                                body_result = packInt64ToTaggedValue(
-                                    builder->CreateZExt(body_result, int64_type),
-                                    ESHKOL_VALUE_INT64);
+                    // Handle return based on TCO mode
+                    if (use_tco) {
+                        // TCO mode: current block might be terminated by a tail call jump
+                        BasicBlock* current_bb = builder->GetInsertBlock();
+                        if (!current_bb->getTerminator()) {
+                            // Body didn't end with tail call, needs a return
+                            // Pack result and branch to return block
+                            if (body_result) {
+                                if (body_result->getType() != tagged_value_type) {
+                                    if (body_result->getType()->isDoubleTy()) {
+                                        body_result = packDoubleToTaggedValue(body_result);
+                                    } else if (body_result->getType()->isIntegerTy(64)) {
+                                        body_result = packInt64ToTaggedValue(body_result, ESHKOL_VALUE_INT64);
+                                    } else if (body_result->getType()->isIntegerTy(32)) {
+                                        body_result = packInt64ToTaggedValue(
+                                            builder->CreateSExt(body_result, int64_type),
+                                            ESHKOL_VALUE_INT64);
+                                    } else if (body_result->getType()->isIntegerTy(1)) {
+                                        body_result = packInt64ToTaggedValue(
+                                            builder->CreateZExt(body_result, int64_type),
+                                            ESHKOL_VALUE_INT64);
+                                    }
+                                }
+                                builder->CreateRet(body_result);
+                            } else {
+                                builder->CreateRet(packNullToTaggedValue());
                             }
                         }
-                        builder->CreateRet(body_result);
+
+                        // Delete unused return block if it has no predecessors
+                        if (return_bb && return_bb->hasNPredecessors(0)) {
+                            return_bb->eraseFromParent();
+                        }
+
+                        // Restore TCO context
+                        tco_context = prev_tco_context;
                     } else {
-                        builder->CreateRet(packNullToTaggedValue());
+                        // Non-TCO path: normal return handling
+                        if (body_result) {
+                            if (body_result->getType() != tagged_value_type) {
+                                if (body_result->getType()->isDoubleTy()) {
+                                    body_result = packDoubleToTaggedValue(body_result);
+                                } else if (body_result->getType()->isIntegerTy(64)) {
+                                    body_result = packInt64ToTaggedValue(body_result, ESHKOL_VALUE_INT64);
+                                } else if (body_result->getType()->isIntegerTy(32)) {
+                                    // Handle i32 returns (e.g., from printf/newline)
+                                    body_result = packInt64ToTaggedValue(
+                                        builder->CreateSExt(body_result, int64_type),
+                                        ESHKOL_VALUE_INT64);
+                                } else if (body_result->getType()->isIntegerTy(1)) {
+                                    body_result = packInt64ToTaggedValue(
+                                        builder->CreateZExt(body_result, int64_type),
+                                        ESHKOL_VALUE_INT64);
+                                }
+                            }
+                            builder->CreateRet(body_result);
+                        } else {
+                            builder->CreateRet(packNullToTaggedValue());
+                        }
                     }
 
                     // Restore context
@@ -10400,17 +11539,23 @@ private:
                 global_symbol_table[entry.first] = entry.second;
                 eshkol_debug("Letrec: preserving function reference: %s", entry.first.c_str());
             }
+            // MUTABLE CAPTURE FIX: Also preserve GlobalVariable captures
+            // These are variables that were moved to GlobalVariables when captured by lambdas
+            if (isa<GlobalVariable>(entry.second)) {
+                func_refs_to_preserve[entry.first] = entry.second;
+                eshkol_debug("Letrec: preserving GlobalVariable capture: %s", entry.first.c_str());
+            }
         }
 
         // Restore previous symbol table state
         symbol_table = prev_symbols;
 
-        // Re-add preserved function references
+        // Re-add preserved function references and GlobalVariable captures
         for (auto& entry : func_refs_to_preserve) {
             symbol_table[entry.first] = entry.second;
         }
 
-        eshkol_debug("Letrec expression completed, scope restored (preserved %zu function refs)",
+        eshkol_debug("Letrec expression completed, scope restored (preserved %zu refs)",
                     func_refs_to_preserve.size());
 
         return body_result ? body_result : ConstantInt::get(int64_type, 0);
@@ -12441,7 +13586,7 @@ private:
 
             std::string capture_key = lambda_name + "_capture_" + var_name;
 
-            // First try local symbol tables
+            // First try capture-specific key in symbol tables
             auto it = global_symbol_table.find(capture_key);
             bool found_in_global = (it != global_symbol_table.end());
             if (!found_in_global) {
@@ -12449,6 +13594,19 @@ private:
             }
 
             bool found = found_in_global ? (it != global_symbol_table.end()) : (it != symbol_table.end());
+
+            // FALLBACK: Try raw variable name (for top-level global variables)
+            if (!found) {
+                it = global_symbol_table.find(var_name);
+                found_in_global = (it != global_symbol_table.end());
+                if (!found_in_global) {
+                    it = symbol_table.find(var_name);
+                }
+                found = found_in_global ? (it != global_symbol_table.end()) : (it != symbol_table.end());
+                if (found) {
+                    eshkol_debug("%s: found capture '%s' via raw variable name", context_name.c_str(), var_name.c_str());
+                }
+            }
 
             // REPL MODE: Try creating external declaration for capture global
             if (!found && g_repl_mode_enabled) {
@@ -12475,8 +13633,25 @@ private:
 
             if (found && it->second) {
                 Value* storage = it->second;
-                // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
-                capture_args.push_back(storage);
+                // MUTABLE CAPTURE FIX: For let-bound allocas, pack the address
+                // as int64 in a tagged_value, store in temp, pass pointer to temp
+                if (isa<AllocaInst>(storage)) {
+                    Function* current_func = builder->GetInsertBlock()->getParent();
+                    IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                              current_func->getEntryBlock().begin());
+                    AllocaInst* temp_alloca = entry_builder.CreateAlloca(
+                        tagged_value_type, nullptr, var_name + "_autodiff_capture_storage");
+
+                    // Pack the alloca address as an int64 in a tagged_value
+                    Value* ptr_as_int = builder->CreatePtrToInt(storage, int64_type);
+                    Value* packed_ptr = packInt64ToTaggedValue(ptr_as_int, true);
+                    builder->CreateStore(packed_ptr, temp_alloca);
+
+                    capture_args.push_back(temp_alloca);
+                } else {
+                    // GlobalVariable or other - pass directly
+                    capture_args.push_back(storage);
+                }
             } else {
                 // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
                 capture_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
@@ -12487,34 +13662,351 @@ private:
         return capture_args;
     }
 
-    Value* codegenDerivative(const eshkol_operations_t* op) {
-        if (!op->derivative_op.function || !op->derivative_op.point) {
-            eshkol_error("Invalid derivative operation - missing function or point");
-            return nullptr;
-        }
-        
-        eshkol_info("Computing derivative using forward-mode AD (dual numbers)");
-        
+    // Higher-order derivative: (derivative f) returns a closure that computes derivatives
+    Value* codegenDerivativeHigherOrder(const eshkol_operations_t* op) {
+        static int derivative_ho_counter = 0;
+        eshkol_info("Creating higher-order derivative function (derivative f -> df)");
+
         // Get the function to differentiate
         Value* func = resolveLambdaFunction(op->derivative_op.function);
+
+        // RUNTIME FUNCTION PARAMETER FIX: If resolveLambdaFunction returns nullptr,
+        // check if this is a function parameter and create a runtime derivative wrapper
         if (!func) {
-            eshkol_error("Failed to resolve function for derivative");
+            const eshkol_ast_t* func_ast = op->derivative_op.function;
+            if (func_ast && func_ast->type == ESHKOL_VAR) {
+                std::string func_name = func_ast->variable.id;
+                eshkol_debug("derivative HO: trying runtime function parameter '%s'", func_name.c_str());
+
+                // Check if this is a function parameter or captured value
+                Value* var_value = nullptr;
+                auto local_it = symbol_table.find(func_name);
+                if (local_it != symbol_table.end()) {
+                    var_value = local_it->second;
+                } else {
+                    auto global_it = global_symbol_table.find(func_name);
+                    if (global_it != global_symbol_table.end()) {
+                        var_value = global_it->second;
+                    }
+                }
+
+                if (var_value) {
+                    // Get the closure value for runtime dispatch
+                    Value* closure_val = nullptr;
+                    if (isa<Argument>(var_value) && var_value->getType() == tagged_value_type) {
+                        closure_val = var_value;
+                    } else if (isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
+                        closure_val = builder->CreateLoad(tagged_value_type, var_value);
+                    } else if (isa<AllocaInst>(var_value)) {
+                        AllocaInst* alloca = cast<AllocaInst>(var_value);
+                        if (alloca->getAllocatedType() == tagged_value_type) {
+                            closure_val = builder->CreateLoad(tagged_value_type, var_value);
+                        }
+                    } else if (isa<LoadInst>(var_value) && var_value->getType() == tagged_value_type) {
+                        closure_val = var_value;
+                    } else if (isa<GlobalVariable>(var_value)) {
+                        GlobalVariable* global = cast<GlobalVariable>(var_value);
+                        closure_val = builder->CreateLoad(global->getValueType(), var_value);
+                    }
+
+                    if (closure_val) {
+                        eshkol_debug("derivative HO: creating runtime derivative wrapper for '%s'", func_name.c_str());
+
+                        // Create a derivative wrapper that captures the function and calls it at runtime
+                        std::string deriv_func_name = "derivative_runtime_" + std::to_string(derivative_ho_counter++);
+
+                        // Wrapper function takes: (x_tagged, captured_f_ptr)
+                        // captured_f_ptr is a pointer to the closure tagged_value
+                        std::vector<Type*> param_types = {tagged_value_type, PointerType::getUnqual(*context)};
+                        FunctionType* deriv_func_type = FunctionType::get(tagged_value_type, param_types, false);
+                        Function* deriv_func = Function::Create(
+                            deriv_func_type,
+                            Function::ExternalLinkage,
+                            deriv_func_name,
+                            module.get()
+                        );
+
+                        // Save current insertion point
+                        BasicBlock* saved_bb = builder->GetInsertBlock();
+                        BasicBlock::iterator saved_point = builder->GetInsertPoint();
+
+                        // Create function body
+                        BasicBlock* entry = BasicBlock::Create(*context, "entry", deriv_func);
+                        builder->SetInsertPoint(entry);
+
+                        auto arg_it = deriv_func->arg_begin();
+                        Value* x_tagged = &(*arg_it);
+                        x_tagged->setName("x");
+                        ++arg_it;
+                        Value* captured_f_ptr = &(*arg_it);
+                        captured_f_ptr->setName("captured_f");
+
+                        // Load the captured function closure
+                        Value* f_closure = builder->CreateLoad(tagged_value_type, captured_f_ptr);
+
+                        // HIGHER-ORDER DERIVATIVE FIX: Use numerical differentiation (central difference)
+                        // instead of forward-mode AD. This works for ANY function, including derivatives.
+                        // Forward-mode AD doesn't work here because the captured function (e.g., df4)
+                        // expects a plain double, not a dual number.
+                        //
+                        // Central difference formula: f'(x) ≈ (f(x+h) - f(x-h)) / (2h)
+                        Value* x = unpackDoubleFromTaggedValue(x_tagged);
+                        Value* h = ConstantFP::get(double_type, 1e-8);  // Small step for numerical derivative
+                        Value* two_h = ConstantFP::get(double_type, 2e-8);
+
+                        // Compute f(x + h)
+                        Value* x_plus_h = builder->CreateFAdd(x, h);
+                        Value* x_plus_h_tagged = packDoubleToTaggedValue(x_plus_h);
+                        std::vector<Value*> call_args_plus = {x_plus_h_tagged};
+                        Value* f_plus = codegenClosureCall(f_closure, call_args_plus);
+                        Value* f_plus_val = unpackDoubleFromTaggedValue(f_plus);
+
+                        // Compute f(x - h)
+                        Value* x_minus_h = builder->CreateFSub(x, h);
+                        Value* x_minus_h_tagged = packDoubleToTaggedValue(x_minus_h);
+                        std::vector<Value*> call_args_minus = {x_minus_h_tagged};
+                        Value* f_minus = codegenClosureCall(f_closure, call_args_minus);
+                        Value* f_minus_val = unpackDoubleFromTaggedValue(f_minus);
+
+                        // Compute derivative: (f(x+h) - f(x-h)) / (2h)
+                        Value* diff = builder->CreateFSub(f_plus_val, f_minus_val);
+                        Value* derivative_val = builder->CreateFDiv(diff, two_h);
+                        Value* result_tagged = packDoubleToTaggedValue(derivative_val);
+                        builder->CreateRet(result_tagged);
+
+                        // Restore insertion point
+                        if (saved_bb) {
+                            builder->SetInsertPoint(saved_bb, saved_point);
+                        }
+
+                        // Register the derivative function
+                        function_table[deriv_func_name] = deriv_func;
+
+                        // Create closure capturing the function parameter
+                        Value* func_ptr_int = builder->CreatePtrToInt(deriv_func, int64_type);
+                        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+                        uint64_t packed_info = 1;  // 1 capture (the function)
+                        Value* packed_captures = ConstantInt::get(int64_type, packed_info);
+                        Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+
+                        Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+                                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr});
+
+                        // Store captured function
+                        Value* env_ptr_ptr = builder->CreateGEP(int8_type, closure_ptr, ConstantInt::get(int64_type, 8));
+                        Value* env_ptr = builder->CreateLoad(PointerType::getUnqual(*context), env_ptr_ptr);
+                        Value* captures_base = builder->CreateGEP(int8_type, env_ptr, ConstantInt::get(int64_type, 8));
+                        builder->CreateStore(closure_val, captures_base);
+
+                        // Return closure as tagged value
+                        Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
+                        return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
+                    }
+                }
+            }
+            eshkol_error("Failed to resolve function for higher-order derivative");
             return nullptr;
         }
-        
+
         Function* func_ptr = dyn_cast<Function>(func);
         if (!func_ptr) {
-            eshkol_error("derivative operator requires a function");
+            eshkol_error("higher-order derivative requires a function");
             return nullptr;
         }
-        
+
+        std::string orig_func_name = func_ptr->getName().str();
+        std::string deriv_func_name = "derivative_" + orig_func_name + "_" + std::to_string(derivative_ho_counter++);
+
+        // Create derivative wrapper function: takes x, returns derivative at x
+        std::vector<Type*> param_types = {tagged_value_type};  // Takes one tagged_value (x)
+
+        // Add capture parameters for the original function if it has captures
+        FunctionType* orig_func_type = func_ptr->getFunctionType();
+        size_t orig_num_captures = 0;
+        if (orig_func_type->getNumParams() > 1) {
+            orig_num_captures = orig_func_type->getNumParams() - 1;
+            for (size_t i = 0; i < orig_num_captures; i++) {
+                param_types.push_back(PointerType::getUnqual(*context));  // Capture pointers
+            }
+        }
+
+        FunctionType* deriv_func_type = FunctionType::get(tagged_value_type, param_types, false);
+        Function* deriv_func = Function::Create(
+            deriv_func_type,
+            Function::ExternalLinkage,
+            deriv_func_name,
+            module.get()
+        );
+
+        // Save current insertion point
+        BasicBlock* saved_bb = builder->GetInsertBlock();
+        BasicBlock::iterator saved_point = builder->GetInsertPoint();
+
+        // Create function body
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", deriv_func);
+        builder->SetInsertPoint(entry);
+
+        // Get x parameter
+        auto arg_it = deriv_func->arg_begin();
+        Value* x_tagged = &(*arg_it);
+        x_tagged->setName("x");
+
+        // Extract double from x
+        Value* x = unpackDoubleFromTaggedValue(x_tagged);
+
+        // Create dual number with seed = 1.0
+        Value* one = ConstantFP::get(double_type, 1.0);
+        Value* x_dual = packDualNumber(x, one);
+        Value* x_dual_tagged = packDualToTaggedValue(x_dual);
+
+        // Build call arguments: (x_dual_tagged, captures...)
+        std::vector<Value*> call_args = {x_dual_tagged};
+        ++arg_it;
+        for (size_t i = 0; i < orig_num_captures; i++, ++arg_it) {
+            call_args.push_back(&(*arg_it));
+        }
+
+        // Call the original function with dual number
+        Value* result = builder->CreateCall(orig_func_type, func_ptr, call_args);
+
+        // Extract derivative from result (tangent part of dual number)
+        Value* result_dual = unpackDualFromTaggedValue(result);
+        Value* derivative_val = autodiff_->getDualTangent(result_dual);
+
+        // Pack result as tagged double
+        Value* result_tagged = packDoubleToTaggedValue(derivative_val);
+        builder->CreateRet(result_tagged);
+
+        // Restore insertion point
+        if (saved_bb) {
+            builder->SetInsertPoint(saved_bb, saved_point);
+        }
+
+        // Register the derivative function
+        function_table[deriv_func_name] = deriv_func;
+
+        // If original function has captures, we need to create a closure
+        if (orig_num_captures > 0) {
+            // Get capture values from the original function's closure
+            std::string orig_lambda_name = func_ptr->getName().str();
+            std::vector<Value*> capture_vals;
+
+            for (size_t i = 0; i < orig_num_captures; i++) {
+                // Get capture name from original function's parameter
+                auto orig_arg_it = func_ptr->arg_begin();
+                std::advance(orig_arg_it, i + 1);
+                std::string var_name = orig_arg_it->getName().str();
+                if (var_name.find("captured_") == 0) {
+                    var_name = var_name.substr(9);
+                }
+
+                std::string capture_key = orig_lambda_name + "_capture_" + var_name;
+
+                // Find capture value
+                Value* cap_val = nullptr;
+                auto git = global_symbol_table.find(capture_key);
+                if (git != global_symbol_table.end() && isa<GlobalVariable>(git->second)) {
+                    cap_val = builder->CreateLoad(tagged_value_type, git->second);
+                } else {
+                    auto lit = symbol_table.find(capture_key);
+                    if (lit != symbol_table.end()) {
+                        if (isa<AllocaInst>(lit->second)) {
+                            cap_val = builder->CreateLoad(tagged_value_type, lit->second);
+                        } else {
+                            cap_val = lit->second;
+                        }
+                    }
+                }
+
+                if (!cap_val) {
+                    // Try direct variable lookup
+                    auto vit = symbol_table.find(var_name);
+                    if (vit != symbol_table.end()) {
+                        if (isa<AllocaInst>(vit->second)) {
+                            cap_val = builder->CreateLoad(tagged_value_type, vit->second);
+                        } else {
+                            cap_val = vit->second;
+                        }
+                    } else {
+                        auto gvit = global_symbol_table.find(var_name);
+                        if (gvit != global_symbol_table.end() && isa<GlobalVariable>(gvit->second)) {
+                            cap_val = builder->CreateLoad(tagged_value_type, gvit->second);
+                        }
+                    }
+                }
+
+                if (cap_val) {
+                    capture_vals.push_back(cap_val);
+                } else {
+                    eshkol_warn("Could not find capture %s for derivative closure", var_name.c_str());
+                    capture_vals.push_back(packNullToTaggedValue());
+                }
+            }
+
+            // Allocate closure with captures
+            Value* func_ptr_int = builder->CreatePtrToInt(deriv_func, int64_type);
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+            uint64_t packed_info = orig_num_captures & 0xFFFF;
+            Value* packed_captures = ConstantInt::get(int64_type, packed_info);
+            Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+
+            Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+                                                     {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr});
+
+            // Store captures
+            Value* env_ptr_ptr = builder->CreateGEP(int8_type, closure_ptr, ConstantInt::get(int64_type, 8));
+            Value* env_ptr = builder->CreateLoad(PointerType::getUnqual(*context), env_ptr_ptr);
+            Value* captures_base = builder->CreateGEP(int8_type, env_ptr, ConstantInt::get(int64_type, 8));
+
+            for (size_t i = 0; i < capture_vals.size(); i++) {
+                Value* cap_slot = builder->CreateGEP(tagged_value_type, captures_base,
+                    ConstantInt::get(int64_type, i));
+                builder->CreateStore(capture_vals[i], cap_slot);
+            }
+
+            // Return closure as tagged value
+            Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
+            return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
+        } else {
+            // No captures - still need to allocate a closure structure
+            Value* func_ptr_int = builder->CreatePtrToInt(deriv_func, int64_type);
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+            uint64_t packed_info = 0;  // 0 captures
+            Value* packed_captures = ConstantInt::get(int64_type, packed_info);
+            Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+
+            Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+                                                     {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr});
+
+            // Return closure as tagged value
+            Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
+            return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
+        }
+    }
+
+    Value* codegenDerivative(const eshkol_operations_t* op) {
+        if (!op->derivative_op.function) {
+            eshkol_error("Invalid derivative operation - missing function");
+            return nullptr;
+        }
+
+        // Higher-order form: (derivative f) returns a closure that computes derivatives
+        if (!op->derivative_op.point) {
+            return codegenDerivativeHigherOrder(op);
+        }
+
+        eshkol_info("Computing derivative using forward-mode AD (dual numbers)");
+
         // Get evaluation point - must be a scalar double
         Value* x = codegenAST(op->derivative_op.point);
         if (!x) {
             eshkol_error("Failed to evaluate derivative point");
             return nullptr;
         }
-        
+
         // Convert x to double if it's an integer or tagged_value
         if (x->getType()->isIntegerTy()) {
             x = builder->CreateSIToFP(x, double_type);
@@ -12526,18 +14018,117 @@ private:
             eshkol_error("derivative point must be numeric (int64 or double)");
             return nullptr;
         }
-        
+
         // Create dual number with seed derivative = 1.0
         // This means: "we're computing the derivative with respect to this input"
         Value* one = ConstantFP::get(double_type, 1.0);
         Value* x_dual = packDualNumber(x, one);
-        
+
         // Pack dual number into tagged_value for function call
         Value* x_dual_tagged = packDualToTaggedValue(x_dual);
-        
+
+        // Get the function to differentiate
+        Value* func = resolveLambdaFunction(op->derivative_op.function);
+
+        // RUNTIME FUNCTION PARAMETER FIX: If resolveLambdaFunction returns nullptr,
+        // check if this is a function parameter (runtime closure) and use codegenClosureCall
+        if (!func) {
+            const eshkol_ast_t* func_ast = op->derivative_op.function;
+            if (func_ast && func_ast->type == ESHKOL_VAR) {
+                std::string func_name = func_ast->variable.id;
+                eshkol_debug("derivative: trying runtime function parameter '%s'", func_name.c_str());
+
+                // Check if this is a function parameter or captured value
+                Value* var_value = nullptr;
+                auto local_it = symbol_table.find(func_name);
+                if (local_it != symbol_table.end()) {
+                    var_value = local_it->second;
+                } else {
+                    auto global_it = global_symbol_table.find(func_name);
+                    if (global_it != global_symbol_table.end()) {
+                        var_value = global_it->second;
+                    }
+                }
+
+                if (var_value) {
+                    // Check if it's a function parameter (Argument) with tagged_value type
+                    // Also check isStructTy() as a fallback for tagged_value_type matching
+                    if (isa<Argument>(var_value) && (var_value->getType() == tagged_value_type || var_value->getType()->isStructTy())) {
+                        eshkol_debug("derivative: using runtime dispatch for function parameter '%s'", func_name.c_str());
+                        std::vector<Value*> call_args = {x_dual_tagged};
+                        Value* result = codegenClosureCall(var_value, call_args);
+
+                        // Unpack result and extract derivative
+                        Value* result_dual = unpackDualFromTaggedValue(result);
+                        auto [value, derivative] = unpackDualNumber(result_dual);
+                        return packDoubleToTaggedValue(derivative);
+                    }
+                    // Check if it's a pointer to closure (mutable capture)
+                    if (isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
+                        eshkol_debug("derivative: using runtime dispatch for captured function '%s'", func_name.c_str());
+                        Value* loaded_val = builder->CreateLoad(tagged_value_type, var_value);
+                        std::vector<Value*> call_args = {x_dual_tagged};
+                        Value* result = codegenClosureCall(loaded_val, call_args);
+
+                        // Unpack result and extract derivative
+                        Value* result_dual = unpackDualFromTaggedValue(result);
+                        auto [value, derivative] = unpackDualNumber(result_dual);
+                        return packDoubleToTaggedValue(derivative);
+                    }
+                    // Check if it's an AllocaInst (local variable holding a closure)
+                    if (isa<AllocaInst>(var_value) && var_value->getType()->isPointerTy()) {
+                        AllocaInst* alloca = cast<AllocaInst>(var_value);
+                        if (alloca->getAllocatedType() == tagged_value_type) {
+                            eshkol_debug("derivative: using runtime dispatch for local function '%s'", func_name.c_str());
+                            Value* loaded_val = builder->CreateLoad(tagged_value_type, var_value);
+                            std::vector<Value*> call_args = {x_dual_tagged};
+                            Value* result = codegenClosureCall(loaded_val, call_args);
+
+                            // Unpack result and extract derivative
+                            Value* result_dual = unpackDualFromTaggedValue(result);
+                            auto [value, derivative] = unpackDualNumber(result_dual);
+                            return packDoubleToTaggedValue(derivative);
+                        }
+                    }
+                    // Check if it's a LoadInst (already loaded closure value)
+                    if (isa<LoadInst>(var_value) && var_value->getType() == tagged_value_type) {
+                        eshkol_debug("derivative: using runtime dispatch for loaded function '%s'", func_name.c_str());
+                        std::vector<Value*> call_args = {x_dual_tagged};
+                        Value* result = codegenClosureCall(var_value, call_args);
+
+                        // Unpack result and extract derivative
+                        Value* result_dual = unpackDualFromTaggedValue(result);
+                        auto [value, derivative] = unpackDualNumber(result_dual);
+                        return packDoubleToTaggedValue(derivative);
+                    }
+                    // Check if it's a GlobalVariable (letrec captured function)
+                    if (isa<GlobalVariable>(var_value)) {
+                        eshkol_debug("derivative: using runtime dispatch for global function '%s'", func_name.c_str());
+                        GlobalVariable* global = cast<GlobalVariable>(var_value);
+                        Value* loaded_val = builder->CreateLoad(global->getValueType(), var_value);
+                        std::vector<Value*> call_args = {x_dual_tagged};
+                        Value* result = codegenClosureCall(loaded_val, call_args);
+
+                        // Unpack result and extract derivative
+                        Value* result_dual = unpackDualFromTaggedValue(result);
+                        auto [value, derivative] = unpackDualNumber(result_dual);
+                        return packDoubleToTaggedValue(derivative);
+                    }
+                }
+            }
+            eshkol_error("Failed to resolve function for derivative");
+            return nullptr;
+        }
+
+        Function* func_ptr = dyn_cast<Function>(func);
+        if (!func_ptr) {
+            eshkol_error("derivative operator requires a function");
+            return nullptr;
+        }
+
         // Build arguments for derivative lambda call
         std::vector<Value*> deriv_call_args = {x_dual_tagged};
-        
+
         // CLOSURE FIX: Load captures from STORAGE
         FunctionType* deriv_func_type = func_ptr->getFunctionType();
         if (deriv_func_type->getNumParams() > 1) {
@@ -12585,9 +14176,14 @@ private:
                 // INNER FUNCTION FIX: If capture_key not found, try plain variable name
                 // This handles lambdas inside functions where captures are function parameters
                 // (not stored as GlobalVariables with _capture_ keys)
+                // Also handles top-level global variables that are captured by lambdas
                 if (!found) {
-                    it = symbol_table.find(var_name);
-                    found = (it != symbol_table.end());
+                    it = global_symbol_table.find(var_name);
+                    found_in_global = (it != global_symbol_table.end());
+                    if (!found_in_global) {
+                        it = symbol_table.find(var_name);
+                    }
+                    found = found_in_global ? (it != global_symbol_table.end()) : (it != symbol_table.end());
                     if (found) {
                         eshkol_debug("Derivative: found capture '%s' via plain variable name", var_name.c_str());
                     }
@@ -12657,17 +14253,1250 @@ private:
     // ===== END DERIVATIVE OPERATOR =====
     // ===== PHASE 3: GRADIENT OPERATOR IMPLEMENTATION =====
     // Reverse-mode automatic differentiation for vector gradients
-    
-    Value* codegenGradient(const eshkol_operations_t* op) {
-        if (!op->gradient_op.function || !op->gradient_op.point) {
-            eshkol_error("Invalid gradient operation - missing function or point");
+
+    // Higher-order gradient: (gradient f) returns a closure that computes gradients
+    // Supports N-dimensional inputs using numerical differentiation (central difference)
+    Value* codegenGradientHigherOrder(const eshkol_operations_t* op) {
+        static int gradient_ho_counter = 0;
+        eshkol_info("Creating higher-order gradient function (gradient f -> grad_f)");
+
+        // Resolve the function at compile-time if possible
+        Value* func = resolveLambdaFunction(op->gradient_op.function);
+        Value* closure_val = nullptr;
+
+        if (!func) {
+            // Runtime function parameter - get the closure value
+            const eshkol_ast_t* func_ast = op->gradient_op.function;
+            if (func_ast && func_ast->type == ESHKOL_VAR) {
+                std::string func_name = func_ast->variable.id;
+                Value* var_value = nullptr;
+
+                auto local_it = symbol_table.find(func_name);
+                if (local_it != symbol_table.end()) {
+                    var_value = local_it->second;
+                } else {
+                    auto global_it = global_symbol_table.find(func_name);
+                    if (global_it != global_symbol_table.end()) {
+                        var_value = global_it->second;
+                    }
+                }
+
+                if (var_value) {
+                    if (isa<Argument>(var_value) && var_value->getType() == tagged_value_type) {
+                        closure_val = var_value;
+                    } else if (isa<AllocaInst>(var_value)) {
+                        closure_val = builder->CreateLoad(tagged_value_type, var_value);
+                    } else if (isa<GlobalVariable>(var_value)) {
+                        closure_val = builder->CreateLoad(tagged_value_type, var_value);
+                    }
+                }
+            }
+
+            if (!closure_val) {
+                eshkol_error("Failed to resolve function for higher-order gradient");
+                return nullptr;
+            }
+        }
+
+        // Create gradient wrapper function
+        // This is VARIADIC: accepts args like (grad-f x y z ...) as a cons list
+        // Computes partial derivatives numerically using central difference
+        std::string grad_func_name = "gradient_ho_" + std::to_string(gradient_ho_counter++);
+
+        // CRITICAL: Save and disable TCO context during gradient function generation
+        // The gradient function has its own internal loops that must not be confused with TCO
+        auto saved_tco_ctx = binding_->getTCOContext();
+        binding_->getTCOContext().enabled = false;
+        binding_->getTCOContext().func_name = "";
+        binding_->getTCOContext().loop_header = nullptr;
+
+        // Function takes a rest list (variadic args packaged as cons list) + captured function
+        std::vector<Type*> param_types = {tagged_value_type, PointerType::getUnqual(*context)};
+        FunctionType* grad_func_type = FunctionType::get(tagged_value_type, param_types, false);
+        Function* grad_func = Function::Create(
+            grad_func_type,
+            Function::ExternalLinkage,
+            grad_func_name,
+            module.get()
+        );
+
+        BasicBlock* saved_bb = builder->GetInsertBlock();
+        BasicBlock::iterator saved_point = builder->GetInsertPoint();
+
+        // Create the gradient computation body
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", grad_func);
+        builder->SetInsertPoint(entry);
+
+        auto arg_it = grad_func->arg_begin();
+        Value* args_list = &(*arg_it);  // First arg: rest list of arguments
+        args_list->setName("args");
+        ++arg_it;
+        Value* captured_f_ptr = &(*arg_it);  // Captured function pointer
+        captured_f_ptr->setName("captured_f");
+
+        Value* f_closure = builder->CreateLoad(tagged_value_type, captured_f_ptr);
+
+        // Constants for numerical differentiation (central difference)
+        Value* h = ConstantFP::get(double_type, 1e-8);
+        Value* two_h = ConstantFP::get(double_type, 2e-8);
+
+        // Get cons accessor functions - avoid struct-by-value ABI issues on ARM64
+        Function* cons_get_double = function_table["arena_tagged_cons_get_double"];
+        Function* cons_get_type = function_table["arena_tagged_cons_get_type"];
+        Function* cons_get_ptr = function_table["arena_tagged_cons_get_ptr"];
+        if (!cons_get_double || !cons_get_type || !cons_get_ptr) {
+            eshkol_error("Cons accessor functions not found");
+            if (saved_bb) builder->SetInsertPoint(saved_bb, saved_point);
             return nullptr;
+        }
+
+        // First, convert the cons list to a vector and count dimensions
+        // Count list length using simple loop with direct tagged_value access
+        BasicBlock* count_loop = BasicBlock::Create(*context, "count_loop", grad_func);
+        BasicBlock* count_done = BasicBlock::Create(*context, "count_done", grad_func);
+        BasicBlock* count_body = BasicBlock::Create(*context, "count_body", grad_func);
+
+        builder->CreateBr(count_loop);
+        builder->SetInsertPoint(count_loop);
+        PHINode* count_phi = builder->CreatePHI(int64_type, 2, "count");
+        count_phi->addIncoming(ConstantInt::get(int64_type, 0), entry);
+        PHINode* curr_phi = builder->CreatePHI(tagged_value_type, 2, "curr");
+        curr_phi->addIncoming(args_list, entry);
+
+        // Check if current is null (end of list)
+        Value* curr_type = getTaggedValueType(curr_phi);
+        Value* curr_base = builder->CreateAnd(curr_type, ConstantInt::get(int8_type, 0x0F));
+        Value* is_null = builder->CreateICmpEQ(curr_base, ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
+        builder->CreateCondBr(is_null, count_done, count_body);
+
+        // Count body - increment and get cdr using separate type/ptr accessors (ARM64 ABI fix)
+        builder->SetInsertPoint(count_body);
+        Value* count_next = builder->CreateAdd(count_phi, ConstantInt::get(int64_type, 1));
+        Value* curr_ptr = builder->CreateIntToPtr(unpackInt64FromTaggedValue(curr_phi), PointerType::getUnqual(*context));
+        // Get cdr type and pointer separately, then pack into tagged_value
+        Value* cdr_type = builder->CreateCall(cons_get_type, {curr_ptr, ConstantInt::get(int1_type, 1)});
+        Value* cdr_ptr = builder->CreateCall(cons_get_ptr, {curr_ptr, ConstantInt::get(int1_type, 1)});
+        Value* cdr_val = packPtrToTaggedValueWithFlags(cdr_ptr, cdr_type, ConstantInt::get(int8_type, 0));
+        count_phi->addIncoming(count_next, count_body);
+        curr_phi->addIncoming(cdr_val, count_body);
+        builder->CreateBr(count_loop);
+
+        // Count done - dim_val has the list length
+        builder->SetInsertPoint(count_done);
+        Value* dim_val = count_phi;
+
+        // Allocate vector for the point (length + elements)
+        Value* vec_total_size = builder->CreateAdd(ConstantInt::get(int64_type, 1), dim_val);
+        Value* vec_bytes = builder->CreateMul(vec_total_size, ConstantInt::get(int64_type,
+            module->getDataLayout().getTypeAllocSize(tagged_value_type)));
+        Value* point_ptr = builder->CreateCall(function_table["malloc"], {vec_bytes});
+        builder->CreateStore(dim_val, point_ptr);  // Store length
+
+        // Copy list elements to vector using simple loop
+        BasicBlock* copy_loop = BasicBlock::Create(*context, "copy_loop", grad_func);
+        BasicBlock* copy_done = BasicBlock::Create(*context, "copy_done", grad_func);
+        BasicBlock* copy_body = BasicBlock::Create(*context, "copy_body", grad_func);
+
+        builder->CreateBr(copy_loop);
+        builder->SetInsertPoint(copy_loop);
+        PHINode* copy_idx = builder->CreatePHI(int64_type, 2, "copy_idx");
+        copy_idx->addIncoming(ConstantInt::get(int64_type, 0), count_done);
+        PHINode* copy_curr = builder->CreatePHI(tagged_value_type, 2, "copy_curr");
+        copy_curr->addIncoming(args_list, count_done);
+
+        Value* copy_type = getTaggedValueType(copy_curr);
+        Value* copy_base = builder->CreateAnd(copy_type, ConstantInt::get(int8_type, 0x0F));
+        Value* copy_is_null = builder->CreateICmpEQ(copy_base, ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
+        builder->CreateCondBr(copy_is_null, copy_done, copy_body);
+
+        // Copy body - store car and advance using separate type/ptr accessors (ARM64 ABI fix)
+        builder->SetInsertPoint(copy_body);
+
+        Value* copy_ptr = builder->CreateIntToPtr(unpackInt64FromTaggedValue(copy_curr), PointerType::getUnqual(*context));
+        // Get car type and value separately, then pack into tagged_value
+        Value* car_type_raw = builder->CreateCall(cons_get_type, {copy_ptr, ConstantInt::get(int1_type, 0)});
+        Value* car_double = builder->CreateCall(cons_get_double, {copy_ptr, ConstantInt::get(int1_type, 0)});
+        Value* car_val = packDoubleToTaggedValue(car_double);
+
+        Value* vec_elem_offset = builder->CreateAdd(ConstantInt::get(int64_type, 1), copy_idx);
+        Value* vec_elem_ptr = builder->CreateGEP(tagged_value_type, point_ptr, vec_elem_offset);
+        builder->CreateStore(car_val, vec_elem_ptr);
+        Value* copy_idx_next = builder->CreateAdd(copy_idx, ConstantInt::get(int64_type, 1));
+        // Get cdr type and pointer separately, then pack into tagged_value
+        Value* cdr_type_raw = builder->CreateCall(cons_get_type, {copy_ptr, ConstantInt::get(int1_type, 1)});
+        Value* cdr_ptr_raw = builder->CreateCall(cons_get_ptr, {copy_ptr, ConstantInt::get(int1_type, 1)});
+        Value* copy_cdr = packPtrToTaggedValueWithFlags(cdr_ptr_raw, cdr_type_raw, ConstantInt::get(int8_type, 0));
+        copy_idx->addIncoming(copy_idx_next, copy_body);
+        copy_curr->addIncoming(copy_cdr, copy_body);
+        builder->CreateBr(copy_loop);
+
+        // Copy done - now point_ptr is a proper vector
+        builder->SetInsertPoint(copy_done);
+
+        // Allocate result tensor data
+        Value* result_size = builder->CreateMul(dim_val, ConstantInt::get(int64_type, 8));
+        Value* result_data = builder->CreateCall(function_table["malloc"], {result_size});
+
+        // SIMPLIFIED GRADIENT: Use switch-based dispatch like derivative does
+        // Instead of complex loops, generate static code paths for each arg count
+        const int MAX_GRADIENT_ARGS = 8;
+
+        BasicBlock* switch_default = BasicBlock::Create(*context, "grad_default", grad_func);
+        BasicBlock* grad_done = BasicBlock::Create(*context, "grad_done", grad_func);
+
+        SwitchInst* dim_switch = builder->CreateSwitch(dim_val, switch_default, MAX_GRADIENT_ARGS);
+        std::vector<std::pair<BasicBlock*, Value*>> results;
+
+        // Generate a case for each dimension count (1 to MAX_GRADIENT_ARGS)
+        for (int dim_count = 1; dim_count <= MAX_GRADIENT_ARGS; dim_count++) {
+            BasicBlock* case_bb = BasicBlock::Create(*context,
+                "grad_dim_" + std::to_string(dim_count), grad_func);
+            dim_switch->addCase(ConstantInt::get(int64_type, dim_count), case_bb);
+            builder->SetInsertPoint(case_bb);
+
+            // Load all arguments from point_ptr into a local array
+            std::vector<Value*> base_args;
+            for (int i = 0; i < dim_count; i++) {
+                Value* elem_offset = ConstantInt::get(int64_type, 1 + i);
+                Value* elem_ptr = builder->CreateGEP(tagged_value_type, point_ptr, elem_offset);
+                Value* loaded_arg = builder->CreateLoad(tagged_value_type, elem_ptr);
+                base_args.push_back(loaded_arg);
+            }
+
+            // For each dimension, compute partial derivative using central difference
+            for (int i = 0; i < dim_count; i++) {
+                // Get the original value at dimension i
+                Value* orig_val = unpackDoubleFromTaggedValue(base_args[i]);
+                Value* plus_val = builder->CreateFAdd(orig_val, h);
+                Value* minus_val = builder->CreateFSub(orig_val, h);
+
+                // Build plus args (copy base_args with modified index i)
+                std::vector<Value*> plus_args = base_args;
+                plus_args[i] = packDoubleToTaggedValue(plus_val);
+
+                // Build minus args
+                std::vector<Value*> minus_args = base_args;
+                minus_args[i] = packDoubleToTaggedValue(minus_val);
+
+                // Call f(plus_args) and f(minus_args) using codegenClosureCall
+                Value* f_plus = codegenClosureCall(f_closure, plus_args);
+                Value* f_minus = codegenClosureCall(f_closure, minus_args);
+
+                // Compute partial derivative: (f_plus - f_minus) / (2h)
+                Value* f_plus_d = unpackDoubleFromTaggedValue(f_plus);
+                Value* f_minus_d = unpackDoubleFromTaggedValue(f_minus);
+                Value* diff = builder->CreateFSub(f_plus_d, f_minus_d);
+                Value* partial = builder->CreateFDiv(diff, two_h);
+
+                // Store in result array
+                Value* result_slot = builder->CreateGEP(double_type, result_data,
+                    ConstantInt::get(int64_type, i));
+                builder->CreateStore(partial, result_slot);
+            }
+
+            builder->CreateBr(grad_done);
+            results.push_back({builder->GetInsertBlock(), dim_val});
+        }
+
+        // Default case: unsupported dimension count, return null tensor
+        builder->SetInsertPoint(switch_default);
+        builder->CreateBr(grad_done);
+        results.push_back({switch_default, ConstantInt::get(int64_type, 0)});
+
+        // Grad done - create result tensor using proper tensor struct format
+        builder->SetInsertPoint(grad_done);
+
+        // Tensor struct format:
+        // Field 0: dims (pointer to dimensions array)
+        // Field 1: num_dims (number of dimensions)
+        // Field 2: elements (pointer to double data)
+        // Field 3: total_elements
+
+        // Allocate tensor struct
+        Value* tensor_size = ConstantInt::get(int64_type, module->getDataLayout().getTypeAllocSize(tensor_type));
+        Value* tensor_mem = builder->CreateCall(function_table["malloc"], {tensor_size});
+        Value* typed_tensor_ptr = builder->CreatePointerCast(tensor_mem, PointerType::getUnqual(tensor_type));
+
+        // Allocate dimensions array (1 element for 1D tensor)
+        Value* dims_array = builder->CreateCall(function_table["malloc"],
+            {ConstantInt::get(int64_type, 8)});  // 1 * sizeof(int64)
+        builder->CreateStore(dim_val, dims_array);  // dims[0] = number of gradient components
+
+        // Fill tensor struct fields
+        Value* dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 0);
+        builder->CreateStore(dims_array, dims_field_ptr);  // Field 0: dims pointer
+
+        Value* num_dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 1);
+        builder->CreateStore(ConstantInt::get(int64_type, 1), num_dims_field_ptr);  // Field 1: num_dims = 1
+
+        Value* elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 2);
+        builder->CreateStore(result_data, elements_field_ptr);  // Field 2: elements pointer
+
+        Value* total_elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 3);
+        builder->CreateStore(dim_val, total_elements_field_ptr);  // Field 3: total_elements = dim_val
+
+        Value* result_tensor = packPtrToTaggedValue(
+            builder->CreatePtrToInt(typed_tensor_ptr, int64_type),
+            ESHKOL_VALUE_TENSOR_PTR);
+        builder->CreateRet(result_tensor);
+
+        // Restore insertion point
+        if (saved_bb) {
+            builder->SetInsertPoint(saved_bb, saved_point);
+        }
+
+        // Restore TCO context
+        binding_->getTCOContext() = saved_tco_ctx;
+
+        // Register the gradient function
+        function_table[grad_func_name] = grad_func;
+        nested_function_captures[grad_func_name] = {"f"};  // 1 capture
+
+        // Create closure capturing the original function
+        if (!closure_val && func) {
+            // Static function - pack as closure
+            closure_val = packPtrToTaggedValue(
+                builder->CreatePtrToInt(func, int64_type),
+                ESHKOL_VALUE_LAMBDA_SEXPR);
+        }
+
+        Value* func_ptr_int = builder->CreatePtrToInt(grad_func, int64_type);
+        Value* arena = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        // packed_info format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic
+        // We have 1 capture, 0 fixed params, and IS variadic
+        uint64_t packed_info = 1 | (0ULL << 16) | (1ULL << 63);  // 1 capture, variadic
+        Value* packed_captures = ConstantInt::get(int64_type, packed_info);
+        Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+        Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+                                                 {arena, func_ptr_int, packed_captures, sexpr_ptr});
+
+        // Store captured function in closure environment
+        Value* env_ptr_ptr = builder->CreateGEP(int8_type, closure_ptr, ConstantInt::get(int64_type, 8));
+        Value* env_ptr = builder->CreateLoad(PointerType::getUnqual(*context), env_ptr_ptr);
+        Value* captures_base = builder->CreateGEP(int8_type, env_ptr, ConstantInt::get(int64_type, 8));
+        builder->CreateStore(closure_val, captures_base);
+
+        // Return closure as tagged value
+        Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
+        return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
+    }
+
+    Value* codegenGradient(const eshkol_operations_t* op) {
+        if (!op->gradient_op.function) {
+            eshkol_error("Invalid gradient operation - missing function");
+            return nullptr;
+        }
+
+        // Higher-order form: (gradient f) returns a closure that computes gradients
+        if (!op->gradient_op.point) {
+            return codegenGradientHigherOrder(op);
         }
 
         // Resolve function (lambda or function reference)
         Value* func = resolveLambdaFunction(op->gradient_op.function);
 
+        // RUNTIME FUNCTION PARAMETER FIX: Handle functions passed as parameters
+        // For gradient with runtime function parameters, we need to use a different approach
+        // since gradient requires knowing the function structure at compile time.
+        // For now, we'll check if the function AST is a variable and look it up.
         if (!func) {
+            const eshkol_ast_t* func_ast = op->gradient_op.function;
+            if (func_ast && func_ast->type == ESHKOL_VAR) {
+                std::string func_name = func_ast->variable.id;
+                eshkol_debug("gradient: checking runtime function parameter '%s'", func_name.c_str());
+
+                // Check if this is a function parameter or captured value
+                Value* var_value = nullptr;
+
+                // NESTED FUNCTION FIX: First check if there's a GlobalVariable for this capture
+                // This handles nested functions where captures are stored in GlobalVariables
+                Function* current_func = builder->GetInsertBlock()->getParent();
+                std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
+                auto gv_it = global_symbol_table.find(capture_key);
+                if (gv_it != global_symbol_table.end() && isa<GlobalVariable>(gv_it->second)) {
+                    var_value = gv_it->second;
+                }
+
+                // If not found as a capture, try regular symbol_table lookup
+                if (!var_value) {
+                    auto local_it = symbol_table.find(func_name);
+                    if (local_it != symbol_table.end()) {
+                        var_value = local_it->second;
+                    } else {
+                        auto global_it = global_symbol_table.find(func_name);
+                        if (global_it != global_symbol_table.end()) {
+                            var_value = global_it->second;
+                        }
+                    }
+                }
+
+                // NESTED FUNCTION FIX: Check if the Argument belongs to the current function
+                // If it's from a different function, we need to find it in our captures
+                // Also handle pointer-type captures (used for mutable closures)
+                if (var_value && isa<Argument>(var_value)) {
+                    Argument* arg = cast<Argument>(var_value);
+                    Function* arg_parent = arg->getParent();
+                    Function* current_func = builder->GetInsertBlock()->getParent();
+
+                    // POINTER CAPTURE FIX: If this is a pointer-type capture argument,
+                    // load the tagged value from it before proceeding
+                    if (arg_parent == current_func && arg->getType()->isPointerTy()) {
+                        var_value = builder->CreateLoad(tagged_value_type, arg);
+                    }
+
+                    if (arg_parent != current_func) {
+                        // The Argument is from a different function - find it in current function's captures
+                        bool found_in_captures = false;
+                        for (auto& curr_arg : current_func->args()) {
+                            std::string arg_name = curr_arg.getName().str();
+                            if (arg_name == "captured_" + func_name) {
+                                // Found the capture parameter in current function
+                                if (curr_arg.getType()->isPointerTy()) {
+                                    var_value = builder->CreateLoad(tagged_value_type, &curr_arg);
+                                } else {
+                                    var_value = &curr_arg;
+                                }
+                                found_in_captures = true;
+                                eshkol_debug("gradient: using current function's capture for %s", func_name.c_str());
+                                break;
+                            }
+                        }
+                        if (!found_in_captures) {
+                            // Check GlobalVariable captures
+                            std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
+                            auto cap_it = global_symbol_table.find(capture_key);
+                            if (cap_it != global_symbol_table.end() && isa<GlobalVariable>(cap_it->second)) {
+                                var_value = builder->CreateLoad(tagged_value_type, cap_it->second);
+                                found_in_captures = true;
+                                eshkol_debug("gradient: using GlobalVariable capture for %s", func_name.c_str());
+                            } else {
+                                // Try just the variable name as global key
+                                auto var_cap_it = global_symbol_table.find(func_name);
+                                if (var_cap_it != global_symbol_table.end() && isa<GlobalVariable>(var_cap_it->second)) {
+                                    var_value = builder->CreateLoad(tagged_value_type, var_cap_it->second);
+                                    found_in_captures = true;
+                                    eshkol_debug("gradient: using GlobalVariable %s directly", func_name.c_str());
+                                }
+                            }
+                        }
+                        if (!found_in_captures) {
+                            eshkol_error("gradient: could not find capture for '%s'", func_name.c_str());
+                            return nullptr;
+                        }
+                    }
+
+                    // Use forward-mode AD by calling function n times with directional derivatives
+                    // For each dimension i, we create a Scheme vector with dual numbers where
+                    // tangent=1 at position i and tangent=0 elsewhere
+
+                    // Get the input point
+                    Value* point_val = codegenAST(op->gradient_op.point);
+                    if (!point_val) {
+                        eshkol_error("Failed to evaluate gradient point");
+                        return nullptr;
+                    }
+
+                    // Ensure point is tagged
+                    if (point_val->getType() != tagged_value_type) {
+                        if (point_val->getType()->isIntegerTy(64)) {
+                            point_val = packInt64ToTaggedValue(point_val, true);
+                        } else if (point_val->getType()->isDoubleTy()) {
+                            point_val = packDoubleToTaggedValue(point_val);
+                        }
+                    }
+
+                    // Note: current_func already defined above for capture lookup
+
+                    // Get arena_allocate for Scheme vector allocation
+                    Function* arena_allocate_func = function_table["arena_allocate"];
+                    Function* malloc_func = function_table["malloc"];
+                    if (!arena_allocate_func || !malloc_func) {
+                        eshkol_error("arena_allocate or malloc not found for gradient");
+                        return nullptr;
+                    }
+                    Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+                    // Get tagged_value size
+                    uint64_t tagged_size = module->getDataLayout().getTypeAllocSize(tagged_value_type);
+
+                    // Check input type - handle Scheme vector (VECTOR_PTR), tensor (TENSOR_PTR), or scalar
+                    Value* input_type = getTaggedValueType(point_val);
+                    Value* input_base = builder->CreateAnd(input_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* is_scheme_vec = builder->CreateICmpEQ(input_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+                    Value* is_tensor = builder->CreateICmpEQ(input_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
+
+                    BasicBlock* scheme_vec_path = BasicBlock::Create(*context, "grad_rt_svec", current_func);
+                    BasicBlock* tensor_path = BasicBlock::Create(*context, "grad_rt_tensor", current_func);
+                    BasicBlock* scalar_path = BasicBlock::Create(*context, "grad_rt_scalar", current_func);
+                    BasicBlock* check_tensor = BasicBlock::Create(*context, "grad_rt_check_tensor", current_func);
+                    BasicBlock* grad_rt_compute = BasicBlock::Create(*context, "grad_rt_compute", current_func);
+
+                    builder->CreateCondBr(is_scheme_vec, scheme_vec_path, check_tensor);
+
+                    builder->SetInsertPoint(check_tensor);
+                    builder->CreateCondBr(is_tensor, tensor_path, scalar_path);
+
+                    // Scheme vector path - use input directly
+                    builder->SetInsertPoint(scheme_vec_path);
+                    Value* svec_ptr = unpackPtrFromTaggedValue(point_val);
+                    Value* svec_len = builder->CreateLoad(int64_type, svec_ptr);
+                    Value* svec_elems = builder->CreateGEP(int8_type, svec_ptr, ConstantInt::get(int64_type, 8));
+                    Value* svec_elems_typed = builder->CreatePointerCast(svec_elems, PointerType::getUnqual(tagged_value_type));
+                    builder->CreateBr(grad_rt_compute);
+                    BasicBlock* svec_exit = builder->GetInsertBlock();
+
+                    // Tensor path - convert tensor elements to Scheme vector of tagged doubles
+                    builder->SetInsertPoint(tensor_path);
+                    Value* tensor_ptr_int = safeExtractInt64(point_val);
+                    Value* tensor_ptr = builder->CreateIntToPtr(tensor_ptr_int, builder->getPtrTy());
+                    Value* dims_field = builder->CreateStructGEP(tensor_type, tensor_ptr, 0);
+                    Value* dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dims_field);
+                    Value* typed_dims = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
+                    Value* tensor_n = builder->CreateLoad(int64_type, typed_dims);
+                    Value* tensor_elems_field = builder->CreateStructGEP(tensor_type, tensor_ptr, 2);
+                    Value* tensor_elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), tensor_elems_field);
+                    Value* tensor_elems_typed = builder->CreatePointerCast(tensor_elems_ptr, builder->getPtrTy());
+
+                    // Allocate Scheme vector for tensor elements
+                    Value* tconv_size = builder->CreateAdd(
+                        builder->CreateMul(tensor_n, ConstantInt::get(int64_type, tagged_size)),
+                        ConstantInt::get(int64_type, 8));
+                    Value* tconv_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, tconv_size});
+                    builder->CreateStore(tensor_n, tconv_vec);
+                    Value* tconv_elems = builder->CreateGEP(int8_type, tconv_vec, ConstantInt::get(int64_type, 8));
+                    Value* tconv_elems_typed = builder->CreatePointerCast(tconv_elems, PointerType::getUnqual(tagged_value_type));
+
+                    // Copy tensor elements as tagged doubles
+                    Value* tconv_i = builder->CreateAlloca(int64_type, nullptr, "tconv_i");
+                    builder->CreateStore(ConstantInt::get(int64_type, 0), tconv_i);
+                    BasicBlock* tconv_cond = BasicBlock::Create(*context, "tconv_cond", current_func);
+                    BasicBlock* tconv_body = BasicBlock::Create(*context, "tconv_body", current_func);
+                    BasicBlock* tconv_end = BasicBlock::Create(*context, "tconv_end", current_func);
+                    builder->CreateBr(tconv_cond);
+
+                    builder->SetInsertPoint(tconv_cond);
+                    Value* tc_idx = builder->CreateLoad(int64_type, tconv_i);
+                    builder->CreateCondBr(builder->CreateICmpULT(tc_idx, tensor_n), tconv_body, tconv_end);
+
+                    builder->SetInsertPoint(tconv_body);
+                    Value* tc_src = builder->CreateGEP(int64_type, tensor_elems_typed, tc_idx);
+                    Value* tc_bits = builder->CreateLoad(int64_type, tc_src);
+                    Value* tc_dbl = builder->CreateBitCast(tc_bits, double_type);
+                    Value* tc_tagged = packDoubleToTaggedValue(tc_dbl);
+                    Value* tc_dst = builder->CreateGEP(tagged_value_type, tconv_elems_typed, tc_idx);
+                    builder->CreateStore(tc_tagged, tc_dst);
+                    builder->CreateStore(builder->CreateAdd(tc_idx, ConstantInt::get(int64_type, 1)), tconv_i);
+                    builder->CreateBr(tconv_cond);
+
+                    builder->SetInsertPoint(tconv_end);
+                    builder->CreateBr(grad_rt_compute);
+                    BasicBlock* tensor_exit = builder->GetInsertBlock();
+
+                    // Scalar path - create 1-element Scheme vector
+                    builder->SetInsertPoint(scalar_path);
+                    Value* scalar_val = unpackDoubleFromTaggedValue(point_val);
+                    Value* scalar_vec_size = ConstantInt::get(int64_type, 8 + tagged_size);
+                    Value* scalar_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, scalar_vec_size});
+                    builder->CreateStore(ConstantInt::get(int64_type, 1), scalar_vec);
+                    Value* scalar_elem = builder->CreateGEP(int8_type, scalar_vec, ConstantInt::get(int64_type, 8));
+                    Value* scalar_elem_typed = builder->CreatePointerCast(scalar_elem, PointerType::getUnqual(tagged_value_type));
+                    Value* scalar_tagged = packDoubleToTaggedValue(scalar_val);
+                    builder->CreateStore(scalar_tagged, scalar_elem_typed);
+                    builder->CreateBr(grad_rt_compute);
+                    BasicBlock* scalar_exit = builder->GetInsertBlock();
+
+                    // Merge input paths
+                    builder->SetInsertPoint(grad_rt_compute);
+                    PHINode* n = builder->CreatePHI(int64_type, 3, "grad_n");
+                    n->addIncoming(svec_len, svec_exit);
+                    n->addIncoming(tensor_n, tensor_exit);
+                    n->addIncoming(ConstantInt::get(int64_type, 1), scalar_exit);
+
+                    PHINode* input_elems = builder->CreatePHI(PointerType::getUnqual(tagged_value_type), 3, "grad_elems");
+                    input_elems->addIncoming(svec_elems_typed, svec_exit);
+                    input_elems->addIncoming(tconv_elems_typed, tensor_exit);
+                    input_elems->addIncoming(scalar_elem_typed, scalar_exit);
+
+                    // Allocate result tensor
+                    Value* result_size = ConstantInt::get(int64_type,
+                        module->getDataLayout().getTypeAllocSize(tensor_type));
+                    Value* result_ptr = builder->CreateCall(malloc_func, {result_size});
+                    Value* typed_result = builder->CreatePointerCast(result_ptr, builder->getPtrTy());
+
+                    Value* result_dims_ptr = builder->CreateCall(malloc_func, {ConstantInt::get(int64_type, 8)});
+                    Value* typed_result_dims = builder->CreatePointerCast(result_dims_ptr, builder->getPtrTy());
+                    builder->CreateStore(n, typed_result_dims);
+                    builder->CreateStore(typed_result_dims, builder->CreateStructGEP(tensor_type, typed_result, 0));
+                    builder->CreateStore(ConstantInt::get(int64_type, 1), builder->CreateStructGEP(tensor_type, typed_result, 1));
+                    builder->CreateStore(n, builder->CreateStructGEP(tensor_type, typed_result, 3));
+
+                    Value* result_elems_size = builder->CreateMul(n, ConstantInt::get(int64_type, sizeof(double)));
+                    Value* result_elems_ptr = builder->CreateCall(malloc_func, {result_elems_size});
+                    Value* typed_result_elems = builder->CreatePointerCast(result_elems_ptr, builder->getPtrTy());
+                    builder->CreateStore(typed_result_elems, builder->CreateStructGEP(tensor_type, typed_result, 2));
+
+                    // Allocate Scheme vector for dual numbers (reused each iteration)
+                    Value* dual_vec_size = builder->CreateAdd(
+                        builder->CreateMul(n, ConstantInt::get(int64_type, tagged_size)),
+                        ConstantInt::get(int64_type, 8));
+                    Value* dual_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, dual_vec_size});
+                    builder->CreateStore(n, dual_vec);
+                    Value* dual_elems = builder->CreateGEP(int8_type, dual_vec, ConstantInt::get(int64_type, 8));
+                    Value* dual_elems_typed = builder->CreatePointerCast(dual_elems, PointerType::getUnqual(tagged_value_type));
+
+                    // Outer loop: for each dimension i, compute partial derivative
+                    Value* dim_counter = builder->CreateAlloca(int64_type, nullptr, "grad_dim_i");
+                    builder->CreateStore(ConstantInt::get(int64_type, 0), dim_counter);
+
+                    BasicBlock* dim_cond = BasicBlock::Create(*context, "grad_dim_cond", current_func);
+                    BasicBlock* dim_body = BasicBlock::Create(*context, "grad_dim_body", current_func);
+                    BasicBlock* dim_end = BasicBlock::Create(*context, "grad_dim_end", current_func);
+
+                    builder->CreateBr(dim_cond);
+
+                    builder->SetInsertPoint(dim_cond);
+                    Value* dim_i = builder->CreateLoad(int64_type, dim_counter);
+                    builder->CreateCondBr(builder->CreateICmpULT(dim_i, n), dim_body, dim_end);
+
+                    builder->SetInsertPoint(dim_body);
+
+                    // Inner loop: create dual vector with tangent=1 at dim_i
+                    Value* inner_counter = builder->CreateAlloca(int64_type, nullptr, "grad_inner_j");
+                    builder->CreateStore(ConstantInt::get(int64_type, 0), inner_counter);
+
+                    BasicBlock* inner_cond = BasicBlock::Create(*context, "grad_inner_cond", current_func);
+                    BasicBlock* inner_body = BasicBlock::Create(*context, "grad_inner_body", current_func);
+                    BasicBlock* inner_end = BasicBlock::Create(*context, "grad_inner_end", current_func);
+
+                    builder->CreateBr(inner_cond);
+
+                    builder->SetInsertPoint(inner_cond);
+                    Value* inner_j = builder->CreateLoad(int64_type, inner_counter);
+                    builder->CreateCondBr(builder->CreateICmpULT(inner_j, n), inner_body, inner_end);
+
+                    builder->SetInsertPoint(inner_body);
+                    // Load primal value at position j from input elements
+                    Value* in_elem_ptr = builder->CreateGEP(tagged_value_type, input_elems, inner_j);
+                    Value* in_elem = builder->CreateLoad(tagged_value_type, in_elem_ptr);
+                    Value* primal_val = unpackDoubleFromTaggedValue(in_elem);
+
+                    // Set tangent: 1.0 if j == i, else 0.0
+                    Value* is_active = builder->CreateICmpEQ(inner_j, dim_i);
+                    Value* tangent = builder->CreateSelect(is_active,
+                        ConstantFP::get(double_type, 1.0),
+                        ConstantFP::get(double_type, 0.0));
+
+                    // Create dual number and store in dual vector
+                    Value* dual_num = packDualNumber(primal_val, tangent);
+                    Value* dual_tagged = packDualToTaggedValue(dual_num);
+                    Value* dual_elem_ptr = builder->CreateGEP(tagged_value_type, dual_elems_typed, inner_j);
+                    builder->CreateStore(dual_tagged, dual_elem_ptr);
+
+                    builder->CreateStore(builder->CreateAdd(inner_j, ConstantInt::get(int64_type, 1)), inner_counter);
+                    builder->CreateBr(inner_cond);
+
+                    builder->SetInsertPoint(inner_end);
+
+                    // Pack dual vector as Scheme vector (VECTOR_PTR)
+                    Value* dual_vec_tagged = packPtrToTaggedValue(
+                        builder->CreatePtrToInt(dual_vec, int64_type),
+                        ESHKOL_VALUE_VECTOR_PTR);
+
+                    // Call function via closure dispatch
+                    std::vector<Value*> call_args = {dual_vec_tagged};
+                    Value* call_result = codegenClosureCall(var_value, call_args);
+
+                    // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
+                    // If function returns a constant (not using its argument), it won't be dual
+                    Value* rt_result_type = getTaggedValueType(call_result);
+                    Value* rt_result_base = builder->CreateAnd(rt_result_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* rt_is_dual = builder->CreateICmpEQ(rt_result_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+
+                    BasicBlock* rt_dual_bb = BasicBlock::Create(*context, "grad_rt_dual", current_func);
+                    BasicBlock* rt_const_bb = BasicBlock::Create(*context, "grad_rt_const", current_func);
+                    BasicBlock* rt_merge_bb = BasicBlock::Create(*context, "grad_rt_merge", current_func);
+
+                    builder->CreateCondBr(rt_is_dual, rt_dual_bb, rt_const_bb);
+
+                    // Dual path: extract tangent normally
+                    builder->SetInsertPoint(rt_dual_bb);
+                    Value* rt_result_dual = unpackDualFromTaggedValue(call_result);
+                    auto [rt_result_primal, rt_dual_deriv] = unpackDualNumber(rt_result_dual);
+                    builder->CreateBr(rt_merge_bb);
+                    BasicBlock* rt_dual_exit = builder->GetInsertBlock();
+
+                    // Constant path: derivative is 0.0
+                    builder->SetInsertPoint(rt_const_bb);
+                    Value* rt_zero_deriv = ConstantFP::get(double_type, 0.0);
+                    builder->CreateBr(rt_merge_bb);
+                    BasicBlock* rt_const_exit = builder->GetInsertBlock();
+
+                    // Merge paths
+                    builder->SetInsertPoint(rt_merge_bb);
+                    PHINode* deriv = builder->CreatePHI(double_type, 2, "grad_deriv");
+                    deriv->addIncoming(rt_dual_deriv, rt_dual_exit);
+                    deriv->addIncoming(rt_zero_deriv, rt_const_exit);
+
+                    // Store derivative in result tensor
+                    Value* result_elem_ptr = builder->CreateGEP(int64_type, typed_result_elems, dim_i);
+                    Value* deriv_bits = builder->CreateBitCast(deriv, int64_type);
+                    builder->CreateStore(deriv_bits, result_elem_ptr);
+
+                    builder->CreateStore(builder->CreateAdd(dim_i, ConstantInt::get(int64_type, 1)), dim_counter);
+                    builder->CreateBr(dim_cond);
+
+                    builder->SetInsertPoint(dim_end);
+                    Value* result_int = builder->CreatePtrToInt(typed_result, int64_type);
+                    return packPtrToTaggedValue(result_int, ESHKOL_VALUE_TENSOR_PTR);
+                }
+
+                // NESTED FUNCTION CAPTURE FIX: Handle pointer-type Arguments (captured functions)
+                // In nested functions like (define (step point) (gradient f point)),
+                // 'f' is captured and passed as a pointer to the closure environment
+                if (var_value && isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
+                    eshkol_debug("gradient: using forward-mode AD for captured function '%s'", func_name.c_str());
+
+                    // Load the function from the capture pointer
+                    Value* loaded_func = builder->CreateLoad(tagged_value_type, var_value);
+
+                    // Get the input point
+                    Value* point_val = codegenAST(op->gradient_op.point);
+                    if (!point_val) {
+                        eshkol_error("Failed to evaluate gradient point");
+                        return nullptr;
+                    }
+
+                    // Ensure point is tagged
+                    if (point_val->getType() != tagged_value_type) {
+                        if (point_val->getType()->isIntegerTy(64)) {
+                            point_val = packInt64ToTaggedValue(point_val, true);
+                        } else if (point_val->getType()->isDoubleTy()) {
+                            point_val = packDoubleToTaggedValue(point_val);
+                        }
+                    }
+
+                    Function* current_func = builder->GetInsertBlock()->getParent();
+
+                    // Get arena_allocate for Scheme vector allocation
+                    Function* arena_allocate_func = function_table["arena_allocate"];
+                    Function* malloc_func = function_table["malloc"];
+                    if (!arena_allocate_func || !malloc_func) {
+                        eshkol_error("arena_allocate or malloc not found for gradient");
+                        return nullptr;
+                    }
+                    Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+                    // Get tagged_value size
+                    uint64_t tagged_size = module->getDataLayout().getTypeAllocSize(tagged_value_type);
+
+                    // Check input type - handle Scheme vector (VECTOR_PTR), tensor (TENSOR_PTR), or scalar
+                    Value* input_type = getTaggedValueType(point_val);
+                    Value* input_base = builder->CreateAnd(input_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* is_scheme_vec = builder->CreateICmpEQ(input_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+                    Value* is_tensor = builder->CreateICmpEQ(input_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
+
+                    BasicBlock* cap_scheme_vec_path = BasicBlock::Create(*context, "grad_cap_svec", current_func);
+                    BasicBlock* cap_tensor_path = BasicBlock::Create(*context, "grad_cap_tensor", current_func);
+                    BasicBlock* cap_scalar_path = BasicBlock::Create(*context, "grad_cap_scalar", current_func);
+                    BasicBlock* cap_check_tensor = BasicBlock::Create(*context, "grad_cap_check_tensor", current_func);
+                    BasicBlock* cap_grad_compute = BasicBlock::Create(*context, "grad_cap_compute", current_func);
+
+                    builder->CreateCondBr(is_scheme_vec, cap_scheme_vec_path, cap_check_tensor);
+
+                    builder->SetInsertPoint(cap_check_tensor);
+                    builder->CreateCondBr(is_tensor, cap_tensor_path, cap_scalar_path);
+
+                    // Scheme vector path - use input directly
+                    builder->SetInsertPoint(cap_scheme_vec_path);
+                    Value* cap_svec_ptr = unpackPtrFromTaggedValue(point_val);
+                    Value* cap_svec_len = builder->CreateLoad(int64_type, cap_svec_ptr);
+                    Value* cap_svec_elems = builder->CreateGEP(int8_type, cap_svec_ptr, ConstantInt::get(int64_type, 8));
+                    Value* cap_svec_elems_typed = builder->CreatePointerCast(cap_svec_elems, PointerType::getUnqual(tagged_value_type));
+                    builder->CreateBr(cap_grad_compute);
+                    BasicBlock* cap_svec_exit = builder->GetInsertBlock();
+
+                    // Tensor path - convert tensor elements to Scheme vector of tagged doubles
+                    builder->SetInsertPoint(cap_tensor_path);
+                    Value* cap_tensor_ptr_int = safeExtractInt64(point_val);
+                    Value* cap_tensor_ptr = builder->CreateIntToPtr(cap_tensor_ptr_int, builder->getPtrTy());
+                    Value* cap_dims_field = builder->CreateStructGEP(tensor_type, cap_tensor_ptr, 0);
+                    Value* cap_dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), cap_dims_field);
+                    Value* cap_typed_dims = builder->CreatePointerCast(cap_dims_ptr, builder->getPtrTy());
+                    Value* cap_tensor_n = builder->CreateLoad(int64_type, cap_typed_dims);
+                    Value* cap_tensor_elems_field = builder->CreateStructGEP(tensor_type, cap_tensor_ptr, 2);
+                    Value* cap_tensor_elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), cap_tensor_elems_field);
+                    Value* cap_tensor_elems_typed = builder->CreatePointerCast(cap_tensor_elems_ptr, builder->getPtrTy());
+
+                    // Allocate Scheme vector for tensor elements
+                    Value* cap_tconv_size = builder->CreateAdd(
+                        builder->CreateMul(cap_tensor_n, ConstantInt::get(int64_type, tagged_size)),
+                        ConstantInt::get(int64_type, 8));
+                    Value* cap_tconv_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, cap_tconv_size});
+                    builder->CreateStore(cap_tensor_n, cap_tconv_vec);
+                    Value* cap_tconv_elems = builder->CreateGEP(int8_type, cap_tconv_vec, ConstantInt::get(int64_type, 8));
+                    Value* cap_tconv_elems_typed = builder->CreatePointerCast(cap_tconv_elems, PointerType::getUnqual(tagged_value_type));
+
+                    // Copy tensor elements as tagged doubles
+                    Value* cap_tconv_i = builder->CreateAlloca(int64_type, nullptr, "cap_tconv_i");
+                    builder->CreateStore(ConstantInt::get(int64_type, 0), cap_tconv_i);
+                    BasicBlock* cap_tconv_cond = BasicBlock::Create(*context, "cap_tconv_cond", current_func);
+                    BasicBlock* cap_tconv_body = BasicBlock::Create(*context, "cap_tconv_body", current_func);
+                    BasicBlock* cap_tconv_end = BasicBlock::Create(*context, "cap_tconv_end", current_func);
+                    builder->CreateBr(cap_tconv_cond);
+
+                    builder->SetInsertPoint(cap_tconv_cond);
+                    Value* cap_tc_idx = builder->CreateLoad(int64_type, cap_tconv_i);
+                    builder->CreateCondBr(builder->CreateICmpULT(cap_tc_idx, cap_tensor_n), cap_tconv_body, cap_tconv_end);
+
+                    builder->SetInsertPoint(cap_tconv_body);
+                    Value* cap_tc_src = builder->CreateGEP(int64_type, cap_tensor_elems_typed, cap_tc_idx);
+                    Value* cap_tc_bits = builder->CreateLoad(int64_type, cap_tc_src);
+                    Value* cap_tc_dbl = builder->CreateBitCast(cap_tc_bits, double_type);
+                    Value* cap_tc_tagged = packDoubleToTaggedValue(cap_tc_dbl);
+                    Value* cap_tc_dst = builder->CreateGEP(tagged_value_type, cap_tconv_elems_typed, cap_tc_idx);
+                    builder->CreateStore(cap_tc_tagged, cap_tc_dst);
+                    builder->CreateStore(builder->CreateAdd(cap_tc_idx, ConstantInt::get(int64_type, 1)), cap_tconv_i);
+                    builder->CreateBr(cap_tconv_cond);
+
+                    builder->SetInsertPoint(cap_tconv_end);
+                    builder->CreateBr(cap_grad_compute);
+                    BasicBlock* cap_tensor_exit = builder->GetInsertBlock();
+
+                    // Scalar path - create 1-element Scheme vector
+                    builder->SetInsertPoint(cap_scalar_path);
+                    Value* cap_scalar_val = unpackDoubleFromTaggedValue(point_val);
+                    Value* cap_scalar_vec_size = ConstantInt::get(int64_type, 8 + tagged_size);
+                    Value* cap_scalar_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, cap_scalar_vec_size});
+                    builder->CreateStore(ConstantInt::get(int64_type, 1), cap_scalar_vec);
+                    Value* cap_scalar_elem = builder->CreateGEP(int8_type, cap_scalar_vec, ConstantInt::get(int64_type, 8));
+                    Value* cap_scalar_elem_typed = builder->CreatePointerCast(cap_scalar_elem, PointerType::getUnqual(tagged_value_type));
+                    Value* cap_scalar_tagged = packDoubleToTaggedValue(cap_scalar_val);
+                    builder->CreateStore(cap_scalar_tagged, cap_scalar_elem_typed);
+                    builder->CreateBr(cap_grad_compute);
+                    BasicBlock* cap_scalar_exit = builder->GetInsertBlock();
+
+                    // Merge input paths
+                    builder->SetInsertPoint(cap_grad_compute);
+                    PHINode* cap_n = builder->CreatePHI(int64_type, 3, "cap_grad_n");
+                    cap_n->addIncoming(cap_svec_len, cap_svec_exit);
+                    cap_n->addIncoming(cap_tensor_n, cap_tensor_exit);
+                    cap_n->addIncoming(ConstantInt::get(int64_type, 1), cap_scalar_exit);
+
+                    PHINode* cap_input_elems = builder->CreatePHI(PointerType::getUnqual(tagged_value_type), 3, "cap_grad_elems");
+                    cap_input_elems->addIncoming(cap_svec_elems_typed, cap_svec_exit);
+                    cap_input_elems->addIncoming(cap_tconv_elems_typed, cap_tensor_exit);
+                    cap_input_elems->addIncoming(cap_scalar_elem_typed, cap_scalar_exit);
+
+                    // Allocate result tensor
+                    Value* cap_result_size = ConstantInt::get(int64_type,
+                        module->getDataLayout().getTypeAllocSize(tensor_type));
+                    Value* cap_result_ptr = builder->CreateCall(malloc_func, {cap_result_size});
+                    Value* cap_typed_result = builder->CreatePointerCast(cap_result_ptr, builder->getPtrTy());
+
+                    Value* cap_result_dims_ptr = builder->CreateCall(malloc_func, {ConstantInt::get(int64_type, 8)});
+                    Value* cap_typed_result_dims = builder->CreatePointerCast(cap_result_dims_ptr, builder->getPtrTy());
+                    builder->CreateStore(cap_n, cap_typed_result_dims);
+                    builder->CreateStore(cap_typed_result_dims, builder->CreateStructGEP(tensor_type, cap_typed_result, 0));
+                    builder->CreateStore(ConstantInt::get(int64_type, 1), builder->CreateStructGEP(tensor_type, cap_typed_result, 1));
+                    builder->CreateStore(cap_n, builder->CreateStructGEP(tensor_type, cap_typed_result, 3));
+
+                    Value* cap_result_elems_size = builder->CreateMul(cap_n, ConstantInt::get(int64_type, sizeof(double)));
+                    Value* cap_result_elems_ptr = builder->CreateCall(malloc_func, {cap_result_elems_size});
+                    Value* cap_typed_result_elems = builder->CreatePointerCast(cap_result_elems_ptr, builder->getPtrTy());
+                    builder->CreateStore(cap_typed_result_elems, builder->CreateStructGEP(tensor_type, cap_typed_result, 2));
+
+                    // Allocate Scheme vector for dual numbers (reused each iteration)
+                    Value* cap_dual_vec_size = builder->CreateAdd(
+                        builder->CreateMul(cap_n, ConstantInt::get(int64_type, tagged_size)),
+                        ConstantInt::get(int64_type, 8));
+                    Value* cap_dual_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, cap_dual_vec_size});
+                    builder->CreateStore(cap_n, cap_dual_vec);
+                    Value* cap_dual_elems = builder->CreateGEP(int8_type, cap_dual_vec, ConstantInt::get(int64_type, 8));
+                    Value* cap_dual_elems_typed = builder->CreatePointerCast(cap_dual_elems, PointerType::getUnqual(tagged_value_type));
+
+                    // Outer loop: for each dimension i, compute partial derivative
+                    Value* cap_dim_counter = builder->CreateAlloca(int64_type, nullptr, "cap_grad_dim_i");
+                    builder->CreateStore(ConstantInt::get(int64_type, 0), cap_dim_counter);
+
+                    BasicBlock* cap_dim_cond = BasicBlock::Create(*context, "cap_grad_dim_cond", current_func);
+                    BasicBlock* cap_dim_body = BasicBlock::Create(*context, "cap_grad_dim_body", current_func);
+                    BasicBlock* cap_dim_end = BasicBlock::Create(*context, "cap_grad_dim_end", current_func);
+
+                    builder->CreateBr(cap_dim_cond);
+
+                    builder->SetInsertPoint(cap_dim_cond);
+                    Value* cap_dim_i = builder->CreateLoad(int64_type, cap_dim_counter);
+                    builder->CreateCondBr(builder->CreateICmpULT(cap_dim_i, cap_n), cap_dim_body, cap_dim_end);
+
+                    builder->SetInsertPoint(cap_dim_body);
+
+                    // Inner loop: create dual vector with tangent=1 at dim_i
+                    Value* cap_inner_counter = builder->CreateAlloca(int64_type, nullptr, "cap_grad_inner_j");
+                    builder->CreateStore(ConstantInt::get(int64_type, 0), cap_inner_counter);
+
+                    BasicBlock* cap_inner_cond = BasicBlock::Create(*context, "cap_grad_inner_cond", current_func);
+                    BasicBlock* cap_inner_body = BasicBlock::Create(*context, "cap_grad_inner_body", current_func);
+                    BasicBlock* cap_inner_end = BasicBlock::Create(*context, "cap_grad_inner_end", current_func);
+
+                    builder->CreateBr(cap_inner_cond);
+
+                    builder->SetInsertPoint(cap_inner_cond);
+                    Value* cap_inner_j = builder->CreateLoad(int64_type, cap_inner_counter);
+                    builder->CreateCondBr(builder->CreateICmpULT(cap_inner_j, cap_n), cap_inner_body, cap_inner_end);
+
+                    builder->SetInsertPoint(cap_inner_body);
+                    // Load primal value at position j from input elements
+                    Value* cap_in_elem_ptr = builder->CreateGEP(tagged_value_type, cap_input_elems, cap_inner_j);
+                    Value* cap_in_elem = builder->CreateLoad(tagged_value_type, cap_in_elem_ptr);
+                    Value* cap_primal_val = unpackDoubleFromTaggedValue(cap_in_elem);
+
+                    // Set tangent: 1.0 if j == i, else 0.0
+                    Value* cap_is_active = builder->CreateICmpEQ(cap_inner_j, cap_dim_i);
+                    Value* cap_tangent = builder->CreateSelect(cap_is_active,
+                        ConstantFP::get(double_type, 1.0),
+                        ConstantFP::get(double_type, 0.0));
+
+                    // Create dual number and store in dual vector
+                    Value* cap_dual_num = packDualNumber(cap_primal_val, cap_tangent);
+                    Value* cap_dual_tagged = packDualToTaggedValue(cap_dual_num);
+                    Value* cap_dual_elem_ptr = builder->CreateGEP(tagged_value_type, cap_dual_elems_typed, cap_inner_j);
+                    builder->CreateStore(cap_dual_tagged, cap_dual_elem_ptr);
+
+                    builder->CreateStore(builder->CreateAdd(cap_inner_j, ConstantInt::get(int64_type, 1)), cap_inner_counter);
+                    builder->CreateBr(cap_inner_cond);
+
+                    builder->SetInsertPoint(cap_inner_end);
+
+                    // Pack dual vector as Scheme vector (VECTOR_PTR)
+                    Value* cap_dual_vec_tagged = packPtrToTaggedValue(
+                        builder->CreatePtrToInt(cap_dual_vec, int64_type),
+                        ESHKOL_VALUE_VECTOR_PTR);
+
+                    // Call function via closure dispatch (using loaded_func, not var_value)
+                    std::vector<Value*> cap_call_args = {cap_dual_vec_tagged};
+                    Value* cap_call_result = codegenClosureCall(loaded_func, cap_call_args);
+
+                    // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
+                    Value* cap_result_type = getTaggedValueType(cap_call_result);
+                    Value* cap_result_base = builder->CreateAnd(cap_result_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* cap_is_dual = builder->CreateICmpEQ(cap_result_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+
+                    BasicBlock* cap_dual_bb = BasicBlock::Create(*context, "grad_cap_dual", current_func);
+                    BasicBlock* cap_const_bb = BasicBlock::Create(*context, "grad_cap_const", current_func);
+                    BasicBlock* cap_merge_bb = BasicBlock::Create(*context, "grad_cap_merge", current_func);
+
+                    builder->CreateCondBr(cap_is_dual, cap_dual_bb, cap_const_bb);
+
+                    // Dual path: extract tangent normally
+                    builder->SetInsertPoint(cap_dual_bb);
+                    Value* cap_result_dual = unpackDualFromTaggedValue(cap_call_result);
+                    auto [cap_result_primal, cap_dual_deriv] = unpackDualNumber(cap_result_dual);
+                    builder->CreateBr(cap_merge_bb);
+                    BasicBlock* cap_dual_exit = builder->GetInsertBlock();
+
+                    // Constant path: derivative is 0.0
+                    builder->SetInsertPoint(cap_const_bb);
+                    Value* cap_zero_deriv = ConstantFP::get(double_type, 0.0);
+                    builder->CreateBr(cap_merge_bb);
+                    BasicBlock* cap_const_exit = builder->GetInsertBlock();
+
+                    // Merge paths
+                    builder->SetInsertPoint(cap_merge_bb);
+                    PHINode* cap_deriv = builder->CreatePHI(double_type, 2, "grad_cap_deriv");
+                    cap_deriv->addIncoming(cap_dual_deriv, cap_dual_exit);
+                    cap_deriv->addIncoming(cap_zero_deriv, cap_const_exit);
+
+                    // Store derivative in result tensor
+                    Value* cap_result_elem_ptr = builder->CreateGEP(int64_type, cap_typed_result_elems, cap_dim_i);
+                    Value* cap_deriv_bits = builder->CreateBitCast(cap_deriv, int64_type);
+                    builder->CreateStore(cap_deriv_bits, cap_result_elem_ptr);
+
+                    builder->CreateStore(builder->CreateAdd(cap_dim_i, ConstantInt::get(int64_type, 1)), cap_dim_counter);
+                    builder->CreateBr(cap_dim_cond);
+
+                    builder->SetInsertPoint(cap_dim_end);
+                    Value* cap_result_int = builder->CreatePtrToInt(cap_typed_result, int64_type);
+                    return packPtrToTaggedValue(cap_result_int, ESHKOL_VALUE_TENSOR_PTR);
+                }
+
+                // GLOBALVARIABLE FIX: Handle captured functions stored in GlobalVariables
+                // This happens when a nested function captures 'f' from an outer function
+                if (var_value && isa<GlobalVariable>(var_value)) {
+                    eshkol_debug("gradient: using forward-mode AD for GlobalVariable function '%s'", func_name.c_str());
+
+                    // Load the function from the GlobalVariable
+                    GlobalVariable* gv = cast<GlobalVariable>(var_value);
+                    Value* loaded_func = builder->CreateLoad(gv->getValueType(), var_value);
+
+                    // Get the input point
+                    Value* point_val = codegenAST(op->gradient_op.point);
+                    if (!point_val) {
+                        eshkol_error("Failed to evaluate gradient point");
+                        return nullptr;
+                    }
+
+                    // Ensure point is tagged
+                    if (point_val->getType() != tagged_value_type) {
+                        if (point_val->getType()->isIntegerTy(64)) {
+                            point_val = packInt64ToTaggedValue(point_val, true);
+                        } else if (point_val->getType()->isDoubleTy()) {
+                            point_val = packDoubleToTaggedValue(point_val);
+                        }
+                    }
+
+                    Function* current_func = builder->GetInsertBlock()->getParent();
+
+                    // Get arena_allocate for Scheme vector allocation
+                    Function* arena_allocate_func = function_table["arena_allocate"];
+                    Function* malloc_func = function_table["malloc"];
+                    if (!arena_allocate_func || !malloc_func) {
+                        eshkol_error("arena_allocate or malloc not found for gradient");
+                        return nullptr;
+                    }
+                    Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+                    // Get tagged_value size
+                    uint64_t tagged_size = module->getDataLayout().getTypeAllocSize(tagged_value_type);
+
+                    // Check input type - handle Scheme vector (VECTOR_PTR), tensor (TENSOR_PTR), or scalar
+                    Value* input_type = getTaggedValueType(point_val);
+                    Value* input_base = builder->CreateAnd(input_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* is_scheme_vec = builder->CreateICmpEQ(input_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+                    Value* is_tensor = builder->CreateICmpEQ(input_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
+
+                    BasicBlock* gv_scheme_vec_path = BasicBlock::Create(*context, "grad_gv_svec", current_func);
+                    BasicBlock* gv_tensor_path = BasicBlock::Create(*context, "grad_gv_tensor", current_func);
+                    BasicBlock* gv_scalar_path = BasicBlock::Create(*context, "grad_gv_scalar", current_func);
+                    BasicBlock* gv_check_tensor = BasicBlock::Create(*context, "grad_gv_check_tensor", current_func);
+                    BasicBlock* gv_grad_compute = BasicBlock::Create(*context, "grad_gv_compute", current_func);
+
+                    builder->CreateCondBr(is_scheme_vec, gv_scheme_vec_path, gv_check_tensor);
+
+                    builder->SetInsertPoint(gv_check_tensor);
+                    builder->CreateCondBr(is_tensor, gv_tensor_path, gv_scalar_path);
+
+                    // Scheme vector path - use input directly
+                    builder->SetInsertPoint(gv_scheme_vec_path);
+                    Value* gv_svec_ptr = unpackPtrFromTaggedValue(point_val);
+                    Value* gv_svec_len = builder->CreateLoad(int64_type, gv_svec_ptr);
+                    Value* gv_svec_elems = builder->CreateGEP(int8_type, gv_svec_ptr, ConstantInt::get(int64_type, 8));
+                    Value* gv_svec_elems_typed = builder->CreatePointerCast(gv_svec_elems, PointerType::getUnqual(tagged_value_type));
+                    builder->CreateBr(gv_grad_compute);
+                    BasicBlock* gv_svec_exit = builder->GetInsertBlock();
+
+                    // Tensor path - convert tensor elements to Scheme vector of tagged doubles
+                    builder->SetInsertPoint(gv_tensor_path);
+                    Value* gv_tensor_ptr_int = safeExtractInt64(point_val);
+                    Value* gv_tensor_ptr = builder->CreateIntToPtr(gv_tensor_ptr_int, builder->getPtrTy());
+                    Value* gv_dims_field = builder->CreateStructGEP(tensor_type, gv_tensor_ptr, 0);
+                    Value* gv_dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), gv_dims_field);
+                    Value* gv_typed_dims = builder->CreatePointerCast(gv_dims_ptr, builder->getPtrTy());
+                    Value* gv_tensor_n = builder->CreateLoad(int64_type, gv_typed_dims);
+                    Value* gv_tensor_elems_field = builder->CreateStructGEP(tensor_type, gv_tensor_ptr, 2);
+                    Value* gv_tensor_elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), gv_tensor_elems_field);
+                    Value* gv_tensor_elems_typed = builder->CreatePointerCast(gv_tensor_elems_ptr, builder->getPtrTy());
+
+                    // Allocate Scheme vector for tensor elements
+                    Value* gv_tconv_size = builder->CreateAdd(
+                        builder->CreateMul(gv_tensor_n, ConstantInt::get(int64_type, tagged_size)),
+                        ConstantInt::get(int64_type, 8));
+                    Value* gv_tconv_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, gv_tconv_size});
+                    builder->CreateStore(gv_tensor_n, gv_tconv_vec);
+                    Value* gv_tconv_elems = builder->CreateGEP(int8_type, gv_tconv_vec, ConstantInt::get(int64_type, 8));
+                    Value* gv_tconv_elems_typed = builder->CreatePointerCast(gv_tconv_elems, PointerType::getUnqual(tagged_value_type));
+
+                    // Copy tensor elements as tagged doubles
+                    Value* gv_tconv_i = builder->CreateAlloca(int64_type, nullptr, "gv_tconv_i");
+                    builder->CreateStore(ConstantInt::get(int64_type, 0), gv_tconv_i);
+                    BasicBlock* gv_tconv_cond = BasicBlock::Create(*context, "gv_tconv_cond", current_func);
+                    BasicBlock* gv_tconv_body = BasicBlock::Create(*context, "gv_tconv_body", current_func);
+                    BasicBlock* gv_tconv_end = BasicBlock::Create(*context, "gv_tconv_end", current_func);
+                    builder->CreateBr(gv_tconv_cond);
+
+                    builder->SetInsertPoint(gv_tconv_cond);
+                    Value* gv_tc_idx = builder->CreateLoad(int64_type, gv_tconv_i);
+                    builder->CreateCondBr(builder->CreateICmpULT(gv_tc_idx, gv_tensor_n), gv_tconv_body, gv_tconv_end);
+
+                    builder->SetInsertPoint(gv_tconv_body);
+                    Value* gv_tc_src = builder->CreateGEP(int64_type, gv_tensor_elems_typed, gv_tc_idx);
+                    Value* gv_tc_bits = builder->CreateLoad(int64_type, gv_tc_src);
+                    Value* gv_tc_dbl = builder->CreateBitCast(gv_tc_bits, double_type);
+                    Value* gv_tc_tagged = packDoubleToTaggedValue(gv_tc_dbl);
+                    Value* gv_tc_dst = builder->CreateGEP(tagged_value_type, gv_tconv_elems_typed, gv_tc_idx);
+                    builder->CreateStore(gv_tc_tagged, gv_tc_dst);
+                    builder->CreateStore(builder->CreateAdd(gv_tc_idx, ConstantInt::get(int64_type, 1)), gv_tconv_i);
+                    builder->CreateBr(gv_tconv_cond);
+
+                    builder->SetInsertPoint(gv_tconv_end);
+                    builder->CreateBr(gv_grad_compute);
+                    BasicBlock* gv_tensor_exit = builder->GetInsertBlock();
+
+                    // Scalar path - create 1-element Scheme vector
+                    builder->SetInsertPoint(gv_scalar_path);
+                    Value* gv_scalar_val = unpackDoubleFromTaggedValue(point_val);
+                    Value* gv_scalar_vec_size = ConstantInt::get(int64_type, 8 + tagged_size);
+                    Value* gv_scalar_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, gv_scalar_vec_size});
+                    builder->CreateStore(ConstantInt::get(int64_type, 1), gv_scalar_vec);
+                    Value* gv_scalar_elem = builder->CreateGEP(int8_type, gv_scalar_vec, ConstantInt::get(int64_type, 8));
+                    Value* gv_scalar_elem_typed = builder->CreatePointerCast(gv_scalar_elem, PointerType::getUnqual(tagged_value_type));
+                    Value* gv_scalar_tagged = packDoubleToTaggedValue(gv_scalar_val);
+                    builder->CreateStore(gv_scalar_tagged, gv_scalar_elem_typed);
+                    builder->CreateBr(gv_grad_compute);
+                    BasicBlock* gv_scalar_exit = builder->GetInsertBlock();
+
+                    // Merge input paths
+                    builder->SetInsertPoint(gv_grad_compute);
+                    PHINode* gv_n = builder->CreatePHI(int64_type, 3, "gv_grad_n");
+                    gv_n->addIncoming(gv_svec_len, gv_svec_exit);
+                    gv_n->addIncoming(gv_tensor_n, gv_tensor_exit);
+                    gv_n->addIncoming(ConstantInt::get(int64_type, 1), gv_scalar_exit);
+
+                    PHINode* gv_input_elems = builder->CreatePHI(PointerType::getUnqual(tagged_value_type), 3, "gv_grad_elems");
+                    gv_input_elems->addIncoming(gv_svec_elems_typed, gv_svec_exit);
+                    gv_input_elems->addIncoming(gv_tconv_elems_typed, gv_tensor_exit);
+                    gv_input_elems->addIncoming(gv_scalar_elem_typed, gv_scalar_exit);
+
+                    // Allocate result tensor
+                    Value* gv_result_size = ConstantInt::get(int64_type,
+                        module->getDataLayout().getTypeAllocSize(tensor_type));
+                    Value* gv_result_ptr = builder->CreateCall(malloc_func, {gv_result_size});
+                    Value* gv_typed_result = builder->CreatePointerCast(gv_result_ptr, builder->getPtrTy());
+
+                    Value* gv_result_dims_ptr = builder->CreateCall(malloc_func, {ConstantInt::get(int64_type, 8)});
+                    Value* gv_typed_result_dims = builder->CreatePointerCast(gv_result_dims_ptr, builder->getPtrTy());
+                    builder->CreateStore(gv_n, gv_typed_result_dims);
+                    builder->CreateStore(gv_typed_result_dims, builder->CreateStructGEP(tensor_type, gv_typed_result, 0));
+                    builder->CreateStore(ConstantInt::get(int64_type, 1), builder->CreateStructGEP(tensor_type, gv_typed_result, 1));
+                    builder->CreateStore(gv_n, builder->CreateStructGEP(tensor_type, gv_typed_result, 3));
+
+                    Value* gv_result_elems_size = builder->CreateMul(gv_n, ConstantInt::get(int64_type, sizeof(double)));
+                    Value* gv_result_elems_ptr = builder->CreateCall(malloc_func, {gv_result_elems_size});
+                    Value* gv_typed_result_elems = builder->CreatePointerCast(gv_result_elems_ptr, builder->getPtrTy());
+                    builder->CreateStore(gv_typed_result_elems, builder->CreateStructGEP(tensor_type, gv_typed_result, 2));
+
+                    // Allocate Scheme vector for dual numbers (reused each iteration)
+                    Value* gv_dual_vec_size = builder->CreateAdd(
+                        builder->CreateMul(gv_n, ConstantInt::get(int64_type, tagged_size)),
+                        ConstantInt::get(int64_type, 8));
+                    Value* gv_dual_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, gv_dual_vec_size});
+                    builder->CreateStore(gv_n, gv_dual_vec);
+                    Value* gv_dual_elems = builder->CreateGEP(int8_type, gv_dual_vec, ConstantInt::get(int64_type, 8));
+                    Value* gv_dual_elems_typed = builder->CreatePointerCast(gv_dual_elems, PointerType::getUnqual(tagged_value_type));
+
+                    // Outer loop: for each dimension i, compute partial derivative
+                    Value* gv_dim_counter = builder->CreateAlloca(int64_type, nullptr, "gv_grad_dim_i");
+                    builder->CreateStore(ConstantInt::get(int64_type, 0), gv_dim_counter);
+
+                    BasicBlock* gv_dim_cond = BasicBlock::Create(*context, "gv_grad_dim_cond", current_func);
+                    BasicBlock* gv_dim_body = BasicBlock::Create(*context, "gv_grad_dim_body", current_func);
+                    BasicBlock* gv_dim_end = BasicBlock::Create(*context, "gv_grad_dim_end", current_func);
+
+                    builder->CreateBr(gv_dim_cond);
+
+                    builder->SetInsertPoint(gv_dim_cond);
+                    Value* gv_dim_i = builder->CreateLoad(int64_type, gv_dim_counter);
+                    builder->CreateCondBr(builder->CreateICmpULT(gv_dim_i, gv_n), gv_dim_body, gv_dim_end);
+
+                    builder->SetInsertPoint(gv_dim_body);
+
+                    // Inner loop: create dual vector with tangent=1 at dim_i
+                    Value* gv_inner_counter = builder->CreateAlloca(int64_type, nullptr, "gv_grad_inner_j");
+                    builder->CreateStore(ConstantInt::get(int64_type, 0), gv_inner_counter);
+
+                    BasicBlock* gv_inner_cond = BasicBlock::Create(*context, "gv_grad_inner_cond", current_func);
+                    BasicBlock* gv_inner_body = BasicBlock::Create(*context, "gv_grad_inner_body", current_func);
+                    BasicBlock* gv_inner_end = BasicBlock::Create(*context, "gv_grad_inner_end", current_func);
+
+                    builder->CreateBr(gv_inner_cond);
+
+                    builder->SetInsertPoint(gv_inner_cond);
+                    Value* gv_inner_j = builder->CreateLoad(int64_type, gv_inner_counter);
+                    builder->CreateCondBr(builder->CreateICmpULT(gv_inner_j, gv_n), gv_inner_body, gv_inner_end);
+
+                    builder->SetInsertPoint(gv_inner_body);
+                    // Load primal value at position j from input elements
+                    Value* gv_in_elem_ptr = builder->CreateGEP(tagged_value_type, gv_input_elems, gv_inner_j);
+                    Value* gv_in_elem = builder->CreateLoad(tagged_value_type, gv_in_elem_ptr);
+                    Value* gv_primal_val = unpackDoubleFromTaggedValue(gv_in_elem);
+
+                    // Set tangent: 1.0 if j == i, else 0.0
+                    Value* gv_is_active = builder->CreateICmpEQ(gv_inner_j, gv_dim_i);
+                    Value* gv_tangent = builder->CreateSelect(gv_is_active,
+                        ConstantFP::get(double_type, 1.0),
+                        ConstantFP::get(double_type, 0.0));
+
+                    // Create dual number and store in dual vector
+                    Value* gv_dual_num = packDualNumber(gv_primal_val, gv_tangent);
+                    Value* gv_dual_tagged = packDualToTaggedValue(gv_dual_num);
+                    Value* gv_dual_elem_ptr = builder->CreateGEP(tagged_value_type, gv_dual_elems_typed, gv_inner_j);
+                    builder->CreateStore(gv_dual_tagged, gv_dual_elem_ptr);
+
+                    builder->CreateStore(builder->CreateAdd(gv_inner_j, ConstantInt::get(int64_type, 1)), gv_inner_counter);
+                    builder->CreateBr(gv_inner_cond);
+
+                    builder->SetInsertPoint(gv_inner_end);
+
+                    // Pack dual vector as Scheme vector (VECTOR_PTR)
+                    Value* gv_dual_vec_tagged = packPtrToTaggedValue(
+                        builder->CreatePtrToInt(gv_dual_vec, int64_type),
+                        ESHKOL_VALUE_VECTOR_PTR);
+
+                    // Call function via closure dispatch (using loaded_func)
+                    std::vector<Value*> gv_call_args = {gv_dual_vec_tagged};
+                    Value* gv_call_result = codegenClosureCall(loaded_func, gv_call_args);
+
+                    // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
+                    Value* gv_result_type = getTaggedValueType(gv_call_result);
+                    Value* gv_result_base = builder->CreateAnd(gv_result_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* gv_is_dual = builder->CreateICmpEQ(gv_result_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+
+                    BasicBlock* gv_dual_bb = BasicBlock::Create(*context, "grad_gv_dual", current_func);
+                    BasicBlock* gv_const_bb = BasicBlock::Create(*context, "grad_gv_const", current_func);
+                    BasicBlock* gv_merge_bb = BasicBlock::Create(*context, "grad_gv_merge", current_func);
+
+                    builder->CreateCondBr(gv_is_dual, gv_dual_bb, gv_const_bb);
+
+                    // Dual path: extract tangent normally
+                    builder->SetInsertPoint(gv_dual_bb);
+                    Value* gv_result_dual = unpackDualFromTaggedValue(gv_call_result);
+                    auto [gv_result_primal, gv_dual_deriv] = unpackDualNumber(gv_result_dual);
+                    builder->CreateBr(gv_merge_bb);
+                    BasicBlock* gv_dual_exit = builder->GetInsertBlock();
+
+                    // Constant path: derivative is 0.0
+                    builder->SetInsertPoint(gv_const_bb);
+                    Value* gv_zero_deriv = ConstantFP::get(double_type, 0.0);
+                    builder->CreateBr(gv_merge_bb);
+                    BasicBlock* gv_const_exit = builder->GetInsertBlock();
+
+                    // Merge paths
+                    builder->SetInsertPoint(gv_merge_bb);
+                    PHINode* gv_deriv = builder->CreatePHI(double_type, 2, "grad_gv_deriv");
+                    gv_deriv->addIncoming(gv_dual_deriv, gv_dual_exit);
+                    gv_deriv->addIncoming(gv_zero_deriv, gv_const_exit);
+
+                    // Store derivative in result tensor
+                    Value* gv_result_elem_ptr = builder->CreateGEP(int64_type, gv_typed_result_elems, gv_dim_i);
+                    Value* gv_deriv_bits = builder->CreateBitCast(gv_deriv, int64_type);
+                    builder->CreateStore(gv_deriv_bits, gv_result_elem_ptr);
+
+                    builder->CreateStore(builder->CreateAdd(gv_dim_i, ConstantInt::get(int64_type, 1)), gv_dim_counter);
+                    builder->CreateBr(gv_dim_cond);
+
+                    builder->SetInsertPoint(gv_dim_end);
+                    Value* gv_result_int = builder->CreatePtrToInt(gv_typed_result, int64_type);
+                    return packPtrToTaggedValue(gv_result_int, ESHKOL_VALUE_TENSOR_PTR);
+                }
+            }
             eshkol_error("Failed to resolve function for gradient computation");
             return nullptr;
         }
@@ -12732,6 +15561,8 @@ private:
         BasicBlock* scheme_vector_input = BasicBlock::Create(*context, "grad_scheme_vector_input", current_func);
         BasicBlock* vector_input = BasicBlock::Create(*context, "grad_vector_input", current_func);
         BasicBlock* grad_merge_input = BasicBlock::Create(*context, "grad_merge_input", current_func);
+        // Create grad_done early so scheme_vector_input path can branch to it
+        BasicBlock* grad_done = BasicBlock::Create(*context, "grad_done", current_func);
 
         // First check if AD node (nested gradient)
         BasicBlock* check_scalar = BasicBlock::Create(*context, "grad_check_scalar", current_func);
@@ -12853,88 +15684,215 @@ private:
         builder->CreateBr(grad_merge_input);
         BasicBlock* scalar_input_exit = builder->GetInsertBlock();
         
-        // SCHEME VECTOR INPUT: Convert Scheme vector to tensor format
-        // Scheme vector layout: [length (8 bytes)] + [tagged_value elements (16 bytes each)]
+        // SCHEME VECTOR INPUT: Use forward-mode AD with dual numbers (preserves Scheme vector format)
+        // This allows functions that use vector-ref to work correctly with gradient
         builder->SetInsertPoint(scheme_vector_input);
-        eshkol_debug("Gradient: converting Scheme vector to tensor format");
+        eshkol_debug("Gradient: using forward-mode AD for Scheme vector input");
 
-        // Get Scheme vector pointer
-        Value* scheme_vec_ptr_int = unpackInt64FromTaggedValue(vector_val);
-        Value* scheme_vec_ptr = builder->CreateIntToPtr(scheme_vec_ptr_int, builder->getPtrTy());
+        // Get Scheme vector pointer and length
+        Value* svec_ptr_int = unpackInt64FromTaggedValue(vector_val);
+        Value* svec_ptr = builder->CreateIntToPtr(svec_ptr_int, builder->getPtrTy());
+        Value* svec_n = builder->CreateLoad(int64_type, svec_ptr);
+        Value* svec_elems_base = builder->CreateGEP(int8_type, svec_ptr, ConstantInt::get(int64_type, 8));
+        Value* svec_elems = builder->CreatePointerCast(svec_elems_base, PointerType::getUnqual(tagged_value_type));
 
-        // Read length from first 8 bytes
-        Value* scheme_len_ptr = builder->CreateBitCast(scheme_vec_ptr, PointerType::getUnqual(*context));
-        Value* scheme_len = builder->CreateLoad(int64_type, scheme_len_ptr);
+        // Allocate result tensor for gradient
+        Function* malloc_svec = function_table["malloc"];
+        Value* svec_result_tensor_size = ConstantInt::get(int64_type, module->getDataLayout().getTypeAllocSize(tensor_type));
+        Value* svec_result_tensor = builder->CreateCall(malloc_svec, {svec_result_tensor_size});
+        Value* svec_typed_result = builder->CreatePointerCast(svec_result_tensor, builder->getPtrTy());
 
-        // Allocate tensor structure
-        Function* malloc_func_scheme = function_table["malloc"];
-        Value* scheme_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* scheme_tensor_ptr = builder->CreateCall(malloc_func_scheme, {scheme_tensor_size});
-        Value* typed_scheme_tensor = builder->CreatePointerCast(scheme_tensor_ptr, builder->getPtrTy());
+        // Set result tensor dimensions
+        Value* svec_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
+        Value* svec_dims_ptr = builder->CreateCall(malloc_svec, {svec_dims_size});
+        Value* svec_typed_dims = builder->CreatePointerCast(svec_dims_ptr, builder->getPtrTy());
+        builder->CreateStore(svec_n, svec_typed_dims);
+        builder->CreateStore(svec_typed_dims, builder->CreateStructGEP(tensor_type, svec_typed_result, 0));
+        builder->CreateStore(ConstantInt::get(int64_type, 1), builder->CreateStructGEP(tensor_type, svec_typed_result, 1));
+        builder->CreateStore(svec_n, builder->CreateStructGEP(tensor_type, svec_typed_result, 3));
 
-        // Set dimensions: [length] (1D tensor)
-        Value* scheme_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* scheme_dims_ptr = builder->CreateCall(malloc_func_scheme, {scheme_dims_size});
-        Value* typed_scheme_dims = builder->CreatePointerCast(scheme_dims_ptr, builder->getPtrTy());
-        builder->CreateStore(scheme_len, typed_scheme_dims);
+        // Allocate result elements
+        Value* svec_result_elems_size = builder->CreateMul(svec_n, ConstantInt::get(int64_type, sizeof(int64_t)));
+        Value* svec_result_elems = builder->CreateCall(malloc_svec, {svec_result_elems_size});
+        Value* svec_typed_result_elems = builder->CreatePointerCast(svec_result_elems, builder->getPtrTy());
+        builder->CreateStore(svec_typed_result_elems, builder->CreateStructGEP(tensor_type, svec_typed_result, 2));
 
-        // Set tensor metadata
-        builder->CreateStore(typed_scheme_dims,
-            builder->CreateStructGEP(tensor_type, typed_scheme_tensor, 0));  // dimensions
-        builder->CreateStore(ConstantInt::get(int64_type, 1),
-            builder->CreateStructGEP(tensor_type, typed_scheme_tensor, 1));  // num_dimensions = 1
-        builder->CreateStore(scheme_len,
-            builder->CreateStructGEP(tensor_type, typed_scheme_tensor, 3));  // total_elements
+        // Get arena for dual vector allocation
+        Function* arena_alloc_svec = function_table["arena_allocate"];
+        Value* arena_svec = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        uint64_t tagged_size_svec = module->getDataLayout().getTypeAllocSize(tagged_value_type);
 
-        // Allocate elements array
-        Value* scheme_elems_size = builder->CreateMul(scheme_len,
-            ConstantInt::get(int64_type, sizeof(int64_t)));
-        Value* scheme_elems_ptr = builder->CreateCall(malloc_func_scheme, {scheme_elems_size});
-        Value* typed_scheme_elems = builder->CreatePointerCast(scheme_elems_ptr, builder->getPtrTy());
+        // Outer loop: for each dimension i, compute ∂f/∂xᵢ using forward-mode AD
+        Value* svec_dim_i = builder->CreateAlloca(int64_type, nullptr, "svec_dim_i");
+        builder->CreateStore(ConstantInt::get(int64_type, 0), svec_dim_i);
 
-        builder->CreateStore(typed_scheme_elems,
-            builder->CreateStructGEP(tensor_type, typed_scheme_tensor, 2));  // elements
+        BasicBlock* svec_dim_cond = BasicBlock::Create(*context, "svec_dim_cond", current_func);
+        BasicBlock* svec_dim_body = BasicBlock::Create(*context, "svec_dim_body", current_func);
+        BasicBlock* svec_dim_end = BasicBlock::Create(*context, "svec_dim_end", current_func);
 
-        // Copy elements from Scheme vector (tagged_value) to tensor (double as int64)
-        // Scheme elements start at offset 8, each is 16 bytes (tagged_value)
-        Value* scheme_elem_base = builder->CreateGEP(int8_type, scheme_vec_ptr,
-            ConstantInt::get(int64_type, 8));
-        Value* scheme_elem_base_typed = builder->CreateBitCast(scheme_elem_base, PointerType::getUnqual(*context));
+        builder->CreateBr(svec_dim_cond);
 
-        // Loop to copy elements
-        BasicBlock* scheme_copy_cond = BasicBlock::Create(*context, "scheme_copy_cond", current_func);
-        BasicBlock* scheme_copy_body = BasicBlock::Create(*context, "scheme_copy_body", current_func);
-        BasicBlock* scheme_copy_done = BasicBlock::Create(*context, "scheme_copy_done", current_func);
+        builder->SetInsertPoint(svec_dim_cond);
+        Value* svec_i = builder->CreateLoad(int64_type, svec_dim_i);
+        builder->CreateCondBr(builder->CreateICmpULT(svec_i, svec_n), svec_dim_body, svec_dim_end);
 
-        Value* scheme_copy_i = builder->CreateAlloca(int64_type, nullptr, "scheme_copy_i");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), scheme_copy_i);
-        builder->CreateBr(scheme_copy_cond);
+        builder->SetInsertPoint(svec_dim_body);
 
-        builder->SetInsertPoint(scheme_copy_cond);
-        Value* scheme_i = builder->CreateLoad(int64_type, scheme_copy_i);
-        Value* scheme_cond = builder->CreateICmpULT(scheme_i, scheme_len);
-        builder->CreateCondBr(scheme_cond, scheme_copy_body, scheme_copy_done);
+        // Allocate dual vector (Scheme vector of dual numbers)
+        Value* svec_dual_size = builder->CreateAdd(ConstantInt::get(int64_type, 8),
+            builder->CreateMul(svec_n, ConstantInt::get(int64_type, tagged_size_svec)));
+        Value* svec_dual_vec = builder->CreateCall(arena_alloc_svec, {arena_svec, svec_dual_size});
+        builder->CreateStore(svec_n, svec_dual_vec);
+        Value* svec_dual_elems = builder->CreateGEP(int8_type, svec_dual_vec, ConstantInt::get(int64_type, 8));
+        Value* svec_dual_elems_typed = builder->CreatePointerCast(svec_dual_elems, PointerType::getUnqual(tagged_value_type));
 
-        builder->SetInsertPoint(scheme_copy_body);
-        // Load tagged_value from Scheme vector
-        Value* scheme_src_ptr = builder->CreateGEP(tagged_value_type, scheme_elem_base_typed, scheme_i);
-        Value* scheme_tagged_elem = builder->CreateLoad(tagged_value_type, scheme_src_ptr);
-        // Extract the double value and store as int64 bitcast
-        Value* scheme_double_val = unpackDoubleFromTaggedValue(scheme_tagged_elem);
-        Value* scheme_as_int64 = builder->CreateBitCast(scheme_double_val, int64_type);
-        Value* scheme_dst_ptr = builder->CreateGEP(int64_type, typed_scheme_elems, scheme_i);
-        builder->CreateStore(scheme_as_int64, scheme_dst_ptr);
-        // Increment
-        Value* scheme_next_i = builder->CreateAdd(scheme_i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(scheme_next_i, scheme_copy_i);
-        builder->CreateBr(scheme_copy_cond);
+        // Inner loop: create dual vector with tangent=1 at position i, 0 elsewhere
+        Value* svec_inner_j = builder->CreateAlloca(int64_type, nullptr, "svec_inner_j");
+        builder->CreateStore(ConstantInt::get(int64_type, 0), svec_inner_j);
 
-        builder->SetInsertPoint(scheme_copy_done);
-        // Pack converted tensor as tagged_value with TENSOR_PTR type
-        Value* scheme_tensor_int = builder->CreatePtrToInt(typed_scheme_tensor, int64_type);
-        Value* scheme_vector_tagged = packPtrToTaggedValue(scheme_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
-        builder->CreateBr(grad_merge_input);
+        BasicBlock* svec_inner_cond = BasicBlock::Create(*context, "svec_inner_cond", current_func);
+        BasicBlock* svec_inner_body = BasicBlock::Create(*context, "svec_inner_body", current_func);
+        BasicBlock* svec_inner_end = BasicBlock::Create(*context, "svec_inner_end", current_func);
+
+        builder->CreateBr(svec_inner_cond);
+
+        builder->SetInsertPoint(svec_inner_cond);
+        Value* svec_j = builder->CreateLoad(int64_type, svec_inner_j);
+        builder->CreateCondBr(builder->CreateICmpULT(svec_j, svec_n), svec_inner_body, svec_inner_end);
+
+        builder->SetInsertPoint(svec_inner_body);
+        // Load primal value from input
+        Value* svec_in_ptr = builder->CreateGEP(tagged_value_type, svec_elems, svec_j);
+        Value* svec_in_val = builder->CreateLoad(tagged_value_type, svec_in_ptr);
+        Value* svec_primal = unpackDoubleFromTaggedValue(svec_in_val);
+        // Tangent: 1.0 if j == i, else 0.0
+        Value* svec_is_active = builder->CreateICmpEQ(svec_j, svec_i);
+        Value* svec_tangent = builder->CreateSelect(svec_is_active,
+            ConstantFP::get(double_type, 1.0), ConstantFP::get(double_type, 0.0));
+        // Create dual number and store
+        Value* svec_dual = packDualNumber(svec_primal, svec_tangent);
+        Value* svec_dual_tagged = packDualToTaggedValue(svec_dual);
+        Value* svec_dual_ptr = builder->CreateGEP(tagged_value_type, svec_dual_elems_typed, svec_j);
+        builder->CreateStore(svec_dual_tagged, svec_dual_ptr);
+        builder->CreateStore(builder->CreateAdd(svec_j, ConstantInt::get(int64_type, 1)), svec_inner_j);
+        builder->CreateBr(svec_inner_cond);
+
+        builder->SetInsertPoint(svec_inner_end);
+
+        // Pack dual vector as Scheme vector
+        Value* svec_dual_tagged_vec = packPtrToTaggedValue(
+            builder->CreatePtrToInt(svec_dual_vec, int64_type), ESHKOL_VALUE_VECTOR_PTR);
+
+        // Call function with dual vector
+        std::vector<Value*> svec_call_args = {svec_dual_tagged_vec};
+        // Add captures if function has them
+        if (func_ptr->getFunctionType()->getNumParams() > 1) {
+            size_t svec_num_captures = func_ptr->getFunctionType()->getNumParams() - 1;
+            std::string svec_lambda_name = func_ptr->getName().str();
+            for (size_t ci = 0; ci < svec_num_captures; ci++) {
+                auto arg_it = func_ptr->arg_begin();
+                std::advance(arg_it, ci + 1);
+                std::string var_name = arg_it->getName().str();
+                if (var_name.find("captured_") == 0) var_name = var_name.substr(9);
+                std::string cap_key = svec_lambda_name + "_capture_" + var_name;
+
+                // Try capture key in global and local symbol tables
+                auto cap_it = global_symbol_table.find(cap_key);
+                bool found = (cap_it != global_symbol_table.end() && cap_it->second);
+                if (!found) {
+                    cap_it = symbol_table.find(cap_key);
+                    found = (cap_it != symbol_table.end() && cap_it->second);
+                }
+
+                if (found) {
+                    svec_call_args.push_back(cap_it->second);
+                } else {
+                    // FALLBACK: Try raw variable name (for top-level global variables and let bindings)
+                    Value* storage = nullptr;
+                    auto raw_it = global_symbol_table.find(var_name);
+                    if (raw_it != global_symbol_table.end() && raw_it->second) {
+                        storage = raw_it->second;
+                    } else {
+                        // Also check local symbol table
+                        auto local_it = symbol_table.find(var_name);
+                        if (local_it != symbol_table.end() && local_it->second) {
+                            storage = local_it->second;
+                        }
+                    }
+
+                    if (storage) {
+                        // MUTABLE CAPTURE FIX: For let-bound allocas, pack the address
+                        // as int64 in a tagged_value, store in temp, pass pointer to temp
+                        if (isa<AllocaInst>(storage)) {
+                            Function* svec_current_func = builder->GetInsertBlock()->getParent();
+                            IRBuilder<> entry_builder(&svec_current_func->getEntryBlock(),
+                                                      svec_current_func->getEntryBlock().begin());
+                            AllocaInst* temp_alloca = entry_builder.CreateAlloca(
+                                tagged_value_type, nullptr, var_name + "_svec_capture_storage");
+
+                            // Pack the alloca address as an int64 in a tagged_value
+                            Value* ptr_as_int = builder->CreatePtrToInt(storage, int64_type);
+                            Value* packed_ptr = packInt64ToTaggedValue(ptr_as_int, true);
+                            builder->CreateStore(packed_ptr, temp_alloca);
+
+                            svec_call_args.push_back(temp_alloca);
+                        } else {
+                            // GlobalVariable or other - pass directly
+                            svec_call_args.push_back(storage);
+                        }
+                    } else {
+                        svec_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
+                        eshkol_warn("Gradient (svec): capture '%s' not found", var_name.c_str());
+                    }
+                }
+            }
+        }
+        Value* svec_call_result = builder->CreateCall(func_ptr, svec_call_args);
+
+        // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
+        Value* svec_result_type = getTaggedValueType(svec_call_result);
+        Value* svec_result_base = builder->CreateAnd(svec_result_type, ConstantInt::get(int8_type, 0x0F));
+        Value* svec_is_dual = builder->CreateICmpEQ(svec_result_base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+
+        BasicBlock* svec_dual_bb = BasicBlock::Create(*context, "grad_svec_dual", current_func);
+        BasicBlock* svec_const_bb = BasicBlock::Create(*context, "grad_svec_const", current_func);
+        BasicBlock* svec_merge_bb = BasicBlock::Create(*context, "grad_svec_merge", current_func);
+
+        builder->CreateCondBr(svec_is_dual, svec_dual_bb, svec_const_bb);
+
+        // Dual path: extract tangent normally
+        builder->SetInsertPoint(svec_dual_bb);
+        Value* svec_result_dual = unpackDualFromTaggedValue(svec_call_result);
+        auto [svec_result_primal, svec_dual_deriv] = unpackDualNumber(svec_result_dual);
+        builder->CreateBr(svec_merge_bb);
+        BasicBlock* svec_dual_exit = builder->GetInsertBlock();
+
+        // Constant path: derivative is 0.0
+        builder->SetInsertPoint(svec_const_bb);
+        Value* svec_zero_deriv = ConstantFP::get(double_type, 0.0);
+        builder->CreateBr(svec_merge_bb);
+        BasicBlock* svec_const_exit = builder->GetInsertBlock();
+
+        // Merge paths
+        builder->SetInsertPoint(svec_merge_bb);
+        PHINode* svec_deriv = builder->CreatePHI(double_type, 2, "grad_svec_deriv");
+        svec_deriv->addIncoming(svec_dual_deriv, svec_dual_exit);
+        svec_deriv->addIncoming(svec_zero_deriv, svec_const_exit);
+
+        // Store derivative in result tensor
+        Value* svec_result_ptr = builder->CreateGEP(int64_type, svec_typed_result_elems, svec_i);
+        Value* svec_deriv_bits = builder->CreateBitCast(svec_deriv, int64_type);
+        builder->CreateStore(svec_deriv_bits, svec_result_ptr);
+
+        builder->CreateStore(builder->CreateAdd(svec_i, ConstantInt::get(int64_type, 1)), svec_dim_i);
+        builder->CreateBr(svec_dim_cond);
+
+        builder->SetInsertPoint(svec_dim_end);
+        // Return result tensor
+        Value* svec_result_int = builder->CreatePtrToInt(svec_typed_result, int64_type);
+        Value* scheme_vector_tagged = packPtrToTaggedValue(svec_result_int, ESHKOL_VALUE_TENSOR_PTR);
+        builder->CreateBr(grad_done);  // Skip reverse-mode AD, go directly to done
         BasicBlock* scheme_vector_exit = builder->GetInsertBlock();
 
         // VECTOR INPUT: Use original vector as-is (existing behavior - tensor format)
@@ -12942,12 +15900,12 @@ private:
         builder->CreateBr(grad_merge_input);
         BasicBlock* vector_input_exit = builder->GetInsertBlock();
 
-        // MERGE: PHI node selects AD node promoted, scalar promoted, scheme vector converted, or original tensor
+        // MERGE: PHI node selects AD node promoted, scalar promoted, or original tensor
+        // NOTE: Scheme vector path now uses forward-mode AD and branches directly to grad_done
         builder->SetInsertPoint(grad_merge_input);
-        PHINode* actual_input = builder->CreatePHI(tagged_value_type, 4, "gradient_input");
+        PHINode* actual_input = builder->CreatePHI(tagged_value_type, 3, "gradient_input");
         actual_input->addIncoming(ad_promoted_tagged, ad_node_exit);  // Nested gradient path
         actual_input->addIncoming(promoted_vector_tagged, scalar_input_exit);
-        actual_input->addIncoming(scheme_vector_tagged, scheme_vector_exit);  // Scheme vector converted
         actual_input->addIncoming(vector_val, vector_input_exit);
         
         // Continue with gradient computation using merged input (guaranteed to be tensor!)
@@ -12985,8 +15943,8 @@ private:
         
         BasicBlock* dim_valid = BasicBlock::Create(*context, "grad_dim_valid", current_func);
         BasicBlock* dim_invalid = BasicBlock::Create(*context, "grad_dim_invalid", current_func);
-        BasicBlock* grad_done = BasicBlock::Create(*context, "grad_done", current_func);
-        
+        // grad_done already created earlier for scheme_vector_input forward-mode path
+
         // CRITICAL FIX: Create empty tensor BEFORE branching (for PHI node dominance)
         // This ensures null_tagged_grad is available in all paths
         Value* empty_tensor_size = ConstantInt::get(int64_type,
@@ -13279,6 +16237,8 @@ private:
         // Step 5: Call function with AD node (scalar) or tensor (vector)
         // SCALAR FUNCTION FIX: For n=1, extract the single AD node and pass it directly!
         // This allows scalar functions like (lambda (x) (* x x)) to work
+
+
         Value* n_is_one = builder->CreateICmpEQ(n, ConstantInt::get(int64_type, 1));
         
         BasicBlock* scalar_call = BasicBlock::Create(*context, "grad_scalar_call", current_func);
@@ -13330,7 +16290,7 @@ private:
 
                 std::string scalar_capture_key = scalar_lambda_name + "_capture_" + scalar_var_name;
 
-                // First try local symbol tables
+                // First try capture-specific key in symbol tables
                 auto scalar_it = global_symbol_table.find(scalar_capture_key);
                 bool found_in_global = (scalar_it != global_symbol_table.end());
                 if (!found_in_global) {
@@ -13338,6 +16298,19 @@ private:
                 }
 
                 bool found = found_in_global ? (scalar_it != global_symbol_table.end()) : (scalar_it != symbol_table.end());
+
+                // FALLBACK: Try raw variable name (for top-level global variables)
+                if (!found) {
+                    scalar_it = global_symbol_table.find(scalar_var_name);
+                    found_in_global = (scalar_it != global_symbol_table.end());
+                    if (!found_in_global) {
+                        scalar_it = symbol_table.find(scalar_var_name);
+                    }
+                    found = found_in_global ? (scalar_it != global_symbol_table.end()) : (scalar_it != symbol_table.end());
+                    if (found) {
+                        eshkol_debug("Gradient (scalar): found capture '%s' via raw variable name", scalar_var_name.c_str());
+                    }
+                }
 
                 // REPL MODE: Try creating external declaration for capture global
                 if (!found && g_repl_mode_enabled) {
@@ -13432,7 +16405,7 @@ private:
 
                 std::string capture_key = lambda_name + "_capture_" + var_name;
 
-                // First try local symbol tables
+                // First try capture-specific key in symbol tables
                 auto it = global_symbol_table.find(capture_key);
                 bool found_in_global = (it != global_symbol_table.end());
                 if (!found_in_global) {
@@ -13440,6 +16413,19 @@ private:
                 }
 
                 bool found = found_in_global ? (it != global_symbol_table.end()) : (it != symbol_table.end());
+
+                // FALLBACK: Try raw variable name (for top-level global variables)
+                if (!found) {
+                    it = global_symbol_table.find(var_name);
+                    found_in_global = (it != global_symbol_table.end());
+                    if (!found_in_global) {
+                        it = symbol_table.find(var_name);
+                    }
+                    found = found_in_global ? (it != global_symbol_table.end()) : (it != symbol_table.end());
+                    if (found) {
+                        eshkol_debug("Gradient: found capture '%s' via raw variable name", var_name.c_str());
+                    }
+                }
 
                 // REPL MODE: Try creating external declaration for capture global
                 if (!found && g_repl_mode_enabled) {
@@ -13794,11 +16780,12 @@ private:
         builder->CreateBr(grad_done);
         BasicBlock* dim_valid_exit = builder->GetInsertBlock();
         
-        // Merge valid and invalid paths
+        // Merge valid, invalid, and scheme vector forward-mode paths
         builder->SetInsertPoint(grad_done);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, "grad_result_final");
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "grad_result_final");
         result_phi->addIncoming(null_tagged_grad, dim_invalid);
         result_phi->addIncoming(final_result, dim_valid_exit);  // Use merged result from double backward handling
+        result_phi->addIncoming(scheme_vector_tagged, scheme_vector_exit);  // Forward-mode AD for Scheme vectors
 
         return result_phi;
     }
@@ -18173,11 +21160,37 @@ private:
             std::string func_name = func_ast->variable.id;
             eshkol_debug("resolveLambdaFunction: looking for variable '%s'", func_name.c_str());
 
-            // Strategy 0: Check function_table FIRST for regular defined functions
+            // BUILTIN FIRST-CLASS FIX: Check for builtin math functions FIRST before raw function_table lookup
+            // These need wrapper functions that take/return tagged_value_type
+            static const std::set<std::string> math_builtins = {
+                "sin", "cos", "tan", "exp", "log", "sqrt", "abs", "fabs",
+                "asin", "acos", "atan", "sinh", "cosh", "tanh",
+                "asinh", "acosh", "atanh", "exp2", "log2", "log10",
+                "floor", "ceil", "round", "trunc", "cbrt",
+                "ceiling", "truncate"  // Scheme-style names
+            };
+            if (math_builtins.count(func_name)) {
+                eshkol_debug("resolveLambdaFunction: '%s' is a math builtin, creating wrapper", func_name.c_str());
+                return createBuiltinUnaryMathFunction(func_name);
+            }
+
+            // Strategy 0: Check function_table for regular defined functions (NOT raw C builtins)
             auto direct_it = function_table.find(func_name);
             if (direct_it != function_table.end() && direct_it->second) {
-                eshkol_debug("resolveLambdaFunction: found '%s' in function_table", func_name.c_str());
-                return direct_it->second;
+                // SAFETY: Skip raw C functions - they need wrappers for first-class use
+                Function* found_func = direct_it->second;
+                FunctionType* ft = found_func->getFunctionType();
+                // A raw C math function has signature: double -> double
+                // A wrapped function has signature: tagged_value -> tagged_value
+                bool is_raw_c_func = (ft->getNumParams() > 0 &&
+                                      ft->getParamType(0)->isDoubleTy() &&
+                                      ft->getReturnType()->isDoubleTy());
+                if (!is_raw_c_func) {
+                    eshkol_debug("resolveLambdaFunction: found '%s' in function_table", func_name.c_str());
+                    return found_func;
+                }
+                // Otherwise, fall through to other strategies or wrapper creation
+                eshkol_debug("resolveLambdaFunction: '%s' is raw C function, skipping", func_name.c_str());
             }
 
             // SCOPED LOOKUP FIX: Try scoped key FIRST to resolve local lambdas correctly
@@ -19554,43 +22567,42 @@ private:
 
         Value* arg = &*builtin_func->arg_begin();
 
+        // UNIFIED MATH BUILTIN HANDLING: All math functions use the same pattern
+        // Map Scheme-style names to C library names
+        std::string c_func_name = func_name_in;
+        if (func_name_in == "abs") c_func_name = "fabs";
+        else if (func_name_in == "ceiling") c_func_name = "ceil";
+        else if (func_name_in == "truncate") c_func_name = "trunc";
+
+        // Get or declare the C math function
+        Function* c_math_func = nullptr;
+        auto c_it = function_table.find(c_func_name);
+        if (c_it != function_table.end()) {
+            c_math_func = c_it->second;
+        } else {
+            // Declare it
+            FunctionType* math_type = FunctionType::get(double_type, {double_type}, false);
+            c_math_func = Function::Create(math_type, Function::ExternalLinkage, c_func_name, module.get());
+            function_table[c_func_name] = c_math_func;
+        }
+
         Value* result;
-        if (func_name_in == "abs") {
-            // Handle abs for both integer and floating-point
-            Value* type_tag = getTaggedValueType(arg);
-            Value* base_type = builder->CreateAnd(type_tag, ConstantInt::get(int8_type, 0x0F));
-            Value* is_double = builder->CreateICmpEQ(base_type,
+        if (c_math_func) {
+            // POLYMORPHIC INPUT: Handle both int64 and double inputs
+            // Get the type tag from the argument
+            Value* arg_type = getTaggedValueType(arg);
+            Value* arg_base_type = builder->CreateAnd(arg_type,
+                ConstantInt::get(int8_type, 0x0F));
+            Value* arg_is_double = builder->CreateICmpEQ(arg_base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
 
-            BasicBlock* double_block = BasicBlock::Create(*context, "abs_double", builtin_func);
-            BasicBlock* int_block = BasicBlock::Create(*context, "abs_int", builtin_func);
-            BasicBlock* merge_block = BasicBlock::Create(*context, "abs_merge", builtin_func);
+            // Convert to double: if double, BitCast; if int64, SIToFP
+            Value* double_val = builder->CreateSelect(arg_is_double,
+                unpackDoubleFromTaggedValue(arg),
+                builder->CreateSIToFP(unpackInt64FromTaggedValue(arg), double_type));
 
-            builder->CreateCondBr(is_double, double_block, int_block);
-
-            // Double case: use fabs intrinsic
-            builder->SetInsertPoint(double_block);
-            Value* double_val = unpackDoubleFromTaggedValue(arg);
-            Function* fabs_func = Intrinsic::getOrInsertDeclaration(module.get(), Intrinsic::fabs, {double_type});
-            Value* abs_double = builder->CreateCall(fabs_func, {double_val});
-            Value* double_result = packDoubleToTaggedValue(abs_double);
-            builder->CreateBr(merge_block);
-
-            // Integer case: conditional negate
-            builder->SetInsertPoint(int_block);
-            Value* int_val = unpackInt64FromTaggedValue(arg);
-            Value* is_negative = builder->CreateICmpSLT(int_val, ConstantInt::get(int64_type, 0));
-            Value* negated = builder->CreateNeg(int_val);
-            Value* abs_int = builder->CreateSelect(is_negative, negated, int_val);
-            Value* int_result = packInt64ToTaggedValue(abs_int, true);
-            builder->CreateBr(merge_block);
-
-            // Merge
-            builder->SetInsertPoint(merge_block);
-            PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "abs_result");
-            phi->addIncoming(double_result, double_block);
-            phi->addIncoming(int_result, int_block);
-            result = phi;
+            Value* math_result = builder->CreateCall(c_math_func, {double_val});
+            result = packDoubleToTaggedValue(math_result);
         } else {
             eshkol_error("Unknown unary math function: %s", func_name_in.c_str());
             result = tagged_->packNull();
@@ -19788,6 +22800,12 @@ namespace ControlFlowCallbacks {
     void popFunctionContextWrapper(void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         codegen->popFunctionContext();
+    }
+
+    bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        const eshkol_operations_t* op = static_cast<const eshkol_operations_t*>(lambda_op);
+        return codegen->isSelfTailRecursive(op, func_name ? func_name : "");
     }
 }
 
