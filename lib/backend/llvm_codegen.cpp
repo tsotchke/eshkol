@@ -111,19 +111,40 @@ struct TypedValue {
     eshkol_value_type_t type;       // Our type tag from eshkol.h
     bool is_exact;                  // Scheme exactness tracking
     uint8_t flags;                  // Additional flags (e.g., indirect reference flag)
+    eshkol::hott::TypeId hott_type; // HoTT compile-time type (for gradual typing)
 
     // Flag constants
     static constexpr uint8_t FLAG_INDIRECT = 0x01;  // Value is address of global to load from
 
-    TypedValue() : llvm_value(nullptr), type(ESHKOL_VALUE_NULL), is_exact(true), flags(0) {}
+    TypedValue()
+        : llvm_value(nullptr), type(ESHKOL_VALUE_NULL), is_exact(true), flags(0),
+          hott_type(eshkol::hott::BuiltinTypes::Null) {}
+
     TypedValue(Value* val, eshkol_value_type_t t, bool exact = true, uint8_t f = 0)
-        : llvm_value(val), type(t), is_exact(exact), flags(f) {}
+        : llvm_value(val), type(t), is_exact(exact), flags(f),
+          hott_type(eshkol::hott::BuiltinTypes::Value) {}
+
+    // Constructor with explicit HoTT type
+    TypedValue(Value* val, eshkol_value_type_t t, eshkol::hott::TypeId hott_t, bool exact = true, uint8_t f = 0)
+        : llvm_value(val), type(t), is_exact(exact), flags(f), hott_type(hott_t) {}
 
     // Helper methods
     bool isInt64() const { return type == ESHKOL_VALUE_INT64; }
     bool isDouble() const { return type == ESHKOL_VALUE_DOUBLE; }
     bool isNull() const { return type == ESHKOL_VALUE_NULL; }
     bool isIndirect() const { return (flags & FLAG_INDIRECT) != 0; }
+
+    // HoTT type helpers
+    bool hasKnownType() const { return hott_type != eshkol::hott::BuiltinTypes::Value; }
+    bool isHottInt64() const { return hott_type == eshkol::hott::BuiltinTypes::Int64; }
+    bool isHottFloat64() const { return hott_type == eshkol::hott::BuiltinTypes::Float64; }
+    bool isHottNumeric() const {
+        return hott_type == eshkol::hott::BuiltinTypes::Int64 ||
+               hott_type == eshkol::hott::BuiltinTypes::Float64 ||
+               hott_type == eshkol::hott::BuiltinTypes::Integer ||
+               hott_type == eshkol::hott::BuiltinTypes::Real ||
+               hott_type == eshkol::hott::BuiltinTypes::Number;
+    }
 };
 
 // OPTION 3: Deferred Lambda S-Expression Generation
@@ -2606,13 +2627,15 @@ private:
                 return TypedValue(
                     ConstantInt::get(int64_type, ast->int64_val),
                     ESHKOL_VALUE_INT64,
+                    eshkol::hott::BuiltinTypes::Int64,  // HoTT type
                     true  // Integer literals are exact
                 );
-                
+
             case ESHKOL_DOUBLE:
                 return TypedValue(
                     ConstantFP::get(double_type, ast->double_val),
                     ESHKOL_VALUE_DOUBLE,
+                    eshkol::hott::BuiltinTypes::Float64,  // HoTT type
                     false  // Double literals are inexact
                 );
 
@@ -2620,6 +2643,7 @@ private:
                 return TypedValue(
                     ConstantInt::get(int64_type, ast->int64_val),
                     ESHKOL_VALUE_CHAR,
+                    eshkol::hott::BuiltinTypes::Char,  // HoTT type
                     true  // Character literals are exact
                 );
 
@@ -2629,6 +2653,7 @@ private:
                 return TypedValue(
                     ast->int64_val ? ConstantInt::getTrue(*context) : ConstantInt::getFalse(*context),
                     ESHKOL_VALUE_BOOL,
+                    eshkol::hott::BuiltinTypes::Boolean,  // HoTT type
                     true  // Boolean literals are exact
                 );
 
@@ -7670,6 +7695,99 @@ private:
         return builder->CreateCall(callee, args);
     }
     
+    // HoTT-optimized binary arithmetic: when both types are known, skip runtime dispatch
+    // Returns nullptr if optimization not possible (fall back to polymorphic path)
+    Value* hottOptimizedBinaryArith(const TypedValue& left, const TypedValue& right,
+                                     const std::string& operation) {
+        using namespace eshkol::hott;
+
+        // Both operands must have known HoTT types
+        if (!left.hasKnownType() || !right.hasKnownType()) {
+            return nullptr;
+        }
+
+        // Use HoTT type system for promotion
+        TypeId result_type = ctx_->hottTypes().promoteForArithmetic(
+            left.hott_type, right.hott_type);
+
+        // Only optimize for known numeric types
+        if (result_type != BuiltinTypes::Int64 &&
+            result_type != BuiltinTypes::Float64) {
+            return nullptr;
+        }
+
+        Value* left_val = left.llvm_value;
+        Value* right_val = right.llvm_value;
+
+        // Result is Int64: both operands are integers
+        if (result_type == BuiltinTypes::Int64) {
+            // Ensure we have i64 values (handle bool, char)
+            if (left_val->getType() != int64_type) {
+                left_val = builder->CreateSExt(left_val, int64_type, "sext_left");
+            }
+            if (right_val->getType() != int64_type) {
+                right_val = builder->CreateSExt(right_val, int64_type, "sext_right");
+            }
+
+            Value* result;
+            if (operation == "add") {
+                result = builder->CreateAdd(left_val, right_val, "hott_iadd");
+            } else if (operation == "sub") {
+                result = builder->CreateSub(left_val, right_val, "hott_isub");
+            } else if (operation == "mul") {
+                result = builder->CreateMul(left_val, right_val, "hott_imul");
+            } else if (operation == "div") {
+                result = builder->CreateSDiv(left_val, right_val, "hott_idiv");
+            } else {
+                return nullptr;
+            }
+            return packInt64ToTaggedValue(result, true);
+        }
+
+        // Result is Float64: at least one operand is float, or mixed int/float
+        if (result_type == BuiltinTypes::Float64) {
+            // Convert operands to double if needed
+            Value* left_d = left_val;
+            Value* right_d = right_val;
+
+            if (left.hott_type == BuiltinTypes::Int64 ||
+                left.hott_type == BuiltinTypes::Integer) {
+                if (left_val->getType() != int64_type) {
+                    left_val = builder->CreateSExt(left_val, int64_type);
+                }
+                left_d = builder->CreateSIToFP(left_val, double_type, "hott_itof_l");
+            } else if (left_val->getType() != double_type) {
+                left_d = builder->CreateFPExt(left_val, double_type);
+            }
+
+            if (right.hott_type == BuiltinTypes::Int64 ||
+                right.hott_type == BuiltinTypes::Integer) {
+                if (right_val->getType() != int64_type) {
+                    right_val = builder->CreateSExt(right_val, int64_type);
+                }
+                right_d = builder->CreateSIToFP(right_val, double_type, "hott_itof_r");
+            } else if (right_val->getType() != double_type) {
+                right_d = builder->CreateFPExt(right_val, double_type);
+            }
+
+            Value* result;
+            if (operation == "add") {
+                result = builder->CreateFAdd(left_d, right_d, "hott_fadd");
+            } else if (operation == "sub") {
+                result = builder->CreateFSub(left_d, right_d, "hott_fsub");
+            } else if (operation == "mul") {
+                result = builder->CreateFMul(left_d, right_d, "hott_fmul");
+            } else if (operation == "div") {
+                result = builder->CreateFDiv(left_d, right_d, "hott_fdiv");
+            } else {
+                return nullptr;
+            }
+            return packDoubleToTaggedValue(result);
+        }
+
+        return nullptr;
+    }
+
     Value* codegenArithmetic(const eshkol_operations_t* op, const std::string& operation) {
         // Handle unary minus: (- x) => negation
         if (op->call_op.num_vars == 1 && operation == "sub") {
@@ -7693,19 +7811,56 @@ private:
             eshkol_warn("Arithmetic operation requires at least 2 arguments");
             return nullptr;
         }
-        
-        // Convert all operands to tagged_value
-        std::vector<Value*> tagged_operands;
+
+        // Collect all operands with their HoTT types
+        std::vector<TypedValue> typed_operands;
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
             TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
             if (!tv.llvm_value) continue;
-            Value* tagged = typedValueToTaggedValue(tv);
-            tagged_operands.push_back(tagged);
+            typed_operands.push_back(tv);
         }
-        
-        if (tagged_operands.empty()) return nullptr;
-        
-        // Apply polymorphic operation to operands (binary reduction for now)
+
+        if (typed_operands.empty()) return nullptr;
+
+        // Check if ALL operands have known HoTT types - if so, use optimized path
+        bool all_known = true;
+        for (const auto& tv : typed_operands) {
+            if (!tv.hasKnownType()) {
+                all_known = false;
+                break;
+            }
+        }
+
+        if (all_known && typed_operands.size() >= 2) {
+            // HoTT-optimized path: all types known at compile time
+            TypedValue result = typed_operands[0];
+            for (size_t i = 1; i < typed_operands.size(); i++) {
+                Value* opt_result = hottOptimizedBinaryArith(result, typed_operands[i], operation);
+                if (opt_result) {
+                    // Update result with new HoTT type
+                    eshkol::hott::TypeId new_type = ctx_->hottTypes().promoteForArithmetic(
+                        result.hott_type, typed_operands[i].hott_type);
+                    eshkol_value_type_t rt = (new_type == eshkol::hott::BuiltinTypes::Int64)
+                        ? ESHKOL_VALUE_INT64 : ESHKOL_VALUE_DOUBLE;
+                    result = TypedValue(opt_result, rt, new_type,
+                                        new_type == eshkol::hott::BuiltinTypes::Int64);
+                } else {
+                    // Fall back to polymorphic path for this pair
+                    all_known = false;
+                    break;
+                }
+            }
+            if (all_known) {
+                return result.llvm_value;
+            }
+        }
+
+        // Polymorphic fallback: convert to tagged values and use runtime dispatch
+        std::vector<Value*> tagged_operands;
+        for (const auto& tv : typed_operands) {
+            tagged_operands.push_back(typedValueToTaggedValue(tv));
+        }
+
         Value* result = tagged_operands[0];
         for (size_t i = 1; i < tagged_operands.size(); i++) {
             if (operation == "add") {
@@ -7718,7 +7873,7 @@ private:
                 result = polymorphicDiv(result, tagged_operands[i]);
             }
         }
-        
+
         // Phase 3B: Keep result as tagged_value to preserve type information!
         // Don't unpack - variables will store tagged_value directly
         return result;
