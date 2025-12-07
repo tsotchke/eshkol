@@ -25,6 +25,7 @@
 #include <eshkol/backend/type_system.h>
 #include <eshkol/backend/function_cache.h>
 #include <eshkol/backend/memory_codegen.h>
+#include <eshkol/types/hott_types.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <unordered_map>
@@ -72,6 +73,10 @@ public:
     TypeSystem& types() { return types_; }
     FunctionCache& funcs() { return funcs_; }
     MemoryCodegen& memory() { return memory_; }
+
+    // === HoTT Type System ===
+    hott::TypeEnvironment& hottTypes() { return hott_types_; }
+    const hott::TypeEnvironment& hottTypes() const { return hott_types_; }
 
     // === Commonly Used Types (convenience accessors) ===
     llvm::IntegerType* int64Type() { return types_.getInt64Type(); }
@@ -275,6 +280,9 @@ private:
     TypeSystem& types_;
     FunctionCache& funcs_;
     MemoryCodegen& memory_;
+
+    // HoTT type environment (owned)
+    hott::TypeEnvironment hott_types_;
 
     // Symbol tables
     std::vector<std::unordered_map<std::string, llvm::Value*>> scope_stack_;
