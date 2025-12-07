@@ -5,7 +5,8 @@
 (provide caar cadr cdar cddr
          caaar caadr cadar caddr cdaar cdadr cddar cdddr
          caaaar caaadr caadar caaddr cadaar cadadr caddar cadddr
-         cdaaar cdaadr cdadar cdaddr cddaar cddadr cdddar cddddr)
+         cdaaar cdaadr cdadar cdaddr cddaar cddadr cdddar cddddr
+         first second third fourth fifth sixth seventh eighth ninth tenth)
 
 ;;; Two-level operations
 (define (caar x) (car (car x)))
@@ -40,3 +41,15 @@
 (define (cddadr x) (cdr (cdr (car (cdr x)))))
 (define (cdddar x) (cdr (cdr (cdr (car x)))))
 (define (cddddr x) (cdr (cdr (cdr (cdr x)))))
+
+;;; Positional accessors (aliases for car, cadr, caddr, etc.)
+(define (first x) (car x))
+(define (second x) (cadr x))
+(define (third x) (caddr x))
+(define (fourth x) (cadddr x))
+(define (fifth x) (car (cddddr x)))
+(define (sixth x) (cadr (cddddr x)))
+(define (seventh x) (caddr (cddddr x)))
+(define (eighth x) (cadddr (cddddr x)))
+(define (ninth x) (car (cddddr (cddddr x))))
+(define (tenth x) (cadr (cddddr (cddddr x))))

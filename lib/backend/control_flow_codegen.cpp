@@ -371,8 +371,12 @@ llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
     if (!then_value) {
         then_value = llvm::ConstantInt::get(ctx_.int64Type(), 0);
     }
-    ctx_.builder().CreateBr(merge_block);
+    // TCO FIX: Only add branch if block isn't already terminated (tail calls terminate the block)
     then_block = ctx_.builder().GetInsertBlock();
+    bool then_terminated = then_block->getTerminator() != nullptr;
+    if (!then_terminated) {
+        ctx_.builder().CreateBr(merge_block);
+    }
 
     // Generate else block
     ctx_.builder().SetInsertPoint(else_block);
@@ -380,8 +384,23 @@ llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
     if (!else_value) {
         else_value = llvm::ConstantInt::get(ctx_.int64Type(), 0);
     }
-    ctx_.builder().CreateBr(merge_block);
+    // TCO FIX: Only add branch if block isn't already terminated (tail calls terminate the block)
     else_block = ctx_.builder().GetInsertBlock();
+    bool else_terminated = else_block->getTerminator() != nullptr;
+    if (!else_terminated) {
+        ctx_.builder().CreateBr(merge_block);
+    }
+
+    // TCO FIX: Handle cases where one or both branches are terminated by tail calls
+    if (then_terminated && else_terminated) {
+        // Both branches are tail calls - no merge block needed
+        // Remove the unused merge block
+        merge_block->eraseFromParent();
+        // CRITICAL: Don't call packNull() here - we're in a terminated block!
+        // packNull() tries to add instructions which would fail LLVM verification.
+        // Return UndefValue since this value is never used (control flow diverged via TCO)
+        return llvm::UndefValue::get(ctx_.taggedValueType());
+    }
 
     // Determine result type
     llvm::Type* result_type;
@@ -391,8 +410,9 @@ llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
         result_type = ctx_.int64Type();
     }
 
-    // Convert values to result type if needed
-    auto convertToResultType = [&](llvm::Value* val, llvm::BasicBlock* block) -> llvm::Value* {
+    // Convert values to result type if needed (only for non-terminated branches)
+    auto convertToResultType = [&](llvm::Value* val, llvm::BasicBlock* block, bool is_terminated) -> llvm::Value* {
+        if (is_terminated) return val;  // Don't touch terminated blocks
         if (val->getType() == result_type) return val;
 
         llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
@@ -433,10 +453,25 @@ llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
         return converted;
     };
 
-    then_value = convertToResultType(then_value, then_block);
-    else_value = convertToResultType(else_value, else_block);
+    if (!then_terminated) {
+        then_value = convertToResultType(then_value, then_block, then_terminated);
+    }
+    if (!else_terminated) {
+        else_value = convertToResultType(else_value, else_block, else_terminated);
+    }
 
     ctx_.builder().SetInsertPoint(merge_block);
+
+    // Create PHI node only with branches that actually reach the merge block
+    if (then_terminated) {
+        // Only else branch reaches merge - no phi needed, just return else value
+        return else_value;
+    } else if (else_terminated) {
+        // Only then branch reaches merge - no phi needed, just return then value
+        return then_value;
+    }
+
+    // Both branches reach merge - use phi node
     llvm::PHINode* phi = ctx_.builder().CreatePHI(result_type, 2, "iftmp");
     phi->addIncoming(then_value, then_block);
     phi->addIncoming(else_value, else_block);

@@ -1180,15 +1180,6 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     llvm::Value* idx_tagged = typed_to_tagged_callback_(idx_typed, callback_context_);
     if (!idx_tagged) return nullptr;
 
-    // Extract vector pointer
-    llvm::Value* vec_ptr_int = tagged_.unpackInt64(vec_arg);
-    llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(vec_ptr_int, ctx_.ptrType());
-
-    // Get pointer to elements (after length field)
-    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
-
     // Extract index - handle both raw i64 and tagged values
     llvm::Value* idx = idx_tagged;
     if (idx->getType() == ctx_.taggedValueType()) {
@@ -1199,8 +1190,92 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
         }
     }
 
+    // TENSOR/GRADIENT FIX: Detect if input is a tensor (TENSOR_PTR) vs Scheme vector (VECTOR_PTR)
+    // Tensors are used by gradient operation and have different memory layout
+    llvm::Value* vec_type = tagged_.getType(vec_arg);
+    llvm::Value* vec_base_type = ctx_.builder().CreateAnd(vec_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(vec_base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* tensor_path = llvm::BasicBlock::Create(ctx_.context(), "vref_tensor", current_func);
+    llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "vref_vector", current_func);
+    llvm::BasicBlock* merge_path = llvm::BasicBlock::Create(ctx_.context(), "vref_merge", current_func);
+
+    ctx_.builder().CreateCondBr(is_tensor, tensor_path, vector_path);
+
+    // TENSOR PATH: Extract element from tensor structure
+    // Tensor layout: {dims_ptr*, num_dims, elements_ptr*, total_elements}
+    ctx_.builder().SetInsertPoint(tensor_path);
+    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(vec_arg);
+    llvm::Value* tensor_ptr = ctx_.builder().CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+
+    // Get elements pointer (field 2 of tensor struct)
+    llvm::Value* elems_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 2);
+    llvm::Value* elems_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), elems_field_ptr);
+
+    // Elements are stored as int64 (could be double bits OR AD node pointer)
+    llvm::Value* tensor_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elems_ptr, idx);
+    llvm::Value* tensor_elem_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), tensor_elem_ptr);
+
+    // Check if the element is an AD node pointer (for gradient computation)
+    // AD nodes in gradient context have small pointer values (< 0x0001000000000000)
+    // while doubles like 3.0 have larger IEEE754 representations
+    llvm::Value* not_zero = ctx_.builder().CreateICmpNE(tensor_elem_int64,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* in_ptr_range = ctx_.builder().CreateICmpULT(tensor_elem_int64,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0x0001000000000000ULL));
+    llvm::Value* could_be_ad_ptr = ctx_.builder().CreateAnd(not_zero, in_ptr_range);
+
+    llvm::BasicBlock* is_ad_node = llvm::BasicBlock::Create(ctx_.context(), "vref_ad_node", current_func);
+    llvm::BasicBlock* is_double = llvm::BasicBlock::Create(ctx_.context(), "vref_double", current_func);
+    llvm::BasicBlock* tensor_merge = llvm::BasicBlock::Create(ctx_.context(), "vref_tensor_merge", current_func);
+
+    ctx_.builder().CreateCondBr(could_be_ad_ptr, is_ad_node, is_double);
+
+    // AD NODE: Pack as AD_NODE_PTR
+    ctx_.builder().SetInsertPoint(is_ad_node);
+    llvm::Value* ad_node_result = tagged_.packPtr(tensor_elem_int64, ESHKOL_VALUE_AD_NODE_PTR);
+    ctx_.builder().CreateBr(tensor_merge);
+    llvm::BasicBlock* ad_exit = ctx_.builder().GetInsertBlock();
+
+    // DOUBLE: Bitcast int64 to double and pack as DOUBLE
+    ctx_.builder().SetInsertPoint(is_double);
+    llvm::Value* elem_as_double = ctx_.builder().CreateBitCast(tensor_elem_int64, ctx_.doubleType());
+    llvm::Value* double_result = tagged_.packDouble(elem_as_double);
+    ctx_.builder().CreateBr(tensor_merge);
+    llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(tensor_merge);
+    llvm::PHINode* tensor_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "tensor_elem");
+    tensor_result->addIncoming(ad_node_result, ad_exit);
+    tensor_result->addIncoming(double_result, double_exit);
+    ctx_.builder().CreateBr(merge_path);
+    llvm::BasicBlock* tensor_exit = ctx_.builder().GetInsertBlock();
+
+    // VECTOR PATH: Original Scheme vector logic
+    ctx_.builder().SetInsertPoint(vector_path);
+    llvm::Value* vec_ptr_int = tagged_.unpackInt64(vec_arg);
+    llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(vec_ptr_int, ctx_.ptrType());
+
+    // Get pointer to elements (after length field)
+    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
+
     llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base_typed, idx);
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem_ptr);
+    llvm::Value* vector_result = ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem_ptr);
+    ctx_.builder().CreateBr(merge_path);
+    llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
+
+    // MERGE: Return appropriate result
+    ctx_.builder().SetInsertPoint(merge_path);
+    llvm::PHINode* final_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "vref_result");
+    final_result->addIncoming(tensor_result, tensor_exit);
+    final_result->addIncoming(vector_result, vector_exit);
+
+    return final_result;
 }
 
 llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {

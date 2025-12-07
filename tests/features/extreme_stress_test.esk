@@ -1,0 +1,518 @@
+(require stdlib)
+
+;; =============================================================================
+;; EXTREME STRESS TEST - Push the Eshkol compiler to its absolute limits
+;; =============================================================================
+;; Tests: closures, recursion, autodiff, tensors, lists, HOFs, memory, CPS,
+;;        mutual recursion, trampolines, church encodings, state machines,
+;;        and complex compositions.
+;; =============================================================================
+
+(display "=== EXTREME STRESS TEST ===\n")
+(display "Testing compiler limits across all subsystems\n\n")
+
+;; Track test results
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (display name)
+  (display ": ")
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL - expected ")
+        (display expected)
+        (display " got ")
+        (display actual)
+        (display "\n"))))
+
+(define (check-approx name expected actual tolerance)
+  (display name)
+  (display ": ")
+  (if (< (abs (- expected actual)) tolerance)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL - expected ~")
+        (display expected)
+        (display " got ")
+        (display actual)
+        (display "\n"))))
+
+;; =============================================================================
+;; SECTION 1: DEEPLY NESTED CLOSURES (10 levels)
+;; =============================================================================
+(display "\n--- Section 1: Deep Closure Nesting ---\n")
+
+(define (make-deep-closure a)
+  (lambda (b)
+    (lambda (c)
+      (lambda (d)
+        (lambda (e)
+          (lambda (f)
+            (lambda (g)
+              (lambda (h)
+                (lambda (i)
+                  (lambda (j)
+                    (+ a b c d e f g h i j)))))))))))
+
+(define deep-result
+  ((((((((((make-deep-closure 1) 2) 3) 4) 5) 6) 7) 8) 9) 10))
+(check "10-level nested closure" 55 deep-result)
+
+;; =============================================================================
+;; SECTION 2: MUTUAL RECURSION WITH CLOSURES
+;; =============================================================================
+(display "\n--- Section 2: Mutual Recursion with Closures ---\n")
+
+(define (make-even-odd-pair base)
+  (letrec ((my-even? (lambda (n)
+                       (if (= n 0)
+                           (+ base 1)  ; return base+1 for even
+                           (my-odd? (- n 1)))))
+           (my-odd? (lambda (n)
+                      (if (= n 0)
+                          base        ; return base for odd
+                          (my-even? (- n 1))))))
+    (cons my-even? my-odd?)))
+
+(define eo-pair (make-even-odd-pair 100))
+(check "Mutual recursion even(10)" 101 ((car eo-pair) 10))
+(check "Mutual recursion odd(10)" 100 ((cdr eo-pair) 10))
+
+;; =============================================================================
+;; SECTION 3: CPS TRANSFORMATIONS
+;; =============================================================================
+(display "\n--- Section 3: CPS Transformations ---\n")
+
+;; CPS factorial with continuation
+(define (cps-fact n k)
+  (if (= n 0)
+      (k 1)
+      (cps-fact (- n 1) (lambda (r) (k (* n r))))))
+
+(check "CPS factorial(7)" 5040 (cps-fact 7 (lambda (x) x)))
+
+;; CPS fibonacci
+(define (cps-fib n k)
+  (if (< n 2)
+      (k n)
+      (cps-fib (- n 1)
+               (lambda (a)
+                 (cps-fib (- n 2)
+                          (lambda (b) (k (+ a b))))))))
+
+(check "CPS fibonacci(10)" 55 (cps-fib 10 (lambda (x) x)))
+
+;; =============================================================================
+;; SECTION 4: CHURCH ENCODINGS
+;; =============================================================================
+(display "\n--- Section 4: Church Encodings ---\n")
+
+;; Church numerals
+(define church-zero (lambda (f) (lambda (x) x)))
+(define (church-succ n) (lambda (f) (lambda (x) (f ((n f) x)))))
+(define (church-add m n) (lambda (f) (lambda (x) ((m f) ((n f) x)))))
+(define (church-mul m n) (lambda (f) (n (m f))))
+(define (church->int n) ((n (lambda (x) (+ x 1))) 0))
+
+(define church-1 (church-succ church-zero))
+(define church-2 (church-succ church-1))
+(define church-3 (church-succ church-2))
+(define church-5 (church-add church-2 church-3))
+(define church-6 (church-mul church-2 church-3))
+
+(check "Church 2+3" 5 (church->int church-5))
+(check "Church 2*3" 6 (church->int church-6))
+
+;; Church booleans
+(define church-true (lambda (t) (lambda (f) t)))
+(define church-false (lambda (t) (lambda (f) f)))
+(define (church-if c t f) ((c t) f))
+(define (church-and a b) ((a b) church-false))
+(define (church-or a b) ((a church-true) b))
+(define (church-not a) ((a church-false) church-true))
+
+(check "Church AND(T,T)" #t (church-if (church-and church-true church-true) #t #f))
+(check "Church OR(F,T)" #t (church-if (church-or church-false church-true) #t #f))
+(check "Church NOT(F)" #t (church-if (church-not church-false) #t #f))
+
+;; =============================================================================
+;; SECTION 5: Y COMBINATOR VARIATIONS
+;; =============================================================================
+(display "\n--- Section 5: Y Combinator Variations ---\n")
+
+;; Z combinator (strict Y)
+(define Z
+  (lambda (f)
+    ((lambda (x) (f (lambda (v) ((x x) v))))
+     (lambda (x) (f (lambda (v) ((x x) v)))))))
+
+(define fact-gen
+  (lambda (fact)
+    (lambda (n)
+      (if (= n 0) 1 (* n (fact (- n 1)))))))
+
+(check "Z-combinator factorial(6)" 720 ((Z fact-gen) 6))
+
+;; Mutual recursion via Y
+(define (make-mutual-y)
+  (let ((even-odd
+         (Z (lambda (self)
+              (cons
+               (lambda (n) (if (= n 0) #t ((cdr (self)) (- n 1))))
+               (lambda (n) (if (= n 0) #f ((car (self)) (- n 1)))))))))
+    even-odd))
+
+(define my-eo (make-mutual-y))
+(check "Y-mutual even(8)" #t ((car my-eo) 8))
+(check "Y-mutual odd(7)" #t ((cdr my-eo) 7))
+
+;; =============================================================================
+;; SECTION 6: ADVANCED LIST OPERATIONS
+;; =============================================================================
+(display "\n--- Section 6: Advanced List Operations ---\n")
+
+;; iota is in stdlib - use it directly
+(define big-list (iota 100))
+(check "iota length" 100 (length big-list))
+
+;; Nested map operations
+(define (square x) (* x x))
+(define (cube x) (* x x x))
+
+(define nested-map-result
+  (fold + 0
+    (map square
+      (filter even?
+        (map (lambda (x) (+ x 1))
+          (iota 20))))))
+(check "Nested map/filter/fold" 1540 nested-map-result)
+
+;; Quicksort stress
+(define (qsort lst)
+  (if (null? lst) '()
+      (let ((pivot (car lst))
+            (rest (cdr lst)))
+        (append
+          (qsort (filter (lambda (x) (< x pivot)) rest))
+          (cons pivot
+            (qsort (filter (lambda (x) (>= x pivot)) rest)))))))
+
+(define unsorted (list 64 25 12 22 11 90 1 87 45 33 76 99 5 42 88))
+(define sorted (qsort unsorted))
+(check "Quicksort first" 1 (car sorted))
+(check "Quicksort last" 99 (list-ref sorted 14))
+
+;; =============================================================================
+;; SECTION 7: TENSOR OPERATIONS
+;; =============================================================================
+(display "\n--- Section 7: Tensor Operations ---\n")
+
+;; Create tensors
+(define t1 (arange 1 11))   ; [1,2,...,10]
+(define t2 (arange 11 21))  ; [11,12,...,20]
+
+;; Tensor arithmetic
+(define t-sum (tensor-add t1 t2))
+(check "Tensor add first" 12.0 (tensor-get t-sum 0))
+(check "Tensor add last" 30.0 (tensor-get t-sum 9))
+
+(define t-prod (tensor-mul t1 t2))
+(check "Tensor mul first" 11.0 (tensor-get t-prod 0))
+(check "Tensor mul last" 200.0 (tensor-get t-prod 9))
+
+;; Dot product
+(define dot-result (tensor-dot t1 t2))
+(check "Tensor dot product" 935.0 dot-result)
+
+;; Sum and mean
+(check "Tensor sum" 55.0 (tensor-sum t1))
+(check "Tensor mean" 5.5 (tensor-mean t1))
+
+;; 2D tensor operations
+(define t2d (reshape (arange 1 10) (list 3 3)))
+(check "2D tensor shape" (list 3 3) (tensor-shape t2d))
+(check "2D tensor get [1,1]" 5.0 (tensor-get t2d 1 1))
+
+;; Tensor from Scheme vector with integers
+(define v1 (vector 1 2 3 4 5))
+(define v2 (vector 6 7 8 9 10))
+(check "Vector dot product" 130 (tensor-dot v1 v2))
+
+;; =============================================================================
+;; SECTION 8: AUTOMATIC DIFFERENTIATION
+;; =============================================================================
+(display "\n--- Section 8: Automatic Differentiation ---\n")
+
+;; Simple derivatives
+(define (f1 x) (* x x))           ; f(x) = x^2, f'(x) = 2x
+(define df1 (derivative f1))
+(check-approx "d/dx(x^2) at x=3" 6.0 (df1 3.0) 0.001)
+
+(define (f2 x) (* x x x))         ; f(x) = x^3, f'(x) = 3x^2
+(define df2 (derivative f2))
+(check-approx "d/dx(x^3) at x=2" 12.0 (df2 2.0) 0.001)
+
+;; Composed function derivative
+(define (f3 x) (sin (* x x)))     ; f(x) = sin(x^2), f'(x) = 2x*cos(x^2)
+(define df3 (derivative f3))
+(check-approx "d/dx(sin(x^2)) at x=1" 1.0806 (df3 1.0) 0.001)
+
+;; Higher-order derivative (second derivative)
+(define (f4 x) (* x x x x))       ; f(x) = x^4
+(define df4 (derivative f4))      ; f'(x) = 4x^3
+(define ddf4 (derivative df4))    ; f''(x) = 12x^2
+(check-approx "d^2/dx^2(x^4) at x=2" 48.0 (ddf4 2.0) 0.1)
+
+;; Gradient of multi-variable function
+(define (g x y) (+ (* x x) (* y y)))  ; g(x,y) = x^2 + y^2
+(define grad-g (gradient g))
+(define grad-result (grad-g 3.0 4.0))
+(check-approx "grad(x^2+y^2)[0] at (3,4)" 6.0 (tensor-get grad-result 0) 0.001)
+(check-approx "grad(x^2+y^2)[1] at (3,4)" 8.0 (tensor-get grad-result 1) 0.001)
+
+;; =============================================================================
+;; SECTION 9: STATE MACHINES AND GENERATORS
+;; =============================================================================
+(display "\n--- Section 9: State Machines and Generators ---\n")
+
+;; Counter factory with operations
+(define (make-counter initial)
+  (let ((count initial))
+    (lambda (op)
+      (cond ((eq? op 'inc) (set! count (+ count 1)) count)
+            ((eq? op 'dec) (set! count (- count 1)) count)
+            ((eq? op 'get) count)
+            ((eq? op 'reset) (set! count initial) count)
+            (else count)))))
+
+(define c1 (make-counter 0))
+(c1 'inc) (c1 'inc) (c1 'inc)
+(check "Counter after 3 inc" 3 (c1 'get))
+(c1 'dec)
+(check "Counter after dec" 2 (c1 'get))
+(c1 'reset)
+(check "Counter after reset" 0 (c1 'get))
+
+;; Finite state machine (traffic light)
+(define (make-traffic-light)
+  (let ((state 'red))
+    (lambda (cmd)
+      (cond ((eq? cmd 'next)
+             (set! state
+                   (cond ((eq? state 'red) 'green)
+                         ((eq? state 'green) 'yellow)
+                         ((eq? state 'yellow) 'red)
+                         (else 'red)))
+             state)
+            ((eq? cmd 'get) state)
+            (else state)))))
+
+(define light (make-traffic-light))
+(check "Light initial" 'red (light 'get))
+(light 'next)
+(check "Light after next" 'green (light 'get))
+(light 'next) (light 'next)
+(check "Light cycle complete" 'red (light 'get))
+
+;; =============================================================================
+;; SECTION 10: TRAMPOLINES FOR DEEP RECURSION
+;; =============================================================================
+(display "\n--- Section 10: Trampolines ---\n")
+
+;; Trampoline infrastructure
+(define (local-trampoline f)
+  (let loop ((result (f)))
+    (if (procedure? result)
+        (loop (result))
+        result)))
+
+;; Trampolined even/odd for very deep recursion
+(define (t-even n)
+  (if (= n 0)
+      #t
+      (lambda () (t-odd (- n 1)))))
+
+(define (t-odd n)
+  (if (= n 0)
+      #f
+      (lambda () (t-even (- n 1)))))
+
+(check "Trampoline even(1000)" #t (local-trampoline (lambda () (t-even 1000))))
+(check "Trampoline odd(999)" #t (local-trampoline (lambda () (t-odd 999))))
+
+;; Trampolined sum for stress test
+(define (t-sum n acc)
+  (if (= n 0)
+      acc
+      (lambda () (t-sum (- n 1) (+ acc n)))))
+
+(check "Trampoline sum(500)" 125250 (local-trampoline (lambda () (t-sum 500 0))))
+
+;; =============================================================================
+;; SECTION 11: FUNCTION COMPOSITION CHAINS
+;; =============================================================================
+(display "\n--- Section 11: Composition Chains ---\n")
+
+;; compose is already in stdlib - use it directly
+
+;; Build long composition chain
+(define add1 (lambda (x) (+ x 1)))
+(define mul2 (lambda (x) (* x 2)))
+
+(define chain-5
+  (compose add1
+    (compose mul2
+      (compose add1
+        (compose mul2 add1)))))
+
+(check "5-function composition" 15 (chain-5 2))
+
+;; Compose with fold
+(define (compose-all . fns)
+  (fold-right compose (lambda (x) x) fns))
+
+(define chain-8
+  (compose-all add1 mul2 add1 mul2 add1 mul2 add1 mul2))
+
+(check "8-function composition" 31 (chain-8 1))
+
+;; =============================================================================
+;; SECTION 12: COMPLEX CLOSURES WITH MULTIPLE CAPTURES
+;; =============================================================================
+(display "\n--- Section 12: Multi-Capture Closures ---\n")
+
+(define (make-complex-closure a b c d e)
+  (let ((sum (+ a b c d e))
+        (prod (* a b c d e)))
+    (lambda (op x)
+      (cond ((eq? op 'add) (+ sum x))
+            ((eq? op 'mul) (* prod x))
+            ((eq? op 'poly) (+ (* a x x x x) (* b x x x) (* c x x) (* d x) e))
+            (else 0)))))
+
+(define cc (make-complex-closure 1 2 3 4 5))
+(check "Complex closure add" 20 (cc 'add 5))
+(check "Complex closure mul" 240 (cc 'mul 2))
+(check "Complex closure poly at x=2" 57 (cc 'poly 2))
+
+;; =============================================================================
+;; SECTION 13: MAP WITH ALL BUILTIN FUNCTIONS
+;; =============================================================================
+(display "\n--- Section 13: Map with Builtins ---\n")
+
+;; Test map with various builtin functions
+(define test-list (list -3 -2 -1 0 1 2 3))
+(define abs-result (map abs test-list))
+(check "Map with abs" (list 3 2 1 0 1 2 3) abs-result)
+
+(define float-list (list 1.0 4.0 9.0 16.0))
+(define sqrt-result (map sqrt float-list))
+(check-approx "Map with sqrt [0]" 1.0 (car sqrt-result) 0.001)
+(check-approx "Map with sqrt [1]" 2.0 (cadr sqrt-result) 0.001)
+
+(define pred-list (list 1 2 3 4 5 6))
+(define even-result (map even? pred-list))
+(check "Map with even?" (list #f #t #f #t #f #t) even-result)
+
+;; Multi-list map with builtins
+(define add-result (map + (list 1 2 3) (list 10 20 30)))
+(check "Map + two lists" (list 11 22 33) add-result)
+
+(define mul-result (map * (list 1 2 3) (list 4 5 6)))
+(check "Map * two lists" (list 4 10 18) mul-result)
+
+;; =============================================================================
+;; SECTION 14: ACKERMANN FUNCTION (INTENSE RECURSION)
+;; =============================================================================
+(display "\n--- Section 14: Ackermann Function ---\n")
+
+(define (ackermann m n)
+  (cond ((= m 0) (+ n 1))
+        ((= n 0) (ackermann (- m 1) 1))
+        (else (ackermann (- m 1) (ackermann m (- n 1))))))
+
+(check "Ackermann(2,3)" 9 (ackermann 2 3))
+(check "Ackermann(3,3)" 61 (ackermann 3 3))
+(check "Ackermann(3,4)" 125 (ackermann 3 4))
+
+;; =============================================================================
+;; SECTION 15: MEMORY STRESS - MANY ALLOCATIONS
+;; =============================================================================
+(display "\n--- Section 15: Memory Stress ---\n")
+
+;; Create many cons cells
+(define (make-pairs n)
+  (if (= n 0) '()
+      (cons (cons n (* n n)) (make-pairs (- n 1)))))
+
+(define pairs (make-pairs 200))
+(check "Pairs length" 200 (length pairs))
+(check "Pairs first" (cons 200 40000) (car pairs))
+
+;; Create deeply nested structure
+(define (make-deep-list n val)
+  (if (= n 0) val
+      (list (make-deep-list (- n 1) val))))
+
+(define deep-struct (make-deep-list 50 'leaf))
+(define (depth lst)
+  (if (not (pair? lst)) 0
+      (+ 1 (depth (car lst)))))
+(check "Deep structure depth" 50 (depth deep-struct))
+
+;; =============================================================================
+;; SECTION 16: STRESS COMBINATION - ALL FEATURES TOGETHER
+;; =============================================================================
+(display "\n--- Section 16: Combined Stress ---\n")
+
+;; A function that uses closures, recursion, lists, and math
+(define (ultimate-stress n)
+  (let ((counter (make-counter 0))
+        (accumulator '()))
+    (letrec ((process (lambda (i)
+                        (if (= i 0)
+                            accumulator
+                            (begin
+                              (counter 'inc)
+                              (set! accumulator
+                                    (cons (list i (* i i) (factorial i))
+                                          accumulator))
+                              (process (- i 1)))))))
+      (process n))
+    (list (counter 'get) (length accumulator) (car accumulator))))
+
+(define (factorial n)
+  (if (<= n 1) 1 (* n (factorial (- n 1)))))
+
+(define stress-result (ultimate-stress 10))
+(check "Ultimate stress counter" 10 (car stress-result))
+(check "Ultimate stress length" 10 (cadr stress-result))
+(check "Ultimate stress first entry" (list 1 1 1) (caddr stress-result))
+
+;; =============================================================================
+;; FINAL SUMMARY
+;; =============================================================================
+(display "\n=== FINAL RESULTS ===\n")
+(display "Tests passed: ")
+(display tests-passed)
+(display "\n")
+(display "Tests failed: ")
+(display tests-failed)
+(display "\n")
+(display "Total tests: ")
+(display (+ tests-passed tests-failed))
+(display "\n")
+
+(if (= tests-failed 0)
+    (display "\n*** ALL TESTS PASSED - COMPILER IS ROBUST! ***\n")
+    (display "\n!!! SOME TESTS FAILED - REVIEW NEEDED !!!\n"))
+
+0

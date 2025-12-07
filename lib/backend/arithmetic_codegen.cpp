@@ -887,7 +887,43 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
     }
 
-    // Extract both operands as doubles
+    // Get base types for both operands
+    llvm::Value* base_type = tagged_.getType(base);
+    llvm::Value* exp_type = tagged_.getType(exponent);
+    llvm::Value* base_base = ctx_.builder().CreateAnd(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* exp_base = ctx_.builder().CreateAnd(exp_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+
+    // Create basic blocks for different paths
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "pow_dual", func);
+    llvm::BasicBlock* regular_path = llvm::BasicBlock::Create(ctx_.context(), "pow_regular", func);
+    llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "pow_merge", func);
+
+    // Check for dual numbers
+    llvm::Value* base_is_dual = ctx_.builder().CreateICmpEQ(base_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* exp_is_dual = ctx_.builder().CreateICmpEQ(exp_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* any_dual = ctx_.builder().CreateOr(base_is_dual, exp_is_dual);
+    ctx_.builder().CreateCondBr(any_dual, dual_path, regular_path);
+
+    // Dual number path - use dualPow for automatic differentiation
+    ctx_.builder().SetInsertPoint(dual_path);
+    llvm::Value* base_is_double = ctx_.builder().CreateICmpEQ(base_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* exp_is_double = ctx_.builder().CreateICmpEQ(exp_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* base_dual = convertToDual(base, base_is_dual, base_is_double);
+    llvm::Value* exp_dual = convertToDual(exponent, exp_is_dual, exp_is_double);
+    llvm::Value* dual_result = autodiff_.dualPow(base_dual, exp_dual);
+    llvm::Value* dual_tagged = autodiff_.packDualToTagged(dual_result);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
+
+    // Regular path - standard pow
+    ctx_.builder().SetInsertPoint(regular_path);
     llvm::Value* base_dbl = extractAsDouble(base);
     llvm::Value* exp_dbl = extractAsDouble(exponent);
 
@@ -904,7 +940,16 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
     }
 
     llvm::Value* result = ctx_.builder().CreateCall(pow_func, {base_dbl, exp_dbl}, "pow_result");
-    return tagged_.packDouble(result);
+    llvm::Value* regular_tagged = tagged_.packDouble(result);
+    ctx_.builder().CreateBr(merge);
+
+    // Merge paths
+    ctx_.builder().SetInsertPoint(merge);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "pow_result");
+    phi->addIncoming(dual_tagged, dual_exit);
+    phi->addIncoming(regular_tagged, regular_path);
+
+    return phi;
 }
 
 // === Min/Max Functions ===

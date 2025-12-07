@@ -1,0 +1,328 @@
+(require stdlib)
+
+(display "=== BRUTAL STRESS TEST ===")
+(newline)
+(newline)
+
+;; ============================================================
+;; TEST 1: Y Combinator - The ultimate recursion test
+;; ============================================================
+(display "1. Y Combinator (factorial via fixed point): ")
+(define Y
+  (lambda (f)
+    ((lambda (x) (f (lambda (v) ((x x) v))))
+     (lambda (x) (f (lambda (v) ((x x) v)))))))
+
+(define factorial-gen
+  (lambda (fact)
+    (lambda (n)
+      (if (<= n 1)
+          1
+          (* n (fact (- n 1)))))))
+
+(define y-factorial (Y factorial-gen))
+(display (y-factorial 6))
+(newline)
+
+;; ============================================================
+;; TEST 2: Deeply nested closures capturing closures
+;; ============================================================
+(display "2. Nested closure chain (5 levels): ")
+(define (make-chain)
+  (define (level1 a)
+    (define (level2 b)
+      (define (level3 c)
+        (define (level4 d)
+          (define (level5 e)
+            (+ a b c d e))
+          level5)
+        level4)
+      level3)
+    level2)
+  level1)
+
+(define chain (make-chain))
+(display (((((chain 1) 2) 3) 4) 5))
+(newline)
+
+;; ============================================================
+;; TEST 3: Mutual recursion with captures across 3 functions
+;; ============================================================
+(display "3. Triple mutual recursion with captures: ")
+(define (collatz-counter n)
+  (define count 0)
+  (define (even-step x cnt)
+    (if (= x 1)
+        cnt
+        (if (= (modulo x 2) 0)
+            (odd-step (/ x 2) (+ cnt 1))
+            (continue-step (* (+ (* x 3) 1) 1) (+ cnt 1)))))
+  (define (odd-step x cnt)
+    (if (= x 1)
+        cnt
+        (if (= (modulo x 2) 0)
+            (continue-step (/ x 2) (+ cnt 1))
+            (even-step (* (+ (* x 3) 1) 1) (+ cnt 1)))))
+  (define (continue-step x cnt)
+    (if (= x 1)
+        cnt
+        (if (= (modulo x 2) 0)
+            (even-step (/ x 2) (+ cnt 1))
+            (odd-step (* (+ (* x 3) 1) 1) (+ cnt 1)))))
+  (even-step n 0))
+
+(display (collatz-counter 27))
+(newline)
+
+;; ============================================================
+;; TEST 4: CPS (Continuation-Passing Style) factorial
+;; ============================================================
+(display "4. CPS factorial: ")
+(define (cps-factorial n k)
+  (if (<= n 1)
+      (k 1)
+      (cps-factorial (- n 1)
+                     (lambda (result)
+                       (k (* n result))))))
+
+(display (cps-factorial 7 (lambda (x) x)))
+(newline)
+
+;; ============================================================
+;; TEST 5: Church numerals and operations
+;; ============================================================
+(display "5. Church numerals (3 + 2 = ): ")
+(define church-zero (lambda (f) (lambda (x) x)))
+(define church-one (lambda (f) (lambda (x) (f x))))
+(define church-two (lambda (f) (lambda (x) (f (f x)))))
+(define church-three (lambda (f) (lambda (x) (f (f (f x))))))
+
+(define church-succ
+  (lambda (n)
+    (lambda (f)
+      (lambda (x)
+        (f ((n f) x))))))
+
+(define church-add
+  (lambda (m)
+    (lambda (n)
+      (lambda (f)
+        (lambda (x)
+          ((m f) ((n f) x)))))))
+
+(define church-to-int
+  (lambda (n)
+    ((n (lambda (x) (+ x 1))) 0)))
+
+(display (church-to-int ((church-add church-three) church-two)))
+(newline)
+
+;; ============================================================
+;; TEST 6: Memoized fibonacci with closure state
+;; ============================================================
+(display "6. Fibonacci sequence (first 10): ")
+(define (make-fib-generator)
+  (define a 0)
+  (define b 1)
+  (lambda ()
+    (let ((result a))
+      (set! a b)
+      (set! b (+ result b))
+      result)))
+
+(define fib-gen (make-fib-generator))
+(define (collect-fibs n)
+  (define (helper i acc)
+    (if (<= i 0)
+        (reverse acc)
+        (helper (- i 1) (cons (fib-gen) acc))))
+  (helper n '()))
+
+(display (collect-fibs 10))
+(newline)
+
+;; ============================================================
+;; TEST 7: Higher-order map with nested lambdas
+;; ============================================================
+(display "7. Nested map operations: ")
+(define nested-data '((1 2 3) (4 5 6) (7 8 9)))
+(define (sum-list lst)
+  (define (iter acc rest)
+    (if (null? rest)
+        acc
+        (iter (+ acc (car rest)) (cdr rest))))
+  (iter 0 lst))
+(display (map sum-list nested-data))
+(newline)
+
+;; ============================================================
+;; TEST 8: Compose with multiple functions
+;; ============================================================
+(display "8. Function composition chain: ")
+(define (my-compose f g)
+  (lambda (x) (f (g x))))
+
+(define add10 (lambda (x) (+ x 10)))
+(define mul2 (lambda (x) (* x 2)))
+(define sub3 (lambda (x) (- x 3)))
+
+(define pipeline (my-compose add10 (my-compose mul2 sub3)))
+(display (pipeline 5))  ; (5-3)*2+10 = 14
+(newline)
+
+;; ============================================================
+;; TEST 9: Recursive tree sum
+;; ============================================================
+(display "9. Recursive tree sum: ")
+(define (make-tree val left right)
+  (list 'tree val left right))
+(define (tree-val t) (cadr t))
+(define (tree-left t) (caddr t))
+(define (tree-right t) (cadddr t))
+
+(define test-tree
+  (make-tree 1
+    (make-tree 2
+      (make-tree 4 '() '())
+      (make-tree 5 '() '()))
+    (make-tree 3
+      (make-tree 6 '() '())
+      (make-tree 7 '() '()))))
+
+(define (tree-sum t)
+  (if (null? t)
+      0
+      (+ (tree-val t)
+         (tree-sum (tree-left t))
+         (tree-sum (tree-right t)))))
+
+(display (tree-sum test-tree))
+(newline)
+
+;; ============================================================
+;; TEST 10: Ackermann function (brutal recursion)
+;; ============================================================
+(display "10. Ackermann(3,4) = ")
+(define (ackermann m n)
+  (cond
+    ((= m 0) (+ n 1))
+    ((= n 0) (ackermann (- m 1) 1))
+    (else (ackermann (- m 1) (ackermann m (- n 1))))))
+
+(display (ackermann 3 4))
+(newline)
+
+;; ============================================================
+;; TEST 11: Closure capturing mutable state (counter factory)
+;; ============================================================
+(display "11. Counter factory: ")
+(define (make-counter start step)
+  (define current start)
+  (define (get) current)
+  (define (inc!) 
+    (set! current (+ current step))
+    current)
+  (define (reset!) 
+    (set! current start)
+    current)
+  (lambda (op)
+    (cond
+      ((eq? op 'get) (get))
+      ((eq? op 'inc) (inc!))
+      ((eq? op 'reset) (reset!))
+      (else 'unknown))))
+
+(define counter (make-counter 0 5))
+(display (list (counter 'inc) (counter 'inc) (counter 'inc) (counter 'reset) (counter 'get)))
+(newline)
+
+;; ============================================================
+;; TEST 12: Quicksort (complex recursive list processing)
+;; ============================================================
+(display "12. Quicksort: ")
+(define (quicksort lst)
+  (if (or (null? lst) (null? (cdr lst)))
+      lst
+      (let ((pivot (car lst))
+            (rest (cdr lst)))
+        (define (partition lst less greater)
+          (if (null? lst)
+              (append (quicksort less) (cons pivot (quicksort greater)))
+              (if (< (car lst) pivot)
+                  (partition (cdr lst) (cons (car lst) less) greater)
+                  (partition (cdr lst) less (cons (car lst) greater)))))
+        (partition rest '() '()))))
+
+(display (quicksort '(3 1 4 1 5 9 2 6 5 3 5)))
+(newline)
+
+;; ============================================================
+;; TEST 13: Trampolined mutual recursion
+;; ============================================================
+(display "13. Trampolined even/odd check (1000): ")
+(define (local-trampoline thunk)
+  (define (loop result)
+    (if (procedure? result)
+        (loop (result))
+        result))
+  (loop thunk))
+
+(define (t-even? n)
+  (if (= n 0)
+      #t
+      (lambda () (t-odd? (- n 1)))))
+
+(define (t-odd? n)
+  (if (= n 0)
+      #f
+      (lambda () (t-even? (- n 1)))))
+
+(display (local-trampoline (t-even? 1000)))
+(newline)
+
+;; ============================================================
+;; TEST 14: Multiple return values simulation
+;; ============================================================
+(display "14. Div/mod multiple returns: ")
+(define (divmod a b)
+  (list (quotient a b) (modulo a b)))
+
+(define (chain-divmod n divisors)
+  (if (null? divisors)
+      (list n '())
+      (let ((result (divmod n (car divisors))))
+        (let ((quot (car result))
+              (rem (cadr result)))
+          (let ((rest (chain-divmod quot (cdr divisors))))
+            (list (car rest) (cons rem (cadr rest))))))))
+
+(display (chain-divmod 1000 '(7 5 3)))
+(newline)
+
+;; ============================================================
+;; TEST 15: Closure-based state machine
+;; ============================================================
+(display "15. State machine (traffic light): ")
+(define (make-traffic-light)
+  (define state 'red)
+  (define (transition!)
+    (set! state
+      (cond
+        ((eq? state 'red) 'green)
+        ((eq? state 'green) 'yellow)
+        ((eq? state 'yellow) 'red)))
+    state)
+  (define (current) state)
+  (lambda (op)
+    (if (eq? op 'next)
+        (transition!)
+        (current))))
+
+(define light (make-traffic-light))
+(display (list (light 'current) (light 'next) (light 'next) (light 'next) (light 'next)))
+(newline)
+
+(newline)
+(display "=== ALL BRUTAL TESTS COMPLETE ===")
+(newline)
+0

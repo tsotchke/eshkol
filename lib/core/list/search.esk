@@ -1,7 +1,7 @@
 ;;; core/list/search.esk
 ;;; List searching functions (membership and association)
 
-(provide member memq memv assoc assq assv list-ref list-tail)
+(provide member member? memq memv assoc assq assv list-ref list-tail)
 
 ;;; member: Return sublist starting with first element equal? to x, or #f
 ;;; (member 3 '(1 2 3 4 5)) => (3 4 5)
@@ -11,6 +11,11 @@
       (if (equal? x (car lst))
           lst
           (member x (cdr lst)))))
+
+;;; member?: Return #t if x is in lst, #f otherwise
+;;; (member? 3 '(1 2 3 4 5)) => #t
+(define (member? x lst)
+  (if (member x lst) #t #f))
 
 ;;; memq: Like member but uses eq? for comparison
 (define (memq x lst)

@@ -895,8 +895,14 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
 llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
     using namespace llvm;
 
-    if (!op->derivative_op.function || !op->derivative_op.point) {
-        eshkol_error("Invalid derivative operation - missing function or point");
+    if (!op->derivative_op.function) {
+        eshkol_error("Invalid derivative operation - missing function");
+        return nullptr;
+    }
+
+    // Higher-order form: (derivative f) - delegate back to main codegen
+    if (!op->derivative_op.point) {
+        // Return nullptr to signal that main codegen should handle this
         return nullptr;
     }
 
@@ -910,13 +916,17 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
     // Get the function to differentiate
     Value* func = resolve_lambda_callback_(op->derivative_op.function, 1, callback_context_);
     if (!func) {
-        eshkol_error("Failed to resolve function for derivative");
+        // RUNTIME FUNCTION PARAMETER FIX: Return nullptr without error
+        // to let the fallback codegenDerivative handle runtime function parameters
+        eshkol_debug("AutodiffCodegen::derivative: function not resolved, falling back to main codegen");
         return nullptr;
     }
 
     Function* func_ptr = dyn_cast<Function>(func);
     if (!func_ptr) {
-        eshkol_error("derivative operator requires a function");
+        // RUNTIME FUNCTION PARAMETER FIX: Return nullptr without error
+        // to let the fallback handle runtime closures
+        eshkol_debug("AutodiffCodegen::derivative: not a Function*, falling back to main codegen");
         return nullptr;
     }
 
@@ -1004,6 +1014,15 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
             // INNER FUNCTION FIX: If capture_key not found, try plain variable name
             // This handles lambdas inside functions where captures are function parameters
             // (not stored as GlobalVariables with _capture_ keys)
+            // Also handles top-level global variables that are captured by lambdas
+            if (!found && global_symbol_table_) {
+                auto it = global_symbol_table_->find(var_name);
+                if (it != global_symbol_table_->end()) {
+                    found = true;
+                    storage = it->second;
+                    eshkol_debug("Derivative: found capture '%s' via global variable name", var_name.c_str());
+                }
+            }
             if (!found && symbol_table_) {
                 auto it = symbol_table_->find(var_name);
                 if (it != symbol_table_->end()) {

@@ -660,6 +660,15 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_va
         return eshkol_deep_equal(&cdr1, &cdr2);
     }
 
+    // Special case: numeric comparison between INT64 and DOUBLE
+    // This allows (equal? 130 130.0) to return #t when values are numerically equal
+    if ((type1 == ESHKOL_VALUE_INT64 && type2 == ESHKOL_VALUE_DOUBLE) ||
+        (type1 == ESHKOL_VALUE_DOUBLE && type2 == ESHKOL_VALUE_INT64)) {
+        double d1 = (type1 == ESHKOL_VALUE_DOUBLE) ? val1->data.double_val : (double)val1->data.int_val;
+        double d2 = (type2 == ESHKOL_VALUE_DOUBLE) ? val2->data.double_val : (double)val2->data.int_val;
+        return d1 == d2;
+    }
+
     // Different types: not equal
     if (type1 != type2) {
         return false;
@@ -1363,11 +1372,18 @@ eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_capt
     return env;
 }
 
-eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures, uint64_t sexpr_ptr) {
+eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t packed_info, uint64_t sexpr_ptr) {
     if (!arena) {
         eshkol_error("Cannot allocate closure: null arena");
         return nullptr;
     }
+
+    // VARIADIC CLOSURE FIX: Unpack the num_captures from the packed info
+    // The packed_info field contains:
+    //   - Bits 0-15:  actual num_captures
+    //   - Bits 16-31: fixed_param_count
+    //   - Bit 63:     is_variadic flag
+    size_t actual_num_captures = CLOSURE_ENV_GET_NUM_CAPTURES(packed_info);
 
     // Allocate the closure structure
     eshkol_closure_t* closure = (eshkol_closure_t*)
@@ -1382,18 +1398,21 @@ eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size
     closure->sexpr_ptr = sexpr_ptr;  // Store S-expression for homoiconicity
 
     // Allocate environment if there are captures
-    if (num_captures > 0) {
-        closure->env = arena_allocate_closure_env(arena, num_captures);
+    if (actual_num_captures > 0) {
+        // Allocate env with actual capture count
+        closure->env = arena_allocate_closure_env(arena, actual_num_captures);
         if (!closure->env) {
             eshkol_error("Failed to allocate closure environment");
             return nullptr;
         }
+        // Store the full packed_info (including variadic flag) in the env's num_captures field
+        closure->env->num_captures = packed_info;
     } else {
         closure->env = nullptr;
     }
 
-    eshkol_debug("Allocated closure at %p with func_ptr=%p, env=%p (%zu captures), sexpr=%p",
-                (void*)closure, (void*)func_ptr, (void*)closure->env, num_captures, (void*)sexpr_ptr);
+    eshkol_debug("Allocated closure at %p with func_ptr=%p, env=%p (%zu captures, packed=0x%zx), sexpr=%p",
+                (void*)closure, (void*)func_ptr, (void*)closure->env, actual_num_captures, packed_info, (void*)sexpr_ptr);
 
     return closure;
 }

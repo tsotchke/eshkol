@@ -120,6 +120,16 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
 
 llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     // tensor-get: (tensor-get tensor index1 index2 ...)
+    //
+    // N-DIMENSIONAL SLICING SUPPORT:
+    // - If num_indices == ndim: return scalar element
+    // - If num_indices < ndim: return view tensor (slice)
+    //
+    // For tensor with shape [d0, d1, ..., d(n-1)] and indices [i0, ..., i(k-1)]:
+    //   linear_offset = sum(i_j * stride_j) where stride_j = product(d(j+1)..d(n-1))
+    //   slice_shape = [d(k), d(k+1), ..., d(n-1)]
+    //   slice_elements = elements + linear_offset
+    //
     if (op->call_op.num_vars < 2) {
         eshkol_error("tensor-get requires at least tensor and one index");
         return nullptr;
@@ -128,50 +138,181 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
     if (!tensor_val) return nullptr;
 
-    // Use safeExtractInt64 to handle all value types
+    const uint64_t num_indices = op->call_op.num_vars - 1;
+
+    // Extract tensor pointer
     llvm::Value* tensor_ptr_int = tagged_.safeExtractInt64(tensor_val);
     llvm::Value* tensor_ptr = ctx_.builder().CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
 
-    // Calculate linear index from multi-dimensional indices
-    llvm::Value* linear_index = llvm::ConstantInt::get(ctx_.int64Type(), 0);
-
-    // Load dimensions and elements
+    // Load tensor metadata
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* dims_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 0);
-    llvm::Value* dims_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), dims_field_ptr);
 
-    llvm::Value* elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 2);
-    llvm::Value* elements_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), elements_field_ptr);
-    llvm::Value* typed_elements_ptr = ctx_.builder().CreatePointerCast(elements_ptr, ctx_.ptrType());
+    llvm::Value* dims_field = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 0);
+    llvm::Value* dims_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), dims_field);
 
-    // Calculate linear index using row-major order
-    llvm::Value* stride = llvm::ConstantInt::get(ctx_.int64Type(), 1);
-    for (int64_t i = op->call_op.num_vars - 2; i >= 0; i--) {
-        llvm::Value* index = codegenAST(&op->call_op.variables[i + 1]);
-        if (index) {
-            // Use safeExtractInt64 for indices too
-            llvm::Value* index_int = tagged_.safeExtractInt64(index);
+    llvm::Value* ndim_field = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 1);
+    llvm::Value* ndim = ctx_.builder().CreateLoad(ctx_.int64Type(), ndim_field);
 
-            llvm::Value* contribution = ctx_.builder().CreateMul(index_int, stride);
-            linear_index = ctx_.builder().CreateAdd(linear_index, contribution);
+    llvm::Value* elements_field = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* elements_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), elements_field);
 
-            // Update stride for next dimension
-            if (i > 0) {
-                llvm::Value* dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), dims_ptr,
-                                                      llvm::ConstantInt::get(ctx_.int64Type(), i));
-                llvm::Value* dim = ctx_.builder().CreateLoad(ctx_.int64Type(), dim_ptr);
-                stride = ctx_.builder().CreateMul(stride, dim);
-            }
-        }
+    llvm::Value* total_field = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = ctx_.builder().CreateLoad(ctx_.int64Type(), total_field);
+
+    // ===== PHASE 1: Compute strides for all dimensions =====
+    // stride[i] = product of dims[i+1..n-1] (row-major order)
+    // We compute these using a loop since ndim is runtime-known
+    //
+    // stride[n-1] = 1
+    // stride[i] = stride[i+1] * dims[i+1]
+    //
+    // But we need strides for indices 0..num_indices-1, computed from dims
+    // Since indices might be < ndim, we use total_elements/product(dims[0..i])
+
+    // First compute stride[0] = total_elements / dims[0]
+    // Then stride[i] = stride[i-1] / dims[i]
+
+    // Collect indices and compute linear offset
+    std::vector<llvm::Value*> indices;
+    for (uint64_t i = 0; i < num_indices; i++) {
+        llvm::Value* idx = codegenAST(&op->call_op.variables[i + 1]);
+        if (!idx) return nullptr;
+        indices.push_back(tagged_.safeExtractInt64(idx));
     }
 
-    // Load element at linear index
-    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_elements_ptr, linear_index);
-    llvm::Value* elem_as_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), elem_ptr);
+    // Compute linear offset incrementally
+    // offset = i0*stride0 + i1*stride1 + ... where stride_j = total / prod(d0..dj)
+    llvm::Value* linear_offset = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    llvm::Value* prod_dims = llvm::ConstantInt::get(ctx_.int64Type(), 1);
 
-    // Tensors store doubles as bitcast i64 - convert back to double and pack as tagged_value
-    llvm::Value* elem_as_double = ctx_.builder().CreateBitCast(elem_as_int64, ctx_.doubleType());
-    return tagged_.packDouble(elem_as_double);
+    for (uint64_t i = 0; i < num_indices; i++) {
+        // Load dims[i]
+        llvm::Value* dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), dims_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), i));
+        llvm::Value* dim_i = ctx_.builder().CreateLoad(ctx_.int64Type(), dim_ptr);
+
+        // stride[i] = total_elements / (prod_dims * dim_i) = total_elements / prod_dims_including_i
+        llvm::Value* prod_dims_next = ctx_.builder().CreateMul(prod_dims, dim_i);
+
+        // stride[i] = total / prod_dims_next
+        llvm::Value* stride_i = ctx_.builder().CreateUDiv(total_elements, prod_dims_next);
+
+        // offset += indices[i] * stride[i]
+        llvm::Value* contrib = ctx_.builder().CreateMul(indices[i], stride_i);
+        linear_offset = ctx_.builder().CreateAdd(linear_offset, contrib);
+
+        prod_dims = prod_dims_next;
+    }
+
+    // ===== PHASE 2: Decide scalar vs slice =====
+    llvm::Value* num_indices_val = llvm::ConstantInt::get(ctx_.int64Type(), num_indices);
+    llvm::Value* is_full_index = ctx_.builder().CreateICmpEQ(num_indices_val, ndim);
+
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* scalar_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_scalar", func);
+    llvm::BasicBlock* slice_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_slice", func);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_done", func);
+
+    ctx_.builder().CreateCondBr(is_full_index, scalar_bb, slice_bb);
+
+    // ===== SCALAR PATH: Full indexing - return element as double =====
+    ctx_.builder().SetInsertPoint(scalar_bb);
+
+    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elements_ptr, linear_offset);
+    llvm::Value* elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), elem_ptr);
+    llvm::Value* elem_double = ctx_.builder().CreateBitCast(elem_bits, ctx_.doubleType());
+    llvm::Value* scalar_result = tagged_.packDouble(elem_double);
+
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* scalar_exit = ctx_.builder().GetInsertBlock();
+
+    // ===== SLICE PATH: Partial indexing - return view tensor =====
+    ctx_.builder().SetInsertPoint(slice_bb);
+
+    // Calculate remaining dimensions: new_ndim = ndim - num_indices
+    llvm::Value* new_ndim = ctx_.builder().CreateSub(ndim, num_indices_val);
+
+    // Calculate slice total elements: total / prod_dims
+    // (prod_dims = product of indexed dimensions)
+    llvm::Value* slice_total = ctx_.builder().CreateUDiv(total_elements, prod_dims);
+
+    // Allocate new tensor struct using malloc
+    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
+    if (!malloc_func) {
+        llvm::FunctionType* malloc_ty = llvm::FunctionType::get(ctx_.ptrType(), {ctx_.int64Type()}, false);
+        malloc_func = llvm::Function::Create(malloc_ty, llvm::Function::ExternalLinkage, "malloc", &ctx_.module());
+    }
+
+    // Tensor struct: 4 fields * 8 bytes = 32 bytes
+    llvm::Value* struct_size = llvm::ConstantInt::get(ctx_.int64Type(), 32);
+    llvm::Value* new_tensor = ctx_.builder().CreateCall(malloc_func, {struct_size});
+
+    // Allocate new dims array: new_ndim * 8 bytes
+    llvm::Value* dims_bytes = ctx_.builder().CreateMul(new_ndim, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* new_dims = ctx_.builder().CreateCall(malloc_func, {dims_bytes});
+
+    // Copy remaining dimensions using a loop
+    llvm::BasicBlock* copy_entry = ctx_.builder().GetInsertBlock();
+    llvm::BasicBlock* copy_cond = llvm::BasicBlock::Create(ctx_.context(), "copy_dims_cond", func);
+    llvm::BasicBlock* copy_body = llvm::BasicBlock::Create(ctx_.context(), "copy_dims_body", func);
+    llvm::BasicBlock* copy_done = llvm::BasicBlock::Create(ctx_.context(), "copy_dims_done", func);
+
+    ctx_.builder().CreateBr(copy_cond);
+
+    ctx_.builder().SetInsertPoint(copy_cond);
+    llvm::PHINode* copy_i = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "i");
+    copy_i->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0), copy_entry);
+
+    llvm::Value* copy_done_cond = ctx_.builder().CreateICmpUGE(copy_i, new_ndim);
+    ctx_.builder().CreateCondBr(copy_done_cond, copy_done, copy_body);
+
+    ctx_.builder().SetInsertPoint(copy_body);
+    // Source index = num_indices + i
+    llvm::Value* src_idx = ctx_.builder().CreateAdd(copy_i, num_indices_val);
+    llvm::Value* src_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), dims_ptr, src_idx);
+    llvm::Value* dim_val = ctx_.builder().CreateLoad(ctx_.int64Type(), src_ptr);
+
+    llvm::Value* dst_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), new_dims, copy_i);
+    ctx_.builder().CreateStore(dim_val, dst_ptr);
+
+    llvm::Value* next_i = ctx_.builder().CreateAdd(copy_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    copy_i->addIncoming(next_i, copy_body);
+    ctx_.builder().CreateBr(copy_cond);
+
+    ctx_.builder().SetInsertPoint(copy_done);
+
+    // Fill tensor struct fields
+    // Field 0: dims pointer
+    llvm::Value* f0 = ctx_.builder().CreateStructGEP(tensor_type, new_tensor, 0);
+    ctx_.builder().CreateStore(new_dims, f0);
+
+    // Field 1: ndim
+    llvm::Value* f1 = ctx_.builder().CreateStructGEP(tensor_type, new_tensor, 1);
+    ctx_.builder().CreateStore(new_ndim, f1);
+
+    // Field 2: elements pointer (view into original at offset)
+    llvm::Value* slice_start = ctx_.builder().CreateGEP(ctx_.int64Type(), elements_ptr, linear_offset);
+    llvm::Value* f2 = ctx_.builder().CreateStructGEP(tensor_type, new_tensor, 2);
+    ctx_.builder().CreateStore(slice_start, f2);
+
+    // Field 3: total_elements
+    llvm::Value* f3 = ctx_.builder().CreateStructGEP(tensor_type, new_tensor, 3);
+    ctx_.builder().CreateStore(slice_total, f3);
+
+    // Pack as TENSOR_PTR tagged value
+    llvm::Value* tensor_int = ctx_.builder().CreatePtrToInt(new_tensor, ctx_.int64Type());
+    llvm::Value* slice_result = tagged_.packPtr(tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* slice_exit = ctx_.builder().GetInsertBlock();
+
+    // ===== MERGE =====
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "tget_result");
+    result->addIncoming(scalar_result, scalar_exit);
+    result->addIncoming(slice_result, slice_exit);
+
+    return result;
 }
 
 llvm::Value* TensorCodegen::vectorRef(const eshkol_operations_t* op) {
@@ -1489,7 +1630,7 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::tensorShape(const eshkol_operations_t* op) {
-    // tensor-shape: (tensor-shape tensor) -> returns dimensions as a Scheme vector
+    // tensor-shape: (tensor-shape tensor) -> returns dimensions as a Scheme list
     if (op->call_op.num_vars != 1) {
         eshkol_error("tensor-shape requires exactly 1 tensor argument");
         return nullptr;
@@ -1514,73 +1655,101 @@ llvm::Value* TensorCodegen::tensorShape(const eshkol_operations_t* op) {
     llvm::Value* dims_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 0);
     llvm::Value* dims_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), dims_field_ptr);
 
-    // Get or declare malloc function
-    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
-    if (!malloc_func) {
-        llvm::FunctionType* malloc_type = llvm::FunctionType::get(
-            ctx_.ptrType(), {ctx_.int64Type()}, false);
-        malloc_func = llvm::Function::Create(
-            malloc_type, llvm::Function::ExternalLinkage, "malloc", &ctx_.module());
-    }
-
-    // Allocate result vector: [length:i64][elem0:tagged][elem1:tagged]...
-    uint64_t elem_size = ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType());
-    llvm::Value* result_size = ctx_.builder().CreateAdd(
-        llvm::ConstantInt::get(ctx_.int64Type(), 8),  // length field
-        ctx_.builder().CreateMul(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), elem_size)));
-
-    // Allocate from arena if available, otherwise malloc
-    llvm::GlobalVariable* arena_global = ctx_.globalArena();
-    llvm::Value* result_vec;
-    if (arena_global) {
-        llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
-        result_vec = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, result_size});
-    } else {
-        result_vec = ctx_.builder().CreateCall(malloc_func, {result_size});
-    }
-
-    // Store length
-    llvm::Value* result_len_ptr = ctx_.builder().CreateBitCast(result_vec, ctx_.ptrType());
-    ctx_.builder().CreateStore(num_dims, result_len_ptr);
-
-    // Get element base (after 8-byte length field)
-    llvm::Value* result_elems_base = ctx_.builder().CreateGEP(ctx_.int8Type(), result_vec,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* result_elems_typed = ctx_.builder().CreateBitCast(result_elems_base, ctx_.ptrType());
-
-    // Create loop to copy dimensions as tagged values
+    // Build a proper cons-based list from dimensions (build from end to front)
+    // Start with null (empty list) and prepend each dimension
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::GlobalVariable* arena_global = ctx_.globalArena();
+
+    if (!arena_global) {
+        eshkol_error("tensor-shape requires arena for list allocation");
+        return tagged_.packNull();
+    }
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
+
+    // Create alloca at function entry for the accumulator
+    llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
+    llvm::BasicBlock& entry = current_func->getEntryBlock();
+    llvm::IRBuilder<> entry_builder(&entry, entry.getFirstInsertionPt());
+    llvm::Value* result_alloca = entry_builder.CreateAlloca(ctx_.int64Type(), nullptr, "shape_result");
+    llvm::Value* counter_alloca = entry_builder.CreateAlloca(ctx_.int64Type(), nullptr, "shape_i");
+
+    ctx_.builder().SetInsertPoint(current_block);
+
+    // Initialize: result = 0 (null), counter = num_dims - 1 (iterate backwards)
+    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), result_alloca);
+    llvm::Value* start_idx = ctx_.builder().CreateSub(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(start_idx, counter_alloca);
+
+    // Loop condition
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "shape_cond", current_func);
     llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "shape_body", current_func);
     llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(ctx_.context(), "shape_exit", current_func);
 
-    llvm::Value* counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "shape_i");
-    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
     ctx_.builder().CreateBr(loop_cond);
 
     ctx_.builder().SetInsertPoint(loop_cond);
-    llvm::Value* i = ctx_.builder().CreateLoad(ctx_.int64Type(), counter);
-    llvm::Value* cond = ctx_.builder().CreateICmpULT(i, num_dims);
+    llvm::Value* i = ctx_.builder().CreateLoad(ctx_.int64Type(), counter_alloca);
+    // Loop while i >= 0
+    llvm::Value* cond = ctx_.builder().CreateICmpSGE(i, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     ctx_.builder().CreateCondBr(cond, loop_body, loop_exit);
 
     ctx_.builder().SetInsertPoint(loop_body);
-    // Load dimension value
+
+    // Load dimension value at index i
     llvm::Value* dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), dims_ptr, i);
     llvm::Value* dim_val = ctx_.builder().CreateLoad(ctx_.int64Type(), dim_ptr);
 
-    // Pack as tagged integer and store
-    llvm::Value* dim_tagged = tagged_.packInt64(dim_val, true);
-    llvm::Value* result_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), result_elems_typed, i);
-    ctx_.builder().CreateStore(dim_tagged, result_elem_ptr);
+    // Load current list tail
+    llvm::Value* current_tail_int = ctx_.builder().CreateLoad(ctx_.int64Type(), result_alloca);
 
-    // Increment counter
-    llvm::Value* next_i = ctx_.builder().CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    ctx_.builder().CreateStore(next_i, counter);
+    // Allocate new cons cell
+    llvm::Value* cons_cell = ctx_.builder().CreateCall(
+        mem_.getArenaAllocateTaggedConsCell(), {arena_ptr});
+
+    // Set car to dimension value (int64)
+    llvm::Value* is_car = llvm::ConstantInt::get(ctx_.int1Type(), 0);
+    llvm::Value* int_type = llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64);
+    ctx_.builder().CreateCall(mem_.getTaggedConsSetInt64(),
+        {cons_cell, is_car, dim_val, int_type});
+
+    // Set cdr to current tail
+    llvm::Value* is_cdr = llvm::ConstantInt::get(ctx_.int1Type(), 1);
+    llvm::Value* is_null_tail = ctx_.builder().CreateICmpEQ(current_tail_int,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+
+    // Branch for null vs non-null cdr
+    llvm::BasicBlock* set_null_cdr = llvm::BasicBlock::Create(ctx_.context(), "set_null_cdr", current_func);
+    llvm::BasicBlock* set_cons_cdr = llvm::BasicBlock::Create(ctx_.context(), "set_cons_cdr", current_func);
+    llvm::BasicBlock* cdr_done = llvm::BasicBlock::Create(ctx_.context(), "cdr_done", current_func);
+
+    ctx_.builder().CreateCondBr(is_null_tail, set_null_cdr, set_cons_cdr);
+
+    ctx_.builder().SetInsertPoint(set_null_cdr);
+    ctx_.builder().CreateCall(mem_.getTaggedConsSetNull(), {cons_cell, is_cdr});
+    ctx_.builder().CreateBr(cdr_done);
+
+    ctx_.builder().SetInsertPoint(set_cons_cdr);
+    llvm::Value* cons_type = llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR);
+    ctx_.builder().CreateCall(mem_.getTaggedConsSetPtr(),
+        {cons_cell, is_cdr, current_tail_int, cons_type});
+    ctx_.builder().CreateBr(cdr_done);
+
+    ctx_.builder().SetInsertPoint(cdr_done);
+
+    // Update result to point to new cons cell
+    llvm::Value* cons_cell_int = ctx_.builder().CreatePtrToInt(cons_cell, ctx_.int64Type());
+    ctx_.builder().CreateStore(cons_cell_int, result_alloca);
+
+    // Decrement counter
+    llvm::Value* next_i = ctx_.builder().CreateSub(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_i, counter_alloca);
     ctx_.builder().CreateBr(loop_cond);
 
     ctx_.builder().SetInsertPoint(loop_exit);
 
-    return tagged_.packPtr(result_vec, ESHKOL_VALUE_VECTOR_PTR);
+    // Load final result
+    llvm::Value* final_result_int = ctx_.builder().CreateLoad(ctx_.int64Type(), result_alloca);
+    return tagged_.packPtr(final_result_int, ESHKOL_VALUE_CONS_PTR);
 }
 
 llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
@@ -1707,7 +1876,8 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
-    // reshape: (reshape tensor dim1 dim2 ...) - Change tensor shape (must preserve total elements)
+    // reshape: (reshape tensor dim1 dim2 ...) OR (reshape tensor (list d1 d2 ...))
+    // Support both individual dimension args and a list of dimensions
     if (op->call_op.num_vars < 2) {
         eshkol_error("reshape requires tensor and at least 1 dimension");
         return nullptr;
@@ -1728,15 +1898,94 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
-    // Get new dimensions
+    // Get new dimensions - need to handle two cases:
+    // 1. Individual args: (reshape tensor 3 3) -> num_vars > 2
+    // 2. List arg: (reshape tensor (list 3 3)) -> num_vars == 2 and arg is CONS_PTR
+
     std::vector<llvm::Value*> new_dims;
-    for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-        llvm::Value* dim = codegenAST(&op->call_op.variables[i]);
-        if (!dim) return nullptr;
-        if (dim->getType() == ctx_.taggedValueType()) {
-            dim = tagged_.unpackInt64(dim);
+
+    if (op->call_op.num_vars == 2) {
+        // Could be a single dimension OR a list of dimensions
+        llvm::Value* dim_arg = codegenAST(&op->call_op.variables[1]);
+        if (!dim_arg) return nullptr;
+
+        // Check if it's a list (CONS_PTR) at runtime
+        llvm::Value* type_tag = tagged_.getType(dim_arg);
+        llvm::Value* is_list = ctx_.builder().CreateICmpEQ(type_tag,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+
+        llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* list_path = llvm::BasicBlock::Create(ctx_.context(), "reshape_list", current_func);
+        llvm::BasicBlock* single_path = llvm::BasicBlock::Create(ctx_.context(), "reshape_single", current_func);
+        llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "reshape_merge", current_func);
+
+        ctx_.builder().CreateCondBr(is_list, list_path, single_path);
+
+        // LIST PATH: Extract dimensions from the list (handling 2D for now)
+        ctx_.builder().SetInsertPoint(list_path);
+        llvm::Value* list_ptr_int = tagged_.unpackInt64(dim_arg);
+
+        // Get cons cell pointer
+        llvm::Value* cons_ptr = ctx_.builder().CreateIntToPtr(list_ptr_int, ctx_.ptrType());
+        llvm::Value* is_car = llvm::ConstantInt::get(ctx_.int1Type(), 0);  // false = car
+        llvm::Value* is_cdr = llvm::ConstantInt::get(ctx_.int1Type(), 1);  // true = cdr
+
+        // Extract first element (car) - use arena_tagged_cons_get_int64
+        llvm::Value* dim1_from_list = ctx_.builder().CreateCall(
+            mem_.getTaggedConsGetInt64(), {cons_ptr, is_car});
+
+        // Get cdr (rest of list) - use arena_tagged_cons_get_ptr
+        llvm::Value* cdr_ptr_int = ctx_.builder().CreateCall(
+            mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
+
+        // Extract second element (cadr) from the cdr cons cell
+        llvm::Value* cdr_cons_ptr = ctx_.builder().CreateIntToPtr(cdr_ptr_int, ctx_.ptrType());
+        llvm::Value* dim2_from_list = ctx_.builder().CreateCall(
+            mem_.getTaggedConsGetInt64(), {cdr_cons_ptr, is_car});
+
+        ctx_.builder().CreateBr(merge_block);
+        llvm::BasicBlock* list_exit = ctx_.builder().GetInsertBlock();
+
+        // SINGLE PATH: Use the value as a single dimension
+        ctx_.builder().SetInsertPoint(single_path);
+        llvm::Value* single_dim = dim_arg;
+        if (single_dim->getType() == ctx_.taggedValueType()) {
+            single_dim = tagged_.unpackInt64(single_dim);
         }
-        new_dims.push_back(dim);
+        // For single dimension, treat as 1D reshape (dim2 = 1 as placeholder, but only 1 dim used)
+        llvm::Value* dim1_from_single = single_dim;
+        llvm::Value* dim2_from_single = llvm::ConstantInt::get(ctx_.int64Type(), 1);
+        ctx_.builder().CreateBr(merge_block);
+        llvm::BasicBlock* single_exit = ctx_.builder().GetInsertBlock();
+
+        // MERGE: Use phi nodes to get final dimensions
+        ctx_.builder().SetInsertPoint(merge_block);
+
+        llvm::PHINode* is_2d_phi = ctx_.builder().CreatePHI(ctx_.builder().getInt1Ty(), 2, "is_2d");
+        is_2d_phi->addIncoming(ctx_.builder().getTrue(), list_exit);
+        is_2d_phi->addIncoming(ctx_.builder().getFalse(), single_exit);
+
+        llvm::PHINode* final_dim1_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "final_dim1");
+        final_dim1_phi->addIncoming(dim1_from_list, list_exit);
+        final_dim1_phi->addIncoming(dim1_from_single, single_exit);
+
+        llvm::PHINode* final_dim2_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "final_dim2");
+        final_dim2_phi->addIncoming(dim2_from_list, list_exit);
+        final_dim2_phi->addIncoming(dim2_from_single, single_exit);
+
+        new_dims.push_back(final_dim1_phi);
+        // Always push dim2 - for single dimension case it's 1, for list case it's the actual value
+        new_dims.push_back(final_dim2_phi);
+    } else {
+        // Multiple explicit dimension arguments
+        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+            llvm::Value* dim = codegenAST(&op->call_op.variables[i]);
+            if (!dim) return nullptr;
+            if (dim->getType() == ctx_.taggedValueType()) {
+                dim = tagged_.unpackInt64(dim);
+            }
+            new_dims.push_back(dim);
+        }
     }
 
     // Get source tensor properties
