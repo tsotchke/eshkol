@@ -24,6 +24,7 @@
 #include <eshkol/backend/call_apply_codegen.h>
 #include <eshkol/backend/map_codegen.h>
 #include <eshkol/backend/tail_call_codegen.h>
+#include <eshkol/types/type_checker.h>
 #include <eshkol/logger.h>
 #include "../core/arena_memory.h"
 
@@ -119,6 +120,8 @@ struct TypedValue {
 
     // Flag constants
     static constexpr uint8_t FLAG_INDIRECT = 0x01;  // Value is address of global to load from
+    static constexpr uint8_t FLAG_LINEAR   = 0x02;  // Must be consumed exactly once (linear type)
+    static constexpr uint8_t FLAG_PROOF    = 0x04;  // Compile-time only, erased at runtime
 
     TypedValue()
         : llvm_value(nullptr), type(ESHKOL_VALUE_NULL), is_exact(true), flags(0),
@@ -165,6 +168,21 @@ struct TypedValue {
     }
     bool isList() const { return type == ESHKOL_VALUE_CONS_PTR; }
     bool isVector() const { return type == ESHKOL_VALUE_VECTOR_PTR; }
+
+    // Linear and proof type helpers (HoTT Phase 4)
+    bool isLinear() const { return (flags & FLAG_LINEAR) != 0; }
+    bool isProof() const { return (flags & FLAG_PROOF) != 0; }
+    bool shouldErase() const { return isProof(); }  // Proofs are erased at runtime
+
+    // Create an erased value (for proof types that don't exist at runtime)
+    static TypedValue makeErased(eshkol::hott::TypeId proof_type) {
+        return TypedValue(nullptr, ESHKOL_VALUE_NULL, proof_type, true, FLAG_PROOF);
+    }
+
+    // Create an erased value with a unit placeholder (for contexts that need a valid LLVM value)
+    static TypedValue makeErasedWithPlaceholder(llvm::Value* unit_value, eshkol::hott::TypeId proof_type) {
+        return TypedValue(unit_value, ESHKOL_VALUE_NULL, proof_type, true, FLAG_PROOF);
+    }
 };
 
 // OPTION 3: Deferred Lambda S-Expression Generation
@@ -832,6 +850,37 @@ public:
 
             // Create built-in function declarations
             createBuiltinFunctions();
+
+            // ========== HoTT TYPE CHECKING PHASE ==========
+            // Run type checker before code generation for gradual typing support
+            // This populates type information that will be used during codegen
+            {
+                eshkol::hott::TypeEnvironment& type_env = ctx_->hottTypes();
+                eshkol::hott::TypeChecker type_checker(type_env);
+
+                // Type check all top-level definitions
+                for (size_t i = 0; i < num_asts; i++) {
+                    if (asts[i].type == ESHKOL_OP && asts[i].operation.op == ESHKOL_DEFINE_OP) {
+                        auto result = type_checker.synthesize(&asts[i]);
+                        if (!result.success) {
+                            // Type error - report but continue for gradual typing
+                            eshkol_warn("HoTT type check warning in '%s': %s",
+                                       asts[i].operation.define_op.name,
+                                       result.error_message.c_str());
+                        } else {
+                            eshkol_debug("HoTT: type checked '%s' successfully",
+                                        asts[i].operation.define_op.name);
+                        }
+                    }
+                }
+
+                // Report any accumulated type errors (but don't fail compilation - gradual typing)
+                if (type_checker.hasErrors()) {
+                    eshkol_warn("HoTT: %zu type warnings detected (gradual typing continues)",
+                               type_checker.errors().size());
+                }
+            }
+            eshkol_debug("HoTT type checking phase complete");
 
             // SAFE ORDER: Function declarations → Function bodies → Global variables in main()
             // Global variables (including lambdas) are processed ONLY in main function context
@@ -4251,6 +4300,28 @@ private:
         return car_tagged_phi;
     }
 
+    // ========== HoTT PROOF ERASURE HELPERS ==========
+    // Check if a HoTT type should be erased at runtime (proof types have no runtime representation)
+    bool shouldEraseType(eshkol::hott::TypeId type_id) {
+        // Query the TypeEnvironment to check if this type has RuntimeRep::Erased
+        auto rep = ctx_->hottTypes().getRuntimeRep(type_id);
+        return rep == eshkol::hott::RuntimeRep::Erased;
+    }
+
+    // Create a unit value for erased types (when we need a valid LLVM value but the type is erased)
+    // Returns null tagged_value which is our "unit" type
+    Value* createErasedPlaceholder() {
+        // Create a null tagged_value as a unit placeholder
+        // This is for cases where the type system requires a value but the proof is erased
+        return tagged_->packNull();
+    }
+
+    // Create TypedValue for an erased proof type
+    TypedValue makeErasedTypedValue(eshkol::hott::TypeId proof_type) {
+        Value* placeholder = createErasedPlaceholder();
+        return TypedValue::makeErasedWithPlaceholder(placeholder, proof_type);
+    }
+
     // Robust helper to convert tagged_value to TypedValue with proper runtime type detection
     // This preserves type information through PHI nodes
     TypedValue detectValueType(Value* llvm_val) {
@@ -4350,6 +4421,12 @@ private:
     }
     // Convert TypedValue to tagged_value (AST→IR boundary crossing)
     Value* typedValueToTaggedValue(const TypedValue& tv) {
+        // HoTT PROOF ERASURE: If this is a proof type, return null (proofs have no runtime representation)
+        if (tv.shouldErase()) {
+            eshkol_debug("typedValueToTaggedValue: erasing proof type (HoTT TypeId %u)", tv.hott_type.id);
+            return packNullToTaggedValue();
+        }
+
         if (!tv.llvm_value) {
             return packNullToTaggedValue();
         }
@@ -4718,8 +4795,9 @@ private:
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 Value* packed_info = ConstantInt::get(int64_type, 0);  // No captures
                 Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+                Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR);  // Math builtins return scalars
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info, sexpr_ptr});
+                                                         {arena_ptr, func_ptr_int, packed_info, sexpr_ptr, return_type_info});
                 Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
                 return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
             }
@@ -4919,6 +4997,11 @@ private:
 
             case ESHKOL_SET_OP:
                 return codegenSet(op);
+
+            case ESHKOL_DEFINE_TYPE_OP:
+                // Type alias definition - compile-time only, no runtime code
+                // The type alias is stored in the AST for use by the type checker
+                return packNullToTaggedValue();
 
             case ESHKOL_TENSOR_OP:
                 return tensor_->tensorOperation(op);
@@ -11100,7 +11183,7 @@ private:
                 builder->CreateStore(sexpr_ptr, closure_sexpr_global);
             }
 
-            // Allocate closure: arena_allocate_closure(arena, func_ptr, packed_info, sexpr_ptr)
+            // Allocate closure: arena_allocate_closure(arena, func_ptr, packed_info, sexpr_ptr, return_type_info)
             // Pack variadic info into the num_captures field:
             //   - Bits 0-15:  num_captures
             //   - Bits 16-31: fixed_param_count
@@ -11112,11 +11195,57 @@ private:
                 packed_info |= (1ULL << 63);
             }
             Value* packed_captures = ConstantInt::get(int64_type, packed_info);
-            eshkol_debug("Closure %s: packed_info=0x%llx (captures=%zu, fixed_params=%llu, variadic=%d)",
+
+            // Compute return type info for closure metadata:
+            //   - Bits 0-7:   return_type (CLOSURE_RETURN_*)
+            //   - Bits 8-15:  input_arity (num_params)
+            //   - Bits 16-47: hott_type_id (0 for now)
+            uint8_t return_type_category = CLOSURE_RETURN_UNKNOWN;
+            if (op->lambda_op.return_type) {
+                hott_type_kind_t kind = op->lambda_op.return_type->kind;
+                switch (kind) {
+                    case HOTT_TYPE_INTEGER:
+                    case HOTT_TYPE_REAL:
+                    case HOTT_TYPE_NUMBER:
+                        return_type_category = CLOSURE_RETURN_SCALAR;
+                        break;
+                    case HOTT_TYPE_VECTOR:
+                    case HOTT_TYPE_TENSOR:
+                        return_type_category = CLOSURE_RETURN_VECTOR;
+                        break;
+                    case HOTT_TYPE_LIST:
+                    case HOTT_TYPE_PAIR:
+                        return_type_category = CLOSURE_RETURN_LIST;
+                        break;
+                    case HOTT_TYPE_ARROW:
+                        return_type_category = CLOSURE_RETURN_FUNCTION;
+                        break;
+                    case HOTT_TYPE_BOOLEAN:
+                        return_type_category = CLOSURE_RETURN_BOOL;
+                        break;
+                    case HOTT_TYPE_STRING:
+                        return_type_category = CLOSURE_RETURN_STRING;
+                        break;
+                    case HOTT_TYPE_NULL:
+                    case HOTT_TYPE_NOTHING:
+                        return_type_category = CLOSURE_RETURN_VOID;
+                        break;
+                    default:
+                        return_type_category = CLOSURE_RETURN_UNKNOWN;
+                        break;
+                }
+            }
+            uint64_t return_type_info = (uint64_t)return_type_category;
+            return_type_info |= ((uint64_t)(op->lambda_op.num_params & 0xFF)) << 8;
+            // hott_type_id will be added when we integrate with the type checker
+            Value* return_type_val = ConstantInt::get(int64_type, return_type_info);
+
+            eshkol_debug("Closure %s: packed_info=0x%llx (captures=%zu, fixed_params=%llu, variadic=%d), return_type=%d",
                         lambda_name.c_str(), (unsigned long long)packed_info,
-                        free_vars.size(), (unsigned long long)op->lambda_op.num_params, is_variadic ? 1 : 0);
+                        free_vars.size(), (unsigned long long)op->lambda_op.num_params, is_variadic ? 1 : 0,
+                        return_type_category);
             Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
-                                                     {arena_ptr, func_ptr, packed_captures, sexpr_ptr});
+                                                     {arena_ptr, func_ptr, packed_captures, sexpr_ptr, return_type_val});
 
             // Store captured values into closure environment
             // The closure struct is: { uint64_t func_ptr, eshkol_closure_env_t* env }
@@ -11306,8 +11435,49 @@ private:
         // Allocate closure with 0 captures but with S-expression
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
         Value* num_captures = ConstantInt::get(int64_type, 0);
+
+        // Compute return type info for closure metadata (same logic as captures path)
+        uint8_t return_type_category = CLOSURE_RETURN_UNKNOWN;
+        if (op->lambda_op.return_type) {
+            hott_type_kind_t kind = op->lambda_op.return_type->kind;
+            switch (kind) {
+                case HOTT_TYPE_INTEGER:
+                case HOTT_TYPE_REAL:
+                case HOTT_TYPE_NUMBER:
+                    return_type_category = CLOSURE_RETURN_SCALAR;
+                    break;
+                case HOTT_TYPE_VECTOR:
+                case HOTT_TYPE_TENSOR:
+                    return_type_category = CLOSURE_RETURN_VECTOR;
+                    break;
+                case HOTT_TYPE_LIST:
+                case HOTT_TYPE_PAIR:
+                    return_type_category = CLOSURE_RETURN_LIST;
+                    break;
+                case HOTT_TYPE_ARROW:
+                    return_type_category = CLOSURE_RETURN_FUNCTION;
+                    break;
+                case HOTT_TYPE_BOOLEAN:
+                    return_type_category = CLOSURE_RETURN_BOOL;
+                    break;
+                case HOTT_TYPE_STRING:
+                    return_type_category = CLOSURE_RETURN_STRING;
+                    break;
+                case HOTT_TYPE_NULL:
+                case HOTT_TYPE_NOTHING:
+                    return_type_category = CLOSURE_RETURN_VOID;
+                    break;
+                default:
+                    return_type_category = CLOSURE_RETURN_UNKNOWN;
+                    break;
+            }
+        }
+        uint64_t return_type_info_val = (uint64_t)return_type_category;
+        return_type_info_val |= ((uint64_t)(op->lambda_op.num_params & 0xFF)) << 8;
+        Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+
         Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
-                                                 {arena_ptr, func_ptr, num_captures, sexpr_ptr});
+                                                 {arena_ptr, func_ptr, num_captures, sexpr_ptr, return_type_info});
 
         Value* closure_tagged = packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CLOSURE_PTR);
         return closure_tagged;
@@ -14530,9 +14700,11 @@ private:
                         uint64_t packed_info = 1;  // 1 capture (the function)
                         Value* packed_captures = ConstantInt::get(int64_type, packed_info);
                         Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+                        // Derivative function returns a scalar
+                        Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR | (1 << 8));
 
                         Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
-                                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr});
+                                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
 
                         // Store captured function
                         Value* env_ptr_ptr = builder->CreateGEP(int8_type, closure_ptr, ConstantInt::get(int64_type, 8));
@@ -14692,9 +14864,11 @@ private:
             uint64_t packed_info = orig_num_captures & 0xFFFF;
             Value* packed_captures = ConstantInt::get(int64_type, packed_info);
             Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+            // Derivative function returns a scalar
+            Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR | (1 << 8));
 
             Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
-                                                     {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr});
+                                                     {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
 
             // Store captures
             Value* env_ptr_ptr = builder->CreateGEP(int8_type, closure_ptr, ConstantInt::get(int64_type, 8));
@@ -14718,9 +14892,11 @@ private:
             uint64_t packed_info = 0;  // 0 captures
             Value* packed_captures = ConstantInt::get(int64_type, packed_info);
             Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+            // Derivative function returns a scalar
+            Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR | (1 << 8));
 
             Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
-                                                     {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr});
+                                                     {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
 
             // Return closure as tagged value
             Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
@@ -15308,8 +15484,10 @@ private:
         uint64_t packed_info = 1 | (0ULL << 16) | (1ULL << 63);  // 1 capture, variadic
         Value* packed_captures = ConstantInt::get(int64_type, packed_info);
         Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+        // Gradient returns a vector
+        Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_VECTOR | (1 << 8));
         Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
-                                                 {arena, func_ptr_int, packed_captures, sexpr_ptr});
+                                                 {arena, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
 
         // Store captured function in closure environment
         Value* env_ptr_ptr = builder->CreateGEP(int8_type, closure_ptr, ConstantInt::get(int64_type, 8));

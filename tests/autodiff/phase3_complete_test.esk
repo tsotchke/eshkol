@@ -4,7 +4,6 @@
 ;; Test parsing and placeholder implementations compile without errors
 
 (extern void printf char* ...)
-(extern void :real printf display char* ...)
 
 ;; ===== TEST 1: Gradient Parsing =====
 ;; Verify gradient syntax is parsed correctly

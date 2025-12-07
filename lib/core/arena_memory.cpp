@@ -1372,7 +1372,8 @@ eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_capt
     return env;
 }
 
-eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t packed_info, uint64_t sexpr_ptr) {
+eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t packed_info,
+                                         uint64_t sexpr_ptr, uint64_t return_type_info) {
     if (!arena) {
         eshkol_error("Cannot allocate closure: null arena");
         return nullptr;
@@ -1397,6 +1398,16 @@ eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size
     closure->func_ptr = func_ptr;
     closure->sexpr_ptr = sexpr_ptr;  // Store S-expression for homoiconicity
 
+    // Unpack return type metadata:
+    //   - Bits 0-7:   return_type (CLOSURE_RETURN_*)
+    //   - Bits 8-15:  input_arity
+    //   - Bits 16-47: hott_type_id
+    closure->return_type = (uint8_t)(return_type_info & 0xFF);
+    closure->input_arity = (uint8_t)((return_type_info >> 8) & 0xFF);
+    closure->flags = 0;
+    closure->reserved = 0;
+    closure->hott_type_id = (uint32_t)((return_type_info >> 16) & 0xFFFFFFFF);
+
     // Allocate environment if there are captures
     if (actual_num_captures > 0) {
         // Allocate env with actual capture count
@@ -1411,8 +1422,9 @@ eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size
         closure->env = nullptr;
     }
 
-    eshkol_debug("Allocated closure at %p with func_ptr=%p, env=%p (%zu captures, packed=0x%zx), sexpr=%p",
-                (void*)closure, (void*)func_ptr, (void*)closure->env, actual_num_captures, packed_info, (void*)sexpr_ptr);
+    eshkol_debug("Allocated closure at %p with func_ptr=%p, env=%p (%zu captures), return_type=%d, arity=%d",
+                (void*)closure, (void*)func_ptr, (void*)closure->env, actual_num_captures,
+                closure->return_type, closure->input_arity);
 
     return closure;
 }

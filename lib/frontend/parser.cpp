@@ -227,7 +227,8 @@ private:
 };
 
 static eshkol_ast_t parse_atom(const Token& token) {
-    eshkol_ast_t ast = {.type = ESHKOL_INVALID};
+    eshkol_ast_t ast = {};  // Zero-initialize all fields
+    ast.type = ESHKOL_INVALID;
     
     switch (token.type) {
         case TOKEN_STRING:
@@ -296,6 +297,7 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "quote") return ESHKOL_QUOTE_OP;
     // Note: "compose" is now a user-definable higher-order function, not a special op
     if (op == "define") return ESHKOL_DEFINE_OP;
+    if (op == "define-type") return ESHKOL_DEFINE_TYPE_OP;
     if (op == "set!") return ESHKOL_SET_OP;
     if (op == "import") return ESHKOL_IMPORT_OP;
     if (op == "require") return ESHKOL_REQUIRE_OP;  // module system: (require module.name ...)
@@ -465,6 +467,20 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                     return nullptr;
                 }
                 hott_type_expr_t* result = hott_make_vector_type(elem);
+                hott_free_type_expr(elem);
+                return result;
+            }
+
+            if (lower == "tensor") {
+                // (tensor element-type) - same as vector but for multi-dimensional arrays
+                hott_type_expr_t* elem = parseTypeExpression(tokenizer);
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected ) after tensor element type");
+                    hott_free_type_expr(elem);
+                    return nullptr;
+                }
+                hott_type_expr_t* result = hott_make_tensor_type(elem);
                 hott_free_type_expr(elem);
                 return result;
             }
@@ -932,6 +948,8 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
     // Convert defines to bindings
     result.operation.let_op.num_bindings = defines.size();
     result.operation.let_op.bindings = new eshkol_ast_t[defines.size()];
+    result.operation.let_op.binding_types = nullptr;  // No type annotations for internal defines
+    result.operation.let_op.name = nullptr;  // Not a named let
 
     for (size_t i = 0; i < defines.size(); i++) {
         const auto& def = defines[i];
@@ -968,6 +986,17 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
                 strcpy(val_ast.operation.lambda_op.rest_param, def.operation.define_op.rest_param);
             } else {
                 val_ast.operation.lambda_op.rest_param = nullptr;
+            }
+
+            // HoTT type annotations - copy from define_op if present
+            val_ast.operation.lambda_op.return_type = def.operation.define_op.return_type;
+            if (val_ast.operation.lambda_op.num_params > 0 && def.operation.define_op.param_types) {
+                val_ast.operation.lambda_op.param_types = new hott_type_expr_t*[val_ast.operation.lambda_op.num_params];
+                for (size_t j = 0; j < val_ast.operation.lambda_op.num_params; j++) {
+                    val_ast.operation.lambda_op.param_types[j] = def.operation.define_op.param_types[j];
+                }
+            } else {
+                val_ast.operation.lambda_op.param_types = nullptr;
             }
         } else {
             // Simple variable define - use value directly
@@ -1225,7 +1254,8 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
 }
 
 static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
-    eshkol_ast_t ast = {.type = ESHKOL_OP};
+    eshkol_ast_t ast = {};  // Zero-initialize all fields
+    ast.type = ESHKOL_OP;
     std::vector<eshkol_ast_t> elements;
     
     Token token = tokenizer.nextToken();
@@ -1342,12 +1372,27 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             
             if (token.type == TOKEN_LPAREN) {
                 // Function definition: (define (name params...) body)
+                // Or with return type: (define (name params...) : type body)
                 eshkol_ast_t func_signature = parse_function_signature(tokenizer);
                 if (func_signature.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
-                
+
+                // Check for optional return type annotation: : type
+                Token peek = tokenizer.peekToken();
+                if (peek.type == TOKEN_COLON) {
+                    tokenizer.nextToken();  // consume ':'
+                    func_signature.eshkol_func.return_type = parseTypeExpression(tokenizer);
+                    if (!func_signature.eshkol_func.return_type) {
+                        eshkol_error("Failed to parse return type annotation in define");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    eshkol_debug("Parsed return type annotation for function '%s'",
+                                func_signature.eshkol_func.id);
+                }
+
                 // Parse function body (can be multiple expressions)
                 std::vector<eshkol_ast_t> body_expressions;
                 
@@ -1556,6 +1601,83 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
+            return ast;
+        }
+
+        // Special handling for define-type - type alias definition
+        // Syntax: (define-type Name type-expr)
+        //     or: (define-type (Name a b) type-expr)  - parameterized
+        if (ast.operation.op == ESHKOL_DEFINE_TYPE_OP) {
+            token = tokenizer.nextToken();
+
+            std::string type_name;
+            std::vector<std::string> type_params;
+
+            if (token.type == TOKEN_SYMBOL) {
+                // Simple type alias: (define-type Name type-expr)
+                type_name = token.value;
+            } else if (token.type == TOKEN_LPAREN) {
+                // Parameterized type: (define-type (Name a b) type-expr)
+                token = tokenizer.nextToken();
+                if (token.type != TOKEN_SYMBOL) {
+                    eshkol_error("define-type requires type name");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                type_name = token.value;
+
+                // Parse type parameters
+                while (true) {
+                    token = tokenizer.nextToken();
+                    if (token.type == TOKEN_RPAREN) break;
+                    if (token.type != TOKEN_SYMBOL) {
+                        eshkol_error("define-type parameters must be symbols");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    type_params.push_back(token.value);
+                }
+            } else {
+                eshkol_error("define-type requires type name or (name params...)");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Parse type expression
+            hott_type_expr_t* type_expr = parseTypeExpression(tokenizer);
+            if (!type_expr) {
+                eshkol_error("Failed to parse type expression in define-type");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Expect closing paren
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                eshkol_error("Expected ')' after define-type");
+                hott_free_type_expr(type_expr);
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Set up define-type operation
+            ast.operation.define_type_op.name = new char[type_name.length() + 1];
+            strcpy(ast.operation.define_type_op.name, type_name.c_str());
+            ast.operation.define_type_op.type_expr = type_expr;
+            ast.operation.define_type_op.num_type_params = type_params.size();
+
+            if (!type_params.empty()) {
+                ast.operation.define_type_op.type_params = new char*[type_params.size()];
+                for (size_t i = 0; i < type_params.size(); i++) {
+                    ast.operation.define_type_op.type_params[i] = new char[type_params[i].length() + 1];
+                    strcpy(ast.operation.define_type_op.type_params[i], type_params[i].c_str());
+                }
+            } else {
+                ast.operation.define_type_op.type_params = nullptr;
+            }
+
+            eshkol_debug("Parsed define-type '%s' with %zu type parameters",
+                        type_name.c_str(), type_params.size());
             return ast;
         }
 
@@ -1793,7 +1915,21 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
+
+            // Check for optional return type annotation: : type
+            // Syntax: (lambda (params...) : type body)
+            Token peek = tokenizer.peekToken();
+            if (peek.type == TOKEN_COLON) {
+                tokenizer.nextToken();  // consume ':'
+                ast.operation.lambda_op.return_type = parseTypeExpression(tokenizer);
+                if (!ast.operation.lambda_op.return_type) {
+                    eshkol_error("Failed to parse return type annotation in lambda");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                eshkol_debug("Parsed return type annotation for lambda");
+            }
+
             // Parse lambda body (can be multiple expressions with internal defines)
             std::vector<eshkol_ast_t> body_expressions;
 
@@ -1899,10 +2035,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
+
             std::vector<eshkol_ast_t> bindings;
-            
-            // Parse each binding: (variable value)
+            std::vector<hott_type_expr_t*> binding_types;
+
+            // Parse each binding: (variable value) or (variable : type value)
             while (true) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
@@ -1911,13 +2048,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
-                
+
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("let binding must be a list (variable value)");
+                    eshkol_error("let binding must be a list (variable value) or (variable : type value)");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
-                
+
                 // Parse variable name
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_SYMBOL) {
@@ -1925,12 +2062,26 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
-                
+
                 eshkol_ast_t var_ast = {.type = ESHKOL_VAR};
                 var_ast.variable.id = new char[token.value.length() + 1];
                 strcpy(var_ast.variable.id, token.value.c_str());
                 var_ast.variable.data = nullptr;
-                
+
+                // Check for optional type annotation: (var : type value)
+                hott_type_expr_t* binding_type = nullptr;
+                Token peek = tokenizer.peekToken();
+                if (peek.type == TOKEN_COLON) {
+                    tokenizer.nextToken();  // consume ':'
+                    binding_type = parseTypeExpression(tokenizer);
+                    if (!binding_type) {
+                        eshkol_error("Failed to parse type annotation in let binding");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    eshkol_debug("Parsed type annotation for let binding '%s'", var_ast.variable.id);
+                }
+
                 // Parse value expression
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_EOF) {
@@ -2007,8 +2158,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 *binding.cons_cell.car = var_ast;
                 binding.cons_cell.cdr = new eshkol_ast_t;
                 *binding.cons_cell.cdr = val_ast;
-                
+
                 bindings.push_back(binding);
+                binding_types.push_back(binding_type);  // May be nullptr if no annotation
             }
             
             // Parse body expressions (can be multiple, like in define)
@@ -2052,11 +2204,14 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.let_op.num_bindings = bindings.size();
             if (ast.operation.let_op.num_bindings > 0) {
                 ast.operation.let_op.bindings = new eshkol_ast_t[ast.operation.let_op.num_bindings];
+                ast.operation.let_op.binding_types = new hott_type_expr_t*[ast.operation.let_op.num_bindings];
                 for (size_t i = 0; i < ast.operation.let_op.num_bindings; i++) {
                     ast.operation.let_op.bindings[i] = bindings[i];
+                    ast.operation.let_op.binding_types[i] = binding_types[i];  // Transfer ownership
                 }
             } else {
                 ast.operation.let_op.bindings = nullptr;
+                ast.operation.let_op.binding_types = nullptr;
             }
             
             ast.operation.let_op.body = new eshkol_ast_t;
@@ -4057,7 +4212,8 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
         case TOKEN_VECTOR_START: {
             // Handle vector literal: #(element1 element2 ...)
             // Creates a 1D tensor (same as (vector ...))
-            eshkol_ast_t ast = {.type = ESHKOL_OP};
+            eshkol_ast_t ast = {};  // Zero-initialize all fields
+            ast.type = ESHKOL_OP;
             ast.operation.op = ESHKOL_TENSOR_OP;
 
             std::vector<eshkol_ast_t> elements;

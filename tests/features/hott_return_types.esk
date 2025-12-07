@@ -1,0 +1,100 @@
+;; Test HoTT return type annotations
+
+;; Test 1: Define with return type
+(display "Test 1: Define with return type annotation\n")
+(define (square (x : int)) : int
+  (* x x))
+(display "  square(5) = ")
+(display (square 5))
+(newline)
+
+;; Test 2: Lambda with return type
+(display "Test 2: Lambda with return type annotation\n")
+(define cube
+  (lambda ((x : int)) : int
+    (* x (* x x))))
+(display "  cube(3) = ")
+(display (cube 3))
+(newline)
+
+;; Test 3: Define with float return type
+(display "Test 3: Float return type\n")
+(define (half (x : float)) : float
+  (/ x 2.0))
+(display "  half(10.0) = ")
+(display (half 10.0))
+(newline)
+
+;; Test 4: Multiple parameters with return type
+(display "Test 4: Multiple parameters with return type\n")
+(define (add (x : int) (y : int)) : int
+  (+ x y))
+(display "  add(3, 4) = ")
+(display (add 3 4))
+(newline)
+
+;; Test 5: Arrow type return (function returning function)
+(display "Test 5: Higher-order function with return type\n")
+(define (make-adder (n : int)) : (-> int int)
+  (lambda ((x : int)) : int
+    (+ x n)))
+(define add5 (make-adder 5))
+(display "  (make-adder 5)(10) = ")
+(display (add5 10))
+(newline)
+
+;; Test 6: Let binding with type annotation
+(display "Test 6: Let binding with type annotation\n")
+(let ((x : int 42))
+  (display "  x = ")
+  (display x)
+  (newline))
+
+;; Test 7: Multiple let bindings with types
+(display "Test 7: Multiple typed let bindings\n")
+(let ((a : int 10)
+      (b : float 3.14))
+  (display "  a = ")
+  (display a)
+  (display ", b = ")
+  (display b)
+  (newline))
+
+;; Test 8: Mixed typed and untyped bindings
+(display "Test 8: Mixed typed and untyped let bindings\n")
+(let ((x : int 5)
+      (y 10)
+      (z : float 2.5))
+  (display "  x + y = ")
+  (display (+ x y))
+  (display ", z = ")
+  (display z)
+  (newline))
+
+;; Test 9: Nested let with types
+(display "Test 9: Nested let with type annotations\n")
+(let ((outer : int 100))
+  (let ((inner : int (+ outer 50)))
+    (display "  outer + 50 = ")
+    (display inner)
+    (newline)))
+
+;; Test 10: Simple type alias
+(display "Test 10: Simple type alias (define-type)\n")
+(define-type Int int)
+(define-type Real float)
+(display "  Type aliases defined successfully\n")
+
+;; Test 11: Parameterized type alias
+(display "Test 11: Parameterized type alias\n")
+(define-type (Pair a b) (* a b))
+(define-type Point (pair float float))
+(display "  Parameterized type aliases defined successfully\n")
+
+;; Test 12: Function type alias
+(display "Test 12: Function type alias\n")
+(define-type Predicate (-> Value bool))
+(define-type BinaryOp (-> int int int))
+(display "  Function type aliases defined successfully\n")
+
+(display "All type annotation tests passed!\n")

@@ -69,9 +69,9 @@ void MemoryCodegen::createClosureFunctions() {
     auto ptr = types.getPtrType();
     auto i64 = types.getInt64Type();
 
-    // arena_allocate_closure: eshkol_closure_t* (arena_t*, uint64_t func_ptr, size_t num_captures, uint64_t sexpr_ptr)
+    // arena_allocate_closure: eshkol_closure_t* (arena_t*, uint64_t func_ptr, size_t num_captures, uint64_t sexpr_ptr, uint64_t return_type_info)
     arena_allocate_closure = createFunc("arena_allocate_closure",
-        llvm::FunctionType::get(ptr, {ptr, i64, i64, i64}, false));
+        llvm::FunctionType::get(ptr, {ptr, i64, i64, i64, i64}, false));
 }
 
 void MemoryCodegen::createTaggedConsGetters() {

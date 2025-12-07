@@ -1,0 +1,338 @@
+;;
+;; HoTT Type System Comprehensive Tests
+;;
+;; Tests all aspects of the HoTT type system implementation
+;; - Type hierarchy and subtyping
+;; - Type promotion in arithmetic
+;; - Container types (List, Vector, Tensor)
+;; - Function types and annotations
+;; - Polymorphic types
+;;
+
+(require stdlib)
+
+;; Test framework
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(define (check-approx name expected actual tolerance)
+  (if (< (abs (- expected actual)) tolerance)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(display "===================================================================\n")
+(display "           HoTT TYPE SYSTEM COMPREHENSIVE TESTS                  \n")
+(display "===================================================================\n\n")
+
+;; ============================================================================
+;; Section 1: Numeric Tower (Type Hierarchy)
+;; ============================================================================
+(display "--- Section 1: Numeric Tower ---\n")
+
+;; Test integer types
+(define i64 42)
+(check "Int64 literal" 42 i64)
+
+;; Test floating point types
+(define f64 3.14159)
+(check-approx "Float64 literal" 3.14159 f64 0.00001)
+
+;; Test type coercion in arithmetic (Int64 + Float64 -> Float64)
+(define mixed-result (+ 10 2.5))
+(check-approx "Int + Float -> Float" 12.5 mixed-result 0.00001)
+
+;; Test integer division promotion
+(define div-result (/ 7.0 2.0))
+(check-approx "Float / Float" 3.5 div-result 0.00001)
+
+;; Test multiplication promotion
+(define mul-result (* 3 1.5))
+(check-approx "Int * Float" 4.5 mul-result 0.00001)
+
+;; ============================================================================
+;; Section 2: Boolean Type
+;; ============================================================================
+(display "\n--- Section 2: Boolean Type ---\n")
+
+(define t #t)
+(define f #f)
+(check "Boolean true" #t t)
+(check "Boolean false" #f f)
+(check "Boolean not" #t (not f))
+(check "Boolean and" #f (and #t #f))
+(check "Boolean or" #t (or #t #f))
+
+;; ============================================================================
+;; Section 3: String Type
+;; ============================================================================
+(display "\n--- Section 3: String Type ---\n")
+
+(define s "Hello, HoTT!")
+(check "String literal" "Hello, HoTT!" s)
+
+(define s2 (string-append "Hello" ", " "World"))
+;; Note: string-append result may need string=? for comparison
+(check "String append length" 12 (string-length s2))
+
+;; ============================================================================
+;; Section 4: List Types
+;; ============================================================================
+(display "\n--- Section 4: List Types ---\n")
+
+;; Homogeneous list of integers
+(: int-list (list integer))
+(define int-list (list 1 2 3 4 5))
+(check "List length" 5 (length int-list))
+(check "List car" 1 (car int-list))
+(check "List cadr" 2 (cadr int-list))
+
+;; List operations
+(define reversed (reverse int-list))
+(check "List reverse car" 5 (car reversed))
+
+;; Map over typed list
+(define squared (map (lambda (x) (* x x)) int-list))
+(check "Map squared first" 1 (car squared))
+(check "Map squared second" 4 (cadr squared))
+
+;; ============================================================================
+;; Section 5: Vector Types (Fixed-size arrays)
+;; ============================================================================
+(display "\n--- Section 5: Vector Types ---\n")
+
+;; Create typed vector
+(: vec3 (vector real))
+(define vec3 (vector 1.0 2.0 3.0))
+(check "Vector length" 3 (vector-length vec3))
+(check-approx "Vector ref 0" 1.0 (vector-ref vec3 0) 0.0001)
+(check-approx "Vector ref 1" 2.0 (vector-ref vec3 1) 0.0001)
+(check-approx "Vector ref 2" 3.0 (vector-ref vec3 2) 0.0001)
+
+;; Vector with integers
+(: int-vec (vector integer))
+(define int-vec (vector 10 20 30 40))
+(check "Int vector length" 4 (vector-length int-vec))
+(check "Int vector ref" 30 (vector-ref int-vec 2))
+
+;; ============================================================================
+;; Section 6: Function Types with Return Annotations
+;; ============================================================================
+(display "\n--- Section 6: Function Types with Return Annotations ---\n")
+
+;; Function with explicit return type
+(: square (-> integer integer))
+(define (square n)
+  (* n n))
+(check "Square function" 25 (square 5))
+
+;; Function with multiple params and return type
+(: add-three (-> integer integer integer integer))
+(define (add-three a b c)
+  (+ a (+ b c)))
+(check "Add three" 10 (add-three 2 3 5))
+
+;; Inline typed parameters
+(define (typed-multiply (x : integer) (y : integer)) : integer
+  (* x y))
+(check "Typed multiply" 35 (typed-multiply 5 7))
+
+;; Return type annotation
+(define (compute-area (radius : real)) : real
+  (* 3.14159 (* radius radius)))
+(check-approx "Compute area" 78.53975 (compute-area 5.0) 0.0001)
+
+;; ============================================================================
+;; Section 7: Higher-Order Functions
+;; ============================================================================
+(display "\n--- Section 7: Higher-Order Functions ---\n")
+
+;; Function that takes a function parameter
+(: apply-twice (-> (-> integer integer) integer integer))
+(define (apply-twice f n)
+  (f (f n)))
+(check "Apply twice" 16 (apply-twice (lambda (x) (* x 2)) 4))
+
+;; Function that returns a function
+(: make-adder (-> integer (-> integer integer)))
+(define (make-adder n)
+  (lambda (x) (+ x n)))
+(define add-5 (make-adder 5))
+(check "Make adder" 15 (add-5 10))
+
+;; Compose functions
+(define (my-compose f g)
+  (lambda (x) (f (g x))))
+(define add1 (lambda (x) (+ x 1)))
+(define double (lambda (x) (* x 2)))
+(define add1-then-double (my-compose double add1))
+(check "Compose add1 then double" 10 (add1-then-double 4))
+
+;; ============================================================================
+;; Section 8: Polymorphic Types
+;; ============================================================================
+(display "\n--- Section 8: Polymorphic Types ---\n")
+
+;; Identity function (polymorphic)
+(: id (forall (a) (-> a a)))
+(define (id x) x)
+(check "Id int" 42 (id 42))
+(check "Id string" "hello" (id "hello"))
+(check "Id bool" #t (id #t))
+
+;; Polymorphic fst
+(: fst (forall (a b) (-> a b a)))
+(define (fst x y) x)
+(check "First int" 1 (fst 1 2))
+(check "First string" "a" (fst "a" "b"))
+
+;; Polymorphic snd
+(: snd (forall (a b) (-> a b b)))
+(define (snd x y) y)
+(check "Second int" 2 (snd 1 2))
+(check "Second string" "b" (snd "a" "b"))
+
+;; ============================================================================
+;; Section 9: Recursive Type Structures
+;; ============================================================================
+(display "\n--- Section 9: Recursive Type Structures ---\n")
+
+;; Recursive list processing
+(define (sum-list lst)
+  (if (null? lst)
+      0
+      (+ (car lst) (sum-list (cdr lst)))))
+(check "Sum list" 15 (sum-list (list 1 2 3 4 5)))
+
+;; Recursive with typed parameter
+(define (factorial (n : integer)) : integer
+  (if (<= n 1)
+      1
+      (* n (factorial (- n 1)))))
+(check "Factorial 5" 120 (factorial 5))
+(check "Factorial 0" 1 (factorial 0))
+
+;; ============================================================================
+;; Section 10: Pair Types (Product Types)
+;; ============================================================================
+(display "\n--- Section 10: Pair Types ---\n")
+
+;; Basic pair
+(define p (cons 1 2))
+(check "Pair car" 1 (car p))
+(check "Pair cdr" 2 (cdr p))
+
+;; Nested pair (using empty list instead of null)
+(define nested (cons 1 (cons 2 (cons 3 '()))))
+(check "Nested first" 1 (car nested))
+(check "Nested second" 2 (car (cdr nested)))
+(check "Nested third" 3 (car (cdr (cdr nested))))
+
+;; ============================================================================
+;; Section 11: Conditional Types (If Expression Types)
+;; ============================================================================
+(display "\n--- Section 11: Conditional Types ---\n")
+
+;; If should unify branch types
+(define (max-val a b)
+  (if (> a b) a b))
+(check "Max 5 3" 5 (max-val 5 3))
+(check "Max 2 7" 7 (max-val 2 7))
+
+;; Nested conditionals
+(define (sign n)
+  (if (> n 0)
+      1
+      (if (< n 0)
+          -1
+          0)))
+(check "Sign positive" 1 (sign 42))
+(check "Sign negative" -1 (sign -42))
+(check "Sign zero" 0 (sign 0))
+
+;; ============================================================================
+;; Section 12: Let Bindings with Types
+;; ============================================================================
+(display "\n--- Section 12: Let Bindings with Types ---\n")
+
+;; Simple let with types (using the correct let binding syntax)
+(define result-let
+  (let ((x : int 10)
+        (y : int 20))
+    (+ x y)))
+(check "Let with types" 30 result-let)
+
+;; Nested let
+(define nested-let
+  (let ((a 5))
+    (let ((b (* a 2)))
+      (+ a b))))
+(check "Nested let" 15 nested-let)
+
+;; Let* (sequential)
+(define let*-result
+  (let* ((x 10)
+         (y (+ x 5))
+         (z (* y 2)))
+    z))
+(check "Let* sequential" 30 let*-result)
+
+;; ============================================================================
+;; Section 13: Gradual Typing (Dynamic + Static)
+;; ============================================================================
+(display "\n--- Section 13: Gradual Typing ---\n")
+
+;; Untyped function (should still work)
+(define (untyped-add a b)
+  (+ a b))
+(check "Untyped add" 7 (untyped-add 3 4))
+
+;; Mix typed and untyped
+(define (half-typed (x : integer) y)
+  (+ x y))
+(check "Half typed" 15 (half-typed 10 5))
+
+;; Dynamic type handling
+(define dynamic-val 42)
+(check "Dynamic value" 42 dynamic-val)
+
+;; ============================================================================
+;; Section 14: Tensor Types (Multi-dimensional)
+;; ============================================================================
+(display "\n--- Section 14: Tensor Types ---\n")
+
+;; 1D tensor (like vector)
+(: tensor-1d (tensor real))
+(define tensor-1d (vector 1.0 2.0 3.0 4.0))
+(check "Tensor 1D length" 4 (vector-length tensor-1d))
+
+;; Tensor operations through vector interface
+(define tensor-elem (vector-ref tensor-1d 2))
+(check-approx "Tensor element" 3.0 tensor-elem 0.0001)
+
+;; ============================================================================
+;; SUMMARY
+;; ============================================================================
+(display "\n===================================================================\n")
+(display "RESULTS: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed\n")
+(display "===================================================================\n")
+
+(if (= tests-failed 0)
+    (display "ALL HOTT TYPE SYSTEM TESTS PASSED!\n")
+    (display "SOME TESTS FAILED!\n"))

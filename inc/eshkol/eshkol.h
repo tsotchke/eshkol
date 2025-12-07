@@ -261,13 +261,55 @@ typedef struct eshkol_closure_env {
 _Static_assert(sizeof(eshkol_closure_env_t) == sizeof(size_t),
                "Closure environment header must be minimal");
 
+// Closure return type constants (matches eshkol_value_type_t but with additional info)
+// These are used to determine function behavior without calling it
+#define CLOSURE_RETURN_UNKNOWN     0x00  // Return type not known (untyped lambda)
+#define CLOSURE_RETURN_SCALAR      0x01  // Returns a scalar (int64 or double)
+#define CLOSURE_RETURN_VECTOR      0x02  // Returns a vector/tensor
+#define CLOSURE_RETURN_LIST        0x03  // Returns a list (cons cells)
+#define CLOSURE_RETURN_FUNCTION    0x04  // Returns another function (higher-order)
+#define CLOSURE_RETURN_BOOL        0x05  // Returns a boolean
+#define CLOSURE_RETURN_STRING      0x06  // Returns a string
+#define CLOSURE_RETURN_VOID        0x07  // Returns null/void
+
 // Full closure structure combining function pointer and environment
 // This is what gets allocated when a closure-returning function is called
 typedef struct eshkol_closure {
     uint64_t func_ptr;                    // Pointer to the lambda function
     eshkol_closure_env_t* env;            // Pointer to captured environment (may be NULL for no captures)
     uint64_t sexpr_ptr;                   // Pointer to S-expression representation for homoiconicity
+    uint8_t return_type;                  // Return type category (CLOSURE_RETURN_*)
+    uint8_t input_arity;                  // Number of expected input arguments (0-255)
+    uint8_t flags;                        // Additional flags (reserved for future use)
+    uint8_t reserved;                     // Padding for alignment
+    uint32_t hott_type_id;                // HoTT TypeId for the return type (0 = unknown)
 } eshkol_closure_t;
+
+// Helper macros for closure type queries
+#define CLOSURE_RETURNS_VECTOR(closure) ((closure)->return_type == CLOSURE_RETURN_VECTOR)
+#define CLOSURE_RETURNS_SCALAR(closure) ((closure)->return_type == CLOSURE_RETURN_SCALAR)
+#define CLOSURE_RETURNS_FUNCTION(closure) ((closure)->return_type == CLOSURE_RETURN_FUNCTION)
+#define CLOSURE_TYPE_KNOWN(closure) ((closure)->return_type != CLOSURE_RETURN_UNKNOWN)
+
+// Get closure return type from a tagged value (assumes ESHKOL_VALUE_CLOSURE_PTR type)
+static inline uint8_t eshkol_closure_get_return_type(eshkol_tagged_value_t tagged) {
+    if ((tagged.type & 0x0F) != ESHKOL_VALUE_CLOSURE_PTR) {
+        return CLOSURE_RETURN_UNKNOWN;
+    }
+    uint64_t ptr = tagged.data.ptr_val;
+    eshkol_closure_t* closure = (eshkol_closure_t*)ptr;
+    return closure ? closure->return_type : CLOSURE_RETURN_UNKNOWN;
+}
+
+// Check if a closure returns a vector (for autodiff)
+static inline bool eshkol_closure_returns_vector(eshkol_tagged_value_t tagged) {
+    return eshkol_closure_get_return_type(tagged) == CLOSURE_RETURN_VECTOR;
+}
+
+// Check if a closure returns a scalar (for autodiff)
+static inline bool eshkol_closure_returns_scalar(eshkol_tagged_value_t tagged) {
+    return eshkol_closure_get_return_type(tagged) == CLOSURE_RETURN_SCALAR;
+}
 
 // ===== END CLOSURE ENVIRONMENT STRUCTURES =====
 
@@ -351,6 +393,7 @@ typedef enum {
     // Primitive types
     HOTT_TYPE_INTEGER,      // integer
     HOTT_TYPE_REAL,         // real (double)
+    HOTT_TYPE_NUMBER,       // number (supertype of integer and real)
     HOTT_TYPE_BOOLEAN,      // boolean
     HOTT_TYPE_STRING,       // string
     HOTT_TYPE_CHAR,         // char
@@ -364,6 +407,7 @@ typedef enum {
     HOTT_TYPE_SUM,          // (+ a b) sum type (either)
     HOTT_TYPE_LIST,         // (list a) list type
     HOTT_TYPE_VECTOR,       // (vector a) vector type
+    HOTT_TYPE_TENSOR,       // (tensor a) tensor type (multi-dimensional array)
     HOTT_TYPE_PAIR,         // (pair a b) cons pair type
     // Polymorphic types
     HOTT_TYPE_VAR,          // type variable (e.g., 'a in forall)
@@ -453,6 +497,7 @@ typedef enum {
     ESHKOL_UNLESS_OP,    // unless - negated when (execute when false)
     ESHKOL_QUOTE_OP,     // quote - literal data
     ESHKOL_SET_OP,       // set! - variable mutation
+    ESHKOL_DEFINE_TYPE_OP, // define-type - type alias definition
     ESHKOL_IMPORT_OP,    // import - load another Eshkol file (legacy string path)
     ESHKOL_REQUIRE_OP,   // require - import module by symbolic name (new module system)
     ESHKOL_PROVIDE_OP,   // provide - export symbols from module
@@ -547,11 +592,19 @@ typedef struct eshkol_operation {
 	           uint64_t num_bindings;
 	           struct eshkol_ast *body;
 	           char *name;                       // Named let: loop name (NULL for regular let)
+	           // HoTT type annotations for bindings
+	           hott_type_expr_t **binding_types; // Array of type annotations (NULL entries for unannotated)
 	       } let_op;
 	       struct {
 	           char *name;                       // Variable name to mutate
 	           struct eshkol_ast *value;         // New value
 	       } set_op;
+	       struct {
+	           char *name;                       // Type alias name
+	           hott_type_expr_t *type_expr;      // The type expression this aliases
+	           char **type_params;               // Type parameter names (for parameterized types)
+	           uint64_t num_type_params;         // Number of type parameters
+	       } define_type_op;
 	       struct {
 	           char *path;                       // Path to file to import
 	       } import_op;
@@ -727,6 +780,7 @@ hott_type_expr_t* hott_make_type_var(const char* name);
 hott_type_expr_t* hott_make_arrow_type(hott_type_expr_t** param_types, uint64_t num_params, hott_type_expr_t* return_type);
 hott_type_expr_t* hott_make_list_type(hott_type_expr_t* element_type);
 hott_type_expr_t* hott_make_vector_type(hott_type_expr_t* element_type);
+hott_type_expr_t* hott_make_tensor_type(hott_type_expr_t* element_type);
 hott_type_expr_t* hott_make_pair_type(hott_type_expr_t* left, hott_type_expr_t* right);
 hott_type_expr_t* hott_make_product_type(hott_type_expr_t* left, hott_type_expr_t* right);
 hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* right);
