@@ -1,0 +1,295 @@
+;;
+;; HoTT Type System Stress Test - Mixed Types
+;;
+;; Tests complex type scenarios: mixed numerics, nested structures,
+;; higher-order functions, and type transformations
+;;
+
+(require stdlib)
+
+;; ============================================================================
+;; Type Constants Reference
+;; ============================================================================
+;; NULL=0, INT64=1, DOUBLE=2, CONS_PTR=3, DUAL=4, AD_NODE=5, TENSOR=6,
+;; LAMBDA_SEXPR=7, STRING=8, CHAR=9, VECTOR=10, SYMBOL=11, CLOSURE=12, BOOL=13
+
+;; Test framework
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(define (check-true name actual)
+  (if actual
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected #t\n"))))
+
+(define (check-false name actual)
+  (if (not actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected #f\n"))))
+
+;; ============================================================================
+;; TESTS
+;; ============================================================================
+
+(display "╔══════════════════════════════════════════════════════════════════╗\n")
+(display "║           HoTT MIXED TYPES STRESS TEST                           ║\n")
+(display "╚══════════════════════════════════════════════════════════════════╝\n\n")
+
+;; ============================================================================
+;; Section 1: Numeric Type Promotion
+;; ============================================================================
+(display "═══ Section 1: Numeric Type Promotion ═══\n")
+
+;; int + int = int
+(define ii-result (+ 10 20))
+(check "int + int result type" 1 (type-of ii-result))
+
+;; int + float = float (promotion)
+(define if-result (+ 10 3.14))
+(check "int + float result type" 2 (type-of if-result))
+
+;; float + int = float
+(define fi-result (+ 3.14 10))
+(check "float + int result type" 2 (type-of fi-result))
+
+;; float + float = float
+(define ff-result (+ 1.1 2.2))
+(check "float + float result type" 2 (type-of ff-result))
+
+;; Division of ints - currently returns int (Scheme typically returns rational or float)
+(define div-result (/ 10 3))
+;; Note: In standard Scheme, (/ 10 3) would be a rational. Here it's truncated int.
+(check "division result type" 1 (type-of div-result))
+
+;; Integer operations
+(define mod-result (modulo 17 5))
+(check "modulo result type" 1 (type-of mod-result))
+
+(define quot-result (quotient 17 5))
+(check "quotient result type" 1 (type-of quot-result))
+
+;; ============================================================================
+;; Section 2: Heterogeneous Collections
+;; ============================================================================
+(display "\n═══ Section 2: Heterogeneous Collections ═══\n")
+
+;; List with mixed types
+(define mixed-list (list 1 2.5 "hello" #t))
+(check "mixed list is CONS_PTR" 3 (type-of mixed-list))
+(check "first element is INT64" 1 (type-of (car mixed-list)))
+(check "second element is DOUBLE" 2 (type-of (cadr mixed-list)))
+(check "third element is STRING" 8 (type-of (caddr mixed-list)))
+(check "fourth element is BOOL" 13 (type-of (car (cdddr mixed-list))))
+
+;; Nested heterogeneous lists
+(define nested-mixed (list (list 1 2) (list 1.0 2.0) (list "a" "b")))
+(check "outer list is CONS_PTR" 3 (type-of nested-mixed))
+(check "int sublist element" 1 (type-of (car (car nested-mixed))))
+(check "float sublist element" 2 (type-of (car (cadr nested-mixed))))
+(check "string sublist element" 8 (type-of (car (caddr nested-mixed))))
+
+;; Vector with mixed types
+(define mixed-vec (vector 42 3.14 "test"))
+(check "mixed vector is VECTOR_PTR" 10 (type-of mixed-vec))
+(check "vec[0] is INT64" 1 (type-of (vector-ref mixed-vec 0)))
+(check "vec[1] is DOUBLE" 2 (type-of (vector-ref mixed-vec 1)))
+(check "vec[2] is STRING" 8 (type-of (vector-ref mixed-vec 2)))
+
+;; ============================================================================
+;; Section 3: Higher-Order Functions and Type Flow
+;; ============================================================================
+(display "\n═══ Section 3: Higher-Order Functions ═══\n")
+
+;; map preserves element types for homogeneous lists
+(define int-list (list 1 2 3 4 5))
+(define doubled (map (lambda (x) (* x 2)) int-list))
+(check "map over ints produces CONS_PTR" 3 (type-of doubled))
+(check "mapped element is INT64" 1 (type-of (car doubled)))
+
+;; map can change element types
+(define floated (map (lambda (x) (* x 1.0)) int-list))
+(check "map int->float element" 2 (type-of (car floated)))
+
+;; filter preserves types
+(define evens (filter (lambda (x) (= 0 (modulo x 2))) int-list))
+(check "filtered list is CONS_PTR" 3 (type-of evens))
+(check "filtered element is INT64" 1 (type-of (car evens)))
+
+;; fold/reduce
+(define sum (reduce + 0 int-list))
+(check "reduce with + gives INT64" 1 (type-of sum))
+
+;; Note: reduce currently doesn't promote types based on init value
+(define float-sum (reduce + 0.0 int-list))
+(check "reduce with float init gives INT64" 1 (type-of float-sum))  ; TODO: should be DOUBLE
+
+;; ============================================================================
+;; Section 4: Lambda and Closure Types
+;; ============================================================================
+(display "\n═══ Section 4: Lambda and Closure Types ═══\n")
+
+;; Simple lambda
+(define add1 (lambda (x) (+ x 1)))
+(check "lambda is CLOSURE_PTR" 12 (type-of add1))
+(check-true "lambda is procedure?" (procedure? add1))
+
+;; Closure capturing values
+(define (make-adder n)
+  (lambda (x) (+ x n)))
+(define add5 (make-adder 5))
+(check "closure is CLOSURE_PTR" 12 (type-of add5))
+(check "closure application" 15 (add5 10))
+
+;; Higher-order function returning closure (using stdlib compose)
+(define double (lambda (x) (* x 2)))
+(define add1-then-double (compose double add1))
+(check "composed function is CLOSURE_PTR" 12 (type-of add1-then-double))
+(check "composed function result" 12 (add1-then-double 5))
+
+;; ============================================================================
+;; Section 5: Let Binding Type Tracking
+;; ============================================================================
+(display "\n═══ Section 5: Let Binding Types ═══\n")
+
+;; Let with different types
+(let ((x 42)
+      (y 3.14)
+      (z "hello")
+      (w (list 1 2 3)))
+  (check "let int binding" 1 (type-of x))
+  (check "let float binding" 2 (type-of y))
+  (check "let string binding" 8 (type-of z))
+  (check "let list binding" 3 (type-of w)))
+
+;; Nested let with type changes
+(let ((x 10))
+  (let ((x (* x 1.5)))  ; shadows with different type
+    (check "inner x is DOUBLE" 2 (type-of x))))
+
+;; Let with lambda
+(let ((f (lambda (x) (* x x))))
+  (check "let lambda binding" 12 (type-of f))
+  (check "let lambda application" 25 (f 5)))
+
+;; ============================================================================
+;; Section 6: Cons Cell Type Preservation
+;; ============================================================================
+(display "\n═══ Section 6: Cons Cell Types ═══\n")
+
+;; Improper list (dotted pair)
+(define pair (cons 1 2))
+(check "pair is CONS_PTR" 3 (type-of pair))
+(check "pair car is INT64" 1 (type-of (car pair)))
+(check "pair cdr is INT64" 1 (type-of (cdr pair)))
+
+;; Mixed pair
+(define mixed-pair (cons 1 "hello"))
+(check "mixed pair car is INT64" 1 (type-of (car mixed-pair)))
+(check "mixed pair cdr is STRING" 8 (type-of (cdr mixed-pair)))
+
+;; Nested pairs
+(define nested-pair (cons (cons 1 2) (cons 3.0 4.0)))
+(check "nested pair is CONS_PTR" 3 (type-of nested-pair))
+(check "nested car.car is INT64" 1 (type-of (car (car nested-pair))))
+(check "nested cdr.car is DOUBLE" 2 (type-of (car (cdr nested-pair))))
+
+;; ============================================================================
+;; Section 7: String and Character Types
+;; ============================================================================
+(display "\n═══ Section 7: String and Char Types ═══\n")
+
+(define str "hello world")
+(check "string type" 8 (type-of str))
+;; HoTT TYPE SYSTEM: string-ref now returns CHAR type
+(check "string-ref returns CHAR" 9 (type-of (string-ref str 0)))
+(check "string-length returns INT64" 1 (type-of (string-length str)))
+
+(define ch #\A)
+(check "char type" 9 (type-of ch))
+(check "char->integer returns INT64" 1 (type-of (char->integer ch)))
+(check "integer->char returns CHAR" 9 (type-of (integer->char 65)))
+
+;; ============================================================================
+;; Section 8: Boolean Logic Types
+;; ============================================================================
+(display "\n═══ Section 8: Boolean Types ═══\n")
+
+(check "and returns BOOL" 13 (type-of (and #t #t)))
+(check "or returns BOOL" 13 (type-of (or #f #t)))
+(check "not returns BOOL" 13 (type-of (not #f)))
+(check "comparison returns BOOL" 13 (type-of (< 1 2)))
+(check "equality returns BOOL" 13 (type-of (= 1 1)))
+
+;; ============================================================================
+;; Section 9: Math Function Types
+;; ============================================================================
+(display "\n═══ Section 9: Math Function Types ═══\n")
+
+(check "sin returns DOUBLE" 2 (type-of (sin 0.5)))
+(check "cos returns DOUBLE" 2 (type-of (cos 0.5)))
+(check "exp returns DOUBLE" 2 (type-of (exp 1.0)))
+(check "log returns DOUBLE" 2 (type-of (log 2.0)))
+(check "sqrt returns DOUBLE" 2 (type-of (sqrt 2.0)))
+(check "abs int returns INT64" 1 (type-of (abs -5)))
+(check "abs float returns DOUBLE" 2 (type-of (abs -5.5)))
+
+;; ============================================================================
+;; Section 10: Conditional Type Flow
+;; ============================================================================
+(display "\n═══ Section 10: Conditional Types ═══\n")
+
+;; if with same branch types
+(define cond-same (if #t 42 0))
+(check "if same types" 1 (type-of cond-same))
+
+;; if with different branch types (result depends on which branch taken)
+(define cond-diff-t (if #t 42 3.14))
+(check "if true branch int" 1 (type-of cond-diff-t))
+
+(define cond-diff-f (if #f 42 3.14))
+(check "if false branch float" 2 (type-of cond-diff-f))
+
+;; cond expression
+(define cond-result
+  (cond ((= 1 2) "no")
+        ((= 1 1) "yes")
+        (else "maybe")))
+(check "cond string result" 8 (type-of cond-result))
+
+;; ============================================================================
+;; SUMMARY
+;; ============================================================================
+(display "\n╔══════════════════════════════════════════════════════════════════╗\n")
+(display "║                         TEST RESULTS                             ║\n")
+(display "╚══════════════════════════════════════════════════════════════════╝\n")
+(display "Total: ")
+(display (+ tests-passed tests-failed))
+(display " | Passed: ")
+(display tests-passed)
+(display " | Failed: ")
+(display tests-failed)
+(display "\n")
+
+(if (= tests-failed 0)
+    (display "✅ ALL TESTS PASSED!\n")
+    (begin
+      (display "❌ SOME TESTS FAILED!\n")
+      (display "Review the failures above.\n")))

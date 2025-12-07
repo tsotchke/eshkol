@@ -186,6 +186,10 @@ namespace BuiltinTypes {
     inline constexpr TypeId Tensor{104, Universe::U1, 0};
     inline constexpr TypeId Closure{105, Universe::U1, 0};
 
+    // Autodiff types (U1) - for forward and reverse mode AD
+    inline constexpr TypeId DualNumber{106, Universe::U1, 0};  // Forward-mode AD: (primal, tangent)
+    inline constexpr TypeId ADNode{107, Universe::U1, 0};      // Reverse-mode AD: computation graph node
+
     // Resource types (U1, Linear)
     inline constexpr TypeId Handle{110, Universe::U1, TYPE_FLAG_LINEAR};
     inline constexpr TypeId Buffer{111, Universe::U1, 0};
@@ -197,6 +201,37 @@ namespace BuiltinTypes {
     inline constexpr TypeId Bounded{202, Universe::U2, TYPE_FLAG_PROOF};
     inline constexpr TypeId Subtype{203, Universe::U2, TYPE_FLAG_PROOF};
 }
+
+// ============================================================================
+// PARAMETERIZED TYPE INSTANCE
+// ============================================================================
+
+/**
+ * Represents an instantiated parameterized type like List<Int64>.
+ *
+ * This allows tracking the element type of collections at compile time.
+ */
+struct ParameterizedType {
+    TypeId base_type;                    // The type family (e.g., List)
+    std::vector<TypeId> type_args;       // The type arguments (e.g., [Int64])
+
+    bool operator==(const ParameterizedType& other) const {
+        return base_type == other.base_type && type_args == other.type_args;
+    }
+
+    bool operator<(const ParameterizedType& other) const {
+        if (base_type.id != other.base_type.id) return base_type.id < other.base_type.id;
+        return type_args < other.type_args;
+    }
+
+    // Check if this is a valid parameterized type (has type arguments)
+    bool isParameterized() const { return !type_args.empty(); }
+
+    // Get the element type for single-parameter types like List<T>
+    TypeId elementType() const {
+        return type_args.empty() ? BuiltinTypes::Value : type_args[0];
+    }
+};
 
 // ============================================================================
 // TYPE ENVIRONMENT
@@ -211,6 +246,7 @@ namespace BuiltinTypes {
  * - Subtype checking with caching
  * - Least common supertype computation
  * - Arithmetic type promotion
+ * - Parameterized type instantiation (List<Int64>, etc.)
  */
 class TypeEnvironment {
 private:
@@ -220,6 +256,9 @@ private:
 
     // Subtype cache for performance
     mutable std::map<std::pair<uint16_t, uint16_t>, bool> subtype_cache_;
+
+    // Parameterized type cache: maps instantiated types to their info
+    mutable std::map<ParameterizedType, TypeId> parameterized_cache_;
 
 public:
     /**
@@ -323,6 +362,44 @@ public:
      * Map a HoTT TypeId to an eshkol_value_type_t.
      */
     uint8_t toRuntimeType(TypeId id) const;
+
+    // ========== Parameterized Types ==========
+
+    /**
+     * Create or retrieve a parameterized type instance.
+     * For example, instantiateType(List, {Int64}) creates List<Int64>.
+     * Returns a ParameterizedType that can be used for element type tracking.
+     */
+    ParameterizedType instantiateType(TypeId base_type,
+                                       const std::vector<TypeId>& type_args) const;
+
+    /**
+     * Create a List type with the given element type.
+     * Convenience method for instantiateType(List, {element_type}).
+     */
+    ParameterizedType makeListType(TypeId element_type) const;
+
+    /**
+     * Create a Vector type with the given element type.
+     */
+    ParameterizedType makeVectorType(TypeId element_type) const;
+
+    /**
+     * Check if a type is a type family (parameterized type constructor).
+     */
+    bool isTypeFamily(TypeId id) const;
+
+    /**
+     * Get the element type from a parameterized collection type.
+     * Returns Value (unknown) if the type is not parameterized.
+     */
+    TypeId getElementType(const ParameterizedType& ptype) const;
+
+    /**
+     * Infer the element type of a homogeneous list from its elements.
+     * Returns Value if elements have different types, otherwise the common type.
+     */
+    TypeId inferListElementType(const std::vector<TypeId>& element_types) const;
 
 private:
     /**

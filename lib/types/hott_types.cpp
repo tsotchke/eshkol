@@ -117,6 +117,14 @@ void TypeEnvironment::initializeBuiltinTypes() {
     registerTypeFamily(Closure.id, "Closure", Universe::U1, {"a", "b"},
                        RuntimeRep::Pointer);
 
+    // ===== Autodiff types (U1) - for forward and reverse mode AD =====
+    // DualNumber<T> = (primal: T, tangent: Float64) for forward-mode AD
+    registerTypeFamily(DualNumber.id, "Dual", Universe::U1, {"a"},
+                       RuntimeRep::Struct);
+    // ADNode<T> = computation graph node for reverse-mode AD
+    registerTypeFamily(ADNode.id, "ADNode", Universe::U1, {"a"},
+                       RuntimeRep::Pointer);
+
     // ===== Resource types (U1, Linear) =====
     registerTypeFamily(Handle.id, "Handle", Universe::U1, {"k"},
                        RuntimeRep::Pointer);
@@ -160,6 +168,12 @@ void TypeEnvironment::initializeBuiltinTypes() {
     name_to_id_["null"] = Null;
     name_to_id_["nil"] = Null;
     name_to_id_["symbol"] = Symbol;
+
+    // Autodiff type aliases
+    name_to_id_["dual"] = DualNumber;
+    name_to_id_["dual-number"] = DualNumber;
+    name_to_id_["ad-node"] = ADNode;
+    name_to_id_["adnode"] = ADNode;
 }
 
 TypeId TypeEnvironment::registerBuiltinType(uint16_t id, const std::string& name,
@@ -391,6 +405,10 @@ TypeId TypeEnvironment::fromRuntimeType(uint8_t runtime_type) const {
             return Symbol;
         case ESHKOL_VALUE_CLOSURE_PTR:
             return Closure;
+        case ESHKOL_VALUE_DUAL_NUMBER:
+            return DualNumber;
+        case ESHKOL_VALUE_AD_NODE_PTR:
+            return ADNode;
         default:
             return Value;  // Fallback to root type
     }
@@ -411,9 +429,68 @@ uint8_t TypeEnvironment::toRuntimeType(TypeId id) const {
     if (id == Tensor) return ESHKOL_VALUE_TENSOR_PTR;
     if (id == Symbol) return ESHKOL_VALUE_SYMBOL;
     if (id == Closure || id == Function) return ESHKOL_VALUE_CLOSURE_PTR;
+    if (id == DualNumber) return ESHKOL_VALUE_DUAL_NUMBER;
+    if (id == ADNode) return ESHKOL_VALUE_AD_NODE_PTR;
 
     // For supertypes, fall back to tagged value
     return ESHKOL_VALUE_NULL;
+}
+
+// ============================================================================
+// PARAMETERIZED TYPES IMPLEMENTATION
+// ============================================================================
+
+ParameterizedType TypeEnvironment::instantiateType(TypeId base_type,
+                                                    const std::vector<TypeId>& type_args) const {
+    ParameterizedType ptype;
+    ptype.base_type = base_type;
+    ptype.type_args = type_args;
+
+    // Cache the instantiation for quick lookup
+    parameterized_cache_[ptype] = base_type;
+
+    return ptype;
+}
+
+ParameterizedType TypeEnvironment::makeListType(TypeId element_type) const {
+    return instantiateType(BuiltinTypes::List, {element_type});
+}
+
+ParameterizedType TypeEnvironment::makeVectorType(TypeId element_type) const {
+    return instantiateType(BuiltinTypes::Vector, {element_type});
+}
+
+bool TypeEnvironment::isTypeFamily(TypeId id) const {
+    const TypeNode* node = getTypeNode(id);
+    return node && node->is_type_family;
+}
+
+TypeId TypeEnvironment::getElementType(const ParameterizedType& ptype) const {
+    return ptype.elementType();
+}
+
+TypeId TypeEnvironment::inferListElementType(const std::vector<TypeId>& element_types) const {
+    if (element_types.empty()) {
+        return BuiltinTypes::Value;  // Empty list has unknown element type
+    }
+
+    // Start with the first element's type
+    TypeId common_type = element_types[0];
+
+    // Check if all elements have the same type
+    for (size_t i = 1; i < element_types.size(); i++) {
+        if (element_types[i] != common_type) {
+            // Different types - try to find least common supertype
+            auto lcs = leastCommonSupertype(common_type, element_types[i]);
+            if (lcs) {
+                common_type = *lcs;
+            } else {
+                return BuiltinTypes::Value;  // No common supertype
+            }
+        }
+    }
+
+    return common_type;
 }
 
 } // namespace eshkol::hott

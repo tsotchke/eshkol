@@ -403,11 +403,15 @@ llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
     }
 
     // Determine result type
+    // HoTT FIX: Use tagged_value when types differ to preserve type information
     llvm::Type* result_type;
     if (then_value->getType() == ctx_.taggedValueType() || else_value->getType() == ctx_.taggedValueType()) {
         result_type = ctx_.taggedValueType();
+    } else if (then_value->getType() != else_value->getType()) {
+        // Types differ (e.g., int64 vs double) - use tagged_value to preserve type info
+        result_type = ctx_.taggedValueType();
     } else {
-        result_type = ctx_.int64Type();
+        result_type = then_value->getType();  // Both same type, use it directly
     }
 
     // Convert values to result type if needed (only for non-terminated branches)

@@ -1,0 +1,79 @@
+;;
+;; HoTT Type System Tests - List Element Types
+;;
+;; Tests that the type system correctly tracks element types through list operations
+;;
+
+(require stdlib)
+
+;; Test framework
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+;; ============================================================================
+;; TESTS
+;; ============================================================================
+
+(display "╔══════════════════════════════════════════════════════════════════╗\n")
+(display "║             HoTT LIST ELEMENT TYPE TESTS                         ║\n")
+(display "╚══════════════════════════════════════════════════════════════════╝\n\n")
+
+(display "═══ Section 1: Homogeneous Lists ═══\n")
+
+;; Test 1: Homogeneous integer list
+(define int-list (list 1 2 3 4 5))
+(check "car of int-list has type INT64" 1 (type-of (car int-list)))
+
+;; Test 2: Homogeneous float list
+(define float-list (list 1.1 2.2 3.3))
+(check "car of float-list has type DOUBLE" 2 (type-of (car float-list)))
+
+(display "\n═══ Section 2: List Structure ═══\n")
+
+;; Test 3: cdr preserves list type (CONS_PTR = 3)
+(check "cdr returns CONS_PTR type" 3 (type-of (cdr int-list)))
+
+;; Test 4: car of cdr returns element type
+(check "cadr returns INT64" 1 (type-of (cadr int-list)))
+
+;; Test 5: cons creates list (CONS_PTR = 3)
+(define new-list (cons 10 int-list))
+(check "cons result is CONS_PTR" 3 (type-of new-list))
+
+;; Test 6: Nested list
+(define nested-list (list (list 1 2) (list 3 4)))
+(check "inner list is CONS_PTR" 3 (type-of (car nested-list)))
+
+(display "\n═══ Section 3: Vector Element Types ═══\n")
+
+;; Test 7: Vector element types (VECTOR_PTR = 10)
+(define int-vec (vector 1 2 3 4))
+(check "vector has VECTOR_PTR type" 10 (type-of int-vec))
+(check "vector-ref returns INT64" 1 (type-of (vector-ref int-vec 0)))
+
+;; Test 8: Float vector
+(define float-vec (vector 1.1 2.2 3.3))
+(check "float vector-ref returns DOUBLE" 2 (type-of (vector-ref float-vec 0)))
+
+;; ============================================================================
+;; SUMMARY
+;; ============================================================================
+(display "\n═══════════════════════════════════════════════════════════════\n")
+(display "RESULTS: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed\n")
+(display "═══════════════════════════════════════════════════════════════\n")
+
+(if (= tests-failed 0)
+    (display "ALL TESTS PASSED!\n")
+    (display "SOME TESTS FAILED!\n"))
