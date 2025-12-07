@@ -1205,23 +1205,39 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
 
     ctx_.builder().CreateCondBr(is_tensor, tensor_path, vector_path);
 
-    // TENSOR PATH: Extract element from tensor structure
+    // TENSOR PATH: Extract element or row slice from tensor structure
     // Tensor layout: {dims_ptr*, num_dims, elements_ptr*, total_elements}
+    // For 2D+ tensors, vector-ref returns a row slice (1D tensor)
+    // For 1D tensors, vector-ref returns the scalar element
     ctx_.builder().SetInsertPoint(tensor_path);
     llvm::Value* tensor_ptr_int = tagged_.unpackInt64(vec_arg);
     llvm::Value* tensor_ptr = ctx_.builder().CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
 
-    // Get elements pointer (field 2 of tensor struct)
+    // Load tensor metadata
+    llvm::Value* dims_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 0);
+    llvm::Value* dims_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), dims_field_ptr);
+    llvm::Value* ndim_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 1);
+    llvm::Value* ndim = ctx_.builder().CreateLoad(ctx_.int64Type(), ndim_field_ptr);
     llvm::Value* elems_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 2);
     llvm::Value* elems_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), elems_field_ptr);
+    llvm::Value* total_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 3);
+    llvm::Value* total_elements = ctx_.builder().CreateLoad(ctx_.int64Type(), total_field_ptr);
 
-    // Elements are stored as int64 (could be double bits OR AD node pointer)
+    // Check if tensor is multi-dimensional (ndim > 1)
+    llvm::Value* is_multidim = ctx_.builder().CreateICmpUGT(ndim, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+
+    llvm::BasicBlock* tensor_1d_path = llvm::BasicBlock::Create(ctx_.context(), "vref_tensor_1d", current_func);
+    llvm::BasicBlock* tensor_nd_path = llvm::BasicBlock::Create(ctx_.context(), "vref_tensor_nd", current_func);
+    llvm::BasicBlock* tensor_merge = llvm::BasicBlock::Create(ctx_.context(), "vref_tensor_merge", current_func);
+
+    ctx_.builder().CreateCondBr(is_multidim, tensor_nd_path, tensor_1d_path);
+
+    // === 1D TENSOR PATH: Return single element (original behavior) ===
+    ctx_.builder().SetInsertPoint(tensor_1d_path);
     llvm::Value* tensor_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elems_ptr, idx);
     llvm::Value* tensor_elem_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), tensor_elem_ptr);
 
     // Check if the element is an AD node pointer (for gradient computation)
-    // AD nodes in gradient context have small pointer values (< 0x0001000000000000)
-    // while doubles like 3.0 have larger IEEE754 representations
     llvm::Value* not_zero = ctx_.builder().CreateICmpNE(tensor_elem_int64,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* in_ptr_range = ctx_.builder().CreateICmpULT(tensor_elem_int64,
@@ -1230,27 +1246,83 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
 
     llvm::BasicBlock* is_ad_node = llvm::BasicBlock::Create(ctx_.context(), "vref_ad_node", current_func);
     llvm::BasicBlock* is_double = llvm::BasicBlock::Create(ctx_.context(), "vref_double", current_func);
-    llvm::BasicBlock* tensor_merge = llvm::BasicBlock::Create(ctx_.context(), "vref_tensor_merge", current_func);
+    llvm::BasicBlock* elem_merge = llvm::BasicBlock::Create(ctx_.context(), "vref_elem_merge", current_func);
 
     ctx_.builder().CreateCondBr(could_be_ad_ptr, is_ad_node, is_double);
 
-    // AD NODE: Pack as AD_NODE_PTR
     ctx_.builder().SetInsertPoint(is_ad_node);
     llvm::Value* ad_node_result = tagged_.packPtr(tensor_elem_int64, ESHKOL_VALUE_AD_NODE_PTR);
-    ctx_.builder().CreateBr(tensor_merge);
+    ctx_.builder().CreateBr(elem_merge);
     llvm::BasicBlock* ad_exit = ctx_.builder().GetInsertBlock();
 
-    // DOUBLE: Bitcast int64 to double and pack as DOUBLE
     ctx_.builder().SetInsertPoint(is_double);
     llvm::Value* elem_as_double = ctx_.builder().CreateBitCast(tensor_elem_int64, ctx_.doubleType());
     llvm::Value* double_result = tagged_.packDouble(elem_as_double);
-    ctx_.builder().CreateBr(tensor_merge);
+    ctx_.builder().CreateBr(elem_merge);
     llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
 
+    ctx_.builder().SetInsertPoint(elem_merge);
+    llvm::PHINode* elem_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "tensor_elem");
+    elem_result->addIncoming(ad_node_result, ad_exit);
+    elem_result->addIncoming(double_result, double_exit);
+    ctx_.builder().CreateBr(tensor_merge);
+    llvm::BasicBlock* tensor_1d_exit = ctx_.builder().GetInsertBlock();
+
+    // === N-D TENSOR PATH: Return row slice as 1D tensor ===
+    ctx_.builder().SetInsertPoint(tensor_nd_path);
+
+    // Get row size from dims[1] (number of columns)
+    llvm::Value* row_size_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), dims_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* row_size = ctx_.builder().CreateLoad(ctx_.int64Type(), row_size_ptr);
+
+    // Calculate row offset: idx * row_size
+    llvm::Value* row_offset = ctx_.builder().CreateMul(idx, row_size);
+
+    // Allocate new 1D tensor struct for the row slice
+    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
+    if (!malloc_func) {
+        llvm::FunctionType* malloc_ty = llvm::FunctionType::get(ctx_.ptrType(), {ctx_.int64Type()}, false);
+        malloc_func = llvm::Function::Create(malloc_ty, llvm::Function::ExternalLinkage, "malloc", &ctx_.module());
+    }
+
+    // Tensor struct: 4 fields * 8 bytes = 32 bytes
+    llvm::Value* struct_size = llvm::ConstantInt::get(ctx_.int64Type(), 32);
+    llvm::Value* slice_tensor = ctx_.builder().CreateCall(malloc_func, {struct_size});
+
+    // Allocate dims array for 1D tensor: 1 * 8 bytes
+    llvm::Value* slice_dims = ctx_.builder().CreateCall(malloc_func, {llvm::ConstantInt::get(ctx_.int64Type(), 8)});
+    ctx_.builder().CreateStore(row_size, slice_dims);
+
+    // Fill slice tensor struct
+    // Field 0: dims pointer
+    llvm::Value* slice_f0 = ctx_.builder().CreateStructGEP(ctx_.tensorType(), slice_tensor, 0);
+    ctx_.builder().CreateStore(slice_dims, slice_f0);
+
+    // Field 1: ndim = 1
+    llvm::Value* slice_f1 = ctx_.builder().CreateStructGEP(ctx_.tensorType(), slice_tensor, 1);
+    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), slice_f1);
+
+    // Field 2: elements pointer (view into original at row offset)
+    llvm::Value* row_start = ctx_.builder().CreateGEP(ctx_.int64Type(), elems_ptr, row_offset);
+    llvm::Value* slice_f2 = ctx_.builder().CreateStructGEP(ctx_.tensorType(), slice_tensor, 2);
+    ctx_.builder().CreateStore(row_start, slice_f2);
+
+    // Field 3: total_elements = row_size
+    llvm::Value* slice_f3 = ctx_.builder().CreateStructGEP(ctx_.tensorType(), slice_tensor, 3);
+    ctx_.builder().CreateStore(row_size, slice_f3);
+
+    // Pack as TENSOR_PTR
+    llvm::Value* slice_int = ctx_.builder().CreatePtrToInt(slice_tensor, ctx_.int64Type());
+    llvm::Value* slice_result = tagged_.packPtr(slice_int, ESHKOL_VALUE_TENSOR_PTR);
+    ctx_.builder().CreateBr(tensor_merge);
+    llvm::BasicBlock* tensor_nd_exit = ctx_.builder().GetInsertBlock();
+
+    // === TENSOR MERGE ===
     ctx_.builder().SetInsertPoint(tensor_merge);
-    llvm::PHINode* tensor_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "tensor_elem");
-    tensor_result->addIncoming(ad_node_result, ad_exit);
-    tensor_result->addIncoming(double_result, double_exit);
+    llvm::PHINode* tensor_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "tensor_result");
+    tensor_result->addIncoming(elem_result, tensor_1d_exit);
+    tensor_result->addIncoming(slice_result, tensor_nd_exit);
     ctx_.builder().CreateBr(merge_path);
     llvm::BasicBlock* tensor_exit = ctx_.builder().GetInsertBlock();
 
