@@ -35,6 +35,12 @@ struct TypeCheckResult {
     int line = 0;
     int column = 0;
 
+    // Additional context for better error messages
+    std::string context;           // e.g., "in function 'foo'"
+    std::string expected_type;     // For type mismatches
+    std::string actual_type;       // For type mismatches
+    std::string hint;              // Suggested fix
+
     // Factory methods
     static TypeCheckResult ok(TypeId type) {
         return {true, type, ""};
@@ -42,6 +48,38 @@ struct TypeCheckResult {
 
     static TypeCheckResult error(const std::string& msg, int line = 0, int col = 0) {
         return {false, TypeId{}, msg, line, col};
+    }
+
+    // Enhanced error factory with context
+    static TypeCheckResult typeMismatch(const std::string& expected, const std::string& actual,
+                                        const std::string& context = "") {
+        TypeCheckResult result;
+        result.success = false;
+        result.expected_type = expected;
+        result.actual_type = actual;
+        result.context = context;
+        result.error_message = "Type mismatch: expected '" + expected + "', got '" + actual + "'";
+        if (!context.empty()) {
+            result.error_message += " " + context;
+        }
+        return result;
+    }
+
+    // Error with hint
+    static TypeCheckResult errorWithHint(const std::string& msg, const std::string& hint,
+                                         int line = 0, int col = 0) {
+        TypeCheckResult result = error(msg, line, col);
+        result.hint = hint;
+        return result;
+    }
+
+    // Format error for display
+    std::string formatError() const {
+        std::string result = error_message;
+        if (!hint.empty()) {
+            result += "\n  Hint: " + hint;
+        }
+        return result;
     }
 };
 
@@ -65,6 +103,19 @@ public:
                         const std::vector<std::string>& params = {});
     std::optional<hott_type_expr_t*> lookupTypeAlias(const std::string& name) const;
 
+    // Parameterized type alias support
+    bool hasTypeAliasParams(const std::string& name) const;
+    const std::vector<std::string>& getTypeAliasParams(const std::string& name) const;
+
+    /**
+     * Instantiate a parameterized type alias with concrete type arguments
+     * @param name The type alias name
+     * @param type_args The concrete type arguments to substitute
+     * @return A new type expression with parameters substituted, or nullptr if not found
+     */
+    hott_type_expr_t* instantiateTypeAlias(const std::string& name,
+                                           const std::vector<hott_type_expr_t*>& type_args) const;
+
     // Linear type binding (Phase 6)
     void bindLinear(const std::string& name, TypeId type);
     void useLinear(const std::string& name);
@@ -83,6 +134,12 @@ private:
 
     // Type aliases defined by define-type
     std::map<std::string, hott_type_expr_t*> type_aliases_;
+
+    // Type alias parameters for parameterized types (e.g., (define-type (MyList a) (list a)))
+    std::map<std::string, std::vector<std::string>> type_alias_params_;
+
+    // Empty vector for when no params exist (returned by reference)
+    static inline const std::vector<std::string> empty_params_ = {};
 
     // Linear type tracking
     std::set<std::string> linear_vars_;
@@ -270,14 +327,16 @@ public:
     /**
      * Synthesize: Infer type from expression (bottom-up)
      * Γ ⊢ e ⇒ τ
+     * Stores the inferred type in expr->inferred_hott_type
      */
-    TypeCheckResult synthesize(const eshkol_ast_t* expr);
+    TypeCheckResult synthesize(eshkol_ast_t* expr);
 
     /**
      * Check: Verify expression has expected type (top-down)
      * Γ ⊢ e ⇐ τ
+     * Stores the checked type in expr->inferred_hott_type
      */
-    TypeCheckResult check(const eshkol_ast_t* expr, TypeId expected);
+    TypeCheckResult check(eshkol_ast_t* expr, TypeId expected);
 
     // === Error Management ===
 
@@ -385,18 +444,18 @@ private:
 
     // === Synthesis Helpers ===
 
-    TypeCheckResult synthesizeLiteral(const eshkol_ast_t* expr);
-    TypeCheckResult synthesizeVariable(const eshkol_ast_t* expr);
-    TypeCheckResult synthesizeOperation(const eshkol_ast_t* expr);
-    TypeCheckResult synthesizeLambda(const eshkol_ast_t* expr);
-    TypeCheckResult synthesizeApplication(const eshkol_ast_t* expr);
-    TypeCheckResult synthesizeDefine(const eshkol_ast_t* expr);
-    TypeCheckResult synthesizeLet(const eshkol_ast_t* expr);
-    TypeCheckResult synthesizeIf(const eshkol_ast_t* expr);
+    TypeCheckResult synthesizeLiteral(eshkol_ast_t* expr);
+    TypeCheckResult synthesizeVariable(eshkol_ast_t* expr);
+    TypeCheckResult synthesizeOperation(eshkol_ast_t* expr);
+    TypeCheckResult synthesizeLambda(eshkol_ast_t* expr);
+    TypeCheckResult synthesizeApplication(eshkol_ast_t* expr);
+    TypeCheckResult synthesizeDefine(eshkol_ast_t* expr);
+    TypeCheckResult synthesizeLet(eshkol_ast_t* expr);
+    TypeCheckResult synthesizeIf(eshkol_ast_t* expr);
 
     // === Checking Helpers ===
 
-    TypeCheckResult checkLambda(const eshkol_ast_t* expr, TypeId expected);
+    TypeCheckResult checkLambda(eshkol_ast_t* expr, TypeId expected);
 
     // === Type Operations ===
 
@@ -427,7 +486,7 @@ private:
  */
 std::vector<TypeCheckResult> typeCheckProgram(
     TypeEnvironment& env,
-    const eshkol_ast_t* asts,
+    eshkol_ast_t* asts,
     size_t num_asts,
     bool strict = false);
 

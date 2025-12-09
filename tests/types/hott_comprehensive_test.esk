@@ -1,0 +1,604 @@
+;;
+;; HoTT Type System Comprehensive Test Suite
+;;
+;; This test exercises all aspects of the HoTT type system integration:
+;; 1. Parameterized type aliases and instantiation
+;; 2. Function type inference and annotations
+;; 3. Closure type annotations with captured values
+;; 4. Type promotion in arithmetic operations
+;; 5. Compile-time constant evaluation
+;; 6. Recursive function type inference
+;; 7. Higher-order function types
+;; 8. Vector and tensor type checking
+;; 9. Generic type aliases with multiple parameters
+;; 10. Complex nested types
+;; 11. Let binding type inference
+;; 12. Conditional type unification
+;;
+
+(require stdlib)
+
+;; Test framework
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(define (check-approx name expected actual tolerance)
+  (if (< (abs (- expected actual)) tolerance)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(display "===================================================================\n")
+(display "    HoTT TYPE SYSTEM COMPREHENSIVE TEST SUITE                    \n")
+(display "===================================================================\n\n")
+
+;; ============================================================================
+;; PART 1: PARAMETERIZED TYPE ALIASES
+;; ============================================================================
+(display "=== PART 1: Parameterized Type Aliases ===\n\n")
+
+;; Simple non-parameterized aliases
+(define-type IntegerList (list integer))
+(define-type RealVector (vector real))
+(define-type StringPair (* string string))
+
+;; Single-parameter type aliases
+(define-type (MyList a) (list a))
+(define-type (MyVector a) (vector a))
+(define-type (Box a) (* a null))
+
+;; Multi-parameter type aliases
+(define-type (Pair a b) (* a b))
+(define-type (Triple a b c) (* a (* b c)))
+(define-type (Either a b) (+ a b))
+
+;; Nested type aliases
+(define-type (ListOfPairs a b) (list (Pair a b)))
+(define-type (PairOfLists a b) (Pair (list a) (list b)))
+
+;; Test non-parameterized aliases
+(: my-int-list IntegerList)
+(define my-int-list (list 1 2 3 4 5))
+(check "IntegerList length" 5 (length my-int-list))
+(check "IntegerList first" 1 (car my-int-list))
+
+(: my-real-vec RealVector)
+(define my-real-vec (vector 1.0 2.0 3.0))
+(check "RealVector length" 3 (vector-length my-real-vec))
+
+;; Test single-parameter aliases
+(: int-box (Box integer))
+(define int-box (cons 42 '()))
+(check "Box integer value" 42 (car int-box))
+
+;; Test multi-parameter aliases
+(: int-string-pair (Pair integer string))
+(define int-string-pair (cons 100 "hello"))
+(check "Pair first" 100 (car int-string-pair))
+(check "Pair second" "hello" (cdr int-string-pair))
+
+;; ============================================================================
+;; PART 2: FUNCTION TYPE ANNOTATIONS
+;; ============================================================================
+(display "\n=== PART 2: Function Type Annotations ===\n\n")
+
+;; Simple function with full type annotation
+(define (add-integers (a : integer) (b : integer)) : integer
+  (+ a b))
+(check "add-integers" 15 (add-integers 7 8))
+
+;; Function with float return type
+(define (compute-average (a : real) (b : real)) : real
+  (/ (+ a b) 2.0))
+(check-approx "compute-average" 7.5 (compute-average 5.0 10.0) 0.0001)
+
+;; Function with mixed types (promotion)
+(define (mixed-add (i : integer) (r : real)) : real
+  (+ i r))
+(check-approx "mixed-add" 12.5 (mixed-add 10 2.5) 0.0001)
+
+;; Function returning boolean
+(define (is-positive (n : integer)) : boolean
+  (> n 0))
+(check "is-positive true" #t (is-positive 5))
+(check "is-positive false" #f (is-positive -5))
+
+;; Function with string parameter
+(define (greet (name : string)) : string
+  (string-append "Hello, " name))
+(check "greet" "Hello, World" (greet "World"))
+
+;; ============================================================================
+;; PART 3: HIGHER-ORDER FUNCTION TYPES
+;; ============================================================================
+(display "\n=== PART 3: Higher-Order Function Types ===\n\n")
+
+;; Function that takes a function parameter
+(define (apply-twice (f : (-> integer integer)) (x : integer)) : integer
+  (f (f x)))
+(check "apply-twice double" 20 (apply-twice (lambda (n) (* n 2)) 5))
+
+;; Function that returns a function
+(define (make-adder (n : integer)) : (-> integer integer)
+  (lambda ((x : integer)) : integer (+ x n)))
+(define add-10 (make-adder 10))
+(check "make-adder" 25 (add-10 15))
+
+;; Function with multiple function parameters
+(define (compose-int (f : (-> integer integer))
+                     (g : (-> integer integer))
+                     (x : integer)) : integer
+  (f (g x)))
+(check "compose-int" 11 (compose-int (lambda (n) (+ n 1))
+                                     (lambda (n) (* n 2))
+                                     5))
+
+;; Curried function
+(define (curry-mul (x : integer)) : (-> integer integer)
+  (lambda ((y : integer)) : integer (* x y)))
+(define mul-by-7 (curry-mul 7))
+(check "curry-mul" 35 (mul-by-7 5))
+
+;; ============================================================================
+;; PART 4: CLOSURE TYPE ANNOTATIONS
+;; ============================================================================
+(display "\n=== PART 4: Closure Type Annotations ===\n\n")
+
+;; Closure with captured value
+(define (make-counter (start : integer)) : (-> integer)
+  (let ((count start))
+    (lambda ()
+      (set! count (+ count 1))
+      count)))
+(define counter (make-counter 0))
+(check "counter 1" 1 (counter))
+(check "counter 2" 2 (counter))
+(check "counter 3" 3 (counter))
+
+;; Closure with typed captured value
+(define (make-scaler (factor : real)) : (-> real real)
+  (lambda ((x : real)) : real
+    (* x factor)))
+(define scale-by-2 (make-scaler 2.0))
+(define scale-by-half (make-scaler 0.5))
+(check-approx "scale-by-2" 20.0 (scale-by-2 10.0) 0.0001)
+(check-approx "scale-by-half" 5.0 (scale-by-half 10.0) 0.0001)
+
+;; Nested closure
+(define (make-accumulator (init : real)) : (-> real real)
+  (let ((sum init))
+    (lambda ((x : real)) : real
+      (set! sum (+ sum x))
+      sum)))
+(define acc (make-accumulator 0.0))
+(check-approx "accumulator 1" 5.0 (acc 5.0) 0.0001)
+(check-approx "accumulator 2" 8.0 (acc 3.0) 0.0001)
+(check-approx "accumulator 3" 10.0 (acc 2.0) 0.0001)
+
+;; ============================================================================
+;; PART 5: COMPILE-TIME CONSTANT EVALUATION
+;; ============================================================================
+(display "\n=== PART 5: Compile-Time Constants ===\n\n")
+
+;; Integer constants
+(define const-add (+ 10 20 30))
+(check "const-add" 60 const-add)
+
+(define const-mul (* 2 3 4 5))
+(check "const-mul" 120 const-mul)
+
+(define const-sub (- 100 25 15))
+(check "const-sub" 60 const-sub)
+
+(define const-div (/ 120 4 3))
+(check "const-div" 10 const-div)
+
+;; Float constants
+(define const-float-add (+ 1.5 2.5 3.0))
+(check-approx "const-float-add" 7.0 const-float-add 0.0001)
+
+(define const-float-mul (* 2.0 3.0 1.5))
+(check-approx "const-float-mul" 9.0 const-float-mul 0.0001)
+
+;; Mixed int/float constants (promotion)
+(define const-mixed-1 (+ 10 2.5))
+(check-approx "const-mixed-1" 12.5 const-mixed-1 0.0001)
+
+(define const-mixed-2 (* 3 1.5))
+(check-approx "const-mixed-2" 4.5 const-mixed-2 0.0001)
+
+;; Complex expressions
+(define const-complex (+ (* 2 3) (/ 10 2) (- 20 15)))
+(check "const-complex" 16 const-complex)
+
+;; ============================================================================
+;; PART 6: RECURSIVE FUNCTION TYPE INFERENCE
+;; ============================================================================
+(display "\n=== PART 6: Recursive Function Types ===\n\n")
+
+;; Factorial with type annotation
+(define (factorial (n : integer)) : integer
+  (if (<= n 1)
+      1
+      (* n (factorial (- n 1)))))
+(check "factorial 0" 1 (factorial 0))
+(check "factorial 5" 120 (factorial 5))
+(check "factorial 10" 3628800 (factorial 10))
+
+;; Fibonacci with type annotation
+(define (fibonacci (n : integer)) : integer
+  (if (<= n 1)
+      n
+      (+ (fibonacci (- n 1)) (fibonacci (- n 2)))))
+(check "fibonacci 0" 0 (fibonacci 0))
+(check "fibonacci 1" 1 (fibonacci 1))
+(check "fibonacci 10" 55 (fibonacci 10))
+
+;; Recursive list sum
+(define (list-sum (lst : (list integer))) : integer
+  (if (null? lst)
+      0
+      (+ (car lst) (list-sum (cdr lst)))))
+(check "list-sum" 15 (list-sum (list 1 2 3 4 5)))
+
+;; Recursive list length
+(define (list-len (lst : (list integer))) : integer
+  (if (null? lst)
+      0
+      (+ 1 (list-len (cdr lst)))))
+(check "list-len" 5 (list-len (list 1 2 3 4 5)))
+
+;; Tail-recursive factorial
+(define (fact-tail (n : integer) (acc : integer)) : integer
+  (if (<= n 1)
+      acc
+      (fact-tail (- n 1) (* n acc))))
+(check "fact-tail 5" 120 (fact-tail 5 1))
+
+;; ============================================================================
+;; PART 7: VECTOR AND TENSOR TYPES
+;; ============================================================================
+(display "\n=== PART 7: Vector and Tensor Types ===\n\n")
+
+;; Integer vector
+(: int-vec (vector integer))
+(define int-vec (vector 1 2 3 4 5))
+(check "int-vec length" 5 (vector-length int-vec))
+(check "int-vec ref 0" 1 (vector-ref int-vec 0))
+(check "int-vec ref 4" 5 (vector-ref int-vec 4))
+
+;; Real vector
+(: real-vec (vector real))
+(define real-vec (vector 1.0 2.0 3.0 4.0))
+(check "real-vec length" 4 (vector-length real-vec))
+(check-approx "real-vec ref 0" 1.0 (vector-ref real-vec 0) 0.0001)
+
+;; Vector sum function
+(define (vec-sum (v : (vector real))) : real
+  (let ((len (vector-length v))
+        (total 0.0))
+    (let loop ((i 0))
+      (if (< i len)
+          (begin
+            (set! total (+ total (vector-ref v i)))
+            (loop (+ i 1)))
+          total))))
+(check-approx "vec-sum" 10.0 (vec-sum real-vec) 0.0001)
+
+;; Vector dot product
+(define (vec-dot (v1 : (vector real)) (v2 : (vector real))) : real
+  (let ((len (vector-length v1))
+        (total 0.0))
+    (let loop ((i 0))
+      (if (< i len)
+          (begin
+            (set! total (+ total (* (vector-ref v1 i) (vector-ref v2 i))))
+            (loop (+ i 1)))
+          total))))
+(define v1 (vector 1.0 2.0 3.0))
+(define v2 (vector 4.0 5.0 6.0))
+(check-approx "vec-dot" 32.0 (vec-dot v1 v2) 0.0001)
+
+;; ============================================================================
+;; PART 8: LET BINDING TYPE INFERENCE
+;; ============================================================================
+(display "\n=== PART 8: Let Binding Types ===\n\n")
+
+;; Simple let with type annotation
+(define let-typed
+  (let ((x : integer 10)
+        (y : integer 20))
+    (+ x y)))
+(check "let-typed" 30 let-typed)
+
+;; Let with inferred types
+(define let-inferred
+  (let ((a 5)
+        (b 3.5))
+    (+ a b)))
+(check-approx "let-inferred" 8.5 let-inferred 0.0001)
+
+;; Nested let
+(define nested-let
+  (let ((x 10))
+    (let ((y (* x 2)))
+      (let ((z (+ y 5)))
+        z))))
+(check "nested-let" 25 nested-let)
+
+;; Let* with dependent bindings
+(define let-star-result
+  (let* ((a 5)
+         (b (* a 2))
+         (c (+ a b))
+         (d (* b c)))
+    d))
+(check "let-star" 150 let-star-result)
+
+;; Named let (loop)
+(define named-let-sum
+  (let loop ((i 0) (sum 0))
+    (if (< i 10)
+        (loop (+ i 1) (+ sum i))
+        sum)))
+(check "named-let-sum" 45 named-let-sum)
+
+;; Named let with accumulator pattern
+(define (sum-to-n (n : integer)) : integer
+  (let loop ((i 1) (acc 0))
+    (if (> i n)
+        acc
+        (loop (+ i 1) (+ acc i)))))
+(check "sum-to-n 10" 55 (sum-to-n 10))
+
+;; ============================================================================
+;; PART 9: CONDITIONAL TYPE UNIFICATION
+;; ============================================================================
+(display "\n=== PART 9: Conditional Types ===\n\n")
+
+;; If with same-type branches
+(define (abs-int (n : integer)) : integer
+  (if (< n 0) (- 0 n) n))
+(check "abs-int positive" 5 (abs-int 5))
+(check "abs-int negative" 5 (abs-int -5))
+
+;; If with type promotion
+(define (safe-divide (a : real) (b : real)) : real
+  (if (= b 0.0) 0.0 (/ a b)))
+(check-approx "safe-divide normal" 5.0 (safe-divide 10.0 2.0) 0.0001)
+(check-approx "safe-divide by zero" 0.0 (safe-divide 10.0 0.0) 0.0001)
+
+;; Nested conditionals
+(define (classify-number (n : integer)) : integer
+  (if (> n 0)
+      1
+      (if (< n 0)
+          -1
+          0)))
+(check "classify positive" 1 (classify-number 42))
+(check "classify negative" -1 (classify-number -42))
+(check "classify zero" 0 (classify-number 0))
+
+;; Conditional with complex expressions
+(define (clamp (val : real) (lo : real) (hi : real)) : real
+  (if (< val lo)
+      lo
+      (if (> val hi)
+          hi
+          val)))
+(check-approx "clamp low" 0.0 (clamp -5.0 0.0 10.0) 0.0001)
+(check-approx "clamp high" 10.0 (clamp 15.0 0.0 10.0) 0.0001)
+(check-approx "clamp middle" 5.0 (clamp 5.0 0.0 10.0) 0.0001)
+
+;; ============================================================================
+;; PART 10: COMPLEX NESTED TYPES
+;; ============================================================================
+(display "\n=== PART 10: Complex Nested Types ===\n\n")
+
+;; List of lists
+(: matrix-like (list (list integer)))
+(define matrix-like (list (list 1 2 3) (list 4 5 6) (list 7 8 9)))
+(check "matrix-like rows" 3 (length matrix-like))
+(check "matrix-like first row" 3 (length (car matrix-like)))
+(check "matrix-like element" 5 (cadr (cadr matrix-like)))
+
+;; Function returning list (cons builds pairs that form lists)
+(define (range-list (start : integer) (end : integer))
+  (if (>= start end)
+      '()
+      (cons start (range-list (+ start 1) end))))
+(check "range-list length" 5 (length (range-list 0 5)))
+(check "range-list first" 0 (car (range-list 0 5)))
+(check "range-list last" 4 (car (reverse (range-list 0 5))))
+
+;; Higher-order function with list
+(define (my-map (f : (-> integer integer)) (lst : (list integer)))
+  (if (null? lst)
+      '()
+      (cons (f (car lst)) (my-map f (cdr lst)))))
+(define squared (my-map (lambda (x) (* x x)) (list 1 2 3 4 5)))
+(check "my-map first" 1 (car squared))
+(check "my-map second" 4 (cadr squared))
+(check "my-map third" 9 (caddr squared))
+
+;; Filter with predicate
+(define (my-filter (pred : (-> integer boolean)) (lst : (list integer)))
+  (if (null? lst)
+      '()
+      (if (pred (car lst))
+          (cons (car lst) (my-filter pred (cdr lst)))
+          (my-filter pred (cdr lst)))))
+(define evens (my-filter (lambda (x) (= (modulo x 2) 0)) (list 1 2 3 4 5 6)))
+(check "my-filter length" 3 (length evens))
+(check "my-filter first" 2 (car evens))
+
+;; ============================================================================
+;; PART 11: POLYMORPHIC TYPE ANNOTATIONS
+;; ============================================================================
+(display "\n=== PART 11: Polymorphic Types ===\n\n")
+
+;; Identity function (polymorphic)
+(: my-identity (forall (a) (-> a a)))
+(define (my-identity x) x)
+(check "my-identity int" 42 (my-identity 42))
+(check "my-identity string" "hello" (my-identity "hello"))
+(check "my-identity bool" #t (my-identity #t))
+
+;; First projection (polymorphic)
+(: first-of (forall (a b) (-> a b a)))
+(define (first-of x y) x)
+(check "first-of int string" 1 (first-of 1 "a"))
+(check "first-of string int" "b" (first-of "b" 2))
+
+;; Second projection (polymorphic)
+(: second-of (forall (a b) (-> a b b)))
+(define (second-of x y) y)
+(check "second-of int string" "a" (second-of 1 "a"))
+(check "second-of string int" 2 (second-of "b" 2))
+
+;; Const function (polymorphic)
+(: const-fn (forall (a b) (-> a (-> b a))))
+(define (const-fn x)
+  (lambda (y) x))
+(define always-42 (const-fn 42))
+(check "const-fn" 42 (always-42 "ignored"))
+
+;; ============================================================================
+;; PART 12: TYPE ALIAS SCOPING
+;; ============================================================================
+(display "\n=== PART 12: Type Alias Scoping ===\n\n")
+
+;; Point types
+(define-type Point2D (* real real))
+(define-type Point3D (* real (* real real)))
+
+;; Using aliased types in functions
+(define (make-point2d (x : real) (y : real)) : Point2D
+  (cons x y))
+(define (point2d-x (p : Point2D)) (car p))
+(define (point2d-y (p : Point2D)) (cdr p))
+
+(define p1 (make-point2d 3.0 4.0))
+(check-approx "point2d-x" 3.0 (point2d-x p1) 0.0001)
+(check-approx "point2d-y" 4.0 (point2d-y p1) 0.0001)
+
+;; Distance function
+(define (distance2d (p1 : Point2D) (p2 : Point2D)) : real
+  (let ((dx (- (point2d-x p2) (point2d-x p1)))
+        (dy (- (point2d-y p2) (point2d-y p1))))
+    (sqrt (+ (* dx dx) (* dy dy)))))
+
+(define origin (make-point2d 0.0 0.0))
+(check-approx "distance2d" 5.0 (distance2d origin p1) 0.0001)
+
+;; 3D point operations
+(define (make-point3d (x : real) (y : real) (z : real)) : Point3D
+  (cons x (cons y z)))
+(define (point3d-x (p : Point3D)) (car p))
+(define (point3d-y (p : Point3D)) (car (cdr p)))
+(define (point3d-z (p : Point3D)) (cdr (cdr p)))
+
+(define p3d (make-point3d 1.0 2.0 3.0))
+(check-approx "point3d-x" 1.0 (point3d-x p3d) 0.0001)
+(check-approx "point3d-y" 2.0 (point3d-y p3d) 0.0001)
+(check-approx "point3d-z" 3.0 (point3d-z p3d) 0.0001)
+
+;; ============================================================================
+;; PART 13: NUMERIC TOWER AND PROMOTION
+;; ============================================================================
+(display "\n=== PART 13: Numeric Tower ===\n\n")
+
+;; Int + Int -> Int
+(define int-plus-int (+ 10 20))
+(check "int+int" 30 int-plus-int)
+
+;; Float + Float -> Float
+(define float-plus-float (+ 1.5 2.5))
+(check-approx "float+float" 4.0 float-plus-float 0.0001)
+
+;; Int + Float -> Float (promotion)
+(define int-plus-float (+ 10 2.5))
+(check-approx "int+float" 12.5 int-plus-float 0.0001)
+
+;; Int * Float -> Float (promotion)
+(define int-times-float (* 3 1.5))
+(check-approx "int*float" 4.5 int-times-float 0.0001)
+
+;; Int / Float -> Float
+(define int-div-float (/ 10 2.5))
+(check-approx "int/float" 4.0 int-div-float 0.0001)
+
+;; Chained operations with promotion
+(define chain-promo (+ 1 (* 2 3.0) (/ 10.0 2) (- 20 5)))
+(check-approx "chain-promo" 27.0 chain-promo 0.0001)
+
+;; ============================================================================
+;; PART 14: LAMBDA TYPE ANNOTATIONS
+;; ============================================================================
+(display "\n=== PART 14: Lambda Types ===\n\n")
+
+;; Lambda with full type annotation
+(define typed-add
+  (lambda ((x : integer) (y : integer)) : integer
+    (+ x y)))
+(check "typed-add" 30 (typed-add 10 20))
+
+;; Lambda with single parameter
+(define typed-square
+  (lambda ((n : integer)) : integer
+    (* n n)))
+(check "typed-square" 25 (typed-square 5))
+
+;; Lambda in higher-order context
+(define result-map
+  (map (lambda ((x : integer)) : integer (* x 2))
+       (list 1 2 3 4 5)))
+(check "lambda-map first" 2 (car result-map))
+(check "lambda-map second" 4 (cadr result-map))
+
+;; Nested lambdas with types
+(define nested-lambda-result
+  ((lambda ((x : integer)) : (-> integer integer)
+     (lambda ((y : integer)) : integer
+       (+ x y)))
+   10))
+(check "nested-lambda" 25 (nested-lambda-result 15))
+
+;; Lambda with closure over typed value
+(define (make-power (exp : integer)) : (-> integer integer)
+  (lambda ((base : integer)) : integer
+    (let loop ((i 0) (result 1))
+      (if (< i exp)
+          (loop (+ i 1) (* result base))
+          result))))
+(define square-fn (make-power 2))
+(define cube-fn (make-power 3))
+(check "square-fn" 25 (square-fn 5))
+(check "cube-fn" 125 (cube-fn 5))
+
+;; ============================================================================
+;; SUMMARY
+;; ============================================================================
+(display "\n===================================================================\n")
+(display "RESULTS: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed\n")
+(display "===================================================================\n")
+
+(if (= tests-failed 0)
+    (display "ALL HoTT COMPREHENSIVE TESTS PASSED!\n")
+    (display "SOME TESTS FAILED!\n"))

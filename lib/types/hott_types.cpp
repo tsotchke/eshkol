@@ -86,6 +86,16 @@ void TypeEnvironment::initializeBuiltinTypes() {
                         RuntimeRep::Float64, Number);
     registerBuiltinType(Float64.id, "Float64", Universe::U0, 0,
                         RuntimeRep::Float64, Real);
+    registerBuiltinType(Float32.id, "Float32", Universe::U0, 0,
+                        RuntimeRep::Float64, Real);  // Represented as Float64 for simplicity
+
+    // Complex number types (subtype of Number)
+    registerBuiltinType(Complex.id, "Complex", Universe::U0, 0,
+                        RuntimeRep::Struct, Number);  // Struct with real and imaginary parts
+    registerBuiltinType(Complex64.id, "Complex64", Universe::U0, 0,
+                        RuntimeRep::Struct, Complex);  // 2x Float32
+    registerBuiltinType(Complex128.id, "Complex128", Universe::U0, 0,
+                        RuntimeRep::Struct, Complex);  // 2x Float64
 
     // ===== Text types =====
     registerBuiltinType(Text.id, "Text", Universe::U0, 0,
@@ -352,6 +362,15 @@ TypeId TypeEnvironment::promoteForArithmetic(TypeId a, TypeId b) const {
     // Same type, no promotion needed
     if (a == b) return a;
 
+    // If one operand is Value (top type), use the other operand's type
+    // This handles cases like (+ (car lst) 5) where car returns Value
+    if (a == Value) return b;
+    if (b == Value) return a;
+
+    // If one operand is Number, use the other operand's type if numeric
+    if (a == Number && (isSubtype(b, Integer) || isSubtype(b, Real))) return b;
+    if (b == Number && (isSubtype(a, Integer) || isSubtype(a, Real))) return a;
+
     // Integer + Real -> Real (Float64)
     if ((isSubtype(a, Integer) && isSubtype(b, Real)) ||
         (isSubtype(a, Real) && isSubtype(b, Integer))) {
@@ -503,6 +522,153 @@ TypeId TypeEnvironment::inferListElementType(const std::vector<TypeId>& element_
     }
 
     return common_type;
+}
+
+// ============================================================================
+// Dependent Type Dimension Tracking
+// ============================================================================
+
+ParameterizedType TypeEnvironment::makeVectorTypeWithDim(TypeId element_type, uint64_t dimension) const {
+    ParameterizedType ptype;
+    ptype.base_type = BuiltinTypes::Vector;
+    ptype.type_args = {element_type};
+    ptype.value_args = {CTValueSimple::makeNat(dimension)};
+
+    // Cache the instantiation
+    parameterized_cache_[ptype] = BuiltinTypes::Vector;
+
+    return ptype;
+}
+
+ParameterizedType TypeEnvironment::makeTensorTypeWithDims(TypeId element_type,
+                                                           const std::vector<uint64_t>& dimensions) const {
+    ParameterizedType ptype;
+    ptype.base_type = BuiltinTypes::Tensor;
+    ptype.type_args = {element_type};
+
+    for (uint64_t dim : dimensions) {
+        ptype.value_args.push_back(CTValueSimple::makeNat(dim));
+    }
+
+    // Cache the instantiation
+    parameterized_cache_[ptype] = BuiltinTypes::Tensor;
+
+    return ptype;
+}
+
+void TypeEnvironment::storeDimensionInfo(TypeId type_id, const std::vector<CTValueSimple>& dimensions) {
+    dimension_cache_[type_id.id] = dimensions;
+}
+
+std::optional<std::vector<CTValueSimple>> TypeEnvironment::getDimensionInfo(TypeId type_id) const {
+    auto it = dimension_cache_.find(type_id.id);
+    if (it != dimension_cache_.end()) {
+        return it->second;
+    }
+    return std::nullopt;
+}
+
+// ============================================================================
+// FUNCTION TYPES (Π-TYPES)
+// ============================================================================
+
+TypeId TypeEnvironment::makeFunctionType(const std::vector<TypeId>& param_types, TypeId return_type) const {
+    // Check if we already have this exact function type cached
+    for (const auto& entry : function_type_cache_) {
+        const PiType& pi = entry.second;
+        if (pi.return_type == return_type && pi.params.size() == param_types.size()) {
+            bool match = true;
+            for (size_t i = 0; i < param_types.size() && match; i++) {
+                if (pi.params[i].type != param_types[i]) {
+                    match = false;
+                }
+            }
+            if (match) {
+                return TypeId{entry.first, Universe::U0, 0};
+            }
+        }
+    }
+
+    // Create a new function type
+    PiType pi;
+    for (const auto& pt : param_types) {
+        pi.params.push_back({"", pt, false});
+    }
+    pi.return_type = return_type;
+    pi.is_dependent = false;
+
+    uint16_t type_id = next_function_type_id_++;
+    function_type_cache_[type_id] = pi;
+
+    return TypeId{type_id, Universe::U0, 0};
+}
+
+TypeId TypeEnvironment::makeSimpleFunctionType(TypeId input, TypeId output) const {
+    return makeFunctionType({input}, output);
+}
+
+const PiType* TypeEnvironment::getFunctionType(TypeId id) const {
+    // Check if it's in the function type cache
+    auto it = function_type_cache_.find(id.id);
+    if (it != function_type_cache_.end()) {
+        return &it->second;
+    }
+
+    // Not a function type
+    return nullptr;
+}
+
+bool TypeEnvironment::isFunctionType(TypeId id) const {
+    // Check if it's the base Function type or a specific function type
+    if (id == BuiltinTypes::Function) {
+        return true;
+    }
+    return function_type_cache_.find(id.id) != function_type_cache_.end();
+}
+
+TypeId TypeEnvironment::getFunctionReturnType(TypeId id) const {
+    const PiType* pi = getFunctionType(id);
+    if (pi) {
+        return pi->return_type;
+    }
+    return BuiltinTypes::Value;
+}
+
+std::vector<TypeId> TypeEnvironment::getFunctionParamTypes(TypeId id) const {
+    const PiType* pi = getFunctionType(id);
+    if (pi) {
+        std::vector<TypeId> result;
+        result.reserve(pi->params.size());
+        for (const auto& param : pi->params) {
+            result.push_back(param.type);
+        }
+        return result;
+    }
+    return {};
+}
+
+std::string TypeEnvironment::getFunctionTypeName(TypeId id) const {
+    const PiType* pi = getFunctionType(id);
+    if (!pi) {
+        return "Function";
+    }
+
+    std::string result;
+    if (pi->params.size() == 1) {
+        result = getTypeName(pi->params[0].type);
+    } else {
+        result = "(";
+        for (size_t i = 0; i < pi->params.size(); i++) {
+            if (i > 0) result += ", ";
+            result += getTypeName(pi->params[i].type);
+        }
+        result += ")";
+    }
+
+    result += " -> ";
+    result += getTypeName(pi->return_type);
+
+    return result;
 }
 
 } // namespace eshkol::hott

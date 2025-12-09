@@ -32,6 +32,8 @@ struct Token {
     TokenType type;
     std::string value;
     size_t pos;
+    uint32_t line;    // 1-based line number
+    uint32_t column;  // 1-based column number
 };
 
 class SchemeTokenizer {
@@ -39,10 +41,14 @@ private:
     std::string input;
     size_t pos;
     size_t length;
+    uint32_t line_;
+    uint32_t column_;
+    size_t line_start_;  // Position of current line start for column calculation
     std::vector<Token> pushback_buffer;  // Buffer for pushed back tokens
 
 public:
-    SchemeTokenizer(const std::string& text) : input(text), pos(0), length(text.length()) {}
+    SchemeTokenizer(const std::string& text)
+        : input(text), pos(0), length(text.length()), line_(1), column_(1), line_start_(0) {}
 
     // Push a token back to be returned by the next nextToken() call
     void pushBack(const Token& token) {
@@ -65,33 +71,42 @@ public:
         }
 
         skipWhitespace();
-        
+
         if (pos >= length) {
-            return {TOKEN_EOF, "", pos};
+            return {TOKEN_EOF, "", pos, line_, column_};
         }
-        
+
+        // Save current location for the token
+        uint32_t tok_line = line_;
+        uint32_t tok_col = column_;
+
         char ch = input[pos];
-        
+
         switch (ch) {
             case '(':
                 pos++;
-                return {TOKEN_LPAREN, "(", pos - 1};
+                column_++;
+                return {TOKEN_LPAREN, "(", pos - 1, tok_line, tok_col};
             case ')':
                 pos++;
-                return {TOKEN_RPAREN, ")", pos - 1};
+                column_++;
+                return {TOKEN_RPAREN, ")", pos - 1, tok_line, tok_col};
             case '\'':
                 pos++;
-                return {TOKEN_QUOTE, "'", pos - 1};
+                column_++;
+                return {TOKEN_QUOTE, "'", pos - 1, tok_line, tok_col};
             case ':':
                 pos++;
-                return {TOKEN_COLON, ":", pos - 1};
+                column_++;
+                return {TOKEN_COLON, ":", pos - 1, tok_line, tok_col};
             case '"':
                 return readString();
             default:
                 // Check for arrow type: ->
                 if (ch == '-' && pos + 1 < length && input[pos + 1] == '>') {
                     pos += 2;
-                    return {TOKEN_ARROW, "->", pos - 2};
+                    column_ += 2;
+                    return {TOKEN_ARROW, "->", pos - 2, tok_line, tok_col};
                 }
                 if (std::isdigit(ch) || (ch == '-' && pos + 1 < length && std::isdigit(input[pos + 1]))) {
                     return readNumber();
@@ -108,7 +123,13 @@ private:
         while (pos < length) {
             // Skip whitespace
             if (std::isspace(input[pos])) {
-                pos++;
+                if (input[pos] == '\n') {
+                    line_++;
+                    pos++;
+                    line_start_ = pos;
+                } else {
+                    pos++;
+                }
                 continue;
             }
             // Skip comments (from ; to end of line)
@@ -121,16 +142,22 @@ private:
             // Not whitespace or comment, stop
             break;
         }
+        // Update column after whitespace
+        column_ = static_cast<uint32_t>(pos - line_start_ + 1);
     }
     
     Token readString() {
         size_t start = pos;
+        uint32_t tok_line = line_;
+        uint32_t tok_col = column_;
         pos++; // skip opening quote
+        column_++;
         std::string value;
-        
+
         while (pos < length && input[pos] != '"') {
             if (input[pos] == '\\' && pos + 1 < length) {
                 pos++;
+                column_++;
                 switch (input[pos]) {
                     case 'n': value += '\n'; break;
                     case 't': value += '\t'; break;
@@ -139,91 +166,119 @@ private:
                     case '"': value += '"'; break;
                     default: value += input[pos]; break;
                 }
+            } else if (input[pos] == '\n') {
+                value += input[pos];
+                line_++;
+                line_start_ = pos + 1;
             } else {
                 value += input[pos];
             }
             pos++;
+            column_ = static_cast<uint32_t>(pos - line_start_ + 1);
         }
-        
-        if (pos < length) pos++; // skip closing quote
-        return {TOKEN_STRING, value, start};
+
+        if (pos < length) {
+            pos++; // skip closing quote
+            column_++;
+        }
+        return {TOKEN_STRING, value, start, tok_line, tok_col};
     }
     
     Token readNumber() {
         size_t start = pos;
+        uint32_t tok_line = line_;
+        uint32_t tok_col = column_;
         std::string value;
 
         if (input[pos] == '-') {
             value += input[pos++];
+            column_++;
         }
 
         // Read integer or decimal part
         while (pos < length && (std::isdigit(input[pos]) || input[pos] == '.')) {
             value += input[pos++];
+            column_++;
         }
 
         // Handle scientific notation (e.g., 1e-7, 2.5E+10, 3e4)
         if (pos < length && (input[pos] == 'e' || input[pos] == 'E')) {
             value += input[pos++];
+            column_++;
             // Handle optional sign after 'e'
             if (pos < length && (input[pos] == '+' || input[pos] == '-')) {
                 value += input[pos++];
+                column_++;
             }
             // Read exponent digits
             while (pos < length && std::isdigit(input[pos])) {
                 value += input[pos++];
+                column_++;
             }
         }
 
-        return {TOKEN_NUMBER, value, start};
+        return {TOKEN_NUMBER, value, start, tok_line, tok_col};
     }
     
     Token readBoolean() {
         size_t start = pos;
+        uint32_t tok_line = line_;
+        uint32_t tok_col = column_;
         pos++; // skip #
+        column_++;
 
         // Check for vector literal: #(
         if (pos < length && input[pos] == '(') {
             pos++;  // skip (
-            return {TOKEN_VECTOR_START, "#(", start};
+            column_++;
+            return {TOKEN_VECTOR_START, "#(", start, tok_line, tok_col};
         }
 
         if (pos < length && (input[pos] == 't' || input[pos] == 'f')) {
             std::string value = std::string("#") + input[pos];
             pos++;
-            return {TOKEN_BOOLEAN, value, start};
+            column_++;
+            return {TOKEN_BOOLEAN, value, start, tok_line, tok_col};
         }
 
         // Check for character literal: #\x
         if (pos < length && input[pos] == '\\') {
             pos++; // skip backslash
+            column_++;
             if (pos < length) {
                 // Check for named characters like #\space, #\newline, #\tab
                 if (pos + 4 < length && input.substr(pos, 5) == "space") {
                     pos += 5;
-                    return {TOKEN_CHAR, " ", start};
+                    column_ += 5;
+                    return {TOKEN_CHAR, " ", start, tok_line, tok_col};
                 } else if (pos + 6 < length && input.substr(pos, 7) == "newline") {
                     pos += 7;
-                    return {TOKEN_CHAR, "\n", start};
+                    column_ += 7;
+                    return {TOKEN_CHAR, "\n", start, tok_line, tok_col};
                 } else if (pos + 2 < length && input.substr(pos, 3) == "tab") {
                     pos += 3;
-                    return {TOKEN_CHAR, "\t", start};
+                    column_ += 3;
+                    return {TOKEN_CHAR, "\t", start, tok_line, tok_col};
                 } else {
                     // Single character
                     std::string value(1, input[pos]);
                     pos++;
-                    return {TOKEN_CHAR, value, start};
+                    column_++;
+                    return {TOKEN_CHAR, value, start, tok_line, tok_col};
                 }
             }
         }
 
         // Invalid boolean, treat as symbol
         pos = start;
+        column_ = tok_col;
         return readSymbol();
     }
     
     Token readSymbol() {
         size_t start = pos;
+        uint32_t tok_line = line_;
+        uint32_t tok_col = column_;
         std::string value;
 
         while (pos < length && !std::isspace(input[pos]) &&
@@ -233,16 +288,19 @@ private:
             // Note: We allow '->' within symbols (e.g., number->string)
             // The TOKEN_ARROW is only recognized at the start of a new token
             value += input[pos++];
+            column_++;
         }
 
-        return {TOKEN_SYMBOL, value, start};
+        return {TOKEN_SYMBOL, value, start, tok_line, tok_col};
     }
 };
 
 static eshkol_ast_t parse_atom(const Token& token) {
     eshkol_ast_t ast = {};  // Zero-initialize all fields
     ast.type = ESHKOL_INVALID;
-    
+    ast.line = token.line;
+    ast.column = token.column;
+
     switch (token.type) {
         case TOKEN_STRING:
             ast.type = ESHKOL_STRING;
@@ -252,7 +310,7 @@ static eshkol_ast_t parse_atom(const Token& token) {
                 strcpy(ast.str_val.ptr, token.value.c_str());
             }
             break;
-            
+
         case TOKEN_NUMBER: {
             // Check if it's a floating-point number (has '.' or scientific notation 'e'/'E')
             if (token.value.find('.') != std::string::npos ||
@@ -266,7 +324,7 @@ static eshkol_ast_t parse_atom(const Token& token) {
             }
             break;
         }
-        
+
         case TOKEN_BOOLEAN:
             ast.type = ESHKOL_BOOL;
             ast.int64_val = (token.value == "#t") ? 1 : 0;
@@ -286,11 +344,11 @@ static eshkol_ast_t parse_atom(const Token& token) {
             }
             ast.variable.data = nullptr;
             break;
-            
+
         default:
             break;
     }
-    
+
     return ast;
 }
 
@@ -1270,8 +1328,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
     eshkol_ast_t ast = {};  // Zero-initialize all fields
     ast.type = ESHKOL_OP;
     std::vector<eshkol_ast_t> elements;
-    
+
     Token token = tokenizer.nextToken();
+    // Set source location from first token in the list
+    ast.line = token.line;
+    ast.column = token.column;
     
     // Empty list
     if (token.type == TOKEN_RPAREN) {

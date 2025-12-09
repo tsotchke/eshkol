@@ -4,10 +4,254 @@
  */
 
 #include "eshkol/types/dependent.h"
+#include "eshkol/eshkol.h"
 #include <sstream>
 
 namespace eshkol {
 namespace hott {
+
+// ===== CTValue Implementation =====
+
+namespace {
+
+/**
+ * Result of constant expression evaluation.
+ * Supports both integer and floating-point values.
+ */
+struct ConstValue {
+    enum class Kind { Integer, Float, None };
+    Kind kind = Kind::None;
+    int64_t int_val = 0;
+    double float_val = 0.0;
+
+    static ConstValue makeInt(int64_t v) {
+        ConstValue cv;
+        cv.kind = Kind::Integer;
+        cv.int_val = v;
+        cv.float_val = static_cast<double>(v);
+        return cv;
+    }
+
+    static ConstValue makeFloat(double v) {
+        ConstValue cv;
+        cv.kind = Kind::Float;
+        cv.float_val = v;
+        cv.int_val = static_cast<int64_t>(v);
+        return cv;
+    }
+
+    static ConstValue none() {
+        return ConstValue();
+    }
+
+    bool isValid() const { return kind != Kind::None; }
+    bool isInt() const { return kind == Kind::Integer; }
+    bool isFloat() const { return kind == Kind::Float; }
+
+    // Get as double (works for both int and float)
+    double asDouble() const { return float_val; }
+
+    // Get as int64 (truncates floats)
+    int64_t asInt() const { return int_val; }
+
+    // Promote to float if either operand is float
+    static ConstValue add(const ConstValue& a, const ConstValue& b) {
+        if (!a.isValid() || !b.isValid()) return none();
+        if (a.isFloat() || b.isFloat()) {
+            return makeFloat(a.asDouble() + b.asDouble());
+        }
+        return makeInt(a.asInt() + b.asInt());
+    }
+
+    static ConstValue sub(const ConstValue& a, const ConstValue& b) {
+        if (!a.isValid() || !b.isValid()) return none();
+        if (a.isFloat() || b.isFloat()) {
+            return makeFloat(a.asDouble() - b.asDouble());
+        }
+        return makeInt(a.asInt() - b.asInt());
+    }
+
+    static ConstValue mul(const ConstValue& a, const ConstValue& b) {
+        if (!a.isValid() || !b.isValid()) return none();
+        if (a.isFloat() || b.isFloat()) {
+            return makeFloat(a.asDouble() * b.asDouble());
+        }
+        return makeInt(a.asInt() * b.asInt());
+    }
+
+    static ConstValue div(const ConstValue& a, const ConstValue& b) {
+        if (!a.isValid() || !b.isValid()) return none();
+        // Check for division by zero
+        if (b.isFloat() && b.asDouble() == 0.0) return none();
+        if (b.isInt() && b.asInt() == 0) return none();
+
+        if (a.isFloat() || b.isFloat()) {
+            return makeFloat(a.asDouble() / b.asDouble());
+        }
+        return makeInt(a.asInt() / b.asInt());
+    }
+};
+
+/**
+ * Recursively evaluate an AST expression to a compile-time value.
+ * Supports both integer and floating-point arithmetic.
+ * Returns an invalid ConstValue if the expression cannot be evaluated at compile time.
+ */
+ConstValue evaluateConstExpr(const eshkol_ast_t* expr) {
+    if (!expr) return ConstValue::none();
+
+    switch (expr->type) {
+        // Integer literals
+        case ESHKOL_INT64:
+            return ConstValue::makeInt(expr->int64_val);
+
+        case ESHKOL_INT32:
+            return ConstValue::makeInt(static_cast<int64_t>(expr->int32_val));
+
+        case ESHKOL_INT16:
+            return ConstValue::makeInt(static_cast<int64_t>(expr->int16_val));
+
+        case ESHKOL_INT8:
+            return ConstValue::makeInt(static_cast<int64_t>(expr->int8_val));
+
+        // Unsigned integers
+        case ESHKOL_UINT64:
+            return ConstValue::makeInt(static_cast<int64_t>(expr->uint64_val));
+
+        case ESHKOL_UINT32:
+            return ConstValue::makeInt(static_cast<int64_t>(expr->uint32_val));
+
+        case ESHKOL_UINT16:
+            return ConstValue::makeInt(static_cast<int64_t>(expr->uint16_val));
+
+        case ESHKOL_UINT8:
+            return ConstValue::makeInt(static_cast<int64_t>(expr->uint8_val));
+
+        // Floating-point literal
+        case ESHKOL_DOUBLE:
+            return ConstValue::makeFloat(expr->double_val);
+
+        // Arithmetic operations
+        case ESHKOL_OP: {
+            switch (expr->operation.op) {
+                case ESHKOL_ADD_OP: {
+                    // Addition: evaluate all operands and sum
+                    if (expr->operation.call_op.num_vars < 2) return ConstValue::none();
+                    ConstValue result = evaluateConstExpr(&expr->operation.call_op.variables[0]);
+                    if (!result.isValid()) return ConstValue::none();
+                    for (uint64_t i = 1; i < expr->operation.call_op.num_vars; i++) {
+                        ConstValue operand = evaluateConstExpr(&expr->operation.call_op.variables[i]);
+                        if (!operand.isValid()) return ConstValue::none();
+                        result = ConstValue::add(result, operand);
+                    }
+                    return result;
+                }
+
+                case ESHKOL_SUB_OP: {
+                    // Subtraction: supports multiple operands (a - b - c - ...)
+                    if (expr->operation.call_op.num_vars < 2) return ConstValue::none();
+                    ConstValue result = evaluateConstExpr(&expr->operation.call_op.variables[0]);
+                    if (!result.isValid()) return ConstValue::none();
+                    for (uint64_t i = 1; i < expr->operation.call_op.num_vars; i++) {
+                        ConstValue operand = evaluateConstExpr(&expr->operation.call_op.variables[i]);
+                        if (!operand.isValid()) return ConstValue::none();
+                        result = ConstValue::sub(result, operand);
+                    }
+                    return result;
+                }
+
+                case ESHKOL_MUL_OP: {
+                    // Multiplication: evaluate all operands and multiply
+                    if (expr->operation.call_op.num_vars < 2) return ConstValue::none();
+                    ConstValue result = evaluateConstExpr(&expr->operation.call_op.variables[0]);
+                    if (!result.isValid()) return ConstValue::none();
+                    for (uint64_t i = 1; i < expr->operation.call_op.num_vars; i++) {
+                        ConstValue operand = evaluateConstExpr(&expr->operation.call_op.variables[i]);
+                        if (!operand.isValid()) return ConstValue::none();
+                        result = ConstValue::mul(result, operand);
+                    }
+                    return result;
+                }
+
+                case ESHKOL_DIV_OP: {
+                    // Division: supports multiple operands (a / b / c / ...)
+                    if (expr->operation.call_op.num_vars < 2) return ConstValue::none();
+                    ConstValue result = evaluateConstExpr(&expr->operation.call_op.variables[0]);
+                    if (!result.isValid()) return ConstValue::none();
+                    for (uint64_t i = 1; i < expr->operation.call_op.num_vars; i++) {
+                        ConstValue operand = evaluateConstExpr(&expr->operation.call_op.variables[i]);
+                        if (!operand.isValid()) return ConstValue::none();
+                        result = ConstValue::div(result, operand);
+                        if (!result.isValid()) return ConstValue::none();  // Division by zero
+                    }
+                    return result;
+                }
+
+                default:
+                    // Non-arithmetic operation, cannot evaluate
+                    return ConstValue::none();
+            }
+        }
+
+        // Variables, function calls, etc. cannot be evaluated at compile time
+        default:
+            return ConstValue::none();
+    }
+}
+
+} // anonymous namespace
+
+std::optional<uint64_t> CTValue::tryEvalNat() const {
+    switch (kind_) {
+        case Kind::Nat:
+            return nat_val_;
+
+        case Kind::Expr: {
+            // Try to evaluate the expression as a constant
+            ConstValue result = evaluateConstExpr(expr_);
+            if (result.isValid()) {
+                // For Nat (natural numbers), we need a non-negative integer
+                if (result.isInt() && result.asInt() >= 0) {
+                    return static_cast<uint64_t>(result.asInt());
+                }
+                // Also accept integer-valued floats
+                if (result.isFloat()) {
+                    double fval = result.asDouble();
+                    if (fval >= 0.0 && fval == static_cast<double>(static_cast<uint64_t>(fval))) {
+                        return static_cast<uint64_t>(fval);
+                    }
+                }
+            }
+            return std::nullopt;
+        }
+
+        case Kind::Bool:
+        case Kind::Unknown:
+        default:
+            return std::nullopt;
+    }
+}
+
+std::optional<double> CTValue::tryEvalFloat() const {
+    switch (kind_) {
+        case Kind::Nat:
+            return static_cast<double>(nat_val_);
+
+        case Kind::Expr: {
+            // Try to evaluate the expression as a constant
+            ConstValue result = evaluateConstExpr(expr_);
+            if (result.isValid()) {
+                return result.asDouble();
+            }
+            return std::nullopt;
+        }
+
+        case Kind::Bool:
+        case Kind::Unknown:
+        default:
+            return std::nullopt;
+    }
+}
 
 // ===== DependentType Implementation =====
 

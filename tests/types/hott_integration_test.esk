@@ -1,0 +1,350 @@
+;;
+;; HoTT Type System Integration Tests
+;;
+;; Tests the integration of the HoTT type system with the compiler:
+;; - Type inference and storage in AST
+;; - Parameterized type aliases
+;; - Compile-time constant evaluation
+;; - Type annotations on functions and closures
+;; - Dimension tracking for vectors/tensors
+;;
+
+(require stdlib)
+
+;; Test framework
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(define (check-approx name expected actual tolerance)
+  (if (< (abs (- expected actual)) tolerance)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(display "===================================================================\n")
+(display "       HoTT TYPE SYSTEM INTEGRATION TESTS                        \n")
+(display "===================================================================\n\n")
+
+;; ============================================================================
+;; Section 1: Parameterized Type Aliases
+;; ============================================================================
+(display "--- Section 1: Parameterized Type Aliases ---\n")
+
+;; Define a parameterized type alias
+(define-type (IntList) (list integer))
+(define-type (RealList) (list real))
+(define-type (Pair a b) (* a b))
+
+;; Use the type alias in annotations
+(: my-int-list IntList)
+(define my-int-list (list 1 2 3 4 5))
+(check "IntList length" 5 (length my-int-list))
+(check "IntList car" 1 (car my-int-list))
+
+(: my-real-list RealList)
+(define my-real-list (list 1.0 2.0 3.0))
+(check "RealList length" 3 (length my-real-list))
+(check-approx "RealList car" 1.0 (car my-real-list) 0.0001)
+
+;; ============================================================================
+;; Section 2: Closure Return Type Annotations
+;; ============================================================================
+(display "\n--- Section 2: Closure Return Types ---\n")
+
+;; Closure with return type annotation
+(define (make-counter (start : integer)) : (-> integer)
+  (let ((count start))
+    (lambda ()
+      (set! count (+ count 1))
+      count)))
+
+(define counter1 (make-counter 0))
+(check "Counter first call" 1 (counter1))
+(check "Counter second call" 2 (counter1))
+(check "Counter third call" 3 (counter1))
+
+;; Closure capturing typed values
+(define (make-multiplier (factor : real)) : (-> real real)
+  (lambda ((x : real)) : real
+    (* x factor)))
+
+(define double (make-multiplier 2.0))
+(define triple (make-multiplier 3.0))
+(check-approx "Double 5.0" 10.0 (double 5.0) 0.0001)
+(check-approx "Triple 5.0" 15.0 (triple 5.0) 0.0001)
+
+;; ============================================================================
+;; Section 3: Compile-Time Constant Evaluation
+;; ============================================================================
+(display "\n--- Section 3: Compile-Time Constants ---\n")
+
+;; These should be evaluable at compile time
+(define const-sum (+ 10 20 30))
+(check "Const sum" 60 const-sum)
+
+(define const-product (* 2 3 4))
+(check "Const product" 24 const-product)
+
+(define const-diff (- 100 25 15))
+(check "Const difference" 60 const-diff)
+
+(define const-quotient (/ 100 5 2))
+(check "Const quotient" 10 const-quotient)
+
+;; Mixed int/float constants
+(define const-mixed (+ 10 2.5))
+(check-approx "Const mixed" 12.5 const-mixed 0.0001)
+
+(define const-float-mul (* 3 1.5))
+(check-approx "Const float mul" 4.5 const-float-mul 0.0001)
+
+;; ============================================================================
+;; Section 4: Type Inference Through Expressions
+;; ============================================================================
+(display "\n--- Section 4: Type Inference ---\n")
+
+;; Arithmetic type promotion
+(define int-val 42)
+(define float-val 3.14)
+(define promoted (+ int-val float-val))
+(check-approx "Int + Float promotion" 45.14 promoted 0.0001)
+
+;; Let binding type inference
+(define let-result
+  (let ((a 10)
+        (b 20.0))
+    (+ a b)))
+(check-approx "Let binding inference" 30.0 let-result 0.0001)
+
+;; Nested let with type inference
+(define nested-let-result
+  (let ((x 5))
+    (let ((y (* x 2)))
+      (let ((z (+ y 0.5)))
+        z))))
+(check-approx "Nested let inference" 10.5 nested-let-result 0.0001)
+
+;; ============================================================================
+;; Section 5: Function Type Checking
+;; ============================================================================
+(display "\n--- Section 5: Function Types ---\n")
+
+;; Simple typed function
+(define (add-ints (a : integer) (b : integer)) : integer
+  (+ a b))
+(check "Add ints" 15 (add-ints 7 8))
+
+;; Higher-order typed function
+(define (apply-to-pair (f : (-> integer integer integer))
+                       (x : integer)
+                       (y : integer)) : integer
+  (f x y))
+(check "Apply to pair" 35 (apply-to-pair * 5 7))
+
+;; Curried function with types
+(define (curry-add (x : integer)) : (-> integer integer)
+  (lambda ((y : integer)) : integer
+    (+ x y)))
+(define add-10 (curry-add 10))
+(check "Curried add" 25 (add-10 15))
+
+;; ============================================================================
+;; Section 6: Vector Type Checking
+;; ============================================================================
+(display "\n--- Section 6: Vector Types ---\n")
+
+;; Typed vector creation
+(: typed-vec (vector real))
+(define typed-vec (vector 1.0 2.0 3.0 4.0 5.0))
+(check "Typed vec length" 5 (vector-length typed-vec))
+(check-approx "Typed vec ref 0" 1.0 (vector-ref typed-vec 0) 0.0001)
+(check-approx "Typed vec ref 4" 5.0 (vector-ref typed-vec 4) 0.0001)
+
+;; Vector operations with type annotations
+(define (vector-sum (v : (vector real))) : real
+  (let ((len (vector-length v))
+        (sum 0.0))
+    (let loop ((i 0))
+      (if (< i len)
+          (begin
+            (set! sum (+ sum (vector-ref v i)))
+            (loop (+ i 1)))
+          sum))))
+(check-approx "Vector sum" 15.0 (vector-sum typed-vec) 0.0001)
+
+;; ============================================================================
+;; Section 7: Conditional Type Unification
+;; ============================================================================
+(display "\n--- Section 7: Conditional Types ---\n")
+
+;; If branches with same type
+(define (abs-val (x : integer)) : integer
+  (if (< x 0) (- 0 x) x))
+(check "Abs positive" 5 (abs-val 5))
+(check "Abs negative" 5 (abs-val -5))
+
+;; If with type promotion
+(define (safe-div (a : real) (b : real)) : real
+  (if (= b 0.0) 0.0 (/ a b)))
+(check-approx "Safe div normal" 5.0 (safe-div 10.0 2.0) 0.0001)
+(check-approx "Safe div by zero" 0.0 (safe-div 10.0 0.0) 0.0001)
+
+;; Nested conditionals
+(define (classify (x : integer)) : integer
+  (if (> x 0)
+      1
+      (if (< x 0)
+          -1
+          0)))
+(check "Classify positive" 1 (classify 42))
+(check "Classify negative" -1 (classify -42))
+(check "Classify zero" 0 (classify 0))
+
+;; ============================================================================
+;; Section 8: Recursive Functions with Types
+;; ============================================================================
+(display "\n--- Section 8: Recursive Types ---\n")
+
+;; Recursive factorial
+(define (fact (n : integer)) : integer
+  (if (<= n 1)
+      1
+      (* n (fact (- n 1)))))
+(check "Fact 0" 1 (fact 0))
+(check "Fact 5" 120 (fact 5))
+(check "Fact 10" 3628800 (fact 10))
+
+;; Recursive fibonacci
+(define (fib (n : integer)) : integer
+  (if (<= n 1)
+      n
+      (+ (fib (- n 1)) (fib (- n 2)))))
+(check "Fib 0" 0 (fib 0))
+(check "Fib 1" 1 (fib 1))
+(check "Fib 10" 55 (fib 10))
+
+;; Recursive list sum
+(define (list-sum (lst : (list integer))) : integer
+  (if (null? lst)
+      0
+      (+ (car lst) (list-sum (cdr lst)))))
+(check "List sum" 15 (list-sum (list 1 2 3 4 5)))
+
+;; ============================================================================
+;; Section 9: Complex Number Support
+;; ============================================================================
+(display "\n--- Section 9: Complex Numbers ---\n")
+
+;; Note: Complex number support tests basic operations
+;; The type system now includes Complex, Complex64, Complex128
+
+;; Test that real numbers work in complex contexts
+(define complex-real 3.14159)
+(define complex-imag 2.71828)
+(define magnitude (sqrt (+ (* complex-real complex-real)
+                           (* complex-imag complex-imag))))
+(check-approx "Complex magnitude calc" 4.155 magnitude 0.01)
+
+;; ============================================================================
+;; Section 10: Mixed Type Operations
+;; ============================================================================
+(display "\n--- Section 10: Mixed Types ---\n")
+
+;; Operations with mixed numeric types
+(define (mixed-arithmetic (i : integer) (r : real)) : real
+  (+ (* i 2) (/ r 3.0)))
+(check-approx "Mixed arithmetic" 11.333 (mixed-arithmetic 5 4.0) 0.01)
+
+;; Chained operations
+(define chain-result
+  (+ 1
+     (* 2 3.0)
+     (/ 10.0 2)
+     (- 20 5)))
+(check-approx "Chained ops" 27.0 chain-result 0.0001)
+
+;; Type coercion in lists
+(define mixed-list (list 1 2.0 3 4.0 5))
+(check "Mixed list length" 5 (length mixed-list))
+
+;; ============================================================================
+;; Section 11: Lambda Type Annotations
+;; ============================================================================
+(display "\n--- Section 11: Lambda Types ---\n")
+
+;; Lambda with full type annotation
+(define typed-lambda
+  (lambda ((x : integer) (y : integer)) : integer
+    (+ x y)))
+(check "Typed lambda" 30 (typed-lambda 10 20))
+
+;; Lambda in map with type inference
+(define squared-list
+  (map (lambda ((x : integer)) : integer (* x x))
+       (list 1 2 3 4 5)))
+(check "Squared first" 1 (car squared-list))
+(check "Squared second" 4 (cadr squared-list))
+(check "Squared third" 9 (caddr squared-list))
+
+;; Nested lambdas with types
+(define nested-lambda
+  ((lambda ((x : integer)) : (-> integer integer)
+     (lambda ((y : integer)) : integer
+       (+ x y)))
+   10))
+(check "Nested lambda" 25 (nested-lambda 15))
+
+;; ============================================================================
+;; Section 12: Type Alias Scoping
+;; ============================================================================
+(display "\n--- Section 12: Type Alias Scoping ---\n")
+
+;; Multiple type aliases
+(define-type Point2D (* real real))
+(define-type IntPoint (* integer integer))
+
+;; Using aliased types
+(: origin Point2D)
+(define origin (cons 0.0 0.0))
+(check-approx "Origin x" 0.0 (car origin) 0.0001)
+(check-approx "Origin y" 0.0 (cdr origin) 0.0001)
+
+(define (make-point (x : real) (y : real)) : Point2D
+  (cons x y))
+(define p (make-point 3.0 4.0))
+(check-approx "Point x" 3.0 (car p) 0.0001)
+(check-approx "Point y" 4.0 (cdr p) 0.0001)
+
+;; Distance function using typed points
+(define (distance (p1 : Point2D) (p2 : Point2D)) : real
+  (let ((dx (- (car p2) (car p1)))
+        (dy (- (cdr p2) (cdr p1))))
+    (sqrt (+ (* dx dx) (* dy dy)))))
+(check-approx "Distance" 5.0 (distance origin p) 0.0001)
+
+;; ============================================================================
+;; SUMMARY
+;; ============================================================================
+(display "\n===================================================================\n")
+(display "RESULTS: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed\n")
+(display "===================================================================\n")
+
+(if (= tests-failed 0)
+    (display "ALL HOTT INTEGRATION TESTS PASSED!\n")
+    (display "SOME TESTS FAILED!\n"))
