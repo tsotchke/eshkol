@@ -68,7 +68,7 @@ math_test_outputs/
 *.ll
 *.ast
 *.tmp
-*.bak
+*.bak*
 *.backup
 a.out
 

@@ -101,14 +101,33 @@ public:
     bool boolValue() const { return bool_val_; }
     const eshkol_ast_t* exprValue() const { return expr_; }
 
-    // Evaluation - try to get a concrete natural number value
-    std::optional<uint64_t> tryEvalNat() const {
-        if (kind_ == Kind::Nat) {
-            return nat_val_;
-        }
-        // TODO: Add symbolic expression evaluation for constant expressions
-        return std::nullopt;
-    }
+    /**
+     * Evaluation - try to get a concrete natural number value.
+     *
+     * For Nat kind, returns the stored value directly.
+     * For Expr kind, attempts to evaluate constant expressions including:
+     * - Integer literals (ESHKOL_INT64)
+     * - Floating-point literals (ESHKOL_DOUBLE) if they are integer-valued
+     * - Arithmetic operations on constants (+, -, *, /)
+     *
+     * @return The evaluated value if it can be computed at compile time,
+     *         or std::nullopt if the expression depends on runtime values.
+     */
+    std::optional<uint64_t> tryEvalNat() const;
+
+    /**
+     * Evaluation - try to get a concrete floating-point value.
+     *
+     * For Nat kind, returns the value converted to double.
+     * For Expr kind, attempts to evaluate constant expressions including:
+     * - Integer literals (ESHKOL_INT64, etc.)
+     * - Floating-point literals (ESHKOL_DOUBLE)
+     * - Arithmetic operations on constants (+, -, *, /)
+     *
+     * @return The evaluated value if it can be computed at compile time,
+     *         or std::nullopt if the expression depends on runtime values.
+     */
+    std::optional<double> tryEvalFloat() const;
 
     // Evaluation - try to get a concrete boolean value
     std::optional<bool> tryEvalBool() const {

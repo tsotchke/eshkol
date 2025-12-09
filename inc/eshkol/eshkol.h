@@ -753,6 +753,14 @@ typedef struct eshkol_ast {
         } tensor_val;
         eshkol_operations_t operation;
     };
+    // HoTT type system: inferred type from type checker
+    // Packed format: bits 0-15 = TypeId.id, bits 16-23 = universe level, bits 24-31 = flags
+    // Value 0 means "not yet type-checked"
+    uint32_t inferred_hott_type;
+
+    // Source location for error reporting
+    uint32_t line;      // 1-based line number (0 = unknown)
+    uint32_t column;    // 1-based column number (0 = unknown)
 } eshkol_ast_t;
 
 void eshkol_ast_clean(eshkol_ast_t *ast);
@@ -801,6 +809,30 @@ void hott_free_type_expr(hott_type_expr_t* type);
 
 // Type expression to string (for display/error messages)
 char* hott_type_to_string(const hott_type_expr_t* type);
+
+// ===== Inferred HoTT Type Helpers =====
+// Pack/unpack TypeId to/from uint32_t for AST storage
+// Format: bits 0-15 = id, bits 16-23 = universe, bits 24-31 = flags
+
+static inline uint32_t hott_pack_type_id(uint16_t id, uint8_t universe, uint8_t flags) {
+    return (uint32_t)id | ((uint32_t)universe << 16) | ((uint32_t)flags << 24);
+}
+
+static inline uint16_t hott_unpack_type_id(uint32_t packed) {
+    return (uint16_t)(packed & 0xFFFF);
+}
+
+static inline uint8_t hott_unpack_universe(uint32_t packed) {
+    return (uint8_t)((packed >> 16) & 0xFF);
+}
+
+static inline uint8_t hott_unpack_flags(uint32_t packed) {
+    return (uint8_t)((packed >> 24) & 0xFF);
+}
+
+static inline int hott_type_is_set(uint32_t packed) {
+    return packed != 0;
+}
 
 #ifdef __cplusplus
 };

@@ -107,6 +107,22 @@ struct TypeId {
 
     // Check if this is a valid (non-null) type
     bool isValid() const { return id != 0; }
+
+    // Pack to uint32_t for AST storage (bits 0-15: id, 16-23: universe, 24-31: flags)
+    uint32_t pack() const {
+        return static_cast<uint32_t>(id) |
+               (static_cast<uint32_t>(static_cast<uint8_t>(level)) << 16) |
+               (static_cast<uint32_t>(flags) << 24);
+    }
+
+    // Unpack from uint32_t stored in AST
+    static TypeId unpack(uint32_t packed) {
+        return TypeId{
+            static_cast<uint16_t>(packed & 0xFFFF),
+            static_cast<Universe>((packed >> 16) & 0xFF),
+            static_cast<uint8_t>((packed >> 24) & 0xFF)
+        };
+    }
 };
 
 // ============================================================================
@@ -167,6 +183,12 @@ namespace BuiltinTypes {
     inline constexpr TypeId Natural{14, Universe::U0, TYPE_FLAG_EXACT};
     inline constexpr TypeId Real{15, Universe::U0, 0};
     inline constexpr TypeId Float64{16, Universe::U0, 0};
+    inline constexpr TypeId Float32{17, Universe::U0, 0};  // Single precision float
+
+    // Complex number types (subtypes of Number)
+    inline constexpr TypeId Complex{18, Universe::U0, 0};      // Complex number (abstract)
+    inline constexpr TypeId Complex64{19, Universe::U0, 0};    // Complex with Float32 components
+    inline constexpr TypeId Complex128{23, Universe::U0, 0};   // Complex with Float64 components
 
     // Text types
     inline constexpr TypeId Text{20, Universe::U0, 0};
@@ -210,29 +232,83 @@ namespace BuiltinTypes {
 // ============================================================================
 
 /**
- * Represents an instantiated parameterized type like List<Int64>.
+ * Compile-time value for dependent type parameters.
+ * Simplified version - for full functionality see dependent.h
+ */
+struct CTValueSimple {
+    enum class Kind { Nat, Unknown };
+    Kind kind = Kind::Unknown;
+    uint64_t nat_value = 0;
+
+    static CTValueSimple makeNat(uint64_t n) {
+        CTValueSimple v;
+        v.kind = Kind::Nat;
+        v.nat_value = n;
+        return v;
+    }
+
+    static CTValueSimple makeUnknown() {
+        return CTValueSimple();
+    }
+
+    bool isKnown() const { return kind != Kind::Unknown; }
+    bool isNat() const { return kind == Kind::Nat; }
+
+    std::optional<uint64_t> tryGetNat() const {
+        if (kind == Kind::Nat) return nat_value;
+        return std::nullopt;
+    }
+
+    bool operator==(const CTValueSimple& other) const {
+        return kind == other.kind && nat_value == other.nat_value;
+    }
+
+    bool operator<(const CTValueSimple& other) const {
+        if (kind != other.kind) return static_cast<int>(kind) < static_cast<int>(other.kind);
+        return nat_value < other.nat_value;
+    }
+};
+
+/**
+ * Represents an instantiated parameterized type like List<Int64> or Vector<Float64, 100>.
  *
- * This allows tracking the element type of collections at compile time.
+ * This allows tracking the element type of collections at compile time,
+ * as well as dimension information for dependent types.
  */
 struct ParameterizedType {
-    TypeId base_type;                    // The type family (e.g., List)
-    std::vector<TypeId> type_args;       // The type arguments (e.g., [Int64])
+    TypeId base_type;                        // The type family (e.g., List, Vector)
+    std::vector<TypeId> type_args;           // The type arguments (e.g., [Int64])
+    std::vector<CTValueSimple> value_args;   // Value arguments for dimensions (e.g., [100])
 
     bool operator==(const ParameterizedType& other) const {
-        return base_type == other.base_type && type_args == other.type_args;
+        return base_type == other.base_type &&
+               type_args == other.type_args &&
+               value_args == other.value_args;
     }
 
     bool operator<(const ParameterizedType& other) const {
         if (base_type.id != other.base_type.id) return base_type.id < other.base_type.id;
-        return type_args < other.type_args;
+        if (type_args != other.type_args) return type_args < other.type_args;
+        return value_args < other.value_args;
     }
 
     // Check if this is a valid parameterized type (has type arguments)
     bool isParameterized() const { return !type_args.empty(); }
 
+    // Check if this has known dimension values
+    bool hasDimensions() const { return !value_args.empty(); }
+
     // Get the element type for single-parameter types like List<T>
     TypeId elementType() const {
         return type_args.empty() ? BuiltinTypes::Value : type_args[0];
+    }
+
+    // Get a dimension value (for Vector, Tensor, etc.)
+    std::optional<uint64_t> getDimension(size_t idx = 0) const {
+        if (idx < value_args.size()) {
+            return value_args[idx].tryGetNat();
+        }
+        return std::nullopt;
     }
 };
 
@@ -319,6 +395,16 @@ private:
 
     // Parameterized type cache: maps instantiated types to their info
     mutable std::map<ParameterizedType, TypeId> parameterized_cache_;
+
+    // Dimension info cache: maps TypeId to its dimension values
+    mutable std::map<uint16_t, std::vector<CTValueSimple>> dimension_cache_;
+
+    // Function type cache: maps function signatures to their PiType info
+    // Key: TypeId of a function, Value: its PiType (param types + return type)
+    mutable std::map<uint16_t, PiType> function_type_cache_;
+
+    // Next function type ID (allocated dynamically)
+    mutable uint16_t next_function_type_id_ = 500;  // Function types in range 500-999
 
 public:
     /**
@@ -466,6 +552,77 @@ public:
      * Returns Value if elements have different types, otherwise the common type.
      */
     TypeId inferListElementType(const std::vector<TypeId>& element_types) const;
+
+    // ========== Dependent Type Dimension Tracking ==========
+
+    /**
+     * Create a Vector type with element type and dimension.
+     * For example, makeVectorTypeWithDim(Float64, 100) creates Vector<Float64, 100>.
+     */
+    ParameterizedType makeVectorTypeWithDim(TypeId element_type, uint64_t dimension) const;
+
+    /**
+     * Create a Tensor type with element type and dimensions.
+     * For example, makeTensorTypeWithDims(Float64, {3, 4}) creates Tensor<Float64, 3, 4>.
+     */
+    ParameterizedType makeTensorTypeWithDims(TypeId element_type,
+                                              const std::vector<uint64_t>& dimensions) const;
+
+    /**
+     * Store dimension info for a TypeId (used during type synthesis).
+     * This allows extractDimension() to retrieve dimension information later.
+     */
+    void storeDimensionInfo(TypeId type_id, const std::vector<CTValueSimple>& dimensions);
+
+    /**
+     * Retrieve stored dimension info for a TypeId.
+     * Returns nullopt if no dimension info was stored.
+     */
+    std::optional<std::vector<CTValueSimple>> getDimensionInfo(TypeId type_id) const;
+
+    // ========== Function Types (Π-types) ==========
+
+    /**
+     * Create a function type with the given parameter types and return type.
+     * Returns a TypeId that can be used to refer to this function type.
+     *
+     * Example: makeFunctionType({Int64, Int64}, Int64) creates (Int64, Int64) -> Int64
+     */
+    TypeId makeFunctionType(const std::vector<TypeId>& param_types, TypeId return_type) const;
+
+    /**
+     * Create a simple unary function type: input -> output
+     */
+    TypeId makeSimpleFunctionType(TypeId input, TypeId output) const;
+
+    /**
+     * Get the PiType info for a function TypeId.
+     * Returns nullptr if the TypeId is not a function type.
+     */
+    const PiType* getFunctionType(TypeId id) const;
+
+    /**
+     * Check if a TypeId represents a function type.
+     */
+    bool isFunctionType(TypeId id) const;
+
+    /**
+     * Get the return type of a function.
+     * Returns Value if not a function type.
+     */
+    TypeId getFunctionReturnType(TypeId id) const;
+
+    /**
+     * Get the parameter types of a function.
+     * Returns empty vector if not a function type.
+     */
+    std::vector<TypeId> getFunctionParamTypes(TypeId id) const;
+
+    /**
+     * Get a human-readable name for a function type.
+     * For example: "(Int64, Float64) -> Boolean"
+     */
+    std::string getFunctionTypeName(TypeId id) const;
 
 private:
     /**

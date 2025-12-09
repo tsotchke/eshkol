@@ -1,6 +1,7 @@
 # HoTT Implementation Status Report
 
-**Date:** 2025-12-07 (Final)
+**Date:** 2025-12-09 (Updated)
+**Version:** v1.0-foundation
 **Reference:** [HOTT_IMPLEMENTATION_PLAN.md](HOTT_IMPLEMENTATION_PLAN.md)
 
 ---
@@ -282,18 +283,67 @@ BorrowChecker& borrowChecker();                // Access borrow checker
 
 ## Test Coverage
 
-| Component | Status |
-|-----------|--------|
-| Type Infrastructure | Tests passing |
-| Parser Extensions | Tests passing |
-| Type Checker | Integrated and working |
-| Codegen Integration | Working (4/5 type tests passing) |
-| Dependent Types | Infrastructure complete |
-| Linear Types | Infrastructure complete |
+### Summary
 
-Run tests with:
+| Test Suite | Tests | Status |
+|------------|-------|--------|
+| **hott_comprehensive_test.esk** | 103 | All Passing |
+| **hott_types_test.cpp** | 15 | All Passing |
+| **hott_integration_test.esk** | 50+ | All Passing |
+| **type_checker_test.cpp** | Unit tests | Passing |
+
+### Comprehensive Test Categories (103 tests)
+
+1. **Numeric Operations** - Integer/float arithmetic, type promotion
+2. **List Operations** - Construction, access, manipulation
+3. **Vector Operations** - Creation, indexing, type tracking
+4. **Closures** - Higher-order functions, currying, composition
+5. **Named Let Loops** - Recursive binding with type inference
+6. **Function Composition** - compose, pipe, curried functions
+7. **Type Annotations** - Parameter types, return types, aliases
+8. **Compile-Time Constants** - Constant folding and evaluation
+
+### Unit Tests (hott_types_test.cpp)
+
+```cpp
+RUN_TEST(builtin_types_exist);      // All builtin types registered
+RUN_TEST(type_aliases);             // Alias lookup (int→Int64, etc.)
+RUN_TEST(numeric_tower_subtyping);  // Int64 <: Integer <: Number <: Value
+RUN_TEST(text_subtyping);           // String <: Text <: Value
+RUN_TEST(reflexivity);              // T <: T for all T
+RUN_TEST(least_common_supertype);   // LCS(Int64, Float64) = Number
+RUN_TEST(arithmetic_promotion);     // Int64 + Float64 → Float64
+RUN_TEST(type_flags);               // EXACT, LINEAR, PROOF flags
+RUN_TEST(universe_levels);          // U0 for ground, U1 for constructors
+RUN_TEST(runtime_type_mapping);     // TypeId ↔ eshkol_value_type_t
+RUN_TEST(user_type_registration);   // Custom user types
+RUN_TEST(supertype_chain);          // Chain: Int64→Integer→Number→Value
+RUN_TEST(type_families);            // List<a>, Vector<a> parameterization
+RUN_TEST(runtime_rep);              // RuntimeRep::Int64, Pointer, Erased
+RUN_TEST(utility_functions);        // isNumericType, universeToString, etc.
+```
+
+### Integration Tests (hott_integration_test.esk)
+
+12 sections covering:
+1. Parameterized Type Aliases
+2. Closure Return Type Annotations
+3. Compile-Time Constant Evaluation
+4. Type Inference Through Expressions
+5. Function Type Checking
+6. Vector Type Checking
+7. Conditional Type Unification
+8. Recursive Function Types
+9. Complex Number Support
+10. Mixed Type Operations
+11. Lambda Type Annotations
+12. Type Alias Scoping
+
+Run all tests with:
 ```bash
-./scripts/run_types_tests.sh
+cmake --build build && ./build/eshkol-run tests/types/hott_comprehensive_test.esk
+./build/hott_types_test
+./build/eshkol-run tests/types/hott_integration_test.esk
 ```
 
 ---
@@ -312,17 +362,181 @@ See also:
 
 ---
 
+## Architecture Deep Dive
+
+### Type System Flow
+
+```
+┌────────────────────┐
+│   Source Code      │ (: x integer)
+└────────┬───────────┘
+         │
+         ▼
+┌────────────────────┐
+│     Parser         │ parseTypeExpression()
+│                    │ → hott_type_expr_t
+└────────┬───────────┘
+         │
+         ▼
+┌────────────────────┐
+│  Type Checker      │ synthesize() / check()
+│                    │ → TypeCheckResult
+│  - Context         │   (stores in AST)
+│  - LinearContext   │
+│  - BorrowChecker   │
+└────────┬───────────┘
+         │
+         ▼
+┌────────────────────┐
+│  TypeEnvironment   │ isSubtype(), promoteForArithmetic()
+│                    │ makeFunctionType()
+│  - TypeNode map    │
+│  - Subtype cache   │
+│  - Function cache  │
+└────────┬───────────┘
+         │
+         ▼
+┌────────────────────┐
+│   LLVM Codegen     │ TypedValue with hott_type
+│                    │ Type-directed optimization
+└────────────────────┘
+```
+
+### Key Data Structures
+
+**TypeId** (32-bit packed):
+```
+┌──────────────────┬──────────┬──────────┐
+│    ID (16 bits)  │ Level(8) │ Flags(8) │
+└──────────────────┴──────────┴──────────┘
+```
+
+**TypeNode** (in TypeEnvironment):
+```cpp
+struct TypeNode {
+    TypeId id;
+    std::string name;
+    std::optional<TypeId> supertype;
+    std::vector<TypeId> subtypes;
+    std::vector<std::string> param_names;  // For type families
+    RuntimeRep runtime_rep;
+    bool is_type_family;
+    Origin origin;  // Builtin, UserDefined, Inferred
+};
+```
+
+**PiType** (Function types):
+```cpp
+struct PiType {
+    struct ParamInfo {
+        std::string name;
+        TypeId type;
+        bool is_dependent;
+    };
+    std::vector<ParamInfo> params;
+    TypeId return_type;
+    bool is_dependent;
+};
+```
+
+### Builtin Type IDs
+
+| ID | Type | Universe | Supertype |
+|----|------|----------|-----------|
+| 1 | Value | U0 | - |
+| 10 | Number | U0 | Value |
+| 11 | Integer | U0 | Number |
+| 12 | Int64 | U0 | Integer |
+| 13 | Natural | U0 | Integer |
+| 20 | Real | U0 | Number |
+| 21 | Float64 | U0 | Real |
+| 30 | Text | U0 | Value |
+| 31 | String | U0 | Text |
+| 32 | Char | U0 | Text |
+| 40 | Boolean | U0 | Value |
+| 50 | List | U1 | - |
+| 51 | Vector | U1 | - |
+| 52 | Tensor | U1 | - |
+| 60 | Function | U1 | - |
+| 70 | DualNumber | U1 | - |
+| 71 | ADNode | U1 | - |
+| 80 | HashTable | U1 | - |
+
+---
+
 ## Future Enhancements
 
-1. **Full Π-type evaluation** - Implement dependent type substitution during type checking
+### Post-v1.0 Roadmap
+
+1. **Full Π-type evaluation** - Dependent type substitution during type checking
 2. **Runtime dimension tracking** - Carry dimension info through runtime for dynamic checking
 3. **Linear type syntax** - Add `(linear T)` type annotation in parser
 4. **Proof terms** - Allow constructing and manipulating proof objects
 5. **Effect system** - Add effect tracking for IO, state, exceptions
+6. **Refinement types** - Types with predicates: `(: x (and integer (> 0)))`
+7. **Row polymorphism** - Extensible records and variants
+8. **Higher-kinded types** - Type constructors as first-class values
 
-## Completed (Previously Future Work)
+### Completed (Previously Future Work)
 
 - ✅ **Σ-types (Dependent pairs)** - Added SigmaType and SigmaValue in dependent.h
 - ✅ **Borrow checking** - Full ownership/borrowing semantics in BorrowChecker
 - ✅ **Escape hatches** - UnsafeContext for bypassing safety checks
 - ✅ **Linear scope verification** - checkLinearLet for scope-end checking
+- ✅ **Parameterized type aliases** - `instantiateTypeAlias()` with substitution
+- ✅ **Symbolic expression evaluation** - `evaluateConstExpr()` for constants
+- ✅ **Dimension extraction** - `extractDimension()` with cache lookup
+- ✅ **Closure HoTT type ID** - Packed into closure metadata
+
+---
+
+## Quick Reference
+
+### Type Annotation Syntax
+
+```scheme
+;; Variable annotation
+(: name type)
+
+;; Function parameter
+(define (f (x : integer)) ...)
+
+;; Function return type
+(define (f (x : integer)) : integer ...)
+
+;; Lambda with types
+(lambda ((x : integer)) : integer body)
+
+;; Arrow types
+(-> integer integer)           ;; int → int
+(-> integer integer integer)   ;; (int, int) → int
+
+;; Type aliases
+(define-type IntList (list integer))
+(define-type (Pair a b) (* a b))
+```
+
+### Common Type Promotions
+
+| Left | Right | Result |
+|------|-------|--------|
+| Int64 | Int64 | Int64 |
+| Int64 | Float64 | Float64 |
+| Float64 | Int64 | Float64 |
+| Float64 | Float64 | Float64 |
+| Integer | Real | Float64 |
+| Number | Int64 | Int64 |
+| Value | T | T |
+
+### Runtime Type Mapping
+
+| HoTT Type | Runtime Tag | RuntimeRep |
+|-----------|-------------|------------|
+| Int64 | ESHKOL_VALUE_INT64 | Int64 |
+| Float64 | ESHKOL_VALUE_DOUBLE | Float64 |
+| String | ESHKOL_VALUE_STRING_PTR | Pointer |
+| Boolean | ESHKOL_VALUE_BOOL | Int64 |
+| List | ESHKOL_VALUE_CONS_PTR | Pointer |
+| Vector | ESHKOL_VALUE_VECTOR_PTR | Pointer |
+| Tensor | ESHKOL_VALUE_TENSOR_PTR | Pointer |
+| Eq, Bounded | - | Erased |

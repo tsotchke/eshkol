@@ -896,17 +896,26 @@ public:
                 eshkol::hott::TypeChecker type_checker(type_env);
 
                 // Type check all top-level definitions
+                // Note: const_cast is safe here because we're intentionally annotating
+                // the AST with inferred types during type checking phase
                 for (size_t i = 0; i < num_asts; i++) {
-                    if (asts[i].type == ESHKOL_OP && asts[i].operation.op == ESHKOL_DEFINE_OP) {
-                        auto result = type_checker.synthesize(&asts[i]);
-                        if (!result.success) {
-                            // Type error - report but continue for gradual typing
-                            eshkol_warn("HoTT type check warning in '%s': %s",
-                                       asts[i].operation.define_op.name,
-                                       result.error_message.c_str());
-                        } else {
-                            eshkol_debug("HoTT: type checked '%s' successfully",
-                                        asts[i].operation.define_op.name);
+                    if (asts[i].type == ESHKOL_OP) {
+                        // Process type definitions first to register type aliases
+                        if (asts[i].operation.op == ESHKOL_DEFINE_TYPE_OP) {
+                            type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts[i]));
+                        }
+                        // Then process regular definitions
+                        else if (asts[i].operation.op == ESHKOL_DEFINE_OP) {
+                            auto result = type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts[i]));
+                            if (!result.success) {
+                                // Type error - report but continue for gradual typing
+                                eshkol_warn("HoTT type check warning in '%s': %s",
+                                           asts[i].operation.define_op.name,
+                                           result.error_message.c_str());
+                            } else {
+                                eshkol_debug("HoTT: type checked '%s' successfully",
+                                            asts[i].operation.define_op.name);
+                            }
                         }
                     }
                 }
@@ -3998,7 +4007,7 @@ private:
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
     Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args, const char* caller_info = "unknown") {
-        eshkol_warn("codegenClosureCall from %s: call_args.size=%zu", caller_info, call_args.size());
+        (void)caller_info;  // Used for debugging
         // Check if the result is a CLOSURE_PTR or a direct function pointer
         Value* type_tag = getTaggedValueType(func_result);
         Value* base_type = builder->CreateAnd(type_tag,
@@ -7963,19 +7972,13 @@ private:
             // If we can't find the function directly, check if it's a variable containing a function pointer
             // Check local symbols first, then global symbols
             Value* var_value = nullptr;
-            eshkol_warn("Variable lookup for '%s': local_count=%zu, global_count=%zu",
-                       func_name.c_str(), symbol_table.count(func_name), global_symbol_table.count(func_name));
             auto local_it = symbol_table.find(func_name);
             if (local_it != symbol_table.end()) {
                 var_value = local_it->second;
-                eshkol_warn("  Found in local symbol_table");
             } else {
                 auto global_it = global_symbol_table.find(func_name);
                 if (global_it != global_symbol_table.end()) {
                     var_value = global_it->second;
-                    eshkol_warn("  Found in global_symbol_table");
-                } else {
-                    eshkol_warn("  NOT FOUND in either table");
                 }
             }
 
@@ -7983,11 +7986,6 @@ private:
             // Before trying to match lambdas by arity, check if we need an indirect call
             if (var_value) {
                 Value* func_val = var_value;
-                eshkol_warn("var_value found for '%s': isLoad=%d, isAlloca=%d, isArg=%d, isGlobal=%d, isFunc=%d, isPtr=%d",
-                           func_name.c_str(),
-                           isa<LoadInst>(func_val), isa<AllocaInst>(func_val),
-                           isa<Argument>(func_val), isa<GlobalVariable>(func_val),
-                           isa<Function>(func_val), func_val->getType()->isPointerTy());
 
                 // CLOSURE FIX: Handle LoadInst - this is a loaded captured value from closure environment
                 // The captured value is a CLOSURE_PTR tagged_value, so use codegenClosureCall to handle it properly
@@ -8114,7 +8112,6 @@ private:
 
                     // Generate all arguments first
                     std::vector<Value*> call_args;
-                    eshkol_warn("GlobalVariable call to %s: num_vars=%llu", func_name.c_str(), (unsigned long long)op->call_op.num_vars);
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
                         if (!arg) continue;
@@ -8133,7 +8130,6 @@ private:
                         call_args.push_back(arg);
                     }
 
-                    eshkol_warn("GlobalVariable call to %s: call_args.size=%zu", func_name.c_str(), call_args.size());
                     // Use codegenClosureCall which properly handles captured values
                     return codegenClosureCall(loaded_val, call_args, "GlobalVariable");
                 }
@@ -12002,45 +11998,81 @@ private:
             // Compute return type info for closure metadata:
             //   - Bits 0-7:   return_type (CLOSURE_RETURN_*)
             //   - Bits 8-15:  input_arity (num_params)
-            //   - Bits 16-47: hott_type_id (0 for now)
+            //   - Bits 16-47: hott_type_id
             uint8_t return_type_category = CLOSURE_RETURN_UNKNOWN;
+            uint32_t hott_type_id = eshkol::hott::BuiltinTypes::Value.id;  // Default to Value (top type)
             if (op->lambda_op.return_type) {
                 hott_type_kind_t kind = op->lambda_op.return_type->kind;
                 switch (kind) {
                     case HOTT_TYPE_INTEGER:
+                        return_type_category = CLOSURE_RETURN_SCALAR;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Integer.id;
+                        break;
                     case HOTT_TYPE_REAL:
+                        return_type_category = CLOSURE_RETURN_SCALAR;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Real.id;
+                        break;
                     case HOTT_TYPE_NUMBER:
                         return_type_category = CLOSURE_RETURN_SCALAR;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Number.id;
                         break;
                     case HOTT_TYPE_VECTOR:
+                        return_type_category = CLOSURE_RETURN_VECTOR;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Vector.id;
+                        break;
                     case HOTT_TYPE_TENSOR:
                         return_type_category = CLOSURE_RETURN_VECTOR;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Tensor.id;
                         break;
                     case HOTT_TYPE_LIST:
+                        return_type_category = CLOSURE_RETURN_LIST;
+                        hott_type_id = eshkol::hott::BuiltinTypes::List.id;
+                        break;
                     case HOTT_TYPE_PAIR:
                         return_type_category = CLOSURE_RETURN_LIST;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Pair.id;
                         break;
                     case HOTT_TYPE_ARROW:
                         return_type_category = CLOSURE_RETURN_FUNCTION;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Function.id;
                         break;
                     case HOTT_TYPE_BOOLEAN:
                         return_type_category = CLOSURE_RETURN_BOOL;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Boolean.id;
                         break;
                     case HOTT_TYPE_STRING:
                         return_type_category = CLOSURE_RETURN_STRING;
+                        hott_type_id = eshkol::hott::BuiltinTypes::String.id;
+                        break;
+                    case HOTT_TYPE_CHAR:
+                        return_type_category = CLOSURE_RETURN_SCALAR;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Char.id;
+                        break;
+                    case HOTT_TYPE_SYMBOL:
+                        return_type_category = CLOSURE_RETURN_UNKNOWN;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Symbol.id;
                         break;
                     case HOTT_TYPE_NULL:
+                        return_type_category = CLOSURE_RETURN_VOID;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Null.id;
+                        break;
                     case HOTT_TYPE_NOTHING:
                         return_type_category = CLOSURE_RETURN_VOID;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Invalid.id;
+                        break;
+                    case HOTT_TYPE_ANY:
+                        return_type_category = CLOSURE_RETURN_UNKNOWN;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Value.id;
                         break;
                     default:
                         return_type_category = CLOSURE_RETURN_UNKNOWN;
+                        hott_type_id = eshkol::hott::BuiltinTypes::Value.id;
                         break;
                 }
             }
             uint64_t return_type_info = (uint64_t)return_type_category;
             return_type_info |= ((uint64_t)(op->lambda_op.num_params & 0xFF)) << 8;
-            // hott_type_id will be added when we integrate with the type checker
+            return_type_info |= ((uint64_t)hott_type_id) << 16;  // Pack HoTT type ID into bits 16-47
             Value* return_type_val = ConstantInt::get(int64_type, return_type_info);
 
             eshkol_debug("Closure %s: packed_info=0x%llx (captures=%zu, fixed_params=%llu, variadic=%d), return_type=%d",
@@ -12252,42 +12284,79 @@ private:
 
         // Compute return type info for closure metadata (same logic as captures path)
         uint8_t return_type_category = CLOSURE_RETURN_UNKNOWN;
+        uint32_t hott_type_id = eshkol::hott::BuiltinTypes::Value.id;  // Default to Value (top type)
         if (op->lambda_op.return_type) {
             hott_type_kind_t kind = op->lambda_op.return_type->kind;
             switch (kind) {
                 case HOTT_TYPE_INTEGER:
+                    return_type_category = CLOSURE_RETURN_SCALAR;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Integer.id;
+                    break;
                 case HOTT_TYPE_REAL:
+                    return_type_category = CLOSURE_RETURN_SCALAR;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Real.id;
+                    break;
                 case HOTT_TYPE_NUMBER:
                     return_type_category = CLOSURE_RETURN_SCALAR;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Number.id;
                     break;
                 case HOTT_TYPE_VECTOR:
+                    return_type_category = CLOSURE_RETURN_VECTOR;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Vector.id;
+                    break;
                 case HOTT_TYPE_TENSOR:
                     return_type_category = CLOSURE_RETURN_VECTOR;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Tensor.id;
                     break;
                 case HOTT_TYPE_LIST:
+                    return_type_category = CLOSURE_RETURN_LIST;
+                    hott_type_id = eshkol::hott::BuiltinTypes::List.id;
+                    break;
                 case HOTT_TYPE_PAIR:
                     return_type_category = CLOSURE_RETURN_LIST;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Pair.id;
                     break;
                 case HOTT_TYPE_ARROW:
                     return_type_category = CLOSURE_RETURN_FUNCTION;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Function.id;
                     break;
                 case HOTT_TYPE_BOOLEAN:
                     return_type_category = CLOSURE_RETURN_BOOL;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Boolean.id;
                     break;
                 case HOTT_TYPE_STRING:
                     return_type_category = CLOSURE_RETURN_STRING;
+                    hott_type_id = eshkol::hott::BuiltinTypes::String.id;
+                    break;
+                case HOTT_TYPE_CHAR:
+                    return_type_category = CLOSURE_RETURN_SCALAR;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Char.id;
+                    break;
+                case HOTT_TYPE_SYMBOL:
+                    return_type_category = CLOSURE_RETURN_UNKNOWN;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Symbol.id;
                     break;
                 case HOTT_TYPE_NULL:
+                    return_type_category = CLOSURE_RETURN_VOID;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Null.id;
+                    break;
                 case HOTT_TYPE_NOTHING:
                     return_type_category = CLOSURE_RETURN_VOID;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Invalid.id;
+                    break;
+                case HOTT_TYPE_ANY:
+                    return_type_category = CLOSURE_RETURN_UNKNOWN;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Value.id;
                     break;
                 default:
                     return_type_category = CLOSURE_RETURN_UNKNOWN;
+                    hott_type_id = eshkol::hott::BuiltinTypes::Value.id;
                     break;
             }
         }
         uint64_t return_type_info_val = (uint64_t)return_type_category;
         return_type_info_val |= ((uint64_t)(op->lambda_op.num_params & 0xFF)) << 8;
+        return_type_info_val |= ((uint64_t)hott_type_id) << 16;  // Pack HoTT type ID into bits 16-47
         Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
 
         Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
@@ -12671,13 +12740,97 @@ private:
             init_values.push_back(init_val);
         }
 
+        // NAMED LET CAPTURE FIX: Find free variables in the loop body and create GlobalVariables
+        // for non-global captures. This is similar to how letrec handles captures.
+        // Variables that are already GlobalVariables can be accessed directly.
+        // Variables that are AllocaInst or Argument need to be stored in GlobalVariables.
+
+        // Build set of loop parameter names (these are bound, not free)
+        std::set<std::string> bound_names(param_names.begin(), param_names.end());
+        bound_names.insert(loop_name);  // The loop name itself is also bound
+
+        // Find free variables in the body
+        std::vector<std::string> free_vars;
+        findFreeVariables(op->let_op.body, prev_symbols, nullptr, 0, free_vars);
+
+        // Remove loop parameters from free vars
+        free_vars.erase(
+            std::remove_if(free_vars.begin(), free_vars.end(),
+                [&bound_names](const std::string& var) { return bound_names.count(var) > 0; }),
+            free_vars.end());
+
+        // Create GlobalVariables for non-global captures
+        static int named_let_counter = 0;
+        int current_counter = named_let_counter++;
+        std::unordered_map<std::string, GlobalVariable*> capture_globals;
+
+        for (const std::string& fv : free_vars) {
+            auto it = prev_symbols.find(fv);
+            if (it == prev_symbols.end() || !it->second) continue;
+
+            Value* outer_val = it->second;
+
+            // If already a GlobalVariable, no need to create a new one
+            if (isa<GlobalVariable>(outer_val)) {
+                capture_globals[fv] = dyn_cast<GlobalVariable>(outer_val);
+                eshkol_debug("Named let '%s': capture '%s' is already GlobalVariable",
+                           loop_name.c_str(), fv.c_str());
+            } else {
+                // Create a new GlobalVariable to hold the captured value
+                std::string global_name = module_prefix + "_named_let_capture_" + loop_name +
+                                         "_" + fv + "_" + std::to_string(current_counter);
+                GlobalVariable* capture_global = new GlobalVariable(
+                    *module,
+                    tagged_value_type,
+                    false,  // not constant (mutable captures like set!)
+                    GlobalValue::InternalLinkage,
+                    UndefValue::get(tagged_value_type),
+                    global_name
+                );
+                capture_globals[fv] = capture_global;
+
+                // Load the value from the outer scope and store it in the global
+                Value* captured_val = nullptr;
+                if (isa<AllocaInst>(outer_val)) {
+                    captured_val = builder->CreateLoad(
+                        dyn_cast<AllocaInst>(outer_val)->getAllocatedType(), outer_val);
+                } else if (isa<Argument>(outer_val)) {
+                    // For Argument, check if it's a pointer type (capture pointer) or value type
+                    // When the outer function is a lambda with captures, captured variables
+                    // are passed as pointers to closure env slots
+                    if (outer_val->getType()->isPointerTy()) {
+                        captured_val = builder->CreateLoad(tagged_value_type, outer_val,
+                                                          fv + "_cap_load");
+                        eshkol_debug("Named let '%s': loading capture '%s' from pointer argument",
+                                   loop_name.c_str(), fv.c_str());
+                    } else {
+                        captured_val = outer_val;  // Arguments are direct values
+                    }
+                } else {
+                    captured_val = outer_val;
+                }
+
+                // Ensure tagged_value type
+                if (captured_val->getType() != tagged_value_type) {
+                    if (captured_val->getType()->isDoubleTy()) {
+                        captured_val = packDoubleToTaggedValue(captured_val);
+                    } else if (captured_val->getType()->isIntegerTy(64)) {
+                        captured_val = packInt64ToTaggedValue(captured_val, true);
+                    }
+                }
+
+                builder->CreateStore(captured_val, capture_global);
+                eshkol_debug("Named let '%s': created GlobalVariable for capture '%s'",
+                           loop_name.c_str(), fv.c_str());
+            }
+        }
+
         // Create the loop function: (lambda (param1 param2 ...) body)
         // Function signature: all parameters are tagged_value, returns tagged_value
         std::vector<Type*> param_types(param_names.size(), tagged_value_type);
         FunctionType* loop_func_type = FunctionType::get(tagged_value_type, param_types, false);
 
-        static int named_let_counter = 0;
-        std::string func_name = "named_let_" + loop_name + "_" + std::to_string(named_let_counter++);
+        std::string func_name = "named_let_" + loop_name + "_" + std::to_string(current_counter);
         Function* loop_func = Function::Create(
             loop_func_type,
             Function::ExternalLinkage,
@@ -12705,12 +12858,26 @@ private:
         builder->SetInsertPoint(entry);
         current_function = loop_func;
 
-        // Clear symbol table for function scope but keep the loop function visible
+        // Clear symbol table for function scope
         symbol_table.clear();
         symbol_table[loop_name + "_func"] = loop_func;
         function_table[loop_name] = loop_func;
 
-        // Add parameters to symbol table
+        // Add capture GlobalVariables to symbol table (they can be accessed from any function)
+        for (auto& capture : capture_globals) {
+            symbol_table[capture.first] = capture.second;
+        }
+
+        // Also add any other GlobalVariables from prev_symbols that weren't captured
+        // (e.g., stdlib functions, other top-level defines)
+        for (auto& entry : prev_symbols) {
+            if (entry.second && isa<GlobalVariable>(entry.second) &&
+                capture_globals.find(entry.first) == capture_globals.end()) {
+                symbol_table[entry.first] = entry.second;
+            }
+        }
+
+        // Add parameters to symbol table (these shadow any outer vars with same name)
         arg_it = loop_func->arg_begin();
         for (size_t i = 0; i < param_names.size(); i++, ++arg_it) {
             // Create alloca for parameter
