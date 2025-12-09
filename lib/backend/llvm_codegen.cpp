@@ -5577,6 +5577,12 @@ private:
             case ESHKOL_UNLESS_OP:
                 return codegenUnless(op);
 
+            case ESHKOL_GUARD_OP:
+                return codegenGuard(op);
+
+            case ESHKOL_RAISE_OP:
+                return codegenRaise(op);
+
             case ESHKOL_QUOTE_OP:
                 // Quote returns the AST as literal data
                 if (op->call_op.num_vars > 0) {
@@ -9746,6 +9752,47 @@ private:
         return arith_->extractAsDouble(tagged);
     }
 
+    // Extract string pointer from tagged value
+    // Returns i8* pointer to the string, or null if not a string
+    Value* extractStringFromTagged(Value* tagged) {
+        if (!tagged) return nullptr;
+
+        // Check if it's a string pointer type
+        Value* type_val = getTaggedValueType(tagged);
+        Value* base_type = builder->CreateAnd(type_val, ConstantInt::get(int8_type, 0x0F));
+        Value* is_string = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+
+        // Create branches to handle string vs non-string
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* string_block = BasicBlock::Create(*context, "is_string", current_func);
+        BasicBlock* not_string_block = BasicBlock::Create(*context, "not_string", current_func);
+        BasicBlock* merge_block = BasicBlock::Create(*context, "merge_string_extract", current_func);
+
+        builder->CreateCondBr(is_string, string_block, not_string_block);
+
+        // String path: extract pointer
+        builder->SetInsertPoint(string_block);
+        Value* str_int = unpackInt64FromTaggedValue(tagged);
+        Value* str_ptr = builder->CreateIntToPtr(str_int, builder->getPtrTy());
+        builder->CreateBr(merge_block);
+        BasicBlock* string_exit = builder->GetInsertBlock();
+
+        // Not string path: return null
+        builder->SetInsertPoint(not_string_block);
+        Value* null_ptr = ConstantPointerNull::get(builder->getPtrTy());
+        builder->CreateBr(merge_block);
+        BasicBlock* not_string_exit = builder->GetInsertBlock();
+
+        // Merge
+        builder->SetInsertPoint(merge_block);
+        PHINode* result = builder->CreatePHI(builder->getPtrTy(), 2, "str_result");
+        result->addIncoming(str_ptr, string_exit);
+        result->addIncoming(null_ptr, not_string_exit);
+
+        return result;
+    }
+
     // MIGRATED: Delegates to ControlFlowCodegen
     // Helper to check if a tagged value is "truthy" (non-false, non-null, non-zero)
     Value* isTruthy(Value* val) {
@@ -9764,6 +9811,302 @@ private:
     // MIGRATED: Cond expression - delegates to ControlFlowCodegen
     Value* codegenCond(const eshkol_operations_t* op) {
         return flow_->codegenCond(op);
+    }
+
+    // Exception handling: guard expression
+    // Syntax: (guard (var clause ...) body ...)
+    // Sets up setjmp handler, evaluates body, handles exceptions via clauses
+    Value* codegenGuard(const eshkol_operations_t* op) {
+        // Get runtime functions
+        Function* push_handler_func = module->getFunction("eshkol_push_exception_handler");
+        Function* pop_handler_func = module->getFunction("eshkol_pop_exception_handler");
+        Function* get_exception_func = module->getFunction("eshkol_get_current_exception");
+        Function* clear_exception_func = module->getFunction("eshkol_clear_current_exception");
+        Function* setjmp_func = module->getFunction("setjmp");
+
+        // Declare functions if not already declared
+        if (!push_handler_func) {
+            FunctionType* push_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+            push_handler_func = Function::Create(push_type, Function::ExternalLinkage, "eshkol_push_exception_handler", module.get());
+        }
+        if (!pop_handler_func) {
+            FunctionType* pop_type = FunctionType::get(builder->getVoidTy(), {}, false);
+            pop_handler_func = Function::Create(pop_type, Function::ExternalLinkage, "eshkol_pop_exception_handler", module.get());
+        }
+        if (!get_exception_func) {
+            FunctionType* get_type = FunctionType::get(builder->getPtrTy(), {}, false);
+            get_exception_func = Function::Create(get_type, Function::ExternalLinkage, "eshkol_get_current_exception", module.get());
+        }
+        if (!clear_exception_func) {
+            FunctionType* clear_type = FunctionType::get(builder->getVoidTy(), {}, false);
+            clear_exception_func = Function::Create(clear_type, Function::ExternalLinkage, "eshkol_clear_current_exception", module.get());
+        }
+        if (!setjmp_func) {
+            // setjmp takes a jmp_buf pointer and returns int
+            FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
+            setjmp_func = Function::Create(setjmp_type, Function::ExternalLinkage, "setjmp", module.get());
+        }
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* entry_block = builder->GetInsertBlock();
+
+        // Create basic blocks - IMPORTANT: setup_block is separate to avoid
+        // corrupting the caller's block when we're nested inside another expression
+        BasicBlock* setup_block = BasicBlock::Create(*context, "guard_setup", current_func);
+        BasicBlock* try_block = BasicBlock::Create(*context, "guard_try", current_func);
+        BasicBlock* handler_block = BasicBlock::Create(*context, "guard_handler", current_func);
+        BasicBlock* done_block = BasicBlock::Create(*context, "guard_done", current_func);
+
+        // Branch from entry to setup
+        builder->CreateBr(setup_block);
+
+        // Setup block: allocate jmp_buf, push handler, call setjmp
+        builder->SetInsertPoint(setup_block);
+
+        // Allocate jmp_buf on stack (platform-specific size, use 200 bytes to be safe)
+        Type* jmp_buf_type = ArrayType::get(builder->getInt8Ty(), 200);
+        Value* jmp_buf_alloc = builder->CreateAlloca(jmp_buf_type, nullptr, "jmp_buf");
+
+        // Push exception handler
+        builder->CreateCall(push_handler_func, {jmp_buf_alloc});
+
+        // Call setjmp - returns 0 on first call, non-zero when longjmp is called
+        Value* setjmp_result = builder->CreateCall(setjmp_func, {jmp_buf_alloc}, "setjmp_result");
+        Value* is_exception = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
+
+        builder->CreateCondBr(is_exception, handler_block, try_block);
+
+        // Try block - evaluate body
+        builder->SetInsertPoint(try_block);
+        Value* body_result = nullptr;
+        if (op->guard_op.body && op->guard_op.num_body_exprs > 0) {
+            TypedValue body_typed = codegenTypedAST(&op->guard_op.body[0]);
+            // Convert to tagged value to ensure consistent type for PHI node
+            body_result = typedValueToTaggedValue(body_typed);
+        }
+        if (!body_result) {
+            body_result = packNullToTaggedValue();
+        }
+
+        // After evaluating the body, check where we ended up
+        // The body might have changed the insert point (e.g., nested guard, error)
+        BasicBlock* body_end_block = builder->GetInsertBlock();
+        bool body_end_terminated = body_end_block->getTerminator() != nullptr;
+
+        BasicBlock* try_exit_block = nullptr;
+        if (!body_end_terminated) {
+            // Current block is not terminated - body completed normally
+            // Continue from wherever we are (might be try_block or inner guard's done_block)
+            builder->CreateCall(pop_handler_func, {});
+            try_exit_block = builder->GetInsertBlock();
+            builder->CreateBr(done_block);
+        }
+        // If body_end_block is terminated (e.g., by unreachable after error/raise),
+        // control already diverged and we don't need to add anything
+
+        // Handler block - exception was raised
+        builder->SetInsertPoint(handler_block);
+
+        // Pop handler first
+        builder->CreateCall(pop_handler_func, {});
+
+        // Get current exception
+        Value* exception_ptr = builder->CreateCall(get_exception_func, {}, "exception_ptr");
+
+        // Bind exception to variable in scope
+        const char* var_name = op->guard_op.var_name;
+        if (var_name) {
+            // Pack exception pointer as tagged value
+            Value* exc_tagged = packPtrToTaggedValue(exception_ptr, ESHKOL_VALUE_EXCEPTION);
+            symbol_table[var_name] = exc_tagged;
+        }
+
+        // Evaluate guard clauses (similar to cond)
+        Value* handler_result = nullptr;
+        BasicBlock* handler_exit_block = nullptr;
+
+        if (op->guard_op.num_clauses > 0) {
+            std::vector<std::pair<Value*, BasicBlock*>> phi_inputs;
+
+            for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                const eshkol_ast_t* clause = &op->guard_op.clauses[i];
+
+                if (clause->type != ESHKOL_OP || clause->operation.op != ESHKOL_CALL_OP) {
+                    continue;
+                }
+
+                // Check if this is an 'else' clause
+                bool is_else = false;
+                if (clause->operation.call_op.func &&
+                    clause->operation.call_op.func->type == ESHKOL_VAR &&
+                    clause->operation.call_op.func->variable.id) {
+                    is_else = (strcmp(clause->operation.call_op.func->variable.id, "else") == 0);
+                }
+
+                if (is_else) {
+                    // Evaluate body expressions
+                    Value* result = nullptr;
+                    for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                        TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
+                        // Convert to tagged value for consistent PHI node type
+                        result = typedValueToTaggedValue(typed);
+                    }
+                    if (!result) result = packNullToTaggedValue();
+
+                    // Clear exception after handling
+                    builder->CreateCall(clear_exception_func, {});
+
+                    handler_exit_block = builder->GetInsertBlock();
+                    phi_inputs.push_back({result, handler_exit_block});
+                    builder->CreateBr(done_block);
+                    break;
+                } else {
+                    // Evaluate test
+                    TypedValue test_typed = codegenTypedAST(clause->operation.call_op.func);
+                    Value* test = test_typed.llvm_value;
+                    if (!test) continue;
+
+                    Value* is_true = flow_->isTruthy(test);
+                    BasicBlock* then_block = BasicBlock::Create(*context, "guard_clause_then", current_func);
+                    BasicBlock* next_block = BasicBlock::Create(*context, "guard_clause_next", current_func);
+
+                    builder->CreateCondBr(is_true, then_block, next_block);
+
+                    // Then block - evaluate body expressions
+                    builder->SetInsertPoint(then_block);
+                    Value* result = nullptr;
+                    for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                        TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
+                        // Convert to tagged value for consistent PHI node type
+                        result = typedValueToTaggedValue(typed);
+                    }
+                    if (!result) result = packNullToTaggedValue();
+
+                    // Clear exception after handling
+                    builder->CreateCall(clear_exception_func, {});
+
+                    handler_exit_block = builder->GetInsertBlock();
+                    phi_inputs.push_back({result, handler_exit_block});
+                    builder->CreateBr(done_block);
+
+                    // Continue to next clause
+                    builder->SetInsertPoint(next_block);
+                }
+            }
+
+            // If we fall through (no clause matched), re-raise
+            // For now, just return the exception as-is
+            if (builder->GetInsertBlock()->getTerminator() == nullptr) {
+                // Re-get exception pointer since we may be in a different block
+                Value* fallthrough_exc = builder->CreateCall(get_exception_func, {}, "fallthrough_exception");
+                Value* exc_tagged = packPtrToTaggedValue(fallthrough_exc, ESHKOL_VALUE_EXCEPTION);
+                phi_inputs.push_back({exc_tagged, builder->GetInsertBlock()});
+                builder->CreateBr(done_block);
+            }
+
+            // Done block - merge results
+            builder->SetInsertPoint(done_block);
+            if (phi_inputs.size() == 1 && try_exit_block) {
+                PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "guard_result");
+                phi->addIncoming(body_result, try_exit_block);
+                phi->addIncoming(phi_inputs[0].first, phi_inputs[0].second);
+                return phi;
+            } else if (phi_inputs.size() > 0) {
+                // Calculate the number of incoming edges (with or without try_exit)
+                size_t num_inputs = phi_inputs.size() + (try_exit_block ? 1 : 0);
+                PHINode* phi = builder->CreatePHI(tagged_value_type, num_inputs, "guard_result");
+                if (try_exit_block) {
+                    phi->addIncoming(body_result, try_exit_block);
+                }
+                for (auto& [val, block] : phi_inputs) {
+                    phi->addIncoming(val, block);
+                }
+                return phi;
+            } else if (try_exit_block) {
+                // No handler inputs but we have a normal exit
+                return body_result;
+            }
+        } else {
+            // No clauses - just return exception
+            builder->CreateCall(clear_exception_func, {});
+            Value* exc_tagged = packPtrToTaggedValue(exception_ptr, ESHKOL_VALUE_EXCEPTION);
+            BasicBlock* handler_exit = builder->GetInsertBlock();  // Capture current block
+            builder->CreateBr(done_block);
+
+            builder->SetInsertPoint(done_block);
+            if (try_exit_block) {
+                PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "guard_result");
+                phi->addIncoming(body_result, try_exit_block);
+                phi->addIncoming(exc_tagged, handler_exit);  // Use captured block
+                return phi;
+            } else {
+                // Body always throws, just return exception value
+                return exc_tagged;
+            }
+        }
+
+        return packNullToTaggedValue();
+    }
+
+    // Exception handling: raise expression
+    // Syntax: (raise exception)
+    // Simplified: Always create a new exception from the given value
+    Value* codegenRaise(const eshkol_operations_t* op) {
+        // Get or declare eshkol_raise function
+        Function* raise_func = module->getFunction("eshkol_raise");
+        if (!raise_func) {
+            FunctionType* raise_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+            raise_func = Function::Create(raise_type, Function::ExternalLinkage, "eshkol_raise", module.get());
+            raise_func->setDoesNotReturn();
+        }
+
+        // Get or declare eshkol_make_exception function
+        Function* make_exc_func = module->getFunction("eshkol_make_exception");
+        if (!make_exc_func) {
+            FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
+                {builder->getInt32Ty(), builder->getPtrTy()}, false);
+            make_exc_func = Function::Create(make_type, Function::ExternalLinkage, "eshkol_make_exception", module.get());
+        }
+
+        // Evaluate exception expression and create exception object
+        Value* error_msg = nullptr;
+        if (op->raise_op.exception) {
+            // Check if it's a string literal at compile time - optimize common case
+            if (op->raise_op.exception->type == ESHKOL_STRING) {
+                error_msg = codegenString(op->raise_op.exception->str_val.ptr);
+            } else {
+                // For other expressions, extract string at runtime
+                Value* expr_val = codegenAST(op->raise_op.exception);
+                if (expr_val) {
+                    // extractStringFromTagged returns string ptr or null
+                    // We need to handle the null case with a fallback
+                    Value* extracted = extractStringFromTagged(expr_val);
+                    // Check if extracted is null and use fallback
+                    Value* is_null = builder->CreateICmpEQ(extracted,
+                        ConstantPointerNull::get(builder->getPtrTy()));
+                    Value* fallback = codegenString("user exception");
+                    error_msg = builder->CreateSelect(is_null, fallback, extracted, "error_msg");
+                }
+            }
+        }
+        if (!error_msg) {
+            error_msg = codegenString("raised exception");
+        }
+
+        // Create the exception object
+        Value* exc = builder->CreateCall(make_exc_func, {
+            ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_USER_DEFINED),
+            error_msg
+        }, "new_exception");
+
+        // Call raise (which doesn't return)
+        builder->CreateCall(raise_func, {exc});
+        builder->CreateUnreachable();
+
+        // Return undef - this code path is unreachable, so the value doesn't matter
+        // IMPORTANT: Don't call packNullToTaggedValue() here as it creates instructions
+        // after the unreachable terminator, which is invalid LLVM IR
+        return UndefValue::get(tagged_value_type);
     }
 
     // Helper function to compare two tagged values using eqv? semantics
@@ -10547,92 +10890,84 @@ private:
     // NOTE: codegenNewline has been migrated to StringIOCodegen (strio_->newline)
 
     Value* codegenError(const eshkol_operations_t* op) {
-        Function* printf_func = function_table["printf"];
-        Function* exit_func = function_table["exit"];
-        if (!printf_func || !exit_func) return nullptr;
+        // Use exception system: create exception and raise it
+        // This allows (error "msg" ...) to be caught by guard
 
-        // Print "Error: " prefix
-        builder->CreateCall(printf_func, {
-            codegenString("Error: ")
-        });
+        // Get or declare exception functions
+        Function* make_exc_func = module->getFunction("eshkol_make_exception");
+        if (!make_exc_func) {
+            FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
+                {builder->getInt32Ty(), builder->getPtrTy()}, false);
+            make_exc_func = Function::Create(make_type, Function::ExternalLinkage, "eshkol_make_exception", module.get());
+        }
 
-        // Display all arguments (message and irritants)
-        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-            TypedValue arg = codegenTypedAST(&op->call_op.variables[i]);
-            if (!arg.llvm_value) continue;
+        Function* raise_func = module->getFunction("eshkol_raise");
+        if (!raise_func) {
+            FunctionType* raise_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+            raise_func = Function::Create(raise_type, Function::ExternalLinkage, "eshkol_raise", module.get());
+            raise_func->setDoesNotReturn();
+        }
 
-            Value* tagged_arg = typedValueToTaggedValue(arg);
-            if (!tagged_arg) continue;
+        // Build error message from first string argument (if any)
+        Value* error_msg = codegenString("error");
+        if (op->call_op.num_vars > 0) {
+            TypedValue first_arg = codegenTypedAST(&op->call_op.variables[0]);
+            if (first_arg.llvm_value) {
+                Value* tagged_arg = typedValueToTaggedValue(first_arg);
+                if (tagged_arg) {
+                    Value* type_byte = builder->CreateExtractValue(tagged_arg, {0});
+                    Value* data_i64 = builder->CreateExtractValue(tagged_arg, {4});
 
-            // Extract type and data from tagged value
-            Value* type_byte = builder->CreateExtractValue(tagged_arg, {0});
-            Value* data_i64 = builder->CreateExtractValue(tagged_arg, {4});
+                    // Check if first arg is a string
+                    Value* is_string = builder->CreateICmpEQ(type_byte,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
 
-            // Check if it's a string (type == ESHKOL_VALUE_STRING_PTR)
-            Value* is_string = builder->CreateICmpEQ(type_byte,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+                    Function* current_func = builder->GetInsertBlock()->getParent();
+                    BasicBlock* check_block = builder->GetInsertBlock();
+                    BasicBlock* string_block = BasicBlock::Create(*context, "error_str_msg", current_func);
+                    BasicBlock* default_block = BasicBlock::Create(*context, "error_default_msg", current_func);
+                    BasicBlock* continue_block = BasicBlock::Create(*context, "error_continue", current_func);
 
-            Function* current_func = builder->GetInsertBlock()->getParent();
-            // Check if it's a double (type == ESHKOL_VALUE_DOUBLE)
-            Value* is_double = builder->CreateICmpEQ(type_byte,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+                    builder->CreateCondBr(is_string, string_block, default_block);
 
-            BasicBlock* string_block = BasicBlock::Create(*context, "error_string", current_func);
-            BasicBlock* check_double_block = BasicBlock::Create(*context, "error_check_double", current_func);
-            BasicBlock* double_block = BasicBlock::Create(*context, "error_double", current_func);
-            BasicBlock* int_block = BasicBlock::Create(*context, "error_int", current_func);
-            BasicBlock* done_block = BasicBlock::Create(*context, "error_done", current_func);
+                    // String case: use as message
+                    builder->SetInsertPoint(string_block);
+                    Value* str_ptr = builder->CreateIntToPtr(data_i64, PointerType::get(*context, 0));
+                    builder->CreateBr(continue_block);
 
-            builder->CreateCondBr(is_string, string_block, check_double_block);
+                    // Default case: use "error"
+                    builder->SetInsertPoint(default_block);
+                    builder->CreateBr(continue_block);
 
-            // String case: print as %s
-            builder->SetInsertPoint(string_block);
-            Value* str_ptr = builder->CreateIntToPtr(data_i64, PointerType::get(*context, 0));
-            builder->CreateCall(printf_func, {codegenString("%s"), str_ptr});
-            builder->CreateBr(done_block);
+                    // Merge
+                    builder->SetInsertPoint(continue_block);
+                    PHINode* msg_phi = builder->CreatePHI(builder->getPtrTy(), 2, "error_msg");
+                    msg_phi->addIncoming(str_ptr, string_block);
+                    msg_phi->addIncoming(error_msg, default_block);
 
-            // Check if double
-            builder->SetInsertPoint(check_double_block);
-            builder->CreateCondBr(is_double, double_block, int_block);
-
-            // Double case: print as %g
-            builder->SetInsertPoint(double_block);
-            Value* as_double = builder->CreateBitCast(data_i64, double_type);
-            builder->CreateCall(printf_func, {codegenString("%g"), as_double});
-            builder->CreateBr(done_block);
-
-            // Integer case: print as %lld
-            builder->SetInsertPoint(int_block);
-            builder->CreateCall(printf_func, {codegenString("%lld"), data_i64});
-            builder->CreateBr(done_block);
-
-            builder->SetInsertPoint(done_block);
-
-            // Add space between arguments
-            if (i < op->call_op.num_vars - 1) {
-                builder->CreateCall(printf_func, {codegenString(" ")});
+                    error_msg = msg_phi;
+                }
             }
         }
 
-        // Print newline
-        builder->CreateCall(printf_func, {codegenString("\n")});
+        // Create exception
+        Value* exception = builder->CreateCall(make_exc_func, {
+            ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR),
+            error_msg
+        }, "error_exception");
 
-        // Call exit(1) to terminate the program
-        builder->CreateCall(exit_func, {
-            ConstantInt::get(int32_type, 1)
-        });
-
-        // Mark as unreachable since exit never returns
+        // Raise exception
+        builder->CreateCall(raise_func, {exception});
         builder->CreateUnreachable();
 
-        // Create a new unreachable block for any subsequent code
-        // This allows error to be used in branches without breaking the IR
+        // Create a new block for any subsequent code (which would be dead code)
+        // Don't terminate it yet - subsequent code might add instructions
+        // It will be terminated later when we detect it's unreachable
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* dead_block = BasicBlock::Create(*context, "error_dead", current_func);
         builder->SetInsertPoint(dead_block);
 
-        // Return a void value (though we'll never reach this)
-        return ConstantPointerNull::get(PointerType::get(*context, 0));
+        return packNullToTaggedValue();
     }
 
     // =========================================================================

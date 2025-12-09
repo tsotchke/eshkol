@@ -62,8 +62,8 @@ typedef enum {
     ESHKOL_VALUE_CLOSURE_PTR = 12, // Pointer to closure (func_ptr + captured environment)
     ESHKOL_VALUE_BOOL        = 13, // Boolean (#t or #f, stored as 1 or 0)
     ESHKOL_VALUE_HASH_PTR    = 14, // Pointer to hash table structure
-    // Reserved for future expansion
-    ESHKOL_VALUE_MAX         = 15  // 4-bit type field limit
+    ESHKOL_VALUE_EXCEPTION   = 15, // Pointer to exception object
+    // Note: 4-bit type field limit reached (0x0F mask)
 } eshkol_value_type_t;
 
 // Type flags for Scheme exactness tracking
@@ -167,6 +167,7 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 #define ESHKOL_IS_CLOSURE_PTR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_CLOSURE_PTR)
 #define ESHKOL_IS_BOOL_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_BOOL)
 #define ESHKOL_IS_HASH_PTR_TYPE(type)    (((type) & 0x0F) == ESHKOL_VALUE_HASH_PTR)
+#define ESHKOL_IS_EXCEPTION_TYPE(type)   (((type) & 0x0F) == ESHKOL_VALUE_EXCEPTION)
 // General pointer type check: any type that stores a pointer value (not int64 or double)
 #define ESHKOL_IS_ANY_PTR_TYPE(type)     (ESHKOL_IS_CONS_PTR_TYPE(type) || \
                                           ESHKOL_IS_STRING_PTR_TYPE(type) || \
@@ -321,6 +322,66 @@ static inline bool eshkol_closure_returns_scalar(eshkol_tagged_value_t tagged) {
 }
 
 // ===== END CLOSURE ENVIRONMENT STRUCTURES =====
+
+// ===== EXCEPTION HANDLING STRUCTURES =====
+// Support for R7RS-compatible exception handling (guard, raise, error)
+
+// Exception type codes for built-in exception types
+typedef enum {
+    ESHKOL_EXCEPTION_ERROR = 0,        // Generic error
+    ESHKOL_EXCEPTION_TYPE_ERROR,       // Type mismatch
+    ESHKOL_EXCEPTION_FILE_ERROR,       // File operation failed
+    ESHKOL_EXCEPTION_READ_ERROR,       // Read/parse error
+    ESHKOL_EXCEPTION_SYNTAX_ERROR,     // Syntax error
+    ESHKOL_EXCEPTION_RANGE_ERROR,      // Index out of bounds
+    ESHKOL_EXCEPTION_ARITY_ERROR,      // Wrong number of arguments
+    ESHKOL_EXCEPTION_DIVIDE_BY_ZERO,   // Division by zero
+    ESHKOL_EXCEPTION_USER_DEFINED      // User-defined exception
+} eshkol_exception_type_t;
+
+// Exception object structure (arena-allocated)
+typedef struct eshkol_exception {
+    eshkol_exception_type_t type;      // Exception type code
+    char* message;                      // Error message
+    eshkol_tagged_value_t* irritants;   // Array of irritant values
+    uint32_t num_irritants;             // Number of irritants
+    uint32_t line;                      // Source line (0 = unknown)
+    uint32_t column;                    // Source column (0 = unknown)
+    char* filename;                     // Source filename (NULL = unknown)
+} eshkol_exception_t;
+
+// Exception handler entry for the handler stack
+typedef struct eshkol_exception_handler {
+    void* jmp_buf_ptr;                  // Pointer to setjmp buffer
+    struct eshkol_exception_handler* prev;  // Previous handler in stack
+} eshkol_exception_handler_t;
+
+// Global exception state (thread-local in multi-threaded context)
+// Current exception being handled (NULL if none)
+extern eshkol_exception_t* g_current_exception;
+// Top of exception handler stack (NULL if no handlers)
+extern eshkol_exception_handler_t* g_exception_handler_stack;
+
+// Exception API functions (implemented in arena_memory.cpp)
+eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t type, const char* message);
+void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_tagged_value_t irritant);
+void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint32_t column, const char* filename);
+void eshkol_raise(eshkol_exception_t* exception);
+void eshkol_push_exception_handler(void* jmp_buf_ptr);
+void eshkol_pop_exception_handler(void);
+int eshkol_exception_type_matches(eshkol_exception_t* exc, eshkol_exception_type_t type);
+
+// Helper to create tagged exception value
+static inline eshkol_tagged_value_t eshkol_make_exception_value(eshkol_exception_t* exc) {
+    eshkol_tagged_value_t result;
+    result.type = ESHKOL_VALUE_EXCEPTION;
+    result.flags = 0;
+    result.reserved = 0;
+    result.data.ptr_val = (uint64_t)exc;
+    return result;
+}
+
+// ===== END EXCEPTION HANDLING STRUCTURES =====
 
 // ===== LAMBDA REGISTRY FOR HOMOICONICITY =====
 // Runtime table mapping function pointers to their S-expression representations
@@ -530,7 +591,10 @@ typedef enum {
     ESHKOL_DIRECTIONAL_DERIV_OP,
     // HoTT Type System operators
     ESHKOL_TYPE_ANNOTATION_OP,  // (: name type) - standalone type declaration
-    ESHKOL_FORALL_OP            // (forall (a b) type) - polymorphic type
+    ESHKOL_FORALL_OP,           // (forall (a b) type) - polymorphic type
+    // Exception handling operators
+    ESHKOL_GUARD_OP,            // (guard (var clause ...) body ...) - exception handler
+    ESHKOL_RAISE_OP             // (raise exception) - raise exception
 } eshkol_op_t;
 
 struct eshkol_ast;
@@ -704,6 +768,18 @@ typedef struct eshkol_operation {
             uint64_t num_vars;
             hott_type_expr_t *body;         // Body type expression
         } forall_op;
+        // ===== EXCEPTION HANDLING OPERATIONS =====
+        struct {
+            char *var_name;                 // Exception variable name (bound in clauses)
+            struct eshkol_ast *clauses;     // Array of guard clauses: ((test expr ...) ...)
+            uint64_t num_clauses;           // Number of clauses
+            struct eshkol_ast *body;        // Body expressions to evaluate
+            uint64_t num_body_exprs;        // Number of body expressions
+        } guard_op;
+        struct {
+            struct eshkol_ast *exception;   // Exception value to raise
+        } raise_op;
+        // ===== END EXCEPTION HANDLING OPERATIONS =====
     };
 } eshkol_operations_t;
 

@@ -32,6 +32,11 @@ ControlFlowCodegen::ControlFlowCodegen(CodegenContext& ctx, TaggedValueCodegen& 
 llvm::Value* ControlFlowCodegen::isTruthy(llvm::Value* val) {
     if (!val) return llvm::ConstantInt::getFalse(ctx_.context());
 
+    // Handle raw i1 boolean - truthy if true
+    if (val->getType()->isIntegerTy(1)) {
+        return val;  // Already i1, use directly
+    }
+
     // Handle raw int64 - truthy if non-zero
     if (val->getType()->isIntegerTy(64)) {
         return ctx_.builder().CreateICmpNE(val, llvm::ConstantInt::get(ctx_.int64Type(), 0));

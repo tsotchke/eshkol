@@ -396,6 +396,9 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "curl") return ESHKOL_CURL_OP;
     if (op == "laplacian") return ESHKOL_LAPLACIAN_OP;
     if (op == "directional-derivative") return ESHKOL_DIRECTIONAL_DERIV_OP;
+    // Exception handling operators
+    if (op == "guard") return ESHKOL_GUARD_OP;
+    if (op == "raise") return ESHKOL_RAISE_OP;
     // Treat arithmetic operations as special CALL_OPs so they get proper argument handling
     // We'll store the operation type in the function name and handle display in the printer
     return ESHKOL_CALL_OP;
@@ -2301,6 +2304,191 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 ast.operation.let_op.name = nullptr;
             }
 
+            return ast;
+        }
+
+        // Special handling for guard - exception handler (R7RS)
+        // Syntax: (guard (var clause ...) body ...)
+        // Where each clause is (test expr ...) or (else expr ...)
+        if (ast.operation.op == ESHKOL_GUARD_OP) {
+            // Parse handler specification: (var clause ...)
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_LPAREN) {
+                eshkol_error("guard requires handler specification (var clause ...) as first argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Parse exception variable name
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_SYMBOL) {
+                eshkol_error("guard handler specification must start with variable name");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Store variable name
+            ast.operation.guard_op.var_name = new char[token.value.length() + 1];
+            strcpy(ast.operation.guard_op.var_name, token.value.c_str());
+
+            // Parse clauses: ((test expr ...) ...)
+            std::vector<eshkol_ast_t> clauses;
+
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;  // End of handler spec
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in guard handler");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                if (token.type != TOKEN_LPAREN) {
+                    eshkol_error("guard clause must be a list (test expr ...)");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                // Parse clause: (test expr ...) or (else expr ...)
+                eshkol_ast_t clause = {.type = ESHKOL_OP};
+                clause.operation.op = ESHKOL_CALL_OP;
+
+                // Parse test (first element)
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("guard clause cannot be empty");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                eshkol_ast_t test;
+                if (token.type == TOKEN_LPAREN) {
+                    test = parse_list(tokenizer);
+                } else {
+                    test = parse_atom(token);
+                }
+
+                clause.operation.call_op.func = new eshkol_ast_t;
+                *clause.operation.call_op.func = test;
+
+                // Parse body expressions
+                std::vector<eshkol_ast_t> body_exprs;
+                while (true) {
+                    token = tokenizer.nextToken();
+                    if (token.type == TOKEN_RPAREN) break;
+                    if (token.type == TOKEN_EOF) {
+                        eshkol_error("Unexpected end of input in guard clause body");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+
+                    eshkol_ast_t expr;
+                    if (token.type == TOKEN_LPAREN) {
+                        expr = parse_list(tokenizer);
+                    } else {
+                        expr = parse_atom(token);
+                    }
+                    body_exprs.push_back(expr);
+                }
+
+                clause.operation.call_op.num_vars = body_exprs.size();
+                if (body_exprs.size() > 0) {
+                    clause.operation.call_op.variables = new eshkol_ast_t[body_exprs.size()];
+                    for (size_t i = 0; i < body_exprs.size(); i++) {
+                        clause.operation.call_op.variables[i] = body_exprs[i];
+                    }
+                } else {
+                    clause.operation.call_op.variables = nullptr;
+                }
+
+                clauses.push_back(clause);
+            }
+
+            // Store clauses
+            ast.operation.guard_op.num_clauses = clauses.size();
+            if (clauses.size() > 0) {
+                ast.operation.guard_op.clauses = new eshkol_ast_t[clauses.size()];
+                for (size_t i = 0; i < clauses.size(); i++) {
+                    ast.operation.guard_op.clauses[i] = clauses[i];
+                }
+            } else {
+                ast.operation.guard_op.clauses = nullptr;
+            }
+
+            // Parse body expressions
+            std::vector<eshkol_ast_t> body_expressions;
+
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in guard body");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                eshkol_ast_t expr;
+                if (token.type == TOKEN_LPAREN) {
+                    expr = parse_list(tokenizer);
+                } else {
+                    expr = parse_atom(token);
+                }
+                body_expressions.push_back(expr);
+            }
+
+            if (body_expressions.empty()) {
+                eshkol_error("guard body cannot be empty");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Transform internal defines to letrec if needed
+            eshkol_ast_t body = transformInternalDefinesToLetrec(body_expressions);
+
+            ast.operation.guard_op.body = new eshkol_ast_t[1];
+            ast.operation.guard_op.body[0] = body;
+            ast.operation.guard_op.num_body_exprs = 1;
+
+            eshkol_debug("Parsed guard with variable '%s' and %zu clauses",
+                        ast.operation.guard_op.var_name, clauses.size());
+            return ast;
+        }
+
+        // Special handling for raise - raise exception
+        // Syntax: (raise exception)
+        if (ast.operation.op == ESHKOL_RAISE_OP) {
+            // Parse exception expression
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
+                eshkol_error("raise requires an exception expression");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            eshkol_ast_t exception;
+            if (token.type == TOKEN_LPAREN) {
+                exception = parse_list(tokenizer);
+            } else {
+                exception = parse_atom(token);
+            }
+
+            if (exception.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            ast.operation.raise_op.exception = new eshkol_ast_t;
+            *ast.operation.raise_op.exception = exception;
+
+            // Expect closing paren
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                eshkol_error("raise takes exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            eshkol_debug("Parsed raise expression");
             return ast;
         }
 
