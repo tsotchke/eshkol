@@ -1,0 +1,70 @@
+;;; exception_test.esk
+;;; Tests for exception handling (guard, raise, error)
+
+;;; Test 1: Basic guard catches error
+(define result1
+  (guard (exn
+          (else "caught"))
+    (error "test error")
+    "not reached"))
+
+(display "Test 1 - guard catches exception: ")
+(display result1)
+(newline)
+
+;;; Test 2: Guard with successful body (no exception)
+(define result2
+  (guard (exn
+          (else "caught"))
+    (+ 1 2)))
+
+(display "Test 2 - guard with no exception: ")
+(display result2)
+(newline)
+
+;;; Test 3: Guard with condition test
+(define result3
+  (guard (exn
+          (#t "handled"))
+    (error "another error")))
+
+(display "Test 3 - guard with condition: ")
+(display result3)
+(newline)
+
+;;; Test 4: Raise expression
+(define result4
+  (guard (exn
+          (else "raised and caught"))
+    (raise "custom exception")))
+
+(display "Test 4 - raise expression: ")
+(display result4)
+(newline)
+
+;;; Test 5: Nested guards
+(define result5
+  (guard (outer
+          (else "outer caught"))
+    (guard (inner
+            (else "inner caught"))
+      (error "deep error"))))
+
+(display "Test 5 - nested guards: ")
+(display result5)
+(newline)
+
+;;; Test 6: Guard with multiple clauses
+(define result6
+  (guard (exn
+          (#f "false clause")
+          (#t "true clause")
+          (else "else clause"))
+    (error "test")))
+
+(display "Test 6 - multiple clauses: ")
+(display result6)
+(newline)
+
+(display "All exception tests completed!")
+(newline)

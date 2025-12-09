@@ -8,10 +8,12 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
+#include "../../inc/eshkol/eshkol.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <setjmp.h>
 
 #ifdef __cplusplus
 #include <new>      // for std::bad_alloc
@@ -2321,5 +2323,200 @@ arena_tagged_cons_cell_t* hash_table_values(arena_t* arena, const eshkol_hash_ta
 }
 
 // ===== END HASH TABLE IMPLEMENTATION =====
+
+// ===== EXCEPTION HANDLING IMPLEMENTATION =====
+// Runtime support for R7RS-compatible exception handling
+
+// Global exception state
+eshkol_exception_t* g_current_exception = nullptr;
+eshkol_exception_handler_t* g_exception_handler_stack = nullptr;
+
+// Create a new exception object
+extern "C" eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t type, const char* message) {
+    arena_t* arena = __repl_shared_arena;
+    if (!arena) {
+        // Allocate from heap if no arena available
+        eshkol_exception_t* exc = (eshkol_exception_t*)malloc(sizeof(eshkol_exception_t));
+        if (!exc) return nullptr;
+
+        exc->type = type;
+        exc->message = message ? strdup(message) : nullptr;
+        exc->irritants = nullptr;
+        exc->num_irritants = 0;
+        exc->line = 0;
+        exc->column = 0;
+        exc->filename = nullptr;
+        return exc;
+    }
+
+    // Allocate from arena
+    eshkol_exception_t* exc = (eshkol_exception_t*)arena_allocate(arena, sizeof(eshkol_exception_t));
+    if (!exc) return nullptr;
+
+    exc->type = type;
+    if (message) {
+        size_t len = strlen(message) + 1;
+        exc->message = (char*)arena_allocate(arena, len);
+        if (exc->message) strcpy(exc->message, message);
+    } else {
+        exc->message = nullptr;
+    }
+    exc->irritants = nullptr;
+    exc->num_irritants = 0;
+    exc->line = 0;
+    exc->column = 0;
+    exc->filename = nullptr;
+
+    return exc;
+}
+
+// Add an irritant to an exception
+extern "C" void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_tagged_value_t irritant) {
+    if (!exc) return;
+
+    // Grow irritants array
+    uint32_t new_count = exc->num_irritants + 1;
+    eshkol_tagged_value_t* new_irritants;
+
+    arena_t* arena = __repl_shared_arena;
+    if (arena) {
+        new_irritants = (eshkol_tagged_value_t*)arena_allocate(arena, new_count * sizeof(eshkol_tagged_value_t));
+    } else {
+        new_irritants = (eshkol_tagged_value_t*)malloc(new_count * sizeof(eshkol_tagged_value_t));
+    }
+
+    if (!new_irritants) return;
+
+    // Copy existing irritants
+    if (exc->irritants && exc->num_irritants > 0) {
+        memcpy(new_irritants, exc->irritants, exc->num_irritants * sizeof(eshkol_tagged_value_t));
+    }
+
+    // Add new irritant
+    new_irritants[exc->num_irritants] = irritant;
+    exc->irritants = new_irritants;
+    exc->num_irritants = new_count;
+}
+
+// Set source location on exception
+extern "C" void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint32_t column, const char* filename) {
+    if (!exc) return;
+
+    exc->line = line;
+    exc->column = column;
+
+    if (filename) {
+        arena_t* arena = __repl_shared_arena;
+        if (arena) {
+            size_t len = strlen(filename) + 1;
+            exc->filename = (char*)arena_allocate(arena, len);
+            if (exc->filename) strcpy(exc->filename, filename);
+        } else {
+            exc->filename = strdup(filename);
+        }
+    }
+}
+
+// Raise an exception - jumps to nearest handler
+extern "C" void eshkol_raise(eshkol_exception_t* exception) {
+    g_current_exception = exception;
+
+    if (g_exception_handler_stack && g_exception_handler_stack->jmp_buf_ptr) {
+        // Jump to the handler
+        longjmp(*(jmp_buf*)g_exception_handler_stack->jmp_buf_ptr, 1);
+    } else {
+        // No handler - print error and abort
+        fprintf(stderr, "Unhandled exception: ");
+        if (exception && exception->message) {
+            fprintf(stderr, "%s", exception->message);
+        } else {
+            fprintf(stderr, "(unknown error)");
+        }
+        if (exception && exception->line > 0) {
+            fprintf(stderr, " at line %u", exception->line);
+            if (exception->column > 0) {
+                fprintf(stderr, ", column %u", exception->column);
+            }
+            if (exception->filename) {
+                fprintf(stderr, " in %s", exception->filename);
+            }
+        }
+        fprintf(stderr, "\n");
+        abort();
+    }
+}
+
+// Push exception handler onto stack
+extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
+    eshkol_exception_handler_t* handler;
+
+    arena_t* arena = __repl_shared_arena;
+    if (arena) {
+        handler = (eshkol_exception_handler_t*)arena_allocate(arena, sizeof(eshkol_exception_handler_t));
+    } else {
+        handler = (eshkol_exception_handler_t*)malloc(sizeof(eshkol_exception_handler_t));
+    }
+
+    if (!handler) {
+        eshkol_error("Failed to allocate exception handler");
+        return;
+    }
+
+    handler->jmp_buf_ptr = jmp_buf_ptr;
+    handler->prev = g_exception_handler_stack;
+    g_exception_handler_stack = handler;
+}
+
+// Pop exception handler from stack
+extern "C" void eshkol_pop_exception_handler(void) {
+    if (g_exception_handler_stack) {
+        eshkol_exception_handler_t* popped = g_exception_handler_stack;
+        g_exception_handler_stack = popped->prev;
+        // Note: If allocated from arena, memory is automatically freed with arena
+        // If from heap, we leak here - but exception handlers should be short-lived
+    }
+}
+
+// Check if exception matches a specific type
+extern "C" int eshkol_exception_type_matches(eshkol_exception_t* exc, eshkol_exception_type_t type) {
+    if (!exc) return 0;
+    return exc->type == type;
+}
+
+// Get current exception (for handlers)
+extern "C" eshkol_exception_t* eshkol_get_current_exception(void) {
+    return g_current_exception;
+}
+
+// Clear current exception
+extern "C" void eshkol_clear_current_exception(void) {
+    g_current_exception = nullptr;
+}
+
+// Display exception for debugging
+extern "C" void eshkol_display_exception(eshkol_exception_t* exc) {
+    if (!exc) {
+        printf("#<exception:null>");
+        return;
+    }
+
+    const char* type_name;
+    switch (exc->type) {
+        case ESHKOL_EXCEPTION_ERROR: type_name = "error"; break;
+        case ESHKOL_EXCEPTION_TYPE_ERROR: type_name = "type-error"; break;
+        case ESHKOL_EXCEPTION_FILE_ERROR: type_name = "file-error"; break;
+        case ESHKOL_EXCEPTION_READ_ERROR: type_name = "read-error"; break;
+        case ESHKOL_EXCEPTION_SYNTAX_ERROR: type_name = "syntax-error"; break;
+        case ESHKOL_EXCEPTION_RANGE_ERROR: type_name = "range-error"; break;
+        case ESHKOL_EXCEPTION_ARITY_ERROR: type_name = "arity-error"; break;
+        case ESHKOL_EXCEPTION_DIVIDE_BY_ZERO: type_name = "divide-by-zero"; break;
+        case ESHKOL_EXCEPTION_USER_DEFINED: type_name = "user-exception"; break;
+        default: type_name = "unknown"; break;
+    }
+
+    printf("#<%s: %s>", type_name, exc->message ? exc->message : "");
+}
+
+// ===== END EXCEPTION HANDLING IMPLEMENTATION =====
 
 #endif // __cplusplus
