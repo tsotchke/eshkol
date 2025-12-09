@@ -28,6 +28,29 @@ StringIOCodegen::StringIOCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged
     eshkol_debug("StringIOCodegen initialized");
 }
 
+llvm::Value* StringIOCodegen::ensureRawInt64(llvm::Value* val, const std::string& name) {
+    if (!val) return nullptr;
+
+    // If already raw i64, return as-is
+    if (val->getType()->isIntegerTy(64)) {
+        return val;
+    }
+
+    // If it's a tagged_value struct, extract the int64 data field
+    if (val->getType() == ctx_.taggedValueType()) {
+        return tagged_.unpackInt64(val);
+    }
+
+    // For other integer types, extend to i64
+    if (val->getType()->isIntegerTy()) {
+        return ctx_.builder().CreateSExt(val, ctx_.int64Type(), name);
+    }
+
+    // Fallback: try to extract from tagged value anyway
+    eshkol_warn("ensureRawInt64: unexpected type, attempting unpack");
+    return tagged_.unpackInt64(val);
+}
+
 llvm::Value* StringIOCodegen::createString(const char* str) {
     if (!str) return nullptr;
 
@@ -131,12 +154,18 @@ llvm::Value* StringIOCodegen::stringRef(const eshkol_operations_t* op) {
     llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!str_arg) return nullptr;
 
-    // Get index via typed AST to get raw integer
+    // Get index via typed AST
     void* idx_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
     if (!idx_tv_ptr) return nullptr;
 
-    // Extract the raw LLVM value from TypedValue - first field is llvm_value
-    llvm::Value* idx = *reinterpret_cast<llvm::Value**>(idx_tv_ptr);
+    // Extract the LLVM value from TypedValue - first field is llvm_value
+    llvm::Value* idx_raw = *reinterpret_cast<llvm::Value**>(idx_tv_ptr);
+    if (!idx_raw) return nullptr;
+
+    // CRITICAL: Ensure index is raw i64, not tagged_value struct
+    // GEP indices must be integers - if we have a tagged_value from a variable,
+    // we need to extract the actual integer value
+    llvm::Value* idx = ensureRawInt64(idx_raw, "string_ref_idx");
     if (!idx) return nullptr;
 
     // Extract string pointer
@@ -216,14 +245,20 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
     llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!str_arg) return nullptr;
 
-    // Get start and end indices via typed AST to get raw integer values
+    // Get start and end indices via typed AST
     void* start_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
     void* end_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[2], callback_context_);
     if (!start_tv_ptr || !end_tv_ptr) return nullptr;
 
-    // Extract raw LLVM values from TypedValue
-    llvm::Value* start = *reinterpret_cast<llvm::Value**>(start_tv_ptr);
-    llvm::Value* end = *reinterpret_cast<llvm::Value**>(end_tv_ptr);
+    // Extract LLVM values from TypedValue
+    llvm::Value* start_raw = *reinterpret_cast<llvm::Value**>(start_tv_ptr);
+    llvm::Value* end_raw = *reinterpret_cast<llvm::Value**>(end_tv_ptr);
+    if (!start_raw || !end_raw) return nullptr;
+
+    // CRITICAL: Ensure indices are raw i64, not tagged_value struct
+    // All operations below require raw integers (GEP, sub, memcpy size)
+    llvm::Value* start = ensureRawInt64(start_raw, "substring_start");
+    llvm::Value* end = ensureRawInt64(end_raw, "substring_end");
     if (!start || !end) return nullptr;
 
     // Extract string pointer from tagged value
@@ -368,32 +403,67 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
     // Get snprintf function
     llvm::Function* snprintf_func = ctx_.funcs().getSnprintf();
 
-    // Get the raw value, extracting from tagged if needed
     llvm::Value* raw_val = tv->llvm_value;
-    if (raw_val->getType() == ctx_.taggedValueType()) {
-        raw_val = tagged_.unpackInt64(raw_val);
-    }
 
-    if (tv->type == ESHKOL_VALUE_DOUBLE || !tv->is_exact) {
+    // For tagged values, we need runtime type checking since the value
+    // might come from a hash table or other dynamic source
+    if (raw_val->getType() == ctx_.taggedValueType()) {
+        llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+        // Get runtime type from tagged value
+        llvm::Value* runtime_type = tagged_.getType(raw_val);
+        llvm::Value* base_type = ctx_.builder().CreateAnd(runtime_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+        llvm::Value* is_runtime_double = ctx_.builder().CreateICmpEQ(base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+
+        // Extract raw i64 data
+        llvm::Value* data_i64 = tagged_.unpackInt64(raw_val);
+
+        // Create blocks for double vs integer formatting
+        llvm::BasicBlock* double_block = llvm::BasicBlock::Create(ctx_.context(), "n2s_double", current_func);
+        llvm::BasicBlock* int_block = llvm::BasicBlock::Create(ctx_.context(), "n2s_int", current_func);
+        llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "n2s_merge", current_func);
+
+        ctx_.builder().CreateCondBr(is_runtime_double, double_block, int_block);
+
         // Format as double
-        llvm::Value* double_val = raw_val;
-        if (raw_val->getType()->isIntegerTy(64)) {
-            double_val = ctx_.builder().CreateBitCast(raw_val, ctx_.doubleType());
-        } else if (!raw_val->getType()->isDoubleTy()) {
-            double_val = ctx_.builder().CreateSIToFP(raw_val, ctx_.doubleType());
-        }
-        llvm::Value* fmt = createString("%g");
-        ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt, double_val});
-    } else {
+        ctx_.builder().SetInsertPoint(double_block);
+        llvm::Value* double_val = ctx_.builder().CreateBitCast(data_i64, ctx_.doubleType());
+        llvm::Value* fmt_double = createString("%g");
+        ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt_double, double_val});
+        ctx_.builder().CreateBr(merge_block);
+
         // Format as integer
-        llvm::Value* int_val = raw_val;
-        if (raw_val->getType()->isDoubleTy()) {
-            int_val = ctx_.builder().CreateFPToSI(raw_val, ctx_.int64Type());
-        } else if (!raw_val->getType()->isIntegerTy(64)) {
-            int_val = ctx_.builder().CreateSExt(raw_val, ctx_.int64Type());
+        ctx_.builder().SetInsertPoint(int_block);
+        llvm::Value* fmt_int = createString("%lld");
+        ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt_int, data_i64});
+        ctx_.builder().CreateBr(merge_block);
+
+        ctx_.builder().SetInsertPoint(merge_block);
+    } else {
+        // Non-tagged value: use static type info
+        if (tv->type == ESHKOL_VALUE_DOUBLE || !tv->is_exact) {
+            // Format as double
+            llvm::Value* double_val = raw_val;
+            if (raw_val->getType()->isIntegerTy(64)) {
+                double_val = ctx_.builder().CreateBitCast(raw_val, ctx_.doubleType());
+            } else if (!raw_val->getType()->isDoubleTy()) {
+                double_val = ctx_.builder().CreateSIToFP(raw_val, ctx_.doubleType());
+            }
+            llvm::Value* fmt = createString("%g");
+            ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt, double_val});
+        } else {
+            // Format as integer
+            llvm::Value* int_val = raw_val;
+            if (raw_val->getType()->isDoubleTy()) {
+                int_val = ctx_.builder().CreateFPToSI(raw_val, ctx_.int64Type());
+            } else if (!raw_val->getType()->isIntegerTy(64)) {
+                int_val = ctx_.builder().CreateSExt(raw_val, ctx_.int64Type());
+            }
+            llvm::Value* fmt = createString("%lld");
+            ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt, int_val});
         }
-        llvm::Value* fmt = createString("%lld");
-        ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt, int_val});
     }
 
     return tagged_.packPtr(buf, ESHKOL_VALUE_STRING_PTR);
@@ -469,7 +539,11 @@ llvm::Value* StringIOCodegen::stringSet(const eshkol_operations_t* op) {
     void* idx_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
     if (!idx_tv_ptr) return nullptr;
 
-    llvm::Value* idx = *reinterpret_cast<llvm::Value**>(idx_tv_ptr);
+    llvm::Value* idx_raw = *reinterpret_cast<llvm::Value**>(idx_tv_ptr);
+    if (!idx_raw) return nullptr;
+
+    // CRITICAL: Ensure index is raw i64, not tagged_value struct
+    llvm::Value* idx = ensureRawInt64(idx_raw, "string_set_idx");
     if (!idx) return nullptr;
 
     // Get character argument
@@ -479,11 +553,6 @@ llvm::Value* StringIOCodegen::stringSet(const eshkol_operations_t* op) {
     // Extract string pointer from tagged value
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
-
-    // Ensure index is i64
-    if (!idx->getType()->isIntegerTy(64)) {
-        idx = ctx_.builder().CreateZExt(idx, ctx_.int64Type());
-    }
 
     // Get character value
     llvm::Value* char_val = tagged_.unpackInt64(char_arg);
@@ -512,16 +581,60 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::Value* delim_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
     if (!str_arg || !delim_arg) return nullptr;
 
-    // Extract string pointers
-    llvm::Value* str_ptr_int = tagged_.unpackInt64(str_arg);
-    llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(str_ptr_int, ctx_.ptrType());
-    llvm::Value* delim_ptr_int = tagged_.unpackInt64(delim_arg);
-    llvm::Value* delim_ptr = ctx_.builder().CreateIntToPtr(delim_ptr_int, ctx_.ptrType());
-
     llvm::Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::Function* strlen_func = ctx_.funcs().getStrlen();
     llvm::Function* malloc_func = ctx_.funcs().getMalloc();
     llvm::Function* memcpy_func = ctx_.funcs().getMemcpy();
+
+    // Extract string pointer
+    llvm::Value* str_ptr_int = tagged_.unpackInt64(str_arg);
+    llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(str_ptr_int, ctx_.ptrType());
+
+    // Handle delimiter: could be string or char
+    // Check if delimiter is a char (type == ESHKOL_VALUE_CHAR)
+    llvm::Value* delim_type = tagged_.getType(delim_arg);
+    llvm::Value* is_char = ctx_.builder().CreateICmpEQ(delim_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CHAR));
+
+    // Create blocks for char vs string delimiter handling
+    llvm::BasicBlock* char_delim_block = llvm::BasicBlock::Create(ctx_.context(), "split_char_delim", parent_func);
+    llvm::BasicBlock* str_delim_block = llvm::BasicBlock::Create(ctx_.context(), "split_str_delim", parent_func);
+    llvm::BasicBlock* delim_ready_block = llvm::BasicBlock::Create(ctx_.context(), "split_delim_ready", parent_func);
+
+    // Create alloca for delimiter pointer at function entry
+    llvm::IRBuilderBase::InsertPoint saved_ip_delim = ctx_.builder().saveIP();
+    llvm::BasicBlock& entry_block = parent_func->getEntryBlock();
+    ctx_.builder().SetInsertPoint(&entry_block, entry_block.begin());
+    llvm::Value* delim_ptr_storage = ctx_.builder().CreateAlloca(ctx_.ptrType(), nullptr, "delim_ptr_storage");
+    ctx_.builder().restoreIP(saved_ip_delim);
+
+    ctx_.builder().CreateCondBr(is_char, char_delim_block, str_delim_block);
+
+    // Handle char delimiter: convert to single-char string
+    ctx_.builder().SetInsertPoint(char_delim_block);
+    llvm::Value* char_val = tagged_.unpackInt64(delim_arg);
+    // Allocate 2 bytes for single char + null terminator
+    llvm::Value* char_buf = ctx_.builder().CreateCall(malloc_func,
+        {llvm::ConstantInt::get(ctx_.int64Type(), 2)});
+    // Store char and null terminator
+    llvm::Value* char_i8 = ctx_.builder().CreateTrunc(char_val, ctx_.int8Type());
+    ctx_.builder().CreateStore(char_i8, char_buf);
+    llvm::Value* term_char = ctx_.builder().CreateGEP(ctx_.int8Type(), char_buf,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_char);
+    ctx_.builder().CreateStore(char_buf, delim_ptr_storage);
+    ctx_.builder().CreateBr(delim_ready_block);
+
+    // Handle string delimiter: use directly
+    ctx_.builder().SetInsertPoint(str_delim_block);
+    llvm::Value* delim_ptr_int = tagged_.unpackInt64(delim_arg);
+    llvm::Value* str_delim_ptr = ctx_.builder().CreateIntToPtr(delim_ptr_int, ctx_.ptrType());
+    ctx_.builder().CreateStore(str_delim_ptr, delim_ptr_storage);
+    ctx_.builder().CreateBr(delim_ready_block);
+
+    // Continue with unified delimiter handling
+    ctx_.builder().SetInsertPoint(delim_ready_block);
+    llvm::Value* delim_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), delim_ptr_storage);
 
     // Get delimiter length and string length
     llvm::Value* delim_len = ctx_.builder().CreateCall(strlen_func, {delim_ptr});
@@ -562,35 +675,37 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     // Check if we're at end of string
     llvm::Value* at_end = ctx_.builder().CreateICmpEQ(curr_pos, str_len);
 
-    // Simple approach: check remaining length and delimiter
+    // Create intermediate block for checking if we should try matching
+    llvm::BasicBlock* check_match = llvm::BasicBlock::Create(ctx_.context(), "split_check_match", parent_func);
+
+    // If at end, add the final segment; otherwise check if we can match
+    ctx_.builder().CreateCondBr(at_end, add_segment, check_match);
+
+    // Check if we can match delimiter at current position
+    ctx_.builder().SetInsertPoint(check_match);
     llvm::Value* remaining = ctx_.builder().CreateSub(str_len, curr_pos);
     llvm::Value* can_match = ctx_.builder().CreateICmpUGE(remaining, delim_len);
-    llvm::Value* should_check = ctx_.builder().CreateAnd(can_match, ctx_.builder().CreateNot(at_end));
 
     // Check if delimiter length is 0 (edge case)
     llvm::Value* delim_nonzero = ctx_.builder().CreateICmpUGT(delim_len,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
-    should_check = ctx_.builder().CreateAnd(should_check, delim_nonzero);
+    llvm::Value* should_check = ctx_.builder().CreateAnd(can_match, delim_nonzero);
 
-    // If at end or can't match, add segment
-    ctx_.builder().CreateCondBr(ctx_.builder().CreateOr(at_end, ctx_.builder().CreateNot(should_check)),
-        add_segment, found_delim);
+    // If we can match, try to match; otherwise just advance
+    ctx_.builder().CreateCondBr(should_check, found_delim, not_found);
 
-    // Found possible delimiter location, do character-by-character comparison
+    // Found possible delimiter location, compare using strncmp
     ctx_.builder().SetInsertPoint(found_delim);
     llvm::Value* curr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, curr_pos);
 
-    // Simple: check first char match (for single-char delimiters)
-    llvm::Value* str_char = ctx_.builder().CreateLoad(ctx_.int8Type(), curr_ptr);
-    llvm::Value* delim_char = ctx_.builder().CreateLoad(ctx_.int8Type(), delim_ptr);
-    llvm::Value* first_match = ctx_.builder().CreateICmpEQ(str_char, delim_char);
+    // Use strncmp to compare delimiter with current position
+    llvm::Function* strncmp_func = ctx_.funcs().getStrncmp();
+    llvm::Value* cmp_result = ctx_.builder().CreateCall(strncmp_func,
+        {curr_ptr, delim_ptr, delim_len});
+    llvm::Value* is_match = ctx_.builder().CreateICmpEQ(cmp_result,
+        llvm::ConstantInt::get(ctx_.int32Type(), 0));
 
-    // For now, handle single-char delimiter case well
-    llvm::Value* single_char_delim = ctx_.builder().CreateICmpEQ(delim_len,
-        llvm::ConstantInt::get(ctx_.int64Type(), 1));
-
-    ctx_.builder().CreateCondBr(ctx_.builder().CreateAnd(first_match, single_char_delim),
-        add_segment, not_found);
+    ctx_.builder().CreateCondBr(is_match, add_segment, not_found);
 
     // Not found at this position, advance
     ctx_.builder().SetInsertPoint(not_found);
@@ -642,7 +757,7 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(new_pos, pos_ptr);
     ctx_.builder().CreateBr(search_cond);
 
-    // Loop end: return result (in reverse order, but acceptable for basic implementation)
+    // Loop end: return result (segments in reverse order - use Eshkol's reverse if needed)
     ctx_.builder().SetInsertPoint(loop_end);
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_ptr);
 }

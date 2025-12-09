@@ -1,0 +1,27 @@
+;;; core/list/convert.esk
+;;; Conversion functions between lists and vectors
+
+(provide list->vector vector->list)
+
+;;; list->vector: Convert a list to a vector
+;;; (list->vector '(1 2 3)) => #(1 2 3)
+(define (list->vector lst)
+  (let ((len (length lst)))
+    (let ((vec (make-vector len #f)))
+      (define (fill! lst i)
+        (if (null? lst)
+            vec
+            (begin
+              (vector-set! vec i (car lst))
+              (fill! (cdr lst) (+ i 1)))))
+      (fill! lst 0))))
+
+;;; vector->list: Convert a vector to a list
+;;; (vector->list #(1 2 3)) => (1 2 3)
+(define (vector->list vec)
+  (define len (vector-length vec))
+  (define (build i acc)
+    (if (< i 0)
+        acc
+        (build (- i 1) (cons (vector-ref vec i) acc))))
+  (build (- len 1) '()))

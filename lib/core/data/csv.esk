@@ -1,0 +1,130 @@
+;;; data/csv.esk
+;;; CSV parsing and generation library
+;;; Pure Eshkol implementation
+
+(require core.list.transform)
+(require core.strings)
+
+(provide csv-parse csv-parse-file csv-stringify csv-write-file
+         csv-parse-line csv-parse-lines csv-split-fields csv-stringify-row)
+
+;; =============================================================================
+;; CSV Parsing
+;; =============================================================================
+
+;;; csv-split-fields: Split a line into fields, respecting quoted fields
+;;; Returns a list of strings (field values)
+(define (csv-split-fields line)
+  (if (string=? line "")
+      '()  ; Empty line = empty list
+      (csv-split-fields-helper line 0 (string-length line) "" '() #f)))
+
+;; Helper to convert empty strings to null for clearer representation
+(define (csv-field-value str)
+  (if (string=? str "") '() str))
+
+(define (csv-split-fields-helper line pos len current fields in-quotes)
+  (if (>= pos len)
+      ;; End of line - add final field (convert empty to null)
+      (reverse (cons (csv-field-value current) fields))
+      (let ((ch (string-ref line pos)))
+        (cond
+          ;; Quote character
+          ((char=? ch #\")
+           (if in-quotes
+               ;; Check for escaped quote (double quote)
+               (if (and (< (+ pos 1) len) (char=? (string-ref line (+ pos 1)) #\"))
+                   ;; Escaped quote - add one quote and skip both
+                   (csv-split-fields-helper line (+ pos 2) len
+                                            (string-append current "\"")
+                                            fields #t)
+                   ;; End of quoted field
+                   (csv-split-fields-helper line (+ pos 1) len current fields #f))
+               ;; Start of quoted field
+               (csv-split-fields-helper line (+ pos 1) len current fields #t)))
+          ;; Comma - field separator (only if not in quotes)
+          ((and (char=? ch #\,) (not in-quotes))
+           (csv-split-fields-helper line (+ pos 1) len ""
+                                    (cons (csv-field-value current) fields) #f))
+          ;; Regular character
+          (else
+           (csv-split-fields-helper line (+ pos 1) len
+                                    (string-append current (make-string 1 ch))
+                                    fields in-quotes))))))
+
+;;; csv-parse-line: Parse a single CSV line into a list of fields
+(define (csv-parse-line line)
+  (csv-split-fields line))
+
+;;; csv-parse: Parse a CSV string into a list of rows (each row is a list of fields)
+(define (csv-parse str)
+  (csv-parse-lines (reverse (string-split str #\newline))))
+
+(define (csv-parse-lines lines)
+  (if (null? lines)
+      '()
+      (let ((line (car lines)))
+        (if (string=? line "")
+            (csv-parse-lines (cdr lines))  ; Skip empty lines
+            (cons (csv-parse-line line) (csv-parse-lines (cdr lines)))))))
+
+;;; csv-parse-file: Read and parse a CSV file
+(define (csv-parse-file filename)
+  (let ((content (read-file filename)))
+    (if content
+        (csv-parse content)
+        '())))
+
+;; =============================================================================
+;; CSV Generation
+;; =============================================================================
+
+;;; csv-escape-field: Escape a field for CSV output
+;;; Adds quotes if field contains comma, quote, or newline
+;;; Converts null () back to empty string
+(define (csv-escape-field field)
+  (let ((str (cond
+               ((null? field) "")           ; null -> empty string
+               ((string? field) field)
+               (else (number->string field)))))
+    (if (csv-needs-quoting? str)
+        (string-append "\"" (csv-escape-quotes str) "\"")
+        str)))
+
+(define (csv-needs-quoting? str)
+  (or (string-contains? str ",")
+      (string-contains? str "\"")
+      (string-contains? str "\n")))
+
+(define (csv-escape-quotes str)
+  (string-replace str "\"" "\"\""))
+
+;;; csv-stringify-row: Convert a row (list of fields) to CSV string
+(define (csv-stringify-row row)
+  (csv-stringify-row-helper row #t))
+
+(define (csv-stringify-row-helper row first)
+  (if (null? row)
+      ""
+      (let ((field (csv-escape-field (car row)))
+            (rest (csv-stringify-row-helper (cdr row) #f)))
+        (if first
+            (string-append field rest)
+            (string-append "," field rest)))))
+
+;;; csv-stringify: Convert a list of rows to CSV string
+(define (csv-stringify rows)
+  (csv-stringify-helper rows #t))
+
+(define (csv-stringify-helper rows first)
+  (if (null? rows)
+      ""
+      (let ((row-str (csv-stringify-row (car rows)))
+            (rest (csv-stringify-helper (cdr rows) #f)))
+        (if first
+            (string-append row-str rest)
+            (string-append "\n" row-str rest)))))
+
+;;; csv-write-file: Write rows to a CSV file
+(define (csv-write-file filename rows)
+  (write-file filename (csv-stringify rows)))

@@ -68,7 +68,9 @@ math_test_outputs/
 *.ll
 *.ast
 *.tmp
-
+*.bak
+*.backup
+a.out
 
 compile_commands.json
 .aider*

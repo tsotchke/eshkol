@@ -1,0 +1,28 @@
+;;
+;; Simple Hash Table Debug Test
+;;
+
+(require stdlib)
+
+(display "=== Simple Hash Debug ===\n")
+
+;; Test string key, string value
+(define h1 (make-hash-table))
+(hash-set! h1 "key" "value")
+(display "String->String: ")
+(display (hash-ref h1 "key"))
+(newline)
+
+;; Test string key, integer value
+(define h2 (make-hash-table))
+(hash-set! h2 "num" 42)
+(display "String->Int: ")
+(display (hash-ref h2 "num"))
+(newline)
+
+;; Test what type the value has
+(display "Type of 42: ")
+(display 42)
+(newline)
+
+(display "Done\n")

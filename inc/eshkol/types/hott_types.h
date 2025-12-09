@@ -190,6 +190,9 @@ namespace BuiltinTypes {
     inline constexpr TypeId DualNumber{106, Universe::U1, 0};  // Forward-mode AD: (primal, tangent)
     inline constexpr TypeId ADNode{107, Universe::U1, 0};      // Reverse-mode AD: computation graph node
 
+    // Hash/Map types (U1) - key-value collections
+    inline constexpr TypeId HashTable{108, Universe::U1, 0};  // Mutable hash table
+
     // Resource types (U1, Linear)
     inline constexpr TypeId Handle{110, Universe::U1, TYPE_FLAG_LINEAR};
     inline constexpr TypeId Buffer{111, Universe::U1, 0};
@@ -440,6 +443,12 @@ public:
      * Create a Vector type with the given element type.
      */
     ParameterizedType makeVectorType(TypeId element_type) const;
+
+    /**
+     * Create a HashTable type with the given key and value types.
+     * For example, makeHashTableType(String, Int64) creates HashTable<String, Int64>.
+     */
+    ParameterizedType makeHashTableType(TypeId key_type, TypeId value_type) const;
 
     /**
      * Check if a type is a type family (parameterized type constructor).

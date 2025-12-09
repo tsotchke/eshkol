@@ -1,0 +1,151 @@
+;;
+;; HoTT Type System Tests - Hash Table Type Annotations
+;;
+;; Tests the type annotation syntax for hash tables:
+;; (: name (HashTable key-type value-type))
+;;
+
+(require stdlib)
+
+;; Test framework
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(display "╔══════════════════════════════════════════════════════════════════╗\n")
+(display "║           HASH TABLE TYPE ANNOTATION TESTS                      ║\n")
+(display "╚══════════════════════════════════════════════════════════════════╝\n\n")
+
+;; ============================================================================
+;; Section 1: Basic hash table type annotations
+;; ============================================================================
+(display "═══ Section 1: Basic hash table type annotations ═══\n")
+
+;; String key -> Integer value
+(: ages (HashTable string integer))
+(define ages (make-hash-table))
+(hash-set! ages "Alice" 30)
+(hash-set! ages "Bob" 25)
+(check "string->int hash-set!/ref" 30 (hash-ref ages "Alice"))
+(check "string->int second entry" 25 (hash-ref ages "Bob"))
+
+;; Integer key -> String value
+(: names (HashTable integer string))
+(define names (make-hash-table))
+(hash-set! names 1 "one")
+(hash-set! names 2 "two")
+(check "int->string hash-set!/ref" "one" (hash-ref names 1))
+(check "int->string second entry" "two" (hash-ref names 2))
+
+;; ============================================================================
+;; Section 2: Hash table operations with typed tables
+;; ============================================================================
+(display "\n═══ Section 2: Hash table operations ═══\n")
+
+(: counters (HashTable string integer))
+(define counters (make-hash-table))
+(hash-set! counters "visits" 100)
+(hash-set! counters "clicks" 50)
+
+(check "hash-count" 2 (hash-count counters))
+(check "hash-has-key? true" #t (hash-has-key? counters "visits"))
+(check "hash-has-key? false" #f (hash-has-key? counters "missing"))
+
+;; Test hash-ref with default
+(check "hash-ref with default (found)" 100 (hash-ref counters "visits" 0))
+(check "hash-ref with default (not found)" 0 (hash-ref counters "missing" 0))
+
+;; ============================================================================
+;; Section 3: Hash table modification
+;; ============================================================================
+(display "\n═══ Section 3: Hash table modification ═══\n")
+
+(: mutable-ht (HashTable string integer))
+(define mutable-ht (make-hash-table))
+
+;; Add entries
+(hash-set! mutable-ht "a" 1)
+(hash-set! mutable-ht "b" 2)
+(hash-set! mutable-ht "c" 3)
+(check "after adding 3 entries" 3 (hash-count mutable-ht))
+
+;; Update entry
+(hash-set! mutable-ht "a" 10)
+(check "update existing key" 10 (hash-ref mutable-ht "a"))
+(check "count unchanged after update" 3 (hash-count mutable-ht))
+
+;; Remove entry
+(hash-remove! mutable-ht "b")
+(check "after remove count" 2 (hash-count mutable-ht))
+(check "removed key not found" #f (hash-has-key? mutable-ht "b"))
+
+;; Clear table
+(hash-clear! mutable-ht)
+(check "after clear count" 0 (hash-count mutable-ht))
+
+;; ============================================================================
+;; Section 4: Hash table with real number values
+;; ============================================================================
+(display "\n═══ Section 4: Real number values ═══\n")
+
+(: prices (HashTable string real))
+(define prices (make-hash-table))
+(hash-set! prices "apple" 1.50)
+(hash-set! prices "banana" 0.75)
+(hash-set! prices "orange" 2.00)
+
+(check "real value storage" 1.50 (hash-ref prices "apple"))
+(check "real value storage 2" 0.75 (hash-ref prices "banana"))
+
+;; ============================================================================
+;; Section 5: Hash keys and values retrieval
+;; ============================================================================
+(display "\n═══ Section 5: Keys and values retrieval ═══\n")
+
+(: config (HashTable string string))
+(define config (make-hash-table))
+(hash-set! config "host" "localhost")
+(hash-set! config "port" "8080")
+
+;; Get keys - returns a list
+(define config-keys (hash-keys config))
+(check "hash-keys returns list" #t (pair? config-keys))
+
+;; Get values - returns a list
+(define config-values (hash-values config))
+(check "hash-values returns list" #t (pair? config-values))
+
+;; ============================================================================
+;; Section 6: Boolean values in hash tables
+;; ============================================================================
+(display "\n═══ Section 6: Boolean values ═══\n")
+
+(: flags (HashTable string boolean))
+(define flags (make-hash-table))
+(hash-set! flags "enabled" #t)
+(hash-set! flags "debug" #f)
+
+(check "boolean true storage" #t (hash-ref flags "enabled"))
+(check "boolean false storage" #f (hash-ref flags "debug"))
+
+;; ============================================================================
+;; SUMMARY
+;; ============================================================================
+(display "\n═══════════════════════════════════════════════════════════════\n")
+(display "RESULTS: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed\n")
+(display "═══════════════════════════════════════════════════════════════\n")
+
+(if (= tests-failed 0)
+    (display "ALL TESTS PASSED!\n")
+    (display "SOME TESTS FAILED!\n"))

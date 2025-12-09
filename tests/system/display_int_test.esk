@@ -1,0 +1,16 @@
+;;
+;; Direct Integer Display Test
+;;
+
+(require stdlib)
+
+(display "Direct integer: ")
+(display 42)
+(newline)
+
+(define x 99)
+(display "Variable integer: ")
+(display x)
+(newline)
+
+(display "Done\n")

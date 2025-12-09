@@ -5,7 +5,7 @@
 #
 cmake_minimum_required(VERSION 3.14)
 
-set(ESHKOL_VERSION "0.1.1")
+set(ESHKOL_VERSION "1.0.0")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
 

@@ -1,0 +1,119 @@
+;; Comprehensive CSV test suite
+(require core.data.csv)
+(require core.list.transform)
+(require core.strings)
+
+(display "=== CSV Comprehensive Test Suite ===\n\n")
+
+;; Test 1: Basic parsing
+(display "Test 1: Basic csv-parse-line\n")
+(display "Input: \"a,b,c\"\n")
+(display "Result: ")
+(display (csv-parse-line "a,b,c"))
+(newline)
+(newline)
+
+;; Test 2: Quoted fields
+(display "Test 2: Quoted fields\n")
+(display "Input: \"hello,\"world, test\",done\"\n")
+(display "Result: ")
+(display (csv-parse-line "hello,\"world, test\",done"))
+(newline)
+(newline)
+
+;; Test 3: Escaped quotes within fields
+(display "Test 3: Escaped quotes (\"\" becomes \")\n")
+(display "Input: \"say,\"\"hello\"\",world\"\n")
+(display "Result: ")
+(display (csv-parse-line "say,\"\"hello\"\",world"))
+(newline)
+(newline)
+
+;; Test 4: Empty fields
+(display "Test 4: Empty fields\n")
+(display "Input: \"a,,b\"\n")
+(display "Result: ")
+(display (csv-parse-line "a,,b"))
+(newline)
+(newline)
+
+;; Test 5: Single field
+(display "Test 5: Single field (no commas)\n")
+(display "Input: \"hello\"\n")
+(display "Result: ")
+(display (csv-parse-line "hello"))
+(newline)
+(newline)
+
+;; Test 6: Empty input
+(display "Test 6: Empty input\n")
+(display "Input: \"\"\n")
+(display "Result: ")
+(display (csv-parse-line ""))
+(newline)
+(newline)
+
+;; Test 7: Stringify row
+(display "Test 7: csv-stringify-row\n")
+(display "Input: '(\"a\" \"b\" \"c\")\n")
+(display "Result: ")
+(display (csv-stringify-row '("a" "b" "c")))
+(newline)
+(newline)
+
+;; Test 8: Stringify row with special characters
+(display "Test 8: Stringify row with commas\n")
+(display "Input: '(\"hello\" \"world, test\" \"done\")\n")
+(display "Result: ")
+(display (csv-stringify-row '("hello" "world, test" "done")))
+(newline)
+(newline)
+
+;; Test 9: Parse multiple lines
+(display "Test 9: csv-parse-lines\n")
+(define lines '("a,b,c" "1,2,3" "x,y,z"))
+(display "Input: ")
+(display lines)
+(newline)
+(display "Result: ")
+(display (csv-parse-lines lines))
+(newline)
+(newline)
+
+;; Test 10: File I/O - Write and read back
+(display "Test 10: File I/O (write and read)\n")
+(define test-data '(("Name" "Age" "City")
+                    ("Alice" "30" "New York")
+                    ("Bob" "25" "Los Angeles")))
+(display "Data to write: ")
+(display test-data)
+(newline)
+
+;; Write to file
+(csv-write-file "/tmp/test_csv_output.csv" test-data)
+(display "Written to /tmp/test_csv_output.csv\n")
+
+;; Read back
+(define read-data (csv-parse-file "/tmp/test_csv_output.csv"))
+(display "Read back: ")
+(display read-data)
+(newline)
+(newline)
+
+;; Test 11: Round-trip integrity check
+(display "Test 11: Round-trip integrity\n")
+(define complex-data '(("Field1" "Field2" "Field3")
+                       ("simple" "with, comma" "with \"quotes\"")
+                       ("numbers" "123" "456.789")))
+(display "Original: ")
+(display complex-data)
+(newline)
+
+(csv-write-file "/tmp/test_csv_complex.csv" complex-data)
+(define roundtrip (csv-parse-file "/tmp/test_csv_complex.csv"))
+(display "After roundtrip: ")
+(display roundtrip)
+(newline)
+(newline)
+
+(display "=== All CSV tests completed ===\n")

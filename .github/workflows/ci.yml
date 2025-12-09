@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [master, develop, 'feat/**']
+  pull_request:
+    branches: [master]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build \
+            llvm-17-dev libllvm17 \
+            libreadline-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run Type Tests
+        run: ./scripts/run_types_tests.sh
+
+      - name: Run C++ Type Tests
+        run: ./scripts/run_cpp_type_tests.sh
+
+      - name: Run List Tests
+        run: ./scripts/run_list_tests.sh
+
+      - name: Run Autodiff Tests
+        run: ./scripts/run_autodiff_tests.sh
+
+      - name: Run Memory Tests
+        run: ./scripts/run_memory_tests.sh
+
+      - name: Run Module Tests
+        run: ./scripts/run_modules_tests.sh
+
+      - name: Run Stdlib Tests
+        run: ./scripts/run_stdlib_tests.sh
+
+      - name: Run Features Tests
+        run: ./scripts/run_features_tests.sh
+
+      - name: Run ML Tests
+        run: ./scripts/run_ml_tests.sh
+
+      - name: Run Neural Tests
+        run: ./scripts/run_neural_tests.sh
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        if: matrix.build_type == 'Release'
+        with:
+          name: eshkol-linux-x64
+          path: |
+            build/eshkol-run
+            build/eshkol-repl
+            build/stdlib.o
+
+  build-macos-arm:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: brew install llvm@17 cmake ninja readline
+
+      - name: Build
+        run: |
+          export PATH="/opt/homebrew/opt/llvm@17/bin:$PATH"
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+
+      - name: Run Type Tests
+        run: ./scripts/run_types_tests.sh
+
+      - name: Run List Tests
+        run: ./scripts/run_list_tests.sh
+
+      - name: Run Autodiff Tests
+        run: ./scripts/run_autodiff_tests.sh
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: eshkol-macos-arm64
+          path: |
+            build/eshkol-run
+            build/eshkol-repl
+            build/stdlib.o
+
+  build-macos-intel:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: brew install llvm@17 cmake ninja readline
+
+      - name: Build
+        run: |
+          export PATH="/usr/local/opt/llvm@17/bin:$PATH"
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+
+      - name: Run Type Tests
+        run: ./scripts/run_types_tests.sh
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: eshkol-macos-x64
+          path: |
+            build/eshkol-run
+            build/eshkol-repl
+            build/stdlib.o

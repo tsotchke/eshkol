@@ -1,0 +1,52 @@
+;; Test string functions that use closures capturing function parameters
+;; This tests the fix for findFreeVariables AND_OP/OR_OP traversal bug
+
+(require stdlib)
+
+;; Test framework
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(display "=== String Closure Tests ===\n\n")
+
+;; Test string-last-index (uses nested lambda with and/or capturing str, substr)
+(display "Testing string-last-index:\n")
+(check "string-last-index basic" 7 (string-last-index "hello world" "o"))
+(check "string-last-index first occurrence" 0 (string-last-index "hello world" "hello"))
+(check "string-last-index last occurrence" 3 (string-last-index "abcabc" "abc"))
+(check "string-last-index not found" -1 (string-last-index "hello" "xyz"))
+(check "string-last-index at end" 11 (string-last-index "hello world!" "!"))
+(check "string-last-index multi-char" 6 (string-last-index "abcdefabc" "abc"))
+
+;; Test string-contains (uses nested lambda)
+(display "\nTesting string-contains:\n")
+(check "string-contains true" #t (string-contains "hello world" "world"))
+(check "string-contains false" #f (string-contains "hello world" "xyz"))
+(check "string-contains at start" #t (string-contains "hello" "hel"))
+(check "string-contains at end" #t (string-contains "hello" "llo"))
+
+;; Test string-index (uses nested lambda capturing str, char/substr)
+(display "\nTesting string-index:\n")
+(check "string-index found" 4 (string-index "hello" "o"))
+(check "string-index first" 0 (string-index "hello" "h"))
+(check "string-index not found" -1 (string-index "hello" "z"))
+(check "string-index multi-char" 6 (string-index "hello world" "world"))
+
+;; Summary
+(display "\n=== Results ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (display "\nALL TESTS PASSED!\n")
+    (display "\nSOME TESTS FAILED!\n"))

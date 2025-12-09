@@ -105,8 +105,21 @@ public:
     
 private:
     void skipWhitespace() {
-        while (pos < length && std::isspace(input[pos])) {
-            pos++;
+        while (pos < length) {
+            // Skip whitespace
+            if (std::isspace(input[pos])) {
+                pos++;
+                continue;
+            }
+            // Skip comments (from ; to end of line)
+            if (input[pos] == ';') {
+                while (pos < length && input[pos] != '\n') {
+                    pos++;
+                }
+                continue;
+            }
+            // Not whitespace or comment, stop
+            break;
         }
     }
     
@@ -4321,9 +4334,17 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
             continue;
         }
 
-        // Track quotes
-        if (c == '"' && (input.empty() || input.back() != '\\')) {
-            in_quote = !in_quote;
+        // Track quotes - a quote is escaped only if preceded by ODD number of backslashes
+        if (c == '"') {
+            // Count trailing backslashes in input
+            size_t backslash_count = 0;
+            for (size_t i = input.size(); i > 0 && input[i-1] == '\\'; i--) {
+                backslash_count++;
+            }
+            // Quote is escaped only if odd number of backslashes precede it
+            if (backslash_count % 2 == 0) {
+                in_quote = !in_quote;
+            }
         }
 
         input += static_cast<char>(c);

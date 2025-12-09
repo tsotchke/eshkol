@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-22.04
+    outputs:
+      upload_url: ${{ steps.create.outputs.upload_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Release
+        id: create
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Eshkol ${{ github.ref_name }}
+          body: |
+            See CHANGELOG.md for details.
+
+            ## Quick Install
+
+            **macOS:**
+            ```bash
+            brew tap tsotchke/eshkol
+            brew install eshkol
+            ```
+
+            **Linux (Debian/Ubuntu):**
+            ```bash
+            curl -fsSL https://eshkol.ai/install.sh | bash
+            ```
+
+            **From Source:**
+            ```bash
+            git clone https://github.com/tsotchke/eshkol.git
+            cd eshkol
+            cmake -B build -DCMAKE_BUILD_TYPE=Release
+            cmake --build build
+            ```
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+
+  build-and-upload:
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux-x64
+          - os: macos-14
+            name: macos-arm64
+          - os: macos-13
+            name: macos-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build llvm-17-dev libreadline-dev
+
+      - name: Install Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install llvm@17 cmake ninja readline
+
+      - name: Build
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            export PATH="/opt/homebrew/opt/llvm@17/bin:/usr/local/opt/llvm@17/bin:$PATH"
+          fi
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+
+      - name: Run Tests
+        run: |
+          ./scripts/run_types_tests.sh
+          ./scripts/run_list_tests.sh
+          ./scripts/run_autodiff_tests.sh
+
+      - name: Package
+        run: |
+          mkdir -p pkg/bin pkg/lib pkg/share/eshkol
+          cp build/eshkol-run pkg/bin/
+          cp build/eshkol-repl pkg/bin/
+          cp build/stdlib.o pkg/lib/
+          cp lib/stdlib.esk pkg/share/eshkol/
+          if [ -d lib/core ]; then
+            cp -r lib/core pkg/share/eshkol/
+          fi
+          cp README.md LICENSE pkg/
+          tar -czvf eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz -C pkg .
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+          asset_name: eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+          asset_content_type: application/gzip
+
+  build-debian-package:
+    needs: create-release
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build llvm-17-dev libreadline-dev dpkg-dev
+
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+
+      - name: Build Debian Package
+        run: |
+          VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//')
+          ./scripts/build-deb.sh "$VERSION"
+
+      - name: Upload Debian Package
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: eshkol_*.deb
+          asset_name: eshkol-${{ github.ref_name }}-amd64.deb
+          asset_content_type: application/vnd.debian.binary-package

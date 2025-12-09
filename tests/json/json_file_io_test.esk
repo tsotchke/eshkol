@@ -1,0 +1,160 @@
+;;
+;; JSON File I/O Test Suite
+;; Tests reading and writing JSON from/to files
+;;
+
+(require stdlib)
+
+;; Test framework
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+;; Helper: Read entire file as a single string (accumulates lines)
+(define (read-file-as-string filename)
+  (let ((port (open-input-file filename)))
+    (read-file-loop port "")))
+
+(define (read-file-loop port acc)
+  (let ((line (read-line port)))
+    (if (eof-object? line)
+        (begin
+          (close-port port)
+          acc)
+        (read-file-loop port (string-append acc line)))))
+
+(display "╔══════════════════════════════════════════════════════════════════╗\n")
+(display "║              JSON FILE I/O TESTS                                ║\n")
+(display "╚══════════════════════════════════════════════════════════════════╝\n\n")
+
+;; ============================================================================
+;; Section 1: Write JSON to File from Hash Table
+;; ============================================================================
+(display "═══ Section 1: Write JSON from hash table ═══\n")
+
+;; Create a hash table
+(define user-hash (make-hash-table))
+(hash-set! user-hash "name" "Alice")
+(hash-set! user-hash "age" 30)
+(hash-set! user-hash "active" #t)
+
+;; Write to file using write-string
+(define hash-file "/tmp/eshkol_test_hash.json")
+(define hash-port (open-output-file hash-file))
+(write-string (json-stringify user-hash) hash-port)
+(close-port hash-port)
+(display "Wrote hash table to: ") (display hash-file) (newline)
+(check "hash file exists" #t (file-exists? hash-file))
+
+;; ============================================================================
+;; Section 2: Write JSON to File from Alist
+;; ============================================================================
+(display "\n═══ Section 2: Write JSON from alist ═══\n")
+
+;; Create an alist and convert to hash table for stringify
+(define product-alist (list (cons "id" 42)
+                            (cons "name" "Widget")
+                            (cons "price" 19.99)))
+(define product-hash (alist->hash-table product-alist))
+
+;; Write to file
+(define alist-file "/tmp/eshkol_test_alist.json")
+(define alist-port (open-output-file alist-file))
+(write-string (json-stringify product-hash) alist-port)
+(close-port alist-port)
+(display "Wrote alist as JSON to: ") (display alist-file) (newline)
+(check "alist file exists" #t (file-exists? alist-file))
+
+;; ============================================================================
+;; Section 3: Read JSON from File
+;; ============================================================================
+(display "\n═══ Section 3: Read JSON from file ═══\n")
+
+;; Read back the hash file
+(define hash-content (read-file-as-string hash-file))
+(display "Read from hash file: ") (display hash-content) (newline)
+(define parsed-hash (json-parse hash-content))
+(check "read hash name" "Alice" (json-get parsed-hash "name"))
+(check "read hash age" 30 (json-get parsed-hash "age"))
+(check "read hash active" #t (json-get parsed-hash "active"))
+
+;; Read back the alist file
+(define alist-content (read-file-as-string alist-file))
+(display "Read from alist file: ") (display alist-content) (newline)
+(define parsed-alist (json-parse alist-content))
+(check "read alist id" 42 (json-get parsed-alist "id"))
+(check "read alist name" "Widget" (json-get parsed-alist "name"))
+
+;; ============================================================================
+;; Section 4: Complex JSON File (Arrays and Nested Objects)
+;; ============================================================================
+(display "\n═══ Section 4: Complex JSON file ═══\n")
+
+;; Create complex structure
+(define config-hash (make-hash-table))
+(hash-set! config-hash "version" "1.0.0")
+(hash-set! config-hash "features" (list "parsing" "stringify" "file-io"))
+(define db-hash (make-hash-table))
+(hash-set! db-hash "host" "localhost")
+(hash-set! db-hash "port" 5432)
+(hash-set! config-hash "database" db-hash)
+
+;; Write complex JSON
+(define config-file "/tmp/eshkol_test_config.json")
+(define config-port (open-output-file config-file))
+(write-string (json-stringify config-hash) config-port)
+(close-port config-port)
+(display "Wrote complex JSON to: ") (display config-file) (newline)
+
+;; Read and verify
+(define config-content (read-file-as-string config-file))
+(display "Read config: ") (display config-content) (newline)
+(define parsed-config (json-parse config-content))
+(check "config version" "1.0.0" (json-get parsed-config "version"))
+(check "config features" 3 (length (json-get parsed-config "features")))
+(define parsed-db (json-get parsed-config "database"))
+(check "config db host" "localhost" (json-get parsed-db "host"))
+(check "config db port" 5432 (json-get parsed-db "port"))
+
+;; ============================================================================
+;; Section 5: Round-trip File Test
+;; ============================================================================
+(display "\n═══ Section 5: Round-trip file test ═══\n")
+
+;; Create data
+(define original (json-parse "{\"test\":\"roundtrip\",\"numbers\":[1,2,3,4,5]}"))
+
+;; Write to file
+(define rt-file "/tmp/eshkol_test_roundtrip.json")
+(define rt-port (open-output-file rt-file))
+(write-string (json-stringify original) rt-port)
+(close-port rt-port)
+
+;; Read back
+(define rt-content (read-file-as-string rt-file))
+(define roundtrip (json-parse rt-content))
+
+(check "roundtrip test field" "roundtrip" (json-get roundtrip "test"))
+(check "roundtrip numbers" (list 1 2 3 4 5) (json-get roundtrip "numbers"))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+(display "\n═══════════════════════════════════════════════════════════════\n")
+(display "RESULTS: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed\n")
+(display "═══════════════════════════════════════════════════════════════\n")
+
+(if (= tests-failed 0)
+    (display "ALL TESTS PASSED!\n")
+    (display "SOME TESTS FAILED!\n"))

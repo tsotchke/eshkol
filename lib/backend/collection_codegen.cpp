@@ -126,11 +126,19 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         return nullptr;
     }
 
+    // Get current function before argument codegen (which might create new blocks)
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
     // Generate code for argument via callback
+    // Note: The argument might itself contain car/cdr calls that create blocks
     llvm::Value* pair_val = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!pair_val) return nullptr;
 
-    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    // Create a continuation block to ensure we don't add instructions to
+    // any block created by the argument codegen
+    llvm::BasicBlock* car_start = llvm::BasicBlock::Create(ctx_.context(), "car_start", current_func);
+    ctx_.builder().CreateBr(car_start);
+    ctx_.builder().SetInsertPoint(car_start);
 
     // VECTOR/TENSOR SUPPORT: Check if input is a vector or tensor type
     if (pair_val->getType() == ctx_.taggedValueType()) {
@@ -316,6 +324,8 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
         llvm::Value* car_is_bool = ctx_.builder().CreateICmpEQ(car_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
+        llvm::Value* car_is_hash_ptr = ctx_.builder().CreateICmpEQ(car_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HASH_PTR));
 
         // Create blocks for each type
         llvm::BasicBlock* null_car = llvm::BasicBlock::Create(ctx_.context(), "car_extract_null", current_func);
@@ -331,6 +341,8 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         llvm::BasicBlock* closure_car = llvm::BasicBlock::Create(ctx_.context(), "car_extract_closure", current_func);
         llvm::BasicBlock* check_bool = llvm::BasicBlock::Create(ctx_.context(), "car_check_bool", current_func);
         llvm::BasicBlock* bool_car = llvm::BasicBlock::Create(ctx_.context(), "car_extract_bool", current_func);
+        llvm::BasicBlock* check_hash = llvm::BasicBlock::Create(ctx_.context(), "car_check_hash", current_func);
+        llvm::BasicBlock* hash_ptr_car = llvm::BasicBlock::Create(ctx_.context(), "car_extract_hash", current_func);
         llvm::BasicBlock* int_car = llvm::BasicBlock::Create(ctx_.context(), "car_extract_int", current_func);
         llvm::BasicBlock* merge_car = llvm::BasicBlock::Create(ctx_.context(), "car_merge", current_func);
 
@@ -401,7 +413,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
 
         // Handle boolean values
         ctx_.builder().SetInsertPoint(check_bool);
-        ctx_.builder().CreateCondBr(car_is_bool, bool_car, int_car);
+        ctx_.builder().CreateCondBr(car_is_bool, bool_car, check_hash);
 
         ctx_.builder().SetInsertPoint(bool_car);
         llvm::Value* car_bool_int = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
@@ -410,6 +422,16 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         ctx_.builder().CreateBr(merge_car);
         llvm::BasicBlock* bool_exit = ctx_.builder().GetInsertBlock();
 
+        // Handle HASH_PTR for hash tables
+        ctx_.builder().SetInsertPoint(check_hash);
+        ctx_.builder().CreateCondBr(car_is_hash_ptr, hash_ptr_car, int_car);
+
+        ctx_.builder().SetInsertPoint(hash_ptr_car);
+        llvm::Value* car_hash = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
+        llvm::Value* tagged_hash = tagged_.packPtr(ctx_.builder().CreateIntToPtr(car_hash, ctx_.ptrType()), ESHKOL_VALUE_HASH_PTR);
+        ctx_.builder().CreateBr(merge_car);
+        llvm::BasicBlock* hash_exit = ctx_.builder().GetInsertBlock();
+
         ctx_.builder().SetInsertPoint(int_car);
         llvm::Value* car_int64 = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
         llvm::Value* tagged_int64 = tagged_.packInt64(car_int64, true);
@@ -417,7 +439,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(merge_car);
-        llvm::PHINode* car_tagged_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 8);
+        llvm::PHINode* car_tagged_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9);
         car_tagged_phi->addIncoming(tagged_null_car, null_car_exit);
         car_tagged_phi->addIncoming(tagged_double, double_exit);
         car_tagged_phi->addIncoming(tagged_cons, cons_exit);
@@ -425,6 +447,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         car_tagged_phi->addIncoming(tagged_lambda, lambda_exit);
         car_tagged_phi->addIncoming(tagged_closure, closure_exit);
         car_tagged_phi->addIncoming(tagged_bool, bool_exit);
+        car_tagged_phi->addIncoming(tagged_hash, hash_exit);
         car_tagged_phi->addIncoming(tagged_int64, int_exit);
         ctx_.builder().CreateBr(car_final);
         llvm::BasicBlock* merge_exit = ctx_.builder().GetInsertBlock();
@@ -435,6 +458,11 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         final_phi->addIncoming(vector_phi, vector_merge_exit);
         final_phi->addIncoming(null_tagged, null_exit);
         final_phi->addIncoming(car_tagged_phi, merge_exit);
+
+        // Create continuation block so car_final stays clean with just the PHI
+        llvm::BasicBlock* car_done = llvm::BasicBlock::Create(ctx_.context(), "car_done", current_func);
+        ctx_.builder().CreateBr(car_done);
+        ctx_.builder().SetInsertPoint(car_done);
 
         return final_phi;
     }
@@ -468,6 +496,11 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
     result_phi->addIncoming(null_tagged, null_exit);
     result_phi->addIncoming(valid_tagged, valid_exit);
 
+    // Create done block to not pollute continue_block
+    llvm::BasicBlock* car_fallback_done = llvm::BasicBlock::Create(ctx_.context(), "car_fallback_done", current_func);
+    ctx_.builder().CreateBr(car_fallback_done);
+    ctx_.builder().SetInsertPoint(car_fallback_done);
+
     return result_phi;
 }
 
@@ -482,11 +515,19 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         return nullptr;
     }
 
+    // Get current function before argument codegen (which might create new blocks)
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
     // Generate code for argument via callback
+    // Note: The argument might itself contain cdr calls that create blocks
     llvm::Value* pair_val = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!pair_val) return nullptr;
 
-    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    // Create a continuation block to ensure we don't add instructions to
+    // any block created by the argument codegen
+    llvm::BasicBlock* cdr_start = llvm::BasicBlock::Create(ctx_.context(), "cdr_start", current_func);
+    ctx_.builder().CreateBr(cdr_start);
+    ctx_.builder().SetInsertPoint(cdr_start);
 
     // VECTOR/TENSOR SUPPORT: Check if input is a vector or tensor type
     if (pair_val->getType() == ctx_.taggedValueType()) {
@@ -691,6 +732,8 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
         llvm::Value* cdr_is_bool = ctx_.builder().CreateICmpEQ(cdr_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
+        llvm::Value* cdr_is_hash_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HASH_PTR));
 
         // Create blocks for each type
         llvm::BasicBlock* double_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_double", current_func);
@@ -706,6 +749,8 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::BasicBlock* closure_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_closure", current_func);
         llvm::BasicBlock* check_bool_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_bool", current_func);
         llvm::BasicBlock* bool_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_bool", current_func);
+        llvm::BasicBlock* check_hash_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_hash", current_func);
+        llvm::BasicBlock* hash_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_hash", current_func);
         llvm::BasicBlock* int_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_int", current_func);
         llvm::BasicBlock* merge_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_merge", current_func);
 
@@ -774,7 +819,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
 
         // Handle boolean values
         ctx_.builder().SetInsertPoint(check_bool_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_bool, bool_cdr, int_cdr);
+        ctx_.builder().CreateCondBr(cdr_is_bool, bool_cdr, check_hash_cdr);
 
         ctx_.builder().SetInsertPoint(bool_cdr);
         llvm::Value* cdr_bool_int = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
@@ -783,6 +828,16 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         ctx_.builder().CreateBr(merge_cdr);
         llvm::BasicBlock* bool_exit = ctx_.builder().GetInsertBlock();
 
+        // Handle HASH_PTR for hash tables
+        ctx_.builder().SetInsertPoint(check_hash_cdr);
+        ctx_.builder().CreateCondBr(cdr_is_hash_ptr, hash_cdr, int_cdr);
+
+        ctx_.builder().SetInsertPoint(hash_cdr);
+        llvm::Value* cdr_hash = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
+        llvm::Value* tagged_hash_cdr = tagged_.packPtr(ctx_.builder().CreateIntToPtr(cdr_hash, ctx_.ptrType()), ESHKOL_VALUE_HASH_PTR);
+        ctx_.builder().CreateBr(merge_cdr);
+        llvm::BasicBlock* hash_exit = ctx_.builder().GetInsertBlock();
+
         ctx_.builder().SetInsertPoint(int_cdr);
         llvm::Value* cdr_int64 = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
         llvm::Value* tagged_int64_cdr = tagged_.packInt64(cdr_int64, true);
@@ -790,7 +845,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(merge_cdr);
-        llvm::PHINode* cdr_tagged_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 8);
+        llvm::PHINode* cdr_tagged_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9);
         cdr_tagged_phi->addIncoming(tagged_double_cdr, double_exit);
         cdr_tagged_phi->addIncoming(tagged_cons_cdr, cons_exit_cdr);
         cdr_tagged_phi->addIncoming(tagged_null_extract, null_cdr_exit);
@@ -798,6 +853,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         cdr_tagged_phi->addIncoming(tagged_lambda_cdr, lambda_exit);
         cdr_tagged_phi->addIncoming(tagged_closure_cdr, closure_exit);
         cdr_tagged_phi->addIncoming(tagged_bool_cdr, bool_exit);
+        cdr_tagged_phi->addIncoming(tagged_hash_cdr, hash_exit);
         cdr_tagged_phi->addIncoming(tagged_int64_cdr, int_exit);
         ctx_.builder().CreateBr(cdr_final);
         llvm::BasicBlock* merge_exit = ctx_.builder().GetInsertBlock();
@@ -808,6 +864,11 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         final_phi->addIncoming(vector_phi, vector_merge_exit);
         final_phi->addIncoming(null_tagged_cdr, null_exit);
         final_phi->addIncoming(cdr_tagged_phi, merge_exit);
+
+        // Create continuation block so cdr_final stays clean with just the PHI
+        llvm::BasicBlock* cdr_done = llvm::BasicBlock::Create(ctx_.context(), "cdr_done", current_func);
+        ctx_.builder().CreateBr(cdr_done);
+        ctx_.builder().SetInsertPoint(cdr_done);
 
         return final_phi;
     }
@@ -839,6 +900,11 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
     llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2);
     result_phi->addIncoming(null_tagged, null_exit);
     result_phi->addIncoming(valid_tagged, valid_exit);
+
+    // Create done block to not pollute continue_block
+    llvm::BasicBlock* cdr_fallback_done = llvm::BasicBlock::Create(ctx_.context(), "cdr_fallback_done", current_func);
+    ctx_.builder().CreateBr(cdr_fallback_done);
+    ctx_.builder().SetInsertPoint(cdr_fallback_done);
 
     return result_phi;
 }

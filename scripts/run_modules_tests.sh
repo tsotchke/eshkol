@@ -48,29 +48,62 @@ for test_file in tests/modules/*.esk; do
     # Clean up stale temp files before each test
     rm -f a.out a.out.tmp.o
 
-    # Try to compile
-    if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
-        # Compilation succeeded, try to run
-        if ./a.out > /tmp/test_output.txt 2>&1; then
-            # Check if there were any errors in output
-            if grep -q "error:" /tmp/test_output.txt; then
-                echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
-                RUNTIME_ERRORS+=("$test_name")
-                ((FAIL++))
-            else
-                echo -e "${GREEN}✅ PASS${NC}"
+    # Check if this is a negative test (expected to fail)
+    if grep -q ";;; Expected: Error" "$test_file"; then
+        # Negative test - should fail to compile OR fail at runtime
+        compile_output=$(./build/eshkol-run "$test_file" -L./build 2>&1)
+        compile_exit=$?
+
+        # Check if compile failed OR compile output contains error
+        if [ $compile_exit -ne 0 ] || echo "$compile_output" | grep -q "error:"; then
+            # Check if it's a compile-time failure
+            if [ $compile_exit -ne 0 ] || [ ! -f a.out ]; then
+                echo -e "${GREEN}✅ PASS (expected compile error)${NC}"
                 ((PASS++))
+            else
+                # Executable was created despite error, check runtime
+                if ./a.out > /dev/null 2>&1; then
+                    # Runtime succeeded but should have failed
+                    echo -e "${RED}❌ SHOULD HAVE FAILED${NC}"
+                    FAILED_TESTS+=("$test_name (expected error)")
+                    ((FAIL++))
+                else
+                    # Runtime failed as expected
+                    echo -e "${GREEN}✅ PASS (expected runtime error)${NC}"
+                    ((PASS++))
+                fi
             fi
         else
-            echo -e "${RED}❌ RUNTIME FAIL${NC}"
-            FAILED_TESTS+=("$test_name")
+            # No error detected
+            echo -e "${RED}❌ SHOULD HAVE FAILED${NC}"
+            FAILED_TESTS+=("$test_name (expected error)")
             ((FAIL++))
         fi
     else
-        echo -e "${RED}❌ COMPILE FAIL${NC}"
-        FAILED_TESTS+=("$test_name")
-        ((COMPILE_FAIL++))
-        ((FAIL++))
+        # Normal test - should compile and run successfully
+        if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
+            # Compilation succeeded, try to run
+            if ./a.out > /tmp/test_output.txt 2>&1; then
+                # Check if there were any errors in output
+                if grep -q "error:" /tmp/test_output.txt; then
+                    echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
+                    RUNTIME_ERRORS+=("$test_name")
+                    ((FAIL++))
+                else
+                    echo -e "${GREEN}✅ PASS${NC}"
+                    ((PASS++))
+                fi
+            else
+                echo -e "${RED}❌ RUNTIME FAIL${NC}"
+                FAILED_TESTS+=("$test_name")
+                ((FAIL++))
+            fi
+        else
+            echo -e "${RED}❌ COMPILE FAIL${NC}"
+            FAILED_TESTS+=("$test_name")
+            ((COMPILE_FAIL++))
+            ((FAIL++))
+        fi
     fi
 done
 

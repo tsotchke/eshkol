@@ -1660,6 +1660,16 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             fprintf(get_output(opts), "#<ad-node>");
             break;
 
+        case ESHKOL_VALUE_HASH_PTR: {
+            eshkol_hash_table_t* ht = (eshkol_hash_table_t*)value->data.ptr_val;
+            if (!ht) {
+                fprintf(get_output(opts), "#<hash:0>");
+            } else {
+                fprintf(get_output(opts), "#<hash:%zu>", ht->size);
+            }
+            break;
+        }
+
         default:
             if (opts->show_types) {
                 fprintf(get_output(opts), "#<unknown-type-%d:0x%llx>",
@@ -1922,5 +1932,394 @@ static void display_vector(uint64_t vector_ptr, eshkol_display_opts_t* opts) {
 }
 
 // ===== END UNIFIED DISPLAY IMPLEMENTATION =====
+
+// ===== HASH TABLE IMPLEMENTATION =====
+
+// FNV-1a hash constants
+static const uint64_t FNV_OFFSET_BASIS = 14695981039346656037ULL;
+static const uint64_t FNV_PRIME = 1099511628211ULL;
+
+// Hash a string using FNV-1a
+static uint64_t fnv1a_hash_string(const char* str) {
+    uint64_t hash = FNV_OFFSET_BASIS;
+    while (*str) {
+        hash ^= (uint8_t)*str++;
+        hash *= FNV_PRIME;
+    }
+    return hash;
+}
+
+// Hash a 64-bit value
+static uint64_t fnv1a_hash_u64(uint64_t val) {
+    uint64_t hash = FNV_OFFSET_BASIS;
+    for (int i = 0; i < 8; i++) {
+        hash ^= (val >> (i * 8)) & 0xFF;
+        hash *= FNV_PRIME;
+    }
+    return hash;
+}
+
+// Hash a tagged value
+uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
+    if (!value) return 0;
+
+    uint8_t type = value->type & 0x0F;
+    uint64_t hash = FNV_OFFSET_BASIS;
+
+    // Mix in the type
+    hash ^= type;
+    hash *= FNV_PRIME;
+
+    switch (type) {
+        case ESHKOL_VALUE_INT64:
+        case ESHKOL_VALUE_BOOL:
+        case ESHKOL_VALUE_CHAR:
+            hash ^= fnv1a_hash_u64(value->data.int_val);
+            break;
+
+        case ESHKOL_VALUE_DOUBLE: {
+            // Hash double as its bit pattern
+            uint64_t bits;
+            memcpy(&bits, &value->data.double_val, sizeof(double));
+            hash ^= fnv1a_hash_u64(bits);
+            break;
+        }
+
+        case ESHKOL_VALUE_STRING_PTR:
+            if (value->data.ptr_val) {
+                hash ^= fnv1a_hash_string((const char*)value->data.ptr_val);
+            }
+            break;
+
+        case ESHKOL_VALUE_SYMBOL:
+            // Symbols are interned, so we can hash the pointer directly
+            hash ^= fnv1a_hash_u64(value->data.ptr_val);
+            break;
+
+        default:
+            // For other types, hash the raw pointer/value
+            hash ^= fnv1a_hash_u64(value->data.raw_val);
+            break;
+    }
+
+    return hash;
+}
+
+// Compare two tagged values for equality (as hash keys)
+bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t* b) {
+    if (!a || !b) return a == b;
+
+    uint8_t type_a = a->type & 0x0F;
+    uint8_t type_b = b->type & 0x0F;
+
+    // Must be same type to be equal (for hash key purposes)
+    if (type_a != type_b) return false;
+
+    switch (type_a) {
+        case ESHKOL_VALUE_INT64:
+        case ESHKOL_VALUE_BOOL:
+        case ESHKOL_VALUE_CHAR:
+            return a->data.int_val == b->data.int_val;
+
+        case ESHKOL_VALUE_DOUBLE:
+            return a->data.double_val == b->data.double_val;
+
+        case ESHKOL_VALUE_STRING_PTR:
+            if (a->data.ptr_val == b->data.ptr_val) return true;
+            if (!a->data.ptr_val || !b->data.ptr_val) return false;
+            return strcmp((const char*)a->data.ptr_val, (const char*)b->data.ptr_val) == 0;
+
+        case ESHKOL_VALUE_SYMBOL:
+            // Symbols are interned - pointer equality is sufficient
+            return a->data.ptr_val == b->data.ptr_val;
+
+        case ESHKOL_VALUE_NULL:
+            return true;  // All nulls are equal
+
+        default:
+            // For other types, compare raw values
+            return a->data.raw_val == b->data.raw_val;
+    }
+}
+
+// Allocate a hash table with specified initial capacity
+eshkol_hash_table_t* arena_allocate_hash_table(arena_t* arena, size_t initial_capacity) {
+    if (!arena || initial_capacity == 0) {
+        eshkol_error("Invalid parameters for hash table allocation");
+        return nullptr;
+    }
+
+    // Allocate the hash table structure
+    eshkol_hash_table_t* table = (eshkol_hash_table_t*)
+        arena_allocate_aligned(arena, sizeof(eshkol_hash_table_t), 8);
+    if (!table) return nullptr;
+
+    // Allocate arrays for keys, values, and status
+    table->keys = (eshkol_tagged_value_t*)
+        arena_allocate_zeroed(arena, sizeof(eshkol_tagged_value_t) * initial_capacity);
+    table->values = (eshkol_tagged_value_t*)
+        arena_allocate_zeroed(arena, sizeof(eshkol_tagged_value_t) * initial_capacity);
+    table->status = (uint8_t*)
+        arena_allocate_zeroed(arena, sizeof(uint8_t) * initial_capacity);
+
+    if (!table->keys || !table->values || !table->status) {
+        eshkol_error("Failed to allocate hash table arrays");
+        return nullptr;
+    }
+
+    table->capacity = initial_capacity;
+    table->size = 0;
+    table->tombstones = 0;
+
+    return table;
+}
+
+// Create a hash table with default initial capacity
+eshkol_hash_table_t* arena_hash_table_create(arena_t* arena) {
+    return arena_allocate_hash_table(arena, HASH_TABLE_INITIAL_CAPACITY);
+}
+
+// Find slot for a key (returns -1 if not found, otherwise returns index)
+// Also returns first tombstone slot via tombstone_slot parameter
+static int64_t find_slot(const eshkol_hash_table_t* table, const eshkol_tagged_value_t* key,
+                         int64_t* tombstone_slot) {
+    uint64_t hash = hash_tagged_value(key);
+    size_t index = hash % table->capacity;
+    int64_t first_tombstone = -1;
+
+    for (size_t i = 0; i < table->capacity; i++) {
+        size_t probe_index = (index + i) % table->capacity;
+        uint8_t status = table->status[probe_index];
+
+        if (status == HASH_ENTRY_EMPTY) {
+            // Empty slot - key not in table
+            if (tombstone_slot) *tombstone_slot = first_tombstone;
+            return -1;
+        }
+
+        if (status == HASH_ENTRY_DELETED) {
+            // Track first tombstone for potential insertion
+            if (first_tombstone == -1) {
+                first_tombstone = (int64_t)probe_index;
+            }
+            continue;
+        }
+
+        // status == HASH_ENTRY_OCCUPIED
+        if (hash_keys_equal(&table->keys[probe_index], key)) {
+            if (tombstone_slot) *tombstone_slot = -1;
+            return (int64_t)probe_index;
+        }
+    }
+
+    // Table is full (shouldn't happen with proper load factor management)
+    if (tombstone_slot) *tombstone_slot = first_tombstone;
+    return -1;
+}
+
+// Resize the hash table when load factor exceeds threshold
+static bool hash_table_resize(arena_t* arena, eshkol_hash_table_t* table, size_t new_capacity) {
+    // Allocate new arrays
+    eshkol_tagged_value_t* new_keys = (eshkol_tagged_value_t*)
+        arena_allocate_zeroed(arena, sizeof(eshkol_tagged_value_t) * new_capacity);
+    eshkol_tagged_value_t* new_values = (eshkol_tagged_value_t*)
+        arena_allocate_zeroed(arena, sizeof(eshkol_tagged_value_t) * new_capacity);
+    uint8_t* new_status = (uint8_t*)
+        arena_allocate_zeroed(arena, sizeof(uint8_t) * new_capacity);
+
+    if (!new_keys || !new_values || !new_status) {
+        return false;
+    }
+
+    // Rehash all existing entries
+    for (size_t i = 0; i < table->capacity; i++) {
+        if (table->status[i] == HASH_ENTRY_OCCUPIED) {
+            uint64_t hash = hash_tagged_value(&table->keys[i]);
+            size_t index = hash % new_capacity;
+
+            // Linear probing to find empty slot
+            while (new_status[index] != HASH_ENTRY_EMPTY) {
+                index = (index + 1) % new_capacity;
+            }
+
+            new_keys[index] = table->keys[i];
+            new_values[index] = table->values[i];
+            new_status[index] = HASH_ENTRY_OCCUPIED;
+        }
+    }
+
+    // Update table to use new arrays
+    table->keys = new_keys;
+    table->values = new_values;
+    table->status = new_status;
+    table->capacity = new_capacity;
+    table->tombstones = 0;  // No tombstones after rehash
+
+    return true;
+}
+
+// Set a key-value pair in the hash table
+bool hash_table_set(arena_t* arena, eshkol_hash_table_t* table,
+                    const eshkol_tagged_value_t* key, const eshkol_tagged_value_t* value) {
+    if (!arena || !table || !key || !value) return false;
+
+    // Check if we need to resize (load factor > 0.75)
+    double load = (double)(table->size + table->tombstones) / table->capacity;
+    if (load > HASH_TABLE_LOAD_FACTOR) {
+        if (!hash_table_resize(arena, table, table->capacity * 2)) {
+            return false;
+        }
+    }
+
+    int64_t tombstone_slot;
+    int64_t slot = find_slot(table, key, &tombstone_slot);
+
+    if (slot >= 0) {
+        // Key exists - update value
+        table->values[slot] = *value;
+        return true;
+    }
+
+    // Key doesn't exist - insert at tombstone slot or find new slot
+    size_t insert_index;
+    if (tombstone_slot >= 0) {
+        insert_index = (size_t)tombstone_slot;
+        table->tombstones--;  // Reusing tombstone
+    } else {
+        // Find empty slot
+        uint64_t hash = hash_tagged_value(key);
+        insert_index = hash % table->capacity;
+        while (table->status[insert_index] != HASH_ENTRY_EMPTY) {
+            insert_index = (insert_index + 1) % table->capacity;
+        }
+    }
+
+    table->keys[insert_index] = *key;
+    table->values[insert_index] = *value;
+    table->status[insert_index] = HASH_ENTRY_OCCUPIED;
+    table->size++;
+
+    return true;
+}
+
+// Get a value from the hash table
+bool hash_table_get(const eshkol_hash_table_t* table,
+                    const eshkol_tagged_value_t* key, eshkol_tagged_value_t* out_value) {
+    if (!table || !key) return false;
+
+    int64_t slot = find_slot(table, key, nullptr);
+    if (slot < 0) return false;
+
+    if (out_value) {
+        *out_value = table->values[slot];
+    }
+    return true;
+}
+
+// Check if a key exists in the hash table
+bool hash_table_has_key(const eshkol_hash_table_t* table, const eshkol_tagged_value_t* key) {
+    if (!table || !key) return false;
+    return find_slot(table, key, nullptr) >= 0;
+}
+
+// Remove a key from the hash table
+bool hash_table_remove(eshkol_hash_table_t* table, const eshkol_tagged_value_t* key) {
+    if (!table || !key) return false;
+
+    int64_t slot = find_slot(table, key, nullptr);
+    if (slot < 0) return false;
+
+    // Mark as deleted (tombstone)
+    table->status[slot] = HASH_ENTRY_DELETED;
+    table->size--;
+    table->tombstones++;
+
+    return true;
+}
+
+// Clear all entries from the hash table
+void hash_table_clear(eshkol_hash_table_t* table) {
+    if (!table) return;
+
+    memset(table->status, HASH_ENTRY_EMPTY, table->capacity);
+    table->size = 0;
+    table->tombstones = 0;
+}
+
+// Get the number of entries in the hash table
+size_t hash_table_count(const eshkol_hash_table_t* table) {
+    return table ? table->size : 0;
+}
+
+// Get all keys as a list
+arena_tagged_cons_cell_t* hash_table_keys(arena_t* arena, const eshkol_hash_table_t* table) {
+    if (!arena || !table || table->size == 0) return nullptr;
+
+    arena_tagged_cons_cell_t* head = nullptr;
+    arena_tagged_cons_cell_t* tail = nullptr;
+
+    for (size_t i = 0; i < table->capacity; i++) {
+        if (table->status[i] == HASH_ENTRY_OCCUPIED) {
+            arena_tagged_cons_cell_t* cell = arena_allocate_tagged_cons_cell(arena);
+            if (!cell) return head;  // Return what we have so far
+
+            // Set car to the key
+            arena_tagged_cons_set_tagged_value(cell, false, &table->keys[i]);
+            // Set cdr to null initially
+            arena_tagged_cons_set_null(cell, true);
+
+            if (!head) {
+                head = tail = cell;
+            } else {
+                // Set previous tail's cdr to this cell
+                eshkol_tagged_value_t cell_val;
+                cell_val.type = ESHKOL_VALUE_CONS_PTR;
+                cell_val.flags = 0;
+                cell_val.reserved = 0;
+                cell_val.data.ptr_val = (uint64_t)cell;
+                arena_tagged_cons_set_tagged_value(tail, true, &cell_val);
+                tail = cell;
+            }
+        }
+    }
+
+    return head;
+}
+
+// Get all values as a list
+arena_tagged_cons_cell_t* hash_table_values(arena_t* arena, const eshkol_hash_table_t* table) {
+    if (!arena || !table || table->size == 0) return nullptr;
+
+    arena_tagged_cons_cell_t* head = nullptr;
+    arena_tagged_cons_cell_t* tail = nullptr;
+
+    for (size_t i = 0; i < table->capacity; i++) {
+        if (table->status[i] == HASH_ENTRY_OCCUPIED) {
+            arena_tagged_cons_cell_t* cell = arena_allocate_tagged_cons_cell(arena);
+            if (!cell) return head;
+
+            // Set car to the value
+            arena_tagged_cons_set_tagged_value(cell, false, &table->values[i]);
+            // Set cdr to null initially
+            arena_tagged_cons_set_null(cell, true);
+
+            if (!head) {
+                head = tail = cell;
+            } else {
+                eshkol_tagged_value_t cell_val;
+                cell_val.type = ESHKOL_VALUE_CONS_PTR;
+                cell_val.flags = 0;
+                cell_val.reserved = 0;
+                cell_val.data.ptr_val = (uint64_t)cell;
+                arena_tagged_cons_set_tagged_value(tail, true, &cell_val);
+                tail = cell;
+            }
+        }
+    }
+
+    return head;
+}
+
+// ===== END HASH TABLE IMPLEMENTATION =====
 
 #endif // __cplusplus
