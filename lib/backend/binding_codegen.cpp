@@ -260,6 +260,7 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     // Determine if this should be global
     Function* current = getCurrentFunction(current_function_);
     bool is_global_init = current && current->getName() == "__global_init";
+    bool is_lib_init = current && current->getName() == "__eshkol_lib_init__";
     bool is_repl = isReplMode(repl_mode_);
     bool is_main = current && current->getName() == "main";
 
@@ -268,8 +269,8 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
 
     // Debug: log what function we're in
     if (current) {
-        eshkol_debug("BindingCodegen::define: in function %s (global_init=%d, repl=%d, main=%d, existing=%d)",
-                     current->getName().str().c_str(), is_global_init, is_repl, is_main,
+        eshkol_debug("BindingCodegen::define: in function %s (global_init=%d, lib_init=%d, repl=%d, main=%d, existing=%d)",
+                     current->getName().str().c_str(), is_global_init, is_lib_init, is_repl, is_main,
                      existing_global != nullptr);
     } else {
         eshkol_debug("BindingCodegen::define: no current function (repl=%d)", is_repl);
@@ -278,7 +279,8 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     // Top-level defines or REPL mode: use global
     // Nested defines inside functions: use local (alloca)
     // CRITICAL: If a global already exists (pre-declared), use it even in main
-    bool use_global = !current || is_global_init || is_repl || (is_main && existing_global);
+    // LIBRARY MODE: __eshkol_lib_init__ is like __global_init for libraries
+    bool use_global = !current || is_global_init || is_lib_init || is_repl || (is_main && existing_global);
 
     // Store the binding
     if (use_global) {
@@ -448,6 +450,20 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
         if (entry.second && isa<GlobalVariable>(entry.second) &&
             entry.first.find("_capture_") == std::string::npos) {
             entries_to_preserve[entry.first] = entry.second;
+        }
+        // ARENA CAPTURE FIX: Preserve entries that were MODIFIED during body evaluation
+        // When codegenLambda captures a let-bound variable, it allocates arena storage
+        // and updates symbol_table[var_name]. This arena storage is the result of a CallInst
+        // (not GlobalVariable), so we need to preserve it by detecting modification.
+        // Check if the entry existed in saved_symbols with a DIFFERENT value.
+        auto saved_it = saved_symbols.find(entry.first);
+        if (saved_it != saved_symbols.end() && saved_it->second != entry.second) {
+            // Entry was modified - preserve the new value
+            // Skip internal capture storage entries
+            if (entry.first.find("_capture_") == std::string::npos) {
+                entries_to_preserve[entry.first] = entry.second;
+                eshkol_debug("let: preserving modified entry %s (arena capture)", entry.first.c_str());
+            }
         }
     }
 
@@ -676,6 +692,20 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         if (entry.second && isa<GlobalVariable>(entry.second) &&
             entry.first.find("_capture_") == std::string::npos) {
             entries_to_preserve[entry.first] = entry.second;
+        }
+        // ARENA CAPTURE FIX: Preserve entries that were MODIFIED during body evaluation
+        // When codegenLambda captures a let-bound variable, it allocates arena storage
+        // and updates symbol_table[var_name]. This arena storage is the result of a CallInst
+        // (not GlobalVariable), so we need to preserve it by detecting modification.
+        // Check if the entry existed in saved_symbols with a DIFFERENT value.
+        auto saved_it = saved_symbols.find(entry.first);
+        if (saved_it != saved_symbols.end() && saved_it->second != entry.second) {
+            // Entry was modified - preserve the new value
+            // Skip internal capture storage entries
+            if (entry.first.find("_capture_") == std::string::npos) {
+                entries_to_preserve[entry.first] = entry.second;
+                eshkol_debug("letrec: preserving modified entry %s (arena capture)", entry.first.c_str());
+            }
         }
     }
 

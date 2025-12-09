@@ -1,0 +1,194 @@
+;;
+;; JSON Library Test Suite
+;;
+
+(require stdlib)
+
+;; Test framework
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (display expected) (display " got ") (display actual) (display "\n"))))
+
+(display "╔══════════════════════════════════════════════════════════════════╗\n")
+(display "║                   JSON LIBRARY TESTS                            ║\n")
+(display "╚══════════════════════════════════════════════════════════════════╝\n\n")
+
+;; ============================================================================
+;; Section 1: Parsing Primitives
+;; ============================================================================
+(display "═══ Section 1: Parsing primitives ═══\n")
+
+;; Numbers
+(check "parse integer" 42 (json-parse "42"))
+(check "parse negative" -17 (json-parse "-17"))
+(check "parse zero" 0 (json-parse "0"))
+(check "parse float" 3.14 (json-parse "3.14"))
+
+;; Strings
+(check "parse string" "hello" (json-parse "\"hello\""))
+(check "parse empty string" "" (json-parse "\"\""))
+
+;; Booleans
+(check "parse true" #t (json-parse "true"))
+(check "parse false" #f (json-parse "false"))
+
+;; Null
+(check "parse null" '() (json-parse "null"))
+
+;; ============================================================================
+;; Section 2: Parsing Arrays
+;; ============================================================================
+(display "\n═══ Section 2: Parsing arrays ═══\n")
+
+(check "parse empty array" '() (json-parse "[]"))
+(check "parse int array" (list 1 2 3) (json-parse "[1, 2, 3]"))
+(check "parse mixed array" (list 1 "two" #t) (json-parse "[1, \"two\", true]"))
+(check "json-array-ref" 2 (json-array-ref (json-parse "[1, 2, 3]") 1))
+
+;; ============================================================================
+;; Section 3: Parsing Objects
+;; ============================================================================
+(display "\n═══ Section 3: Parsing objects ═══\n")
+
+(define obj1 (json-parse "{\"name\": \"Alice\", \"age\": 30}"))
+(check "json-get name" "Alice" (json-get obj1 "name"))
+(check "json-get age" 30 (json-get obj1 "age"))
+(check "json-get missing with default" "unknown" (json-get obj1 "city" "unknown"))
+
+(define obj2 (json-parse "{}"))
+(check "parse empty object" 0 (hash-count obj2))
+
+;; ============================================================================
+;; Section 4: Nested Structures
+;; ============================================================================
+(display "\n═══ Section 4: Nested structures ═══\n")
+
+(define nested (json-parse "{\"user\": {\"id\": 123, \"name\": \"Bob\"}, \"scores\": [95, 87, 91]}"))
+(define user (json-get nested "user"))
+(check "nested object get" 123 (json-get user "id"))
+(check "nested array get" 87 (json-array-ref (json-get nested "scores") 1))
+
+;; ============================================================================
+;; Section 5: Stringify Primitives
+;; ============================================================================
+(display "\n═══ Section 5: Stringify primitives ═══\n")
+
+(check "stringify integer" "42" (json-stringify 42))
+(check "stringify negative" "-17" (json-stringify -17))
+(check "stringify float" "3.14" (json-stringify 3.14))
+(check "stringify string" "\"hello\"" (json-stringify "hello"))
+(check "stringify true" "true" (json-stringify #t))
+(check "stringify false" "false" (json-stringify #f))
+(check "stringify null" "null" (json-stringify '()))
+
+;; ============================================================================
+;; Section 6: Stringify Arrays
+;; ============================================================================
+(display "\n═══ Section 6: Stringify arrays ═══\n")
+
+;; Note: '() represents JSON null, so empty list stringifies to "null"
+;; This is by design - JSON null and empty array share the same representation
+(check "stringify empty/null" "null" (json-stringify '()))
+(check "stringify int array" "[1,2,3]" (json-stringify (list 1 2 3)))
+(check "stringify mixed array" "[1,\"two\",true]" (json-stringify (list 1 "two" #t)))
+
+;; ============================================================================
+;; Section 7: Stringify Objects
+;; ============================================================================
+(display "\n═══ Section 7: Stringify objects ═══\n")
+
+(define ht1 (make-hash-table))
+(hash-set! ht1 "name" "Alice")
+(hash-set! ht1 "age" 30)
+;; Note: object key order is not guaranteed
+(check "stringify object has name" #t (string-contains? (json-stringify ht1) "\"name\":\"Alice\""))
+(check "stringify object has age" #t (string-contains? (json-stringify ht1) "\"age\":30"))
+
+;; ============================================================================
+;; Section 8: Roundtrip Tests
+;; ============================================================================
+(display "\n═══ Section 8: Roundtrip tests ═══\n")
+
+;; Parse then stringify should preserve structure
+(define json1 "[1,2,3]")
+(check "roundtrip array" json1 (json-stringify (json-parse json1)))
+
+(define json2 "\"hello world\"")
+(check "roundtrip string" json2 (json-stringify (json-parse json2)))
+
+(define json3 "true")
+(check "roundtrip bool" json3 (json-stringify (json-parse json3)))
+
+;; ============================================================================
+;; Section 9: String Escaping
+;; ============================================================================
+(display "\n═══ Section 9: String escaping ═══\n")
+
+(check "parse escaped quote" "say \"hi\"" (json-parse "\"say \\\"hi\\\"\""))
+(check "parse escaped newline" "line1\nline2" (json-parse "\"line1\\nline2\""))
+(check "stringify with quote" "\"say \\\"hi\\\"\"" (json-stringify "say \"hi\""))
+(check "stringify with newline" "\"line1\\nline2\"" (json-stringify "line1\nline2"))
+
+;; ============================================================================
+;; Section 10: Hash Table / Alist Conversion
+;; ============================================================================
+(display "\n═══ Section 10: Hash table conversion ═══\n")
+
+;; hash-table->alist
+(define conv-obj (json-parse "{\"a\":1,\"b\":2,\"c\":3}"))
+(define conv-alist (hash-table->alist conv-obj))
+(check "alist is list" #t (pair? conv-alist))
+(check "alist length" 3 (length conv-alist))
+;; Check that all values are accessible via assoc
+(check "alist has a" 1 (cdr (assoc "a" conv-alist)))
+(check "alist has b" 2 (cdr (assoc "b" conv-alist)))
+(check "alist has c" 3 (cdr (assoc "c" conv-alist)))
+
+;; alist->hash-table
+(define test-alist (list (cons "x" 10) (cons "y" 20)))
+(define conv-hash (alist->hash-table test-alist))
+(check "hash-ref x" 10 (hash-ref conv-hash "x"))
+(check "hash-ref y" 20 (hash-ref conv-hash "y"))
+
+;; Round-trip conversion
+(define rt-obj (json-parse "{\"name\":\"test\",\"value\":42}"))
+(define rt-alist (hash-table->alist rt-obj))
+(define rt-hash (alist->hash-table rt-alist))
+(check "roundtrip name" "test" (hash-ref rt-hash "name"))
+(check "roundtrip value" 42 (hash-ref rt-hash "value"))
+
+;; ============================================================================
+;; Section 11: Deep Nesting (Regression Test)
+;; ============================================================================
+(display "\n═══ Section 11: Deep nesting ═══\n")
+
+;; This tests that nested objects have separate hash tables (not shared)
+(define deep (json-parse "{\"outer\":{\"inner\":{\"value\":123}}}"))
+(define outer (json-get deep "outer"))
+(define inner (json-get outer "inner"))
+(check "deep value" 123 (json-get inner "value"))
+;; Verify they are different objects by checking key counts
+(check "outer has inner" #t (pair? (hash-keys outer)))
+(check "inner has value" #t (pair? (hash-keys inner)))
+
+;; ============================================================================
+;; SUMMARY
+;; ============================================================================
+(display "\n═══════════════════════════════════════════════════════════════\n")
+(display "RESULTS: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed\n")
+(display "═══════════════════════════════════════════════════════════════\n")
+
+(if (= tests-failed 0)
+    (display "ALL TESTS PASSED!\n")
+    (display "SOME TESTS FAILED!\n"))

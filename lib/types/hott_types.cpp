@@ -125,6 +125,11 @@ void TypeEnvironment::initializeBuiltinTypes() {
     registerTypeFamily(ADNode.id, "ADNode", Universe::U1, {"a"},
                        RuntimeRep::Pointer);
 
+    // ===== Hash/Map types (U1) - key-value collections =====
+    // HashTable<K, V> = mutable hash table mapping keys of type K to values of type V
+    registerTypeFamily(HashTable.id, "HashTable", Universe::U1, {"k", "v"},
+                       RuntimeRep::Pointer);
+
     // ===== Resource types (U1, Linear) =====
     registerTypeFamily(Handle.id, "Handle", Universe::U1, {"k"},
                        RuntimeRep::Pointer);
@@ -409,6 +414,8 @@ TypeId TypeEnvironment::fromRuntimeType(uint8_t runtime_type) const {
             return DualNumber;
         case ESHKOL_VALUE_AD_NODE_PTR:
             return ADNode;
+        case ESHKOL_VALUE_HASH_PTR:
+            return HashTable;
         default:
             return Value;  // Fallback to root type
     }
@@ -431,6 +438,7 @@ uint8_t TypeEnvironment::toRuntimeType(TypeId id) const {
     if (id == Closure || id == Function) return ESHKOL_VALUE_CLOSURE_PTR;
     if (id == DualNumber) return ESHKOL_VALUE_DUAL_NUMBER;
     if (id == ADNode) return ESHKOL_VALUE_AD_NODE_PTR;
+    if (id == HashTable) return ESHKOL_VALUE_HASH_PTR;
 
     // For supertypes, fall back to tagged value
     return ESHKOL_VALUE_NULL;
@@ -458,6 +466,10 @@ ParameterizedType TypeEnvironment::makeListType(TypeId element_type) const {
 
 ParameterizedType TypeEnvironment::makeVectorType(TypeId element_type) const {
     return instantiateType(BuiltinTypes::Vector, {element_type});
+}
+
+ParameterizedType TypeEnvironment::makeHashTableType(TypeId key_type, TypeId value_type) const {
+    return instantiateType(BuiltinTypes::HashTable, {key_type, value_type});
 }
 
 bool TypeEnvironment::isTypeFamily(TypeId id) const {

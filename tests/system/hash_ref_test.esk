@@ -1,0 +1,18 @@
+;;
+;; Hash Table Ref Test
+;;
+
+(require stdlib)
+
+(display "Creating and setting...\n")
+(define ht (make-hash-table))
+(hash-set! ht "key" "value")
+(display "Set done!\n")
+
+(display "Getting value...\n")
+(define val (hash-ref ht "key"))
+(display "Got value: ")
+(display val)
+(newline)
+
+(display "Done\n")

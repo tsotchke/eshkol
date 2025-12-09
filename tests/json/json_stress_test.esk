@@ -1,0 +1,246 @@
+;;
+;; JSON Stress Test
+;; Tests JSON parsing/stringify with complex, deeply nested, and large data structures
+;;
+
+(require stdlib)
+
+;; Test framework
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "."))  ;; Compact output for stress tests
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "\nFAIL: ") (display name)
+        (display " - expected ") (display expected)
+        (display " got ") (display actual) (newline))))
+
+(display "╔══════════════════════════════════════════════════════════════════╗\n")
+(display "║              JSON STRESS TESTS                                  ║\n")
+(display "╚══════════════════════════════════════════════════════════════════╝\n\n")
+
+;; ============================================================================
+;; Test 1: Deeply Nested Objects (10 levels)
+;; ============================================================================
+(display "Test 1: Deep nesting (10 levels)... ")
+
+(define deep-json "{\"l1\":{\"l2\":{\"l3\":{\"l4\":{\"l5\":{\"l6\":{\"l7\":{\"l8\":{\"l9\":{\"l10\":\"bottom\"}}}}}}}}}}")
+(define deep-obj (json-parse deep-json))
+(define l1 (json-get deep-obj "l1"))
+(define l2 (json-get l1 "l2"))
+(define l3 (json-get l2 "l3"))
+(define l4 (json-get l3 "l4"))
+(define l5 (json-get l4 "l5"))
+(define l6 (json-get l5 "l6"))
+(define l7 (json-get l6 "l7"))
+(define l8 (json-get l7 "l8"))
+(define l9 (json-get l8 "l9"))
+(define l10 (json-get l9 "l10"))
+(check "deep-10" "bottom" l10)
+(display " OK\n")
+
+;; ============================================================================
+;; Test 2: Large Array (100 elements)
+;; ============================================================================
+(display "Test 2: Large array (100 elements)... ")
+
+;; Build a JSON array string with 100 numbers
+(define (build-array-json n)
+  (define (loop i acc)
+    (if (>= i n)
+        (string-append "[" acc "]")
+        (loop (+ i 1)
+              (if (= i 0)
+                  (number->string i)
+                  (string-append acc "," (number->string i))))))
+  (loop 0 ""))
+
+(define large-array-json (build-array-json 100))
+(define large-array (json-parse large-array-json))
+(check "array-length" 100 (length large-array))
+(check "array-first" 0 (car large-array))
+(check "array-50" 50 (list-ref large-array 50))
+(check "array-last" 99 (list-ref large-array 99))
+(display " OK\n")
+
+;; ============================================================================
+;; Test 3: Object with Many Keys (50 keys)
+;; ============================================================================
+(display "Test 3: Object with many keys (50)... ")
+
+(define (build-object-json n)
+  (define (loop i acc)
+    (if (>= i n)
+        (string-append "{" acc "}")
+        (loop (+ i 1)
+              (if (= i 0)
+                  (string-append "\"key" (number->string i) "\":" (number->string i))
+                  (string-append acc ",\"key" (number->string i) "\":" (number->string i))))))
+  (loop 0 ""))
+
+(define many-keys-json (build-object-json 50))
+(define many-keys-obj (json-parse many-keys-json))
+(check "obj-key0" 0 (json-get many-keys-obj "key0"))
+(check "obj-key25" 25 (json-get many-keys-obj "key25"))
+(check "obj-key49" 49 (json-get many-keys-obj "key49"))
+(display " OK\n")
+
+;; ============================================================================
+;; Test 4: Mixed Nested Structure (API Response Simulation)
+;; ============================================================================
+(display "Test 4: Complex API response... ")
+
+(define api-json "{
+  \"status\": \"success\",
+  \"code\": 200,
+  \"data\": {
+    \"users\": [
+      {\"id\": 1, \"name\": \"Alice\", \"roles\": [\"admin\", \"user\"], \"active\": true},
+      {\"id\": 2, \"name\": \"Bob\", \"roles\": [\"user\"], \"active\": false},
+      {\"id\": 3, \"name\": \"Charlie\", \"roles\": [\"moderator\", \"user\"], \"active\": true}
+    ],
+    \"pagination\": {
+      \"page\": 1,
+      \"total_pages\": 10,
+      \"per_page\": 3
+    },
+    \"meta\": {
+      \"version\": \"2.0\",
+      \"timestamp\": 1234567890
+    }
+  },
+  \"errors\": null
+}")
+
+(define api-obj (json-parse api-json))
+(check "api-status" "success" (json-get api-obj "status"))
+(check "api-code" 200 (json-get api-obj "code"))
+
+(define data (json-get api-obj "data"))
+(define users (json-get data "users"))
+(check "users-count" 3 (length users))
+
+(define user1 (car users))
+(check "user1-id" 1 (json-get user1 "id"))
+(check "user1-name" "Alice" (json-get user1 "name"))
+(check "user1-roles-count" 2 (length (json-get user1 "roles")))
+(check "user1-active" #t (json-get user1 "active"))
+
+(define user2 (cadr users))
+(check "user2-id" 2 (json-get user2 "id"))
+(check "user2-active" #f (json-get user2 "active"))
+
+(define pagination (json-get data "pagination"))
+(check "pagination-page" 1 (json-get pagination "page"))
+(check "pagination-total" 10 (json-get pagination "total_pages"))
+
+(define meta (json-get data "meta"))
+(check "meta-version" "2.0" (json-get meta "version"))
+(display " OK\n")
+
+;; ============================================================================
+;; Test 5: String Escaping Stress
+;; ============================================================================
+(display "Test 5: String escaping... ")
+
+(define escape-json "{\"text\":\"Line1\\nLine2\\tTabbed\\\"Quoted\\\"\\\\Backslash\"}")
+(define escape-obj (json-parse escape-json))
+(define text (json-get escape-obj "text"))
+(check "has-newline" #t (string-contains? text "\n"))
+(check "has-tab" #t (string-contains? text "\t"))
+(check "has-quote" #t (string-contains? text "\""))
+(check "has-backslash" #t (string-contains? text "\\"))
+(display " OK\n")
+
+;; ============================================================================
+;; Test 6: Round-trip Complex Structure
+;; ============================================================================
+(display "Test 6: Round-trip complex structure... ")
+
+(define complex-hash (make-hash-table))
+(hash-set! complex-hash "string" "hello world")
+(hash-set! complex-hash "number" 42)
+(hash-set! complex-hash "float" 3.14159)
+(hash-set! complex-hash "bool_true" #t)
+(hash-set! complex-hash "bool_false" #f)
+(hash-set! complex-hash "array" (list 1 2 3 "four" #t))
+(define inner-hash (make-hash-table))
+(hash-set! inner-hash "nested" "value")
+(hash-set! complex-hash "object" inner-hash)
+
+;; Stringify then parse
+(define complex-json (json-stringify complex-hash))
+(define roundtrip (json-parse complex-json))
+
+(check "rt-string" "hello world" (json-get roundtrip "string"))
+(check "rt-number" 42 (json-get roundtrip "number"))
+(check "rt-bool-t" #t (json-get roundtrip "bool_true"))
+(check "rt-bool-f" #f (json-get roundtrip "bool_false"))
+(check "rt-array" 5 (length (json-get roundtrip "array")))
+(check "rt-nested" "value" (json-get (json-get roundtrip "object") "nested"))
+(display " OK\n")
+
+;; ============================================================================
+;; Test 7: Array of Objects
+;; ============================================================================
+(display "Test 7: Array of objects... ")
+
+(define arr-obj-json "[{\"a\":1},{\"b\":2},{\"c\":3},{\"d\":4},{\"e\":5}]")
+(define arr-obj (json-parse arr-obj-json))
+(check "arr-obj-len" 5 (length arr-obj))
+(check "arr-obj-0-a" 1 (json-get (list-ref arr-obj 0) "a"))
+(check "arr-obj-1-b" 2 (json-get (list-ref arr-obj 1) "b"))
+(check "arr-obj-4-e" 5 (json-get (list-ref arr-obj 4) "e"))
+(display " OK\n")
+
+;; ============================================================================
+;; Test 8: Unicode-like Content (ASCII subset)
+;; ============================================================================
+(display "Test 8: Special characters... ")
+
+(define special-json "{\"symbols\":\"@#$%^&*()_+-=[]{}|;:,./<>?\"}")
+(define special-obj (json-parse special-json))
+;; @#$%^&*()_+-=[]{}|;:,./<>? = 26 characters
+(check "special-len" 26 (string-length (json-get special-obj "symbols")))
+(display " OK\n")
+
+;; ============================================================================
+;; Test 9: Empty Structures
+;; ============================================================================
+(display "Test 9: Empty structures... ")
+
+(define empty-obj (json-parse "{}"))
+(define empty-arr (json-parse "[]"))
+(check "empty-obj-keys" 0 (length (hash-keys empty-obj)))
+(check "empty-arr-null" #t (null? empty-arr))
+(display " OK\n")
+
+;; ============================================================================
+;; Test 10: Numeric Edge Cases
+;; ============================================================================
+(display "Test 10: Numeric edge cases... ")
+
+(define nums-json "{\"zero\":0,\"neg\":-42,\"big\":999999999,\"float\":0.001,\"exp\":1.5e10}")
+(define nums-obj (json-parse nums-json))
+(check "num-zero" 0 (json-get nums-obj "zero"))
+(check "num-neg" -42 (json-get nums-obj "neg"))
+(check "num-big" 999999999 (json-get nums-obj "big"))
+(display " OK\n")
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+(display "\n═══════════════════════════════════════════════════════════════\n")
+(display "STRESS TEST RESULTS: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed\n")
+(display "═══════════════════════════════════════════════════════════════\n")
+
+(if (= tests-failed 0)
+    (display "ALL STRESS TESTS PASSED!\n")
+    (display "SOME STRESS TESTS FAILED!\n"))

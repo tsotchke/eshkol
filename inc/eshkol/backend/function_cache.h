@@ -42,6 +42,7 @@ public:
     // String functions
     llvm::Function* getStrlen();   // size_t strlen(const char*)
     llvm::Function* getStrcmp();   // int strcmp(const char*, const char*)
+    llvm::Function* getStrncmp();  // int strncmp(const char*, const char*, size_t)
     llvm::Function* getStrcpy();   // char* strcpy(char*, const char*)
     llvm::Function* getStrcat();   // char* strcat(char*, const char*)
     llvm::Function* getStrstr();   // char* strstr(const char*, const char*)
@@ -67,6 +68,7 @@ private:
     // Cached function pointers (nullptr until first use)
     llvm::Function* strlen_func;
     llvm::Function* strcmp_func;
+    llvm::Function* strncmp_func;
     llvm::Function* strcpy_func;
     llvm::Function* strcat_func;
     llvm::Function* strstr_func;

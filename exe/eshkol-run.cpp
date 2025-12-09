@@ -1491,13 +1491,19 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_CALL_OP:
                 case ESHKOL_COND_OP:  // cond uses call_op structure
                 case ESHKOL_IF_OP:    // if uses call_op structure
-                case ESHKOL_AND_OP:   // and uses call_op/sequence structure
-                case ESHKOL_OR_OP:    // or uses call_op/sequence structure
                     if (ast->operation.call_op.func) {
                         update_ast_references(ast->operation.call_op.func, rename_map);
                     }
                     for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
                         update_ast_references(&ast->operation.call_op.variables[i], rename_map);
+                    }
+                    break;
+
+                case ESHKOL_AND_OP:
+                case ESHKOL_OR_OP:
+                    // NOTE: AND_OP/OR_OP use sequence_op structure, NOT call_op!
+                    for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
+                        update_ast_references(&ast->operation.sequence_op.expressions[i], rename_map);
                     }
                     break;
 
@@ -1703,21 +1709,64 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                         continue;
                     }
 
+                    // Collect module exports BEFORE processing requires (process_requires may modify ASTs)
+                    std::set<std::string> module_exports = collect_module_exports(module_asts);
+                    if (debug_mode) {
+                        std::string exp_str;
+                        for (const auto& e : module_exports) {
+                            if (!exp_str.empty()) exp_str += ", ";
+                            exp_str += e;
+                        }
+                        eshkol_debug("Module provides: %s (count=%zu)", exp_str.c_str(), module_exports.size());
+                    }
+
                     // Recursively process requires in the module (they're also pre-compiled)
                     std::string module_dir = std::filesystem::path(module_path).parent_path().string();
                     process_requires(module_asts, module_dir, debug_mode);
 
-                    // Extract only function definitions (strip bodies for external linkage)
-                    // The actual function code will come from stdlib.o at link time
+                    // Extract function/variable definitions for external linkage
+                    // After process_requires, module_asts contains:
+                    //   - ASTs from sub-required modules (already marked external)
+                    //   - This module's ASTs (need to check against module_exports)
+                    // The actual code/data will come from stdlib.o at link time
                     for (auto& module_ast : module_asts) {
                         if (module_ast.type == ESHKOL_OP &&
-                            module_ast.operation.op == ESHKOL_DEFINE_OP &&
-                            module_ast.operation.define_op.is_function) {
-                            // Mark as external function (body will come from .o file)
-                            module_ast.operation.define_op.is_external = 1;
-                            required_asts.push_back(module_ast);
+                            module_ast.operation.op == ESHKOL_DEFINE_OP) {
+                            const char* sym_name = module_ast.operation.define_op.name;
+                            if (!sym_name) continue;
+
+                            // Only export if symbol is public (in provides list) OR already external
+                            // Already-external symbols come from sub-required modules
+                            // Private symbols have been/will be renamed with module prefix
+                            bool already_external = module_ast.operation.define_op.is_external;
+                            bool is_public = already_external || module_exports.empty() || module_exports.count(sym_name) > 0;
                             if (debug_mode) {
-                                eshkol_info("  External function: %s", module_ast.operation.define_op.name);
+                                eshkol_debug("  Check symbol %s: exports_empty=%d, in_exports=%d, is_public=%d",
+                                            sym_name, (int)module_exports.empty(),
+                                            (int)(module_exports.count(sym_name) > 0), (int)is_public);
+                            }
+                            if (!is_public) {
+                                if (debug_mode) {
+                                    eshkol_debug("  Skipping private symbol: %s", sym_name);
+                                }
+                                continue;
+                            }
+
+                            if (module_ast.operation.define_op.is_function) {
+                                // Mark as external function (body will come from .o file)
+                                module_ast.operation.define_op.is_external = 1;
+                                required_asts.push_back(module_ast);
+                                if (debug_mode) {
+                                    eshkol_info("  External function: %s", sym_name);
+                                }
+                            } else {
+                                // Export PUBLIC variable as external
+                                // Only public variables (in provides) need external declarations
+                                module_ast.operation.define_op.is_external = 1;
+                                required_asts.push_back(module_ast);
+                                if (debug_mode) {
+                                    eshkol_info("  External variable: %s", sym_name);
+                                }
                             }
                         }
                     }

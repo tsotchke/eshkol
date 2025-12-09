@@ -1,0 +1,454 @@
+;;
+;; json.esk - JSON parsing and serialization for Eshkol
+;;
+;; Provides:
+;;   (json-parse str) -> value
+;;   (json-stringify value) -> string
+;;   (json-get obj key [default]) -> value
+;;   (json-array-ref arr idx) -> value
+;;   (hash-table->alist ht) -> alist
+;;   (alist->hash-table alist) -> hash-table
+;;
+;; JSON mapping:
+;;   object  -> hash-table
+;;   array   -> list
+;;   string  -> string
+;;   number  -> integer or real
+;;   true    -> #t
+;;   false   -> #f
+;;   null    -> '()
+;;
+
+(provide json-parse json-stringify json-get json-array-ref
+         hash-table->alist alist->hash-table
+         alist->json json-write-file alist-write-json json-read-file)
+
+(require core.list.transform)
+(require core.list.search)
+
+;; ============================================================================
+;; Character code constants (ASCII)
+;; ============================================================================
+(define JSON_SPACE 32)
+(define JSON_TAB 9)
+(define JSON_NEWLINE 10)
+(define JSON_RETURN 13)
+(define JSON_QUOTE 34)
+(define JSON_COMMA 44)
+(define JSON_COLON 58)
+(define JSON_LBRACKET 91)
+(define JSON_RBRACKET 93)
+(define JSON_LBRACE 123)
+(define JSON_RBRACE 125)
+(define JSON_BACKSLASH 92)
+(define JSON_SLASH 47)
+(define JSON_MINUS 45)
+(define JSON_PLUS 43)
+(define JSON_DOT 46)
+(define JSON_ZERO 48)
+(define JSON_NINE 57)
+(define JSON_e_LOWER 101)
+(define JSON_E_UPPER 69)
+(define JSON_t 116)
+(define JSON_f 102)
+(define JSON_n 110)
+
+;; ============================================================================
+;; Internal Helpers
+;; ============================================================================
+
+;; Check if character code is whitespace
+(define (json-whitespace? c)
+  (or (= c JSON_SPACE) (= c JSON_TAB) (= c JSON_NEWLINE) (= c JSON_RETURN)))
+
+;; Check if character code is a digit
+(define (json-digit? c)
+  (and (>= c JSON_ZERO) (<= c JSON_NINE)))
+
+;; Skip whitespace in string starting at position
+(define (json-skip-ws str pos len)
+  (if (>= pos len)
+      pos
+      (if (json-whitespace? (char->integer (string-ref str pos)))
+          (json-skip-ws str (+ pos 1) len)
+          pos)))
+
+;; ============================================================================
+;; JSON String Parser
+;; ============================================================================
+
+;; Parse a JSON string literal (positioned after opening quote)
+;; Returns: (cons parsed-string new-position)
+(define (json-parse-str str pos len)
+  (define (loop p result)
+    (if (>= p len)
+        (cons result p)
+        (let ((c (char->integer (string-ref str p))))
+          (cond
+            ((= c JSON_QUOTE)
+             ;; End of string
+             (cons result (+ p 1)))
+            ((= c JSON_BACKSLASH)
+             ;; Escape sequence
+             (if (>= (+ p 1) len)
+                 (cons result p)
+                 (let ((next (char->integer (string-ref str (+ p 1)))))
+                   (cond
+                     ((= next 110) ;; \n
+                      (loop (+ p 2) (string-append result "\n")))
+                     ((= next 116) ;; \t
+                      (loop (+ p 2) (string-append result "\t")))
+                     ((= next 114) ;; \r
+                      (loop (+ p 2) (string-append result "\r")))
+                     ((= next JSON_BACKSLASH)
+                      (loop (+ p 2) (string-append result "\\")))
+                     ((= next JSON_QUOTE)
+                      (loop (+ p 2) (string-append result "\"")))
+                     ((= next JSON_SLASH)
+                      (loop (+ p 2) (string-append result "/")))
+                     (else
+                      (loop (+ p 2) (string-append result (make-string 1 (integer->char next)))))))))
+            (else
+             ;; Regular character
+             (loop (+ p 1) (string-append result (make-string 1 (string-ref str p)))))))))
+  (loop pos ""))
+
+;; ============================================================================
+;; JSON Number Parser
+;; ============================================================================
+
+;; Parse a JSON number
+;; Returns: (cons parsed-number new-position)
+(define (json-parse-num str pos len)
+  ;; Check for negative sign
+  (define neg (and (< pos len) (= (char->integer (string-ref str pos)) JSON_MINUS)))
+  (define start-pos (if neg (+ pos 1) pos))
+
+  (define (loop p result has-dot has-exp)
+    (if (>= p len)
+        (cons (string->number (if neg (string-append "-" result) result)) p)
+        (let ((c (char->integer (string-ref str p))))
+          (cond
+            ((json-digit? c)
+             (loop (+ p 1) (string-append result (make-string 1 (string-ref str p))) has-dot has-exp))
+            ((and (= c JSON_DOT) (not has-dot) (not has-exp))
+             (loop (+ p 1) (string-append result ".") #t has-exp))
+            ((and (or (= c JSON_e_LOWER) (= c JSON_E_UPPER)) (not has-exp))
+             (loop (+ p 1) (string-append result "e") has-dot #t))
+            ((and (or (= c JSON_PLUS) (= c JSON_MINUS)) has-exp)
+             ;; Sign after exponent
+             (loop (+ p 1) (string-append result (make-string 1 (string-ref str p))) has-dot has-exp))
+            (else
+             (cons (string->number (if neg (string-append "-" result) result)) p))))))
+
+  (loop start-pos "" #f #f))
+
+;; ============================================================================
+;; JSON Value Parser (main recursive parser)
+;; ============================================================================
+
+;; Forward declare for mutual recursion
+(define json-parse-val #f)
+
+;; Parse array contents (after opening bracket)
+(define (json-parse-arr str pos len)
+  (define (loop p elements)
+    (let ((p2 (json-skip-ws str p len)))
+      (if (>= p2 len)
+          (cons (reverse elements) p2)
+          (if (= (char->integer (string-ref str p2)) JSON_RBRACKET)
+              (cons (reverse elements) (+ p2 1))
+              ;; Parse element
+              (let ((val-result (json-parse-val str p2 len)))
+                (let ((p3 (json-skip-ws str (cdr val-result) len)))
+                  (if (>= p3 len)
+                      (cons (reverse (cons (car val-result) elements)) p3)
+                      (let ((c3 (char->integer (string-ref str p3))))
+                        (cond
+                          ((= c3 JSON_COMMA)
+                           (loop (+ p3 1) (cons (car val-result) elements)))
+                          ((= c3 JSON_RBRACKET)
+                           (cons (reverse (cons (car val-result) elements)) (+ p3 1)))
+                          (else
+                           (cons (reverse (cons (car val-result) elements)) p3)))))))))))
+  (loop pos '()))
+
+;; Parse object contents (after opening brace)
+;; IMPORTANT: Use let for hash table to create LOCAL binding
+;; Using define would create a GLOBAL that gets shared across recursive calls
+(define (json-parse-obj str pos len)
+  (let ((ht (make-hash-table)))
+    (json-parse-obj-loop str pos len ht)))
+
+;; Helper function to parse object with given hash table
+(define (json-parse-obj-loop str p len ht)
+  (let ((p2 (json-skip-ws str p len)))
+    (if (>= p2 len)
+        (cons ht p2)
+        (let ((c2 (char->integer (string-ref str p2))))
+          (cond
+            ((= c2 JSON_RBRACE)
+             (cons ht (+ p2 1)))
+            ((= c2 JSON_QUOTE)
+             ;; Parse key
+             (let* ((key-result (json-parse-str str (+ p2 1) len))
+                    (key (car key-result))
+                    (key-pos (cdr key-result))
+                    (p3 (json-skip-ws str key-pos len)))
+               (if (or (>= p3 len)
+                       (not (= (char->integer (string-ref str p3)) JSON_COLON)))
+                   (cons ht p3)
+                   ;; Parse value
+                   (let ((val-result (json-parse-val str (+ p3 1) len)))
+                     (hash-set! ht key (car val-result))
+                     (let ((p4 (json-skip-ws str (cdr val-result) len)))
+                       (if (>= p4 len)
+                           (cons ht p4)
+                           (let ((c4 (char->integer (string-ref str p4))))
+                             (cond
+                               ((= c4 JSON_COMMA)
+                                (json-parse-obj-loop str (+ p4 1) len ht))
+                               ((= c4 JSON_RBRACE)
+                                (cons ht (+ p4 1)))
+                               (else
+                                (cons ht p4))))))))))
+            (else
+             (cons ht p2)))))))
+
+;; Implementation of json-parse-val
+(define (json-parse-val-impl str pos len)
+  (let ((p (json-skip-ws str pos len)))
+    (if (>= p len)
+        (cons '() p)
+        (let ((c (char->integer (string-ref str p))))
+          (cond
+            ;; String
+            ((= c JSON_QUOTE)
+             (json-parse-str str (+ p 1) len))
+
+            ;; Number
+            ((or (json-digit? c) (= c JSON_MINUS))
+             (json-parse-num str p len))
+
+            ;; Object
+            ((= c JSON_LBRACE)
+             (json-parse-obj str (+ p 1) len))
+
+            ;; Array
+            ((= c JSON_LBRACKET)
+             (json-parse-arr str (+ p 1) len))
+
+            ;; true
+            ((= c JSON_t)
+             (if (and (>= len (+ p 4))
+                      (= (char->integer (string-ref str (+ p 1))) 114)  ;; r
+                      (= (char->integer (string-ref str (+ p 2))) 117)  ;; u
+                      (= (char->integer (string-ref str (+ p 3))) 101)) ;; e
+                 (cons #t (+ p 4))
+                 (cons '() p)))
+
+            ;; false
+            ((= c JSON_f)
+             (if (and (>= len (+ p 5))
+                      (= (char->integer (string-ref str (+ p 1))) 97)   ;; a
+                      (= (char->integer (string-ref str (+ p 2))) 108)  ;; l
+                      (= (char->integer (string-ref str (+ p 3))) 115)  ;; s
+                      (= (char->integer (string-ref str (+ p 4))) 101)) ;; e
+                 (cons #f (+ p 5))
+                 (cons '() p)))
+
+            ;; null
+            ((= c JSON_n)
+             (if (and (>= len (+ p 4))
+                      (= (char->integer (string-ref str (+ p 1))) 117)  ;; u
+                      (= (char->integer (string-ref str (+ p 2))) 108)  ;; l
+                      (= (char->integer (string-ref str (+ p 3))) 108)) ;; l
+                 (cons '() (+ p 4))
+                 (cons '() p)))
+
+            ;; Unknown
+            (else
+             (cons '() p)))))))
+
+;; Set up forward reference
+(set! json-parse-val json-parse-val-impl)
+
+;; ============================================================================
+;; Public API - Parsing
+;; ============================================================================
+
+;; Parse a JSON string into an Eshkol value
+(define (json-parse str)
+  (car (json-parse-val str 0 (string-length str))))
+
+;; Get a field from a JSON object (hash table)
+(define (json-get obj key . default)
+  (if (null? default)
+      (hash-ref obj key #f)
+      (hash-ref obj key (car default))))
+
+;; Get an element from a JSON array (list)
+(define (json-array-ref arr idx)
+  (list-ref arr idx))
+
+;; ============================================================================
+;; JSON Stringify
+;; ============================================================================
+
+;; Forward declare
+(define json-stringify-val #f)
+
+;; Escape a string for JSON output
+(define (json-escape-str str)
+  (define (loop p len result)
+    (if (>= p len)
+        (string-append "\"" result "\"")
+        (let ((c (char->integer (string-ref str p))))
+          (cond
+            ((= c JSON_QUOTE)
+             (loop (+ p 1) len (string-append result "\\\"")))
+            ((= c JSON_BACKSLASH)
+             (loop (+ p 1) len (string-append result "\\\\")))
+            ((= c JSON_NEWLINE)
+             (loop (+ p 1) len (string-append result "\\n")))
+            ((= c JSON_TAB)
+             (loop (+ p 1) len (string-append result "\\t")))
+            ((= c JSON_RETURN)
+             (loop (+ p 1) len (string-append result "\\r")))
+            (else
+             (loop (+ p 1) len (string-append result (make-string 1 (string-ref str p)))))))))
+  (loop 0 (string-length str) ""))
+
+;; Stringify array
+(define (json-stringify-arr lst)
+  (define (loop items first result)
+    (if (null? items)
+        (string-append "[" result "]")
+        (loop (cdr items)
+              #f
+              (string-append result
+                            (if first "" ",")
+                            (json-stringify-val (car items))))))
+  (loop lst #t ""))
+
+;; Stringify object
+(define (json-stringify-obj ht)
+  (define keys (hash-keys ht))
+
+  (define (loop ks first result)
+    (if (null? ks)
+        (string-append "{" result "}")
+        (loop (cdr ks)
+              #f
+              (string-append result
+                            (if first "" ",")
+                            (json-escape-str (car ks))
+                            ":"
+                            (json-stringify-val (hash-ref ht (car ks)))))))
+  (loop keys #t ""))
+
+;; Implementation
+(define (json-stringify-val-impl val)
+  (cond
+    ;; Null/empty list
+    ((null? val) "null")
+
+    ;; Boolean
+    ((boolean? val)
+     (if val "true" "false"))
+
+    ;; String
+    ((string? val)
+     (json-escape-str val))
+
+    ;; Integer
+    ((integer? val)
+     (number->string val))
+
+    ;; Real number
+    ((real? val)
+     (number->string val))
+
+    ;; Hash table -> object
+    ((hash-table? val)
+     (json-stringify-obj val))
+
+    ;; List -> array (but not null which is also a list)
+    ((pair? val)
+     (json-stringify-arr val))
+
+    ;; Unknown
+    (else "null")))
+
+;; Set forward reference
+(set! json-stringify-val json-stringify-val-impl)
+
+;; Convert an Eshkol value to a JSON string
+(define (json-stringify val)
+  (json-stringify-val val))
+
+;; ============================================================================
+;; Hash Table / Association List Conversion
+;; ============================================================================
+
+;; Convert a hash table to an association list
+;; Each entry becomes (key . value)
+;; Example: #<hash:2> with {a: 1, b: 2} -> ((a . 1) (b . 2))
+(define (hash-table->alist ht)
+  (let ((keys (hash-keys ht)))
+    (hash-table->alist-loop ht keys)))
+
+(define (hash-table->alist-loop ht keys)
+  (if (null? keys)
+      '()
+      (cons (cons (car keys) (hash-ref ht (car keys)))
+            (hash-table->alist-loop ht (cdr keys)))))
+
+;; Convert an association list to a hash table
+;; Each entry (key . value) becomes a hash entry
+;; Example: ((a . 1) (b . 2)) -> hash table with {a: 1, b: 2}
+(define (alist->hash-table alist)
+  (let ((ht (make-hash-table)))
+    (alist->hash-table-loop alist ht)))
+
+(define (alist->hash-table-loop alist ht)
+  (if (null? alist)
+      ht
+      (begin
+        (hash-set! ht (caar alist) (cdar alist))
+        (alist->hash-table-loop (cdr alist) ht))))
+
+;; ============================================================================
+;; File I/O Convenience Functions
+;; ============================================================================
+
+;; Convert an alist to JSON string (via hash table)
+;; Example: (alist->json '(("name" . "test") ("value" . 42))) -> "{\"name\":\"test\",\"value\":42}"
+(define (alist->json alist)
+  (json-stringify (alist->hash-table alist)))
+
+;; Write JSON to a file from a hash table
+;; Example: (json-write-file "/tmp/data.json" my-hash)
+(define (json-write-file filename data)
+  (let ((port (open-output-file filename)))
+    (write-string (json-stringify data) port)
+    (close-port port)))
+
+;; Write JSON to a file from an alist
+;; Example: (alist-write-json "/tmp/data.json" '(("a" . 1) ("b" . 2)))
+(define (alist-write-json filename alist)
+  (json-write-file filename (alist->hash-table alist)))
+
+;; Read JSON from a file and return as hash table
+;; Example: (json-read-file "/tmp/data.json") -> #<hash>
+(define (json-read-file filename)
+  (let ((port (open-input-file filename)))
+    (json-read-file-loop port "")))
+
+(define (json-read-file-loop port acc)
+  (let ((line (read-line port)))
+    (if (eof-object? line)
+        (begin
+          (close-port port)
+          (json-parse acc))
+        (json-read-file-loop port (string-append acc line)))))

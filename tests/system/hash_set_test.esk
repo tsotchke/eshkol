@@ -1,0 +1,15 @@
+;;
+;; Hash Table Set Test
+;;
+
+(require stdlib)
+
+(display "Creating hash table...\n")
+(define ht (make-hash-table))
+(display "Hash table created!\n")
+
+(display "Setting key...\n")
+(hash-set! ht "key" "value")
+(display "Key set!\n")
+
+(display "Done\n")

@@ -14,14 +14,15 @@ namespace eshkol {
 
 FunctionCache::FunctionCache(llvm::Module& mod, TypeSystem& ts)
     : module(mod), types(ts),
-      strlen_func(nullptr), strcmp_func(nullptr), strcpy_func(nullptr),
-      strcat_func(nullptr), strstr_func(nullptr), malloc_func(nullptr),
-      memcpy_func(nullptr), memset_func(nullptr), snprintf_func(nullptr),
-      strtod_func(nullptr) {}
+      strlen_func(nullptr), strcmp_func(nullptr), strncmp_func(nullptr),
+      strcpy_func(nullptr), strcat_func(nullptr), strstr_func(nullptr),
+      malloc_func(nullptr), memcpy_func(nullptr), memset_func(nullptr),
+      snprintf_func(nullptr), strtod_func(nullptr) {}
 
 void FunctionCache::reset() {
     strlen_func = nullptr;
     strcmp_func = nullptr;
+    strncmp_func = nullptr;
     strcpy_func = nullptr;
     strcat_func = nullptr;
     strstr_func = nullptr;
@@ -63,6 +64,16 @@ llvm::Function* FunctionCache::getStrcmp() {
         getOrCreateFunction("strcmp", ft, strcmp_func);
     }
     return strcmp_func;
+}
+
+// int strncmp(const char*, const char*, size_t)
+llvm::Function* FunctionCache::getStrncmp() {
+    if (!strncmp_func) {
+        auto ft = llvm::FunctionType::get(types.getInt32Type(),
+            {types.getPtrType(), types.getPtrType(), types.getInt64Type()}, false);
+        getOrCreateFunction("strncmp", ft, strncmp_func);
+    }
+    return strncmp_func;
 }
 
 // char* strcpy(char*, const char*)

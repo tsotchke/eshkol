@@ -316,8 +316,16 @@ llvm::Value* TaggedValueCodegen::packChar(llvm::Value* char_val) {
     llvm::Value* char_as_i64;
     if (char_val->getType()->isIntegerTy(64)) {
         char_as_i64 = char_val;
-    } else {
+    } else if (char_val->getType()->isIntegerTy()) {
+        // Only ZExt if it's an integer type (not struct)
         char_as_i64 = ctx_.builder().CreateZExt(char_val, ctx_.int64Type());
+    } else if (char_val->getType() == ctx_.taggedValueType()) {
+        // If it's already a tagged value, unpack it first
+        char_as_i64 = unpackInt64(char_val);
+    } else {
+        // Fallback: try to interpret as pointer and convert
+        eshkol_warn("packChar: unexpected type, attempting pointer cast");
+        char_as_i64 = ctx_.builder().CreatePtrToInt(char_val, ctx_.int64Type());
     }
     ctx_.builder().CreateStore(char_as_i64, data_ptr);
 

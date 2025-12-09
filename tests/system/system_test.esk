@@ -1,0 +1,103 @@
+;;
+;; System Operations Test - Test system, environment, and file operations
+;;
+
+(require stdlib)
+
+;; Test environment operations
+(display "=== Environment Operations ===\n")
+
+;; Test getenv
+(display "HOME: ")
+(display (getenv "HOME"))
+(newline)
+
+(display "PATH exists: ")
+(display (if (getenv "PATH") #t #f))
+(newline)
+
+;; Test setenv
+(setenv "ESHKOL_TEST" "hello123")
+(display "After setenv: ")
+(display (getenv "ESHKOL_TEST"))
+(newline)
+
+;; Test unsetenv
+(unsetenv "ESHKOL_TEST")
+(display "After unsetenv: ")
+(display (if (getenv "ESHKOL_TEST") "still set" "unset"))
+(newline)
+
+;; Test current-seconds
+(display "Current time: ")
+(display (current-seconds))
+(newline)
+
+;; Test file operations
+(display "\n=== File Operations ===\n")
+
+;; Test current directory
+(display "Current directory: ")
+(display (current-directory))
+(newline)
+
+;; Test file-exists?
+(display "tests/system/system_test.esk exists: ")
+(display (file-exists? "tests/system/system_test.esk"))
+(newline)
+
+(display "nonexistent.txt exists: ")
+(display (file-exists? "nonexistent.txt"))
+(newline)
+
+;; Test directory-exists?
+(display "tests directory exists: ")
+(display (directory-exists? "tests"))
+(newline)
+
+;; Test write-file and read-file
+(write-file "/tmp/eshkol_test.txt" "Hello from Eshkol!")
+(display "File written: /tmp/eshkol_test.txt\n")
+
+(display "File contents: ")
+(display (read-file "/tmp/eshkol_test.txt"))
+(newline)
+
+;; Test file-size
+(display "File size: ")
+(display (file-size "/tmp/eshkol_test.txt"))
+(display " bytes\n")
+
+;; Test append-file
+(append-file "/tmp/eshkol_test.txt" "\nAppended line!")
+(display "After append: ")
+(display (read-file "/tmp/eshkol_test.txt"))
+(newline)
+
+;; Test file permissions
+(display "File readable: ")
+(display (file-readable? "/tmp/eshkol_test.txt"))
+(newline)
+
+(display "File writable: ")
+(display (file-writable? "/tmp/eshkol_test.txt"))
+(newline)
+
+;; Test file-delete
+(file-delete "/tmp/eshkol_test.txt")
+(display "File deleted: ")
+(display (not (file-exists? "/tmp/eshkol_test.txt")))
+(newline)
+
+;; Test make-directory and delete-directory
+(make-directory "/tmp/eshkol_test_dir")
+(display "Directory created: ")
+(display (directory-exists? "/tmp/eshkol_test_dir"))
+(newline)
+
+(delete-directory "/tmp/eshkol_test_dir")
+(display "Directory deleted: ")
+(display (not (directory-exists? "/tmp/eshkol_test_dir")))
+(newline)
+
+(display "\n=== All system tests completed! ===\n")

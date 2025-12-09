@@ -7,6 +7,12 @@
 #ifndef ESHKOL_ESHKOL_H
 #define ESHKOL_ESHKOL_H
 
+// Version information
+#define ESHKOL_VERSION_MAJOR 1
+#define ESHKOL_VERSION_MINOR 0
+#define ESHKOL_VERSION_PATCH 0
+#define ESHKOL_VERSION_STRING "1.0.0-foundation"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -55,6 +61,7 @@ typedef enum {
     ESHKOL_VALUE_SYMBOL      = 11, // Symbol (interned string for identifiers)
     ESHKOL_VALUE_CLOSURE_PTR = 12, // Pointer to closure (func_ptr + captured environment)
     ESHKOL_VALUE_BOOL        = 13, // Boolean (#t or #f, stored as 1 or 0)
+    ESHKOL_VALUE_HASH_PTR    = 14, // Pointer to hash table structure
     // Reserved for future expansion
     ESHKOL_VALUE_MAX         = 15  // 4-bit type field limit
 } eshkol_value_type_t;
@@ -159,6 +166,7 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 #define ESHKOL_IS_SYMBOL_TYPE(type)      (((type) & 0x0F) == ESHKOL_VALUE_SYMBOL)
 #define ESHKOL_IS_CLOSURE_PTR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_CLOSURE_PTR)
 #define ESHKOL_IS_BOOL_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_BOOL)
+#define ESHKOL_IS_HASH_PTR_TYPE(type)    (((type) & 0x0F) == ESHKOL_VALUE_HASH_PTR)
 // General pointer type check: any type that stores a pointer value (not int64 or double)
 #define ESHKOL_IS_ANY_PTR_TYPE(type)     (ESHKOL_IS_CONS_PTR_TYPE(type) || \
                                           ESHKOL_IS_STRING_PTR_TYPE(type) || \
@@ -166,7 +174,8 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
                                           ESHKOL_IS_TENSOR_PTR_TYPE(type) || \
                                           ESHKOL_IS_AD_NODE_PTR_TYPE(type) || \
                                           ESHKOL_IS_LAMBDA_SEXPR_TYPE(type) || \
-                                          ESHKOL_IS_CLOSURE_PTR_TYPE(type))
+                                          ESHKOL_IS_CLOSURE_PTR_TYPE(type) || \
+                                          ESHKOL_IS_HASH_PTR_TYPE(type))
 
 // Exactness checking macros
 #define ESHKOL_IS_EXACT(type)         (((type) & ESHKOL_VALUE_EXACT_FLAG) != 0)

@@ -1,0 +1,95 @@
+;;
+;; Hash Table Test - Test hash table operations
+;;
+
+(require stdlib)
+
+(display "=== Hash Table Operations ===\n")
+
+;; Test make-hash-table
+(define ht (make-hash-table))
+(display "Created hash table\n")
+
+;; Test hash-count (should be 0)
+(display "Initial count: ")
+(display (hash-count ht))
+(newline)
+
+;; Test hash-set!
+(hash-set! ht "name" "Alice")
+(hash-set! ht "age" 30)
+(hash-set! ht "city" "Paris")
+(display "Added 3 entries\n")
+
+;; Test hash-count (should be 3)
+(display "Count after adding: ")
+(display (hash-count ht))
+(newline)
+
+;; Test hash-ref
+(display "Name: ")
+(display (hash-ref ht "name"))
+(newline)
+
+(display "Age: ")
+(display (hash-ref ht "age"))
+(newline)
+
+(display "City: ")
+(display (hash-ref ht "city"))
+(newline)
+
+;; Test hash-ref with default
+(display "Country (not set, default): ")
+(display (hash-ref ht "country" "Unknown"))
+(newline)
+
+;; Test hash-has-key?
+(display "Has 'name' key: ")
+(display (hash-has-key? ht "name"))
+(newline)
+
+(display "Has 'country' key: ")
+(display (hash-has-key? ht "country"))
+(newline)
+
+;; Test hash-keys
+(display "Keys: ")
+(display (hash-keys ht))
+(newline)
+
+;; Test hash-values
+(display "Values: ")
+(display (hash-values ht))
+(newline)
+
+;; Test hash-remove!
+(hash-remove! ht "city")
+(display "After removing 'city', count: ")
+(display (hash-count ht))
+(newline)
+
+(display "Has 'city' key after remove: ")
+(display (hash-has-key? ht "city"))
+(newline)
+
+;; Test numeric keys
+(define ht2 (make-hash-table))
+(hash-set! ht2 1 "one")
+(hash-set! ht2 2 "two")
+(hash-set! ht2 3 "three")
+(display "\nNumeric keys test:\n")
+(display "1 -> ")
+(display (hash-ref ht2 1))
+(newline)
+(display "2 -> ")
+(display (hash-ref ht2 2))
+(newline)
+
+;; Test hash-clear!
+(hash-clear! ht2)
+(display "After clear, count: ")
+(display (hash-count ht2))
+(newline)
+
+(display "\n=== All hash table tests completed! ===\n")

@@ -21,7 +21,7 @@
 ;;; Control - trampolining for deep recursion
 (require core.control.trampoline)
 
-;;; List - compound accessors, generation, transformation, queries, sorting, higher-order, search
+;;; List - compound accessors, generation, transformation, queries, sorting, higher-order, search, convert
 (require core.list.compound)
 (require core.list.generate)
 (require core.list.transform)
@@ -29,3 +29,14 @@
 (require core.list.sort)
 (require core.list.higher_order)
 (require core.list.search)
+(require core.list.convert)
+
+;;; Strings - extended string utilities
+(require core.strings)
+
+;;; JSON - parsing and serialization
+(require core.json)
+
+;;; Data formats - CSV, Base64
+(require core.data.csv)
+(require core.data.base64)

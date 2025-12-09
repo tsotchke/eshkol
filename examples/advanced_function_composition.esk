@@ -5,6 +5,8 @@
 ;; that leverages Eshkol's closure and lexical scoping capabilities.
 ;;
 
+(require stdlib)
+
 ;; Define some simple functions for testing
 (define (square x) (* x x))
 (define (add1 x) (+ x 1))
@@ -13,10 +15,7 @@
 
 ;; Part 1: Binary Function Composition
 ;; -----------------------------------
-
-;; Define a binary function composition operator
-(define (compose f g)
-  (lambda (x) (f (g x))))
+;; Note: compose is already provided by stdlib
 
 ;; Test binary composition
 (display "Testing binary composition:\n")

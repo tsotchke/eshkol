@@ -1,0 +1,18 @@
+;;
+;; Hash Table Integer Test
+;;
+
+(require stdlib)
+
+(display "Creating and setting integer value...\n")
+(define ht (make-hash-table))
+(hash-set! ht "num" 42)
+(display "Integer set!\n")
+
+(display "Getting integer value...\n")
+(define val (hash-ref ht "num"))
+(display "Got value: ")
+(display val)
+(newline)
+
+(display "Done\n")

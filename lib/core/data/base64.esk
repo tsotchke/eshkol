@@ -1,0 +1,147 @@
+;;; data/base64.esk
+;;; Base64 encoding and decoding library
+;;; Pure Eshkol implementation
+
+(provide base64-encode base64-decode base64-encode-string base64-decode-string
+         string->bytes bytes->string base64-char-at base64-value
+         string->bytes-helper base64-encode-helper base64-decode-helper base64-remove-padding)
+
+;; =============================================================================
+;; Base64 Alphabet
+;; =============================================================================
+
+;; Standard Base64 alphabet
+(define base64-chars "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+
+;;; base64-char-at: Get the base64 character for a 6-bit value (0-63)
+(define (base64-char-at index)
+  (string-ref base64-chars index))
+
+;;; base64-value: Get the 6-bit value for a base64 character
+(define (base64-value ch)
+  (cond
+    ((and (char>=? ch #\A) (char<=? ch #\Z))
+     (- (char->integer ch) (char->integer #\A)))
+    ((and (char>=? ch #\a) (char<=? ch #\z))
+     (+ 26 (- (char->integer ch) (char->integer #\a))))
+    ((and (char>=? ch #\0) (char<=? ch #\9))
+     (+ 52 (- (char->integer ch) (char->integer #\0))))
+    ((char=? ch #\+) 62)
+    ((char=? ch #\/) 63)
+    ((char=? ch #\=) 0)  ; Padding
+    (else 0)))
+
+;; =============================================================================
+;; Encoding
+;; =============================================================================
+
+;;; base64-encode-string: Encode a string to base64
+(define (base64-encode-string str)
+  (base64-encode (string->bytes str)))
+
+;;; string->bytes: Convert string to list of byte values
+(define (string->bytes str)
+  (string->bytes-helper str 0 (string-length str)))
+
+(define (string->bytes-helper str pos len)
+  (if (>= pos len)
+      '()
+      (cons (char->integer (string-ref str pos))
+            (string->bytes-helper str (+ pos 1) len))))
+
+;;; base64-encode: Encode a list of bytes to base64 string
+(define (base64-encode bytes)
+  (base64-encode-helper bytes ""))
+
+(define (base64-encode-helper bytes result)
+  (cond
+    ;; No more bytes
+    ((null? bytes) result)
+    ;; 1 byte remaining - pad with ==
+    ((null? (cdr bytes))
+     (let* ((b1 (car bytes))
+            (c1 (base64-char-at (quotient b1 4)))
+            (c2 (base64-char-at (* (remainder b1 4) 16))))
+       (string-append result (make-string 1 c1) (make-string 1 c2) "==")))
+    ;; 2 bytes remaining - pad with =
+    ((null? (cddr bytes))
+     (let* ((b1 (car bytes))
+            (b2 (cadr bytes))
+            (c1 (base64-char-at (quotient b1 4)))
+            (c2 (base64-char-at (+ (* (remainder b1 4) 16) (quotient b2 16))))
+            (c3 (base64-char-at (* (remainder b2 16) 4))))
+       (string-append result (make-string 1 c1) (make-string 1 c2) (make-string 1 c3) "=")))
+    ;; 3 or more bytes - encode 3 bytes to 4 characters
+    (else
+     (let* ((b1 (car bytes))
+            (b2 (cadr bytes))
+            (b3 (caddr bytes))
+            (c1 (base64-char-at (quotient b1 4)))
+            (c2 (base64-char-at (+ (* (remainder b1 4) 16) (quotient b2 16))))
+            (c3 (base64-char-at (+ (* (remainder b2 16) 4) (quotient b3 64))))
+            (c4 (base64-char-at (remainder b3 64))))
+       (base64-encode-helper
+        (cdddr bytes)
+        (string-append result
+                       (make-string 1 c1)
+                       (make-string 1 c2)
+                       (make-string 1 c3)
+                       (make-string 1 c4)))))))
+
+;; =============================================================================
+;; Decoding
+;; =============================================================================
+
+;;; base64-decode-string: Decode a base64 string to a string
+(define (base64-decode-string str)
+  (bytes->string (base64-decode str)))
+
+;;; bytes->string: Convert list of byte values to string
+(define (bytes->string bytes)
+  (if (null? bytes)
+      ""
+      (string-append (make-string 1 (integer->char (car bytes)))
+                     (bytes->string (cdr bytes)))))
+
+;;; base64-decode: Decode a base64 string to a list of bytes
+(define (base64-decode str)
+  (let ((clean (base64-remove-padding str)))
+    (base64-decode-helper clean 0 (string-length clean) '())))
+
+(define (base64-remove-padding str)
+  (let ((len (string-length str)))
+    (cond
+      ((= len 0) str)
+      ((char=? (string-ref str (- len 1)) #\=)
+       (base64-remove-padding (substring str 0 (- len 1))))
+      (else str))))
+
+(define (base64-decode-helper str pos len result)
+  (cond
+    ;; No more characters
+    ((>= pos len) (reverse result))
+    ;; 2 characters remaining (1 byte)
+    ((= (- len pos) 2)
+     (let* ((v1 (base64-value (string-ref str pos)))
+            (v2 (base64-value (string-ref str (+ pos 1))))
+            (b1 (+ (* v1 4) (quotient v2 16))))
+       (reverse (cons b1 result))))
+    ;; 3 characters remaining (2 bytes)
+    ((= (- len pos) 3)
+     (let* ((v1 (base64-value (string-ref str pos)))
+            (v2 (base64-value (string-ref str (+ pos 1))))
+            (v3 (base64-value (string-ref str (+ pos 2))))
+            (b1 (+ (* v1 4) (quotient v2 16)))
+            (b2 (+ (* (remainder v2 16) 16) (quotient v3 4))))
+       (reverse (cons b2 (cons b1 result)))))
+    ;; 4 or more characters (3 bytes per 4 chars)
+    (else
+     (let* ((v1 (base64-value (string-ref str pos)))
+            (v2 (base64-value (string-ref str (+ pos 1))))
+            (v3 (base64-value (string-ref str (+ pos 2))))
+            (v4 (base64-value (string-ref str (+ pos 3))))
+            (b1 (+ (* v1 4) (quotient v2 16)))
+            (b2 (+ (* (remainder v2 16) 16) (quotient v3 4)))
+            (b3 (+ (* (remainder v3 4) 64) v4)))
+       (base64-decode-helper str (+ pos 4) len
+                             (cons b3 (cons b2 (cons b1 result))))))))

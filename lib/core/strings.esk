@@ -1,12 +1,22 @@
 ;;; lib/core/strings.esk - Extended String Utilities
 ;;; Part of the core library
 
+(require core.list.higher_order)
+(require core.list.transform)
+
+(provide string-join string-trim string-trim-left string-trim-right
+         string-replace string-reverse string-copy string-repeat
+         string-starts-with? string-ends-with?
+         string-index string-last-index string-contains string-count
+         string-upcase string-downcase
+         string-split-ordered)
+
 ;; string-join: Join list of strings with delimiter
 ;; (string-join '("a" "b" "c") ",") => "a,b,c"
 (define (string-join lst delim)
   (if (null? lst)
       ""
-      (fold (lambda (s acc)
+      (fold (lambda (acc s)
               (string-append acc delim s))
             (car lst)
             (cdr lst))))
@@ -71,6 +81,18 @@
     (and (>= str-len suf-len)
          (string=? (substring str (- str-len suf-len) str-len) suffix))))
 
+;; string-index: Find first occurrence of substring, returns -1 if not found
+(define (string-index str substr)
+  (define str-len (string-length str))
+  (define sub-len (string-length substr))
+  (define (search i)
+    (if (> (+ i sub-len) str-len)
+        -1
+        (if (string=? (substring str i (+ i sub-len)) substr)
+            i
+            (search (+ i 1)))))
+  (search 0))
+
 ;; string-last-index: Find last occurrence of substring
 (define (string-last-index str substr)
   (define str-len (string-length str))
@@ -83,3 +105,42 @@
             i
             (search (- i 1)))))
   (search (- str-len sub-len)))
+
+;; string-contains: Check if string contains substring
+(define (string-contains str substr)
+  (>= (string-index str substr) 0))
+
+;; string-count: Count occurrences of substring in string
+(define (string-count str substr)
+  (define str-len (string-length str))
+  (define sub-len (string-length substr))
+  (define (count i acc)
+    (if (> (+ i sub-len) str-len)
+        acc
+        (if (string=? (substring str i (+ i sub-len)) substr)
+            (count (+ i sub-len) (+ acc 1))
+            (count (+ i 1) acc))))
+  (count 0 0))
+
+;; string-upcase: Convert string to uppercase
+(define (string-upcase str)
+  (define (upcase-char c)
+    (if (and (>= c 97) (<= c 122))  ;; a-z
+        (- c 32)
+        c))
+  (list->string (map (lambda (c) (integer->char (upcase-char (char->integer c))))
+                     (string->list str))))
+
+;; string-downcase: Convert string to lowercase
+(define (string-downcase str)
+  (define (downcase-char c)
+    (if (and (>= c 65) (<= c 90))  ;; A-Z
+        (+ c 32)
+        c))
+  (list->string (map (lambda (c) (integer->char (downcase-char (char->integer c))))
+                     (string->list str))))
+
+;; string-split-ordered: Split string by delimiter, returns list in left-to-right order
+;; The builtin string-split returns in reverse order, this wraps it with reverse
+(define (string-split-ordered str delim)
+  (reverse (string-split str delim)))

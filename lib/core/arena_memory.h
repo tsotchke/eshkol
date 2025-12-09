@@ -270,6 +270,59 @@ eshkol_shared_header_t* shared_get_header(void* ptr);
 
 // ===== END SHARED MEMORY MANAGEMENT =====
 
+// ===== HASH TABLE MEMORY MANAGEMENT =====
+// Open-addressing hash table with linear probing for O(1) average lookup
+
+// Hash table entry status
+typedef enum {
+    HASH_ENTRY_EMPTY = 0,     // Slot never used
+    HASH_ENTRY_OCCUPIED = 1,  // Slot contains valid key-value pair
+    HASH_ENTRY_DELETED = 2    // Slot was deleted (tombstone)
+} hash_entry_status_t;
+
+// Hash table structure
+// Uses open addressing with linear probing for simplicity and cache efficiency
+typedef struct eshkol_hash_table {
+    size_t capacity;                      // Number of buckets
+    size_t size;                          // Number of stored entries
+    size_t tombstones;                    // Number of deleted entries (for rehashing decisions)
+    eshkol_tagged_value_t* keys;          // Array of keys (tagged values)
+    eshkol_tagged_value_t* values;        // Array of values (tagged values)
+    uint8_t* status;                      // Entry status array (EMPTY/OCCUPIED/DELETED)
+} eshkol_hash_table_t;
+
+// Initial capacity for new hash tables
+#define HASH_TABLE_INITIAL_CAPACITY 16
+
+// Load factor threshold for rehashing (0.75 = 75%)
+#define HASH_TABLE_LOAD_FACTOR 0.75
+
+// Hash table allocation and creation
+eshkol_hash_table_t* arena_allocate_hash_table(arena_t* arena, size_t initial_capacity);
+eshkol_hash_table_t* arena_hash_table_create(arena_t* arena);
+
+// Hash table operations
+bool hash_table_set(arena_t* arena, eshkol_hash_table_t* table,
+                    const eshkol_tagged_value_t* key, const eshkol_tagged_value_t* value);
+bool hash_table_get(const eshkol_hash_table_t* table,
+                    const eshkol_tagged_value_t* key, eshkol_tagged_value_t* out_value);
+bool hash_table_has_key(const eshkol_hash_table_t* table, const eshkol_tagged_value_t* key);
+bool hash_table_remove(eshkol_hash_table_t* table, const eshkol_tagged_value_t* key);
+void hash_table_clear(eshkol_hash_table_t* table);
+size_t hash_table_count(const eshkol_hash_table_t* table);
+
+// Hash table iteration (returns arena-allocated list of keys/values)
+arena_tagged_cons_cell_t* hash_table_keys(arena_t* arena, const eshkol_hash_table_t* table);
+arena_tagged_cons_cell_t* hash_table_values(arena_t* arena, const eshkol_hash_table_t* table);
+
+// Hash function for tagged values
+uint64_t hash_tagged_value(const eshkol_tagged_value_t* value);
+
+// Equality comparison for hash keys
+bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t* b);
+
+// ===== END HASH TABLE MEMORY MANAGEMENT =====
+
 // ===== END AD MEMORY MANAGEMENT =====
 
 #ifdef __cplusplus

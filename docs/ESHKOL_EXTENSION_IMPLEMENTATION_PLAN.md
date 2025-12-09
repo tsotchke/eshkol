@@ -366,7 +366,7 @@ Value* codegenStringUpcase(const eshkol_operations_t* op) {
         (error "Unexpected end of JSON")
         (let ((c (string-ref str pos)))
           (cond
-            ((= c 123) (parse-object))     ; {
+            ((= c 123) (parse-object))      ; {
             ((= c 91) (parse-array))        ; [
             ((= c 34) (parse-string))       ; "
             ((= c 116) (parse-true))        ; t

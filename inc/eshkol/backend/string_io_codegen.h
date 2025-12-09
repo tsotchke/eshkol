@@ -281,6 +281,15 @@ private:
     llvm::Function* printf_func_ = nullptr;
     llvm::Function* display_value_func_ = nullptr;
 
+    /**
+     * Ensure a value is a raw i64 integer, extracting from tagged_value if needed.
+     * This is critical for GEP operations that require integer indices.
+     * @param val The value (may be raw i64 or tagged_value struct)
+     * @param name Name hint for the extracted value
+     * @return Raw i64 value suitable for GEP indices
+     */
+    llvm::Value* ensureRawInt64(llvm::Value* val, const std::string& name = "raw_idx");
+
     // Callbacks for AST code generation (set by main codegen)
     using CodegenASTFunc = llvm::Value* (*)(const void* ast, void* context);
     using CodegenTypedASTFunc = void* (*)(const void* ast, void* context);
