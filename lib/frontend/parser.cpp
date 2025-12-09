@@ -17,6 +17,9 @@ enum TokenType {
     TOKEN_LPAREN,
     TOKEN_RPAREN,
     TOKEN_QUOTE,
+    TOKEN_BACKQUOTE,     // ` for quasiquote
+    TOKEN_COMMA,         // , for unquote
+    TOKEN_COMMA_AT,      // ,@ for unquote-splicing
     TOKEN_SYMBOL,
     TOKEN_STRING,
     TOKEN_NUMBER,
@@ -95,6 +98,20 @@ public:
                 pos++;
                 column_++;
                 return {TOKEN_QUOTE, "'", pos - 1, tok_line, tok_col};
+            case '`':
+                pos++;
+                column_++;
+                return {TOKEN_BACKQUOTE, "`", pos - 1, tok_line, tok_col};
+            case ',':
+                pos++;
+                column_++;
+                // Check for ,@ (unquote-splicing)
+                if (pos < length && input[pos] == '@') {
+                    pos++;
+                    column_++;
+                    return {TOKEN_COMMA_AT, ",@", pos - 2, tok_line, tok_col};
+                }
+                return {TOKEN_COMMA, ",", pos - 1, tok_line, tok_col};
             case ':':
                 pos++;
                 column_++;
@@ -362,10 +379,14 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "or") return ESHKOL_OR_OP;
     if (op == "cond") return ESHKOL_COND_OP;
     if (op == "case") return ESHKOL_CASE_OP;
+    if (op == "match") return ESHKOL_MATCH_OP;
     if (op == "do") return ESHKOL_DO_OP;
     if (op == "when") return ESHKOL_WHEN_OP;
     if (op == "unless") return ESHKOL_UNLESS_OP;
     if (op == "quote") return ESHKOL_QUOTE_OP;
+    if (op == "quasiquote") return ESHKOL_QUASIQUOTE_OP;
+    if (op == "unquote") return ESHKOL_UNQUOTE_OP;
+    if (op == "unquote-splicing") return ESHKOL_UNQUOTE_SPLICING_OP;
     // Note: "compose" is now a user-definable higher-order function, not a special op
     if (op == "define") return ESHKOL_DEFINE_OP;
     if (op == "define-type") return ESHKOL_DEFINE_TYPE_OP;
@@ -399,6 +420,11 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     // Exception handling operators
     if (op == "guard") return ESHKOL_GUARD_OP;
     if (op == "raise") return ESHKOL_RAISE_OP;
+    // Multiple return values operations
+    if (op == "values") return ESHKOL_VALUES_OP;
+    if (op == "call-with-values") return ESHKOL_CALL_WITH_VALUES_OP;
+    if (op == "let-values") return ESHKOL_LET_VALUES_OP;
+    if (op == "let*-values") return ESHKOL_LET_STAR_VALUES_OP;
     // Treat arithmetic operations as special CALL_OPs so they get proper argument handling
     // We'll store the operation type in the function name and handle display in the printer
     return ESHKOL_CALL_OP;
@@ -1185,6 +1211,8 @@ static std::set<std::string> buildScopeContext(const eshkol_ast_t* enclosing_fun
 // ===== END CLOSURE CAPTURE ANALYSIS =====
 
 static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer);
+static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer);
+static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer);
 
 static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
     // Parse function signature: (func-name param1 param2 ...)
@@ -1326,6 +1354,150 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
 
     return signature;
 }
+
+// ===== PATTERN MATCHING HELPER =====
+
+// Recursive pattern parser - handles nested patterns
+static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
+    Token token = tokenizer.nextToken();
+
+    eshkol_pattern_t* pattern = new eshkol_pattern_t;
+    pattern->type = PATTERN_INVALID;
+
+    if (token.type == TOKEN_SYMBOL) {
+        // Symbol: wildcard (_) or variable binding
+        if (token.value == "_") {
+            pattern->type = PATTERN_WILDCARD;
+        } else {
+            pattern->type = PATTERN_VARIABLE;
+            pattern->variable.name = new char[token.value.length() + 1];
+            strcpy(pattern->variable.name, token.value.c_str());
+        }
+    } else if (token.type == TOKEN_NUMBER || token.type == TOKEN_STRING ||
+               token.type == TOKEN_BOOLEAN || token.type == TOKEN_CHAR) {
+        // Literal pattern
+        pattern->type = PATTERN_LITERAL;
+        pattern->literal.value = new eshkol_ast_t;
+        *pattern->literal.value = parse_atom(token);
+    } else if (token.type == TOKEN_QUOTE) {
+        // Quoted literal pattern 'x
+        pattern->type = PATTERN_LITERAL;
+        pattern->literal.value = new eshkol_ast_t;
+        *pattern->literal.value = parse_quoted_data(tokenizer);
+    } else if (token.type == TOKEN_LPAREN) {
+        // Complex pattern: (cons ...), (list ...), (? ...), (or ...), or literal list
+        Token peek = tokenizer.nextToken();
+
+        if (peek.type == TOKEN_SYMBOL) {
+            if (peek.value == "cons") {
+                // Cons pattern: (cons car-pat cdr-pat)
+                pattern->type = PATTERN_CONS;
+                // Recursively parse car and cdr patterns
+                pattern->cons.car_pattern = parse_pattern(tokenizer);
+                pattern->cons.cdr_pattern = parse_pattern(tokenizer);
+                // Consume closing paren
+                token = tokenizer.nextToken();
+                if (token.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected closing paren after cons pattern");
+                    pattern->type = PATTERN_INVALID;
+                }
+            } else if (peek.value == "list") {
+                // List pattern: (list p1 p2 ...)
+                pattern->type = PATTERN_LIST;
+                std::vector<eshkol_pattern_t*> list_pats;
+                while (true) {
+                    // Peek to see if we're at the end
+                    Token peek_end = tokenizer.nextToken();
+                    if (peek_end.type == TOKEN_RPAREN) break;
+                    // Put the token back by parsing it as part of pattern
+                    tokenizer.pushBack(peek_end);
+                    eshkol_pattern_t* elem_pat = parse_pattern(tokenizer);
+                    if (elem_pat) {
+                        list_pats.push_back(elem_pat);
+                    }
+                }
+                pattern->list.num_patterns = list_pats.size();
+                pattern->list.patterns = new eshkol_pattern_t*[list_pats.size()];
+                for (size_t i = 0; i < list_pats.size(); i++) {
+                    pattern->list.patterns[i] = list_pats[i];
+                }
+            } else if (peek.value == "?") {
+                // Predicate pattern: (? pred)
+                pattern->type = PATTERN_PREDICATE;
+                Token pred_tok = tokenizer.nextToken();
+                pattern->predicate.predicate = new eshkol_ast_t;
+                if (pred_tok.type == TOKEN_LPAREN) {
+                    *pattern->predicate.predicate = parse_list(tokenizer);
+                } else {
+                    *pattern->predicate.predicate = parse_atom(pred_tok);
+                }
+                // Consume closing paren
+                token = tokenizer.nextToken();
+                if (token.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected closing paren after predicate pattern");
+                    pattern->type = PATTERN_INVALID;
+                }
+            } else if (peek.value == "or") {
+                // Or pattern: (or p1 p2 ...)
+                pattern->type = PATTERN_OR;
+                std::vector<eshkol_pattern_t*> or_pats;
+                while (true) {
+                    Token peek_end = tokenizer.nextToken();
+                    if (peek_end.type == TOKEN_RPAREN) break;
+                    tokenizer.pushBack(peek_end);
+                    eshkol_pattern_t* sub_pat = parse_pattern(tokenizer);
+                    if (sub_pat) {
+                        or_pats.push_back(sub_pat);
+                    }
+                }
+                pattern->or_pat.num_patterns = or_pats.size();
+                pattern->or_pat.patterns = new eshkol_pattern_t*[or_pats.size()];
+                for (size_t i = 0; i < or_pats.size(); i++) {
+                    pattern->or_pat.patterns[i] = or_pats[i];
+                }
+            } else {
+                // Unknown pattern keyword - treat as literal (quoted list-like)
+                pattern->type = PATTERN_LITERAL;
+                pattern->literal.value = new eshkol_ast_t;
+                eshkol_ast_t list_ast = {.type = ESHKOL_VAR};
+                list_ast.variable.id = new char[peek.value.length() + 1];
+                strcpy(list_ast.variable.id, peek.value.c_str());
+                *pattern->literal.value = list_ast;
+                // Skip to end of this list
+                int depth = 1;
+                while (depth > 0) {
+                    token = tokenizer.nextToken();
+                    if (token.type == TOKEN_LPAREN) depth++;
+                    else if (token.type == TOKEN_RPAREN) depth--;
+                }
+            }
+        } else if (peek.type == TOKEN_RPAREN) {
+            // Empty list pattern () - matches null
+            pattern->type = PATTERN_LITERAL;
+            pattern->literal.value = new eshkol_ast_t;
+            pattern->literal.value->type = ESHKOL_NULL;
+        } else {
+            // Other starting token - probably a quoted list, treat as literal
+            pattern->type = PATTERN_LITERAL;
+            pattern->literal.value = new eshkol_ast_t;
+            pattern->literal.value->type = ESHKOL_INVALID;
+            // Skip the rest
+            int depth = 1;
+            while (depth > 0) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_LPAREN) depth++;
+                else if (token.type == TOKEN_RPAREN) depth--;
+            }
+        }
+    } else {
+        // Unknown token type - invalid pattern
+        pattern->type = PATTERN_INVALID;
+    }
+
+    return pattern;
+}
+
+// ===== END PATTERN MATCHING HELPER =====
 
 static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
     eshkol_ast_t ast = {};  // Zero-initialize all fields
@@ -2307,6 +2479,280 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             return ast;
         }
 
+        // ===== MULTIPLE RETURN VALUES OPERATIONS =====
+
+        // Special handling for values - return multiple values
+        // Syntax: (values expr1 expr2 ...)
+        if (ast.operation.op == ESHKOL_VALUES_OP) {
+            std::vector<eshkol_ast_t> values;
+
+            // Parse all value expressions
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in values");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                eshkol_ast_t expr;
+                if (token.type == TOKEN_LPAREN) {
+                    expr = parse_list(tokenizer);
+                } else if (token.type == TOKEN_QUOTE) {
+                    eshkol_ast_t quoted = parse_quoted_data(tokenizer);
+                    expr.type = ESHKOL_OP;
+                    expr.operation.op = ESHKOL_QUOTE_OP;
+                    expr.operation.call_op.func = nullptr;
+                    expr.operation.call_op.num_vars = 1;
+                    expr.operation.call_op.variables = new eshkol_ast_t[1];
+                    expr.operation.call_op.variables[0] = quoted;
+                } else {
+                    expr = parse_atom(token);
+                }
+
+                if (expr.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                values.push_back(expr);
+            }
+
+            // Store values
+            ast.operation.values_op.num_values = values.size();
+            if (values.size() > 0) {
+                ast.operation.values_op.expressions = new eshkol_ast_t[values.size()];
+                for (size_t i = 0; i < values.size(); i++) {
+                    ast.operation.values_op.expressions[i] = values[i];
+                }
+            } else {
+                ast.operation.values_op.expressions = nullptr;
+            }
+
+            return ast;
+        }
+
+        // Special handling for call-with-values - apply consumer to producer's values
+        // Syntax: (call-with-values producer consumer)
+        if (ast.operation.op == ESHKOL_CALL_WITH_VALUES_OP) {
+            // Parse producer (a thunk that returns multiple values)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("call-with-values requires producer argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            eshkol_ast_t producer;
+            if (token.type == TOKEN_LPAREN) {
+                producer = parse_list(tokenizer);
+            } else {
+                producer = parse_atom(token);
+            }
+
+            if (producer.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Parse consumer (a function that takes the multiple values)
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("call-with-values requires consumer argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            eshkol_ast_t consumer;
+            if (token.type == TOKEN_LPAREN) {
+                consumer = parse_list(tokenizer);
+            } else {
+                consumer = parse_atom(token);
+            }
+
+            if (consumer.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Check for closing paren
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                eshkol_error("call-with-values takes exactly 2 arguments");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            ast.operation.call_with_values_op.producer = new eshkol_ast_t;
+            *ast.operation.call_with_values_op.producer = producer;
+            ast.operation.call_with_values_op.consumer = new eshkol_ast_t;
+            *ast.operation.call_with_values_op.consumer = consumer;
+
+            return ast;
+        }
+
+        // Special handling for let-values and let*-values - bind multiple values from producers
+        // Syntax: (let-values (((var1 var2 ...) producer1) ...) body ...)
+        if (ast.operation.op == ESHKOL_LET_VALUES_OP || ast.operation.op == ESHKOL_LET_STAR_VALUES_OP) {
+            // Parse bindings list
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_LPAREN) {
+                eshkol_error("let-values requires bindings list as first argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            std::vector<std::vector<std::string>> all_vars;  // Variable names per binding
+            std::vector<eshkol_ast_t> producers;             // Producer expressions
+
+            // Parse each binding: ((var1 var2 ...) producer)
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in let-values bindings");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                if (token.type != TOKEN_LPAREN) {
+                    eshkol_error("let-values binding must be a list ((vars ...) producer)");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                // Parse variable list: (var1 var2 ...)
+                token = tokenizer.nextToken();
+                if (token.type != TOKEN_LPAREN) {
+                    eshkol_error("let-values binding must start with variable list");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                std::vector<std::string> vars;
+                while (true) {
+                    token = tokenizer.nextToken();
+                    if (token.type == TOKEN_RPAREN) break;
+                    if (token.type == TOKEN_EOF) {
+                        eshkol_error("Unexpected end of input in let-values variable list");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    if (token.type != TOKEN_SYMBOL) {
+                        eshkol_error("let-values variable list must contain only symbols");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    vars.push_back(token.value);
+                }
+
+                // Parse producer expression
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Expected producer expression in let-values binding");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                eshkol_ast_t producer;
+                if (token.type == TOKEN_LPAREN) {
+                    producer = parse_list(tokenizer);
+                } else if (token.type == TOKEN_QUOTE) {
+                    eshkol_ast_t quoted = parse_quoted_data(tokenizer);
+                    producer.type = ESHKOL_OP;
+                    producer.operation.op = ESHKOL_QUOTE_OP;
+                    producer.operation.call_op.func = nullptr;
+                    producer.operation.call_op.num_vars = 1;
+                    producer.operation.call_op.variables = new eshkol_ast_t[1];
+                    producer.operation.call_op.variables[0] = quoted;
+                } else {
+                    producer = parse_atom(token);
+                }
+
+                if (producer.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                // Check for closing paren of binding
+                token = tokenizer.nextToken();
+                if (token.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected closing parenthesis after let-values binding");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                all_vars.push_back(vars);
+                producers.push_back(producer);
+            }
+
+            // Parse body expressions
+            std::vector<eshkol_ast_t> body_expressions;
+
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in let-values body");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                eshkol_ast_t expr;
+                if (token.type == TOKEN_LPAREN) {
+                    expr = parse_list(tokenizer);
+                } else {
+                    expr = parse_atom(token);
+                }
+
+                if (expr.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                body_expressions.push_back(expr);
+            }
+
+            if (body_expressions.empty()) {
+                eshkol_error("let-values body cannot be empty");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Transform internal defines to letrec
+            eshkol_ast_t body = transformInternalDefinesToLetrec(body_expressions);
+
+            // Set up let-values operation
+            ast.operation.let_values_op.num_bindings = all_vars.size();
+            if (all_vars.size() > 0) {
+                ast.operation.let_values_op.binding_vars = new char**[all_vars.size()];
+                ast.operation.let_values_op.binding_var_counts = new uint64_t[all_vars.size()];
+                ast.operation.let_values_op.producers = new eshkol_ast_t[all_vars.size()];
+
+                for (size_t i = 0; i < all_vars.size(); i++) {
+                    ast.operation.let_values_op.binding_var_counts[i] = all_vars[i].size();
+                    ast.operation.let_values_op.binding_vars[i] = new char*[all_vars[i].size()];
+                    for (size_t j = 0; j < all_vars[i].size(); j++) {
+                        ast.operation.let_values_op.binding_vars[i][j] = new char[all_vars[i][j].length() + 1];
+                        strcpy(ast.operation.let_values_op.binding_vars[i][j], all_vars[i][j].c_str());
+                    }
+                    ast.operation.let_values_op.producers[i] = producers[i];
+                }
+            } else {
+                ast.operation.let_values_op.binding_vars = nullptr;
+                ast.operation.let_values_op.binding_var_counts = nullptr;
+                ast.operation.let_values_op.producers = nullptr;
+            }
+
+            ast.operation.let_values_op.body = new eshkol_ast_t;
+            *ast.operation.let_values_op.body = body;
+
+            return ast;
+        }
+
+        // ===== END MULTIPLE RETURN VALUES OPERATIONS =====
+
         // Special handling for guard - exception handler (R7RS)
         // Syntax: (guard (var clause ...) body ...)
         // Where each clause is (test expr ...) or (else expr ...)
@@ -2656,6 +3102,121 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
             } else {
                 ast.operation.call_op.variables = nullptr;
+            }
+
+            return ast;
+        }
+
+        // Special handling for match - pattern matching
+        // match: (match expr (pattern body ...) ... (_ default-body ...))
+        if (ast.operation.op == ESHKOL_MATCH_OP) {
+            // Parse expression to match against
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
+                eshkol_error("match requires an expression to match against");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            eshkol_ast_t expr;
+            if (token.type == TOKEN_LPAREN) {
+                expr = parse_list(tokenizer);
+            } else {
+                expr = parse_atom(token);
+            }
+
+            if (expr.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Parse clauses: (pattern body ...)
+            std::vector<eshkol_match_clause_t> clauses;
+
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in match expression");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                if (token.type != TOKEN_LPAREN) {
+                    eshkol_error("match clause must be a list (pattern body ...)");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                eshkol_match_clause_t clause;
+                clause.guard = nullptr;
+
+                // Parse pattern using the recursive pattern parser
+                clause.pattern = parse_pattern(tokenizer);
+                if (!clause.pattern || clause.pattern->type == PATTERN_INVALID) {
+                    eshkol_error("Invalid pattern in match clause");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                // Parse body expressions
+                std::vector<eshkol_ast_t> body_exprs;
+
+                while (true) {
+                    token = tokenizer.nextToken();
+                    if (token.type == TOKEN_RPAREN) break;
+                    if (token.type == TOKEN_EOF) {
+                        eshkol_error("Unexpected end of input in match clause body");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+
+                    eshkol_ast_t body_expr;
+                    if (token.type == TOKEN_LPAREN) {
+                        body_expr = parse_list(tokenizer);
+                    } else {
+                        body_expr = parse_atom(token);
+                    }
+
+                    if (body_expr.type == ESHKOL_INVALID) {
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    body_exprs.push_back(body_expr);
+                }
+
+                // Store body - if multiple, wrap in sequence
+                if (body_exprs.size() == 1) {
+                    clause.body = new eshkol_ast_t;
+                    *clause.body = body_exprs[0];
+                } else if (body_exprs.size() > 1) {
+                    clause.body = new eshkol_ast_t;
+                    clause.body->type = ESHKOL_OP;
+                    clause.body->operation.op = ESHKOL_SEQUENCE_OP;
+                    clause.body->operation.sequence_op.num_expressions = body_exprs.size();
+                    clause.body->operation.sequence_op.expressions = new eshkol_ast_t[body_exprs.size()];
+                    for (size_t i = 0; i < body_exprs.size(); i++) {
+                        clause.body->operation.sequence_op.expressions[i] = body_exprs[i];
+                    }
+                } else {
+                    clause.body = new eshkol_ast_t;
+                    clause.body->type = ESHKOL_NULL;
+                }
+
+                clauses.push_back(clause);
+            }
+
+            // Set up match operation
+            ast.operation.match_op.expr = new eshkol_ast_t;
+            *ast.operation.match_op.expr = expr;
+            ast.operation.match_op.num_clauses = clauses.size();
+            if (clauses.size() > 0) {
+                ast.operation.match_op.clauses = new eshkol_match_clause_t[clauses.size()];
+                for (size_t i = 0; i < clauses.size(); i++) {
+                    ast.operation.match_op.clauses[i] = clauses[i];
+                }
+            } else {
+                ast.operation.match_op.clauses = nullptr;
             }
 
             return ast;
@@ -4540,6 +5101,60 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
             ast.operation.call_op.num_vars = 1;
             ast.operation.call_op.variables = new eshkol_ast_t[1];
             ast.operation.call_op.variables[0] = quoted_expr;
+            return ast;
+        }
+
+        case TOKEN_BACKQUOTE: {
+            // Handle quasiquoted expressions - `expr becomes (quasiquote expr)
+            eshkol_ast_t inner_expr = parse_expression(tokenizer);
+            if (inner_expr.type == ESHKOL_INVALID) {
+                return inner_expr;
+            }
+
+            // Create a quasiquote operation
+            eshkol_ast_t ast;
+            ast.type = ESHKOL_OP;
+            ast.operation.op = ESHKOL_QUASIQUOTE_OP;
+            ast.operation.call_op.func = nullptr;
+            ast.operation.call_op.num_vars = 1;
+            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables[0] = inner_expr;
+            return ast;
+        }
+
+        case TOKEN_COMMA: {
+            // Handle unquote - ,expr becomes (unquote expr)
+            eshkol_ast_t inner_expr = parse_expression(tokenizer);
+            if (inner_expr.type == ESHKOL_INVALID) {
+                return inner_expr;
+            }
+
+            // Create an unquote operation
+            eshkol_ast_t ast;
+            ast.type = ESHKOL_OP;
+            ast.operation.op = ESHKOL_UNQUOTE_OP;
+            ast.operation.call_op.func = nullptr;
+            ast.operation.call_op.num_vars = 1;
+            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables[0] = inner_expr;
+            return ast;
+        }
+
+        case TOKEN_COMMA_AT: {
+            // Handle unquote-splicing - ,@expr becomes (unquote-splicing expr)
+            eshkol_ast_t inner_expr = parse_expression(tokenizer);
+            if (inner_expr.type == ESHKOL_INVALID) {
+                return inner_expr;
+            }
+
+            // Create an unquote-splicing operation
+            eshkol_ast_t ast;
+            ast.type = ESHKOL_OP;
+            ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
+            ast.operation.call_op.func = nullptr;
+            ast.operation.call_op.num_vars = 1;
+            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables[0] = inner_expr;
             return ast;
         }
 

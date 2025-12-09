@@ -60,6 +60,19 @@ void* arena_allocate(arena_t* arena, size_t size);
 void* arena_allocate_aligned(arena_t* arena, size_t size, size_t alignment);
 void* arena_allocate_zeroed(arena_t* arena, size_t size);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Header-aware allocation functions
+// These allocate objects with an eshkol_object_header_t prepended.
+// The returned pointer points to the DATA, not the header.
+// Use ESHKOL_GET_HEADER(ptr) to access the header from the data pointer.
+// Memory layout: [header (8 bytes)][object data (variable)]
+// ─────────────────────────────────────────────────────────────────────────────
+void* arena_allocate_with_header(arena_t* arena, size_t data_size, uint8_t subtype, uint8_t flags);
+void* arena_allocate_with_header_zeroed(arena_t* arena, size_t data_size, uint8_t subtype, uint8_t flags);
+
+// Typed allocation helpers for new consolidated types
+void* arena_allocate_multi_value(arena_t* arena, size_t count);
+
 // Scope management
 void arena_push_scope(arena_t* arena);
 void arena_pop_scope(arena_t* arena);

@@ -1,0 +1,82 @@
+; Pattern Matching Test
+; Tests the match expression with various pattern types
+
+; Test 1: Simple literal matching
+(define (test-literal x)
+  (match x
+    (1 "one")
+    (2 "two")
+    (3 "three")
+    (_ "other")))
+
+(display "Test 1 - Literal matching:")
+(newline)
+(display (test-literal 1))  ; "one"
+(newline)
+(display (test-literal 2))  ; "two"
+(newline)
+(display (test-literal 5))  ; "other"
+(newline)
+
+; Test 2: Variable binding
+(define (test-var x)
+  (match x
+    (y (+ y 10))))
+
+(display "Test 2 - Variable binding:")
+(newline)
+(display (test-var 5))  ; 15
+(newline)
+
+; Test 3: Cons pattern matching
+(define (test-cons lst)
+  (match lst
+    ((cons h t) h)
+    (_ 0)))
+
+(display "Test 3 - Cons pattern:")
+(newline)
+(display (test-cons (list 1 2 3)))  ; 1
+(newline)
+(display (test-cons '()))  ; 0
+(newline)
+
+; Test 4: List pattern matching
+(define (test-list-pattern lst)
+  (match lst
+    ((list a b) (+ a b))
+    ((list a b c) (+ a (+ b c)))
+    (_ -1)))
+
+(display "Test 4 - List patterns:")
+(newline)
+(display (test-list-pattern (list 3 4)))  ; 7
+(newline)
+(display (test-list-pattern (list 1 2 3)))  ; 6
+(newline)
+(display (test-list-pattern (list 1)))  ; -1
+(newline)
+
+; Test 5: Wildcard pattern
+(define (test-wildcard pair)
+  (match pair
+    ((cons _ y) y)))
+
+(display "Test 5 - Wildcard:")
+(newline)
+(display (test-wildcard (cons 100 42)))  ; 42
+(newline)
+
+; Test 6: Nested patterns
+(define (second-of-first lst)
+  (match lst
+    ((cons (cons _ (cons x _)) _) x)
+    (_ "not found")))
+
+(display "Test 6 - Nested patterns:")
+(newline)
+(display (second-of-first (list (list 1 2 3) (list 4 5))))  ; 2
+(newline)
+
+(display "All pattern matching tests completed!")
+(newline)

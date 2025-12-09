@@ -185,7 +185,7 @@ qrng_error qrng_measure_state(qrng_ctx *ctx, uint8_t *state, size_t len);
  */
 #define QRNG_VERSION_MAJOR 1  /**< Major version number */
 #define QRNG_VERSION_MINOR 1  /**< Minor version number */
-#define QRNG_VERSION_PATCH 0  /**< Patch version number */
+#define QRNG_VERSION_PATCH 1  /**< Patch version number */
 
 /**
  * @brief Get version string
