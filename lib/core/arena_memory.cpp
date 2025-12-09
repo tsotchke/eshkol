@@ -188,6 +188,83 @@ void* arena_allocate_zeroed(arena_t* arena, size_t size) {
     return ptr;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// HEADER-AWARE ALLOCATION FUNCTIONS
+// These functions allocate objects with an eshkol_object_header_t prepended.
+// The returned pointer points to the DATA, not the header.
+// Use ESHKOL_GET_HEADER(ptr) to access the header from the data pointer.
+// Memory layout: [header (8 bytes)][object data (variable)]
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Allocate object with header prepended
+// Returns pointer to data (after header), or nullptr on failure
+void* arena_allocate_with_header(arena_t* arena, size_t data_size, uint8_t subtype, uint8_t flags) {
+    if (!arena || data_size == 0) {
+        return nullptr;
+    }
+
+    // Total size: header + data, aligned to 8 bytes
+    size_t total_size = sizeof(eshkol_object_header_t) + data_size;
+    total_size = (total_size + 7) & ~7;  // Round up to 8-byte alignment
+
+    // Allocate the full block
+    void* raw = arena_allocate_aligned(arena, total_size, 8);
+    if (!raw) {
+        eshkol_error("Failed to allocate object with header (size=%zu)", data_size);
+        return nullptr;
+    }
+
+    // Initialize header
+    eshkol_object_header_t* header = (eshkol_object_header_t*)raw;
+    header->subtype = subtype;
+    header->flags = flags;
+    header->ref_count = 0;
+    header->size = (uint32_t)data_size;
+
+    // Return pointer to data (after header)
+    return (void*)((uint8_t*)raw + sizeof(eshkol_object_header_t));
+}
+
+// Allocate zeroed object with header
+void* arena_allocate_with_header_zeroed(arena_t* arena, size_t data_size, uint8_t subtype, uint8_t flags) {
+    void* ptr = arena_allocate_with_header(arena, data_size, subtype, flags);
+    if (ptr) {
+        memset(ptr, 0, data_size);
+    }
+    return ptr;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// TYPED ALLOCATION HELPERS FOR NEW CONSOLIDATED TYPES
+// These will be used for new allocations during and after migration
+// ───────────────────────────────────────────────────────────────────────────
+
+// Allocate a multi-value container (for multiple return values)
+// count: number of tagged values to hold
+void* arena_allocate_multi_value(arena_t* arena, size_t count) {
+    size_t data_size = sizeof(size_t) + count * sizeof(eshkol_tagged_value_t);
+    void* ptr = arena_allocate_with_header(arena, data_size, HEAP_SUBTYPE_MULTI_VALUE, 0);
+    if (ptr) {
+        // Initialize count field
+        *((size_t*)ptr) = count;
+    }
+    return ptr;
+}
+
+// Get the count from a multi-value container
+static inline size_t multi_value_get_count(void* multi_value_ptr) {
+    return *((size_t*)multi_value_ptr);
+}
+
+// Get pointer to the values array in a multi-value container
+static inline eshkol_tagged_value_t* multi_value_get_values(void* multi_value_ptr) {
+    return (eshkol_tagged_value_t*)((uint8_t*)multi_value_ptr + sizeof(size_t));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// END HEADER-AWARE ALLOCATION FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
 // Scope management
 void arena_push_scope(arena_t* arena) {
     if (!arena) return;

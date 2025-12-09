@@ -5590,6 +5590,30 @@ private:
                 }
                 return packNullToTaggedValue();
 
+            case ESHKOL_QUASIQUOTE_OP:
+                // Quasiquote is like quote but processes unquotes inside
+                // For now, delegate to a helper that handles unquote processing
+                if (op->call_op.num_vars > 0) {
+                    return codegenQuasiquote(&op->call_op.variables[0]);
+                }
+                return packNullToTaggedValue();
+
+            case ESHKOL_UNQUOTE_OP:
+                // Unquote at top level is an error - should only appear inside quasiquote
+                // But if we encounter it during quasiquote processing, evaluate it
+                if (op->call_op.num_vars > 0) {
+                    return codegenAST(&op->call_op.variables[0]);
+                }
+                return packNullToTaggedValue();
+
+            case ESHKOL_UNQUOTE_SPLICING_OP:
+                // Unquote-splicing at top level is an error
+                // For now, treat like unquote - proper splicing needs list context
+                if (op->call_op.num_vars > 0) {
+                    return codegenAST(&op->call_op.variables[0]);
+                }
+                return packNullToTaggedValue();
+
             case ESHKOL_SET_OP:
                 return codegenSet(op);
 
@@ -5665,6 +5689,21 @@ private:
                 // Type annotations are compile-time only - they affect type checking
                 // but generate no runtime code (proof erasure)
                 return packNullToTaggedValue();
+
+            // Multiple Return Values operations
+            case ESHKOL_VALUES_OP:
+                return codegenValues(op);
+
+            case ESHKOL_CALL_WITH_VALUES_OP:
+                return codegenCallWithValues(op);
+
+            case ESHKOL_LET_VALUES_OP:
+            case ESHKOL_LET_STAR_VALUES_OP:
+                return codegenLetValues(op);
+
+            // Pattern matching operation
+            case ESHKOL_MATCH_OP:
+                return codegenMatch(op);
 
             default:
                 eshkol_warn("Unhandled operation type: %d", op->op);
@@ -10108,6 +10147,735 @@ private:
         // after the unreachable terminator, which is invalid LLVM IR
         return UndefValue::get(tagged_value_type);
     }
+
+    // ===== MULTIPLE RETURN VALUES OPERATIONS =====
+
+    // (values expr1 expr2 ...) - Return multiple values
+    // Creates a multi-value object that packages multiple values together
+    Value* codegenValues(const eshkol_operations_t* op) {
+        uint64_t num_values = op->values_op.num_values;
+
+        // Special case: (values) returns nothing
+        if (num_values == 0) {
+            return packNullToTaggedValue();
+        }
+
+        // Special case: (values x) returns x directly (single value optimization)
+        if (num_values == 1) {
+            return codegenAST(&op->values_op.expressions[0]);
+        }
+
+        // Multiple values: create a multi-value object
+        // Structure: [count: size_t, val1: tagged, val2: tagged, ...]
+
+        // Call arena_allocate_multi_value to allocate the multi-value object
+        Function* alloc_func = module->getFunction("arena_allocate_multi_value");
+        if (!alloc_func) {
+            FunctionType* alloc_type = FunctionType::get(builder->getPtrTy(),
+                {builder->getPtrTy(), int64_type}, false);
+            alloc_func = Function::Create(alloc_type, Function::ExternalLinkage,
+                "arena_allocate_multi_value", module.get());
+        }
+
+        // Get current arena
+        Value* arena = getArenaPtr();
+
+        // Allocate multi-value object
+        Value* mv_ptr = builder->CreateCall(alloc_func,
+            {arena, ConstantInt::get(int64_type, num_values)}, "multi_value");
+
+        // Store each value into the multi-value object
+        // Layout: size_t count at offset 0, then array of tagged values
+        size_t offset = sizeof(size_t);  // Skip the count (already set by allocator)
+
+        for (uint64_t i = 0; i < num_values; i++) {
+            Value* val = codegenAST(&op->values_op.expressions[i]);
+            if (!val) {
+                eshkol_error("Failed to codegen value expression in 'values'");
+                return packNullToTaggedValue();
+            }
+
+            // Store value at offset
+            Value* elem_ptr = builder->CreateGEP(builder->getInt8Ty(), mv_ptr,
+                ConstantInt::get(int64_type, offset + i * sizeof(eshkol_tagged_value_t)), "mv_elem_ptr");
+            Value* typed_ptr = builder->CreatePointerCast(elem_ptr,
+                PointerType::getUnqual(tagged_value_type));
+            builder->CreateStore(val, typed_ptr);
+        }
+
+        // Return the multi-value object as a HEAP_PTR with MULTI_VALUE subtype
+        // The subtype is stored in the object header by arena_allocate_multi_value
+        // Note: HEAP_PTR (8) and STRING_PTR (8) are the same value in current type system
+        return packPtrToTaggedValue(mv_ptr, ESHKOL_VALUE_STRING_PTR);
+    }
+
+    // (call-with-values producer consumer) - Apply consumer to producer's values
+    // producer: thunk that returns multiple values
+    // consumer: function that accepts those values
+    Value* codegenCallWithValues(const eshkol_operations_t* op) {
+        // Evaluate producer thunk (a zero-argument function)
+        Value* producer_val = codegenAST(op->call_with_values_op.producer);
+        if (!producer_val) {
+            eshkol_error("Failed to codegen producer in call-with-values");
+            return packNullToTaggedValue();
+        }
+
+        // Call the producer (it should be a thunk)
+        // We need to wrap it in a call if it's not already
+        Value* produced = nullptr;
+
+        // Check if producer is a function we can call
+        // For now, assume producer returns its result directly (already evaluated)
+        // In a more complete implementation, we'd check if it's a closure and call it
+        produced = producer_val;
+
+        // Evaluate consumer function
+        Value* consumer_val = codegenAST(op->call_with_values_op.consumer);
+        if (!consumer_val) {
+            eshkol_error("Failed to codegen consumer in call-with-values");
+            return packNullToTaggedValue();
+        }
+
+        // Check if produced value is a multi-value object
+        Value* type_tag = getTaggedValueType(produced);
+        Value* is_heap_ptr = builder->CreateICmpEQ(type_tag,
+            ConstantInt::get(int8_type, ESHKOL_TYPE_HEAP_PTR));
+
+        // For single value, just call consumer with that value
+        // For multi-value, unpack and call with all values
+
+        // Create blocks for the check
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* multi_block = BasicBlock::Create(*context, "multi_value", current_func);
+        BasicBlock* single_block = BasicBlock::Create(*context, "single_value", current_func);
+        BasicBlock* merge_block = BasicBlock::Create(*context, "cwv_merge", current_func);
+
+        builder->CreateCondBr(is_heap_ptr, multi_block, single_block);
+
+        // Multi-value block: unpack values and call consumer with them
+        builder->SetInsertPoint(multi_block);
+        Value* mv_result = callConsumerWithMultiValue(consumer_val, produced);
+        builder->CreateBr(merge_block);
+        multi_block = builder->GetInsertBlock();
+
+        // Single-value block: call consumer with single value
+        builder->SetInsertPoint(single_block);
+        Value* single_result = callConsumerWithSingleValue(consumer_val, produced);
+        builder->CreateBr(merge_block);
+        single_block = builder->GetInsertBlock();
+
+        // Merge
+        builder->SetInsertPoint(merge_block);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "cwv_result");
+        phi->addIncoming(mv_result, multi_block);
+        phi->addIncoming(single_result, single_block);
+
+        return phi;
+    }
+
+    // Helper: Call consumer with unpacked multi-value
+    Value* callConsumerWithMultiValue(Value* consumer, Value* multi_val) {
+        // Extract the pointer from the tagged value
+        Value* mv_ptr = unpackPtrFromTaggedValue(multi_val);
+
+        // Read the count from the multi-value object
+        Value* count_ptr = builder->CreatePointerCast(mv_ptr, PointerType::getUnqual(int64_type));
+        Value* count = builder->CreateLoad(int64_type, count_ptr, "mv_count");
+
+        // For now, we'll handle up to 8 values (common case)
+        // A more complete implementation would use dynamic dispatch
+
+        // Read all values into an array (up to 8)
+        std::vector<Value*> values;
+        size_t offset = sizeof(size_t);
+
+        for (int i = 0; i < 8; i++) {
+            Value* elem_ptr = builder->CreateGEP(builder->getInt8Ty(), mv_ptr,
+                ConstantInt::get(int64_type, offset + i * sizeof(eshkol_tagged_value_t)), "mv_elem");
+            Value* typed_ptr = builder->CreatePointerCast(elem_ptr,
+                PointerType::getUnqual(tagged_value_type));
+            values.push_back(builder->CreateLoad(tagged_value_type, typed_ptr, "mv_val"));
+        }
+
+        // Call consumer using the dynamic call mechanism
+        // The consumer is a closure/function, use callClosure with the unpacked values
+        return callClosureWithArgs(consumer, values, count);
+    }
+
+    // Helper: Call closure with dynamic argument count
+    Value* callClosureWithArgs(Value* closure, const std::vector<Value*>& args, Value* actual_count) {
+        // Get eshkol_call_closure function
+        Function* call_func = module->getFunction("eshkol_call_closure");
+        if (!call_func) {
+            // Declare: tagged_value eshkol_call_closure(ptr closure, ptr args, int64 count)
+            FunctionType* call_type = FunctionType::get(tagged_value_type,
+                {builder->getPtrTy(), builder->getPtrTy(), int64_type}, false);
+            call_func = Function::Create(call_type, Function::ExternalLinkage,
+                "eshkol_call_closure", module.get());
+        }
+
+        // Allocate array on stack for args
+        Value* args_array = builder->CreateAlloca(tagged_value_type,
+            ConstantInt::get(int32_type, args.size()), "args_array");
+
+        // Store args
+        for (size_t i = 0; i < args.size(); i++) {
+            Value* ptr = builder->CreateGEP(tagged_value_type, args_array,
+                ConstantInt::get(int64_type, i));
+            builder->CreateStore(args[i], ptr);
+        }
+
+        // Extract closure pointer
+        Value* closure_ptr = unpackPtrFromTaggedValue(closure);
+
+        // Call
+        return builder->CreateCall(call_func, {closure_ptr, args_array, actual_count}, "closure_result");
+    }
+
+    // Helper: Call consumer with single value
+    Value* callConsumerWithSingleValue(Value* consumer, Value* val) {
+        std::vector<Value*> args = {val};
+        return callClosureWithArgs(consumer, args, ConstantInt::get(int64_type, 1));
+    }
+
+    // (let-values (((var1 var2) producer1) ...) body) - Bind multiple values
+    Value* codegenLetValues(const eshkol_operations_t* op) {
+        bool is_star = (op->op == ESHKOL_LET_STAR_VALUES_OP);
+
+        // Save current scope
+        std::unordered_map<std::string, Value*> saved_env;
+        if (!is_star) {
+            // For let-values, we need to evaluate all producers before any bindings
+            // Save current environment
+            saved_env = symbol_table;
+        }
+
+        // For each binding, evaluate producer and bind variables
+        for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+            // Get variable names and count for this binding
+            char** vars = op->let_values_op.binding_vars[i];
+            uint64_t var_count = op->let_values_op.binding_var_counts[i];
+
+            // Evaluate producer expression
+            Value* produced = codegenAST(&op->let_values_op.producers[i]);
+            if (!produced) {
+                eshkol_error("Failed to codegen producer in let-values");
+                return packNullToTaggedValue();
+            }
+
+            // Check if produced is a multi-value or single value
+            // For simplicity, we'll extract values directly
+
+            if (var_count == 0) {
+                // No variables to bind, just evaluate for side effects
+                continue;
+            }
+
+            if (var_count == 1) {
+                // Single variable - bind directly
+                symbol_table[vars[0]] = produced;
+            } else {
+                // Multiple variables - need to unpack multi-value
+                // Check if it's a HEAP_PTR (multi-value)
+                Value* type_tag = getTaggedValueType(produced);
+                Value* is_heap_ptr = builder->CreateICmpEQ(type_tag,
+                    ConstantInt::get(int8_type, ESHKOL_TYPE_HEAP_PTR));
+
+                // Create blocks
+                Function* current_func = builder->GetInsertBlock()->getParent();
+                BasicBlock* multi_block = BasicBlock::Create(*context, "lv_multi", current_func);
+                BasicBlock* single_block = BasicBlock::Create(*context, "lv_single", current_func);
+                BasicBlock* merge_block = BasicBlock::Create(*context, "lv_merge", current_func);
+
+                builder->CreateCondBr(is_heap_ptr, multi_block, single_block);
+
+                // Multi-value block: unpack values
+                builder->SetInsertPoint(multi_block);
+
+                Value* mv_ptr = unpackPtrFromTaggedValue(produced);
+                size_t offset = sizeof(size_t);
+
+                std::vector<Value*> multi_vals;
+                for (uint64_t j = 0; j < var_count; j++) {
+                    Value* elem_ptr = builder->CreateGEP(builder->getInt8Ty(), mv_ptr,
+                        ConstantInt::get(int64_type, offset + j * sizeof(eshkol_tagged_value_t)), "lv_elem");
+                    Value* typed_ptr = builder->CreatePointerCast(elem_ptr,
+                        PointerType::getUnqual(tagged_value_type));
+                    multi_vals.push_back(builder->CreateLoad(tagged_value_type, typed_ptr, "lv_val"));
+                }
+
+                builder->CreateBr(merge_block);
+                multi_block = builder->GetInsertBlock();
+
+                // Single-value block: first var gets value, rest get null
+                builder->SetInsertPoint(single_block);
+
+                std::vector<Value*> single_vals;
+                single_vals.push_back(produced);
+                for (uint64_t j = 1; j < var_count; j++) {
+                    single_vals.push_back(packNullToTaggedValue());
+                }
+
+                builder->CreateBr(merge_block);
+                single_block = builder->GetInsertBlock();
+
+                // Merge and create PHI nodes for each variable
+                builder->SetInsertPoint(merge_block);
+
+                for (uint64_t j = 0; j < var_count; j++) {
+                    PHINode* phi = builder->CreatePHI(tagged_value_type, 2, std::string("lv_") + vars[j]);
+                    phi->addIncoming(multi_vals[j], multi_block);
+                    phi->addIncoming(single_vals[j], single_block);
+                    symbol_table[vars[j]] = phi;
+                }
+            }
+        }
+
+        // Evaluate body
+        Value* result = codegenAST(op->let_values_op.body);
+
+        // Restore environment (for non-star version, bindings go out of scope)
+        for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+            char** vars = op->let_values_op.binding_vars[i];
+            uint64_t var_count = op->let_values_op.binding_var_counts[i];
+            for (uint64_t j = 0; j < var_count; j++) {
+                symbol_table.erase(vars[j]);
+            }
+        }
+
+        // Restore any shadowed bindings
+        for (const auto& pair : saved_env) {
+            if (symbol_table.find(pair.first) == symbol_table.end()) {
+                symbol_table[pair.first] = pair.second;
+            }
+        }
+
+        return result ? result : packNullToTaggedValue();
+    }
+
+    // ===== END MULTIPLE RETURN VALUES OPERATIONS =====
+
+    // ===== QUASIQUOTATION OPERATIONS =====
+
+    // Codegen for quasiquote - process unquotes within quoted structure
+    Value* codegenQuasiquote(const eshkol_ast_t* ast) {
+        if (!ast) return packNullToTaggedValue();
+
+        // Check if this is an unquote operation - if so, evaluate it
+        if (ast->type == ESHKOL_OP) {
+            if (ast->operation.op == ESHKOL_UNQUOTE_OP) {
+                // Unquote: evaluate the inner expression
+                if (ast->operation.call_op.num_vars > 0) {
+                    return codegenAST(&ast->operation.call_op.variables[0]);
+                }
+                return packNullToTaggedValue();
+            }
+            if (ast->operation.op == ESHKOL_UNQUOTE_SPLICING_OP) {
+                // Unquote-splicing: evaluate and return (splicing is handled at list level)
+                if (ast->operation.call_op.num_vars > 0) {
+                    return codegenAST(&ast->operation.call_op.variables[0]);
+                }
+                return packNullToTaggedValue();
+            }
+        }
+
+        // For cons cells, recursively process car and cdr
+        if (ast->type == ESHKOL_CONS) {
+            Value* car_val = codegenQuasiquote(ast->cons_cell.car);
+            Value* cdr_val = codegenQuasiquote(ast->cons_cell.cdr);
+
+            // Check if car is unquote-splicing - need special handling
+            if (ast->cons_cell.car && ast->cons_cell.car->type == ESHKOL_OP &&
+                ast->cons_cell.car->operation.op == ESHKOL_UNQUOTE_SPLICING_OP) {
+                // Splicing: append the evaluated list to cdr
+                // For now, just cons them (proper append requires runtime support)
+                return codegenTaggedArenaConsCellFromTaggedValue(car_val, cdr_val);
+            }
+
+            // Regular cons
+            Value* cons_int = codegenTaggedArenaConsCellFromTaggedValue(car_val, cdr_val);
+            return packPtrToTaggedValue(builder->CreateIntToPtr(cons_int, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+        }
+
+        // For other types, quote them as-is
+        return codegenQuotedAST(ast);
+    }
+
+    // ===== END QUASIQUOTATION OPERATIONS =====
+
+    // ===== PATTERN MATCHING OPERATIONS =====
+
+    // Helper: Compare two tagged values for equality (eqv? semantics)
+    Value* matchCompareValues(Value* val1, Value* val2) {
+        // Get types
+        Value* type1 = getTaggedValueType(val1);
+        Value* type2 = getTaggedValueType(val2);
+
+        // Types must match for equality
+        Value* types_match = builder->CreateICmpEQ(type1, type2, "types_match");
+
+        // Get the raw data parts
+        Value* data1 = unpackInt64FromTaggedValue(val1);
+        Value* data2 = unpackInt64FromTaggedValue(val2);
+
+        // Data must match
+        Value* data_match = builder->CreateICmpEQ(data1, data2, "data_match");
+
+        // Both conditions must hold
+        return builder->CreateAnd(types_match, data_match, "values_equal");
+    }
+
+    // Helper: Check if a value is a pair (cons cell)
+    Value* matchIsPair(Value* val) {
+        Value* type = getTaggedValueType(val);
+        return builder->CreateICmpEQ(type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR), "is_pair");
+    }
+
+    // Helper: Check if a value is null (empty list)
+    Value* matchIsNull(Value* val) {
+        Value* type = getTaggedValueType(val);
+        return builder->CreateICmpEQ(type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_NULL), "is_null");
+    }
+
+    // Helper: Get car of a pair (assumes val is already known to be a pair)
+    Value* matchGetCar(Value* val) {
+        Value* ptr = unpackPtrFromTaggedValue(val);
+        Value* car_ptr = builder->CreatePointerCast(ptr,
+            PointerType::getUnqual(tagged_value_type));
+        return builder->CreateLoad(tagged_value_type, car_ptr, "car_val");
+    }
+
+    // Helper: Get cdr of a pair (assumes val is already known to be a pair)
+    Value* matchGetCdr(Value* val) {
+        Value* ptr = unpackPtrFromTaggedValue(val);
+        Value* cdr_ptr = builder->CreateGEP(builder->getInt8Ty(), ptr,
+            ConstantInt::get(int64_type, sizeof(eshkol_tagged_value_t)), "cdr_addr");
+        Value* typed_cdr_ptr = builder->CreatePointerCast(cdr_ptr,
+            PointerType::getUnqual(tagged_value_type));
+        return builder->CreateLoad(tagged_value_type, typed_cdr_ptr, "cdr_val");
+    }
+
+    // Recursive pattern matching - returns i1 indicating if pattern matches
+    // If match succeeds, binds pattern variables in symbol_table
+    // fail_block: where to branch on match failure
+    // continue_block: where to branch on match success (after bindings)
+    Value* compilePatternMatch(const eshkol_pattern_t* pattern, Value* val,
+                               BasicBlock* fail_block,
+                               std::vector<std::pair<std::string, Value*>>& bindings) {
+        if (!pattern) {
+            return ConstantInt::getTrue(*context);
+        }
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+
+        switch (pattern->type) {
+            case PATTERN_WILDCARD:
+                // Wildcard always matches, no binding
+                return ConstantInt::getTrue(*context);
+
+            case PATTERN_VARIABLE: {
+                // Variable always matches and binds the value
+                if (pattern->variable.name) {
+                    bindings.push_back({pattern->variable.name, val});
+                }
+                return ConstantInt::getTrue(*context);
+            }
+
+            case PATTERN_LITERAL: {
+                // Literal matches if values are eqv?
+                if (!pattern->literal.value) {
+                    return ConstantInt::getFalse(*context);
+                }
+                TypedValue lit_tv = codegenTypedAST(pattern->literal.value);
+                if (!lit_tv.llvm_value) {
+                    return ConstantInt::getFalse(*context);
+                }
+                Value* lit_val = typedValueToTaggedValue(lit_tv);
+                return matchCompareValues(val, lit_val);
+            }
+
+            case PATTERN_CONS: {
+                // Cons matches if value is a pair and car/cdr match sub-patterns
+                Value* is_pair = matchIsPair(val);
+
+                BasicBlock* match_pair = BasicBlock::Create(*context, "match_cons", current_func);
+                BasicBlock* no_match = BasicBlock::Create(*context, "cons_fail", current_func);
+                BasicBlock* after_cons = BasicBlock::Create(*context, "after_cons", current_func);
+
+                builder->CreateCondBr(is_pair, match_pair, no_match);
+
+                // Pair matched - check car and cdr
+                builder->SetInsertPoint(match_pair);
+                Value* car_val = matchGetCar(val);
+                Value* cdr_val = matchGetCdr(val);
+
+                // Match car pattern
+                Value* car_match = compilePatternMatch(pattern->cons.car_pattern, car_val,
+                                                        fail_block, bindings);
+
+                BasicBlock* after_car = builder->GetInsertBlock();
+                BasicBlock* check_cdr = BasicBlock::Create(*context, "check_cdr", current_func);
+                builder->CreateCondBr(car_match, check_cdr, no_match);
+
+                // Match cdr pattern
+                builder->SetInsertPoint(check_cdr);
+                Value* cdr_match = compilePatternMatch(pattern->cons.cdr_pattern, cdr_val,
+                                                        fail_block, bindings);
+
+                BasicBlock* after_cdr = builder->GetInsertBlock();
+                builder->CreateCondBr(cdr_match, after_cons, no_match);
+
+                // No match - jump to fail
+                builder->SetInsertPoint(no_match);
+                builder->CreateBr(fail_block);
+
+                // After successful cons match
+                builder->SetInsertPoint(after_cons);
+                return ConstantInt::getTrue(*context);
+            }
+
+            case PATTERN_LIST: {
+                // List pattern matches a proper list with exact number of elements
+                uint64_t num_patterns = pattern->list.num_patterns;
+
+                BasicBlock* current_block = builder->GetInsertBlock();
+                BasicBlock* match_success = BasicBlock::Create(*context, "list_match_ok", current_func);
+                BasicBlock* match_fail = BasicBlock::Create(*context, "list_match_fail", current_func);
+
+                Value* current_val = val;
+
+                // Match each element
+                for (uint64_t i = 0; i < num_patterns; i++) {
+                    // Check if current is a pair
+                    Value* is_pair = matchIsPair(current_val);
+
+                    BasicBlock* elem_match = BasicBlock::Create(*context, "list_elem", current_func);
+                    builder->CreateCondBr(is_pair, elem_match, match_fail);
+
+                    builder->SetInsertPoint(elem_match);
+
+                    // Get car and match with pattern
+                    Value* car_val = matchGetCar(current_val);
+                    Value* elem_match_result = compilePatternMatch(pattern->list.patterns[i],
+                                                                    car_val, match_fail, bindings);
+
+                    BasicBlock* after_elem = builder->GetInsertBlock();
+                    BasicBlock* next_elem = BasicBlock::Create(*context, "list_next", current_func);
+                    builder->CreateCondBr(elem_match_result, next_elem, match_fail);
+
+                    builder->SetInsertPoint(next_elem);
+
+                    // Move to cdr for next iteration
+                    current_val = matchGetCdr(current_val);
+                }
+
+                // After all elements, remaining must be null (proper list)
+                Value* is_null = matchIsNull(current_val);
+                builder->CreateCondBr(is_null, match_success, match_fail);
+
+                // Fail block
+                builder->SetInsertPoint(match_fail);
+                builder->CreateBr(fail_block);
+
+                // Success
+                builder->SetInsertPoint(match_success);
+                return ConstantInt::getTrue(*context);
+            }
+
+            case PATTERN_PREDICATE: {
+                // Predicate pattern: (? pred) matches if (pred val) is true
+                if (!pattern->predicate.predicate) {
+                    return ConstantInt::getFalse(*context);
+                }
+
+                // Evaluate the predicate expression to get the predicate function
+                TypedValue pred_tv = codegenTypedAST(pattern->predicate.predicate);
+                if (!pred_tv.llvm_value) {
+                    return ConstantInt::getFalse(*context);
+                }
+                Value* pred_val = typedValueToTaggedValue(pred_tv);
+
+                // Call the predicate with our value (1 argument)
+                Value* result = callClosureWithArgs(pred_val, {val},
+                                                     ConstantInt::get(int64_type, 1));
+                if (!result) {
+                    return ConstantInt::getFalse(*context);
+                }
+
+                // Check if result is truthy
+                return flow_->isTruthy(result);
+            }
+
+            case PATTERN_OR: {
+                // Or pattern: (or p1 p2 ...) matches if any sub-pattern matches
+                if (pattern->or_pat.num_patterns == 0) {
+                    return ConstantInt::getFalse(*context);
+                }
+
+                BasicBlock* match_success = BasicBlock::Create(*context, "or_success", current_func);
+                BasicBlock* try_next = builder->GetInsertBlock();
+
+                for (uint64_t i = 0; i < pattern->or_pat.num_patterns; i++) {
+                    BasicBlock* try_pattern = BasicBlock::Create(*context, "or_try", current_func);
+                    BasicBlock* next_pattern = BasicBlock::Create(*context, "or_next", current_func);
+
+                    builder->SetInsertPoint(try_pattern);
+
+                    // Try this pattern (with temporary bindings that we may discard)
+                    std::vector<std::pair<std::string, Value*>> temp_bindings;
+                    Value* match_result = compilePatternMatch(pattern->or_pat.patterns[i],
+                                                               val, next_pattern, temp_bindings);
+
+                    // If matched, copy bindings and go to success
+                    BasicBlock* after_try = builder->GetInsertBlock();
+                    BasicBlock* copy_bindings = BasicBlock::Create(*context, "or_bind", current_func);
+                    builder->CreateCondBr(match_result, copy_bindings, next_pattern);
+
+                    builder->SetInsertPoint(copy_bindings);
+                    for (auto& bind : temp_bindings) {
+                        bindings.push_back(bind);
+                    }
+                    builder->CreateBr(match_success);
+
+                    // Link previous block to this try
+                    builder->SetInsertPoint(try_next);
+                    builder->CreateBr(try_pattern);
+
+                    try_next = next_pattern;
+                }
+
+                // Last next_pattern goes to fail
+                builder->SetInsertPoint(try_next);
+                builder->CreateBr(fail_block);
+
+                builder->SetInsertPoint(match_success);
+                return ConstantInt::getTrue(*context);
+            }
+
+            default:
+                eshkol_warn("Unknown pattern type: %d", pattern->type);
+                return ConstantInt::getFalse(*context);
+        }
+    }
+
+    // (match expr (pattern body) ...) - Pattern matching expression
+    Value* codegenMatch(const eshkol_operations_t* op) {
+        if (op->match_op.num_clauses == 0) {
+            eshkol_warn("match requires at least one clause");
+            return packNullToTaggedValue();
+        }
+
+        // Evaluate the expression to match against
+        TypedValue expr_tv = codegenTypedAST(op->match_op.expr);
+        if (!expr_tv.llvm_value) {
+            eshkol_error("Failed to codegen match expression");
+            return packNullToTaggedValue();
+        }
+        Value* match_value = typedValueToTaggedValue(expr_tv);
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* done_block = BasicBlock::Create(*context, "match_done", current_func);
+        BasicBlock* no_match_block = BasicBlock::Create(*context, "match_error", current_func);
+
+        std::vector<std::pair<Value*, BasicBlock*>> phi_inputs;
+
+        // Process each clause
+        for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
+            const eshkol_match_clause_t* clause = &op->match_op.clauses[i];
+
+            BasicBlock* try_clause = BasicBlock::Create(*context, "match_clause", current_func);
+            BasicBlock* next_clause = BasicBlock::Create(*context, "match_next", current_func);
+            BasicBlock* clause_body = BasicBlock::Create(*context, "match_body", current_func);
+
+            builder->CreateBr(try_clause);
+            builder->SetInsertPoint(try_clause);
+
+            // Save current symbol table for this clause's scope
+            std::unordered_map<std::string, Value*> saved_env = symbol_table;
+
+            // Collect bindings from pattern matching
+            std::vector<std::pair<std::string, Value*>> bindings;
+
+            // Compile pattern match
+            Value* pattern_match = compilePatternMatch(clause->pattern, match_value,
+                                                        next_clause, bindings);
+
+            // After pattern matching, check result
+            BasicBlock* after_pattern = builder->GetInsertBlock();
+
+            // Add bindings to symbol table
+            for (auto& bind : bindings) {
+                symbol_table[bind.first] = bind.second;
+            }
+
+            // Check if we need to evaluate a guard
+            if (clause->guard) {
+                BasicBlock* check_guard = BasicBlock::Create(*context, "match_guard", current_func);
+                builder->CreateCondBr(pattern_match, check_guard, next_clause);
+
+                builder->SetInsertPoint(check_guard);
+                TypedValue guard_tv = codegenTypedAST(clause->guard);
+                if (!guard_tv.llvm_value) {
+                    builder->CreateBr(next_clause);
+                } else {
+                    Value* guard_val = typedValueToTaggedValue(guard_tv);
+                    Value* guard_true = flow_->isTruthy(guard_val);
+                    builder->CreateCondBr(guard_true, clause_body, next_clause);
+                }
+            } else {
+                // No guard, just check pattern result
+                builder->CreateCondBr(pattern_match, clause_body, next_clause);
+            }
+
+            // Clause body - pattern matched (and guard passed if any)
+            builder->SetInsertPoint(clause_body);
+
+            TypedValue body_tv = codegenTypedAST(clause->body);
+            Value* body_result = body_tv.llvm_value ? typedValueToTaggedValue(body_tv)
+                                                     : packNullToTaggedValue();
+
+            BasicBlock* after_body = builder->GetInsertBlock();
+            bool body_terminated = after_body->getTerminator() != nullptr;
+
+            phi_inputs.push_back({body_result, after_body});
+
+            if (!body_terminated) {
+                builder->CreateBr(done_block);
+            }
+
+            // Restore symbol table
+            symbol_table = saved_env;
+
+            // Next clause
+            builder->SetInsertPoint(next_clause);
+        }
+
+        // No clause matched - this is an error in strict mode, or return null
+        builder->CreateBr(no_match_block);
+
+        builder->SetInsertPoint(no_match_block);
+        // For now, return null on no match (could also raise an error)
+        phi_inputs.push_back({packNullToTaggedValue(), no_match_block});
+        builder->CreateBr(done_block);
+
+        // Done block - merge all results
+        builder->SetInsertPoint(done_block);
+
+        if (phi_inputs.size() == 1) {
+            return phi_inputs[0].first;
+        }
+
+        PHINode* result = builder->CreatePHI(tagged_value_type, phi_inputs.size(), "match_result");
+        for (auto& [val, block] : phi_inputs) {
+            result->addIncoming(val, block);
+        }
+
+        return result;
+    }
+
+    // ===== END PATTERN MATCHING OPERATIONS =====
 
     // Helper function to compare two tagged values using eqv? semantics
     // Returns an i1 (boolean) value
