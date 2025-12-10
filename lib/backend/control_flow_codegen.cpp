@@ -50,8 +50,9 @@ llvm::Value* ControlFlowCodegen::isTruthy(llvm::Value* val) {
     // Handle tagged_value
     if (val->getType() == ctx_.taggedValueType()) {
         llvm::Value* type = tagged_.getType(val);
-        llvm::Value* base_type = ctx_.builder().CreateAnd(type,
-            llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+        // Use getBaseType() to properly handle legacy types (>=32) and exactness flags
+        // DO NOT use 0x0F mask - 32 & 0x0F = 0 (NULL) which is WRONG!
+        llvm::Value* base_type = tagged_.getBaseType(type);
 
         // Check for false/null (type 0 with value 0)
         llvm::Value* is_null_type = ctx_.builder().CreateICmpEQ(base_type,

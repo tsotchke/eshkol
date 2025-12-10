@@ -1,0 +1,12 @@
+; Minimal macro test
+; Just tests the most basic case
+
+; Test a simple transformation macro
+(define-syntax double
+  (syntax-rules ()
+    ((double x) (* x 2))))
+
+(display "Testing double macro:")
+(newline)
+(display (double 5))
+(newline)

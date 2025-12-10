@@ -428,8 +428,8 @@ bool TaggedValueCodegen::isTaggedValue(llvm::Value* val) const {
 llvm::Value* TaggedValueCodegen::typeOf(llvm::Value* tagged_val) {
     // Get the type tag from the tagged value
     llvm::Value* type_tag = getType(tagged_val);
-    llvm::Value* base_type = ctx_.builder().CreateAnd(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    // Use getBaseType() to properly handle legacy types (>=32) and exactness flags
+    llvm::Value* base_type = getBaseType(type_tag);
 
     // We need to return a symbol. For now, return the type tag as an integer
     // wrapped in a tagged value with SYMBOL type.
@@ -439,6 +439,188 @@ llvm::Value* TaggedValueCodegen::typeOf(llvm::Value* tagged_val) {
     // Create a result based on type tag - return as INT64 for now
     // This allows tests like (= (type-of 42) 1) where 1 is ESHKOL_VALUE_INT64
     return packInt64(ctx_.builder().CreateZExt(base_type, ctx_.int64Type()), true);
+}
+
+// === Type Compatibility Checks (M1 Migration) ===
+// These generate IR to check if a tagged value is a specific type.
+// Currently supports old format. Will be extended to support consolidated types.
+
+llvm::Value* TaggedValueCodegen::isNull(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+    // Use getBaseType() to properly handle legacy types (>=32) and exactness flags
+    llvm::Value* base_type = getBaseType(type_tag);
+    return ctx_.builder().CreateICmpEQ(
+        base_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
+}
+
+llvm::Value* TaggedValueCodegen::isCons(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+
+    // Check legacy format: ESHKOL_VALUE_CONS_PTR (direct comparison, no masking for types >= 32)
+    llvm::Value* is_old_cons = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+
+    // Future: Also check new format (ESHKOL_VALUE_HEAP_PTR with HEAP_SUBTYPE_CONS)
+    // For now, return legacy format check only
+    return is_old_cons;
+}
+
+llvm::Value* TaggedValueCodegen::isString(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+
+    // Check legacy format: ESHKOL_VALUE_STRING_PTR (direct comparison, no masking for types >= 32)
+    llvm::Value* is_old_string = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_STRING_PTR));
+
+    return is_old_string;
+}
+
+llvm::Value* TaggedValueCodegen::isVector(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+
+    // Check legacy format: ESHKOL_VALUE_VECTOR_PTR (direct comparison, no masking for types >= 32)
+    llvm::Value* is_old_vector = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+
+    return is_old_vector;
+}
+
+llvm::Value* TaggedValueCodegen::isClosure(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+
+    // Check legacy format: ESHKOL_VALUE_CLOSURE_PTR (direct comparison, no masking for types >= 32)
+    llvm::Value* is_old_closure = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
+
+    return is_old_closure;
+}
+
+llvm::Value* TaggedValueCodegen::isLambdaSexpr(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+
+    // Check legacy format: ESHKOL_VALUE_LAMBDA_SEXPR (direct comparison, no masking for types >= 32)
+    llvm::Value* is_old_lambda = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_LAMBDA_SEXPR));
+
+    return is_old_lambda;
+}
+
+llvm::Value* TaggedValueCodegen::isHeapPtr(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+
+    // Check all legacy heap pointer types (direct comparison, no masking for types >= 32)
+    llvm::Value* is_cons = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+    llvm::Value* is_string = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_STRING_PTR));
+    llvm::Value* is_vector = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+    llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+    llvm::Value* is_hash = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HASH_PTR));
+    llvm::Value* is_exception = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_EXCEPTION));
+
+    // Check new consolidated HEAP_PTR type
+    llvm::Value* is_new_heap = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+    // OR all together
+    llvm::Value* result = ctx_.builder().CreateOr(is_cons, is_string);
+    result = ctx_.builder().CreateOr(result, is_vector);
+    result = ctx_.builder().CreateOr(result, is_tensor);
+    result = ctx_.builder().CreateOr(result, is_hash);
+    result = ctx_.builder().CreateOr(result, is_exception);
+    result = ctx_.builder().CreateOr(result, is_new_heap);
+
+    return result;
+}
+
+llvm::Value* TaggedValueCodegen::isCallable(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+
+    // Check legacy callable types (direct comparison, no masking for types >= 32)
+    llvm::Value* is_closure = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
+    llvm::Value* is_lambda = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_LAMBDA_SEXPR));
+    llvm::Value* is_ad_node = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_AD_NODE_PTR));
+
+    // Check new consolidated CALLABLE type
+    llvm::Value* is_new_callable = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+
+    // OR all together
+    llvm::Value* result = ctx_.builder().CreateOr(is_closure, is_lambda);
+    result = ctx_.builder().CreateOr(result, is_ad_node);
+    result = ctx_.builder().CreateOr(result, is_new_callable);
+
+    return result;
+}
+
+llvm::Value* TaggedValueCodegen::isInt64(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+    // Use getBaseType() to properly handle legacy types (>=32) and exactness flags
+    llvm::Value* base_type = getBaseType(type_tag);
+
+    return ctx_.builder().CreateICmpEQ(
+        base_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+}
+
+llvm::Value* TaggedValueCodegen::isDouble(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+    // Use getBaseType() to properly handle legacy types (>=32) and exactness flags
+    llvm::Value* base_type = getBaseType(type_tag);
+
+    return ctx_.builder().CreateICmpEQ(
+        base_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+}
+
+llvm::Value* TaggedValueCodegen::isNumeric(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+    // Use getBaseType() to properly handle legacy types (>=32) and exactness flags
+    llvm::Value* base_type = getBaseType(type_tag);
+
+    llvm::Value* is_int = ctx_.builder().CreateICmpEQ(
+        base_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    llvm::Value* is_double = ctx_.builder().CreateICmpEQ(
+        base_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+
+    return ctx_.builder().CreateOr(is_int, is_double);
+}
+
+llvm::Value* TaggedValueCodegen::isBool(llvm::Value* tagged_val) {
+    llvm::Value* type_tag = getType(tagged_val);
+    // Use getBaseType() to properly handle legacy types (>=32) and exactness flags
+    llvm::Value* base_type = getBaseType(type_tag);
+
+    return ctx_.builder().CreateICmpEQ(
+        base_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
+}
+
+llvm::Value* TaggedValueCodegen::getBaseType(llvm::Value* type_tag) {
+    // Get base type from type tag, handling legacy types correctly:
+    // - Immediate types (0-7): may have exactness flags in high bits, mask with 0x0F
+    // - Consolidated (8-9), Multimedia (16-19), Legacy (32+): use directly
+    //
+    // Logic: type >= 8 ? type : (type & 0x0F)
+    //
+    // This is CRITICAL for pointer consolidation migration!
+    // Legacy types like CONS_PTR=32, STRING_PTR=33, CLOSURE_PTR=34 must NOT be masked.
+    // 32 & 0x0F = 0 (NULL) - WRONG!
+    // 33 & 0x0F = 1 (INT64) - WRONG!
+
+    llvm::Value* is_not_immediate = ctx_.builder().CreateICmpUGE(
+        type_tag,
+        llvm::ConstantInt::get(ctx_.int8Type(), 8));
+
+    llvm::Value* masked = ctx_.builder().CreateAnd(
+        type_tag,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+
+    return ctx_.builder().CreateSelect(is_not_immediate, type_tag, masked);
 }
 
 } // namespace eshkol

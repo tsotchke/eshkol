@@ -1,0 +1,5 @@
+; Test without macros - just basic output
+(display "Hello world")
+(newline)
+(display (* 5 2))
+(newline)

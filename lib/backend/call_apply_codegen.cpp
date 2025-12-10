@@ -354,6 +354,22 @@ Value* CallApplyCodegen::applyArithmetic(const std::string& op, Value* list_int)
 
 Value* CallApplyCodegen::applyUserFunction(Function* func, Value* list_int) {
     std::string func_name = func->getName().str();
+
+    // VARIADIC ARITHMETIC FIX: Check if this is a builtin arithmetic function wrapper
+    // These are created with names like "builtin_+_2arg" when (define my-add +) is used
+    // We need to use applyArithmetic to handle all arguments, not just the fixed arity
+    if (func_name.find("builtin_") == 0) {
+        if (func_name.find("_+_") != std::string::npos) {
+            return applyArithmetic("+", list_int);
+        } else if (func_name.find("_-_") != std::string::npos) {
+            return applyArithmetic("-", list_int);
+        } else if (func_name.find("_*_") != std::string::npos) {
+            return applyArithmetic("*", list_int);
+        } else if (func_name.find("_/_") != std::string::npos) {
+            return applyArithmetic("/", list_int);
+        }
+    }
+
     Function* cons_get_ptr = getTaggedConsGetPtrFunc();
     if (!cons_get_ptr) return tagged_.packNull();
 
@@ -495,8 +511,10 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
     Value* final_count = count_phi;
 
     // Get closure info
+    // Use getBaseType() to properly handle legacy types (CLOSURE_PTR=34, etc.)
+    // DO NOT use 0x0F mask - 34 & 0x0F = 2 (FLOAT64) which is WRONG!
     Value* type_tag = tagged_.getType(func_value);
-    Value* base_type = ctx_.builder().CreateAnd(type_tag, ConstantInt::get(ctx_.int8Type(), 0x0F));
+    Value* base_type = tagged_.getBaseType(type_tag);
     Value* is_closure = ctx_.builder().CreateICmpEQ(base_type,
         ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
 
@@ -612,12 +630,75 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
     Value* direct_func_ptr_i64 = tagged_.unpackInt64(func_value);
     Value* direct_func_ptr = ctx_.builder().CreateIntToPtr(direct_func_ptr_i64, ctx_.ptrType());
 
+    std::vector<std::pair<BasicBlock*, Value*>> direct_results;
+
+    // VARIADIC ARITHMETIC FIX: Check if function is a builtin arithmetic function
+    // If so, use applyArithmetic which properly handles variadic arguments
+    if (get_builtin_arithmetic_callback_) {
+        // Get the builtin arithmetic functions
+        Function* builtin_add = get_builtin_arithmetic_callback_("+", callback_context_);
+        Function* builtin_sub = get_builtin_arithmetic_callback_("-", callback_context_);
+        Function* builtin_mul = get_builtin_arithmetic_callback_("*", callback_context_);
+        Function* builtin_div = get_builtin_arithmetic_callback_("/", callback_context_);
+
+        // Create blocks for arithmetic dispatch
+        BasicBlock* add_block = BasicBlock::Create(ctx_.context(), "apply_builtin_add", current_func);
+        BasicBlock* sub_block = BasicBlock::Create(ctx_.context(), "apply_builtin_sub", current_func);
+        BasicBlock* mul_block = BasicBlock::Create(ctx_.context(), "apply_builtin_mul", current_func);
+        BasicBlock* div_block = BasicBlock::Create(ctx_.context(), "apply_builtin_div", current_func);
+        BasicBlock* regular_dispatch = BasicBlock::Create(ctx_.context(), "apply_regular_dispatch", current_func);
+
+        // Check if function matches builtin +
+        Value* is_add = ctx_.builder().CreateICmpEQ(direct_func_ptr, builtin_add);
+        ctx_.builder().CreateCondBr(is_add, add_block, sub_block);
+
+        // Add block - call applyArithmetic for +
+        ctx_.builder().SetInsertPoint(add_block);
+        Value* add_result = applyArithmetic("+", list_int);
+        ctx_.builder().CreateBr(merge_bb);
+        direct_results.push_back({ctx_.builder().GetInsertBlock(), add_result});
+
+        // Sub block - check for -
+        ctx_.builder().SetInsertPoint(sub_block);
+        Value* is_sub = ctx_.builder().CreateICmpEQ(direct_func_ptr, builtin_sub);
+        BasicBlock* sub_do = BasicBlock::Create(ctx_.context(), "apply_do_sub", current_func);
+        ctx_.builder().CreateCondBr(is_sub, sub_do, mul_block);
+
+        ctx_.builder().SetInsertPoint(sub_do);
+        Value* sub_result = applyArithmetic("-", list_int);
+        ctx_.builder().CreateBr(merge_bb);
+        direct_results.push_back({ctx_.builder().GetInsertBlock(), sub_result});
+
+        // Mul block - check for *
+        ctx_.builder().SetInsertPoint(mul_block);
+        Value* is_mul = ctx_.builder().CreateICmpEQ(direct_func_ptr, builtin_mul);
+        BasicBlock* mul_do = BasicBlock::Create(ctx_.context(), "apply_do_mul", current_func);
+        ctx_.builder().CreateCondBr(is_mul, mul_do, div_block);
+
+        ctx_.builder().SetInsertPoint(mul_do);
+        Value* mul_result = applyArithmetic("*", list_int);
+        ctx_.builder().CreateBr(merge_bb);
+        direct_results.push_back({ctx_.builder().GetInsertBlock(), mul_result});
+
+        // Div block - check for /
+        ctx_.builder().SetInsertPoint(div_block);
+        Value* is_div = ctx_.builder().CreateICmpEQ(direct_func_ptr, builtin_div);
+        BasicBlock* div_do = BasicBlock::Create(ctx_.context(), "apply_do_div", current_func);
+        ctx_.builder().CreateCondBr(is_div, div_do, regular_dispatch);
+
+        ctx_.builder().SetInsertPoint(div_do);
+        Value* div_result = applyArithmetic("/", list_int);
+        ctx_.builder().CreateBr(merge_bb);
+        direct_results.push_back({ctx_.builder().GetInsertBlock(), div_result});
+
+        // Continue with regular dispatch
+        ctx_.builder().SetInsertPoint(regular_dispatch);
+    }
+
     BasicBlock* direct_dispatch_default = BasicBlock::Create(ctx_.context(),
         "apply_direct_default", current_func);
     SwitchInst* direct_sw = ctx_.builder().CreateSwitch(final_count, direct_dispatch_default,
         MAX_APPLY_ARGS + 1);
-
-    std::vector<std::pair<BasicBlock*, Value*>> direct_results;
 
     for (int ac = 0; ac <= MAX_APPLY_ARGS; ac++) {
         BasicBlock* case_bb = BasicBlock::Create(ctx_.context(),

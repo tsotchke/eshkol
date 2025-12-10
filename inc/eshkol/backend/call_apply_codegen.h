@@ -185,6 +185,15 @@ public:
         create_cons_callback_ = callback;
     }
 
+    /**
+     * Callback type for getting builtin arithmetic function.
+     * Returns the Function* for a given operation (+, -, *, /).
+     */
+    using GetBuiltinArithmeticCallback = llvm::Function* (*)(const std::string& op, void* context);
+    void setGetBuiltinArithmeticCallback(GetBuiltinArithmeticCallback callback) {
+        get_builtin_arithmetic_callback_ = callback;
+    }
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
@@ -205,6 +214,9 @@ private:
     ExtractConsCarCallback extract_cons_car_callback_ = nullptr;
     GetConsAccessorCallback get_cons_accessor_callback_ = nullptr;
     CreateConsCallback create_cons_callback_ = nullptr;
+
+    // Builtin arithmetic callback
+    GetBuiltinArithmeticCallback get_builtin_arithmetic_callback_ = nullptr;
 
     // === Internal Helpers ===
 
