@@ -500,8 +500,8 @@ int64_t arena_tagged_cons_get_int64(const arena_tagged_cons_cell_t* cell, bool i
     // Phase 3B: Access nested tagged_value structure
     const eshkol_tagged_value_t* tv = is_cdr ? &cell->cdr : &cell->car;
     uint8_t type = tv->type;
-    if (!ESHKOL_IS_INT64_TYPE(type)) {
-        eshkol_error("Attempted to get int64 from non-int64 cell (type=%d)", type);
+    if (!ESHKOL_IS_INT_STORAGE_TYPE(type)) {
+        eshkol_error("Attempted to get int64 from non-int-storage cell (type=%d)", type);
         return 0;
     }
 
@@ -557,8 +557,8 @@ void arena_tagged_cons_set_int64(arena_tagged_cons_cell_t* cell, bool is_cdr,
         return;
     }
     
-    if (!ESHKOL_IS_INT64_TYPE(type)) {
-        eshkol_error("Invalid type for int64 value: %d", type);
+    if (!ESHKOL_IS_INT_STORAGE_TYPE(type)) {
+        eshkol_error("Invalid type for int64 storage value: %d", type);
         return;
     }
     
@@ -693,8 +693,16 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_va
         return val1 == val2;  // Both null -> equal, one null -> not equal
     }
 
-    uint8_t type1 = val1->type & 0x0F;
-    uint8_t type2 = val2->type & 0x0F;
+    // Compute base type correctly:
+    // - Legacy types (>= 32): use directly
+    // - Consolidated (8-31): use directly
+    // - Immediate (< 8): mask to strip exactness flags
+    auto get_base_type = [](uint8_t t) -> uint8_t {
+        if (t >= 8) return t;  // Legacy, consolidated, or multimedia types
+        return t & 0x0F;  // Immediate types: strip exactness flags
+    };
+    uint8_t type1 = get_base_type(val1->type);
+    uint8_t type2 = get_base_type(val2->type);
 
     // Helper to check if a value represents empty list
     auto is_empty_list = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
@@ -1654,22 +1662,33 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
     }
 
     uint8_t full_type = value->type;
-    uint8_t base_type = full_type & 0x0F;
+    // Compute base type correctly:
+    // - Legacy types (>= 32): use full_type directly, no masking
+    // - Consolidated (8-15) and multimedia (16-31): use full_type directly
+    // - Immediate types (< 8): might have exactness flags, mask with 0x0F
+    uint8_t base_type;
+    if (full_type >= 32) {
+        base_type = full_type;  // Legacy types: CONS_PTR=32, STRING_PTR=33, etc.
+    } else if (full_type >= 8) {
+        base_type = full_type;  // Consolidated/multimedia: HEAP_PTR=8, HANDLE=16, etc.
+    } else {
+        base_type = full_type & 0x0F;  // Immediate types: strip exactness flags
+    }
 
-    // Check for port types BEFORE the switch (they use CONS_PTR as base with flags)
-    if (base_type == ESHKOL_VALUE_CONS_PTR) {
-        if (full_type & 0x10) {
-            FILE* fp = (FILE*)value->data.ptr_val;
-            int fd = fp ? fileno(fp) : -1;
-            fprintf(get_output(opts), "#<input-port fd:%d>", fd);
-            return;
-        }
-        if (full_type & 0x20) {
-            FILE* fp = (FILE*)value->data.ptr_val;
-            int fd = fp ? fileno(fp) : -1;
-            fprintf(get_output(opts), "#<output-port fd:%d>", fd);
-            return;
-        }
+    // Check for port types BEFORE the switch (they use special flag encoding)
+    // Input port: CONS_PTR | 0x10 = 48
+    // Output port: CONS_PTR | 0x40 = 96 (NOT 0x20! CONS_PTR=32=0x20)
+    if (full_type == (ESHKOL_VALUE_CONS_PTR | 0x10)) {
+        FILE* fp = (FILE*)value->data.ptr_val;
+        int fd = fp ? fileno(fp) : -1;
+        fprintf(get_output(opts), "#<input-port fd:%d>", fd);
+        return;
+    }
+    if (full_type == (ESHKOL_VALUE_CONS_PTR | 0x40)) {
+        FILE* fp = (FILE*)value->data.ptr_val;
+        int fd = fp ? fileno(fp) : -1;
+        fprintf(get_output(opts), "#<output-port fd:%d>", fd);
+        return;
     }
 
     switch (base_type) {
@@ -1799,8 +1818,9 @@ void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts) {
         // Display car
         eshkol_display_value_opts(&cell->car, opts);
 
-        // Check cdr type
-        uint8_t cdr_type = cell->cdr.type & 0x0F;
+        // Check cdr type - use full type for legacy types (>= 32)
+        uint8_t cdr_full = cell->cdr.type;
+        uint8_t cdr_type = (cdr_full >= 32) ? cdr_full : (cdr_full & 0x0F);
 
         if (cdr_type == ESHKOL_VALUE_NULL) {
             // Proper list end
@@ -2042,7 +2062,9 @@ static uint64_t fnv1a_hash_u64(uint64_t val) {
 uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
     if (!value) return 0;
 
-    uint8_t type = value->type & 0x0F;
+    // Compute base type: legacy/consolidated (>= 8) use directly, immediate (< 8) mask
+    uint8_t full = value->type;
+    uint8_t type = (full >= 8) ? full : (full & 0x0F);
     uint64_t hash = FNV_OFFSET_BASIS;
 
     // Mix in the type
@@ -2088,8 +2110,12 @@ uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
 bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t* b) {
     if (!a || !b) return a == b;
 
-    uint8_t type_a = a->type & 0x0F;
-    uint8_t type_b = b->type & 0x0F;
+    // Compute base type: legacy/consolidated (>= 8) use directly, immediate (< 8) mask
+    auto get_base_type = [](uint8_t t) -> uint8_t {
+        return (t >= 8) ? t : (t & 0x0F);
+    };
+    uint8_t type_a = get_base_type(a->type);
+    uint8_t type_b = get_base_type(b->type);
 
     // Must be same type to be equal (for hash key purposes)
     if (type_a != type_b) return false;

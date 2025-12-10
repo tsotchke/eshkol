@@ -686,6 +686,15 @@ TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
     std::string name = expr->variable.id;
     auto type = ctx_.lookup(name);
     if (!type) {
+        // Check if it's a builtin arithmetic operator (used as first-class value)
+        // These are valid but not in the type context when used as values
+        if (name == "+" || name == "-" || name == "*" || name == "/") {
+            // Return a function type (variadic, returns number)
+            // For now, return a simple (Number, Number) -> Number
+            // Using Int64 as the base numeric type
+            return TypeCheckResult::ok(
+                env_.makeFunctionType({BuiltinTypes::Int64, BuiltinTypes::Int64}, BuiltinTypes::Int64));
+        }
         return errorAt(expr, "Unbound variable: " + name);
     }
 

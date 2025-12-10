@@ -45,25 +45,53 @@ typedef enum {
     ESHKOL_BOOL
 } eshkol_type_t;
 
-// Mixed type list support - Value type tags for tagged cons cells
+// ═══════════════════════════════════════════════════════════════════════════
+// VALUE TYPE TAGS - 8-bit type field with subtype headers for pointers
+// ═══════════════════════════════════════════════════════════════════════════
 typedef enum {
-    ESHKOL_VALUE_NULL        = 0,  // Empty/null value
-    ESHKOL_VALUE_INT64       = 1,  // 64-bit signed integer
-    ESHKOL_VALUE_DOUBLE      = 2,  // Double-precision floating point
-    ESHKOL_VALUE_CONS_PTR    = 3,  // Pointer to another cons cell
-    ESHKOL_VALUE_DUAL_NUMBER = 4,  // Dual number for forward-mode AD
-    ESHKOL_VALUE_AD_NODE_PTR = 5,  // Pointer to AD computation graph node
-    ESHKOL_VALUE_TENSOR_PTR  = 6,  // Pointer to tensor structure
-    ESHKOL_VALUE_LAMBDA_SEXPR = 7, // Lambda S-expression metadata (homoiconicity)
-    ESHKOL_VALUE_STRING_PTR  = 8,  // Pointer to string (char* with length prefix)
-    ESHKOL_VALUE_CHAR        = 9,  // Character (stored as Unicode codepoint in data field)
-    ESHKOL_VALUE_VECTOR_PTR  = 10, // Pointer to Scheme vector (heterogeneous array of tagged values)
-    ESHKOL_VALUE_SYMBOL      = 11, // Symbol (interned string for identifiers)
-    ESHKOL_VALUE_CLOSURE_PTR = 12, // Pointer to closure (func_ptr + captured environment)
-    ESHKOL_VALUE_BOOL        = 13, // Boolean (#t or #f, stored as 1 or 0)
-    ESHKOL_VALUE_HASH_PTR    = 14, // Pointer to hash table structure
-    ESHKOL_VALUE_EXCEPTION   = 15, // Pointer to exception object
-    // Note: 4-bit type field limit reached (0x0F mask)
+    // ═══════════════════════════════════════════════════════════════════════
+    // IMMEDIATE VALUES (0-7) - data stored directly in tagged value
+    // No heap allocation, no header needed
+    // ═══════════════════════════════════════════════════════════════════════
+    ESHKOL_VALUE_NULL        = 0,   // Empty/null value
+    ESHKOL_VALUE_INT64       = 1,   // 64-bit signed integer
+    ESHKOL_VALUE_DOUBLE      = 2,   // Double-precision float
+    ESHKOL_VALUE_BOOL        = 3,   // Boolean (#t/#f)
+    ESHKOL_VALUE_CHAR        = 4,   // Unicode character
+    ESHKOL_VALUE_SYMBOL      = 5,   // Interned symbol
+    ESHKOL_VALUE_DUAL_NUMBER = 6,   // Forward-mode AD dual number
+    // Reserved: 7
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CONSOLIDATED POINTER TYPES (8-9) - subtype in object header
+    // All heap-allocated objects have eshkol_object_header_t prefix
+    // ═══════════════════════════════════════════════════════════════════════
+    ESHKOL_VALUE_HEAP_PTR    = 8,   // Heap data: cons, string, vector, tensor, hash, exception
+    ESHKOL_VALUE_CALLABLE    = 9,   // Callables: closure, lambda-sexpr, ad-node
+
+    // Reserved: 10-15 (for future core types)
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // MULTIMEDIA TYPES (16-19) - linear resources with lifecycle management
+    // ═══════════════════════════════════════════════════════════════════════
+    ESHKOL_VALUE_HANDLE      = 16,  // Managed resource handles
+    ESHKOL_VALUE_BUFFER      = 17,  // Typed data buffers
+    ESHKOL_VALUE_STREAM      = 18,  // Lazy data streams
+    ESHKOL_VALUE_EVENT       = 19,  // Input/system events
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // LEGACY TYPES - For backward compatibility during migration
+    // These will be REMOVED once migration is complete
+    // ═══════════════════════════════════════════════════════════════════════
+    ESHKOL_VALUE_CONS_PTR    = 32,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_CONS
+    ESHKOL_VALUE_STRING_PTR  = 33,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_STRING
+    ESHKOL_VALUE_VECTOR_PTR  = 34,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_VECTOR
+    ESHKOL_VALUE_TENSOR_PTR  = 35,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_TENSOR
+    ESHKOL_VALUE_HASH_PTR    = 36,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_HASH
+    ESHKOL_VALUE_EXCEPTION   = 37,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_EXCEPTION
+    ESHKOL_VALUE_CLOSURE_PTR = 38,  // LEGACY: use CALLABLE + CALLABLE_SUBTYPE_CLOSURE
+    ESHKOL_VALUE_LAMBDA_SEXPR = 39, // LEGACY: use CALLABLE + CALLABLE_SUBTYPE_LAMBDA_SEXPR
+    ESHKOL_VALUE_AD_NODE_PTR = 40,  // LEGACY: use CALLABLE + CALLABLE_SUBTYPE_AD_NODE
 } eshkol_value_type_t;
 
 // Type flags for Scheme exactness tracking
@@ -151,32 +179,60 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
     return val->data.ptr_val;
 }
 
-// Type checking helper macros
-#define ESHKOL_IS_INT64_TYPE(type)       (((type) & 0x0F) == ESHKOL_VALUE_INT64 || ((type) & 0x0F) == ESHKOL_VALUE_CHAR || ((type) & 0x0F) == ESHKOL_VALUE_BOOL)
-#define ESHKOL_IS_DOUBLE_TYPE(type)      (((type) & 0x0F) == ESHKOL_VALUE_DOUBLE)
-#define ESHKOL_IS_CONS_PTR_TYPE(type)    (((type) & 0x0F) == ESHKOL_VALUE_CONS_PTR)
-#define ESHKOL_IS_NULL_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_NULL)
-#define ESHKOL_IS_DUAL_NUMBER_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_DUAL_NUMBER)
-#define ESHKOL_IS_AD_NODE_PTR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_AD_NODE_PTR)
-#define ESHKOL_IS_TENSOR_PTR_TYPE(type)  (((type) & 0x0F) == ESHKOL_VALUE_TENSOR_PTR)
-#define ESHKOL_IS_LAMBDA_SEXPR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_LAMBDA_SEXPR)
-#define ESHKOL_IS_STRING_PTR_TYPE(type)  (((type) & 0x0F) == ESHKOL_VALUE_STRING_PTR)
-#define ESHKOL_IS_CHAR_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_CHAR)
-#define ESHKOL_IS_VECTOR_PTR_TYPE(type)  (((type) & 0x0F) == ESHKOL_VALUE_VECTOR_PTR)
-#define ESHKOL_IS_SYMBOL_TYPE(type)      (((type) & 0x0F) == ESHKOL_VALUE_SYMBOL)
-#define ESHKOL_IS_CLOSURE_PTR_TYPE(type) (((type) & 0x0F) == ESHKOL_VALUE_CLOSURE_PTR)
-#define ESHKOL_IS_BOOL_TYPE(type)        (((type) & 0x0F) == ESHKOL_VALUE_BOOL)
-#define ESHKOL_IS_HASH_PTR_TYPE(type)    (((type) & 0x0F) == ESHKOL_VALUE_HASH_PTR)
-#define ESHKOL_IS_EXCEPTION_TYPE(type)   (((type) & 0x0F) == ESHKOL_VALUE_EXCEPTION)
-// General pointer type check: any type that stores a pointer value (not int64 or double)
-#define ESHKOL_IS_ANY_PTR_TYPE(type)     (ESHKOL_IS_CONS_PTR_TYPE(type) || \
+// ═══════════════════════════════════════════════════════════════════════════
+// TYPE CHECKING MACROS - Handle both new consolidated and legacy types
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Immediate type checks (no masking needed for new types)
+#define ESHKOL_IS_NULL_TYPE(type)        ((type) == ESHKOL_VALUE_NULL)
+#define ESHKOL_IS_INT64_TYPE(type)       ((type) == ESHKOL_VALUE_INT64)
+#define ESHKOL_IS_DOUBLE_TYPE(type)      ((type) == ESHKOL_VALUE_DOUBLE)
+#define ESHKOL_IS_BOOL_TYPE(type)        ((type) == ESHKOL_VALUE_BOOL)
+#define ESHKOL_IS_CHAR_TYPE(type)        ((type) == ESHKOL_VALUE_CHAR)
+#define ESHKOL_IS_SYMBOL_TYPE(type)      ((type) == ESHKOL_VALUE_SYMBOL)
+#define ESHKOL_IS_DUAL_NUMBER_TYPE(type) ((type) == ESHKOL_VALUE_DUAL_NUMBER)
+
+// Storage type checks - for cons cell setters that take int64 or double storage
+// INT64 storage: INT64, BOOL, CHAR, SYMBOL (types that use int_val in the union)
+// Also includes legacy pointer types (32+) which store pointer addresses as int64
+#define ESHKOL_IS_INT_STORAGE_TYPE(type) ((type) == ESHKOL_VALUE_INT64 || \
+                                          (type) == ESHKOL_VALUE_BOOL || \
+                                          (type) == ESHKOL_VALUE_CHAR || \
+                                          (type) == ESHKOL_VALUE_SYMBOL || \
+                                          (type) >= 32)
+
+// Consolidated type checks
+#define ESHKOL_IS_HEAP_PTR_TYPE(type)    ((type) == ESHKOL_VALUE_HEAP_PTR)
+#define ESHKOL_IS_CALLABLE_TYPE(type)    ((type) == ESHKOL_VALUE_CALLABLE)
+
+// Legacy type checks (for backward compatibility during migration)
+#define ESHKOL_IS_CONS_PTR_TYPE(type)    ((type) == ESHKOL_VALUE_CONS_PTR)
+#define ESHKOL_IS_STRING_PTR_TYPE(type)  ((type) == ESHKOL_VALUE_STRING_PTR)
+#define ESHKOL_IS_VECTOR_PTR_TYPE(type)  ((type) == ESHKOL_VALUE_VECTOR_PTR)
+#define ESHKOL_IS_TENSOR_PTR_TYPE(type)  ((type) == ESHKOL_VALUE_TENSOR_PTR)
+#define ESHKOL_IS_HASH_PTR_TYPE(type)    ((type) == ESHKOL_VALUE_HASH_PTR)
+#define ESHKOL_IS_EXCEPTION_TYPE(type)   ((type) == ESHKOL_VALUE_EXCEPTION)
+#define ESHKOL_IS_CLOSURE_PTR_TYPE(type) ((type) == ESHKOL_VALUE_CLOSURE_PTR)
+#define ESHKOL_IS_LAMBDA_SEXPR_TYPE(type) ((type) == ESHKOL_VALUE_LAMBDA_SEXPR)
+#define ESHKOL_IS_AD_NODE_PTR_TYPE(type) ((type) == ESHKOL_VALUE_AD_NODE_PTR)
+
+// Combined type checks (new consolidated OR legacy individual)
+#define ESHKOL_IS_ANY_HEAP_TYPE(type)    (ESHKOL_IS_HEAP_PTR_TYPE(type) || \
+                                          ESHKOL_IS_CONS_PTR_TYPE(type) || \
                                           ESHKOL_IS_STRING_PTR_TYPE(type) || \
                                           ESHKOL_IS_VECTOR_PTR_TYPE(type) || \
                                           ESHKOL_IS_TENSOR_PTR_TYPE(type) || \
-                                          ESHKOL_IS_AD_NODE_PTR_TYPE(type) || \
-                                          ESHKOL_IS_LAMBDA_SEXPR_TYPE(type) || \
-                                          ESHKOL_IS_CLOSURE_PTR_TYPE(type) || \
-                                          ESHKOL_IS_HASH_PTR_TYPE(type))
+                                          ESHKOL_IS_HASH_PTR_TYPE(type) || \
+                                          ESHKOL_IS_EXCEPTION_TYPE(type))
+
+#define ESHKOL_IS_ANY_CALLABLE_TYPE(type) (ESHKOL_IS_CALLABLE_TYPE(type) || \
+                                           ESHKOL_IS_CLOSURE_PTR_TYPE(type) || \
+                                           ESHKOL_IS_LAMBDA_SEXPR_TYPE(type) || \
+                                           ESHKOL_IS_AD_NODE_PTR_TYPE(type))
+
+// General pointer type check: any type that stores a pointer value
+#define ESHKOL_IS_ANY_PTR_TYPE(type)     (ESHKOL_IS_ANY_HEAP_TYPE(type) || \
+                                          ESHKOL_IS_ANY_CALLABLE_TYPE(type))
 
 // Exactness checking macros
 #define ESHKOL_IS_EXACT(type)         (((type) & ESHKOL_VALUE_EXACT_FLAG) != 0)
@@ -185,7 +241,8 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 // Type manipulation macros
 #define ESHKOL_MAKE_EXACT(type)       ((type) | ESHKOL_VALUE_EXACT_FLAG)
 #define ESHKOL_MAKE_INEXACT(type)     ((type) | ESHKOL_VALUE_INEXACT_FLAG)
-#define ESHKOL_GET_BASE_TYPE(type)    ((type) & 0x0F)
+// For new types, no masking needed. For types with exactness flags, mask them off.
+#define ESHKOL_GET_BASE_TYPE(type)    ((type) & 0x3F)  // 6 bits for base type (0-63)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // OBJECT HEADER SYSTEM (Foundation for Pointer Consolidation)
@@ -369,129 +426,109 @@ typedef enum {
     (--(ESHKOL_GET_HEADER(data_ptr)->ref_count))
 
 // ───────────────────────────────────────────────────────────────────────────
-// CONSOLIDATED TYPE VALUES
-// These are the target type values for the consolidation migration.
-// During transition, compatibility macros check both old and new representations.
-// After migration completes, the old enum values will be deprecated.
-// ───────────────────────────────────────────────────────────────────────────
-
-// Consolidated heap pointer (consolidates: CONS, STRING, VECTOR, TENSOR, HASH, EXCEPTION)
-// Uses same slot as STRING_PTR (8) - subtype distinguishes specific kinds
-#define ESHKOL_TYPE_HEAP_PTR    8
-
-// Consolidated callable (consolidates: CLOSURE, LAMBDA_SEXPR, AD_NODE)
-// Uses transition slot 20 to avoid conflict with CHAR (9)
-#define ESHKOL_TYPE_CALLABLE    20
-
-// Multimedia types (future extension)
-#define ESHKOL_TYPE_HANDLE      16  // External resource handle
-#define ESHKOL_TYPE_BUFFER      17  // Zero-copy memory buffer
-#define ESHKOL_TYPE_STREAM      18  // Async I/O stream
-#define ESHKOL_TYPE_EVENT       19  // Real-time event
-
 // ───────────────────────────────────────────────────────────────────────────
 // COMPATIBILITY MACROS FOR TYPE CHECKING
-// These macros work with BOTH old (individual types) and new (consolidated) formats.
+// These macros work with BOTH old (legacy) and new (consolidated) formats.
 // Use these during the migration period to ensure code works with either format.
 // ───────────────────────────────────────────────────────────────────────────
 
-// Check if value is a cons cell (old CONS_PTR or new HEAP_PTR with CONS subtype)
+// Check if value is a cons cell (legacy CONS_PTR or new HEAP_PTR with CONS subtype)
 #define ESHKOL_IS_CONS_COMPAT(val) \
-    (((val).type & 0x0F) == ESHKOL_VALUE_CONS_PTR || \
-     ((val).type == ESHKOL_TYPE_HEAP_PTR && \
+    ((val).type == ESHKOL_VALUE_CONS_PTR || \
+     ((val).type == ESHKOL_VALUE_HEAP_PTR && \
       (val).data.ptr_val != 0 && \
       ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_CONS))
 
-// Check if value is a string (old STRING_PTR or new HEAP_PTR with STRING subtype)
+// Check if value is a string (legacy STRING_PTR or new HEAP_PTR with STRING subtype)
 #define ESHKOL_IS_STRING_COMPAT(val) \
-    (((val).type & 0x0F) == ESHKOL_VALUE_STRING_PTR || \
-     ((val).type == ESHKOL_TYPE_HEAP_PTR && \
+    ((val).type == ESHKOL_VALUE_STRING_PTR || \
+     ((val).type == ESHKOL_VALUE_HEAP_PTR && \
       (val).data.ptr_val != 0 && \
       ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_STRING))
 
-// Check if value is a vector (old VECTOR_PTR or new HEAP_PTR with VECTOR subtype)
+// Check if value is a vector (legacy VECTOR_PTR or new HEAP_PTR with VECTOR subtype)
 #define ESHKOL_IS_VECTOR_COMPAT(val) \
-    (((val).type & 0x0F) == ESHKOL_VALUE_VECTOR_PTR || \
-     ((val).type == ESHKOL_TYPE_HEAP_PTR && \
+    ((val).type == ESHKOL_VALUE_VECTOR_PTR || \
+     ((val).type == ESHKOL_VALUE_HEAP_PTR && \
       (val).data.ptr_val != 0 && \
       ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_VECTOR))
 
-// Check if value is a tensor (old TENSOR_PTR or new HEAP_PTR with TENSOR subtype)
+// Check if value is a tensor (legacy TENSOR_PTR or new HEAP_PTR with TENSOR subtype)
 #define ESHKOL_IS_TENSOR_COMPAT(val) \
-    (((val).type & 0x0F) == ESHKOL_VALUE_TENSOR_PTR || \
-     ((val).type == ESHKOL_TYPE_HEAP_PTR && \
+    ((val).type == ESHKOL_VALUE_TENSOR_PTR || \
+     ((val).type == ESHKOL_VALUE_HEAP_PTR && \
       (val).data.ptr_val != 0 && \
       ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_TENSOR))
 
-// Check if value is a hash table (old HASH_PTR or new HEAP_PTR with HASH subtype)
+// Check if value is a hash table (legacy HASH_PTR or new HEAP_PTR with HASH subtype)
 #define ESHKOL_IS_HASH_COMPAT(val) \
-    (((val).type & 0x0F) == ESHKOL_VALUE_HASH_PTR || \
-     ((val).type == ESHKOL_TYPE_HEAP_PTR && \
+    ((val).type == ESHKOL_VALUE_HASH_PTR || \
+     ((val).type == ESHKOL_VALUE_HEAP_PTR && \
       (val).data.ptr_val != 0 && \
       ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_HASH))
 
-// Check if value is an exception (old EXCEPTION or new HEAP_PTR with EXCEPTION subtype)
+// Check if value is an exception (legacy EXCEPTION or new HEAP_PTR with EXCEPTION subtype)
 #define ESHKOL_IS_EXCEPTION_COMPAT(val) \
-    (((val).type & 0x0F) == ESHKOL_VALUE_EXCEPTION || \
-     ((val).type == ESHKOL_TYPE_HEAP_PTR && \
+    ((val).type == ESHKOL_VALUE_EXCEPTION || \
+     ((val).type == ESHKOL_VALUE_HEAP_PTR && \
       (val).data.ptr_val != 0 && \
       ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_EXCEPTION))
 
 // Check if value is a multi-value (ONLY new HEAP_PTR with MULTI_VALUE subtype)
 #define ESHKOL_IS_MULTI_VALUE(val) \
-    ((val).type == ESHKOL_TYPE_HEAP_PTR && \
+    ((val).type == ESHKOL_VALUE_HEAP_PTR && \
      (val).data.ptr_val != 0 && \
      ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_MULTI_VALUE)
 
-// Check if value is a closure (old CLOSURE_PTR or new CALLABLE with CLOSURE subtype)
+// Check if value is a closure (legacy CLOSURE_PTR or new CALLABLE with CLOSURE subtype)
 #define ESHKOL_IS_CLOSURE_COMPAT(val) \
-    (((val).type & 0x0F) == ESHKOL_VALUE_CLOSURE_PTR || \
-     ((val).type == ESHKOL_TYPE_CALLABLE && \
+    ((val).type == ESHKOL_VALUE_CLOSURE_PTR || \
+     ((val).type == ESHKOL_VALUE_CALLABLE && \
       (val).data.ptr_val != 0 && \
       ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == CALLABLE_SUBTYPE_CLOSURE))
 
-// Check if value is a lambda sexpr (old LAMBDA_SEXPR or new CALLABLE with LAMBDA_SEXPR subtype)
+// Check if value is a lambda sexpr (legacy LAMBDA_SEXPR or new CALLABLE with LAMBDA_SEXPR subtype)
 #define ESHKOL_IS_LAMBDA_SEXPR_COMPAT(val) \
-    (((val).type & 0x0F) == ESHKOL_VALUE_LAMBDA_SEXPR || \
-     ((val).type == ESHKOL_TYPE_CALLABLE && \
+    ((val).type == ESHKOL_VALUE_LAMBDA_SEXPR || \
+     ((val).type == ESHKOL_VALUE_CALLABLE && \
       (val).data.ptr_val != 0 && \
       ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == CALLABLE_SUBTYPE_LAMBDA_SEXPR))
 
-// Check if value is an AD node (old AD_NODE_PTR or new CALLABLE with AD_NODE subtype)
+// Check if value is an AD node (legacy AD_NODE_PTR or new CALLABLE with AD_NODE subtype)
 #define ESHKOL_IS_AD_NODE_COMPAT(val) \
-    (((val).type & 0x0F) == ESHKOL_VALUE_AD_NODE_PTR || \
-     ((val).type == ESHKOL_TYPE_CALLABLE && \
+    ((val).type == ESHKOL_VALUE_AD_NODE_PTR || \
+     ((val).type == ESHKOL_VALUE_CALLABLE && \
       (val).data.ptr_val != 0 && \
       ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == CALLABLE_SUBTYPE_AD_NODE))
 
-// Check if value is any heap pointer (old individual types OR new consolidated HEAP_PTR)
+// Check if value is any heap pointer (legacy individual types OR new consolidated HEAP_PTR)
 #define ESHKOL_IS_HEAP_PTR_COMPAT(val) \
-    (((val).type & 0x0F) == ESHKOL_VALUE_CONS_PTR || \
-     ((val).type & 0x0F) == ESHKOL_VALUE_STRING_PTR || \
-     ((val).type & 0x0F) == ESHKOL_VALUE_VECTOR_PTR || \
-     ((val).type & 0x0F) == ESHKOL_VALUE_TENSOR_PTR || \
-     ((val).type & 0x0F) == ESHKOL_VALUE_HASH_PTR || \
-     ((val).type & 0x0F) == ESHKOL_VALUE_EXCEPTION || \
-     (val).type == ESHKOL_TYPE_HEAP_PTR)
+    ((val).type == ESHKOL_VALUE_HEAP_PTR || \
+     (val).type == ESHKOL_VALUE_CONS_PTR || \
+     (val).type == ESHKOL_VALUE_STRING_PTR || \
+     (val).type == ESHKOL_VALUE_VECTOR_PTR || \
+     (val).type == ESHKOL_VALUE_TENSOR_PTR || \
+     (val).type == ESHKOL_VALUE_HASH_PTR || \
+     (val).type == ESHKOL_VALUE_EXCEPTION)
 
-// Check if value is any callable (old individual types OR new consolidated CALLABLE)
+// Check if value is any callable (legacy individual types OR new consolidated CALLABLE)
 #define ESHKOL_IS_CALLABLE_COMPAT(val) \
-    (((val).type & 0x0F) == ESHKOL_VALUE_CLOSURE_PTR || \
-     ((val).type & 0x0F) == ESHKOL_VALUE_LAMBDA_SEXPR || \
-     ((val).type & 0x0F) == ESHKOL_VALUE_AD_NODE_PTR || \
-     (val).type == ESHKOL_TYPE_CALLABLE)
+    ((val).type == ESHKOL_VALUE_CALLABLE || \
+     (val).type == ESHKOL_VALUE_CLOSURE_PTR || \
+     (val).type == ESHKOL_VALUE_LAMBDA_SEXPR || \
+     (val).type == ESHKOL_VALUE_AD_NODE_PTR)
 
 // Check if value is a multimedia handle
-#define ESHKOL_IS_HANDLE(val) ((val).type == ESHKOL_TYPE_HANDLE)
+#define ESHKOL_IS_HANDLE(val) ((val).type == ESHKOL_VALUE_HANDLE)
 
 // Check if value is a multimedia buffer
-#define ESHKOL_IS_BUFFER(val) ((val).type == ESHKOL_TYPE_BUFFER)
+#define ESHKOL_IS_BUFFER(val) ((val).type == ESHKOL_VALUE_BUFFER)
 
 // Check if value is a multimedia stream
-#define ESHKOL_IS_STREAM(val) ((val).type == ESHKOL_TYPE_STREAM)
+#define ESHKOL_IS_STREAM(val) ((val).type == ESHKOL_VALUE_STREAM)
 
 // Check if value is a multimedia event
-#define ESHKOL_IS_EVENT(val)  ((val).type == ESHKOL_TYPE_EVENT)
+#define ESHKOL_IS_EVENT(val)  ((val).type == ESHKOL_VALUE_EVENT)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // END OBJECT HEADER SYSTEM
@@ -917,6 +954,89 @@ typedef struct eshkol_match_clause {
 
 // ===== END PATTERN MATCHING SYSTEM =====
 
+// ═══════════════════════════════════════════════════════════════════════════
+// MACRO SYSTEM (syntax-rules)
+// Implements hygienic macros via pattern matching and template substitution.
+// Pattern: ((macro-name args...) template)
+// Supports: literals, pattern variables, ellipsis (...), nested patterns
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Macro pattern element types
+typedef enum {
+    MACRO_PAT_LITERAL,      // Literal identifier that must match exactly
+    MACRO_PAT_VARIABLE,     // Pattern variable to capture value
+    MACRO_PAT_ELLIPSIS,     // Ellipsis marker for repetition (...)
+    MACRO_PAT_LIST,         // Nested list pattern
+    MACRO_PAT_IMPROPER      // Improper list pattern (x . rest)
+} macro_pattern_type_t;
+
+// Forward declaration
+struct eshkol_macro_pattern;
+
+// Macro pattern element
+typedef struct eshkol_macro_pattern {
+    macro_pattern_type_t type;
+    union {
+        // MACRO_PAT_LITERAL / MACRO_PAT_VARIABLE
+        char *identifier;
+
+        // MACRO_PAT_LIST / MACRO_PAT_IMPROPER
+        struct {
+            struct eshkol_macro_pattern **elements;
+            uint64_t num_elements;
+            struct eshkol_macro_pattern *rest;  // For improper lists only
+        } list;
+    };
+    uint8_t followed_by_ellipsis;  // True if this element is followed by ...
+} eshkol_macro_pattern_t;
+
+// Template element types (for template construction)
+typedef enum {
+    MACRO_TPL_LITERAL,      // Literal value (copied as-is)
+    MACRO_TPL_VARIABLE,     // Pattern variable reference
+    MACRO_TPL_LIST,         // List constructor
+    MACRO_TPL_ELLIPSIS      // Repetition of preceding element
+} macro_template_type_t;
+
+// Forward declaration
+struct eshkol_macro_template;
+
+// Macro template element
+typedef struct eshkol_macro_template {
+    macro_template_type_t type;
+    union {
+        // MACRO_TPL_LITERAL
+        struct eshkol_ast *literal;
+
+        // MACRO_TPL_VARIABLE
+        char *variable_name;
+
+        // MACRO_TPL_LIST
+        struct {
+            struct eshkol_macro_template **elements;
+            uint64_t num_elements;
+        } list;
+    };
+    uint8_t followed_by_ellipsis;  // True if template element followed by ...
+} eshkol_macro_template_t;
+
+// Macro rule: (pattern template)
+typedef struct eshkol_macro_rule {
+    eshkol_macro_pattern_t *pattern;    // Pattern to match (including macro name)
+    eshkol_macro_template_t *template_; // Template for expansion
+} eshkol_macro_rule_t;
+
+// Macro definition: (define-syntax name (syntax-rules (literals...) rules...))
+typedef struct eshkol_macro_def {
+    char *name;                         // Macro name
+    char **literals;                    // Literal identifiers that must match exactly
+    uint64_t num_literals;
+    eshkol_macro_rule_t *rules;         // Array of rules
+    uint64_t num_rules;
+} eshkol_macro_def_t;
+
+// ===== END MACRO SYSTEM =====
+
 typedef enum {
     ESHKOL_INVALID_OP,
     ESHKOL_COMPOSE_OP,
@@ -979,7 +1099,9 @@ typedef enum {
     ESHKOL_LET_VALUES_OP,       // (let-values (((vars ...) producer) ...) body)
     ESHKOL_LET_STAR_VALUES_OP,  // (let*-values (((vars ...) producer) ...) body) - sequential
     ESHKOL_VALUES_OP,           // (values v1 v2 ...) - return multiple values
-    ESHKOL_CALL_WITH_VALUES_OP  // (call-with-values producer consumer)
+    ESHKOL_CALL_WITH_VALUES_OP, // (call-with-values producer consumer)
+    // Macro system operators
+    ESHKOL_DEFINE_SYNTAX_OP     // (define-syntax name (syntax-rules ...))
 } eshkol_op_t;
 
 struct eshkol_ast;
@@ -1191,6 +1313,12 @@ typedef struct eshkol_operation {
             uint64_t num_clauses;                // Number of clauses
         } match_op;
         // ===== END PATTERN MATCHING OPERATIONS =====
+
+        // ===== MACRO OPERATIONS =====
+        struct {
+            eshkol_macro_def_t *macro;           // Macro definition
+        } define_syntax_op;
+        // ===== END MACRO OPERATIONS =====
     };
 } eshkol_operations_t;
 

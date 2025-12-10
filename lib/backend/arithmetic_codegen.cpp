@@ -111,13 +111,13 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
     }
 
     // Extract type tags
+    // Use getBaseType() to properly handle legacy types (VECTOR_PTR=34, TENSOR_PTR=35, etc.)
+    // DO NOT use 0x0F mask - 34 & 0x0F = 2 (DOUBLE) which is WRONG!
     llvm::Value* left_type = tagged_.getType(left);
     llvm::Value* right_type = tagged_.getType(right);
 
-    llvm::Value* left_base = ctx_.builder().CreateAnd(left_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
-    llvm::Value* right_base = ctx_.builder().CreateAnd(right_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* left_base = tagged_.getBaseType(left_type);
+    llvm::Value* right_base = tagged_.getBaseType(right_type);
 
     // Check for vector/tensor types
     llvm::Value* left_is_vector = ctx_.builder().CreateICmpEQ(left_base,
@@ -240,13 +240,13 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
     }
 
     // Extract type tags
+    // Use getBaseType() to properly handle legacy types (VECTOR_PTR=34, TENSOR_PTR=35, etc.)
+    // DO NOT use 0x0F mask - 34 & 0x0F = 2 (DOUBLE) which is WRONG!
     llvm::Value* left_type = tagged_.getType(left);
     llvm::Value* right_type = tagged_.getType(right);
 
-    llvm::Value* left_base = ctx_.builder().CreateAnd(left_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
-    llvm::Value* right_base = ctx_.builder().CreateAnd(right_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* left_base = tagged_.getBaseType(left_type);
+    llvm::Value* right_base = tagged_.getBaseType(right_type);
 
     // Check for vector/tensor types
     llvm::Value* left_is_vector = ctx_.builder().CreateICmpEQ(left_base,
@@ -369,13 +369,13 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
     }
 
     // Extract type tags
+    // Use getBaseType() to properly handle legacy types (VECTOR_PTR=34, TENSOR_PTR=35, etc.)
+    // DO NOT use 0x0F mask - 34 & 0x0F = 2 (DOUBLE) which is WRONG!
     llvm::Value* left_type = tagged_.getType(left);
     llvm::Value* right_type = tagged_.getType(right);
 
-    llvm::Value* left_base = ctx_.builder().CreateAnd(left_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
-    llvm::Value* right_base = ctx_.builder().CreateAnd(right_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* left_base = tagged_.getBaseType(left_type);
+    llvm::Value* right_base = tagged_.getBaseType(right_type);
 
     // Check for vector/tensor types
     llvm::Value* left_is_vector = ctx_.builder().CreateICmpEQ(left_base,
@@ -498,13 +498,13 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     }
 
     // Extract type tags
+    // Use getBaseType() to properly handle legacy types (VECTOR_PTR=34, TENSOR_PTR=35, etc.)
+    // DO NOT use 0x0F mask - 34 & 0x0F = 2 (DOUBLE) which is WRONG!
     llvm::Value* left_type = tagged_.getType(left);
     llvm::Value* right_type = tagged_.getType(right);
 
-    llvm::Value* left_base = ctx_.builder().CreateAnd(left_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
-    llvm::Value* right_base = ctx_.builder().CreateAnd(right_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* left_base = tagged_.getBaseType(left_type);
+    llvm::Value* right_base = tagged_.getBaseType(right_type);
 
     // Check for vector/tensor types
     llvm::Value* left_is_vector = ctx_.builder().CreateICmpEQ(left_base,
@@ -641,9 +641,9 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
 
 llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
     // Check type and negate appropriately
+    // Use getBaseType() to properly handle legacy types (>=32)
     llvm::Value* type_tag = tagged_.getType(operand);
-    llvm::Value* base_type = ctx_.builder().CreateAnd(type_tag,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
     llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
@@ -681,9 +681,9 @@ llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
 }
 
 llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
+    // Use getBaseType() to properly handle legacy types (>=32)
     llvm::Value* type_tag = tagged_.getType(operand);
-    llvm::Value* base_type = ctx_.builder().CreateAnd(type_tag,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
     llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
@@ -750,9 +750,9 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     }
 
     // Handle tagged value
+    // Use getBaseType() to properly handle legacy types (>=32)
     llvm::Value* type_tag = tagged_.getType(tagged_val);
-    llvm::Value* base_type = ctx_.builder().CreateAnd(type_tag,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
     llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
@@ -773,13 +773,13 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     }
 
     // Extract type tags
+    // Use getBaseType() to properly handle legacy types (VECTOR_PTR=34, TENSOR_PTR=35, etc.)
+    // DO NOT use 0x0F mask - 34 & 0x0F = 2 (DOUBLE) which is WRONG!
     llvm::Value* left_type = tagged_.getType(left);
     llvm::Value* right_type = tagged_.getType(right);
 
-    llvm::Value* left_base = ctx_.builder().CreateAnd(left_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
-    llvm::Value* right_base = ctx_.builder().CreateAnd(right_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* left_base = tagged_.getBaseType(left_type);
+    llvm::Value* right_base = tagged_.getBaseType(right_type);
 
     // Check if either operand is double
     llvm::Value* left_is_double = ctx_.builder().CreateICmpEQ(left_base,
@@ -888,12 +888,11 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
     }
 
     // Get base types for both operands
+    // Use getBaseType() to properly handle legacy types (>=32)
     llvm::Value* base_type = tagged_.getType(base);
     llvm::Value* exp_type = tagged_.getType(exponent);
-    llvm::Value* base_base = ctx_.builder().CreateAnd(base_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
-    llvm::Value* exp_base = ctx_.builder().CreateAnd(exp_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* base_base = tagged_.getBaseType(base_type);
+    llvm::Value* exp_base = tagged_.getBaseType(exp_type);
 
     // Create basic blocks for different paths
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
@@ -1010,13 +1009,12 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
     }
 
     // Extract type information
+    // Use getBaseType() to properly handle legacy types (>=32)
     llvm::Value* dividend_type = tagged_.getType(dividend);
     llvm::Value* divisor_type = tagged_.getType(divisor);
 
-    llvm::Value* dividend_base = ctx_.builder().CreateAnd(dividend_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
-    llvm::Value* divisor_base = ctx_.builder().CreateAnd(divisor_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* dividend_base = tagged_.getBaseType(dividend_type);
+    llvm::Value* divisor_base = tagged_.getBaseType(divisor_type);
 
     // Check if both are integers
     llvm::Value* dividend_is_int = ctx_.builder().CreateICmpEQ(dividend_base,
@@ -1078,13 +1076,12 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     }
 
     // Extract type information
+    // Use getBaseType() to properly handle legacy types (>=32)
     llvm::Value* dividend_type = tagged_.getType(dividend);
     llvm::Value* divisor_type = tagged_.getType(divisor);
 
-    llvm::Value* dividend_base = ctx_.builder().CreateAnd(dividend_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
-    llvm::Value* divisor_base = ctx_.builder().CreateAnd(divisor_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* dividend_base = tagged_.getBaseType(dividend_type);
+    llvm::Value* divisor_base = tagged_.getBaseType(divisor_type);
 
     // Check if both are integers
     llvm::Value* dividend_is_int = ctx_.builder().CreateICmpEQ(dividend_base,

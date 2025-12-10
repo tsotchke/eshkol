@@ -2369,8 +2369,9 @@ llvm::Value* TensorCodegen::zeros(const eshkol_operations_t* op) {
         // If it's a raw i64, it's definitely not a list
         if (dim_arg->getType() == ctx_.taggedValueType()) {
             llvm::Value* type_tag = tagged_.getType(dim_arg);
-            llvm::Value* base_type = ctx_.builder().CreateAnd(type_tag,
-                llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+            // Use getBaseType() to properly handle legacy types (CONS_PTR=32)
+            // DO NOT use 0x0F mask - 32 & 0x0F = 0 (NULL) which is WRONG!
+            llvm::Value* base_type = tagged_.getBaseType(type_tag);
             llvm::Value* is_list = ctx_.builder().CreateICmpEQ(base_type,
                 llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
             ctx_.builder().CreateCondBr(is_list, list_path, single_path);
@@ -2574,8 +2575,9 @@ llvm::Value* TensorCodegen::ones(const eshkol_operations_t* op) {
         // If it's a raw i64, it's definitely not a list
         if (dim_arg->getType() == ctx_.taggedValueType()) {
             llvm::Value* type_tag = tagged_.getType(dim_arg);
-            llvm::Value* base_type = ctx_.builder().CreateAnd(type_tag,
-                llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+            // Use getBaseType() to properly handle legacy types (CONS_PTR=32)
+            // DO NOT use 0x0F mask - 32 & 0x0F = 0 (NULL) which is WRONG!
+            llvm::Value* base_type = tagged_.getBaseType(type_tag);
             llvm::Value* is_list = ctx_.builder().CreateICmpEQ(base_type,
                 llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
             ctx_.builder().CreateCondBr(is_list, list_path, single_path);
@@ -3047,8 +3049,9 @@ llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val) {
 
     // Handle tagged value - check type and extract appropriately
     llvm::Value* type_tag = tagged_.getType(tagged_val);
-    llvm::Value* base_type = ctx_.builder().CreateAnd(type_tag,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    // Use getBaseType() to properly handle legacy types (>=32)
+    // DO NOT use 0x0F mask - 34 & 0x0F = 2 (DOUBLE) which is WRONG!
+    llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
     llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));

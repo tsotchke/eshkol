@@ -1,0 +1,465 @@
+(require stdlib)
+
+;;; =============================================================================
+;;; POINTER CONSOLIDATION COMPREHENSIVE TEST
+;;; =============================================================================
+;;; This test validates the entire type system after migration from 4-bit types
+;;; to 8-bit types with legacy types at 32+.
+;;;
+;;; Type Layout:
+;;;   Immediate (0-7): NULL=0, INT64=1, DOUBLE=2, BOOL=3, CHAR=4, SYMBOL=5, DUAL=6
+;;;   Consolidated (8-9): HEAP_PTR=8, CALLABLE=9
+;;;   Multimedia (16-19): HANDLE, BUFFER, STREAM, EVENT
+;;;   Legacy (32+): CONS=32, STRING=33, VECTOR=34, TENSOR=35, HASH=36,
+;;;                 EXCEPTION=37, CLOSURE=38, LAMBDA_SEXPR=39, AD_NODE=40
+;;;
+;;; The 0x0F masking bug would cause:
+;;;   32 & 0x0F = 0 (NULL), 33 & 0x0F = 1 (INT64), 34 & 0x0F = 2 (DOUBLE), etc.
+;;; =============================================================================
+
+(define test-count 0)
+(define pass-count 0)
+(define fail-count 0)
+
+(define (test-header section)
+  (newline)
+  (display "=== ")
+  (display section)
+  (display " ===")
+  (newline))
+
+(define (test name expected actual)
+  (set! test-count (+ test-count 1))
+  (if (equal? expected actual)
+      (begin
+        (set! pass-count (+ pass-count 1))
+        (display "[PASS] ")
+        (display name)
+        (newline))
+      (begin
+        (set! fail-count (+ fail-count 1))
+        (display "[FAIL] ")
+        (display name)
+        (display " - Expected: ")
+        (display expected)
+        (display " Got: ")
+        (display actual)
+        (newline))))
+
+(define (test-true name condition)
+  (test name #t condition))
+
+(define (test-false name condition)
+  (test name #f condition))
+
+;;; =============================================================================
+;;; SECTION 1: IMMEDIATE TYPES (0-7)
+;;; =============================================================================
+(test-header "IMMEDIATE TYPES")
+
+;; NULL (type 0)
+(test "null? on empty list" #t (null? '()))
+(test "null? on non-empty list" #f (null? (list 1)))
+
+;; INT64 (type 1)
+(test "integer arithmetic" 42 (+ 20 22))
+(test "integer comparison" #t (= 5 5))
+(test "integer negation" -10 (- 0 10))
+(test "integer modulo" 2 (modulo 17 5))
+
+;; DOUBLE (type 2)
+;; Note: Using numeric = instead of equal? for floats due to precision
+(test-true "float arithmetic" (< (abs (- (+ 1.14 2.0) 3.14)) 0.0001))
+(test "float comparison" #t (< 1.5 2.5))
+(test "int-float mixed" 5.5 (+ 3 2.5))
+
+;; BOOL (type 3)
+(test "boolean true" #t #t)
+(test "boolean false" #f #f)
+(test "boolean not" #t (not #f))
+(test "boolean and" #t (and #t #t))
+(test "boolean or" #t (or #f #t))
+
+;; CHAR (type 4)
+(test "char literal" #\A #\A)
+(test "char comparison" #t (char=? #\x #\x))
+
+;; SYMBOL (type 5) - tested via quote
+(test "symbol quote" 'hello 'hello)
+(test "symbol equality" #t (eq? 'foo 'foo))
+
+;;; =============================================================================
+;;; SECTION 2: CONS CELLS AND LISTS (CONS_PTR = 32)
+;;; =============================================================================
+(test-header "CONS CELLS (type 32)")
+
+;; Basic cons
+(define pair1 (cons 1 2))
+(test "cons car" 1 (car pair1))
+(test "cons cdr" 2 (cdr pair1))
+
+;; Lists (chains of cons cells)
+(define list1 (list 1 2 3 4 5))
+(test "list length" 5 (length list1))
+(test "list car" 1 (car list1))
+(test "list cadr" 2 (car (cdr list1)))
+(test "list-ref" 3 (list-ref list1 2))
+
+;; Nested lists
+(define nested (list (list 1 2) (list 3 4) (list 5 6)))
+(test "nested list car car" 1 (car (car nested)))
+(test "nested list cadr car" 3 (car (car (cdr nested))))
+
+;; List predicates
+(test "pair? on cons" #t (pair? pair1))
+(test "pair? on list" #t (pair? list1))
+(test "pair? on number" #f (pair? 42))
+(test "list? on list" #t (list? list1))
+(test "list? on improper" #f (list? pair1))
+
+;; List operations
+(test "append" (list 1 2 3 4) (append (list 1 2) (list 3 4)))
+(test "reverse" (list 5 4 3 2 1) (reverse list1))
+
+;;; =============================================================================
+;;; SECTION 3: STRINGS (STRING_PTR = 33)
+;;; =============================================================================
+(test-header "STRINGS (type 33)")
+
+(define str1 "Hello")
+(define str2 "World")
+
+(test "string-length" 5 (string-length str1))
+(test "string-append" "HelloWorld" (string-append str1 str2))
+(test "string-ref" #\e (string-ref str1 1))
+(test "string=?" #t (string=? "test" "test"))
+(test "string<?" #t (string<? "abc" "abd"))
+(test "substring" "ell" (substring str1 1 4))
+
+;; String conversion
+(test "number->string int" "42" (number->string 42))
+(test "string->number" 123 (string->number "123"))
+
+;;; =============================================================================
+;;; SECTION 4: VECTORS (VECTOR_PTR = 34)
+;;; =============================================================================
+(test-header "VECTORS (type 34)")
+
+(define vec1 (vector 10 20 30 40 50))
+
+(test "vector-length" 5 (vector-length vec1))
+(test "vector-ref 0" 10 (vector-ref vec1 0))
+(test "vector-ref 2" 30 (vector-ref vec1 2))
+(test "vector-ref 4" 50 (vector-ref vec1 4))
+
+;; Vector predicates
+(test "vector? on vector" #t (vector? vec1))
+(test "vector? on list" #f (vector? list1))
+
+;; Vector with mixed types
+(define mixed-vec (vector 1 2.5 "three" #t))
+(test "mixed vector int" 1 (vector-ref mixed-vec 0))
+(test "mixed vector float" 2.5 (vector-ref mixed-vec 1))
+(test "mixed vector string" "three" (vector-ref mixed-vec 2))
+(test "mixed vector bool" #t (vector-ref mixed-vec 3))
+
+;;; =============================================================================
+;;; SECTION 5: CLOSURES (CLOSURE_PTR = 38)
+;;; =============================================================================
+(test-header "CLOSURES (type 38)")
+
+;; Simple closure
+(define (add-n n)
+  (lambda (x) (+ x n)))
+
+(define add-5 (add-n 5))
+(define add-10 (add-n 10))
+
+(test "closure add-5" 15 (add-5 10))
+(test "closure add-10" 25 (add-10 15))
+
+;; Closure capturing multiple values
+(define (make-linear a b)
+  (lambda (x) (+ (* a x) b)))
+
+(define f-2x-plus-3 (make-linear 2 3))
+(test "linear closure" 13 (f-2x-plus-3 5))
+
+;; Nested closures
+(define (make-adder-factory base)
+  (lambda (n)
+    (lambda (x) (+ x n base))))
+
+(define factory (make-adder-factory 100))
+(define adder-from-factory (factory 10))
+(display "DEBUG nested: ")
+(display (adder-from-factory 5))
+(newline)
+(test "nested closure" 115 (adder-from-factory 5))
+
+;; Closure stored in variable and passed to apply
+(define my-add +)
+(display "DEBUG apply list length: ")
+(display (length (list 1 2 3 4)))
+(newline)
+(display "DEBUG apply my-add: ")
+(display (apply my-add (list 1 2 3 4)))
+(newline)
+(display "DEBUG direct +: ")
+(display (apply + (list 1 2 3 4)))
+(newline)
+(test "closure via apply" 10 (apply my-add (list 1 2 3 4)))
+
+;; Higher-order function with closure
+(define (double x) (* x 2))
+(define (square x) (* x x))
+(define double-then-square (compose square double))
+(define square-then-double (compose double square))
+
+(test "compose double-then-square" 100 (double-then-square 5))
+(test "compose square-then-double" 50 (square-then-double 5))
+
+;;; =============================================================================
+;;; SECTION 6: HIGHER-ORDER FUNCTIONS (tests CLOSURE_PTR with apply)
+;;; =============================================================================
+(test-header "HIGHER-ORDER FUNCTIONS")
+
+;; Map with named function
+(define (increment x) (+ x 1))
+(test "map increment" (list 2 3 4 5 6) (map increment (list 1 2 3 4 5)))
+
+;; Map with lambda
+(test "map lambda" (list 2 4 6 8 10) (map (lambda (x) (* x 2)) (list 1 2 3 4 5)))
+
+;; Map with closure
+(define times-3 (make-linear 3 0))
+(test "map closure" (list 3 6 9 12 15) (map times-3 (list 1 2 3 4 5)))
+
+;; Filter
+(define (even? n) (= 0 (modulo n 2)))
+(test "filter even" (list 2 4 6 8 10) (filter even? (list 1 2 3 4 5 6 7 8 9 10)))
+
+;; Fold/reduce
+(test "fold +" 15 (fold + 0 (list 1 2 3 4 5)))
+(test "fold *" 120 (fold * 1 (list 1 2 3 4 5)))
+
+;; Apply with various arities
+(test "apply + 2 args" 3 (apply + (list 1 2)))
+(test "apply + 5 args" 15 (apply + (list 1 2 3 4 5)))
+(test "apply cons" (cons 1 2) (apply cons (list 1 2)))
+(test "apply list" (list 1 2 3) (apply list (list 1 2 3)))
+
+;;; =============================================================================
+;;; SECTION 7: RECURSIVE VARIADIC FUNCTIONS WITH APPLY
+;;; =============================================================================
+(test-header "RECURSIVE VARIADIC WITH APPLY")
+
+;; This is a critical test - it failed before the migration fix
+(define (my-sum . args)
+  (if (null? args)
+      0
+      (+ (car args) (apply my-sum (cdr args)))))
+
+(test "variadic sum 3" 6 (my-sum 1 2 3))
+(test "variadic sum 5" 15 (my-sum 1 2 3 4 5))
+
+;; Variadic map implementation
+(define (my-map f lst)
+  (if (null? lst)
+      '()
+      (cons (f (car lst)) (my-map f (cdr lst)))))
+
+(test "custom map" (list 2 4 6) (my-map double (list 1 2 3)))
+
+;;; =============================================================================
+;;; SECTION 8: TENSORS AND NUMERIC VECTORS (TENSOR_PTR = 35, VECTOR_PTR = 34)
+;;; =============================================================================
+(test-header "TENSORS AND NUMERIC OPERATIONS")
+
+;; Numeric vectors for math operations
+(define v1 (vector 1.0 2.0 3.0))
+(define v2 (vector 4.0 5.0 6.0))
+
+;; Element access
+(test "numeric vector ref" 2.0 (vref v1 1))
+
+;; Vector arithmetic (if supported)
+(test "vref on v2" 5.0 (vref v2 1))
+
+;;; =============================================================================
+;;; SECTION 9: HASH TABLES (HASH_PTR = 36)
+;;; =============================================================================
+(test-header "HASH TABLES (type 36)")
+
+(define ht (make-hash-table))
+(hash-set! ht "name" "Alice")
+(hash-set! ht "age" 30)
+(hash-set! ht "active" #t)
+
+(test "hash-ref string" "Alice" (hash-ref ht "name"))
+(test "hash-ref number" 30 (hash-ref ht "age"))
+(test "hash-ref bool" #t (hash-ref ht "active"))
+;; hash-has-key? not implemented, use hash-ref with default
+(test "hash-ref with default (found)" "Alice" (hash-ref ht "name" "default"))
+(test "hash-ref with default (not found)" "default" (hash-ref ht "missing" "default"))
+
+;; Hash with various key types
+(define ht2 (make-hash-table))
+(hash-set! ht2 1 "one")
+(hash-set! ht2 2 "two")
+(test "hash with int key" "one" (hash-ref ht2 1))
+
+;;; =============================================================================
+;;; SECTION 10: EXCEPTION HANDLING (EXCEPTION = 37)
+;;; =============================================================================
+(test-header "EXCEPTION HANDLING (type 37)")
+
+(define exception-result
+  (guard (e (else "caught"))
+    (error "test error")))
+(test "guard catches error" "caught" exception-result)
+
+(define no-exception-result
+  (guard (e (else "caught"))
+    (+ 1 2)))
+(test "guard no exception" 3 no-exception-result)
+
+;;; =============================================================================
+;;; SECTION 11: LAMBDA S-EXPRESSIONS (LAMBDA_SEXPR = 39)
+;;; =============================================================================
+(test-header "LAMBDA S-EXPRESSIONS (type 39)")
+
+;; Homoiconic lambda display
+(define simple-lambda (lambda (x) (* x x)))
+(display "Lambda display: ")
+(display simple-lambda)
+(newline)
+
+(define multi-arg-lambda (lambda (x y) (+ x y)))
+(display "Multi-arg lambda: ")
+(display multi-arg-lambda)
+(newline)
+
+;; Lambda with captured variable
+(define n 5)
+(define closure-lambda (lambda (x) (+ x n)))
+(display "Closure lambda: ")
+(display closure-lambda)
+(newline)
+
+;; Test lambda execution
+(test "simple lambda exec" 25 (simple-lambda 5))
+(test "multi-arg lambda exec" 15 (multi-arg-lambda 7 8))
+(test "closure lambda exec" 12 (closure-lambda 7))
+
+;;; =============================================================================
+;;; SECTION 12: AUTODIFF (AD_NODE_PTR = 40, DUAL_NUMBER = 6)
+;;; =============================================================================
+(test-header "AUTODIFF (types 6 and 40)")
+
+;; Gradient of simple functions
+(define (f-square v) (* (vref v 0) (vref v 0)))
+(define grad-square (gradient f-square (vector 3.0)))
+(test "gradient of x^2 at x=3" 6.0 (vref grad-square 0))
+
+(define (f-cube v) (* (vref v 0) (vref v 0) (vref v 0)))
+(define grad-cube (gradient f-cube (vector 2.0)))
+(test "gradient of x^3 at x=2" 12.0 (vref grad-cube 0))
+
+;; Multivariate gradient
+(define (f-sum-squares v) (+ (* (vref v 0) (vref v 0))
+                              (* (vref v 1) (vref v 1))))
+(define grad-ss (gradient f-sum-squares (vector 3.0 4.0)))
+(test "grad sum-squares dx" 6.0 (vref grad-ss 0))
+(test "grad sum-squares dy" 8.0 (vref grad-ss 1))
+
+;; Derivative (single variable convenience)
+(define (g x) (* x x x))
+(test "derivative x^3 at 2" 12.0 (derivative g 2.0))
+
+;;; =============================================================================
+;;; SECTION 13: TYPE MIXING AND EDGE CASES
+;;; =============================================================================
+(test-header "TYPE MIXING AND EDGE CASES")
+
+;; List containing all types
+(define mega-list (list
+  42              ; INT64
+  3.14            ; DOUBLE
+  #t              ; BOOL
+  #\X             ; CHAR
+  "string"        ; STRING_PTR
+  (vector 1 2 3)  ; VECTOR_PTR
+  (cons 'a 'b)    ; CONS_PTR
+  (lambda (x) x)  ; CLOSURE_PTR
+))
+
+(test "mega-list length" 8 (length mega-list))
+(test "mega-list int" 42 (list-ref mega-list 0))
+(test "mega-list double" 3.14 (list-ref mega-list 1))
+(test "mega-list bool" #t (list-ref mega-list 2))
+(test "mega-list char" #\X (list-ref mega-list 3))
+(test "mega-list string" "string" (list-ref mega-list 4))
+(test "mega-list vector" 2 (vector-ref (list-ref mega-list 5) 1))
+(test "mega-list cons car" 'a (car (list-ref mega-list 6)))
+(test "mega-list closure" 99 ((list-ref mega-list 7) 99))
+
+;; Vector containing various types
+(define mega-vector (vector 1 2.5 #f "test" (list 1 2)))
+(test "mega-vec int" 1 (vector-ref mega-vector 0))
+(test "mega-vec float" 2.5 (vector-ref mega-vector 1))
+(test "mega-vec bool" #f (vector-ref mega-vector 2))
+(test "mega-vec string" "test" (vector-ref mega-vector 3))
+(test "mega-vec list" 2 (length (vector-ref mega-vector 4)))
+
+;;; =============================================================================
+;;; SECTION 14: STRESS TEST - DEEPLY NESTED STRUCTURES
+;;; =============================================================================
+(test-header "DEEP NESTING STRESS TEST")
+
+;; Deeply nested list
+(define deep-list (list (list (list (list (list 42))))))
+(test "5-deep nested list" 42 (car (car (car (car (car deep-list))))))
+
+;; Deeply nested closures
+(define (nest-5 a)
+  (lambda (b)
+    (lambda (c)
+      (lambda (d)
+        (lambda (e)
+          (+ a b c d e))))))
+
+(test "5-nested closure" 15 (((((nest-5 1) 2) 3) 4) 5))
+
+;; Chain of function applications
+(define (chain-test x)
+  ((compose
+    (compose double square)
+    (compose increment double))
+   x))
+
+(test "chained compose" 242 (chain-test 5))  ; ((5*2+1)^2)*2 = 11^2*2 = 242
+
+;;; =============================================================================
+;;; FINAL SUMMARY
+;;; =============================================================================
+(newline)
+(display "===============================================")
+(newline)
+(display "POINTER CONSOLIDATION TEST COMPLETE")
+(newline)
+(display "===============================================")
+(newline)
+(display "Total Tests: ")
+(display test-count)
+(newline)
+(display "Passed: ")
+(display pass-count)
+(newline)
+(display "Failed: ")
+(display fail-count)
+(newline)
+(if (= fail-count 0)
+    (display "STATUS: ALL TESTS PASSED!")
+    (display "STATUS: SOME TESTS FAILED"))
+(newline)

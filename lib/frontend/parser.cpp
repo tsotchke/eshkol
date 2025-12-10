@@ -390,6 +390,7 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     // Note: "compose" is now a user-definable higher-order function, not a special op
     if (op == "define") return ESHKOL_DEFINE_OP;
     if (op == "define-type") return ESHKOL_DEFINE_TYPE_OP;
+    if (op == "define-syntax") return ESHKOL_DEFINE_SYNTAX_OP;
     if (op == "set!") return ESHKOL_SET_OP;
     if (op == "import") return ESHKOL_IMPORT_OP;
     if (op == "require") return ESHKOL_REQUIRE_OP;  // module system: (require module.name ...)
@@ -3219,6 +3220,228 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 ast.operation.match_op.clauses = nullptr;
             }
 
+            return ast;
+        }
+
+        // Special handling for define-syntax - macro definition
+        // define-syntax: (define-syntax name (syntax-rules (literals...) ((pattern) template) ...))
+        if (ast.operation.op == ESHKOL_DEFINE_SYNTAX_OP) {
+            // Parse macro name
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_SYMBOL) {
+                eshkol_error("define-syntax requires a name");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            eshkol_macro_def_t *macro = new eshkol_macro_def_t;
+            macro->name = strdup(token.value.c_str());
+            macro->literals = nullptr;
+            macro->num_literals = 0;
+            macro->rules = nullptr;
+            macro->num_rules = 0;
+
+            // Expect (syntax-rules ...)
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_LPAREN) {
+                eshkol_error("define-syntax requires (syntax-rules ...) as second argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Verify "syntax-rules"
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_SYMBOL || token.value != "syntax-rules") {
+                eshkol_error("define-syntax currently only supports syntax-rules");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Parse literals list: (literal1 literal2 ...)
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_LPAREN) {
+                eshkol_error("syntax-rules requires literals list");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            std::vector<std::string> literals;
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in syntax-rules literals");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                if (token.type == TOKEN_SYMBOL) {
+                    literals.push_back(token.value);
+                }
+            }
+
+            if (literals.size() > 0) {
+                macro->literals = new char*[literals.size()];
+                macro->num_literals = literals.size();
+                for (size_t i = 0; i < literals.size(); i++) {
+                    macro->literals[i] = strdup(literals[i].c_str());
+                }
+            }
+
+            // Parse rules: ((pattern) template) ...
+            std::vector<eshkol_macro_rule_t> rules;
+
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;  // End of syntax-rules
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in syntax-rules");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                if (token.type != TOKEN_LPAREN) {
+                    eshkol_error("syntax-rules rule must be a list ((pattern) template)");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                eshkol_macro_rule_t rule;
+                rule.pattern = nullptr;
+                rule.template_ = nullptr;
+
+                // Parse pattern (which is itself a list)
+                token = tokenizer.nextToken();
+                if (token.type != TOKEN_LPAREN) {
+                    eshkol_error("syntax-rules pattern must be a list");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                // For now, store the pattern as a simple list structure
+                // We'll parse it into eshkol_macro_pattern_t in the macro expander
+                // This allows us to store the raw S-expression pattern
+                rule.pattern = new eshkol_macro_pattern_t;
+                rule.pattern->type = MACRO_PAT_LIST;
+                rule.pattern->followed_by_ellipsis = 0;
+
+                // Parse pattern elements
+                std::vector<eshkol_macro_pattern_t*> pat_elements;
+                while (true) {
+                    token = tokenizer.nextToken();
+                    if (token.type == TOKEN_RPAREN) break;
+                    if (token.type == TOKEN_EOF) {
+                        eshkol_error("Unexpected end of input in macro pattern");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+
+                    eshkol_macro_pattern_t* elem = new eshkol_macro_pattern_t;
+                    elem->followed_by_ellipsis = 0;
+
+                    if (token.type == TOKEN_SYMBOL) {
+                        if (token.value == "...") {
+                            // Mark previous element as followed by ellipsis
+                            if (pat_elements.size() > 0) {
+                                pat_elements.back()->followed_by_ellipsis = 1;
+                            }
+                            delete elem;
+                            continue;
+                        }
+
+                        // Check if it's a literal
+                        bool is_literal = false;
+                        for (const auto& lit : literals) {
+                            if (lit == token.value) {
+                                is_literal = true;
+                                break;
+                            }
+                        }
+
+                        elem->type = is_literal ? MACRO_PAT_LITERAL : MACRO_PAT_VARIABLE;
+                        elem->identifier = strdup(token.value.c_str());
+                    } else if (token.type == TOKEN_LPAREN) {
+                        // Nested pattern - parse recursively (simplified for now)
+                        elem->type = MACRO_PAT_LIST;
+                        elem->list.elements = nullptr;
+                        elem->list.num_elements = 0;
+                        elem->list.rest = nullptr;
+                        // Skip nested list for now - count parens
+                        int depth = 1;
+                        while (depth > 0) {
+                            token = tokenizer.nextToken();
+                            if (token.type == TOKEN_LPAREN) depth++;
+                            else if (token.type == TOKEN_RPAREN) depth--;
+                            else if (token.type == TOKEN_EOF) {
+                                eshkol_error("Unexpected end of input in nested pattern");
+                                ast.type = ESHKOL_INVALID;
+                                return ast;
+                            }
+                        }
+                    } else {
+                        // Literal value
+                        elem->type = MACRO_PAT_LITERAL;
+                        elem->identifier = strdup(token.value.c_str());
+                    }
+
+                    pat_elements.push_back(elem);
+                }
+
+                if (pat_elements.size() > 0) {
+                    rule.pattern->list.elements = new eshkol_macro_pattern_t*[pat_elements.size()];
+                    rule.pattern->list.num_elements = pat_elements.size();
+                    for (size_t i = 0; i < pat_elements.size(); i++) {
+                        rule.pattern->list.elements[i] = pat_elements[i];
+                    }
+                } else {
+                    rule.pattern->list.elements = nullptr;
+                    rule.pattern->list.num_elements = 0;
+                }
+                rule.pattern->list.rest = nullptr;
+
+                // Parse template - store as AST for now
+                token = tokenizer.nextToken();
+                eshkol_ast_t template_ast;
+                if (token.type == TOKEN_LPAREN) {
+                    template_ast = parse_list(tokenizer);
+                } else {
+                    template_ast = parse_atom(token);
+                }
+
+                // Convert AST to template structure (simplified)
+                rule.template_ = new eshkol_macro_template_t;
+                rule.template_->type = MACRO_TPL_LITERAL;
+                rule.template_->literal = new eshkol_ast_t;
+                *rule.template_->literal = template_ast;
+                rule.template_->followed_by_ellipsis = 0;
+
+                // Consume closing paren of rule
+                token = tokenizer.nextToken();
+                if (token.type != TOKEN_RPAREN) {
+                    eshkol_error("Expected closing paren after macro rule template");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                rules.push_back(rule);
+            }
+
+            if (rules.size() > 0) {
+                macro->rules = new eshkol_macro_rule_t[rules.size()];
+                macro->num_rules = rules.size();
+                for (size_t i = 0; i < rules.size(); i++) {
+                    macro->rules[i] = rules[i];
+                }
+            }
+
+            // Consume closing paren of define-syntax
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                eshkol_error("Expected closing paren after define-syntax");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            ast.operation.define_syntax_op.macro = macro;
             return ast;
         }
 

@@ -44,6 +44,12 @@ void MemoryCodegen::createCoreArenaFunctions() {
     arena_allocate = createFunc("arena_allocate",
         llvm::FunctionType::get(ptr, {ptr, i64}, false));
 
+    // arena_allocate_with_header: void* (arena_t*, size_t data_size, uint8_t subtype, uint8_t flags)
+    // Returns pointer to data (header is at offset -8)
+    auto i8 = types.getInt8Type();
+    arena_allocate_with_header = createFunc("arena_allocate_with_header",
+        llvm::FunctionType::get(ptr, {ptr, i64, i8, i8}, false));
+
     // arena_push_scope: void (arena_t*)
     arena_push_scope = createFunc("arena_push_scope",
         llvm::FunctionType::get(voidTy, {ptr}, false));

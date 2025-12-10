@@ -406,35 +406,43 @@ TypeId TypeEnvironment::fromRuntimeType(uint8_t runtime_type) const {
     using namespace BuiltinTypes;
 
     // Map eshkol_value_type_t to HoTT TypeId
-    switch (runtime_type & 0x0F) {
+    // CRITICAL: Handle legacy types (>=32) correctly - do NOT use 0x0F mask!
+    // Legacy types: CONS_PTR=32, STRING_PTR=33, VECTOR_PTR=34, TENSOR_PTR=35,
+    //               HASH_PTR=36, EXCEPTION=37, CLOSURE_PTR=38, LAMBDA_SEXPR=39, AD_NODE_PTR=40
+
+    // For immediate types (0-7), strip exactness flags
+    uint8_t base_type = (runtime_type >= 8) ? runtime_type : (runtime_type & 0x0F);
+
+    switch (base_type) {
         case ESHKOL_VALUE_NULL:
             return Null;
         case ESHKOL_VALUE_INT64:
             return Int64;
         case ESHKOL_VALUE_DOUBLE:
             return Float64;
-        case ESHKOL_VALUE_CONS_PTR:
-            return List;
-        case ESHKOL_VALUE_STRING_PTR:
-            return String;
         case ESHKOL_VALUE_CHAR:
             return Char;
         case ESHKOL_VALUE_BOOL:
             return Boolean;
+        case ESHKOL_VALUE_SYMBOL:
+            return Symbol;
+        case ESHKOL_VALUE_DUAL_NUMBER:
+            return DualNumber;
+        // Legacy pointer types (at 32+)
+        case ESHKOL_VALUE_CONS_PTR:
+            return List;
+        case ESHKOL_VALUE_STRING_PTR:
+            return String;
         case ESHKOL_VALUE_VECTOR_PTR:
             return Vector;
         case ESHKOL_VALUE_TENSOR_PTR:
             return Tensor;
-        case ESHKOL_VALUE_SYMBOL:
-            return Symbol;
-        case ESHKOL_VALUE_CLOSURE_PTR:
-            return Closure;
-        case ESHKOL_VALUE_DUAL_NUMBER:
-            return DualNumber;
-        case ESHKOL_VALUE_AD_NODE_PTR:
-            return ADNode;
         case ESHKOL_VALUE_HASH_PTR:
             return HashTable;
+        case ESHKOL_VALUE_CLOSURE_PTR:
+            return Closure;
+        case ESHKOL_VALUE_AD_NODE_PTR:
+            return ADNode;
         default:
             return Value;  // Fallback to root type
     }

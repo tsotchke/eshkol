@@ -197,6 +197,115 @@ public:
      */
     bool isTaggedValue(llvm::Value* val) const;
 
+    // === Type Compatibility Checks (M1 Migration) ===
+    // These generate IR to check if a tagged value is a specific type.
+    // Compatible with both old (individual types) and new (consolidated) formats.
+    // Returns i1 (boolean).
+
+    /**
+     * Check if value is null (empty list).
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is null
+     */
+    llvm::Value* isNull(llvm::Value* tagged_val);
+
+    /**
+     * Check if value is a cons cell (pair/list).
+     * Compatible with ESHKOL_VALUE_CONS_PTR and HEAP_PTR+CONS subtype.
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is a cons cell
+     */
+    llvm::Value* isCons(llvm::Value* tagged_val);
+
+    /**
+     * Check if value is a string.
+     * Compatible with ESHKOL_VALUE_STRING_PTR and HEAP_PTR+STRING subtype.
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is a string
+     */
+    llvm::Value* isString(llvm::Value* tagged_val);
+
+    /**
+     * Check if value is a vector.
+     * Compatible with ESHKOL_VALUE_VECTOR_PTR and HEAP_PTR+VECTOR subtype.
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is a vector
+     */
+    llvm::Value* isVector(llvm::Value* tagged_val);
+
+    /**
+     * Check if value is a closure.
+     * Compatible with ESHKOL_VALUE_CLOSURE_PTR and CALLABLE+CLOSURE subtype.
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is a closure
+     */
+    llvm::Value* isClosure(llvm::Value* tagged_val);
+
+    /**
+     * Check if value is a lambda s-expression.
+     * Compatible with ESHKOL_VALUE_LAMBDA_SEXPR and CALLABLE+LAMBDA_SEXPR subtype.
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is a lambda s-expression
+     */
+    llvm::Value* isLambdaSexpr(llvm::Value* tagged_val);
+
+    /**
+     * Check if value is any heap-allocated pointer.
+     * Includes: cons, string, vector, tensor, hash, exception.
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is a heap pointer
+     */
+    llvm::Value* isHeapPtr(llvm::Value* tagged_val);
+
+    /**
+     * Check if value is any callable.
+     * Includes: closure, lambda-sexpr, ad-node.
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is callable
+     */
+    llvm::Value* isCallable(llvm::Value* tagged_val);
+
+    /**
+     * Check if value is an integer (int64).
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is an integer
+     */
+    llvm::Value* isInt64(llvm::Value* tagged_val);
+
+    /**
+     * Check if value is a double (floating-point).
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is a double
+     */
+    llvm::Value* isDouble(llvm::Value* tagged_val);
+
+    /**
+     * Check if value is numeric (int64 or double).
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is numeric
+     */
+    llvm::Value* isNumeric(llvm::Value* tagged_val);
+
+    /**
+     * Check if value is a boolean.
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is a boolean
+     */
+    llvm::Value* isBool(llvm::Value* tagged_val);
+
+    /**
+     * Get base type from a type tag, properly handling legacy types.
+     * For immediate types (< 8): strips exactness flags with 0x0F mask
+     * For consolidated/multimedia/legacy types (>= 8): returns type unchanged
+     *
+     * This is the correct way to extract base type for comparisons.
+     * NEVER use raw 0x0F mask on types >= 8 (legacy types like CONS_PTR=32)!
+     *
+     * @param type_tag The i8 type tag from a tagged value
+     * @return The i8 base type suitable for comparison
+     */
+    llvm::Value* getBaseType(llvm::Value* type_tag);
+
 private:
     CodegenContext& ctx_;
 

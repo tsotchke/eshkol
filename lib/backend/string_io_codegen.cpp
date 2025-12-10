@@ -411,9 +411,10 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
         llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
         // Get runtime type from tagged value
+        // Use getBaseType() to properly handle legacy types (>=32)
+        // DO NOT use 0x0F mask - 34 & 0x0F = 2 (DOUBLE) which is WRONG!
         llvm::Value* runtime_type = tagged_.getType(raw_val);
-        llvm::Value* base_type = ctx_.builder().CreateAnd(runtime_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+        llvm::Value* base_type = tagged_.getBaseType(runtime_type);
         llvm::Value* is_runtime_double = ctx_.builder().CreateICmpEQ(base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
 
@@ -1466,9 +1467,10 @@ llvm::Value* StringIOCodegen::openOutputFile(const eshkol_operations_t* op) {
     llvm::Value* file_ptr_int = ctx_.builder().CreatePtrToInt(file_ptr, ctx_.int64Type());
 
     // Pack as a tagged value with output port type
+    // NOTE: Use 0x40 instead of 0x20 because CONS_PTR=32=0x20, so 32|0x20=32!
     llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
     result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR | 0x20), {0}); // type = output port
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR | 0x40), {0}); // type = output port
     result = ctx_.builder().CreateInsertValue(result,
         llvm::ConstantInt::get(ctx_.int8Type(), 0), {1}); // flags
     result = ctx_.builder().CreateInsertValue(result,

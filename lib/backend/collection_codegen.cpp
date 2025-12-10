@@ -143,8 +143,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
     // VECTOR/TENSOR SUPPORT: Check if input is a vector or tensor type
     if (pair_val->getType() == ctx_.taggedValueType()) {
         llvm::Value* input_type = tagged_.getType(pair_val);
-        llvm::Value* input_base_type = ctx_.builder().CreateAnd(input_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+        llvm::Value* input_base_type = tagged_.getBaseType(input_type);
 
         // Check for VECTOR_PTR (Scheme vector) or TENSOR_PTR
         llvm::Value* is_scheme_vector = ctx_.builder().CreateICmpEQ(input_base_type,
@@ -305,9 +304,8 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         llvm::Value* is_cdr = llvm::ConstantInt::get(ctx_.int1Type(), 0); // false = car
         llvm::Value* car_type = ctx_.builder().CreateCall(mem_.getTaggedConsGetType(), {cons_ptr, is_cdr});
 
-        // Mask out flags to get base type
-        llvm::Value* car_base_type = ctx_.builder().CreateAnd(car_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+        // Get base type (properly handles legacy types >= 32)
+        llvm::Value* car_base_type = tagged_.getBaseType(car_type);
 
         // Type checks
         llvm::Value* car_is_null_type = ctx_.builder().CreateICmpEQ(car_base_type,
@@ -324,6 +322,8 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
         llvm::Value* car_is_bool = ctx_.builder().CreateICmpEQ(car_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
+        llvm::Value* car_is_char = ctx_.builder().CreateICmpEQ(car_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CHAR));
         llvm::Value* car_is_hash_ptr = ctx_.builder().CreateICmpEQ(car_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HASH_PTR));
 
@@ -341,6 +341,8 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         llvm::BasicBlock* closure_car = llvm::BasicBlock::Create(ctx_.context(), "car_extract_closure", current_func);
         llvm::BasicBlock* check_bool = llvm::BasicBlock::Create(ctx_.context(), "car_check_bool", current_func);
         llvm::BasicBlock* bool_car = llvm::BasicBlock::Create(ctx_.context(), "car_extract_bool", current_func);
+        llvm::BasicBlock* check_char = llvm::BasicBlock::Create(ctx_.context(), "car_check_char", current_func);
+        llvm::BasicBlock* char_car = llvm::BasicBlock::Create(ctx_.context(), "car_extract_char", current_func);
         llvm::BasicBlock* check_hash = llvm::BasicBlock::Create(ctx_.context(), "car_check_hash", current_func);
         llvm::BasicBlock* hash_ptr_car = llvm::BasicBlock::Create(ctx_.context(), "car_extract_hash", current_func);
         llvm::BasicBlock* int_car = llvm::BasicBlock::Create(ctx_.context(), "car_extract_int", current_func);
@@ -413,7 +415,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
 
         // Handle boolean values
         ctx_.builder().SetInsertPoint(check_bool);
-        ctx_.builder().CreateCondBr(car_is_bool, bool_car, check_hash);
+        ctx_.builder().CreateCondBr(car_is_bool, bool_car, check_char);
 
         ctx_.builder().SetInsertPoint(bool_car);
         llvm::Value* car_bool_int = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
@@ -421,6 +423,16 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         llvm::Value* tagged_bool = tagged_.packBool(car_bool_i1);
         ctx_.builder().CreateBr(merge_car);
         llvm::BasicBlock* bool_exit = ctx_.builder().GetInsertBlock();
+
+        // Handle CHAR values
+        ctx_.builder().SetInsertPoint(check_char);
+        ctx_.builder().CreateCondBr(car_is_char, char_car, check_hash);
+
+        ctx_.builder().SetInsertPoint(char_car);
+        llvm::Value* car_char_int = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
+        llvm::Value* tagged_char = tagged_.packChar(car_char_int);
+        ctx_.builder().CreateBr(merge_car);
+        llvm::BasicBlock* char_exit = ctx_.builder().GetInsertBlock();
 
         // Handle HASH_PTR for hash tables
         ctx_.builder().SetInsertPoint(check_hash);
@@ -439,7 +451,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(merge_car);
-        llvm::PHINode* car_tagged_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9);
+        llvm::PHINode* car_tagged_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 10);
         car_tagged_phi->addIncoming(tagged_null_car, null_car_exit);
         car_tagged_phi->addIncoming(tagged_double, double_exit);
         car_tagged_phi->addIncoming(tagged_cons, cons_exit);
@@ -447,6 +459,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         car_tagged_phi->addIncoming(tagged_lambda, lambda_exit);
         car_tagged_phi->addIncoming(tagged_closure, closure_exit);
         car_tagged_phi->addIncoming(tagged_bool, bool_exit);
+        car_tagged_phi->addIncoming(tagged_char, char_exit);
         car_tagged_phi->addIncoming(tagged_hash, hash_exit);
         car_tagged_phi->addIncoming(tagged_int64, int_exit);
         ctx_.builder().CreateBr(car_final);
@@ -532,8 +545,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
     // VECTOR/TENSOR SUPPORT: Check if input is a vector or tensor type
     if (pair_val->getType() == ctx_.taggedValueType()) {
         llvm::Value* input_type = tagged_.getType(pair_val);
-        llvm::Value* input_base_type = ctx_.builder().CreateAnd(input_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+        llvm::Value* input_base_type = tagged_.getBaseType(input_type);
 
         llvm::Value* is_scheme_vector = ctx_.builder().CreateICmpEQ(input_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
@@ -711,11 +723,10 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
 
         llvm::Value* cons_ptr = ctx_.builder().CreateIntToPtr(pair_int_safe, ctx_.ptrType());
 
-        // Get cdr type
+        // Get cdr type (properly handles legacy types >= 32)
         llvm::Value* is_cdr = llvm::ConstantInt::get(ctx_.int1Type(), 1);
         llvm::Value* cdr_type = ctx_.builder().CreateCall(mem_.getTaggedConsGetType(), {cons_ptr, is_cdr});
-        llvm::Value* cdr_base_type = ctx_.builder().CreateAnd(cdr_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+        llvm::Value* cdr_base_type = tagged_.getBaseType(cdr_type);
 
         // Type checks
         llvm::Value* cdr_is_double = ctx_.builder().CreateICmpEQ(cdr_base_type,
@@ -732,6 +743,8 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
         llvm::Value* cdr_is_bool = ctx_.builder().CreateICmpEQ(cdr_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
+        llvm::Value* cdr_is_char = ctx_.builder().CreateICmpEQ(cdr_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CHAR));
         llvm::Value* cdr_is_hash_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HASH_PTR));
 
@@ -749,6 +762,8 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::BasicBlock* closure_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_closure", current_func);
         llvm::BasicBlock* check_bool_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_bool", current_func);
         llvm::BasicBlock* bool_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_bool", current_func);
+        llvm::BasicBlock* check_char_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_char", current_func);
+        llvm::BasicBlock* char_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_char", current_func);
         llvm::BasicBlock* check_hash_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_hash", current_func);
         llvm::BasicBlock* hash_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_hash", current_func);
         llvm::BasicBlock* int_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_int", current_func);
@@ -819,7 +834,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
 
         // Handle boolean values
         ctx_.builder().SetInsertPoint(check_bool_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_bool, bool_cdr, check_hash_cdr);
+        ctx_.builder().CreateCondBr(cdr_is_bool, bool_cdr, check_char_cdr);
 
         ctx_.builder().SetInsertPoint(bool_cdr);
         llvm::Value* cdr_bool_int = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
@@ -827,6 +842,16 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::Value* tagged_bool_cdr = tagged_.packBool(cdr_bool_i1);
         ctx_.builder().CreateBr(merge_cdr);
         llvm::BasicBlock* bool_exit = ctx_.builder().GetInsertBlock();
+
+        // Handle CHAR values
+        ctx_.builder().SetInsertPoint(check_char_cdr);
+        ctx_.builder().CreateCondBr(cdr_is_char, char_cdr, check_hash_cdr);
+
+        ctx_.builder().SetInsertPoint(char_cdr);
+        llvm::Value* cdr_char_int = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
+        llvm::Value* tagged_char_cdr = tagged_.packChar(cdr_char_int);
+        ctx_.builder().CreateBr(merge_cdr);
+        llvm::BasicBlock* char_exit = ctx_.builder().GetInsertBlock();
 
         // Handle HASH_PTR for hash tables
         ctx_.builder().SetInsertPoint(check_hash_cdr);
@@ -845,7 +870,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(merge_cdr);
-        llvm::PHINode* cdr_tagged_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9);
+        llvm::PHINode* cdr_tagged_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 10);
         cdr_tagged_phi->addIncoming(tagged_double_cdr, double_exit);
         cdr_tagged_phi->addIncoming(tagged_cons_cdr, cons_exit_cdr);
         cdr_tagged_phi->addIncoming(tagged_null_extract, null_cdr_exit);
@@ -853,6 +878,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         cdr_tagged_phi->addIncoming(tagged_lambda_cdr, lambda_exit);
         cdr_tagged_phi->addIncoming(tagged_closure_cdr, closure_exit);
         cdr_tagged_phi->addIncoming(tagged_bool_cdr, bool_exit);
+        cdr_tagged_phi->addIncoming(tagged_char_cdr, char_exit);
         cdr_tagged_phi->addIncoming(tagged_hash_cdr, hash_exit);
         cdr_tagged_phi->addIncoming(tagged_int64_cdr, int_exit);
         ctx_.builder().CreateBr(cdr_final);
@@ -978,10 +1004,9 @@ llvm::Value* CollectionCodegen::isNull(const eshkol_operations_t* op) {
     llvm::Value* tagged_arg = typed_to_tagged_callback_(typed_val, callback_context_);
     if (!tagged_arg) return nullptr;
 
-    // Get type tag and mask to get base type
+    // Get type tag and base type (properly handles legacy types >= 32)
     llvm::Value* type_tag = tagged_.getType(tagged_arg);
-    llvm::Value* base_type = ctx_.builder().CreateAnd(type_tag,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
     // Check for ESHKOL_VALUE_NULL type
     llvm::Value* is_null_type = ctx_.builder().CreateICmpEQ(base_type,
@@ -1019,10 +1044,9 @@ llvm::Value* CollectionCodegen::isPair(const eshkol_operations_t* op) {
     llvm::Value* tagged_arg = typed_to_tagged_callback_(typed_val, callback_context_);
     if (!tagged_arg) return nullptr;
 
-    // Get type tag and mask to get base type
+    // Get type tag and base type (properly handles legacy types >= 32)
     llvm::Value* type_tag = tagged_.getType(tagged_arg);
-    llvm::Value* base_type = ctx_.builder().CreateAnd(type_tag,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
     // Check if type is CONS_PTR
     llvm::Value* is_cons_type = ctx_.builder().CreateICmpEQ(base_type,
@@ -1179,10 +1203,9 @@ llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
     llvm::Value* length = nullptr;
 
     if (vec_arg->getType() == ctx_.taggedValueType()) {
-        // Get the type tag to distinguish vector vs tensor
+        // Get the type tag to distinguish vector vs tensor (properly handles legacy types)
         llvm::Value* type_tag = tagged_.getType(vec_arg);
-        llvm::Value* base_type = ctx_.builder().CreateAnd(type_tag,
-            llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+        llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
         llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
@@ -1259,8 +1282,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     // TENSOR/GRADIENT FIX: Detect if input is a tensor (TENSOR_PTR) vs Scheme vector (VECTOR_PTR)
     // Tensors are used by gradient operation and have different memory layout
     llvm::Value* vec_type = tagged_.getType(vec_arg);
-    llvm::Value* vec_base_type = ctx_.builder().CreateAnd(vec_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
+    llvm::Value* vec_base_type = tagged_.getBaseType(vec_type);
     llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(vec_base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
 

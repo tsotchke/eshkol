@@ -27,6 +27,7 @@
 #include <eshkol/backend/system_codegen.h>
 #include <eshkol/backend/hash_codegen.h>
 #include <eshkol/types/type_checker.h>
+#include <eshkol/frontend/macro_expander.h>
 #include <eshkol/logger.h>
 #include "../core/arena_memory.h"
 
@@ -60,6 +61,7 @@
 #include <memory>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 #include <set>
 #include <string>
 #include <vector>
@@ -266,6 +268,8 @@ namespace ControlFlowCallbacks {
     static void popFunctionContextWrapper(void* context);
     // TCO callback for checking self-tail-recursion
     static bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
+    // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
+    static llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
 }
 
 class EshkolLLVMCodeGen {
@@ -293,6 +297,7 @@ class EshkolLLVMCodeGen {
     friend void ControlFlowCallbacks::pushFunctionContextWrapper(void* context);
     friend void ControlFlowCallbacks::popFunctionContextWrapper(void* context);
     friend bool ControlFlowCallbacks::isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
+    friend llvm::Function* ControlFlowCallbacks::getBuiltinArithmeticWrapper(const std::string& op, void* context);
 
 private:
     std::unique_ptr<LLVMContext> context;
@@ -635,6 +640,28 @@ public:
                 eshkol_debug("REPL: Cleared stale lambda sexpr state");
             }
 
+            // ===== MACRO EXPANSION PHASE =====
+            // Expand all macros before code generation.
+            // The macro expander:
+            // 1. Collects define-syntax forms to register macros
+            // 2. Expands macro calls in remaining ASTs
+            // 3. Filters out define-syntax forms (they don't produce runtime code)
+            eshkol::MacroExpander macro_expander;
+            std::vector<eshkol_ast_t> input_asts;
+            for (size_t i = 0; i < num_asts; i++) {
+                input_asts.push_back(asts[i]);
+            }
+            std::vector<eshkol_ast_t> expanded_asts = macro_expander.expandAll(input_asts);
+
+            // Use expanded ASTs for the rest of code generation
+            const eshkol_ast_t* asts_to_use = expanded_asts.data();
+            size_t num_asts_to_use = expanded_asts.size();
+
+            if (macro_expander.macroCount() > 0) {
+                eshkol_debug("Macro expansion complete: %zu macros defined, %zu ASTs after expansion",
+                            macro_expander.macroCount(), num_asts_to_use);
+            }
+
             // Create global arena variable (shared across all functions and scopes)
             // Use ExternalLinkage so the arena can be shared between main program and linked libraries
             // In library mode: external declaration (no initializer) - provided by main
@@ -898,23 +925,23 @@ public:
                 // Type check all top-level definitions
                 // Note: const_cast is safe here because we're intentionally annotating
                 // the AST with inferred types during type checking phase
-                for (size_t i = 0; i < num_asts; i++) {
-                    if (asts[i].type == ESHKOL_OP) {
+                for (size_t i = 0; i < num_asts_to_use; i++) {
+                    if (asts_to_use[i].type == ESHKOL_OP) {
                         // Process type definitions first to register type aliases
-                        if (asts[i].operation.op == ESHKOL_DEFINE_TYPE_OP) {
-                            type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts[i]));
+                        if (asts_to_use[i].operation.op == ESHKOL_DEFINE_TYPE_OP) {
+                            type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                         }
                         // Then process regular definitions
-                        else if (asts[i].operation.op == ESHKOL_DEFINE_OP) {
-                            auto result = type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts[i]));
+                        else if (asts_to_use[i].operation.op == ESHKOL_DEFINE_OP) {
+                            auto result = type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                             if (!result.success) {
                                 // Type error - report but continue for gradual typing
                                 eshkol_warn("HoTT type check warning in '%s': %s",
-                                           asts[i].operation.define_op.name,
+                                           asts_to_use[i].operation.define_op.name,
                                            result.error_message.c_str());
                             } else {
                                 eshkol_debug("HoTT: type checked '%s' successfully",
-                                            asts[i].operation.define_op.name);
+                                            asts_to_use[i].operation.define_op.name);
                             }
                         }
                     }
@@ -933,28 +960,28 @@ public:
             // This avoids issues with processing lambdas without a function context
             
             // Step 1: Create function declarations FIRST (including nested functions)
-            for (size_t i = 0; i < num_asts; i++) {
-                if (asts[i].type == ESHKOL_OP && asts[i].operation.op == ESHKOL_DEFINE_OP) {
-                    if (asts[i].operation.define_op.is_function) {
+            for (size_t i = 0; i < num_asts_to_use; i++) {
+                if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP) {
+                    if (asts_to_use[i].operation.define_op.is_function) {
                         // Create function declaration for top-level function
-                        createFunctionDeclaration(&asts[i]);
+                        createFunctionDeclaration(&asts_to_use[i]);
                         // Also recursively declare any nested functions inside this function
-                        if (asts[i].operation.define_op.value) {
-                            declareNestedFunctions(asts[i].operation.define_op.value);
+                        if (asts_to_use[i].operation.define_op.value) {
+                            declareNestedFunctions(asts_to_use[i].operation.define_op.value);
                         }
                     }
                 }
                 // Also check for nested functions in non-function top-level expressions
-                declareNestedFunctions(&asts[i]);
+                declareNestedFunctions(&asts_to_use[i]);
             }
             eshkol_debug("Created all function declarations (including nested)");
 
             // Step 1.5: Pre-declare global variables so functions can reference them
             // This creates GlobalVariables for non-function top-level defines
-            for (size_t i = 0; i < num_asts; i++) {
-                if (asts[i].type == ESHKOL_OP && asts[i].operation.op == ESHKOL_DEFINE_OP &&
-                    !asts[i].operation.define_op.is_function) {
-                    const char* var_name = asts[i].operation.define_op.name;
+            for (size_t i = 0; i < num_asts_to_use; i++) {
+                if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
+                    !asts_to_use[i].operation.define_op.is_function) {
+                    const char* var_name = asts_to_use[i].operation.define_op.name;
                     if (var_name && !module->getNamedGlobal(var_name)) {
                         // Create GlobalVariable with tagged_value type for maximum compatibility
                         GlobalVariable* global_var = new GlobalVariable(
@@ -976,14 +1003,14 @@ public:
             // Step 1.75: Pre-generate lambda functions for top-level (define var (lambda ...)) patterns
             // This is CRITICAL: user's main may reference these lambdas in gradient/derivative calls,
             // and those need to resolve the lambda function at compile time (Step 2)
-            preGenerateTopLevelLambdas(asts, num_asts);
+            preGenerateTopLevelLambdas(asts_to_use, num_asts_to_use);
             eshkol_debug("Pre-generated all top-level lambdas");
 
             // Step 2: Generate function definitions
-            for (size_t i = 0; i < num_asts; i++) {
-                if (asts[i].type == ESHKOL_OP && asts[i].operation.op == ESHKOL_DEFINE_OP &&
-                    asts[i].operation.define_op.is_function) {
-                    codegenAST(&asts[i]);
+            for (size_t i = 0; i < num_asts_to_use; i++) {
+                if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
+                    asts_to_use[i].operation.define_op.is_function) {
+                    codegenAST(&asts_to_use[i]);
                 }
             }
 
@@ -993,7 +1020,7 @@ public:
             // LIBRARY MODE: Skip main creation, create init function instead
             if (library_mode) {
                 eshkol_info("Compiling in library mode - no main function will be created");
-                createLibraryInitFunction(asts, num_asts);
+                createLibraryInitFunction(asts_to_use, num_asts_to_use);
                 // In library mode, we're done after creating the init function
                 // All function definitions are already compiled above
             } else {
@@ -1003,7 +1030,7 @@ public:
                 if (!has_user_main) {
                     // No user main - create main function wrapper for top-level expressions
                     createMainWrapper();
-                
+
                 // Then generate code for top-level expressions in main
                 if (main_entry) {
                     builder->SetInsertPoint(main_entry);
@@ -1016,10 +1043,10 @@ public:
                     // Lambda captures are handled by calling __lambda_init__ after each lambda define,
                     // rather than hoisting all defines first.
 
-                    for (size_t i = 0; i < num_asts; i++) {
-                        bool is_function_def = (asts[i].type == ESHKOL_OP &&
-                                               asts[i].operation.op == ESHKOL_DEFINE_OP &&
-                                               asts[i].operation.define_op.is_function);
+                    for (size_t i = 0; i < num_asts_to_use; i++) {
+                        bool is_function_def = (asts_to_use[i].type == ESHKOL_OP &&
+                                               asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
+                                               asts_to_use[i].operation.define_op.is_function);
 
                         // Skip function definitions - they were already compiled in earlier pass
                         if (is_function_def) {
@@ -1027,7 +1054,7 @@ public:
                         }
 
                         // Process all other expressions (defines AND non-defines) sequentially
-                        codegenAST(&asts[i]);
+                        codegenAST(&asts_to_use[i]);
 
                         // After each expression that might define a lambda, generate its S-expression
                         // and call __lambda_init__ to initialize captures immediately
@@ -1181,13 +1208,13 @@ public:
 
                 // Step 3: Process global variable definitions BEFORE calling scheme_main
                 current_function = c_main;
-                for (size_t i = 0; i < num_asts; i++) {
+                for (size_t i = 0; i < num_asts_to_use; i++) {
                     // Process non-function top-level defines to initialize global variables
-                    if (asts[i].type == ESHKOL_OP &&
-                        asts[i].operation.op == ESHKOL_DEFINE_OP &&
-                        !asts[i].operation.define_op.is_function) {
-                        codegenAST(&asts[i]);
-                        eshkol_debug("Initialized global variable: %s", asts[i].operation.define_op.name);
+                    if (asts_to_use[i].type == ESHKOL_OP &&
+                        asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
+                        !asts_to_use[i].operation.define_op.is_function) {
+                        codegenAST(&asts_to_use[i]);
+                        eshkol_debug("Initialized global variable: %s", asts_to_use[i].operation.define_op.name);
                     }
                 }
 
@@ -1922,6 +1949,7 @@ private:
         call_apply_->setExtractConsCarCallback(ControlFlowCallbacks::extractConsCarWrapper);
         call_apply_->setGetConsAccessorCallback(ControlFlowCallbacks::getConsAccessorWrapper);
         call_apply_->setCreateConsCallback(ControlFlowCallbacks::consCreateWrapper);
+        call_apply_->setGetBuiltinArithmeticCallback(ControlFlowCallbacks::getBuiltinArithmeticWrapper);
         eshkol_debug("Created CallApplyCodegen with callbacks");
 
         // Initialize MapCodegen - higher-order list mapping operations
@@ -2044,6 +2072,7 @@ private:
         function_table["arena_create"] = mem->getArenaCreate();
         function_table["arena_destroy"] = mem->getArenaDestroy();
         function_table["arena_allocate"] = mem->getArenaAllocate();
+        function_table["arena_allocate_with_header"] = mem->getArenaAllocateWithHeader();
         function_table["arena_push_scope"] = mem->getArenaPushScope();
         function_table["arena_pop_scope"] = mem->getArenaPopScope();
         function_table["arena_allocate_cons_cell"] = mem->getArenaAllocateConsCell();
@@ -3801,8 +3830,7 @@ private:
         
         // Extract type from car_tagged
         Value* car_type = getTaggedValueType(car_tagged);
-        Value* car_base_type = builder->CreateAnd(car_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* car_base_type = getBaseType(car_type);
         
         // SYMBOLIC DIFF FIX: Check for NULL, DOUBLE, all pointer types (CONS_PTR, STRING_PTR, etc.), and INT64
         Value* car_is_null = builder->CreateICmpEQ(car_base_type,
@@ -3886,8 +3914,7 @@ private:
         
         // Get cdr type
         Value* cdr_type = getTaggedValueType(cdr_tagged);
-        Value* cdr_base_type = builder->CreateAnd(cdr_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* cdr_base_type = getBaseType(cdr_type);
         
         Value* cdr_is_null = builder->CreateICmpEQ(cdr_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
@@ -4010,8 +4037,7 @@ private:
         (void)caller_info;  // Used for debugging
         // Check if the result is a CLOSURE_PTR or a direct function pointer
         Value* type_tag = getTaggedValueType(func_result);
-        Value* base_type = builder->CreateAnd(type_tag,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* base_type = getBaseType(type_tag);
         Value* is_closure = builder->CreateICmpEQ(base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_CLOSURE_PTR));
 
@@ -4285,6 +4311,18 @@ private:
         return tagged_->getType(tagged_val);
     }
 
+    // Get base type from type tag, handling exactness flags correctly
+    // For immediate types (0-7): mask with 0x0F to strip exactness flags
+    // For types >= 8 (consolidated, multimedia, legacy): use directly
+    Value* getBaseType(Value* type_tag) {
+        // type >= 8 ? type : (type & 0x0F)
+        Value* is_not_immediate = builder->CreateICmpUGE(type_tag,
+            ConstantInt::get(int8_type, 8));
+        Value* masked = builder->CreateAnd(type_tag,
+            ConstantInt::get(int8_type, 0x0F));
+        return builder->CreateSelect(is_not_immediate, type_tag, masked);
+    }
+
     // MIGRATED: Delegates to TaggedValueCodegen
     Value* getTaggedValueFlags(Value* tagged_val) {
         return tagged_->getFlags(tagged_val);
@@ -4314,8 +4352,7 @@ private:
         Value* is_car = ConstantInt::get(int1_type, 0);
         Value* car_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car});
 
-        Value* car_base_type = builder->CreateAnd(car_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* car_base_type = getBaseType(car_type);
 
         // HOMOICONIC FIX: Check for NULL, DOUBLE, CONS_PTR, STRING_PTR, LAMBDA_SEXPR, CLOSURE_PTR, INT64
         Value* car_is_null = builder->CreateICmpEQ(car_base_type,
@@ -4502,9 +4539,8 @@ private:
         Value* is_cdr = ConstantInt::get(int1_type, 1);
         Value* cdr_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
         
-        Value* cdr_base_type = builder->CreateAnd(cdr_type,
-            ConstantInt::get(int8_type, 0x0F));
-        
+        Value* cdr_base_type = getBaseType(cdr_type);
+
         // SYMBOLIC DIFF FIX: Check for NULL, DOUBLE, CONS_PTR, BOOL, INT64
         Value* cdr_is_double = builder->CreateICmpEQ(cdr_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
@@ -4653,9 +4689,8 @@ private:
         Value* is_car_flag = ConstantInt::get(int1_type, 0); // false = car
         Value* car_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_flag});
 
-        // Mask out flags to get base type (type & 0x0F)
-        Value* car_base_type = builder->CreateAnd(car_type,
-            ConstantInt::get(int8_type, 0x0F));
+        // Get base type - correctly handles legacy types (>= 32)
+        Value* car_base_type = getBaseType(car_type);
 
         // NULL FIX: Check for NULL values stored in cons cells
         Value* car_is_null = builder->CreateICmpEQ(car_base_type,
@@ -4837,9 +4872,8 @@ private:
         if (llvm_val->getType() == tagged_value_type) {
             // Extract type tag from tagged_value
             Value* type_tag = getTaggedValueType(llvm_val);
-            Value* base_type = builder->CreateAnd(type_tag,
-                ConstantInt::get(int8_type, 0x0F));
-            
+            Value* base_type = getBaseType(type_tag);
+
             // Check if it's a double
             Value* is_double = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
@@ -7593,14 +7627,14 @@ private:
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* type = getTaggedValueType(arg);
-            Value* base_type = builder->CreateAnd(type, ConstantInt::get(int8_type, 0x0F));
+            Value* base_type = getBaseType(type);
             Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
             Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
             return packBoolToTaggedValue(builder->CreateOr(is_int, is_double));
         }
         if (func_name == "integer?") return codegenTypePredicate(op, ESHKOL_VALUE_INT64);
         if (func_name == "real?") return codegenTypePredicate(op, ESHKOL_VALUE_DOUBLE);
-        if (func_name == "list?") return codegenTypePredicate(op, ESHKOL_VALUE_CONS_PTR);
+        if (func_name == "list?") return codegenListPredicate(op);
         if (func_name == "string?") return codegenTypePredicate(op, ESHKOL_VALUE_STRING_PTR);
         if (func_name == "boolean?") return codegenBooleanPredicate(op);
         if (func_name == "symbol?") return codegenTypePredicate(op, ESHKOL_VALUE_SYMBOL);
@@ -8601,8 +8635,7 @@ private:
                 if (arg->getType() == tagged_value_type) {
                     // Get the type from the tagged value
                     Value* type_byte = getTaggedValueType(arg);
-                    Value* base_type = builder->CreateAnd(type_byte,
-                        ConstantInt::get(int8_type, 0x0F));
+                    Value* base_type = getBaseType(type_byte);
 
                     // Check type and unpack appropriately
                     Value* is_string = builder->CreateICmpEQ(base_type,
@@ -9169,8 +9202,7 @@ private:
 
         // Extract type tag
         Value* arg_type = getTaggedValueType(arg_tagged);
-        Value* arg_base_type = builder->CreateAnd(arg_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* arg_base_type = getBaseType(arg_type);
 
         // Check if argument is a dual number
         Value* arg_is_dual = builder->CreateICmpEQ(arg_base_type,
@@ -9299,8 +9331,7 @@ private:
 
         // Extract type tag
         Value* arg_type = getTaggedValueType(arg_tagged);
-        Value* arg_base_type = builder->CreateAnd(arg_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* arg_base_type = getBaseType(arg_type);
 
         // Check type conditions
         Value* arg_is_dual = builder->CreateICmpEQ(arg_base_type,
@@ -9798,7 +9829,7 @@ private:
 
         // Check if it's a string pointer type
         Value* type_val = getTaggedValueType(tagged);
-        Value* base_type = builder->CreateAnd(type_val, ConstantInt::get(int8_type, 0x0F));
+        Value* base_type = getBaseType(type_val);
         Value* is_string = builder->CreateICmpEQ(base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
 
@@ -10239,7 +10270,7 @@ private:
         // Check if produced value is a multi-value object
         Value* type_tag = getTaggedValueType(produced);
         Value* is_heap_ptr = builder->CreateICmpEQ(type_tag,
-            ConstantInt::get(int8_type, ESHKOL_TYPE_HEAP_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
         // For single value, just call consumer with that value
         // For multi-value, unpack and call with all values
@@ -10379,7 +10410,7 @@ private:
                 // Check if it's a HEAP_PTR (multi-value)
                 Value* type_tag = getTaggedValueType(produced);
                 Value* is_heap_ptr = builder->CreateICmpEQ(type_tag,
-                    ConstantInt::get(int8_type, ESHKOL_TYPE_HEAP_PTR));
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
                 // Create blocks
                 Function* current_func = builder->GetInsertBlock()->getParent();
@@ -10883,8 +10914,8 @@ private:
         // Get types
         Value* type1 = getTaggedValueType(arg1);
         Value* type2 = getTaggedValueType(arg2);
-        Value* base_type1 = builder->CreateAnd(type1, ConstantInt::get(int8_type, 0x0F));
-        Value* base_type2 = builder->CreateAnd(type2, ConstantInt::get(int8_type, 0x0F));
+        Value* base_type1 = getBaseType(type1);
+        Value* base_type2 = getBaseType(type2);
 
         // For eqv?, we check if types are "numeric compatible"
         Value* is_int1 = builder->CreateICmpEQ(base_type1,
@@ -11124,7 +11155,7 @@ private:
         Value* arg = typedValueToTaggedValue(tv);
 
         Value* type = getTaggedValueType(arg);
-        Value* base_type = builder->CreateAnd(type, ConstantInt::get(int8_type, 0x0F));
+        Value* base_type = getBaseType(type);
         Value* matches = builder->CreateICmpEQ(base_type,
             ConstantInt::get(int8_type, expected_type));
 
@@ -11400,8 +11431,7 @@ private:
         if (vec_arg->getType() == tagged_value_type) {
             // Get the type tag to distinguish vector vs tensor
             Value* type_tag = getTaggedValueType(vec_arg);
-            Value* base_type = builder->CreateAnd(type_tag,
-                ConstantInt::get(int8_type, 0x0F));
+            Value* base_type = getBaseType(type_tag);
 
             // Check if it's a tensor (ESHKOL_VALUE_TENSOR_PTR = 6)
             Value* is_tensor = builder->CreateICmpEQ(base_type,
@@ -11505,8 +11535,8 @@ private:
         // Get types
         Value* type1 = getTaggedValueType(arg1);
         Value* type2 = getTaggedValueType(arg2);
-        Value* base_type1 = builder->CreateAnd(type1, ConstantInt::get(int8_type, 0x0F));
-        Value* base_type2 = builder->CreateAnd(type2, ConstantInt::get(int8_type, 0x0F));
+        Value* base_type1 = getBaseType(type1);
+        Value* base_type2 = getBaseType(type2);
 
         // Types must be equal for eq?
         Value* types_match = builder->CreateICmpEQ(base_type1, base_type2);
@@ -11567,8 +11597,8 @@ private:
         // Get types
         Value* type1 = getTaggedValueType(arg1);
         Value* type2 = getTaggedValueType(arg2);
-        Value* base_type1 = builder->CreateAnd(type1, ConstantInt::get(int8_type, 0x0F));
-        Value* base_type2 = builder->CreateAnd(type2, ConstantInt::get(int8_type, 0x0F));
+        Value* base_type1 = getBaseType(type1);
+        Value* base_type2 = getBaseType(type2);
 
         // For eqv?, we check if types are "numeric compatible"
         // Both must be numbers for numeric comparison, otherwise types must match exactly
@@ -12238,10 +12268,12 @@ private:
     // ===== END TAIL CALL OPTIMIZATION SUPPORT =====
 
     // Helper function to find free variables in a lambda body
-    void findFreeVariables(const eshkol_ast_t* ast,
+    // bound_vars tracks all variable names bound by enclosing lambdas (for nested closure support)
+    void findFreeVariablesImpl(const eshkol_ast_t* ast,
                           const std::unordered_map<std::string, Value*>& current_scope,
                           const eshkol_ast_t* parameters, uint64_t num_params,
-                          std::vector<std::string>& free_vars) {
+                          std::vector<std::string>& free_vars,
+                          std::unordered_set<std::string>& bound_vars) {
         if (!ast) return;
 
         switch (ast->type) {
@@ -12249,7 +12281,7 @@ private:
                 std::string var_name = ast->variable.id;
 
 
-                // Check if this variable is a parameter
+                // Check if this variable is a parameter of the current lambda
                 bool is_parameter = false;
                 if (parameters) {
                     for (uint64_t i = 0; i < num_params; i++) {
@@ -12260,6 +12292,11 @@ private:
                             break;
                         }
                     }
+                }
+
+                // NESTED CLOSURE FIX: Also check if bound by an enclosing lambda
+                if (!is_parameter && bound_vars.find(var_name) != bound_vars.end()) {
+                    is_parameter = true;  // Treat enclosing lambda params as bound
                 }
 
                 // If not a parameter and exists in current scope or REPL registry, it's a free variable
@@ -12309,16 +12346,16 @@ private:
                     case ESHKOL_CALL_OP: {
                         // CRITICAL: Also check the function expression - it could be a captured lambda!
                         if (op->call_op.func) {
-                            findFreeVariables(op->call_op.func, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->call_op.func, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                            findFreeVariables(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
                     }
                     case ESHKOL_SEQUENCE_OP:
                         for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                            findFreeVariables(&op->sequence_op.expressions[i], current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(&op->sequence_op.expressions[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
                     case ESHKOL_LET_OP: {
@@ -12339,7 +12376,7 @@ private:
                         for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                             const eshkol_ast_t* binding = &op->let_op.bindings[i];
                             if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
-                                findFreeVariables(binding->cons_cell.cdr, current_scope, parameters, num_params, free_vars);
+                                findFreeVariablesImpl(binding->cons_cell.cdr, current_scope, parameters, num_params, free_vars, bound_vars);
                             }
                         }
 
@@ -12348,7 +12385,7 @@ private:
                         if (op->let_op.body) {
                             // We need to pass let-bound names as "virtual parameters" so they're not captured
                             // For simplicity, just search the body and filter out let-bound names after
-                            findFreeVariables(op->let_op.body, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->let_op.body, current_scope, parameters, num_params, free_vars, bound_vars);
 
                             // Remove any let-bound names that were incorrectly added as free vars
                             for (const std::string& let_var : let_bound_names) {
@@ -12375,13 +12412,13 @@ private:
                         for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                             const eshkol_ast_t* binding = &op->let_op.bindings[i];
                             if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
-                                findFreeVariables(binding->cons_cell.cdr, current_scope, parameters, num_params, free_vars);
+                                findFreeVariablesImpl(binding->cons_cell.cdr, current_scope, parameters, num_params, free_vars, bound_vars);
                             }
                         }
 
                         // Search let body
                         if (op->let_op.body) {
-                            findFreeVariables(op->let_op.body, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->let_op.body, current_scope, parameters, num_params, free_vars, bound_vars);
 
                             // Remove let-bound names from free vars
                             for (const std::string& let_var : let_bound_names) {
@@ -12390,13 +12427,24 @@ private:
                         }
                         break;
                     }
-                    case ESHKOL_LAMBDA_OP:
+                    case ESHKOL_LAMBDA_OP: {
+                        // NESTED CLOSURE FIX: For nested lambdas, add current lambda's parameters
+                        // to bound_vars before recursing, so they're not mistaken for globals
+                        std::unordered_set<std::string> nested_bound_vars = bound_vars;
+                        if (parameters) {
+                            for (uint64_t i = 0; i < num_params; i++) {
+                                if (parameters[i].type == ESHKOL_VAR && parameters[i].variable.id) {
+                                    nested_bound_vars.insert(parameters[i].variable.id);
+                                }
+                            }
+                        }
                         // Nested lambda - search its body too (but its parameters are bound)
                         if (op->lambda_op.body) {
-                            findFreeVariables(op->lambda_op.body, current_scope,
-                                             op->lambda_op.parameters, op->lambda_op.num_params, free_vars);
+                            findFreeVariablesImpl(op->lambda_op.body, current_scope,
+                                             op->lambda_op.parameters, op->lambda_op.num_params, free_vars, nested_bound_vars);
                         }
                         break;
+                    }
                     case ESHKOL_COND_OP:
                         // Handle cond expressions - search all clauses
                         // cond uses call_op structure where each variable is a clause
@@ -12406,11 +12454,11 @@ private:
                             if (clause->type == ESHKOL_OP && clause->operation.op == ESHKOL_CALL_OP) {
                                 // The func is the test expression
                                 if (clause->operation.call_op.func) {
-                                    findFreeVariables(clause->operation.call_op.func, current_scope, parameters, num_params, free_vars);
+                                    findFreeVariablesImpl(clause->operation.call_op.func, current_scope, parameters, num_params, free_vars, bound_vars);
                                 }
                                 // The variables are the body expressions
                                 for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
-                                    findFreeVariables(&clause->operation.call_op.variables[j], current_scope, parameters, num_params, free_vars);
+                                    findFreeVariablesImpl(&clause->operation.call_op.variables[j], current_scope, parameters, num_params, free_vars, bound_vars);
                                 }
                             }
                         }
@@ -12420,19 +12468,19 @@ private:
                         // Handle and/or expressions - search all arguments
                         // NOTE: AND_OP/OR_OP use sequence_op structure, NOT call_op!
                         for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                            findFreeVariables(&op->sequence_op.expressions[i], current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(&op->sequence_op.expressions[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
                     case ESHKOL_IF_OP:
                         // IF_OP uses call_op: variables[0]=cond, [1]=then, [2]=else
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                            findFreeVariables(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
                     case ESHKOL_DEFINE_OP:
                         // Handle define expressions - search the value
                         if (op->define_op.value) {
-                            findFreeVariables(op->define_op.value, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->define_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
                     case ESHKOL_SET_OP: {
@@ -12443,7 +12491,7 @@ private:
                         if (letrec_excluded_capture_names.find(set_var_name) != letrec_excluded_capture_names.end()) {
                             // This is a letrec-bound name - don't capture it, just process the value
                             if (op->set_op.value) {
-                                findFreeVariables(op->set_op.value, current_scope, parameters, num_params, free_vars);
+                                findFreeVariablesImpl(op->set_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
                             }
                             break;
                         }
@@ -12461,6 +12509,11 @@ private:
                             }
                         }
 
+                        // NESTED CLOSURE FIX: Also check bound_vars
+                        if (!is_parameter && bound_vars.find(set_var_name) != bound_vars.end()) {
+                            is_parameter = true;
+                        }
+
                         // If not a parameter, check if it's in outer scope (free variable)
                         if (!is_parameter && current_scope.find(set_var_name) != current_scope.end()) {
                             Value* val = current_scope.at(set_var_name);
@@ -12473,38 +12526,38 @@ private:
 
                         // Also search the value expression for free variables
                         if (op->set_op.value) {
-                            findFreeVariables(op->set_op.value, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->set_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
                     }
                     case ESHKOL_GRADIENT_OP:
                         // GRADIENT FREE VARS FIX: Search both function and point expressions
                         if (op->gradient_op.function) {
-                            findFreeVariables(op->gradient_op.function, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->gradient_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         if (op->gradient_op.point) {
-                            findFreeVariables(op->gradient_op.point, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->gradient_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
                     case ESHKOL_DERIVATIVE_OP:
                         // DERIVATIVE FREE VARS FIX: Search both function and point expressions
                         if (op->derivative_op.function) {
-                            findFreeVariables(op->derivative_op.function, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->derivative_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         if (op->derivative_op.point) {
-                            findFreeVariables(op->derivative_op.point, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->derivative_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
                     case ESHKOL_DIRECTIONAL_DERIV_OP:
                         // DIRECTIONAL_DERIV FREE VARS FIX: Search function, point, and direction
                         if (op->directional_deriv_op.function) {
-                            findFreeVariables(op->directional_deriv_op.function, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->directional_deriv_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         if (op->directional_deriv_op.point) {
-                            findFreeVariables(op->directional_deriv_op.point, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->directional_deriv_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         if (op->directional_deriv_op.direction) {
-                            findFreeVariables(op->directional_deriv_op.direction, current_scope, parameters, num_params, free_vars);
+                            findFreeVariablesImpl(op->directional_deriv_op.direction, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
                     default:
@@ -12514,15 +12567,24 @@ private:
             }
             case ESHKOL_CONS:
                 if (ast->cons_cell.car) {
-                    findFreeVariables(ast->cons_cell.car, current_scope, parameters, num_params, free_vars);
+                    findFreeVariablesImpl(ast->cons_cell.car, current_scope, parameters, num_params, free_vars, bound_vars);
                 }
                 if (ast->cons_cell.cdr) {
-                    findFreeVariables(ast->cons_cell.cdr, current_scope, parameters, num_params, free_vars);
+                    findFreeVariablesImpl(ast->cons_cell.cdr, current_scope, parameters, num_params, free_vars, bound_vars);
                 }
                 break;
             default:
                 break;
         }
+    }
+
+    // Wrapper function for findFreeVariablesImpl - initializes empty bound_vars set
+    void findFreeVariables(const eshkol_ast_t* ast,
+                          const std::unordered_map<std::string, Value*>& current_scope,
+                          const eshkol_ast_t* parameters, uint64_t num_params,
+                          std::vector<std::string>& free_vars) {
+        std::unordered_set<std::string> bound_vars;
+        findFreeVariablesImpl(ast, current_scope, parameters, num_params, free_vars, bound_vars);
     }
 
     Value* codegenLambda(const eshkol_operations_t* op) {
@@ -13619,8 +13681,7 @@ private:
             else if (val && val->getType() == tagged_value_type && !is_lambda_expr) {
                 // Extract type to check if it's a function pointer
                 Value* val_type = getTaggedValueType(val);
-                Value* val_base_type = builder->CreateAnd(val_type,
-                    ConstantInt::get(int8_type, 0x0F));
+                Value* val_base_type = getBaseType(val_type);
 
                 // Check if it's a CONS_PTR (function pointers are stored as CONS_PTR)
                 Value* is_func_ptr = builder->CreateICmpEQ(val_base_type,
@@ -14629,8 +14690,7 @@ private:
         
         // Check if vector_val is tagged_value with AD_NODE_PTR, VECTOR_PTR, or TENSOR_PTR type
         Value* input_type = getTaggedValueType(vector_val);
-        Value* input_base_type = builder->CreateAnd(input_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* input_base_type = getBaseType(input_type);
 
         Value* is_ad_node_ptr = builder->CreateICmpEQ(input_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
@@ -17366,7 +17426,7 @@ private:
 
         // Check if current is null (end of list)
         Value* curr_type = getTaggedValueType(curr_phi);
-        Value* curr_base = builder->CreateAnd(curr_type, ConstantInt::get(int8_type, 0x0F));
+        Value* curr_base = getBaseType(curr_type);
         Value* is_null = builder->CreateICmpEQ(curr_base, ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
         builder->CreateCondBr(is_null, count_done, count_body);
 
@@ -17406,7 +17466,7 @@ private:
         copy_curr->addIncoming(args_list, count_done);
 
         Value* copy_type = getTaggedValueType(copy_curr);
-        Value* copy_base = builder->CreateAnd(copy_type, ConstantInt::get(int8_type, 0x0F));
+        Value* copy_base = getBaseType(copy_type);
         Value* copy_is_null = builder->CreateICmpEQ(copy_base, ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
         builder->CreateCondBr(copy_is_null, copy_done, copy_body);
 
@@ -17724,7 +17784,7 @@ private:
 
                     // Check input type - handle Scheme vector (VECTOR_PTR), tensor (TENSOR_PTR), or scalar
                     Value* input_type = getTaggedValueType(point_val);
-                    Value* input_base = builder->CreateAnd(input_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* input_base = getBaseType(input_type);
                     Value* is_scheme_vec = builder->CreateICmpEQ(input_base,
                         ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
                     Value* is_tensor = builder->CreateICmpEQ(input_base,
@@ -17914,7 +17974,7 @@ private:
                     // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
                     // If function returns a constant (not using its argument), it won't be dual
                     Value* rt_result_type = getTaggedValueType(call_result);
-                    Value* rt_result_base = builder->CreateAnd(rt_result_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* rt_result_base = getBaseType(rt_result_type);
                     Value* rt_is_dual = builder->CreateICmpEQ(rt_result_base,
                         ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
 
@@ -17997,7 +18057,7 @@ private:
 
                     // Check input type - handle Scheme vector (VECTOR_PTR), tensor (TENSOR_PTR), or scalar
                     Value* input_type = getTaggedValueType(point_val);
-                    Value* input_base = builder->CreateAnd(input_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* input_base = getBaseType(input_type);
                     Value* is_scheme_vec = builder->CreateICmpEQ(input_base,
                         ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
                     Value* is_tensor = builder->CreateICmpEQ(input_base,
@@ -18186,7 +18246,7 @@ private:
 
                     // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
                     Value* cap_result_type = getTaggedValueType(cap_call_result);
-                    Value* cap_result_base = builder->CreateAnd(cap_result_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* cap_result_base = getBaseType(cap_result_type);
                     Value* cap_is_dual = builder->CreateICmpEQ(cap_result_base,
                         ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
 
@@ -18269,7 +18329,7 @@ private:
 
                     // Check input type - handle Scheme vector (VECTOR_PTR), tensor (TENSOR_PTR), or scalar
                     Value* input_type = getTaggedValueType(point_val);
-                    Value* input_base = builder->CreateAnd(input_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* input_base = getBaseType(input_type);
                     Value* is_scheme_vec = builder->CreateICmpEQ(input_base,
                         ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
                     Value* is_tensor = builder->CreateICmpEQ(input_base,
@@ -18458,7 +18518,7 @@ private:
 
                     // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
                     Value* gv_result_type = getTaggedValueType(gv_call_result);
-                    Value* gv_result_base = builder->CreateAnd(gv_result_type, ConstantInt::get(int8_type, 0x0F));
+                    Value* gv_result_base = getBaseType(gv_result_type);
                     Value* gv_is_dual = builder->CreateICmpEQ(gv_result_base,
                         ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
 
@@ -18539,8 +18599,7 @@ private:
 
         // Extract type from input (may be DOUBLE, INT64, TENSOR_PTR, or AD_NODE_PTR for nested gradients)
         Value* input_type = getTaggedValueType(vector_val);
-        Value* input_base_type = builder->CreateAnd(input_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* input_base_type = getBaseType(input_type);
 
         // DOUBLE BACKWARD: Check if input is an AD node (from outer gradient)
         // This happens in nested gradients like (gradient (lambda (y) (gradient f y)) x)
@@ -18858,7 +18917,7 @@ private:
 
         // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
         Value* svec_result_type = getTaggedValueType(svec_call_result);
-        Value* svec_result_base = builder->CreateAnd(svec_result_type, ConstantInt::get(int8_type, 0x0F));
+        Value* svec_result_base = getBaseType(svec_result_type);
         Value* svec_is_dual = builder->CreateICmpEQ(svec_result_base,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
 
@@ -19503,8 +19562,7 @@ private:
         // CRITICAL FIX: Use type-based detection instead of pointer value heuristic
         // Check if output is actually an AD node by examining its type tag
         Value* output_type = getTaggedValueType(output_tagged);
-        Value* output_base_type = builder->CreateAnd(output_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* output_base_type = getBaseType(output_type);
         Value* output_is_ad_node = builder->CreateICmpEQ(output_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
         
@@ -19844,8 +19902,7 @@ private:
         Value* vector_val = typedValueToTaggedValue(vector_tv);
 
         Value* input_type = getTaggedValueType(vector_val);
-        Value* input_base_type = builder->CreateAnd(input_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* input_base_type = getBaseType(input_type);
 
         // Check if input is Scheme VECTOR_PTR (needs conversion to tensor format)
         Value* is_scheme_vector = builder->CreateICmpEQ(input_base_type,
@@ -19964,8 +20021,7 @@ private:
 
         // ENHANCED TYPE CHECK: Accept tensors, AD tensors, AND Scheme vectors as valid outputs
         Value* output_type = getTaggedValueType(test_output_tagged);
-        Value* output_base_type = builder->CreateAnd(output_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* output_base_type = getBaseType(output_type);
 
         // Check for valid vector types (regular tensors, AD tensors, and Scheme vectors)
         Value* output_is_tensor_ptr = builder->CreateICmpEQ(output_base_type,
@@ -20274,8 +20330,7 @@ private:
         // CRITICAL FIX: Handle both tensor and Scheme vector output
         // Check if output is a Scheme vector (VECTOR_PTR)
         Value* jac_loop_output_type = getTaggedValueType(jac_output_tagged);
-        Value* jac_loop_output_base = builder->CreateAnd(jac_loop_output_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* jac_loop_output_base = getBaseType(jac_loop_output_type);
         Value* jac_loop_is_scheme_vec = builder->CreateICmpEQ(jac_loop_output_base,
             ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
 
@@ -20670,8 +20725,7 @@ private:
         Value* vector_val = typedValueToTaggedValue(vector_tv);
 
         Value* input_type = getTaggedValueType(vector_val);
-        Value* input_base_type = builder->CreateAnd(input_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* input_base_type = getBaseType(input_type);
 
         // Check if input is Scheme VECTOR_PTR (needs conversion to tensor format)
         Value* is_scheme_vector = builder->CreateICmpEQ(input_base_type,
@@ -21427,9 +21481,8 @@ private:
         
         // ENHANCED TYPE CHECK: Verify Jacobian is a valid tensor (same fix as Jacobian operator)
         Value* jacobian_type = getTaggedValueType(jacobian_tagged);
-        Value* jacobian_base_type = builder->CreateAnd(jacobian_type,
-            ConstantInt::get(int8_type, 0x0F));
-        
+        Value* jacobian_base_type = getBaseType(jacobian_type);
+
         Value* jac_is_tensor_ptr = builder->CreateICmpEQ(jacobian_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
         Value* jac_is_ad_tensor = builder->CreateICmpEQ(jacobian_base_type,
@@ -21537,8 +21590,7 @@ private:
         
         // CRITICAL FIX: Handle both tensor and Scheme vector inputs
         Value* curl_input_type = getTaggedValueType(vector_val);
-        Value* curl_input_base_type = builder->CreateAnd(curl_input_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* curl_input_base_type = getBaseType(curl_input_type);
         Value* curl_is_scheme_vector = builder->CreateICmpEQ(curl_input_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
 
@@ -21613,9 +21665,8 @@ private:
         
         // ENHANCED TYPE CHECK: Verify Jacobian is a valid tensor (same fix as Jacobian operator)
         Value* jacobian_type = getTaggedValueType(jacobian_tagged);
-        Value* jacobian_base_type = builder->CreateAnd(jacobian_type,
-            ConstantInt::get(int8_type, 0x0F));
-        
+        Value* jacobian_base_type = getBaseType(jacobian_type);
+
         Value* jac_is_tensor_ptr = builder->CreateICmpEQ(jacobian_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
         Value* jac_is_ad_tensor = builder->CreateICmpEQ(jacobian_base_type,
@@ -21778,9 +21829,8 @@ private:
         
         // ENHANCED TYPE CHECK: Verify Hessian is a valid tensor (same fix as Jacobian operator)
         Value* hessian_type = getTaggedValueType(hessian_tagged);
-        Value* hessian_base_type = builder->CreateAnd(hessian_type,
-            ConstantInt::get(int8_type, 0x0F));
-        
+        Value* hessian_base_type = getBaseType(hessian_type);
+
         Value* hess_is_tensor_ptr = builder->CreateICmpEQ(hessian_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
         Value* hess_is_ad_tensor = builder->CreateICmpEQ(hessian_base_type,
@@ -21917,8 +21967,7 @@ private:
         Function* current_func = builder->GetInsertBlock()->getParent();
 
         Value* dir_type = getTaggedValueType(direction_val);
-        Value* dir_base_type = builder->CreateAnd(dir_type,
-            ConstantInt::get(int8_type, 0x0F));
+        Value* dir_base_type = getBaseType(dir_type);
 
         Value* dir_is_scheme_vector = builder->CreateICmpEQ(dir_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
@@ -22987,8 +23036,7 @@ private:
             // Only optimize simple patterns like cadr, caddr that access flat vectors
             if (ends_with_a && d_count > 0 && d_count == (int)pattern.length() - 1) {
                 Value* input_type = getTaggedValueType(current);
-                Value* input_base_type = builder->CreateAnd(input_type,
-                    ConstantInt::get(int8_type, 0x0F));
+                Value* input_base_type = getBaseType(input_type);
 
                 Value* is_scheme_vector = builder->CreateICmpEQ(input_base_type,
                     ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
@@ -23107,8 +23155,7 @@ private:
                     // FIX: Check for NULL by type, not by data value
                     // A NULL tagged value has type=ESHKOL_VALUE_NULL, data is irrelevant
                     Value* result_type = getTaggedValueType(list_result);
-                    Value* result_base_type = builder->CreateAnd(result_type,
-                        ConstantInt::get(int8_type, 0x0F));
+                    Value* result_base_type = getBaseType(result_type);
                     Value* is_null_type = builder->CreateICmpEQ(result_base_type,
                         ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
 
@@ -23144,8 +23191,7 @@ private:
                     Value* field_type = builder->CreateCall(getTaggedConsGetTypeFunc(),
                         {cons_ptr, is_car_op});
 
-                    Value* base_type = builder->CreateAnd(field_type,
-                        ConstantInt::get(int8_type, 0x0F));
+                    Value* base_type = getBaseType(field_type);
 
                     // Check for all value types (including NULL for list terminators)
                     Value* is_field_null = builder->CreateICmpEQ(base_type,
@@ -23389,10 +23435,9 @@ private:
             Value* field_type = builder->CreateCall(getTaggedConsGetTypeFunc(),
                 {cons_ptr, is_car_op});
             
-            // Mask to get base type
-            Value* base_type = builder->CreateAnd(field_type,
-                ConstantInt::get(int8_type, 0x0F));
-            
+            // Get base type - correctly handles legacy types (>= 32)
+            Value* base_type = getBaseType(field_type);
+
             // Check type: NULL (for list terminators), double, cons_ptr, string_ptr, lambda_sexpr, closure_ptr, int64
             Value* is_field_null = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
@@ -24083,6 +24128,109 @@ private:
         return packBoolToTaggedValue(is_bool);
     }
 
+    // List predicate: checks if value is a proper list (null-terminated chain of cons cells)
+    // A proper list is either:
+    //   - null (empty list)
+    //   - a cons cell whose cdr is also a proper list
+    Value* codegenListPredicate(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("list? requires exactly 1 argument");
+            return nullptr;
+        }
+
+        Value* val = codegenAST(&op->call_op.variables[0]);
+        if (!val) return nullptr;
+
+        // Create basic blocks for the loop
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* entry_block = builder->GetInsertBlock();
+        BasicBlock* loop_header = BasicBlock::Create(*context, "list_check_header", func);
+        BasicBlock* is_cons_block = BasicBlock::Create(*context, "list_check_is_cons", func);
+        BasicBlock* get_cdr_type_block = BasicBlock::Create(*context, "list_get_cdr_type", func);
+        BasicBlock* exit_true = BasicBlock::Create(*context, "list_check_true", func);
+        BasicBlock* exit_false = BasicBlock::Create(*context, "list_check_false", func);
+        BasicBlock* exit_merge = BasicBlock::Create(*context, "list_check_merge", func);
+
+        // Branch to loop header with initial value
+        builder->CreateBr(loop_header);
+
+        // Loop header: check current value type
+        builder->SetInsertPoint(loop_header);
+        PHINode* current = builder->CreatePHI(tagged_value_type, 2, "list_current");
+        current->addIncoming(val, entry_block);
+
+        // Get type of current value
+        Value* type_tag = getTaggedValueType(current);
+        Value* base_type = getBaseType(type_tag);
+
+        // Check if null (proper list terminator) - success!
+        Value* is_null = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
+        builder->CreateCondBr(is_null, exit_true, is_cons_block);
+
+        // Check if cons cell
+        builder->SetInsertPoint(is_cons_block);
+        Value* is_cons = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+        // If not cons and not null, it's not a proper list
+        builder->CreateCondBr(is_cons, get_cdr_type_block, exit_false);
+
+        // Get cdr type from the cons cell
+        builder->SetInsertPoint(get_cdr_type_block);
+        // Unpack the cons pointer
+        Value* cons_ptr_int = unpackInt64FromTaggedValue(current);
+        Value* cons_ptr = builder->CreateIntToPtr(cons_ptr_int, builder->getPtrTy());
+
+        // Get cdr type using arena_tagged_cons_get_type(cell, true)
+        Value* is_cdr_flag = ConstantInt::getTrue(*context); // true = cdr
+        Value* cdr_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr_flag});
+        Value* cdr_base_type = getBaseType(cdr_type);
+
+        // For the loop to continue, we need to construct the cdr as a tagged value
+        // If cdr type is NULL, we're done (proper list)
+        Value* cdr_is_null = builder->CreateICmpEQ(cdr_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
+
+        // If cdr type is CONS_PTR, continue checking
+        Value* cdr_is_cons = builder->CreateICmpEQ(cdr_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+
+        // If cdr is null, it's a proper list ending
+        BasicBlock* cdr_check_cons = BasicBlock::Create(*context, "list_cdr_check_cons", func);
+        builder->CreateCondBr(cdr_is_null, exit_true, cdr_check_cons);
+
+        builder->SetInsertPoint(cdr_check_cons);
+        // If cdr is another cons cell, get its pointer and continue loop
+        BasicBlock* cdr_continue = BasicBlock::Create(*context, "list_cdr_continue", func);
+        builder->CreateCondBr(cdr_is_cons, cdr_continue, exit_false);
+
+        builder->SetInsertPoint(cdr_continue);
+        // Get cdr pointer and pack as tagged value for next iteration
+        Value* cdr_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr_flag});
+        Value* cdr_ptr = builder->CreateIntToPtr(cdr_ptr_val, builder->getPtrTy());
+        Value* cdr_tagged = packPtrToTaggedValue(cdr_ptr, ESHKOL_VALUE_CONS_PTR);
+        current->addIncoming(cdr_tagged, cdr_continue);
+        builder->CreateBr(loop_header);
+
+        // Exit true: it's a proper list
+        builder->SetInsertPoint(exit_true);
+        Value* true_result = packBoolToTaggedValue(ConstantInt::getTrue(*context));
+        builder->CreateBr(exit_merge);
+
+        // Exit false: not a proper list
+        builder->SetInsertPoint(exit_false);
+        Value* false_result = packBoolToTaggedValue(ConstantInt::getFalse(*context));
+        builder->CreateBr(exit_merge);
+
+        // Merge results
+        builder->SetInsertPoint(exit_merge);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, "list_result");
+        result->addIncoming(true_result, exit_true);
+        result->addIncoming(false_result, exit_false);
+
+        return result;
+    }
+
     // Procedure predicate: checks if value is a function
     Value* codegenProcedurePredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
@@ -24095,8 +24243,7 @@ private:
 
         // Check if it's a procedure (either lambda s-expression or closure)
         Value* type_tag = getTaggedValueType(val);
-        Value* base_type = builder->CreateAnd(type_tag,
-            ConstantInt::get(int8_type, 0x0F));  // Mask off flags
+        Value* base_type = getBaseType(type_tag);
 
         // A procedure can be either LAMBDA_SEXPR or CLOSURE_PTR
         Value* is_lambda = builder->CreateICmpEQ(base_type,
@@ -24669,61 +24816,40 @@ private:
             // Handle display builtin function
             if (func_name == "display") {
                 // Create wrapper for display that takes tagged_value and returns 0
+                // Uses the proper runtime eshkol_display_value for full type support
                 static int display_counter = 0;
                 std::string wrapper_name = "builtin_display_" + std::to_string(display_counter++);
-                
-                // FIX: Accept tagged_value parameter, not i64
+
                 FunctionType* wrapper_type = FunctionType::get(
                     int64_type,
-                    {tagged_value_type},  // FIXED: Accept tagged_value
+                    {tagged_value_type},
                     false
                 );
-                
+
                 Function* wrapper_func = Function::Create(
                     wrapper_type,
                     Function::ExternalLinkage,
                     wrapper_name,
                     module.get()
                 );
-                
+
                 BasicBlock* entry = BasicBlock::Create(*context, "entry", wrapper_func);
                 IRBuilderBase::InsertPoint old_point = builder->saveIP();
                 builder->SetInsertPoint(entry);
-                
-                // Call display function with tagged_value
+
+                // Call proper runtime display function
                 Value* arg_tagged = &*wrapper_func->arg_begin();
-                Function* printf_func = function_table["printf"];
-                if (printf_func) {
-                    // Extract type and value from tagged_value
-                    Value* arg_type = getTaggedValueType(arg_tagged);
-                    Value* arg_base_type = builder->CreateAnd(arg_type,
-                        ConstantInt::get(int8_type, 0x0F));
-                    Value* is_double = builder->CreateICmpEQ(arg_base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-                    
-                    BasicBlock* double_display = BasicBlock::Create(*context, "display_double", wrapper_func);
-                    BasicBlock* int_display = BasicBlock::Create(*context, "display_int", wrapper_func);
-                    BasicBlock* display_done = BasicBlock::Create(*context, "display_done", wrapper_func);
-                    
-                    builder->CreateCondBr(is_double, double_display, int_display);
-                    
-                    builder->SetInsertPoint(double_display);
-                    Value* double_val = unpackDoubleFromTaggedValue(arg_tagged);
-                    builder->CreateCall(printf_func, {codegenString("%g"), double_val});
-                    builder->CreateBr(display_done);
-                    
-                    builder->SetInsertPoint(int_display);
-                    Value* int_val = unpackInt64FromTaggedValue(arg_tagged);
-                    builder->CreateCall(printf_func, {codegenString("%lld"), int_val});
-                    builder->CreateBr(display_done);
-                    
-                    builder->SetInsertPoint(display_done);
+                if (eshkol_display_value_func) {
+                    // Store tagged value on stack and pass pointer to runtime
+                    Value* arg_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "display_arg");
+                    builder->CreateStore(arg_tagged, arg_ptr);
+                    builder->CreateCall(eshkol_display_value_func, {arg_ptr});
                 }
                 builder->CreateRet(ConstantInt::get(int64_type, 0));
-                
+
                 builder->restoreIP(old_point);
                 registerContextFunction(wrapper_name, wrapper_func);
-                
+
                 return wrapper_func;
             }
             
@@ -25666,7 +25792,7 @@ private:
             result = packBoolToTaggedValue(is_neg);
         } else if (pred_name == "null?") {
             Value* type_tag = getTaggedValueType(arg);
-            Value* base_type = builder->CreateAnd(type_tag, ConstantInt::get(int8_type, 0x0F));
+            Value* base_type = getBaseType(type_tag);
             // Check for NULL type or CONS_PTR with null pointer
             Value* is_null_type = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
@@ -25680,7 +25806,7 @@ private:
             result = packBoolToTaggedValue(is_null);
         } else if (pred_name == "pair?") {
             Value* type_tag = getTaggedValueType(arg);
-            Value* base_type = builder->CreateAnd(type_tag, ConstantInt::get(int8_type, 0x0F));
+            Value* base_type = getBaseType(type_tag);
             // Check for CONS_PTR with non-null pointer
             Value* is_cons_type = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
@@ -25768,8 +25894,7 @@ private:
             // POLYMORPHIC INPUT: Handle both int64 and double inputs
             // Get the type tag from the argument
             Value* arg_type = getTaggedValueType(arg);
-            Value* arg_base_type = builder->CreateAnd(arg_type,
-                ConstantInt::get(int8_type, 0x0F));
+            Value* arg_base_type = getBaseType(arg_type);
             Value* arg_is_double = builder->CreateICmpEQ(arg_base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
 
@@ -25983,6 +26108,11 @@ namespace ControlFlowCallbacks {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         const eshkol_operations_t* op = static_cast<const eshkol_operations_t*>(lambda_op);
         return codegen->isSelfTailRecursive(op, func_name ? func_name : "");
+    }
+
+    llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->createBuiltinArithmeticFunction(op, 2);
     }
 }
 

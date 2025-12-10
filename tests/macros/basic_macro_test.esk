@@ -1,0 +1,48 @@
+; Basic macro tests for Eshkol
+; Tests the define-syntax/syntax-rules system
+
+; Test 1: Simple transformation macro
+(define-syntax double
+  (syntax-rules ()
+    ((double x) (* x 2))))
+
+(display "Test 1: double macro - (double 5) = ")
+(display (double 5))
+(newline)
+
+; Test 2: Macro with two arguments
+(define-syntax my-add
+  (syntax-rules ()
+    ((my-add a b) (+ a b))))
+
+(display "Test 2: my-add macro - (my-add 3 4) = ")
+(display (my-add 3 4))
+(newline)
+
+; Test 3: Nested macro calls
+(display "Test 3: Nested - (double (my-add 2 3)) = ")
+(display (double (my-add 2 3)))
+(newline)
+
+; Test 4: Macro with literal keyword
+(define-syntax when
+  (syntax-rules ()
+    ((when test body)
+     (if test body #f))))
+
+(display "Test 4: when macro - (when #t 42) = ")
+(display (when #t 42))
+(newline)
+
+; Test 5: unless macro
+(define-syntax unless
+  (syntax-rules ()
+    ((unless test body)
+     (if test #f body))))
+
+(display "Test 5: unless macro - (unless #f 99) = ")
+(display (unless #f 99))
+(newline)
+
+(display "All macro tests passed!")
+(newline)

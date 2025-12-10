@@ -39,6 +39,7 @@ public:
     llvm::Function* getArenaCreate() const { return arena_create; }
     llvm::Function* getArenaDestroy() const { return arena_destroy; }
     llvm::Function* getArenaAllocate() const { return arena_allocate; }
+    llvm::Function* getArenaAllocateWithHeader() const { return arena_allocate_with_header; }
     llvm::Function* getArenaPushScope() const { return arena_push_scope; }
     llvm::Function* getArenaPopScope() const { return arena_pop_scope; }
 
@@ -82,6 +83,7 @@ private:
     llvm::Function* arena_create;
     llvm::Function* arena_destroy;
     llvm::Function* arena_allocate;
+    llvm::Function* arena_allocate_with_header;
     llvm::Function* arena_push_scope;
     llvm::Function* arena_pop_scope;
 
