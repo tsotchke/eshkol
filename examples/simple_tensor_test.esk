@@ -1,8 +1,0 @@
-;; Simple tensor test - return constant
-
-(define (main)
-  ;; Create vector (ignore result)
-  (define v1 (vector 1 2 3))
-  
-  ;; Return a simple constant
-  1)

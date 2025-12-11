@@ -1,9 +1,0 @@
-;; Test basic matrix creation
-
-(define (main)
-  (printf "Testing basic matrix creation...\n")
-  (define A (matrix 2 2 1 2 3 4))
-  (printf "Matrix created successfully\n")
-  (printf "Element 0: %d\n" (tensor-get A 0))
-  (printf "Element 1: %d\n" (tensor-get A 1))
-  0)

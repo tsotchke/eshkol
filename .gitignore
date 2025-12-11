@@ -72,6 +72,10 @@ math_test_outputs/
 *.backup
 a.out
 
+#local specific files
+docs/private/*
+examples-dep/
+
 compile_commands.json
 .aider*
 .claude/

@@ -37,7 +37,7 @@ HOTT_TYPES_TEST="$PROJECT_DIR/tests/types/hott_types_test.cpp"
 TYPE_CHECKER_TEST="$PROJECT_DIR/tests/types/type_checker_test.cpp"
 
 # Source files needed
-SOURCES="$PROJECT_DIR/lib/types/hott_types.cpp $PROJECT_DIR/lib/types/type_checker.cpp $PROJECT_DIR/lib/types/dependent.cpp"
+SOURCES="$PROJECT_DIR/lib/types/hott_types.cpp $PROJECT_DIR/lib/types/type_checker.cpp $PROJECT_DIR/lib/types/dependent.cpp $PROJECT_DIR/lib/core/ast.cpp"
 
 # Output directory
 BUILD_DIR="$PROJECT_DIR/build"

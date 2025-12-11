@@ -1353,25 +1353,6 @@ private:
     Function* getStrtodFunc() { return funcs->getStrtod(); }
 
     void createBuiltinFunctions() {
-        // malloc function declaration for dynamic allocation
-        std::vector<Type*> malloc_args;
-        malloc_args.push_back(int64_type); // size_t size
-
-        FunctionType* malloc_type = FunctionType::get(
-            PointerType::getUnqual(*context), // return void*
-            malloc_args,
-            false // not varargs
-        );
-
-        Function* malloc_func = Function::Create(
-            malloc_type,
-            Function::ExternalLinkage,
-            "malloc",
-            module.get()
-        );
-
-        function_table["malloc"] = malloc_func;
-
         // printf function declaration
         std::vector<Type*> printf_args;
         printf_args.push_back(PointerType::getUnqual(*context)); // const char* format
@@ -15768,8 +15749,6 @@ private:
         Value* v2_val = codegenAST(&op->call_op.variables[1]);
         if (!v1_val || !v2_val) return nullptr;
 
-        Function* malloc_func = function_table["malloc"];
-
         // Get vectors (assuming tensors for simplicity)
         Value* v1_ptr_int = unpackInt64FromTaggedValue(v1_val);
         Value* v1_ptr = builder->CreateIntToPtr(v1_ptr_int, builder->getPtrTy());
@@ -18231,9 +18210,8 @@ private:
 
                     // Get arena_allocate for Scheme vector allocation
                     Function* arena_allocate_func = function_table["arena_allocate"];
-                    Function* malloc_func = function_table["malloc"];
-                    if (!arena_allocate_func || !malloc_func) {
-                        eshkol_error("arena_allocate or malloc not found for gradient");
+                    if (!arena_allocate_func) {
+                        eshkol_error("arena_allocate not found for gradient");
                         return nullptr;
                     }
                     Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
@@ -18527,9 +18505,8 @@ private:
 
                     // Get arena_allocate for Scheme vector allocation
                     Function* arena_allocate_func = function_table["arena_allocate"];
-                    Function* malloc_func = function_table["malloc"];
-                    if (!arena_allocate_func || !malloc_func) {
-                        eshkol_error("arena_allocate or malloc not found for gradient");
+                    if (!arena_allocate_func) {
+                        eshkol_error("arena_allocate not found for gradient");
                         return nullptr;
                     }
                     Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
@@ -18795,9 +18772,8 @@ private:
 
                     // Get arena_allocate for Scheme vector allocation
                     Function* arena_allocate_func = function_table["arena_allocate"];
-                    Function* malloc_func = function_table["malloc"];
-                    if (!arena_allocate_func || !malloc_func) {
-                        eshkol_error("arena_allocate or malloc not found for gradient");
+                    if (!arena_allocate_func) {
+                        eshkol_error("arena_allocate not found for gradient");
                         return nullptr;
                     }
                     Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
@@ -22292,12 +22268,6 @@ private:
         Value* curl_z = builder->CreateFSub(dF2_dx1, dF1_dx2);
         
         // Create result 3D vector
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc not found for curl result");
-            return nullptr;
-        }
-        
         // Allocate result tensor via arena (OALR compliant - no malloc)
         Value* typed_result_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
 
