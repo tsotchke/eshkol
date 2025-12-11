@@ -1,7 +1,0 @@
-;; Very simple differentiation test
-
-(define (main)
-    (printf "Testing basic diff operation:\n")
-    (diff x x)
-    (printf "Diff operation completed successfully!\n")
-    0)

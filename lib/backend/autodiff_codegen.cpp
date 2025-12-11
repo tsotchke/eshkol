@@ -1351,7 +1351,7 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
 
             // Check if input2 is the variable (by value comparison with tolerance AND type check)
             llvm::Value* diff2 = ctx_.builder().CreateFSub(input2_val, var_val);
-            llvm::Function* fabs_intrinsic = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(), llvm::Intrinsic::fabs, {ctx_.doubleType()});
+            llvm::Function* fabs_intrinsic = llvm::Intrinsic::getDeclaration(&ctx_.module(), llvm::Intrinsic::fabs, {ctx_.doubleType()});
             llvm::Value* abs_diff2 = ctx_.builder().CreateCall(fabs_intrinsic, {diff2});
             llvm::Value* val_matches_2 = ctx_.builder().CreateFCmpOLT(abs_diff2, llvm::ConstantFP::get(ctx_.doubleType(), 1e-10));
             llvm::Value* is_var2 = ctx_.builder().CreateAnd(val_matches_2, input2_is_var_type);
