@@ -1,6 +1,0 @@
-;; Test tensor-reduce in isolation
-
-(define (main)
-  (define v1 (vector 1 2 3))
-  (define result (tensor-reduce v1 + 0))
-  0)

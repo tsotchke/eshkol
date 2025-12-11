@@ -1,6 +1,0 @@
-;; Test multiplication differentiation
-
-(define (main)
-    (printf "Testing multiplication differentiation:\n")
-    (printf "d/dx(x * x) = %ld (should be 2x, but x=0 so result is 0)\n" (diff (* x x) x))
-    0)

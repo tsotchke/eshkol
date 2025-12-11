@@ -1,4 +1,0 @@
-;; Hello World in Eshkol
-;; This is the simplest possible Eshkol program
-
-(printf "Hello, Eshkol!\n")
