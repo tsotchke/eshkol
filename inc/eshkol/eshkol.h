@@ -129,7 +129,7 @@ typedef struct eshkol_tagged_value {
 } eshkol_tagged_value_t;
 
 // Compile-time size validation for tagged values
-_Static_assert(sizeof(eshkol_tagged_value_t) <= 16,
+static_assert(sizeof(eshkol_tagged_value_t) <= 16,
                "Tagged value must fit in 16 bytes for efficiency");
 
 // Dual number for forward-mode automatic differentiation
@@ -140,7 +140,7 @@ typedef struct eshkol_dual_number {
 } eshkol_dual_number_t;
 
 // Compile-time size validation for dual numbers
-_Static_assert(sizeof(eshkol_dual_number_t) == 16,
+static_assert(sizeof(eshkol_dual_number_t) == 16,
                "Dual number must be 16 bytes for cache efficiency");
 
 // Helper functions for tagged value manipulation
@@ -280,7 +280,7 @@ typedef struct eshkol_object_header {
 } eshkol_object_header_t;
 
 // Compile-time validation
-_Static_assert(sizeof(eshkol_object_header_t) == 8,
+static_assert(sizeof(eshkol_object_header_t) == 8,
                "Object header must be 8 bytes for alignment");
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -627,7 +627,7 @@ typedef struct eshkol_closure_env {
 } eshkol_closure_env_t;
 
 // Compile-time size validation
-_Static_assert(sizeof(eshkol_closure_env_t) == sizeof(size_t),
+static_assert(sizeof(eshkol_closure_env_t) == sizeof(size_t),
                "Closure environment header must be minimal");
 
 // Closure return type constants (matches eshkol_value_type_t but with additional info)

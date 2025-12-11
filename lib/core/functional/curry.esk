@@ -1,7 +1,7 @@
 ;;; core/functional/curry.esk
 ;;; Currying and partial application
 
-(provide curry2 curry3 uncurry2 partial1 partial2 partial3)
+(provide curry2 curry3 uncurry2 partial1 partial2 partial3 partial)
 
 ;;; curry2: Curry a 2-argument function
 (define (curry2 f)
@@ -34,3 +34,9 @@
 ;;; partial3: Partial application for ternary functions
 (define (partial3 f x)
   (lambda (y z) (f x y z)))
+
+;;; partial: Generic partial application using variadic functions
+;;; (partial f a b) => (lambda xs (apply f (append (list a b) xs)))
+(define (partial f . args)
+  (lambda xs
+    (apply f (append args xs))))

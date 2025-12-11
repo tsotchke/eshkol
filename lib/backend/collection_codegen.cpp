@@ -629,12 +629,6 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::Value* typed_new_vec = ctx_.builder().CreateCall(
             mem_.getArenaAllocateVectorWithHeader(), {arena_ptr, new_length});
 
-        // Get malloc for tensor allocation (still needed below)
-        llvm::FunctionType* malloc_type = llvm::FunctionType::get(
-            ctx_.ptrType(), {ctx_.int64Type()}, false);
-        llvm::FunctionCallee malloc_callee = ctx_.module().getOrInsertFunction("malloc", malloc_type);
-        llvm::Function* malloc_func = llvm::cast<llvm::Function>(malloc_callee.getCallee());
-
         // Store new length
         ctx_.builder().CreateStore(new_length, typed_new_vec);
 
