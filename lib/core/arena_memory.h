@@ -110,6 +110,23 @@ void* arena_allocate_list_node(arena_t* arena, size_t element_size, size_t count
 arena_tagged_cons_cell_t* arena_allocate_tagged_cons_cell(arena_t* arena);
 arena_tagged_cons_cell_t* arena_allocate_tagged_cons_batch(arena_t* arena, size_t count);
 
+// Allocate cons cell with object header (for consolidated HEAP_PTR type)
+arena_tagged_cons_cell_t* arena_allocate_cons_with_header(arena_t* arena);
+
+// Allocate string with object header (for consolidated HEAP_PTR type)
+// Returns pointer to string data (header is at offset -8)
+char* arena_allocate_string_with_header(arena_t* arena, size_t length);
+
+// Allocate vector with object header (for consolidated HEAP_PTR type)
+// Returns pointer to vector data (header is at offset -8)
+void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity);
+
+// Allocate closure with object header (for consolidated CALLABLE type)
+// Returns pointer to closure data (header is at offset -8)
+eshkol_closure_t* arena_allocate_closure_with_header(arena_t* arena, uint64_t func_ptr,
+                                                      size_t num_captures, uint64_t sexpr_ptr,
+                                                      uint64_t return_type_info);
+
 // Convenience constructors
 arena_tagged_cons_cell_t* arena_create_int64_cons(arena_t* arena,
                                                    int64_t car, uint8_t car_type,
@@ -160,6 +177,7 @@ eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count);
 
 // AD node allocation for computational graphs
 ad_node_t* arena_allocate_ad_node(arena_t* arena);
+ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena);  // For consolidated CALLABLE type
 ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count);
 
 // Global tape pointer for AD operations (shared across JIT modules in REPL)
@@ -168,6 +186,12 @@ extern ad_tape_t* __current_ad_tape;
 // Global AD mode flag (shared across JIT modules in REPL)
 // CRITICAL: This must be shared so lambdas from one module can see AD mode set by another
 extern bool __ad_mode_active;
+
+// Debug helper to print AD mode state
+void debug_print_ad_mode(const char* context);
+
+// Debug helper to print pointer value
+void debug_print_ptr(const char* context, void* ptr);
 
 // Global shared arena for REPL mode (persistent across evaluations)
 extern arena_t* __repl_shared_arena;
@@ -283,6 +307,35 @@ eshkol_shared_header_t* shared_get_header(void* ptr);
 
 // ===== END SHARED MEMORY MANAGEMENT =====
 
+// ===== TENSOR MEMORY MANAGEMENT =====
+// N-dimensional numeric tensor with arena allocation
+
+// Tensor structure for multi-dimensional arrays
+// Must match LLVM TypeSystem tensor_type layout:
+// Fields are all 8 bytes for natural alignment (32 bytes total)
+// NOTE: elements stored as int64_t bit patterns of doubles for compatibility
+typedef struct eshkol_tensor {
+    uint64_t* dimensions;     // idx 0: Pointer to dimension sizes array
+    uint64_t  num_dimensions; // idx 1: Number of dimensions (rank)
+    int64_t*  elements;       // idx 2: Element data (doubles stored as int64 bits)
+    uint64_t  total_elements; // idx 3: Product of all dimensions
+} eshkol_tensor_t;
+
+// Compile-time size validation
+_Static_assert(sizeof(eshkol_tensor_t) == 32,
+               "Tensor struct must be 32 bytes for optimal alignment");
+
+// Allocate tensor with object header (for consolidated HEAP_PTR type)
+// Returns pointer to tensor data (header is at offset -8)
+// Does NOT allocate dims or elements arrays - caller must allocate separately
+eshkol_tensor_t* arena_allocate_tensor_with_header(arena_t* arena);
+
+// Allocate tensor with dimensions and elements arrays in one call
+// Returns fully initialized tensor with dims and elements arrays allocated
+eshkol_tensor_t* arena_allocate_tensor_full(arena_t* arena, uint64_t num_dims, uint64_t total_elements);
+
+// ===== END TENSOR MEMORY MANAGEMENT =====
+
 // ===== HASH TABLE MEMORY MANAGEMENT =====
 // Open-addressing hash table with linear probing for O(1) average lookup
 
@@ -313,6 +366,7 @@ typedef struct eshkol_hash_table {
 // Hash table allocation and creation
 eshkol_hash_table_t* arena_allocate_hash_table(arena_t* arena, size_t initial_capacity);
 eshkol_hash_table_t* arena_hash_table_create(arena_t* arena);
+eshkol_hash_table_t* arena_hash_table_create_with_header(arena_t* arena);  // With object header for HEAP_PTR type
 
 // Hash table operations
 bool hash_table_set(arena_t* arena, eshkol_hash_table_t* table,

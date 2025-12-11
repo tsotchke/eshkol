@@ -30,6 +30,18 @@ ad_tape_t* __current_ad_tape = nullptr;
 // CRITICAL: This must be shared so lambdas from one module can see AD mode set by another
 bool __ad_mode_active = false;
 
+// Debug helper to print AD mode state
+void debug_print_ad_mode(const char* context) {
+    fprintf(stderr, "[AD_MODE_DEBUG] %s: __ad_mode_active = %s\n",
+            context, __ad_mode_active ? "TRUE" : "FALSE");
+}
+
+// Debug helper to print pointer value
+void debug_print_ptr(const char* context, void* ptr) {
+    fprintf(stderr, "[PTR_DEBUG] %s: ptr = %p (0x%llx)\n",
+            context, ptr, (unsigned long long)(uintptr_t)ptr);
+}
+
 // NESTED GRADIENT FIX: Tape stack for arbitrary-depth nested gradients
 // MAX_TAPE_DEPTH must match the value in llvm_codegen.cpp
 static const size_t MAX_TAPE_DEPTH = 32;
@@ -259,6 +271,193 @@ static inline size_t multi_value_get_count(void* multi_value_ptr) {
 // Get pointer to the values array in a multi-value container
 static inline eshkol_tagged_value_t* multi_value_get_values(void* multi_value_ptr) {
     return (eshkol_tagged_value_t*)((uint8_t*)multi_value_ptr + sizeof(size_t));
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// CONS CELL WITH HEADER (for consolidated HEAP_PTR type)
+// ───────────────────────────────────────────────────────────────────────────
+
+// Allocate a cons cell with object header (new consolidated format)
+// Returns pointer to cons cell data (header is at offset -8)
+arena_tagged_cons_cell_t* arena_allocate_cons_with_header(arena_t* arena) {
+    if (!arena) {
+        eshkol_error("Cannot allocate cons with header: null arena");
+        return nullptr;
+    }
+
+    // Allocate header + cons cell, aligned for tagged values
+    size_t total = sizeof(eshkol_object_header_t) + sizeof(arena_tagged_cons_cell_t);
+    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 16);
+    if (!mem) {
+        eshkol_error("Failed to allocate cons cell with header");
+        return nullptr;
+    }
+
+    // Initialize header
+    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
+    hdr->subtype = HEAP_SUBTYPE_CONS;
+    hdr->flags = 0;
+    hdr->ref_count = 0;
+    hdr->size = sizeof(arena_tagged_cons_cell_t);
+
+    // Initialize cons cell
+    arena_tagged_cons_cell_t* cell = (arena_tagged_cons_cell_t*)(mem + sizeof(eshkol_object_header_t));
+    cell->car.type = ESHKOL_VALUE_NULL;
+    cell->car.flags = 0;
+    cell->car.reserved = 0;
+    cell->car.data.raw_val = 0;
+    cell->cdr.type = ESHKOL_VALUE_NULL;
+    cell->cdr.flags = 0;
+    cell->cdr.reserved = 0;
+    cell->cdr.data.raw_val = 0;
+
+    return cell;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// STRING WITH HEADER (for consolidated HEAP_PTR type)
+// ───────────────────────────────────────────────────────────────────────────
+
+// Allocate a string with object header (new consolidated format)
+// Returns pointer to string data (header is at offset -8)
+// Includes space for null terminator
+char* arena_allocate_string_with_header(arena_t* arena, size_t length) {
+    if (!arena) {
+        eshkol_error("Cannot allocate string with header: null arena");
+        return nullptr;
+    }
+
+    // Allocate header + string data + null terminator
+    size_t data_size = length + 1;  // +1 for null terminator
+    size_t total = sizeof(eshkol_object_header_t) + data_size;
+    total = (total + 7) & ~7;  // Align to 8 bytes
+
+    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 8);
+    if (!mem) {
+        eshkol_error("Failed to allocate string with header (length=%zu)", length);
+        return nullptr;
+    }
+
+    // Initialize header
+    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
+    hdr->subtype = HEAP_SUBTYPE_STRING;
+    hdr->flags = 0;
+    hdr->ref_count = 0;
+    hdr->size = (uint32_t)data_size;
+
+    // Return pointer to string data
+    char* str = (char*)(mem + sizeof(eshkol_object_header_t));
+    str[0] = '\0';  // Initialize as empty string
+
+    return str;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// VECTOR WITH HEADER (for consolidated HEAP_PTR type)
+// ───────────────────────────────────────────────────────────────────────────
+
+// Allocate a vector with object header (new consolidated format)
+// Uses simple layout compatible with existing codegen:
+//   - offset -8: object header (8 bytes)
+//   - offset 0:  length (int64_t, 8 bytes)
+//   - offset 8:  elements (capacity * sizeof(tagged_value))
+// Returns pointer to length field (header is at offset -8)
+void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity) {
+    if (!arena) {
+        eshkol_error("Cannot allocate vector with header: null arena");
+        return nullptr;
+    }
+
+    // Calculate size: header + length field + element storage
+    size_t data_size = 8 + capacity * sizeof(eshkol_tagged_value_t);  // length + elements
+    size_t total = sizeof(eshkol_object_header_t) + data_size;
+    total = (total + 15) & ~15;  // Align to 16 bytes for tagged values
+
+    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 16);
+    if (!mem) {
+        eshkol_error("Failed to allocate vector with header (capacity=%zu)", capacity);
+        return nullptr;
+    }
+
+    // Initialize header
+    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
+    hdr->subtype = HEAP_SUBTYPE_VECTOR;
+    hdr->flags = 0;
+    hdr->ref_count = 0;
+    hdr->size = (uint32_t)data_size;
+
+    // Return pointer to data (length field at offset 0)
+    // Note: Caller is responsible for setting length and initializing elements
+    // This matches existing codegen behavior
+    return mem + sizeof(eshkol_object_header_t);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// CLOSURE WITH HEADER (for consolidated CALLABLE type)
+// ───────────────────────────────────────────────────────────────────────────
+
+// Allocate a closure with object header (new consolidated format)
+// Returns pointer to closure data (header is at offset -8)
+// This is for new allocations - existing arena_allocate_closure remains for compatibility
+eshkol_closure_t* arena_allocate_closure_with_header(arena_t* arena, uint64_t func_ptr,
+                                                      size_t packed_info, uint64_t sexpr_ptr,
+                                                      uint64_t return_type_info) {
+    if (!arena) {
+        eshkol_error("Cannot allocate closure with header: null arena");
+        return nullptr;
+    }
+
+    // VARIADIC CLOSURE FIX: Unpack the num_captures from the packed info
+    // The packed_info field contains:
+    //   - Bits 0-15:  actual num_captures
+    //   - Bits 16-31: fixed_param_count
+    //   - Bit 63:     is_variadic flag
+    size_t actual_num_captures = CLOSURE_ENV_GET_NUM_CAPTURES(packed_info);
+
+    // Calculate size: header + closure structure
+    size_t data_size = sizeof(eshkol_closure_t);
+    size_t total = sizeof(eshkol_object_header_t) + data_size;
+    total = (total + 7) & ~7;  // Align to 8 bytes
+
+    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 8);
+    if (!mem) {
+        eshkol_error("Failed to allocate closure with header");
+        return nullptr;
+    }
+
+    // Initialize header
+    // Use LAMBDA_SEXPR subtype for closures without captures (semantically they're lambda s-expressions)
+    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
+    hdr->subtype = (actual_num_captures == 0) ? CALLABLE_SUBTYPE_LAMBDA_SEXPR : CALLABLE_SUBTYPE_CLOSURE;
+    hdr->flags = 0;
+    hdr->ref_count = 0;
+    hdr->size = (uint32_t)data_size;
+
+    // Initialize closure
+    eshkol_closure_t* closure = (eshkol_closure_t*)(mem + sizeof(eshkol_object_header_t));
+    closure->func_ptr = func_ptr;
+    closure->sexpr_ptr = sexpr_ptr;
+    closure->return_type = (uint8_t)(return_type_info & 0xFF);
+    closure->input_arity = (uint8_t)((return_type_info >> 8) & 0xFF);
+
+    // VARIADIC FIX: Store variadic flag in closure->flags so it's available even when env is NULL
+    closure->flags = CLOSURE_ENV_IS_VARIADIC(packed_info) ? CLOSURE_FLAG_VARIADIC : 0;
+    closure->reserved = 0;
+    closure->hott_type_id = (uint32_t)((return_type_info >> 16) & 0xFFFFFFFF);
+
+    // Allocate environment if there are captures
+    if (actual_num_captures > 0) {
+        // Allocate env with actual capture count
+        closure->env = arena_allocate_closure_env(arena, actual_num_captures);
+        if (closure->env) {
+            // Store the full packed_info (including variadic flag) in the env's num_captures field
+            closure->env->num_captures = packed_info;
+        }
+    } else {
+        closure->env = nullptr;
+    }
+
+    return closure;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -704,10 +903,31 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_va
     uint8_t type1 = get_base_type(val1->type);
     uint8_t type2 = get_base_type(val2->type);
 
+    // Helper to check if a value is a cons cell (legacy or consolidated)
+    auto is_cons = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
+        if (type == ESHKOL_VALUE_CONS_PTR) return true;
+        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
+            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
+            return hdr->subtype == HEAP_SUBTYPE_CONS;
+        }
+        return false;
+    };
+
     // Helper to check if a value represents empty list
-    auto is_empty_list = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
+    auto is_empty_list = [&is_cons](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
         if (type == ESHKOL_VALUE_NULL) return true;
         if (type == ESHKOL_VALUE_CONS_PTR && val->data.ptr_val == 0) return true;
+        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val == 0) return true;
+        return false;
+    };
+
+    // Helper to check if a value is a string (legacy or consolidated)
+    auto is_string = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
+        if (type == ESHKOL_VALUE_STRING_PTR) return true;
+        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
+            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
+            return hdr->subtype == HEAP_SUBTYPE_STRING;
+        }
         return false;
     };
 
@@ -724,27 +944,38 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_va
         return false;
     }
 
-    // Both cons: recursively compare cars and cdrs
-    if (type1 == ESHKOL_VALUE_CONS_PTR && type2 == ESHKOL_VALUE_CONS_PTR) {
-        arena_tagged_cons_cell_t* cons1 = (arena_tagged_cons_cell_t*)val1->data.ptr_val;
-        arena_tagged_cons_cell_t* cons2 = (arena_tagged_cons_cell_t*)val2->data.ptr_val;
+    // Both cons (legacy or consolidated): recursively compare cars and cdrs
+    bool is_cons1 = is_cons(type1, val1);
+    bool is_cons2 = is_cons(type2, val2);
+    if (is_cons1 && is_cons2) {
+        arena_tagged_cons_cell_t* cell1 = (arena_tagged_cons_cell_t*)val1->data.ptr_val;
+        arena_tagged_cons_cell_t* cell2 = (arena_tagged_cons_cell_t*)val2->data.ptr_val;
 
-        if (!cons1 || !cons2) {
+        if (!cell1 || !cell2) {
             // If both null pointers, equal; if one null, not equal
-            return cons1 == cons2;
+            return cell1 == cell2;
         }
 
         // Compare cars recursively
-        eshkol_tagged_value_t car1 = arena_tagged_cons_get_tagged_value(cons1, false);
-        eshkol_tagged_value_t car2 = arena_tagged_cons_get_tagged_value(cons2, false);
+        eshkol_tagged_value_t car1 = arena_tagged_cons_get_tagged_value(cell1, false);
+        eshkol_tagged_value_t car2 = arena_tagged_cons_get_tagged_value(cell2, false);
         if (!eshkol_deep_equal(&car1, &car2)) {
             return false;
         }
 
         // Compare cdrs recursively
-        eshkol_tagged_value_t cdr1 = arena_tagged_cons_get_tagged_value(cons1, true);
-        eshkol_tagged_value_t cdr2 = arena_tagged_cons_get_tagged_value(cons2, true);
+        eshkol_tagged_value_t cdr1 = arena_tagged_cons_get_tagged_value(cell1, true);
+        eshkol_tagged_value_t cdr2 = arena_tagged_cons_get_tagged_value(cell2, true);
         return eshkol_deep_equal(&cdr1, &cdr2);
+    }
+
+    // Both strings (legacy or consolidated): compare content
+    bool is_str1 = is_string(type1, val1);
+    bool is_str2 = is_string(type2, val2);
+    if (is_str1 && is_str2) {
+        if (val1->data.ptr_val == val2->data.ptr_val) return true;
+        if (!val1->data.ptr_val || !val2->data.ptr_val) return false;
+        return strcmp((const char*)val1->data.ptr_val, (const char*)val2->data.ptr_val) == 0;
     }
 
     // Special case: numeric comparison between INT64 and DOUBLE
@@ -834,10 +1065,10 @@ ad_node_t* arena_allocate_ad_node(arena_t* arena) {
         eshkol_error("Cannot allocate AD node: null arena");
         return nullptr;
     }
-    
+
     ad_node_t* node = (ad_node_t*)
         arena_allocate_aligned(arena, sizeof(ad_node_t), 8);
-    
+
     if (node) {
         node->type = AD_NODE_CONSTANT;
         node->value = 0.0;
@@ -846,7 +1077,44 @@ ad_node_t* arena_allocate_ad_node(arena_t* arena) {
         node->input2 = nullptr;
         node->id = 0;
     }
-    
+
+    return node;
+}
+
+// AD node allocation with object header (for consolidated CALLABLE type)
+ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena) {
+    if (!arena) {
+        eshkol_error("Cannot allocate AD node with header: null arena");
+        return nullptr;
+    }
+
+    // Calculate size: header + ad_node structure
+    size_t data_size = sizeof(ad_node_t);
+    size_t total = sizeof(eshkol_object_header_t) + data_size;
+    total = (total + 7) & ~7;  // Align to 8 bytes
+
+    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 8);
+    if (!mem) {
+        eshkol_error("Failed to allocate AD node with header");
+        return nullptr;
+    }
+
+    // Initialize header with AD_NODE subtype
+    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
+    hdr->subtype = CALLABLE_SUBTYPE_AD_NODE;
+    hdr->flags = 0;
+    hdr->ref_count = 0;
+    hdr->size = (uint32_t)data_size;
+
+    // Initialize AD node
+    ad_node_t* node = (ad_node_t*)(mem + sizeof(eshkol_object_header_t));
+    node->type = AD_NODE_CONSTANT;
+    node->value = 0.0;
+    node->gradient = 0.0;
+    node->input1 = nullptr;
+    node->input2 = nullptr;
+    node->id = 0;
+
     return node;
 }
 
@@ -1696,6 +1964,78 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             fprintf(get_output(opts), "()");
             break;
 
+        case ESHKOL_VALUE_HEAP_PTR: {
+            // Consolidated heap pointer - read subtype from object header
+            void* data_ptr = (void*)value->data.ptr_val;
+            if (!data_ptr) {
+                fprintf(get_output(opts), "()");
+                break;
+            }
+            eshkol_object_header_t* header = ESHKOL_GET_HEADER(data_ptr);
+            switch (header->subtype) {
+                case HEAP_SUBTYPE_CONS:
+                    eshkol_display_list(value->data.ptr_val, opts);
+                    break;
+                case HEAP_SUBTYPE_STRING:
+                    if (opts->quote_strings) {
+                        fprintf(get_output(opts), "\"%s\"", (const char*)data_ptr);
+                    } else {
+                        fprintf(get_output(opts), "%s", (const char*)data_ptr);
+                    }
+                    break;
+                case HEAP_SUBTYPE_VECTOR:
+                    display_vector(value->data.ptr_val, opts);
+                    break;
+                case HEAP_SUBTYPE_TENSOR:
+                    display_tensor(value->data.ptr_val, opts);
+                    break;
+                case HEAP_SUBTYPE_HASH:
+                    fprintf(get_output(opts), "#<hash>");
+                    break;
+                case HEAP_SUBTYPE_EXCEPTION:
+                    fprintf(get_output(opts), "#<exception>");
+                    break;
+                case HEAP_SUBTYPE_MULTI_VALUE:
+                    fprintf(get_output(opts), "#<values>");
+                    break;
+                default:
+                    fprintf(get_output(opts), "#<heap:%d>", header->subtype);
+                    break;
+            }
+            break;
+        }
+
+        case ESHKOL_VALUE_CALLABLE: {
+            // Consolidated callable - read subtype from object header
+            void* data_ptr = (void*)value->data.ptr_val;
+            if (!data_ptr) {
+                fprintf(get_output(opts), "#<procedure>");
+                break;
+            }
+            eshkol_object_header_t* header = ESHKOL_GET_HEADER(data_ptr);
+            switch (header->subtype) {
+                case CALLABLE_SUBTYPE_CLOSURE:
+                    eshkol_display_closure(value->data.ptr_val, opts);
+                    break;
+                case CALLABLE_SUBTYPE_LAMBDA_SEXPR:
+                    eshkol_display_lambda(value->data.ptr_val, opts);
+                    break;
+                case CALLABLE_SUBTYPE_AD_NODE:
+                    fprintf(get_output(opts), "#<ad-node>");
+                    break;
+                case CALLABLE_SUBTYPE_PRIMITIVE:
+                    fprintf(get_output(opts), "#<primitive>");
+                    break;
+                case CALLABLE_SUBTYPE_CONTINUATION:
+                    fprintf(get_output(opts), "#<continuation>");
+                    break;
+                default:
+                    fprintf(get_output(opts), "#<callable:%d>", header->subtype);
+                    break;
+            }
+            break;
+        }
+
         case ESHKOL_VALUE_INT64:
             fprintf(get_output(opts), "%lld", (long long)value->data.int_val);
             break;
@@ -1818,16 +2158,33 @@ void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts) {
         // Display car
         eshkol_display_value_opts(&cell->car, opts);
 
-        // Check cdr type - use full type for legacy types (>= 32)
+        // Check cdr type - handle both legacy and consolidated formats
         uint8_t cdr_full = cell->cdr.type;
-        uint8_t cdr_type = (cdr_full >= 32) ? cdr_full : (cdr_full & 0x0F);
+        uint8_t cdr_type = (cdr_full >= 32) ? cdr_full : (cdr_full >= 8) ? cdr_full : (cdr_full & 0x0F);
 
         if (cdr_type == ESHKOL_VALUE_NULL) {
             // Proper list end
             break;
         } else if (cdr_type == ESHKOL_VALUE_CONS_PTR) {
-            // Continue to next cell
+            // Legacy cons - continue to next cell
             current = cell->cdr.data.ptr_val;
+        } else if (cdr_type == ESHKOL_VALUE_HEAP_PTR) {
+            // Consolidated heap pointer - check if it's a cons cell
+            void* cdr_ptr = (void*)cell->cdr.data.ptr_val;
+            if (cdr_ptr) {
+                eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(cdr_ptr);
+                if (hdr->subtype == HEAP_SUBTYPE_CONS) {
+                    // Continue to next cons cell
+                    current = cell->cdr.data.ptr_val;
+                } else {
+                    // Not a cons - dotted pair
+                    fprintf(out, " . ");
+                    eshkol_display_value_opts(&cell->cdr, opts);
+                    break;
+                }
+            } else {
+                break;
+            }
         } else {
             // Dotted pair - display cdr and break
             fprintf(out, " . ");
@@ -1840,19 +2197,31 @@ void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts) {
     fprintf(out, ")");
 }
 
-// Display a lambda by looking up its S-expression in the registry
-void eshkol_display_lambda(uint64_t func_ptr, eshkol_display_opts_t* opts) {
+// Display a lambda by extracting embedded S-expression or looking up in registry
+void eshkol_display_lambda(uint64_t closure_ptr, eshkol_display_opts_t* opts) {
     FILE* out = get_output(opts);
 
-    // Look up S-expression in registry
-    uint64_t sexpr_ptr = eshkol_lambda_registry_lookup(func_ptr);
-
-    if (sexpr_ptr != 0) {
-        // Found S-expression - display it
-        eshkol_display_list(sexpr_ptr, opts);
-    } else {
-        // No S-expression found - display placeholder
+    if (closure_ptr == 0) {
         fprintf(out, "#<procedure>");
+        return;
+    }
+
+    // For LAMBDA_SEXPR subtype, the closure_ptr IS a closure struct with sexpr_ptr
+    // (same structure as CLOSURE subtype, just no environment)
+    eshkol_closure_t* closure = (eshkol_closure_t*)closure_ptr;
+    uint64_t sexpr = closure->sexpr_ptr;
+
+    if (sexpr != 0) {
+        // Display the embedded S-expression
+        eshkol_display_list(sexpr, opts);
+    } else {
+        // No embedded S-expression - try the registry as fallback
+        uint64_t registry_sexpr = eshkol_lambda_registry_lookup(closure->func_ptr);
+        if (registry_sexpr != 0) {
+            eshkol_display_list(registry_sexpr, opts);
+        } else {
+            fprintf(out, "#<procedure>");
+        }
     }
 }
 
@@ -1906,19 +2275,14 @@ static void display_char(uint32_t codepoint, eshkol_display_opts_t* opts) {
     }
 }
 
-// Tensor struct layout (must match LLVM TypeSystem tensor_type):
+// Tensor struct layout is defined in arena_memory.h (eshkol_tensor_t)
+// Must match LLVM TypeSystem tensor_type:
 // struct Tensor {
 //     uint64_t* dimensions;      // idx 0: array of dimension sizes
 //     uint64_t  num_dimensions;  // idx 1: number of dimensions
 //     int64_t*  elements;        // idx 2: element data (doubles stored as int64 bits)
 //     uint64_t  total_elements;  // idx 3: total number of elements
 // };
-typedef struct {
-    uint64_t* dimensions;
-    uint64_t  num_dimensions;
-    int64_t*  elements;
-    uint64_t  total_elements;
-} eshkol_tensor_t;
 
 // Recursive helper for displaying N-dimensional tensors
 static void display_tensor_recursive(FILE* out, const eshkol_tensor_t* tensor,
@@ -2097,6 +2461,20 @@ uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
             hash ^= fnv1a_hash_u64(value->data.ptr_val);
             break;
 
+        case ESHKOL_VALUE_HEAP_PTR:
+            // M1 CONSOLIDATION: Check subtype in header to determine how to hash
+            if (value->data.ptr_val) {
+                uint8_t subtype = ESHKOL_GET_SUBTYPE((void*)value->data.ptr_val);
+                if (subtype == HEAP_SUBTYPE_STRING) {
+                    // Hash string content, not pointer address
+                    hash ^= fnv1a_hash_string((const char*)value->data.ptr_val);
+                } else {
+                    // For other heap types (cons, vector, tensor, hash), hash pointer
+                    hash ^= fnv1a_hash_u64(value->data.ptr_val);
+                }
+            }
+            break;
+
         default:
             // For other types, hash the raw pointer/value
             hash ^= fnv1a_hash_u64(value->data.raw_val);
@@ -2141,6 +2519,26 @@ bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t
         case ESHKOL_VALUE_NULL:
             return true;  // All nulls are equal
 
+        case ESHKOL_VALUE_HEAP_PTR: {
+            // M1 CONSOLIDATION: Check subtype in header to determine comparison method
+            if (a->data.ptr_val == b->data.ptr_val) return true;
+            if (!a->data.ptr_val || !b->data.ptr_val) return false;
+
+            uint8_t subtype_a = ESHKOL_GET_SUBTYPE((void*)a->data.ptr_val);
+            uint8_t subtype_b = ESHKOL_GET_SUBTYPE((void*)b->data.ptr_val);
+
+            // Different subtypes are not equal
+            if (subtype_a != subtype_b) return false;
+
+            if (subtype_a == HEAP_SUBTYPE_STRING) {
+                // Compare string content, not pointer addresses
+                return strcmp((const char*)a->data.ptr_val, (const char*)b->data.ptr_val) == 0;
+            }
+
+            // For other heap types (cons, vector, tensor, hash), compare pointers
+            return a->data.ptr_val == b->data.ptr_val;
+        }
+
         default:
             // For other types, compare raw values
             return a->data.raw_val == b->data.raw_val;
@@ -2183,6 +2581,138 @@ eshkol_hash_table_t* arena_allocate_hash_table(arena_t* arena, size_t initial_ca
 eshkol_hash_table_t* arena_hash_table_create(arena_t* arena) {
     return arena_allocate_hash_table(arena, HASH_TABLE_INITIAL_CAPACITY);
 }
+
+// Create a hash table with object header (for consolidated HEAP_PTR type)
+eshkol_hash_table_t* arena_hash_table_create_with_header(arena_t* arena) {
+    if (!arena) {
+        eshkol_error("Invalid arena for hash table allocation");
+        return nullptr;
+    }
+
+    // Calculate total size: header + hash table structure
+    size_t data_size = sizeof(eshkol_hash_table_t);
+    size_t total = sizeof(eshkol_object_header_t) + data_size;
+    total = (total + 7) & ~7;  // 8-byte alignment
+
+    // Allocate header + hash table as one block
+    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 8);
+    if (!mem) {
+        eshkol_error("Failed to allocate hash table with header");
+        return nullptr;
+    }
+
+    // Initialize the object header
+    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
+    hdr->subtype = HEAP_SUBTYPE_HASH;
+    hdr->flags = 0;
+    hdr->ref_count = 0;
+    hdr->size = (uint32_t)data_size;
+
+    // Get pointer to hash table structure (after header)
+    eshkol_hash_table_t* table = (eshkol_hash_table_t*)(mem + sizeof(eshkol_object_header_t));
+
+    // Allocate arrays for keys, values, and status
+    size_t initial_capacity = HASH_TABLE_INITIAL_CAPACITY;
+    table->keys = (eshkol_tagged_value_t*)
+        arena_allocate_zeroed(arena, sizeof(eshkol_tagged_value_t) * initial_capacity);
+    table->values = (eshkol_tagged_value_t*)
+        arena_allocate_zeroed(arena, sizeof(eshkol_tagged_value_t) * initial_capacity);
+    table->status = (uint8_t*)
+        arena_allocate_zeroed(arena, sizeof(uint8_t) * initial_capacity);
+
+    if (!table->keys || !table->values || !table->status) {
+        eshkol_error("Failed to allocate hash table arrays");
+        return nullptr;
+    }
+
+    table->capacity = initial_capacity;
+    table->size = 0;
+    table->tombstones = 0;
+
+    return table;
+}
+
+// ===== TENSOR ALLOCATION FUNCTIONS =====
+
+// Allocate tensor with object header (for consolidated HEAP_PTR type)
+// Returns pointer to tensor data (header is at offset -8)
+// Does NOT allocate dimensions or elements arrays - caller must allocate separately
+eshkol_tensor_t* arena_allocate_tensor_with_header(arena_t* arena) {
+    if (!arena) {
+        eshkol_error("Invalid arena for tensor allocation");
+        return nullptr;
+    }
+
+    // Calculate total size: header + tensor structure
+    size_t data_size = sizeof(eshkol_tensor_t);
+    size_t total = sizeof(eshkol_object_header_t) + data_size;
+    total = (total + 7) & ~7;  // 8-byte alignment
+
+    // Allocate header + tensor as one block
+    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 8);
+    if (!mem) {
+        eshkol_error("Failed to allocate tensor with header");
+        return nullptr;
+    }
+
+    // Initialize the object header
+    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
+    hdr->subtype = HEAP_SUBTYPE_TENSOR;
+    hdr->flags = 0;
+    hdr->ref_count = 0;
+    hdr->size = (uint32_t)data_size;
+
+    // Get pointer to tensor structure (after header)
+    eshkol_tensor_t* tensor = (eshkol_tensor_t*)(mem + sizeof(eshkol_object_header_t));
+
+    // Initialize to zero (caller will set dimensions, elements, etc.)
+    tensor->dimensions = nullptr;
+    tensor->num_dimensions = 0;
+    tensor->elements = nullptr;
+    tensor->total_elements = 0;
+
+    return tensor;
+}
+
+// Allocate tensor with dimensions and elements arrays in one call
+// Returns fully initialized tensor with dimensions and elements arrays allocated
+eshkol_tensor_t* arena_allocate_tensor_full(arena_t* arena, uint64_t num_dims, uint64_t total_elements) {
+    if (!arena) {
+        eshkol_error("Invalid arena for tensor allocation");
+        return nullptr;
+    }
+
+    // First allocate the tensor struct with header
+    eshkol_tensor_t* tensor = arena_allocate_tensor_with_header(arena);
+    if (!tensor) {
+        return nullptr;
+    }
+
+    // Allocate dimensions array
+    if (num_dims > 0) {
+        tensor->dimensions = (uint64_t*)arena_allocate_aligned(arena, num_dims * sizeof(uint64_t), 8);
+        if (!tensor->dimensions) {
+            eshkol_error("Failed to allocate tensor dimensions array");
+            return nullptr;
+        }
+    }
+
+    // Allocate elements array (int64_t for storing double bit patterns)
+    if (total_elements > 0) {
+        tensor->elements = (int64_t*)arena_allocate_zeroed(arena, total_elements * sizeof(int64_t));
+        if (!tensor->elements) {
+            eshkol_error("Failed to allocate tensor elements array");
+            return nullptr;
+        }
+    }
+
+    tensor->num_dimensions = num_dims;
+    tensor->total_elements = total_elements;
+
+    return tensor;
+}
+
+// ===== END TENSOR ALLOCATION FUNCTIONS =====
 
 // Find slot for a key (returns -1 if not found, otherwise returns index)
 // Also returns first tombstone slot via tombstone_slot parameter
@@ -2365,7 +2895,8 @@ arena_tagged_cons_cell_t* hash_table_keys(arena_t* arena, const eshkol_hash_tabl
 
     for (size_t i = 0; i < table->capacity; i++) {
         if (table->status[i] == HASH_ENTRY_OCCUPIED) {
-            arena_tagged_cons_cell_t* cell = arena_allocate_tagged_cons_cell(arena);
+            // M1 CONSOLIDATION: Use arena_allocate_cons_with_header for proper HEAP_PTR support
+            arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
             if (!cell) return head;  // Return what we have so far
 
             // Set car to the key
@@ -2377,8 +2908,9 @@ arena_tagged_cons_cell_t* hash_table_keys(arena_t* arena, const eshkol_hash_tabl
                 head = tail = cell;
             } else {
                 // Set previous tail's cdr to this cell
+                // M1 CONSOLIDATION: Use HEAP_PTR (8) not legacy CONS_PTR (32)
                 eshkol_tagged_value_t cell_val;
-                cell_val.type = ESHKOL_VALUE_CONS_PTR;
+                cell_val.type = ESHKOL_VALUE_HEAP_PTR;
                 cell_val.flags = 0;
                 cell_val.reserved = 0;
                 cell_val.data.ptr_val = (uint64_t)cell;
@@ -2400,7 +2932,8 @@ arena_tagged_cons_cell_t* hash_table_values(arena_t* arena, const eshkol_hash_ta
 
     for (size_t i = 0; i < table->capacity; i++) {
         if (table->status[i] == HASH_ENTRY_OCCUPIED) {
-            arena_tagged_cons_cell_t* cell = arena_allocate_tagged_cons_cell(arena);
+            // M1 CONSOLIDATION: Use arena_allocate_cons_with_header for proper HEAP_PTR support
+            arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
             if (!cell) return head;
 
             // Set car to the value
@@ -2411,8 +2944,9 @@ arena_tagged_cons_cell_t* hash_table_values(arena_t* arena, const eshkol_hash_ta
             if (!head) {
                 head = tail = cell;
             } else {
+                // M1 CONSOLIDATION: Use HEAP_PTR (8) not legacy CONS_PTR (32)
                 eshkol_tagged_value_t cell_val;
-                cell_val.type = ESHKOL_VALUE_CONS_PTR;
+                cell_val.type = ESHKOL_VALUE_HEAP_PTR;
                 cell_val.flags = 0;
                 cell_val.reserved = 0;
                 cell_val.data.ptr_val = (uint64_t)cell;
@@ -2434,7 +2968,50 @@ arena_tagged_cons_cell_t* hash_table_values(arena_t* arena, const eshkol_hash_ta
 eshkol_exception_t* g_current_exception = nullptr;
 eshkol_exception_handler_t* g_exception_handler_stack = nullptr;
 
-// Create a new exception object
+// Create a new exception object with object header (for consolidated HEAP_PTR type)
+extern "C" eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exception_type_t type, const char* message) {
+    arena_t* arena = __repl_shared_arena;
+    if (!arena) {
+        eshkol_error("No arena available for exception allocation");
+        return nullptr;
+    }
+
+    size_t data_size = sizeof(eshkol_exception_t);
+    size_t total = sizeof(eshkol_object_header_t) + data_size;
+    total = (total + 7) & ~7;
+
+    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 8);
+    if (!mem) {
+        eshkol_error("Failed to allocate exception with header");
+        return nullptr;
+    }
+
+    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
+    hdr->subtype = HEAP_SUBTYPE_EXCEPTION;
+    hdr->flags = 0;
+    hdr->ref_count = 0;
+    hdr->size = (uint32_t)data_size;
+
+    eshkol_exception_t* exc = (eshkol_exception_t*)(mem + sizeof(eshkol_object_header_t));
+
+    exc->type = type;
+    if (message) {
+        size_t len = strlen(message) + 1;
+        exc->message = (char*)arena_allocate(arena, len);
+        if (exc->message) strcpy(exc->message, message);
+    } else {
+        exc->message = nullptr;
+    }
+    exc->irritants = nullptr;
+    exc->num_irritants = 0;
+    exc->line = 0;
+    exc->column = 0;
+    exc->filename = nullptr;
+
+    return exc;
+}
+
+// Create a new exception object (legacy - no header)
 extern "C" eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t type, const char* message) {
     arena_t* arena = __repl_shared_arena;
     if (!arena) {

@@ -149,11 +149,17 @@ public:
 
     // === String Interning ===
 
-    /** Get or create an interned string global */
+    /** Get or create an interned string global (legacy, no header) */
     llvm::GlobalVariable* internString(const std::string& str);
 
     /** Check if a string is already interned */
     llvm::GlobalVariable* lookupInternedString(const std::string& str);
+
+    /** Get or create an interned string with object header prepended.
+     *  Returns pointer to string data (after header).
+     *  For use with HEAP_PTR type - the header is accessible via ESHKOL_GET_HEADER macro.
+     */
+    llvm::Value* internStringWithHeader(const std::string& str, uint8_t subtype);
 
     // === Nested Function Captures ===
 
@@ -296,6 +302,7 @@ private:
 
     // String interning
     std::unordered_map<std::string, llvm::GlobalVariable*> interned_strings_;
+    std::unordered_map<std::string, llvm::Value*> headered_strings_;  // Strings with headers
 
     // Current function context
     llvm::Function* current_function_ = nullptr;

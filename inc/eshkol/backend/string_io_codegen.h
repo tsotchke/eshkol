@@ -36,16 +36,28 @@ public:
     // === String Literal Creation ===
 
     /**
-     * Create a global string constant with interning.
+     * Create a global string constant with interning (NO header).
      * @param str The string content
      * @return Pointer to the string constant
+     * @deprecated Use createStringWithHeader for HEAP_PTR compatibility
      */
     llvm::Value* createString(const char* str);
 
     /**
+     * Create a global string constant WITH header for HEAP_PTR.
+     * The header is prepended to the string data, and the returned pointer
+     * points to the string data (after header). Use ESHKOL_GET_HEADER(ptr)
+     * to access the header.
+     * @param str The string content
+     * @param subtype The subtype value (default: HEAP_SUBTYPE_STRING)
+     * @return Pointer to the string data (header at ptr-8)
+     */
+    llvm::Value* createStringWithHeader(const char* str, uint8_t subtype = HEAP_SUBTYPE_STRING);
+
+    /**
      * Create a string tagged value.
      * @param str The string content
-     * @return Tagged value with STRING_PTR type
+     * @return Tagged value with HEAP_PTR type (uses header)
      */
     llvm::Value* packString(const char* str);
 

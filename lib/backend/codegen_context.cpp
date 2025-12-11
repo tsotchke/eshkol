@@ -131,6 +131,63 @@ llvm::GlobalVariable* CodegenContext::lookupInternedString(const std::string& st
     return (it != interned_strings_.end()) ? it->second : nullptr;
 }
 
+llvm::Value* CodegenContext::internStringWithHeader(const std::string& str, uint8_t subtype) {
+    // Check if already interned with header
+    std::string key = str + "_hdr_" + std::to_string(subtype);
+    auto it = headered_strings_.find(key);
+    if (it != headered_strings_.end()) {
+        return it->second;
+    }
+
+    // Create struct type: {i8 subtype, i8 flags, i16 ref_count, i32 size, [N x i8] data}
+    // This matches eshkol_object_header_t followed by string data
+    size_t str_len = str.length() + 1;  // Include null terminator
+
+    llvm::ArrayType* str_array_type = llvm::ArrayType::get(int8Type(), str_len);
+    llvm::StructType* headered_str_type = llvm::StructType::get(
+        context_,
+        {int8Type(), int8Type(), int16Type(), int32Type(), str_array_type},
+        true  // packed for exact layout
+    );
+
+    // Create header constants
+    llvm::Constant* subtype_const = llvm::ConstantInt::get(int8Type(), subtype);
+    llvm::Constant* flags_const = llvm::ConstantInt::get(int8Type(), 0);
+    llvm::Constant* ref_count_const = llvm::ConstantInt::get(int16Type(), 0);
+    llvm::Constant* size_const = llvm::ConstantInt::get(int32Type(), (uint32_t)str_len);
+
+    // Create string data constant
+    llvm::Constant* str_data = llvm::ConstantDataArray::getString(context_, str, true);
+
+    // Create the complete struct initializer
+    llvm::Constant* struct_init = llvm::ConstantStruct::get(
+        headered_str_type,
+        {subtype_const, flags_const, ref_count_const, size_const, str_data}
+    );
+
+    // Create global variable
+    llvm::GlobalVariable* global_struct = new llvm::GlobalVariable(
+        module_,
+        headered_str_type,
+        true,  // isConstant
+        llvm::GlobalValue::PrivateLinkage,
+        struct_init,
+        ".str_hdr"
+    );
+    global_struct->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+
+    // GEP to get pointer to string data (field index 4, the array)
+    llvm::Constant* zero = llvm::ConstantInt::get(int32Type(), 0);
+    llvm::Constant* idx_data = llvm::ConstantInt::get(int32Type(), 4);
+    llvm::Constant* indices[] = {zero, idx_data, zero};
+    llvm::Constant* str_ptr = llvm::ConstantExpr::getInBoundsGetElementPtr(
+        headered_str_type, global_struct, indices
+    );
+
+    headered_strings_[key] = str_ptr;
+    return str_ptr;
+}
+
 // === Nested Function Captures ===
 
 void CodegenContext::setFunctionCaptures(const std::string& funcName,

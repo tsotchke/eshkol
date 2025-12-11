@@ -329,21 +329,22 @@
   (newline)
   
   ;; Function: f(x,y) = x^2 + y^2
+  ;; NOTE: Use vector-ref for vectors (gradient passes vectors internally)
   (define (f v)
-    (let ((x (car v))
-          (y (cadr v)))
+    (let ((x (vector-ref v 0))
+          (y (vector-ref v 1)))
       (+ (* x x) (* y y))))
-  
+
   (define point (vector 3.0 4.0))
-  
+
   (display "Function: f(x,y) = x^2 + y^2")
   (newline)
   (display "Point: (3.0, 4.0)")
   (newline)
   (display "f(3,4) = ")
-  (display (f (list 3.0 4.0)))
+  (display (f (vector 3.0 4.0)))
   (newline)
-  
+
   (display "Gradient: ")
   (display (gradient f point))
   (display " (expected: [6.0, 8.0])")

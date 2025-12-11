@@ -529,24 +529,23 @@
 ;; SECTION 16: COMPLEX VARIADIC PATTERNS
 ;; =============================================================================
 (display "\n--- Section 16: Complex Variadic Patterns ---\n")
-(display "NOTE: Variadic closures with captures skipped - known limitation\n")
 
 ;; Variadic with closure capture
-;; SKIPPED: (define (make-variadic-adder base)
-;; SKIPPED:   (lambda args
-;; SKIPPED:     (+ base (apply var-sum args))))
-;; SKIPPED: 
-;; SKIPPED: (define add-from-10 (make-variadic-adder 10))
-;; SKIPPED: (check "Variadic closure" 25 (add-from-10 1 2 3 4 5))
+(define (make-variadic-adder base)
+  (lambda args
+    (+ base (apply var-sum args))))
+
+(define add-from-10 (make-variadic-adder 10))
+(check "Variadic closure" 25 (add-from-10 1 2 3 4 5))
 
 ;; Variadic that returns variadic
-;; SKIPPED: (define (multiplier-factory)
-;; SKIPPED:   (lambda factors
-;; SKIPPED:     (lambda args
-;; SKIPPED:       (apply var-prod (append factors args)))))
-;; SKIPPED: 
-;; SKIPPED: (define mult-factory ((multiplier-factory) 2 3))
-;; SKIPPED: (check "Nested variadic" 120 (mult-factory 4 5))
+(define (multiplier-factory)
+  (lambda factors
+    (lambda args
+      (apply var-prod (append factors args)))))
+
+(define mult-factory ((multiplier-factory) 2 3))
+(check "Nested variadic" 120 (mult-factory 4 5))
 
 ;; Variadic map-like
 (define (apply-all f . args)

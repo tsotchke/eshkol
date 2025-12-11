@@ -590,7 +590,7 @@ llvm::Value* AutodiffCodegen::createADConstant(llvm::Value* value) {
     llvm::Value* arena_ptr = getArenaPtr();
     if (!arena_ptr) return nullptr;
 
-    llvm::Function* alloc_func = mem_.getArenaAllocateAdNode();
+    llvm::Function* alloc_func = mem_.getArenaAllocateAdNodeWithHeader();
     if (!alloc_func) return nullptr;
 
     llvm::Value* node_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr});
@@ -670,7 +670,7 @@ llvm::Value* AutodiffCodegen::recordADNodeBinary(uint32_t op_type, llvm::Value* 
     llvm::Value* arena_ptr = getArenaPtr();
     if (!arena_ptr) return nullptr;
 
-    llvm::Function* alloc_func = mem_.getArenaAllocateAdNode();
+    llvm::Function* alloc_func = mem_.getArenaAllocateAdNodeWithHeader();
     if (!alloc_func) return nullptr;
 
     llvm::Value* node_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr});
@@ -770,7 +770,7 @@ llvm::Value* AutodiffCodegen::recordADNodeUnary(uint32_t op_type, llvm::Value* i
     llvm::Value* arena_ptr = getArenaPtr();
     if (!arena_ptr) return nullptr;
 
-    llvm::Function* alloc_func = mem_.getArenaAllocateAdNode();
+    llvm::Function* alloc_func = mem_.getArenaAllocateAdNodeWithHeader();
     if (!alloc_func) return nullptr;
 
     llvm::Value* node_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr});
@@ -838,7 +838,7 @@ llvm::Value* AutodiffCodegen::createADVariable(llvm::Value* value, size_t var_in
     llvm::Value* arena_ptr = getArenaPtr();
     if (!arena_ptr) return nullptr;
 
-    llvm::Function* alloc_func = mem_.getArenaAllocateAdNode();
+    llvm::Function* alloc_func = mem_.getArenaAllocateAdNodeWithHeader();
     if (!alloc_func) return nullptr;
 
     llvm::Value* node_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr});
@@ -1592,7 +1592,7 @@ llvm::Value* AutodiffCodegen::createADConstantOnTape(llvm::Value* tape_ptr, llvm
     llvm::Value* arena_ptr = getArenaPtr();
     if (!arena_ptr) return nullptr;
 
-    llvm::Function* alloc_func = mem_.getArenaAllocateAdNode();
+    llvm::Function* alloc_func = mem_.getArenaAllocateAdNodeWithHeader();
     if (!alloc_func) return nullptr;
 
     llvm::Value* node_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr});
@@ -1665,7 +1665,7 @@ llvm::Value* AutodiffCodegen::recordADNodeBinaryOnTape(llvm::Value* tape_ptr, ui
     llvm::Value* arena_ptr = getArenaPtr();
     if (!arena_ptr) return nullptr;
 
-    llvm::Function* alloc_func = mem_.getArenaAllocateAdNode();
+    llvm::Function* alloc_func = mem_.getArenaAllocateAdNodeWithHeader();
     if (!alloc_func) return nullptr;
 
     llvm::Value* node_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr});

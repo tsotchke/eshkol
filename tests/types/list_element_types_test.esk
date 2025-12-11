@@ -40,25 +40,25 @@
 
 (display "\n═══ Section 2: List Structure ═══\n")
 
-;; Test 3: cdr preserves list type (CONS_PTR = 3)
-(check "cdr returns CONS_PTR type" 3 (type-of (cdr int-list)))
+;; Test 3: cdr preserves list type (HEAP_PTR = 8, consolidated format)
+(check "cdr returns HEAP_PTR type" 8 (type-of (cdr int-list)))
 
 ;; Test 4: car of cdr returns element type
 (check "cadr returns INT64" 1 (type-of (cadr int-list)))
 
-;; Test 5: cons creates list (CONS_PTR = 3)
+;; Test 5: cons creates list (HEAP_PTR = 8, consolidated format)
 (define new-list (cons 10 int-list))
-(check "cons result is CONS_PTR" 3 (type-of new-list))
+(check "cons result is HEAP_PTR" 8 (type-of new-list))
 
 ;; Test 6: Nested list
 (define nested-list (list (list 1 2) (list 3 4)))
-(check "inner list is CONS_PTR" 3 (type-of (car nested-list)))
+(check "inner list is HEAP_PTR" 8 (type-of (car nested-list)))
 
 (display "\n═══ Section 3: Vector Element Types ═══\n")
 
-;; Test 7: Vector element types (VECTOR_PTR = 10)
+;; Test 7: Vector element types (HEAP_PTR = 8, consolidated format)
 (define int-vec (vector 1 2 3 4))
-(check "vector has VECTOR_PTR type" 10 (type-of int-vec))
+(check "vector has HEAP_PTR type" 8 (type-of int-vec))
 (check "vector-ref returns INT64" 1 (type-of (vector-ref int-vec 0)))
 
 ;; Test 8: Float vector

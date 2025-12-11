@@ -29,17 +29,19 @@ FunctionCodegen::FunctionCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged
 llvm::Value* FunctionCodegen::createClosure(llvm::Function* func, const std::vector<llvm::Value*>& captures) {
     if (captures.empty()) {
         // No captures - just return function pointer as closure
+        // NOTE: Uses legacy CLOSURE_PTR since there's no allocation (no header).
+        // The isClosure() helper recognizes both legacy and consolidated types.
         llvm::Value* func_ptr = ctx_.builder().CreatePtrToInt(func, ctx_.int64Type());
         return tagged_.packPtr(
             ctx_.builder().CreateIntToPtr(func_ptr, ctx_.ptrType()),
-            ESHKOL_VALUE_CLOSURE_PTR
+            ESHKOL_VALUE_CALLABLE
         );
     }
 
-    // Allocate closure structure in arena
-    llvm::Function* alloc_closure = mem_.getArenaAllocateClosure();
+    // Allocate closure structure in arena with header (consolidated CALLABLE type)
+    llvm::Function* alloc_closure = mem_.getArenaAllocateClosureWithHeader();
     if (!alloc_closure) {
-        eshkol_warn("arena_allocate_closure not available");
+        eshkol_warn("arena_allocate_closure_with_header not available");
         return tagged_.packNull();
     }
 
@@ -52,10 +54,12 @@ llvm::Value* FunctionCodegen::createClosure(llvm::Function* func, const std::vec
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global, "arena");
     llvm::Value* func_ptr = ctx_.builder().CreatePtrToInt(func, ctx_.int64Type());
     llvm::Value* num_captures = llvm::ConstantInt::get(ctx_.int64Type(), captures.size());
+    llvm::Value* sexpr_ptr = llvm::ConstantInt::get(ctx_.int64Type(), 0);  // No sexpr for now
+    llvm::Value* return_type_info = llvm::ConstantInt::get(ctx_.int64Type(), 0);  // Default type info
 
     llvm::Value* closure_ptr = ctx_.builder().CreateCall(
         alloc_closure,
-        {arena_ptr, func_ptr, num_captures},
+        {arena_ptr, func_ptr, num_captures, sexpr_ptr, return_type_info},
         "closure"
     );
 
@@ -80,7 +84,8 @@ llvm::Value* FunctionCodegen::createClosure(llvm::Function* func, const std::vec
         ctx_.builder().CreateStore(captures[i], capture_typed_ptr);
     }
 
-    return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CLOSURE_PTR);
+    // Pack using consolidated CALLABLE type (header contains CALLABLE_SUBTYPE_CLOSURE)
+    return tagged_.packCallable(closure_ptr);
 }
 
 // Note: The following implementations are complex and depend on:

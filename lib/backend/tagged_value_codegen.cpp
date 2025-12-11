@@ -265,6 +265,26 @@ llvm::Value* TaggedValueCodegen::packPtrWithFlags(
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// CONSOLIDATED TYPE PACKING (M1 Migration)
+// These pack pointers using the new consolidated types (HEAP_PTR/CALLABLE).
+// The subtype is stored in the object header (set by with_header allocators).
+// ════════════════════════════════════════════════════════════════════════════
+
+llvm::Value* TaggedValueCodegen::packHeapPtr(llvm::Value* ptr_val, uint8_t flags) {
+    // Pack pointer using consolidated HEAP_PTR type.
+    // The subtype (cons, string, vector, etc.) is in the object header.
+    // Objects must be allocated with arena_allocate_*_with_header().
+    return packPtr(ptr_val, ESHKOL_VALUE_HEAP_PTR, flags);
+}
+
+llvm::Value* TaggedValueCodegen::packCallable(llvm::Value* ptr_val, uint8_t flags) {
+    // Pack pointer using consolidated CALLABLE type.
+    // The subtype (closure, lambda-sexpr, ad-node) is in the object header.
+    // Objects must be allocated with arena_allocate_closure_with_header().
+    return packPtr(ptr_val, ESHKOL_VALUE_CALLABLE, flags);
+}
+
 llvm::Value* TaggedValueCodegen::packNull() {
     llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_null");
 
@@ -454,110 +474,221 @@ llvm::Value* TaggedValueCodegen::isNull(llvm::Value* tagged_val) {
 }
 
 llvm::Value* TaggedValueCodegen::isCons(llvm::Value* tagged_val) {
+    // M1 CONSOLIDATION FIX: Check HEAP_PTR type and HEAP_SUBTYPE_CONS subtype
+    // Cons cells are HEAP_PTR with header subtype == HEAP_SUBTYPE_CONS (0)
+    // Must use control flow to avoid reading header for non-HEAP_PTR values.
+
     llvm::Value* type_tag = getType(tagged_val);
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
 
-    // Check legacy format: ESHKOL_VALUE_CONS_PTR (direct comparison, no masking for types >= 32)
-    llvm::Value* is_old_cons = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+    // Check if HEAP_PTR type
+    llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
-    // Future: Also check new format (ESHKOL_VALUE_HEAP_PTR with HEAP_SUBTYPE_CONS)
-    // For now, return legacy format check only
-    return is_old_cons;
+    // Create blocks for subtype check
+    llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
+    llvm::BasicBlock* check_subtype = llvm::BasicBlock::Create(ctx_.context(), "is_cons.check_subtype", func);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "is_cons.merge", func);
+
+    // If HEAP_PTR, check subtype; otherwise return false
+    ctx_.builder().CreateCondBr(is_heap_ptr, check_subtype, merge_block);
+
+    // Check subtype in header
+    ctx_.builder().SetInsertPoint(check_subtype);
+    llvm::Value* is_cons_subtype = checkHeapSubtype(tagged_val, HEAP_SUBTYPE_CONS);
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* subtype_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(merge_block);
+    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "is_cons.result");
+    result->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), current_block);
+    result->addIncoming(is_cons_subtype, subtype_exit);
+
+    return result;
 }
 
 llvm::Value* TaggedValueCodegen::isString(llvm::Value* tagged_val) {
+    // M1 CONSOLIDATION FIX: Check HEAP_PTR type and HEAP_SUBTYPE_STRING subtype
+    // Strings are HEAP_PTR with header subtype == HEAP_SUBTYPE_STRING (1)
+    // Must use control flow to avoid reading header for non-HEAP_PTR values.
+
     llvm::Value* type_tag = getType(tagged_val);
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
 
-    // Check legacy format: ESHKOL_VALUE_STRING_PTR (direct comparison, no masking for types >= 32)
-    llvm::Value* is_old_string = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_STRING_PTR));
+    // Check if HEAP_PTR type
+    llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
-    return is_old_string;
+    // Create blocks for subtype check
+    llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
+    llvm::BasicBlock* check_subtype = llvm::BasicBlock::Create(ctx_.context(), "is_string.check_subtype", func);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "is_string.merge", func);
+
+    // If HEAP_PTR, check subtype; otherwise return false
+    ctx_.builder().CreateCondBr(is_heap_ptr, check_subtype, merge_block);
+
+    // Check subtype in header
+    ctx_.builder().SetInsertPoint(check_subtype);
+    llvm::Value* is_string_subtype = checkHeapSubtype(tagged_val, HEAP_SUBTYPE_STRING);
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* subtype_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(merge_block);
+    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "is_string.result");
+    result->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), current_block);
+    result->addIncoming(is_string_subtype, subtype_exit);
+
+    return result;
 }
 
 llvm::Value* TaggedValueCodegen::isVector(llvm::Value* tagged_val) {
+    // M1 CONSOLIDATION: Check HEAP_PTR type and HEAP_SUBTYPE_VECTOR subtype
+    // Vectors are HEAP_PTR with header subtype == HEAP_SUBTYPE_VECTOR (2)
+
     llvm::Value* type_tag = getType(tagged_val);
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
 
-    // Check legacy format: ESHKOL_VALUE_VECTOR_PTR (direct comparison, no masking for types >= 32)
-    llvm::Value* is_old_vector = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+    // Check if HEAP_PTR type
+    llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
-    return is_old_vector;
+    // Create blocks for subtype check
+    llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
+    llvm::BasicBlock* check_subtype = llvm::BasicBlock::Create(ctx_.context(), "is_vector.check_subtype", func);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "is_vector.merge", func);
+
+    // If HEAP_PTR, check subtype; otherwise return false
+    ctx_.builder().CreateCondBr(is_heap_ptr, check_subtype, merge_block);
+
+    // Check subtype in header
+    ctx_.builder().SetInsertPoint(check_subtype);
+    llvm::Value* is_vector_subtype = checkHeapSubtype(tagged_val, HEAP_SUBTYPE_VECTOR);
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* subtype_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(merge_block);
+    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "is_vector.result");
+    result->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), current_block);
+    result->addIncoming(is_vector_subtype, subtype_exit);
+
+    return result;
+}
+
+llvm::Value* TaggedValueCodegen::isTensor(llvm::Value* tagged_val) {
+    // M1 CONSOLIDATION: Check HEAP_PTR type and HEAP_SUBTYPE_TENSOR subtype
+    // Tensors are HEAP_PTR with header subtype == HEAP_SUBTYPE_TENSOR (3)
+
+    llvm::Value* type_tag = getType(tagged_val);
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+
+    // Check if HEAP_PTR type
+    llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+    // Create blocks for subtype check
+    llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
+    llvm::BasicBlock* check_subtype = llvm::BasicBlock::Create(ctx_.context(), "is_tensor.check_subtype", func);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "is_tensor.merge", func);
+
+    // If HEAP_PTR, check subtype; otherwise return false
+    ctx_.builder().CreateCondBr(is_heap_ptr, check_subtype, merge_block);
+
+    // Check subtype in header
+    ctx_.builder().SetInsertPoint(check_subtype);
+    llvm::Value* is_tensor_subtype = checkHeapSubtype(tagged_val, HEAP_SUBTYPE_TENSOR);
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* subtype_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(merge_block);
+    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "is_tensor.result");
+    result->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), current_block);
+    result->addIncoming(is_tensor_subtype, subtype_exit);
+
+    return result;
 }
 
 llvm::Value* TaggedValueCodegen::isClosure(llvm::Value* tagged_val) {
+    // M1 CONSOLIDATION FIX: Check CALLABLE type and CALLABLE_SUBTYPE_CLOSURE subtype
+    // Closures are CALLABLE with header subtype == CALLABLE_SUBTYPE_CLOSURE (0)
+    // Must use control flow to avoid reading header for non-CALLABLE values.
+
     llvm::Value* type_tag = getType(tagged_val);
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
 
-    // Check legacy format: ESHKOL_VALUE_CLOSURE_PTR (direct comparison, no masking for types >= 32)
-    llvm::Value* is_old_closure = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
+    // Check if CALLABLE type
+    llvm::Value* is_callable = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
 
-    return is_old_closure;
+    // Create blocks for subtype check
+    llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
+    llvm::BasicBlock* check_subtype = llvm::BasicBlock::Create(ctx_.context(), "is_closure.check_subtype", func);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "is_closure.merge", func);
+
+    // If CALLABLE, check subtype; otherwise return false
+    ctx_.builder().CreateCondBr(is_callable, check_subtype, merge_block);
+
+    // Check subtype in header
+    ctx_.builder().SetInsertPoint(check_subtype);
+    llvm::Value* is_closure_subtype = checkCallableSubtype(tagged_val, CALLABLE_SUBTYPE_CLOSURE);
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* subtype_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(merge_block);
+    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "is_closure.result");
+    result->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), current_block);
+    result->addIncoming(is_closure_subtype, subtype_exit);
+
+    return result;
 }
 
 llvm::Value* TaggedValueCodegen::isLambdaSexpr(llvm::Value* tagged_val) {
+    // M1 CONSOLIDATION FIX: Check CALLABLE type and CALLABLE_SUBTYPE_LAMBDA_SEXPR subtype
+    // Lambda s-exprs are CALLABLE with header subtype == CALLABLE_SUBTYPE_LAMBDA_SEXPR (1)
+    // Must use control flow to avoid reading header for non-CALLABLE values.
+
     llvm::Value* type_tag = getType(tagged_val);
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
 
-    // Check legacy format: ESHKOL_VALUE_LAMBDA_SEXPR (direct comparison, no masking for types >= 32)
-    llvm::Value* is_old_lambda = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_LAMBDA_SEXPR));
+    // Check if CALLABLE type
+    llvm::Value* is_callable = ctx_.builder().CreateICmpEQ(
+        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
 
-    return is_old_lambda;
+    // Create blocks for subtype check
+    llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
+    llvm::BasicBlock* check_subtype = llvm::BasicBlock::Create(ctx_.context(), "is_lambda.check_subtype", func);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "is_lambda.merge", func);
+
+    // If CALLABLE, check subtype; otherwise return false
+    ctx_.builder().CreateCondBr(is_callable, check_subtype, merge_block);
+
+    // Check subtype in header
+    ctx_.builder().SetInsertPoint(check_subtype);
+    llvm::Value* is_lambda_subtype = checkCallableSubtype(tagged_val, CALLABLE_SUBTYPE_LAMBDA_SEXPR);
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* subtype_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(merge_block);
+    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "is_lambda.result");
+    result->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), current_block);
+    result->addIncoming(is_lambda_subtype, subtype_exit);
+
+    return result;
 }
 
 llvm::Value* TaggedValueCodegen::isHeapPtr(llvm::Value* tagged_val) {
+    // M1 CONSOLIDATION FIX: All heap data objects use HEAP_PTR type (8)
+    // Subtypes (cons, string, vector, tensor, hash, exception) are in the object header
     llvm::Value* type_tag = getType(tagged_val);
-
-    // Check all legacy heap pointer types (direct comparison, no masking for types >= 32)
-    llvm::Value* is_cons = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
-    llvm::Value* is_string = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_STRING_PTR));
-    llvm::Value* is_vector = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
-    llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
-    llvm::Value* is_hash = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HASH_PTR));
-    llvm::Value* is_exception = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_EXCEPTION));
-
-    // Check new consolidated HEAP_PTR type
-    llvm::Value* is_new_heap = ctx_.builder().CreateICmpEQ(
+    return ctx_.builder().CreateICmpEQ(
         type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-
-    // OR all together
-    llvm::Value* result = ctx_.builder().CreateOr(is_cons, is_string);
-    result = ctx_.builder().CreateOr(result, is_vector);
-    result = ctx_.builder().CreateOr(result, is_tensor);
-    result = ctx_.builder().CreateOr(result, is_hash);
-    result = ctx_.builder().CreateOr(result, is_exception);
-    result = ctx_.builder().CreateOr(result, is_new_heap);
-
-    return result;
 }
 
 llvm::Value* TaggedValueCodegen::isCallable(llvm::Value* tagged_val) {
+    // M1 CONSOLIDATION FIX: All callable objects use CALLABLE type (9)
+    // Subtypes (closure, lambda_sexpr, ad_node) are in the object header
     llvm::Value* type_tag = getType(tagged_val);
-
-    // Check legacy callable types (direct comparison, no masking for types >= 32)
-    llvm::Value* is_closure = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
-    llvm::Value* is_lambda = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_LAMBDA_SEXPR));
-    llvm::Value* is_ad_node = ctx_.builder().CreateICmpEQ(
-        type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_AD_NODE_PTR));
-
-    // Check new consolidated CALLABLE type
-    llvm::Value* is_new_callable = ctx_.builder().CreateICmpEQ(
+    return ctx_.builder().CreateICmpEQ(
         type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
-
-    // OR all together
-    llvm::Value* result = ctx_.builder().CreateOr(is_closure, is_lambda);
-    result = ctx_.builder().CreateOr(result, is_ad_node);
-    result = ctx_.builder().CreateOr(result, is_new_callable);
-
-    return result;
 }
 
 llvm::Value* TaggedValueCodegen::isInt64(llvm::Value* tagged_val) {
@@ -621,6 +752,59 @@ llvm::Value* TaggedValueCodegen::getBaseType(llvm::Value* type_tag) {
         llvm::ConstantInt::get(ctx_.int8Type(), 0x0F));
 
     return ctx_.builder().CreateSelect(is_not_immediate, type_tag, masked);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// PRIVATE HELPERS FOR CONSOLIDATED TYPE CHECKING
+// ════════════════════════════════════════════════════════════════════════════
+
+llvm::Value* TaggedValueCodegen::getSubtypeFromHeader(llvm::Value* ptr_val) {
+    // Object header is at (data_ptr - 8). Subtype is at offset 0 of header.
+    // Header layout:
+    //   offset 0: uint8_t subtype
+    //   offset 1: uint8_t flags
+    //   offset 2: uint16_t ref_count
+    //   offset 4: uint32_t size
+
+    // Ensure we have a pointer type
+    llvm::Value* data_ptr = ptr_val;
+    if (ptr_val->getType()->isIntegerTy(64)) {
+        data_ptr = ctx_.builder().CreateIntToPtr(ptr_val, ctx_.ptrType(), "data_ptr");
+    }
+
+    // Compute header address: data_ptr - 8 bytes
+    llvm::Value* header_ptr = ctx_.builder().CreateGEP(
+        ctx_.int8Type(),
+        data_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), -8),
+        "header_ptr");
+
+    // Load subtype byte from offset 0 of header
+    llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "subtype");
+    return subtype;
+}
+
+llvm::Value* TaggedValueCodegen::checkHeapSubtype(llvm::Value* tagged_val, uint8_t expected_subtype) {
+    // Extract pointer from tagged value and check subtype in header
+    llvm::Value* ptr_val = unpackInt64(tagged_val);
+    llvm::Value* subtype = getSubtypeFromHeader(ptr_val);
+
+    return ctx_.builder().CreateICmpEQ(
+        subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), expected_subtype),
+        "subtype_match");
+}
+
+llvm::Value* TaggedValueCodegen::checkCallableSubtype(llvm::Value* tagged_val, uint8_t expected_subtype) {
+    // Extract pointer from tagged value and check subtype in header
+    // Same implementation as checkHeapSubtype - both use object header at ptr-8
+    llvm::Value* ptr_val = unpackInt64(tagged_val);
+    llvm::Value* subtype = getSubtypeFromHeader(ptr_val);
+
+    return ctx_.builder().CreateICmpEQ(
+        subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), expected_subtype),
+        "callable_subtype_match");
 }
 
 } // namespace eshkol

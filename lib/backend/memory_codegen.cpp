@@ -21,6 +21,7 @@ MemoryCodegen::MemoryCodegen(llvm::Module& mod, TypeSystem& ts)
     createTaggedConsSetters();
     createTapeFunctions();
     createAdNodeFunctions();
+    createTypedAllocatorFunctions();  // NEW: Consolidated type allocators
 }
 
 llvm::Function* MemoryCodegen::createFunc(const char* name, llvm::FunctionType* ft) {
@@ -175,6 +176,78 @@ void MemoryCodegen::createAdNodeFunctions() {
     // arena_allocate_ad_node: ad_node_t* (arena_t*)
     arena_allocate_ad_node = createFunc("arena_allocate_ad_node",
         llvm::FunctionType::get(ptr, {ptr}, false));
+}
+
+void MemoryCodegen::createTypedAllocatorFunctions() {
+    // ═══════════════════════════════════════════════════════════════════════
+    // TYPED ALLOCATORS WITH OBJECT HEADERS
+    // These functions allocate objects with the eshkol_object_header_t prefix,
+    // enabling the new consolidated type system (HEAP_PTR/CALLABLE + subtype).
+    // ═══════════════════════════════════════════════════════════════════════
+
+    auto ptr = types.getPtrType();
+    auto i64 = types.getInt64Type();
+
+    // arena_allocate_cons_with_header: arena_tagged_cons_cell_t* (arena_t*)
+    // Allocates cons cell with object header prepended.
+    // Returns pointer to cons cell data (header is at offset -8).
+    // C signature: arena_tagged_cons_cell_t* arena_allocate_cons_with_header(arena_t* arena)
+    arena_allocate_cons_with_header = createFunc("arena_allocate_cons_with_header",
+        llvm::FunctionType::get(ptr, {ptr}, false));
+
+    // arena_allocate_string_with_header: char* (arena_t*, size_t length)
+    // Allocates string buffer with object header prepended.
+    // Returns pointer to string data (header is at offset -8).
+    // C signature: char* arena_allocate_string_with_header(arena_t* arena, size_t length)
+    arena_allocate_string_with_header = createFunc("arena_allocate_string_with_header",
+        llvm::FunctionType::get(ptr, {ptr, i64}, false));
+
+    // arena_allocate_vector_with_header: void* (arena_t*, size_t capacity)
+    // Allocates vector with object header prepended.
+    // Returns pointer to arena_vector_data_t (header is at offset -8).
+    // C signature: void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity)
+    arena_allocate_vector_with_header = createFunc("arena_allocate_vector_with_header",
+        llvm::FunctionType::get(ptr, {ptr, i64}, false));
+
+    // arena_allocate_closure_with_header: eshkol_closure_t* (arena_t*, uint64_t func_ptr,
+    //                                     size_t num_captures, uint64_t sexpr_ptr, uint64_t return_type_info)
+    // Allocates closure with object header prepended for CALLABLE type.
+    // Returns pointer to closure data (header is at offset -8).
+    // C signature matches arena_allocate_closure but prepends header.
+    arena_allocate_closure_with_header = createFunc("arena_allocate_closure_with_header",
+        llvm::FunctionType::get(ptr, {ptr, i64, i64, i64, i64}, false));
+
+    // arena_allocate_ad_node_with_header: ad_node_t* (arena_t*)
+    // Allocates AD node with object header prepended for CALLABLE type.
+    // Returns pointer to AD node data (header is at offset -8).
+    arena_allocate_ad_node_with_header = createFunc("arena_allocate_ad_node_with_header",
+        llvm::FunctionType::get(ptr, {ptr}, false));
+
+    // arena_hash_table_create_with_header: eshkol_hash_table_t* (arena_t*)
+    // Allocates hash table with object header prepended for HEAP_PTR type.
+    // Returns pointer to hash table data (header is at offset -8).
+    arena_hash_table_create_with_header = createFunc("arena_hash_table_create_with_header",
+        llvm::FunctionType::get(ptr, {ptr}, false));
+
+    // arena_allocate_tensor_with_header: eshkol_tensor_t* (arena_t*)
+    // Allocates tensor struct with object header prepended for HEAP_PTR type.
+    // Returns pointer to tensor data (header is at offset -8).
+    // Does NOT allocate dims or elements arrays - caller must allocate separately.
+    arena_allocate_tensor_with_header = createFunc("arena_allocate_tensor_with_header",
+        llvm::FunctionType::get(ptr, {ptr}, false));
+
+    // arena_allocate_tensor_full: eshkol_tensor_t* (arena_t*, uint64_t num_dims, uint64_t total_elements)
+    // Allocates complete tensor with header, dims array, and elements array.
+    // Returns fully initialized tensor with dims and elements arrays allocated.
+    arena_allocate_tensor_full = createFunc("arena_allocate_tensor_full",
+        llvm::FunctionType::get(ptr, {ptr, i64, i64}, false));
+
+    // eshkol_make_exception_with_header: eshkol_exception_t* (int32_t type, const char* message)
+    // Allocates exception with object header prepended for HEAP_PTR type.
+    // Returns pointer to exception data (header is at offset -8).
+    auto i32 = llvm::Type::getInt32Ty(module.getContext());
+    eshkol_make_exception_with_header = createFunc("eshkol_make_exception_with_header",
+        llvm::FunctionType::get(ptr, {i32, ptr}, false));
 }
 
 } // namespace eshkol

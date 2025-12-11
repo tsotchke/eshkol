@@ -156,9 +156,9 @@ llvm::Value* HashCodegen::ensureTaggedValue(llvm::Value* val, const std::string&
     }
 
     // If it's a pointer (e.g., string), it should already be tagged
-    // but just in case, pack it as a generic pointer
+    // but just in case, pack it as a heap pointer (consolidated format)
     if (val->getType()->isPointerTy()) {
-        return tagged_.packPtr(val, ESHKOL_VALUE_CONS_PTR);  // default to cons ptr
+        return tagged_.packHeapPtr(val);  // use consolidated HEAP_PTR format
     }
 
     // For any other integer types, extend to i64 and pack
@@ -203,11 +203,78 @@ llvm::Value* HashCodegen::makeHashTable(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(context, 0), ctx_.globalArena());
 
-    // Call arena_hash_table_create(arena)
-    llvm::Value* table_ptr = builder.CreateCall(hash_table_create_func_, {arena_ptr});
+    // Call arena_hash_table_create_with_header(arena) for consolidated HEAP_PTR type
+    llvm::Function* create_with_header = mem_.getArenaHashTableCreateWithHeader();
+    llvm::Value* table_ptr = builder.CreateCall(create_with_header, {arena_ptr}, "hash_table");
 
-    // Pack as HASH_PTR tagged value
-    return tagged_.packPtr(table_ptr, ESHKOL_VALUE_HASH_PTR);
+    // Pack as HEAP_PTR tagged value (subtype HEAP_SUBTYPE_HASH is in header)
+    return tagged_.packHeapPtr(table_ptr);
+}
+
+// hash-table?: Type predicate for hash tables
+// Handles both legacy HASH_PTR and consolidated HEAP_PTR+HEAP_SUBTYPE_HASH
+llvm::Value* HashCodegen::isHashTable(const eshkol_operations_t* op) {
+    if (op->call_op.num_vars != 1) {
+        eshkol_warn("hash-table? requires exactly 1 argument");
+        return nullptr;
+    }
+
+    auto& builder = ctx_.builder();
+    auto& context = ctx_.context();
+
+    llvm::Value* arg = codegenAST(&op->call_op.variables[0]);
+    if (!arg) return nullptr;
+
+    arg = ensureTaggedValue(arg, "hash_table_arg");
+
+    llvm::Value* type_tag = tagged_.getType(arg);
+    llvm::Value* base_type = tagged_.getBaseType(type_tag);
+    llvm::Value* ptr_val = tagged_.unpackInt64(arg);
+
+    // M1 CONSOLIDATION: Check for legacy HASH_PTR (36) OR consolidated HEAP_PTR (8) with subtype
+    llvm::Value* is_hash_legacy = builder.CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HASH_PTR));  // Legacy type 36
+    llvm::Value* is_heap_ptr = builder.CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));  // Consolidated type 8
+    llvm::Value* is_non_null = builder.CreateICmpNE(ptr_val,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* check_heap = builder.CreateAnd(is_heap_ptr, is_non_null);
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* legacy_true = llvm::BasicBlock::Create(context, "hash_legacy_true", current_func);
+    llvm::BasicBlock* check_heap_block = llvm::BasicBlock::Create(context, "check_heap_hash", current_func);
+    llvm::BasicBlock* check_subtype = llvm::BasicBlock::Create(context, "check_hash_subtype", current_func);
+    llvm::BasicBlock* false_block = llvm::BasicBlock::Create(context, "hash_false", current_func);
+    llvm::BasicBlock* merge = llvm::BasicBlock::Create(context, "hash_check_merge", current_func);
+
+    builder.CreateCondBr(is_hash_legacy, legacy_true, check_heap_block);
+
+    builder.SetInsertPoint(legacy_true);
+    builder.CreateBr(merge);
+
+    builder.SetInsertPoint(check_heap_block);
+    builder.CreateCondBr(check_heap, check_subtype, false_block);
+
+    builder.SetInsertPoint(check_subtype);
+    llvm::Value* obj_ptr = builder.CreateIntToPtr(ptr_val, ctx_.ptrType());
+    llvm::Value* header_ptr = builder.CreateGEP(ctx_.int8Type(), obj_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), -8), "header_ptr");
+    llvm::Value* subtype = builder.CreateLoad(ctx_.int8Type(), header_ptr, "subtype");
+    llvm::Value* is_hash_subtype = builder.CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_HASH));
+    builder.CreateBr(merge);
+    llvm::BasicBlock* subtype_exit = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(false_block);
+    builder.CreateBr(merge);
+
+    builder.SetInsertPoint(merge);
+    llvm::PHINode* phi = builder.CreatePHI(ctx_.int1Type(), 3, "is_hash");
+    phi->addIncoming(llvm::ConstantInt::getTrue(context), legacy_true);
+    phi->addIncoming(is_hash_subtype, subtype_exit);
+    phi->addIncoming(llvm::ConstantInt::getFalse(context), false_block);
+
+    return tagged_.packBool(phi);
 }
 
 // hash-set!: Set a key-value pair in the hash table
@@ -413,9 +480,9 @@ llvm::Value* HashCodegen::hashKeys(const eshkol_operations_t* op) {
     llvm::Value* null_val = tagged_.packNull();
     builder.CreateBr(merge_block);
 
-    // Valid case: pack as CONS_PTR
+    // Valid case: pack as HEAP_PTR (consolidated format)
     builder.SetInsertPoint(valid_block);
-    llvm::Value* list_val = tagged_.packPtr(keys_ptr, ESHKOL_VALUE_CONS_PTR);
+    llvm::Value* list_val = tagged_.packHeapPtr(keys_ptr);
     builder.CreateBr(merge_block);
 
     // Merge
@@ -468,9 +535,9 @@ llvm::Value* HashCodegen::hashValues(const eshkol_operations_t* op) {
     llvm::Value* null_val = tagged_.packNull();
     builder.CreateBr(merge_block);
 
-    // Valid case: pack as CONS_PTR
+    // Valid case: pack as HEAP_PTR (consolidated format)
     builder.SetInsertPoint(valid_block);
-    llvm::Value* list_val = tagged_.packPtr(values_ptr, ESHKOL_VALUE_CONS_PTR);
+    llvm::Value* list_val = tagged_.packHeapPtr(values_ptr);
     builder.CreateBr(merge_block);
 
     // Merge

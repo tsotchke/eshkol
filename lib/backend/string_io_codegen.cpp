@@ -64,10 +64,21 @@ llvm::Value* StringIOCodegen::createString(const char* str) {
     );
 }
 
+llvm::Value* StringIOCodegen::createStringWithHeader(const char* str, uint8_t subtype) {
+    if (!str) return nullptr;
+
+    // Use context's string interning with header
+    // This creates a global with [header][string] layout
+    // Returns pointer to string data (header at ptr-8)
+    return ctx_.internStringWithHeader(str, subtype);
+}
+
 llvm::Value* StringIOCodegen::packString(const char* str) {
-    llvm::Value* str_ptr = createString(str);
+    // Use createStringWithHeader to ensure proper header for HEAP_PTR
+    llvm::Value* str_ptr = createStringWithHeader(str, HEAP_SUBTYPE_STRING);
     if (!str_ptr) return tagged_.packNull();
-    return tagged_.packPtr(str_ptr, ESHKOL_VALUE_STRING_PTR);
+    // Pack as HEAP_PTR - header is now at ptr-8
+    return tagged_.packPtr(str_ptr, ESHKOL_VALUE_HEAP_PTR);
 }
 
 llvm::Function* StringIOCodegen::getPrintf() {
@@ -214,10 +225,10 @@ llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {
         total_len = ctx_.builder().CreateAdd(total_len, len);
     }
 
-    // Allocate new string using arena_allocate
+    // Allocate new string with header using arena_allocate_string_with_header
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* new_str = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocate(), {arena_ptr, total_len});
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, total_len});
 
     // Copy first string
     ctx_.builder().CreateCall(strcpy_func, {new_str, str_ptrs[0]});
@@ -227,7 +238,7 @@ llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {
         ctx_.builder().CreateCall(strcat_func, {new_str, str_ptrs[i]});
     }
 
-    return tagged_.packPtr(new_str, ESHKOL_VALUE_STRING_PTR);
+    return tagged_.packHeapPtr(new_str);
 }
 
 llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
@@ -269,10 +280,10 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
     llvm::Value* len = ctx_.builder().CreateSub(end, start);
     llvm::Value* alloc_len = ctx_.builder().CreateAdd(len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
 
-    // Allocate new string
+    // Allocate new string with header
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* new_str = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocate(), {arena_ptr, alloc_len});
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, alloc_len});
 
     // Get memcpy function
     llvm::Function* memcpy_func = ctx_.funcs().getMemcpy();
@@ -285,7 +296,7 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
     llvm::Value* null_pos = ctx_.builder().CreateGEP(ctx_.int8Type(), new_str, len);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), null_pos);
 
-    return tagged_.packPtr(new_str, ESHKOL_VALUE_STRING_PTR);
+    return tagged_.packHeapPtr(new_str);
 }
 
 llvm::Value* StringIOCodegen::stringCompare(const eshkol_operations_t* op, const std::string& cmp_type) {
@@ -394,11 +405,11 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
     auto* tv = reinterpret_cast<TypedValueLayout*>(tv_ptr);
     if (!tv->llvm_value) return nullptr;
 
-    // Allocate buffer for string (64 bytes should be enough for any number)
+    // Allocate buffer for string with header (64 bytes should be enough for any number)
     llvm::Value* buf_size = llvm::ConstantInt::get(ctx_.int64Type(), 64);
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocate(), {arena_ptr, buf_size});
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
 
     // Get snprintf function
     llvm::Function* snprintf_func = ctx_.funcs().getSnprintf();
@@ -467,7 +478,7 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
         }
     }
 
-    return tagged_.packPtr(buf, ESHKOL_VALUE_STRING_PTR);
+    return tagged_.packHeapPtr(buf);
 }
 
 llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
@@ -504,10 +515,11 @@ llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
         fill_char = llvm::ConstantInt::get(ctx_.int8Type(), ' ');
     }
 
-    // Allocate buffer: len + 1 for null terminator
+    // Allocate buffer with header: len + 1 for null terminator
     llvm::Value* buf_size = ctx_.builder().CreateAdd(len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    llvm::Function* malloc_func = ctx_.funcs().getMalloc();
-    llvm::Value* buf = ctx_.builder().CreateCall(malloc_func, {buf_size});
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* buf = ctx_.builder().CreateCall(
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
 
     // Fill with the character using memset
     llvm::Function* memset_func = ctx_.funcs().getMemset();
@@ -518,7 +530,7 @@ llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
     llvm::Value* term_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), buf, len);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_ptr);
 
-    return tagged_.packPtr(buf, ESHKOL_VALUE_STRING_PTR);
+    return tagged_.packHeapPtr(buf);
 }
 
 llvm::Value* StringIOCodegen::stringSet(const eshkol_operations_t* op) {
@@ -584,8 +596,8 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
 
     llvm::Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::Function* strlen_func = ctx_.funcs().getStrlen();
-    llvm::Function* malloc_func = ctx_.funcs().getMalloc();
     llvm::Function* memcpy_func = ctx_.funcs().getMemcpy();
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
 
     // Extract string pointer
     llvm::Value* str_ptr_int = tagged_.unpackInt64(str_arg);
@@ -614,9 +626,9 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     // Handle char delimiter: convert to single-char string
     ctx_.builder().SetInsertPoint(char_delim_block);
     llvm::Value* char_val = tagged_.unpackInt64(delim_arg);
-    // Allocate 2 bytes for single char + null terminator
-    llvm::Value* char_buf = ctx_.builder().CreateCall(malloc_func,
-        {llvm::ConstantInt::get(ctx_.int64Type(), 2)});
+    // Allocate 2 bytes for single char + null terminator (no header needed for temp buffer)
+    llvm::Value* char_buf = ctx_.builder().CreateCall(
+        ctx_.memory().getArenaAllocate(), {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 2)});
     // Store char and null terminator
     llvm::Value* char_i8 = ctx_.builder().CreateTrunc(char_val, ctx_.int8Type());
     ctx_.builder().CreateStore(char_i8, char_buf);
@@ -719,9 +731,10 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::Value* seg_start = ctx_.builder().CreateLoad(ctx_.int64Type(), segment_start_ptr);
     llvm::Value* seg_len = ctx_.builder().CreateSub(curr_pos, seg_start);
 
-    // Allocate new string for segment
+    // Allocate new string with header for segment
     llvm::Value* seg_buf_size = ctx_.builder().CreateAdd(seg_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    llvm::Value* seg_buf = ctx_.builder().CreateCall(malloc_func, {seg_buf_size});
+    llvm::Value* seg_buf = ctx_.builder().CreateCall(
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, seg_buf_size});
 
     // Copy characters using memcpy
     llvm::Value* src_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, seg_start);
@@ -731,17 +744,16 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::Value* term_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), seg_buf, seg_len);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_ptr);
 
-    // Create tagged string value
-    llvm::Value* seg_tagged = tagged_.packPtr(seg_buf, ESHKOL_VALUE_STRING_PTR);
+    // Create tagged string value (consolidated HEAP_PTR)
+    llvm::Value* seg_tagged = tagged_.packHeapPtr(seg_buf);
 
     // Cons this segment onto result using callback
     llvm::Value* curr_result = ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_ptr);
     llvm::Value* cons_ptr_int = cons_create_callback_(seg_tagged, curr_result, callback_context_);
 
     // Pack new cons cell
-    llvm::Value* new_result = tagged_.packPtr(
-        ctx_.builder().CreateIntToPtr(cons_ptr_int, ctx_.ptrType()),
-        ESHKOL_VALUE_CONS_PTR);
+    llvm::Value* new_result = tagged_.packHeapPtr(
+        ctx_.builder().CreateIntToPtr(cons_ptr_int, ctx_.ptrType()));
     ctx_.builder().CreateStore(new_result, result_ptr);
 
     // Update segment_start to pos + delim_len
@@ -855,7 +867,6 @@ llvm::Value* StringIOCodegen::stringUpcase(const eshkol_operations_t* op) {
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
     llvm::Function* strlen_func = ctx_.funcs().getStrlen();
-    llvm::Function* malloc_func = ctx_.funcs().getMalloc();
     llvm::Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
 
     // Get string length
@@ -863,8 +874,10 @@ llvm::Value* StringIOCodegen::stringUpcase(const eshkol_operations_t* op) {
     llvm::Value* buf_size = ctx_.builder().CreateAdd(str_len,
         llvm::ConstantInt::get(ctx_.int64Type(), 1));
 
-    // Allocate new string
-    llvm::Value* new_str = ctx_.builder().CreateCall(malloc_func, {buf_size});
+    // Allocate new string with header
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* new_str = ctx_.builder().CreateCall(
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
 
     // Create loop to convert each character
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "upcase_cond", parent_func);
@@ -919,7 +932,7 @@ llvm::Value* StringIOCodegen::stringUpcase(const eshkol_operations_t* op) {
     llvm::Value* term_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), new_str, str_len);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_ptr);
 
-    return tagged_.packPtr(new_str, ESHKOL_VALUE_STRING_PTR);
+    return tagged_.packHeapPtr(new_str);
 }
 
 llvm::Value* StringIOCodegen::stringDowncase(const eshkol_operations_t* op) {
@@ -941,7 +954,6 @@ llvm::Value* StringIOCodegen::stringDowncase(const eshkol_operations_t* op) {
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
     llvm::Function* strlen_func = ctx_.funcs().getStrlen();
-    llvm::Function* malloc_func = ctx_.funcs().getMalloc();
     llvm::Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
 
     // Get string length
@@ -949,8 +961,10 @@ llvm::Value* StringIOCodegen::stringDowncase(const eshkol_operations_t* op) {
     llvm::Value* buf_size = ctx_.builder().CreateAdd(str_len,
         llvm::ConstantInt::get(ctx_.int64Type(), 1));
 
-    // Allocate new string
-    llvm::Value* new_str = ctx_.builder().CreateCall(malloc_func, {buf_size});
+    // Allocate new string with header
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* new_str = ctx_.builder().CreateCall(
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
 
     // Create loop to convert each character
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "downcase_cond", parent_func);
@@ -1005,7 +1019,7 @@ llvm::Value* StringIOCodegen::stringDowncase(const eshkol_operations_t* op) {
     llvm::Value* term_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), new_str, str_len);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_ptr);
 
-    return tagged_.packPtr(new_str, ESHKOL_VALUE_STRING_PTR);
+    return tagged_.packHeapPtr(new_str);
 }
 
 llvm::Value* StringIOCodegen::stringToList(const eshkol_operations_t* op) {
@@ -1074,10 +1088,9 @@ llvm::Value* StringIOCodegen::stringToList(const eshkol_operations_t* op) {
     llvm::Value* current_list = ctx_.builder().CreateLoad(ctx_.taggedValueType(), list_ptr);
     llvm::Value* cons_ptr_int = cons_create_callback_(char_tagged, current_list, callback_context_);
 
-    // Pack cons cell pointer as tagged value with CONS_PTR type
-    llvm::Value* new_list = tagged_.packPtr(
-        ctx_.builder().CreateIntToPtr(cons_ptr_int, ctx_.ptrType()),
-        ESHKOL_VALUE_CONS_PTR);
+    // Pack cons cell pointer as tagged value with HEAP_PTR type (consolidated)
+    llvm::Value* new_list = tagged_.packHeapPtr(
+        ctx_.builder().CreateIntToPtr(cons_ptr_int, ctx_.ptrType()));
     ctx_.builder().CreateStore(new_list, list_ptr);
 
     // Decrement index
@@ -1106,10 +1119,9 @@ llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
 
     // Ensure list_arg is a tagged value (codegenList returns i64 cons pointer)
     if (list_arg->getType() != ctx_.taggedValueType()) {
-        // It's an i64 cons pointer, pack it as tagged value
-        list_arg = tagged_.packPtr(
-            ctx_.builder().CreateIntToPtr(list_arg, ctx_.ptrType()),
-            ESHKOL_VALUE_CONS_PTR);
+        // It's an i64 cons pointer, pack it as HEAP_PTR tagged value
+        list_arg = tagged_.packHeapPtr(
+            ctx_.builder().CreateIntToPtr(list_arg, ctx_.ptrType()));
     }
 
     llvm::Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -1161,12 +1173,13 @@ llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(cdr_val, list_iter_ptr);
     ctx_.builder().CreateBr(count_cond);
 
-    // Count end: allocate string buffer
+    // Count end: allocate string buffer with header
     ctx_.builder().SetInsertPoint(count_end);
     llvm::Value* final_count = ctx_.builder().CreateLoad(ctx_.int64Type(), count_ptr);
     llvm::Value* buf_size = ctx_.builder().CreateAdd(final_count, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    llvm::Function* malloc_func = ctx_.funcs().getMalloc();
-    llvm::Value* str_buf = ctx_.builder().CreateCall(malloc_func, {buf_size});
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* str_buf = ctx_.builder().CreateCall(
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
 
     // Reset iterator and index for filling
     ctx_.builder().CreateStore(list_arg, list_iter_ptr);
@@ -1214,7 +1227,7 @@ llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
     llvm::Value* term_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_buf, term_idx);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_ptr);
 
-    return tagged_.packPtr(str_buf, ESHKOL_VALUE_STRING_PTR);
+    return tagged_.packHeapPtr(str_buf);
 }
 
 llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
@@ -1276,9 +1289,9 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
             // Display S-expression if valid
             ctx_.builder().SetInsertPoint(sexpr_ok);
             {
-                // Create tagged value with type CONS_PTR for the S-expression
+                // Create tagged value with type HEAP_PTR for the S-expression (consolidated)
                 llvm::Value* sexpr_tagged = llvm::UndefValue::get(ctx_.taggedValueType());
-                llvm::Value* cons_type = llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR);
+                llvm::Value* cons_type = llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR);
                 sexpr_tagged = ctx_.builder().CreateInsertValue(sexpr_tagged, cons_type, {0});
                 sexpr_tagged = ctx_.builder().CreateInsertValue(sexpr_tagged, sexpr_list, {4});
 
@@ -1421,10 +1434,10 @@ llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op) {
     llvm::Value* file_ptr_int = ctx_.builder().CreatePtrToInt(file_ptr, ctx_.int64Type());
 
     // Pack as a tagged value with a special "port" type
-    // We'll use ESHKOL_VALUE_CONS_PTR + 0x10 flag to indicate it's a port
+    // We'll use ESHKOL_VALUE_HEAP_PTR + 0x10 flag to indicate it's a port
     llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
     result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR | 0x10), {0}); // type = port
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR | 0x10), {0}); // type = port
     result = ctx_.builder().CreateInsertValue(result,
         llvm::ConstantInt::get(ctx_.int8Type(), 0), {1}); // flags
     result = ctx_.builder().CreateInsertValue(result,
@@ -1470,7 +1483,7 @@ llvm::Value* StringIOCodegen::openOutputFile(const eshkol_operations_t* op) {
     // NOTE: Use 0x40 instead of 0x20 because CONS_PTR=32=0x20, so 32|0x20=32!
     llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
     result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR | 0x40), {0}); // type = output port
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR | 0x40), {0}); // type = output port
     result = ctx_.builder().CreateInsertValue(result,
         llvm::ConstantInt::get(ctx_.int8Type(), 0), {1}); // flags
     result = ctx_.builder().CreateInsertValue(result,
@@ -1493,8 +1506,7 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
 
     llvm::Function* fgets_func = getOrDeclareFgets(ctx_);
     llvm::Function* strlen_func = ctx_.funcs().getStrlen();
-    llvm::Function* malloc_func = ctx_.funcs().getMalloc();
-    if (!fgets_func || !strlen_func || !malloc_func) return nullptr;
+    if (!fgets_func || !strlen_func) return nullptr;
 
     // Get port argument
     void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
@@ -1506,9 +1518,11 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
     llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(tagged, {4});
     llvm::Value* file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
 
-    // Allocate a buffer for reading (1024 bytes)
+    // Allocate a buffer with header for reading (1024 bytes)
     llvm::Value* buffer_size = llvm::ConstantInt::get(ctx_.int64Type(), 1024);
-    llvm::Value* buffer = ctx_.builder().CreateCall(malloc_func, {buffer_size});
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* buffer = ctx_.builder().CreateCall(
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buffer_size});
 
     // Call fgets
     llvm::Value* result_ptr = ctx_.builder().CreateCall(fgets_func, {
@@ -1562,11 +1576,11 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(no_strip_block);
 
-    // Pack string as tagged value
+    // Pack string as tagged value (consolidated HEAP_PTR)
     llvm::Value* buffer_int = ctx_.builder().CreatePtrToInt(buffer, ctx_.int64Type());
     llvm::Value* str_result = llvm::UndefValue::get(ctx_.taggedValueType());
     str_result = ctx_.builder().CreateInsertValue(str_result,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_STRING_PTR), {0});
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR), {0});
     str_result = ctx_.builder().CreateInsertValue(str_result,
         llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
     str_result = ctx_.builder().CreateInsertValue(str_result,
