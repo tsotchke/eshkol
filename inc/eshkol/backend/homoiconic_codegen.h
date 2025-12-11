@@ -83,6 +83,17 @@ public:
      */
     llvm::Value* lambdaToSExpr(const eshkol_operations_t* op);
 
+    /**
+     * Create an S-expression for a builtin primitive.
+     *
+     * Returns (primitive name) for display purposes.
+     * Used when builtin operators like +, -, *, / are stored in variables.
+     *
+     * @param name The primitive name (e.g., "+", "-", "*", "/")
+     * @return Cons list pointer (i64) representing the primitive
+     */
+    llvm::Value* builtinToSExpr(const std::string& name);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;

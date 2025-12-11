@@ -62,6 +62,9 @@ public:
     // Hash table creation
     llvm::Value* makeHashTable(const eshkol_operations_t* op);
 
+    // Type predicate - handles both legacy HASH_PTR and consolidated HEAP_PTR+HASH
+    llvm::Value* isHashTable(const eshkol_operations_t* op);
+
     // Hash table operations
     llvm::Value* hashSet(const eshkol_operations_t* op);
     llvm::Value* hashRef(const eshkol_operations_t* op);

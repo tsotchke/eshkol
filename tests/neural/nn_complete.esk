@@ -276,9 +276,10 @@
   (newline)
   
   ;; Function: f(x, y) = x^2 + y^2
+  ;; NOTE: Use vector-ref for vectors (gradient passes vectors internally)
   (define (f v)
-    (let ((x (car v))
-          (y (cadr v)))
+    (let ((x (vector-ref v 0))
+          (y (vector-ref v 1)))
       (+ (* x x) (* y y))))
   
   ;; Point to evaluate gradient

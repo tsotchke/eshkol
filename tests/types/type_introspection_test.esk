@@ -7,22 +7,18 @@
 (require stdlib)
 
 ;; ============================================================================
-;; Type Constants (from eshkol_value_type_t in eshkol.h)
+;; Type Constants (M1 Consolidated Pointer System)
 ;; ============================================================================
-;; ESHKOL_VALUE_NULL        = 0   ; Empty/null value
-;; ESHKOL_VALUE_INT64       = 1   ; 64-bit signed integer
-;; ESHKOL_VALUE_DOUBLE      = 2   ; Double-precision floating point
-;; ESHKOL_VALUE_CONS_PTR    = 3   ; Pointer to cons cell (list)
-;; ESHKOL_VALUE_DUAL_NUMBER = 4   ; Dual number for forward-mode AD
-;; ESHKOL_VALUE_AD_NODE_PTR = 5   ; Pointer to AD computation graph node
-;; ESHKOL_VALUE_TENSOR_PTR  = 6   ; Pointer to tensor structure
-;; ESHKOL_VALUE_LAMBDA_SEXPR= 7   ; Lambda S-expression metadata
-;; ESHKOL_VALUE_STRING_PTR  = 8   ; Pointer to string
-;; ESHKOL_VALUE_CHAR        = 9   ; Character (Unicode codepoint)
-;; ESHKOL_VALUE_VECTOR_PTR  = 10  ; Pointer to Scheme vector
-;; ESHKOL_VALUE_SYMBOL      = 11  ; Symbol (interned string)
-;; ESHKOL_VALUE_CLOSURE_PTR = 12  ; Pointer to closure
-;; ESHKOL_VALUE_BOOL        = 13  ; Boolean (#t or #f)
+;; ESHKOL_VALUE_NULL      = 0   ; Empty/null value
+;; ESHKOL_VALUE_INT64     = 1   ; 64-bit signed integer
+;; ESHKOL_VALUE_DOUBLE    = 2   ; Double-precision floating point
+;; ESHKOL_VALUE_BOOL      = 3   ; Boolean (#t or #f)
+;; ESHKOL_VALUE_CHAR      = 4   ; Character (Unicode codepoint)
+;; ESHKOL_VALUE_SYMBOL    = 5   ; Symbol (interned string)
+;; ESHKOL_VALUE_DUAL      = 6   ; Dual number for forward-mode AD
+;; ESHKOL_VALUE_UNDEFINED = 7   ; Undefined value
+;; ESHKOL_VALUE_HEAP_PTR  = 8   ; Heap pointer (cons, string, vector, tensor, hash)
+;; ESHKOL_VALUE_CALLABLE  = 9   ; Callable pointer (closure, lambda, ad-node)
 
 ;; Test framework
 (define tests-passed 0)
@@ -68,16 +64,16 @@
 
 (check "type-of integer" 1 (type-of 42))
 (check "type-of float" 2 (type-of 3.14))
-(check "type-of boolean" 13 (type-of #t))
-(check "type-of list" 3 (type-of (list 1 2 3)))
+(check "type-of boolean" 3 (type-of #t))
+(check "type-of list" 8 (type-of (list 1 2 3)))
 (check "type-of string" 8 (type-of "hello"))
 (check "type-of null" 0 (type-of '()))
-(check "type-of vector" 10 (type-of (vector 1 2 3)))
-(check "type-of char" 9 (type-of #\a))
+(check "type-of vector" 8 (type-of (vector 1 2 3)))
+(check "type-of char" 4 (type-of #\a))
 
-;; Lambda/closure type
+;; Lambda/closure type (CALLABLE = 9)
 (define my-func (lambda (x) (+ x 1)))
-(check "type-of lambda" 12 (type-of my-func))
+(check "type-of lambda" 9 (type-of my-func))
 
 (display "\n═══ Section 2: Type predicates ═══\n")
 

@@ -239,13 +239,12 @@ Value* CallApplyCodegen::applyCons(Value* list_int) {
     Value* second_cons = ctx_.builder().CreateIntToPtr(rest_int, ctx_.ptrType());
     Value* second_elem = extractConsCarAsTaggedValue(second_cons);
 
-    // Create cons cell using callback - returns i64 pointer, need to pack as CONS_PTR tagged value
+    // Create cons cell using callback - returns i64 pointer with header (consolidated format)
     Value* result;
     if (create_cons_callback_) {
         Value* cons_ptr_int = create_cons_callback_(first_elem, second_elem, callback_context_);
-        result = tagged_.packPtr(
-            ctx_.builder().CreateIntToPtr(cons_ptr_int, ctx_.ptrType()),
-            ESHKOL_VALUE_CONS_PTR);
+        result = tagged_.packHeapPtr(
+            ctx_.builder().CreateIntToPtr(cons_ptr_int, ctx_.ptrType()));
     } else {
         eshkol_error("applyCons: create_cons_callback not set");
         result = tagged_.packNull();
@@ -440,8 +439,8 @@ Value* CallApplyCodegen::applyUserFunction(Function* func, Value* list_int) {
 
     // For variadic functions, pass remaining list as rest parameter
     if (is_variadic) {
-        // Pack as CONS_PTR tagged value (or NULL if empty)
-        Value* rest_tagged = tagged_.packPtr(current, ESHKOL_VALUE_CONS_PTR);
+        // Pack as HEAP_PTR tagged value (or NULL if empty) - consolidated format
+        Value* rest_tagged = tagged_.packHeapPtr(current);
         args.push_back(rest_tagged);
     }
 
@@ -511,16 +510,21 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
     Value* final_count = count_phi;
 
     // Get closure info
-    // Use getBaseType() to properly handle legacy types (CLOSURE_PTR=34, etc.)
-    // DO NOT use 0x0F mask - 34 & 0x0F = 2 (FLOAT64) which is WRONG!
+    // Use getBaseType() to properly handle legacy types (CLOSURE_PTR=38, etc.)
+    // DO NOT use 0x0F mask - 38 & 0x0F = 6 which is WRONG!
+    // M1 CONSOLIDATION COMPLETE: All callable objects use CALLABLE type (9)
+    // Legacy CLOSURE_PTR (38) is no longer used
     Value* type_tag = tagged_.getType(func_value);
     Value* base_type = tagged_.getBaseType(type_tag);
     Value* is_closure = ctx_.builder().CreateICmpEQ(base_type,
-        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
 
     BasicBlock* closure_path = BasicBlock::Create(ctx_.context(), "apply_closure", current_func);
     BasicBlock* direct_path = BasicBlock::Create(ctx_.context(), "apply_direct", current_func);
     BasicBlock* merge_bb = BasicBlock::Create(ctx_.context(), "apply_merge", current_func);
+
+    // Declare closure_results early so we can add arithmetic results
+    std::vector<std::pair<BasicBlock*, Value*>> closure_results;
 
     ctx_.builder().CreateCondBr(is_closure, closure_path, direct_path);
 
@@ -533,10 +537,74 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
     Value* func_ptr_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(), closure_ptr);
     Value* actual_func_ptr = ctx_.builder().CreateIntToPtr(func_ptr_i64, ctx_.ptrType());
 
+    // VARIADIC ARITHMETIC FIX: Check if closure wraps a builtin arithmetic function
+    // If so, use applyArithmetic to handle all arguments correctly
+    if (get_builtin_arithmetic_callback_) {
+        Function* builtin_add = get_builtin_arithmetic_callback_("+", callback_context_);
+        Function* builtin_sub = get_builtin_arithmetic_callback_("-", callback_context_);
+        Function* builtin_mul = get_builtin_arithmetic_callback_("*", callback_context_);
+        Function* builtin_div = get_builtin_arithmetic_callback_("/", callback_context_);
+
+        BasicBlock* closure_add_block = BasicBlock::Create(ctx_.context(), "closure_builtin_add", current_func);
+        BasicBlock* closure_sub_check = BasicBlock::Create(ctx_.context(), "closure_sub_check", current_func);
+        BasicBlock* closure_sub_block = BasicBlock::Create(ctx_.context(), "closure_builtin_sub", current_func);
+        BasicBlock* closure_mul_check = BasicBlock::Create(ctx_.context(), "closure_mul_check", current_func);
+        BasicBlock* closure_mul_block = BasicBlock::Create(ctx_.context(), "closure_builtin_mul", current_func);
+        BasicBlock* closure_div_check = BasicBlock::Create(ctx_.context(), "closure_div_check", current_func);
+        BasicBlock* closure_div_block = BasicBlock::Create(ctx_.context(), "closure_builtin_div", current_func);
+        BasicBlock* closure_regular = BasicBlock::Create(ctx_.context(), "closure_regular", current_func);
+
+        // Check for builtin +
+        Value* is_closure_add = ctx_.builder().CreateICmpEQ(actual_func_ptr, builtin_add);
+        ctx_.builder().CreateCondBr(is_closure_add, closure_add_block, closure_sub_check);
+
+        // Add block
+        ctx_.builder().SetInsertPoint(closure_add_block);
+        Value* closure_add_result = applyArithmetic("+", list_int);
+        ctx_.builder().CreateBr(merge_bb);
+        closure_results.push_back({ctx_.builder().GetInsertBlock(), closure_add_result});
+
+        // Check for builtin -
+        ctx_.builder().SetInsertPoint(closure_sub_check);
+        Value* is_closure_sub = ctx_.builder().CreateICmpEQ(actual_func_ptr, builtin_sub);
+        ctx_.builder().CreateCondBr(is_closure_sub, closure_sub_block, closure_mul_check);
+
+        ctx_.builder().SetInsertPoint(closure_sub_block);
+        Value* closure_sub_result = applyArithmetic("-", list_int);
+        ctx_.builder().CreateBr(merge_bb);
+        closure_results.push_back({ctx_.builder().GetInsertBlock(), closure_sub_result});
+
+        // Check for builtin *
+        ctx_.builder().SetInsertPoint(closure_mul_check);
+        Value* is_closure_mul = ctx_.builder().CreateICmpEQ(actual_func_ptr, builtin_mul);
+        ctx_.builder().CreateCondBr(is_closure_mul, closure_mul_block, closure_div_check);
+
+        ctx_.builder().SetInsertPoint(closure_mul_block);
+        Value* closure_mul_result = applyArithmetic("*", list_int);
+        ctx_.builder().CreateBr(merge_bb);
+        closure_results.push_back({ctx_.builder().GetInsertBlock(), closure_mul_result});
+
+        // Check for builtin /
+        ctx_.builder().SetInsertPoint(closure_div_check);
+        Value* is_closure_div = ctx_.builder().CreateICmpEQ(actual_func_ptr, builtin_div);
+        ctx_.builder().CreateCondBr(is_closure_div, closure_div_block, closure_regular);
+
+        ctx_.builder().SetInsertPoint(closure_div_block);
+        Value* closure_div_result = applyArithmetic("/", list_int);
+        ctx_.builder().CreateBr(merge_bb);
+        closure_results.push_back({ctx_.builder().GetInsertBlock(), closure_div_result});
+
+        // Continue with regular closure handling
+        ctx_.builder().SetInsertPoint(closure_regular);
+    }
+
     // Load env and num_captures
     Value* env_ptr_addr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr,
         ConstantInt::get(ctx_.int64Type(), 8));
     Value* env_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), env_ptr_addr);
+
+    // Save current block for PHI node - this may be closure_path or closure_regular
+    BasicBlock* pre_env_check_bb = ctx_.builder().GetInsertBlock();
 
     Value* env_null = ctx_.builder().CreateICmpEQ(env_ptr,
         ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
@@ -551,7 +619,7 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
 
     ctx_.builder().SetInsertPoint(env_checked_bb);
     PHINode* num_captures_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "num_captures");
-    num_captures_phi->addIncoming(ConstantInt::get(ctx_.int64Type(), 0), closure_path);
+    num_captures_phi->addIncoming(ConstantInt::get(ctx_.int64Type(), 0), pre_env_check_bb);
     num_captures_phi->addIncoming(loaded_captures, env_valid_bb);
 
     // Clamp captures to max
@@ -576,7 +644,7 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
     SwitchInst* sw = ctx_.builder().CreateSwitch(dispatch_idx, dispatch_default,
         (MAX_APPLY_ARGS + 1) * (MAX_APPLY_CAPTURES + 1));
 
-    std::vector<std::pair<BasicBlock*, Value*>> closure_results;
+    // Note: closure_results was declared earlier (before arithmetic handling)
 
     // Generate cases for each (arg_count, capture_count) pair
     for (int ac = 0; ac <= MAX_APPLY_ARGS; ac++) {

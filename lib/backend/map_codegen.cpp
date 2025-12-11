@@ -330,9 +330,9 @@ Value* MapCodegen::mapWithClosure(Value* closure_val, Value* list) {
     // Tagged cons cell has: car (16 bytes) then cdr (16 bytes for tagged_value)
     Value* tail_cdr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), tail_cons,
         ConstantInt::get(ctx_.int64Type(), 16));
-    // Store new_cons as cdr (pack as CONS_PTR)
+    // Store new_cons as cdr (pack as HEAP_PTR - consolidated pointer format)
     Value* new_cons_as_ptr = ctx_.builder().CreateIntToPtr(new_cons_int, ctx_.ptrType());
-    Value* new_cons_tagged = tagged_.packPtr(new_cons_as_ptr, ESHKOL_VALUE_CONS_PTR);
+    Value* new_cons_tagged = tagged_.packHeapPtr(new_cons_as_ptr);
     ctx_.builder().CreateStore(new_cons_tagged, tail_cdr_ptr);
     ctx_.builder().CreateStore(new_cons_int, result_tail);
     ctx_.builder().CreateBr(continue_bb);
@@ -358,9 +358,8 @@ Value* MapCodegen::mapWithClosure(Value* closure_val, Value* list) {
     Value* final_head = ctx_.builder().CreateLoad(ctx_.int64Type(), result_head);
     Value* is_empty = ctx_.builder().CreateICmpEQ(final_head, ConstantInt::get(ctx_.int64Type(), 0));
     Value* null_val = tagged_.packNull();
-    Value* list_val = tagged_.packPtr(
-        ctx_.builder().CreateIntToPtr(final_head, ctx_.ptrType()),
-        ESHKOL_VALUE_CONS_PTR);
+    Value* list_val = tagged_.packHeapPtr(
+        ctx_.builder().CreateIntToPtr(final_head, ctx_.ptrType()));
     return ctx_.builder().CreateSelect(is_empty, null_val, list_val);
 }
 
@@ -413,12 +412,11 @@ void MapCodegen::loadCapturedValues(
         }
 
         if (found && storage) {
-            // MUTABLE CAPTURE FIX: For let-bound allocas or arena pointers, we need to:
+            // MUTABLE CAPTURE FIX: For let-bound allocas, arena pointers, or GlobalVariables:
             // 1. Pack the storage address as an int64 in a tagged_value
             // 2. Store in temp storage and pass pointer to temp storage
-            // CLOSURE ESCAPE FIX: Also handle arena pointers (from escaped closure captures)
-            bool needs_ptr_packing = isa<AllocaInst>(storage) ||
-                (storage->getType()->isPointerTy() && !isa<GlobalVariable>(storage) && !isa<Argument>(storage));
+            bool needs_ptr_packing = isa<AllocaInst>(storage) || isa<GlobalVariable>(storage) ||
+                (storage->getType()->isPointerTy() && !isa<Argument>(storage));
 
             if (needs_ptr_packing) {
                 Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -456,14 +454,13 @@ void MapCodegen::loadCapturedValues(
             }
 
             if (var_storage) {
-                // MUTABLE CAPTURE FIX: For let-bound allocas or arena pointers, we need to:
+                // MUTABLE CAPTURE FIX: For let-bound allocas, arena pointers, or GlobalVariables:
                 // 1. Pack the storage address as an int64
                 // 2. Wrap that in a tagged_value
                 // 3. Store in temp storage
                 // 4. Pass pointer to temp storage
-                // CLOSURE ESCAPE FIX: Also handle arena pointers (from escaped closure captures)
-                bool needs_ptr_packing = isa<AllocaInst>(var_storage) ||
-                    (var_storage->getType()->isPointerTy() && !isa<GlobalVariable>(var_storage) && !isa<Argument>(var_storage));
+                bool needs_ptr_packing = isa<AllocaInst>(var_storage) || isa<GlobalVariable>(var_storage) ||
+                    (var_storage->getType()->isPointerTy() && !isa<Argument>(var_storage));
 
                 if (needs_ptr_packing) {
                     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -486,11 +483,6 @@ void MapCodegen::loadCapturedValues(
                     ctx_.builder().CreateStore(var_storage, temp_alloca);
                     args.push_back(temp_alloca);
                     eshkol_debug("Map: created temp storage for Argument var '%s' for lambda '%s'",
-                                var_name.c_str(), lambda_name.c_str());
-                } else if (isa<GlobalVariable>(var_storage)) {
-                    // Global variables can be passed directly - the lambda will load from them
-                    args.push_back(var_storage);
-                    eshkol_debug("Map: using GlobalVariable '%s' directly for lambda '%s'",
                                 var_name.c_str(), lambda_name.c_str());
                 } else {
                     args.push_back(var_storage);
@@ -619,7 +611,7 @@ Value* MapCodegen::mapSingleList(Function* proc_func, Value* list) {
     Value* tail_cons_ptr = ctx_.builder().CreateIntToPtr(tail_val, ctx_.ptrType());
 
     Value* is_cdr_set = ConstantInt::get(ctx_.int1Type(), 1);
-    Value* ptr_type = ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR);
+    Value* ptr_type = ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateCall(cons_set_ptr, {tail_cons_ptr, is_cdr_set, new_result_cons, ptr_type});
     ctx_.builder().CreateStore(new_result_cons, result_tail);
     ctx_.builder().CreateBr(continue_map);
@@ -638,8 +630,7 @@ Value* MapCodegen::mapSingleList(Function* proc_func, Value* list) {
 
     eshkol_debug("Single-list map completed - cons cells remain persistent in arena memory");
 
-    return tagged_.packPtr(ctx_.builder().CreateIntToPtr(final_result, ctx_.ptrType()),
-                          ESHKOL_VALUE_CONS_PTR);
+    return tagged_.packHeapPtr(ctx_.builder().CreateIntToPtr(final_result, ctx_.ptrType()));
 }
 
 Value* MapCodegen::mapMultiList(Function* proc_func, const std::vector<Value*>& lists) {
@@ -756,7 +747,7 @@ Value* MapCodegen::mapMultiList(Function* proc_func, const std::vector<Value*>& 
     Value* tail_cons_ptr = ctx_.builder().CreateIntToPtr(tail_val, ctx_.ptrType());
 
     Value* is_cdr_set = ConstantInt::get(ctx_.int1Type(), 1);
-    Value* ptr_type = ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR);
+    Value* ptr_type = ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateCall(cons_set_ptr, {tail_cons_ptr, is_cdr_set, new_result_cons, ptr_type});
     ctx_.builder().CreateStore(new_result_cons, result_tail);
     ctx_.builder().CreateBr(continue_multimap);
@@ -780,8 +771,7 @@ Value* MapCodegen::mapMultiList(Function* proc_func, const std::vector<Value*>& 
 
     eshkol_debug("Multi-list map completed - cons cells remain persistent in arena memory");
 
-    return tagged_.packPtr(ctx_.builder().CreateIntToPtr(final_result, ctx_.ptrType()),
-                          ESHKOL_VALUE_CONS_PTR);
+    return tagged_.packHeapPtr(ctx_.builder().CreateIntToPtr(final_result, ctx_.ptrType()));
 }
 
 } // namespace eshkol

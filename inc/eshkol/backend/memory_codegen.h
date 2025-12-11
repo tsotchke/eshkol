@@ -43,12 +43,18 @@ public:
     llvm::Function* getArenaPushScope() const { return arena_push_scope; }
     llvm::Function* getArenaPopScope() const { return arena_pop_scope; }
 
-    // Cons cell allocation
+    // Cons cell allocation (legacy - no header)
     llvm::Function* getArenaAllocateConsCell() const { return arena_allocate_cons_cell; }
     llvm::Function* getArenaAllocateTaggedConsCell() const { return arena_allocate_tagged_cons_cell; }
 
-    // Closure allocation
+    // Closure allocation (legacy - no header)
     llvm::Function* getArenaAllocateClosure() const { return arena_allocate_closure; }
+
+    // ─── NEW: Typed allocators with object headers (for consolidated types) ───
+    llvm::Function* getArenaAllocateConsWithHeader() const { return arena_allocate_cons_with_header; }
+    llvm::Function* getArenaAllocateStringWithHeader() const { return arena_allocate_string_with_header; }
+    llvm::Function* getArenaAllocateVectorWithHeader() const { return arena_allocate_vector_with_header; }
+    llvm::Function* getArenaAllocateClosureWithHeader() const { return arena_allocate_closure_with_header; }
 
     // Tagged cons cell getters
     llvm::Function* getTaggedConsGetInt64() const { return tagged_cons_get_int64; }
@@ -74,6 +80,17 @@ public:
 
     // AD node allocation
     llvm::Function* getArenaAllocateAdNode() const { return arena_allocate_ad_node; }
+    llvm::Function* getArenaAllocateAdNodeWithHeader() const { return arena_allocate_ad_node_with_header; }
+
+    // Hash table allocation (with header for HEAP_PTR type)
+    llvm::Function* getArenaHashTableCreateWithHeader() const { return arena_hash_table_create_with_header; }
+
+    // Tensor allocation (with header for HEAP_PTR type)
+    llvm::Function* getArenaAllocateTensorWithHeader() const { return arena_allocate_tensor_with_header; }
+    llvm::Function* getArenaAllocateTensorFull() const { return arena_allocate_tensor_full; }
+
+    // Exception allocation (with header for HEAP_PTR type)
+    llvm::Function* getMakeExceptionWithHeader() const { return eshkol_make_exception_with_header; }
 
 private:
     llvm::Module& module;
@@ -87,12 +104,18 @@ private:
     llvm::Function* arena_push_scope;
     llvm::Function* arena_pop_scope;
 
-    // Cons cell allocation
+    // Cons cell allocation (legacy - no header)
     llvm::Function* arena_allocate_cons_cell;
     llvm::Function* arena_allocate_tagged_cons_cell;
 
-    // Closure allocation
+    // Closure allocation (legacy - no header)
     llvm::Function* arena_allocate_closure;
+
+    // NEW: Typed allocators with object headers (for consolidated types)
+    llvm::Function* arena_allocate_cons_with_header;
+    llvm::Function* arena_allocate_string_with_header;
+    llvm::Function* arena_allocate_vector_with_header;
+    llvm::Function* arena_allocate_closure_with_header;
 
     // Tagged cons cell getters
     llvm::Function* tagged_cons_get_int64;
@@ -118,6 +141,17 @@ private:
 
     // AD node allocation
     llvm::Function* arena_allocate_ad_node;
+    llvm::Function* arena_allocate_ad_node_with_header;
+
+    // Hash table allocation (with header for HEAP_PTR type)
+    llvm::Function* arena_hash_table_create_with_header;
+
+    // Tensor allocation (with header for HEAP_PTR type)
+    llvm::Function* arena_allocate_tensor_with_header;
+    llvm::Function* arena_allocate_tensor_full;
+
+    // Exception allocation (with header for HEAP_PTR type)
+    llvm::Function* eshkol_make_exception_with_header;
 
     // Helper to create function declarations
     llvm::Function* createFunc(const char* name, llvm::FunctionType* ft);
@@ -130,6 +164,7 @@ private:
     void createTaggedConsSetters();
     void createTapeFunctions();
     void createAdNodeFunctions();
+    void createTypedAllocatorFunctions();  // NEW: For consolidated type allocators
 };
 
 } // namespace eshkol

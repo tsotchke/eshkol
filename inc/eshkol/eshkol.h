@@ -80,18 +80,22 @@ typedef enum {
     ESHKOL_VALUE_EVENT       = 19,  // Input/system events
 
     // ═══════════════════════════════════════════════════════════════════════
-    // LEGACY TYPES - For backward compatibility during migration
-    // These will be REMOVED once migration is complete
+    // LEGACY TYPES (DEPRECATED) - For display system backward compatibility only
+    // M1 Migration is COMPLETE. New code MUST use consolidated types:
+    //   - HEAP_PTR (8) + subtype for: cons, string, vector, tensor, hash, exception
+    //   - CALLABLE (9) + subtype for: closure, lambda-sexpr, ad-node
+    // These constants are retained only for the display system to render old data.
+    // DO NOT use these in new code - they will be removed in a future version.
     // ═══════════════════════════════════════════════════════════════════════
-    ESHKOL_VALUE_CONS_PTR    = 32,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_CONS
-    ESHKOL_VALUE_STRING_PTR  = 33,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_STRING
-    ESHKOL_VALUE_VECTOR_PTR  = 34,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_VECTOR
-    ESHKOL_VALUE_TENSOR_PTR  = 35,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_TENSOR
-    ESHKOL_VALUE_HASH_PTR    = 36,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_HASH
-    ESHKOL_VALUE_EXCEPTION   = 37,  // LEGACY: use HEAP_PTR + HEAP_SUBTYPE_EXCEPTION
-    ESHKOL_VALUE_CLOSURE_PTR = 38,  // LEGACY: use CALLABLE + CALLABLE_SUBTYPE_CLOSURE
-    ESHKOL_VALUE_LAMBDA_SEXPR = 39, // LEGACY: use CALLABLE + CALLABLE_SUBTYPE_LAMBDA_SEXPR
-    ESHKOL_VALUE_AD_NODE_PTR = 40,  // LEGACY: use CALLABLE + CALLABLE_SUBTYPE_AD_NODE
+    ESHKOL_VALUE_CONS_PTR    = 32,  // DEPRECATED: use HEAP_PTR + HEAP_SUBTYPE_CONS
+    ESHKOL_VALUE_STRING_PTR  = 33,  // DEPRECATED: use HEAP_PTR + HEAP_SUBTYPE_STRING
+    ESHKOL_VALUE_VECTOR_PTR  = 34,  // DEPRECATED: use HEAP_PTR + HEAP_SUBTYPE_VECTOR
+    ESHKOL_VALUE_TENSOR_PTR  = 35,  // DEPRECATED: use HEAP_PTR + HEAP_SUBTYPE_TENSOR
+    ESHKOL_VALUE_HASH_PTR    = 36,  // DEPRECATED: use HEAP_PTR + HEAP_SUBTYPE_HASH
+    ESHKOL_VALUE_EXCEPTION   = 37,  // DEPRECATED: use HEAP_PTR + HEAP_SUBTYPE_EXCEPTION
+    ESHKOL_VALUE_CLOSURE_PTR = 38,  // DEPRECATED: use CALLABLE + CALLABLE_SUBTYPE_CLOSURE
+    ESHKOL_VALUE_LAMBDA_SEXPR = 39, // DEPRECATED: use CALLABLE + CALLABLE_SUBTYPE_LAMBDA_SEXPR
+    ESHKOL_VALUE_AD_NODE_PTR = 40,  // DEPRECATED: use CALLABLE + CALLABLE_SUBTYPE_AD_NODE
 } eshkol_value_type_t;
 
 // Type flags for Scheme exactness tracking
@@ -194,29 +198,35 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 
 // Storage type checks - for cons cell setters that take int64 or double storage
 // INT64 storage: INT64, BOOL, CHAR, SYMBOL (types that use int_val in the union)
-// Also includes legacy pointer types (32+) which store pointer addresses as int64
+// Also includes legacy pointer types (32+) and consolidated types (HEAP_PTR, CALLABLE)
+// which store pointer addresses as int64
 #define ESHKOL_IS_INT_STORAGE_TYPE(type) ((type) == ESHKOL_VALUE_INT64 || \
                                           (type) == ESHKOL_VALUE_BOOL || \
                                           (type) == ESHKOL_VALUE_CHAR || \
                                           (type) == ESHKOL_VALUE_SYMBOL || \
+                                          (type) == ESHKOL_VALUE_HEAP_PTR || \
+                                          (type) == ESHKOL_VALUE_CALLABLE || \
                                           (type) >= 32)
 
 // Consolidated type checks
 #define ESHKOL_IS_HEAP_PTR_TYPE(type)    ((type) == ESHKOL_VALUE_HEAP_PTR)
 #define ESHKOL_IS_CALLABLE_TYPE(type)    ((type) == ESHKOL_VALUE_CALLABLE)
 
-// Legacy type checks (for backward compatibility during migration)
-#define ESHKOL_IS_CONS_PTR_TYPE(type)    ((type) == ESHKOL_VALUE_CONS_PTR)
-#define ESHKOL_IS_STRING_PTR_TYPE(type)  ((type) == ESHKOL_VALUE_STRING_PTR)
-#define ESHKOL_IS_VECTOR_PTR_TYPE(type)  ((type) == ESHKOL_VALUE_VECTOR_PTR)
-#define ESHKOL_IS_TENSOR_PTR_TYPE(type)  ((type) == ESHKOL_VALUE_TENSOR_PTR)
-#define ESHKOL_IS_HASH_PTR_TYPE(type)    ((type) == ESHKOL_VALUE_HASH_PTR)
-#define ESHKOL_IS_EXCEPTION_TYPE(type)   ((type) == ESHKOL_VALUE_EXCEPTION)
-#define ESHKOL_IS_CLOSURE_PTR_TYPE(type) ((type) == ESHKOL_VALUE_CLOSURE_PTR)
-#define ESHKOL_IS_LAMBDA_SEXPR_TYPE(type) ((type) == ESHKOL_VALUE_LAMBDA_SEXPR)
-#define ESHKOL_IS_AD_NODE_PTR_TYPE(type) ((type) == ESHKOL_VALUE_AD_NODE_PTR)
+// ───────────────────────────────────────────────────────────────────────────
+// DEPRECATED Legacy type checks - for display system backward compatibility
+// New code should check HEAP_PTR/CALLABLE type and read subtype from header
+// ───────────────────────────────────────────────────────────────────────────
+#define ESHKOL_IS_CONS_PTR_TYPE(type)    ((type) == ESHKOL_VALUE_CONS_PTR)     // DEPRECATED
+#define ESHKOL_IS_STRING_PTR_TYPE(type)  ((type) == ESHKOL_VALUE_STRING_PTR)   // DEPRECATED
+#define ESHKOL_IS_VECTOR_PTR_TYPE(type)  ((type) == ESHKOL_VALUE_VECTOR_PTR)   // DEPRECATED
+#define ESHKOL_IS_TENSOR_PTR_TYPE(type)  ((type) == ESHKOL_VALUE_TENSOR_PTR)   // DEPRECATED
+#define ESHKOL_IS_HASH_PTR_TYPE(type)    ((type) == ESHKOL_VALUE_HASH_PTR)     // DEPRECATED
+#define ESHKOL_IS_EXCEPTION_TYPE(type)   ((type) == ESHKOL_VALUE_EXCEPTION)    // DEPRECATED
+#define ESHKOL_IS_CLOSURE_PTR_TYPE(type) ((type) == ESHKOL_VALUE_CLOSURE_PTR)  // DEPRECATED
+#define ESHKOL_IS_LAMBDA_SEXPR_TYPE(type) ((type) == ESHKOL_VALUE_LAMBDA_SEXPR) // DEPRECATED
+#define ESHKOL_IS_AD_NODE_PTR_TYPE(type) ((type) == ESHKOL_VALUE_AD_NODE_PTR)  // DEPRECATED
 
-// Combined type checks (new consolidated OR legacy individual)
+// Combined type checks (consolidated + legacy for display compatibility)
 #define ESHKOL_IS_ANY_HEAP_TYPE(type)    (ESHKOL_IS_HEAP_PTR_TYPE(type) || \
                                           ESHKOL_IS_CONS_PTR_TYPE(type) || \
                                           ESHKOL_IS_STRING_PTR_TYPE(type) || \
@@ -426,10 +436,12 @@ typedef enum {
     (--(ESHKOL_GET_HEADER(data_ptr)->ref_count))
 
 // ───────────────────────────────────────────────────────────────────────────
+// COMPATIBILITY MACROS FOR TYPE CHECKING (Display System Use)
 // ───────────────────────────────────────────────────────────────────────────
-// COMPATIBILITY MACROS FOR TYPE CHECKING
-// These macros work with BOTH old (legacy) and new (consolidated) formats.
-// Use these during the migration period to ensure code works with either format.
+// These macros support BOTH legacy and consolidated formats for the display
+// system to render old data. M1 Migration is COMPLETE - new code should use:
+//   - HEAP_PTR type + ESHKOL_GET_SUBTYPE() to check heap subtypes
+//   - CALLABLE type + ESHKOL_GET_SUBTYPE() to check callable subtypes
 // ───────────────────────────────────────────────────────────────────────────
 
 // Check if value is a cons cell (legacy CONS_PTR or new HEAP_PTR with CONS subtype)
@@ -629,6 +641,9 @@ _Static_assert(sizeof(eshkol_closure_env_t) == sizeof(size_t),
 #define CLOSURE_RETURN_STRING      0x06  // Returns a string
 #define CLOSURE_RETURN_VOID        0x07  // Returns null/void
 
+// Closure flags (stored in closure->flags field)
+#define CLOSURE_FLAG_VARIADIC      0x01  // Closure accepts variadic arguments
+
 // Full closure structure combining function pointer and environment
 // This is what gets allocated when a closure-returning function is called
 typedef struct eshkol_closure {
@@ -648,14 +663,32 @@ typedef struct eshkol_closure {
 #define CLOSURE_RETURNS_FUNCTION(closure) ((closure)->return_type == CLOSURE_RETURN_FUNCTION)
 #define CLOSURE_TYPE_KNOWN(closure) ((closure)->return_type != CLOSURE_RETURN_UNKNOWN)
 
-// Get closure return type from a tagged value (assumes ESHKOL_VALUE_CLOSURE_PTR type)
+// Get closure return type from a tagged value
+// Supports both consolidated CALLABLE type and legacy CLOSURE_PTR
 static inline uint8_t eshkol_closure_get_return_type(eshkol_tagged_value_t tagged) {
-    if ((tagged.type & 0x0F) != ESHKOL_VALUE_CLOSURE_PTR) {
-        return CLOSURE_RETURN_UNKNOWN;
+    uint8_t base_type = tagged.type & 0x3F;  // Mask off flags
+
+    // Check for consolidated CALLABLE type
+    if (base_type == ESHKOL_VALUE_CALLABLE) {
+        uint64_t ptr = tagged.data.ptr_val;
+        if (!ptr) return CLOSURE_RETURN_UNKNOWN;
+        // For CALLABLE, verify subtype is closure before reading
+        eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)ptr);
+        if (header->subtype != CALLABLE_SUBTYPE_CLOSURE) {
+            return CLOSURE_RETURN_UNKNOWN;
+        }
+        eshkol_closure_t* closure = (eshkol_closure_t*)ptr;
+        return closure->return_type;
     }
-    uint64_t ptr = tagged.data.ptr_val;
-    eshkol_closure_t* closure = (eshkol_closure_t*)ptr;
-    return closure ? closure->return_type : CLOSURE_RETURN_UNKNOWN;
+
+    // Legacy support: CLOSURE_PTR (deprecated)
+    if (base_type == ESHKOL_VALUE_CLOSURE_PTR) {
+        uint64_t ptr = tagged.data.ptr_val;
+        eshkol_closure_t* closure = (eshkol_closure_t*)ptr;
+        return closure ? closure->return_type : CLOSURE_RETURN_UNKNOWN;
+    }
+
+    return CLOSURE_RETURN_UNKNOWN;
 }
 
 // Check if a closure returns a vector (for autodiff)
@@ -711,6 +744,7 @@ extern eshkol_exception_handler_t* g_exception_handler_stack;
 
 // Exception API functions (implemented in arena_memory.cpp)
 eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t type, const char* message);
+eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exception_type_t type, const char* message);
 void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_tagged_value_t irritant);
 void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint32_t column, const char* filename);
 void eshkol_raise(eshkol_exception_t* exception);

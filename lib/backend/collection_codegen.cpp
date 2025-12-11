@@ -28,10 +28,11 @@ CollectionCodegen::CollectionCodegen(CodegenContext& ctx, TaggedValueCodegen& ta
 }
 
 llvm::Value* CollectionCodegen::allocConsCell(llvm::Value* car_val, llvm::Value* cdr_val) {
-    // Use arena-based tagged cons cell allocation
-    llvm::Function* alloc_func = mem_.getArenaAllocateTaggedConsCell();
+    // Use arena-based tagged cons cell allocation WITH object header (consolidated type format).
+    // This allocator prepends an eshkol_object_header_t with subtype HEAP_SUBTYPE_CONS.
+    llvm::Function* alloc_func = mem_.getArenaAllocateConsWithHeader();
     if (!alloc_func) {
-        eshkol_warn("arena_allocate_tagged_cons_cell not available");
+        eshkol_warn("arena_allocate_cons_with_header not available");
         return tagged_.packNull();
     }
 
@@ -50,7 +51,8 @@ llvm::Value* CollectionCodegen::allocConsCell(llvm::Value* car_val, llvm::Value*
 
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global, "arena");
 
-    // Allocate empty tagged cons cell (takes only arena pointer)
+    // Allocate tagged cons cell with object header (takes only arena pointer).
+    // Returns pointer to cons cell data; header is at (ptr - 8).
     llvm::Value* cons_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr}, "cons_cell");
 
     // Create allocas at function entry to ensure dominance
@@ -77,9 +79,10 @@ llvm::Value* CollectionCodegen::allocConsCell(llvm::Value* car_val, llvm::Value*
     ctx_.builder().CreateCall(set_func, {cons_ptr, is_car, car_ptr});
     ctx_.builder().CreateCall(set_func, {cons_ptr, is_cdr, cdr_ptr});
 
-    // Return pointer to cons cell as int64, packed as CONS_PTR
+    // Return pointer to cons cell as int64, packed with HEAP_PTR type (consolidated format).
+    // The object header contains HEAP_SUBTYPE_CONS to identify this as a cons cell.
     llvm::Value* cons_int = ctx_.builder().CreatePtrToInt(cons_ptr, ctx_.int64Type());
-    return tagged_.packPtr(cons_int, ESHKOL_VALUE_CONS_PTR);
+    return tagged_.packHeapPtr(cons_int);
 }
 
 // Note: The following implementations are complex and depend on:
@@ -141,16 +144,34 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(car_start);
 
     // VECTOR/TENSOR SUPPORT: Check if input is a vector or tensor type
+    // With consolidated types, CONS/VECTOR/TENSOR all use HEAP_PTR - must check subtype in header
     if (pair_val->getType() == ctx_.taggedValueType()) {
         llvm::Value* input_type = tagged_.getType(pair_val);
         llvm::Value* input_base_type = tagged_.getBaseType(input_type);
 
-        // Check for VECTOR_PTR (Scheme vector) or TENSOR_PTR
-        llvm::Value* is_scheme_vector = ctx_.builder().CreateICmpEQ(input_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
-        llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(input_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
-        llvm::Value* is_vector_type = ctx_.builder().CreateOr(is_scheme_vector, is_tensor);
+        // First check if it's a HEAP_PTR type
+        llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(input_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+        // If HEAP_PTR, we need to check the subtype in the object header
+        // Get pointer to the object
+        llvm::Value* obj_ptr_int = tagged_.unpackInt64(pair_val);
+        llvm::Value* obj_ptr = ctx_.builder().CreateIntToPtr(obj_ptr_int, ctx_.ptrType());
+
+        // Read subtype from object header at ptr-8
+        llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), obj_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), -8));
+        llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "subtype");
+
+        // Check subtypes - HEAP_SUBTYPE_VECTOR=2, HEAP_SUBTYPE_TENSOR=3, HEAP_SUBTYPE_CONS=0
+        llvm::Value* is_vector_subtype = ctx_.builder().CreateICmpEQ(subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+        llvm::Value* is_tensor_subtype = ctx_.builder().CreateICmpEQ(subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+
+        // It's a vector/tensor type if HEAP_PTR AND (subtype==VECTOR OR subtype==TENSOR)
+        llvm::Value* is_vector_or_tensor = ctx_.builder().CreateOr(is_vector_subtype, is_tensor_subtype);
+        llvm::Value* is_vector_type = ctx_.builder().CreateAnd(is_heap_ptr, is_vector_or_tensor);
 
         llvm::BasicBlock* vector_block = llvm::BasicBlock::Create(ctx_.context(), "car_vector", current_func);
         llvm::BasicBlock* list_block = llvm::BasicBlock::Create(ctx_.context(), "car_list", current_func);
@@ -165,7 +186,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         llvm::BasicBlock* tensor_block = llvm::BasicBlock::Create(ctx_.context(), "car_tensor", current_func);
         llvm::BasicBlock* vector_merge = llvm::BasicBlock::Create(ctx_.context(), "car_vector_merge", current_func);
 
-        ctx_.builder().CreateCondBr(is_scheme_vector, scheme_vec_block, tensor_block);
+        ctx_.builder().CreateCondBr(is_vector_subtype, scheme_vec_block, tensor_block);
 
         // Scheme vector: structure is [length (8 bytes), elem0, elem1, ...]
         // Layout: vec_ptr+0 = length, vec_ptr+8 = elem0, vec_ptr+24 = elem1, etc.
@@ -231,7 +252,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
 
         ctx_.builder().SetInsertPoint(car_ad_node);
         llvm::Value* car_ad_ptr = ctx_.builder().CreateIntToPtr(elem_as_int64, ctx_.ptrType());
-        llvm::Value* car_ad_node_tagged = tagged_.packPtr(car_ad_ptr, ESHKOL_VALUE_AD_NODE_PTR);
+        llvm::Value* car_ad_node_tagged = tagged_.packCallable(car_ad_ptr);
         ctx_.builder().CreateBr(car_tensor_merge);
         llvm::BasicBlock* car_ad_node_exit = ctx_.builder().GetInsertBlock();
 
@@ -307,25 +328,32 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         // Get base type (properly handles legacy types >= 32)
         llvm::Value* car_base_type = tagged_.getBaseType(car_type);
 
-        // Type checks
+        // Type checks - handle both legacy (CONS_PTR) and consolidated (HEAP_PTR) formats
         llvm::Value* car_is_null_type = ctx_.builder().CreateICmpEQ(car_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
         llvm::Value* car_is_double = ctx_.builder().CreateICmpEQ(car_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-        llvm::Value* car_is_cons_ptr = ctx_.builder().CreateICmpEQ(car_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+        llvm::Value* car_is_cons_legacy = ctx_.builder().CreateICmpEQ(car_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* car_is_heap_ptr = ctx_.builder().CreateICmpEQ(car_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* car_is_cons_ptr = ctx_.builder().CreateOr(car_is_cons_legacy, car_is_heap_ptr);
         llvm::Value* car_is_string_ptr = ctx_.builder().CreateICmpEQ(car_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_STRING_PTR));
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
         llvm::Value* car_is_lambda_sexpr = ctx_.builder().CreateICmpEQ(car_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_LAMBDA_SEXPR));
-        llvm::Value* car_is_closure_ptr = ctx_.builder().CreateICmpEQ(car_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+        // Check for both legacy CLOSURE_PTR and new CALLABLE type
+        llvm::Value* car_is_closure_legacy = ctx_.builder().CreateICmpEQ(car_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+        llvm::Value* car_is_callable = ctx_.builder().CreateICmpEQ(car_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+        llvm::Value* car_is_closure_ptr = ctx_.builder().CreateOr(car_is_closure_legacy, car_is_callable);
         llvm::Value* car_is_bool = ctx_.builder().CreateICmpEQ(car_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
         llvm::Value* car_is_char = ctx_.builder().CreateICmpEQ(car_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CHAR));
         llvm::Value* car_is_hash_ptr = ctx_.builder().CreateICmpEQ(car_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HASH_PTR));
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
         // Create blocks for each type
         llvm::BasicBlock* null_car = llvm::BasicBlock::Create(ctx_.context(), "car_extract_null", current_func);
@@ -371,7 +399,8 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
 
         ctx_.builder().SetInsertPoint(cons_ptr_car);
         llvm::Value* car_cons = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_cons = tagged_.packPtr(ctx_.builder().CreateIntToPtr(car_cons, ctx_.ptrType()), ESHKOL_VALUE_CONS_PTR);
+        // Pack as HEAP_PTR (consolidated format) - type checks handle both formats
+        llvm::Value* tagged_cons = tagged_.packHeapPtr(ctx_.builder().CreateIntToPtr(car_cons, ctx_.ptrType()));
         ctx_.builder().CreateBr(merge_car);
         llvm::BasicBlock* cons_exit = ctx_.builder().GetInsertBlock();
 
@@ -381,7 +410,7 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
 
         ctx_.builder().SetInsertPoint(string_ptr_car);
         llvm::Value* car_string = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_string = tagged_.packPtr(ctx_.builder().CreateIntToPtr(car_string, ctx_.ptrType()), ESHKOL_VALUE_STRING_PTR);
+        llvm::Value* tagged_string = tagged_.packPtr(ctx_.builder().CreateIntToPtr(car_string, ctx_.ptrType()), ESHKOL_VALUE_HEAP_PTR);
         ctx_.builder().CreateBr(merge_car);
         llvm::BasicBlock* string_exit = ctx_.builder().GetInsertBlock();
 
@@ -434,13 +463,14 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         ctx_.builder().CreateBr(merge_car);
         llvm::BasicBlock* char_exit = ctx_.builder().GetInsertBlock();
 
-        // Handle HASH_PTR for hash tables
+        // Handle HASH_PTR for hash tables (legacy HASH_PTR - repacks as HEAP_PTR)
         ctx_.builder().SetInsertPoint(check_hash);
         ctx_.builder().CreateCondBr(car_is_hash_ptr, hash_ptr_car, int_car);
 
         ctx_.builder().SetInsertPoint(hash_ptr_car);
         llvm::Value* car_hash = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_hash = tagged_.packPtr(ctx_.builder().CreateIntToPtr(car_hash, ctx_.ptrType()), ESHKOL_VALUE_HASH_PTR);
+        // Repack as HEAP_PTR (consolidated format) - subtype is in object header
+        llvm::Value* tagged_hash = tagged_.packHeapPtr(ctx_.builder().CreateIntToPtr(car_hash, ctx_.ptrType()));
         ctx_.builder().CreateBr(merge_car);
         llvm::BasicBlock* hash_exit = ctx_.builder().GetInsertBlock();
 
@@ -543,15 +573,33 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(cdr_start);
 
     // VECTOR/TENSOR SUPPORT: Check if input is a vector or tensor type
+    // With consolidated types, CONS/VECTOR/TENSOR all use HEAP_PTR - must check subtype in header
     if (pair_val->getType() == ctx_.taggedValueType()) {
         llvm::Value* input_type = tagged_.getType(pair_val);
         llvm::Value* input_base_type = tagged_.getBaseType(input_type);
 
-        llvm::Value* is_scheme_vector = ctx_.builder().CreateICmpEQ(input_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
-        llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(input_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
-        llvm::Value* is_vector_type = ctx_.builder().CreateOr(is_scheme_vector, is_tensor);
+        // First check if it's a HEAP_PTR type
+        llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(input_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+        // If HEAP_PTR, we need to check the subtype in the object header
+        llvm::Value* obj_ptr_int = tagged_.unpackInt64(pair_val);
+        llvm::Value* obj_ptr = ctx_.builder().CreateIntToPtr(obj_ptr_int, ctx_.ptrType());
+
+        // Read subtype from object header at ptr-8
+        llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), obj_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), -8));
+        llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "subtype");
+
+        // Check subtypes - HEAP_SUBTYPE_VECTOR=2, HEAP_SUBTYPE_TENSOR=3
+        llvm::Value* is_vector_subtype = ctx_.builder().CreateICmpEQ(subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+        llvm::Value* is_tensor_subtype = ctx_.builder().CreateICmpEQ(subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+
+        // It's a vector/tensor type if HEAP_PTR AND (subtype==VECTOR OR subtype==TENSOR)
+        llvm::Value* is_vector_or_tensor = ctx_.builder().CreateOr(is_vector_subtype, is_tensor_subtype);
+        llvm::Value* is_vector_type = ctx_.builder().CreateAnd(is_heap_ptr, is_vector_or_tensor);
 
         llvm::BasicBlock* vector_block = llvm::BasicBlock::Create(ctx_.context(), "cdr_vector", current_func);
         llvm::BasicBlock* list_block = llvm::BasicBlock::Create(ctx_.context(), "cdr_list", current_func);
@@ -566,27 +614,26 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::BasicBlock* tensor_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_tensor", current_func);
         llvm::BasicBlock* vector_merge = llvm::BasicBlock::Create(ctx_.context(), "cdr_vector_merge", current_func);
 
-        ctx_.builder().CreateCondBr(is_scheme_vector, scheme_vec_cdr, tensor_cdr);
+        ctx_.builder().CreateCondBr(is_vector_subtype, scheme_vec_cdr, tensor_cdr);
 
         // Scheme vector cdr: create new vector with elements 1..n-1
-        // Layout: [length (8 bytes)][elem0 (16 bytes)][elem1 (16 bytes)]...
+        // Layout: [header (8 bytes)][length (8 bytes)][elem0 (16 bytes)][elem1 (16 bytes)]...
         ctx_.builder().SetInsertPoint(scheme_vec_cdr);
         llvm::Value* vec_ptr_int = tagged_.unpackInt64(pair_val);
         llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(vec_ptr_int, ctx_.ptrType());
         llvm::Value* length = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr);
         llvm::Value* new_length = ctx_.builder().CreateSub(length, llvm::ConstantInt::get(ctx_.int64Type(), 1));
 
-        // Allocate new vector: 8 bytes (length) + new_length * 16 bytes (elements)
+        // Allocate new vector with header using arena
+        llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* typed_new_vec = ctx_.builder().CreateCall(
+            mem_.getArenaAllocateVectorWithHeader(), {arena_ptr, new_length});
+
+        // Get malloc for tensor allocation (still needed below)
         llvm::FunctionType* malloc_type = llvm::FunctionType::get(
             ctx_.ptrType(), {ctx_.int64Type()}, false);
         llvm::FunctionCallee malloc_callee = ctx_.module().getOrInsertFunction("malloc", malloc_type);
         llvm::Function* malloc_func = llvm::cast<llvm::Function>(malloc_callee.getCallee());
-        llvm::Value* elem_bytes = ctx_.builder().CreateMul(new_length,
-            llvm::ConstantInt::get(ctx_.int64Type(), 16)); // tagged_value is 16 bytes
-        llvm::Value* new_vec_size = ctx_.builder().CreateAdd(elem_bytes,
-            llvm::ConstantInt::get(ctx_.int64Type(), 8)); // + 8 bytes for length
-        llvm::Value* new_vec_ptr = ctx_.builder().CreateCall(malloc_func, {new_vec_size});
-        llvm::Value* typed_new_vec = ctx_.builder().CreatePointerCast(new_vec_ptr, ctx_.ptrType());
 
         // Store new length
         ctx_.builder().CreateStore(new_length, typed_new_vec);
@@ -623,9 +670,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         ctx_.builder().CreateBr(copy_cond);
 
         ctx_.builder().SetInsertPoint(copy_done);
-        llvm::Value* new_vec_int = ctx_.builder().CreatePtrToInt(typed_new_vec, ctx_.int64Type());
-        llvm::Value* scheme_cdr_result = tagged_.packPtr(
-            ctx_.builder().CreateIntToPtr(new_vec_int, ctx_.ptrType()), ESHKOL_VALUE_VECTOR_PTR);
+        llvm::Value* scheme_cdr_result = tagged_.packHeapPtr(typed_new_vec);
         ctx_.builder().CreateBr(vector_merge);
         llvm::BasicBlock* scheme_vec_exit = ctx_.builder().GetInsertBlock();
 
@@ -638,27 +683,25 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::Value* tensor_len = ctx_.builder().CreateLoad(ctx_.int64Type(), dims_ptr);
         llvm::Value* tensor_new_len = ctx_.builder().CreateSub(tensor_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
 
-        // Allocate new tensor structure
-        llvm::Value* new_tensor_size = llvm::ConstantInt::get(ctx_.int64Type(),
-            ctx_.module().getDataLayout().getTypeAllocSize(ctx_.tensorType()));
-        llvm::Value* new_tensor_raw = ctx_.builder().CreateCall(malloc_func, {new_tensor_size});
-        llvm::Value* new_tensor = ctx_.builder().CreatePointerCast(new_tensor_raw, ctx_.ptrType());
+        // Get arena for OALR-compliant allocation
+        llvm::Value* tensor_arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
 
-        // Allocate dims array
-        llvm::Value* new_dims_raw = ctx_.builder().CreateCall(malloc_func,
-            {llvm::ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t))});
-        llvm::Value* new_dims = ctx_.builder().CreatePointerCast(new_dims_raw, ctx_.ptrType());
+        // Allocate new tensor structure via arena (OALR compliant - no malloc)
+        llvm::Value* new_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {tensor_arena_ptr});
+
+        // Allocate dims array via arena
+        llvm::Value* new_dims = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
+            {tensor_arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t))});
         ctx_.builder().CreateStore(tensor_new_len, new_dims);
         ctx_.builder().CreateStore(new_dims, ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 0));
         ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1),
             ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 1));
         ctx_.builder().CreateStore(tensor_new_len, ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 3));
 
-        // Allocate and copy elements
+        // Allocate and copy elements via arena
         llvm::Value* new_elems_size = ctx_.builder().CreateMul(tensor_new_len,
             llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
-        llvm::Value* new_elems_raw = ctx_.builder().CreateCall(malloc_func, {new_elems_size});
-        llvm::Value* new_elems = ctx_.builder().CreatePointerCast(new_elems_raw, ctx_.ptrType());
+        llvm::Value* new_elems = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {tensor_arena_ptr, new_elems_size});
         ctx_.builder().CreateStore(new_elems, ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 2));
 
         // Get old elements
@@ -691,7 +734,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         ctx_.builder().SetInsertPoint(tcopy_done);
         llvm::Value* new_tensor_int = ctx_.builder().CreatePtrToInt(new_tensor, ctx_.int64Type());
         llvm::Value* tensor_cdr_result = tagged_.packPtr(
-            ctx_.builder().CreateIntToPtr(new_tensor_int, ctx_.ptrType()), ESHKOL_VALUE_TENSOR_PTR);
+            ctx_.builder().CreateIntToPtr(new_tensor_int, ctx_.ptrType()), ESHKOL_VALUE_HEAP_PTR);
         ctx_.builder().CreateBr(vector_merge);
         llvm::BasicBlock* tensor_exit = ctx_.builder().GetInsertBlock();
 
@@ -731,22 +774,30 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         // Type checks
         llvm::Value* cdr_is_double = ctx_.builder().CreateICmpEQ(cdr_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-        llvm::Value* cdr_is_cons_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+        // Handle both legacy (CONS_PTR) and consolidated (HEAP_PTR) formats
+        llvm::Value* cdr_is_cons_legacy = ctx_.builder().CreateICmpEQ(cdr_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* cdr_is_heap_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* cdr_is_cons_ptr = ctx_.builder().CreateOr(cdr_is_cons_legacy, cdr_is_heap_ptr);
         llvm::Value* cdr_is_null_type = ctx_.builder().CreateICmpEQ(cdr_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
         llvm::Value* cdr_is_string_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_STRING_PTR));
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
         llvm::Value* cdr_is_lambda_sexpr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_LAMBDA_SEXPR));
-        llvm::Value* cdr_is_closure_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR));
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+        // Check for both legacy CLOSURE_PTR and new CALLABLE type
+        llvm::Value* cdr_is_closure_legacy = ctx_.builder().CreateICmpEQ(cdr_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+        llvm::Value* cdr_is_callable = ctx_.builder().CreateICmpEQ(cdr_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+        llvm::Value* cdr_is_closure_ptr = ctx_.builder().CreateOr(cdr_is_closure_legacy, cdr_is_callable);
         llvm::Value* cdr_is_bool = ctx_.builder().CreateICmpEQ(cdr_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
         llvm::Value* cdr_is_char = ctx_.builder().CreateICmpEQ(cdr_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CHAR));
         llvm::Value* cdr_is_hash_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HASH_PTR));
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
         // Create blocks for each type
         llvm::BasicBlock* double_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_double", current_func);
@@ -782,7 +833,8 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
 
         ctx_.builder().SetInsertPoint(cons_cdr);
         llvm::Value* cdr_cons = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_cons_cdr = tagged_.packPtr(cdr_cons, ESHKOL_VALUE_CONS_PTR);
+        // Pack as HEAP_PTR (consolidated format) - type checks handle both formats
+        llvm::Value* tagged_cons_cdr = tagged_.packHeapPtr(cdr_cons);
         ctx_.builder().CreateBr(merge_cdr);
         llvm::BasicBlock* cons_exit_cdr = ctx_.builder().GetInsertBlock();
 
@@ -800,7 +852,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
 
         ctx_.builder().SetInsertPoint(string_cdr);
         llvm::Value* cdr_string = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_string_cdr = tagged_.packPtr(ctx_.builder().CreateIntToPtr(cdr_string, ctx_.ptrType()), ESHKOL_VALUE_STRING_PTR);
+        llvm::Value* tagged_string_cdr = tagged_.packPtr(ctx_.builder().CreateIntToPtr(cdr_string, ctx_.ptrType()), ESHKOL_VALUE_HEAP_PTR);
         ctx_.builder().CreateBr(merge_cdr);
         llvm::BasicBlock* string_exit = ctx_.builder().GetInsertBlock();
 
@@ -853,13 +905,14 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         ctx_.builder().CreateBr(merge_cdr);
         llvm::BasicBlock* char_exit = ctx_.builder().GetInsertBlock();
 
-        // Handle HASH_PTR for hash tables
+        // Handle HASH_PTR for hash tables (legacy HASH_PTR - repacks as HEAP_PTR)
         ctx_.builder().SetInsertPoint(check_hash_cdr);
         ctx_.builder().CreateCondBr(cdr_is_hash_ptr, hash_cdr, int_cdr);
 
         ctx_.builder().SetInsertPoint(hash_cdr);
         llvm::Value* cdr_hash = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_hash_cdr = tagged_.packPtr(ctx_.builder().CreateIntToPtr(cdr_hash, ctx_.ptrType()), ESHKOL_VALUE_HASH_PTR);
+        // Repack as HEAP_PTR (consolidated format) - subtype is in object header
+        llvm::Value* tagged_hash_cdr = tagged_.packHeapPtr(ctx_.builder().CreateIntToPtr(cdr_hash, ctx_.ptrType()));
         ctx_.builder().CreateBr(merge_cdr);
         llvm::BasicBlock* hash_exit = ctx_.builder().GetInsertBlock();
 
@@ -1012,9 +1065,12 @@ llvm::Value* CollectionCodegen::isNull(const eshkol_operations_t* op) {
     llvm::Value* is_null_type = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
 
-    // Also check for CONS_PTR with null pointer (empty list representation)
-    llvm::Value* is_cons_type = ctx_.builder().CreateICmpEQ(base_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+    // Also check for CONS_PTR/HEAP_PTR with null pointer (empty list representation)
+    llvm::Value* is_cons_legacy = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    llvm::Value* is_cons_type = ctx_.builder().CreateOr(is_cons_legacy, is_heap_ptr);
     llvm::Value* data_val = tagged_.unpackInt64(tagged_arg);
     llvm::Value* is_null_ptr = ctx_.builder().CreateICmpEQ(data_val,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
@@ -1048,17 +1104,23 @@ llvm::Value* CollectionCodegen::isPair(const eshkol_operations_t* op) {
     llvm::Value* type_tag = tagged_.getType(tagged_arg);
     llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
-    // Check if type is CONS_PTR
-    llvm::Value* is_cons_type = ctx_.builder().CreateICmpEQ(base_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+    // Check if type is HEAP_PTR (consolidated format)
+    llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
     // Also check that the pointer is not null (not empty list)
     llvm::Value* data_val = tagged_.unpackInt64(tagged_arg);
     llvm::Value* is_not_null = ctx_.builder().CreateICmpNE(data_val,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
 
-    // Pair is CONS_PTR with non-null pointer
-    llvm::Value* result = ctx_.builder().CreateAnd(is_cons_type, is_not_null);
+    // CONSOLIDATED FORMAT FIX: For HEAP_PTR, we must check the subtype in the object header
+    // to distinguish cons cells from strings, vectors, tensors, etc.
+    // Use checkHeapSubtype to verify subtype is HEAP_SUBTYPE_CONS (0)
+    llvm::Value* is_cons_subtype = tagged_.checkHeapSubtype(tagged_arg, HEAP_SUBTYPE_CONS);
+
+    // Pair is HEAP_PTR with non-null pointer AND subtype CONS
+    llvm::Value* is_heap_cons = ctx_.builder().CreateAnd(is_heap_ptr, is_not_null);
+    llvm::Value* result = ctx_.builder().CreateAnd(is_heap_cons, is_cons_subtype);
     return tagged_.packBool(result);
 }
 
@@ -1082,18 +1144,12 @@ llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
     // Extract length as i64
     llvm::Value* length = tagged_.unpackInt64(len_tagged);
 
-    // Calculate allocation size: 8 (length field) + sizeof(tagged_value) * length
-    uint64_t tagged_value_size = ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType());
-    llvm::Value* elem_size = llvm::ConstantInt::get(ctx_.int64Type(), tagged_value_size);
-    llvm::Value* data_size = ctx_.builder().CreateMul(length, elem_size);
-    llvm::Value* total_size = ctx_.builder().CreateAdd(data_size,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-
-    // Allocate from arena
+    // Allocate from arena with header (for consolidated HEAP_PTR type)
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
-    llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, total_size});
+    llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
+        {arena_ptr, length});
 
-    // Store length at beginning
+    // Store length at beginning (offset 0)
     llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
     ctx_.builder().CreateStore(length, len_ptr);
 
@@ -1141,7 +1197,7 @@ llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(loop_header);
 
     ctx_.builder().SetInsertPoint(loop_exit);
-    return tagged_.packPtr(vec_ptr, ESHKOL_VALUE_VECTOR_PTR);
+    return tagged_.packHeapPtr(vec_ptr);
 }
 
 llvm::Value* CollectionCodegen::vector(const eshkol_operations_t* op) {
@@ -1152,16 +1208,12 @@ llvm::Value* CollectionCodegen::vector(const eshkol_operations_t* op) {
 
     uint64_t num_elems = op->call_op.num_vars;
 
-    // Calculate allocation size: 8 (length) + sizeof(tagged_value) * num_elems
-    uint64_t tagged_value_size = ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType());
-    uint64_t total_size = 8 + tagged_value_size * num_elems;
-
-    // Allocate from arena
+    // Allocate from arena with header (for consolidated HEAP_PTR type)
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
-    llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
-        {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), total_size)});
+    llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
+        {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), num_elems)});
 
-    // Store length at beginning
+    // Store length at beginning (offset 0)
     llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), num_elems), len_ptr);
 
@@ -1183,7 +1235,7 @@ llvm::Value* CollectionCodegen::vector(const eshkol_operations_t* op) {
         ctx_.builder().CreateStore(tagged_elem, elem_ptr);
     }
 
-    return tagged_.packPtr(vec_ptr, ESHKOL_VALUE_VECTOR_PTR);
+    return tagged_.packHeapPtr(vec_ptr);
 }
 
 llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
@@ -1203,21 +1255,33 @@ llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
     llvm::Value* length = nullptr;
 
     if (vec_arg->getType() == ctx_.taggedValueType()) {
-        // Get the type tag to distinguish vector vs tensor (properly handles legacy types)
+        // M1 CONSOLIDATION: Distinguish vector vs tensor via header subtype
+        // Both are HEAP_PTR (8), so we need to check the header at ptr-8
         llvm::Value* type_tag = tagged_.getType(vec_arg);
         llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
-        llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+        llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
         llvm::Value* ptr_int = tagged_.unpackInt64(vec_arg);
         llvm::Value* ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
         llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* check_subtype = llvm::BasicBlock::Create(ctx_.context(), "check_subtype", current_func);
         llvm::BasicBlock* tensor_block = llvm::BasicBlock::Create(ctx_.context(), "tensor_len", current_func);
         llvm::BasicBlock* vector_block = llvm::BasicBlock::Create(ctx_.context(), "vector_len", current_func);
         llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "len_merge", current_func);
 
+        // If HEAP_PTR, check subtype; otherwise assume legacy vector
+        ctx_.builder().CreateCondBr(is_heap_ptr, check_subtype, vector_block);
+
+        // Check subtype in header at ptr-8
+        ctx_.builder().SetInsertPoint(check_subtype);
+        llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), -8), "header_ptr");
+        llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "subtype");
+        llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
         ctx_.builder().CreateCondBr(is_tensor, tensor_block, vector_block);
 
         // Tensor path: load total_elements from field 3
@@ -1232,7 +1296,7 @@ llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
         llvm::Value* vec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_len_ptr);
         ctx_.builder().CreateBr(merge_block);
 
-        // Merge
+        // Merge - only 2 predecessors (tensor_block and vector_block)
         ctx_.builder().SetInsertPoint(merge_block);
         llvm::PHINode* len_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "length");
         len_phi->addIncoming(tensor_len, tensor_block);
@@ -1279,18 +1343,32 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
         }
     }
 
-    // TENSOR/GRADIENT FIX: Detect if input is a tensor (TENSOR_PTR) vs Scheme vector (VECTOR_PTR)
-    // Tensors are used by gradient operation and have different memory layout
+    // M1 CONSOLIDATION: Detect tensor vs Scheme vector via header subtype
+    // Both use HEAP_PTR type, but tensors have HEAP_SUBTYPE_TENSOR (3)
+    // and Scheme vectors have HEAP_SUBTYPE_VECTOR (2)
     llvm::Value* vec_type = tagged_.getType(vec_arg);
     llvm::Value* vec_base_type = tagged_.getBaseType(vec_type);
-    llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(vec_base_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+    llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(vec_base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* check_subtype = llvm::BasicBlock::Create(ctx_.context(), "vref_check_subtype", current_func);
     llvm::BasicBlock* tensor_path = llvm::BasicBlock::Create(ctx_.context(), "vref_tensor", current_func);
     llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "vref_vector", current_func);
     llvm::BasicBlock* merge_path = llvm::BasicBlock::Create(ctx_.context(), "vref_merge", current_func);
 
+    // If HEAP_PTR, check subtype to distinguish tensor vs vector
+    ctx_.builder().CreateCondBr(is_heap_ptr, check_subtype, vector_path);
+
+    // Check subtype in header
+    ctx_.builder().SetInsertPoint(check_subtype);
+    llvm::Value* vec_ptr_for_sub = ctx_.builder().CreateIntToPtr(
+        tagged_.unpackInt64(vec_arg), ctx_.ptrType());
+    llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr_for_sub,
+        llvm::ConstantInt::get(ctx_.int64Type(), -8));
+    llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr);
+    llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
     ctx_.builder().CreateCondBr(is_tensor, tensor_path, vector_path);
 
     // TENSOR PATH: Extract element or row slice from tensor structure
@@ -1339,7 +1417,8 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     ctx_.builder().CreateCondBr(could_be_ad_ptr, is_ad_node, is_double);
 
     ctx_.builder().SetInsertPoint(is_ad_node);
-    llvm::Value* ad_node_result = tagged_.packPtr(tensor_elem_int64, ESHKOL_VALUE_AD_NODE_PTR);
+    // Pack as CALLABLE (AD nodes have CALLABLE_SUBTYPE_AD_NODE in header)
+    llvm::Value* ad_node_result = tagged_.packPtr(tensor_elem_int64, ESHKOL_VALUE_CALLABLE);
     ctx_.builder().CreateBr(elem_merge);
     llvm::BasicBlock* ad_exit = ctx_.builder().GetInsertBlock();
 
@@ -1367,19 +1446,15 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     // Calculate row offset: idx * row_size
     llvm::Value* row_offset = ctx_.builder().CreateMul(idx, row_size);
 
-    // Allocate new 1D tensor struct for the row slice
-    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
-    if (!malloc_func) {
-        llvm::FunctionType* malloc_ty = llvm::FunctionType::get(ctx_.ptrType(), {ctx_.int64Type()}, false);
-        malloc_func = llvm::Function::Create(malloc_ty, llvm::Function::ExternalLinkage, "malloc", &ctx_.module());
-    }
+    // Get arena for OALR-compliant allocation
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
 
-    // Tensor struct: 4 fields * 8 bytes = 32 bytes
-    llvm::Value* struct_size = llvm::ConstantInt::get(ctx_.int64Type(), 32);
-    llvm::Value* slice_tensor = ctx_.builder().CreateCall(malloc_func, {struct_size});
+    // Allocate new 1D tensor struct via arena (OALR compliant - no malloc)
+    llvm::Value* slice_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
 
-    // Allocate dims array for 1D tensor: 1 * 8 bytes
-    llvm::Value* slice_dims = ctx_.builder().CreateCall(malloc_func, {llvm::ConstantInt::get(ctx_.int64Type(), 8)});
+    // Allocate dims array for 1D tensor via arena: 1 * 8 bytes
+    llvm::Value* slice_dims = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
+        {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 8)});
     ctx_.builder().CreateStore(row_size, slice_dims);
 
     // Fill slice tensor struct
@@ -1402,7 +1477,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
 
     // Pack as TENSOR_PTR
     llvm::Value* slice_int = ctx_.builder().CreatePtrToInt(slice_tensor, ctx_.int64Type());
-    llvm::Value* slice_result = tagged_.packPtr(slice_int, ESHKOL_VALUE_TENSOR_PTR);
+    llvm::Value* slice_result = tagged_.packPtr(slice_int, ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateBr(tensor_merge);
     llvm::BasicBlock* tensor_nd_exit = ctx_.builder().GetInsertBlock();
 

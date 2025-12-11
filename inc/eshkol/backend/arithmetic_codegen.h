@@ -221,6 +221,16 @@ private:
      * @return AD node pointer
      */
     llvm::Value* convertToADNode(llvm::Value* operand, llvm::Value* is_ad, llvm::Value* base_type);
+
+    /**
+     * Check if a tagged value is specifically an AD node.
+     * Safely checks both CALLABLE type AND CALLABLE_SUBTYPE_AD_NODE subtype.
+     * Uses proper branching to avoid dereferencing non-pointer values.
+     * @param operand Tagged value operand
+     * @param base_type The base type of the operand
+     * @return Boolean i1 value: true if AD node, false otherwise
+     */
+    llvm::Value* isADNode(llvm::Value* operand, llvm::Value* base_type);
 };
 
 } // namespace eshkol

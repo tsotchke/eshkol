@@ -57,20 +57,20 @@ Value* HomoiconicCodegen::quoteAST(const eshkol_ast_t* ast) {
         case ESHKOL_VAR:
             // Return symbol as string - use STRING_PTR type for symbols
             return tagged_.packPtr(
-                string_io_.createString(ast->variable.id),
-                ESHKOL_VALUE_STRING_PTR);
+                string_io_.createStringWithHeader(ast->variable.id),
+                ESHKOL_VALUE_HEAP_PTR);
 
         case ESHKOL_BOOL:
             // Return boolean as #t or #f symbol
             return tagged_.packPtr(
-                string_io_.createString(ast->int64_val ? "#t" : "#f"),
-                ESHKOL_VALUE_STRING_PTR);
+                string_io_.createStringWithHeader(ast->int64_val ? "#t" : "#f"),
+                ESHKOL_VALUE_HEAP_PTR);
 
         case ESHKOL_STRING:
             // Return string literal
             return tagged_.packPtr(
-                string_io_.createString(ast->str_val.ptr),
-                ESHKOL_VALUE_STRING_PTR);
+                string_io_.createStringWithHeader(ast->str_val.ptr),
+                ESHKOL_VALUE_HEAP_PTR);
 
         case ESHKOL_CHAR:
             // Return character as #\char symbol
@@ -82,8 +82,8 @@ Value* HomoiconicCodegen::quoteAST(const eshkol_ast_t* ast) {
                 else if (ch == '\t') snprintf(char_buf, sizeof(char_buf), "#\\tab");
                 else snprintf(char_buf, sizeof(char_buf), "#\\%c", ch);
                 return tagged_.packPtr(
-                    string_io_.createString(char_buf),
-                    ESHKOL_VALUE_STRING_PTR);
+                    string_io_.createStringWithHeader(char_buf),
+                    ESHKOL_VALUE_HEAP_PTR);
             }
 
         case ESHKOL_OP:
@@ -120,7 +120,7 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
             }
             return tagged_.packPtr(
                 ctx_.builder().CreateIntToPtr(list_ptr, ctx_.builder().getPtrTy()),
-                ESHKOL_VALUE_CONS_PTR);
+                ESHKOL_VALUE_HEAP_PTR);
         }
 
         case ESHKOL_LAMBDA_OP: {
@@ -131,14 +131,14 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
             }
             return tagged_.packPtr(
                 ctx_.builder().CreateIntToPtr(nested_sexpr, ctx_.builder().getPtrTy()),
-                ESHKOL_VALUE_CONS_PTR);
+                ESHKOL_VALUE_HEAP_PTR);
         }
 
         case ESHKOL_IF_OP: {
             // Build (if test then else)
             // IF_OP uses call_op structure: variables[0]=condition, variables[1]=then, variables[2]=else
             Value* if_sym = tagged_.packPtr(
-                string_io_.createString("if"), ESHKOL_VALUE_STRING_PTR);
+                string_io_.createStringWithHeader("if"), ESHKOL_VALUE_HEAP_PTR);
 
             // Build from right to left: else -> then -> test -> if
             Value* result = packNull();
@@ -149,7 +149,7 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                 Value* cons_int = consFromTagged(else_branch, result);
                 result = tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(cons_int, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             }
 
             // Add then branch (variables[1])
@@ -158,7 +158,7 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                 Value* cons_int = consFromTagged(then_branch, result);
                 result = tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(cons_int, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             }
 
             // Add condition (variables[0])
@@ -167,13 +167,13 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                 Value* cons_int = consFromTagged(test, result);
                 result = tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(cons_int, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             }
 
             Value* final_cons = consFromTagged(if_sym, result);
             return tagged_.packPtr(
                 ctx_.builder().CreateIntToPtr(final_cons, ctx_.builder().getPtrTy()),
-                ESHKOL_VALUE_CONS_PTR);
+                ESHKOL_VALUE_HEAP_PTR);
         }
 
         case ESHKOL_AND_OP: {
@@ -189,7 +189,7 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
         case ESHKOL_COND_OP: {
             // Build (cond (test1 expr1) (test2 expr2) ...)
             Value* cond_sym = tagged_.packPtr(
-                string_io_.createString("cond"), ESHKOL_VALUE_STRING_PTR);
+                string_io_.createStringWithHeader("cond"), ESHKOL_VALUE_HEAP_PTR);
             Value* result = packNull();
 
             // Build clauses from right to left
@@ -205,12 +205,12 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                         Value* cons_int = consFromTagged(expr, clause);
                         clause = tagged_.packPtr(
                             ctx_.builder().CreateIntToPtr(cons_int, ctx_.builder().getPtrTy()),
-                            ESHKOL_VALUE_CONS_PTR);
+                            ESHKOL_VALUE_HEAP_PTR);
                     }
                     Value* test_cons = consFromTagged(test, clause);
                     clause = tagged_.packPtr(
                         ctx_.builder().CreateIntToPtr(test_cons, ctx_.builder().getPtrTy()),
-                        ESHKOL_VALUE_CONS_PTR);
+                        ESHKOL_VALUE_HEAP_PTR);
                 } else {
                     // Fallback: just quote the clause directly
                     clause = quoteAST(clause_ast);
@@ -219,13 +219,13 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                 Value* cons_int = consFromTagged(clause, result);
                 result = tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(cons_int, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             }
 
             Value* final_cons = consFromTagged(cond_sym, result);
             return tagged_.packPtr(
                 ctx_.builder().CreateIntToPtr(final_cons, ctx_.builder().getPtrTy()),
-                ESHKOL_VALUE_CONS_PTR);
+                ESHKOL_VALUE_HEAP_PTR);
         }
 
         case ESHKOL_SEQUENCE_OP: {
@@ -240,7 +240,7 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
             const char* let_name = op->op == ESHKOL_LET_OP ? "let" :
                                    op->op == ESHKOL_LET_STAR_OP ? "let*" : "letrec";
             Value* let_sym = tagged_.packPtr(
-                string_io_.createString(let_name), ESHKOL_VALUE_STRING_PTR);
+                string_io_.createStringWithHeader(let_name), ESHKOL_VALUE_HEAP_PTR);
 
             // Build bindings list
             Value* bindings = packNull();
@@ -253,8 +253,8 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                     Value* var;
                     if (var_ast->type == ESHKOL_VAR && var_ast->variable.id) {
                         var = tagged_.packPtr(
-                            string_io_.createString(var_ast->variable.id),
-                            ESHKOL_VALUE_STRING_PTR);
+                            string_io_.createStringWithHeader(var_ast->variable.id),
+                            ESHKOL_VALUE_HEAP_PTR);
                     } else {
                         var = quoteAST(var_ast);
                     }
@@ -266,11 +266,11 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                     Value* val_cons = consFromTagged(val, binding);
                     binding = tagged_.packPtr(
                         ctx_.builder().CreateIntToPtr(val_cons, ctx_.builder().getPtrTy()),
-                        ESHKOL_VALUE_CONS_PTR);
+                        ESHKOL_VALUE_HEAP_PTR);
                     Value* var_cons = consFromTagged(var, binding);
                     binding = tagged_.packPtr(
                         ctx_.builder().CreateIntToPtr(var_cons, ctx_.builder().getPtrTy()),
-                        ESHKOL_VALUE_CONS_PTR);
+                        ESHKOL_VALUE_HEAP_PTR);
                 } else {
                     // Fallback: quote the binding directly
                     binding = quoteAST(binding_cons);
@@ -279,7 +279,7 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                 Value* cons_int = consFromTagged(binding, bindings);
                 bindings = tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(cons_int, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             }
 
             // Build body
@@ -290,23 +290,23 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
             Value* body_cons = consFromTagged(body, result);
             result = tagged_.packPtr(
                 ctx_.builder().CreateIntToPtr(body_cons, ctx_.builder().getPtrTy()),
-                ESHKOL_VALUE_CONS_PTR);
+                ESHKOL_VALUE_HEAP_PTR);
             Value* bindings_cons = consFromTagged(bindings, result);
             result = tagged_.packPtr(
                 ctx_.builder().CreateIntToPtr(bindings_cons, ctx_.builder().getPtrTy()),
-                ESHKOL_VALUE_CONS_PTR);
+                ESHKOL_VALUE_HEAP_PTR);
             Value* let_cons = consFromTagged(let_sym, result);
             return tagged_.packPtr(
                 ctx_.builder().CreateIntToPtr(let_cons, ctx_.builder().getPtrTy()),
-                ESHKOL_VALUE_CONS_PTR);
+                ESHKOL_VALUE_HEAP_PTR);
         }
 
         case ESHKOL_DEFINE_OP: {
             // Build (define name value) or (define (name params) body)
             Value* define_sym = tagged_.packPtr(
-                string_io_.createString("define"), ESHKOL_VALUE_STRING_PTR);
+                string_io_.createStringWithHeader("define"), ESHKOL_VALUE_HEAP_PTR);
             Value* name = tagged_.packPtr(
-                string_io_.createString(op->define_op.name), ESHKOL_VALUE_STRING_PTR);
+                string_io_.createStringWithHeader(op->define_op.name), ESHKOL_VALUE_HEAP_PTR);
 
             if (op->define_op.is_function) {
                 // Build (define (name params...) body)
@@ -314,17 +314,17 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                 Value* name_params = packNull();
                 for (int64_t i = op->define_op.num_params - 1; i >= 0; i--) {
                     Value* param = tagged_.packPtr(
-                        string_io_.createString(op->define_op.parameters[i].variable.id),
-                        ESHKOL_VALUE_STRING_PTR);
+                        string_io_.createStringWithHeader(op->define_op.parameters[i].variable.id),
+                        ESHKOL_VALUE_HEAP_PTR);
                     Value* cons_int = consFromTagged(param, name_params);
                     name_params = tagged_.packPtr(
                         ctx_.builder().CreateIntToPtr(cons_int, ctx_.builder().getPtrTy()),
-                        ESHKOL_VALUE_CONS_PTR);
+                        ESHKOL_VALUE_HEAP_PTR);
                 }
                 Value* name_cons = consFromTagged(name, name_params);
                 name_params = tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(name_cons, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
 
                 Value* body = quoteAST(op->define_op.value);
 
@@ -332,15 +332,15 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                 Value* body_cons = consFromTagged(body, result);
                 result = tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(body_cons, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
                 Value* np_cons = consFromTagged(name_params, result);
                 result = tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(np_cons, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
                 Value* def_cons = consFromTagged(define_sym, result);
                 return tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(def_cons, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             } else {
                 // Build (define name value)
                 Value* value = quoteAST(op->define_op.value);
@@ -348,15 +348,15 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                 Value* val_cons = consFromTagged(value, result);
                 result = tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(val_cons, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
                 Value* name_cons = consFromTagged(name, result);
                 result = tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(name_cons, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
                 Value* def_cons = consFromTagged(define_sym, result);
                 return tagged_.packPtr(
                     ctx_.builder().CreateIntToPtr(def_cons, ctx_.builder().getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             }
         }
 
@@ -370,7 +370,7 @@ Value* HomoiconicCodegen::quoteNaryOp(const char* op_name,
                                        const eshkol_ast_t* args,
                                        uint64_t num_args) {
     Value* op_sym = tagged_.packPtr(
-        string_io_.createString(op_name), ESHKOL_VALUE_STRING_PTR);
+        string_io_.createStringWithHeader(op_name), ESHKOL_VALUE_HEAP_PTR);
     Value* result = packNull();
 
     // Build args from right to left
@@ -379,13 +379,13 @@ Value* HomoiconicCodegen::quoteNaryOp(const char* op_name,
         Value* cons_int = consFromTagged(arg, result);
         result = tagged_.packPtr(
             ctx_.builder().CreateIntToPtr(cons_int, ctx_.builder().getPtrTy()),
-            ESHKOL_VALUE_CONS_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
     }
 
     Value* final_cons = consFromTagged(op_sym, result);
     return tagged_.packPtr(
         ctx_.builder().CreateIntToPtr(final_cons, ctx_.builder().getPtrTy()),
-        ESHKOL_VALUE_CONS_PTR);
+        ESHKOL_VALUE_HEAP_PTR);
 }
 
 Value* HomoiconicCodegen::quoteList(const eshkol_operations_t* op) {
@@ -408,7 +408,7 @@ Value* HomoiconicCodegen::quoteList(const eshkol_operations_t* op) {
         } else {
             result_tagged = tagged_.packPtr(
                 ctx_.builder().CreateIntToPtr(result_int, ctx_.builder().getPtrTy()),
-                ESHKOL_VALUE_CONS_PTR);
+                ESHKOL_VALUE_HEAP_PTR);
         }
 
         // Create cons cell from two tagged values
@@ -429,8 +429,8 @@ Value* HomoiconicCodegen::quoteList(const eshkol_operations_t* op) {
             return result_int;
         }
 
-        Value* op_string = string_io_.createString(op->call_op.func->variable.id);
-        Value* op_tagged = tagged_.packPtr(op_string, ESHKOL_VALUE_STRING_PTR);
+        Value* op_string = string_io_.createStringWithHeader(op->call_op.func->variable.id);
+        Value* op_tagged = tagged_.packPtr(op_string, ESHKOL_VALUE_HEAP_PTR);
 
         Value* result_tagged;
         if (result_int == ConstantInt::get(ctx_.int64Type(), 0)) {
@@ -438,7 +438,7 @@ Value* HomoiconicCodegen::quoteList(const eshkol_operations_t* op) {
         } else {
             result_tagged = tagged_.packPtr(
                 ctx_.builder().CreateIntToPtr(result_int, ctx_.builder().getPtrTy()),
-                ESHKOL_VALUE_CONS_PTR);
+                ESHKOL_VALUE_HEAP_PTR);
         }
 
         Value* final_list = consFromTagged(op_tagged, result_tagged);
@@ -465,8 +465,8 @@ Value* HomoiconicCodegen::buildParameterList(const eshkol_ast_t* params,
         if (params[i].type != ESHKOL_VAR || !params[i].variable.id) continue;
 
         // Create parameter symbol string
-        Value* param_name = string_io_.createString(params[i].variable.id);
-        Value* param_tagged = tagged_.packPtr(param_name, ESHKOL_VALUE_STRING_PTR);
+        Value* param_name = string_io_.createStringWithHeader(params[i].variable.id);
+        Value* param_tagged = tagged_.packPtr(param_name, ESHKOL_VALUE_HEAP_PTR);
 
         // Get rest of list as tagged value
         Value* rest_tagged;
@@ -475,7 +475,7 @@ Value* HomoiconicCodegen::buildParameterList(const eshkol_ast_t* params,
         } else {
             rest_tagged = tagged_.packPtr(
                 ctx_.builder().CreateIntToPtr(result, ctx_.builder().getPtrTy()),
-                ESHKOL_VALUE_CONS_PTR);
+                ESHKOL_VALUE_HEAP_PTR);
         }
 
         // Cons parameter onto rest
@@ -525,8 +525,8 @@ Value* HomoiconicCodegen::lambdaToSExpr(const eshkol_operations_t* op) {
     // Step 3: Build complete structure: (lambda (params) body)
 
     // 3a: Create "lambda" symbol string
-    Value* lambda_symbol = string_io_.createString("lambda");
-    Value* lambda_tagged = tagged_.packPtr(lambda_symbol, ESHKOL_VALUE_STRING_PTR);
+    Value* lambda_symbol = string_io_.createStringWithHeader("lambda");
+    Value* lambda_tagged = tagged_.packPtr(lambda_symbol, ESHKOL_VALUE_HEAP_PTR);
 
     // 3b: Pack param_list as tagged value
     Value* param_list_tagged;
@@ -535,7 +535,7 @@ Value* HomoiconicCodegen::lambdaToSExpr(const eshkol_operations_t* op) {
     } else {
         param_list_tagged = tagged_.packPtr(
             ctx_.builder().CreateIntToPtr(param_list, ctx_.builder().getPtrTy()),
-            ESHKOL_VALUE_CONS_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
     }
 
     // 3c: body_tagged is already a tagged_value from step 2
@@ -545,19 +545,51 @@ Value* HomoiconicCodegen::lambdaToSExpr(const eshkol_operations_t* op) {
     Value* body_cons = consFromTagged(body_tagged, body_null_tagged);
     Value* body_cons_tagged = tagged_.packPtr(
         ctx_.builder().CreateIntToPtr(body_cons, ctx_.builder().getPtrTy()),
-        ESHKOL_VALUE_CONS_PTR);
+        ESHKOL_VALUE_HEAP_PTR);
 
     Value* params_body = consFromTagged(param_list_tagged, body_cons_tagged);
 
     // 3e: Build (lambda . (params body))
     Value* params_body_tagged = tagged_.packPtr(
         ctx_.builder().CreateIntToPtr(params_body, ctx_.builder().getPtrTy()),
-        ESHKOL_VALUE_CONS_PTR);
+        ESHKOL_VALUE_HEAP_PTR);
 
     Value* result = consFromTagged(lambda_tagged, params_body_tagged);
 
     eshkol_debug("Generated lambda S-expression with %llu parameters",
                 (unsigned long long)num_params);
+
+    return result;
+}
+
+Value* HomoiconicCodegen::builtinToSExpr(const std::string& name) {
+    // Create S-expression: (primitive name)
+    // This allows builtin operators to display their identity
+    // Returns an i64 (raw pointer to cons cell) for use as sexpr_ptr
+
+    // Create "primitive" symbol
+    Value* primitive_symbol = string_io_.createStringWithHeader("primitive");
+    Value* primitive_tagged = tagged_.packPtr(primitive_symbol, ESHKOL_VALUE_HEAP_PTR);
+
+    // Create the operator name symbol
+    Value* name_symbol = string_io_.createStringWithHeader(name.c_str());
+    Value* name_tagged = tagged_.packPtr(name_symbol, ESHKOL_VALUE_HEAP_PTR);
+
+    // Create the inner list: (name)
+    // consFromTagged returns a tagged_value struct, extract the i64 pointer
+    Value* null_tagged = packNull();
+    Value* name_list_tagged_val = consFromTagged(name_tagged, null_tagged);
+    Value* name_list_i64 = tagged_.unpackInt64(name_list_tagged_val);
+    Value* name_list_tagged = tagged_.packPtr(
+        ctx_.builder().CreateIntToPtr(name_list_i64, ctx_.builder().getPtrTy()),
+        ESHKOL_VALUE_HEAP_PTR);
+
+    // Create the outer list: (primitive name)
+    Value* result_tagged_val = consFromTagged(primitive_tagged, name_list_tagged);
+    // Return raw i64 pointer (not tagged) for sexpr_ptr field
+    Value* result = tagged_.unpackInt64(result_tagged_val);
+
+    eshkol_debug("Generated builtin S-expression for '%s'", name.c_str());
 
     return result;
 }

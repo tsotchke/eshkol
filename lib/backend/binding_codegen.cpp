@@ -233,8 +233,8 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     bool is_func_value = false;
     if (get_typed_value_type_callback_) {
         int value_type = get_typed_value_type_callback_(typed_ptr, callback_context_);
-        is_func_value = (value_type == ESHKOL_VALUE_LAMBDA_SEXPR ||
-                         value_type == ESHKOL_VALUE_CLOSURE_PTR);
+        is_func_value = (value_type == ESHKOL_VALUE_CALLABLE ||
+                         value_type == ESHKOL_VALUE_CALLABLE);
         if (is_func_value) {
             eshkol_debug("BindingCodegen::define: %s is a function value (type=%d)", var_name, value_type);
         }

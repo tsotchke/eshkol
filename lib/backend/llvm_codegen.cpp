@@ -170,8 +170,9 @@ struct TypedValue {
         }
         return eshkol::hott::BuiltinTypes::Value;
     }
-    bool isList() const { return type == ESHKOL_VALUE_CONS_PTR; }
-    bool isVector() const { return type == ESHKOL_VALUE_VECTOR_PTR; }
+    // M1 Migration: Check both legacy and consolidated formats
+    bool isList() const { return type == ESHKOL_VALUE_HEAP_PTR || type == ESHKOL_VALUE_HEAP_PTR; }
+    bool isVector() const { return type == ESHKOL_VALUE_HEAP_PTR || type == ESHKOL_VALUE_HEAP_PTR; }
 
     // Linear and proof type helpers (HoTT Phase 4)
     bool isLinear() const { return (flags & FLAG_LINEAR) != 0; }
@@ -711,15 +712,17 @@ public:
                     "__ad_mode_active"
                 );
             } else {
+                // M1 CONSOLIDATION: Use ExternalLinkage even in compiled mode
+                // This links to the C runtime __ad_mode_active for debugging
                 ad_mode_active = new GlobalVariable(
                     *module,
                     int1_type,
                     false, // not constant
-                    GlobalValue::InternalLinkage, // Internal linkage for compiled mode
-                    ConstantInt::get(int1_type, 0), // Initialize to false
+                    GlobalValue::ExternalLinkage, // External - linked to runtime
+                    nullptr, // External - no initializer (defined in arena_memory.cpp)
                     "__ad_mode_active"
                 );
-                eshkol_debug("Created global AD mode flag: __ad_mode_active (initialized to false)");
+                eshkol_debug("Created global AD mode flag: __ad_mode_active (external linkage)");
             }
 
             // PHASE 1 AUTODIFF FIX: Create global tape pointer
@@ -1199,6 +1202,17 @@ public:
                 } else {
                     Value* arena_size = ConstantInt::get(int64_type, 8192);
                     arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+
+                    // Also store in __repl_shared_arena for runtime functions
+                    GlobalVariable* shared_arena_ref = new GlobalVariable(
+                        *module,
+                        PointerType::getUnqual(*context),
+                        false,
+                        GlobalValue::ExternalLinkage,
+                        nullptr,
+                        "__repl_shared_arena"
+                    );
+                    builder->CreateStore(arena_ptr, shared_arena_ref);
                 }
                 builder->CreateStore(arena_ptr, global_arena);
 
@@ -2112,7 +2126,9 @@ private:
     Function* getArenaPopScopeFunc() { return mem->getArenaPopScope(); }
     Function* getArenaAllocateConsCellFunc() { return mem->getArenaAllocateConsCell(); }
     Function* getArenaAllocateClosureFunc() { return mem->getArenaAllocateClosure(); }
+    Function* getArenaAllocateClosureWithHeaderFunc() { return mem->getArenaAllocateClosureWithHeader(); }
     Function* getArenaAllocateTaggedConsCellFunc() { return mem->getArenaAllocateTaggedConsCell(); }
+    Function* getArenaAllocateConsWithHeaderFunc() { return mem->getArenaAllocateConsWithHeader(); }
     Function* getTaggedConsGetInt64Func() { return mem->getTaggedConsGetInt64(); }
     Function* getTaggedConsGetDoubleFunc() { return mem->getTaggedConsGetDouble(); }
     Function* getTaggedConsGetPtrFunc() { return mem->getTaggedConsGetPtr(); }
@@ -2730,6 +2746,17 @@ private:
                     // Normal mode: create new arena
                     Value* arena_size = ConstantInt::get(int64_type, 8192);
                     arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+
+                    // Also store in __repl_shared_arena for runtime functions
+                    GlobalVariable* shared_arena_ref = new GlobalVariable(
+                        *module,
+                        PointerType::getUnqual(*context),
+                        false,
+                        GlobalValue::ExternalLinkage,
+                        nullptr,
+                        "__repl_shared_arena"
+                    );
+                    builder->CreateStore(arena_ptr, shared_arena_ref);
                     eshkol_debug("Created new arena in main wrapper");
                 }
                 builder->CreateStore(arena_ptr, global_arena);
@@ -2850,6 +2877,17 @@ private:
                     // Normal mode: create new arena
                     Value* arena_size = ConstantInt::get(int64_type, 8192);
                     arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+
+                    // Also store in __repl_shared_arena for runtime functions
+                    GlobalVariable* shared_arena_ref = new GlobalVariable(
+                        *module,
+                        PointerType::getUnqual(*context),
+                        false,
+                        GlobalValue::ExternalLinkage,
+                        nullptr,
+                        "__repl_shared_arena"
+                    );
+                    builder->CreateStore(arena_ptr, shared_arena_ref);
                     eshkol_debug("Created new arena in main wrapper");
                 }
                 builder->CreateStore(arena_ptr, global_arena);
@@ -2926,6 +2964,17 @@ private:
                 // Normal mode: create new arena
                 Value* arena_size = ConstantInt::get(int64_type, 8192);
                 arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+
+                // Also store in __repl_shared_arena for runtime functions
+                GlobalVariable* shared_arena_ref2 = new GlobalVariable(
+                    *module,
+                    PointerType::getUnqual(*context),
+                    false,
+                    GlobalValue::ExternalLinkage,
+                    nullptr,
+                    "__repl_shared_arena"
+                );
+                builder->CreateStore(arena_ptr, shared_arena_ref2);
                 eshkol_debug("Created new arena in main (top-level expressions case)");
             }
             builder->CreateStore(arena_ptr, global_arena);
@@ -3217,7 +3266,7 @@ private:
                                     if (!val) return TypedValue();
                                     // Return the tagged_value directly - type info is inside
                                     // Use CONS_PTR so codegenVariableDefinition stores properly
-                                    return TypedValue(val, ESHKOL_VALUE_CONS_PTR, true);
+                                    return TypedValue(val, ESHKOL_VALUE_HEAP_PTR, true);
                                 }
                             }
                         }
@@ -3250,7 +3299,7 @@ private:
                     Value* val = codegenAST(ast);
                     if (!val) return TypedValue();
                     // Lambda returns a closure (even with 0 captures for S-expression support)
-                    return TypedValue(val, ESHKOL_VALUE_CLOSURE_PTR, true);
+                    return TypedValue(val, ESHKOL_VALUE_CALLABLE, true);
                 }
 
                 // Check if this is an operation that returns a typed pointer
@@ -3285,7 +3334,7 @@ private:
                                                  eshkol::hott::BuiltinTypes::Null, true);
                             }
                         }
-                        return TypedValue(val, ESHKOL_VALUE_CONS_PTR,
+                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::List, list_type, true);
                     }
 
@@ -3306,7 +3355,7 @@ private:
                                                  eshkol::hott::BuiltinTypes::Null, true);
                             }
                         }
-                        return TypedValue(val, ESHKOL_VALUE_CONS_PTR,
+                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::List, list_type, true);
                     }
 
@@ -3329,7 +3378,7 @@ private:
                                                  eshkol::hott::BuiltinTypes::Null, true);
                             }
                         }
-                        return TypedValue(val, ESHKOL_VALUE_CONS_PTR,
+                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::List, list_type, true);
                     }
 
@@ -3364,14 +3413,14 @@ private:
 
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_VECTOR_PTR,
+                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::Vector, vec_type, true);
                     }
 
                     if (func_name == "make-vector") {
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_VECTOR_PTR,
+                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::Vector, true);
                     }
 
@@ -3394,7 +3443,7 @@ private:
                     if (func_name == "gradient" || func_name == "jacobian") {
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
-                        return TypedValue(val, ESHKOL_VALUE_TENSOR_PTR,
+                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
                                          eshkol::hott::BuiltinTypes::Tensor, true);
                     }
 
@@ -3447,7 +3496,7 @@ private:
                                         // Callee returns a lambda - mark the result appropriately
                                         Value* val = codegenAST(ast);
                                         if (!val) return TypedValue();
-                                        return TypedValue(val, ESHKOL_VALUE_LAMBDA_SEXPR, true);
+                                        return TypedValue(val, ESHKOL_VALUE_CALLABLE, true);
                                     }
                                 } catch (...) {}
                             }
@@ -3468,7 +3517,7 @@ private:
                         if (!val) return TypedValue();
 
                         // Return CLOSURE_PTR if the lambda has captures, LAMBDA_SEXPR otherwise
-                        return TypedValue(val, has_captures ? ESHKOL_VALUE_CLOSURE_PTR : ESHKOL_VALUE_LAMBDA_SEXPR, true);
+                        return TypedValue(val, has_captures ? ESHKOL_VALUE_CALLABLE : ESHKOL_VALUE_CALLABLE, true);
                     }
 
                     // Case 3: Named function that contains a nested lambda (e.g., make-adder)
@@ -3481,7 +3530,7 @@ private:
                             if (entry.first.find(func_name + "_nested_") == 0) {
                                 Value* val = codegenAST(ast);
                                 if (!val) return TypedValue();
-                                return TypedValue(val, ESHKOL_VALUE_LAMBDA_SEXPR, true);
+                                return TypedValue(val, ESHKOL_VALUE_CALLABLE, true);
                             }
                         }
                     }
@@ -3531,7 +3580,7 @@ private:
                     bool found_in_global = (global_symbol_table.find(func_key) != global_symbol_table.end());
                     if (found_in_symbol_table || found_in_global) {
                         // This variable is a lambda - return with LAMBDA_SEXPR type
-                        return TypedValue(val, ESHKOL_VALUE_LAMBDA_SEXPR,
+                        return TypedValue(val, ESHKOL_VALUE_CALLABLE,
                                          eshkol::hott::BuiltinTypes::Function, true);
                     }
                 }
@@ -3594,7 +3643,7 @@ private:
                     // HOMOICONIC FIX: Handle Function* (lambdas) properly
                     if (isa<Function>(val)) {
                         Value* as_int = builder->CreatePtrToInt(val, int64_type);
-                        return TypedValue(as_int, ESHKOL_VALUE_LAMBDA_SEXPR,
+                        return TypedValue(as_int, ESHKOL_VALUE_CALLABLE,
                                          eshkol::hott::BuiltinTypes::Function, true);
                     }
                     // Other pointer types - convert to CONS_PTR
@@ -3604,9 +3653,9 @@ private:
                     }
                     // Include parameterized type if available
                     if (param_type.has_value()) {
-                        return TypedValue(as_int, ESHKOL_VALUE_CONS_PTR, hott_type, *param_type, true);
+                        return TypedValue(as_int, ESHKOL_VALUE_HEAP_PTR, hott_type, *param_type, true);
                     }
-                    return TypedValue(as_int, ESHKOL_VALUE_CONS_PTR, hott_type, true);
+                    return TypedValue(as_int, ESHKOL_VALUE_HEAP_PTR, hott_type, true);
                 } else {
                     // Non-numeric type (unknown)
                     return TypedValue(val, ESHKOL_VALUE_NULL, hott_type, true);
@@ -3777,8 +3826,8 @@ private:
             return nullptr;
         }
         
-        // Allocate tagged cons cell (32 bytes in Phase 3B) using arena
-        Value* cons_ptr = builder->CreateCall(getArenaAllocateTaggedConsCellFunc(), {arena_ptr});
+        // Allocate tagged cons cell with object header (consolidated pointer format)
+        Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
         
         // Convert TypedValue to tagged_value
         Value* car_tagged = typedValueToTaggedValue(car_val);
@@ -3825,40 +3874,47 @@ private:
             return nullptr;
         }
         
-        // Allocate tagged cons cell
-        Value* cons_ptr = builder->CreateCall(getArenaAllocateTaggedConsCellFunc(), {arena_ptr});
-        
+        // Allocate tagged cons cell with object header (consolidated pointer format)
+        Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+
         // Extract type from car_tagged
         Value* car_type = getTaggedValueType(car_tagged);
         Value* car_base_type = getBaseType(car_type);
-        
-        // SYMBOLIC DIFF FIX: Check for NULL, DOUBLE, all pointer types (CONS_PTR, STRING_PTR, etc.), and INT64
+
+        // Check for NULL, DOUBLE, all pointer types, and INT64
+        // Handle both legacy types (CONS_PTR=32, etc.) and consolidated (HEAP_PTR=8, CALLABLE=9)
         Value* car_is_null = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
         Value* car_is_double = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        // Check all pointer types that should use set_ptr
+        // Legacy pointer types
         Value* car_is_cons = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* car_is_string = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* car_is_vector = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* car_is_tensor = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* car_is_ad = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* car_is_lambda = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_LAMBDA_SEXPR));
-        // CLOSURE_PTR FIX: Also handle closure pointers in cons cells
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* car_is_closure = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CLOSURE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        // Consolidated pointer types
+        Value* car_is_heap_ptr = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* car_is_callable = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* car_is_ptr = builder->CreateOr(car_is_cons,
             builder->CreateOr(car_is_string,
             builder->CreateOr(car_is_vector,
             builder->CreateOr(car_is_tensor,
             builder->CreateOr(car_is_ad,
-            builder->CreateOr(car_is_lambda, car_is_closure))))));
+            builder->CreateOr(car_is_lambda,
+            builder->CreateOr(car_is_closure,
+            builder->CreateOr(car_is_heap_ptr, car_is_callable))))))));
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* car_null = BasicBlock::Create(*context, "cons_car_null", current_func);
@@ -3922,20 +3978,20 @@ private:
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
         // Check all pointer types that should use set_ptr
         Value* cdr_is_cons = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* cdr_is_string = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* cdr_is_vector = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* cdr_is_tensor = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* cdr_is_ad = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* cdr_is_lambda = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_LAMBDA_SEXPR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         // CLOSURE_PTR FIX: Also handle closure pointers in cons cells
         Value* cdr_is_closure = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CLOSURE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* cdr_is_ptr = builder->CreateOr(cdr_is_cons,
             builder->CreateOr(cdr_is_string,
             builder->CreateOr(cdr_is_vector,
@@ -4031,15 +4087,52 @@ private:
         return tagged_->packNull();
     }
 
+    // Ensure a value is in tagged format
+    // codegenAST returns raw i64/double for primitives, but tagged structs for complex types
+    // This function checks the LLVM type and packs raw values into tagged format
+    Value* ensureTaggedValue(Value* val) {
+        if (!val) return packNullToTaggedValue();
+
+        Type* val_type = val->getType();
+
+        // Already a tagged value struct?
+        if (val_type == tagged_value_type) {
+            return val;
+        }
+
+        // Raw integer (i64) - pack as INT64
+        if (val_type->isIntegerTy(64)) {
+            return packInt64ToTaggedValue(val, true);
+        }
+
+        // Raw double - pack as DOUBLE
+        if (val_type->isDoubleTy()) {
+            return packDoubleToTaggedValue(val);
+        }
+
+        // Raw pointer - pack as HEAP_PTR (assume it has a header)
+        if (val_type->isPointerTy()) {
+            return packPtrToTaggedValue(val, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        // For other types, assume it's already tagged or return null
+        eshkol_debug("ensureTaggedValue: unexpected type, assuming tagged");
+        return val;
+    }
+
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
     Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args, const char* caller_info = "unknown") {
         (void)caller_info;  // Used for debugging
-        // Check if the result is a CLOSURE_PTR or a direct function pointer
+        // Check if the result is a CLOSURE_PTR (legacy) or CALLABLE (consolidated) or a direct function pointer
+        // M1 Migration: Check both legacy and consolidated formats for backward compatibility
         Value* type_tag = getTaggedValueType(func_result);
         Value* base_type = getBaseType(type_tag);
-        Value* is_closure = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CLOSURE_PTR));
+        Value* is_legacy_closure = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* is_callable_type = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* is_closure = builder->CreateOr(is_legacy_closure, is_callable_type);
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* closure_bb = BasicBlock::Create(*context, "call_closure", current_func);
@@ -4051,12 +4144,106 @@ private:
         // CLOSURE PATH: Extract func_ptr and captures, dispatch by capture count
         builder->SetInsertPoint(closure_bb);
 
+        // Declare results vector early for arithmetic results and capture results
+        std::vector<std::pair<BasicBlock*, Value*>> results;
+
         Value* closure_ptr_i64 = unpackInt64FromTaggedValue(func_result);
         Value* closure_ptr = builder->CreateIntToPtr(closure_ptr_i64, PointerType::getUnqual(*context));
 
         // Load func_ptr from closure (offset 0)
         Value* func_ptr_from_closure = builder->CreateLoad(int64_type, closure_ptr);
         Value* actual_func_ptr = builder->CreateIntToPtr(func_ptr_from_closure, PointerType::getUnqual(*context));
+
+        // VARIADIC ARITHMETIC FIX: Check if closure wraps a builtin arithmetic function
+        // If so, we need to handle all arguments with polymorphic arithmetic instead of
+        // using the fixed-arity function stored in the closure
+        // Only do this check if we have arguments (skip for empty arg calls)
+        if (!call_args.empty()) {
+            Function* builtin_add = createBuiltinArithmeticFunction("+", 2);
+            Function* builtin_sub = createBuiltinArithmeticFunction("-", 2);
+            Function* builtin_mul = createBuiltinArithmeticFunction("*", 2);
+            Function* builtin_div = createBuiltinArithmeticFunction("/", 2);
+
+            BasicBlock* arith_add_bb = BasicBlock::Create(*context, "closure_arith_add", current_func);
+            BasicBlock* arith_sub_check = BasicBlock::Create(*context, "closure_arith_sub_check", current_func);
+            BasicBlock* arith_sub_bb = BasicBlock::Create(*context, "closure_arith_sub", current_func);
+            BasicBlock* arith_mul_check = BasicBlock::Create(*context, "closure_arith_mul_check", current_func);
+            BasicBlock* arith_mul_bb = BasicBlock::Create(*context, "closure_arith_mul", current_func);
+            BasicBlock* arith_div_check = BasicBlock::Create(*context, "closure_arith_div_check", current_func);
+            BasicBlock* arith_div_bb = BasicBlock::Create(*context, "closure_arith_div", current_func);
+            BasicBlock* arith_regular = BasicBlock::Create(*context, "closure_arith_regular", current_func);
+
+            // Check for builtin + (addition)
+            Value* is_add = builder->CreateICmpEQ(actual_func_ptr, builtin_add);
+            builder->CreateCondBr(is_add, arith_add_bb, arith_sub_check);
+
+            // ADD path: use polymorphicAdd on all args
+            builder->SetInsertPoint(arith_add_bb);
+            {
+                Value* result = call_args[0];
+                for (size_t i = 1; i < call_args.size(); i++) {
+                    result = polymorphicAdd(result, call_args[i]);
+                }
+                builder->CreateBr(merge_bb);
+                // Store result for phi - we'll add to results later
+                results.push_back({builder->GetInsertBlock(), result});
+            }
+
+            // Check for builtin - (subtraction)
+            builder->SetInsertPoint(arith_sub_check);
+            Value* is_sub = builder->CreateICmpEQ(actual_func_ptr, builtin_sub);
+            builder->CreateCondBr(is_sub, arith_sub_bb, arith_mul_check);
+
+            builder->SetInsertPoint(arith_sub_bb);
+            {
+                Value* result;
+                if (call_args.size() == 1) {
+                    // Unary minus: (- x) => 0 - x
+                    Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
+                    result = polymorphicSub(zero, call_args[0]);
+                } else {
+                    result = call_args[0];
+                    for (size_t i = 1; i < call_args.size(); i++) {
+                        result = polymorphicSub(result, call_args[i]);
+                    }
+                }
+                builder->CreateBr(merge_bb);
+                results.push_back({builder->GetInsertBlock(), result});
+            }
+
+            // Check for builtin * (multiplication)
+            builder->SetInsertPoint(arith_mul_check);
+            Value* is_mul = builder->CreateICmpEQ(actual_func_ptr, builtin_mul);
+            builder->CreateCondBr(is_mul, arith_mul_bb, arith_div_check);
+
+            builder->SetInsertPoint(arith_mul_bb);
+            {
+                Value* result = call_args[0];
+                for (size_t i = 1; i < call_args.size(); i++) {
+                    result = polymorphicMul(result, call_args[i]);
+                }
+                builder->CreateBr(merge_bb);
+                results.push_back({builder->GetInsertBlock(), result});
+            }
+
+            // Check for builtin / (division)
+            builder->SetInsertPoint(arith_div_check);
+            Value* is_div = builder->CreateICmpEQ(actual_func_ptr, builtin_div);
+            builder->CreateCondBr(is_div, arith_div_bb, arith_regular);
+
+            builder->SetInsertPoint(arith_div_bb);
+            {
+                Value* result = call_args[0];
+                for (size_t i = 1; i < call_args.size(); i++) {
+                    result = polymorphicDiv(result, call_args[i]);
+                }
+                builder->CreateBr(merge_bb);
+                results.push_back({builder->GetInsertBlock(), result});
+            }
+
+            // Regular closure path continues from here
+            builder->SetInsertPoint(arith_regular);
+        }
 
         // Load env pointer from closure (offset 8)
         Value* env_ptr_addr = builder->CreateGEP(int8_type, closure_ptr,
@@ -4072,16 +4259,27 @@ private:
 
         builder->CreateCondBr(env_is_null, env_null, env_valid);
 
-        // Null env path - 0 captures, but need to get arity from closure->input_arity
+        // Null env path - 0 captures, but need to get arity and variadic flag from closure
         builder->SetInsertPoint(env_null);
-        // Closure structure: func_ptr(8) + env(8) + sexpr_ptr(8) + return_type(1) + input_arity(1)
-        // So input_arity is at offset 25 from closure_ptr
+        // Closure structure: func_ptr(8) + env(8) + sexpr_ptr(8) + return_type(1) + input_arity(1) + flags(1)
+        // So input_arity is at offset 25, flags is at offset 26 from closure_ptr
         Value* input_arity_ptr = builder->CreateGEP(int8_type, closure_ptr,
             ConstantInt::get(int64_type, 25));
         Value* input_arity_byte = builder->CreateLoad(int8_type, input_arity_ptr);
         Value* input_arity_i64 = builder->CreateZExt(input_arity_byte, int64_type);
-        // Pack: 0 captures (bits 0-15), input_arity in bits 16-31
-        Value* null_env_packed = builder->CreateShl(input_arity_i64, ConstantInt::get(int64_type, 16));
+
+        // VARIADIC FIX: Read flags from closure and check for CLOSURE_FLAG_VARIADIC (0x01)
+        Value* flags_ptr = builder->CreateGEP(int8_type, closure_ptr,
+            ConstantInt::get(int64_type, 26));
+        Value* flags_byte = builder->CreateLoad(int8_type, flags_ptr);
+        Value* flags_i64 = builder->CreateZExt(flags_byte, int64_type);
+        Value* is_variadic_from_flags = builder->CreateAnd(flags_i64, ConstantInt::get(int64_type, 1)); // CLOSURE_FLAG_VARIADIC
+        Value* variadic_bit = builder->CreateShl(is_variadic_from_flags, ConstantInt::get(int64_type, 63));
+
+        // Pack: 0 captures (bits 0-15), input_arity in bits 16-31, variadic in bit 63
+        Value* null_env_packed = builder->CreateOr(
+            builder->CreateShl(input_arity_i64, ConstantInt::get(int64_type, 16)),
+            variadic_bit);
         builder->CreateBr(env_checked);
 
         // Valid env path - load packed_info from env (offset 0)
@@ -4146,9 +4344,9 @@ private:
         // For now, we build the list by consing all args (no fixed params handling yet)
         // This is a simplification - full implementation would handle fixed params
         for (int64_t i = call_args.size() - 1; i >= 0; i--) {
-            // Allocate cons cell
+            // Allocate cons cell with object header (consolidated pointer format)
             Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            Value* cons_cell = builder->CreateCall(getArenaAllocateTaggedConsCellFunc(), {arena_ptr});
+            Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
 
             // Set car to arg, cdr to rest_list using pre-allocated allocas
             Value* arg_val = call_args[i];
@@ -4160,9 +4358,9 @@ private:
             builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
                 {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[i]}); // cdr
 
-            // Update rest_list to point to new cons cell
+            // Update rest_list to point to new cons cell (consolidated HEAP_PTR format)
             Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
-            rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_CONS_PTR);
+            rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
         }
 
         // Now generate switch for variadic closure call (with captures)
@@ -4210,7 +4408,7 @@ private:
         BasicBlock* nonvar_switch_default = BasicBlock::Create(*context, "cap_default", current_func);
         SwitchInst* sw = builder->CreateSwitch(num_captures, nonvar_switch_default, MAX_CAPTURES + 1);
 
-        std::vector<std::pair<BasicBlock*, Value*>> results;
+        // Note: results vector is declared earlier (before arithmetic check)
 
         // Generate a case for each capture count
         for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
@@ -4266,7 +4464,7 @@ private:
         // Only INT64 (function pointer) and LAMBDA_SEXPR should be called directly
         // CONS_PTR, STRING_PTR, NULL, BOOL, DOUBLE etc. should be returned as-is
         Value* is_lambda_sexpr = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_LAMBDA_SEXPR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* is_int64 = builder->CreateICmpEQ(base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
         Value* is_callable = builder->CreateOr(is_lambda_sexpr, is_int64);
@@ -4343,6 +4541,90 @@ private:
         return tagged_->unpackPtr(tagged_val);
     }
 
+    // MIGRATION HELPER: Get subtype from object header for HEAP_PTR/CALLABLE values
+    // Object header is 8 bytes before the data pointer:
+    //   [subtype(1)][flags(1)][ref_count(2)][size(4)][data...]
+    // Returns the subtype byte (0-255)
+    Value* getObjectSubtype(Value* ptr_val) {
+        // Ensure we have a pointer
+        Value* ptr;
+        if (ptr_val->getType()->isIntegerTy()) {
+            ptr = builder->CreateIntToPtr(ptr_val, builder->getPtrTy());
+        } else {
+            ptr = ptr_val;
+        }
+        // Header is at ptr - 8, subtype is the first byte
+        Value* header_ptr = builder->CreateGEP(int8_type, ptr,
+            ConstantInt::get(int64_type, -8));
+        return builder->CreateLoad(int8_type, header_ptr);
+    }
+
+    // MIGRATION HELPER: Check if a tagged value has a specific HEAP_PTR subtype
+    Value* isHeapSubtype(Value* tagged_val, uint8_t expected_subtype) {
+        Value* type = getTaggedValueType(tagged_val);
+        Value* base_type = getBaseType(type);
+        Value* is_heap = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+
+        // Get current function from builder
+        Function* func = builder->GetInsertBlock()->getParent();
+
+        // If not HEAP_PTR, return false
+        BasicBlock* current_bb = builder->GetInsertBlock();
+        BasicBlock* check_subtype = BasicBlock::Create(*context, "check_heap_subtype", func);
+        BasicBlock* done = BasicBlock::Create(*context, "done_heap_check", func);
+
+        builder->CreateCondBr(is_heap, check_subtype, done);
+
+        builder->SetInsertPoint(check_subtype);
+        Value* ptr_val = unpackInt64FromTaggedValue(tagged_val);
+        Value* subtype = getObjectSubtype(ptr_val);
+        Value* matches = builder->CreateICmpEQ(subtype,
+            ConstantInt::get(int8_type, expected_subtype));
+        builder->CreateBr(done);
+        BasicBlock* subtype_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(done);
+        PHINode* result = builder->CreatePHI(int1_type, 2);
+        result->addIncoming(ConstantInt::getFalse(*context), current_bb);
+        result->addIncoming(matches, subtype_exit);
+
+        return result;
+    }
+
+    // MIGRATION HELPER: Check if a tagged value has a specific CALLABLE subtype
+    Value* isCallableSubtype(Value* tagged_val, uint8_t expected_subtype) {
+        Value* type = getTaggedValueType(tagged_val);
+        Value* base_type = getBaseType(type);
+        Value* is_callable = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+
+        // Get current function from builder
+        Function* func = builder->GetInsertBlock()->getParent();
+
+        // If not CALLABLE, return false
+        BasicBlock* current_bb = builder->GetInsertBlock();
+        BasicBlock* check_subtype = BasicBlock::Create(*context, "check_callable_subtype", func);
+        BasicBlock* done = BasicBlock::Create(*context, "done_callable_check", func);
+
+        builder->CreateCondBr(is_callable, check_subtype, done);
+
+        builder->SetInsertPoint(check_subtype);
+        Value* ptr_val = unpackInt64FromTaggedValue(tagged_val);
+        Value* subtype = getObjectSubtype(ptr_val);
+        Value* matches = builder->CreateICmpEQ(subtype,
+            ConstantInt::get(int8_type, expected_subtype));
+        builder->CreateBr(done);
+        BasicBlock* subtype_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(done);
+        PHINode* result = builder->CreatePHI(int1_type, 2);
+        result->addIncoming(ConstantInt::getFalse(*context), current_bb);
+        result->addIncoming(matches, subtype_exit);
+
+        return result;
+    }
+
     Value* extractCarAsTaggedValue(Value* cons_ptr_int) {
         // TYPE SYSTEM FIX: Use safeExtractInt64 to handle tagged_value structs
         cons_ptr_int = safeExtractInt64(cons_ptr_int);
@@ -4360,23 +4642,27 @@ private:
         Value* car_is_double = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
         Value* car_is_cons_ptr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* car_is_string_ptr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* car_is_lambda_sexpr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_LAMBDA_SEXPR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         // CLOSURE_PTR FIX: Handle closure pointers when extracting from cons cells
-        Value* car_is_closure_ptr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CLOSURE_PTR));
+        // M1 Migration: Check both legacy CLOSURE_PTR and new CALLABLE type
+        Value* car_is_closure_legacy = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* car_is_callable = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* car_is_closure_ptr = builder->CreateOr(car_is_closure_legacy, car_is_callable);
         // BOOL FIX: Handle boolean values when extracting from cons cells
         Value* car_is_bool = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL));
         // HASH_PTR FIX: Handle hash table pointers when extracting from cons cells
         Value* car_is_hash_ptr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HASH_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         // VECTOR_PTR FIX: Handle vector pointers when extracting from cons cells
         Value* car_is_vector_ptr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* null_car = BasicBlock::Create(*context, "car_extract_null", current_func);
@@ -4421,9 +4707,10 @@ private:
 
         builder->SetInsertPoint(cons_ptr_car);
         Value* car_cons_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
+        // M1 Migration: Use consolidated HEAP_PTR (subtype in object header)
         Value* tagged_cons_ptr = packPtrToTaggedValue(
             builder->CreateIntToPtr(car_cons_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_CONS_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_car);
         BasicBlock* cons_ptr_exit = builder->GetInsertBlock();
 
@@ -4435,7 +4722,7 @@ private:
         Value* car_string_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
         Value* tagged_string_ptr = packPtrToTaggedValue(
             builder->CreateIntToPtr(car_string_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_STRING_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_car);
         BasicBlock* string_ptr_exit = builder->GetInsertBlock();
 
@@ -4490,9 +4777,10 @@ private:
 
         builder->SetInsertPoint(hash_ptr_car);
         Value* car_hash_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
+        // Repack as HEAP_PTR (consolidated format) - subtype is in object header
         Value* tagged_hash_ptr = packPtrToTaggedValue(
             builder->CreateIntToPtr(car_hash_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_HASH_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_car);
         BasicBlock* hash_ptr_exit = builder->GetInsertBlock();
 
@@ -4504,7 +4792,7 @@ private:
         Value* car_vector_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
         Value* tagged_vector_ptr = packPtrToTaggedValue(
             builder->CreateIntToPtr(car_vector_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_VECTOR_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_car);
         BasicBlock* vector_ptr_exit = builder->GetInsertBlock();
 
@@ -4545,7 +4833,7 @@ private:
         Value* cdr_is_double = builder->CreateICmpEQ(cdr_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
         Value* cdr_is_ptr = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* cdr_is_null = builder->CreateICmpEQ(cdr_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
         // BOOL FIX: Handle boolean values in cdr
@@ -4553,13 +4841,13 @@ private:
             ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL));
         // HASH_PTR FIX: Handle hash table pointers in cdr
         Value* cdr_is_hash_ptr = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HASH_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         // VECTOR_PTR FIX: Handle vector pointers in cdr
         Value* cdr_is_vector_ptr = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         // STRING_PTR FIX: Handle string pointers in cdr
         Value* cdr_is_string_ptr = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* double_cdr = BasicBlock::Create(*context, "cdr_extract_double", current_func);
@@ -4591,10 +4879,10 @@ private:
 
         builder->SetInsertPoint(ptr_cdr);
         Value* cdr_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
-        // SYMBOLIC DIFF FIX: Preserve CONS_PTR type for nested lists!
+        // M1 Migration: Use consolidated HEAP_PTR (subtype in object header)
         Value* tagged_ptr_cdr = packPtrToTaggedValue(
             builder->CreateIntToPtr(cdr_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_CONS_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_cdr);
         BasicBlock* ptr_exit = builder->GetInsertBlock();
 
@@ -4623,9 +4911,10 @@ private:
 
         builder->SetInsertPoint(hash_ptr_cdr);
         Value* cdr_hash_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
+        // Repack as HEAP_PTR (consolidated format) - subtype is in object header
         Value* tagged_hash_ptr_cdr = packPtrToTaggedValue(
             builder->CreateIntToPtr(cdr_hash_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_HASH_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_cdr);
         BasicBlock* hash_ptr_exit = builder->GetInsertBlock();
 
@@ -4637,7 +4926,7 @@ private:
         Value* cdr_vector_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         Value* tagged_vector_ptr_cdr = packPtrToTaggedValue(
             builder->CreateIntToPtr(cdr_vector_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_VECTOR_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_cdr);
         BasicBlock* vector_ptr_exit = builder->GetInsertBlock();
 
@@ -4649,7 +4938,7 @@ private:
         Value* cdr_string_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
         Value* tagged_string_ptr_cdr = packPtrToTaggedValue(
             builder->CreateIntToPtr(cdr_string_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_STRING_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_cdr);
         BasicBlock* string_ptr_exit = builder->GetInsertBlock();
 
@@ -4699,19 +4988,19 @@ private:
         Value* car_is_double = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
         Value* car_is_cons = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         // SYMBOL FIX: Check for STRING_PTR, LAMBDA_SEXPR, CLOSURE_PTR
         Value* car_is_string = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* car_is_lambda = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_LAMBDA_SEXPR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* car_is_closure = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CLOSURE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         // HASH_PTR FIX: Check for HASH_PTR, VECTOR_PTR
         Value* car_is_hash = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HASH_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* car_is_vector = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
         // NULL FIX: Add null_block for NULL values
         BasicBlock* null_block = BasicBlock::Create(*context, "extract_null", current_func);
@@ -4756,7 +5045,7 @@ private:
 
         builder->SetInsertPoint(cons_block);
         Value* car_cons = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
-        Value* tagged_cons = packPtrToTaggedValue(builder->CreateIntToPtr(car_cons, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+        Value* tagged_cons = packPtrToTaggedValue(builder->CreateIntToPtr(car_cons, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_block);
         BasicBlock* cons_exit = builder->GetInsertBlock();
 
@@ -4766,7 +5055,8 @@ private:
 
         builder->SetInsertPoint(string_block);
         Value* car_string = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
-        Value* tagged_string = packPtrToTaggedValue(builder->CreateIntToPtr(car_string, builder->getPtrTy()), ESHKOL_VALUE_STRING_PTR);
+        // MIGRATION: Output as HEAP_PTR (subtype STRING in header)
+        Value* tagged_string = packPtrToTaggedValue(builder->CreateIntToPtr(car_string, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_block);
         BasicBlock* string_exit = builder->GetInsertBlock();
 
@@ -4804,17 +5094,19 @@ private:
 
         builder->SetInsertPoint(hash_block);
         Value* car_hash = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
-        Value* tagged_hash = packPtrToTaggedValue(builder->CreateIntToPtr(car_hash, builder->getPtrTy()), ESHKOL_VALUE_HASH_PTR);
+        // Repack as HEAP_PTR (consolidated format) - subtype is in object header
+        Value* tagged_hash = packPtrToTaggedValue(builder->CreateIntToPtr(car_hash, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_block);
         BasicBlock* hash_exit = builder->GetInsertBlock();
 
-        // VECTOR_PTR FIX: Handle vector pointers
+        // VECTOR_PTR FIX: Handle vector pointers (MIGRATION: output as HEAP_PTR)
         builder->SetInsertPoint(check_vector);
         builder->CreateCondBr(car_is_vector, vector_block, int_block);
 
         builder->SetInsertPoint(vector_block);
         Value* car_vector = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
-        Value* tagged_vector = packPtrToTaggedValue(builder->CreateIntToPtr(car_vector, builder->getPtrTy()), ESHKOL_VALUE_VECTOR_PTR);
+        // MIGRATION: Use consolidated HEAP_PTR (subtype in header)
+        Value* tagged_vector = packPtrToTaggedValue(builder->CreateIntToPtr(car_vector, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_block);
         BasicBlock* vector_exit = builder->GetInsertBlock();
 
@@ -4933,11 +5225,11 @@ private:
                         name.find("jacobian") != std::string::npos ||
                         name.find("hessian") != std::string::npos) {
                         eshkol_debug("detectValueType: i64 from tensor PtrToInt (%s)", name.c_str());
-                        return TypedValue(llvm_val, ESHKOL_VALUE_TENSOR_PTR, true);
+                        return TypedValue(llvm_val, ESHKOL_VALUE_HEAP_PTR, true);
                     }
                 }
                 eshkol_debug("detectValueType: i64 from PtrToInt, treating as CONS_PTR");
-                return TypedValue(llvm_val, ESHKOL_VALUE_CONS_PTR, true);
+                return TypedValue(llvm_val, ESHKOL_VALUE_HEAP_PTR, true);
             }
             return TypedValue(llvm_val, ESHKOL_VALUE_INT64, true);
         } else if (val_type->isDoubleTy()) {
@@ -4949,9 +5241,9 @@ private:
                 // Return FUNCTION POINTER (for execution) with LAMBDA_SEXPR type (for display lookup)
                 // Display code will use var_sexpr alias to find the S-expression
                 eshkol_debug("detectValueType: Function* detected, tagging as LAMBDA_SEXPR");
-                return TypedValue(as_int, ESHKOL_VALUE_LAMBDA_SEXPR, true);
+                return TypedValue(as_int, ESHKOL_VALUE_CALLABLE, true);
             }
-            return TypedValue(as_int, ESHKOL_VALUE_CONS_PTR, true);
+            return TypedValue(as_int, ESHKOL_VALUE_HEAP_PTR, true);
         }
         
         return TypedValue(
@@ -4993,23 +5285,30 @@ private:
             return packDoubleToTaggedValue(tv.llvm_value);
         } else if (tv.type == ESHKOL_VALUE_CHAR) {
             return packCharToTaggedValue(tv.llvm_value);
-        } else if (tv.type == ESHKOL_VALUE_CONS_PTR) {
-            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_CONS_PTR);
-        } else if (tv.type == ESHKOL_VALUE_VECTOR_PTR) {
-            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_VECTOR_PTR);
-        } else if (tv.type == ESHKOL_VALUE_TENSOR_PTR) {
-            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_TENSOR_PTR);
-        } else if (tv.type == ESHKOL_VALUE_STRING_PTR) {
-            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_STRING_PTR);
-        } else if (tv.type == ESHKOL_VALUE_AD_NODE_PTR) {
-            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_AD_NODE_PTR);
-        } else if (tv.type == ESHKOL_VALUE_LAMBDA_SEXPR) {
-            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_LAMBDA_SEXPR, tv.flags);
+        } else if (tv.type == ESHKOL_VALUE_HEAP_PTR) {
+            // Legacy CONS_PTR - pack as HEAP_PTR (consolidated format)
+            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_HEAP_PTR);
+        } else if (tv.type == ESHKOL_VALUE_HEAP_PTR) {
+            // Consolidated heap pointer (cons, string, vector, etc. with header)
+            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_HEAP_PTR);
+        } else if (tv.type == ESHKOL_VALUE_CALLABLE) {
+            // Consolidated callable (closure, lambda, etc. with header)
+            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_CALLABLE);
+        // MIGRATION: Legacy types now output as consolidated HEAP_PTR (subtype in header)
+        } else if (tv.type == ESHKOL_VALUE_HEAP_PTR) {
+            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_HEAP_PTR);
+        } else if (tv.type == ESHKOL_VALUE_HEAP_PTR) {
+            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_HEAP_PTR);
+        } else if (tv.type == ESHKOL_VALUE_HEAP_PTR) {
+            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_HEAP_PTR);
+        // MIGRATION: Legacy callable types now output as consolidated CALLABLE (subtype in header)
+        } else if (tv.type == ESHKOL_VALUE_CALLABLE) {
+            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_CALLABLE, tv.flags);
         } else if (tv.type == ESHKOL_VALUE_BOOL) {
             // BOOL FIX: Handle boolean values for list storage
             return packBoolToTaggedValue(tv.llvm_value);
-        } else if (tv.type == ESHKOL_VALUE_CLOSURE_PTR) {
-            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_CLOSURE_PTR);
+        } else if (tv.type == ESHKOL_VALUE_CALLABLE) {
+            return packPtrToTaggedValue(tv.llvm_value, ESHKOL_VALUE_CALLABLE);
         } else if (tv.isNull()) {
             return packNullToTaggedValue();
         }
@@ -5228,9 +5527,10 @@ private:
                 return ConstantFP::get(double_type, ast->double_val);
                 
             case ESHKOL_STRING: {
-                // String literals are packed as tagged values with STRING_PTR type
-                Value* str_ptr = codegenString(ast->str_val.ptr);
-                return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_STRING_PTR);
+                // String literals use internStringWithHeader to create globals with headers.
+                // This allows consistent use of HEAP_PTR for all heap/string types.
+                Value* str_ptr = ctx_->internStringWithHeader(ast->str_val.ptr, HEAP_SUBTYPE_STRING);
+                return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_HEAP_PTR);
             }
                 
             case ESHKOL_VAR:
@@ -5366,10 +5666,11 @@ private:
                 Value* packed_info = ConstantInt::get(int64_type, 0);  // No captures
                 Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
                 Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR);  // Math builtins return scalars
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+                // Use with_header allocator for consolidated CALLABLE type
+                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                          {arena_ptr, func_ptr_int, packed_info, sexpr_ptr, return_type_info});
-                Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
-                return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
+                // Pack as CALLABLE (subtype CLOSURE is in header)
+                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
         }
 
@@ -5402,12 +5703,13 @@ private:
                 uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
                 Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
 
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+                // Use with_header allocator for consolidated CALLABLE type
+                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                          {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
-                Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
                 eshkol_debug("Wrapped user function '%s' (arity=%llu) in closure for first-class use",
                             var_name.c_str(), (unsigned long long)num_params);
-                return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
+                // Pack as CALLABLE (subtype CLOSURE is in header)
+                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
 
             // Fallback: return raw function pointer (for C functions, builtins, etc.)
@@ -5415,30 +5717,74 @@ private:
         }
 
         // Handle builtin operators as first-class functions
-        // Comparison operators
+        // Comparison operators - wrap in closure for proper first-class function use
         if (var_name == "<" || var_name == ">" || var_name == "<=" ||
             var_name == ">=" || var_name == "=") {
             Function* builtin_func = createBuiltinComparisonFunction(var_name);
             if (builtin_func) {
-                return builtin_func;
+                // Create closure for the comparison function
+                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, int64_type);
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                // Pack info: no captures, arity=2
+                uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
+                Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+                // Comparison builtins return booleans
+                uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
+                Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                // Use with_header allocator for consolidated CALLABLE type
+                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
+                // Pack as CALLABLE (subtype CLOSURE is in header)
+                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
         }
 
-        // Arithmetic operators
+        // Arithmetic operators - wrap in closure for proper first-class function use
         if (var_name == "+" || var_name == "-" || var_name == "*" || var_name == "/") {
             Function* builtin_func = createBuiltinArithmeticFunction(var_name, 2);
             if (builtin_func) {
-                return builtin_func;
+                // Create closure for the arithmetic function (like math builtins above)
+                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, int64_type);
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                // Pack info: no captures, arity=2
+                uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
+                // Create S-expression for homoiconicity: (primitive +)
+                Value* sexpr_cons = homoiconic_->builtinToSExpr(var_name);
+                Value* sexpr_ptr = sexpr_cons;  // builtinToSExpr returns i64 cons ptr
+                // Arithmetic builtins return scalars
+                uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
+                Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                // Use with_header allocator for consolidated CALLABLE type
+                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
+                // Pack as CALLABLE (subtype CLOSURE is in header)
+                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
         }
 
-        // Predicates as first-class functions
+        // Predicates as first-class functions - wrap in closure
         if (var_name == "even?" || var_name == "odd?" || var_name == "zero?" ||
             var_name == "positive?" || var_name == "negative?" || var_name == "null?" ||
             var_name == "pair?") {
             Function* builtin_func = createBuiltinPredicateFunction(var_name);
             if (builtin_func) {
-                return builtin_func;
+                // Create closure for the predicate function
+                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, int64_type);
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                // Pack info: no captures, arity=1 (predicates are unary)
+                uint64_t packed_info = 0 | (1 << 16);  // arity in bits 16-31
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
+                Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+                // Predicates return booleans
+                uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (1 << 8);
+                Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                // Use with_header allocator for consolidated CALLABLE type
+                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
+                // Pack as CALLABLE (subtype CLOSURE is in header)
+                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
         }
 
@@ -5455,8 +5801,24 @@ private:
             size_t arity = (var_name == "cons") ? 2 : 1;
             Value* builtin_func = resolveLambdaFunction(&var_ast, arity);
             free((void*)var_ast.variable.id);
-            if (builtin_func) {
-                return builtin_func;
+            if (builtin_func && isa<Function>(builtin_func)) {
+                // Wrap in closure for proper first-class function use
+                Function* func = cast<Function>(builtin_func);
+                Value* func_ptr_int = builder->CreatePtrToInt(func, int64_type);
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                // Pack info: no captures, arity
+                uint64_t packed_info = 0 | (arity << 16);  // arity in bits 16-31
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
+                Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+                // cons returns a list (pair), car/cdr return unknown
+                uint64_t return_type = (var_name == "cons") ? CLOSURE_RETURN_LIST : CLOSURE_RETURN_UNKNOWN;
+                uint64_t return_type_info_val = return_type | (arity << 8);
+                Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                // Use with_header allocator for consolidated CALLABLE type
+                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
+                // Pack as CALLABLE (subtype CLOSURE is in header)
+                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
         }
 
@@ -5500,6 +5862,14 @@ private:
                 } else {
                     return var_ptr;
                 }
+            }
+            // IntToPtrInst: pointer unpacked from closure capture (GlobalVariable or arena storage)
+            else if (isa<IntToPtrInst>(var_ptr)) {
+                return builder->CreateLoad(tagged_value_type, var_ptr);
+            }
+            // CallInst pointer: arena-allocated storage
+            else if (isa<CallInst>(var_ptr) && var_ptr->getType()->isPointerTy()) {
+                return builder->CreateLoad(tagged_value_type, var_ptr);
             }
             else {
                 return var_ptr;
@@ -5932,7 +6302,7 @@ private:
                 Value* func_addr = builder->CreatePtrToInt(lambda_func, int64_type);
                 Value* func_tagged = packPtrToTaggedValue(
                     builder->CreateIntToPtr(func_addr, builder->getPtrTy()),
-                    ESHKOL_VALUE_LAMBDA_SEXPR);  // CRITICAL: Mark as LAMBDA_SEXPR, not CONS_PTR
+                    ESHKOL_VALUE_CALLABLE);  // CRITICAL: Mark as LAMBDA_SEXPR, not CONS_PTR
                 builder->CreateRet(func_tagged);
             }
             // Otherwise, detect type and pack to tagged_value
@@ -6418,7 +6788,7 @@ private:
                         use_pregenerated = false;
                     } else {
                         value = builder->CreatePtrToInt(pregenerated, int64_type);
-                        value_type = ESHKOL_VALUE_LAMBDA_SEXPR;
+                        value_type = ESHKOL_VALUE_CALLABLE;
                         hott_type = eshkol::hott::BuiltinTypes::Function;  // Lambda is a function
                         use_pregenerated = true;
                         eshkol_debug("Reusing pre-generated lambda %s for %s (no captures)",
@@ -6455,12 +6825,12 @@ private:
                         // Force CONS_PTR type for list operations (unless result is null)
                         eshkol_debug("  FORCING CONS_PTR type");
                         if (value && !isa<ConstantInt>(value)) {
-                            value_type = ESHKOL_VALUE_CONS_PTR;
+                            value_type = ESHKOL_VALUE_HEAP_PTR;
                         } else if (auto* ci = dyn_cast<ConstantInt>(value)) {
                             if (ci->isZero()) {
                                 value_type = ESHKOL_VALUE_NULL;
                             } else {
-                                value_type = ESHKOL_VALUE_CONS_PTR;
+                                value_type = ESHKOL_VALUE_HEAP_PTR;
                             }
                         }
                     }
@@ -6539,7 +6909,7 @@ private:
             }
             // HOMOICONIC FIX: Handle LAMBDA_SEXPR type (value is PtrToInt of Function*)
             // We need to find the corresponding lambda function to create the var_sexpr alias
-            else if (value_type == ESHKOL_VALUE_LAMBDA_SEXPR) {
+            else if (value_type == ESHKOL_VALUE_CALLABLE) {
                 Function* matching_lambda = nullptr;
 
                 // Try to recover the original Function* from the PtrToInt instruction
@@ -6672,7 +7042,7 @@ private:
             }
             // CLOSURE_PTR FIX: Handle CLOSURE_PTR type (value is a closure from a function call)
             // We need to find the underlying lambda function to register var_name_func
-            else if (value_type == ESHKOL_VALUE_CLOSURE_PTR) {
+            else if (value_type == ESHKOL_VALUE_CALLABLE) {
                 Function* matching_lambda = nullptr;
 
                 // Handle CallInst (function call results that return closures)
@@ -6762,9 +7132,9 @@ private:
                 // 1. REPL mode (always), OR
                 // 2. Global init mode with CONS_PTR, LAMBDA_SEXPR, TENSOR_PTR, or BOOL types
                 bool needs_tagged_packing = is_repl_eval ||
-                    (is_global_init && (value_type == ESHKOL_VALUE_CONS_PTR ||
-                                        value_type == ESHKOL_VALUE_LAMBDA_SEXPR ||
-                                        value_type == ESHKOL_VALUE_TENSOR_PTR ||
+                    (is_global_init && (value_type == ESHKOL_VALUE_HEAP_PTR ||
+                                        value_type == ESHKOL_VALUE_CALLABLE ||
+                                        value_type == ESHKOL_VALUE_HEAP_PTR ||
                                         value_type == ESHKOL_VALUE_BOOL));
                 if (needs_tagged_packing && storage_type != tagged_value_type) {
                     actual_storage_type = tagged_value_type;
@@ -6816,19 +7186,22 @@ private:
                             store_value = packBoolToTaggedValue(value);
                         } else if (storage_type->isIntegerTy(64)) {
                             // CRITICAL FIX: Check value_type to properly tag list/cons pointers
-                            if (value_type == ESHKOL_VALUE_CONS_PTR) {
+                            // M1 Migration: Handle both legacy CONS_PTR and consolidated HEAP_PTR
+                            if (value_type == ESHKOL_VALUE_HEAP_PTR || value_type == ESHKOL_VALUE_HEAP_PTR) {
+                                // Use consolidated HEAP_PTR (subtype in object header)
                                 store_value = packPtrToTaggedValue(
                                     builder->CreateIntToPtr(value, builder->getPtrTy()),
-                                    ESHKOL_VALUE_CONS_PTR);
-                            } else if (value_type == ESHKOL_VALUE_TENSOR_PTR) {
+                                    ESHKOL_VALUE_HEAP_PTR);
+                            } else if (value_type == ESHKOL_VALUE_HEAP_PTR) {
+                                // M1 Migration: Tensors also use HEAP_PTR
                                 store_value = packPtrToTaggedValue(
                                     builder->CreateIntToPtr(value, builder->getPtrTy()),
-                                    ESHKOL_VALUE_TENSOR_PTR);
-                            } else if (value_type == ESHKOL_VALUE_LAMBDA_SEXPR) {
+                                    ESHKOL_VALUE_HEAP_PTR);
+                            } else if (value_type == ESHKOL_VALUE_CALLABLE) {
                                 // HOMOICONIC FIX: Preserve lambda S-expression type
                                 store_value = packPtrToTaggedValue(
                                     builder->CreateIntToPtr(value, builder->getPtrTy()),
-                                    ESHKOL_VALUE_LAMBDA_SEXPR);
+                                    ESHKOL_VALUE_CALLABLE);
                             } else {
                                 store_value = packInt64ToTaggedValue(value, true);
                             }
@@ -6889,7 +7262,7 @@ private:
                     // This allows (display add5) to work after (define add5 (make-adder 5))
                     eshkol_debug("Checking returned lambda handling for %s: value_type=%d, is_tagged=%d, is_i64=%d",
                                 var_name, value_type, value->getType() == tagged_value_type, storage_type->isIntegerTy(64));
-                    if (value_type != ESHKOL_VALUE_LAMBDA_SEXPR &&
+                    if (value_type != ESHKOL_VALUE_CALLABLE &&
                         (value->getType() == tagged_value_type || storage_type->isIntegerTy(64))) {
                         Function* matching_lambda = nullptr;
                         int highest_lambda_num = -1;
@@ -6965,20 +7338,21 @@ private:
                     Value* store_value = value;
                     if (store_value->getType() != tagged_value_type) {
                         // Pack value into tagged_value format
-                        // CRITICAL FIX: Check value_type FIRST before raw LLVM type checks!
-                        // List pointers are i64, so we must check CONS_PTR before isIntegerTy
-                        if (value_type == ESHKOL_VALUE_CONS_PTR) {
+                        // M1 Migration: Handle both legacy and consolidated types
+                        if (value_type == ESHKOL_VALUE_HEAP_PTR || value_type == ESHKOL_VALUE_HEAP_PTR) {
+                            // Use consolidated HEAP_PTR (subtype in object header)
                             store_value = packPtrToTaggedValue(
                                 builder->CreateIntToPtr(value, builder->getPtrTy()),
-                                ESHKOL_VALUE_CONS_PTR);
-                        } else if (value_type == ESHKOL_VALUE_TENSOR_PTR) {
+                                ESHKOL_VALUE_HEAP_PTR);
+                        } else if (value_type == ESHKOL_VALUE_HEAP_PTR) {
+                            // M1 Migration: Tensors use HEAP_PTR
                             store_value = packPtrToTaggedValue(
                                 builder->CreateIntToPtr(value, builder->getPtrTy()),
-                                ESHKOL_VALUE_TENSOR_PTR);
-                        } else if (value_type == ESHKOL_VALUE_LAMBDA_SEXPR) {
+                                ESHKOL_VALUE_HEAP_PTR);
+                        } else if (value_type == ESHKOL_VALUE_CALLABLE) {
                             store_value = packPtrToTaggedValue(
                                 builder->CreateIntToPtr(value, builder->getPtrTy()),
-                                ESHKOL_VALUE_LAMBDA_SEXPR);
+                                ESHKOL_VALUE_CALLABLE);
                         } else if (value_type == ESHKOL_VALUE_BOOL) {
                             // BOOL FIX: Handle boolean values
                             store_value = packBoolToTaggedValue(value);
@@ -6998,26 +7372,29 @@ private:
                     eshkol_debug("Stored value to pre-declared global: %s", var_name);
                 } else {
                     // No pre-declared global, use AllocaInst
-                    // HOMOICONIC FIX: Pack CONS_PTR, LAMBDA_SEXPR, TENSOR_PTR in tagged_value to preserve type
+                    // M1 Migration: Handle both legacy and consolidated types
                     Value* store_value = value;
                     Type* actual_storage_type = storage_type;
-                    if ((value_type == ESHKOL_VALUE_CONS_PTR ||
-                         value_type == ESHKOL_VALUE_LAMBDA_SEXPR ||
-                         value_type == ESHKOL_VALUE_TENSOR_PTR) &&
+                    if ((value_type == ESHKOL_VALUE_HEAP_PTR ||
+                         value_type == ESHKOL_VALUE_HEAP_PTR ||
+                         value_type == ESHKOL_VALUE_CALLABLE ||
+                         value_type == ESHKOL_VALUE_HEAP_PTR) &&
                         storage_type != tagged_value_type) {
                         actual_storage_type = tagged_value_type;
-                        if (value_type == ESHKOL_VALUE_CONS_PTR) {
+                        if (value_type == ESHKOL_VALUE_HEAP_PTR || value_type == ESHKOL_VALUE_HEAP_PTR) {
+                            // Use consolidated HEAP_PTR
                             store_value = packPtrToTaggedValue(
                                 builder->CreateIntToPtr(value, builder->getPtrTy()),
-                                ESHKOL_VALUE_CONS_PTR);
-                        } else if (value_type == ESHKOL_VALUE_TENSOR_PTR) {
+                                ESHKOL_VALUE_HEAP_PTR);
+                        } else if (value_type == ESHKOL_VALUE_HEAP_PTR) {
+                            // M1 Migration: Tensors use HEAP_PTR
                             store_value = packPtrToTaggedValue(
                                 builder->CreateIntToPtr(value, builder->getPtrTy()),
-                                ESHKOL_VALUE_TENSOR_PTR);
-                        } else if (value_type == ESHKOL_VALUE_LAMBDA_SEXPR) {
+                                ESHKOL_VALUE_HEAP_PTR);
+                        } else if (value_type == ESHKOL_VALUE_CALLABLE) {
                             store_value = packPtrToTaggedValue(
                                 builder->CreateIntToPtr(value, builder->getPtrTy()),
-                                ESHKOL_VALUE_LAMBDA_SEXPR);
+                                ESHKOL_VALUE_CALLABLE);
                         }
                     }
                     AllocaInst* variable = builder->CreateAlloca(
@@ -7043,7 +7420,7 @@ private:
                 // and create var_func reference so the alias code in main can find it
                 // BUT ONLY if _func isn't already set (don't overwrite correct values from LAMBDA_SEXPR branch)
                 // CRITICAL: Handle both LAMBDA_SEXPR and CLOSURE_PTR types
-                if ((value_type == ESHKOL_VALUE_LAMBDA_SEXPR || value_type == ESHKOL_VALUE_CLOSURE_PTR) &&
+                if ((value_type == ESHKOL_VALUE_CALLABLE || value_type == ESHKOL_VALUE_CALLABLE) &&
                     symbol_table.find(std::string(var_name) + "_func") == symbol_table.end()) {
                     // Find the most recently created lambda or nested function (heuristic for returned functions)
                     Function* matching_lambda = nullptr;
@@ -7635,7 +8012,7 @@ private:
         if (func_name == "integer?") return codegenTypePredicate(op, ESHKOL_VALUE_INT64);
         if (func_name == "real?") return codegenTypePredicate(op, ESHKOL_VALUE_DOUBLE);
         if (func_name == "list?") return codegenListPredicate(op);
-        if (func_name == "string?") return codegenTypePredicate(op, ESHKOL_VALUE_STRING_PTR);
+        if (func_name == "string?") return codegenHeapSubtypePredicate(op, HEAP_SUBTYPE_STRING);
         if (func_name == "boolean?") return codegenBooleanPredicate(op);
         if (func_name == "symbol?") return codegenTypePredicate(op, ESHKOL_VALUE_SYMBOL);
         if (func_name == "procedure?") return codegenProcedurePredicate(op);
@@ -7744,7 +8121,7 @@ private:
         // HASH TABLE OPERATIONS (delegated to HashCodegen)
         // =========================================================================
         if (func_name == "make-hash-table") return hash_->makeHashTable(op);
-        if (func_name == "hash-table?") return codegenTypePredicate(op, ESHKOL_VALUE_HASH_PTR);
+        if (func_name == "hash-table?") return hash_->isHashTable(op);
         if (func_name == "hash-ref") return hash_->hashRef(op);
         if (func_name == "hash-set!") return hash_->hashSet(op);
         if (func_name == "hash-has-key?") return hash_->hashHasKey(op);
@@ -7858,7 +8235,7 @@ private:
         if (func_name == "tensor-set") return tensor_->tensorSet(op);
 
         // Scheme vectors (heterogeneous - can hold any type) - MIGRATED to CollectionCodegen
-        if (func_name == "vector?") return codegenTypePredicate(op, ESHKOL_VALUE_VECTOR_PTR);
+        if (func_name == "vector?") return codegenHeapSubtypePredicate(op, HEAP_SUBTYPE_VECTOR);
         if (func_name == "make-vector") return coll_->makeVector(op);
         if (func_name == "vector") return coll_->vector(op);
         if (func_name == "vector-ref") return coll_->vectorRef(op);
@@ -8440,9 +8817,9 @@ private:
                     } else if (arg->getType()->isPointerTy()) {
                         // Check if this is a Function* (first-class function being passed)
                         if (isa<Function>(arg)) {
-                            arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_LAMBDA_SEXPR);
+                            arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_CALLABLE);
                         } else {
-                            arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_CONS_PTR);
+                            arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_HEAP_PTR);
                         }
                     } else {
                         TypedValue tv = detectValueType(arg);
@@ -8476,9 +8853,9 @@ private:
                 } else if (arg->getType()->isPointerTy()) {
                     // Check if this is a Function* (first-class function being passed)
                     if (isa<Function>(arg)) {
-                        arg_tagged = packPtrToTaggedValue(arg, ESHKOL_VALUE_LAMBDA_SEXPR);
+                        arg_tagged = packPtrToTaggedValue(arg, ESHKOL_VALUE_CALLABLE);
                     } else {
-                        arg_tagged = packPtrToTaggedValue(arg, ESHKOL_VALUE_CONS_PTR);
+                        arg_tagged = packPtrToTaggedValue(arg, ESHKOL_VALUE_HEAP_PTR);
                     }
                 } else {
                     TypedValue tv = detectValueType(arg);
@@ -8488,7 +8865,7 @@ private:
                 // Create cons cell: (arg . rest_list) - returns i64 pointer
                 Value* cons_ptr_i64 = codegenTaggedArenaConsCellFromTaggedValue(arg_tagged, rest_list_tagged);
                 // Pack as CONS_PTR tagged_value for next iteration
-                rest_list_tagged = packPtrToTaggedValue(cons_ptr_i64, ESHKOL_VALUE_CONS_PTR);
+                rest_list_tagged = packPtrToTaggedValue(cons_ptr_i64, ESHKOL_VALUE_HEAP_PTR);
             }
 
             // Add rest list as the final parameter (already a tagged_value)
@@ -8571,9 +8948,9 @@ private:
                         // Check if this is a Function* (first-class function being passed)
                         if (isa<Function>(arg)) {
                             // Pack function pointers as LAMBDA_SEXPR for homoiconic display
-                            arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_LAMBDA_SEXPR);
+                            arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_CALLABLE);
                         } else {
-                            arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_CONS_PTR);
+                            arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_HEAP_PTR);
                         }
                     } else if (actual_type->isIntegerTy()) {
                         // Convert other integer types to i64 first
@@ -8639,7 +9016,7 @@ private:
 
                     // Check type and unpack appropriately
                     Value* is_string = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
                     Value* is_double = builder->CreateICmpEQ(base_type,
                         ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
 
@@ -8738,6 +9115,11 @@ private:
                         // Function parameters (captures) are already loaded values
                         closure_tagged = closure_var;
                     }
+                } else if (isa<IntToPtrInst>(closure_var)) {
+                    // MUTABLE CAPTURE FIX: IntToPtrInst means this is a captured closure pointer
+                    // from the lambda's closure environment. Load the tagged value from it.
+                    closure_tagged = builder->CreateLoad(tagged_value_type, closure_var);
+                    eshkol_debug("Loading closure from IntToPtrInst for %s", func_name.c_str());
                 } else if (isa<Function>(closure_var)) {
                     // This is a nested function definition - load captures from global variables
                     // Captures are stored with naming convention: lambda_name + "_capture_" + var_name
@@ -9210,7 +9592,7 @@ private:
 
         // REVERSE-MODE AD FIX: Check if argument is an AD node (for gradient/jacobian)
         Value* arg_is_ad_node = builder->CreateICmpEQ(arg_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* dual_path = BasicBlock::Create(*context, (func_name + "_dual_path").c_str(), current_func);
@@ -9245,7 +9627,7 @@ private:
             ad_result_node = ad_node_ptr;
         }
         Value* ad_result_int = builder->CreatePtrToInt(ad_result_node, int64_type);
-        Value* tagged_ad_result = packPtrToTaggedValue(ad_result_int, ESHKOL_VALUE_AD_NODE_PTR);
+        Value* tagged_ad_result = packPtrToTaggedValue(ad_result_int, ESHKOL_VALUE_CALLABLE);
         builder->CreateBr(merge);
         BasicBlock* ad_node_exit = builder->GetInsertBlock();
 
@@ -9337,7 +9719,7 @@ private:
         Value* arg_is_dual = builder->CreateICmpEQ(arg_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
         Value* arg_is_ad_node = builder->CreateICmpEQ(arg_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* arg_is_int = builder->CreateICmpEQ(arg_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
 
@@ -9359,7 +9741,7 @@ private:
         Value* ad_node_ptr = builder->CreateIntToPtr(ad_node_ptr_int, PointerType::getUnqual(*context));
         Value* new_ad_node = recordADNodeUnary(12, ad_node_ptr);  // 12 = AD_NODE_ABS
         Value* new_ad_node_int = builder->CreatePtrToInt(new_ad_node, int64_type);
-        Value* ad_result = packPtrToTaggedValue(new_ad_node_int, ESHKOL_VALUE_AD_NODE_PTR);
+        Value* ad_result = packPtrToTaggedValue(new_ad_node_int, ESHKOL_VALUE_CALLABLE);
         builder->CreateBr(merge);
         BasicBlock* ad_node_exit = builder->GetInsertBlock();
 
@@ -9831,7 +10213,7 @@ private:
         Value* type_val = getTaggedValueType(tagged);
         Value* base_type = getBaseType(type_val);
         Value* is_string = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
         // Create branches to handle string vs non-string
         Function* current_func = builder->GetInsertBlock()->getParent();
@@ -9986,8 +10368,8 @@ private:
         // Bind exception to variable in scope
         const char* var_name = op->guard_op.var_name;
         if (var_name) {
-            // Pack exception pointer as tagged value
-            Value* exc_tagged = packPtrToTaggedValue(exception_ptr, ESHKOL_VALUE_EXCEPTION);
+            // Pack exception pointer as HEAP_PTR (consolidated format - subtype in header)
+            Value* exc_tagged = packPtrToTaggedValue(exception_ptr, ESHKOL_VALUE_HEAP_PTR);
             symbol_table[var_name] = exc_tagged;
         }
 
@@ -10069,7 +10451,8 @@ private:
             if (builder->GetInsertBlock()->getTerminator() == nullptr) {
                 // Re-get exception pointer since we may be in a different block
                 Value* fallthrough_exc = builder->CreateCall(get_exception_func, {}, "fallthrough_exception");
-                Value* exc_tagged = packPtrToTaggedValue(fallthrough_exc, ESHKOL_VALUE_EXCEPTION);
+                // Pack as HEAP_PTR (consolidated format - subtype in header)
+                Value* exc_tagged = packPtrToTaggedValue(fallthrough_exc, ESHKOL_VALUE_HEAP_PTR);
                 phi_inputs.push_back({exc_tagged, builder->GetInsertBlock()});
                 builder->CreateBr(done_block);
             }
@@ -10099,7 +10482,8 @@ private:
         } else {
             // No clauses - just return exception
             builder->CreateCall(clear_exception_func, {});
-            Value* exc_tagged = packPtrToTaggedValue(exception_ptr, ESHKOL_VALUE_EXCEPTION);
+            // Pack as HEAP_PTR (consolidated format - subtype in header)
+            Value* exc_tagged = packPtrToTaggedValue(exception_ptr, ESHKOL_VALUE_HEAP_PTR);
             BasicBlock* handler_exit = builder->GetInsertBlock();  // Capture current block
             builder->CreateBr(done_block);
 
@@ -10130,12 +10514,12 @@ private:
             raise_func->setDoesNotReturn();
         }
 
-        // Get or declare eshkol_make_exception function
-        Function* make_exc_func = module->getFunction("eshkol_make_exception");
+        // Get or declare eshkol_make_exception_with_header function (uses consolidated HEAP_PTR type)
+        Function* make_exc_func = module->getFunction("eshkol_make_exception_with_header");
         if (!make_exc_func) {
             FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
                 {builder->getInt32Ty(), builder->getPtrTy()}, false);
-            make_exc_func = Function::Create(make_type, Function::ExternalLinkage, "eshkol_make_exception", module.get());
+            make_exc_func = Function::Create(make_type, Function::ExternalLinkage, "eshkol_make_exception_with_header", module.get());
         }
 
         // Evaluate exception expression and create exception object
@@ -10226,18 +10610,22 @@ private:
                 return packNullToTaggedValue();
             }
 
+            // CRITICAL: codegenAST returns raw values for primitives (i64, double) but
+            // tagged values for complex types. We need to ensure all values are tagged.
+            Value* tagged_val = ensureTaggedValue(val);
+
             // Store value at offset
             Value* elem_ptr = builder->CreateGEP(builder->getInt8Ty(), mv_ptr,
                 ConstantInt::get(int64_type, offset + i * sizeof(eshkol_tagged_value_t)), "mv_elem_ptr");
             Value* typed_ptr = builder->CreatePointerCast(elem_ptr,
                 PointerType::getUnqual(tagged_value_type));
-            builder->CreateStore(val, typed_ptr);
+            builder->CreateStore(tagged_val, typed_ptr);
         }
 
         // Return the multi-value object as a HEAP_PTR with MULTI_VALUE subtype
         // The subtype is stored in the object header by arena_allocate_multi_value
         // Note: HEAP_PTR (8) and STRING_PTR (8) are the same value in current type system
-        return packPtrToTaggedValue(mv_ptr, ESHKOL_VALUE_STRING_PTR);
+        return packPtrToTaggedValue(mv_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
     // (call-with-values producer consumer) - Apply consumer to producer's values
@@ -10251,14 +10639,9 @@ private:
             return packNullToTaggedValue();
         }
 
-        // Call the producer (it should be a thunk)
-        // We need to wrap it in a call if it's not already
-        Value* produced = nullptr;
-
-        // Check if producer is a function we can call
-        // For now, assume producer returns its result directly (already evaluated)
-        // In a more complete implementation, we'd check if it's a closure and call it
-        produced = producer_val;
+        // Call the producer thunk (zero arguments) to get the multi-value result
+        std::vector<Value*> no_args;
+        Value* produced = codegenClosureCall(producer_val, no_args, "call-with-values-producer");
 
         // Evaluate consumer function
         Value* consumer_val = codegenAST(op->call_with_values_op.consumer);
@@ -10305,6 +10688,7 @@ private:
     }
 
     // Helper: Call consumer with unpacked multi-value
+    // Uses runtime dispatch to handle variable number of values (up to 8)
     Value* callConsumerWithMultiValue(Value* consumer, Value* multi_val) {
         // Extract the pointer from the tagged value
         Value* mv_ptr = unpackPtrFromTaggedValue(multi_val);
@@ -10312,9 +10696,6 @@ private:
         // Read the count from the multi-value object
         Value* count_ptr = builder->CreatePointerCast(mv_ptr, PointerType::getUnqual(int64_type));
         Value* count = builder->CreateLoad(int64_type, count_ptr, "mv_count");
-
-        // For now, we'll handle up to 8 values (common case)
-        // A more complete implementation would use dynamic dispatch
 
         // Read all values into an array (up to 8)
         std::vector<Value*> values;
@@ -10328,39 +10709,50 @@ private:
             values.push_back(builder->CreateLoad(tagged_value_type, typed_ptr, "mv_val"));
         }
 
-        // Call consumer using the dynamic call mechanism
-        // The consumer is a closure/function, use callClosure with the unpacked values
-        return callClosureWithArgs(consumer, values, count);
+        // Create switch for different value counts (1-8)
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "mv_merge", current_func);
+        BasicBlock* default_bb = BasicBlock::Create(*context, "mv_default", current_func);
+
+        SwitchInst* sw = builder->CreateSwitch(count, default_bb, 8);
+
+        std::vector<std::pair<BasicBlock*, Value*>> results;
+
+        // Generate case blocks for each arity
+        for (int n = 1; n <= 8; n++) {
+            BasicBlock* case_bb = BasicBlock::Create(*context, "mv_case_" + std::to_string(n), current_func);
+            sw->addCase(ConstantInt::get(int64_type, n), case_bb);
+
+            builder->SetInsertPoint(case_bb);
+            std::vector<Value*> case_args(values.begin(), values.begin() + n);
+            Value* result = codegenClosureCall(consumer, case_args, "call-with-values");
+            builder->CreateBr(merge_bb);
+            results.push_back({builder->GetInsertBlock(), result});
+        }
+
+        // Default case (0 values or >8) - call with no args
+        builder->SetInsertPoint(default_bb);
+        std::vector<Value*> no_args;
+        Value* default_result = codegenClosureCall(consumer, no_args, "call-with-values-default");
+        builder->CreateBr(merge_bb);
+        results.push_back({builder->GetInsertBlock(), default_result});
+
+        // Merge all results
+        builder->SetInsertPoint(merge_bb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, results.size(), "mv_result");
+        for (auto& [bb, val] : results) {
+            phi->addIncoming(val, bb);
+        }
+
+        return phi;
     }
 
     // Helper: Call closure with dynamic argument count
+    // Uses codegenClosureCall which handles all closure calling conventions
     Value* callClosureWithArgs(Value* closure, const std::vector<Value*>& args, Value* actual_count) {
-        // Get eshkol_call_closure function
-        Function* call_func = module->getFunction("eshkol_call_closure");
-        if (!call_func) {
-            // Declare: tagged_value eshkol_call_closure(ptr closure, ptr args, int64 count)
-            FunctionType* call_type = FunctionType::get(tagged_value_type,
-                {builder->getPtrTy(), builder->getPtrTy(), int64_type}, false);
-            call_func = Function::Create(call_type, Function::ExternalLinkage,
-                "eshkol_call_closure", module.get());
-        }
-
-        // Allocate array on stack for args
-        Value* args_array = builder->CreateAlloca(tagged_value_type,
-            ConstantInt::get(int32_type, args.size()), "args_array");
-
-        // Store args
-        for (size_t i = 0; i < args.size(); i++) {
-            Value* ptr = builder->CreateGEP(tagged_value_type, args_array,
-                ConstantInt::get(int64_type, i));
-            builder->CreateStore(args[i], ptr);
-        }
-
-        // Extract closure pointer
-        Value* closure_ptr = unpackPtrFromTaggedValue(closure);
-
-        // Call
-        return builder->CreateCall(call_func, {closure_ptr, args_array, actual_count}, "closure_result");
+        (void)actual_count;  // Not needed - codegenClosureCall handles arity
+        // Delegate to codegenClosureCall which properly handles closures with captures
+        return codegenClosureCall(closure, args, "call-with-values");
     }
 
     // Helper: Call consumer with single value
@@ -10525,7 +10917,7 @@ private:
 
             // Regular cons
             Value* cons_int = codegenTaggedArenaConsCellFromTaggedValue(car_val, cdr_val);
-            return packPtrToTaggedValue(builder->CreateIntToPtr(cons_int, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+            return packPtrToTaggedValue(builder->CreateIntToPtr(cons_int, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
         }
 
         // For other types, quote them as-is
@@ -10560,7 +10952,7 @@ private:
     Value* matchIsPair(Value* val) {
         Value* type = getTaggedValueType(val);
         return builder->CreateICmpEQ(type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR), "is_pair");
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR), "is_pair");
     }
 
     // Helper: Check if a value is null (empty list)
@@ -11142,14 +11534,14 @@ private:
         return flow_->codegenUnless(op);
     }
 
-    // Type predicates
+    // Type predicates - MIGRATED to consolidated type system
+    // For immediate types: checks type directly
     Value* codegenTypePredicate(const eshkol_operations_t* op, uint8_t expected_type) {
         if (op->call_op.num_vars != 1) {
             eshkol_warn("Type predicate requires exactly 1 argument");
             return nullptr;
         }
 
-        // CRITICAL FIX: Use codegenTypedAST + typedValueToTaggedValue for proper type handling
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
         if (!tv.llvm_value) return nullptr;
         Value* arg = typedValueToTaggedValue(tv);
@@ -11159,6 +11551,35 @@ private:
         Value* matches = builder->CreateICmpEQ(base_type,
             ConstantInt::get(int8_type, expected_type));
 
+        return packBoolToTaggedValue(matches);
+    }
+
+    // Consolidated type predicates - check HEAP_PTR/CALLABLE and subtype in header
+    Value* codegenHeapSubtypePredicate(const eshkol_operations_t* op, uint8_t expected_subtype) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("Type predicate requires exactly 1 argument");
+            return nullptr;
+        }
+
+        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv.llvm_value) return nullptr;
+        Value* arg = typedValueToTaggedValue(tv);
+
+        Value* matches = isHeapSubtype(arg, expected_subtype);
+        return packBoolToTaggedValue(matches);
+    }
+
+    Value* codegenCallableSubtypePredicate(const eshkol_operations_t* op, uint8_t expected_subtype) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("Type predicate requires exactly 1 argument");
+            return nullptr;
+        }
+
+        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv.llvm_value) return nullptr;
+        Value* arg = typedValueToTaggedValue(tv);
+
+        Value* matches = isCallableSubtype(arg, expected_subtype);
         return packBoolToTaggedValue(matches);
     }
 
@@ -11306,23 +11727,22 @@ private:
         builder->CreateBr(loop_header);
 
         builder->SetInsertPoint(loop_exit);
-        return packPtrToTaggedValue(vec_ptr, ESHKOL_VALUE_VECTOR_PTR);
+        // MIGRATION: Use consolidated HEAP_PTR (subtype HEAP_SUBTYPE_VECTOR is in header)
+        return packPtrToTaggedValue(vec_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
     // vector: Create a vector from given elements
     Value* codegenVector(const eshkol_operations_t* op) {
         uint64_t num_elems = op->call_op.num_vars;
 
-        // Calculate allocation size: 8 (length) + sizeof(tagged_value) * num_elems
-        uint64_t tagged_value_size = module->getDataLayout().getTypeAllocSize(tagged_value_type);
-        uint64_t total_size = 8 + tagged_value_size * num_elems;
-
-        // Allocate from arena
+        // Consolidated pointer system: Use header-based allocation
+        // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
+        // Header contains subtype=HEAP_SUBTYPE_VECTOR, returns pointer to length field
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        Value* vec_ptr = builder->CreateCall(getArenaAllocateFunc(),
-            {arena_ptr, ConstantInt::get(int64_type, total_size)});
+        Value* vec_ptr = builder->CreateCall(mem->getArenaAllocateVectorWithHeader(),
+            {arena_ptr, ConstantInt::get(int64_type, num_elems)});
 
-        // Store length at beginning
+        // Store length at beginning (vec_ptr points to length field)
         Value* len_ptr = builder->CreateBitCast(vec_ptr, PointerType::getUnqual(*context));
         builder->CreateStore(ConstantInt::get(int64_type, num_elems), len_ptr);
 
@@ -11344,7 +11764,8 @@ private:
             builder->CreateStore(tagged_elem, elem_ptr);
         }
 
-        return packPtrToTaggedValue(vec_ptr, ESHKOL_VALUE_VECTOR_PTR);
+        // Consolidated pointer: HEAP_PTR with HEAP_SUBTYPE_VECTOR in header
+        return packPtrToTaggedValue(vec_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
     // vector-ref: Get element at index
@@ -11433,9 +11854,9 @@ private:
             Value* type_tag = getTaggedValueType(vec_arg);
             Value* base_type = getBaseType(type_tag);
 
-            // Check if it's a tensor (ESHKOL_VALUE_TENSOR_PTR = 6)
+            // Check if it's a tensor (ESHKOL_VALUE_HEAP_PTR = 6)
             Value* is_tensor = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
             // Extract pointer
             Value* ptr_int = unpackInt64FromTaggedValue(vec_arg);
@@ -11543,11 +11964,11 @@ private:
 
         // SYMBOL FIX: Detect if we're comparing pointer types (STRING_PTR, CONS_PTR, etc.)
         Value* is_string_ptr = builder->CreateICmpEQ(base_type1,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* is_cons_ptr = builder->CreateICmpEQ(base_type1,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* is_closure_ptr = builder->CreateICmpEQ(base_type1,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CLOSURE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* is_ptr_type = builder->CreateOr(is_string_ptr, builder->CreateOr(is_cons_ptr, is_closure_ptr));
 
         // For pointer types, compare pointers; for integers, compare as int64
@@ -11640,11 +12061,11 @@ private:
         // For non-numbers, fall back to eq? semantics (type + pointer/value equality)
         // SYMBOL FIX: Use pointer comparison for pointer types
         Value* is_string_ptr = builder->CreateICmpEQ(base_type1,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* is_cons_ptr = builder->CreateICmpEQ(base_type1,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* is_closure_ptr = builder->CreateICmpEQ(base_type1,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CLOSURE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* is_ptr_type = builder->CreateOr(is_string_ptr, builder->CreateOr(is_cons_ptr, is_closure_ptr));
 
         Value* ptr1 = unpackPtrFromTaggedValue(arg1);
@@ -11691,12 +12112,12 @@ private:
         // Use exception system: create exception and raise it
         // This allows (error "msg" ...) to be caught by guard
 
-        // Get or declare exception functions
-        Function* make_exc_func = module->getFunction("eshkol_make_exception");
+        // Get or declare exception functions (with header for consolidated HEAP_PTR type)
+        Function* make_exc_func = module->getFunction("eshkol_make_exception_with_header");
         if (!make_exc_func) {
             FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
                 {builder->getInt32Ty(), builder->getPtrTy()}, false);
-            make_exc_func = Function::Create(make_type, Function::ExternalLinkage, "eshkol_make_exception", module.get());
+            make_exc_func = Function::Create(make_type, Function::ExternalLinkage, "eshkol_make_exception_with_header", module.get());
         }
 
         Function* raise_func = module->getFunction("eshkol_raise");
@@ -11718,7 +12139,7 @@ private:
 
                     // Check if first arg is a string
                     Value* is_string = builder->CreateICmpEQ(type_byte,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
                     Function* current_func = builder->GetInsertBlock()->getParent();
                     BasicBlock* check_block = builder->GetInsertBlock();
@@ -12912,6 +13333,10 @@ private:
                         // We need to unpack and use it to continue the pointer-passing chain.
                         was_alloca_capture = true;
                         eshkol_debug("Arena storage capture detected for %s (outer is CallInst)", var_name.c_str());
+                    } else if (isa<GlobalVariable>(outer_it->second)) {
+                        // GlobalVariable: closure contains pointer (packed as int64)
+                        was_alloca_capture = true;
+                        eshkol_debug("GlobalVariable capture detected for %s", var_name.c_str());
                     }
                 }
 
@@ -13244,7 +13669,8 @@ private:
                         lambda_name.c_str(), (unsigned long long)packed_info,
                         free_vars.size(), (unsigned long long)op->lambda_op.num_params, is_variadic ? 1 : 0,
                         return_type_category);
-            Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+            // Use with_header allocator for consolidated CALLABLE type
+            Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                      {arena_ptr, func_ptr, packed_captures, sexpr_ptr, return_type_val});
 
             // Store captured values into closure environment
@@ -13321,8 +13747,10 @@ private:
                         // TCO alloca - load the value and capture it (not pointer)
                         captured_val = builder->CreateLoad(tagged_value_type, var_value, var_name + "_val");
                     } else if (isa<GlobalVariable>(var_value)) {
-                        captured_val = builder->CreateLoad(
-                            dyn_cast<GlobalVariable>(var_value)->getValueType(), var_value);
+                        // GlobalVariable: store pointer so set! modifies the original
+                        Value* global_ptr_int = builder->CreatePtrToInt(var_value, int64_type);
+                        captured_val = packInt64ToTaggedValue(global_ptr_int, true);
+                        eshkol_debug("Storing GlobalVariable pointer for capture: %s", var_name.c_str());
                     } else if (isa<CallInst>(var_value) && var_value->getType()->isPointerTy()) {
                         // ARENA CAPTURE FIX: Handle arena-allocated storage (CallInst from arena_allocate)
                         // When a variable has been moved to arena storage by a previous lambda creation,
@@ -13423,8 +13851,8 @@ private:
                 capture_idx++;
             }
 
-            // Return closure pointer as CLOSURE_PTR tagged value
-            Value* closure_tagged = packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CLOSURE_PTR);
+            // Return closure pointer as CALLABLE tagged value (subtype CLOSURE is in header)
+            Value* closure_tagged = packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             return closure_tagged;
         }
 
@@ -13445,7 +13873,15 @@ private:
 
         // Allocate closure with 0 captures but with S-expression
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        Value* num_captures = ConstantInt::get(int64_type, 0);
+
+        // VARIADIC FIX: Pack closure info even for 0 captures
+        // Format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic
+        uint64_t packed_info = 0;  // 0 captures
+        packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 16;  // Fixed params
+        if (is_variadic) {
+            packed_info |= (1ULL << 63);  // Variadic flag
+        }
+        Value* num_captures = ConstantInt::get(int64_type, packed_info);
 
         // Compute return type info for closure metadata (same logic as captures path)
         uint8_t return_type_category = CLOSURE_RETURN_UNKNOWN;
@@ -13524,13 +13960,15 @@ private:
         return_type_info_val |= ((uint64_t)hott_type_id) << 16;  // Pack HoTT type ID into bits 16-47
         Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
 
-        Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+        // Use with_header allocator for consolidated CALLABLE type
+        Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                  {arena_ptr, func_ptr, num_captures, sexpr_ptr, return_type_info});
 
-        Value* closure_tagged = packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CLOSURE_PTR);
+        // Pack as CALLABLE (subtype CLOSURE is in header)
+        Value* closure_tagged = packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
         return closure_tagged;
     }
-    
+
     Value* codegenLet(const eshkol_operations_t* op) {
         if (!op || !op->let_op.body) {
             eshkol_error("Invalid let expression - missing body");
@@ -13685,7 +14123,7 @@ private:
 
                 // Check if it's a CONS_PTR (function pointers are stored as CONS_PTR)
                 Value* is_func_ptr = builder->CreateICmpEQ(val_base_type,
-                    ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
                 // Extract the function pointer value
                 Value* func_addr = unpackInt64FromTaggedValue(val);
@@ -14309,7 +14747,7 @@ private:
                             captured_val = packInt64ToTaggedValue(captured_val, ESHKOL_VALUE_INT64);
                         } else if (isa<Function>(captured_val)) {
                             Value* func_addr = builder->CreatePtrToInt(captured_val, int64_type);
-                            captured_val = packInt64ToTaggedValue(func_addr, ESHKOL_VALUE_CONS_PTR);
+                            captured_val = packInt64ToTaggedValue(func_addr, ESHKOL_VALUE_CALLABLE);
                         }
                     }
 
@@ -14540,7 +14978,7 @@ private:
                 // Convert function pointer to tagged value for storage
                 val = packInt64ToTaggedValue(
                     builder->CreatePtrToInt(func, int64_type),
-                    ESHKOL_VALUE_CONS_PTR
+                    ESHKOL_VALUE_HEAP_PTR
                 );
             }
             // Ensure value is tagged_value_type for storage
@@ -14602,24 +15040,17 @@ private:
         if (!ast || ast->type != ESHKOL_TENSOR) return nullptr;
         
         // Use class member tensor_type (shared by all tensor operations)
-        
-        // Allocate memory for tensor structure
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc function not found");
-            return nullptr;
-        }
-        
-        Value* tensor_size = ConstantInt::get(int64_type, 
-                                            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* tensor_ptr = builder->CreateCall(malloc_func, {tensor_size});
-        Value* typed_tensor_ptr = builder->CreatePointerCast(tensor_ptr, builder->getPtrTy());
-        
-        // Allocate and populate dimensions array
-        Value* dims_size = ConstantInt::get(int64_type, 
+
+        // Get arena for OALR-compliant allocation
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+        // Allocate tensor with header via arena (OALR compliant - no malloc)
+        Value* typed_tensor_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+        // Allocate and populate dimensions array via arena
+        Value* dims_size = ConstantInt::get(int64_type,
                                           ast->tensor_val.num_dimensions * sizeof(uint64_t));
-        Value* dims_ptr = builder->CreateCall(malloc_func, {dims_size});
-        Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
+        Value* typed_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, dims_size});
         
         for (uint64_t i = 0; i < ast->tensor_val.num_dimensions; i++) {
             Value* dim_ptr = builder->CreateGEP(int64_type, typed_dims_ptr, 
@@ -14627,11 +15058,10 @@ private:
             builder->CreateStore(ConstantInt::get(int64_type, ast->tensor_val.dimensions[i]), dim_ptr);
         }
         
-        // Allocate and populate elements array
-        Value* elements_size = ConstantInt::get(int64_type, 
+        // Allocate and populate elements array via arena (OALR compliant)
+        Value* elements_size = ConstantInt::get(int64_type,
                                              ast->tensor_val.total_elements * sizeof(int64_t));
-        Value* elements_ptr = builder->CreateCall(malloc_func, {elements_size});
-        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
+        Value* typed_elements_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, elements_size});
         
         for (uint64_t i = 0; i < ast->tensor_val.total_elements; i++) {
             Value* element_val = codegenAST(&ast->tensor_val.elements[i]);
@@ -14687,26 +15117,43 @@ private:
         // CRITICAL FIX: Detect if input is AD_NODE_PTR (scalar gradient case) vs TENSOR_PTR
         // Gradient with scalar functions passes single AD node, not tensor!
         Function* current_func = builder->GetInsertBlock()->getParent();
-        
-        // Check if vector_val is tagged_value with AD_NODE_PTR, VECTOR_PTR, or TENSOR_PTR type
+
+        // Consolidated pointer system: Check for CALLABLE or HEAP_PTR
+        // - CALLABLE (9): AD nodes, closures, lambdas
+        // - HEAP_PTR (8): vectors, tensors (distinguished by header subtype)
         Value* input_type = getTaggedValueType(vector_val);
         Value* input_base_type = getBaseType(input_type);
 
-        Value* is_ad_node_ptr = builder->CreateICmpEQ(input_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
-        Value* is_vector_ptr = builder->CreateICmpEQ(input_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+        Value* is_callable = builder->CreateICmpEQ(input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* is_heap_ptr = builder->CreateICmpEQ(input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
         BasicBlock* ad_node_input = BasicBlock::Create(*context, "vref_ad_node_input", current_func);
+        BasicBlock* heap_ptr_dispatch = BasicBlock::Create(*context, "vref_heap_ptr_dispatch", current_func);
         BasicBlock* scheme_vector_input = BasicBlock::Create(*context, "vref_scheme_vector_input", current_func);
         BasicBlock* tensor_input = BasicBlock::Create(*context, "vref_tensor_input", current_func);
         BasicBlock* vref_final = BasicBlock::Create(*context, "vref_final", current_func);
 
-        BasicBlock* check_vector = BasicBlock::Create(*context, "vref_check_vector", current_func);
-        builder->CreateCondBr(is_ad_node_ptr, ad_node_input, check_vector);
+        BasicBlock* check_heap_ptr = BasicBlock::Create(*context, "vref_check_heap_ptr", current_func);
+        builder->CreateCondBr(is_callable, ad_node_input, check_heap_ptr);
 
-        builder->SetInsertPoint(check_vector);
-        builder->CreateCondBr(is_vector_ptr, scheme_vector_input, tensor_input);
+        builder->SetInsertPoint(check_heap_ptr);
+        builder->CreateCondBr(is_heap_ptr, heap_ptr_dispatch, tensor_input);
+
+        // HEAP_PTR dispatch: Read header subtype to distinguish vector vs tensor
+        builder->SetInsertPoint(heap_ptr_dispatch);
+        Value* heap_ptr_int = unpackInt64FromTaggedValue(vector_val);
+        Value* heap_ptr = builder->CreateIntToPtr(heap_ptr_int, builder->getPtrTy());
+        // Header is at ptr - 8 bytes
+        Value* header_ptr = builder->CreateGEP(int8_type, heap_ptr,
+            ConstantInt::get(int64_type, -8));
+        // Subtype is first byte of header
+        Value* subtype = builder->CreateLoad(int8_type, header_ptr);
+
+        Value* is_vector_subtype = builder->CreateICmpEQ(subtype,
+            ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
+        builder->CreateCondBr(is_vector_subtype, scheme_vector_input, tensor_input);
         
         // AD NODE INPUT: Extract value directly from AD node structure (NOT tensor!)
         builder->SetInsertPoint(ad_node_input);
@@ -14720,7 +15167,7 @@ private:
         Value* ad_value = builder->CreateLoad(double_type, value_field_ptr);
         
         // Return value as tagged_value (gradient expects this)
-        Value* ad_result = packPtrToTaggedValue(ad_node_ptr, ESHKOL_VALUE_AD_NODE_PTR);
+        Value* ad_result = packPtrToTaggedValue(ad_node_ptr, ESHKOL_VALUE_CALLABLE);
         builder->CreateBr(vref_final);
         BasicBlock* ad_node_exit = builder->GetInsertBlock();
 
@@ -14747,7 +15194,7 @@ private:
 
         // TENSOR INPUT: Normal tensor access path (existing logic)
         builder->SetInsertPoint(tensor_input);
-        
+
         // Unpack if tagged_value (lambda parameters are tagged_value)
         Value* vector_ptr_int = safeExtractInt64(vector_val);
         Value* index_int = safeExtractInt64(index);
@@ -14819,7 +15266,7 @@ private:
         // AD mode, large value without exponent: AD node pointer
         builder->SetInsertPoint(ad_large_is_ptr);
         Value* ad_ptr = builder->CreateIntToPtr(elem_as_int64, PointerType::getUnqual(*context));
-        Value* ad_tagged = packPtrToTaggedValue(ad_ptr, ESHKOL_VALUE_AD_NODE_PTR);
+        Value* ad_tagged = packPtrToTaggedValue(ad_ptr, ESHKOL_VALUE_CALLABLE);
         builder->CreateBr(vref_merge);
         BasicBlock* ad_large_exit = builder->GetInsertBlock();
         
@@ -14853,7 +15300,7 @@ private:
         // AD node path: Treat as AD node pointer (fallback for normal mode)
         builder->SetInsertPoint(tensor_ad_node_path);
         Value* tensor_ad_node_ptr = builder->CreateIntToPtr(elem_as_int64, PointerType::getUnqual(*context));
-        Value* tensor_ad_node_tagged = packPtrToTaggedValue(tensor_ad_node_ptr, ESHKOL_VALUE_AD_NODE_PTR);
+        Value* tensor_ad_node_tagged = packPtrToTaggedValue(tensor_ad_node_ptr, ESHKOL_VALUE_CALLABLE);
         builder->CreateBr(vref_merge);
         BasicBlock* ad_exit = builder->GetInsertBlock();
         
@@ -14904,17 +15351,15 @@ private:
         Value* src_elements_field_ptr = builder->CreateStructGEP(tensor_type, src_ptr, 2);
         Value* src_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), src_elements_field_ptr);
 
-        // Create new 1D tensor (zero-copy - reuse elements)
-        Function* malloc_func = function_table["malloc"];
-        Value* tensor_size = ConstantInt::get(int64_type,
-                                             module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* new_tensor_ptr = builder->CreateCall(malloc_func, {tensor_size});
-        Value* typed_new_tensor_ptr = builder->CreatePointerCast(new_tensor_ptr, builder->getPtrTy());
+        // Get arena for OALR-compliant allocation
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-        // Allocate single dimension
+        // Create new 1D tensor via arena (OALR compliant - no malloc)
+        Value* typed_new_tensor_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+        // Allocate single dimension via arena
         Value* dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* dims_ptr = builder->CreateCall(malloc_func, {dims_size});
-        Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
+        Value* typed_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, dims_size});
         builder->CreateStore(src_total, typed_dims_ptr);
 
         // Store tensor fields
@@ -14930,7 +15375,7 @@ private:
         Value* total_elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_new_tensor_ptr, 3);
         builder->CreateStore(src_total, total_elements_field_ptr);
 
-        return packPtrToTaggedValue(typed_new_tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
+        return packPtrToTaggedValue(typed_new_tensor_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
     // matmul: (matmul A B) - Matrix multiplication [M x K] @ [K x N] -> [M x N]
@@ -15091,7 +15536,7 @@ private:
 
         // i exit
         builder->SetInsertPoint(i_exit);
-        return packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_TENSOR_PTR);
+        return packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
 
@@ -15206,7 +15651,7 @@ private:
         // Check type
         Value* val_type = getTaggedValueType(src_val);
         Value* is_scheme_vector = builder->CreateICmpEQ(val_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* scheme_vec_bb = BasicBlock::Create(*context, "norm_svec", current_func);
@@ -15343,23 +15788,24 @@ private:
         Value* v2_elems_field = builder->CreateStructGEP(tensor_type, v2_ptr, 2);
         Value* v2_elems = builder->CreateLoad(PointerType::getUnqual(*context), v2_elems_field);
 
-        // Allocate result tensor (m x n matrix)
-        Value* result_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* result_ptr = builder->CreateCall(malloc_func, {result_size});
+        // Get arena for OALR-compliant allocation
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-        // Allocate dims (2 elements)
+        // Allocate result tensor via arena (OALR compliant - no malloc)
+        Value* result_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+        // Allocate dims (2 elements) via arena
         Value* dims_size = ConstantInt::get(int64_type, 2 * sizeof(uint64_t));
-        Value* dims_ptr = builder->CreateCall(malloc_func, {dims_size});
+        Value* dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, dims_size});
         builder->CreateStore(m, dims_ptr);
         Value* dims_1 = builder->CreateGEP(int64_type, dims_ptr,
             ConstantInt::get(int64_type, 1));
         builder->CreateStore(n, dims_1);
 
-        // Allocate elements (m*n doubles)
+        // Allocate elements (m*n doubles) via arena
         Value* total = builder->CreateMul(m, n);
         Value* elems_size = builder->CreateMul(total, ConstantInt::get(int64_type, sizeof(double)));
-        Value* elems_ptr = builder->CreateCall(malloc_func, {elems_size});
+        Value* elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, elems_size});
 
         // Set tensor structure
         builder->CreateStore(dims_ptr, builder->CreateStructGEP(tensor_type, result_ptr, 0));
@@ -15425,7 +15871,7 @@ private:
 
         builder->SetInsertPoint(outer_i_exit);
         Value* result_int = builder->CreatePtrToInt(result_ptr, int64_type);
-        return packPtrToTaggedValue(result_int, ESHKOL_VALUE_TENSOR_PTR);
+        return packPtrToTaggedValue(result_int, ESHKOL_VALUE_HEAP_PTR);
     }
 
     // Symbolic differentiation function
@@ -15897,10 +16343,10 @@ private:
                     ConstantFP::get(double_type, ast->double_val));
 
             case ESHKOL_VAR:
-                // Return symbol as string - use STRING_PTR type for symbols
+                // Return symbol as string with header for HEAP_PTR
                 return packPtrToTaggedValue(
-                    codegenString(ast->variable.id),
-                    ESHKOL_VALUE_STRING_PTR);
+                    ctx_->internStringWithHeader(ast->variable.id, HEAP_SUBTYPE_STRING),
+                    ESHKOL_VALUE_HEAP_PTR);
 
             case ESHKOL_BOOL:
                 // Return boolean as proper BOOL type (NOT as string symbol!)
@@ -15910,13 +16356,13 @@ private:
                     ConstantInt::get(int1_type, ast->int64_val ? 1 : 0));
 
             case ESHKOL_STRING:
-                // Return string literal
+                // Return string literal with header for HEAP_PTR
                 return packPtrToTaggedValue(
-                    codegenString(ast->str_val.ptr),
-                    ESHKOL_VALUE_STRING_PTR);
+                    ctx_->internStringWithHeader(ast->str_val.ptr, HEAP_SUBTYPE_STRING),
+                    ESHKOL_VALUE_HEAP_PTR);
 
             case ESHKOL_CHAR:
-                // Return character as #\char symbol
+                // Return character as #\char symbol with header for HEAP_PTR
                 {
                     char char_buf[16];
                     char ch = (char)ast->int64_val;
@@ -15925,8 +16371,8 @@ private:
                     else if (ch == '\t') snprintf(char_buf, sizeof(char_buf), "#\\tab");
                     else snprintf(char_buf, sizeof(char_buf), "#\\%c", ch);
                     return packPtrToTaggedValue(
-                        codegenString(char_buf),
-                        ESHKOL_VALUE_STRING_PTR);
+                        ctx_->internStringWithHeader(char_buf, HEAP_SUBTYPE_STRING),
+                        ESHKOL_VALUE_HEAP_PTR);
                 }
 
             case ESHKOL_OP:
@@ -15962,9 +16408,10 @@ private:
                 if (list_ptr == ConstantInt::get(int64_type, 0)) {
                     return packNullToTaggedValue();
                 }
+                // M1 Migration: Use consolidated HEAP_PTR (subtype in header)
                 return packPtrToTaggedValue(
                     builder->CreateIntToPtr(list_ptr, builder->getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             }
 
             case ESHKOL_LAMBDA_OP: {
@@ -15977,9 +16424,10 @@ private:
                     GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
                     if (sexpr_global) {
                         Value* loaded_sexpr = builder->CreateLoad(int64_type, sexpr_global);
+                        // M1 Migration: Use consolidated HEAP_PTR
                         return packPtrToTaggedValue(
                             builder->CreateIntToPtr(loaded_sexpr, builder->getPtrTy()),
-                            ESHKOL_VALUE_CONS_PTR);
+                            ESHKOL_VALUE_HEAP_PTR);
                     }
                 }
 
@@ -15988,15 +16436,16 @@ private:
                 if (nested_sexpr == ConstantInt::get(int64_type, 0)) {
                     return packNullToTaggedValue();
                 }
+                // M1 Migration: Use consolidated HEAP_PTR
                 return packPtrToTaggedValue(
                     builder->CreateIntToPtr(nested_sexpr, builder->getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             }
 
             case ESHKOL_IF_OP: {
                 // Build (if test then else)
                 // IF_OP uses call_op structure: variables[0]=condition, variables[1]=then, variables[2]=else
-                Value* if_sym = packPtrToTaggedValue(codegenString("if"), ESHKOL_VALUE_STRING_PTR);
+                Value* if_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("if", HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
 
                 // Build from right to left: else -> then -> test -> if
                 Value* result = packNullToTaggedValue();
@@ -16005,25 +16454,25 @@ private:
                 if (op->call_op.num_vars >= 3) {
                     Value* else_branch = codegenQuotedAST(&op->call_op.variables[2]);
                     result = codegenTaggedArenaConsCellFromTaggedValue(else_branch, result);
-                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                 }
 
                 // Add then branch (variables[1])
                 if (op->call_op.num_vars >= 2) {
                     Value* then_branch = codegenQuotedAST(&op->call_op.variables[1]);
                     result = codegenTaggedArenaConsCellFromTaggedValue(then_branch, result);
-                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                 }
 
                 // Add condition (variables[0])
                 if (op->call_op.num_vars >= 1) {
                     Value* test = codegenQuotedAST(&op->call_op.variables[0]);
                     result = codegenTaggedArenaConsCellFromTaggedValue(test, result);
-                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                 }
 
                 result = codegenTaggedArenaConsCellFromTaggedValue(if_sym, result);
-                return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
             }
 
             case ESHKOL_AND_OP: {
@@ -16041,7 +16490,7 @@ private:
             case ESHKOL_COND_OP: {
                 // Build (cond (test1 expr1) (test2 expr2) ...)
                 // COND_OP uses call_op structure where each variable is a clause
-                Value* cond_sym = packPtrToTaggedValue(codegenString("cond"), ESHKOL_VALUE_STRING_PTR);
+                Value* cond_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("cond", HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
                 Value* result = packNullToTaggedValue();
 
                 // Build clauses from right to left
@@ -16056,21 +16505,21 @@ private:
                         for (int64_t j = clause_ast->operation.call_op.num_vars - 1; j >= 0; j--) {
                             Value* expr = codegenQuotedAST(&clause_ast->operation.call_op.variables[j]);
                             clause = codegenTaggedArenaConsCellFromTaggedValue(expr, clause);
-                            clause = packPtrToTaggedValue(builder->CreateIntToPtr(clause, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                            clause = packPtrToTaggedValue(builder->CreateIntToPtr(clause, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                         }
                         clause = codegenTaggedArenaConsCellFromTaggedValue(test, clause);
-                        clause = packPtrToTaggedValue(builder->CreateIntToPtr(clause, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                        clause = packPtrToTaggedValue(builder->CreateIntToPtr(clause, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                     } else {
                         // Fallback: just quote the clause directly
                         clause = codegenQuotedAST(clause_ast);
                     }
 
                     result = codegenTaggedArenaConsCellFromTaggedValue(clause, result);
-                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                 }
 
                 result = codegenTaggedArenaConsCellFromTaggedValue(cond_sym, result);
-                return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
             }
 
             case ESHKOL_SEQUENCE_OP: {
@@ -16085,7 +16534,7 @@ private:
                 // let_op has bindings (array of cons cells), num_bindings, and body
                 const char* let_name = op->op == ESHKOL_LET_OP ? "let" :
                                        op->op == ESHKOL_LET_STAR_OP ? "let*" : "letrec";
-                Value* let_sym = packPtrToTaggedValue(codegenString(let_name), ESHKOL_VALUE_STRING_PTR);
+                Value* let_sym = packPtrToTaggedValue(ctx_->internStringWithHeader(let_name, HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
 
                 // Build bindings list
                 Value* bindings = packNullToTaggedValue();
@@ -16098,7 +16547,7 @@ private:
                         const eshkol_ast_t* var_ast = binding_cons->cons_cell.car;
                         Value* var;
                         if (var_ast->type == ESHKOL_VAR && var_ast->variable.id) {
-                            var = packPtrToTaggedValue(codegenString(var_ast->variable.id), ESHKOL_VALUE_STRING_PTR);
+                            var = packPtrToTaggedValue(ctx_->internStringWithHeader(var_ast->variable.id, HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
                         } else {
                             var = codegenQuotedAST(var_ast);
                         }
@@ -16108,16 +16557,16 @@ private:
                         // Build (var val) binding
                         binding = packNullToTaggedValue();
                         binding = codegenTaggedArenaConsCellFromTaggedValue(val, binding);
-                        binding = packPtrToTaggedValue(builder->CreateIntToPtr(binding, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                        binding = packPtrToTaggedValue(builder->CreateIntToPtr(binding, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                         binding = codegenTaggedArenaConsCellFromTaggedValue(var, binding);
-                        binding = packPtrToTaggedValue(builder->CreateIntToPtr(binding, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                        binding = packPtrToTaggedValue(builder->CreateIntToPtr(binding, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                     } else {
                         // Fallback: quote the binding directly
                         binding = codegenQuotedAST(binding_cons);
                     }
 
                     bindings = codegenTaggedArenaConsCellFromTaggedValue(binding, bindings);
-                    bindings = packPtrToTaggedValue(builder->CreateIntToPtr(bindings, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    bindings = packPtrToTaggedValue(builder->CreateIntToPtr(bindings, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                 }
 
                 // Build body
@@ -16126,17 +16575,17 @@ private:
                 // Combine: (let bindings body)
                 Value* result = packNullToTaggedValue();
                 result = codegenTaggedArenaConsCellFromTaggedValue(body, result);
-                result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                 result = codegenTaggedArenaConsCellFromTaggedValue(bindings, result);
-                result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                 result = codegenTaggedArenaConsCellFromTaggedValue(let_sym, result);
-                return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
             }
 
             case ESHKOL_DEFINE_OP: {
                 // Build (define name value) or (define (name params) body)
-                Value* define_sym = packPtrToTaggedValue(codegenString("define"), ESHKOL_VALUE_STRING_PTR);
-                Value* name = packPtrToTaggedValue(codegenString(op->define_op.name), ESHKOL_VALUE_STRING_PTR);
+                Value* define_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("define", HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
+                Value* name = packPtrToTaggedValue(ctx_->internStringWithHeader(op->define_op.name, HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
 
                 if (op->define_op.is_function) {
                     // Build (define (name params...) body)
@@ -16144,33 +16593,33 @@ private:
                     Value* name_params = packNullToTaggedValue();
                     for (int64_t i = op->define_op.num_params - 1; i >= 0; i--) {
                         Value* param = packPtrToTaggedValue(
-                            codegenString(op->define_op.parameters[i].variable.id),
-                            ESHKOL_VALUE_STRING_PTR);
+                            ctx_->internStringWithHeader(op->define_op.parameters[i].variable.id, HEAP_SUBTYPE_STRING),
+                            ESHKOL_VALUE_HEAP_PTR);
                         name_params = codegenTaggedArenaConsCellFromTaggedValue(param, name_params);
-                        name_params = packPtrToTaggedValue(builder->CreateIntToPtr(name_params, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                        name_params = packPtrToTaggedValue(builder->CreateIntToPtr(name_params, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                     }
                     name_params = codegenTaggedArenaConsCellFromTaggedValue(name, name_params);
-                    name_params = packPtrToTaggedValue(builder->CreateIntToPtr(name_params, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    name_params = packPtrToTaggedValue(builder->CreateIntToPtr(name_params, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
 
                     Value* body = codegenQuotedAST(op->define_op.value);
 
                     Value* result = packNullToTaggedValue();
                     result = codegenTaggedArenaConsCellFromTaggedValue(body, result);
-                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                     result = codegenTaggedArenaConsCellFromTaggedValue(name_params, result);
-                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                     result = codegenTaggedArenaConsCellFromTaggedValue(define_sym, result);
-                    return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                 } else {
                     // Build (define name value)
                     Value* value = codegenQuotedAST(op->define_op.value);
                     Value* result = packNullToTaggedValue();
                     result = codegenTaggedArenaConsCellFromTaggedValue(value, result);
-                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                     result = codegenTaggedArenaConsCellFromTaggedValue(name, result);
-                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                     result = codegenTaggedArenaConsCellFromTaggedValue(define_sym, result);
-                    return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                    return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                 }
             }
 
@@ -16182,18 +16631,18 @@ private:
 
     // Helper to build (op arg1 arg2 ...) for n-ary operations
     Value* codegenQuotedNaryOp(const char* op_name, const eshkol_ast_t* args, uint64_t num_args) {
-        Value* op_sym = packPtrToTaggedValue(codegenString(op_name), ESHKOL_VALUE_STRING_PTR);
+        Value* op_sym = packPtrToTaggedValue(ctx_->internStringWithHeader(op_name, HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
         Value* result = packNullToTaggedValue();
 
         // Build args from right to left
         for (int64_t i = num_args - 1; i >= 0; i--) {
             Value* arg = codegenQuotedAST(&args[i]);
             result = codegenTaggedArenaConsCellFromTaggedValue(arg, result);
-            result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+            result = packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
         }
 
         result = codegenTaggedArenaConsCellFromTaggedValue(op_sym, result);
-        return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+        return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
     }
     
     // Build runtime S-expression list from call operation
@@ -16215,16 +16664,17 @@ private:
             if (result_int == ConstantInt::get(int64_type, 0)) {
                 result_tagged = packNullToTaggedValue();
             } else {
+                // M1 Migration: Use consolidated HEAP_PTR
                 result_tagged = packPtrToTaggedValue(
                     builder->CreateIntToPtr(result_int, builder->getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             }
-            
+
             // Create cons cell from two tagged values
             Value* cons_cell = codegenTaggedArenaConsCellFromTaggedValue(elem_tagged, result_tagged);
             result_int = cons_cell;
         }
-        
+
         // Add operator symbol at front
         // CRITICAL: Must check func->type is ESHKOL_VAR before accessing variable.id
         // func could be any AST type (lambda call, nested call, etc.)
@@ -16241,17 +16691,18 @@ private:
                 return result_int;
             }
 
-            Value* op_string = codegenString(op->call_op.func->variable.id);
-            TypedValue op_symbol(op_string, ESHKOL_VALUE_STRING_PTR, true);
+            Value* op_string = ctx_->internStringWithHeader(op->call_op.func->variable.id, HEAP_SUBTYPE_STRING);
+            TypedValue op_symbol(op_string, ESHKOL_VALUE_HEAP_PTR, true);
             Value* op_tagged = typedValueToTaggedValue(op_symbol);
 
             Value* result_tagged;
             if (result_int == ConstantInt::get(int64_type, 0)) {
                 result_tagged = packNullToTaggedValue();
             } else {
+                // M1 Migration: Use consolidated HEAP_PTR
                 result_tagged = packPtrToTaggedValue(
                     builder->CreateIntToPtr(result_int, builder->getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             }
 
             Value* final_list = codegenTaggedArenaConsCellFromTaggedValue(op_tagged, result_tagged);
@@ -16278,20 +16729,21 @@ private:
         for (int64_t i = num_params - 1; i >= 0; i--) {
             if (params[i].type != ESHKOL_VAR || !params[i].variable.id) continue;
             
-            // Create parameter symbol string
-            Value* param_name = codegenString(params[i].variable.id);
-            Value* param_tagged = packPtrToTaggedValue(param_name, ESHKOL_VALUE_STRING_PTR);
+            // Create parameter symbol string with header for HEAP_PTR
+            Value* param_name = ctx_->internStringWithHeader(params[i].variable.id, HEAP_SUBTYPE_STRING);
+            Value* param_tagged = packPtrToTaggedValue(param_name, ESHKOL_VALUE_HEAP_PTR);
             
             // Get rest of list as tagged value
             Value* rest_tagged;
             if (result == ConstantInt::get(int64_type, 0)) {
                 rest_tagged = packNullToTaggedValue();
             } else {
+                // M1 Migration: Use consolidated HEAP_PTR
                 rest_tagged = packPtrToTaggedValue(
                     builder->CreateIntToPtr(result, builder->getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
             }
-            
+
             // Cons parameter onto rest
             result = codegenTaggedArenaConsCellFromTaggedValue(param_tagged, rest_tagged);
         }
@@ -16342,36 +16794,39 @@ private:
         
         // Step 3: Build complete structure: (lambda (params) body)
         
-        // 3a: Create "lambda" symbol string
-        Value* lambda_symbol = codegenString("lambda");
-        Value* lambda_tagged = packPtrToTaggedValue(lambda_symbol, ESHKOL_VALUE_STRING_PTR);
+        // 3a: Create "lambda" symbol string with header for HEAP_PTR
+        Value* lambda_symbol = ctx_->internStringWithHeader("lambda", HEAP_SUBTYPE_STRING);
+        Value* lambda_tagged = packPtrToTaggedValue(lambda_symbol, ESHKOL_VALUE_HEAP_PTR);
         
         // 3b: Pack param_list as tagged value
         Value* param_list_tagged;
         if (param_list == ConstantInt::get(int64_type, 0)) {
             param_list_tagged = packNullToTaggedValue();
         } else {
+            // M1 Migration: Use consolidated HEAP_PTR
             param_list_tagged = packPtrToTaggedValue(
                 builder->CreateIntToPtr(param_list, builder->getPtrTy()),
-                ESHKOL_VALUE_CONS_PTR);
+                ESHKOL_VALUE_HEAP_PTR);
         }
-        
+
         // 3c: body_tagged is already a tagged_value from step 2 (no re-packing needed)
 
         // 3d: Build ((params) . (body . null))
         Value* body_null_tagged = packNullToTaggedValue();
         Value* body_cons = codegenTaggedArenaConsCellFromTaggedValue(body_tagged, body_null_tagged);
+        // M1 Migration: Use consolidated HEAP_PTR
         Value* body_cons_tagged = packPtrToTaggedValue(
             builder->CreateIntToPtr(body_cons, builder->getPtrTy()),
-            ESHKOL_VALUE_CONS_PTR);
-        
+            ESHKOL_VALUE_HEAP_PTR);
+
         Value* params_body = codegenTaggedArenaConsCellFromTaggedValue(
             param_list_tagged, body_cons_tagged);
-        
+
         // 3e: Build (lambda . (params body))
+        // M1 Migration: Use consolidated HEAP_PTR
         Value* params_body_tagged = packPtrToTaggedValue(
             builder->CreateIntToPtr(params_body, builder->getPtrTy()),
-            ESHKOL_VALUE_CONS_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
         
         Value* result = codegenTaggedArenaConsCellFromTaggedValue(
             lambda_tagged, params_body_tagged);
@@ -16676,37 +17131,33 @@ private:
                             capture_key
                         );
                     }
-                    // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
-                    capture_args.push_back(capture_global);
+                    // MUTABLE CAPTURE FIX: Pack pointer in closure format
+                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@global)}
+                    Value* helper_global_ptr_int = builder->CreatePtrToInt(capture_global, int64_type);
+                    Value* helper_packed_capture = packInt64ToTaggedValue(helper_global_ptr_int, true);
+                    Value* helper_capture_storage = builder->CreateAlloca(tagged_value_type, nullptr, "autodiff_capture_storage");
+                    builder->CreateStore(helper_packed_capture, helper_capture_storage);
+                    capture_args.push_back(helper_capture_storage);
                     continue;
                 }
             }
 
             if (found && it->second) {
                 Value* storage = it->second;
-                // MUTABLE CAPTURE FIX: For let-bound allocas or arena pointers, pack the address
-                // as int64 in a tagged_value, store in temp, pass pointer to temp
-                // CLOSURE ESCAPE FIX: Also handle arena pointers (from escaped closure captures)
-                bool needs_ptr_packing = isa<AllocaInst>(storage) ||
-                    (storage->getType()->isPointerTy() && !isa<GlobalVariable>(storage) && !isa<Argument>(storage));
+                // MUTABLE CAPTURE FIX: Pack pointer in closure format
+                // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
+                Function* current_func = builder->GetInsertBlock()->getParent();
+                IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                          current_func->getEntryBlock().begin());
+                AllocaInst* temp_alloca = entry_builder.CreateAlloca(
+                    tagged_value_type, nullptr, var_name + "_autodiff_capture_storage");
 
-                if (needs_ptr_packing) {
-                    Function* current_func = builder->GetInsertBlock()->getParent();
-                    IRBuilder<> entry_builder(&current_func->getEntryBlock(),
-                                              current_func->getEntryBlock().begin());
-                    AllocaInst* temp_alloca = entry_builder.CreateAlloca(
-                        tagged_value_type, nullptr, var_name + "_autodiff_capture_storage");
+                // Pack the storage address as an int64 in a tagged_value
+                Value* ptr_as_int = builder->CreatePtrToInt(storage, int64_type);
+                Value* packed_ptr = packInt64ToTaggedValue(ptr_as_int, true);
+                builder->CreateStore(packed_ptr, temp_alloca);
 
-                    // Pack the storage address as an int64 in a tagged_value
-                    Value* ptr_as_int = builder->CreatePtrToInt(storage, int64_type);
-                    Value* packed_ptr = packInt64ToTaggedValue(ptr_as_int, true);
-                    builder->CreateStore(packed_ptr, temp_alloca);
-
-                    capture_args.push_back(temp_alloca);
-                } else {
-                    // GlobalVariable or other - pass directly
-                    capture_args.push_back(storage);
-                }
+                capture_args.push_back(temp_alloca);
             } else {
                 // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
                 capture_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
@@ -16847,7 +17298,8 @@ private:
                         // Derivative function returns a scalar
                         Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR | (1 << 8));
 
-                        Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+                        // Use with_header allocator for consolidated CALLABLE type
+                        Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                                  {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
 
                         // Store captured function
@@ -16856,9 +17308,8 @@ private:
                         Value* captures_base = builder->CreateGEP(int8_type, env_ptr, ConstantInt::get(int64_type, 8));
                         builder->CreateStore(closure_val, captures_base);
 
-                        // Return closure as tagged value
-                        Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
-                        return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
+                        // Return closure as CALLABLE tagged value
+                        return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
                     }
                 }
             }
@@ -17011,7 +17462,8 @@ private:
             // Derivative function returns a scalar
             Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR | (1 << 8));
 
-            Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+            // Use with_header allocator for consolidated CALLABLE type
+            Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                      {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
 
             // Store captures
@@ -17025,9 +17477,8 @@ private:
                 builder->CreateStore(capture_vals[i], cap_slot);
             }
 
-            // Return closure as tagged value
-            Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
-            return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
+            // Return closure as CALLABLE tagged value
+            return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
         } else {
             // No captures - still need to allocate a closure structure
             Value* func_ptr_int = builder->CreatePtrToInt(deriv_func, int64_type);
@@ -17039,12 +17490,12 @@ private:
             // Derivative function returns a scalar
             Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR | (1 << 8));
 
-            Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+            // Use with_header allocator for consolidated CALLABLE type
+            Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                      {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
 
-            // Return closure as tagged value
-            Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
-            return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
+            // Return closure as CALLABLE tagged value
+            return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
         }
     }
 
@@ -17267,26 +17718,26 @@ private:
                                 capture_key
                             );
                         }
-                        // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
-                        deriv_call_args.push_back(capture_global);
+                        // MUTABLE CAPTURE FIX: Pack pointer in closure format
+                        // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@global)}
+                        Value* deriv_global_ptr_int = builder->CreatePtrToInt(capture_global, int64_type);
+                        Value* deriv_packed_capture = packInt64ToTaggedValue(deriv_global_ptr_int, true);
+                        Value* deriv_capture_storage = builder->CreateAlloca(tagged_value_type, nullptr, "deriv_capture_storage");
+                        builder->CreateStore(deriv_packed_capture, deriv_capture_storage);
+                        deriv_call_args.push_back(deriv_capture_storage);
                         continue;
                     }
                 }
 
                 if (found && it->second) {
                     Value* storage = it->second;
-                    // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
-                    // But first check if we need to create a temporary storage for pass-by-value
-                    if (storage->getType()->isPointerTy()) {
-                        deriv_call_args.push_back(storage);
-                    } else {
-                        // Value is not a pointer - need to create temporary storage
-                        // This happens when capturing function parameters (pass-by-value)
-                        Value* temp_storage = builder->CreateAlloca(tagged_value_type, nullptr, "capture_temp");
-                        builder->CreateStore(storage, temp_storage);
-                        deriv_call_args.push_back(temp_storage);
-                        eshkol_debug("Derivative: created temp storage for capture '%s'", var_name.c_str());
-                    }
+                    // MUTABLE CAPTURE FIX: Pack pointer in closure format
+                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
+                    Value* deriv_storage_ptr_int = builder->CreatePtrToInt(storage, int64_type);
+                    Value* deriv_packed_storage = packInt64ToTaggedValue(deriv_storage_ptr_int, true);
+                    Value* deriv_temp_storage = builder->CreateAlloca(tagged_value_type, nullptr, "deriv_capture_storage");
+                    builder->CreateStore(deriv_packed_storage, deriv_temp_storage);
+                    deriv_call_args.push_back(deriv_temp_storage);
                 } else {
                     // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
                     deriv_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
@@ -17446,11 +17897,12 @@ private:
         builder->SetInsertPoint(count_done);
         Value* dim_val = count_phi;
 
-        // Allocate vector for the point (length + elements)
+        // Allocate vector for the point via arena (length + elements) - OALR compliant
+        Value* point_arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
         Value* vec_total_size = builder->CreateAdd(ConstantInt::get(int64_type, 1), dim_val);
         Value* vec_bytes = builder->CreateMul(vec_total_size, ConstantInt::get(int64_type,
             module->getDataLayout().getTypeAllocSize(tagged_value_type)));
-        Value* point_ptr = builder->CreateCall(function_table["malloc"], {vec_bytes});
+        Value* point_ptr = builder->CreateCall(mem->getArenaAllocate(), {point_arena_ptr, vec_bytes});
         builder->CreateStore(dim_val, point_ptr);  // Store length
 
         // Copy list elements to vector using simple loop
@@ -17494,9 +17946,10 @@ private:
         // Copy done - now point_ptr is a proper vector
         builder->SetInsertPoint(copy_done);
 
-        // Allocate result tensor data
+        // Allocate result tensor data via arena (OALR compliant - no malloc)
+        Value* result_arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
         Value* result_size = builder->CreateMul(dim_val, ConstantInt::get(int64_type, 8));
-        Value* result_data = builder->CreateCall(function_table["malloc"], {result_size});
+        Value* result_data = builder->CreateCall(mem->getArenaAllocate(), {result_arena_ptr, result_size});
 
         // SIMPLIFIED GRADIENT: Use switch-based dispatch like derivative does
         // Instead of complex loops, generate static code paths for each arg count
@@ -17573,14 +18026,13 @@ private:
         // Field 2: elements (pointer to double data)
         // Field 3: total_elements
 
-        // Allocate tensor struct
-        Value* tensor_size = ConstantInt::get(int64_type, module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* tensor_mem = builder->CreateCall(function_table["malloc"], {tensor_size});
-        Value* typed_tensor_ptr = builder->CreatePointerCast(tensor_mem, PointerType::getUnqual(tensor_type));
+        // Allocate tensor struct with header via arena (OALR compliant - no malloc)
+        Value* grad_arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* typed_tensor_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {grad_arena_ptr});
 
-        // Allocate dimensions array (1 element for 1D tensor)
-        Value* dims_array = builder->CreateCall(function_table["malloc"],
-            {ConstantInt::get(int64_type, 8)});  // 1 * sizeof(int64)
+        // Allocate dimensions array via arena (1 element for 1D tensor)
+        Value* dims_array = builder->CreateCall(mem->getArenaAllocate(),
+            {grad_arena_ptr, ConstantInt::get(int64_type, 8)});  // 1 * sizeof(int64)
         builder->CreateStore(dim_val, dims_array);  // dims[0] = number of gradient components
 
         // Fill tensor struct fields
@@ -17596,9 +18048,7 @@ private:
         Value* total_elements_field_ptr = builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 3);
         builder->CreateStore(dim_val, total_elements_field_ptr);  // Field 3: total_elements = dim_val
 
-        Value* result_tensor = packPtrToTaggedValue(
-            builder->CreatePtrToInt(typed_tensor_ptr, int64_type),
-            ESHKOL_VALUE_TENSOR_PTR);
+        Value* result_tensor = packPtrToTaggedValue(typed_tensor_ptr, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateRet(result_tensor);
 
         // Restore insertion point
@@ -17615,10 +18065,19 @@ private:
 
         // Create closure capturing the original function
         if (!closure_val && func) {
-            // Static function - pack as closure
-            closure_val = packPtrToTaggedValue(
-                builder->CreatePtrToInt(func, int64_type),
-                ESHKOL_VALUE_LAMBDA_SEXPR);
+            // STATIC FUNCTION FIX: Create a proper closure struct for static functions
+            // codegenClosureCall expects a closure struct, not a raw function pointer
+            // So we wrap the static function in a 0-capture closure
+            Value* static_arena = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* static_func_ptr_int = builder->CreatePtrToInt(func, int64_type);
+            // packed_info: 0 captures, 0 fixed params, NOT variadic
+            uint64_t static_packed_info = 0;  // No captures, not variadic
+            Value* static_packed = ConstantInt::get(int64_type, static_packed_info);
+            Value* static_sexpr = ConstantInt::get(int64_type, 0);
+            Value* static_return_type = ConstantInt::get(int64_type, 0);  // Default return type
+            Value* static_closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
+                {static_arena, static_func_ptr_int, static_packed, static_sexpr, static_return_type});
+            closure_val = packPtrToTaggedValue(static_closure_ptr, ESHKOL_VALUE_CALLABLE);
         }
 
         Value* func_ptr_int = builder->CreatePtrToInt(grad_func, int64_type);
@@ -17630,7 +18089,8 @@ private:
         Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
         // Gradient returns a vector
         Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_VECTOR | (1 << 8));
-        Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureFunc(),
+        // Use with_header allocator for consolidated CALLABLE type
+        Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                  {arena, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
 
         // Store captured function in closure environment
@@ -17639,9 +18099,8 @@ private:
         Value* captures_base = builder->CreateGEP(int8_type, env_ptr, ConstantInt::get(int64_type, 8));
         builder->CreateStore(closure_val, captures_base);
 
-        // Return closure as tagged value
-        Value* closure_int = builder->CreatePtrToInt(closure_ptr, int64_type);
-        return packPtrToTaggedValue(closure_int, ESHKOL_VALUE_CLOSURE_PTR);
+        // Return closure as CALLABLE tagged value
+        return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
     Value* codegenGradient(const eshkol_operations_t* op) {
@@ -17782,21 +18241,47 @@ private:
                     // Get tagged_value size
                     uint64_t tagged_size = module->getDataLayout().getTypeAllocSize(tagged_value_type);
 
-                    // Check input type - handle Scheme vector (VECTOR_PTR), tensor (TENSOR_PTR), or scalar
+                    // Check input type - handle Scheme vector (HEAP_PTR with HEAP_SUBTYPE_VECTOR), tensor (TENSOR_PTR), or scalar
+                    // M1 Migration: Use consolidated HEAP_PTR type with subtype dispatch
                     Value* input_type = getTaggedValueType(point_val);
                     Value* input_base = getBaseType(input_type);
-                    Value* is_scheme_vec = builder->CreateICmpEQ(input_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-                    Value* is_tensor = builder->CreateICmpEQ(input_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
 
+                    // Check for HEAP_PTR (consolidated format)
+                    Value* is_heap_ptr = builder->CreateICmpEQ(input_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+                    // Legacy VECTOR_PTR check (for backwards compatibility during migration)
+                    Value* is_legacy_vec = builder->CreateICmpEQ(input_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+                    Value* is_tensor = builder->CreateICmpEQ(input_base,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+
+                    BasicBlock* heap_ptr_dispatch = BasicBlock::Create(*context, "grad_rt_heap_dispatch", current_func);
+                    BasicBlock* heap_check_tensor = BasicBlock::Create(*context, "grad_rt_heap_check_tensor", current_func);
                     BasicBlock* scheme_vec_path = BasicBlock::Create(*context, "grad_rt_svec", current_func);
                     BasicBlock* tensor_path = BasicBlock::Create(*context, "grad_rt_tensor", current_func);
                     BasicBlock* scalar_path = BasicBlock::Create(*context, "grad_rt_scalar", current_func);
+                    BasicBlock* check_legacy_vec = BasicBlock::Create(*context, "grad_rt_check_legacy", current_func);
                     BasicBlock* check_tensor = BasicBlock::Create(*context, "grad_rt_check_tensor", current_func);
                     BasicBlock* grad_rt_compute = BasicBlock::Create(*context, "grad_rt_compute", current_func);
 
-                    builder->CreateCondBr(is_scheme_vec, scheme_vec_path, check_tensor);
+                    // First check for HEAP_PTR (new consolidated format)
+                    builder->CreateCondBr(is_heap_ptr, heap_ptr_dispatch, check_legacy_vec);
+
+                    // HEAP_PTR dispatch - read subtype from header and route accordingly
+                    builder->SetInsertPoint(heap_ptr_dispatch);
+                    Value* heap_ptr_val = unpackPtrFromTaggedValue(point_val);
+                    Value* header_ptr = builder->CreateGEP(int8_type, heap_ptr_val, ConstantInt::get(int64_type, -8));
+                    Value* subtype = builder->CreateLoad(int8_type, header_ptr);
+                    Value* is_vec_subtype = builder->CreateICmpEQ(subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
+                    Value* is_tensor_subtype = builder->CreateICmpEQ(subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_TENSOR));
+                    builder->CreateCondBr(is_vec_subtype, scheme_vec_path, heap_check_tensor);
+
+                    builder->SetInsertPoint(heap_check_tensor);
+                    builder->CreateCondBr(is_tensor_subtype, tensor_path, scalar_path);
+
+                    // Legacy VECTOR_PTR fallback (for migration period)
+                    builder->SetInsertPoint(check_legacy_vec);
+                    builder->CreateCondBr(is_legacy_vec, scheme_vec_path, check_tensor);
 
                     builder->SetInsertPoint(check_tensor);
                     builder->CreateCondBr(is_tensor, tensor_path, scalar_path);
@@ -17882,13 +18367,11 @@ private:
                     input_elems->addIncoming(tconv_elems_typed, tensor_exit);
                     input_elems->addIncoming(scalar_elem_typed, scalar_exit);
 
-                    // Allocate result tensor
-                    Value* result_size = ConstantInt::get(int64_type,
-                        module->getDataLayout().getTypeAllocSize(tensor_type));
-                    Value* result_ptr = builder->CreateCall(malloc_func, {result_size});
-                    Value* typed_result = builder->CreatePointerCast(result_ptr, builder->getPtrTy());
+                    // Allocate result tensor using arena with header
+                    Value* typed_result = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
 
-                    Value* result_dims_ptr = builder->CreateCall(malloc_func, {ConstantInt::get(int64_type, 8)});
+                    Value* result_dims_size = ConstantInt::get(int64_type, 8);
+                    Value* result_dims_ptr = builder->CreateCall(arena_allocate_func, {arena_ptr, result_dims_size});
                     Value* typed_result_dims = builder->CreatePointerCast(result_dims_ptr, builder->getPtrTy());
                     builder->CreateStore(n, typed_result_dims);
                     builder->CreateStore(typed_result_dims, builder->CreateStructGEP(tensor_type, typed_result, 0));
@@ -17896,15 +18379,14 @@ private:
                     builder->CreateStore(n, builder->CreateStructGEP(tensor_type, typed_result, 3));
 
                     Value* result_elems_size = builder->CreateMul(n, ConstantInt::get(int64_type, sizeof(double)));
-                    Value* result_elems_ptr = builder->CreateCall(malloc_func, {result_elems_size});
+                    Value* result_elems_ptr = builder->CreateCall(arena_allocate_func, {arena_ptr, result_elems_size});
                     Value* typed_result_elems = builder->CreatePointerCast(result_elems_ptr, builder->getPtrTy());
                     builder->CreateStore(typed_result_elems, builder->CreateStructGEP(tensor_type, typed_result, 2));
 
-                    // Allocate Scheme vector for dual numbers (reused each iteration)
-                    Value* dual_vec_size = builder->CreateAdd(
-                        builder->CreateMul(n, ConstantInt::get(int64_type, tagged_size)),
-                        ConstantInt::get(int64_type, 8));
-                    Value* dual_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, dual_vec_size});
+                    // M1 CONSOLIDATION: Allocate Scheme vector for dual numbers with header
+                    // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
+                    Value* dual_vec = builder->CreateCall(mem->getArenaAllocateVectorWithHeader(),
+                        {arena_ptr, n});
                     builder->CreateStore(n, dual_vec);
                     Value* dual_elems = builder->CreateGEP(int8_type, dual_vec, ConstantInt::get(int64_type, 8));
                     Value* dual_elems_typed = builder->CreatePointerCast(dual_elems, PointerType::getUnqual(tagged_value_type));
@@ -17962,10 +18444,10 @@ private:
 
                     builder->SetInsertPoint(inner_end);
 
-                    // Pack dual vector as Scheme vector (VECTOR_PTR)
+                    // M1 CONSOLIDATION: Pack dual vector as HEAP_PTR (header contains HEAP_SUBTYPE_VECTOR)
                     Value* dual_vec_tagged = packPtrToTaggedValue(
                         builder->CreatePtrToInt(dual_vec, int64_type),
-                        ESHKOL_VALUE_VECTOR_PTR);
+                        ESHKOL_VALUE_HEAP_PTR);
 
                     // Call function via closure dispatch
                     std::vector<Value*> call_args = {dual_vec_tagged};
@@ -18013,7 +18495,7 @@ private:
 
                     builder->SetInsertPoint(dim_end);
                     Value* result_int = builder->CreatePtrToInt(typed_result, int64_type);
-                    return packPtrToTaggedValue(result_int, ESHKOL_VALUE_TENSOR_PTR);
+                    return packPtrToTaggedValue(result_int, ESHKOL_VALUE_HEAP_PTR);
                 }
 
                 // NESTED FUNCTION CAPTURE FIX: Handle pointer-type Arguments (captured functions)
@@ -18059,9 +18541,9 @@ private:
                     Value* input_type = getTaggedValueType(point_val);
                     Value* input_base = getBaseType(input_type);
                     Value* is_scheme_vec = builder->CreateICmpEQ(input_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
                     Value* is_tensor = builder->CreateICmpEQ(input_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
                     BasicBlock* cap_scheme_vec_path = BasicBlock::Create(*context, "grad_cap_svec", current_func);
                     BasicBlock* cap_tensor_path = BasicBlock::Create(*context, "grad_cap_tensor", current_func);
@@ -18155,13 +18637,10 @@ private:
                     cap_input_elems->addIncoming(cap_tconv_elems_typed, cap_tensor_exit);
                     cap_input_elems->addIncoming(cap_scalar_elem_typed, cap_scalar_exit);
 
-                    // Allocate result tensor
-                    Value* cap_result_size = ConstantInt::get(int64_type,
-                        module->getDataLayout().getTypeAllocSize(tensor_type));
-                    Value* cap_result_ptr = builder->CreateCall(malloc_func, {cap_result_size});
-                    Value* cap_typed_result = builder->CreatePointerCast(cap_result_ptr, builder->getPtrTy());
+                    // Allocate result tensor via arena (OALR compliant - no malloc)
+                    Value* cap_typed_result = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
 
-                    Value* cap_result_dims_ptr = builder->CreateCall(malloc_func, {ConstantInt::get(int64_type, 8)});
+                    Value* cap_result_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, ConstantInt::get(int64_type, 8)});
                     Value* cap_typed_result_dims = builder->CreatePointerCast(cap_result_dims_ptr, builder->getPtrTy());
                     builder->CreateStore(cap_n, cap_typed_result_dims);
                     builder->CreateStore(cap_typed_result_dims, builder->CreateStructGEP(tensor_type, cap_typed_result, 0));
@@ -18169,15 +18648,14 @@ private:
                     builder->CreateStore(cap_n, builder->CreateStructGEP(tensor_type, cap_typed_result, 3));
 
                     Value* cap_result_elems_size = builder->CreateMul(cap_n, ConstantInt::get(int64_type, sizeof(double)));
-                    Value* cap_result_elems_ptr = builder->CreateCall(malloc_func, {cap_result_elems_size});
+                    Value* cap_result_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, cap_result_elems_size});
                     Value* cap_typed_result_elems = builder->CreatePointerCast(cap_result_elems_ptr, builder->getPtrTy());
                     builder->CreateStore(cap_typed_result_elems, builder->CreateStructGEP(tensor_type, cap_typed_result, 2));
 
-                    // Allocate Scheme vector for dual numbers (reused each iteration)
-                    Value* cap_dual_vec_size = builder->CreateAdd(
-                        builder->CreateMul(cap_n, ConstantInt::get(int64_type, tagged_size)),
-                        ConstantInt::get(int64_type, 8));
-                    Value* cap_dual_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, cap_dual_vec_size});
+                    // M1 CONSOLIDATION: Allocate Scheme vector for dual numbers with header
+                    // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
+                    Value* cap_dual_vec = builder->CreateCall(mem->getArenaAllocateVectorWithHeader(),
+                        {arena_ptr, cap_n});
                     builder->CreateStore(cap_n, cap_dual_vec);
                     Value* cap_dual_elems = builder->CreateGEP(int8_type, cap_dual_vec, ConstantInt::get(int64_type, 8));
                     Value* cap_dual_elems_typed = builder->CreatePointerCast(cap_dual_elems, PointerType::getUnqual(tagged_value_type));
@@ -18235,10 +18713,10 @@ private:
 
                     builder->SetInsertPoint(cap_inner_end);
 
-                    // Pack dual vector as Scheme vector (VECTOR_PTR)
+                    // M1 CONSOLIDATION: Pack dual vector as HEAP_PTR (header contains HEAP_SUBTYPE_VECTOR)
                     Value* cap_dual_vec_tagged = packPtrToTaggedValue(
                         builder->CreatePtrToInt(cap_dual_vec, int64_type),
-                        ESHKOL_VALUE_VECTOR_PTR);
+                        ESHKOL_VALUE_HEAP_PTR);
 
                     // Call function via closure dispatch (using loaded_func, not var_value)
                     std::vector<Value*> cap_call_args = {cap_dual_vec_tagged};
@@ -18285,7 +18763,7 @@ private:
 
                     builder->SetInsertPoint(cap_dim_end);
                     Value* cap_result_int = builder->CreatePtrToInt(cap_typed_result, int64_type);
-                    return packPtrToTaggedValue(cap_result_int, ESHKOL_VALUE_TENSOR_PTR);
+                    return packPtrToTaggedValue(cap_result_int, ESHKOL_VALUE_HEAP_PTR);
                 }
 
                 // GLOBALVARIABLE FIX: Handle captured functions stored in GlobalVariables
@@ -18331,9 +18809,9 @@ private:
                     Value* input_type = getTaggedValueType(point_val);
                     Value* input_base = getBaseType(input_type);
                     Value* is_scheme_vec = builder->CreateICmpEQ(input_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
                     Value* is_tensor = builder->CreateICmpEQ(input_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
                     BasicBlock* gv_scheme_vec_path = BasicBlock::Create(*context, "grad_gv_svec", current_func);
                     BasicBlock* gv_tensor_path = BasicBlock::Create(*context, "grad_gv_tensor", current_func);
@@ -18427,13 +18905,10 @@ private:
                     gv_input_elems->addIncoming(gv_tconv_elems_typed, gv_tensor_exit);
                     gv_input_elems->addIncoming(gv_scalar_elem_typed, gv_scalar_exit);
 
-                    // Allocate result tensor
-                    Value* gv_result_size = ConstantInt::get(int64_type,
-                        module->getDataLayout().getTypeAllocSize(tensor_type));
-                    Value* gv_result_ptr = builder->CreateCall(malloc_func, {gv_result_size});
-                    Value* gv_typed_result = builder->CreatePointerCast(gv_result_ptr, builder->getPtrTy());
+                    // Allocate result tensor via arena (OALR compliant - no malloc)
+                    Value* gv_typed_result = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
 
-                    Value* gv_result_dims_ptr = builder->CreateCall(malloc_func, {ConstantInt::get(int64_type, 8)});
+                    Value* gv_result_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, ConstantInt::get(int64_type, 8)});
                     Value* gv_typed_result_dims = builder->CreatePointerCast(gv_result_dims_ptr, builder->getPtrTy());
                     builder->CreateStore(gv_n, gv_typed_result_dims);
                     builder->CreateStore(gv_typed_result_dims, builder->CreateStructGEP(tensor_type, gv_typed_result, 0));
@@ -18441,15 +18916,14 @@ private:
                     builder->CreateStore(gv_n, builder->CreateStructGEP(tensor_type, gv_typed_result, 3));
 
                     Value* gv_result_elems_size = builder->CreateMul(gv_n, ConstantInt::get(int64_type, sizeof(double)));
-                    Value* gv_result_elems_ptr = builder->CreateCall(malloc_func, {gv_result_elems_size});
+                    Value* gv_result_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, gv_result_elems_size});
                     Value* gv_typed_result_elems = builder->CreatePointerCast(gv_result_elems_ptr, builder->getPtrTy());
                     builder->CreateStore(gv_typed_result_elems, builder->CreateStructGEP(tensor_type, gv_typed_result, 2));
 
-                    // Allocate Scheme vector for dual numbers (reused each iteration)
-                    Value* gv_dual_vec_size = builder->CreateAdd(
-                        builder->CreateMul(gv_n, ConstantInt::get(int64_type, tagged_size)),
-                        ConstantInt::get(int64_type, 8));
-                    Value* gv_dual_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, gv_dual_vec_size});
+                    // M1 CONSOLIDATION: Allocate Scheme vector for dual numbers with header
+                    // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
+                    Value* gv_dual_vec = builder->CreateCall(mem->getArenaAllocateVectorWithHeader(),
+                        {arena_ptr, gv_n});
                     builder->CreateStore(gv_n, gv_dual_vec);
                     Value* gv_dual_elems = builder->CreateGEP(int8_type, gv_dual_vec, ConstantInt::get(int64_type, 8));
                     Value* gv_dual_elems_typed = builder->CreatePointerCast(gv_dual_elems, PointerType::getUnqual(tagged_value_type));
@@ -18507,10 +18981,10 @@ private:
 
                     builder->SetInsertPoint(gv_inner_end);
 
-                    // Pack dual vector as Scheme vector (VECTOR_PTR)
+                    // M1 CONSOLIDATION: Pack dual vector as HEAP_PTR (header contains HEAP_SUBTYPE_VECTOR)
                     Value* gv_dual_vec_tagged = packPtrToTaggedValue(
                         builder->CreatePtrToInt(gv_dual_vec, int64_type),
-                        ESHKOL_VALUE_VECTOR_PTR);
+                        ESHKOL_VALUE_HEAP_PTR);
 
                     // Call function via closure dispatch (using loaded_func)
                     std::vector<Value*> gv_call_args = {gv_dual_vec_tagged};
@@ -18557,7 +19031,7 @@ private:
 
                     builder->SetInsertPoint(gv_dim_end);
                     Value* gv_result_int = builder->CreatePtrToInt(gv_typed_result, int64_type);
-                    return packPtrToTaggedValue(gv_result_int, ESHKOL_VALUE_TENSOR_PTR);
+                    return packPtrToTaggedValue(gv_result_int, ESHKOL_VALUE_HEAP_PTR);
                 }
             }
             eshkol_error("Failed to resolve function for gradient computation");
@@ -18597,6 +19071,9 @@ private:
         // Get current function for basic blocks
         Function* current_func = builder->GetInsertBlock()->getParent();
 
+        // Get arena for OALR-compliant tensor allocation (used throughout gradient computation)
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
         // Extract type from input (may be DOUBLE, INT64, TENSOR_PTR, or AD_NODE_PTR for nested gradients)
         Value* input_type = getTaggedValueType(vector_val);
         Value* input_base_type = getBaseType(input_type);
@@ -18604,7 +19081,7 @@ private:
         // DOUBLE BACKWARD: Check if input is an AD node (from outer gradient)
         // This happens in nested gradients like (gradient (lambda (y) (gradient f y)) x)
         Value* is_ad_node_input = builder->CreateICmpEQ(input_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
 
         // Check if input is scalar (INT64 or DOUBLE)
         Value* is_int64 = builder->CreateICmpEQ(input_base_type,
@@ -18613,9 +19090,13 @@ private:
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
         Value* is_scalar = builder->CreateOr(is_int64, is_double);
 
-        // Check if input is Scheme VECTOR_PTR (needs conversion to tensor format)
-        Value* is_scheme_vector = builder->CreateICmpEQ(input_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+        // M1 Migration: Check if input is Scheme vector (HEAP_PTR with HEAP_SUBTYPE_VECTOR) or legacy VECTOR_PTR
+        // First check for HEAP_PTR (consolidated format)
+        Value* is_heap_ptr = builder->CreateICmpEQ(input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        // Legacy VECTOR_PTR check
+        Value* is_legacy_vector = builder->CreateICmpEQ(input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
         // Branch: AD node input (nested), scalar input (promotion), scheme vector (convert), or tensor input (normal)
         BasicBlock* ad_node_input = BasicBlock::Create(*context, "grad_ad_node_input", current_func);
@@ -18645,16 +19126,12 @@ private:
         Value* ad_value_ptr = builder->CreateStructGEP(ad_node_type, outer_ad_node, 1);
         Value* ad_value = builder->CreateLoad(double_type, ad_value_ptr);
 
-        // Create a 1D tensor containing this value (so rest of gradient code works uniformly)
-        Function* malloc_func_nested = function_table["malloc"];
-        Value* nested_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* nested_tensor_ptr = builder->CreateCall(malloc_func_nested, {nested_tensor_size});
-        Value* typed_ad_tensor = builder->CreatePointerCast(nested_tensor_ptr, builder->getPtrTy());
+        // Create a 1D tensor containing this value via arena (OALR compliant - no malloc)
+        Value* typed_ad_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
 
         // Set up 1D tensor structure
         Value* nested_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* nested_dims_ptr = builder->CreateCall(malloc_func_nested, {nested_dims_size});
+        Value* nested_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, nested_dims_size});
         Value* typed_ad_dims = builder->CreatePointerCast(nested_dims_ptr, builder->getPtrTy());
         builder->CreateStore(ConstantInt::get(int64_type, 1), typed_ad_dims);
 
@@ -18666,7 +19143,7 @@ private:
             builder->CreateStructGEP(tensor_type, typed_ad_tensor, 3));
 
         Value* nested_elems_size = ConstantInt::get(int64_type, sizeof(int64_t));
-        Value* nested_elems_ptr = builder->CreateCall(malloc_func_nested, {nested_elems_size});
+        Value* nested_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, nested_elems_size});
         Value* typed_nested_elems = builder->CreatePointerCast(nested_elems_ptr, builder->getPtrTy());
         Value* nested_value_as_int64 = builder->CreateBitCast(ad_value, int64_type);
         builder->CreateStore(nested_value_as_int64, typed_nested_elems);
@@ -18674,7 +19151,7 @@ private:
             builder->CreateStructGEP(tensor_type, typed_ad_tensor, 2));
 
         Value* nested_tensor_int = builder->CreatePtrToInt(typed_ad_tensor, int64_type);
-        Value* ad_promoted_tagged = packPtrToTaggedValue(nested_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* ad_promoted_tagged = packPtrToTaggedValue(nested_tensor_int, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(grad_merge_input);
         BasicBlock* ad_node_exit = builder->GetInsertBlock();
 
@@ -18685,12 +19162,27 @@ private:
         builder->CreateStore(ConstantPointerNull::get(PointerType::getUnqual(*context)),
             outer_ad_node_storage);
 
-        // Check: scalar → scalar_input, scheme_vector → scheme_vector_input, else → vector_input (tensor)
-        BasicBlock* check_scheme_vector = BasicBlock::Create(*context, "grad_check_scheme_vec", current_func);
-        builder->CreateCondBr(is_scalar, scalar_input, check_scheme_vector);
+        // Check: scalar → scalar_input, heap_ptr (check subtype) → maybe scheme_vector, else → vector_input (tensor)
+        BasicBlock* check_heap_ptr = BasicBlock::Create(*context, "grad_check_heap_ptr", current_func);
+        builder->CreateCondBr(is_scalar, scalar_input, check_heap_ptr);
 
-        builder->SetInsertPoint(check_scheme_vector);
-        builder->CreateCondBr(is_scheme_vector, scheme_vector_input, vector_input);
+        // M1 Migration: Check for HEAP_PTR and dispatch based on subtype
+        builder->SetInsertPoint(check_heap_ptr);
+        BasicBlock* heap_ptr_dispatch = BasicBlock::Create(*context, "grad_heap_dispatch", current_func);
+        BasicBlock* check_legacy_vector = BasicBlock::Create(*context, "grad_check_legacy_vec", current_func);
+        builder->CreateCondBr(is_heap_ptr, heap_ptr_dispatch, check_legacy_vector);
+
+        // HEAP_PTR dispatch - read subtype from header
+        builder->SetInsertPoint(heap_ptr_dispatch);
+        Value* grad_heap_ptr = unpackPtrFromTaggedValue(vector_val);
+        Value* grad_header_ptr = builder->CreateGEP(int8_type, grad_heap_ptr, ConstantInt::get(int64_type, -8));
+        Value* grad_subtype = builder->CreateLoad(int8_type, grad_header_ptr);
+        Value* is_vec_subtype_grad = builder->CreateICmpEQ(grad_subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
+        builder->CreateCondBr(is_vec_subtype_grad, scheme_vector_input, vector_input);
+
+        // Legacy VECTOR_PTR fallback
+        builder->SetInsertPoint(check_legacy_vector);
+        builder->CreateCondBr(is_legacy_vector, scheme_vector_input, vector_input);
 
         // SCALAR INPUT: Auto-promote scalar to 1D tensor #(scalar_value)
         builder->SetInsertPoint(scalar_input);
@@ -18704,21 +19196,15 @@ private:
             builder->CreateBitCast(scalar_val_int, double_type),
             builder->CreateSIToFP(scalar_val_int, double_type));
         
-        // Get malloc for tensor creation
-        Function* malloc_func_scalar = function_table["malloc"];
-        
-        // Allocate 1D tensor structure for promoted scalar
-        Value* promoted_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* promoted_tensor_ptr = builder->CreateCall(malloc_func_scalar, {promoted_tensor_size});
-        Value* typed_promoted_tensor = builder->CreatePointerCast(promoted_tensor_ptr, builder->getPtrTy());
-        
+        // Allocate 1D tensor structure for promoted scalar via arena (OALR compliant - no malloc)
+        Value* typed_promoted_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
         // Set dimensions: [1] (1D tensor with single element)
         Value* promoted_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* promoted_dims_ptr = builder->CreateCall(malloc_func_scalar, {promoted_dims_size});
+        Value* promoted_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, promoted_dims_size});
         Value* typed_promoted_dims = builder->CreatePointerCast(promoted_dims_ptr, builder->getPtrTy());
         builder->CreateStore(ConstantInt::get(int64_type, 1), typed_promoted_dims);
-        
+
         // Set tensor metadata
         builder->CreateStore(typed_promoted_dims,
             builder->CreateStructGEP(tensor_type, typed_promoted_tensor, 0));  // dimensions = [1]
@@ -18726,10 +19212,10 @@ private:
             builder->CreateStructGEP(tensor_type, typed_promoted_tensor, 1));  // num_dimensions = 1
         builder->CreateStore(ConstantInt::get(int64_type, 1),
             builder->CreateStructGEP(tensor_type, typed_promoted_tensor, 3));  // total_elements = 1
-        
+
         // Allocate and set elements: [scalar_value]
         Value* promoted_elems_size = ConstantInt::get(int64_type, sizeof(int64_t));
-        Value* promoted_elems_ptr = builder->CreateCall(malloc_func_scalar, {promoted_elems_size});
+        Value* promoted_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, promoted_elems_size});
         Value* typed_promoted_elems = builder->CreatePointerCast(promoted_elems_ptr, builder->getPtrTy());
         
         // Store scalar as bitcast int64 (preserves IEEE754 bits for doubles)
@@ -18741,7 +19227,7 @@ private:
         
         // Pack promoted tensor as tagged_value with TENSOR_PTR type
         Value* promoted_tensor_int = builder->CreatePtrToInt(typed_promoted_tensor, int64_type);
-        Value* promoted_vector_tagged = packPtrToTaggedValue(promoted_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* promoted_vector_tagged = packPtrToTaggedValue(promoted_tensor_int, ESHKOL_VALUE_HEAP_PTR);
         
         builder->CreateBr(grad_merge_input);
         BasicBlock* scalar_input_exit = builder->GetInsertBlock();
@@ -18758,31 +19244,27 @@ private:
         Value* svec_elems_base = builder->CreateGEP(int8_type, svec_ptr, ConstantInt::get(int64_type, 8));
         Value* svec_elems = builder->CreatePointerCast(svec_elems_base, PointerType::getUnqual(tagged_value_type));
 
-        // Allocate result tensor for gradient
-        Function* malloc_svec = function_table["malloc"];
-        Value* svec_result_tensor_size = ConstantInt::get(int64_type, module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* svec_result_tensor = builder->CreateCall(malloc_svec, {svec_result_tensor_size});
-        Value* svec_typed_result = builder->CreatePointerCast(svec_result_tensor, builder->getPtrTy());
+        // Allocate result tensor for gradient - use arena allocation with header for HEAP_PTR type
+        Value* arena_for_svec = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* svec_typed_result = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_for_svec});
 
-        // Set result tensor dimensions
+        // Set result tensor dimensions - use arena allocation
         Value* svec_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* svec_dims_ptr = builder->CreateCall(malloc_svec, {svec_dims_size});
+        Value* svec_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_for_svec, svec_dims_size});
         Value* svec_typed_dims = builder->CreatePointerCast(svec_dims_ptr, builder->getPtrTy());
         builder->CreateStore(svec_n, svec_typed_dims);
         builder->CreateStore(svec_typed_dims, builder->CreateStructGEP(tensor_type, svec_typed_result, 0));
         builder->CreateStore(ConstantInt::get(int64_type, 1), builder->CreateStructGEP(tensor_type, svec_typed_result, 1));
         builder->CreateStore(svec_n, builder->CreateStructGEP(tensor_type, svec_typed_result, 3));
 
-        // Allocate result elements
+        // Allocate result elements - use arena allocation
         Value* svec_result_elems_size = builder->CreateMul(svec_n, ConstantInt::get(int64_type, sizeof(int64_t)));
-        Value* svec_result_elems = builder->CreateCall(malloc_svec, {svec_result_elems_size});
+        Value* svec_result_elems = builder->CreateCall(mem->getArenaAllocate(), {arena_for_svec, svec_result_elems_size});
         Value* svec_typed_result_elems = builder->CreatePointerCast(svec_result_elems, builder->getPtrTy());
         builder->CreateStore(svec_typed_result_elems, builder->CreateStructGEP(tensor_type, svec_typed_result, 2));
 
         // Get arena for dual vector allocation
-        Function* arena_alloc_svec = function_table["arena_allocate"];
         Value* arena_svec = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-        uint64_t tagged_size_svec = module->getDataLayout().getTypeAllocSize(tagged_value_type);
 
         // Outer loop: for each dimension i, compute ∂f/∂xᵢ using forward-mode AD
         Value* svec_dim_i = builder->CreateAlloca(int64_type, nullptr, "svec_dim_i");
@@ -18800,10 +19282,11 @@ private:
 
         builder->SetInsertPoint(svec_dim_body);
 
-        // Allocate dual vector (Scheme vector of dual numbers)
-        Value* svec_dual_size = builder->CreateAdd(ConstantInt::get(int64_type, 8),
-            builder->CreateMul(svec_n, ConstantInt::get(int64_type, tagged_size_svec)));
-        Value* svec_dual_vec = builder->CreateCall(arena_alloc_svec, {arena_svec, svec_dual_size});
+        // M1 CONSOLIDATION: Allocate dual vector with header (Scheme vector of dual numbers)
+        // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
+        // Header contains HEAP_SUBTYPE_VECTOR, returns pointer to length field
+        Value* svec_dual_vec = builder->CreateCall(mem->getArenaAllocateVectorWithHeader(),
+            {arena_svec, svec_n});
         builder->CreateStore(svec_n, svec_dual_vec);
         Value* svec_dual_elems = builder->CreateGEP(int8_type, svec_dual_vec, ConstantInt::get(int64_type, 8));
         Value* svec_dual_elems_typed = builder->CreatePointerCast(svec_dual_elems, PointerType::getUnqual(tagged_value_type));
@@ -18841,9 +19324,9 @@ private:
 
         builder->SetInsertPoint(svec_inner_end);
 
-        // Pack dual vector as Scheme vector
+        // M1 CONSOLIDATION: Pack dual vector as HEAP_PTR (header contains HEAP_SUBTYPE_VECTOR)
         Value* svec_dual_tagged_vec = packPtrToTaggedValue(
-            builder->CreatePtrToInt(svec_dual_vec, int64_type), ESHKOL_VALUE_VECTOR_PTR);
+            builder->CreatePtrToInt(svec_dual_vec, int64_type), ESHKOL_VALUE_HEAP_PTR);
 
         // Call function with dual vector
         std::vector<Value*> svec_call_args = {svec_dual_tagged_vec};
@@ -18867,7 +19350,18 @@ private:
                 }
 
                 if (found) {
-                    svec_call_args.push_back(cap_it->second);
+                    // MUTABLE CAPTURE FIX: Must pack pointer in closure format
+                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
+                    Value* svec_cap_storage = cap_it->second;
+                    Function* svec_current_func = builder->GetInsertBlock()->getParent();
+                    IRBuilder<> svec_entry_builder(&svec_current_func->getEntryBlock(),
+                                                   svec_current_func->getEntryBlock().begin());
+                    AllocaInst* svec_cap_temp = svec_entry_builder.CreateAlloca(
+                        tagged_value_type, nullptr, var_name + "_svec_cap_temp");
+                    Value* svec_cap_ptr_int = builder->CreatePtrToInt(svec_cap_storage, int64_type);
+                    Value* svec_cap_packed = packInt64ToTaggedValue(svec_cap_ptr_int, true);
+                    builder->CreateStore(svec_cap_packed, svec_cap_temp);
+                    svec_call_args.push_back(svec_cap_temp);
                 } else {
                     // FALLBACK: Try raw variable name (for top-level global variables and let bindings)
                     Value* storage = nullptr;
@@ -18903,8 +19397,17 @@ private:
 
                             svec_call_args.push_back(temp_alloca);
                         } else {
-                            // GlobalVariable or other - pass directly
-                            svec_call_args.push_back(storage);
+                            // GlobalVariable or Argument - also needs to be packed in closure format
+                            // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
+                            Function* svec_current_func2 = builder->GetInsertBlock()->getParent();
+                            IRBuilder<> entry_builder2(&svec_current_func2->getEntryBlock(),
+                                                       svec_current_func2->getEntryBlock().begin());
+                            AllocaInst* temp_alloca2 = entry_builder2.CreateAlloca(
+                                tagged_value_type, nullptr, var_name + "_svec_gv_storage");
+                            Value* ptr_as_int2 = builder->CreatePtrToInt(storage, int64_type);
+                            Value* packed_ptr2 = packInt64ToTaggedValue(ptr_as_int2, true);
+                            builder->CreateStore(packed_ptr2, temp_alloca2);
+                            svec_call_args.push_back(temp_alloca2);
                         }
                     } else {
                         svec_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
@@ -18957,7 +19460,7 @@ private:
         builder->SetInsertPoint(svec_dim_end);
         // Return result tensor
         Value* svec_result_int = builder->CreatePtrToInt(svec_typed_result, int64_type);
-        Value* scheme_vector_tagged = packPtrToTaggedValue(svec_result_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* scheme_vector_tagged = packPtrToTaggedValue(svec_result_int, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(grad_done);  // Skip reverse-mode AD, go directly to done
         BasicBlock* scheme_vector_exit = builder->GetInsertBlock();
 
@@ -18976,14 +19479,7 @@ private:
         
         // Continue with gradient computation using merged input (guaranteed to be tensor!)
         Value* vector_ptr_int = safeExtractInt64(actual_input);
-
-        // Get malloc for tensor allocations
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc function not found for gradient computation");
-            return nullptr;
-        }
-        // Use class member tensor_type (shared by all tensor operations)
+        // Note: arena_ptr already defined at function start
 
 
         // Convert int64 pointer to typed tensor pointer
@@ -19013,34 +19509,32 @@ private:
 
         // CRITICAL FIX: Create empty tensor BEFORE branching (for PHI node dominance)
         // This ensures null_tagged_grad is available in all paths
-        Value* empty_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* empty_tensor_ptr = builder->CreateCall(malloc_func, {empty_tensor_size});
-        Value* typed_empty_tensor = builder->CreatePointerCast(empty_tensor_ptr, builder->getPtrTy());
-        
+        // Allocate empty tensor via arena (OALR compliant - no malloc)
+        Value* typed_empty_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
         // Set dimensions array (size 1, value 0)
         Value* empty_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* empty_dims_ptr = builder->CreateCall(malloc_func, {empty_dims_size});
+        Value* empty_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, empty_dims_size});
         Value* typed_empty_dims = builder->CreatePointerCast(empty_dims_ptr, builder->getPtrTy());
         builder->CreateStore(ConstantInt::get(int64_type, 0), typed_empty_dims);
-        
+
         builder->CreateStore(typed_empty_dims,
             builder->CreateStructGEP(tensor_type, typed_empty_tensor, 0));
         builder->CreateStore(ConstantInt::get(int64_type, 1),
             builder->CreateStructGEP(tensor_type, typed_empty_tensor, 1));
         builder->CreateStore(ConstantInt::get(int64_type, 0),
             builder->CreateStructGEP(tensor_type, typed_empty_tensor, 3));
-        
+
         // Empty elements array
         Value* empty_elems_size = ConstantInt::get(int64_type, sizeof(double));
-        Value* empty_elems_ptr = builder->CreateCall(malloc_func, {empty_elems_size});
+        Value* empty_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, empty_elems_size});
         Value* typed_empty_elems = builder->CreatePointerCast(empty_elems_ptr, builder->getPtrTy());
         builder->CreateStore(typed_empty_elems,
             builder->CreateStructGEP(tensor_type, typed_empty_tensor, 2));
         
         // Pack as tagged_value (TENSOR_PTR type) - available in all paths
         Value* empty_tensor_int = builder->CreatePtrToInt(typed_empty_tensor, int64_type);
-        Value* null_tagged_grad = packPtrToTaggedValue(empty_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* null_tagged_grad = packPtrToTaggedValue(empty_tensor_int, ESHKOL_VALUE_HEAP_PTR);
         
         builder->CreateCondBr(n_is_positive, dim_valid, dim_invalid);
         
@@ -19052,34 +19546,31 @@ private:
         // Valid dimension: compute gradient
         builder->SetInsertPoint(dim_valid);
         
-        // Allocate result gradient vector (SAME structure as input vector)
-        Value* result_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* result_tensor_ptr = builder->CreateCall(malloc_func, {result_tensor_size});
-        Value* typed_result_tensor_ptr = builder->CreatePointerCast(result_tensor_ptr, builder->getPtrTy());
-        
+        // Allocate result gradient vector via arena (OALR compliant - no malloc)
+        Value* typed_result_tensor_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
         // Set result tensor dimension (1D vector of size n)
         Value* result_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* result_dims_ptr = builder->CreateCall(malloc_func, {result_dims_size});
+        Value* result_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, result_dims_size});
         Value* typed_result_dims_ptr = builder->CreatePointerCast(result_dims_ptr, builder->getPtrTy());
         builder->CreateStore(n, typed_result_dims_ptr);
-        
+
         // Store dimension in result tensor
         Value* result_dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_result_tensor_ptr, 0);
         builder->CreateStore(typed_result_dims_ptr, result_dims_field_ptr);
-        
+
         // Store num_dimensions = 1
         Value* result_num_dims_field_ptr = builder->CreateStructGEP(tensor_type, typed_result_tensor_ptr, 1);
         builder->CreateStore(ConstantInt::get(int64_type, 1), result_num_dims_field_ptr);
-        
+
         // Store total_elements = n
         Value* result_total_field_ptr = builder->CreateStructGEP(tensor_type, typed_result_tensor_ptr, 3);
         builder->CreateStore(n, result_total_field_ptr);
-        
+
         // Allocate result elements array (n doubles for partial derivatives)
         Value* result_elements_size = builder->CreateMul(n,
             ConstantInt::get(int64_type, sizeof(double)));
-        Value* result_elements_ptr = builder->CreateCall(malloc_func, {result_elements_size});
+        Value* result_elements_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, result_elements_size});
         Value* typed_result_elements_ptr = builder->CreatePointerCast(result_elements_ptr, builder->getPtrTy());
         
         // Store elements pointer in result tensor
@@ -19107,9 +19598,8 @@ private:
         
         // Loop body: Compute ∂f/∂xᵢ using reverse-mode AD
         builder->SetInsertPoint(grad_loop_body);
-        
-        // Step 1: Create tape for this partial derivative
-        Value* arena_ptr = getArenaPtr();
+
+        // Step 1: Create tape for this partial derivative (arena_ptr defined at function start)
         Value* tape_capacity = ConstantInt::get(int64_type, 1024);
         Value* partial_tape = builder->CreateCall(getArenaAllocateTapeFunc(),
             {arena_ptr, tape_capacity});
@@ -19119,10 +19609,10 @@ private:
         current_tape_ptr = partial_tape;
         
         // Step 2: Create n AD variable nodes (one per vector component)
-        // Allocate array to hold variable node pointers
+        // Allocate array to hold variable node pointers via arena (OALR compliant - no malloc)
         Value* var_nodes_array_size = builder->CreateMul(n,
             ConstantInt::get(int64_type, sizeof(void*)));
-        Value* var_nodes_array = builder->CreateCall(malloc_func, {var_nodes_array_size});
+        Value* var_nodes_array = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, var_nodes_array_size});
         Value* typed_var_nodes = builder->CreatePointerCast(var_nodes_array, builder->getPtrTy());
         
         // Loop to create and initialize variable nodes
@@ -19248,26 +19738,21 @@ private:
         // This requires the function to use recordADNode* operations
         
         // Build tensor of AD node pointers to pass to function
-        Value* ad_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* ad_tensor_ptr = builder->CreateCall(malloc_func, {ad_tensor_size});
-        Value* typed_ad_tensor_ptr = builder->CreatePointerCast(ad_tensor_ptr, builder->getPtrTy());
-        
-        // Set AD tensor dimensions (same as input)
-        builder->CreateStore(typed_result_dims_ptr,
+        // M1 CONSOLIDATION: Use arena allocation with header for HEAP_PTR type
+        Value* ad_arena_ptr = builder->CreateLoad(
+            PointerType::getUnqual(*context), global_arena);
+        Function* alloc_tensor_full = mem->getArenaAllocateTensorFull();
+        Value* typed_ad_tensor_ptr = builder->CreateCall(alloc_tensor_full,
+            {ad_arena_ptr, ConstantInt::get(int64_type, 1), n}, "ad_tensor");
+
+        // Set AD tensor dimensions (same as input) - dims[0] = n
+        Value* ad_dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context),
             builder->CreateStructGEP(tensor_type, typed_ad_tensor_ptr, 0));
-        builder->CreateStore(ConstantInt::get(int64_type, 1),
-            builder->CreateStructGEP(tensor_type, typed_ad_tensor_ptr, 1));
-        builder->CreateStore(n,
-            builder->CreateStructGEP(tensor_type, typed_ad_tensor_ptr, 3));
-        
-        // Allocate and fill AD tensor elements with node pointers
-        Value* ad_elems_size = builder->CreateMul(n,
-            ConstantInt::get(int64_type, sizeof(uint64_t)));
-        Value* ad_elems_ptr = builder->CreateCall(malloc_func, {ad_elems_size});
-        Value* typed_ad_elems_ptr = builder->CreatePointerCast(ad_elems_ptr, builder->getPtrTy());
-        
-        builder->CreateStore(typed_ad_elems_ptr,
+        builder->CreateStore(n, builder->CreateGEP(int64_type, ad_dims_ptr,
+            ConstantInt::get(int64_type, 0)));
+
+        // Get elements array (already allocated by arena_allocate_tensor_full)
+        Value* typed_ad_elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context),
             builder->CreateStructGEP(tensor_type, typed_ad_tensor_ptr, 2));
         
         // Copy node pointers into AD tensor
@@ -19318,7 +19803,7 @@ private:
         Value* single_ad_node_slot = builder->CreateGEP(PointerType::getUnqual(*context),
             typed_var_nodes, ConstantInt::get(int64_type, 0));
         Value* single_ad_node = builder->CreateLoad(PointerType::getUnqual(*context), single_ad_node_slot);
-        Value* scalar_ad_tagged = packPtrToTaggedValue(single_ad_node, ESHKOL_VALUE_AD_NODE_PTR);
+        Value* scalar_ad_tagged = packPtrToTaggedValue(single_ad_node, ESHKOL_VALUE_CALLABLE);
 
         std::vector<Value*> scalar_args = {scalar_ad_tagged};
 
@@ -19395,16 +19880,26 @@ private:
                                 scalar_capture_key
                             );
                         }
-                        // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
-                        scalar_args.push_back(capture_global);
+                        // MUTABLE CAPTURE FIX: Pack pointer in closure format
+                        // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@global)}
+                        Value* scalar_global_ptr_int = builder->CreatePtrToInt(capture_global, int64_type);
+                        Value* scalar_packed_capture = packInt64ToTaggedValue(scalar_global_ptr_int, true);
+                        Value* scalar_capture_storage = builder->CreateAlloca(tagged_value_type, nullptr, "scalar_capture_storage");
+                        builder->CreateStore(scalar_packed_capture, scalar_capture_storage);
+                        scalar_args.push_back(scalar_capture_storage);
                         continue;
                     }
                 }
 
                 if (found && scalar_it->second) {
                     Value* scalar_storage = scalar_it->second;
-                    // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
-                    scalar_args.push_back(scalar_storage);
+                    // MUTABLE CAPTURE FIX: Pack pointer in closure format
+                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
+                    Value* scalar_storage_ptr_int = builder->CreatePtrToInt(scalar_storage, int64_type);
+                    Value* scalar_packed_storage = packInt64ToTaggedValue(scalar_storage_ptr_int, true);
+                    Value* scalar_temp_storage = builder->CreateAlloca(tagged_value_type, nullptr, "scalar_capture_storage");
+                    builder->CreateStore(scalar_packed_storage, scalar_temp_storage);
+                    scalar_args.push_back(scalar_temp_storage);
                 } else {
                     // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
                     scalar_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
@@ -19420,7 +19915,13 @@ private:
         // NESTED GRADIENT FIX: Push tape context (saves outer gradient's tape if any)
         pushTapeContext(partial_tape);
 
+        // M1 Migration FIX: Set AD mode flag so vref recognizes AD node pointers in tensors
+        builder->CreateStore(ConstantInt::get(int1_type, 1), ad_mode_active);
+
         Value* scalar_output = builder->CreateCall(func_ptr, scalar_args);
+
+        // M1 Migration FIX: Reset AD mode flag after function call
+        builder->CreateStore(ConstantInt::get(int1_type, 0), ad_mode_active);
 
         // NESTED GRADIENT FIX: Pop tape context (restores outer gradient's tape if any)
         popTapeContext();
@@ -19434,7 +19935,8 @@ private:
         // VECTOR: Pass AD tensor as usual
         builder->SetInsertPoint(vector_call);
         Value* ad_tensor_int = builder->CreatePtrToInt(typed_ad_tensor_ptr, int64_type);
-        Value* ad_tensor_tagged = packPtrToTaggedValue(ad_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+        // M1 CONSOLIDATION: Use HEAP_PTR type - tensor has header with HEAP_SUBTYPE_TENSOR
+        Value* ad_tensor_tagged = packPtrToTaggedValue(ad_tensor_int, ESHKOL_VALUE_HEAP_PTR);
         
         std::vector<Value*> grad_call_args = {ad_tensor_tagged};
         
@@ -19510,16 +20012,28 @@ private:
                                 capture_key
                             );
                         }
-                        // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
-                        grad_call_args.push_back(capture_global);
+                        // MUTABLE CAPTURE FIX: Create storage containing packed pointer
+                        // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@global)}
+                        // Then lambda loads from slot, unpacks data field to get @global
+                        Value* global_ptr_int = builder->CreatePtrToInt(capture_global, int64_type);
+                        Value* packed_capture = packInt64ToTaggedValue(global_ptr_int, true);
+                        Value* capture_storage = builder->CreateAlloca(tagged_value_type, nullptr, "grad_capture_storage");
+                        builder->CreateStore(packed_capture, capture_storage);
+                        grad_call_args.push_back(capture_storage);
                         continue;
                     }
                 }
 
                 if (found && it->second) {
                     Value* storage = it->second;
-                    // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
-                    grad_call_args.push_back(storage);
+                    // MUTABLE CAPTURE FIX: Create storage containing packed pointer
+                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
+                    // Then lambda loads from slot, unpacks data field to get @storage
+                    Value* storage_ptr_int = builder->CreatePtrToInt(storage, int64_type);
+                    Value* packed_storage = packInt64ToTaggedValue(storage_ptr_int, true);
+                    Value* capture_storage = builder->CreateAlloca(tagged_value_type, nullptr, "grad_capture_storage");
+                    builder->CreateStore(packed_storage, capture_storage);
+                    grad_call_args.push_back(capture_storage);
                 } else {
                     // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
                     grad_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
@@ -19535,7 +20049,13 @@ private:
         // NESTED GRADIENT FIX: Push tape context (saves outer gradient's tape if any)
         pushTapeContext(partial_tape);
 
+        // M1 Migration FIX: Set AD mode flag so vref recognizes AD node pointers in tensors
+        builder->CreateStore(ConstantInt::get(int1_type, 1), ad_mode_active);
+
         Value* vector_output = builder->CreateCall(func_ptr, grad_call_args);
+
+        // M1 Migration FIX: Reset AD mode flag after function call
+        builder->CreateStore(ConstantInt::get(int1_type, 0), ad_mode_active);
 
         // NESTED GRADIENT FIX: Pop tape context (restores outer gradient's tape if any)
         popTapeContext();
@@ -19564,7 +20084,7 @@ private:
         Value* output_type = getTaggedValueType(output_tagged);
         Value* output_base_type = getBaseType(output_type);
         Value* output_is_ad_node = builder->CreateICmpEQ(output_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         
         BasicBlock* has_valid_output = BasicBlock::Create(*context, "grad_valid_output", current_func);
         BasicBlock* invalid_output = BasicBlock::Create(*context, "grad_invalid_output", current_func);
@@ -19819,7 +20339,7 @@ private:
 
         // Pack AD node as result
         Value* ad_result_int = builder->CreatePtrToInt(result_ad_node, int64_type);
-        Value* ad_result_tagged = packPtrToTaggedValue(ad_result_int, ESHKOL_VALUE_AD_NODE_PTR);
+        Value* ad_result_tagged = packPtrToTaggedValue(ad_result_int, ESHKOL_VALUE_CALLABLE);
 
         // Clear the outer AD node storage
         builder->CreateStore(ConstantPointerNull::get(PointerType::getUnqual(*context)),
@@ -19832,7 +20352,7 @@ private:
         builder->SetInsertPoint(return_tensor);
         Value* grad_result_int = builder->CreatePtrToInt(typed_result_tensor_ptr, int64_type);
         // Tag as TENSOR_PTR for proper display handling (packPtrToTaggedValue handles i64 directly)
-        Value* grad_result = packPtrToTaggedValue(grad_result_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* grad_result = packPtrToTaggedValue(grad_result_int, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(grad_merge_result);
         BasicBlock* tensor_result_exit = builder->GetInsertBlock();
 
@@ -19888,11 +20408,8 @@ private:
             return nullptr;
         }
 
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc not found for Jacobian");
-            return nullptr;
-        }
+        // Get arena for OALR-compliant tensor allocation
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
         // CRITICAL FIX: Handle Scheme VECTOR_PTR - convert to tensor format
         // Get current function for basic blocks
@@ -19904,15 +20421,32 @@ private:
         Value* input_type = getTaggedValueType(vector_val);
         Value* input_base_type = getBaseType(input_type);
 
-        // Check if input is Scheme VECTOR_PTR (needs conversion to tensor format)
-        Value* is_scheme_vector = builder->CreateICmpEQ(input_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+        // M1 CONSOLIDATION: Check for both HEAP_PTR (consolidated) and legacy VECTOR_PTR
+        Value* is_heap_ptr = builder->CreateICmpEQ(input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_legacy_vector = builder->CreateICmpEQ(input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
+        BasicBlock* jac_heap_dispatch = BasicBlock::Create(*context, "jac_heap_dispatch", current_func);
+        BasicBlock* jac_check_legacy = BasicBlock::Create(*context, "jac_check_legacy", current_func);
         BasicBlock* jac_scheme_vector_input = BasicBlock::Create(*context, "jac_scheme_vector", current_func);
         BasicBlock* jac_tensor_input = BasicBlock::Create(*context, "jac_tensor_input", current_func);
         BasicBlock* jac_merge_input = BasicBlock::Create(*context, "jac_merge_input", current_func);
 
-        builder->CreateCondBr(is_scheme_vector, jac_scheme_vector_input, jac_tensor_input);
+        // First check for HEAP_PTR (consolidated format)
+        builder->CreateCondBr(is_heap_ptr, jac_heap_dispatch, jac_check_legacy);
+
+        // HEAP_PTR dispatch - read subtype from header
+        builder->SetInsertPoint(jac_heap_dispatch);
+        Value* jac_heap_ptr_val = unpackPtrFromTaggedValue(vector_val);
+        Value* jac_header_ptr = builder->CreateGEP(int8_type, jac_heap_ptr_val, ConstantInt::get(int64_type, -8));
+        Value* jac_subtype = builder->CreateLoad(int8_type, jac_header_ptr);
+        Value* jac_is_vec_subtype = builder->CreateICmpEQ(jac_subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
+        builder->CreateCondBr(jac_is_vec_subtype, jac_scheme_vector_input, jac_tensor_input);
+
+        // Legacy VECTOR_PTR fallback
+        builder->SetInsertPoint(jac_check_legacy);
+        builder->CreateCondBr(is_legacy_vector, jac_scheme_vector_input, jac_tensor_input);
 
         // SCHEME VECTOR: Convert to tensor format
         builder->SetInsertPoint(jac_scheme_vector_input);
@@ -19922,15 +20456,12 @@ private:
         Value* jac_scheme_len_ptr = builder->CreateBitCast(jac_scheme_vec_ptr, PointerType::getUnqual(*context));
         Value* jac_scheme_len = builder->CreateLoad(int64_type, jac_scheme_len_ptr);
 
-        // Allocate tensor
-        Value* jac_scheme_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* jac_scheme_tensor_ptr = builder->CreateCall(malloc_func, {jac_scheme_tensor_size});
-        Value* jac_typed_scheme_tensor = builder->CreatePointerCast(jac_scheme_tensor_ptr, builder->getPtrTy());
+        // Allocate tensor via arena (OALR compliant - no malloc)
+        Value* jac_typed_scheme_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
 
         // Set dimensions
         Value* jac_scheme_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* jac_scheme_dims_ptr = builder->CreateCall(malloc_func, {jac_scheme_dims_size});
+        Value* jac_scheme_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, jac_scheme_dims_size});
         Value* jac_typed_scheme_dims = builder->CreatePointerCast(jac_scheme_dims_ptr, builder->getPtrTy());
         builder->CreateStore(jac_scheme_len, jac_typed_scheme_dims);
 
@@ -19942,7 +20473,7 @@ private:
         // Allocate and copy elements
         Value* jac_scheme_elems_size = builder->CreateMul(jac_scheme_len,
             ConstantInt::get(int64_type, sizeof(int64_t)));
-        Value* jac_scheme_elems_ptr = builder->CreateCall(malloc_func, {jac_scheme_elems_size});
+        Value* jac_scheme_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, jac_scheme_elems_size});
         Value* jac_typed_scheme_elems = builder->CreatePointerCast(jac_scheme_elems_ptr, builder->getPtrTy());
         builder->CreateStore(jac_typed_scheme_elems, builder->CreateStructGEP(tensor_type, jac_typed_scheme_tensor, 2));
 
@@ -19977,7 +20508,7 @@ private:
 
         builder->SetInsertPoint(jac_svec_copy_done);
         Value* jac_scheme_tensor_int = builder->CreatePtrToInt(jac_typed_scheme_tensor, int64_type);
-        Value* jac_scheme_vector_tagged = packPtrToTaggedValue(jac_scheme_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* jac_scheme_vector_tagged = packPtrToTaggedValue(jac_scheme_tensor_int, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(jac_merge_input);
         BasicBlock* jac_scheme_exit = builder->GetInsertBlock();
 
@@ -20012,7 +20543,7 @@ private:
 
         // Call function once to determine output dimension m
         // CRITICAL FIX: Pack as TENSOR_PTR not INT64, so identity lambdas preserve type
-        Value* vector_tagged = packPtrToTaggedValue(vector_ptr_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* vector_tagged = packPtrToTaggedValue(vector_ptr_int, ESHKOL_VALUE_HEAP_PTR);
         // CLOSURE FIX: Load captures for function call
         std::vector<Value*> test_call_args = {vector_tagged};
         std::vector<Value*> jac_test_captures = loadCapturesForAutodiff(func_ptr, "Jacobian test call");
@@ -20023,15 +20554,15 @@ private:
         Value* output_type = getTaggedValueType(test_output_tagged);
         Value* output_base_type = getBaseType(output_type);
 
-        // Check for valid vector types (regular tensors, AD tensors, and Scheme vectors)
-        Value* output_is_tensor_ptr = builder->CreateICmpEQ(output_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
-        Value* output_is_ad_tensor = builder->CreateICmpEQ(output_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
-        Value* output_is_scheme_vector = builder->CreateICmpEQ(output_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-        Value* output_is_tensor_or_ad = builder->CreateOr(output_is_tensor_ptr, output_is_ad_tensor);
-        Value* output_has_vector_type = builder->CreateOr(output_is_tensor_or_ad, output_is_scheme_vector);
+        // M1 CONSOLIDATION: Check for valid output types
+        // For HEAP_PTR, we need to check the subtype to distinguish vector (2) from tensor (3)
+        Value* output_is_heap_ptr = builder->CreateICmpEQ(output_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* output_is_callable = builder->CreateICmpEQ(output_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+
+        // Any HEAP_PTR or CALLABLE is a valid vector type (tensor or vector)
+        Value* output_has_vector_type = builder->CreateOr(output_is_heap_ptr, output_is_callable);
 
         // CRITICAL FIX: Create null tagged value BEFORE branching (for PHI node dominance)
         Value* null_jac_tagged = packInt64ToTaggedValue(
@@ -20078,11 +20609,23 @@ private:
         Function* printf_func = function_table["printf"];
 
         // Branch based on whether output is Scheme vector or tensor
+        // For HEAP_PTR, check subtype to distinguish vector (2) from tensor (3)
+        BasicBlock* jac_output_check_subtype = BasicBlock::Create(*context, "jac_output_check_subtype", current_func);
         BasicBlock* jac_output_scheme_vec = BasicBlock::Create(*context, "jac_output_scheme_vec", current_func);
         BasicBlock* jac_output_tensor = BasicBlock::Create(*context, "jac_output_tensor", current_func);
         BasicBlock* jac_output_merge = BasicBlock::Create(*context, "jac_output_merge", current_func);
 
-        builder->CreateCondBr(output_is_scheme_vector, jac_output_scheme_vec, jac_output_tensor);
+        // If HEAP_PTR, check subtype; otherwise go to tensor path (AD_TENSOR/CALLABLE)
+        builder->CreateCondBr(output_is_heap_ptr, jac_output_check_subtype, jac_output_tensor);
+
+        // Check subtype in header to distinguish Scheme vector from tensor
+        builder->SetInsertPoint(jac_output_check_subtype);
+        Value* test_out_ptr_int = unpackInt64FromTaggedValue(test_output_tagged);
+        Value* test_out_ptr = builder->CreateIntToPtr(test_out_ptr_int, builder->getPtrTy());
+        Value* test_out_header_ptr = builder->CreateGEP(int8_type, test_out_ptr, ConstantInt::get(int64_type, -8));
+        Value* test_out_subtype = builder->CreateLoad(int8_type, test_out_header_ptr);
+        Value* test_out_is_svec = builder->CreateICmpEQ(test_out_subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
+        builder->CreateCondBr(test_out_is_svec, jac_output_scheme_vec, jac_output_tensor);
 
         // SCHEME VECTOR OUTPUT: Extract dimension directly from vector length
         builder->SetInsertPoint(jac_output_scheme_vec);
@@ -20116,41 +20659,38 @@ private:
         m->addIncoming(jac_out_svec_m, jac_out_svec_exit);
         m->addIncoming(jac_out_tensor_m, jac_out_tensor_exit);
         
-        // Allocate Jacobian matrix (m×n, 2D tensor)
-        Value* jac_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* jac_ptr = builder->CreateCall(malloc_func, {jac_tensor_size});
-        Value* typed_jac_ptr = builder->CreatePointerCast(jac_ptr, builder->getPtrTy());
-        
+        // Allocate Jacobian matrix via arena (OALR compliant - no malloc)
+        Value* typed_jac_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
         // Set dimensions [m, n]
         Value* jac_dims_size = builder->CreateMul(
             ConstantInt::get(int64_type, 2),
             ConstantInt::get(int64_type, sizeof(uint64_t)));
-        Value* jac_dims_ptr = builder->CreateCall(malloc_func, {jac_dims_size});
+        Value* jac_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, jac_dims_size});
         Value* typed_jac_dims = builder->CreatePointerCast(jac_dims_ptr, builder->getPtrTy());
-        
+
         builder->CreateStore(m, typed_jac_dims);
         Value* jac_dim1_slot = builder->CreateGEP(int64_type, typed_jac_dims,
             ConstantInt::get(int64_type, 1));
         builder->CreateStore(n, jac_dim1_slot);
-        
+
         // Store dimensions in tensor
         Value* jac_dims_field = builder->CreateStructGEP(tensor_type, typed_jac_ptr, 0);
         builder->CreateStore(typed_jac_dims, jac_dims_field);
-        
+
         // Set num_dimensions = 2
         Value* jac_num_dims_field = builder->CreateStructGEP(tensor_type, typed_jac_ptr, 1);
         builder->CreateStore(ConstantInt::get(int64_type, 2), jac_num_dims_field);
-        
+
         // Set total_elements = m * n
         Value* total_elems = builder->CreateMul(m, n);
         Value* jac_total_field = builder->CreateStructGEP(tensor_type, typed_jac_ptr, 3);
         builder->CreateStore(total_elems, jac_total_field);
-        
+
         // Allocate elements array (m*n doubles)
         Value* jac_elems_size = builder->CreateMul(total_elems,
             ConstantInt::get(int64_type, sizeof(double)));
-        Value* jac_elems_ptr = builder->CreateCall(malloc_func, {jac_elems_size});
+        Value* jac_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, jac_elems_size});
         Value* typed_jac_elems = builder->CreatePointerCast(jac_elems_ptr, builder->getPtrTy());
         
         Value* jac_elems_field = builder->CreateStructGEP(tensor_type, typed_jac_ptr, 2);
@@ -20162,7 +20702,7 @@ private:
         BasicBlock* inner_body = BasicBlock::Create(*context, "jac_inner_body", current_func);
         BasicBlock* inner_exit = BasicBlock::Create(*context, "jac_inner_exit", current_func);
         BasicBlock* outer_exit = BasicBlock::Create(*context, "jac_outer_exit", current_func);
-        
+
         Value* out_idx = builder->CreateAlloca(int64_type, nullptr, "out_idx");
         builder->CreateStore(ConstantInt::get(int64_type, 0), out_idx);
 
@@ -20189,8 +20729,7 @@ private:
         // Compute ∂Fᵢ/∂xⱼ
         builder->SetInsertPoint(inner_body);
 
-        Value* arena_ptr = getArenaPtr();
-
+        // arena_ptr defined at function start
         Value* jac_tape = builder->CreateCall(getArenaAllocateTapeFunc(),
             {arena_ptr, ConstantInt::get(int64_type, 1024)});
         
@@ -20199,10 +20738,10 @@ private:
         // Assigning Value* to member variable corrupts memory - use global instead
         builder->CreateStore(jac_tape, current_ad_tape);
         
-        // Create n AD variable nodes
+        // Create n AD variable nodes via arena (OALR compliant - no malloc)
         Value* jac_var_nodes_size = builder->CreateMul(n,
             ConstantInt::get(int64_type, sizeof(void*)));
-        Value* jac_var_nodes = builder->CreateCall(malloc_func, {jac_var_nodes_size});
+        Value* jac_var_nodes = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, jac_var_nodes_size});
         Value* typed_jac_var_nodes = builder->CreatePointerCast(jac_var_nodes, builder->getPtrTy());
         
         // Initialize all variable nodes with input values
@@ -20241,35 +20780,28 @@ private:
         
         builder->SetInsertPoint(jac_init_exit);
         
-        // Build AD tensor for function call
-        Value* jac_ad_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-
-        Value* jac_ad_tensor_ptr = builder->CreateCall(malloc_func, {jac_ad_tensor_size});
-
-        Value* typed_jac_ad_tensor = builder->CreatePointerCast(jac_ad_tensor_ptr, builder->getPtrTy());
+        // Build AD tensor for function call via arena (OALR compliant - no malloc)
+        Value* typed_jac_ad_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
 
         // Set AD tensor structure
         Value* jac_ad_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* jac_ad_dims_ptr = builder->CreateCall(malloc_func, {jac_ad_dims_size});
-
+        Value* jac_ad_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, jac_ad_dims_size});
         Value* typed_jac_ad_dims = builder->CreatePointerCast(jac_ad_dims_ptr, builder->getPtrTy());
 
         builder->CreateStore(n, typed_jac_ad_dims);
-        
-        // Set tensor fields directly (malloc never returns null in practice)
+
+        // Set tensor fields directly
         builder->CreateStore(typed_jac_ad_dims,
             builder->CreateStructGEP(tensor_type, typed_jac_ad_tensor, 0));
         builder->CreateStore(ConstantInt::get(int64_type, 1),
             builder->CreateStructGEP(tensor_type, typed_jac_ad_tensor, 1));
         builder->CreateStore(n,
             builder->CreateStructGEP(tensor_type, typed_jac_ad_tensor, 3));
-        
-        // CRITICAL FIX: Move elements allocation INSIDE tensor_valid_block
-        // Otherwise typed_jac_ad_tensor is not available after the branch!
+
+        // Allocate elements via arena
         Value* jac_ad_elems_size = builder->CreateMul(n,
             ConstantInt::get(int64_type, sizeof(uint64_t)));
-        Value* jac_ad_elems_ptr = builder->CreateCall(malloc_func, {jac_ad_elems_size});
+        Value* jac_ad_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, jac_ad_elems_size});
         Value* typed_jac_ad_elems = builder->CreatePointerCast(jac_ad_elems_ptr, builder->getPtrTy());
         
         builder->CreateStore(typed_jac_ad_elems,
@@ -20310,7 +20842,7 @@ private:
         // Call function to get output
         Value* jac_ad_tensor_int = builder->CreatePtrToInt(typed_jac_ad_tensor, int64_type);
         // CRITICAL FIX: Pack as TENSOR_PTR not INT64, so identity lambdas preserve type
-        Value* jac_ad_tensor_tagged = packPtrToTaggedValue(jac_ad_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* jac_ad_tensor_tagged = packPtrToTaggedValue(jac_ad_tensor_int, ESHKOL_VALUE_HEAP_PTR);
         
         // PHASE 1 FIX: Set AD mode flag to true before calling lambda
         builder->CreateStore(ConstantInt::get(int1_type, 1), ad_mode_active);
@@ -20323,22 +20855,35 @@ private:
 
         // PHASE 1 FIX: Set AD mode flag back to false after lambda call
         builder->CreateStore(ConstantInt::get(int1_type, 0), ad_mode_active);
-        
+
         Value* jac_output_int = unpackInt64FromTaggedValue(jac_output_tagged);
         Value* jac_output_ptr = builder->CreateIntToPtr(jac_output_int, builder->getPtrTy());
 
-        // CRITICAL FIX: Handle both tensor and Scheme vector output
-        // Check if output is a Scheme vector (VECTOR_PTR)
+        // M1 CONSOLIDATION: Handle both tensor and Scheme vector output
+        // For HEAP_PTR, read the header subtype to distinguish vector vs tensor
         Value* jac_loop_output_type = getTaggedValueType(jac_output_tagged);
         Value* jac_loop_output_base = getBaseType(jac_loop_output_type);
-        Value* jac_loop_is_scheme_vec = builder->CreateICmpEQ(jac_loop_output_base,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+        Value* jac_loop_is_heap_ptr = builder->CreateICmpEQ(jac_loop_output_base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
         BasicBlock* jac_loop_svec_out = BasicBlock::Create(*context, "jac_loop_svec_out", current_func);
         BasicBlock* jac_loop_tensor_out = BasicBlock::Create(*context, "jac_loop_tensor_out", current_func);
         BasicBlock* jac_loop_merge_out = BasicBlock::Create(*context, "jac_loop_merge_out", current_func);
+        BasicBlock* jac_loop_check_subtype = BasicBlock::Create(*context, "jac_loop_check_subtype", current_func);
 
-        builder->CreateCondBr(jac_loop_is_scheme_vec, jac_loop_svec_out, jac_loop_tensor_out);
+        // First check if HEAP_PTR - if so, check subtype; otherwise go to tensor path
+        builder->CreateCondBr(jac_loop_is_heap_ptr, jac_loop_check_subtype, jac_loop_tensor_out);
+
+        // Check subtype to distinguish Scheme vector (2) from tensor (3)
+        builder->SetInsertPoint(jac_loop_check_subtype);
+        // Header is at ptr - 8 bytes
+        Value* jac_loop_header_ptr = builder->CreateGEP(int8_type, jac_output_ptr,
+            ConstantInt::get(int64_type, -8));
+        // Subtype is first byte of header
+        Value* jac_loop_subtype = builder->CreateLoad(int8_type, jac_loop_header_ptr);
+        Value* jac_is_scheme_vec = builder->CreateICmpEQ(jac_loop_subtype,
+            ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
+        builder->CreateCondBr(jac_is_scheme_vec, jac_loop_svec_out, jac_loop_tensor_out);
 
         // SCHEME VECTOR OUTPUT: Extract element from Scheme vector
         builder->SetInsertPoint(jac_loop_svec_out);
@@ -20482,7 +21027,7 @@ private:
 
         // Return the 2D Jacobian tensor directly
         Value* jac_result_int = builder->CreatePtrToInt(typed_jac_ptr, int64_type);
-        Value* jac_result = packPtrToTaggedValue(jac_result_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* jac_result = packPtrToTaggedValue(jac_result_int, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(jac_return_block);
 
         // Merge null and valid results
@@ -20564,7 +21109,7 @@ private:
         Value* current_row_list = builder->CreateLoad(int64_type, row_list);
         Value* row_list_tagged = (current_row_list == ConstantInt::get(int64_type, 0)) ?
             packNullToTaggedValue() :
-            packPtrToTaggedValue(builder->CreateIntToPtr(current_row_list, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+            packPtrToTaggedValue(builder->CreateIntToPtr(current_row_list, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
         
         // Cons element onto row list
         Value* new_row_cons = codegenTaggedArenaConsCellFromTaggedValue(elem_tagged, row_list_tagged);
@@ -20578,12 +21123,12 @@ private:
         Value* completed_row_list = builder->CreateLoad(int64_type, row_list);
         Value* completed_row_tagged = packPtrToTaggedValue(
             builder->CreateIntToPtr(completed_row_list, builder->getPtrTy()),
-            ESHKOL_VALUE_CONS_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
         
         Value* current_outer_list = builder->CreateLoad(int64_type, outer_list);
         Value* outer_list_tagged = (current_outer_list == ConstantInt::get(int64_type, 0)) ?
             packNullToTaggedValue() :
-            packPtrToTaggedValue(builder->CreateIntToPtr(current_outer_list, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+            packPtrToTaggedValue(builder->CreateIntToPtr(current_outer_list, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
         
         // Cons row onto outer list
         Value* new_outer_cons = codegenTaggedArenaConsCellFromTaggedValue(completed_row_tagged, outer_list_tagged);
@@ -20596,18 +21141,15 @@ private:
         // JACOBIAN FIX: Create 1D tensor containing row lists as elements
         // This displays as #((row1) (row2)) - tensor prefix with nested row structure
         
-        // Allocate result tensor (1D, m elements where each is a row list pointer)
-        Value* result_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* result_tensor_ptr = builder->CreateCall(malloc_func, {result_tensor_size});
-        Value* typed_result_tensor = builder->CreatePointerCast(result_tensor_ptr, builder->getPtrTy());
-        
+        // Allocate result tensor via arena (OALR compliant - no malloc)
+        Value* typed_result_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
         // Set dimensions: [m] (1D vector of m rows)
         Value* result_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* result_dims_ptr = builder->CreateCall(malloc_func, {result_dims_size});
+        Value* result_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, result_dims_size});
         Value* typed_result_dims = builder->CreatePointerCast(result_dims_ptr, builder->getPtrTy());
         builder->CreateStore(m, typed_result_dims);
-        
+
         // Set tensor fields
         builder->CreateStore(typed_result_dims,
             builder->CreateStructGEP(tensor_type, typed_result_tensor, 0)); // dimensions
@@ -20615,11 +21157,11 @@ private:
             builder->CreateStructGEP(tensor_type, typed_result_tensor, 1)); // num_dimensions = 1
         builder->CreateStore(m,
             builder->CreateStructGEP(tensor_type, typed_result_tensor, 3)); // total_elements = m
-        
+
         // Allocate elements array (m pointers to row lists)
         Value* result_elems_size = builder->CreateMul(m,
             ConstantInt::get(int64_type, sizeof(uint64_t)));
-        Value* result_elems_ptr = builder->CreateCall(malloc_func, {result_elems_size});
+        Value* result_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, result_elems_size});
         Value* typed_result_elems = builder->CreatePointerCast(result_elems_ptr, builder->getPtrTy());
         
         builder->CreateStore(typed_result_elems,
@@ -20671,7 +21213,7 @@ private:
         
         // Return tensor of row lists as TENSOR_PTR
         Value* jac_result_int = builder->CreatePtrToInt(typed_result_tensor, int64_type);
-        Value* jac_result = packPtrToTaggedValue(jac_result_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* jac_result = packPtrToTaggedValue(jac_result_int, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(jac_return_block);
         
         // Merge null and valid results
@@ -20711,11 +21253,8 @@ private:
             return nullptr;
         }
 
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc not found");
-            return nullptr;
-        }
+        // Get arena for OALR-compliant tensor allocation
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
         // CRITICAL FIX: Handle Scheme VECTOR_PTR - convert to tensor format
         // Get current function for basic blocks
@@ -20727,15 +21266,32 @@ private:
         Value* input_type = getTaggedValueType(vector_val);
         Value* input_base_type = getBaseType(input_type);
 
-        // Check if input is Scheme VECTOR_PTR (needs conversion to tensor format)
-        Value* is_scheme_vector = builder->CreateICmpEQ(input_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+        // M1 CONSOLIDATION: Check for both HEAP_PTR (consolidated) and legacy VECTOR_PTR
+        Value* hess_is_heap_ptr = builder->CreateICmpEQ(input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* hess_is_legacy_vector = builder->CreateICmpEQ(input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
+        BasicBlock* hess_heap_dispatch = BasicBlock::Create(*context, "hess_heap_dispatch", current_func);
+        BasicBlock* hess_check_legacy = BasicBlock::Create(*context, "hess_check_legacy", current_func);
         BasicBlock* hess_scheme_vector_input = BasicBlock::Create(*context, "hess_scheme_vector", current_func);
         BasicBlock* hess_tensor_input = BasicBlock::Create(*context, "hess_tensor_input", current_func);
         BasicBlock* hess_merge_input = BasicBlock::Create(*context, "hess_merge_input", current_func);
 
-        builder->CreateCondBr(is_scheme_vector, hess_scheme_vector_input, hess_tensor_input);
+        // First check for HEAP_PTR (consolidated format)
+        builder->CreateCondBr(hess_is_heap_ptr, hess_heap_dispatch, hess_check_legacy);
+
+        // HEAP_PTR dispatch - read subtype from header
+        builder->SetInsertPoint(hess_heap_dispatch);
+        Value* hess_heap_ptr_val = unpackPtrFromTaggedValue(vector_val);
+        Value* hess_header_ptr = builder->CreateGEP(int8_type, hess_heap_ptr_val, ConstantInt::get(int64_type, -8));
+        Value* hess_subtype = builder->CreateLoad(int8_type, hess_header_ptr);
+        Value* hess_is_vec_subtype = builder->CreateICmpEQ(hess_subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
+        builder->CreateCondBr(hess_is_vec_subtype, hess_scheme_vector_input, hess_tensor_input);
+
+        // Legacy VECTOR_PTR fallback
+        builder->SetInsertPoint(hess_check_legacy);
+        builder->CreateCondBr(hess_is_legacy_vector, hess_scheme_vector_input, hess_tensor_input);
 
         // SCHEME VECTOR: Convert to tensor format
         builder->SetInsertPoint(hess_scheme_vector_input);
@@ -20745,15 +21301,12 @@ private:
         Value* hess_scheme_len_ptr = builder->CreateBitCast(hess_scheme_vec_ptr, PointerType::getUnqual(*context));
         Value* hess_scheme_len = builder->CreateLoad(int64_type, hess_scheme_len_ptr);
 
-        // Allocate tensor
-        Value* hess_scheme_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* hess_scheme_tensor_ptr = builder->CreateCall(malloc_func, {hess_scheme_tensor_size});
-        Value* hess_typed_scheme_tensor = builder->CreatePointerCast(hess_scheme_tensor_ptr, builder->getPtrTy());
+        // Allocate tensor via arena (OALR compliant - no malloc)
+        Value* hess_typed_scheme_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
 
         // Set dimensions
         Value* hess_scheme_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* hess_scheme_dims_ptr = builder->CreateCall(malloc_func, {hess_scheme_dims_size});
+        Value* hess_scheme_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, hess_scheme_dims_size});
         Value* hess_typed_scheme_dims = builder->CreatePointerCast(hess_scheme_dims_ptr, builder->getPtrTy());
         builder->CreateStore(hess_scheme_len, hess_typed_scheme_dims);
 
@@ -20765,7 +21318,7 @@ private:
         // Allocate and copy elements
         Value* hess_scheme_elems_size = builder->CreateMul(hess_scheme_len,
             ConstantInt::get(int64_type, sizeof(int64_t)));
-        Value* hess_scheme_elems_ptr = builder->CreateCall(malloc_func, {hess_scheme_elems_size});
+        Value* hess_scheme_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, hess_scheme_elems_size});
         Value* hess_typed_scheme_elems = builder->CreatePointerCast(hess_scheme_elems_ptr, builder->getPtrTy());
         builder->CreateStore(hess_typed_scheme_elems, builder->CreateStructGEP(tensor_type, hess_typed_scheme_tensor, 2));
 
@@ -20800,7 +21353,7 @@ private:
 
         builder->SetInsertPoint(hess_svec_copy_done);
         Value* hess_scheme_tensor_int = builder->CreatePtrToInt(hess_typed_scheme_tensor, int64_type);
-        Value* hess_scheme_vector_tagged = packPtrToTaggedValue(hess_scheme_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* hess_scheme_vector_tagged = packPtrToTaggedValue(hess_scheme_tensor_int, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(hess_merge_input);
         BasicBlock* hess_scheme_exit = builder->GetInsertBlock();
 
@@ -20835,54 +21388,51 @@ private:
             ConstantInt::get(int64_type, 0));
         Value* n = builder->CreateLoad(int64_type, n_ptr);
 
-        // Allocate n×n Hessian matrix
-        Value* hess_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* hess_ptr = builder->CreateCall(malloc_func, {hess_tensor_size});
-        Value* typed_hess_ptr = builder->CreatePointerCast(hess_ptr, builder->getPtrTy());
-        
+        // Allocate n×n Hessian matrix via arena (OALR compliant - no malloc)
+        Value* typed_hess_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
         // Set dimensions [n, n]
         Value* hess_dims_size = builder->CreateMul(
             ConstantInt::get(int64_type, 2),
             ConstantInt::get(int64_type, sizeof(uint64_t)));
-        Value* hess_dims_ptr = builder->CreateCall(malloc_func, {hess_dims_size});
+        Value* hess_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, hess_dims_size});
         Value* typed_hess_dims = builder->CreatePointerCast(hess_dims_ptr, builder->getPtrTy());
-        
+
         builder->CreateStore(n, typed_hess_dims);
         Value* hess_dim1_slot = builder->CreateGEP(int64_type, typed_hess_dims,
             ConstantInt::get(int64_type, 1));
         builder->CreateStore(n, hess_dim1_slot);
-        
+
         Value* hess_dims_field = builder->CreateStructGEP(tensor_type, typed_hess_ptr, 0);
         builder->CreateStore(typed_hess_dims, hess_dims_field);
-        
+
         Value* hess_num_dims_field = builder->CreateStructGEP(tensor_type, typed_hess_ptr, 1);
         builder->CreateStore(ConstantInt::get(int64_type, 2), hess_num_dims_field);
-        
+
         Value* total_hess_elems = builder->CreateMul(n, n);
         Value* hess_total_field = builder->CreateStructGEP(tensor_type, typed_hess_ptr, 3);
         builder->CreateStore(total_hess_elems, hess_total_field);
-        
+
         // Allocate elements array
         Value* hess_elems_size = builder->CreateMul(total_hess_elems,
             ConstantInt::get(int64_type, sizeof(double)));
-        Value* hess_elems_ptr = builder->CreateCall(malloc_func, {hess_elems_size});
+        Value* hess_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, hess_elems_size});
         Value* typed_hess_elems = builder->CreatePointerCast(hess_elems_ptr, builder->getPtrTy());
-        
+
         Value* hess_elems_field = builder->CreateStructGEP(tensor_type, typed_hess_ptr, 2);
         builder->CreateStore(typed_hess_elems, hess_elems_field);
-        
+
         // Numerical differentiation epsilon
         Value* epsilon = ConstantFP::get(double_type, 1e-8);
-        
+
         // Compute gradient at original point first
         // Create gradient operation structure - but we can't easily do this
         // Instead, inline the gradient computation
-        
-        // Allocate array for base gradient
+
+        // Allocate array for base gradient via arena
         Value* base_grad_size = builder->CreateMul(n,
             ConstantInt::get(int64_type, sizeof(double)));
-        Value* base_grad_ptr = builder->CreateCall(malloc_func, {base_grad_size});
+        Value* base_grad_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, base_grad_size});
         Value* typed_base_grad = builder->CreatePointerCast(base_grad_ptr, builder->getPtrTy());
         
         // Compute base gradient (similar to codegenGradient but store in array)
@@ -20900,19 +21450,18 @@ private:
         builder->CreateCondBr(bg_i_less_n, base_grad_loop_body, base_grad_loop_exit);
         
         builder->SetInsertPoint(base_grad_loop_body);
-        
-        // Create tape and AD nodes
-        Value* arena_ptr = getArenaPtr();
+
+        // Create tape and AD nodes (arena_ptr defined at function start)
         Value* bg_tape = builder->CreateCall(getArenaAllocateTapeFunc(),
             {arena_ptr, ConstantInt::get(int64_type, 1024)});
         
         // CRITICAL: Set global tape pointer (runtime Value*, not compile-time member)
         builder->CreateStore(bg_tape, current_ad_tape);
         
-        // Create variable nodes
+        // Create variable nodes via arena (OALR compliant - no malloc)
         Value* bg_nodes_size = builder->CreateMul(n,
             ConstantInt::get(int64_type, sizeof(void*)));
-        Value* bg_nodes_ptr = builder->CreateCall(malloc_func, {bg_nodes_size});
+        Value* bg_nodes_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, bg_nodes_size});
         Value* typed_bg_nodes = builder->CreatePointerCast(bg_nodes_ptr, builder->getPtrTy());
         
         // Initialize nodes loop
@@ -20948,27 +21497,24 @@ private:
         
         builder->SetInsertPoint(bg_init_exit);
         
-        // Build and call function (similar to gradient)
-        Value* bg_ad_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* bg_ad_tensor_ptr = builder->CreateCall(malloc_func, {bg_ad_tensor_size});
-        Value* typed_bg_ad_tensor = builder->CreatePointerCast(bg_ad_tensor_ptr, builder->getPtrTy());
-        
+        // Build and call function via arena (OALR compliant - no malloc)
+        Value* typed_bg_ad_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
         Value* bg_ad_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* bg_ad_dims_ptr = builder->CreateCall(malloc_func, {bg_ad_dims_size});
+        Value* bg_ad_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, bg_ad_dims_size});
         Value* typed_bg_ad_dims = builder->CreatePointerCast(bg_ad_dims_ptr, builder->getPtrTy());
         builder->CreateStore(n, typed_bg_ad_dims);
-        
+
         builder->CreateStore(typed_bg_ad_dims,
             builder->CreateStructGEP(tensor_type, typed_bg_ad_tensor, 0));
         builder->CreateStore(ConstantInt::get(int64_type, 1),
             builder->CreateStructGEP(tensor_type, typed_bg_ad_tensor, 1));
         builder->CreateStore(n,
             builder->CreateStructGEP(tensor_type, typed_bg_ad_tensor, 3));
-        
+
         Value* bg_ad_elems_size = builder->CreateMul(n,
             ConstantInt::get(int64_type, sizeof(uint64_t)));
-        Value* bg_ad_elems_ptr = builder->CreateCall(malloc_func, {bg_ad_elems_size});
+        Value* bg_ad_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, bg_ad_elems_size});
         Value* typed_bg_ad_elems = builder->CreatePointerCast(bg_ad_elems_ptr, builder->getPtrTy());
         
         builder->CreateStore(typed_bg_ad_elems,
@@ -21006,7 +21552,7 @@ private:
         
         // Call function
         Value* bg_ad_tensor_int = builder->CreatePtrToInt(typed_bg_ad_tensor, int64_type);
-        Value* bg_ad_tensor_tagged = packPtrToTaggedValue(bg_ad_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* bg_ad_tensor_tagged = packPtrToTaggedValue(bg_ad_tensor_int, ESHKOL_VALUE_HEAP_PTR);
         
         // PHASE 1 FIX: Set AD mode flag to true before calling lambda
         builder->CreateStore(ConstantInt::get(int1_type, 1), ad_mode_active);
@@ -21071,10 +21617,10 @@ private:
         
         builder->SetInsertPoint(hess_col_body);
         
-        // Step 1: Create perturbed vector v_j = v + ε·e_j
+        // Step 1: Create perturbed vector v_j = v + ε·e_j via arena (OALR compliant - no malloc)
         Value* perturbed_vec_size = builder->CreateMul(n,
             ConstantInt::get(int64_type, sizeof(double)));
-        Value* perturbed_vec_ptr = builder->CreateCall(malloc_func, {perturbed_vec_size});
+        Value* perturbed_vec_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, perturbed_vec_size});
         Value* typed_perturbed_vec = builder->CreatePointerCast(perturbed_vec_ptr, builder->getPtrTy());
         
         // Copy input vector and perturb j-th component
@@ -21119,10 +21665,10 @@ private:
         Value* pert_tape = builder->CreateCall(getArenaAllocateTapeFunc(),
             {hess_arena_ptr, ConstantInt::get(int64_type, 1024)});
         
-        // Create AD variable nodes from perturbed vector
+        // Create AD variable nodes from perturbed vector via arena (OALR compliant - no malloc)
         Value* pert_nodes_size = builder->CreateMul(n,
             ConstantInt::get(int64_type, sizeof(void*)));
-        Value* pert_nodes_ptr = builder->CreateCall(malloc_func, {pert_nodes_size});
+        Value* pert_nodes_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, pert_nodes_size});
         Value* typed_pert_nodes = builder->CreatePointerCast(pert_nodes_ptr, builder->getPtrTy());
         
         // Initialize perturbed variable nodes
@@ -21154,29 +21700,26 @@ private:
         
         builder->SetInsertPoint(pert_init_exit);
         
-        // Build AD tensor from perturbed nodes
-        Value* pert_ad_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* pert_ad_tensor_ptr = builder->CreateCall(malloc_func, {pert_ad_tensor_size});
-        Value* typed_pert_ad_tensor = builder->CreatePointerCast(pert_ad_tensor_ptr, builder->getPtrTy());
-        
+        // Build AD tensor from perturbed nodes via arena (OALR compliant - no malloc)
+        Value* typed_pert_ad_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
         // Set tensor dimensions
         Value* pert_ad_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* pert_ad_dims_ptr = builder->CreateCall(malloc_func, {pert_ad_dims_size});
+        Value* pert_ad_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, pert_ad_dims_size});
         Value* typed_pert_ad_dims = builder->CreatePointerCast(pert_ad_dims_ptr, builder->getPtrTy());
         builder->CreateStore(n, typed_pert_ad_dims);
-        
+
         builder->CreateStore(typed_pert_ad_dims,
             builder->CreateStructGEP(tensor_type, typed_pert_ad_tensor, 0));
         builder->CreateStore(ConstantInt::get(int64_type, 1),
             builder->CreateStructGEP(tensor_type, typed_pert_ad_tensor, 1));
         builder->CreateStore(n,
             builder->CreateStructGEP(tensor_type, typed_pert_ad_tensor, 3));
-        
+
         // Allocate and fill AD tensor elements
         Value* pert_ad_elems_size = builder->CreateMul(n,
             ConstantInt::get(int64_type, sizeof(uint64_t)));
-        Value* pert_ad_elems_ptr = builder->CreateCall(malloc_func, {pert_ad_elems_size});
+        Value* pert_ad_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, pert_ad_elems_size});
         Value* typed_pert_ad_elems = builder->CreatePointerCast(pert_ad_elems_ptr, builder->getPtrTy());
         
         builder->CreateStore(typed_pert_ad_elems,
@@ -21213,7 +21756,7 @@ private:
         
         // Call function with perturbed AD tensor
         Value* pert_ad_tensor_int = builder->CreatePtrToInt(typed_pert_ad_tensor, int64_type);
-        Value* pert_ad_tensor_tagged = packPtrToTaggedValue(pert_ad_tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* pert_ad_tensor_tagged = packPtrToTaggedValue(pert_ad_tensor_int, ESHKOL_VALUE_HEAP_PTR);
         
         // Set AD mode and tape
         builder->CreateStore(ConstantInt::get(int1_type, 1), ad_mode_active);
@@ -21235,10 +21778,10 @@ private:
         // Run backward pass
         codegenBackward(pert_output_node, pert_tape);
         
-        // Allocate array for perturbed gradient
+        // Allocate array for perturbed gradient via arena (OALR compliant - no malloc)
         Value* pert_grad_size = builder->CreateMul(n,
             ConstantInt::get(int64_type, sizeof(double)));
-        Value* pert_grad_ptr = builder->CreateCall(malloc_func, {pert_grad_size});
+        Value* pert_grad_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, pert_grad_size});
         Value* typed_pert_grad = builder->CreatePointerCast(pert_grad_ptr, builder->getPtrTy());
         
         // Extract perturbed gradient into array
@@ -21325,32 +21868,26 @@ private:
         eshkol_info("Hessian computation complete");
         // Tag as TENSOR_PTR for proper display handling
         Value* hess_result_int = builder->CreatePtrToInt(typed_hess_ptr, int64_type);
-        return packPtrToTaggedValue(hess_result_int, ESHKOL_VALUE_TENSOR_PTR);
+        return packPtrToTaggedValue(hess_result_int, ESHKOL_VALUE_HEAP_PTR);
     }
     // ===== N-DIMENSIONAL NULL VECTOR HELPER =====
     // Create n-dimensional null vector (all zeros) for error handling
     // Handles ANY dimension at runtime - NEVER hardcode dimensions!
     Value* createNullVectorTensor(Value* dimension) {
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc not found for null vector creation");
-            return ConstantInt::get(int64_type, 0);
-        }
-        
         Function* current_func = builder->GetInsertBlock()->getParent();
-        
-        // Allocate tensor structure
-        Value* tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* tensor_ptr = builder->CreateCall(malloc_func, {tensor_size});
-        Value* typed_tensor_ptr = builder->CreatePointerCast(tensor_ptr, builder->getPtrTy());
-        
+
+        // Get arena for OALR-compliant allocation
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+        // Allocate tensor structure via arena (OALR compliant - no malloc)
+        Value* typed_tensor_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
         // Allocate dimensions array (1D vector of given dimension)
         Value* dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* dims_ptr = builder->CreateCall(malloc_func, {dims_size});
+        Value* dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, dims_size});
         Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
         builder->CreateStore(dimension, typed_dims_ptr);  // Runtime dimension!
-        
+
         // Store tensor metadata
         builder->CreateStore(typed_dims_ptr,
             builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 0));  // dimensions
@@ -21358,11 +21895,11 @@ private:
             builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 1));  // num_dimensions = 1
         builder->CreateStore(dimension,
             builder->CreateStructGEP(tensor_type, typed_tensor_ptr, 3));  // total_elements = dimension
-        
+
         // Allocate elements array (dimension * sizeof(double))
         Value* elems_size = builder->CreateMul(dimension,
             ConstantInt::get(int64_type, sizeof(double)));
-        Value* elems_ptr = builder->CreateCall(malloc_func, {elems_size});
+        Value* elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, elems_size});
         Value* typed_elems_ptr = builder->CreatePointerCast(elems_ptr, builder->getPtrTy());
         
         // Zero all elements using RUNTIME LOOP (n-dimensional!)
@@ -21484,9 +22021,9 @@ private:
         Value* jacobian_base_type = getBaseType(jacobian_type);
 
         Value* jac_is_tensor_ptr = builder->CreateICmpEQ(jacobian_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* jac_is_ad_tensor = builder->CreateICmpEQ(jacobian_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* jac_is_valid = builder->CreateOr(jac_is_tensor_ptr, jac_is_ad_tensor);
         
         Function* div_current_func = builder->GetInsertBlock()->getParent();
@@ -21587,19 +22124,38 @@ private:
             eshkol_error("Failed to evaluate curl point");
             return nullptr;
         }
-        
-        // CRITICAL FIX: Handle both tensor and Scheme vector inputs
+
+        // Get arena for OALR-compliant tensor allocation
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+        // M1 CONSOLIDATION: Handle HEAP_PTR (with subtype dispatch), legacy VECTOR_PTR, and tensor
         Value* curl_input_type = getTaggedValueType(vector_val);
         Value* curl_input_base_type = getBaseType(curl_input_type);
-        Value* curl_is_scheme_vector = builder->CreateICmpEQ(curl_input_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+        Value* curl_is_heap_ptr = builder->CreateICmpEQ(curl_input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* curl_is_legacy_vec = builder->CreateICmpEQ(curl_input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
         Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* curl_heap_dispatch = BasicBlock::Create(*context, "curl_heap_dispatch", current_func);
+        BasicBlock* curl_check_legacy = BasicBlock::Create(*context, "curl_check_legacy", current_func);
         BasicBlock* curl_scheme_input = BasicBlock::Create(*context, "curl_scheme_input", current_func);
         BasicBlock* curl_tensor_input = BasicBlock::Create(*context, "curl_tensor_input", current_func);
         BasicBlock* curl_merge_n = BasicBlock::Create(*context, "curl_merge_n", current_func);
 
-        builder->CreateCondBr(curl_is_scheme_vector, curl_scheme_input, curl_tensor_input);
+        builder->CreateCondBr(curl_is_heap_ptr, curl_heap_dispatch, curl_check_legacy);
+
+        // HEAP_PTR dispatch - read subtype from header
+        builder->SetInsertPoint(curl_heap_dispatch);
+        Value* curl_heap_ptr_val = unpackPtrFromTaggedValue(vector_val);
+        Value* curl_header_ptr = builder->CreateGEP(int8_type, curl_heap_ptr_val, ConstantInt::get(int64_type, -8));
+        Value* curl_subtype = builder->CreateLoad(int8_type, curl_header_ptr);
+        Value* curl_is_vec_subtype = builder->CreateICmpEQ(curl_subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
+        builder->CreateCondBr(curl_is_vec_subtype, curl_scheme_input, curl_tensor_input);
+
+        // Legacy VECTOR_PTR fallback
+        builder->SetInsertPoint(curl_check_legacy);
+        builder->CreateCondBr(curl_is_legacy_vec, curl_scheme_input, curl_tensor_input);
 
         // SCHEME VECTOR: Extract dimension from vector length
         builder->SetInsertPoint(curl_scheme_input);
@@ -21643,7 +22199,7 @@ private:
         builder->SetInsertPoint(dim_invalid);
         eshkol_debug("Curl: dimension < 2, differential forms require at least 2D");
         Value* null_result_int = createNullVectorTensor(n);  // Use actual dimension, not hardcoded 3
-        Value* null_result = packPtrToTaggedValue(null_result_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* null_result = packPtrToTaggedValue(null_result_int, ESHKOL_VALUE_HEAP_PTR);
         BasicBlock* dim_invalid_exit = builder->GetInsertBlock();
         builder->CreateBr(curl_done);
         
@@ -21668,9 +22224,9 @@ private:
         Value* jacobian_base_type = getBaseType(jacobian_type);
 
         Value* jac_is_tensor_ptr = builder->CreateICmpEQ(jacobian_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* jac_is_ad_tensor = builder->CreateICmpEQ(jacobian_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* jac_is_valid = builder->CreateOr(jac_is_tensor_ptr, jac_is_ad_tensor);
         
         BasicBlock* jac_valid = BasicBlock::Create(*context, "curl_jac_valid", current_func);
@@ -21686,7 +22242,7 @@ private:
             ConstantInt::get(int64_type, 3)
         );
         // Tag as TENSOR_PTR for proper display
-        Value* null_curl = packPtrToTaggedValue(null_curl_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* null_curl = packPtrToTaggedValue(null_curl_int, ESHKOL_VALUE_HEAP_PTR);
         BasicBlock* jac_invalid_exit = builder->GetInsertBlock(); // Capture actual exit block!
         builder->CreateBr(curl_done);
         
@@ -21742,30 +22298,27 @@ private:
             return nullptr;
         }
         
-        // Allocate result tensor (3D vector)
-        Value* result_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* result_ptr = builder->CreateCall(malloc_func, {result_tensor_size});
-        Value* typed_result_ptr = builder->CreatePointerCast(result_ptr, builder->getPtrTy());
-        
+        // Allocate result tensor via arena (OALR compliant - no malloc)
+        Value* typed_result_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+
         // Set dimensions [3]
         Value* result_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* result_dims_ptr = builder->CreateCall(malloc_func, {result_dims_size});
+        Value* result_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, result_dims_size});
         Value* typed_result_dims = builder->CreatePointerCast(result_dims_ptr, builder->getPtrTy());
         builder->CreateStore(ConstantInt::get(int64_type, 3), typed_result_dims);
-        
+
         Value* result_dims_field = builder->CreateStructGEP(tensor_type, typed_result_ptr, 0);
         builder->CreateStore(typed_result_dims, result_dims_field);
-        
+
         Value* result_num_dims_field = builder->CreateStructGEP(tensor_type, typed_result_ptr, 1);
         builder->CreateStore(ConstantInt::get(int64_type, 1), result_num_dims_field);
-        
+
         Value* result_total_field = builder->CreateStructGEP(tensor_type, typed_result_ptr, 3);
         builder->CreateStore(ConstantInt::get(int64_type, 3), result_total_field);
-        
+
         // Allocate and fill elements [curl_x, curl_y, curl_z]
         Value* result_elems_size = ConstantInt::get(int64_type, 3 * sizeof(double));
-        Value* result_elems_ptr = builder->CreateCall(malloc_func, {result_elems_size});
+        Value* result_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, result_elems_size});
         Value* typed_result_elems = builder->CreatePointerCast(result_elems_ptr, builder->getPtrTy());
         
         Value* result_elems_field = builder->CreateStructGEP(tensor_type, typed_result_ptr, 2);
@@ -21787,7 +22340,7 @@ private:
         eshkol_info("Curl computation complete, returning 3D vector");
         Value* curl_result_int = builder->CreatePtrToInt(typed_result_ptr, int64_type);
         // Tag as TENSOR_PTR for proper display and type consistency
-        Value* curl_result = packPtrToTaggedValue(curl_result_int, ESHKOL_VALUE_TENSOR_PTR);
+        Value* curl_result = packPtrToTaggedValue(curl_result_int, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(curl_done);
         BasicBlock* dim_valid_exit = builder->GetInsertBlock(); // Capture actual predecessor!
         
@@ -21832,9 +22385,9 @@ private:
         Value* hessian_base_type = getBaseType(hessian_type);
 
         Value* hess_is_tensor_ptr = builder->CreateICmpEQ(hessian_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* hess_is_ad_tensor = builder->CreateICmpEQ(hessian_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_AD_NODE_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* hess_is_valid = builder->CreateOr(hess_is_tensor_ptr, hess_is_ad_tensor);
         
         Function* lap_current_func = builder->GetInsertBlock()->getParent();
@@ -21957,26 +22510,39 @@ private:
             return nullptr;
         }
 
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc not found for directional derivative");
-            return nullptr;
-        }
+        // Get arena for OALR-compliant tensor allocation
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-        // CRITICAL FIX: Handle Scheme VECTOR_PTR - convert to tensor format
+        // M1 CONSOLIDATION: Handle HEAP_PTR (with subtype dispatch), legacy VECTOR_PTR, and tensor
         Function* current_func = builder->GetInsertBlock()->getParent();
 
         Value* dir_type = getTaggedValueType(direction_val);
         Value* dir_base_type = getBaseType(dir_type);
 
-        Value* dir_is_scheme_vector = builder->CreateICmpEQ(dir_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+        Value* dd_is_heap_ptr = builder->CreateICmpEQ(dir_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* dd_is_legacy_vec = builder->CreateICmpEQ(dir_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
+        BasicBlock* dd_heap_dispatch = BasicBlock::Create(*context, "dd_heap_dispatch", current_func);
+        BasicBlock* dd_check_legacy = BasicBlock::Create(*context, "dd_check_legacy", current_func);
         BasicBlock* dd_scheme_vector = BasicBlock::Create(*context, "dd_scheme_vector", current_func);
         BasicBlock* dd_tensor_input = BasicBlock::Create(*context, "dd_tensor_input", current_func);
         BasicBlock* dd_merge_input = BasicBlock::Create(*context, "dd_merge_input", current_func);
 
-        builder->CreateCondBr(dir_is_scheme_vector, dd_scheme_vector, dd_tensor_input);
+        builder->CreateCondBr(dd_is_heap_ptr, dd_heap_dispatch, dd_check_legacy);
+
+        // HEAP_PTR dispatch - read subtype from header
+        builder->SetInsertPoint(dd_heap_dispatch);
+        Value* dd_heap_ptr_val = unpackPtrFromTaggedValue(direction_val);
+        Value* dd_header_ptr = builder->CreateGEP(int8_type, dd_heap_ptr_val, ConstantInt::get(int64_type, -8));
+        Value* dd_subtype = builder->CreateLoad(int8_type, dd_header_ptr);
+        Value* dd_is_vec_subtype = builder->CreateICmpEQ(dd_subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
+        builder->CreateCondBr(dd_is_vec_subtype, dd_scheme_vector, dd_tensor_input);
+
+        // Legacy VECTOR_PTR fallback
+        builder->SetInsertPoint(dd_check_legacy);
+        builder->CreateCondBr(dd_is_legacy_vec, dd_scheme_vector, dd_tensor_input);
 
         // SCHEME VECTOR: Convert to tensor format
         builder->SetInsertPoint(dd_scheme_vector);
@@ -21987,14 +22553,12 @@ private:
         Value* dd_scheme_len = builder->CreateLoad(int64_type, dd_scheme_len_ptr);
 
         // Allocate tensor
-        Value* dd_scheme_tensor_size = ConstantInt::get(int64_type,
-            module->getDataLayout().getTypeAllocSize(tensor_type));
-        Value* dd_scheme_tensor_ptr = builder->CreateCall(malloc_func, {dd_scheme_tensor_size});
-        Value* dd_typed_scheme_tensor = builder->CreatePointerCast(dd_scheme_tensor_ptr, builder->getPtrTy());
+        // Allocate tensor via arena (OALR compliant - no malloc)
+        Value* dd_typed_scheme_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
 
         // Set dimensions
         Value* dd_scheme_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* dd_scheme_dims_ptr = builder->CreateCall(malloc_func, {dd_scheme_dims_size});
+        Value* dd_scheme_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, dd_scheme_dims_size});
         Value* dd_typed_scheme_dims = builder->CreatePointerCast(dd_scheme_dims_ptr, builder->getPtrTy());
         builder->CreateStore(dd_scheme_len, dd_typed_scheme_dims);
 
@@ -22006,7 +22570,7 @@ private:
         // Allocate and copy elements
         Value* dd_scheme_elems_size = builder->CreateMul(dd_scheme_len,
             ConstantInt::get(int64_type, sizeof(double)));
-        Value* dd_scheme_elems_ptr = builder->CreateCall(malloc_func, {dd_scheme_elems_size});
+        Value* dd_scheme_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, dd_scheme_elems_size});
         Value* dd_typed_scheme_elems = builder->CreatePointerCast(dd_scheme_elems_ptr, builder->getPtrTy());
         builder->CreateStore(dd_typed_scheme_elems, builder->CreateStructGEP(tensor_type, dd_typed_scheme_tensor, 2));
 
@@ -22669,17 +23233,11 @@ private:
         // Check if it's actually a vector (1D tensor)
         Value* is_vector = builder->CreateICmpEQ(num_dims, ConstantInt::get(int64_type, 1));
         
-        // For simplicity, allocate a fixed-size buffer for the string
-        // In a full implementation, this would calculate the needed size
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc function not found");
-            return nullptr;
-        }
-        
+        // M1 CONSOLIDATION: Use arena allocation for temporary string buffers (OALR compliant)
         // Allocate buffer for result string (assuming max 1024 chars)
         Value* buffer_size = ConstantInt::get(int64_type, 1024);
-        Value* string_buffer = builder->CreateCall(malloc_func, {buffer_size});
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* string_buffer = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, buffer_size});
         Value* typed_string_buffer = builder->CreatePointerCast(string_buffer, builder->getPtrTy());
         
         // Start with opening bracket "["
@@ -22760,9 +23318,10 @@ private:
         // Add the number
         builder->SetInsertPoint(add_number);
 
-        // Create a small buffer for the number string
+        // M1 CONSOLIDATION: Use arena allocation for temporary number buffer (OALR compliant)
         Value* num_buffer_size = ConstantInt::get(int64_type, 32);
-        Value* num_buffer = builder->CreateCall(malloc_func, {num_buffer_size});
+        Value* num_arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* num_buffer = builder->CreateCall(mem->getArenaAllocate(), {num_arena_ptr, num_buffer_size});
         Value* typed_num_buffer = builder->CreatePointerCast(num_buffer, builder->getPtrTy());
 
         // Tensor elements are stored as i64 bits of doubles - bitcast to double for formatting
@@ -22840,15 +23399,10 @@ private:
                                             ConstantInt::get(int64_type, 1));
         Value* cols = builder->CreateLoad(int64_type, cols_ptr);
         
-        // Allocate buffer for result string (assuming max 2048 chars)
-        Function* malloc_func = function_table["malloc"];
-        if (!malloc_func) {
-            eshkol_error("malloc function not found");
-            return nullptr;
-        }
-        
+        // M1 CONSOLIDATION: Use arena allocation for temporary string buffer (OALR compliant)
         Value* buffer_size = ConstantInt::get(int64_type, 2048);
-        Value* string_buffer = builder->CreateCall(malloc_func, {buffer_size});
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* string_buffer = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, buffer_size});
         Value* typed_string_buffer = builder->CreatePointerCast(string_buffer, builder->getPtrTy());
         
         // Get string functions - create declarations if they don't exist
@@ -22966,9 +23520,10 @@ private:
         Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr, linear_index);
         Value* current_elem = builder->CreateLoad(int64_type, elem_ptr);
         
-        // Format element as string
+        // M1 CONSOLIDATION: Use arena allocation for temporary number buffer (OALR compliant)
         Value* num_buffer_size = ConstantInt::get(int64_type, 32);
-        Value* num_buffer = builder->CreateCall(malloc_func, {num_buffer_size});
+        Value* num_arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* num_buffer = builder->CreateCall(mem->getArenaAllocate(), {num_arena_ptr, num_buffer_size});
         Value* typed_num_buffer = builder->CreatePointerCast(num_buffer, builder->getPtrTy());
 
         // Tensor elements are stored as i64 bits of doubles - bitcast to double for formatting
@@ -23034,15 +23589,31 @@ private:
             }
 
             // Only optimize simple patterns like cadr, caddr that access flat vectors
+            // With consolidated types, CONS/VECTOR/TENSOR all use HEAP_PTR - must check subtype in header
             if (ends_with_a && d_count > 0 && d_count == (int)pattern.length() - 1) {
                 Value* input_type = getTaggedValueType(current);
                 Value* input_base_type = getBaseType(input_type);
 
-                Value* is_scheme_vector = builder->CreateICmpEQ(input_base_type,
-                    ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
-                Value* is_tensor = builder->CreateICmpEQ(input_base_type,
-                    ConstantInt::get(int8_type, ESHKOL_VALUE_TENSOR_PTR));
-                Value* is_vector_type = builder->CreateOr(is_scheme_vector, is_tensor);
+                // First check if it's a HEAP_PTR type
+                Value* is_heap_ptr = builder->CreateICmpEQ(input_base_type,
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+
+                // If HEAP_PTR, read the subtype from the object header to distinguish cons/vector/tensor
+                Value* obj_ptr_int = unpackInt64FromTaggedValue(current);
+                Value* obj_ptr = builder->CreateIntToPtr(obj_ptr_int, builder->getPtrTy());
+                Value* header_ptr = builder->CreateGEP(int8_type, obj_ptr,
+                    ConstantInt::get(int64_type, -8));
+                Value* subtype = builder->CreateLoad(int8_type, header_ptr, "subtype");
+
+                // Check subtypes - HEAP_SUBTYPE_VECTOR=2, HEAP_SUBTYPE_TENSOR=3
+                Value* is_vector_subtype = builder->CreateICmpEQ(subtype,
+                    ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
+                Value* is_tensor_subtype = builder->CreateICmpEQ(subtype,
+                    ConstantInt::get(int8_type, HEAP_SUBTYPE_TENSOR));
+
+                // It's a vector/tensor type if HEAP_PTR AND (subtype==VECTOR OR subtype==TENSOR)
+                Value* is_vector_or_tensor = builder->CreateOr(is_vector_subtype, is_tensor_subtype);
+                Value* is_vector_type = builder->CreateAnd(is_heap_ptr, is_vector_or_tensor);
 
                 BasicBlock* vector_opt = BasicBlock::Create(*context, "compound_vector_opt", current_func);
                 BasicBlock* list_fallback = BasicBlock::Create(*context, "compound_list_fallback", current_func);
@@ -23057,7 +23628,7 @@ private:
                 BasicBlock* tensor_opt = BasicBlock::Create(*context, "compound_tensor", current_func);
                 BasicBlock* vector_merge = BasicBlock::Create(*context, "compound_vector_merge", current_func);
 
-                builder->CreateCondBr(is_scheme_vector, scheme_vec_opt, tensor_opt);
+                builder->CreateCondBr(is_vector_subtype, scheme_vec_opt, tensor_opt);
 
                 // Scheme vector: element at d_count
                 // Layout: [length (8 bytes)][elem0 (16 bytes)][elem1 (16 bytes)]...
@@ -23113,7 +23684,7 @@ private:
 
                 builder->SetInsertPoint(ad_node);
                 Value* ad_ptr = builder->CreateIntToPtr(elem_as_int64, PointerType::getUnqual(*context));
-                Value* ad_node_tagged = packPtrToTaggedValue(ad_ptr, ESHKOL_VALUE_AD_NODE_PTR);
+                Value* ad_node_tagged = packPtrToTaggedValue(ad_ptr, ESHKOL_VALUE_CALLABLE);
                 builder->CreateBr(tensor_merge);
                 BasicBlock* ad_node_exit = builder->GetInsertBlock();
 
@@ -23161,7 +23732,7 @@ private:
 
                     // Also check for CONS_PTR with null pointer (0)
                     Value* is_cons_type = builder->CreateICmpEQ(result_base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
                     Value* ptr_int = safeExtractInt64(list_result);
                     Value* is_null_ptr = builder->CreateICmpEQ(ptr_int,
                         ConstantInt::get(int64_type, 0));
@@ -23199,21 +23770,27 @@ private:
                     Value* is_double = builder->CreateICmpEQ(base_type,
                         ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
                     Value* is_cons_ptr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
                     Value* is_string_ptr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
                     Value* is_lambda_sexpr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_LAMBDA_SEXPR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
                     Value* is_closure_ptr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_CLOSURE_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
                     // BOOL FIX: Check for BOOL type
                     Value* is_bool = builder->CreateICmpEQ(base_type,
                         ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL));
                     // HASH_PTR FIX: Check for HASH_PTR, VECTOR_PTR types
                     Value* is_hash_ptr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_HASH_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
                     Value* is_vector_ptr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+                    // CALLABLE FIX: Check for consolidated CALLABLE type (closures, lambdas, AD nodes)
+                    Value* is_callable = builder->CreateICmpEQ(base_type,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+                    // HEAP_PTR FIX: Check for consolidated HEAP_PTR type
+                    Value* is_heap_ptr = builder->CreateICmpEQ(base_type,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
                     // Create all basic blocks for type dispatch
                     BasicBlock* field_null_block = BasicBlock::Create(*context,
@@ -23252,6 +23829,16 @@ private:
                         std::string("fb_") + c + "_check_vector", current_func);
                     BasicBlock* vector_block = BasicBlock::Create(*context,
                         std::string("fb_") + c + "_vector", current_func);
+                    // CALLABLE FIX: Add callable blocks
+                    BasicBlock* check_callable_block = BasicBlock::Create(*context,
+                        std::string("fb_") + c + "_check_callable", current_func);
+                    BasicBlock* callable_block = BasicBlock::Create(*context,
+                        std::string("fb_") + c + "_callable", current_func);
+                    // HEAP_PTR FIX: Add heap_ptr blocks
+                    BasicBlock* check_heap_ptr_block = BasicBlock::Create(*context,
+                        std::string("fb_") + c + "_check_heap_ptr", current_func);
+                    BasicBlock* heap_ptr_block = BasicBlock::Create(*context,
+                        std::string("fb_") + c + "_heap_ptr", current_func);
                     BasicBlock* int_block = BasicBlock::Create(*context,
                         std::string("fb_") + c + "_int", current_func);
                     BasicBlock* merge_block = BasicBlock::Create(*context,
@@ -23282,8 +23869,9 @@ private:
                     builder->SetInsertPoint(cons_block);
                     Value* cons_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                         {cons_ptr, is_car_op});
+                    // M1 Migration: Use consolidated HEAP_PTR
                     Value* tagged_cons = packPtrToTaggedValue(
-                        builder->CreateIntToPtr(cons_val, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+                        builder->CreateIntToPtr(cons_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                     builder->CreateBr(merge_block);
 
                     // String ptr path (symbols)
@@ -23294,7 +23882,7 @@ private:
                     Value* string_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                         {cons_ptr, is_car_op});
                     Value* tagged_string = packPtrToTaggedValue(
-                        builder->CreateIntToPtr(string_val, builder->getPtrTy()), ESHKOL_VALUE_STRING_PTR);
+                        builder->CreateIntToPtr(string_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                     builder->CreateBr(merge_block);
 
                     // Lambda sexpr path
@@ -23338,24 +23926,51 @@ private:
                     builder->SetInsertPoint(check_hash_block);
                     builder->CreateCondBr(is_hash_ptr, hash_block, check_vector_block);
 
-                    // HASH_PTR FIX: Extract hash_ptr
+                    // HASH_PTR FIX: Extract hash_ptr (repacks as HEAP_PTR)
                     builder->SetInsertPoint(hash_block);
                     Value* hash_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                         {cons_ptr, is_car_op});
+                    // Repack as HEAP_PTR (consolidated format) - subtype is in object header
                     Value* tagged_hash = packPtrToTaggedValue(
-                        builder->CreateIntToPtr(hash_val, builder->getPtrTy()), ESHKOL_VALUE_HASH_PTR);
+                        builder->CreateIntToPtr(hash_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
                     builder->CreateBr(merge_block);
 
                     // VECTOR_PTR FIX: Check if vector_ptr
                     builder->SetInsertPoint(check_vector_block);
-                    builder->CreateCondBr(is_vector_ptr, vector_block, int_block);
+                    builder->CreateCondBr(is_vector_ptr, vector_block, check_callable_block);
 
                     // VECTOR_PTR FIX: Extract vector_ptr
                     builder->SetInsertPoint(vector_block);
                     Value* vector_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                         {cons_ptr, is_car_op});
                     Value* tagged_vector = packPtrToTaggedValue(
-                        builder->CreateIntToPtr(vector_val, builder->getPtrTy()), ESHKOL_VALUE_VECTOR_PTR);
+                        builder->CreateIntToPtr(vector_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
+                    builder->CreateBr(merge_block);
+
+                    // CALLABLE FIX: Check if callable (closures, lambdas, AD nodes)
+                    builder->SetInsertPoint(check_callable_block);
+                    builder->CreateCondBr(is_callable, callable_block, check_heap_ptr_block);
+
+                    // CALLABLE FIX: Extract callable with proper type and flags
+                    builder->SetInsertPoint(callable_block);
+                    Value* callable_type_val = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
+                    Value* callable_flags_val = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
+                    Value* callable_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
+                    Value* tagged_callable = packPtrToTaggedValueWithFlags(
+                        builder->CreateIntToPtr(callable_ptr_val, builder->getPtrTy()), callable_type_val, callable_flags_val);
+                    builder->CreateBr(merge_block);
+
+                    // HEAP_PTR FIX: Check if heap_ptr (cons, string, vector, tensor, hash, etc.)
+                    builder->SetInsertPoint(check_heap_ptr_block);
+                    builder->CreateCondBr(is_heap_ptr, heap_ptr_block, int_block);
+
+                    // HEAP_PTR FIX: Extract heap_ptr with proper type and flags
+                    builder->SetInsertPoint(heap_ptr_block);
+                    Value* heap_type_val = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
+                    Value* heap_flags_val = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
+                    Value* heap_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
+                    Value* tagged_heap = packPtrToTaggedValueWithFlags(
+                        builder->CreateIntToPtr(heap_ptr_val, builder->getPtrTy()), heap_type_val, heap_flags_val);
                     builder->CreateBr(merge_block);
 
                     // Int path (fallback)
@@ -23366,7 +23981,7 @@ private:
                     builder->CreateBr(merge_block);
 
                     builder->SetInsertPoint(merge_block);
-                    PHINode* extract_phi = builder->CreatePHI(tagged_value_type, 11);  // HASH_PTR FIX: 11 incoming
+                    PHINode* extract_phi = builder->CreatePHI(tagged_value_type, 13);  // CALLABLE FIX: 13 incoming
                     extract_phi->addIncoming(field_null_tagged, field_null_block);
                     extract_phi->addIncoming(tagged_double, double_block);
                     extract_phi->addIncoming(tagged_cons, cons_block);
@@ -23376,6 +23991,8 @@ private:
                     extract_phi->addIncoming(tagged_bool, bool_block);  // BOOL FIX
                     extract_phi->addIncoming(tagged_hash, hash_block);  // HASH_PTR FIX
                     extract_phi->addIncoming(tagged_vector, vector_block);  // VECTOR_PTR FIX
+                    extract_phi->addIncoming(tagged_callable, callable_block);  // CALLABLE FIX
+                    extract_phi->addIncoming(tagged_heap, heap_ptr_block);  // HEAP_PTR FIX
                     extract_phi->addIncoming(tagged_int, int_block);
                     builder->CreateBr(continue_block);
 
@@ -23444,22 +24061,22 @@ private:
             Value* is_double = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
             Value* is_cons_ptr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
             // SYMBOL FIX: Check for STRING_PTR, LAMBDA_SEXPR, CLOSURE_PTR
             Value* is_string_ptr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_STRING_PTR));
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
             Value* is_lambda_sexpr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_LAMBDA_SEXPR));
+                ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
             Value* is_closure_ptr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_CLOSURE_PTR));
+                ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
             // BOOL FIX: Check for BOOL type
             Value* is_bool = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL));
             // HASH_PTR FIX: Check for HASH_PTR, VECTOR_PTR types
             Value* is_hash_ptr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_HASH_PTR));
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
             Value* is_vector_ptr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_VECTOR_PTR));
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
             BasicBlock* field_null_block = BasicBlock::Create(*context,
                 std::string("compound_") + c + "_field_null", current_func);
@@ -23528,7 +24145,7 @@ private:
             builder->SetInsertPoint(cons_block);
             Value* cons_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                 {cons_ptr, is_car_op});
-            Value* tagged_cons = packPtrToTaggedValue(builder->CreateIntToPtr(cons_val, builder->getPtrTy()), ESHKOL_VALUE_CONS_PTR);
+            Value* tagged_cons = packPtrToTaggedValue(builder->CreateIntToPtr(cons_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
             builder->CreateBr(merge_block);
 
             // SYMBOL FIX: Check if string_ptr
@@ -23539,7 +24156,7 @@ private:
             builder->SetInsertPoint(string_block);
             Value* string_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                 {cons_ptr, is_car_op});
-            Value* tagged_string = packPtrToTaggedValue(builder->CreateIntToPtr(string_val, builder->getPtrTy()), ESHKOL_VALUE_STRING_PTR);
+            Value* tagged_string = packPtrToTaggedValue(builder->CreateIntToPtr(string_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
             builder->CreateBr(merge_block);
 
             // Check if lambda_sexpr
@@ -23592,7 +24209,7 @@ private:
             Value* hash_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                 {cons_ptr, is_car_op});
             Value* tagged_hash = packPtrToTaggedValue(
-                builder->CreateIntToPtr(hash_val, builder->getPtrTy()), ESHKOL_VALUE_HASH_PTR);
+                builder->CreateIntToPtr(hash_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
             builder->CreateBr(merge_block);
 
             // VECTOR_PTR FIX: Check if vector_ptr
@@ -23604,7 +24221,7 @@ private:
             Value* vector_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
                 {cons_ptr, is_car_op});
             Value* tagged_vector = packPtrToTaggedValue(
-                builder->CreateIntToPtr(vector_val, builder->getPtrTy()), ESHKOL_VALUE_VECTOR_PTR);
+                builder->CreateIntToPtr(vector_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
             builder->CreateBr(merge_block);
 
             // Extract int64
@@ -23798,10 +24415,11 @@ private:
             ConstantInt::get(int64_type, 0));
 
         // Pack result correctly based on whether it's null or cons pointer
+        // M1 Migration: Use consolidated HEAP_PTR
         Value* null_tagged_result = packNullToTaggedValue();
         Value* ptr_tagged_result = packPtrToTaggedValue(
             builder->CreateIntToPtr(result_val, builder->getPtrTy()),
-            ESHKOL_VALUE_CONS_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
         Value* result_tagged = builder->CreateSelect(result_is_null,
             null_tagged_result, ptr_tagged_result);
 
@@ -23876,16 +24494,17 @@ private:
         Value* second_tagged = extractCarAsTaggedValue(pair_cdr);
 
         // Cons first onto firsts list
+        // M1 Migration: Use consolidated HEAP_PTR for TypedValue
         Value* firsts = builder->CreateLoad(int64_type, firsts_ptr);
         TypedValue first_tv = taggedValueToTypedValue(first_tagged);
-        TypedValue firsts_cdr = TypedValue(firsts, ESHKOL_VALUE_CONS_PTR);
+        TypedValue firsts_cdr = TypedValue(firsts, ESHKOL_VALUE_HEAP_PTR);
         Value* new_firsts = codegenTaggedArenaConsCell(first_tv, firsts_cdr);
         builder->CreateStore(new_firsts, firsts_ptr);
 
         // Cons second onto seconds list
         Value* seconds = builder->CreateLoad(int64_type, seconds_ptr);
         TypedValue second_tv = taggedValueToTypedValue(second_tagged);
-        TypedValue seconds_cdr = TypedValue(seconds, ESHKOL_VALUE_CONS_PTR);
+        TypedValue seconds_cdr = TypedValue(seconds, ESHKOL_VALUE_HEAP_PTR);
         Value* new_seconds = codegenTaggedArenaConsCell(second_tv, seconds_cdr);
         builder->CreateStore(new_seconds, seconds_ptr);
 
@@ -23905,11 +24524,12 @@ private:
         seconds_rev = codegenIterativeReverse(seconds_rev);
 
         // Create result pair: (firsts . (seconds . null))
+        // M1 Migration: Use consolidated HEAP_PTR
         TypedValue null_tv = TypedValue(ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
-        TypedValue seconds_tv = TypedValue(safeExtractInt64(seconds_rev), ESHKOL_VALUE_CONS_PTR);
+        TypedValue seconds_tv = TypedValue(safeExtractInt64(seconds_rev), ESHKOL_VALUE_HEAP_PTR);
         Value* inner = codegenTaggedArenaConsCell(seconds_tv, null_tv);
-        TypedValue firsts_tv = TypedValue(safeExtractInt64(firsts_rev), ESHKOL_VALUE_CONS_PTR);
-        TypedValue inner_tv = TypedValue(inner, ESHKOL_VALUE_CONS_PTR);
+        TypedValue firsts_tv = TypedValue(safeExtractInt64(firsts_rev), ESHKOL_VALUE_HEAP_PTR);
+        TypedValue inner_tv = TypedValue(inner, ESHKOL_VALUE_HEAP_PTR);
         Value* result = codegenTaggedArenaConsCell(firsts_tv, inner_tv);
 
         return result;
@@ -23978,7 +24598,7 @@ private:
         // Cons value onto result
         Value* result = builder->CreateLoad(int64_type, result_ptr);
         TypedValue val_tv = TypedValue(val, ESHKOL_VALUE_INT64);
-        TypedValue result_tv = TypedValue(result, result_ptr ? ESHKOL_VALUE_CONS_PTR : ESHKOL_VALUE_NULL);
+        TypedValue result_tv = TypedValue(result, result_ptr ? ESHKOL_VALUE_HEAP_PTR : ESHKOL_VALUE_NULL);
         Value* new_result = codegenTaggedArenaConsCell(val_tv, result_tv);
         builder->CreateStore(new_result, result_ptr);
 
@@ -24171,7 +24791,7 @@ private:
         // Check if cons cell
         builder->SetInsertPoint(is_cons_block);
         Value* is_cons = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         // If not cons and not null, it's not a proper list
         builder->CreateCondBr(is_cons, get_cdr_type_block, exit_false);
 
@@ -24193,7 +24813,7 @@ private:
 
         // If cdr type is CONS_PTR, continue checking
         Value* cdr_is_cons = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
         // If cdr is null, it's a proper list ending
         BasicBlock* cdr_check_cons = BasicBlock::Create(*context, "list_cdr_check_cons", func);
@@ -24208,7 +24828,7 @@ private:
         // Get cdr pointer and pack as tagged value for next iteration
         Value* cdr_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr_flag});
         Value* cdr_ptr = builder->CreateIntToPtr(cdr_ptr_val, builder->getPtrTy());
-        Value* cdr_tagged = packPtrToTaggedValue(cdr_ptr, ESHKOL_VALUE_CONS_PTR);
+        Value* cdr_tagged = packPtrToTaggedValue(cdr_ptr, ESHKOL_VALUE_HEAP_PTR);
         current->addIncoming(cdr_tagged, cdr_continue);
         builder->CreateBr(loop_header);
 
@@ -24241,18 +24861,55 @@ private:
         Value* val = codegenAST(&op->call_op.variables[0]);
         if (!val) return nullptr;
 
-        // Check if it's a procedure (either lambda s-expression or closure)
         Value* type_tag = getTaggedValueType(val);
         Value* base_type = getBaseType(type_tag);
 
-        // A procedure can be either LAMBDA_SEXPR or CLOSURE_PTR
-        Value* is_lambda = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_LAMBDA_SEXPR));
-        Value* is_closure = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CLOSURE_PTR));
-        Value* is_procedure = builder->CreateOr(is_lambda, is_closure);
+        // M1 CONSOLIDATION: Closures are now CALLABLE type with subtypes
+        // A procedure is CALLABLE with subtype CLOSURE, LAMBDA_SEXPR, or PRIMITIVE
+        // (AD_NODE is CALLABLE but not a "procedure" in Scheme sense)
+        Value* is_callable = builder->CreateICmpEQ(base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
 
-        return packBoolToTaggedValue(is_procedure);
+        // For CALLABLE, check subtype to ensure it's a procedure (not AD_NODE)
+        // But for procedure? we accept any callable except AD_NODE
+        // Subtypes: CLOSURE=0, LAMBDA_SEXPR=1, AD_NODE=2, PRIMITIVE=3, CONTINUATION=4
+        // Procedures: CLOSURE, LAMBDA_SEXPR, PRIMITIVE (NOT AD_NODE)
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* check_subtype = BasicBlock::Create(*context, "proc_check_subtype", current_func);
+        BasicBlock* is_proc_true = BasicBlock::Create(*context, "proc_true", current_func);
+        BasicBlock* is_proc_false = BasicBlock::Create(*context, "proc_false", current_func);
+        BasicBlock* proc_merge = BasicBlock::Create(*context, "proc_merge", current_func);
+
+        builder->CreateCondBr(is_callable, check_subtype, is_proc_false);
+
+        // Check subtype - read from header at ptr-8
+        builder->SetInsertPoint(check_subtype);
+        Value* ptr_val = unpackPtrFromTaggedValue(val);
+        Value* header_ptr = builder->CreateGEP(int8_type, ptr_val, ConstantInt::get(int64_type, -8));
+        Value* subtype = builder->CreateLoad(int8_type, header_ptr);
+
+        // AD_NODE=2 is NOT a procedure, everything else is
+        Value* is_ad_node = builder->CreateICmpEQ(subtype,
+            ConstantInt::get(int8_type, CALLABLE_SUBTYPE_AD_NODE));
+        Value* is_real_proc = builder->CreateNot(is_ad_node);
+        builder->CreateCondBr(is_real_proc, is_proc_true, is_proc_false);
+
+        // True branch
+        builder->SetInsertPoint(is_proc_true);
+        builder->CreateBr(proc_merge);
+
+        // False branch
+        builder->SetInsertPoint(is_proc_false);
+        builder->CreateBr(proc_merge);
+
+        // Merge and phi
+        builder->SetInsertPoint(proc_merge);
+        PHINode* result = builder->CreatePHI(Type::getInt1Ty(*context), 2, "is_procedure");
+        result->addIncoming(ConstantInt::getTrue(*context), is_proc_true);
+        result->addIncoming(ConstantInt::getFalse(*context), is_proc_false);
+
+        return packBoolToTaggedValue(result);
     }
 
     // codegenAppend removed - now in stdlib.esk (core/list/transform.esk)
@@ -24744,10 +25401,11 @@ private:
                 Value* cdr_val = &*args_it;
 
                 // Create cons cell with car and cdr
+                // M1 Migration: Use consolidated HEAP_PTR
                 Value* new_cons = codegenTaggedArenaConsCellFromTaggedValue(car_val, cdr_val);
                 Value* result = packPtrToTaggedValue(
                     builder->CreateIntToPtr(new_cons, builder->getPtrTy()),
-                    ESHKOL_VALUE_CONS_PTR);
+                    ESHKOL_VALUE_HEAP_PTR);
                 builder->CreateRet(result);
 
                 builder->restoreIP(old_point);
@@ -24800,7 +25458,7 @@ private:
                     Value* new_cons = codegenTaggedArenaConsCellFromTaggedValue(elem, result);
                     result = packPtrToTaggedValue(
                         builder->CreateIntToPtr(new_cons, builder->getPtrTy()),
-                        ESHKOL_VALUE_CONS_PTR
+                        ESHKOL_VALUE_HEAP_PTR
                     );
                 }
 
@@ -24919,7 +25577,7 @@ private:
         Value* new_pair = codegenTaggedArenaConsCell(key_typed, value_typed);
         
         // Cons the new pair onto the existing alist: ((key . value) . alist)
-        TypedValue pair_typed = TypedValue(new_pair, ESHKOL_VALUE_CONS_PTR, true);
+        TypedValue pair_typed = TypedValue(new_pair, ESHKOL_VALUE_HEAP_PTR, true);
         TypedValue alist_typed = detectValueType(alist);
         Value* new_alist = codegenTaggedArenaConsCell(pair_typed, alist_typed);
         
@@ -25032,8 +25690,9 @@ private:
         Value* true_tail_cons_ptr = builder->CreateIntToPtr(true_tail_val, builder->getPtrTy());
         
         // Use getTaggedConsSetPtrFunc() to set cdr
+        // M1 Migration: Use consolidated HEAP_PTR
         Value* is_cdr_set_true = ConstantInt::get(int1_type, 1);
-        Value* ptr_type_tag = ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR);
+        Value* ptr_type_tag = ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateCall(getTaggedConsSetPtrFunc(),
             {true_tail_cons_ptr, is_cdr_set_true, new_true_cons, ptr_type_tag});
         builder->CreateStore(new_true_cons, true_tail);
@@ -25086,9 +25745,9 @@ private:
         
         // Create result pair: (true_list . false_list) with type preservation
         TypedValue true_typed = TypedValue(final_true_list,
-            final_true_list == ConstantInt::get(int64_type, 0) ? ESHKOL_VALUE_NULL : ESHKOL_VALUE_CONS_PTR, true);
+            final_true_list == ConstantInt::get(int64_type, 0) ? ESHKOL_VALUE_NULL : ESHKOL_VALUE_HEAP_PTR, true);
         TypedValue false_typed = TypedValue(final_false_list,
-            final_false_list == ConstantInt::get(int64_type, 0) ? ESHKOL_VALUE_NULL : ESHKOL_VALUE_CONS_PTR, true);
+            final_false_list == ConstantInt::get(int64_type, 0) ? ESHKOL_VALUE_NULL : ESHKOL_VALUE_HEAP_PTR, true);
         Value* result_pair = codegenTaggedArenaConsCell(true_typed, false_typed);
         
         // CRITICAL FIX: No arena scope cleanup - cons cells must persist
@@ -25178,8 +25837,9 @@ private:
         Value* prefix_tail_cons_ptr = builder->CreateIntToPtr(prefix_tail_val, builder->getPtrTy());
         
         // Use getTaggedConsSetPtrFunc() to set cdr
+        // M1 Migration: Use consolidated HEAP_PTR
         Value* is_cdr_set = ConstantInt::get(int1_type, 1);
-        Value* ptr_type_tag = ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR);
+        Value* ptr_type_tag = ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateCall(getTaggedConsSetPtrFunc(),
             {prefix_tail_cons_ptr, is_cdr_set, new_prefix_cons, ptr_type_tag});
         builder->CreateStore(new_prefix_cons, prefix_tail);
@@ -25206,9 +25866,9 @@ private:
         
         // Create result pair: (prefix . suffix) with type preservation
         TypedValue prefix_typed = TypedValue(final_prefix,
-            final_prefix == ConstantInt::get(int64_type, 0) ? ESHKOL_VALUE_NULL : ESHKOL_VALUE_CONS_PTR, true);
+            final_prefix == ConstantInt::get(int64_type, 0) ? ESHKOL_VALUE_NULL : ESHKOL_VALUE_HEAP_PTR, true);
         TypedValue suffix_typed = TypedValue(final_suffix,
-            final_suffix == ConstantInt::get(int64_type, 0) ? ESHKOL_VALUE_NULL : ESHKOL_VALUE_CONS_PTR, true);
+            final_suffix == ConstantInt::get(int64_type, 0) ? ESHKOL_VALUE_NULL : ESHKOL_VALUE_HEAP_PTR, true);
         Value* result_pair = codegenTaggedArenaConsCell(prefix_typed, suffix_typed);
         
         // CRITICAL FIX: No arena scope cleanup - cons cells must persist
@@ -25347,8 +26007,9 @@ private:
         Value* tail_cons_ptr = builder->CreateIntToPtr(tail_val, builder->getPtrTy());
         
         // Use getTaggedConsSetPtrFunc() to set cdr
+        // M1 Migration: Use consolidated HEAP_PTR
         Value* is_cdr_set = ConstantInt::get(int1_type, 1);
-        Value* ptr_type_tag = ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR);
+        Value* ptr_type_tag = ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR);
         builder->CreateCall(getTaggedConsSetPtrFunc(),
             {tail_cons_ptr, is_cdr_set, new_result_cons, ptr_type_tag});
         builder->CreateStore(new_result_cons, result_tail);
@@ -25372,16 +26033,16 @@ private:
         // CRITICAL FIX: No arena scope cleanup - cons cells must persist
 
         // FIX: Pack result as proper tagged value
-        // Empty result returns NULL type, non-empty returns CONS_PTR type
+        // M1 Migration: Use consolidated HEAP_PTR
         Value* result_is_empty = builder->CreateICmpEQ(final_result, ConstantInt::get(int64_type, 0));
 
         // Create null tagged value
         Value* null_tagged = packNullToTaggedValue();
 
-        // Create CONS_PTR tagged value
+        // Create HEAP_PTR tagged value (consolidated format)
         Value* cons_tagged = packPtrToTaggedValue(
             builder->CreateIntToPtr(final_result, builder->getPtrTy()),
-            ESHKOL_VALUE_CONS_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
 
         // Select appropriate tagged value
         Value* result = builder->CreateSelect(result_is_empty, null_tagged, cons_tagged);
@@ -25537,23 +26198,23 @@ private:
         phi->addIncoming(last_pair, loop_exit);
 
         // FIX: Pack result as proper tagged value
-        // Empty list returns NULL type, non-empty returns CONS_PTR type
+        // M1 Migration: Use consolidated HEAP_PTR
         Value* result_is_empty = builder->CreateICmpEQ(phi, ConstantInt::get(int64_type, 0));
 
         // Create null tagged value
         Value* null_tagged = packNullToTaggedValue();
 
-        // Create CONS_PTR tagged value
+        // Create HEAP_PTR tagged value (consolidated format)
         Value* cons_tagged = packPtrToTaggedValue(
             builder->CreateIntToPtr(phi, builder->getPtrTy()),
-            ESHKOL_VALUE_CONS_PTR);
+            ESHKOL_VALUE_HEAP_PTR);
 
         // Select appropriate tagged value
         Value* result = builder->CreateSelect(result_is_empty, null_tagged, cons_tagged);
 
         return result;
     }
-    
+
     // Production implementation: Create arity-specific builtin arithmetic functions (POLYMORPHIC)
     Function* createBuiltinArithmeticFunction(const std::string& operation, size_t arity) {
         // FIX: For arity=0, just use arity=2 (fold will call with 2 args anyway)
@@ -25578,14 +26239,14 @@ private:
             param_types,
             false // not varargs
         );
-        
+
         Function* builtin_func = Function::Create(
             func_type,
-            Function::ExternalLinkage,
+            Function::LinkOnceODRLinkage,  // Allow deduplication when linking with stdlib
             func_name,
             module.get()
         );
-        
+
         // Save current insertion point
         IRBuilderBase::InsertPoint old_point = builder->saveIP();
         
@@ -25797,7 +26458,7 @@ private:
             Value* is_null_type = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
             Value* is_cons_type = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
             Value* data_val = unpackInt64FromTaggedValue(arg);
             Value* is_null_ptr = builder->CreateICmpEQ(data_val,
                 ConstantInt::get(int64_type, 0));
@@ -25809,7 +26470,7 @@ private:
             Value* base_type = getBaseType(type_tag);
             // Check for CONS_PTR with non-null pointer
             Value* is_cons_type = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
             Value* data_val = unpackInt64FromTaggedValue(arg);
             Value* is_not_null = builder->CreateICmpNE(data_val,
                 ConstantInt::get(int64_type, 0));

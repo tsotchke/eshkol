@@ -106,6 +106,32 @@ public:
                          eshkol_value_type_t type,
                          uint8_t flags = 0);
 
+    // ════════════════════════════════════════════════════════════════════════
+    // CONSOLIDATED TYPE PACKING (M1 Migration)
+    // These pack pointers using the new consolidated types (HEAP_PTR/CALLABLE).
+    // The subtype is stored in the object header (set by with_header allocators).
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Pack a heap pointer using consolidated HEAP_PTR type.
+     * Use this for objects allocated with arena_allocate_*_with_header().
+     * Supports: cons, string, vector, tensor, hash, exception, multi-value.
+     * @param ptr_val The LLVM pointer to object data (header is at offset -8)
+     * @param flags Optional flags (default 0)
+     * @return A tagged_value struct with type ESHKOL_VALUE_HEAP_PTR
+     */
+    llvm::Value* packHeapPtr(llvm::Value* ptr_val, uint8_t flags = 0);
+
+    /**
+     * Pack a callable pointer using consolidated CALLABLE type.
+     * Use this for objects allocated with arena_allocate_closure_with_header().
+     * Supports: closure, lambda-sexpr, ad-node.
+     * @param ptr_val The LLVM pointer to callable data (header is at offset -8)
+     * @param flags Optional flags (default 0)
+     * @return A tagged_value struct with type ESHKOL_VALUE_CALLABLE
+     */
+    llvm::Value* packCallable(llvm::Value* ptr_val, uint8_t flags = 0);
+
     /**
      * Pack a pointer with dynamic (runtime) type and flags.
      * @param ptr_val The LLVM pointer or i64 value
@@ -234,6 +260,14 @@ public:
     llvm::Value* isVector(llvm::Value* tagged_val);
 
     /**
+     * Check if value is a tensor.
+     * Compatible with ESHKOL_VALUE_TENSOR_PTR and HEAP_PTR+TENSOR subtype.
+     * @param tagged_val The tagged_value struct
+     * @return i1 true if value is a tensor
+     */
+    llvm::Value* isTensor(llvm::Value* tagged_val);
+
+    /**
      * Check if value is a closure.
      * Compatible with ESHKOL_VALUE_CLOSURE_PTR and CALLABLE+CLOSURE subtype.
      * @param tagged_val The tagged_value struct
@@ -306,6 +340,28 @@ public:
      */
     llvm::Value* getBaseType(llvm::Value* type_tag);
 
+    // === Subtype Checking (for consolidated pointer types) ===
+
+    /**
+     * Check if a tagged value with HEAP_PTR type has a specific subtype.
+     * Assumes the caller has already verified type == ESHKOL_VALUE_HEAP_PTR.
+     *
+     * @param tagged_val The tagged value (must have type HEAP_PTR)
+     * @param expected_subtype The subtype to check for (e.g., HEAP_SUBTYPE_CONS)
+     * @return i1 true if subtype matches
+     */
+    llvm::Value* checkHeapSubtype(llvm::Value* tagged_val, uint8_t expected_subtype);
+
+    /**
+     * Check if a tagged value with CALLABLE type has a specific subtype.
+     * Assumes the caller has already verified type == ESHKOL_VALUE_CALLABLE.
+     *
+     * @param tagged_val The tagged value (must have type CALLABLE)
+     * @param expected_subtype The subtype to check for (e.g., CALLABLE_SUBTYPE_CLOSURE)
+     * @return i1 true if subtype matches
+     */
+    llvm::Value* checkCallableSubtype(llvm::Value* tagged_val, uint8_t expected_subtype);
+
 private:
     CodegenContext& ctx_;
 
@@ -316,6 +372,16 @@ private:
      * @return Pointer to the allocated tagged_value
      */
     llvm::Value* createEntryAlloca(const char* name);
+
+    /**
+     * Read the subtype byte from an object header.
+     * Objects allocated with arena_allocate_*_with_header() have an 8-byte
+     * header at (data_ptr - 8). The subtype is at offset 0 of this header.
+     *
+     * @param ptr_val The pointer to the object data (i64 or ptr from tagged value)
+     * @return The i8 subtype value from the object header
+     */
+    llvm::Value* getSubtypeFromHeader(llvm::Value* ptr_val);
 };
 
 } // namespace eshkol

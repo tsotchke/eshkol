@@ -43,24 +43,23 @@ llvm::Value* TensorCodegen::createTensor(const eshkol_ast_t* ast) {
 llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
     if (!op || op->op != ESHKOL_TENSOR_OP) return nullptr;
 
-    // Get malloc function
-    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
-    if (!malloc_func) {
-        eshkol_error("malloc function not found");
-        return nullptr;
-    }
+    auto& builder = ctx_.builder();
+    auto& context = ctx_.context();
 
-    // Allocate memory for tensor structure
-    llvm::Value* tensor_size = llvm::ConstantInt::get(ctx_.int64Type(),
-        ctx_.module().getDataLayout().getTypeAllocSize(ctx_.tensorType()));
-    llvm::Value* tensor_ptr = ctx_.builder().CreateCall(malloc_func, {tensor_size});
-    llvm::Value* typed_tensor_ptr = ctx_.builder().CreatePointerCast(tensor_ptr, ctx_.builder().getPtrTy());
+    // Get arena pointer
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(context, 0), ctx_.globalArena());
 
-    // Allocate and populate dimensions array
+    // Allocate tensor with header using arena_allocate_tensor_with_header
+    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* typed_tensor_ptr = builder.CreateCall(alloc_tensor_func, {arena_ptr}, "tensor_ptr");
+
+    // Allocate dimensions array using arena
     llvm::Value* dims_size = llvm::ConstantInt::get(ctx_.int64Type(),
         op->tensor_op.num_dimensions * sizeof(uint64_t));
-    llvm::Value* dims_ptr = ctx_.builder().CreateCall(malloc_func, {dims_size});
-    llvm::Value* typed_dims_ptr = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.builder().getPtrTy());
+    llvm::Function* arena_alloc_func = mem_.getArenaAllocate();
+    llvm::Value* dims_ptr = builder.CreateCall(arena_alloc_func, {arena_ptr, dims_size}, "dims_ptr");
+    llvm::Value* typed_dims_ptr = builder.CreatePointerCast(dims_ptr, builder.getPtrTy());
 
     for (uint64_t i = 0; i < op->tensor_op.num_dimensions; i++) {
         llvm::Value* dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims_ptr,
@@ -68,11 +67,11 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
         ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), op->tensor_op.dimensions[i]), dim_ptr);
     }
 
-    // Allocate and populate elements array
+    // Allocate and populate elements array using arena
     llvm::Value* elements_size = llvm::ConstantInt::get(ctx_.int64Type(),
         op->tensor_op.total_elements * sizeof(int64_t));
-    llvm::Value* elements_ptr = ctx_.builder().CreateCall(malloc_func, {elements_size});
-    llvm::Value* typed_elements_ptr = ctx_.builder().CreatePointerCast(elements_ptr, ctx_.builder().getPtrTy());
+    llvm::Value* elements_ptr = builder.CreateCall(arena_alloc_func, {arena_ptr, elements_size}, "elems_ptr");
+    llvm::Value* typed_elements_ptr = builder.CreatePointerCast(elements_ptr, builder.getPtrTy());
 
     for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
         llvm::Value* element_val = codegenAST(&op->tensor_op.elements[i]);
@@ -123,9 +122,9 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
     llvm::Value* total_elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 3);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), op->tensor_op.total_elements), total_elements_field_ptr);
 
-    // Return pointer to tensor as tagged value with TENSOR_PTR type tag
-    llvm::Value* tensor_int = ctx_.builder().CreatePtrToInt(typed_tensor_ptr, ctx_.int64Type());
-    return tagged_.packPtr(tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+    // Return pointer to tensor as consolidated HEAP_PTR tagged value
+    // (subtype HEAP_SUBTYPE_TENSOR is stored in the object header)
+    return tagged_.packHeapPtr(typed_tensor_ptr);
 }
 
 llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
@@ -246,20 +245,18 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     // (prod_dims = product of indexed dimensions)
     llvm::Value* slice_total = ctx_.builder().CreateUDiv(total_elements, prod_dims);
 
-    // Allocate new tensor struct using malloc
-    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
-    if (!malloc_func) {
-        llvm::FunctionType* malloc_ty = llvm::FunctionType::get(ctx_.ptrType(), {ctx_.int64Type()}, false);
-        malloc_func = llvm::Function::Create(malloc_ty, llvm::Function::ExternalLinkage, "malloc", &ctx_.module());
-    }
+    // Get arena pointer
+    llvm::Value* arena_ptr_slice = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    // Tensor struct: 4 fields * 8 bytes = 32 bytes
-    llvm::Value* struct_size = llvm::ConstantInt::get(ctx_.int64Type(), 32);
-    llvm::Value* new_tensor = ctx_.builder().CreateCall(malloc_func, {struct_size});
+    // Allocate new tensor struct with header using arena
+    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* new_tensor = ctx_.builder().CreateCall(alloc_tensor_func, {arena_ptr_slice}, "slice_tensor");
 
-    // Allocate new dims array: new_ndim * 8 bytes
+    // Allocate new dims array using arena: new_ndim * 8 bytes
     llvm::Value* dims_bytes = ctx_.builder().CreateMul(new_ndim, llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* new_dims = ctx_.builder().CreateCall(malloc_func, {dims_bytes});
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* new_dims = ctx_.builder().CreateCall(arena_alloc, {arena_ptr_slice, dims_bytes}, "slice_dims");
 
     // Copy remaining dimensions using a loop
     llvm::BasicBlock* copy_entry = ctx_.builder().GetInsertBlock();
@@ -309,9 +306,8 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     llvm::Value* f3 = ctx_.builder().CreateStructGEP(tensor_type, new_tensor, 3);
     ctx_.builder().CreateStore(slice_total, f3);
 
-    // Pack as TENSOR_PTR tagged value
-    llvm::Value* tensor_int = ctx_.builder().CreatePtrToInt(new_tensor, ctx_.int64Type());
-    llvm::Value* slice_result = tagged_.packPtr(tensor_int, ESHKOL_VALUE_TENSOR_PTR);
+    // Pack as consolidated HEAP_PTR tagged value (subtype in header)
+    llvm::Value* slice_result = tagged_.packHeapPtr(new_tensor);
 
     ctx_.builder().CreateBr(merge_bb);
     llvm::BasicBlock* slice_exit = ctx_.builder().GetInsertBlock();
@@ -421,19 +417,16 @@ llvm::Value* TensorCodegen::schemeVectorArithmetic(llvm::Value* vec1_tagged, llv
     llvm::Value* len_ptr = ctx_.builder().CreateBitCast(ptr1, ctx_.ptrType());
     llvm::Value* length = ctx_.builder().CreateLoad(ctx_.int64Type(), len_ptr);
 
-    // Allocate result vector from arena
-    uint64_t elem_size = ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType());
-    llvm::Value* result_size = ctx_.builder().CreateAdd(
-        llvm::ConstantInt::get(ctx_.int64Type(), 8),  // length field
-        ctx_.builder().CreateMul(length, llvm::ConstantInt::get(ctx_.int64Type(), elem_size)));
-
+    // Consolidated pointer system: Allocate result vector with header
+    // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
     llvm::GlobalVariable* arena_global = ctx_.globalArena();
     if (!arena_global) return tagged_.packNull();
 
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
-    llvm::Value* result_vec = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, result_size});
+    llvm::Value* result_vec = ctx_.builder().CreateCall(
+        mem_.getArenaAllocateVectorWithHeader(), {arena_ptr, length});
 
-    // Store length in result
+    // Store length in result (result_vec points to length field after header)
     llvm::Value* result_len_ptr = ctx_.builder().CreateBitCast(result_vec, ctx_.ptrType());
     ctx_.builder().CreateStore(length, result_len_ptr);
 
@@ -501,42 +494,31 @@ llvm::Value* TensorCodegen::schemeVectorArithmetic(llvm::Value* vec1_tagged, llv
     ctx_.builder().CreateStore(next_i, counter);
     ctx_.builder().CreateBr(loop_cond);
 
-    // Loop exit - return result as tagged value
+    // Loop exit - return result as tagged value (using consolidated HEAP_PTR)
     ctx_.builder().SetInsertPoint(loop_exit);
-    return tagged_.packPtr(result_vec, ESHKOL_VALUE_VECTOR_PTR);
+    return tagged_.packHeapPtr(result_vec);
 }
 
 // Raw tensor arithmetic: tensors with double elements in contiguous array
 llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* arg2, const std::string& operation) {
+    auto& builder = ctx_.builder();
+
     // Get raw int64 values (tensor pointers)
     llvm::Value* tensor1_int = tagged_.unpackInt64(arg1);
     llvm::Value* tensor2_int = tagged_.unpackInt64(arg2);
 
-    llvm::Value* tensor1_ptr = ctx_.builder().CreateIntToPtr(tensor1_int, ctx_.ptrType());
-    llvm::Value* tensor2_ptr = ctx_.builder().CreateIntToPtr(tensor2_int, ctx_.ptrType());
+    llvm::Value* tensor1_ptr = builder.CreateIntToPtr(tensor1_int, ctx_.ptrType());
+    llvm::Value* tensor2_ptr = builder.CreateIntToPtr(tensor2_int, ctx_.ptrType());
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
-    // Get or declare malloc function
-    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
-    if (!malloc_func) {
-        // Declare malloc: void* malloc(size_t)
-        llvm::FunctionType* malloc_type = llvm::FunctionType::get(
-            ctx_.ptrType(),
-            {ctx_.int64Type()},
-            false);
-        malloc_func = llvm::Function::Create(
-            malloc_type,
-            llvm::Function::ExternalLinkage,
-            "malloc",
-            &ctx_.module());
-    }
+    // Get arena pointer
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    // Create result tensor (copy structure of tensor1)
-    llvm::Value* result_tensor_size = llvm::ConstantInt::get(ctx_.int64Type(),
-        ctx_.module().getDataLayout().getTypeAllocSize(tensor_type));
-    llvm::Value* result_tensor_ptr = ctx_.builder().CreateCall(malloc_func, {result_tensor_size});
-    llvm::Value* typed_result_tensor_ptr = ctx_.builder().CreatePointerCast(result_tensor_ptr, ctx_.ptrType());
+    // Create result tensor with header using arena
+    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* typed_result_tensor_ptr = builder.CreateCall(alloc_tensor_func, {arena_ptr}, "arith_tensor");
 
     // Copy dimensions from tensor1 to result
     llvm::Value* tensor1_dims_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor1_ptr, 0);
@@ -559,11 +541,12 @@ llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* 
     llvm::Value* result_total_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_result_tensor_ptr, 3);
     ctx_.builder().CreateStore(total_elements, result_total_elements_field_ptr);
 
-    // Allocate result elements array
-    llvm::Value* elements_size = ctx_.builder().CreateMul(total_elements,
+    // Allocate result elements array using arena
+    llvm::Value* elements_size = builder.CreateMul(total_elements,
         llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
-    llvm::Value* result_elements_ptr = ctx_.builder().CreateCall(malloc_func, {elements_size});
-    llvm::Value* typed_result_elements_ptr = ctx_.builder().CreatePointerCast(result_elements_ptr, ctx_.ptrType());
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* result_elements_ptr = builder.CreateCall(arena_alloc, {arena_ptr, elements_size}, "arith_elems");
+    llvm::Value* typed_result_elements_ptr = builder.CreatePointerCast(result_elements_ptr, ctx_.ptrType());
 
     llvm::Value* result_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_result_tensor_ptr, 2);
     ctx_.builder().CreateStore(typed_result_elements_ptr, result_elements_field_ptr);
@@ -628,11 +611,9 @@ llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* 
     ctx_.builder().CreateStore(next_i, counter);
     ctx_.builder().CreateBr(loop_cond);
 
-    // Loop exit - pack tensor result
+    // Loop exit - pack tensor result as consolidated HEAP_PTR
     ctx_.builder().SetInsertPoint(loop_exit);
-    return tagged_.packPtr(
-        ctx_.builder().CreatePtrToInt(typed_result_tensor_ptr, ctx_.int64Type()),
-        ESHKOL_VALUE_TENSOR_PTR);
+    return tagged_.packHeapPtr(typed_result_tensor_ptr);
 }
 
 // Main entry point: dispatches based on type (VECTOR_PTR vs TENSOR_PTR)
@@ -647,10 +628,8 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
         arg2 = tagged_.packInt64(arg2, true);
     }
 
-    // Extract type tag from first argument at RUNTIME
-    llvm::Value* type_tag = tagged_.getType(arg1);
-    llvm::Value* is_vector = ctx_.builder().CreateICmpEQ(type_tag,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+    // Check type of first argument at RUNTIME (using consolidated type check)
+    llvm::Value* is_vector = tagged_.isVector(arg1);
 
     // Branch based on type
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -691,10 +670,8 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     llvm::Value* val_b = codegenAST(&op->call_op.variables[1]);
     if (!val_a || !val_b) return nullptr;
 
-    // Check type of first argument: Scheme vector (VECTOR_PTR=4) vs Tensor (TENSOR_PTR=6)
-    llvm::Value* val_type = tagged_.getType(val_a);
-    llvm::Value* is_scheme_vector = ctx_.builder().CreateICmpEQ(val_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+    // Check type of first argument: Scheme vector vs Tensor (using consolidated type checks)
+    llvm::Value* is_scheme_vector = tagged_.isVector(val_a);
 
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* scheme_vec_block = llvm::BasicBlock::Create(ctx_.context(), "dot_scheme_vec", current_func);
@@ -859,16 +836,18 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     llvm::Value* c_cols = b_cols;  // N
     llvm::Value* c_total = ctx_.builder().CreateMul(c_rows, c_cols);
 
-    // Allocate result tensor
-    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
+    // Allocate result tensor using arena
+    llvm::Value* dot_arena_ptr = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    // Allocate tensor struct (32 bytes)
-    llvm::Value* c_tensor_ptr = ctx_.builder().CreateCall(malloc_func,
-        {llvm::ConstantInt::get(ctx_.int64Type(), 32)});
+    // Allocate tensor struct with header
+    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* c_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_func, {dot_arena_ptr}, "dot_tensor");
 
     // Allocate dims array (2 x 8 = 16 bytes)
-    llvm::Value* c_dims_ptr = ctx_.builder().CreateCall(malloc_func,
-        {llvm::ConstantInt::get(ctx_.int64Type(), 16)});
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* c_dims_ptr = ctx_.builder().CreateCall(arena_alloc,
+        {dot_arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 16)}, "dot_dims");
     llvm::Value* c_dims_0_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), c_dims_ptr,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
     ctx_.builder().CreateStore(c_rows, c_dims_0_ptr);
@@ -879,7 +858,7 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // Allocate elements array (c_total * 8 bytes for doubles)
     llvm::Value* c_elements_size = ctx_.builder().CreateMul(c_total,
         llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* c_elements_ptr = ctx_.builder().CreateCall(malloc_func, {c_elements_size});
+    llvm::Value* c_elements_ptr = ctx_.builder().CreateCall(arena_alloc, {dot_arena_ptr, c_elements_size}, "dot_elems");
 
     // Store tensor struct fields
     llvm::Value* c_dims_field = ctx_.builder().CreateStructGEP(tensor_type, c_tensor_ptr, 0);
@@ -1003,9 +982,9 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(i_next, i_alloca);
     ctx_.builder().CreateBr(i_cond);
 
-    // After i loop: return tensor result
+    // After i loop: return tensor result as consolidated HEAP_PTR
     ctx_.builder().SetInsertPoint(i_exit);
-    llvm::Value* tensor_result_2d = tagged_.packPtr(c_tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
+    llvm::Value* tensor_result_2d = tagged_.packHeapPtr(c_tensor_ptr);
     ctx_.builder().CreateBr(final_merge);
     llvm::BasicBlock* dot_2d_exit = ctx_.builder().GetInsertBlock();
 
@@ -1066,17 +1045,13 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* tensor_ptr = ctx_.builder().CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
 
-    // Create result tensor with same dimensions
-    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
-    if (!malloc_func) {
-        eshkol_error("malloc function not found");
-        return nullptr;
-    }
+    // Create result tensor with same dimensions using arena
+    llvm::Value* apply_arena_ptr = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* result_tensor_size = llvm::ConstantInt::get(ctx_.int64Type(),
-                                               ctx_.module().getDataLayout().getTypeAllocSize(tensor_type));
-    llvm::Value* result_tensor_ptr = ctx_.builder().CreateCall(malloc_func, {result_tensor_size});
-    llvm::Value* typed_result_tensor_ptr = ctx_.builder().CreatePointerCast(result_tensor_ptr, ctx_.ptrType());
+    // Allocate tensor struct with header
+    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* typed_result_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_func, {apply_arena_ptr}, "apply_tensor");
 
     // Copy tensor structure (dimensions, num_dimensions, total_elements)
     llvm::Value* dims_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 0);
@@ -1094,10 +1069,11 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     llvm::Value* result_total_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_result_tensor_ptr, 3);
     ctx_.builder().CreateStore(total_elements, result_total_elements_field_ptr);
 
-    // Allocate result elements array
+    // Allocate result elements array using arena
     llvm::Value* elements_size = ctx_.builder().CreateMul(total_elements,
                                             llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
-    llvm::Value* result_elements_ptr = ctx_.builder().CreateCall(malloc_func, {elements_size});
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* result_elements_ptr = ctx_.builder().CreateCall(arena_alloc, {apply_arena_ptr, elements_size}, "apply_elems");
     llvm::Value* typed_result_elements_ptr = ctx_.builder().CreatePointerCast(result_elements_ptr, ctx_.ptrType());
 
     llvm::Value* result_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_result_tensor_ptr, 2);
@@ -1193,10 +1169,8 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     }
     std::string func_name = func_ast->variable.id;
 
-    // Check type: Scheme vector (VECTOR_PTR=4) vs Tensor (TENSOR_PTR=6)
-    llvm::Value* val_type = tagged_.getType(src_val);
-    llvm::Value* is_scheme_vector = ctx_.builder().CreateICmpEQ(val_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+    // Check type: Scheme vector vs Tensor (using consolidated type check)
+    llvm::Value* is_scheme_vector = tagged_.isVector(src_val);
 
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* scheme_vec_block = llvm::BasicBlock::Create(ctx_.context(), "reduce_scheme_vec", current_func);
@@ -1379,16 +1353,15 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     llvm::Value* typed_src_elements_ptr = ctx_.builder().CreatePointerCast(src_elements_ptr, ctx_.ptrType());
 
     // Create result tensor with one less dimension
-    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
-    if (!malloc_func) {
-        eshkol_error("malloc function not found");
-        return nullptr;
-    }
+    // Allocate result tensor using arena
+    llvm::Value* reduce_arena_ptr = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* result_tensor_size = llvm::ConstantInt::get(ctx_.int64Type(),
-                                               ctx_.module().getDataLayout().getTypeAllocSize(tensor_type));
-    llvm::Value* result_tensor_ptr = ctx_.builder().CreateCall(malloc_func, {result_tensor_size});
-    llvm::Value* typed_result_tensor_ptr = ctx_.builder().CreatePointerCast(result_tensor_ptr, ctx_.ptrType());
+    // Allocate tensor struct with header
+    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* typed_result_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_func, {reduce_arena_ptr}, "reduce_tensor");
+
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
 
     // Calculate result dimensions (all dimensions except the reduced one)
     llvm::Value* result_num_dims = ctx_.builder().CreateSub(src_num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 1));
@@ -1397,10 +1370,10 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     llvm::Value* is_scalar = ctx_.builder().CreateICmpEQ(result_num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* final_num_dims = ctx_.builder().CreateSelect(is_scalar, llvm::ConstantInt::get(ctx_.int64Type(), 1), result_num_dims);
 
-    // Allocate result dimensions array
+    // Allocate result dimensions array using arena
     llvm::Value* result_dims_size = ctx_.builder().CreateMul(final_num_dims,
                                                llvm::ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t)));
-    llvm::Value* result_dims_ptr = ctx_.builder().CreateCall(malloc_func, {result_dims_size});
+    llvm::Value* result_dims_ptr = ctx_.builder().CreateCall(arena_alloc, {reduce_arena_ptr, result_dims_size}, "reduce_dims");
     llvm::Value* typed_result_dims_ptr = ctx_.builder().CreatePointerCast(result_dims_ptr, ctx_.ptrType());
 
     // For simplified implementation: create result with single dimension of size 1 (scalar result)
@@ -1417,9 +1390,9 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     llvm::Value* result_total_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_result_tensor_ptr, 3);
     ctx_.builder().CreateStore(result_total_elements, result_total_elements_field_ptr);
 
-    // Allocate result elements array (single element for simplified version)
+    // Allocate result elements array (single element for simplified version) using arena
     llvm::Value* result_elements_size = llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t));
-    llvm::Value* result_elements_ptr = ctx_.builder().CreateCall(malloc_func, {result_elements_size});
+    llvm::Value* result_elements_ptr = ctx_.builder().CreateCall(arena_alloc, {reduce_arena_ptr, result_elements_size}, "reduce_elems");
     llvm::Value* typed_result_elements_ptr = ctx_.builder().CreatePointerCast(result_elements_ptr, ctx_.ptrType());
 
     llvm::Value* result_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_result_tensor_ptr, 2);
@@ -1454,9 +1427,9 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     // Update result tensor total elements
     ctx_.builder().CreateStore(result_elements, result_total_elements_field_ptr);
 
-    // Allocate result elements array
+    // Allocate result elements array using arena
     llvm::Value* result_elem_size = ctx_.builder().CreateMul(result_elements, llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
-    llvm::Value* new_result_elements_ptr = ctx_.builder().CreateCall(malloc_func, {result_elem_size});
+    llvm::Value* new_result_elements_ptr = ctx_.builder().CreateCall(arena_alloc, {reduce_arena_ptr, result_elem_size}, "reduce_elems2");
     llvm::Value* typed_new_result_elements_ptr = ctx_.builder().CreatePointerCast(new_result_elements_ptr, ctx_.ptrType());
     ctx_.builder().CreateStore(typed_new_result_elements_ptr, result_elements_field_ptr);
 
@@ -1592,10 +1565,8 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
-    // Check type: Scheme vector (VECTOR_PTR=4) vs Tensor (TENSOR_PTR=6)
-    llvm::Value* val_type = tagged_.getType(src_val);
-    llvm::Value* is_scheme_vector = ctx_.builder().CreateICmpEQ(val_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+    // Check type: Scheme vector vs Tensor (using consolidated type check)
+    llvm::Value* is_scheme_vector = tagged_.isVector(src_val);
 
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* scheme_vec_block = llvm::BasicBlock::Create(ctx_.context(), "sum_scheme_vec", current_func);
@@ -1713,10 +1684,8 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
-    // Check type: Scheme vector (VECTOR_PTR=4) vs Tensor (TENSOR_PTR=6)
-    llvm::Value* val_type = tagged_.getType(src_val);
-    llvm::Value* is_scheme_vector = ctx_.builder().CreateICmpEQ(val_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+    // Check type: Scheme vector vs Tensor (using consolidated type check)
+    llvm::Value* is_scheme_vector = tagged_.isVector(src_val);
 
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* scheme_vec_block = llvm::BasicBlock::Create(ctx_.context(), "mean_scheme_vec", current_func);
@@ -1897,9 +1866,10 @@ llvm::Value* TensorCodegen::tensorShape(const eshkol_operations_t* op) {
     // Load current list tail
     llvm::Value* current_tail_int = ctx_.builder().CreateLoad(ctx_.int64Type(), result_alloca);
 
-    // Allocate new cons cell
+    // Allocate new cons cell with object header (consolidated pointer format)
+    // M1 Migration: Use header allocator for HEAP_PTR compatibility
     llvm::Value* cons_cell = ctx_.builder().CreateCall(
-        mem_.getArenaAllocateTaggedConsCell(), {arena_ptr});
+        mem_.getArenaAllocateConsWithHeader(), {arena_ptr});
 
     // Set car to dimension value (int64)
     llvm::Value* is_car = llvm::ConstantInt::get(ctx_.int1Type(), 0);
@@ -1924,7 +1894,7 @@ llvm::Value* TensorCodegen::tensorShape(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(cdr_done);
 
     ctx_.builder().SetInsertPoint(set_cons_cdr);
-    llvm::Value* cons_type = llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR);
+    llvm::Value* cons_type = llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateCall(mem_.getTaggedConsSetPtr(),
         {cons_cell, is_cdr, current_tail_int, cons_type});
     ctx_.builder().CreateBr(cdr_done);
@@ -1944,7 +1914,7 @@ llvm::Value* TensorCodegen::tensorShape(const eshkol_operations_t* op) {
 
     // Load final result
     llvm::Value* final_result_int = ctx_.builder().CreateLoad(ctx_.int64Type(), result_alloca);
-    return tagged_.packPtr(final_result_int, ESHKOL_VALUE_CONS_PTR);
+    return tagged_.packHeapPtr(ctx_.builder().CreateIntToPtr(final_result_int, ctx_.ptrType()));
 }
 
 llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
@@ -1959,10 +1929,8 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
-    // Check type - transpose only works with native tensors (TENSOR_PTR=6), not Scheme vectors
-    llvm::Value* val_type = tagged_.getType(src_tensor);
-    llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(val_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+    // Check type - transpose only works with native tensors, not Scheme vectors
+    llvm::Value* is_tensor = tagged_.isTensor(src_tensor);
 
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* tensor_block = llvm::BasicBlock::Create(ctx_.context(), "transpose_tensor", current_func);
@@ -2057,7 +2025,7 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(row_cond);
 
     ctx_.builder().SetInsertPoint(row_exit);
-    llvm::Value* tensor_result = tagged_.packPtr(result_ptr, ESHKOL_VALUE_TENSOR_PTR);
+    llvm::Value* tensor_result = tagged_.packHeapPtr(result_ptr);
     ctx_.builder().CreateBr(exit_block);
     llvm::BasicBlock* tensor_exit = ctx_.builder().GetInsertBlock();
 
@@ -2104,10 +2072,14 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         llvm::Value* dim_arg = codegenAST(&op->call_op.variables[1]);
         if (!dim_arg) return nullptr;
 
-        // Check if it's a list (CONS_PTR) at runtime
+        // Check if it's a list (CONS_PTR or HEAP_PTR) at runtime
         llvm::Value* type_tag = tagged_.getType(dim_arg);
-        llvm::Value* is_list = ctx_.builder().CreateICmpEQ(type_tag,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+        llvm::Value* base_type = tagged_.getBaseType(type_tag);
+        llvm::Value* is_cons_legacy = ctx_.builder().CreateICmpEQ(base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* is_list = ctx_.builder().CreateOr(is_cons_legacy, is_heap_ptr);
 
         llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
         llvm::BasicBlock* list_path = llvm::BasicBlock::Create(ctx_.context(), "reshape_list", current_func);
@@ -2189,24 +2161,18 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     llvm::Value* src_total_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 3);
     llvm::Value* src_total = ctx_.builder().CreateLoad(ctx_.int64Type(), src_total_field_ptr);
 
-    // Get or declare malloc
-    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
-    if (!malloc_func) {
-        llvm::FunctionType* malloc_type = llvm::FunctionType::get(
-            ctx_.ptrType(), {ctx_.int64Type()}, false);
-        malloc_func = llvm::Function::Create(
-            malloc_type, llvm::Function::ExternalLinkage, "malloc", &ctx_.module());
-    }
+    // Allocate using arena
+    llvm::Value* reshape_arena_ptr = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    // Create new tensor structure (reuse elements - no copy needed for reshape)
-    llvm::Value* tensor_size = llvm::ConstantInt::get(ctx_.int64Type(),
-        ctx_.module().getDataLayout().getTypeAllocSize(tensor_type));
-    llvm::Value* new_tensor_ptr = ctx_.builder().CreateCall(malloc_func, {tensor_size});
-    llvm::Value* typed_new_tensor_ptr = ctx_.builder().CreatePointerCast(new_tensor_ptr, ctx_.ptrType());
+    // Create new tensor structure with header (reuse elements - no copy needed for reshape)
+    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* typed_new_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_func, {reshape_arena_ptr}, "reshape_tensor");
 
-    // Allocate new dimensions array
+    // Allocate new dimensions array using arena
     llvm::Value* dims_size = llvm::ConstantInt::get(ctx_.int64Type(), new_dims.size() * sizeof(uint64_t));
-    llvm::Value* dims_ptr = ctx_.builder().CreateCall(malloc_func, {dims_size});
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* dims_ptr = ctx_.builder().CreateCall(arena_alloc, {reshape_arena_ptr, dims_size}, "reshape_dims");
     llvm::Value* typed_dims_ptr = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.ptrType());
 
     // Store new dimensions and compute new total
@@ -2233,7 +2199,8 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     llvm::Value* total_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_new_tensor_ptr, 3);
     ctx_.builder().CreateStore(new_total, total_elements_field_ptr);
 
-    return tagged_.packPtr(typed_new_tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
+    // Pack as consolidated HEAP_PTR
+    return tagged_.packHeapPtr(typed_new_tensor_ptr);
 }
 
 // ===== TENSOR CREATION HELPER =====
@@ -2241,46 +2208,43 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::createTensorWithDims(const std::vector<llvm::Value*>& dims,
                                                    llvm::Value* fill_value,
                                                    bool use_memset_zero) {
-    // Get or declare malloc function
-    llvm::Function* malloc_func = ctx_.module().getFunction("malloc");
-    if (!malloc_func) {
-        llvm::FunctionType* malloc_type = llvm::FunctionType::get(
-            ctx_.ptrType(), {ctx_.int64Type()}, false);
-        malloc_func = llvm::Function::Create(
-            malloc_type, llvm::Function::ExternalLinkage, "malloc", &ctx_.module());
-    }
+    auto& builder = ctx_.builder();
+    auto& context = ctx_.context();
+
+    // Get arena pointer
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(context, 0), ctx_.globalArena());
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
     // Calculate total elements
     llvm::Value* total_elements = dims[0];
     for (size_t i = 1; i < dims.size(); i++) {
-        total_elements = ctx_.builder().CreateMul(total_elements, dims[i]);
+        total_elements = builder.CreateMul(total_elements, dims[i]);
     }
 
-    // Allocate tensor structure
-    llvm::Value* tensor_size = llvm::ConstantInt::get(ctx_.int64Type(),
-        ctx_.module().getDataLayout().getTypeAllocSize(tensor_type));
-    llvm::Value* tensor_ptr = ctx_.builder().CreateCall(malloc_func, {tensor_size});
-    llvm::Value* typed_tensor_ptr = ctx_.builder().CreatePointerCast(tensor_ptr, ctx_.ptrType());
+    // Allocate tensor structure with header using arena
+    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* typed_tensor_ptr = builder.CreateCall(alloc_tensor_func, {arena_ptr}, "new_tensor");
 
-    // Allocate dimensions array
+    // Allocate dimensions array using arena
     llvm::Value* dims_size = llvm::ConstantInt::get(ctx_.int64Type(), dims.size() * sizeof(uint64_t));
-    llvm::Value* dims_ptr = ctx_.builder().CreateCall(malloc_func, {dims_size});
-    llvm::Value* typed_dims_ptr = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.ptrType());
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* dims_ptr = builder.CreateCall(arena_alloc, {arena_ptr, dims_size}, "new_dims");
+    llvm::Value* typed_dims_ptr = builder.CreatePointerCast(dims_ptr, ctx_.ptrType());
 
     // Store dimensions
     for (size_t i = 0; i < dims.size(); i++) {
-        llvm::Value* dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims_ptr,
+        llvm::Value* dim_ptr = builder.CreateGEP(ctx_.int64Type(), typed_dims_ptr,
             llvm::ConstantInt::get(ctx_.int64Type(), i));
-        ctx_.builder().CreateStore(dims[i], dim_ptr);
+        builder.CreateStore(dims[i], dim_ptr);
     }
 
-    // Allocate elements array
-    llvm::Value* elements_size = ctx_.builder().CreateMul(total_elements,
+    // Allocate elements array using arena
+    llvm::Value* elements_size = builder.CreateMul(total_elements,
         llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
-    llvm::Value* elements_ptr = ctx_.builder().CreateCall(malloc_func, {elements_size});
-    llvm::Value* typed_elements_ptr = ctx_.builder().CreatePointerCast(elements_ptr, ctx_.ptrType());
+    llvm::Value* elements_ptr = builder.CreateCall(arena_alloc, {arena_ptr, elements_size}, "new_elems");
+    llvm::Value* typed_elements_ptr = builder.CreatePointerCast(elements_ptr, ctx_.ptrType());
 
     // Fill elements if requested
     if (use_memset_zero) {
@@ -2364,7 +2328,7 @@ llvm::Value* TensorCodegen::zeros(const eshkol_operations_t* op) {
         llvm::BasicBlock* single_path = llvm::BasicBlock::Create(ctx_.context(), "zeros_single", current_func);
         llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "zeros_merge", current_func);
 
-        // Check if it's a list (CONS_PTR) at runtime
+        // Check if it's a list (CONS_PTR or HEAP_PTR) at runtime
         // IMPORTANT: Only check type if dim_arg is actually a tagged_value struct
         // If it's a raw i64, it's definitely not a list
         if (dim_arg->getType() == ctx_.taggedValueType()) {
@@ -2372,8 +2336,11 @@ llvm::Value* TensorCodegen::zeros(const eshkol_operations_t* op) {
             // Use getBaseType() to properly handle legacy types (CONS_PTR=32)
             // DO NOT use 0x0F mask - 32 & 0x0F = 0 (NULL) which is WRONG!
             llvm::Value* base_type = tagged_.getBaseType(type_tag);
-            llvm::Value* is_list = ctx_.builder().CreateICmpEQ(base_type,
-                llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+            llvm::Value* is_cons_legacy = ctx_.builder().CreateICmpEQ(base_type,
+                llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+            llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(base_type,
+                llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+            llvm::Value* is_list = ctx_.builder().CreateOr(is_cons_legacy, is_heap_ptr);
             ctx_.builder().CreateCondBr(is_list, list_path, single_path);
         } else {
             // Raw integer - definitely not a list, go directly to single_path
@@ -2526,7 +2493,8 @@ llvm::Value* TensorCodegen::zeros(const eshkol_operations_t* op) {
         tensor_phi->addIncoming(tensor_2d, create_2d_exit);
         tensor_phi->addIncoming(tensor_3d, create_3d_exit);
 
-        return tagged_.packPtr(tensor_phi, ESHKOL_VALUE_TENSOR_PTR);
+        // Pack as consolidated HEAP_PTR (subtype in header)
+        return tagged_.packHeapPtr(tensor_phi);
     }
 
     // Multiple explicit dimension arguments: (zeros 2 3 4)
@@ -2543,7 +2511,8 @@ llvm::Value* TensorCodegen::zeros(const eshkol_operations_t* op) {
     llvm::Value* tensor_ptr = createTensorWithDims(dims, nullptr, true);  // use_memset_zero = true
     if (!tensor_ptr) return nullptr;
 
-    return tagged_.packPtr(tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
+    // Pack as consolidated HEAP_PTR (subtype in header)
+    return tagged_.packHeapPtr(tensor_ptr);
 }
 
 llvm::Value* TensorCodegen::ones(const eshkol_operations_t* op) {
@@ -2570,7 +2539,7 @@ llvm::Value* TensorCodegen::ones(const eshkol_operations_t* op) {
         llvm::BasicBlock* single_path = llvm::BasicBlock::Create(ctx_.context(), "ones_single", current_func);
         llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "ones_merge", current_func);
 
-        // Check if it's a list (CONS_PTR) at runtime
+        // Check if it's a list (CONS_PTR or HEAP_PTR) at runtime
         // IMPORTANT: Only check type if dim_arg is actually a tagged_value struct
         // If it's a raw i64, it's definitely not a list
         if (dim_arg->getType() == ctx_.taggedValueType()) {
@@ -2578,8 +2547,11 @@ llvm::Value* TensorCodegen::ones(const eshkol_operations_t* op) {
             // Use getBaseType() to properly handle legacy types (CONS_PTR=32)
             // DO NOT use 0x0F mask - 32 & 0x0F = 0 (NULL) which is WRONG!
             llvm::Value* base_type = tagged_.getBaseType(type_tag);
-            llvm::Value* is_list = ctx_.builder().CreateICmpEQ(base_type,
-                llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+            llvm::Value* is_cons_legacy = ctx_.builder().CreateICmpEQ(base_type,
+                llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+            llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(base_type,
+                llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+            llvm::Value* is_list = ctx_.builder().CreateOr(is_cons_legacy, is_heap_ptr);
             ctx_.builder().CreateCondBr(is_list, list_path, single_path);
         } else {
             // Raw integer - definitely not a list, go directly to single_path
@@ -2723,7 +2695,8 @@ llvm::Value* TensorCodegen::ones(const eshkol_operations_t* op) {
         tensor_phi->addIncoming(tensor_2d, create_2d_exit);
         tensor_phi->addIncoming(tensor_3d, create_3d_exit);
 
-        return tagged_.packPtr(tensor_phi, ESHKOL_VALUE_TENSOR_PTR);
+        // Pack as consolidated HEAP_PTR
+        return tagged_.packHeapPtr(tensor_phi);
     }
 
     // Multiple explicit dimension arguments: (ones 2 3 4)
@@ -2739,7 +2712,7 @@ llvm::Value* TensorCodegen::ones(const eshkol_operations_t* op) {
     llvm::Value* tensor_ptr = createTensorWithDims(dims, one_bits, false);
     if (!tensor_ptr) return nullptr;
 
-    return tagged_.packPtr(tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
+    return tagged_.packHeapPtr(tensor_ptr);
 }
 
 llvm::Value* TensorCodegen::eye(const eshkol_operations_t* op) {
@@ -2809,7 +2782,7 @@ llvm::Value* TensorCodegen::eye(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(loop_exit);
 
-    return tagged_.packPtr(tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
+    return tagged_.packHeapPtr(tensor_ptr);
 }
 
 llvm::Value* TensorCodegen::arange(const eshkol_operations_t* op) {
@@ -2955,7 +2928,7 @@ llvm::Value* TensorCodegen::arange(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(loop_exit);
 
-    return tagged_.packPtr(tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
+    return tagged_.packHeapPtr(tensor_ptr);
 }
 
 llvm::Value* TensorCodegen::linspace(const eshkol_operations_t* op) {
@@ -3033,7 +3006,7 @@ llvm::Value* TensorCodegen::linspace(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(loop_exit);
 
-    return tagged_.packPtr(tensor_ptr, ESHKOL_VALUE_TENSOR_PTR);
+    return tagged_.packHeapPtr(tensor_ptr);
 }
 
 llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val) {

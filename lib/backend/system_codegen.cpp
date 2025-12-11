@@ -78,7 +78,7 @@ llvm::Value* SystemCodegen::getenv(const eshkol_operations_t* op) {
 
     // Valid case: return string
     ctx_.builder().SetInsertPoint(valid_block);
-    llvm::Value* string_val = tagged_.packPtr(result, ESHKOL_VALUE_STRING_PTR);
+    llvm::Value* string_val = tagged_.packPtr(result, ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateBr(merge_block);
 
     // Merge
@@ -338,11 +338,11 @@ llvm::Value* SystemCodegen::commandLine(const eshkol_operations_t* op) {
     ctx_.builder().CreateCall(strcpy_func, {new_str, arg_ptr});
 
     // Pack string and cons onto list
-    llvm::Value* str_tagged = tagged_.packPtr(new_str, ESHKOL_VALUE_STRING_PTR);
+    llvm::Value* str_tagged = tagged_.packPtr(new_str, ESHKOL_VALUE_HEAP_PTR);
     llvm::Value* current_list = ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_ptr);
 
-    // Allocate cons cell
-    llvm::Value* cons = ctx_.builder().CreateCall(mem_.getArenaAllocateTaggedConsCell(), {arena_ptr});
+    // Allocate cons cell with object header (consolidated pointer format)
+    llvm::Value* cons = ctx_.builder().CreateCall(mem_.getArenaAllocateConsWithHeader(), {arena_ptr});
 
     // Set car to string, cdr to current list
     // Note: is_cdr parameter is i1 (bool), not i32
@@ -357,8 +357,8 @@ llvm::Value* SystemCodegen::commandLine(const eshkol_operations_t* op) {
     ctx_.builder().CreateCall(mem_.getTaggedConsSetTaggedValue(), {cons, is_car, str_ptr_alloca});
     ctx_.builder().CreateCall(mem_.getTaggedConsSetTaggedValue(), {cons, is_cdr, list_ptr_alloca});
 
-    // Update result
-    llvm::Value* new_list = tagged_.packPtr(cons, ESHKOL_VALUE_CONS_PTR);
+    // Update result (HEAP_PTR - consolidated pointer format)
+    llvm::Value* new_list = tagged_.packHeapPtr(cons);
     ctx_.builder().CreateStore(new_list, result_ptr);
 
     // Decrement index
@@ -639,7 +639,7 @@ llvm::Value* SystemCodegen::readFile(const eshkol_operations_t* op) {
     ctx_.builder().CreateCall(fclose_func, {file});
 
     // Return string
-    llvm::Value* success_val = tagged_.packPtr(buf, ESHKOL_VALUE_STRING_PTR);
+    llvm::Value* success_val = tagged_.packPtr(buf, ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateBr(merge_block);
 
     // Merge
@@ -962,11 +962,11 @@ llvm::Value* SystemCodegen::directoryList(const eshkol_operations_t* op) {
     ctx_.builder().CreateCall(strcpy_func, {new_str, name_ptr});
 
     // Pack string and cons onto list
-    llvm::Value* str_tagged = tagged_.packPtr(new_str, ESHKOL_VALUE_STRING_PTR);
+    llvm::Value* str_tagged = tagged_.packPtr(new_str, ESHKOL_VALUE_HEAP_PTR);
     llvm::Value* current_list = ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_ptr);
 
-    // Allocate cons cell
-    llvm::Value* cons = ctx_.builder().CreateCall(mem_.getArenaAllocateTaggedConsCell(), {arena_ptr});
+    // Allocate cons cell with object header (consolidated pointer format)
+    llvm::Value* cons = ctx_.builder().CreateCall(mem_.getArenaAllocateConsWithHeader(), {arena_ptr});
     // Set car to string (is_cdr = 0 for car)
     llvm::Value* is_car = llvm::ConstantInt::get(ctx_.int32Type(), 0);
     llvm::Value* is_cdr = llvm::ConstantInt::get(ctx_.int32Type(), 1);
@@ -980,8 +980,8 @@ llvm::Value* SystemCodegen::directoryList(const eshkol_operations_t* op) {
     ctx_.builder().CreateCall(mem_.getTaggedConsSetTaggedValue(), {cons, is_car, str_ptr});
     ctx_.builder().CreateCall(mem_.getTaggedConsSetTaggedValue(), {cons, is_cdr, list_ptr});
 
-    // Update result
-    llvm::Value* new_list = tagged_.packPtr(cons, ESHKOL_VALUE_CONS_PTR);
+    // Update result (HEAP_PTR - consolidated pointer format)
+    llvm::Value* new_list = tagged_.packHeapPtr(cons);
     ctx_.builder().CreateStore(new_list, result_ptr);
 
     ctx_.builder().CreateBr(loop_block);
@@ -1022,7 +1022,7 @@ llvm::Value* SystemCodegen::currentDirectory(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(merge_block);
 
     ctx_.builder().SetInsertPoint(success_block);
-    llvm::Value* success_val = tagged_.packPtr(result, ESHKOL_VALUE_STRING_PTR);
+    llvm::Value* success_val = tagged_.packPtr(result, ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateBr(merge_block);
 
     ctx_.builder().SetInsertPoint(merge_block);

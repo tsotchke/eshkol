@@ -1,0 +1,18 @@
+;; Debug gradient test - simpler
+(define (f x) (* x x))
+(display "Testing simple derivative...")
+(newline)
+(define df (derivative f))
+(display "Derivative created")
+(newline)
+(display (df 3.0))
+(newline)
+
+(display "Now testing gradient with 1 arg...")
+(newline)
+(define (g1 x) (* x x))
+(define grad-g1 (gradient g1))
+(display "Gradient created for 1 arg")
+(newline)
+(display (grad-g1 3.0))
+(newline)

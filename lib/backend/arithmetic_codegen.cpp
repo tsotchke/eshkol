@@ -103,6 +103,39 @@ llvm::Value* ArithmeticCodegen::convertToADNode(llvm::Value* operand, llvm::Valu
     return phi;
 }
 
+llvm::Value* ArithmeticCodegen::isADNode(llvm::Value* operand, llvm::Value* base_type) {
+    // Safely check if operand is an AD node (CALLABLE with CALLABLE_SUBTYPE_AD_NODE).
+    // Uses branching to avoid dereferencing non-pointer values like DOUBLE/INT64.
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* is_callable_bb = llvm::BasicBlock::Create(ctx_.context(), "is_ad_callable", func);
+    llvm::BasicBlock* not_callable_bb = llvm::BasicBlock::Create(ctx_.context(), "is_ad_not_callable", func);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "is_ad_merge", func);
+
+    // Check if type is CALLABLE
+    llvm::Value* is_callable = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    ctx_.builder().CreateCondBr(is_callable, is_callable_bb, not_callable_bb);
+
+    // CALLABLE path: Check subtype in header
+    ctx_.builder().SetInsertPoint(is_callable_bb);
+    llvm::Value* is_ad_subtype = tagged_.checkCallableSubtype(operand, CALLABLE_SUBTYPE_AD_NODE);
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* callable_exit = ctx_.builder().GetInsertBlock();
+
+    // NOT CALLABLE path: Return false
+    ctx_.builder().SetInsertPoint(not_callable_bb);
+    llvm::Value* not_ad = llvm::ConstantInt::getFalse(ctx_.context());
+    ctx_.builder().CreateBr(merge_bb);
+
+    // Merge
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "is_ad_phi");
+    phi->addIncoming(is_ad_subtype, callable_exit);
+    phi->addIncoming(not_ad, not_callable_bb);
+
+    return phi;
+}
+
 // === Polymorphic Addition ===
 
 llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
@@ -121,13 +154,13 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
     // Check for vector/tensor types
     llvm::Value* left_is_vector = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* right_is_vector = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* left_is_tensor = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* right_is_tensor = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* any_vector = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(left_is_vector, right_is_vector),
         ctx_.builder().CreateOr(left_is_tensor, right_is_tensor));
@@ -151,21 +184,59 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
 
-    // Check for AD nodes
+    // Check for AD nodes (CALLABLE type with CALLABLE_SUBTYPE_AD_NODE)
+    // M1 Migration: Must check SUBTYPE since CALLABLE also includes closures and lambdas
+    // IMPORTANT: Use proper branching to avoid reading headers from non-CALLABLE values
     ctx_.builder().SetInsertPoint(check_ad);
-    llvm::Value* left_is_ad = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_AD_NODE_PTR));
-    llvm::Value* right_is_ad = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_AD_NODE_PTR));
-    llvm::Value* any_ad = ctx_.builder().CreateOr(left_is_ad, right_is_ad);
-    ctx_.builder().CreateCondBr(any_ad, ad_path, check_dual);
 
-    // AD node path
+    // Step 1: Check if either operand has CALLABLE type
+    llvm::Value* left_is_callable = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* right_is_callable = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* any_callable = ctx_.builder().CreateOr(left_is_callable, right_is_callable);
+
+    // Create blocks for subtype checking (only entered if at least one operand is CALLABLE)
+    llvm::BasicBlock* check_left_subtype = llvm::BasicBlock::Create(ctx_.context(), "add_check_left_sub", func);
+    llvm::BasicBlock* left_is_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "add_left_is_ad", func);
+    llvm::BasicBlock* check_right_subtype = llvm::BasicBlock::Create(ctx_.context(), "add_check_right_sub", func);
+    llvm::BasicBlock* right_is_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "add_right_is_ad", func);
+    llvm::BasicBlock* neither_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "add_neither_ad", func);
+
+    // If no CALLABLE, skip to dual check
+    ctx_.builder().CreateCondBr(any_callable, check_left_subtype, check_dual);
+
+    // Check left: if CALLABLE, check subtype; otherwise skip to right check
+    ctx_.builder().SetInsertPoint(check_left_subtype);
+    ctx_.builder().CreateCondBr(left_is_callable, left_is_ad_bb, check_right_subtype);
+
+    // Left is CALLABLE: check if it's AD node subtype
+    ctx_.builder().SetInsertPoint(left_is_ad_bb);
+    llvm::Value* left_ad_subtype = tagged_.checkCallableSubtype(left, CALLABLE_SUBTYPE_AD_NODE);
+    // If left is AD, go to AD path; otherwise check right
+    ctx_.builder().CreateCondBr(left_ad_subtype, ad_path, check_right_subtype);
+
+    // Check right: if CALLABLE, check subtype; otherwise neither is AD
+    ctx_.builder().SetInsertPoint(check_right_subtype);
+    ctx_.builder().CreateCondBr(right_is_callable, right_is_ad_bb, neither_ad_bb);
+
+    // Right is CALLABLE: check if it's AD node subtype
+    ctx_.builder().SetInsertPoint(right_is_ad_bb);
+    llvm::Value* right_ad_subtype = tagged_.checkCallableSubtype(right, CALLABLE_SUBTYPE_AD_NODE);
+    // If right is AD, go to AD path; otherwise neither is AD
+    ctx_.builder().CreateCondBr(right_ad_subtype, ad_path, neither_ad_bb);
+
+    // Neither operand is AD node - go to dual check
+    ctx_.builder().SetInsertPoint(neither_ad_bb);
+    ctx_.builder().CreateBr(check_dual);
+
+    // AD node path - at least one operand is an AD node
     ctx_.builder().SetInsertPoint(ad_path);
-    llvm::Value* left_ad = convertToADNode(left, left_is_ad, left_base);
-    llvm::Value* right_ad = convertToADNode(right, right_is_ad, right_base);
+    // Use CALLABLE type check to determine which operands are AD nodes for conversion
+    llvm::Value* left_ad = convertToADNode(left, left_is_callable, left_base);
+    llvm::Value* right_ad = convertToADNode(right, right_is_callable, right_base);
     llvm::Value* ad_result_node = autodiff_.recordADNodeBinary(2, left_ad, right_ad); // AD_NODE_ADD = 2
-    llvm::Value* ad_result = tagged_.packPtr(ad_result_node, ESHKOL_VALUE_AD_NODE_PTR);
+    llvm::Value* ad_result = tagged_.packCallable(ad_result_node);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* ad_exit = ctx_.builder().GetInsertBlock();
 
@@ -250,13 +321,13 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
     // Check for vector/tensor types
     llvm::Value* left_is_vector = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* right_is_vector = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* left_is_tensor = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* right_is_tensor = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* any_vector = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(left_is_vector, right_is_vector),
         ctx_.builder().CreateOr(left_is_tensor, right_is_tensor));
@@ -280,21 +351,59 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
 
-    // Check for AD nodes
+    // Check for AD nodes (CALLABLE type with CALLABLE_SUBTYPE_AD_NODE)
+    // M1 Migration: Must check SUBTYPE since CALLABLE also includes closures and lambdas
+    // IMPORTANT: Use proper branching to avoid reading headers from non-CALLABLE values
     ctx_.builder().SetInsertPoint(check_ad);
-    llvm::Value* left_is_ad = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_AD_NODE_PTR));
-    llvm::Value* right_is_ad = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_AD_NODE_PTR));
-    llvm::Value* any_ad = ctx_.builder().CreateOr(left_is_ad, right_is_ad);
-    ctx_.builder().CreateCondBr(any_ad, ad_path, check_dual);
 
-    // AD node path
+    // Step 1: Check if either operand has CALLABLE type
+    llvm::Value* left_is_callable = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* right_is_callable = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* any_callable = ctx_.builder().CreateOr(left_is_callable, right_is_callable);
+
+    // Create blocks for subtype checking (only entered if at least one operand is CALLABLE)
+    llvm::BasicBlock* check_left_subtype = llvm::BasicBlock::Create(ctx_.context(), "sub_check_left_sub", func);
+    llvm::BasicBlock* left_is_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "sub_left_is_ad", func);
+    llvm::BasicBlock* check_right_subtype = llvm::BasicBlock::Create(ctx_.context(), "sub_check_right_sub", func);
+    llvm::BasicBlock* right_is_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "sub_right_is_ad", func);
+    llvm::BasicBlock* neither_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "sub_neither_ad", func);
+
+    // If no CALLABLE, skip to dual check
+    ctx_.builder().CreateCondBr(any_callable, check_left_subtype, check_dual);
+
+    // Check left: if CALLABLE, check subtype; otherwise skip to right check
+    ctx_.builder().SetInsertPoint(check_left_subtype);
+    ctx_.builder().CreateCondBr(left_is_callable, left_is_ad_bb, check_right_subtype);
+
+    // Left is CALLABLE: check if it's AD node subtype
+    ctx_.builder().SetInsertPoint(left_is_ad_bb);
+    llvm::Value* left_ad_subtype = tagged_.checkCallableSubtype(left, CALLABLE_SUBTYPE_AD_NODE);
+    // If left is AD, go to AD path; otherwise check right
+    ctx_.builder().CreateCondBr(left_ad_subtype, ad_path, check_right_subtype);
+
+    // Check right: if CALLABLE, check subtype; otherwise neither is AD
+    ctx_.builder().SetInsertPoint(check_right_subtype);
+    ctx_.builder().CreateCondBr(right_is_callable, right_is_ad_bb, neither_ad_bb);
+
+    // Right is CALLABLE: check if it's AD node subtype
+    ctx_.builder().SetInsertPoint(right_is_ad_bb);
+    llvm::Value* right_ad_subtype = tagged_.checkCallableSubtype(right, CALLABLE_SUBTYPE_AD_NODE);
+    // If right is AD, go to AD path; otherwise neither is AD
+    ctx_.builder().CreateCondBr(right_ad_subtype, ad_path, neither_ad_bb);
+
+    // Neither operand is AD node - go to dual check
+    ctx_.builder().SetInsertPoint(neither_ad_bb);
+    ctx_.builder().CreateBr(check_dual);
+
+    // AD node path - at least one operand is an AD node
     ctx_.builder().SetInsertPoint(ad_path);
-    llvm::Value* left_ad = convertToADNode(left, left_is_ad, left_base);
-    llvm::Value* right_ad = convertToADNode(right, right_is_ad, right_base);
+    // Use CALLABLE type check to determine which operands are AD nodes for conversion
+    llvm::Value* left_ad = convertToADNode(left, left_is_callable, left_base);
+    llvm::Value* right_ad = convertToADNode(right, right_is_callable, right_base);
     llvm::Value* ad_result_node = autodiff_.recordADNodeBinary(3, left_ad, right_ad); // AD_NODE_SUB = 3
-    llvm::Value* ad_result = tagged_.packPtr(ad_result_node, ESHKOL_VALUE_AD_NODE_PTR);
+    llvm::Value* ad_result = tagged_.packCallable(ad_result_node);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* ad_exit = ctx_.builder().GetInsertBlock();
 
@@ -379,13 +488,13 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
     // Check for vector/tensor types
     llvm::Value* left_is_vector = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* right_is_vector = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* left_is_tensor = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* right_is_tensor = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* any_vector = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(left_is_vector, right_is_vector),
         ctx_.builder().CreateOr(left_is_tensor, right_is_tensor));
@@ -409,21 +518,59 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
 
-    // Check for AD nodes
+    // Check for AD nodes (CALLABLE type with CALLABLE_SUBTYPE_AD_NODE)
+    // M1 Migration: Must check SUBTYPE since CALLABLE also includes closures and lambdas
+    // IMPORTANT: Use proper branching to avoid reading headers from non-CALLABLE values
     ctx_.builder().SetInsertPoint(check_ad);
-    llvm::Value* left_is_ad = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_AD_NODE_PTR));
-    llvm::Value* right_is_ad = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_AD_NODE_PTR));
-    llvm::Value* any_ad = ctx_.builder().CreateOr(left_is_ad, right_is_ad);
-    ctx_.builder().CreateCondBr(any_ad, ad_path, check_dual);
 
-    // AD node path
+    // Step 1: Check if either operand has CALLABLE type
+    llvm::Value* left_is_callable = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* right_is_callable = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* any_callable = ctx_.builder().CreateOr(left_is_callable, right_is_callable);
+
+    // Create blocks for subtype checking (only entered if at least one operand is CALLABLE)
+    llvm::BasicBlock* check_left_subtype = llvm::BasicBlock::Create(ctx_.context(), "mul_check_left_sub", func);
+    llvm::BasicBlock* left_is_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "mul_left_is_ad", func);
+    llvm::BasicBlock* check_right_subtype = llvm::BasicBlock::Create(ctx_.context(), "mul_check_right_sub", func);
+    llvm::BasicBlock* right_is_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "mul_right_is_ad", func);
+    llvm::BasicBlock* neither_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "mul_neither_ad", func);
+
+    // If no CALLABLE, skip to dual check
+    ctx_.builder().CreateCondBr(any_callable, check_left_subtype, check_dual);
+
+    // Check left: if CALLABLE, check subtype; otherwise skip to right check
+    ctx_.builder().SetInsertPoint(check_left_subtype);
+    ctx_.builder().CreateCondBr(left_is_callable, left_is_ad_bb, check_right_subtype);
+
+    // Left is CALLABLE: check if it's AD node subtype
+    ctx_.builder().SetInsertPoint(left_is_ad_bb);
+    llvm::Value* left_ad_subtype = tagged_.checkCallableSubtype(left, CALLABLE_SUBTYPE_AD_NODE);
+    // If left is AD, go to AD path; otherwise check right
+    ctx_.builder().CreateCondBr(left_ad_subtype, ad_path, check_right_subtype);
+
+    // Check right: if CALLABLE, check subtype; otherwise neither is AD
+    ctx_.builder().SetInsertPoint(check_right_subtype);
+    ctx_.builder().CreateCondBr(right_is_callable, right_is_ad_bb, neither_ad_bb);
+
+    // Right is CALLABLE: check if it's AD node subtype
+    ctx_.builder().SetInsertPoint(right_is_ad_bb);
+    llvm::Value* right_ad_subtype = tagged_.checkCallableSubtype(right, CALLABLE_SUBTYPE_AD_NODE);
+    // If right is AD, go to AD path; otherwise neither is AD
+    ctx_.builder().CreateCondBr(right_ad_subtype, ad_path, neither_ad_bb);
+
+    // Neither operand is AD node - go to dual check
+    ctx_.builder().SetInsertPoint(neither_ad_bb);
+    ctx_.builder().CreateBr(check_dual);
+
+    // AD node path - at least one operand is an AD node
     ctx_.builder().SetInsertPoint(ad_path);
-    llvm::Value* left_ad = convertToADNode(left, left_is_ad, left_base);
-    llvm::Value* right_ad = convertToADNode(right, right_is_ad, right_base);
+    // Use CALLABLE type check to determine which operands are AD nodes for conversion
+    llvm::Value* left_ad = convertToADNode(left, left_is_callable, left_base);
+    llvm::Value* right_ad = convertToADNode(right, right_is_callable, right_base);
     llvm::Value* ad_result_node = autodiff_.recordADNodeBinary(4, left_ad, right_ad); // AD_NODE_MUL = 4
-    llvm::Value* ad_result = tagged_.packPtr(ad_result_node, ESHKOL_VALUE_AD_NODE_PTR);
+    llvm::Value* ad_result = tagged_.packCallable(ad_result_node);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* ad_exit = ctx_.builder().GetInsertBlock();
 
@@ -508,13 +655,13 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
     // Check for vector/tensor types
     llvm::Value* left_is_vector = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* right_is_vector = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_VECTOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* left_is_tensor = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* right_is_tensor = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_TENSOR_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* any_vector = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(left_is_vector, right_is_vector),
         ctx_.builder().CreateOr(left_is_tensor, right_is_tensor));
@@ -538,21 +685,59 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
 
-    // Check for AD nodes
+    // Check for AD nodes (CALLABLE type with CALLABLE_SUBTYPE_AD_NODE)
+    // M1 Migration: Must check SUBTYPE since CALLABLE also includes closures and lambdas
+    // IMPORTANT: Use proper branching to avoid reading headers from non-CALLABLE values
     ctx_.builder().SetInsertPoint(check_ad);
-    llvm::Value* left_is_ad = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_AD_NODE_PTR));
-    llvm::Value* right_is_ad = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_AD_NODE_PTR));
-    llvm::Value* any_ad = ctx_.builder().CreateOr(left_is_ad, right_is_ad);
-    ctx_.builder().CreateCondBr(any_ad, ad_path, check_dual);
 
-    // AD node path
+    // Step 1: Check if either operand has CALLABLE type
+    llvm::Value* left_is_callable = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* right_is_callable = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* any_callable = ctx_.builder().CreateOr(left_is_callable, right_is_callable);
+
+    // Create blocks for subtype checking (only entered if at least one operand is CALLABLE)
+    llvm::BasicBlock* check_left_subtype = llvm::BasicBlock::Create(ctx_.context(), "div_check_left_sub", func);
+    llvm::BasicBlock* left_is_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "div_left_is_ad", func);
+    llvm::BasicBlock* check_right_subtype = llvm::BasicBlock::Create(ctx_.context(), "div_check_right_sub", func);
+    llvm::BasicBlock* right_is_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "div_right_is_ad", func);
+    llvm::BasicBlock* neither_ad_bb = llvm::BasicBlock::Create(ctx_.context(), "div_neither_ad", func);
+
+    // If no CALLABLE, skip to dual check
+    ctx_.builder().CreateCondBr(any_callable, check_left_subtype, check_dual);
+
+    // Check left: if CALLABLE, check subtype; otherwise skip to right check
+    ctx_.builder().SetInsertPoint(check_left_subtype);
+    ctx_.builder().CreateCondBr(left_is_callable, left_is_ad_bb, check_right_subtype);
+
+    // Left is CALLABLE: check if it's AD node subtype
+    ctx_.builder().SetInsertPoint(left_is_ad_bb);
+    llvm::Value* left_ad_subtype = tagged_.checkCallableSubtype(left, CALLABLE_SUBTYPE_AD_NODE);
+    // If left is AD, go to AD path; otherwise check right
+    ctx_.builder().CreateCondBr(left_ad_subtype, ad_path, check_right_subtype);
+
+    // Check right: if CALLABLE, check subtype; otherwise neither is AD
+    ctx_.builder().SetInsertPoint(check_right_subtype);
+    ctx_.builder().CreateCondBr(right_is_callable, right_is_ad_bb, neither_ad_bb);
+
+    // Right is CALLABLE: check if it's AD node subtype
+    ctx_.builder().SetInsertPoint(right_is_ad_bb);
+    llvm::Value* right_ad_subtype = tagged_.checkCallableSubtype(right, CALLABLE_SUBTYPE_AD_NODE);
+    // If right is AD, go to AD path; otherwise neither is AD
+    ctx_.builder().CreateCondBr(right_ad_subtype, ad_path, neither_ad_bb);
+
+    // Neither operand is AD node - go to dual check
+    ctx_.builder().SetInsertPoint(neither_ad_bb);
+    ctx_.builder().CreateBr(check_dual);
+
+    // AD node path - at least one operand is an AD node
     ctx_.builder().SetInsertPoint(ad_path);
-    llvm::Value* left_ad = convertToADNode(left, left_is_ad, left_base);
-    llvm::Value* right_ad = convertToADNode(right, right_is_ad, right_base);
+    // Use CALLABLE type check to determine which operands are AD nodes for conversion
+    llvm::Value* left_ad = convertToADNode(left, left_is_callable, left_base);
+    llvm::Value* right_ad = convertToADNode(right, right_is_callable, right_base);
     llvm::Value* ad_result_node = autodiff_.recordADNodeBinary(5, left_ad, right_ad); // AD_NODE_DIV = 5
-    llvm::Value* ad_result = tagged_.packPtr(ad_result_node, ESHKOL_VALUE_AD_NODE_PTR);
+    llvm::Value* ad_result = tagged_.packCallable(ad_result_node);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* ad_exit = ctx_.builder().GetInsertBlock();
 
@@ -790,9 +975,9 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
 
     // Check if either operand is a STRING_PTR (symbol)
     llvm::Value* left_is_string = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_STRING_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* right_is_string = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_STRING_PTR));
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* both_strings = ctx_.builder().CreateAnd(left_is_string, right_is_string);
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();

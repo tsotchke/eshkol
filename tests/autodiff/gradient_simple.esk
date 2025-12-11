@@ -1,0 +1,9 @@
+;; Simple gradient test
+(define (g x y) (+ (* x x) (* y y)))
+(define grad-g (gradient g))
+(display "Calling gradient...")
+(newline)
+(define result (grad-g 3.0 4.0))
+(display "Result: ")
+(display result)
+(newline)
