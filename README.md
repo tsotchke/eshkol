@@ -635,17 +635,17 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 - Dependent type refinement with theorem proving
 - Linear resource verification with effect tracking
 
-### Version 1.5 (Q2 2026): Quantum Computing Integration  
+### Version 1.2 (Q2 2026): Quantum Computing Integration  
 - Native quantum types with no-cloning enforcement
 - Quantum circuit compilation to hardware backends
 - Quantum-classical hybrid algorithm support
 
-### Version 2.0 (Q3 2026): Neuro-Symbolic AI
+### Version 1.5 (Q3 2026): Neuro-Symbolic AI
 - Logic programming integration (miniKanren-style)
 - Knowledge base representation and reasoning
 - Differentiable programming with symbolic constraints
 
-### Version 2.5 (Q4 2026): Multimedia Computing
+### Version 2.0+ (Q4 2026): Multimedia Computing
 - Real-time audio/video processing with zero-copy semantics
 - GPU compute integration with memory safety
 - Hardware I/O with resource lifetime management
