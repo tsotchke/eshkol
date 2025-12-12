@@ -34,6 +34,10 @@
 #include <vector>
 #include <cctype>
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>  // For _NSGetExecutablePath on macOS
+#endif
+
 using namespace llvm;
 
 // Track already-loaded modules to prevent circular imports
@@ -41,6 +45,10 @@ static std::set<std::string> loaded_modules;
 using namespace llvm::orc;
 
 namespace eshkol {
+
+// Forward declarations for static helper functions
+static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& content);
+static std::string resolveModulePath(const std::string& module_name, const std::string& base_dir = ".");
 
 ReplJITContext::ReplJITContext()
     : jit_(nullptr)
@@ -129,21 +137,51 @@ void ReplJITContext::registerRuntimeSymbols() {
     auto& ES = jit_->getExecutionSession();
     auto& DL = jit_->getDataLayout();
 
-    // Helper macro to add a symbol
+    // Helper macro to add a callable symbol
     #define ADD_SYMBOL(name) \
         symbols[ES.intern(#name)] = { \
             orc::ExecutorAddr::fromPtr((void*)&name), \
             JITSymbolFlags::Callable | JITSymbolFlags::Exported \
         }
 
-    // Arena memory management functions
+    // Helper macro to add a data symbol (global variable)
+    #define ADD_DATA_SYMBOL(name) \
+        symbols[ES.intern(#name)] = { \
+            orc::ExecutorAddr::fromPtr((void*)&name), \
+            JITSymbolFlags::Exported \
+        }
+
+    // ===== ARENA MEMORY MANAGEMENT =====
     ADD_SYMBOL(arena_create);
     ADD_SYMBOL(arena_destroy);
     ADD_SYMBOL(arena_allocate);
+    ADD_SYMBOL(arena_allocate_aligned);
+    ADD_SYMBOL(arena_allocate_zeroed);
     ADD_SYMBOL(arena_push_scope);
     ADD_SYMBOL(arena_pop_scope);
+    ADD_SYMBOL(arena_reset);
+    ADD_SYMBOL(arena_get_used_memory);
+    ADD_SYMBOL(arena_get_total_memory);
+    ADD_SYMBOL(arena_get_block_count);
+
+    // Header-aware allocation (for consolidated HEAP_PTR/CALLABLE types)
+    ADD_SYMBOL(arena_allocate_with_header);
+    ADD_SYMBOL(arena_allocate_with_header_zeroed);
+    ADD_SYMBOL(arena_allocate_multi_value);
+
+    // Cons cell allocation
     ADD_SYMBOL(arena_allocate_cons_cell);
     ADD_SYMBOL(arena_allocate_tagged_cons_cell);
+    ADD_SYMBOL(arena_allocate_tagged_cons_batch);
+    ADD_SYMBOL(arena_allocate_cons_with_header);
+
+    // String allocation
+    ADD_SYMBOL(arena_allocate_string_with_header);
+
+    // Vector allocation
+    ADD_SYMBOL(arena_allocate_vector_with_header);
+
+    // Tagged cons cell accessors
     ADD_SYMBOL(arena_tagged_cons_get_int64);
     ADD_SYMBOL(arena_tagged_cons_get_double);
     ADD_SYMBOL(arena_tagged_cons_get_ptr);
@@ -152,14 +190,92 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(arena_tagged_cons_set_ptr);
     ADD_SYMBOL(arena_tagged_cons_set_null);
     ADD_SYMBOL(arena_tagged_cons_get_type);
+    ADD_SYMBOL(arena_tagged_cons_get_flags);
+    ADD_SYMBOL(arena_tagged_cons_is_type);
     ADD_SYMBOL(arena_tagged_cons_set_tagged_value);
     ADD_SYMBOL(arena_tagged_cons_get_tagged_value);
+
+    // Tagged cons constructors
+    ADD_SYMBOL(arena_create_int64_cons);
+    ADD_SYMBOL(arena_create_mixed_cons);
+
+    // Deep equality
+    ADD_SYMBOL(eshkol_deep_equal);
+
+    // ===== EXCEPTION HANDLING =====
+    ADD_SYMBOL(eshkol_raise);
+    ADD_SYMBOL(eshkol_make_exception);
+    ADD_SYMBOL(eshkol_make_exception_with_header);
+    ADD_SYMBOL(eshkol_push_exception_handler);
+    ADD_SYMBOL(eshkol_pop_exception_handler);
+    ADD_SYMBOL(eshkol_exception_type_matches);
+    ADD_DATA_SYMBOL(g_current_exception);
+    ADD_DATA_SYMBOL(g_exception_handler_stack);
+
+    // ===== AUTOMATIC DIFFERENTIATION =====
+    ADD_SYMBOL(arena_allocate_dual_number);
+    ADD_SYMBOL(arena_allocate_dual_batch);
+    ADD_SYMBOL(arena_allocate_ad_node);
+    ADD_SYMBOL(arena_allocate_ad_node_with_header);
+    ADD_SYMBOL(arena_allocate_ad_batch);
     ADD_SYMBOL(arena_allocate_tape);
     ADD_SYMBOL(arena_tape_add_node);
     ADD_SYMBOL(arena_tape_reset);
-    ADD_SYMBOL(arena_allocate_ad_node);
     ADD_SYMBOL(arena_tape_get_node);
     ADD_SYMBOL(arena_tape_get_node_count);
+    ADD_SYMBOL(debug_print_ad_mode);
+    ADD_SYMBOL(debug_print_ptr);
+
+    // ===== CLOSURE MEMORY MANAGEMENT =====
+    ADD_SYMBOL(arena_allocate_closure_env);
+    ADD_SYMBOL(arena_allocate_closure);
+    ADD_SYMBOL(arena_allocate_closure_with_header);
+
+    // ===== TENSOR MEMORY MANAGEMENT =====
+    ADD_SYMBOL(arena_allocate_tensor_with_header);
+    ADD_SYMBOL(arena_allocate_tensor_full);
+
+    // ===== HASH TABLE MEMORY MANAGEMENT =====
+    ADD_SYMBOL(arena_allocate_hash_table);
+    ADD_SYMBOL(arena_hash_table_create);
+    ADD_SYMBOL(arena_hash_table_create_with_header);
+    ADD_SYMBOL(hash_table_set);
+    ADD_SYMBOL(hash_table_get);
+    ADD_SYMBOL(hash_table_has_key);
+    ADD_SYMBOL(hash_table_remove);
+    ADD_SYMBOL(hash_table_clear);
+    ADD_SYMBOL(hash_table_count);
+    ADD_SYMBOL(hash_table_keys);
+    ADD_SYMBOL(hash_table_values);
+    ADD_SYMBOL(hash_tagged_value);
+    ADD_SYMBOL(hash_keys_equal);
+
+    // ===== REGION (OALR) MEMORY MANAGEMENT =====
+    ADD_SYMBOL(region_create);
+    ADD_SYMBOL(region_destroy);
+    ADD_SYMBOL(region_push);
+    ADD_SYMBOL(region_pop);
+    ADD_SYMBOL(region_current);
+    ADD_SYMBOL(region_allocate);
+    ADD_SYMBOL(region_allocate_aligned);
+    ADD_SYMBOL(region_allocate_zeroed);
+    ADD_SYMBOL(region_allocate_tagged_cons_cell);
+    ADD_SYMBOL(region_get_used_memory);
+    ADD_SYMBOL(region_get_total_memory);
+    ADD_SYMBOL(region_get_name);
+    ADD_SYMBOL(region_get_depth);
+
+    // ===== SHARED (REF-COUNTED) MEMORY MANAGEMENT =====
+    ADD_SYMBOL(shared_allocate);
+    ADD_SYMBOL(shared_allocate_typed);
+    ADD_SYMBOL(shared_retain);
+    ADD_SYMBOL(shared_release);
+    ADD_SYMBOL(shared_ref_count);
+    ADD_SYMBOL(shared_get_header);
+    ADD_SYMBOL(weak_ref_create);
+    ADD_SYMBOL(weak_ref_upgrade);
+    ADD_SYMBOL(weak_ref_release);
+    ADD_SYMBOL(weak_ref_is_alive);
 
     // Standard library functions (printf, malloc, etc.)
     // Need to explicitly cast math functions to resolve overloading
@@ -191,26 +307,31 @@ void ReplJITContext::registerRuntimeSymbols() {
         JITSymbolFlags::Callable | JITSymbolFlags::Exported
     };
 
-    // Register global AD tape pointer (shared across all JIT modules for gradient/jacobian operations)
-    // Reference global namespace symbol (defined in arena_memory.cpp, declared in arena_memory.h)
-    symbols[ES.intern("__current_ad_tape")] = {
-        orc::ExecutorAddr::fromPtr((void*)&::__current_ad_tape),
-        JITSymbolFlags::Exported  // NOT Callable - this is a data symbol
-    };
+    // ===== GLOBAL DATA SYMBOLS =====
+    // These are shared across all JIT modules
 
-    // Register global AD mode flag (shared across all JIT modules for gradient/jacobian operations)
-    // CRITICAL: This must be shared so lambdas from one module can see AD mode set by another
-    symbols[ES.intern("__ad_mode_active")] = {
-        orc::ExecutorAddr::fromPtr((void*)&::__ad_mode_active),
-        JITSymbolFlags::Exported  // NOT Callable - this is a data symbol
-    };
-    // Register global shared arena pointer (shared across all REPL evaluations)
-    symbols[ES.intern("__repl_shared_arena")] = {
-        orc::ExecutorAddr::fromPtr((void*)&::__repl_shared_arena),
-        JITSymbolFlags::Exported  // NOT Callable - this is a data symbol
-    };
+    // AD tape pointer (for gradient/jacobian operations)
+    ADD_DATA_SYMBOL(__current_ad_tape);
+
+    // AD mode flag (CRITICAL: must be shared so lambdas see AD mode set by other modules)
+    ADD_DATA_SYMBOL(__ad_mode_active);
+
+    // Shared arena pointer (persistent across REPL evaluations)
+    ADD_DATA_SYMBOL(__repl_shared_arena);
+
+    // Region stack (for OALR memory management)
+    ADD_DATA_SYMBOL(__region_stack);
+    ADD_DATA_SYMBOL(__region_stack_depth);
+
+    // Command-line arguments (for (command-line) procedure)
+    ADD_DATA_SYMBOL(__eshkol_argc);
+    ADD_DATA_SYMBOL(__eshkol_argv);
+
+    // Global arena (default allocation target)
+    ADD_DATA_SYMBOL(__global_arena);
 
     #undef ADD_SYMBOL
+    #undef ADD_DATA_SYMBOL
 
     // Add all symbols to the main dylib
     auto& main_dylib = jit_->getMainJITDylib();
@@ -282,6 +403,33 @@ uint64_t ReplJITContext::lookupSymbol(const std::string& name) {
     return address;
 }
 
+bool ReplJITContext::isSymbolDefined(const std::string& name) {
+    // Check our local symbol table first
+    if (symbol_table_.find(name) != symbol_table_.end()) {
+        return true;
+    }
+
+    // Check defined lambdas (these are pre-registered before JIT compilation)
+    if (defined_lambdas_.find(name) != defined_lambdas_.end()) {
+        return true;
+    }
+
+    // Check defined globals
+    if (defined_globals_.find(name) != defined_globals_.end()) {
+        return true;
+    }
+
+    // Try looking up in JIT (this covers symbols that might have been
+    // registered via other means)
+    auto symbol = jit_->lookup(name);
+    if (symbol) {
+        return true;
+    }
+    consumeError(symbol.takeError());
+
+    return false;
+}
+
 void ReplJITContext::registerSymbol(const std::string& name, uint64_t address) {
     symbol_table_[name] = address;
 
@@ -318,6 +466,67 @@ void ReplJITContext::registerLambdaVar(const std::string& var_name) {
     // The actual lambda function name and arity will be discovered after compilation
     // For now, just mark it as pending - we'll fill in the details after seeing the module
     defined_lambdas_[var_name] = {"", 0};  // Empty name and 0 arity means "pending"
+}
+
+bool ReplJITContext::loadStdlib() {
+    return loadModule("stdlib");
+}
+
+bool ReplJITContext::loadModule(const std::string& module_name) {
+    std::string module_path = resolveModulePath(module_name);
+
+    if (module_path.empty()) {
+        std::cerr << "Module not found: " << module_name << std::endl;
+        return false;
+    }
+
+    // Check if already loaded
+    if (loaded_modules.count(module_path)) {
+        return true;  // Already loaded, success
+    }
+    loaded_modules.insert(module_path);
+
+    // Read the module file
+    std::ifstream module_file(module_path);
+    if (!module_file.is_open()) {
+        std::cerr << "Cannot open module: " << module_path << std::endl;
+        return false;
+    }
+
+    std::stringstream buffer;
+    buffer << module_file.rdbuf();
+    std::string content = buffer.str();
+    module_file.close();
+
+    // Parse all ASTs from the module
+    std::vector<eshkol_ast_t> module_asts = parseAllAstsFromString(content);
+
+    // Execute each AST in the module (silently)
+    bool success = true;
+    for (auto& ast_item : module_asts) {
+        // Check if this is a define that creates a lambda function
+        // and register it so JIT can find it later
+        if (ast_item.type == ESHKOL_OP && ast_item.operation.op == ESHKOL_DEFINE_OP) {
+            const char* name = ast_item.operation.define_op.name;
+            bool is_lambda = ast_item.operation.define_op.is_function ||
+                (ast_item.operation.define_op.value &&
+                 ast_item.operation.define_op.value->type == ESHKOL_OP &&
+                 ast_item.operation.define_op.value->operation.op == ESHKOL_LAMBDA_OP);
+            if (name && is_lambda) {
+                registerLambdaVar(name);
+            }
+        }
+
+        try {
+            execute(&ast_item);
+        } catch (const std::exception& e) {
+            // Continue loading other definitions even if one fails
+            // (some internal helpers may have issues but main functions work)
+        }
+        eshkol_ast_clean(&ast_item);
+    }
+
+    return success;
 }
 
 void ReplJITContext::injectPreviousSymbols(Module* module) {
@@ -415,26 +624,97 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
     return results;
 }
 
-// Helper to resolve module path (e.g., "core.functional.compose" -> "lib/core/functional/compose.esk")
-static std::string resolveModulePath(const std::string& module_name) {
-    std::string path = module_name;
-    // Replace dots with path separators
-    for (char& c : path) {
-        if (c == '.') c = '/';
-    }
-
-    // Check common locations
-    std::vector<std::string> search_paths = {
-        "lib/" + path + ".esk",
-        path + ".esk",
-        "../lib/" + path + ".esk",
+// Find the lib directory (matches eshkol-run.cpp logic)
+static std::string findLibDir() {
+    std::vector<std::string> lib_dirs = {
+        "lib",
+        "../lib",
+        "/usr/local/share/eshkol/lib",
+        "/usr/share/eshkol/lib",
     };
 
-    for (const auto& p : search_paths) {
+    // Check relative to executable on macOS
+    #ifdef __APPLE__
+    char exe_path[4096];
+    uint32_t size = sizeof(exe_path);
+    if (_NSGetExecutablePath(exe_path, &size) == 0) {
+        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
+        lib_dirs.insert(lib_dirs.begin(), (exe_dir / "../lib").string());
+        lib_dirs.insert(lib_dirs.begin(), (exe_dir / "lib").string());
+    }
+    #endif
+
+    for (const auto& dir : lib_dirs) {
+        if (std::filesystem::exists(dir) && std::filesystem::is_directory(dir)) {
+            return std::filesystem::canonical(dir).string();
+        }
+    }
+    return "";
+}
+
+// Global lib directory cache
+static std::string g_lib_dir;
+
+// Helper to resolve module path (e.g., "core.functional.compose" -> "lib/core/functional/compose.esk")
+// Matches eshkol-run.cpp module resolution logic
+static std::string resolveModulePath(const std::string& module_name, const std::string& base_dir) {
+    // Convert dots to path separators
+    std::string path_part = module_name;
+    for (char& c : path_part) {
+        if (c == '.') c = '/';
+    }
+    path_part += ".esk";
+
+    // Initialize lib dir if needed
+    if (g_lib_dir.empty()) {
+        g_lib_dir = findLibDir();
+    }
+
+    // Search order:
+    // 1. Current directory (relative to base_dir)
+    // 2. Library path (lib/)
+    // 3. Environment variable $ESHKOL_PATH (colon-separated)
+
+    // Try current directory first
+    std::filesystem::path current_path = std::filesystem::path(base_dir) / path_part;
+    if (std::filesystem::exists(current_path)) {
+        return std::filesystem::canonical(current_path).string();
+    }
+
+    // Try library directory
+    if (!g_lib_dir.empty()) {
+        std::filesystem::path lib_path = std::filesystem::path(g_lib_dir) / path_part;
+        if (std::filesystem::exists(lib_path)) {
+            return std::filesystem::canonical(lib_path).string();
+        }
+    }
+
+    // Try $ESHKOL_PATH
+    const char* eshkol_path = std::getenv("ESHKOL_PATH");
+    if (eshkol_path) {
+        std::stringstream ss(eshkol_path);
+        std::string search_dir;
+        while (std::getline(ss, search_dir, ':')) {
+            std::filesystem::path env_path = std::filesystem::path(search_dir) / path_part;
+            if (std::filesystem::exists(env_path)) {
+                return std::filesystem::canonical(env_path).string();
+            }
+        }
+    }
+
+    // Legacy fallback paths
+    std::vector<std::string> fallback_paths = {
+        "lib/" + path_part,
+        path_part,
+        "../lib/" + path_part,
+    };
+
+    for (const auto& p : fallback_paths) {
         if (std::filesystem::exists(p)) {
             return std::filesystem::canonical(p).string();
         }
     }
+
     return "";
 }
 

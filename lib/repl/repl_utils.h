@@ -112,6 +112,9 @@ inline const std::vector<std::string>& get_builtin_symbols() {
         "define", "lambda", "if", "cond", "case", "let", "let*", "letrec",
         "begin", "do", "and", "or", "not", "when", "unless", "quote", "set!",
 
+        // Module system
+        "require", "provide", "import",
+
         // Arithmetic
         "+", "-", "*", "/", "abs", "quotient", "remainder", "modulo",
         "floor", "ceiling", "truncate", "round",
@@ -134,6 +137,8 @@ inline const std::vector<std::string>& get_builtin_symbols() {
         "caaar", "caadr", "cadar", "caddr", "cdaar", "cdadr", "cddar", "cdddr",
         "map", "filter", "fold", "foldl", "foldr", "for-each",
         "memq", "memv", "member", "assq", "assv", "assoc",
+        "range", "iota", "take", "drop", "zip", "flatten",
+        "sort", "sort-by", "unique", "partition",
 
         // Vector operations
         "vector", "make-vector", "vector-length", "vector-ref", "vector-set!",
@@ -144,11 +149,17 @@ inline const std::vector<std::string>& get_builtin_symbols() {
         "string-append", "substring", "string->list", "list->string",
         "string=?", "string<?", "string>?", "string<=?", "string>=?",
         "string-ci=?", "string-ci<?", "string-ci>?", "string-ci<=?", "string-ci>=?",
+        "string-split", "string-join", "string-trim",
+
+        // Hash table operations
+        "hash", "make-hash", "hash-ref", "hash-set!", "hash-has-key?",
+        "hash-remove!", "hash-keys", "hash-values", "hash-count",
+        "hash-clear!", "hash?", "hash-copy",
 
         // Type predicates
         "number?", "integer?", "real?", "complex?", "rational?",
         "string?", "symbol?", "char?", "boolean?", "procedure?",
-        "vector?", "port?", "eof-object?",
+        "vector?", "port?", "eof-object?", "hash?", "tensor?",
 
         // Type conversions
         "number->string", "string->number",
@@ -159,6 +170,7 @@ inline const std::vector<std::string>& get_builtin_symbols() {
         // I/O
         "display", "newline", "printf", "write", "read",
         "read-char", "write-char", "peek-char",
+        "read-line", "read-string",
 
         // Boolean
         "eq?", "eqv?", "equal?",
@@ -168,17 +180,30 @@ inline const std::vector<std::string>& get_builtin_symbols() {
         "values", "call-with-values",
         "dynamic-wind", "error",
 
+        // Exception handling
+        "try", "catch", "throw", "finally",
+
+        // Memory management (OALR - Ownership-Aware Lexical Regions)
+        "with-region", "owned", "move", "borrow", "shared", "weak-ref",
+
         // Automatic differentiation
         "derivative", "gradient", "jacobian", "hessian",
         "divergence", "curl", "laplacian",
         "directional-derivative",
+        "dual", "dual?", "dual-value", "dual-derivative",
 
         // Tensor operations
         "tensor", "tensor-ref", "tensor-set!",
-        "tensor-shape", "tensor-rank",
+        "tensor-shape", "tensor-rank", "tensor-size",
         "tensor-add", "tensor-sub", "tensor-mul", "tensor-div",
-        "tensor-dot", "tensor-transpose",
-        "tensor-map", "tensor-reduce",
+        "tensor-dot", "tensor-transpose", "tensor-reshape",
+        "tensor-map", "tensor-reduce", "tensor-slice",
+        "tensor-zeros", "tensor-ones", "tensor-eye",
+        "tensor-broadcast", "tensor-concat",
+
+        // Functional programming
+        "compose", "curry", "flip", "identity", "const",
+        "partial", "complement",
 
         // REPL special
         "exit"
@@ -221,6 +246,7 @@ inline const std::vector<ReplCommand>& get_repl_commands() {
         {":time",    "",    "Time execution of an expression", ":time <expr>"},
         {":load",    ":l",  "Load and execute a file", ":load <filename>"},
         {":reload",  ":r",  "Reload the last loaded file", ":reload"},
+        {":stdlib",  "",    "Load the standard library", ":stdlib"},
         {":reset",   "",    "Reset the REPL state", ":reset"},
         {":history", "",    "Show command history", ":history [n]"},
         {":version", ":v",  "Show version information", ":version"},
@@ -328,6 +354,7 @@ inline void print_examples() {
     std::cout << "  " << function() << "(list 1 2 3)" << reset() << "           " << dim() << "; => (1 2 3)" << reset() << "\n";
     std::cout << "  " << function() << "(car (list 1 2 3))" << reset() << "     " << dim() << "; => 1" << reset() << "\n";
     std::cout << "  " << function() << "(cons 0 (list 1 2))" << reset() << "    " << dim() << "; => (0 1 2)" << reset() << "\n";
+    std::cout << "  " << function() << "(map square (list 1 2 3))" << reset() << " " << dim() << "; => (1 4 9)" << reset() << "\n";
     std::cout << "\n";
 
     std::cout << keyword() << "Control Flow:" << reset() << "\n";
@@ -335,9 +362,34 @@ inline void print_examples() {
     std::cout << "  " << function() << "(let ((a 10)) (+ a 5))" << reset() << "  " << dim() << "; => 15" << reset() << "\n";
     std::cout << "\n";
 
+    std::cout << keyword() << "Module System:" << reset() << "\n";
+    std::cout << "  " << function() << "(require core.functional.compose)" << reset() << "\n";
+    std::cout << "  " << function() << "(require stdlib)" << reset() << "       " << dim() << "; Load entire standard library" << reset() << "\n";
+    std::cout << "\n";
+
+    std::cout << keyword() << "Hash Tables:" << reset() << "\n";
+    std::cout << "  " << function() << "(define h (hash 'a 1 'b 2))" << reset() << "\n";
+    std::cout << "  " << function() << "(hash-ref h 'a)" << reset() << "        " << dim() << "; => 1" << reset() << "\n";
+    std::cout << "  " << function() << "(hash-set! h 'c 3)" << reset() << "     " << dim() << "; Add key-value pair" << reset() << "\n";
+    std::cout << "\n";
+
+    std::cout << keyword() << "Functional Programming:" << reset() << "\n";
+    std::cout << "  " << function() << "(define add1 (curry + 1))" << reset() << "\n";
+    std::cout << "  " << function() << "(add1 5)" << reset() << "               " << dim() << "; => 6" << reset() << "\n";
+    std::cout << "  " << function() << "((compose square add1) 2)" << reset() << " " << dim() << "; => 9  (square(add1(2)))" << reset() << "\n";
+    std::cout << "\n";
+
     std::cout << keyword() << "Automatic Differentiation:" << reset() << dim() << " (unique to Eshkol!)" << reset() << "\n";
     std::cout << "  " << function() << "(derivative (lambda (x) (* x x)) 3.0)" << reset() << "\n";
     std::cout << "    " << dim() << "; => 6.0  (d/dx of x^2 at x=3)" << reset() << "\n";
+    std::cout << "  " << function() << "(gradient (lambda (x y) (+ (* x x) (* y y))) 3.0 4.0)" << reset() << "\n";
+    std::cout << "    " << dim() << "; => (6.0 8.0)  (∇f at (3,4))" << reset() << "\n";
+    std::cout << "\n";
+
+    std::cout << keyword() << "Vector Calculus:" << reset() << dim() << " (for physics/ML!)" << reset() << "\n";
+    std::cout << "  " << function() << "(divergence F (list 1.0 2.0 3.0))" << reset() << "  " << dim() << "; ∇·F" << reset() << "\n";
+    std::cout << "  " << function() << "(curl F (list 1.0 2.0 3.0))" << reset() << "       " << dim() << "; ∇×F" << reset() << "\n";
+    std::cout << "  " << function() << "(laplacian f (list 1.0 2.0))" << reset() << "      " << dim() << "; ∇²f" << reset() << "\n";
     std::cout << "\n";
 }
 
@@ -545,6 +597,11 @@ inline const std::vector<FunctionDoc>& get_function_docs() {
         {"map", "(map proc lst)", "Apply proc to each element", "(map square '(1 2 3)) => (1 4 9)"},
         {"filter", "(filter pred lst)", "Keep elements matching pred", "(filter even? '(1 2 3 4)) => (2 4)"},
         {"fold", "(fold proc init lst)", "Fold list with proc", "(fold + 0 '(1 2 3)) => 6"},
+        {"range", "(range start end [step])", "Generate list of numbers", "(range 1 5) => (1 2 3 4)"},
+        {"take", "(take n lst)", "Take first n elements", "(take 2 '(1 2 3)) => (1 2)"},
+        {"drop", "(drop n lst)", "Drop first n elements", "(drop 2 '(1 2 3)) => (3)"},
+        {"zip", "(zip lst1 lst2 ...)", "Combine lists element-wise", "(zip '(1 2) '(a b)) => ((1 a) (2 b))"},
+        {"flatten", "(flatten lst)", "Flatten nested list", "(flatten '((1 2) (3 4))) => (1 2 3 4)"},
 
         // Control
         {"if", "(if test then else)", "Conditional expression", "(if (> 2 1) 'yes 'no) => yes"},
@@ -563,6 +620,30 @@ inline const std::vector<FunctionDoc>& get_function_docs() {
         {"letrec", "(letrec ((var val) ...) body)", "Local recursive bindings", "(letrec ((f (lambda ...))) ...)"},
         {"set!", "(set! var value)", "Mutate a variable", "(set! x 10)"},
 
+        // Module system
+        {"require", "(require module ...)", "Load a module", "(require core.functional.compose)"},
+        {"provide", "(provide name ...)", "Export symbols from module", "(provide foo bar)"},
+        {"import", "(import \"path/to/file.esk\")", "Import a file directly", "(import \"lib/utils.esk\")"},
+
+        // Hash tables
+        {"hash", "(hash k1 v1 k2 v2 ...)", "Create a hash table", "(hash 'a 1 'b 2)"},
+        {"make-hash", "(make-hash)", "Create empty hash table", "(make-hash)"},
+        {"hash-ref", "(hash-ref table key [default])", "Get value by key", "(hash-ref h 'a) => 1"},
+        {"hash-set!", "(hash-set! table key value)", "Set key-value pair", "(hash-set! h 'c 3)"},
+        {"hash-has-key?", "(hash-has-key? table key)", "Check if key exists", "(hash-has-key? h 'a) => #t"},
+        {"hash-remove!", "(hash-remove! table key)", "Remove a key", "(hash-remove! h 'a)"},
+        {"hash-keys", "(hash-keys table)", "Get all keys as list", "(hash-keys h) => (a b)"},
+        {"hash-values", "(hash-values table)", "Get all values as list", "(hash-values h) => (1 2)"},
+        {"hash-count", "(hash-count table)", "Count of key-value pairs", "(hash-count h) => 2"},
+        {"hash?", "(hash? obj)", "Test if obj is hash table", "(hash? h) => #t"},
+
+        // Functional programming
+        {"compose", "(compose f g ...)", "Compose functions right-to-left", "((compose f g) x) => (f (g x))"},
+        {"curry", "(curry f args ...)", "Partial application", "((curry + 1) 2) => 3"},
+        {"flip", "(flip f)", "Flip first two arguments", "((flip -) 1 10) => 9"},
+        {"identity", "(identity x)", "Return argument unchanged", "(identity 42) => 42"},
+        {"const", "(const x)", "Return function that always returns x", "((const 5) 'anything) => 5"},
+
         // I/O
         {"display", "(display obj)", "Output obj to stdout", "(display \"Hello\")"},
         {"newline", "(newline)", "Output a newline", "(newline)"},
@@ -574,21 +655,38 @@ inline const std::vector<FunctionDoc>& get_function_docs() {
         {"symbol?", "(symbol? obj)", "Test if obj is a symbol", "(symbol? 'foo) => #t"},
         {"procedure?", "(procedure? obj)", "Test if obj is a procedure", "(procedure? +) => #t"},
         {"boolean?", "(boolean? obj)", "Test if obj is a boolean", "(boolean? #t) => #t"},
+        {"tensor?", "(tensor? obj)", "Test if obj is a tensor", "(tensor? t) => #t"},
 
         // Equality
         {"eq?", "(eq? a b)", "Pointer equality", "(eq? 'a 'a) => #t"},
         {"eqv?", "(eqv? a b)", "Equivalence (numbers, chars)", "(eqv? 1 1) => #t"},
         {"equal?", "(equal? a b)", "Structural equality (recursive)", "(equal? '(1 2) '(1 2)) => #t"},
 
+        // Memory management (OALR)
+        {"with-region", "(with-region [name] [size] body ...)", "Execute body with memory region", "(with-region data 1024 ...)"},
+        {"owned", "(owned expr)", "Mark value as owned (single owner)", "(owned (list 1 2 3))"},
+        {"move", "(move var)", "Transfer ownership of variable", "(move x)"},
+        {"borrow", "(borrow var body ...)", "Temporarily borrow a value", "(borrow x (display x))"},
+        {"shared", "(shared expr)", "Create reference-counted value", "(shared (list 1 2 3))"},
+
         // Automatic Differentiation (unique to Eshkol!)
-        {"derivative", "(derivative f x)", "Compute df/dx at point x", "(derivative (lambda (x) (* x x)) 3) => 6.0"},
-        {"gradient", "(gradient f point)", "Compute gradient of f at point", "(gradient f #(1.0 2.0))"},
-        {"jacobian", "(jacobian f point)", "Compute Jacobian matrix of f at point", "(jacobian f #(1.0 2.0))"},
-        {"hessian", "(hessian f point)", "Compute Hessian matrix of f at point", "(hessian f #(1.0 2.0))"},
-        {"divergence", "(divergence f point)", "Compute divergence of vector field f", "(divergence f #(1.0 2.0 3.0))"},
-        {"curl", "(curl f point)", "Compute curl of 3D vector field f", "(curl f #(1.0 2.0 3.0))"},
-        {"laplacian", "(laplacian f point)", "Compute Laplacian of scalar field f", "(laplacian f #(1.0 2.0))"},
-        {"directional-derivative", "(directional-derivative f point dir)", "Compute directional derivative", "(directional-derivative f pt dir)"},
+        {"derivative", "(derivative f x)", "Compute df/dx at point x (forward-mode AD)", "(derivative (lambda (x) (* x x)) 3) => 6.0"},
+        {"gradient", "(gradient f point ...)", "Compute gradient vector ∇f at point (reverse-mode AD)", "(gradient (lambda (x y) (+ (* x x) (* y y))) 3 4) => (6.0 8.0)"},
+        {"jacobian", "(jacobian f point ...)", "Compute Jacobian matrix of vector function", "(jacobian f 1.0 2.0)"},
+        {"hessian", "(hessian f point ...)", "Compute Hessian matrix (second derivatives)", "(hessian f 1.0 2.0)"},
+        {"divergence", "(divergence f point)", "Compute divergence of vector field ∇·F", "(divergence F (list 1.0 2.0 3.0))"},
+        {"curl", "(curl f point)", "Compute curl of 3D vector field ∇×F", "(curl F (list 1.0 2.0 3.0))"},
+        {"laplacian", "(laplacian f point)", "Compute Laplacian of scalar field ∇²f", "(laplacian f (list 1.0 2.0))"},
+        {"directional-derivative", "(directional-derivative f point dir)", "Derivative in direction dir", "(directional-derivative f pt dir)"},
+
+        // Tensor operations
+        {"tensor", "(tensor dims data)", "Create a tensor with given dimensions", "(tensor '(2 3) '(1 2 3 4 5 6))"},
+        {"tensor-shape", "(tensor-shape t)", "Get dimensions of tensor", "(tensor-shape t) => (2 3)"},
+        {"tensor-rank", "(tensor-rank t)", "Get number of dimensions", "(tensor-rank t) => 2"},
+        {"tensor-ref", "(tensor-ref t idx ...)", "Get element at indices", "(tensor-ref t 0 1) => 2"},
+        {"tensor-set!", "(tensor-set! t value idx ...)", "Set element at indices", "(tensor-set! t 10 0 1)"},
+        {"tensor-add", "(tensor-add t1 t2)", "Element-wise addition", "(tensor-add t1 t2)"},
+        {"tensor-dot", "(tensor-dot t1 t2)", "Dot product / matrix multiply", "(tensor-dot t1 t2)"},
     };
     return docs;
 }
@@ -645,7 +743,8 @@ inline void print_doc_topics() {
     std::cout << "= < > <= >= zero? positive? negative? odd? even?\n\n";
 
     std::cout << keyword() << "Lists: " << reset();
-    std::cout << "cons car cdr list append reverse length list-ref null? pair? list? map filter fold\n\n";
+    std::cout << "cons car cdr list append reverse length list-ref null? pair? list?\n";
+    std::cout << "map filter fold range take drop zip flatten\n\n";
 
     std::cout << keyword() << "Control: " << reset();
     std::cout << "if cond and or not when unless\n\n";
@@ -653,17 +752,35 @@ inline void print_doc_topics() {
     std::cout << keyword() << "Binding: " << reset();
     std::cout << "define lambda let let* letrec set!\n\n";
 
+    std::cout << keyword() << "Modules: " << reset();
+    std::cout << "require provide import\n\n";
+
+    std::cout << keyword() << "Hash Tables: " << reset();
+    std::cout << "hash make-hash hash-ref hash-set! hash-has-key? hash-remove!\n";
+    std::cout << "hash-keys hash-values hash-count hash?\n\n";
+
+    std::cout << keyword() << "Functional: " << reset();
+    std::cout << "compose curry flip identity const\n\n";
+
     std::cout << keyword() << "I/O: " << reset();
     std::cout << "display newline\n\n";
 
     std::cout << keyword() << "Types: " << reset();
-    std::cout << "number? integer? string? symbol? procedure? boolean?\n\n";
+    std::cout << "number? integer? string? symbol? procedure? boolean? tensor?\n\n";
 
     std::cout << keyword() << "Equality: " << reset();
     std::cout << "eq? eqv? equal?\n\n";
 
+    std::cout << keyword() << "Memory (OALR): " << reset() << dim() << "(ownership-aware memory management)" << reset() << "\n";
+    std::cout << "with-region owned move borrow shared\n\n";
+
     std::cout << keyword() << "AutoDiff: " << reset() << dim() << "(unique to Eshkol!)" << reset() << "\n";
-    std::cout << "derivative gradient jacobian hessian divergence curl laplacian directional-derivative\n\n";
+    std::cout << "derivative gradient jacobian hessian\n";
+    std::cout << "divergence curl laplacian directional-derivative\n\n";
+
+    std::cout << keyword() << "Tensors: " << reset() << dim() << "(N-dimensional arrays)" << reset() << "\n";
+    std::cout << "tensor tensor-shape tensor-rank tensor-ref tensor-set!\n";
+    std::cout << "tensor-add tensor-dot\n\n";
 }
 
 // ============================================================================

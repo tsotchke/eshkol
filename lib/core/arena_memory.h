@@ -196,6 +196,14 @@ void debug_print_ptr(const char* context, void* ptr);
 // Global shared arena for REPL mode (persistent across evaluations)
 extern arena_t* __repl_shared_arena;
 
+// Global command-line arguments (for (command-line) procedure in REPL)
+extern int32_t __eshkol_argc;
+extern char** __eshkol_argv;
+
+// Global arena for default allocations
+extern arena_t* __global_arena;
+arena_t* get_global_arena();
+
 // Tape allocation and management
 ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
 void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node);

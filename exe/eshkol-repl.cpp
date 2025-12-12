@@ -21,8 +21,17 @@
 #include <unistd.h>
 #include <chrono>
 #include <iomanip>
+#include <setjmp.h>
 
 using namespace eshkol::repl;
+
+// Jump buffer for exception handling during JIT execution
+static jmp_buf g_repl_exception_jmp_buf;
+
+// Jump buffer for signal-based crash recovery (segfaults, etc.)
+static sigjmp_buf g_crash_jmp_buf;
+static volatile sig_atomic_t g_in_jit = 0;
+static volatile sig_atomic_t g_crash_signal = 0;
 
 // Global flag for Ctrl+C handling
 volatile sig_atomic_t g_interrupted = 0;
@@ -35,6 +44,60 @@ static std::vector<std::string> g_defined_symbols;
 void sigint_handler(int sig) {
     (void)sig;
     g_interrupted = 1;
+}
+
+// Signal handler for crashes during JIT execution (SIGSEGV, SIGFPE, SIGBUS)
+void crash_handler(int sig) {
+    if (g_in_jit) {
+        g_crash_signal = sig;
+        siglongjmp(g_crash_jmp_buf, 1);
+    } else {
+        // Not in JIT - reraise with default handler
+        signal(sig, SIG_DFL);
+        raise(sig);
+    }
+}
+
+// Get human-readable message for crash signal
+const char* crash_signal_message(int sig) {
+    switch (sig) {
+        case SIGSEGV: return "Segmentation fault - likely a type error (e.g., arithmetic on non-numeric value)";
+        case SIGFPE:  return "Floating point exception - likely division by zero";
+        case SIGBUS:  return "Bus error - memory access issue";
+        default:      return "Unknown runtime error";
+    }
+}
+
+// Display an exception with nice formatting
+void display_exception(eshkol_exception_t* exc) {
+    using namespace color;
+
+    const char* type_name = "error";
+    switch (exc->type) {
+        case ESHKOL_EXCEPTION_ERROR: type_name = "error"; break;
+        case ESHKOL_EXCEPTION_TYPE_ERROR: type_name = "type-error"; break;
+        case ESHKOL_EXCEPTION_FILE_ERROR: type_name = "file-error"; break;
+        case ESHKOL_EXCEPTION_READ_ERROR: type_name = "read-error"; break;
+        case ESHKOL_EXCEPTION_SYNTAX_ERROR: type_name = "syntax-error"; break;
+        case ESHKOL_EXCEPTION_RANGE_ERROR: type_name = "range-error"; break;
+        case ESHKOL_EXCEPTION_ARITY_ERROR: type_name = "arity-error"; break;
+        case ESHKOL_EXCEPTION_DIVIDE_BY_ZERO: type_name = "divide-by-zero"; break;
+        case ESHKOL_EXCEPTION_USER_DEFINED: type_name = "user-exception"; break;
+    }
+
+    std::cerr << error() << type_name << reset() << ": ";
+    if (exc->message) {
+        std::cerr << exc->message;
+    }
+
+    if (exc->line > 0) {
+        std::cerr << dim() << " at line " << exc->line;
+        if (exc->column > 0) {
+            std::cerr << ", column " << exc->column;
+        }
+        std::cerr << reset();
+    }
+    std::cerr << "\n";
 }
 
 // Check if running interactively
@@ -400,12 +463,22 @@ bool load_file(const std::string& filename, eshkol::ReplJITContext& repl_ctx) {
                 continue;
             }
 
+            // Check for definitions that should be skipped (reload scenario)
+            const char* defined_name = get_defined_name(ast);
+            if (defined_name && repl_ctx.isSymbolDefined(defined_name)) {
+                // Symbol already exists - skip to avoid duplicate definition error
+                eshkol_ast_clean(&ast);
+                expr_count++;
+                continue;
+            }
+
+            // Register lambda variables for cross-reference support
             const char* lambda_var = get_lambda_var_name(ast);
             if (lambda_var) {
                 repl_ctx.registerLambdaVar(lambda_var);
             }
 
-            const char* defined_name = get_defined_name(ast);
+            // Track defined symbols for :env display
             if (defined_name) {
                 g_defined_symbols.push_back(defined_name);
             }
@@ -491,6 +564,17 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
             print_error("No file has been loaded yet");
         } else {
             load_file(g_last_loaded_file, repl_ctx);
+        }
+        return true;
+    }
+
+    if (cmd == ":stdlib") {
+        std::cout << color::dim() << "Loading standard library..." << color::reset() << std::flush;
+        if (repl_ctx.loadStdlib()) {
+            std::cout << color::dim() << " done" << color::reset() << "\n";
+            print_success("Standard library loaded. Functions available: length, filter, fold, map, etc.");
+        } else {
+            std::cout << color::error() << " failed" << color::reset() << "\n";
         }
         return true;
     }
@@ -693,14 +777,29 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
 }
 
 int main(int argc, char** argv) {
-    (void)argc;
-    (void)argv;
+    // Parse command-line arguments
+    bool load_stdlib = false;
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--stdlib" || arg == "-s") {
+            load_stdlib = true;
+        } else if (arg == "--help" || arg == "-h") {
+            std::cout << "Usage: eshkol-repl [OPTIONS]\n\n";
+            std::cout << "Options:\n";
+            std::cout << "  --stdlib, -s    Load standard library on startup\n";
+            std::cout << "  --help, -h      Show this help message\n";
+            return 0;
+        }
+    }
 
     // Check if running interactively
     g_interactive = isatty(STDIN_FILENO);
 
-    // Install signal handler
+    // Install signal handlers
     signal(SIGINT, sigint_handler);
+    signal(SIGSEGV, crash_handler);
+    signal(SIGFPE, crash_handler);
+    signal(SIGBUS, crash_handler);
 
     // Initialize readline with completion and history (only if interactive)
     if (g_interactive) {
@@ -711,6 +810,22 @@ int main(int argc, char** argv) {
 
     // Initialize REPL JIT context
     eshkol::ReplJITContext repl_ctx;
+
+    // Load stdlib if requested
+    if (load_stdlib) {
+        if (g_interactive) {
+            std::cout << color::dim() << "Loading standard library..." << color::reset() << std::flush;
+        }
+        if (repl_ctx.loadStdlib()) {
+            if (g_interactive) {
+                std::cout << color::dim() << " done" << color::reset() << "\n";
+            }
+        } else {
+            if (g_interactive) {
+                std::cout << color::error() << " failed" << color::reset() << "\n";
+            }
+        }
+    }
 
     std::cout << "\n";
 
@@ -876,8 +991,39 @@ int main(int argc, char** argv) {
                 ast_to_execute = eshkol_wrap_with_display(&ast);
             }
 
-            // Execute using JIT
-            void* result = repl_ctx.execute(ast_to_execute);
+            // Execute using JIT with crash recovery and exception handling
+            void* result = nullptr;
+            bool had_error = false;
+
+            // Outer layer: catch crashes (SIGSEGV, SIGFPE, etc.)
+            g_in_jit = 1;
+            if (sigsetjmp(g_crash_jmp_buf, 1) == 0) {
+                // Inner layer: catch Eshkol exceptions
+                eshkol_push_exception_handler(&g_repl_exception_jmp_buf);
+
+                if (setjmp(g_repl_exception_jmp_buf) == 0) {
+                    // Normal execution path
+                    result = repl_ctx.execute(ast_to_execute);
+                } else {
+                    // Exception was raised - handle it
+                    had_error = true;
+                    eshkol_exception_t* exc = g_current_exception;
+                    if (exc) {
+                        display_exception(exc);
+                    } else {
+                        print_error("Unknown runtime error");
+                    }
+                }
+
+                eshkol_pop_exception_handler();
+            } else {
+                // Crash occurred - display error and continue
+                had_error = true;
+                print_error("Runtime error", crash_signal_message(g_crash_signal));
+                // Re-install signal handler (it was reset to default)
+                signal(g_crash_signal, crash_handler);
+            }
+            g_in_jit = 0;
 
             // Clean up wrapper
             if (should_display && ast_to_execute != &ast) {
@@ -891,7 +1037,7 @@ int main(int argc, char** argv) {
 
             // Clean up
             eshkol_ast_clean(&ast);
-            if (result) {
+            if (result && !had_error) {
                 delete static_cast<int64_t*>(result);
             }
 

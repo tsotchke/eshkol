@@ -63,6 +63,12 @@ uint64_t __outer_ad_node_depth = 0;
 // Global shared arena for REPL mode (persistent across evaluations)
 arena_t* __repl_shared_arena = nullptr;
 
+// Global command-line arguments (for (command-line) procedure)
+// In REPL mode, these remain zero/null since there's no real main()
+// Use weak linkage so generated code can override in standalone mode
+__attribute__((weak)) int32_t __eshkol_argc = 0;
+__attribute__((weak)) char** __eshkol_argv = nullptr;
+
 // Utility function to align size to boundary
 static size_t align_size(size_t size, size_t alignment) {
     return (size + alignment - 1) & ~(alignment - 1);
@@ -1246,10 +1252,12 @@ eshkol_region_t* __region_stack[MAX_REGION_DEPTH] = {nullptr};
 uint64_t __region_stack_depth = 0;
 
 // Default global arena for allocations outside of any region
-static arena_t* __global_arena = nullptr;
+// Non-static to allow JIT code to access it directly
+// Use weak linkage so generated code can override in standalone mode
+__attribute__((weak)) arena_t* __global_arena = nullptr;
 
 // Get or create the global arena
-static arena_t* get_global_arena() {
+arena_t* get_global_arena() {
     if (!__global_arena) {
         __global_arena = arena_create(65536);  // 64KB default
     }

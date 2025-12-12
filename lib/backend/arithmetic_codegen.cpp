@@ -780,6 +780,23 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     llvm::Value* right_dbl = ctx_.builder().CreateSelect(right_is_dbl,
         tagged_.unpackDouble(right),
         ctx_.builder().CreateSIToFP(tagged_.unpackInt64(right), ctx_.doubleType()));
+
+    // Check for division by zero in double path (1/0 is undefined, not infinity)
+    llvm::Value* dbl_is_zero = ctx_.builder().CreateFCmpOEQ(right_dbl,
+        llvm::ConstantFP::get(ctx_.doubleType(), 0.0), "div_dbl_zero_check");
+
+    llvm::BasicBlock* dbl_zero_bb = llvm::BasicBlock::Create(ctx_.context(), "div_dbl_zero", func);
+    llvm::BasicBlock* dbl_safe_bb = llvm::BasicBlock::Create(ctx_.context(), "div_dbl_safe", func);
+
+    ctx_.builder().CreateCondBr(dbl_is_zero, dbl_zero_bb, dbl_safe_bb);
+
+    // Division by zero path for doubles - raise exception
+    ctx_.builder().SetInsertPoint(dbl_zero_bb);
+    raiseDivideByZeroException();
+    ctx_.builder().CreateUnreachable();
+
+    // Safe double division path
+    ctx_.builder().SetInsertPoint(dbl_safe_bb);
     llvm::Value* dbl_result = ctx_.builder().CreateFDiv(left_dbl, right_dbl);
     llvm::Value* dbl_tagged = tagged_.packDouble(dbl_result);
     ctx_.builder().CreateBr(merge);
@@ -788,6 +805,23 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     ctx_.builder().SetInsertPoint(int_path);
     llvm::Value* left_int = tagged_.unpackInt64(left);
     llvm::Value* right_int = tagged_.unpackInt64(right);
+
+    // Check for division by zero in integer path
+    llvm::Value* int_is_zero = ctx_.builder().CreateICmpEQ(right_int,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), "div_int_zero_check");
+
+    llvm::BasicBlock* int_zero_bb = llvm::BasicBlock::Create(ctx_.context(), "div_int_zero", func);
+    llvm::BasicBlock* int_safe_bb = llvm::BasicBlock::Create(ctx_.context(), "div_int_safe", func);
+
+    ctx_.builder().CreateCondBr(int_is_zero, int_zero_bb, int_safe_bb);
+
+    // Division by zero path - raise exception
+    ctx_.builder().SetInsertPoint(int_zero_bb);
+    raiseDivideByZeroException();
+    ctx_.builder().CreateUnreachable();
+
+    // Safe integer division path
+    ctx_.builder().SetInsertPoint(int_safe_bb);
     // Check if division is exact
     llvm::Value* remainder = ctx_.builder().CreateSRem(left_int, right_int);
     llvm::Value* is_exact = ctx_.builder().CreateICmpEQ(remainder,
@@ -808,8 +842,8 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     phi->addIncoming(vec_result, vector_exit);
     phi->addIncoming(ad_result, ad_exit);
     phi->addIncoming(dual_tagged, dual_exit);
-    phi->addIncoming(dbl_tagged, double_path);
-    phi->addIncoming(int_tagged, int_path);
+    phi->addIncoming(dbl_tagged, dbl_safe_bb);
+    phi->addIncoming(int_tagged, int_safe_bb);
 
     return phi;
 }
@@ -820,6 +854,24 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
     // Integer modulo - simpler implementation
     llvm::Value* left_int = tagged_.unpackInt64(left);
     llvm::Value* right_int = tagged_.unpackInt64(right);
+
+    // Check for division by zero
+    llvm::Value* is_zero = ctx_.builder().CreateICmpEQ(right_int,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), "mod_zero_check");
+
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* zero_bb = llvm::BasicBlock::Create(ctx_.context(), "mod_zero", func);
+    llvm::BasicBlock* safe_bb = llvm::BasicBlock::Create(ctx_.context(), "mod_safe", func);
+
+    ctx_.builder().CreateCondBr(is_zero, zero_bb, safe_bb);
+
+    // Division by zero path - raise exception
+    ctx_.builder().SetInsertPoint(zero_bb);
+    raiseDivideByZeroException();
+    ctx_.builder().CreateUnreachable();
+
+    // Safe path - perform modulo
+    ctx_.builder().SetInsertPoint(safe_bb);
     llvm::Value* result = ctx_.builder().CreateSRem(left_int, right_int, "mod_result");
     return tagged_.packInt64(result, true);
 }
@@ -1219,6 +1271,23 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
     ctx_.builder().SetInsertPoint(int_path);
     llvm::Value* a_int = tagged_.unpackInt64(dividend);
     llvm::Value* b_int = tagged_.unpackInt64(divisor);
+
+    // Check for division by zero in integer path
+    llvm::Value* int_is_zero = ctx_.builder().CreateICmpEQ(b_int,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), "rem_zero_check");
+
+    llvm::BasicBlock* int_zero_bb = llvm::BasicBlock::Create(ctx_.context(), "rem_int_zero", func);
+    llvm::BasicBlock* int_safe_bb = llvm::BasicBlock::Create(ctx_.context(), "rem_int_safe", func);
+
+    ctx_.builder().CreateCondBr(int_is_zero, int_zero_bb, int_safe_bb);
+
+    // Division by zero path - raise exception
+    ctx_.builder().SetInsertPoint(int_zero_bb);
+    raiseDivideByZeroException();
+    ctx_.builder().CreateUnreachable();
+
+    // Safe integer remainder
+    ctx_.builder().SetInsertPoint(int_safe_bb);
     llvm::Value* int_result = ctx_.builder().CreateSRem(a_int, b_int, "srem_result");
     llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
     ctx_.builder().CreateBr(merge);
@@ -1286,6 +1355,23 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     ctx_.builder().SetInsertPoint(int_path);
     llvm::Value* a_int = tagged_.unpackInt64(dividend);
     llvm::Value* b_int = tagged_.unpackInt64(divisor);
+
+    // Check for division by zero in integer path
+    llvm::Value* int_is_zero = ctx_.builder().CreateICmpEQ(b_int,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), "quot_zero_check");
+
+    llvm::BasicBlock* int_zero_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_int_zero", func);
+    llvm::BasicBlock* int_safe_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_int_safe", func);
+
+    ctx_.builder().CreateCondBr(int_is_zero, int_zero_bb, int_safe_bb);
+
+    // Division by zero path - raise exception
+    ctx_.builder().SetInsertPoint(int_zero_bb);
+    raiseDivideByZeroException();
+    ctx_.builder().CreateUnreachable();
+
+    // Safe integer division
+    ctx_.builder().SetInsertPoint(int_safe_bb);
     llvm::Value* int_result = ctx_.builder().CreateSDiv(a_int, b_int, "sdiv_result");
     llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
     ctx_.builder().CreateBr(merge);
@@ -1345,6 +1431,46 @@ llvm::Value* ArithmeticCodegen::mathFunc(llvm::Value* operand, const std::string
 
     llvm::Value* result = ctx_.builder().CreateCall(math_fn, {val}, func_name + "_result");
     return tagged_.packDouble(result);
+}
+
+// === Exception Helpers ===
+
+void ArithmeticCodegen::raiseDivideByZeroException() {
+    // Get or declare eshkol_make_exception_with_header
+    llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+    if (!make_exc_func) {
+        llvm::FunctionType* make_type = llvm::FunctionType::get(
+            llvm::PointerType::getUnqual(ctx_.context()),  // Returns exception pointer
+            {ctx_.int32Type(),                              // Exception type
+             llvm::PointerType::getUnqual(ctx_.context())}, // Message string
+            false);
+        make_exc_func = llvm::Function::Create(make_type,
+            llvm::Function::ExternalLinkage, "eshkol_make_exception_with_header", &ctx_.module());
+    }
+
+    // Get or declare eshkol_raise
+    llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+    if (!raise_func) {
+        llvm::FunctionType* raise_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx_.context()),
+            {llvm::PointerType::getUnqual(ctx_.context())},  // Exception pointer
+            false);
+        raise_func = llvm::Function::Create(raise_type,
+            llvm::Function::ExternalLinkage, "eshkol_raise", &ctx_.module());
+        raise_func->setDoesNotReturn();
+    }
+
+    // Create error message string
+    llvm::Value* error_msg = ctx_.builder().CreateGlobalStringPtr("division by zero");
+
+    // Create exception object: eshkol_make_exception_with_header(ESHKOL_EXCEPTION_DIVIDE_BY_ZERO, msg)
+    llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {
+        llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_EXCEPTION_DIVIDE_BY_ZERO),
+        error_msg
+    }, "div_zero_exception");
+
+    // Raise the exception
+    ctx_.builder().CreateCall(raise_func, {exc});
 }
 
 } // namespace eshkol

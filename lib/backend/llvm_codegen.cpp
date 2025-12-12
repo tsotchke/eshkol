@@ -590,6 +590,9 @@ public:
         function_return_types["negative?"] = BuiltinTypes::Boolean;
         function_return_types["even?"] = BuiltinTypes::Boolean;
         function_return_types["odd?"] = BuiltinTypes::Boolean;
+        function_return_types["nan?"] = BuiltinTypes::Boolean;
+        function_return_types["infinite?"] = BuiltinTypes::Boolean;
+        function_return_types["finite?"] = BuiltinTypes::Boolean;
 
         // Math functions return Float64
         function_return_types["sin"] = BuiltinTypes::Float64;
@@ -665,27 +668,33 @@ public:
 
             // Create global arena variable (shared across all functions and scopes)
             // Use ExternalLinkage so the arena can be shared between main program and linked libraries
+            // In REPL mode: external declaration (no initializer) - shared via JIT
             // In library mode: external declaration (no initializer) - provided by main
             // In normal mode: external definition (with initializer) - defines the symbol
+            bool arena_use_external_only = library_mode || g_repl_mode_enabled;
             global_arena = new GlobalVariable(
                 *module,
                 PointerType::getUnqual(*context),
                 false, // not constant
                 GlobalValue::ExternalLinkage, // Always external for cross-module visibility
-                library_mode ? nullptr : ConstantPointerNull::get(PointerType::getUnqual(*context)),
+                arena_use_external_only ? nullptr : ConstantPointerNull::get(PointerType::getUnqual(*context)),
                 "__global_arena"
             );
             eshkol_debug("Created global arena variable: __global_arena (mode=%s)",
-                        library_mode ? "external-declaration" : "external-definition");
+                        arena_use_external_only ? "external-declaration" : "external-definition");
 
             // Create global variables for command-line arguments
             // These are set by main() and read by (command-line)
+            // In REPL mode, use external linkage without initializers to share across JIT modules
+            // In library mode, use external linkage without initializers (defined elsewhere)
+            // In standalone mode, define with initializers
+            bool use_external_only = library_mode || g_repl_mode_enabled;
             new GlobalVariable(
                 *module,
                 int32_type,
                 false, // not constant
                 GlobalValue::ExternalLinkage,
-                library_mode ? nullptr : ConstantInt::get(int32_type, 0),
+                use_external_only ? nullptr : ConstantInt::get(int32_type, 0),
                 "__eshkol_argc"
             );
             new GlobalVariable(
@@ -693,7 +702,7 @@ public:
                 PointerType::getUnqual(*context),
                 false, // not constant
                 GlobalValue::ExternalLinkage,
-                library_mode ? nullptr : ConstantPointerNull::get(PointerType::getUnqual(*context)),
+                use_external_only ? nullptr : ConstantPointerNull::get(PointerType::getUnqual(*context)),
                 "__eshkol_argv"
             );
             eshkol_debug("Created global command-line argument variables");
@@ -3433,7 +3442,8 @@ private:
                         func_name == ">=" || func_name == "=" || func_name == "null?" ||
                         func_name == "pair?" || func_name == "list?" || func_name == "number?" ||
                         func_name == "zero?" || func_name == "positive?" || func_name == "negative?" ||
-                        func_name == "even?" || func_name == "odd?" || func_name == "eq?" || func_name == "equal?") {
+                        func_name == "even?" || func_name == "odd?" || func_name == "eq?" || func_name == "equal?" ||
+                        func_name == "nan?" || func_name == "infinite?" || func_name == "finite?") {
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
                         return TypedValue(val, ESHKOL_VALUE_BOOL,
@@ -5748,7 +5758,8 @@ private:
         // Predicates as first-class functions - wrap in closure
         if (var_name == "even?" || var_name == "odd?" || var_name == "zero?" ||
             var_name == "positive?" || var_name == "negative?" || var_name == "null?" ||
-            var_name == "pair?") {
+            var_name == "pair?" || var_name == "nan?" || var_name == "infinite?" ||
+            var_name == "finite?") {
             Function* builtin_func = createBuiltinPredicateFunction(var_name);
             if (builtin_func) {
                 // Create closure for the predicate function
@@ -8045,6 +8056,9 @@ private:
         if (func_name == "zero?") return codegenNumericPredicate(op, "zero?");
         if (func_name == "even?") return codegenNumericPredicate(op, "even?");
         if (func_name == "odd?") return codegenNumericPredicate(op, "odd?");
+        if (func_name == "nan?") return codegenNumericPredicate(op, "nan?");
+        if (func_name == "infinite?") return codegenNumericPredicate(op, "infinite?");
+        if (func_name == "finite?") return codegenNumericPredicate(op, "finite?");
 
         // Equivalence predicates
         if (func_name == "eq?") return codegenEq(op);
@@ -9278,7 +9292,8 @@ private:
             } else if (operation == "mul") {
                 result = builder->CreateMul(left_val, right_val, "hott_imul");
             } else if (operation == "div") {
-                result = builder->CreateSDiv(left_val, right_val, "hott_idiv");
+                // Division by zero check - use polymorphic path which has exception handling
+                return nullptr;
             } else {
                 return nullptr;
             }
@@ -9319,7 +9334,8 @@ private:
             } else if (operation == "mul") {
                 result = builder->CreateFMul(left_d, right_d, "hott_fmul");
             } else if (operation == "div") {
-                result = builder->CreateFDiv(left_d, right_d, "hott_fdiv");
+                // Division by zero check - use polymorphic path which has exception handling
+                return nullptr;
             } else {
                 return nullptr;
             }
@@ -9792,73 +9808,75 @@ private:
         return packDoubleToTaggedValue(result);
     }
 
-    // Modulo operation - handles both integer and floating point
+    // Modulo operation - Scheme semantics (result has same sign as divisor)
     Value* codegenModulo(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_warn("modulo requires exactly 2 arguments");
             return nullptr;
         }
 
-        Value* arg1 = codegenAST(&op->call_op.variables[0]);
-        Value* arg2 = codegenAST(&op->call_op.variables[1]);
-        if (!arg1 || !arg2) return nullptr;
+        TypedValue tv1 = codegenTypedAST(&op->call_op.variables[0]);
+        TypedValue tv2 = codegenTypedAST(&op->call_op.variables[1]);
+        if (!tv1.llvm_value || !tv2.llvm_value) return nullptr;
 
-        // SCHEME SEMANTICS: modulo is defined for integers only
-        // Convert all values to integers (truncate floats) and return integer result
-        bool arg1_is_int64 = arg1->getType()->isIntegerTy(64);
-        bool arg2_is_int64 = arg2->getType()->isIntegerTy(64);
-        bool arg1_is_double = arg1->getType()->isDoubleTy();
-        bool arg2_is_double = arg2->getType()->isDoubleTy();
-        bool arg1_is_tagged = arg1->getType() == tagged_value_type;
-        bool arg2_is_tagged = arg2->getType() == tagged_value_type;
+        Value* arg1 = typedValueToTaggedValue(tv1);
+        Value* arg2 = typedValueToTaggedValue(tv2);
 
-        // Convert all values to int64 for integer modulo
-        Value* int_val1 = nullptr;
-        Value* int_val2 = nullptr;
+        // Unpack integers
+        Value* int_val1 = unpackInt64FromTaggedValue(arg1);
+        Value* int_val2 = unpackInt64FromTaggedValue(arg2);
+        Value* zero = ConstantInt::get(int64_type, 0);
 
-        // Convert arg1 to int64
-        if (arg1_is_int64) {
-            int_val1 = arg1;
-        } else if (arg1_is_double) {
-            int_val1 = builder->CreateFPToSI(arg1, int64_type);
-        } else if (arg1_is_tagged) {
-            // Extract as double first, then truncate to int
-            Value* dval = extractDoubleFromTagged(arg1);
-            int_val1 = builder->CreateFPToSI(dval, int64_type);
+        // Check for division by zero
+        Value* is_zero = builder->CreateICmpEQ(int_val2, zero, "mod_zero_check");
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* zero_bb = BasicBlock::Create(*context, "mod_zero", func);
+        BasicBlock* safe_bb = BasicBlock::Create(*context, "mod_safe", func);
+        builder->CreateCondBr(is_zero, zero_bb, safe_bb);
+
+        // Division by zero path - raise exception
+        builder->SetInsertPoint(zero_bb);
+        {
+            // Get or declare eshkol_raise function
+            Function* raise_func = module->getFunction("eshkol_raise");
+            if (!raise_func) {
+                FunctionType* raise_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+                raise_func = Function::Create(raise_type, Function::ExternalLinkage, "eshkol_raise", module.get());
+                raise_func->setDoesNotReturn();
+            }
+            // Get or declare eshkol_make_exception_with_header function
+            Function* make_exc_func = module->getFunction("eshkol_make_exception_with_header");
+            if (!make_exc_func) {
+                FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
+                    {builder->getInt32Ty(), builder->getPtrTy()}, false);
+                make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
+                    "eshkol_make_exception_with_header", module.get());
+            }
+            // Create error message and exception
+            Value* error_msg = codegenString("division by zero");
+            Value* exc_type = ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_DIVIDE_BY_ZERO);
+            Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
+            builder->CreateCall(raise_func, {exception});
         }
+        builder->CreateUnreachable();
 
-        // Convert arg2 to int64
-        if (arg2_is_int64) {
-            int_val2 = arg2;
-        } else if (arg2_is_double) {
-            int_val2 = builder->CreateFPToSI(arg2, int64_type);
-        } else if (arg2_is_tagged) {
-            // Extract as double first, then truncate to int
-            Value* dval = extractDoubleFromTagged(arg2);
-            int_val2 = builder->CreateFPToSI(dval, int64_type);
-        }
+        // Safe path - compute Scheme modulo
+        builder->SetInsertPoint(safe_bb);
 
-        if (!int_val1 || !int_val2) {
-            eshkol_warn("modulo: failed to convert arguments to integers");
-            return nullptr;
-        }
-
-        // Use integer SRem for modulo (Scheme modulo follows sign of divisor)
-        // First compute remainder
-        Value* rem = builder->CreateSRem(int_val1, int_val2, "rem");
+        // Compute C-style remainder first
+        Value* rem = builder->CreateSRem(int_val1, int_val2, "remainder");
 
         // Scheme's modulo: result has same sign as divisor
         // If signs differ and remainder is non-zero, add divisor
-        Value* zero = ConstantInt::get(int64_type, 0);
-        Value* rem_neg = builder->CreateICmpSLT(rem, zero);
-        Value* div_neg = builder->CreateICmpSLT(int_val2, zero);
-        Value* signs_differ = builder->CreateXor(rem_neg, div_neg);
-        Value* rem_nonzero = builder->CreateICmpNE(rem, zero);
-        Value* need_adjust = builder->CreateAnd(signs_differ, rem_nonzero);
-        Value* adjusted = builder->CreateAdd(rem, int_val2);
-        Value* result = builder->CreateSelect(need_adjust, adjusted, rem);
+        Value* rem_neg = builder->CreateICmpSLT(rem, zero, "rem_neg");
+        Value* div_neg = builder->CreateICmpSLT(int_val2, zero, "div_neg");
+        Value* signs_differ = builder->CreateXor(rem_neg, div_neg, "signs_differ");
+        Value* rem_nonzero = builder->CreateICmpNE(rem, zero, "rem_nonzero");
+        Value* need_adjust = builder->CreateAnd(signs_differ, rem_nonzero, "need_adjust");
+        Value* adjusted = builder->CreateAdd(rem, int_val2, "adjusted");
+        Value* result = builder->CreateSelect(need_adjust, adjusted, rem, "modulo_result");
 
-        return result;  // Return raw int64
+        return packInt64ToTaggedValue(result, true);
     }
 
     // Remainder operation - handles both integer and floating point
@@ -9869,57 +9887,15 @@ private:
             return nullptr;
         }
 
-        // Use codegenTypedAST for proper type handling
+        // Use ArithmeticCodegen which has division-by-zero checks
         TypedValue tv1 = codegenTypedAST(&op->call_op.variables[0]);
         TypedValue tv2 = codegenTypedAST(&op->call_op.variables[1]);
         if (!tv1.llvm_value || !tv2.llvm_value) return nullptr;
 
-        Value* arg1 = tv1.llvm_value;
-        Value* arg2 = tv2.llvm_value;
+        Value* arg1 = typedValueToTaggedValue(tv1);
+        Value* arg2 = typedValueToTaggedValue(tv2);
 
-        // Check LLVM types
-        bool arg1_is_int64 = arg1->getType()->isIntegerTy(64);
-        bool arg2_is_int64 = arg2->getType()->isIntegerTy(64);
-        bool arg1_is_double = arg1->getType()->isDoubleTy();
-        bool arg2_is_double = arg2->getType()->isDoubleTy();
-        bool arg1_is_tagged = arg1->getType() == tagged_value_type;
-        bool arg2_is_tagged = arg2->getType() == tagged_value_type;
-
-        // Both raw integers - use direct integer remainder (SRem)
-        if (arg1_is_int64 && arg2_is_int64) {
-            Value* result = builder->CreateSRem(arg1, arg2);
-            return result;  // Return raw int64
-        }
-
-        // Both raw doubles - use C's remainder function
-        if (arg1_is_double && arg2_is_double) {
-            return builder->CreateCall(function_table["remainder"], {arg1, arg2});
-        }
-
-        // Mixed types or tagged values - extract as double, then convert to int64 for integer remainder
-        Value* val1 = arg1;
-        Value* val2 = arg2;
-
-        if (arg1_is_int64) {
-            // Already int64, use directly
-        } else if (arg1_is_double) {
-            val1 = builder->CreateFPToSI(arg1, int64_type);
-        } else if (arg1_is_tagged) {
-            Value* extracted = extractDoubleFromTagged(arg1);
-            val1 = builder->CreateFPToSI(extracted, int64_type);
-        }
-
-        if (arg2_is_int64) {
-            // Already int64, use directly
-        } else if (arg2_is_double) {
-            val2 = builder->CreateFPToSI(arg2, int64_type);
-        } else if (arg2_is_tagged) {
-            Value* extracted = extractDoubleFromTagged(arg2);
-            val2 = builder->CreateFPToSI(extracted, int64_type);
-        }
-
-        // Use integer remainder (SRem) to return int64
-        return builder->CreateSRem(val1, val2);
+        return arith_->remainder(arg1, arg2);
     }
 
     // Integer quotient (truncated division)
@@ -9929,42 +9905,15 @@ private:
             return nullptr;
         }
 
-        Value* arg1 = codegenAST(&op->call_op.variables[0]);
-        Value* arg2 = codegenAST(&op->call_op.variables[1]);
-        if (!arg1 || !arg2) return nullptr;
+        // Use ArithmeticCodegen which has division-by-zero checks
+        TypedValue tv1 = codegenTypedAST(&op->call_op.variables[0]);
+        TypedValue tv2 = codegenTypedAST(&op->call_op.variables[1]);
+        if (!tv1.llvm_value || !tv2.llvm_value) return nullptr;
 
-        // FIXED: Handle raw int64/double values correctly
-        bool arg1_is_int64 = arg1->getType()->isIntegerTy(64);
-        bool arg2_is_int64 = arg2->getType()->isIntegerTy(64);
+        Value* arg1 = typedValueToTaggedValue(tv1);
+        Value* arg2 = typedValueToTaggedValue(tv2);
 
-        // Both raw integers - use direct integer division
-        if (arg1_is_int64 && arg2_is_int64) {
-            return builder->CreateSDiv(arg1, arg2);  // Truncates toward zero
-        }
-
-        // Convert to double, divide, truncate
-        Value* val1 = arg1;
-        Value* val2 = arg2;
-
-        if (arg1_is_int64) {
-            val1 = builder->CreateSIToFP(arg1, double_type);
-        } else if (arg1->getType()->isDoubleTy()) {
-            // Already double
-        } else if (arg1->getType() == tagged_value_type) {
-            val1 = extractDoubleFromTagged(arg1);
-        }
-
-        if (arg2_is_int64) {
-            val2 = builder->CreateSIToFP(arg2, double_type);
-        } else if (arg2->getType()->isDoubleTy()) {
-            // Already double
-        } else if (arg2->getType() == tagged_value_type) {
-            val2 = extractDoubleFromTagged(arg2);
-        }
-
-        Value* div_result = builder->CreateFDiv(val1, val2);
-        Value* truncated = builder->CreateCall(function_table["trunc"], {div_result});
-        return builder->CreateFPToSI(truncated, int64_type);
+        return arith_->quotient(arg1, arg2);
     }
 
     // GCD (Greatest Common Divisor) using Euclidean algorithm
@@ -11912,6 +11861,27 @@ private:
             Value* int_val = builder->CreateFPToSI(val, int64_type);
             Value* mod2 = builder->CreateSRem(int_val, ConstantInt::get(int64_type, 2));
             result = builder->CreateICmpNE(mod2, ConstantInt::get(int64_type, 0));
+        } else if (pred == "nan?") {
+            // NaN check: x != x is true only for NaN (unordered comparison)
+            result = builder->CreateFCmpUNO(val, val, "is_nan");
+        } else if (pred == "infinite?") {
+            // Infinite check: |x| == infinity
+            Function* fabs_fn = Intrinsic::getOrInsertDeclaration(
+                module.get(), Intrinsic::fabs, {double_type});
+            Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
+            Value* pos_inf = ConstantFP::getInfinity(double_type, false);
+            result = builder->CreateFCmpOEQ(abs_val, pos_inf, "is_infinite");
+        } else if (pred == "finite?") {
+            // Finite check: not NaN and not infinite
+            // not NaN: val == val (ordered comparison)
+            // not infinite: |val| < infinity
+            Function* fabs_fn = Intrinsic::getOrInsertDeclaration(
+                module.get(), Intrinsic::fabs, {double_type});
+            Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
+            Value* pos_inf = ConstantFP::getInfinity(double_type, false);
+            Value* not_inf = builder->CreateFCmpOLT(abs_val, pos_inf, "not_inf");
+            Value* not_nan = builder->CreateFCmpORD(val, val, "not_nan");
+            result = builder->CreateAnd(not_inf, not_nan, "is_finite");
         } else {
             result = ConstantInt::getFalse(*context);
         }
@@ -25227,7 +25197,8 @@ private:
             // Handle predicates as first-class functions (for filter, etc.)
             if (func_name == "even?" || func_name == "odd?" || func_name == "zero?" ||
                 func_name == "positive?" || func_name == "negative?" || func_name == "null?" ||
-                func_name == "pair?") {
+                func_name == "pair?" || func_name == "nan?" || func_name == "infinite?" ||
+                func_name == "finite?") {
                 return createBuiltinPredicateFunction(func_name);
             }
 
@@ -26446,6 +26417,31 @@ private:
                 ConstantInt::get(int64_type, 0));
             Value* is_pair = builder->CreateAnd(is_cons_type, is_not_null);
             result = packBoolToTaggedValue(is_pair);
+        } else if (pred_name == "nan?") {
+            // NaN check: x != x is true only for NaN (unordered comparison)
+            Value* val = extractDoubleFromTagged(arg);
+            Value* is_nan = builder->CreateFCmpUNO(val, val, "is_nan");
+            result = packBoolToTaggedValue(is_nan);
+        } else if (pred_name == "infinite?") {
+            // Infinite check: |x| == infinity
+            Value* val = extractDoubleFromTagged(arg);
+            Function* fabs_fn = Intrinsic::getOrInsertDeclaration(
+                module.get(), Intrinsic::fabs, {double_type});
+            Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
+            Value* pos_inf = ConstantFP::getInfinity(double_type, false);
+            Value* is_inf = builder->CreateFCmpOEQ(abs_val, pos_inf, "is_infinite");
+            result = packBoolToTaggedValue(is_inf);
+        } else if (pred_name == "finite?") {
+            // Finite check: not NaN and not infinite
+            Value* val = extractDoubleFromTagged(arg);
+            Function* fabs_fn = Intrinsic::getOrInsertDeclaration(
+                module.get(), Intrinsic::fabs, {double_type});
+            Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
+            Value* pos_inf = ConstantFP::getInfinity(double_type, false);
+            Value* not_inf = builder->CreateFCmpOLT(abs_val, pos_inf, "not_inf");
+            Value* not_nan = builder->CreateFCmpORD(val, val, "not_nan");
+            Value* is_finite = builder->CreateAnd(not_inf, not_nan, "is_finite");
+            result = packBoolToTaggedValue(is_finite);
         } else {
             eshkol_error("Unknown predicate: %s", pred_name.c_str());
             result = packBoolToTaggedValue(ConstantInt::getFalse(*context));

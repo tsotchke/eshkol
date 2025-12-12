@@ -1,239 +1,312 @@
 # Eshkol Development Roadmap
 
-This document outlines the planned development path for Eshkol, including estimated timelines and feature priorities.
+This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation release** through upcoming versions that will establish Eshkol as the definitive platform for gradient-based computing and integrated AI.
 
-## Version Timeline
+---
 
-### Version 0.1.0-alpha (Early Developer Preview) - Current Release
+## ✅ v1.0-foundation (2025) - COMPLETED
 
-**Focus**: Core language features, basic Scheme compatibility, and scientific computing foundations.
+**Production Release Delivered**
 
-**Key Components**:
-- Basic Scheme syntax and core special forms
-- Function composition with JIT compilation (partial)
-- Optional type annotations and basic type inference
-- Vector operations and automatic differentiation
-- MCP tools for code analysis
+### Completed Core Implementation
+- ✅ LLVM-based modular backend with 15 specialized codegen modules
+- ✅ Recursive descent parser with HoTT type expression support
+- ✅ Bidirectional type checker with gradual typing
+- ✅ Ownership and escape analysis for memory optimization
+- ✅ Module system with dependency resolution and cycle detection
+- ✅ Hygienic macro system (syntax-rules)
+- ✅ R7RS Scheme compatibility (subset)
 
-### Version 0.2.0-alpha (Function Composition Update) - Target: Q2 2025
+### Completed Automatic Differentiation
+- ✅ Forward-mode AD (dual numbers)
+- ✅ Reverse-mode AD (computational graphs)
+- ✅ Nested gradients (32-level tape stack)
+- ✅ Vector calculus operators (8 total): derivative, gradient, jacobian, hessian, divergence, curl, laplacian, directional-derivative
+- ✅ Polymorphic arithmetic (int64/double/dual/tensor/AD-node)
 
-**Focus**: Improving function composition and type system integration.
+### Completed Memory Management
+- ✅ Arena allocation with OALR (Ownership-Aware Lexical Regions)
+- ✅ Escape analysis (stack/region/shared allocation decisions)
+- ✅ with-region syntax for lexical memory scopes
+- ✅ Ownership tracking (owned, moved, borrowed states)
+- ✅ Zero garbage collection - fully deterministic
 
-**Key Components**:
-- Fixed function composition issues (SCH-019)
-- Complete JIT compilation for N-ary composition
-- Improved type system integration
-- Enhanced MCP tools
-- Performance improvements
+### Completed Data Structures
+- ✅ 16-byte tagged values with consolidated types
+- ✅ 32-byte cons cells supporting mixed-type lists
+- ✅ N-dimensional tensors with autodiff integration
+- ✅ Hash tables (FNV-1a hashing, open addressing)
+- ✅ Heterogeneous vectors
+- ✅ Exception handling (guard/raise)
 
-### Version 0.3.0-alpha (Type System Update) - Target: Q3 2025
+### Completed Standard Library
+- ✅ 60+ list operations
+- ✅ 30+ string utilities
+- ✅ Functional programming (compose, curry, flip)
+- ✅ JSON/CSV/Base64 support
+- ✅ Math library (linear algebra, numerical methods, statistics)
 
-**Focus**: Enhanced type system and Scheme compatibility.
+### Completed Development Tools
+- ✅ Interactive REPL with LLVM ORC JIT
+- ✅ Standalone compiler (eshkol-run)
+- ✅ Library compilation mode
+- ✅ Comprehensive test suite (170+ files)
+- ✅ CMake build system
+- ✅ Docker containers
 
-**Key Components**:
-- Enhanced type inference
-- Better error reporting
-- Type predicates implementation
-- Equality predicates implementation
-- List processing functions
+---
 
-### Version 0.4.0-alpha (Performance Update) - Target: Q4 2025
+## 🚧 v1.1-acceleration (Q1 2026) - ACTIVE DEVELOPMENT
 
-**Focus**: Performance optimizations and memory management.
+**Focus:** Performance acceleration through XLA, SIMD, and parallelism
 
-**Key Components**:
-- Reference counting implementation
-- Optimized closure system
-- Enhanced SIMD support
-- Memory usage optimizations
-- Performance benchmarking suite
+### XLA Backend Integration
+- [ ] XLA fusion for tensor operation chains
+- [ ] Automatic kernel generation
+- [ ] CPU/GPU code generation from single source
+- [ ] JIT compilation for dynamic shapes
 
-### Version 0.5.0-beta (Tail Call Update) - Target: Q1 2026
+### SIMD Vectorization
+- [ ] SSE/AVX/NEON instruction generation
+- [ ] Loop vectorization for tensor operations
+- [ ] Memory alignment optimization
+- [ ] Platform-specific tuning
 
-**Focus**: Tail call optimization and recursion support.
+### Concurrency Primitives
+- [ ] `parallel-map` for data parallelism
+- [ ] `parallel-fold` for parallel reduction
+- [ ] `future` for asynchronous computation
+- [ ] Work-stealing scheduler
+- [ ] Thread-safe memory management
 
-**Key Components**:
-- Tail call optimization
-- Improved recursion support
-- Continuations support (partial)
-- Performance enhancements
-- Expanded standard library
+### Extended Math Library
+- [ ] Complex numbers with autodiff
+- [ ] FFT/IFFT operations
+- [ ] Signal processing filters
+- [ ] Statistical distributions
+- [ ] Optimization algorithms (L-BFGS, conjugate gradient)
 
-### Version 0.6.0-beta (Continuations Update) - Target: Q2 2026
+---
 
-**Focus**: Continuations and advanced control flow.
+## 📋 v1.2-scale (Q2 2026) - PLANNED
 
-**Key Components**:
-- Full continuations support
-- Advanced control flow features
-- Enhanced error handling
-- Expanded standard library
-- Improved debugging tools
+**Focus:** GPU acceleration and distributed computing
 
-### Version 1.0.0 (Full Release) - Target: Q3-Q4 2026
+### GPU Acceleration
+- [ ] CUDA backend for NVIDIA GPUs
+- [ ] Metal backend for Apple Silicon
+- [ ] Vulkan Compute for cross-platform
+- [ ] Automatic host↔device memory transfer
+- [ ] Multi-GPU support
 
-**Focus**: Production-ready release with complete feature set.
+### Distributed Training
+- [ ] Data parallelism across machines
+- [ ] Model parallelism for large networks
+- [ ] Gradient synchronization (AllReduce)
+- [ ] MPI integration for HPC clusters
+- [ ] gRPC for cloud deployments
 
-**Key Components**:
-- Complete Scheme compatibility
-- Full numeric tower
-- Hygienic macro system
-- Comprehensive standard library
-- Production-ready performance
-- Complete documentation
+### Model Deployment
+- [ ] Inference optimization (operator fusion, quantization)
+- [ ] ONNX export
+- [ ] TensorFlow Lite export
+- [ ] Core ML export for Apple platforms
+
+---
+
+## 📋 v1.5-intelligence (Q2-Q3 2026) - PLANNED
+
+**Focus:** Neuro-symbolic integration and advanced AI primitives
+
+### Symbolic Reasoning
+- [ ] Logic programming primitives (unification, backtracking)
+- [ ] Constraint solving
+- [ ] Knowledge representation
+- [ ] Neural-guided symbolic search
+
+### Advanced Neural Architectures
+- [ ] Attention mechanisms
+- [ ] Convolution operations  
+- [ ] Recurrent structures
+- [ ] Transformer blocks
+
+### Neuro-Symbolic Models
+- [ ] Knowledge graph embeddings
+- [ ] Differentiable logic programs
+- [ ] Neural theorem provers
+
+---
+
+## 🔬 v2.0-quantum (Q4 2026+) - RESEARCH
+
+**Focus:** Quantum computing and formal verification
+
+### Quantum Computing
+- [ ] Quantum circuit compilation
+- [ ] Qubit allocation and manipulation
+- [ ] Quantum gate operations
+- [ ] Hybrid classical-quantum algorithms
+
+### Advanced Type System
+- [ ] Full dependent type enforcement
+- [ ] Refinement types
+- [ ] Linear resource verification
+- [ ] Integration with proof assistants (Coq, Lean)
+
+### Advanced Optimizations
+- [ ] Whole-program optimization
+- [ ] Polyhedral optimization
+- [ ] Automatic parallelization
+- [ ] Profile-guided optimization
+
+---
 
 ## Development Priorities
 
-### Near-Term Priorities (1-3 Months)
+### Immediate (Next 3 Months)
+1. XLA backend integration
+2. SIMD vectorization (SSE/AVX/NEON)
+3. Parallel map/fold primitives
+4. Thread pool implementation
 
-1. **Function Composition Improvements**
-   - Fix remaining issues with function composition (SCH-019)
-   - Complete JIT compilation for N-ary composition
-   - Implement comprehensive test suite
-   - Optimize performance for complex compositions
+### Near-Term (3-6 Months)
+1. CUDA backend for NVIDIA GPUs
+2. Metal backend for Apple Silicon
+3. Distributed training framework
+4. Model serialization/deployment
 
-2. **Type System Integration**
-   - Resolve type inference issues for autodiff functions (SCH-006)
-   - Fix vector return type handling (SCH-007)
-   - Address type conflicts in generated C code (SCH-008)
-   - Improve mutual recursion handling in type inference (SCH-015)
+### Medium-Term (6-9 Months)
+1. Advanced neural network primitives
+2. Symbolic reasoning integration
+3. Optimizer library expansion
+4. Visualization tools
 
-3. **Core Scheme Compatibility**
-   - Implement basic type predicates (SCH-014)
-   - Add equality predicates (SCH-016)
-   - Implement list processing functions (SCH-018)
-   - Add higher-order functions (SCH-017)
+### Long-Term (9-12+ Months)
+1. Quantum computing integration
+2. Formal verification tools
+3. Advanced type system features
+4. Ecosystem expansion
 
-### Medium-Term Goals (3-6 Months)
+---
 
-1. **Advanced Type System**
-   - Complete type system integration with Scheme
-   - Implement full type inference for complex patterns
-   - Add comprehensive type error reporting
-   - Optimize type checking performance
+## Component Status
 
-2. **Performance Optimization**
-   - Implement reference counting for proper memory management
-   - Optimize closure environment representation
-   - Improve variable lookup in closures
-   - Enhance SIMD optimizations
+### Core Compiler
+- ✅ Parser - Complete
+- ✅ Type Checker - Complete
+- ✅ LLVM Backend - Complete
+- ✅ Module System - Complete
+- ✅ Macro System - Complete
 
-3. **MCP Tools Enhancement**
-   - Improve type analysis tools
-   - Enhance binding flow visualization
-   - Develop better code generation comparison tools
-   - Create performance profiling visualization
-
-### Long-Term Features (6-12 Months)
-
-1. **Tail Call Optimization (SCH-002)**
-   - Design and implement proper tail call optimization
-   - Integrate with existing recursion patterns
-   - Optimize for performance
-   - Develop comprehensive test suite
-
-2. **Continuations Support (SCH-005)**
-   - Design continuation implementation
-   - Implement call/cc and related functions
-   - Integrate with existing control flow
-   - Test with complex scenarios
-
-3. **Full Numeric Tower (SCH-003)**
-   - Implement rational numbers
-   - Add complex number support
-   - Ensure proper type integration
-   - Optimize numeric operations
-
-4. **Hygienic Macro System (SCH-004)**
-   - Design macro expansion system
-   - Implement hygienic macro support
-   - Add syntax-rules or similar
-   - Create comprehensive test suite
-
-## Component Roadmaps
-
-### Core Language Features
-
-| Feature | Current Status | Target Version | Priority |
-|---------|----------------|----------------|----------|
-| Basic Scheme Syntax | 90% Complete | 0.1.0-alpha | Completed |
-| Core Special Forms | 85% Complete | 0.1.0-alpha | Completed |
-| Lambda Expressions | 80% Complete | 0.1.0-alpha | Completed |
-| Lexical Scoping | 80% Complete | 0.1.0-alpha | Completed |
-| Function Composition | 75% Complete | 0.2.0-alpha | High |
-| Tail Call Optimization | Planned | 0.5.0-beta | Medium |
-| Continuations | Planned | 0.6.0-beta | Medium |
-| Hygienic Macros | Planned | 1.0.0 | Low |
-
-### Type System
-
-| Feature | Current Status | Target Version | Priority |
-|---------|----------------|----------------|----------|
-| Optional Type Annotations | 80% Complete | 0.1.0-alpha | Completed |
-| Basic Type Inference | 70% Complete | 0.1.0-alpha | Completed |
-| Type Checking | 60% Complete | 0.2.0-alpha | High |
-| Autodiff Type Integration | 50% Complete | 0.2.0-alpha | High |
-| Vector Type Handling | 50% Complete | 0.2.0-alpha | High |
-| Type Error Reporting | 40% Complete | 0.3.0-alpha | Medium |
-| Polymorphic Types | Planned | 0.3.0-alpha | Medium |
-| Type Classes/Traits | Planned | 0.4.0-alpha | Low |
-
-### Scientific Computing
-
-| Feature | Current Status | Target Version | Priority |
-|---------|----------------|----------------|----------|
-| Vector Operations | 80% Complete | 0.1.0-alpha | Completed |
-| Forward-mode Autodiff | 80% Complete | 0.1.0-alpha | Completed |
-| Reverse-mode Autodiff | 70% Complete | 0.1.0-alpha | Completed |
-| SIMD Optimization | 60% Complete | 0.2.0-alpha | High |
-| Matrix Operations | 50% Complete | 0.2.0-alpha | High |
-| Gradient-based Optimization | 40% Complete | 0.3.0-alpha | Medium |
-| GPU Acceleration | Planned | 0.6.0-beta | Low |
-| Distributed Computing | Planned | Post-1.0 | Low |
+### Automatic Differentiation
+- ✅ Forward Mode - Complete
+- ✅ Reverse Mode - Complete
+- ✅ Nested Gradients - Complete
+- ✅ Vector Calculus - Complete
 
 ### Memory Management
+- ✅ Arena Allocation - Complete
+- ✅ OALR System - Complete
+- ✅ Ownership Tracking - Complete
+- ✅ Escape Analysis - Complete
 
-| Feature | Current Status | Target Version | Priority |
-|---------|----------------|----------------|----------|
-| Arena Allocation | 90% Complete | 0.1.0-alpha | Completed |
-| Memory Tracking | 80% Complete | 0.1.0-alpha | Completed |
-| Object Pools | 70% Complete | 0.1.0-alpha | Completed |
-| Reference Counting | Planned | 0.4.0-alpha | High |
-| Memory Optimization | Planned | 0.4.0-alpha | High |
-| Garbage Collection (Optional) | Planned | Post-1.0 | Low |
+### Standard Library
+- ✅ Core Functions - Complete
+- ✅ List Operations - Complete
+- ✅ String Utilities - Complete
+- ✅ Math Library - Complete
+- ✅ JSON/CSV Support - Complete
 
-### Scheme Compatibility
+### Development Tools
+- ✅ REPL with JIT - Complete
+- ✅ Compiler (eshkol-run) - Complete
+- ✅ Test Suite - Complete
+- ✅ Build System - Complete
 
-| Feature | Current Status | Target Version | Priority |
-|---------|----------------|----------------|----------|
-| Core Data Types | 70% Complete | 0.1.0-alpha | Completed |
-| Basic Operations | 65% Complete | 0.1.0-alpha | Completed |
-| Type Predicates | Planned | 0.2.0-alpha | High |
-| Equality Predicates | Planned | 0.2.0-alpha | High |
-| List Processing | Planned | 0.3.0-alpha | High |
-| Higher-order Functions | Planned | 0.3.0-alpha | Medium |
-| I/O Functions | Planned | 0.4.0-alpha | Medium |
-| Full R5RS Compatibility | Planned | 1.0.0 | Low |
-| R7RS-small Compatibility | Planned | Post-1.0 | Low |
+### In Active Development (v1.1)
+- 🚧 XLA Backend - Active
+- 🚧 SIMD Vectorization - Active
+- 🚧 Parallelism - Active
+- 🚧 Extended Math - Active
+
+### Planned (v1.2+)
+- 📋 GPU Acceleration
+- 📋 Distributed Computing
+- 📋 Advanced Neural Primitives
+- 📋 Quantum Computing
+
+---
+
+## Research Directions
+
+**Active Research:**
+- Polyhedral optimization for nested loops
+- AD of recursive algorithms
+- Linear type systems for resources
+- Effect systems for purity tracking
+
+**Exploratory Research:**
+- Probabilistic programming
+- Formal verification of AD
+- Hardware-software co-design
+- Novel memory strategies
+
+---
+
+## Community Engagement
+
+**Open Source Development:**
+- GitHub repository with MIT license
+- Active issue tracking and PR reviews
+- Quarterly release cycle
+- Community contribution guidelines
+
+**Academic Partnerships:**
+- University curriculum integration
+- Research collaborations
+- Conference presentations
+- Student project sponsorship
+
+**Enterprise Support:**
+- Professional consulting
+- Custom feature development
+- Training and workshops
+- Priority support
+
+---
 
 ## How to Contribute
 
-We welcome contributions to help us achieve these roadmap goals! Here are some ways you can help:
+We welcome contributions in all areas:
 
-1. **Fix Known Issues**: Check the [KNOWN_ISSUES.md](docs/scheme_compatibility/KNOWN_ISSUES.md) file for current limitations and bugs that need fixing.
+**Core Development:**
+- Implement planned features
+- Optimize existing code
+- Fix bugs and issues
+- Improve test coverage
 
-2. **Implement Planned Features**: Pick a feature from the roadmap that interests you and implement it.
+**Research:**
+- Explore new AD techniques
+- Investigate type system extensions
+- Study memory management innovations
+- Publish findings
 
-3. **Improve Documentation**: Help us improve our documentation to make Eshkol more accessible to new users.
+**Documentation:**
+- Improve user guides
+- Write tutorials
+- Create examples
+- Update specifications
 
-4. **Write Tests**: Help us improve our test coverage to ensure Eshkol is robust and reliable.
+**Ecosystem:**
+- Develop libraries
+- Create tools
+- Build integrations
+- Share use cases
 
-5. **Performance Optimization**: Help us identify and fix performance bottlenecks.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 
-See our [CONTRIBUTING.md](CONTRIBUTING.md) for more details on how to contribute.
+---
 
-## Roadmap Updates
+*Last Updated: December 2025*
 
-This roadmap is a living document and will be updated regularly as development progresses. Major updates to the roadmap will be announced in the release notes and on the project's GitHub Discussions.
-
-Last updated: April 2, 2025
+*Eshkol v1.0-foundation represents a completed production compiler. The roadmap now focuses on performance acceleration (XLA, SIMD, GPU) and advanced AI capabilities (neuro-symbolic, quantum computing) that will establish Eshkol as the definitive platform for gradient-based computing.*
