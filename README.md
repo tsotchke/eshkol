@@ -593,7 +593,7 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 |---------|--------|-------|-----|--------|------|
 | Native AD | ✓ (3 modes) | ✗ | ✓ (reverse) | ✗ | ✗ |
 | Memory Safety | ✓ (arena+linear) | ✗ | ✗ | ✓ (GC) | ✓ (ownership) |
-| Homoiconicity | ✓ (native) | ✗ | ✗ | ✓ | ✗ |
+| Homoiconicity | ✓ (native) | ✓ (partial) | ✗ | ✓ | ✗ |
 | Native Compilation | ✓ (LLVM) | ✓ | ✓ (XLA) | ✗ | ✓ |
 | Deterministic Perf | ✓ (no GC) | ✗ | ✗ | ✗ | ✓ |
 | Dependent Types | ✓ (HoTT) | ✗ | ✗ | ✗ | ✗ |
