@@ -177,60 +177,60 @@ Based on compiler source code analysis:
 ### 2.1 Architectural Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    ESHKOL NEURO-SYMBOLIC ARCHITECTURE                       │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
+┌────────────────────────────────────────────────────────────────────────────┐
+│                    ESHKOL NEURO-SYMBOLIC ARCHITECTURE                      │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                        USER PROGRAMS                                 │   │
+│  │                        USER PROGRAMS                                │   │
 │  │   (define (intelligent-agent percept)                               │   │
 │  │     (let* ((symbols (perceive percept))        ; Neural→Symbolic    │   │
 │  │            (plan (reason symbols kb))          ; Symbolic reasoning │   │
 │  │            (action (decide plan policy)))      ; Neural policy      │   │
 │  │       action))                                                      │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
-│                                    │                                        │
-│                                    ▼                                        │
+│                                    │                                       │
+│                                    ▼                                       │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │                    NEURO-SYMBOLIC INTERFACE                         │   │
-│  │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐           │   │
-│  │  │   perceive    │  │    reason     │  │    decide     │           │   │
-│  │  │ (Neural→Sym)  │  │  (Symbolic)   │  │ (Sym→Neural)  │           │   │
-│  │  └───────┬───────┘  └───────┬───────┘  └───────┬───────┘           │   │
+│  │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐            │   │
+│  │  │   perceive    │  │    reason     │  │    decide     │            │   │
+│  │  │ (Neural→Sym)  │  │  (Symbolic)   │  │ (Sym→Neural)  │            │   │
+│  │  └───────┬───────┘  └───────┬───────┘  └───────┬───────┘            │   │
 │  │          │                  │                  │                    │   │
 │  │          ▼                  ▼                  ▼                    │   │
-│  │  ┌───────────────────────────────────────────────────────────┐     │   │
-│  │  │              DIFFERENTIABLE BRIDGE LAYER                  │     │   │
-│  │  │  • Soft unification    • Attention over KB                │     │   │
-│  │  │  • Symbol embeddings   • Gradient estimators              │     │   │
-│  │  └───────────────────────────────────────────────────────────┘     │   │
+│  │  ┌───────────────────────────────────────────────────────────┐      │   │
+│  │  │              DIFFERENTIABLE BRIDGE LAYER                  │      │   │
+│  │  │  • Soft unification    • Attention over KB                │      │   │
+│  │  │  • Symbol embeddings   • Gradient estimators              │      │   │
+│  │  └───────────────────────────────────────────────────────────┘      │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
-│                                    │                                        │
+│                                    │                                       │
 │          ┌─────────────────────────┴─────────────────────────┐             │
 │          ▼                                                   ▼             │
-│  ┌───────────────────────────────┐   ┌───────────────────────────────┐    │
-│  │      NEURAL SUBSTRATE         │   │     SYMBOLIC SUBSTRATE        │    │
-│  │  ┌─────────────────────────┐  │   │  ┌─────────────────────────┐  │    │
-│  │  │ Autodiff (3 modes)      │  │   │  │ Unification Engine      │  │    │
-│  │  │ • Symbolic (diff)       │  │   │  │ • Pattern matching      │  │    │
-│  │  │ • Forward (derivative)  │  │   │  │ • Variable binding      │  │    │
-│  │  │ • Reverse (gradient)    │  │   │  │ • Occurs check          │  │    │
-│  │  └─────────────────────────┘  │   │  └─────────────────────────┘  │    │
-│  │  ┌─────────────────────────┐  │   │  ┌─────────────────────────┐  │    │
-│  │  │ Tensor Operations       │  │   │  │ Knowledge Base          │  │    │
-│  │  │ • matmul, transpose     │  │   │  │ • Facts & rules         │  │    │
-│  │  │ • tensor-dot, reshape   │  │   │  │ • Triple store          │  │    │
-│  │  │ • Broadcasting          │  │   │  │ • Indexing              │  │    │
-│  │  └─────────────────────────┘  │   │  └─────────────────────────┘  │    │
-│  │  ┌─────────────────────────┐  │   │  ┌─────────────────────────┐  │    │
-│  │  │ Vector Calculus         │  │   │  │ Inference Engines       │  │    │
-│  │  │ • ∇, ∇·, ∇×, ∇²        │  │   │  │ • Forward chaining      │  │    │
-│  │  │ • Jacobian, Hessian     │  │   │  │ • Backward chaining     │  │    │
-│  │  │ • Directional deriv     │  │   │  │ • Constraint solving    │  │    │
-│  │  └─────────────────────────┘  │   │  └─────────────────────────┘  │    │
-│  └───────────────────────────────┘   └───────────────────────────────┘    │
-│                                    │                                        │
-│                                    ▼                                        │
+│  ┌───────────────────────────────┐   ┌───────────────────────────────┐     │
+│  │      NEURAL SUBSTRATE         │   │     SYMBOLIC SUBSTRATE        │     │
+│  │  ┌─────────────────────────┐  │   │  ┌─────────────────────────┐  │     │
+│  │  │ Autodiff (3 modes)      │  │   │  │ Unification Engine      │  │     │
+│  │  │ • Symbolic (diff)       │  │   │  │ • Pattern matching      │  │     │
+│  │  │ • Forward (derivative)  │  │   │  │ • Variable binding      │  │     │
+│  │  │ • Reverse (gradient)    │  │   │  │ • Occurs check          │  │     │
+│  │  └─────────────────────────┘  │   │  └─────────────────────────┘  │     │
+│  │  ┌─────────────────────────┐  │   │  ┌─────────────────────────┐  │     │
+│  │  │ Tensor Operations       │  │   │  │ Knowledge Base          │  │     │
+│  │  │ • matmul, transpose     │  │   │  │ • Facts & rules         │  │     │
+│  │  │ • tensor-dot, reshape   │  │   │  │ • Triple store          │  │     │
+│  │  │ • Broadcasting          │  │   │  │ • Indexing              │  │     │
+│  │  └─────────────────────────┘  │   │  └─────────────────────────┘  │     │
+│  │  ┌─────────────────────────┐  │   │  ┌─────────────────────────┐  │     │
+│  │  │ Vector Calculus         │  │   │  │ Inference Engines       │  │     │
+│  │  │ • ∇, ∇·, ∇×, ∇²         │  │   │  │ • Forward chaining      │  │     │
+│  │  │ • Jacobian, Hessian     │  │   │  │ • Backward chaining     │  │     │
+│  │  │ • Directional deriv     │  │   │  │ • Constraint solving    │  │     │
+│  │  └─────────────────────────┘  │   │  └─────────────────────────┘  │     │
+│  └───────────────────────────────┘   └───────────────────────────────┘     │
+│                                    │                                       │
+│                                    ▼                                       │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │                      RUNTIME FOUNDATION                             │   │
 │  │  • Tagged values (16-byte, type-dispatched)                         │   │
@@ -238,8 +238,8 @@ Based on compiler source code analysis:
 │  │  • JIT compilation (LLVM ORC)                                       │   │
 │  │  • Homoiconicity (code = data)                                      │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.2 Component Specifications
@@ -919,12 +919,12 @@ The HoTT type system provides:
             ┌───────────────┼───────────────┐
             │               │               │
             ▼               ▼               ▼
-         Value          Resource        Proposition
+         Value           Resource        Proposition
             │               │               │
-     ┌──────┼──────┐       │           ┌───┴───┐
-     │      │      │       │           │       │
-     ▼      ▼      ▼       ▼           ▼       ▼
-  Number  Text  Collection Handle    Proof   Witness
+     ┌──────┼──────┐        │           ┌───┴───┐
+     │      │      │        │           │       │
+     ▼      ▼      ▼        ▼           ▼       ▼
+  Number  Text  Collection  Handle    Proof   Witness
 ```
 
 ### 6.2 Dependent Types for Neural-Symbolic Operations
@@ -987,25 +987,25 @@ The HoTT type system provides:
 ### Overview Timeline
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                     ESHKOL NEURO-SYMBOLIC: 6-MONTH PLAN                      │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Month 1          Month 2          Month 3          Month 4          Month 5          Month 6
-│  ════════         ════════         ════════         ════════         ════════         ════════
-│                                                                              │
-│  ┌─────────┐      ┌─────────┐      ┌─────────┐      ┌─────────┐      ┌─────────┐      ┌─────────┐
-│  │ HoTT    │      │ Logic   │      │Knowledge│      │ Neural- │      │ Program │      │ Polish  │
-│  │ Types   │ ──▶  │ Core    │ ──▶  │ Base    │ ──▶  │Symbolic │ ──▶  │Synthesis│ ──▶  │  and    │
-│  │ Phase 1 │      │ Phase 2 │      │ Phase 3 │      │ Phase 4 │      │ Phase 5 │      │ Release │
-│  └─────────┘      └─────────┘      └─────────┘      └─────────┘      └─────────┘      └─────────┘
-│                                                                              │
-│  • Type infra     • Unification    • Fact DB       • Embeddings    • Holes/??       • Perf opt
-│  • Parser ext     • Backtracking   • Rules         • Soft unify    • Enumeration    • Examples
-│  • Type checker   • Logic vars     • Triple store  • Attention     • Neural guide   • Docs
-│  • Proof erasure  • Testing        • Inference     • Grad estim    • Testing        • Release
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                     ESHKOL NEURO-SYMBOLIC: 6-MONTH PLAN                                            │
+├────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                    │
+│  Month 1          Month 2          Month 3          Month 4          Month 5          Month 6      │
+│  ════════         ════════         ════════         ════════         ════════         ════════     │
+│                                                                                                    │
+│  ┌─────────┐      ┌─────────┐      ┌─────────┐      ┌─────────┐      ┌─────────┐      ┌─────────┐  │
+│  │ HoTT    │      │ Logic   │      │Knowledge│      │ Neural- │      │ Program │      │ Polish  │  │
+│  │ Types   │ ──▶  │ Core    │ ──▶  │ Base    │ ──▶  │Symbolic │ ──▶  │Synthesis│ ──▶  │  and    │  │
+│  │ Phase 1 │      │ Phase 2 │      │ Phase 3 │      │ Phase 4 │      │ Phase 5 │      │ Release │  │
+│  └─────────┘      └─────────┘      └─────────┘      └─────────┘      └─────────┘      └─────────┘  │
+│                                                                                                    │
+│  • Type infra     • Unification    • Fact DB       • Embeddings    • Holes/??       • Perf opt     │
+│  • Parser ext     • Backtracking   • Rules         • Soft unify    • Enumeration    • Examples     │
+│  • Type checker   • Logic vars     • Triple store  • Attention     • Neural guide   • Docs         │
+│  • Proof erasure  • Testing        • Inference     • Grad estim    • Testing        • Release      │
+│                                                                                                    │
+└────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Month 1: HoTT Type System Foundation
