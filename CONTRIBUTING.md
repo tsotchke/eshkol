@@ -4,21 +4,30 @@ Thank you for your interest in contributing to Eshkol! This document provides gu
 
 ## Table of Contents
 
-- [Code of Conduct](#code-of-conduct)
-- [Getting Started](#getting-started)
-  - [Development Environment Setup](#development-environment-setup)
-  - [Building the Project](#building-the-project)
-  - [Running Tests](#running-tests)
-- [How to Contribute](#how-to-contribute)
-  - [Reporting Issues](#reporting-issues)
-  - [Suggesting Enhancements](#suggesting-enhancements)
-  - [Pull Requests](#pull-requests)
-- [Development Guidelines](#development-guidelines)
-  - [Coding Standards](#coding-standards)
-  - [Documentation](#documentation)
-  - [Testing](#testing)
-- [Project Structure](#project-structure)
-- [Communication](#communication)
+- [Contributing to Eshkol](#contributing-to-eshkol)
+  - [Table of Contents](#table-of-contents)
+  - [Code of Conduct](#code-of-conduct)
+  - [Getting Started](#getting-started)
+    - [Development Environment Setup](#development-environment-setup)
+    - [Building the Project](#building-the-project)
+    - [Running Tests](#running-tests)
+  - [How to Contribute](#how-to-contribute)
+    - [Reporting Issues](#reporting-issues)
+    - [Suggesting Enhancements](#suggesting-enhancements)
+    - [Pull Requests](#pull-requests)
+  - [Development Guidelines](#development-guidelines)
+    - [Coding Standards](#coding-standards)
+      - [C Code](#c-code)
+      - [TypeScript Code (MCP Tools)](#typescript-code-mcp-tools)
+    - [Documentation](#documentation)
+    - [Testing](#testing)
+  - [Project Structure](#project-structure)
+  - [Communication](#communication)
+  - [Priority Areas for Contribution (v1.1+)](#priority-areas-for-contribution-v11)
+    - [Immediate Priorities (v1.1-acceleration - Q1 2026)](#immediate-priorities-v11-acceleration---q1-2026)
+    - [Near-Term (v1.2-scale - Q2 2026)](#near-term-v12-scale---q2-2026)
+    - [Ongoing](#ongoing)
+  - [Recognition](#recognition)
 
 ## Code of Conduct
 
@@ -214,18 +223,29 @@ eshkol/
 - **GitHub Discussions**: For general questions, ideas, and community discussions.
 - **Pull Requests**: For code contributions and code reviews.
 
-## Priority Areas for Contribution
+## Priority Areas for Contribution (v1.1+)
 
-We especially welcome contributions in these areas:
+v1.0-foundation is **complete**. We welcome contributions for upcoming releases:
 
-1. **Function Composition**: Fixing issues with function composition (SCH-019).
-2. **Type System**: Improving type inference and integration with autodiff.
-3. **Scheme Compatibility**: Implementing standard Scheme functions and predicates.
-4. **Documentation**: Improving tutorials, examples, and API documentation.
-5. **Testing**: Adding more tests and improving test coverage.
-6. **Performance**: Optimizing the compiler and runtime.
+### Immediate Priorities (v1.1-acceleration - Q1 2026)
+1. **XLA Backend Integration**: Accelerated tensor operations
+2. **SIMD Vectorization**: SSE/AVX/NEON instruction generation
+3. **Parallelism Primitives**: parallel-map, parallel-fold, work-stealing scheduler
+4. **Extended Math Library**: Complex numbers, FFT, signal processing
 
-See the [ROADMAP.md](ROADMAP.md) for more details on our development priorities.
+### Near-Term (v1.2-scale - Q2 2026)
+1. **GPU Backends**: CUDA, Metal, Vulkan implementation
+2. **Distributed Training**: Multi-node gradient synchronization
+3. **Model Deployment**: ONNX/TFLite/CoreML export
+4. **Inference Optimization**: Operator fusion, quantization
+
+### Ongoing
+1. **Documentation**: Tutorials, examples, case studies
+2. **Testing**: Expanded test coverage, benchmarking
+3. **Standard Library**: Additional modules and utilities
+4. **Bug Fixes**: Report and fix any issues found
+
+See [ROADMAP.md](ROADMAP.md) and [docs/vision/FUTURE_ROADMAP.md](docs/vision/FUTURE_ROADMAP.md) for complete development plans.
 
 ## Recognition
 

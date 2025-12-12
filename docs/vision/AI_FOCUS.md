@@ -1,263 +1,723 @@
-# Eshkol: AI and Neuro-Symbolic Intelligence Focus
+# Eshkol: Automatic Differentiation for Neural Networks and Gradient-Based Optimization
 
-This document details how Eshkol is uniquely positioned to address the challenges of modern AI development, particularly in the emerging field of neuro-symbolic AI.
+This document details Eshkol v1.0-architecture's **production automatic differentiation system** - a compiler-integrated implementation supporting forward-mode dual numbers, reverse-mode computational graphs, and nested gradients.
 
-## The Neuro-Symbolic AI Challenge
+## The AD Challenge in ML/AI
 
-Modern AI faces a fundamental challenge: neural networks excel at pattern recognition but struggle with reasoning, while symbolic systems excel at reasoning but struggle with perception. Neuro-symbolic AI aims to bridge this gap by combining the strengths of both approaches.
+Modern machine learning depends on automatic differentiation for:
+- **Neural network training** via backpropagation
+- **Gradient-based optimization** (gradient descent, Adam, BFGS)
+- **Physics-informed neural networks** with differentiable constraints
+- **Differentiable rendering** and simulation
 
-Eshkol was designed from the ground up to support this integration, providing a unified language for both neural and symbolic computation.
+Existing solutions (JAX, PyTorch, TensorFlow) implement AD as **external libraries**, requiring framework boundaries, graph tracing, and language-specific quirks. Eshkol integrates AD directly into the **compiler**, making differentiation a natural language operation.
 
-## Self-Modifying Homoiconicity
+## Eshkol's AD System Architecture
 
-### The Power of Code as Data
+### Three Complementary Modes
 
-Eshkol inherits the homoiconicity of Lisp/Scheme, where code is represented as data structures that can be manipulated by the language itself. This property is particularly valuable for AI systems that need to reason about and modify their own algorithms.
+**1. Symbolic Differentiation (Compile-Time)**
+- AST transformation during parsing
+- Symbolic manipulation of mathematical expressions
+- Used for simple analytical derivatives
+- Implementation: `lib/core/ast.cpp` symbolic AST helpers
 
-```scheme
-;; Example: A function that generates a specialized version of itself
-(define (create-specialized-function parameter)
-  `(lambda (x)
-     (+ x ,parameter)))
+**2. Forward-Mode AD (Dual Numbers)**
+- Runtime propagation of derivatives alongside values
+- Efficient for functions ℝ → ℝⁿ (few inputs, many outputs)
+- Implemented with `eshkol_dual_number_t` structure
 
-;; Usage
-(define add-5 (eval (create-specialized-function 5)))
-(add-5 10)  ; => 15
+**3. Reverse-Mode AD (Computational Graphs)**
+- Records computation during forward pass
+- Backpropagates gradients from outputs to inputs
+- Efficient for functions ℝⁿ → ℝ (many inputs, few outputs)
+- Essential for neural network training
+
+## Forward-Mode AD: Dual Numbers
+
+### Dual Number Structure
+```c
+struct eshkol_dual_number {
+    double value;       // f(x)
+    double derivative;  // f'(x)
+}
 ```
 
-### Applications in AI
+### Arithmetic Rules
+Implemented in `lib/backend/autodiff_codegen.cpp`:
+- **(a, a') + (b, b')** = (a+b, a'+b')
+- **(a, a') - (b, b')** = (a-b, a'-b')
+- **(a, a') × (b, b')** = (a×b, a×b' + a'×b)
+- **(a, a') ÷ (b, b')** = (a/b, (a'×b - a×b')/b²)
 
-This homoiconicity enables several powerful capabilities for AI systems:
-
-1. **Self-Modifying Algorithms**: AI systems can analyze their own code and make improvements based on performance metrics.
-
-2. **Meta-Learning**: Systems can learn how to learn by generating and evaluating different learning algorithms.
-
-3. **Program Synthesis**: AI can generate new programs or modify existing ones to solve specific problems.
-
-4. **Symbolic Reasoning**: Symbolic manipulation of code enables formal reasoning about program properties.
-
-## Differentiable Programming
-
-### Built-in Automatic Differentiation
-
-Eshkol integrates automatic differentiation directly into the language, making it possible to differentiate any function without manual derivative calculations.
-
-```scheme
-;; Define a function
-(define (f x)
-  (* x x x))
-
-;; Get its derivative
-(define df/dx (derivative f))
-
-;; Use the derivative
-(df/dx 3)  ; => 27 (3x²)
+### Math Function Support
+All standard math functions extended to dual numbers:
+```c
+// From autodiff_codegen.cpp
+dualSin(dual)   // (sin(x), cos(x)×x')
+dualCos(dual)   // (cos(x), -sin(x)×x')
+dualExp(dual)   // (exp(x), exp(x)×x')
+dualLog(dual)   // (log(x), x'/x)
+dualSqrt(dual)  // (√x, x'/(2√x))
+dualTan(dual)   // (tan(x), x'/cos²(x))
 ```
 
-### Higher-Order Derivatives
+### derivative Operator
 
-Eshkol supports higher-order derivatives, enabling advanced optimization techniques and physical simulations.
-
+**Syntax:**
 ```scheme
-;; Second derivative
-(define d²f/dx² (derivative df/dx))
-
-;; Use the second derivative
-(d²f/dx² 3)  ; => 18 (6x)
+(derivative function point)       ; Evaluate at point
+(derivative function)             ; Return derivative function
 ```
 
-### Applications in AI
-
-This built-in differentiability enables:
-
-1. **End-to-End Differentiable Models**: Create models where every component is differentiable, allowing for more effective optimization.
-
-2. **Custom Neural Network Architectures**: Design and implement novel neural network architectures with full control over the differentiation process.
-
-3. **Physics-Informed Neural Networks**: Incorporate physical laws as differentiable constraints in neural networks.
-
-4. **Differentiable Reasoning**: Develop systems that can reason symbolically while remaining differentiable.
-
-## Neural-Symbolic Integration
-
-### Representing Neural Networks
-
-Eshkol provides a concise and expressive syntax for defining neural networks:
-
+**Working Example:**
 ```scheme
-(define-neural-network mnist-classifier
-  (layer conv1 (conv2d [28 28 1] 32 [5 5] :activation relu))
-  (layer pool1 (max-pool [2 2]))
-  (layer conv2 (conv2d 64 [5 5] :activation relu))
-  (layer pool2 (max-pool [2 2]))
-  (layer fc1 (dense 1024 :activation relu))
-  (layer dropout (dropout 0.4))
-  (layer fc2 (dense 10 :activation softmax))
-  
-  (define (forward x)
-    (-> x
-        (conv1)
-        (pool1)
-        (conv2)
-        (pool2)
-        (flatten)
-        (fc1)
-        (dropout)
-        (fc2))))
+(define (f x) (* x x x))          ; f(x) = x³
+
+(derivative f 2.0)                ; => 12.0 (3x² at x=2)
+
+(define df (derivative f))        ; Higher-order usage
+(df 3.0)                          ; => 27.0 (3x² at x=3)
 ```
 
-### Symbolic Reasoning Integration
+**Implementation:**
+1. Wrap input in dual number: `(x, 1.0)` for tangent
+2. Execute function with dual arithmetic
+3. Extract derivative from result dual
 
-Eshkol allows for seamless integration of symbolic reasoning with neural computation:
+## Reverse-Mode AD: Computational Graphs
 
-```scheme
-(define (neural-symbolic-classifier image)
-  ;; Neural component: extract features
-  (let* ([features (feature-extractor image)]
-         ;; Symbolic component: apply rules to features
-         [symbolic-features (apply-domain-knowledge features)]
-         ;; Neural component: final classification
-         [classification (classifier (concatenate features symbolic-features))])
-    classification))
+### AD Node Structure
+```c
+struct ad_node {
+    ad_node_type_t type;   // Operation: ADD, MUL, SIN, etc.
+    double value;          // Forward pass result
+    double gradient;       // Backward pass gradient
+    ad_node_t* input1;     // First parent
+    ad_node_t* input2;     // Second parent
+    size_t id;             // Topological sort ID
+}
 ```
 
-### Applications in AI
-
-This integration enables:
-
-1. **Knowledge-Enhanced Neural Networks**: Incorporate domain knowledge into neural networks to improve sample efficiency and interpretability.
-
-2. **Neural-Guided Symbolic Reasoning**: Use neural networks to guide symbolic search or reasoning processes.
-
-3. **Explainable AI**: Develop systems that can provide symbolic explanations for their neural predictions.
-
-4. **Hybrid Learning**: Combine gradient-based learning with symbolic learning methods.
-
-## Memory Efficiency for AI
-
-### Arena-Based Memory Management
-
-Eshkol's arena-based memory management system is particularly well-suited for AI workloads:
-
-1. **Predictable Performance**: No garbage collection pauses during critical computations.
-
-2. **Efficient Tensor Operations**: Memory for tensor operations can be pre-allocated and reused.
-
-3. **Locality-Aware Allocation**: Related data can be kept close in memory, improving cache performance.
-
-4. **Custom Memory Strategies**: Different components can use different memory management strategies.
-
-### Applications in AI
-
-This memory efficiency enables:
-
-1. **Larger Models**: Train and deploy larger models with the same hardware resources.
-
-2. **Real-Time AI**: Develop AI systems with strict timing requirements.
-
-3. **Edge Deployment**: Run sophisticated AI models on resource-constrained devices.
-
-4. **Efficient Training**: Reduce memory overhead during training, allowing for larger batch sizes.
-
-## Performance for AI Workloads
-
-### SIMD Optimization
-
-Eshkol automatically applies SIMD optimizations to vector and matrix operations, which are the backbone of most AI computations.
-
-### Parallelism
-
-Built-in parallelism primitives make it easy to distribute AI workloads across multiple cores:
-
-```scheme
-;; Parallel map for data processing
-(pmap process-image dataset)
-
-;; Parallel fold for aggregation
-(pfold + 0 results)
+### Operation Types
+```c
+AD_NODE_CONSTANT   // Leaf: constant value
+AD_NODE_VARIABLE   // Leaf: input variable
+AD_NODE_ADD        // Binary: a + b
+AD_NODE_SUB        // Binary: a - b
+AD_NODE_MUL        // Binary: a × b
+AD_NODE_DIV        // Binary: a ÷ b
+AD_NODE_SIN        // Unary: sin(a)
+AD_NODE_COS        // Unary: cos(a)
+AD_NODE_EXP        // Unary: exp(a)
+AD_NODE_LOG        // Unary: log(a)
+AD_NODE_POW        // Binary: a^b
+AD_NODE_NEG        // Unary: -a
 ```
 
-### C Interoperability
+### Tape Structure
 
-Seamless integration with C libraries allows Eshkol to leverage existing high-performance AI libraries:
-
-```scheme
-;; Use an external C library for GPU acceleration
-(define-external-function cuda-matmul
-  :args ((pointer float) (pointer float) (pointer float) int int int)
-  :return void)
-
-;; Use it in Eshkol code
-(define (matrix-multiply a b)
-  (let* ([m (rows a)]
-         [n (cols a)]
-         [p (cols b)]
-         [c (make-matrix m p)])
-    (cuda-matmul (pointer a) (pointer b) (pointer c) m n p)
-    c))
+**AD Tape:**
+```c
+struct ad_tape {
+    ad_node_t** nodes;         // Nodes in execution order
+    size_t num_nodes;          // Current count
+    size_t capacity;           // Allocated capacity
+    ad_node_t** variables;     // Input variable nodes
+    size_t num_variables;      // Number of inputs
+}
 ```
 
-### Applications in AI
-
-This performance focus enables:
-
-1. **Faster Training**: Reduce training time for complex models.
-
-2. **Real-Time Inference**: Perform inference with strict latency requirements.
-
-3. **Larger Models**: Train and deploy larger models with the same computational resources.
-
-4. **Energy Efficiency**: Reduce energy consumption for AI workloads.
-
-## Case Studies
-
-### Case Study 1: Self-Improving Code Generator
-
-```scheme
-(define (code-generator spec)
-  (let* ([initial-code (generate-initial-code spec)]
-         [performance (evaluate-performance initial-code)]
-         [improved-code (optimize-code initial-code performance)])
-    improved-code))
-
-(define (optimize-code code performance)
-  ;; Neural component: predict which transformations will improve performance
-  (let* ([transformations (predict-useful-transformations code performance)]
-         ;; Symbolic component: apply code transformations
-         [candidates (map (lambda (t) (apply-transformation t code)) transformations)]
-         ;; Evaluate and select the best candidate
-         [performances (map evaluate-performance candidates)]
-         [best-idx (argmax performances)]
-         [best-candidate (list-ref candidates best-idx)])
-    ;; Recursively optimize if significant improvement
-    (if (> (list-ref performances best-idx) (* performance 1.1))
-        (optimize-code best-candidate (list-ref performances best-idx))
-        best-candidate)))
+**Global State:**
+```c
+ad_tape_t* __current_ad_tape;  // Active tape for recording
+bool __ad_mode_active;         // AD context flag
 ```
 
-### Case Study 2: Neural-Symbolic Theorem Prover
+### gradient Operator
 
+**Syntax:**
 ```scheme
-(define (neural-symbolic-prover theorem)
-  (let* ([symbolic-state (initialize-proof-state theorem)]
-         [max-steps 1000]
-         [result (prove-step symbolic-state 0 max-steps)])
-    result))
-
-(define (prove-step state step max-steps)
-  (if (or (proof-complete? state) (>= step max-steps))
-      state
-      (let* ([possible-actions (get-possible-actions state)]
-             ;; Neural component: rank possible next steps
-             [action-scores (neural-action-ranker state possible-actions)]
-             [best-action (argmax action-scores)]
-             [new-state (apply-action best-action state)])
-        (prove-step new-state (+ step 1) max-steps))))
+(gradient function point)        ; Vector → ℝ
+(gradient function)              ; Return gradient function
 ```
 
-## Conclusion
+**Working Example:**
+```scheme
+(define (f v)
+  (+ (* (vref v 0) (vref v 0))    ; x²
+     (* (vref v 1) (vref v 1))))  ; + y²
 
-Eshkol's unique combination of features makes it an ideal language for the next generation of AI research and development, particularly in the emerging field of neuro-symbolic AI. By providing a unified language for both neural and symbolic computation, with built-in support for differentiability, memory efficiency, and high performance, Eshkol enables AI researchers and engineers to explore new approaches to artificial intelligence that combine the strengths of neural networks and symbolic reasoning.
+(gradient f #(3.0 4.0))           ; => #(6.0 8.0)
+; Gradient ∇f = [∂f/∂x, ∂f/∂y] = [2x, 2y]
+```
 
-The journey toward truly intelligent systems requires bridging the gap between pattern recognition and reasoning, between perception and knowledge. Eshkol provides the tools to build this bridge, enabling the development of AI systems that can both learn from data and reason about what they've learned.
+**Implementation Steps:**
+1. **Forward Pass**: Record operations on tape as AD nodes
+2. **Seed Output**: Set output gradient to 1.0
+3. **Backward Pass**: Traverse tape in reverse, accumulate gradients
+4. **Extract**: Collect gradients for input variables
+
+**Backward Pass Rules:**
+```c
+// From backpropagate() in autodiff_codegen.cpp
+For each node in reverse order:
+  switch (node->type) {
+    case AD_NODE_ADD:
+      input1->gradient += node->gradient
+      input2->gradient += node->gradient
+      break
+    case AD_NODE_MUL:
+      input1->gradient += node->gradient * input2->value
+      input2->gradient += node->gradient * input1->value
+      break
+    case AD_NODE_SIN:
+      input1->gradient += node->gradient * cos(input1->value)
+      break
+    // ... and so on for each operation
+  }
+```
+
+## Nested Gradient Support
+
+### Tape Stack Architecture
+
+**Maximum Nesting Depth:** 32 levels
+```c
+ad_tape_t* __ad_tape_stack[32];
+uint64_t __ad_tape_depth = 0;
+```
+
+**Operations:**
+```c
+pushTapeContext()  // Push new tape for inner gradient
+popTapeContext()   // Restore outer tape
+```
+
+### Nested Gradient Example
+
+```scheme
+; Compute ∂²f/∂x∂y
+(define (f x y) (* x y y))
+
+(gradient 
+  (lambda (x)
+    (gradient 
+      (lambda (y) (f x y))
+      (vector 2.0)))
+  (vector 3.0))
+
+; Execution:
+; 1. Outer gradient pushes tape context
+; 2. Inner gradient computes ∂(xy²)/∂y = 2xy at y=2
+; 3. Inner result is 12x (as function of x)
+; 4. Outer gradient computes ∂(12x)/∂x = 12
+```
+
+**Tape Stack Management:**
+- Tape 0 (outermost): Tracks operations on x
+- Tape 1 (inner): Tracks operations on y
+- Each tape isolated, gradients accumulate independently
+- Supports arbitrary nesting up to depth limit
+
+## Vector Calculus Operators
+
+### jacobian - Jacobian Matrix
+
+**Syntax:** `(jacobian function point)`
+
+**Domain:** Vector function ℝⁿ → ℝᵐ
+
+**Returns:** m×n matrix of partial derivatives
+
+**Example:**
+```scheme
+; Polar to Cartesian: ℝ² → ℝ²
+(define (polar->cart v)
+  (let ((r (vref v 0))
+        (theta (vref v 1)))
+    (vector (* r (cos theta))
+            (* r (sin theta)))))
+
+(jacobian polar->cart #(1.0 0.0))
+; => Jacobian matrix ∂(x,y)/∂(r,θ) at (1,0)
+```
+
+**Implementation:**
+- Applies gradient to each output component
+- Assembles results into matrix
+- Uses nested tape contexts for each component
+
+### hessian - Hessian Matrix
+
+**Syntax:** `(hessian function point)`
+
+**Domain:** Scalar field ℝⁿ → ℝ
+
+**Returns:** n×n matrix of second partial derivatives
+
+**Example:**
+```scheme
+(define (quadratic v)
+  (+ (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1))))
+
+(hessian quadratic #(1.0 1.0))
+; => #((2.0 0.0) (0.0 2.0))
+; Constant Hessian for quadratic
+```
+
+**Implementation:**
+- Double backward: gradient of gradient
+- Tape stack depth = 2 for nested differentiation
+- Polynomial degree tracking for efficiency
+
+### divergence - Vector Field Divergence
+
+**Syntax:** `(divergence function point)`
+
+**Domain:** Vector field ℝⁿ → ℝⁿ
+
+**Returns:** Scalar (trace of Jacobian)
+
+**Formula:** ∇·F = ∂F₁/∂x₁ + ∂F₂/∂x₂ + ... + ∂Fₙ/∂xₙ
+
+**Example:**
+```scheme
+(define (radial v)
+  (vector (vref v 0) (vref v 1) (vref v 2)))  ; F = (x, y, z)
+
+(divergence radial #(1.0 2.0 3.0))
+; => 3.0 (sum of diagonal Jacobian elements)
+```
+
+### curl - Vector Field Curl (3D)
+
+**Syntax:** `(curl function point)`
+
+**Domain:** 3D vector field ℝ³ → ℝ³
+
+**Returns:** 3D vector
+
+**Formula:** ∇×F = (∂F₃/∂y - ∂F₂/∂z, ∂F₁/∂z - ∂F₃/∂x, ∂F₂/∂x - ∂F₁/∂y)
+
+**Example:**
+```scheme
+(define (rotating v)
+  (vector (- 0.0 (vref v 1))   ; -y
+          (vref v 0)             ; x
+          0.0))                  ; 0
+
+(curl rotating #(1.0 1.0 0.0))
+; => #(0.0 0.0 2.0)  [rotation around z-axis]
+```
+
+### laplacian - Scalar Field Laplacian
+
+**Syntax:** `(laplacian function point)`
+
+**Domain:** Scalar field ℝⁿ → ℝ
+
+**Returns:** Scalar (trace of Hessian)
+
+**Formula:** ∇²f = ∂²f/∂x₁² + ∂²f/∂x₂² + ... + ∂²f/∂xₙ²
+
+**Example:**
+```scheme
+(define (harmonic v)
+  (+ (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1))))  ; x² + y²
+
+(laplacian harmonic #(1.0 1.0))
+; => 4.0 (∂²f/∂x² + ∂²f/∂y² = 2 + 2)
+```
+
+## Neural Network Training with Eshkol
+
+### Activation Functions
+
+```scheme
+(define (sigmoid x)
+  (/ 1.0 (+ 1.0 (exp (- 0.0 x)))))
+
+(define (relu x)
+  (if (> x 0.0) x 0.0))
+
+(define (tanh-act x)
+  (tanh x))
+```
+
+### Loss Functions
+
+```scheme
+(define (mse-loss pred target)
+  (let ((diff (- pred target)))
+    (* 0.5 (* diff diff))))
+
+(define (cross-entropy pred target)
+  (+ (* target (log pred))
+     (* (- 1.0 target) (log (- 1.0 pred)))))
+```
+
+### Layer Forward Pass
+
+```scheme
+(define (dense-layer input weights bias activation)
+  (let* ((z (+ (tensor-dot weights input) bias))
+         (activated (tensor-apply z activation)))
+    activated))
+```
+
+### Complete Training Example
+
+```scheme
+; Simple 2-layer network for XOR
+(define W1 (matrix 2 2  0.5 0.3
+                        0.2 0.8))
+(define b1 #(0.1 -0.1))
+(define W2 (matrix 1 2  0.6 0.4))
+(define b2 #(0.05))
+
+(define (forward x)
+  (let* ((h1 (tensor-add (tensor-dot W1 x) b1))
+         (a1 (tensor-apply h1 sigmoid))
+         (h2 (tensor-add (tensor-dot W2 a1) b2))
+         (a2 (tensor-apply h2 sigmoid)))
+    a2))
+
+(define (compute-loss x target)
+  (let ((pred (forward x)))
+    (mse-loss pred target)))
+
+; Training step using gradient
+(define input #(1.0 0.0))
+(define target #(1.0))
+(define learning-rate 0.1)
+
+; Compute gradients with respect to network parameters
+; In practice, would wrap parameters in a vector for gradient
+(define loss-val (compute-loss input target))
+(display "Loss: ") (display loss-val) (newline)
+```
+
+## AD Implementation Details
+
+### TypedValue in LLVM Backend
+
+**Structure carrying type information:**
+```c
+struct TypedValue {
+    llvm::Value* llvm_value;        // LLVM IR value
+    eshkol_value_type_t type;       // Runtime type tag
+    bool is_exact;                  // Numeric exactness
+    uint32_t flags;                 // Additional metadata
+    hott_type_expr_t* hott_type;    // HoTT type (optional)
+    TypeId param_type;              // Parameterized type (List<T>, etc.)
+}
+```
+
+**Polymorphic Arithmetic:**
+- Runtime type check determines dispatch
+- Int64 + Int64 → native integer add
+- Double + Double → native floating add
+- Dual + Dual → dual number arithmetic
+- Tensor + Tensor → element-wise operation
+- AD_Node + AD_Node → graph node creation
+
+### AD Mode Tracking
+
+**Global Flags:**
+```c
+bool __ad_mode_active;         // Currently recording graph?
+ad_tape_t* __current_ad_tape;  // Active tape for recording
+```
+
+**Mode Transitions:**
+```c
+// Entering gradient context
+__ad_mode_active = true
+__current_ad_tape = tape
+
+// Operations check flag
+if (__ad_mode_active) {
+    createADNode(operation, inputs...)
+}
+
+// Exiting gradient context
+backpropagate(__current_ad_tape)
+__ad_mode_active = false
+```
+
+### Tape Recording
+
+**Forward Pass (Recording):**
+```c
+// From createADNodeBinary in autodiff_codegen.cpp
+ad_node_t* node = arena_allocate_ad_node(arena)
+node->type = operation_type  // ADD, MUL, etc.
+node->value = computed_result
+node->gradient = 0.0
+node->input1 = left_node
+node->input2 = right_node
+node->id = tape->num_nodes
+
+arena_tape_add_node(tape, node)
+```
+
+**Backward Pass (Backpropagation):**
+```c
+// Traverse tape in reverse order
+for (i = tape->num_nodes - 1; i >= 0; i--) {
+    ad_node_t* node = tape->nodes[i]
+    
+    switch (node->type) {
+        case AD_NODE_ADD:
+            // d(a+b)/da = 1, d(a+b)/db = 1
+            node->input1->gradient += node->gradient
+            node->input2->gradient += node->gradient
+            break
+        
+        case AD_NODE_MUL:
+            // d(a×b)/da = b, d(a×b)/db = a
+            node->input1->gradient += node->gradient * node->input2->value
+            node->input2->gradient += node->gradient * node->input1->value
+            break
+        
+        // ... all other operations
+    }
+}
+```
+
+## Practical AI Applications
+
+### Gradient Descent Optimization
+
+```scheme
+(define (optimize-function f initial-point learning-rate steps)
+  (let loop ((point initial-point)
+             (step 0))
+    (if (>= step steps)
+        point
+        (let ((grad (gradient f point)))
+          ; Update: point -= learning_rate * gradient
+          (define new-point 
+            (tensor-sub point (tensor-mul grad learning-rate)))
+          (loop new-point (+ step 1))))))
+
+; Minimize Rosenbrock function
+(define (rosenbrock v)
+  (let ((x (vref v 0))
+        (y (vref v 1)))
+    (+ (* 100.0 (* (- y (* x x)) (- y (* x x))))
+       (* (- 1.0 x) (- 1.0 x)))))
+
+(define result (optimize-function rosenbrock 
+                                  #(0.0 0.0) 
+                                  0.001 
+                                  1000))
+; Converges toward minimum at (1.0, 1.0)
+```
+
+### Neural Network Parameter Update
+
+```scheme
+(define (update-weights weights gradients learning-rate)
+  (tensor-sub weights 
+              (tensor-mul gradients learning-rate)))
+
+; After computing gradients via backpropagation:
+(define new-W1 (update-weights W1 grad-W1 0.01))
+(define new-b1 (update-weights b1 grad-b1 0.01))
+```
+
+### Automatic Feature Differentiation
+
+```scheme
+; Feature extraction with gradient
+(define (feature-map x)
+  (let* ((f1 (* (vref x 0) (vref x 1)))
+         (f2 (exp (vref x 0)))
+         (f3 (sin (+ (vref x 0) (vref x 1)))))
+    (vector f1 f2 f3)))
+
+; Jacobian shows feature sensitivities
+(define sensitivity (jacobian feature-map #(1.0 1.0)))
+```
+
+## Comparison with Library-Based AD
+
+### JAX (Python)
+**JAX Approach:**
+- Trace Python functions to build graph
+- Transform to XLA for compilation
+- Graph boundary restrictions
+- Framework-specific quirks
+
+**Eshkol Approach:**
+- AD integrated at compiler level
+- Works on any Eshkol function
+- No graph tracing - direct recording
+- Consistent language semantics
+
+### PyTorch (Python)
+**PyTorch Approach:**
+- Dynamic graph construction (autograd)
+- Python overhead for graph building
+- Requires torch.Tensor types
+
+**Eshkol Approach:**
+- Native types (vectors/tensors)
+- No type conversion overhead
+- Compiled performance throughout
+
+### TensorFlow (Python)
+**TensorFlow Approach:**
+- Static graph (TF 1.x) or eager (TF 2.x)
+- Graph compilation separate from Python
+- Complex debugging across boundaries
+
+**Eshkol Approach:**
+- Single language for model and training
+- Native debugging with LLVM tools
+- Clear error messages with source locations
+
+## Homoiconicity for AI
+
+### Code as Data for Model Inspection
+
+```scheme
+(define model (lambda (x W b)
+  (sigmoid (+ (tensor-dot W x) b))))
+
+; Inspect model structure at runtime
+(display model)
+; => (lambda (x W b) (sigmoid (+ (tensor-dot W x) b)))
+
+; Model is both data and executable code
+(define model-structure (car (cdr model)))  ; Extract body
+```
+
+### Metaprogramming for Model Generation
+
+```scheme
+; Generate specialized activation function
+(define (make-activation name func)
+  `(define (,name x)
+     (,func x)))
+
+; Create family of activation variants
+(define relu-family
+  (list (make-activation 'relu (lambda (x) (if (> x 0) x 0)))
+        (make-activation 'leaky-relu (lambda (x) (if (> x 0) x (* 0.01 x))))
+        (make-activation 'elu (lambda (x) (if (> x 0) x (- (exp x) 1))))))
+```
+
+## Memory Efficiency for ML
+
+### Arena Allocation for Training
+
+```scheme
+(with-region 'training-batch
+  (define batch-data (load-batch dataset))
+  (define predictions (map forward batch-data))
+  (define losses (map compute-loss predictions targets))
+  (define avg-loss (/ (fold + 0.0 losses) (length losses))))
+; Memory freed after batch processing
+```
+
+### Escape Analysis Optimization
+
+**Compiler determines allocation:**
+```scheme
+(define (process-sample x)
+  (let ((features (extract-features x)))    ; NO_ESCAPE → stack
+    (let ((prediction (model features)))    ; NO_ESCAPE → stack
+      prediction)))                          ; RETURN_ESCAPE → returned
+
+(define global-model                         ; GLOBAL_ESCAPE → shared
+  (lambda (x) (process x)))
+```
+
+## Real-World ML Example
+
+### Logistic Regression with Gradient Descent
+
+```scheme
+(require stdlib)
+
+; Sigmoid activation
+(define (sigmoid x)
+  (/ 1.0 (+ 1.0 (exp (- 0.0 x)))))
+
+; Logistic regression model
+(define (predict weights bias features)
+  (sigmoid (+ (tensor-dot weights features) bias)))
+
+; Binary cross-entropy loss
+(define (bce-loss pred target)
+  (+ (* target (log pred))
+     (* (- 1.0 target) (log (- 1.0 pred)))))
+
+; Training loop
+(define (train-logistic-regression X y initial-w initial-b lr epochs)
+  (let loop ((w initial-w)
+             (b initial-b)
+             (epoch 0))
+    (if (>= epoch epochs)
+        (vector w b)  ; Return trained parameters
+        (let* (; Compute predictions for all samples
+               (predictions (map (lambda (x) (predict w b x)) X))
+               
+               ; Compute total loss
+               (losses (map bce-loss predictions y))
+               (total-loss (/ (fold + 0.0 losses) (length X)))
+               
+               ; This is where gradient would be computed in real implementation
+               ; For now, showing the structure
+               
+               ; Update parameters (simplified - real version uses gradients)
+               (new-w w)
+               (new-b b))
+          
+          (when (= (modulo epoch 100) 0)
+            (display "Epoch ") (display epoch)
+            (display ", Loss: ") (display total-loss)
+            (newline))
+          
+          (loop new-w new-b (+ epoch 1))))))
+```
+
+## What v1.0 Does NOT Include
+
+To set realistic expectations:
+
+**Not in v1.0:**
+- ❌ Neural network DSL (define-neural-network macro)
+- ❌ Automatic batching
+- ❌ GPU acceleration
+- ❌ Distributed training
+- ❌ Model checkpointing/serialization
+- ❌ Built-in optimizers (Adam, RMSprop, etc.)
+- ❌ Pre-trained models
+- ❌ High-level frameworks
+
+**v1.0 Provides:**
+- ✅ Fundamental AD operators (derivative, gradient, jacobian, hessian, divergence, curl, laplacian)
+- ✅ Tensor operations (element-wise arithmetic, matrix multiply, reductions)
+- ✅ Building blocks for implementing any gradient-based algorithm
+- ✅ Efficient closure system for model composition
+- ✅ Interactive REPL for experimentation
+
+## Future Directions
+
+See [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md) for:
+- GPU tensor acceleration (CUDA, Metal kernels)
+- Automatic batching for training efficiency
+- Distributed gradient computation
+- High-level neural network abstractions
+- Pre-built model architectures
+- Integration with existing ML frameworks
+
+---
+
+*Eshkol v1.0-architecture delivers a **working automatic differentiation system** with production-quality implementation, comprehensive test coverage, and the foundation for advanced ML/AI development. The AD system is not a prototype - it's a fully functional compiler integration with support for nested gradients, vector calculus, and arbitrary function composition.*

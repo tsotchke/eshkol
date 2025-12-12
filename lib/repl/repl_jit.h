@@ -104,6 +104,31 @@ public:
     void registerLambdaVar(const std::string& var_name);
 
     /**
+     * Load the standard library (stdlib.esk) into the REPL environment.
+     * This makes all stdlib functions available for use.
+     *
+     * @return true on success, false on error
+     */
+    bool loadStdlib();
+
+    /**
+     * Load a module by name (e.g., "core.functional.compose" or "stdlib")
+     *
+     * @param module_name Module name with dot-separated path
+     * @return true on success, false on error
+     */
+    bool loadModule(const std::string& module_name);
+
+    /**
+     * Check if a symbol (variable or function) is already defined in the JIT.
+     * Used to detect reload scenarios where we should skip redefinition.
+     *
+     * @param name Symbol name to check
+     * @return true if symbol exists, false otherwise
+     */
+    bool isSymbolDefined(const std::string& name);
+
+    /**
      * Get the current evaluation counter.
      * Used to generate unique function names (__repl_eval_0, __repl_eval_1, etc.)
      */

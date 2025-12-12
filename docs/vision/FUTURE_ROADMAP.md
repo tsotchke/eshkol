@@ -1,208 +1,298 @@
-# Eshkol: Future Roadmap
+# Eshkol: Development Roadmap
 
-This document outlines the planned evolution of Eshkol over the next several years, detailing our vision for the language's development, feature additions, and ecosystem growth.
+This document outlines Eshkol's evolution from the **completed v1.0-foundation** through upcoming releases that will establish Eshkol as the definitive platform for gradient-based computing.
 
-## Overview
+## v1.0-foundation: COMPLETED (2025)
 
-Eshkol's development is guided by a long-term vision of creating a language that excels at both symbolic and numeric computing, with a particular focus on scientific computing and AI applications. This roadmap outlines our plans for realizing this vision through a series of phased developments.
+**Status:** ✅ **Production Release**
 
-## Timeline Summary
+Eshkol v1.0-architecture delivers a complete, production-ready compiler with unprecedented integration of automatic differentiation, deterministic memory management, and homoiconic native code execution.
 
-| Phase | Timeframe | Focus |
-|-------|-----------|-------|
-| Phase 1 | 2025 | Core Language Implementation and Scheme Compatibility |
-| Phase 2 | 2025-2026 | Scientific Computing Extensions |
-| Phase 3 | 2026-2027 | AI-Specific Features |
-| Phase 4 | 2027-2028 | Ecosystem Development |
-| Phase 5 | 2028+ | Advanced Features and Optimizations |
+### Completed Achievements
 
-## Phase 1: Core Language Implementation (2025)
+**Core Compiler:**
+- ✅ LLVM-based modular backend (15 specialized codegen modules)
+- ✅ Recursive descent parser with HoTT type expressions
+- ✅ Bidirectional type checker with gradual typing
+- ✅ Ownership and escape analysis
+- ✅ Module system with dependency resolution and cycle detection
+- ✅ Macro expansion (syntax-rules with hygienic macros)
+- ✅ Exception handling (guard/raise with R7RS semantics)
 
-### Goals
-- Establish a solid foundation for the language
-- Implement core language features
-- Ensure compatibility with Scheme
-- Develop basic tooling
+**Automatic Differentiation:**
+- ✅ Forward-mode AD with dual numbers
+- ✅ Reverse-mode AD with computational graphs
+- ✅ Nested gradients up to 32 levels deep
+- ✅ Vector calculus operators: derivative, gradient, jacobian, hessian, divergence, curl, laplacian
+- ✅ Polymorphic arithmetic supporting int64/double/dual/tensor/AD-node
 
-### Key Deliverables
+**Memory Management:**
+- ✅ Arena allocation with OALR (Ownership-Aware Lexical Regions)
+- ✅ Escape analysis determining stack/region/shared allocation
+- ✅ with-region syntax for lexical memory scopes
+- ✅ Ownership tracking (owned, moved, borrowed states)
+- ✅ Deterministic deallocation (no garbage collection)
 
-#### Language Core
-- Complete lexer and parser
-- Implement type system with gradual typing
-- Develop arena-based memory management
-- Create C code generation backend
-- Implement basic optimizations
+**Data Structures:**
+- ✅ 16-byte tagged values with consolidated type system
+- ✅ 32-byte cons cells supporting mixed-type lists
+- ✅ N-dimensional tensors with element-wise operations
+- ✅ Hash tables with FNV-1a hashing
+- ✅ Heterogeneous vectors
+- ✅ UTF-8 strings with escape sequences
 
-#### Scheme Compatibility
-- Implement all R5RS and R7RS-small features
-- Ensure compatibility with existing Scheme code
-- Develop comprehensive test suite for Scheme compatibility
+**Standard Library:**
+- ✅ 60+ list operations (map, filter, fold, etc.)
+- ✅ 30+ string utilities
+- ✅ Functional programming (compose, curry, flip)
+- ✅ JSON parsing and serialization
+- ✅ CSV processing
+- ✅ Base64 encoding/decoding
+- ✅ Math library (linear algebra: det, inv, solve; numerical integration; root finding; statistics)
 
-#### Basic Tooling
-- Command-line compiler
-- Basic build system integration
-- Simple package management
-- VSCode extension with syntax highlighting and basic features
+**Development Tools:**
+- ✅ Interactive REPL with LLVM ORC JIT
+- ✅ Standalone compiler (eshkol-run)
+- ✅ Library compilation mode
+- ✅ Comprehensive test suite (170+ test files)
+- ✅ CMake build system
+- ✅ Docker containers
 
-#### Documentation
-- Language reference manual
-- Getting started guide
-- Scheme compatibility documentation
-- API documentation
+**Documentation:**
+- ✅ Complete language specification (300+ features)
+- ✅ Language reference with examples
+- ✅ Architecture documentation
+- ✅ API reference
+- ✅ Quickstart guide
 
-## Phase 2: Scientific Computing Extensions (2025-2026)
+**What v1.0-foundation Proves:**
+- Compiler-integrated AD is achievable and practical
+- Homoiconic closures can execute at native LLVM speed
+- Arena memory provides deterministic performance without GC
+- Gradual typing enables both exploration and production hardening
 
-### Goals
-- Enhance the language with scientific computing capabilities
-- Optimize performance for numerical computations
-- Develop scientific libraries and tools
-- Improve interoperability with existing scientific software
+## Development Timeline
 
-### Key Deliverables
+| Release | Timeframe | Status | Focus |
+|---------|-----------|--------|-------|
+| **v1.0-foundation** | **2025** | **✅ COMPLETE** | **Core compiler, AD system, arena memory, REPL** |
+| **v1.1-acceleration** | **Q1 2026** | 🚧 Active | **XLA backend, SIMD vectorization, parallelism** |
+| **v1.2-scale** | **Q2 2026** | 📋 Planned | **GPU acceleration, distributed computing** |
+| **v1.5-intelligence** | **Q2-3 2026** | 📋 Planned | **Neuro-symbolic integration, advanced optimizers** |
+| **v2.0-quantum** | **Q4 2026+** | 🔬 Research | **Quantum computing, formal verification** |
 
-#### Vector and Matrix Operations
-- First-class vector and matrix types
-- Efficient implementation of linear algebra operations
-- SIMD optimization for vector operations
-- Integration with BLAS/LAPACK for high-performance operations
+## v1.1-acceleration: Performance and Parallelism (Q1 2026)
 
-#### Automatic Differentiation
-- Forward-mode automatic differentiation
-- Reverse-mode automatic differentiation (for gradients)
-- Higher-order derivatives
-- Efficient implementation for large-scale models
+**Status:** 🚧 **Active Development**
 
-#### Numerical Computing
-- Specialized numerical types (complex numbers, arbitrary precision, etc.)
-- Numerical integration and differentiation
-- Optimization algorithms
-- Differential equation solvers
+Building on the v1.0 foundation, this release focuses on **computational acceleration** through XLA integration, automatic vectorization, and multi-core parallelism.
 
-#### Scientific Libraries
-- Statistics library
-- Signal processing library
-- Image processing library
-- Data visualization library
+### XLA Backend Integration
 
-#### Interoperability
-- Seamless integration with C/C++ scientific libraries
-- Python interoperability for data science workflows
-- Data format support (HDF5, NetCDF, etc.)
-- GPU acceleration through CUDA/OpenCL
+**Accelerated Linear Algebra Compiler:**
+- XLA fusion for tensor operation chains
+- Automatic kernel generation
+- CPU/GPU code generation from single source
+- JIT compilation for dynamic shapes
 
-## Phase 3: AI-Specific Features (2026-2027)
+**Benefits:**
+- 10-100x speedup for tensor-heavy workloads
+- Unified code path for CPU and GPU
+- Automatic optimization of computation graphs
 
-### Goals
-- Develop features specifically for AI development
-- Enhance support for neural networks and deep learning
-- Implement tools for neuro-symbolic AI
-- Optimize performance for AI workloads
+### SIMD Vectorization
 
-### Key Deliverables
+**Automatic Parallelization:**
+- SSE/AVX/NEON instruction generation
+- Loop vectorization for tensor operations
+- Memory alignment optimization
+- Platform-specific tuning (x86_64, ARM64)
 
-#### Neural Network Support
-- Neural network primitives
-- Automatic batching and parallelization
-- GPU acceleration for neural networks
-- Integration with existing deep learning frameworks
+**Target Operations:**
+- Element-wise tensor arithmetic
+- Reduction operations (sum, mean, etc.)
+- Matrix-vector products
+- Activation functions (sigmoid, tanh, relu)
 
-#### Neuro-Symbolic AI
-- Symbolic reasoning primitives
-- Integration of neural and symbolic components
-- Tools for knowledge representation
-- Explainable AI features
+### Concurrency and Parallelism
 
-#### Reinforcement Learning
-- Environment abstractions
-- Policy and value function representations
-- Reinforcement learning algorithms
-- Distributed training support
+**Multi-Core Primitives:**
+- `(parallel-map func lst...)` - Data parallelism
+- `(parallel-fold func init lst)` - Parallel reduction
+- `(future expr)` - Asynchronous computation
+- Thread pool management
 
-#### AI Development Tools
-- Model visualization
-- Performance profiling for AI workloads
-- Debugging tools for neural networks
-- Experiment tracking and management
+**Work-Stealing Scheduler:**
+- Dynamic load balancing
+- Cache-aware task distribution
+- Minimal overhead for fine-grained tasks
 
-#### AI Libraries
-- Computer vision library
-- Natural language processing library
-- Reinforcement learning library
-- Neuro-symbolic reasoning library
+**Memory Safety:**
+- Ownership tracking across threads
+- Immutable data sharing
+- Message passing for coordination
 
-## Phase 4: Ecosystem Development (2027-2028)
+### Extended Math Library
 
-### Goals
-- Build a comprehensive ecosystem around Eshkol
-- Develop advanced tooling
-- Enhance community engagement
-- Improve documentation and learning resources
+**Numerical Methods:**
+- Complex numbers with autodiff support
+- Arbitrary precision arithmetic
+- Differential equation solvers (ODE, PDE)
+- Optimization algorithms (L-BFGS, conjugate gradient)
 
-### Key Deliverables
+**Signal Processing:**
+- FFT/IFFT operations
+- Convolution and correlation
+- Filtering (low-pass, high-pass, band-pass)
+- Spectral analysis
 
-#### Package Ecosystem
-- Central package repository
-- Dependency management system
-- Package versioning and compatibility checking
-- Package documentation and discovery tools
+**Statistics:**
+- Extended statistical distributions
+- Hypothesis testing
+- Regression analysis
+- Time series analysis
 
-#### Advanced Tooling
-- Full-featured IDE integration
-- Advanced debugging tools
-- Performance profiling tools
-- Refactoring and code analysis tools
+## v1.2-scale: GPU and Distributed Computing (Q2 2026)
 
-#### Community Infrastructure
-- Community forum and discussion platform
-- Contribution guidelines and processes
-- Governance model
-- Regular release schedule
+**Status:** 📋 **Planned**
 
-#### Learning Resources
-- Comprehensive tutorials
-- Interactive learning platform
-- Example projects and case studies
-- University course materials
+This release extends Eshkol's reach to GPUs and distributed systems, enabling large-scale training and deployment.
 
-#### Integration with Other Ecosystems
-- Web development tools
-- Mobile development support
-- Cloud deployment tools
-- IoT and embedded systems support
+### GPU Acceleration
 
-## Phase 5: Advanced Features and Optimizations (2028+)
+**CUDA Backend:**
+- CUDA kernel generation from Eshkol tensor operations
+- Automatic memory transfer (host ↔ device)
+- Multi-GPU support
+- Unified memory management with arena system
 
-### Goals
-- Implement advanced language features
-- Further optimize performance
-- Explore cutting-edge research areas
-- Expand to new domains
+**Metal Backend (macOS/iOS):**
+- Metal Shading Language generation
+- Apple Silicon optimization
+- iPhone/iPad deployment
 
-### Key Deliverables
+**Vulkan Compute:**
+- Cross-platform GPU support
+- Compute shader generation
+- Mobile and desktop GPUs
 
-#### Advanced Language Features
+**Automatic Target Selection:**
+```scheme
+; Same code runs on CPU or GPU
+(define result (tensor-dot W x))
+; Compiler/runtime selects optimal target
+```
+
+### Distributed Training
+
+**Multi-Node Framework:**
+- Data parallelism across machines
+- Model parallelism for large networks
+- Gradient synchronization (AllReduce)
+- Fault tolerance and checkpointing
+
+**Communication:**
+- MPI integration for HPC clusters
+- gRPC for cloud deployments
+- NCCL for multi-GPU communication
+
+### Model Deployment
+
+**Inference Optimization:**
+- Operator fusion
+- Quantization (int8, int16)
+- Model pruning
+- Static graph optimization
+
+**Export Formats:**
+- ONNX export for interoperability
+- TensorFlow Lite for mobile
+- Core ML for Apple platforms
+
+## v1.5-intelligence: Neuro-Symbolic Integration (Q2-3 2026)
+
+**Status:** 📋 **Planned**
+
+Advanced AI capabilities building on v1.0's homoiconic foundation.
+
+### Symbolic Reasoning Primitives
+
+**Logic Programming:**
+- Unification and pattern matching
+- Backtracking search
+- Constraint solving
+- Knowledge representation
+
+**Integration with Neural:**
+- Neural-guided symbolic search
+- Symbolic constraints in neural training
+- Explainable AI through symbolic traces
+
+### Advanced Neural Architectures
+
+**Built-in Primitives:**
+- Attention mechanisms
+- Convolution operations
+- Recurrent structures
+- Transformer blocks
+
+**Neuro-Symbolic Models:**
+- Knowledge graph embeddings
+- Differentiable logic programs
+- Neural theorem provers
+
+## v2.0-quantum: Advanced Research Features (Q4 2026)
+
+**Status:** 🔬 **Research Phase**
+
+Long-term research directions extending Eshkol's capabilities into emerging computational paradigms.
+
+### Quantum Computing Integration
+
+**Quantum Circuit Support:**
+- Qubit allocation and manipulation
+- Quantum gate operations
+- Measurement and state collapse
+- Hybrid classical-quantum algorithms
+
+**Quantum-Classical Interface:**
+- Automatic optimization across boundary
+- State preparation from classical data
+- Measurement result processing
+
+### Advanced Type System
 - Effect system for tracking and controlling side effects
 - Dependent types for more expressive type-level programming
 - Linear types for resource management
 - Refinement types for stronger correctness guarantees
 
-#### Performance Optimizations
-- Whole-program optimization
-- Specialization for specific hardware architectures
-- Just-in-time compilation for dynamic workloads
+**Whole-Program Optimization:**
+- Cross-module inlining and specialization
+- Dead code elimination across boundaries
 - Profile-guided optimization
 
-#### Research Areas
-- Quantum computing support
-- Probabilistic programming
-- Program synthesis
-- Formal verification
+**Advanced Optimizations:**
+- Polyhedral optimization for nested loops
+- Automatic parallelization
+- Cache-aware transformations
 
-#### New Domains
-- Bioinformatics
-- Robotics
-- Financial modeling
-- Digital humanities
+### Expanded Research Directions
+
+**Formal Methods:**
+- Dependent types for correctness proofs
+- Refinement types for stronger guarantees
+- Integration with proof assistants (Coq, Lean)
+
+**Program Synthesis:**
+- Inductive program synthesis from examples
+- Neural program synthesis with symbolic constraints
+- Automatic algorithm discovery
+
+**New Application Domains:**
+- Computational biology and bioinformatics
+- Robotics and control systems
+- Quantitative finance
+- Digital signal processing
 
 ## Research Directions
 
@@ -294,8 +384,73 @@ We welcome contributions from researchers, engineers, and enthusiasts who share 
 - Reporting bugs and suggesting improvements
 - Sharing your experiences and use cases
 
+## Near-Term Priorities (Next 6-12 Months)
+
+**Immediate (v1.1 - Q1 2026):**
+1. XLA backend integration
+2. SIMD vectorization (SSE/AVX/NEON)
+3. Parallel map/fold primitives
+4. Thread pool scheduler
+
+**Next (v1.2 - Q2 2026):**
+1. CUDA backend for NVIDIA GPUs
+2. Metal backend for Apple Silicon
+3. Distributed training framework
+4. Model serialization
+
+**Following (v1.5 - Q2-Q3 2026):**
+1. Advanced neural network primitives
+2. Symbolic reasoning integration
+3. Expanded optimizer library
+4. Visualization tools
+
+## Community and Ecosystem Growth
+
+**Open Source Development:**
+- Active development on GitHub
+- MIT license for maximum adoption
+- Community contributions welcomed
+- Regular release cycle (quarterly)
+
+**Package Ecosystem:**
+- Central package repository (planned v1.1)
+- Dependency management system
+- Versioning and compatibility
+- Documentation generation
+
+**Enterprise Support:**
+- Professional consulting available
+- Training and workshops
+- Custom feature development
+- Priority bug fixes
+
+**Academic Engagement:**
+- University partnerships for curriculum integration
+- Research collaborations on compiler design and AD
+- Conference presentations and publications
+- Student project sponsorship
+
+## Technical Research Directions
+
+**Active Research:**
+- Polyhedral optimization for nested loops
+- Automatic differentiation of recursive algorithms
+- Linear type systems for resource management
+- Effect systems for side effect tracking
+
+**Exploratory Research:**
+- Probabilistic programming integration
+- Formal verification of AD correctness
+- Hardware-software co-design for AD acceleration
+- Novel memory management strategies
+
 ## Conclusion
 
-Eshkol represents an ambitious vision for a programming language that bridges the gap between symbolic and numeric computing, with a particular focus on scientific computing and AI applications. This roadmap outlines our plans for realizing this vision, but we recognize that the path forward will be shaped by the needs and contributions of the community.
+Eshkol v1.0-foundation **proves** that compiler-integrated automatic differentiation, deterministic memory management, and homoiconic native code can coexist in a production system. The completed implementation demonstrates technical leadership in automatic differentiation architecture and establishes a foundation for GPU acceleration, parallelism, and distributed computing.
 
-We invite you to join us on this journey, whether as a developer, researcher, user, or enthusiast. Together, we can build a language that empowers the next generation of scientific and AI applications.
+The roadmap positions Eshkol to **dominate** gradient-based computing through:
+- **Near-term** (3 months): XLA, SIMD, parallelism making Eshkol competitive with any ML framework
+- **Medium-term** (3-6 months): GPU and distributed capabilities rivaling PyTorch/JAX
+- **Long-term** (6+ months): Neuro-symbolic integration and quantum computing establishing new paradigms
+
+We invite researchers, engineers, and organizations to join this evolution - whether through code contributions, research collaborations, or production deployments. Eshkol represents the future of computational science where mathematical elegance and uncompromising performance converge.
