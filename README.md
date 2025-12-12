@@ -616,16 +616,15 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 - **[API Reference](docs/API_REFERENCE.md)**: Comprehensive function documentation
 
 ### For Researchers
-- **[Automatic Differentiation](docs/AUTODIFF_IMPLEMENTATION.md)**: Mathematical foundations and implementation
-- **[Type System](docs/TYPE_SYSTEM_IMPLEMENTATION.md)**: HoTT theory and practical realization
-- **[Memory Architecture](docs/MEMORY_ARCHITECTURE.md)**: Arena allocation and OALR semantics
-- **[Compiler Design](docs/COMPILER_ARCHITECTURE.md)**: LLVM backend and optimization strategies
+- **[Automatic Differentiation](docs/breakdown/AUTODIFF.md)**: Mathematical foundations and implementation
+- **[Type System](docs/breakdown/TYPE_SYSTEM.md)**: HoTT theory and practical realization
+- **[Memory Architecture](docs/breakdown/MEMORY_MANAGEMENT.md)**: Arena allocation and OALR semantics
+- **[Compiler Design](docs/breakdown/COMPILER_ARCHITECTURE.md)**: LLVM backend and optimization strategies
 
 ### For Developers
 - **[Contributing Guide](CONTRIBUTING.md)**: Architecture overview and development workflow
 - **[Test Coverage](docs/TEST_COVERAGE.md)**: Comprehensive test documentation
-- **[Build System](docs/BUILD_SYSTEM.md)**: CMake configuration and cross-platform compilation
-
+- **[Overview](docs/breakdown/OVERVIEW.md)**: Start Here
 ---
 
 ## Future Directions
