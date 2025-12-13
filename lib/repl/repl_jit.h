@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -118,6 +119,16 @@ public:
      * @return true on success, false on error
      */
     bool loadModule(const std::string& module_name);
+
+    /**
+     * Execute multiple ASTs as a batch (for module loading).
+     * This allows forward references between functions in the same module.
+     *
+     * @param asts Vector of ASTs to compile and execute together
+     * @param silent If true, suppress output (for module loading)
+     * @return Pointer to result of last expression, or nullptr
+     */
+    void* executeBatch(std::vector<eshkol_ast_t>& asts, bool silent = true);
 
     /**
      * Check if a symbol (variable or function) is already defined in the JIT.
