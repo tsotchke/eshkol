@@ -306,16 +306,32 @@ eshkol_ast_t parse_string(const std::string& input) {
     return ast;
 }
 
-// Helper: Check if AST is a definition or module statement (shouldn't wrap with display)
+// Helper: Check if AST is a statement that shouldn't be wrapped with display
 bool is_definition_statement(const eshkol_ast_t& ast) {
     if (ast.type != ESHKOL_OP) {
         return false;
     }
     // Definition statements and module system statements don't produce displayable values
-    return ast.operation.op == ESHKOL_DEFINE_OP ||
-           ast.operation.op == ESHKOL_IMPORT_OP ||
-           ast.operation.op == ESHKOL_REQUIRE_OP ||
-           ast.operation.op == ESHKOL_PROVIDE_OP;
+    if (ast.operation.op == ESHKOL_DEFINE_OP ||
+        ast.operation.op == ESHKOL_IMPORT_OP ||
+        ast.operation.op == ESHKOL_REQUIRE_OP ||
+        ast.operation.op == ESHKOL_PROVIDE_OP) {
+        return true;
+    }
+    // Check for display/print/newline calls - they already produce output
+    if (ast.operation.op == ESHKOL_CALL_OP && ast.operation.call_op.func) {
+        if (ast.operation.call_op.func->type == ESHKOL_VAR) {
+            const char* name = ast.operation.call_op.func->variable.id;
+            if (name && (strcmp(name, "display") == 0 ||
+                         strcmp(name, "newline") == 0 ||
+                         strcmp(name, "print") == 0 ||
+                         strcmp(name, "write") == 0 ||
+                         strcmp(name, "displayln") == 0)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 // Helper: Get defined name from AST

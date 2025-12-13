@@ -1,6 +1,8 @@
 ;;; core/functional/curry.esk
 ;;; Currying and partial application
 
+(require core.list.transform)  ; for append
+
 (provide curry2 curry3 uncurry2 partial1 partial2 partial3 partial)
 
 ;;; curry2: Curry a 2-argument function
