@@ -25,19 +25,19 @@ SUITES_FAIL=0
 declare -a PASSED_SUITES
 declare -a FAILED_SUITES
 
-# Test scripts to run (in order)
+# Test scripts to run (in order) - using output versions for verification
 TEST_SCRIPTS=(
-    "run_features_tests.sh"
-    "run_stdlib_tests.sh"
-    "run_list_tests.sh"
-    "run_memory_tests.sh"
-    "run_modules_tests.sh"
-    "run_types_tests.sh"
-    "run_autodiff_tests.sh"
-    "run_ml_tests.sh"
-    "run_neural_tests.sh"
-    "run_json_tests.sh"
-    "run_system_tests.sh"
+    "run_features_tests_with_output.sh"
+    "run_stdlib_tests_with_output.sh"
+    "run_list_tests_with_output.sh"
+    "run_memory_tests_with_output.sh"
+    "run_modules_tests_with_output.sh"
+    "run_types_tests_with_output.sh"
+    "run_autodiff_tests_with_output.sh"
+    "run_ml_tests_with_output.sh"
+    "run_neural_tests_with_output.sh"
+    "run_json_tests_with_output.sh"
+    "run_system_tests_with_output.sh"
     "run_cpp_type_tests.sh"
 )
 

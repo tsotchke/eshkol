@@ -16,13 +16,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Add LLVM 17 Repository
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+
       - name: Install Dependencies
         run: |
-          sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build \
-            llvm-17-dev libllvm17 \
-            libreadline-dev
+            llvm-17 llvm-17-dev \
+            libreadline-dev pkg-config
+          sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
 
       - name: Configure
         run: |

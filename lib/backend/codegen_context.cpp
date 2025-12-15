@@ -98,7 +98,7 @@ void CodegenContext::registerVariadicFunction(const std::string& name,
 
 std::pair<uint64_t, bool> CodegenContext::getVariadicInfo(const std::string& name) const {
     auto it = variadic_info_.find(name);
-    return (it != variadic_info_.end()) ? it->second : std::make_pair(0ULL, false);
+    return (it != variadic_info_.end()) ? it->second : std::make_pair(static_cast<uint64_t>(0), false);
 }
 
 // === String Interning ===

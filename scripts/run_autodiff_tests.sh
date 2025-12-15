@@ -56,21 +56,21 @@ for test_file in tests/autodiff/*.esk; do
             if grep -q "error:" /tmp/test_output.txt; then
                 echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                 RUNTIME_ERRORS+=("$test_name")
-                ((FAIL++))
+                ((FAIL++)) || true
             else
                 echo -e "${GREEN}✅ PASS${NC}"
-                ((PASS++))
+                ((PASS++)) || true
             fi
         else
             echo -e "${RED}❌ RUNTIME FAIL${NC}"
             FAILED_TESTS+=("$test_name")
-            ((FAIL++))
+            ((FAIL++)) || true
         fi
     else
         echo -e "${RED}❌ COMPILE FAIL${NC}"
         FAILED_TESTS+=("$test_name")
-        ((COMPILE_FAIL++))
-        ((FAIL++))
+        ((COMPILE_FAIL++)) || true
+        ((FAIL++)) || true
     fi
 done
 
@@ -95,21 +95,21 @@ if [ -d "tests/autodiff_debug" ]; then
                 if grep -q "error:" /tmp/test_output.txt; then
                     echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                     RUNTIME_ERRORS+=("$test_name")
-                    ((FAIL++))
+                    ((FAIL++)) || true
                 else
                     echo -e "${GREEN}✅ PASS${NC}"
-                    ((PASS++))
+                    ((PASS++)) || true
                 fi
             else
                 echo -e "${RED}❌ RUNTIME FAIL${NC}"
                 FAILED_TESTS+=("$test_name")
-                ((FAIL++))
+                ((FAIL++)) || true
             fi
         else
             echo -e "${RED}❌ COMPILE FAIL${NC}"
             FAILED_TESTS+=("$test_name")
-            ((COMPILE_FAIL++))
-            ((FAIL++))
+            ((COMPILE_FAIL++)) || true
+            ((FAIL++)) || true
         fi
     done
 fi
