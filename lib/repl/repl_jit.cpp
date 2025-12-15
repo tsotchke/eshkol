@@ -30,10 +30,12 @@
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
+#include <cmath>
 #include <filesystem>
 #include <set>
 #include <vector>
 #include <cctype>
+#include <unistd.h>
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>  // For _NSGetExecutablePath on macOS
@@ -479,16 +481,28 @@ static std::string findStdlibObject() {
         "/usr/lib/eshkol/stdlib.o",
     };
 
-    // Check relative to executable on macOS
-    #ifdef __APPLE__
+    // Check relative to executable
     char exe_path[4096];
+    bool got_exe_path = false;
+
+#ifdef __linux__
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len != -1) {
+        exe_path[len] = '\0';
+        got_exe_path = true;
+    }
+#elif defined(__APPLE__)
     uint32_t size = sizeof(exe_path);
     if (_NSGetExecutablePath(exe_path, &size) == 0) {
+        got_exe_path = true;
+    }
+#endif
+
+    if (got_exe_path) {
         std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
         stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.o").string());
         stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.o").string());
     }
-    #endif
 
     for (const auto& path : stdlib_paths) {
         if (std::filesystem::exists(path)) {
@@ -837,16 +851,28 @@ static std::string findLibDir() {
         "/usr/share/eshkol/lib",
     };
 
-    // Check relative to executable on macOS
-    #ifdef __APPLE__
+    // Check relative to executable
     char exe_path[4096];
+    bool got_exe_path = false;
+
+#ifdef __linux__
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len != -1) {
+        exe_path[len] = '\0';
+        got_exe_path = true;
+    }
+#elif defined(__APPLE__)
     uint32_t size = sizeof(exe_path);
     if (_NSGetExecutablePath(exe_path, &size) == 0) {
+        got_exe_path = true;
+    }
+#endif
+
+    if (got_exe_path) {
         std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
         lib_dirs.insert(lib_dirs.begin(), (exe_dir / "../lib").string());
         lib_dirs.insert(lib_dirs.begin(), (exe_dir / "lib").string());
     }
-    #endif
 
     for (const auto& dir : lib_dirs) {
         if (std::filesystem::exists(dir) && std::filesystem::is_directory(dir)) {

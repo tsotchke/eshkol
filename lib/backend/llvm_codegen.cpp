@@ -57,6 +57,22 @@
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Scalar/GVN.h>
 #include <llvm/IR/GlobalValue.h>
+#include <llvm/Config/llvm-config.h>
+#include <llvm/IR/Intrinsics.h>
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LLVM VERSION COMPATIBILITY
+// LLVM 18+ changed several APIs. This section provides compatibility for both.
+// ═══════════════════════════════════════════════════════════════════════════
+#if LLVM_VERSION_MAJOR >= 18
+#define ESHKOL_CODEGEN_OPT_LEVEL CodeGenOptLevel::Default
+#define ESHKOL_CODEGEN_FILETYPE CodeGenFileType::ObjectFile
+#define ESHKOL_GET_INTRINSIC(mod, id, types) Intrinsic::getOrInsertDeclaration(mod, id, types)
+#else
+#define ESHKOL_CODEGEN_OPT_LEVEL CodeGenOpt::Default
+#define ESHKOL_CODEGEN_FILETYPE CGFT_ObjectFile
+#define ESHKOL_GET_INTRINSIC(mod, id, types) Intrinsic::getDeclaration(mod, id, types)
+#endif
 
 #include <memory>
 #include <map>
@@ -69,6 +85,7 @@
 #include <iostream>
 #include <fstream>
 #include <cstdlib>
+#include <cstring>
 #include <algorithm>
 #include <cctype>
 #include <stack>
@@ -542,7 +559,12 @@ public:
 
         // Set target triple
         std::string target_triple_str = sys::getDefaultTargetTriple();
-        module->setTargetTriple(Triple(target_triple_str));
+#if LLVM_VERSION_MAJOR >= 18
+        Triple target_triple(target_triple_str);
+        module->setTargetTriple(target_triple);
+#else
+        module->setTargetTriple(target_triple_str);
+#endif
 
         // CRITICAL: Set DataLayout early so getTypeAllocSize returns correct values
         // This must be done before any allocations that depend on struct sizes
@@ -11866,7 +11888,7 @@ private:
             result = builder->CreateFCmpUNO(val, val, "is_nan");
         } else if (pred == "infinite?") {
             // Infinite check: |x| == infinity
-            Function* fabs_fn = Intrinsic::getOrInsertDeclaration(
+            Function* fabs_fn = ESHKOL_GET_INTRINSIC(
                 module.get(), Intrinsic::fabs, {double_type});
             Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
             Value* pos_inf = ConstantFP::getInfinity(double_type, false);
@@ -11875,7 +11897,7 @@ private:
             // Finite check: not NaN and not infinite
             // not NaN: val == val (ordered comparison)
             // not infinite: |val| < infinity
-            Function* fabs_fn = Intrinsic::getOrInsertDeclaration(
+            Function* fabs_fn = ESHKOL_GET_INTRINSIC(
                 module.get(), Intrinsic::fabs, {double_type});
             Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
             Value* pos_inf = ConstantFP::getInfinity(double_type, false);
@@ -26425,7 +26447,7 @@ private:
         } else if (pred_name == "infinite?") {
             // Infinite check: |x| == infinity
             Value* val = extractDoubleFromTagged(arg);
-            Function* fabs_fn = Intrinsic::getOrInsertDeclaration(
+            Function* fabs_fn = ESHKOL_GET_INTRINSIC(
                 module.get(), Intrinsic::fabs, {double_type});
             Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
             Value* pos_inf = ConstantFP::getInfinity(double_type, false);
@@ -26434,7 +26456,7 @@ private:
         } else if (pred_name == "finite?") {
             // Finite check: not NaN and not infinite
             Value* val = extractDoubleFromTagged(arg);
-            Function* fabs_fn = Intrinsic::getOrInsertDeclaration(
+            Function* fabs_fn = ESHKOL_GET_INTRINSIC(
                 module.get(), Intrinsic::fabs, {double_type});
             Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
             Value* pos_inf = ConstantFP::getInfinity(double_type, false);
@@ -26894,7 +26916,12 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             g_cached_target_triple = sys::getDefaultTargetTriple();
             g_cached_cpu_name = sys::getHostCPUName().str();
             SubtargetFeatures features;
+#if LLVM_VERSION_MAJOR >= 18
             auto host_features = sys::getHostCPUFeatures();
+#else
+            StringMap<bool> host_features;
+            sys::getHostCPUFeatures(host_features);
+#endif
             for (auto& f : host_features) {
                 features.AddFeature(f.first(), f.second);
             }
@@ -26902,8 +26929,12 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             g_target_info_cached = true;
         }
 
-        Triple target_triple(g_cached_target_triple);
-        module->setTargetTriple(target_triple);
+#if LLVM_VERSION_MAJOR >= 18
+        Triple cached_triple(g_cached_target_triple);
+        module->setTargetTriple(cached_triple);
+#else
+        module->setTargetTriple(g_cached_target_triple);
+#endif
 
         std::string error;
         const Target* target = TargetRegistry::lookupTarget(g_cached_target_triple, error);
@@ -26914,10 +26945,17 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
 
         // Create target machine with cached CPU info and size optimization
         TargetOptions target_options;
+#if LLVM_VERSION_MAJOR >= 18
         std::unique_ptr<TargetMachine> target_machine(
-            target->createTargetMachine(target_triple, g_cached_cpu_name, g_cached_features,
+            target->createTargetMachine(cached_triple, g_cached_cpu_name, g_cached_features,
                                        target_options, Reloc::PIC_, std::nullopt,
-                                       CodeGenOptLevel::Default));
+                                       ESHKOL_CODEGEN_OPT_LEVEL));
+#else
+        std::unique_ptr<TargetMachine> target_machine(
+            target->createTargetMachine(g_cached_target_triple, g_cached_cpu_name, g_cached_features,
+                                       target_options, Reloc::PIC_, std::nullopt,
+                                       ESHKOL_CODEGEN_OPT_LEVEL));
+#endif
 
         if (!target_machine) {
             eshkol_error("Failed to create target machine for %s", g_cached_target_triple.c_str());
@@ -26938,7 +26976,7 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         // Create pass manager and emit object file
         legacy::PassManager pass_manager;
         if (target_machine->addPassesToEmitFile(pass_manager, dest, nullptr,
-                                              CodeGenFileType::ObjectFile)) {
+                                              ESHKOL_CODEGEN_FILETYPE)) {
             eshkol_error("Target machine cannot emit object files");
             return -1;
         }
