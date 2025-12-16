@@ -1,7 +1,7 @@
 # Eshkol Language - Complete Technical Specification
 
 **Version:** 1.0.0-foundation  
-**Generated:** 2024-12-12  
+**Generated:** 2025-12-12  
 **Status:** Comprehensive implementation documentation from source code
 
 ---

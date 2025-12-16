@@ -6,7 +6,7 @@ This directory indexes component-level documentation for Eshkol's implementation
 
 For detailed component documentation, see:
 
-**[Compiler Architecture](../aidocs/COMPILER_ARCHITECTURE.md)** - Complete pipeline documentation:
+**[Compiler Architecture](../breakdown/COMPILER_ARCHITECTURE.md)** - Complete pipeline documentation:
 - Frontend: Macro expansion, parsing, type checking
 - Backend: LLVM IR generation, optimization, native codegen
 - Modular architecture: 19 specialized codegen files with callback pattern
@@ -71,5 +71,5 @@ For detailed component documentation, see:
 
 ## See Also
 
-- [Compiler Architecture](../aidocs/COMPILER_ARCHITECTURE.md) - High-level overview
+- [Compiler Architecture](../breakdown/COMPILER_ARCHITECTURE.md) - High-level overview
 - [Master Architecture](../ESHKOL_V1_ARCHITECTURE.md) - Complete technical deep dive
