@@ -29,11 +29,14 @@ class Eshkol < Formula
     ENV["DYLD_FALLBACK_LIBRARY_PATH"] = llvm.opt_lib
 
     # Configure with explicit LLVM paths and proper RPATH
+    # CMAKE_BUILD_WITH_INSTALL_RPATH ensures rpath is set at build time (needed for stdlib.o generation)
     system "cmake", "-B", "build", "-G", "Ninja",
            "-DCMAKE_BUILD_TYPE=Release",
            "-DLLVM_DIR=#{llvm.opt_lib}/cmake/llvm",
            "-DCMAKE_INSTALL_RPATH=#{llvm.opt_lib}",
            "-DCMAKE_BUILD_RPATH=#{llvm.opt_lib}",
+           "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON",
+           "-DCMAKE_MACOSX_RPATH=ON",
            *std_cmake_args
 
     # Build (stdlib.o is generated as part of this - eshkol-run compiles stdlib.esk)
