@@ -1,5 +1,6 @@
 # Build directories
 build/
+build-x86/
 
 # Environment and secrets
 .env
