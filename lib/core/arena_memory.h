@@ -97,10 +97,10 @@ typedef struct arena_tagged_cons_cell {
 } arena_tagged_cons_cell_t;     // Total: 32 bytes (perfect cache alignment!)
 
 // Compile-time size validation
-static_assert(sizeof(arena_tagged_cons_cell_t) == 32,
-               "Tagged cons cell must be exactly 32 bytes for optimal cache alignment");
-static_assert(sizeof(arena_cons_cell_t) == 16,
-               "Legacy cons cell size changed unexpectedly");
+ESHKOL_STATIC_ASSERT(sizeof(arena_tagged_cons_cell_t) == 32,
+                     "Tagged cons cell must be exactly 32 bytes for optimal cache alignment");
+ESHKOL_STATIC_ASSERT(sizeof(arena_cons_cell_t) == 16,
+                     "Legacy cons cell size changed unexpectedly");
 
 // List-specific allocation functions
 arena_cons_cell_t* arena_allocate_cons_cell(arena_t* arena);
@@ -196,6 +196,14 @@ void debug_print_ptr(const char* context, void* ptr);
 // Global shared arena for REPL mode (persistent across evaluations)
 extern arena_t* __repl_shared_arena;
 
+// Global command-line arguments (for (command-line) procedure in REPL)
+extern int32_t __eshkol_argc;
+extern char** __eshkol_argv;
+
+// Global arena for default allocations
+extern arena_t* __global_arena;
+arena_t* get_global_arena();
+
 // Tape allocation and management
 ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
 void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node);
@@ -284,8 +292,8 @@ typedef struct eshkol_weak_ref {
 } eshkol_weak_ref_t;
 
 // Compile-time size validation
-static_assert(sizeof(eshkol_shared_header_t) == 24,
-               "Shared header must be 24 bytes for optimal alignment");
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_shared_header_t) == 24,
+                     "Shared header must be 24 bytes for optimal alignment");
 
 // Shared allocation functions
 void* shared_allocate(size_t size, void (*destructor)(void*));
@@ -322,8 +330,8 @@ typedef struct eshkol_tensor {
 } eshkol_tensor_t;
 
 // Compile-time size validation
-static_assert(sizeof(eshkol_tensor_t) == 32,
-               "Tensor struct must be 32 bytes for optimal alignment");
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_tensor_t) == 32,
+                     "Tensor struct must be 32 bytes for optimal alignment");
 
 // Allocate tensor with object header (for consolidated HEAP_PTR type)
 // Returns pointer to tensor data (header is at offset -8)

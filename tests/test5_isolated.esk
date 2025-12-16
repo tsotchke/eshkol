@@ -1,9 +1,0 @@
-; TEST 5: Apply in higher-order function with proc parameter
-(display "TEST 5: Higher-order apply with proc parameter")
-(newline)
-(define (apply-twice proc val)
-  (apply proc (list (apply proc (list val)))))
-(define result5 (apply-twice (lambda (x) (+ x 1)) 5))
-(display result5)
-(newline)
-;; Expected: 7

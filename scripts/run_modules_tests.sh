@@ -59,25 +59,25 @@ for test_file in tests/modules/*.esk; do
             # Check if it's a compile-time failure
             if [ $compile_exit -ne 0 ] || [ ! -f a.out ]; then
                 echo -e "${GREEN}✅ PASS (expected compile error)${NC}"
-                ((PASS++))
+                ((PASS++)) || true
             else
                 # Executable was created despite error, check runtime
                 if ./a.out > /dev/null 2>&1; then
                     # Runtime succeeded but should have failed
                     echo -e "${RED}❌ SHOULD HAVE FAILED${NC}"
                     FAILED_TESTS+=("$test_name (expected error)")
-                    ((FAIL++))
+                    ((FAIL++)) || true
                 else
                     # Runtime failed as expected
                     echo -e "${GREEN}✅ PASS (expected runtime error)${NC}"
-                    ((PASS++))
+                    ((PASS++)) || true
                 fi
             fi
         else
             # No error detected
             echo -e "${RED}❌ SHOULD HAVE FAILED${NC}"
             FAILED_TESTS+=("$test_name (expected error)")
-            ((FAIL++))
+            ((FAIL++)) || true
         fi
     else
         # Normal test - should compile and run successfully
@@ -88,21 +88,21 @@ for test_file in tests/modules/*.esk; do
                 if grep -q "error:" /tmp/test_output.txt; then
                     echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                     RUNTIME_ERRORS+=("$test_name")
-                    ((FAIL++))
+                    ((FAIL++)) || true
                 else
                     echo -e "${GREEN}✅ PASS${NC}"
-                    ((PASS++))
+                    ((PASS++)) || true
                 fi
             else
                 echo -e "${RED}❌ RUNTIME FAIL${NC}"
                 FAILED_TESTS+=("$test_name")
-                ((FAIL++))
+                ((FAIL++)) || true
             fi
         else
             echo -e "${RED}❌ COMPILE FAIL${NC}"
             FAILED_TESTS+=("$test_name")
-            ((COMPILE_FAIL++))
-            ((FAIL++))
+            ((COMPILE_FAIL++)) || true
+            ((FAIL++)) || true
         fi
     fi
 done

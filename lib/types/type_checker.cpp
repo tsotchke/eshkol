@@ -5,6 +5,8 @@
 
 #include "eshkol/types/type_checker.h"
 #include <sstream>
+#include <cstring>
+#include <cstdlib>
 
 namespace eshkol::hott {
 

@@ -67,13 +67,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Dependencies (Linux)
+      - name: Add LLVM 17 Repository (Linux)
         if: runner.os == 'Linux'
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
           echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build llvm-17-dev libreadline-dev
+
+      - name: Install Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev pkg-config
+          sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
 
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'
@@ -123,12 +128,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Add LLVM 17 Repository
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
           echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build llvm-17-dev libreadline-dev dpkg-dev
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev dpkg-dev pkg-config
+          sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
 
       - name: Build
         run: |
@@ -136,9 +145,11 @@ jobs:
           cmake --build build --parallel
 
       - name: Build Debian Package
+        id: deb
         run: |
           VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//')
           ./scripts/build-deb.sh "$VERSION"
+          echo "deb_file=eshkol_${VERSION}_amd64.deb" >> $GITHUB_OUTPUT
 
       - name: Upload Debian Package
         uses: actions/upload-release-asset@v1
@@ -146,6 +157,43 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: eshkol_*.deb
-          asset_name: eshkol-${{ github.ref_name }}-amd64.deb
+          asset_path: ${{ steps.deb.outputs.deb_file }}
+          asset_name: ${{ steps.deb.outputs.deb_file }}
           asset_content_type: application/vnd.debian.binary-package
+
+  update-homebrew:
+    needs: create-release
+    runs-on: ubuntu-22.04
+    # Only update Homebrew for stable releases (not alpha/beta/rc)
+    if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Calculate SHA256
+        id: sha
+        run: |
+          SHA256=$(curl -sL https://github.com/tsotchke/eshkol/archive/${{ github.ref_name }}.tar.gz | shasum -a 256 | cut -d ' ' -f 1)
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+
+      - name: Update Homebrew Formula
+        run: |
+          VERSION=${{ github.ref_name }}
+          SHA256=${{ steps.sha.outputs.sha256 }}
+
+          # Update the formula file
+          sed -i "s|url \"https://github.com/tsotchke/eshkol/archive/.*\.tar\.gz\"|url \"https://github.com/tsotchke/eshkol/archive/${VERSION}.tar.gz\"|" packaging/homebrew/eshkol.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA256}\"|" packaging/homebrew/eshkol.rb
+
+      - name: Push to Homebrew Tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/tsotchke/homebrew-eshkol.git tap
+          cp packaging/homebrew/eshkol.rb tap/Formula/eshkol.rb
+          cd tap
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add Formula/eshkol.rb
+          git commit -m "Update eshkol to ${{ github.ref_name }}"
+          git push

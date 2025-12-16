@@ -17,6 +17,14 @@
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Intrinsics.h>
+#include <llvm/Config/llvm-config.h>
+
+// LLVM VERSION COMPATIBILITY
+#if LLVM_VERSION_MAJOR >= 18
+#define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getOrInsertDeclaration(mod, id, types)
+#else
+#define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getDeclaration(mod, id, types)
+#endif
 
 namespace eshkol {
 
@@ -1351,7 +1359,7 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
 
             // Check if input2 is the variable (by value comparison with tolerance AND type check)
             llvm::Value* diff2 = ctx_.builder().CreateFSub(input2_val, var_val);
-            llvm::Function* fabs_intrinsic = llvm::Intrinsic::getDeclaration(&ctx_.module(), llvm::Intrinsic::fabs, {ctx_.doubleType()});
+            llvm::Function* fabs_intrinsic = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::fabs, {ctx_.doubleType()});
             llvm::Value* abs_diff2 = ctx_.builder().CreateCall(fabs_intrinsic, {diff2});
             llvm::Value* val_matches_2 = ctx_.builder().CreateFCmpOLT(abs_diff2, llvm::ConstantFP::get(ctx_.doubleType(), 1e-10));
             llvm::Value* is_var2 = ctx_.builder().CreateAnd(val_matches_2, input2_is_var_type);
