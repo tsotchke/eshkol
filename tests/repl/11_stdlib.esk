@@ -1,0 +1,9 @@
+; REPL Test: Standard Library Functions
+:stdlib
+(define (sq x) (* x x))
+(map sq '(1 2 3 4))
+(filter (lambda (x) (> x 2)) '(1 2 3 4 5))
+(fold + 0 '(1 2 3 4 5))
+(length '(1 2 3 4 5))
+(append '(1 2) '(3 4))
+(reverse '(1 2 3))

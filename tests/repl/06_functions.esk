@@ -1,0 +1,7 @@
+; REPL Test: Function Definitions
+(define (square n) (* n n))
+(square 5)
+(define (add3 a b c) (+ a b c))
+(add3 1 2 3)
+(define (fact n) (if (<= n 1) 1 (* n (fact (- n 1)))))
+(fact 5)

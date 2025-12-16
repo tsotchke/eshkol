@@ -1,0 +1,9 @@
+; REPL Test: Automatic Differentiation
+; Forward-mode AD: derivative of x^2 at x=3 should be 6
+(define f (lambda (x) (* x x)))
+(derivative f 3.0)
+; Forward-mode AD: derivative of x^3 at x=2 should be 12
+(define g (lambda (x) (* x x x)))
+(derivative g 2.0)
+; Inline lambda derivative
+(derivative (lambda (x) (* 2.0 x)) 5.0)

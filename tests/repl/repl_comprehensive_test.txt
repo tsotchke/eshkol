@@ -1,0 +1,506 @@
+; Eshkol REPL Comprehensive Test Suite
+; Run with: ./build/eshkol-repl < tests/repl/repl_comprehensive_test.txt
+;
+; Each test has format:
+;   ; TEST: description
+;   expression
+;   ; EXPECT: expected output pattern
+
+; ============================================================================
+; SECTION 1: Basic Arithmetic
+; ============================================================================
+
+; TEST: Integer addition
+(+ 1 2 3)
+; EXPECT: 6
+
+; TEST: Integer subtraction
+(- 10 3)
+; EXPECT: 7
+
+; TEST: Integer multiplication
+(* 4 5)
+; EXPECT: 20
+
+; TEST: Integer division
+(/ 20 4)
+; EXPECT: 5
+
+; TEST: Floating point arithmetic
+(+ 1.5 2.5)
+; EXPECT: 4
+
+; TEST: Mixed integer/float
+(* 2 3.5)
+; EXPECT: 7
+
+; TEST: Nested arithmetic
+(+ (* 2 3) (- 10 5))
+; EXPECT: 11
+
+; TEST: Negative numbers
+(+ -5 10)
+; EXPECT: 5
+
+; ============================================================================
+; SECTION 2: Comparison Operators
+; ============================================================================
+
+; TEST: Equal integers
+(= 5 5)
+; EXPECT: #t
+
+; TEST: Not equal integers
+(= 5 6)
+; EXPECT: #f
+
+; TEST: Less than
+(< 3 5)
+; EXPECT: #t
+
+; TEST: Greater than
+(> 10 5)
+; EXPECT: #t
+
+; TEST: Less than or equal
+(<= 5 5)
+; EXPECT: #t
+
+; TEST: Greater than or equal
+(>= 6 5)
+; EXPECT: #t
+
+; ============================================================================
+; SECTION 3: Boolean Operations
+; ============================================================================
+
+; TEST: Boolean and (true)
+(and #t #t)
+; EXPECT: #t
+
+; TEST: Boolean and (false)
+(and #t #f)
+; EXPECT: #f
+
+; TEST: Boolean or (true)
+(or #f #t)
+; EXPECT: #t
+
+; TEST: Boolean or (false)
+(or #f #f)
+; EXPECT: #f
+
+; TEST: Boolean not
+(not #f)
+; EXPECT: #t
+
+; ============================================================================
+; SECTION 4: Conditionals
+; ============================================================================
+
+; TEST: if true branch
+(if #t 1 2)
+; EXPECT: 1
+
+; TEST: if false branch
+(if #f 1 2)
+; EXPECT: 2
+
+; TEST: Nested if
+(if (> 5 3) (if (< 2 1) 10 20) 30)
+; EXPECT: 20
+
+; TEST: cond expression
+(cond ((= 1 2) 'first) ((= 2 2) 'second) (else 'third))
+; EXPECT: second
+
+; ============================================================================
+; SECTION 5: Variable Definitions
+; ============================================================================
+
+; TEST: Define integer
+(define x 42)
+
+; TEST: Reference defined variable
+x
+; EXPECT: 42
+
+; TEST: Define with expression
+(define y (+ 10 20))
+
+; TEST: Reference computed variable
+y
+; EXPECT: 30
+
+; TEST: Use defined variables in expression
+(+ x y)
+; EXPECT: 72
+
+; ============================================================================
+; SECTION 6: Function Definitions
+; ============================================================================
+
+; TEST: Define simple function
+(define (square n) (* n n))
+
+; TEST: Call simple function
+(square 5)
+; EXPECT: 25
+
+; TEST: Define function with multiple params
+(define (add3 a b c) (+ a b c))
+
+; TEST: Call multi-param function
+(add3 1 2 3)
+; EXPECT: 6
+
+; TEST: Recursive function (factorial)
+(define (fact n) (if (<= n 1) 1 (* n (fact (- n 1)))))
+
+; TEST: Call recursive function
+(fact 5)
+; EXPECT: 120
+
+; TEST: Recursive function (fibonacci)
+(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+
+; TEST: Call fibonacci
+(fib 10)
+; EXPECT: 55
+
+; ============================================================================
+; SECTION 7: Lambda Expressions
+; ============================================================================
+
+; TEST: Lambda call inline
+((lambda (x) (* x 2)) 5)
+; EXPECT: 10
+
+; TEST: Lambda with multiple params
+((lambda (a b) (+ a b)) 3 4)
+; EXPECT: 7
+
+; TEST: Store lambda in variable
+(define double (lambda (x) (* x 2)))
+
+; TEST: Call stored lambda
+(double 7)
+; EXPECT: 14
+
+; TEST: Nested lambdas (currying)
+(((lambda (x) (lambda (y) (+ x y))) 3) 4)
+; EXPECT: 7
+
+; ============================================================================
+; SECTION 8: Let Expressions
+; ============================================================================
+
+; TEST: Simple let
+(let ((x 5)) x)
+; EXPECT: 5
+
+; TEST: Let with multiple bindings
+(let ((a 2) (b 3)) (+ a b))
+; EXPECT: 5
+
+; TEST: Nested let
+(let ((x 1)) (let ((y 2)) (+ x y)))
+; EXPECT: 3
+
+; TEST: Let with computation
+(let ((x (* 3 4))) (+ x 1))
+; EXPECT: 13
+
+; ============================================================================
+; SECTION 9: List Operations
+; ============================================================================
+
+; TEST: Create list
+(list 1 2 3)
+; EXPECT: (1 2 3)
+
+; TEST: Quote list
+'(a b c)
+; EXPECT: (a b c)
+
+; TEST: Car of list
+(car '(1 2 3))
+; EXPECT: 1
+
+; TEST: Cdr of list
+(cdr '(1 2 3))
+; EXPECT: (2 3)
+
+; TEST: Cons
+(cons 1 '(2 3))
+; EXPECT: (1 2 3)
+
+; TEST: Cadr
+(cadr '(1 2 3))
+; EXPECT: 2
+
+; TEST: Null check on empty list
+(null? '())
+; EXPECT: #t
+
+; TEST: Null check on non-empty list
+(null? '(1))
+; EXPECT: #f
+
+; TEST: Pair check
+(pair? '(1 . 2))
+; EXPECT: #t
+
+; TEST: List check
+(list? '(1 2 3))
+; EXPECT: #t
+
+; ============================================================================
+; SECTION 10: Closures
+; ============================================================================
+
+; TEST: Define counter closure
+(define (make-counter)
+  (let ((count 0))
+    (lambda ()
+      (set! count (+ count 1))
+      count)))
+
+; TEST: Create counter instance
+(define counter (make-counter))
+
+; TEST: Increment counter
+(counter)
+; EXPECT: 1
+
+; TEST: Increment again
+(counter)
+; EXPECT: 2
+
+; TEST: Closure capturing
+(define (make-adder n)
+  (lambda (x) (+ x n)))
+
+; TEST: Create adder
+(define add5 (make-adder 5))
+
+; TEST: Use adder
+(add5 10)
+; EXPECT: 15
+
+; ============================================================================
+; SECTION 11: Higher-Order Functions (after stdlib)
+; ============================================================================
+
+; Load standard library
+:stdlib
+
+; TEST: Map function
+(map square '(1 2 3 4 5))
+; EXPECT: (1 4 9 16 25)
+
+; TEST: Filter function
+(filter (lambda (x) (> x 2)) '(1 2 3 4 5))
+; EXPECT: (3 4 5)
+
+; TEST: Fold/reduce
+(fold + 0 '(1 2 3 4 5))
+; EXPECT: 15
+
+; TEST: Length
+(length '(1 2 3 4 5))
+; EXPECT: 5
+
+; TEST: Append
+(append '(1 2) '(3 4))
+; EXPECT: (1 2 3 4)
+
+; TEST: Reverse
+(reverse '(1 2 3))
+; EXPECT: (3 2 1)
+
+; ============================================================================
+; SECTION 12: Math Functions
+; ============================================================================
+
+; TEST: Absolute value
+(abs -5)
+; EXPECT: 5
+
+; TEST: Modulo
+(modulo 17 5)
+; EXPECT: 2
+
+; TEST: Max
+(max 3 7 2 9 1)
+; EXPECT: 9
+
+; TEST: Min
+(min 3 7 2 9 1)
+; EXPECT: 1
+
+; TEST: sqrt
+(sqrt 16)
+; EXPECT: 4
+
+; TEST: expt (power)
+(expt 2 10)
+; EXPECT: 1024
+
+; TEST: sin at 0
+(sin 0)
+; EXPECT: 0
+
+; TEST: cos at 0
+(cos 0)
+; EXPECT: 1
+
+; ============================================================================
+; SECTION 13: Automatic Differentiation
+; ============================================================================
+
+; TEST: Differentiate x^2
+(differentiate (lambda (x) (* x x)) 'x)
+; EXPECT: (* 2 x)
+
+; TEST: Differentiate constant
+(differentiate (lambda (x) 5) 'x)
+; EXPECT: 0
+
+; TEST: Differentiate linear
+(differentiate (lambda (x) (* 3 x)) 'x)
+; EXPECT: 3
+
+; TEST: Forward-mode AD - derivative of x^2 at x=3
+(let ((f (lambda (x) (* x x))))
+  (let ((df (D f)))
+    (df 3)))
+; EXPECT: 6
+
+; TEST: Forward-mode AD - derivative of sin at x=0
+(let ((df (D sin)))
+  (df 0))
+; EXPECT: 1
+
+; ============================================================================
+; SECTION 14: Vectors/Tensors
+; ============================================================================
+
+; TEST: Create vector
+(vector 1 2 3)
+; EXPECT: #(1 2 3)
+
+; TEST: Vector reference
+(vector-ref (vector 10 20 30) 1)
+; EXPECT: 20
+
+; TEST: Vector length
+(vector-length (vector 1 2 3 4 5))
+; EXPECT: 5
+
+; TEST: Make-vector
+(make-vector 3 0)
+; EXPECT: #(0 0 0)
+
+; ============================================================================
+; SECTION 15: String Operations
+; ============================================================================
+
+; TEST: String literal
+"hello"
+; EXPECT: "hello"
+
+; TEST: String length
+(string-length "hello")
+; EXPECT: 5
+
+; TEST: String append
+(string-append "hello" " " "world")
+; EXPECT: "hello world"
+
+; ============================================================================
+; SECTION 16: Type Predicates
+; ============================================================================
+
+; TEST: number?
+(number? 42)
+; EXPECT: #t
+
+; TEST: number? on string
+(number? "hello")
+; EXPECT: #f
+
+; TEST: string?
+(string? "hello")
+; EXPECT: #t
+
+; TEST: symbol?
+(symbol? 'foo)
+; EXPECT: #t
+
+; TEST: procedure?
+(procedure? square)
+; EXPECT: #t
+
+; TEST: boolean?
+(boolean? #t)
+; EXPECT: #t
+
+; ============================================================================
+; SECTION 17: REPL Commands
+; ============================================================================
+
+; TEST: Version command
+:version
+; EXPECT: Eshkol version
+
+; TEST: Environment command
+:env
+; EXPECT: Defined Symbols
+
+; TEST: Type command
+:type (+ 1 2)
+; EXPECT: Type:
+
+; ============================================================================
+; SECTION 18: Complex Expressions
+; ============================================================================
+
+; TEST: Ackermann function
+(define (ack m n)
+  (cond ((= m 0) (+ n 1))
+        ((= n 0) (ack (- m 1) 1))
+        (else (ack (- m 1) (ack m (- n 1))))))
+
+; TEST: Call Ackermann
+(ack 2 3)
+; EXPECT: 9
+
+; TEST: Y-combinator factorial
+(define Y
+  (lambda (f)
+    ((lambda (x) (f (lambda (v) ((x x) v))))
+     (lambda (x) (f (lambda (v) ((x x) v)))))))
+
+; TEST: Y-factorial
+((Y (lambda (fact)
+      (lambda (n)
+        (if (<= n 1)
+            1
+            (* n (fact (- n 1))))))) 5)
+; EXPECT: 120
+
+; TEST: Church numerals
+(define church-zero (lambda (f) (lambda (x) x)))
+(define church-succ (lambda (n) (lambda (f) (lambda (x) (f ((n f) x))))))
+(define church-to-int (lambda (n) ((n (lambda (x) (+ x 1))) 0)))
+
+; TEST: Convert church numeral
+(church-to-int (church-succ (church-succ church-zero)))
+; EXPECT: 2
+
+; ============================================================================
+; END OF TESTS
+; ============================================================================
+
+:quit

@@ -1,0 +1,7 @@
+; REPL Test: Math Functions
+(abs -5)
+(modulo 17 5)
+(max 3 7 2 9 1)
+(min 3 7 2 9 1)
+(sqrt 16)
+(expt 2 10)

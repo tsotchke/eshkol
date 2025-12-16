@@ -11,19 +11,13 @@ permissions:
 jobs:
   create-release:
     runs-on: ubuntu-22.04
-    outputs:
-      upload_url: ${{ steps.create.outputs.upload_url }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Create Release
-        id: create
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Eshkol ${{ github.ref_name }}
+          name: Eshkol ${{ github.ref_name }}
           body: |
             See CHANGELOG.md for details.
 
@@ -112,14 +106,10 @@ jobs:
           tar -czvf eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz -C pkg .
 
       - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
-          asset_name: eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
-          asset_content_type: application/gzip
+          files: eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+          fail_on_unmatched_files: true
 
   build-debian-package:
     needs: create-release
@@ -152,14 +142,10 @@ jobs:
           echo "deb_file=eshkol_${VERSION}_amd64.deb" >> $GITHUB_OUTPUT
 
       - name: Upload Debian Package
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ steps.deb.outputs.deb_file }}
-          asset_name: ${{ steps.deb.outputs.deb_file }}
-          asset_content_type: application/vnd.debian.binary-package
+          files: ${{ steps.deb.outputs.deb_file }}
+          fail_on_unmatched_files: true
 
   update-homebrew:
     needs: create-release

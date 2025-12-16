@@ -1,0 +1,5 @@
+; REPL Test: Vectors
+(vector 1 2 3)
+(vector-ref (vector 10 20 30) 1)
+(vector-length (vector 1 2 3 4 5))
+(make-vector 3 0)

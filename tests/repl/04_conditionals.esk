@@ -1,0 +1,5 @@
+; REPL Test: Conditionals
+(if #t 1 2)
+(if #f 1 2)
+(if (> 5 3) (if (< 2 1) 10 20) 30)
+(cond ((= 1 2) 'first) ((= 2 2) 'second) (else 'third))
