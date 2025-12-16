@@ -191,6 +191,7 @@ add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
   COMMAND $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
   DEPENDS eshkol-run ${STDLIB_SOURCE}
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   COMMENT "Compiling standard library to ${STDLIB_OUTPUT}"
   VERBATIM
 )
