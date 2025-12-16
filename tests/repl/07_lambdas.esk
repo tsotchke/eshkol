@@ -1,0 +1,6 @@
+; REPL Test: Lambda Expressions
+((lambda (x) (* x 2)) 5)
+((lambda (a b) (+ a b)) 3 4)
+(define double (lambda (x) (* x 2)))
+(double 7)
+(((lambda (x) (lambda (y) (+ x y))) 3) 4)

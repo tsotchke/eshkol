@@ -1,0 +1,6 @@
+; REPL Test: Variable Definitions
+(define x 42)
+x
+(define y (+ 10 20))
+y
+(+ x y)

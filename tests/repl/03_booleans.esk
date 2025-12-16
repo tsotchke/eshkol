@@ -1,0 +1,6 @@
+; REPL Test: Boolean Operations
+(and #t #t)
+(and #t #f)
+(or #f #t)
+(or #f #f)
+(not #f)

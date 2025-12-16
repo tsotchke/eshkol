@@ -1,0 +1,10 @@
+; REPL Test: List Operations
+(list 1 2 3)
+'(a b c)
+(car '(1 2 3))
+(cdr '(1 2 3))
+(cons 1 '(2 3))
+(cadr '(1 2 3))
+(null? '())
+(null? '(1))
+(pair? (cons 1 2))

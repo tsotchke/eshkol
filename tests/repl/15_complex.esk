@@ -1,0 +1,15 @@
+; REPL Test: Complex Expressions
+(define (ack m n)
+  (cond ((= m 0) (+ n 1))
+        ((= n 0) (ack (- m 1) 1))
+        (else (ack (- m 1) (ack m (- n 1))))))
+(ack 2 3)
+(define Y
+  (lambda (f)
+    ((lambda (x) (f (lambda (v) ((x x) v))))
+     (lambda (x) (f (lambda (v) ((x x) v)))))))
+((Y (lambda (fact)
+      (lambda (n)
+        (if (<= n 1)
+            1
+            (* n (fact (- n 1))))))) 5)

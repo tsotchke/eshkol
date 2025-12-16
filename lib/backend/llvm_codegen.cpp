@@ -17594,6 +17594,28 @@ private:
                     }
                 }
 
+                // REPL MODE FIX: Check g_repl_symbol_addresses for functions defined in REPL
+                if (!var_value && g_repl_mode_enabled) {
+                    std::lock_guard<std::mutex> lock(g_repl_mutex);
+                    auto repl_it = g_repl_symbol_addresses.find(func_name);
+                    if (repl_it != g_repl_symbol_addresses.end()) {
+                        eshkol_debug("derivative: found '%s' in REPL symbol addresses", func_name.c_str());
+                        // Create external declaration for the global variable
+                        GlobalVariable* global_var = module->getGlobalVariable(func_name);
+                        if (!global_var) {
+                            global_var = new GlobalVariable(
+                                *module,
+                                tagged_value_type,
+                                false,
+                                GlobalValue::ExternalLinkage,
+                                nullptr,
+                                func_name
+                            );
+                        }
+                        var_value = global_var;
+                    }
+                }
+
                 if (var_value) {
                     // Check if it's a function parameter (Argument) with tagged_value type
                     // Also check isStructTy() as a fallback for tagged_value_type matching
