@@ -15,7 +15,12 @@
 #include <getopt.h>
 #include <unistd.h>
 #include <filesystem>
+#ifdef __APPLE__
 #include <mach-o/dyld.h>  // For _NSGetExecutablePath on macOS
+#endif
+#ifdef __linux__
+#include <linux/limits.h>  // For PATH_MAX on Linux
+#endif
 
 #include <string>
 #include <vector>
@@ -23,6 +28,8 @@
 #include <map>
 #include <algorithm>
 #include <sstream>
+#include <cstring>
+#include <cstdlib>
 
 static struct option long_options[] = {
     {"help", no_argument, nullptr, 'h'},
@@ -1264,17 +1271,22 @@ static std::string find_stdlib()
 
     // Also check relative to the executable
     char exe_path[4096];
+    bool got_exe_path = false;
+
+#ifdef __linux__
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len == -1) {
-        // Try macOS method
-        uint32_t size = sizeof(exe_path);
-        if (_NSGetExecutablePath(exe_path, &size) == 0) {
-            std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-            stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/stdlib.esk").string());
-            stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.esk").string());
-        }
-    } else {
+    if (len != -1) {
         exe_path[len] = '\0';
+        got_exe_path = true;
+    }
+#elif defined(__APPLE__)
+    uint32_t size = sizeof(exe_path);
+    if (_NSGetExecutablePath(exe_path, &size) == 0) {
+        got_exe_path = true;
+    }
+#endif
+
+    if (got_exe_path) {
         std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
         stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/stdlib.esk").string());
         stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.esk").string());
@@ -1304,19 +1316,22 @@ static std::string find_stdlib_object()
 
     // Also check relative to the executable
     char exe_path[4096];
+    bool got_exe_path = false;
+
+#ifdef __linux__
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len == -1) {
-        // Try macOS method
-        uint32_t size = sizeof(exe_path);
-        if (_NSGetExecutablePath(exe_path, &size) == 0) {
-            std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-            // Check next to the executable (build directory)
-            stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.o").string());
-            // Check in lib subdirectory
-            stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.o").string());
-        }
-    } else {
+    if (len != -1) {
         exe_path[len] = '\0';
+        got_exe_path = true;
+    }
+#elif defined(__APPLE__)
+    uint32_t size = sizeof(exe_path);
+    if (_NSGetExecutablePath(exe_path, &size) == 0) {
+        got_exe_path = true;
+    }
+#endif
+
+    if (got_exe_path) {
         std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
         stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.o").string());
         stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.o").string());
@@ -1362,17 +1377,22 @@ static std::string find_lib_dir()
 
     // Also check relative to the executable
     char exe_path[4096];
+    bool got_exe_path = false;
+
+#ifdef __linux__
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len == -1) {
-        // Try macOS method
-        uint32_t size = sizeof(exe_path);
-        if (_NSGetExecutablePath(exe_path, &size) == 0) {
-            std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-            lib_dirs.insert(lib_dirs.begin(), (exe_dir / "../lib").string());
-            lib_dirs.insert(lib_dirs.begin(), (exe_dir / "lib").string());
-        }
-    } else {
+    if (len != -1) {
         exe_path[len] = '\0';
+        got_exe_path = true;
+    }
+#elif defined(__APPLE__)
+    uint32_t size = sizeof(exe_path);
+    if (_NSGetExecutablePath(exe_path, &size) == 0) {
+        got_exe_path = true;
+    }
+#endif
+
+    if (got_exe_path) {
         std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
         lib_dirs.insert(lib_dirs.begin(), (exe_dir / "../lib").string());
         lib_dirs.insert(lib_dirs.begin(), (exe_dir / "lib").string());

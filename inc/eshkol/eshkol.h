@@ -14,6 +14,18 @@
 #define ESHKOL_VERSION_STRING "1.0.0-foundation"
 
 #include <stdint.h>
+#include <stdbool.h>
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CROSS-PLATFORM STATIC ASSERTION MACRO
+// _Static_assert is C11, static_assert is C++11. GCC in C++ mode doesn't
+// recognize _Static_assert. This macro provides a unified interface.
+// ═══════════════════════════════════════════════════════════════════════════
+#ifdef __cplusplus
+#define ESHKOL_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#else
+#define ESHKOL_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#endif
 
 #ifdef __cplusplus
 
@@ -129,8 +141,8 @@ typedef struct eshkol_tagged_value {
 } eshkol_tagged_value_t;
 
 // Compile-time size validation for tagged values
-static_assert(sizeof(eshkol_tagged_value_t) <= 16,
-               "Tagged value must fit in 16 bytes for efficiency");
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_tagged_value_t) <= 16,
+                     "Tagged value must fit in 16 bytes for efficiency");
 
 // Dual number for forward-mode automatic differentiation
 // Stores value and derivative simultaneously for efficient chain rule computation
@@ -140,8 +152,8 @@ typedef struct eshkol_dual_number {
 } eshkol_dual_number_t;
 
 // Compile-time size validation for dual numbers
-static_assert(sizeof(eshkol_dual_number_t) == 16,
-               "Dual number must be 16 bytes for cache efficiency");
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 16,
+                     "Dual number must be 16 bytes for cache efficiency");
 
 // Helper functions for tagged value manipulation
 static inline eshkol_tagged_value_t eshkol_make_int64(int64_t val, bool exact) {
@@ -280,8 +292,8 @@ typedef struct eshkol_object_header {
 } eshkol_object_header_t;
 
 // Compile-time validation
-static_assert(sizeof(eshkol_object_header_t) == 8,
-               "Object header must be 8 bytes for alignment");
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,
+                     "Object header must be 8 bytes for alignment");
 
 // ───────────────────────────────────────────────────────────────────────────
 // HEAP_PTR SUBTYPES (type = ESHKOL_VALUE_HEAP_PTR = 8)
@@ -627,8 +639,8 @@ typedef struct eshkol_closure_env {
 } eshkol_closure_env_t;
 
 // Compile-time size validation
-static_assert(sizeof(eshkol_closure_env_t) == sizeof(size_t),
-               "Closure environment header must be minimal");
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_closure_env_t) == sizeof(size_t),
+                     "Closure environment header must be minimal");
 
 // Closure return type constants (matches eshkol_value_type_t but with additional info)
 // These are used to determine function behavior without calling it

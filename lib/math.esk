@@ -22,13 +22,13 @@
 (define (tensor-copy T)
   (let* ((total (vector-length T))
          (V (make-vector total 0.0)))
-    (define (copy-loop i)
+    (letrec ((copy-loop (lambda (i)
       (if (< i total)
           (begin
             (vector-set! V i (vref T i))
             (copy-loop (+ i 1)))
-          V))
-    (copy-loop 0)))
+          V))))
+      (copy-loop 0))))
 
 ;;; ============================================================
 ;;; Determinant via LU Decomposition
@@ -36,72 +36,63 @@
 
 ;; det: Compute determinant of n×n matrix using Gaussian elimination
 ;; with partial pivoting. O(n³) complexity.
+;; Note: Uses mutable state for sign and result tracking
 (define (det M n)
-  (let ((A (tensor-copy M))
-        (sign 1.0)
-        (result 1.0))
+  (let* ((A (tensor-copy M))
+         (state (make-vector 2 0.0)))  ;; state[0] = sign, state[1] = result
+    (vector-set! state 0 1.0)  ;; sign = 1.0
+    (vector-set! state 1 1.0)  ;; result = 1.0
+    (letrec
+      ((find-pivot (lambda (k i max-idx max-val)
+         (if (< i n)
+             (let ((val (abs (vref A (+ (* i n) k)))))
+               (if (> val max-val)
+                   (find-pivot k (+ i 1) i val)
+                   (find-pivot k (+ i 1) max-idx max-val)))
+             max-idx)))
 
-    ;; Main elimination loop over columns k
-    (define (eliminate k)
-      (if (>= k n)
-          (* result sign)  ;; Done - return det * sign
-          (begin
-            ;; Find pivot: max |A[i,k]| for i >= k
-            (let ((max-idx k)
-                  (max-val (abs (vref A (+ (* k n) k)))))
+       (swap-cols (lambda (k max-idx j)
+         (if (< j n)
+             (let ((tmp (vref A (+ (* k n) j))))
+               (vector-set! A (+ (* k n) j)
+                           (vref A (+ (* max-idx n) j)))
+               (vector-set! A (+ (* max-idx n) j) tmp)
+               (swap-cols k max-idx (+ j 1))))))
 
-              ;; Search for maximum in column k below diagonal
-              (define (find-pivot i)
-                (if (< i n)
-                    (let ((val (abs (vref A (+ (* i n) k)))))
-                      (if (> val max-val)
-                          (begin
-                            (set! max-idx i)
-                            (set! max-val val)))
-                      (find-pivot (+ i 1)))))
-              (find-pivot (+ k 1))
+       (elim-col (lambda (k i factor j)
+         (if (< j n)
+             (begin
+               (vector-set! A (+ (* i n) j)
+                 (- (vref A (+ (* i n) j))
+                    (* factor (vref A (+ (* k n) j)))))
+               (elim-col k i factor (+ j 1))))))
 
-              ;; Swap rows k and max-idx if needed
-              (if (not (= max-idx k))
-                  (begin
-                    (set! sign (- 0.0 sign))
-                    ;; Swap entire rows
-                    (define (swap-col j)
-                      (if (< j n)
-                          (let ((tmp (vref A (+ (* k n) j))))
-                            (vector-set! A (+ (* k n) j)
-                                        (vref A (+ (* max-idx n) j)))
-                            (vector-set! A (+ (* max-idx n) j) tmp)
-                            (swap-col (+ j 1)))))
-                    (swap-col 0)))
+       (elim-row (lambda (k pivot i)
+         (if (< i n)
+             (let ((factor (/ (vref A (+ (* i n) k)) pivot)))
+               (elim-col k i factor k)
+               (elim-row k pivot (+ i 1))))))
 
-              ;; Get pivot element
-              (let ((pivot (vref A (+ (* k n) k))))
-                ;; Multiply determinant by pivot
-                (set! result (* result pivot))
+       (eliminate (lambda (k)
+         (if (>= k n)
+             (* (vref state 1) (vref state 0))  ;; Done - return result * sign
+             (let* ((max-idx (find-pivot k (+ k 1) k (abs (vref A (+ (* k n) k))))))
+               ;; Swap rows if needed
+               (if (not (= max-idx k))
+                   (begin
+                     (vector-set! state 0 (- 0.0 (vref state 0)))  ;; Flip sign
+                     (swap-cols k max-idx 0)))
+               ;; Get pivot and update result
+               (let ((pivot (vref A (+ (* k n) k))))
+                 (vector-set! state 1 (* (vref state 1) pivot))
+                 ;; Check for singular
+                 (if (< (abs pivot) epsilon)
+                     0.0  ;; Singular matrix
+                     (begin
+                       (elim-row k pivot (+ k 1))
+                       (eliminate (+ k 1))))))))))
 
-                ;; Check for singular matrix
-                (if (< (abs pivot) epsilon)
-                    0.0  ;; Singular matrix - det is 0
-                    (begin
-                      ;; Eliminate below diagonal
-                      (define (elim-row i)
-                        (if (< i n)
-                            (let ((factor (/ (vref A (+ (* i n) k)) pivot)))
-                              ;; Update row i: A[i,j] -= factor * A[k,j]
-                              (define (elim-col j)
-                                (if (< j n)
-                                    (begin
-                                      (vector-set! A (+ (* i n) j)
-                                        (- (vref A (+ (* i n) j))
-                                           (* factor (vref A (+ (* k n) j)))))
-                                      (elim-col (+ j 1)))))
-                              (elim-col k)
-                              (elim-row (+ i 1)))))
-                      (elim-row (+ k 1))
-                      (eliminate (+ k 1)))))))))
-
-    (eliminate 0)))
+      (eliminate 0))))
 
 ;;; ============================================================
 ;;; Matrix Inverse via Gauss-Jordan Elimination
@@ -111,81 +102,74 @@
 ;; Returns #f if matrix is singular
 (define (inv M n)
   (let ((A (tensor-copy M))
-        (I (tensor-copy (eye n))))  ;; Start with identity
+        (I (tensor-copy (eye n))))
 
-    ;; Forward elimination with partial pivoting
-    (define (forward k)
-      (if (>= k n)
-          #t  ;; Success
-          (begin
-            ;; Find pivot
-            (let ((max-idx k)
-                  (max-val (abs (vref A (+ (* k n) k)))))
-              (define (find-pivot i)
-                (if (< i n)
-                    (let ((val (abs (vref A (+ (* i n) k)))))
-                      (if (> val max-val)
-                          (begin
-                            (set! max-idx i)
-                            (set! max-val val)))
-                      (find-pivot (+ i 1)))))
-              (find-pivot (+ k 1))
+    (letrec
+      ((find-pivot (lambda (k i max-idx max-val)
+         (if (< i n)
+             (let ((val (abs (vref A (+ (* i n) k)))))
+               (if (> val max-val)
+                   (find-pivot k (+ i 1) i val)
+                   (find-pivot k (+ i 1) max-idx max-val)))
+             max-idx)))
 
-              ;; Check for singular
-              (if (< max-val epsilon)
-                  #f  ;; Singular - return false
-                  (begin
-                    ;; Swap rows if needed (in both A and I)
-                    (if (not (= max-idx k))
-                        (define (swap-row j)
-                          (if (< j n)
-                              (let ((tmp-a (vref A (+ (* k n) j)))
-                                    (tmp-i (vref I (+ (* k n) j))))
-                                (vector-set! A (+ (* k n) j)
-                                            (vref A (+ (* max-idx n) j)))
-                                (vector-set! A (+ (* max-idx n) j) tmp-a)
-                                (vector-set! I (+ (* k n) j)
-                                            (vref I (+ (* max-idx n) j)))
-                                (vector-set! I (+ (* max-idx n) j) tmp-i)
-                                (swap-row (+ j 1)))))
-                        (swap-row 0)))
+       (swap-row (lambda (k max-idx j)
+         (if (< j n)
+             (let ((tmp-a (vref A (+ (* k n) j)))
+                   (tmp-i (vref I (+ (* k n) j))))
+               (vector-set! A (+ (* k n) j)
+                           (vref A (+ (* max-idx n) j)))
+               (vector-set! A (+ (* max-idx n) j) tmp-a)
+               (vector-set! I (+ (* k n) j)
+                           (vref I (+ (* max-idx n) j)))
+               (vector-set! I (+ (* max-idx n) j) tmp-i)
+               (swap-row k max-idx (+ j 1))))))
 
-                    ;; Scale pivot row
-                    (let ((pivot (vref A (+ (* k n) k))))
-                      (define (scale-row j)
-                        (if (< j n)
-                            (begin
-                              (vector-set! A (+ (* k n) j)
-                                (/ (vref A (+ (* k n) j)) pivot))
-                              (vector-set! I (+ (* k n) j)
-                                (/ (vref I (+ (* k n) j)) pivot))
-                              (scale-row (+ j 1)))))
-                      (scale-row 0))
+       (scale-row (lambda (k pivot j)
+         (if (< j n)
+             (begin
+               (vector-set! A (+ (* k n) j)
+                 (/ (vref A (+ (* k n) j)) pivot))
+               (vector-set! I (+ (* k n) j)
+                 (/ (vref I (+ (* k n) j)) pivot))
+               (scale-row k pivot (+ j 1))))))
 
-                    ;; Eliminate column k in all other rows
-                    (define (elim-row i)
-                      (if (< i n)
-                          (begin
-                            (if (not (= i k))
-                                (let ((factor (vref A (+ (* i n) k))))
-                                  (define (elim-col j)
-                                    (if (< j n)
-                                        (begin
-                                          (vector-set! A (+ (* i n) j)
-                                            (- (vref A (+ (* i n) j))
-                                               (* factor (vref A (+ (* k n) j)))))
-                                          (vector-set! I (+ (* i n) j)
-                                            (- (vref I (+ (* i n) j))
-                                               (* factor (vref I (+ (* k n) j)))))
-                                          (elim-col (+ j 1)))))
-                                  (elim-col 0)))
-                            (elim-row (+ i 1)))))
-                    (elim-row 0)
-                    (forward (+ k 1))))))))
+       (elim-col (lambda (k i factor j)
+         (if (< j n)
+             (begin
+               (vector-set! A (+ (* i n) j)
+                 (- (vref A (+ (* i n) j))
+                    (* factor (vref A (+ (* k n) j)))))
+               (vector-set! I (+ (* i n) j)
+                 (- (vref I (+ (* i n) j))
+                    (* factor (vref I (+ (* k n) j)))))
+               (elim-col k i factor (+ j 1))))))
 
-    (if (forward 0)
-        I   ;; Return inverse
-        #f))) ;; Singular matrix
+       (elim-row (lambda (k i)
+         (if (< i n)
+             (begin
+               (if (not (= i k))
+                   (let ((factor (vref A (+ (* i n) k))))
+                     (elim-col k i factor 0)))
+               (elim-row k (+ i 1))))))
+
+       (forward (lambda (k)
+         (if (>= k n)
+             #t
+             (let ((max-idx (find-pivot k (+ k 1) k (abs (vref A (+ (* k n) k))))))
+               (if (< (abs (vref A (+ (* max-idx n) k))) epsilon)
+                   #f  ;; Singular
+                   (begin
+                     (if (not (= max-idx k))
+                         (swap-row k max-idx 0))
+                     (let ((pivot (vref A (+ (* k n) k))))
+                       (scale-row k pivot 0))
+                     (elim-row k 0)
+                     (forward (+ k 1)))))))))
+
+      (if (forward 0)
+          I
+          #f))))
 
 ;;; ============================================================
 ;;; Solve Linear System Ax = b
@@ -198,80 +182,73 @@
   (let ((M (tensor-copy A))
         (x (tensor-copy b)))
 
-    ;; Forward elimination
-    (define (forward k)
-      (if (>= k n)
-          #t
+    (letrec
+      ((find-pivot (lambda (k i max-idx max-val)
+         (if (< i n)
+             (let ((val (abs (vref M (+ (* i n) k)))))
+               (if (> val max-val)
+                   (find-pivot k (+ i 1) i val)
+                   (find-pivot k (+ i 1) max-idx max-val)))
+             max-idx)))
+
+       (swap-col (lambda (k max-idx j)
+         (if (< j n)
+             (let ((tmp (vref M (+ (* k n) j))))
+               (vector-set! M (+ (* k n) j)
+                           (vref M (+ (* max-idx n) j)))
+               (vector-set! M (+ (* max-idx n) j) tmp)
+               (swap-col k max-idx (+ j 1))))))
+
+       (elim-col (lambda (k i factor j)
+         (if (< j n)
+             (begin
+               (vector-set! M (+ (* i n) j)
+                 (- (vref M (+ (* i n) j))
+                    (* factor (vref M (+ (* k n) j)))))
+               (elim-col k i factor (+ j 1))))))
+
+       (elim-row (lambda (k i)
+         (if (< i n)
+             (let ((factor (/ (vref M (+ (* i n) k)) (vref M (+ (* k n) k)))))
+               (vector-set! x i (- (vref x i) (* factor (vref x k))))
+               (elim-col k i factor k)
+               (elim-row k (+ i 1))))))
+
+       (forward (lambda (k)
+         (if (>= k n)
+             #t
+             (let ((max-idx (find-pivot k (+ k 1) k (abs (vref M (+ (* k n) k))))))
+               (if (< (abs (vref M (+ (* max-idx n) k))) epsilon)
+                   #f
+                   (begin
+                     (if (not (= max-idx k))
+                         (begin
+                           (let ((tmp-x (vref x k)))
+                             (vector-set! x k (vref x max-idx))
+                             (vector-set! x max-idx tmp-x))
+                           (swap-col k max-idx 0)))
+                     (elim-row k (+ k 1))
+                     (forward (+ k 1))))))))
+
+       (sum-row (lambda (k j acc)
+         (if (< j n)
+             (sum-row k (+ j 1) (+ acc (* (vref M (+ (* k n) j)) (vref x j))))
+             acc)))
+
+       (back-sub (lambda (k)
+         (if (< k 0)
+             #t
+             (begin
+               (vector-set! x k
+                 (/ (- (vref x k) (sum-row k (+ k 1) 0.0))
+                    (vref M (+ (* k n) k))))
+               (back-sub (- k 1)))))))
+
+      (if (forward 0)
           (begin
-            ;; Find pivot
-            (let ((max-idx k)
-                  (max-val (abs (vref M (+ (* k n) k)))))
-              (define (find-pivot i)
-                (if (< i n)
-                    (let ((val (abs (vref M (+ (* i n) k)))))
-                      (if (> val max-val)
-                          (begin
-                            (set! max-idx i)
-                            (set! max-val val)))
-                      (find-pivot (+ i 1)))))
-              (find-pivot (+ k 1))
-
-              (if (< max-val epsilon)
-                  #f  ;; Singular
-                  (begin
-                    ;; Swap rows
-                    (if (not (= max-idx k))
-                        (begin
-                          (let ((tmp-x (vref x k)))
-                            (vector-set! x k (vref x max-idx))
-                            (vector-set! x max-idx tmp-x))
-                          (define (swap-col j)
-                            (if (< j n)
-                                (let ((tmp (vref M (+ (* k n) j))))
-                                  (vector-set! M (+ (* k n) j)
-                                              (vref M (+ (* max-idx n) j)))
-                                  (vector-set! M (+ (* max-idx n) j) tmp)
-                                  (swap-col (+ j 1)))))
-                          (swap-col 0)))
-
-                    ;; Eliminate
-                    (let ((pivot (vref M (+ (* k n) k))))
-                      (define (elim-row i)
-                        (if (< i n)
-                            (let ((factor (/ (vref M (+ (* i n) k)) pivot)))
-                              (vector-set! x i (- (vref x i) (* factor (vref x k))))
-                              (define (elim-col j)
-                                (if (< j n)
-                                    (begin
-                                      (vector-set! M (+ (* i n) j)
-                                        (- (vref M (+ (* i n) j))
-                                           (* factor (vref M (+ (* k n) j)))))
-                                      (elim-col (+ j 1)))))
-                              (elim-col k)
-                              (elim-row (+ i 1)))))
-                      (elim-row (+ k 1)))
-                    (forward (+ k 1))))))))
-
-    ;; Back substitution
-    (define (back-sub k)
-      (if (< k 0)
-          #t
-          (begin
-            (let ((sum 0.0))
-              (define (sum-row j)
-                (if (< j n)
-                    (begin
-                      (set! sum (+ sum (* (vref M (+ (* k n) j)) (vref x j))))
-                      (sum-row (+ j 1)))))
-              (sum-row (+ k 1))
-              (vector-set! x k (/ (- (vref x k) sum) (vref M (+ (* k n) k)))))
-            (back-sub (- k 1)))))
-
-    (if (forward 0)
-        (begin
-          (back-sub (- n 1))
-          x)
-        #f)))
+            (back-sub (- n 1))
+            x)
+          #f))))
 
 ;;; ============================================================
 ;;; Cross Product (3D vectors only)
@@ -288,81 +265,76 @@
 
 ;; dot: Dot product of two vectors
 (define (dot u v)
-  (let ((n (vector-length u))
-        (sum 0.0))
-    (define (loop i)
-      (if (< i n)
-          (begin
-            (set! sum (+ sum (* (vref u i) (vref v i))))
-            (loop (+ i 1)))
-          sum))
-    (loop 0)))
+  (let ((len (vector-length u)))
+    (letrec ((loop (lambda (i acc)
+      (if (< i len)
+          (loop (+ i 1) (+ acc (* (vref u i) (vref v i))))
+          acc))))
+      (loop 0 0.0))))
 
 ;; normalize: Return unit vector in same direction
 (define (normalize v)
   (let ((n (norm v)))
     (if (< n epsilon)
-        v  ;; Return original if zero vector
+        v
         (let* ((len (vector-length v))
                (result (make-vector len 0.0)))
-          (define (loop i)
+          (letrec ((loop (lambda (i)
             (if (< i len)
                 (begin
                   (vector-set! result i (/ (vref v i) n))
                   (loop (+ i 1)))
-                result))
-          (loop 0)))))
+                result))))
+            (loop 0))))))
 
 ;;; ============================================================
 ;;; Eigenvalue Estimation (Power Method)
 ;;; ============================================================
 
-;; Estimate dominant eigenvalue using power iteration
-(define (power-iteration A n max-iters tolerance)
-  (let ((x (make-vector n 1.0))  ;; Initial guess
-        (lambda-old 0.0))
-
-    (define (iterate k)
-      (if (>= k max-iters)
-          (dot x (mat-vec-mul A x n n))  ;; Return Rayleigh quotient
-          (begin
-            ;; y = A * x
-            (let ((y (mat-vec-mul A x n n)))
-              ;; Normalize
-              (let ((norm-y (norm y)))
-                (define (normalize-loop i)
-                  (if (< i n)
-                      (begin
-                        (vector-set! x i (/ (vref y i) norm-y))
-                        (normalize-loop (+ i 1)))))
-                (normalize-loop 0)
-
-                ;; Compute eigenvalue estimate (Rayleigh quotient)
-                (let ((lambda-new (dot x (mat-vec-mul A x n n))))
-                  (if (< (abs (- lambda-new lambda-old)) tolerance)
-                      lambda-new
-                      (begin
-                        (set! lambda-old lambda-new)
-                        (iterate (+ k 1))))))))))
-    (iterate 0)))
-
-;; Matrix-vector multiplication helper
+;; Matrix-vector multiplication helper (defined first for power-iteration)
 (define (mat-vec-mul A x rows cols)
   (let ((result (make-vector rows 0.0)))
-    (define (row-loop i)
-      (if (< i rows)
-          (begin
-            (let ((sum 0.0))
-              (define (col-loop j)
-                (if (< j cols)
-                    (begin
-                      (set! sum (+ sum (* (vref A (+ (* i cols) j)) (vref x j))))
-                      (col-loop (+ j 1)))))
-              (col-loop 0)
-              (vector-set! result i sum))
-            (row-loop (+ i 1)))
-          result))
-    (row-loop 0)))
+    (letrec
+      ((col-loop (lambda (i j acc)
+         (if (< j cols)
+             (col-loop i (+ j 1) (+ acc (* (vref A (+ (* i cols) j)) (vref x j))))
+             acc)))
+
+       (row-loop (lambda (i)
+         (if (< i rows)
+             (begin
+               (vector-set! result i (col-loop i 0 0.0))
+               (row-loop (+ i 1)))
+             result))))
+
+      (row-loop 0))))
+
+;; Estimate dominant eigenvalue using power iteration
+(define (power-iteration A n max-iters tolerance)
+  (let ((x (make-vector n 1.0))
+        (lambda-state (make-vector 1 0.0)))  ;; lambda-old
+
+    (letrec
+      ((normalize-loop (lambda (y norm-y i)
+         (if (< i n)
+             (begin
+               (vector-set! x i (/ (vref y i) norm-y))
+               (normalize-loop y norm-y (+ i 1))))))
+
+       (iterate (lambda (k)
+         (if (>= k max-iters)
+             (dot x (mat-vec-mul A x n n))
+             (let* ((y (mat-vec-mul A x n n))
+                    (norm-y (norm y)))
+               (normalize-loop y norm-y 0)
+               (let ((lambda-new (dot x (mat-vec-mul A x n n))))
+                 (if (< (abs (- lambda-new (vref lambda-state 0))) tolerance)
+                     lambda-new
+                     (begin
+                       (vector-set! lambda-state 0 lambda-new)
+                       (iterate (+ k 1))))))))))
+
+      (iterate 0))))
 
 ;;; ============================================================
 ;;; Numerical Integration (Simpson's Rule)
@@ -372,16 +344,17 @@
 ;; f is the function, a and b are bounds, n is number of intervals (must be even)
 (define (integrate f a b n)
   (let* ((h (/ (- b a) n))
-         (sum (+ (f a) (f b))))
-    (define (loop i)
+         (sum-state (make-vector 1 0.0)))
+    (vector-set! sum-state 0 (+ (f a) (f b)))
+    (letrec ((loop (lambda (i)
       (if (< i n)
-          (let ((x (+ a (* i h))))
+          (let ((x-val (+ a (* i h))))
             (if (even? i)
-                (set! sum (+ sum (* 2.0 (f x))))
-                (set! sum (+ sum (* 4.0 (f x)))))
+                (vector-set! sum-state 0 (+ (vref sum-state 0) (* 2.0 (f x-val))))
+                (vector-set! sum-state 0 (+ (vref sum-state 0) (* 4.0 (f x-val)))))
             (loop (+ i 1)))
-          (* (/ h 3.0) sum)))
-    (loop 1)))
+          (* (/ h 3.0) (vref sum-state 0))))))
+      (loop 1))))
 
 ;;; ============================================================
 ;;; Root Finding (Newton-Raphson)
@@ -390,18 +363,18 @@
 ;; newton: Find root of f using Newton-Raphson method
 ;; df is the derivative of f
 (define (newton f df x0 tolerance max-iters)
-  (define (iterate x k)
+  (letrec ((iterate (lambda (x k)
     (if (>= k max-iters)
-        x  ;; Return best estimate
+        x
         (let ((fx (f x))
               (dfx (df x)))
           (if (< (abs dfx) epsilon)
-              x  ;; Derivative too small
+              x
               (let ((x-new (- x (/ fx dfx))))
                 (if (< (abs (- x-new x)) tolerance)
                     x-new
-                    (iterate x-new (+ k 1))))))))
-  (iterate x0 0))
+                    (iterate x-new (+ k 1))))))))))
+    (iterate x0 0)))
 
 ;;; ============================================================
 ;;; Statistics
@@ -409,17 +382,14 @@
 
 ;; variance: Compute variance of a vector
 (define (variance v)
-  (let* ((n (vector-length v))
-         (mean (tensor-mean v))
-         (sum-sq 0.0))
-    (define (loop i)
-      (if (< i n)
-          (begin
-            (set! sum-sq (+ sum-sq (* (- (vref v i) mean)
-                                      (- (vref v i) mean))))
-            (loop (+ i 1)))
-          (/ sum-sq n)))
-    (loop 0)))
+  (let* ((len (vector-length v))
+         (mean (tensor-mean v)))
+    (letrec ((loop (lambda (i acc)
+      (if (< i len)
+          (loop (+ i 1) (+ acc (* (- (vref v i) mean)
+                                  (- (vref v i) mean))))
+          (/ acc len)))))
+      (loop 0 0.0))))
 
 ;; std: Standard deviation
 (define (std v)
@@ -427,15 +397,12 @@
 
 ;; covariance: Compute covariance of two vectors
 (define (covariance u v)
-  (let* ((n (vector-length u))
+  (let* ((len (vector-length u))
          (mean-u (tensor-mean u))
-         (mean-v (tensor-mean v))
-         (sum 0.0))
-    (define (loop i)
-      (if (< i n)
-          (begin
-            (set! sum (+ sum (* (- (vref u i) mean-u)
-                                (- (vref v i) mean-v))))
-            (loop (+ i 1)))
-          (/ sum n)))
-    (loop 0)))
+         (mean-v (tensor-mean v)))
+    (letrec ((loop (lambda (i acc)
+      (if (< i len)
+          (loop (+ i 1) (+ acc (* (- (vref u i) mean-u)
+                                  (- (vref v i) mean-v))))
+          (/ acc len)))))
+      (loop 0 0.0))))

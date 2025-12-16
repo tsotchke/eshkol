@@ -1,159 +1,219 @@
-# Eshkol 0.1.0-alpha - Early Developer Preview
+# Eshkol v1.0.0-foundation - Production Release
 
-**Release Date**: April 2, 2025
+**Release Date**: December 12, 2025
 
-We're excited to announce the first public release of Eshkol, a high-performance LISP-like language designed for scientific computing and AI applications. This Early Developer Preview is intended for developers interested in exploring the language and potentially contributing to its development.
+We are proud to announce the **production release** of Eshkol v1.0-foundation - a complete, production-ready programming language that delivers unprecedented integration of compiler-level automatic differentiation, deterministic arena memory management, and homoiconic native code execution.
 
-## Overview
+## What is Eshkol?
 
-Eshkol combines the elegant, expressive syntax of Scheme with the raw performance of C. It's designed specifically for scientific computing and artificial intelligence applications, delivering a balance between developer productivity and computational efficiency.
+Eshkol is a production-grade Scheme dialect built on LLVM infrastructure, designed for gradient-based optimization, neural network development, and scientific computing. It combines functional programming elegance with native performance while eliminating garbage collection entirely.
 
-This Early Developer Preview showcases the core vision and capabilities of Eshkol, while being transparent about its current limitations and ongoing development.
+## v1.0-foundation Achievements
 
-## What's Included
+### Complete Production Compiler
 
-### Core Language Features (65% Complete)
-- Basic Scheme syntax and core special forms
-- Lambda expressions with lexical scoping
-- Core list operations (cons, car, cdr, etc.)
-- Arena-based memory management
+Eshkol v1.0-foundation delivers a fully functional compiler with:
 
-### Type System (55% Complete)
-- Optional static type annotations
-- Basic type inference
-- Three typing approaches: implicit, inline explicit, and separate declarations
-- Compile-time type checking (partial)
+- **Modular LLVM backend** with 15 specialized code generation modules
+- **HoTT-inspired gradual type system** with bidirectional type checking
+- **Comprehensive parser** supporting S-expressions, type annotations, pattern matching, and macros
+- **Ownership and escape analysis** for automatic allocation strategy optimization
+- **Module system** with dependency resolution and circular dependency detection
+- **Interactive REPL** with LLVM ORC JIT compilation
+- **170+ test files** providing comprehensive verification
 
-### Scientific Computing (70% Complete)
-- Vector operations with optimized implementations
-- Vector calculus operations (gradient, divergence, curl, laplacian)
-- Automatic differentiation (forward and reverse mode)
-- SIMD optimizations (partial)
+### Compiler-Integrated Automatic Differentiation
 
-### Function Composition (75% Complete)
-- Basic function composition with JIT compilation
-- Support for both x86-64 and ARM64 architectures
-- Proper handling of closure calling conventions
+First-class AD system operating at compiler, runtime, and LLVM IR levels:
 
-### Development Tools (80% Complete)
-- MCP tools for code analysis
-- Type analysis tools
-- Binding and lambda analysis
-- AST visualization
-- Closure memory visualization
-- Mutual recursion analysis
+- **Forward-mode AD** using dual number arithmetic
+- **Reverse-mode AD** with computational graph and tape stack
+- **Symbolic AD** through AST transformation
+- **Nested gradients** up to 32 levels deep
+- **8 vector calculus operators**: derivative, gradient, jacobian, hessian, divergence, curl, laplacian, directional-derivative
+- **Polymorphic implementation** supporting int64, double, dual numbers, AD nodes, and tensors
 
-### VSCode Integration
-- Syntax highlighting
-- Language configuration
-- Enhanced editing experience
+### Deterministic Memory Management (OALR)
+
+Zero garbage collection with ownership-aware lexical regions:
+
+- **Arena allocation** with O(1) bump-pointer allocation
+- **Escape analysis** automatically determining stack/region/shared allocation
+- **with-region syntax** for lexical memory scopes  
+- **Ownership tracking** preventing use-after-move at compile time
+- **Fully deterministic** - zero GC pauses for real-time applications
+
+### Comprehensive Language Features
+
+**300+ language elements including:**
+- 39 special forms (define, lambda, let/let*/letrec, if/cond/case/match, etc.)
+- 60+ list operations with full Scheme compatibility
+- 30+ string utilities
+- 25+ tensor operations
+- 10 hash table operations
+- Complete I/O system with ports and exception handling
+- Hygienic macros (syntax-rules)
+- Pattern matching with 7 pattern types
+- Multiple return values (values, call-with-values, let-values)
+
+### Rich Standard Library
+
+Modular library organization with pure Eshkol implementations:
+
+- **stdlib.esk** - Central module re-exporting core functionality
+- **math.esk** - Linear algebra (det, inv, solve), numerical integration, root finding, statistics
+- **core.functional** - compose, curry, flip combinators
+- **core.list** - higher-order functions, transformations, queries, sorting
+- **core.strings** - extended string manipulation
+- **core.json** - JSON parsing and serialization
+- **core.data** - CSV processing, Base64 encoding
+
+### Production-Ready Infrastructure
+
+- **Cross-platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64)
+- **Docker containers**: Debian and Ubuntu images
+- **CMake build system**: Modern, maintainable build infrastructure
+- **Comprehensive documentation**: Language specification, user reference, API docs
+- **Package generation**: Homebrew formula, Debian packages
 
 ## Installation
 
-### Prerequisites
-- C/C++ Compiler (GCC 9.0+ or Clang 10.0+)
-- CMake (version 3.12 or higher)
-- Node.js (for MCP tools, version 14.0+ recommended)
-
-### Building from Source
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/tsotchke/eshkol.git
-   cd eshkol
-   ```
-
-2. Create a build directory and build the project:
-   ```bash
-   mkdir -p build
-   cd build
-   cmake ..
-   make
-   ```
-
-3. Install the MCP tools (optional, for development tools):
-   ```bash
-   cd ../eshkol-tools
-   npm install
-   ```
-
-### Running Your First Eshkol Program
-
-Create a file named `hello.esk`:
-
-```scheme
-(define (main)
-  (display "Hello, Eshkol!"))
-```
-
-Compile and run:
+### Quick Start
 
 ```bash
-./eshkol hello.esk
+git clone https://github.com/tsotchke/eshkol.git
+cd eshkol
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+
+# Run a program
+build/eshkol-run tests/neural/nn_working.esk
+
+# Start interactive REPL
+build/eshkol-repl
 ```
+
+### System Requirements
+
+- **LLVM** 10.0+ (14+ recommended)
+- **CMake** 3.14+
+- **C17/C++20 compiler** (GCC 8+, Clang 6+)
+- **readline** (optional, for REPL enhancements)
+
+## Example: Neural Network Training
+
+```scheme
+(require stdlib)
+
+;; Sigmoid activation
+(define (sigmoid x)
+  (/ 1.0 (+ 1.0 (exp (- 0.0 x)))))
+
+;; Mean squared error loss
+(define (mse-loss pred target)
+  (let ((diff (- pred target)))
+    (* 0.5 (* diff diff))))
+
+;; Forward pass
+(define (forward weights bias input)
+  (sigmoid (+ (tensor-dot weights input) bias)))
+
+;; Compute loss gradient for backpropagation
+(define (loss-gradient weights bias input target)
+  (gradient 
+    (lambda (params)
+      (mse-loss 
+        (forward (vref params 0) (vref params 1) input)
+        target))
+    (vector weights bias)))
+
+;; Training works - automatic differentiation handles the calculus
+```
+
+## What Makes v1.0-foundation Special
+
+### 1. Compiler-Integrated AD - Not a Library
+
+Unlike JAX, PyTorch, or TensorFlow, Eshkol's automatic differentiation is built into the **compiler itself**, operating on AST, runtime values, and LLVM IR simultaneously. This enables differentiation of **any** Eshkol function without framework constraints or graph tracing overhead.
+
+### 2. Homoiconic Native Code
+
+Lambdas compile to LLVM-native code but retain their source S-expressions in closure structures, enabling both **runtime introspection** and **native performance** - a combination no other compiled language achieves.
+
+### 3. Zero Garbage Collection
+
+Arena-based memory management provides **fully deterministic** performance without GC pauses, making Eshkol suitable for real-time systems, trading algorithms, and control systems where predictable timing is critical.
+
+### 4. Production-Quality Implementation
+
+This isn't a research prototype - it's a complete compiler with comprehensive testing, thorough documentation, and a clear architectural foundation for future expansion.
 
 ## Documentation
 
-Comprehensive documentation is available to help you learn and master Eshkol:
+- **[Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md)** - Complete technical specification
+- **[Language Reference](ESHKOL_V1_LANGUAGE_REFERENCE.md)** - User-focused reference with examples
+- **[Vision Documents](docs/vision/)** - Purpose, competitive analysis, roadmap
+- **[Architecture Guide](docs/ESHKOL_V1_ARCHITECTURE.md)** - Technical architecture overview
+- **[API Reference](docs/API_REFERENCE.md)** - Comprehensive function documentation
+- **[Quickstart](docs/QUICKSTART.md)** - Hands-on tutorial
 
-- [README.md](README.md) - Project overview and quick start
-- [ROADMAP.md](ROADMAP.md) - Development roadmap and priorities
-- [KNOWN_ISSUES.md](docs/scheme_compatibility/KNOWN_ISSUES.md) - Current limitations and workarounds
-- [CONTRIBUTING.md](CONTRIBUTING.md) - How to contribute to Eshkol
+## Known Limitations
 
-Additional documentation is available in the `docs/` directory:
+v1.0-foundation focuses on core capabilities. These features are planned for upcoming releases:
 
-- [Type System Documentation](docs/type_system/TYPE_SYSTEM.md)
-- [Scheme Compatibility](docs/scheme_compatibility/SCHEME_COMPATIBILITY.md)
-- [Vision and Purpose](docs/vision/PURPOSE_AND_VISION.md)
+- **GPU acceleration** - Planned v1.2 (Q2 2026) with CUDA/Metal/Vulkan backends
+- **Multi-threading** - Planned v1.1 (Q1 2026) with parallelism primitives
+- **Distributed computing** - Planned v1.2 (Q2 2026)
+- **XLA integration** - In active development for v1.1
+- **SIMD vectorization** - In active development for v1.1
 
-## Examples
+See [ROADMAP.md](ROADMAP.md) and [docs/vision/FUTURE_ROADMAP.md](docs/vision/FUTURE_ROADMAP.md) for detailed development plans.
 
-The `examples/` directory contains sample programs demonstrating Eshkol's capabilities:
+## Next Steps
 
-- Basic examples: `hello.esk`, `factorial.esk`, `fibonacci.esk`
-- Type system examples: `implicit_typed.esk`, `inline_typed.esk`, `separate_typed.esk`
-- Scientific computing examples: `vector_calculus.esk`, `autodiff_example.esk`
-- Function composition examples: `function_composition.esk`, `advanced_function_composition.esk`
+### For Users
 
-## Known Issues and Limitations
+1. **Explore the REPL**: `build/eshkol-repl`
+2. **Try the examples**: `build/eshkol-run tests/autodiff/*.esk`
+3. **Read the docs**: Start with [ESHKOL_V1_LANGUAGE_REFERENCE.md](ESHKOL_V1_LANGUAGE_REFERENCE.md)
+4. **Experiment with AD**: The automatic differentiation system is production-ready
 
-This Early Developer Preview has several known issues and limitations:
+### For Contributors
 
-- **Function Composition**: Complex composition chains may not work correctly in all cases
-- **Type System**: Type inference for autodiff functions is incomplete
-- **Vector Types**: Vector return types not correctly handled in all cases
-- **Tail Call Optimization**: Not yet implemented
-- **Standard Library**: Many Scheme standard library functions not yet implemented
+1. **Review architecture**: [docs/ESHKOL_V1_ARCHITECTURE.md](docs/ESHKOL_V1_ARCHITECTURE.md)
+2. **Check the roadmap**: [ROADMAP.md](ROADMAP.md) for v1.1/v1.2 plans
+3. **See contribution guidelines**: [CONTRIBUTING.md](CONTRIBUTING.md)
+4. **Join development**: XLA backend and SIMD vectorization are priorities for v1.1
 
-For a complete list of known issues and workarounds, see [KNOWN_ISSUES.md](docs/scheme_compatibility/KNOWN_ISSUES.md).
+### For Researchers
 
-## Roadmap
+1. **Study the AD implementation**: [docs/vision/TECHNICAL_WHITE_PAPER_V1.md](docs/vision/ADDENDUM_TECHNICAL_WHITE_PAPER_V1.md)
+2. **Examine memory architecture**: [docs/breakdown/MEMORY_MANAGEMENT.md](docs/breakdown/MEMORY_MANAGEMENT.md)
+3. **Analyze type system**: [docs/breakdown/TYPE_SYSTEM.md](docs/breakdown/TYPE_SYSTEM.md)
+4. **Explore homoiconic closures**: [docs/vision/AI_FOCUS.md](docs/vision/AI_FOCUS.md)
 
-See [ROADMAP.md](ROADMAP.md) for the development roadmap, including:
+## Acknowledgments
 
-- Version 0.2.0-alpha (Function Composition Update) - Target: Q2 2025
-- Version 0.3.0-alpha (Type System Update) - Target: Q3 2025
-- Version 0.4.0-alpha (Performance Update) - Target: Q4 2025
-- Version 1.0.0 (Full Release) - Target: Q3-Q4 2026
+Eshkol v1.0-foundation represents years of research and implementation, synthesizing ideas from:
+- **Scheme** for elegant functional programming
+- **LLVM** for world-class code generation
+- **Homotopy Type Theory** for rigorous type foundations
+- **Region-based memory** research for deterministic allocation
 
-## Contributing
-
-We welcome contributions to help us achieve these roadmap goals! See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute.
+We thank early testers and contributors who provided valuable feedback during development.
 
 ## License
 
-Eshkol is released under the MIT License. See [LICENSE](LICENSE) for details.
-
-## Acknowledgements
-
-We would like to thank all the early testers and contributors who have helped shape Eshkol into what it is today.
+Eshkol is released under the **MIT License** - see [LICENSE](LICENSE) for details.
 
 ## Contact
 
-- GitHub Issues: For bug reports and feature requests
-- GitHub Discussions: For general questions and community discussions
+- **GitHub Repository**: https://github.com/tsotchke/eshkol
+- **Issues**: Bug reports and feature requests
+- **Discussions**: Technical questions and community engagement
 
 ---
 
-**Note**: This is an Early Developer Preview release and is not intended for production use. We appreciate your understanding and feedback as we continue to develop Eshkol.
+**Eshkol v1.0-foundation** establishes a new standard for programming languages combining automatic differentiation, deterministic memory, and homoiconic native code. This is not a preview - this is only the beginning. Eshkol has a production-grade compiler ready for gradient-based computing, neural network development, and scientific applications where mathematical correctness and performance are non-negotiable.
+
+*Where mathematical elegance meets uncompromising performance.*

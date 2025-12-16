@@ -1,0 +1,34 @@
+# Build directories
+build/
+build-*/
+dist/
+cmake-build-*/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Test artifacts
+a.out
+*.o
+!lib/**/*.o
+
+# Docker
+.dockerignore
+Dockerfile*
+
+# Temporary files
+*.tmp
+*.log

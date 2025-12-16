@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -102,6 +103,41 @@ public:
      * @param var_name Variable name (e.g., "test-func")
      */
     void registerLambdaVar(const std::string& var_name);
+
+    /**
+     * Load the standard library (stdlib.esk) into the REPL environment.
+     * This makes all stdlib functions available for use.
+     *
+     * @return true on success, false on error
+     */
+    bool loadStdlib();
+
+    /**
+     * Load a module by name (e.g., "core.functional.compose" or "stdlib")
+     *
+     * @param module_name Module name with dot-separated path
+     * @return true on success, false on error
+     */
+    bool loadModule(const std::string& module_name);
+
+    /**
+     * Execute multiple ASTs as a batch (for module loading).
+     * This allows forward references between functions in the same module.
+     *
+     * @param asts Vector of ASTs to compile and execute together
+     * @param silent If true, suppress output (for module loading)
+     * @return Pointer to result of last expression, or nullptr
+     */
+    void* executeBatch(std::vector<eshkol_ast_t>& asts, bool silent = true);
+
+    /**
+     * Check if a symbol (variable or function) is already defined in the JIT.
+     * Used to detect reload scenarios where we should skip redefinition.
+     *
+     * @param name Symbol name to check
+     * @return true if symbol exists, false otherwise
+     */
+    bool isSymbolDefined(const std::string& name);
 
     /**
      * Get the current evaluation counter.

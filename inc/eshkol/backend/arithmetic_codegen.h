@@ -231,6 +231,12 @@ private:
      * @return Boolean i1 value: true if AD node, false otherwise
      */
     llvm::Value* isADNode(llvm::Value* operand, llvm::Value* base_type);
+
+    /**
+     * Emit code to raise a divide-by-zero exception.
+     * Creates an exception object and calls eshkol_raise().
+     */
+    void raiseDivideByZeroException();
 };
 
 } // namespace eshkol
