@@ -593,7 +593,7 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 |---------|--------|-------|-----|--------|------|
 | Native AD | ✓ (3 modes) | ✗ | ✓ (reverse) | ✗ | ✗ |
 | Memory Safety | ✓ (arena+linear) | ✗ | ✗ | ✓ (GC) | ✓ (ownership) |
-| Homoiconicity | ✓ (native) | ✗ | ✗ | ✓ | ✗ |
+| Homoiconicity | ✓ (native) | ✓ (partial) | ✗ | ✓ | ✗ |
 | Native Compilation | ✓ (LLVM) | ✓ | ✓ (XLA) | ✗ | ✓ |
 | Deterministic Perf | ✓ (no GC) | ✗ | ✗ | ✗ | ✓ |
 | Dependent Types | ✓ (HoTT) | ✗ | ✗ | ✗ | ✗ |
@@ -616,16 +616,15 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 - **[API Reference](docs/API_REFERENCE.md)**: Comprehensive function documentation
 
 ### For Researchers
-- **[Automatic Differentiation](docs/AUTODIFF_IMPLEMENTATION.md)**: Mathematical foundations and implementation
-- **[Type System](docs/TYPE_SYSTEM_IMPLEMENTATION.md)**: HoTT theory and practical realization
-- **[Memory Architecture](docs/MEMORY_ARCHITECTURE.md)**: Arena allocation and OALR semantics
-- **[Compiler Design](docs/COMPILER_ARCHITECTURE.md)**: LLVM backend and optimization strategies
+- **[Automatic Differentiation](docs/breakdown/AUTODIFF.md)**: Mathematical foundations and implementation
+- **[Type System](docs/breakdown/TYPE_SYSTEM.md)**: HoTT theory and practical realization
+- **[Memory Architecture](docs/breakdown/MEMORY_MANAGEMENT.md)**: Arena allocation and OALR semantics
+- **[Compiler Design](docs/breakdown/COMPILER_ARCHITECTURE.md)**: LLVM backend and optimization strategies
 
 ### For Developers
 - **[Contributing Guide](CONTRIBUTING.md)**: Architecture overview and development workflow
 - **[Test Coverage](docs/TEST_COVERAGE.md)**: Comprehensive test documentation
-- **[Build System](docs/BUILD_SYSTEM.md)**: CMake configuration and cross-platform compilation
-
+- **[Overview](docs/breakdown/OVERVIEW.md)**: Start Here
 ---
 
 ## Future Directions
@@ -635,17 +634,17 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 - Dependent type refinement with theorem proving
 - Linear resource verification with effect tracking
 
-### Version 1.5 (Q2 2026): Quantum Computing Integration  
+### Version 1.2 (Q2 2026): Quantum Computing Integration  
 - Native quantum types with no-cloning enforcement
 - Quantum circuit compilation to hardware backends
 - Quantum-classical hybrid algorithm support
 
-### Version 2.0 (Q3 2026): Neuro-Symbolic AI
+### Version 1.5 (Q3 2026): Neuro-Symbolic AI
 - Logic programming integration (miniKanren-style)
 - Knowledge base representation and reasoning
 - Differentiable programming with symbolic constraints
 
-### Version 2.5 (Q4 2026): Multimedia Computing
+### Version 2.0+ (Q4 2026): Multimedia Computing
 - Real-time audio/video processing with zero-copy semantics
 - GPU compute integration with memory safety
 - Hardware I/O with resource lifetime management
