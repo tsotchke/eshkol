@@ -1,2 +1,0 @@
-/usr/bin/ar qc libeshkol-repl-lib.a "CMakeFiles/eshkol-repl-lib.dir/lib/repl/repl_jit.cpp.o"
-/usr/bin/ranlib libeshkol-repl-lib.a
