@@ -80,6 +80,8 @@ jobs:
 
   build-macos-arm:
     runs-on: macos-14
+    env:
+      PATH: /opt/homebrew/opt/llvm@17/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin
     steps:
       - uses: actions/checkout@v4
 
@@ -88,7 +90,6 @@ jobs:
 
       - name: Build
         run: |
-          export PATH="/opt/homebrew/opt/llvm@17/bin:$PATH"
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel
 
@@ -133,6 +134,8 @@ jobs:
 
   build-macos-intel:
     runs-on: macos-15-large
+    env:
+      PATH: /usr/local/opt/llvm@17/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin
     steps:
       - uses: actions/checkout@v4
 
@@ -141,7 +144,6 @@ jobs:
 
       - name: Build
         run: |
-          export PATH="/usr/local/opt/llvm@17/bin:$PATH"
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel
 
