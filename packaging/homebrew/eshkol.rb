@@ -8,8 +8,8 @@
 class Eshkol < Formula
   desc "Functional programming language with HoTT types and autodiff"
   homepage "https://eshkol.ai"
-  url "https://github.com/tsotchke/eshkol/archive/v1.0.0-foundation.tar.gz"
-  sha256 "REPLACE_WITH_ACTUAL_SHA256"
+  url "https://github.com/tsotchke/eshkol/archive/v1.0.1.tar.gz"
+  sha256 "8d818fbd4c5c8033e3ec0006aeacc6e0824487aad6b14e79c57770c76ddd7975"
   license "MIT"
   head "https://github.com/tsotchke/eshkol.git", branch: "master"
 
@@ -19,16 +19,28 @@ class Eshkol < Formula
   depends_on "readline"
 
   def install
-    # Set LLVM path
-    ENV["PATH"] = "#{Formula["llvm@17"].opt_bin}:#{ENV["PATH"]}"
+    # Set LLVM paths for build and runtime
+    llvm = Formula["llvm@17"]
+    ENV["PATH"] = "#{llvm.opt_bin}:#{ENV["PATH"]}"
+    ENV["LDFLAGS"] = "-L#{llvm.opt_lib} -Wl,-rpath,#{llvm.opt_lib} #{ENV["LDFLAGS"]}"
+    ENV["CPPFLAGS"] = "-I#{llvm.opt_include} #{ENV["CPPFLAGS"]}"
 
-    # Configure
+    # Set runtime library path so eshkol-run can find LLVM when generating stdlib.o
+    ENV["DYLD_FALLBACK_LIBRARY_PATH"] = llvm.opt_lib
+
+    # Configure with explicit LLVM paths and proper RPATH
     system "cmake", "-B", "build", "-G", "Ninja",
            "-DCMAKE_BUILD_TYPE=Release",
+           "-DLLVM_DIR=#{llvm.opt_lib}/cmake/llvm",
+           "-DCMAKE_INSTALL_RPATH=#{llvm.opt_lib}",
+           "-DCMAKE_BUILD_RPATH=#{llvm.opt_lib}",
            *std_cmake_args
 
-    # Build
+    # Build (stdlib.o is generated as part of this - eshkol-run compiles stdlib.esk)
     system "cmake", "--build", "build"
+
+    # Verify stdlib.o was created
+    odie "stdlib.o was not created - eshkol-run may have failed to find LLVM libraries" unless File.exist?("build/stdlib.o")
 
     # Install binaries
     bin.install "build/eshkol-run"
