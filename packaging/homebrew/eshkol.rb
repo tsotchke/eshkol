@@ -39,11 +39,16 @@ class Eshkol < Formula
            "-DCMAKE_MACOSX_RPATH=ON",
            *std_cmake_args
 
-    # Build (stdlib.o is generated as part of this - eshkol-run compiles stdlib.esk)
-    system "cmake", "--build", "build"
+    # Build eshkol-run and eshkol-repl (skip stdlib target - we'll generate it manually)
+    system "cmake", "--build", "build", "--target", "eshkol-run"
+    system "cmake", "--build", "build", "--target", "eshkol-repl"
+
+    # Generate stdlib.o using the freshly built eshkol-run compiler
+    # This compiles lib/stdlib.esk to build/stdlib.o
+    system "build/eshkol-run", "--shared-lib", "-o", "build/stdlib", "lib/stdlib.esk"
 
     # Verify stdlib.o was created
-    odie "stdlib.o was not created - eshkol-run may have failed to find LLVM libraries" unless File.exist?("build/stdlib.o")
+    odie "stdlib.o was not created - eshkol-run compilation failed" unless File.exist?("build/stdlib.o")
 
     # Install binaries
     bin.install "build/eshkol-run"
