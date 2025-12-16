@@ -4418,44 +4418,105 @@ private:
         // ===== NON-VARIADIC PATH: Call as before =====
         builder->SetInsertPoint(non_variadic_bb);
 
+        // ARITY MISMATCH FIX (x86_64 crash prevention):
+        // When call_args.size() < fixed_params, we need to pad with undefined values.
+        // This happens when a closure is called with fewer arguments than it expects,
+        // which is common in Y-combinator patterns like: (self) where self expects 1 arg.
+        // On ARM64 this "works" due to ABI differences, but crashes on x86_64.
+
+        // Pre-allocate padded argument array at function entry
+        // Note: Keep this small to avoid generating too many switch cases (MAX_CALL_ARGS * MAX_CAPTURES)
+        const int MAX_CALL_ARGS = 4;  // Maximum supported regular arguments for arity-mismatched calls
+        IRBuilderBase::InsertPoint saved_ip_nonvar = builder->saveIP();
+        builder->SetInsertPoint(&entry_block, entry_block.begin());
+
+        // Alloca array for padded arguments
+        ArrayType* padded_args_type = ArrayType::get(tagged_value_type, MAX_CALL_ARGS);
+        Value* padded_args_array = builder->CreateAlloca(padded_args_type, nullptr, "padded_args");
+
+        builder->restoreIP(saved_ip_nonvar);
+        builder->SetInsertPoint(non_variadic_bb);
+
+        // Store actual call_args into array
+        for (size_t i = 0; i < call_args.size() && i < MAX_CALL_ARGS; i++) {
+            Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
+                {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
+            builder->CreateStore(call_args[i], slot_ptr);
+        }
+
+        // Fill remaining slots with undefined (null) values for arity mismatch handling
+        Value* undef_val = packNullToTaggedValue();
+        for (size_t i = call_args.size(); i < MAX_CALL_ARGS; i++) {
+            Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
+                {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
+            builder->CreateStore(undef_val, slot_ptr);
+        }
+
+        // Determine actual arg count to use: max(call_args.size(), fixed_params)
+        Value* call_args_count = ConstantInt::get(int64_type, call_args.size());
+        Value* use_fixed = builder->CreateICmpUGT(fixed_params, call_args_count);
+        Value* actual_arg_count = builder->CreateSelect(use_fixed, fixed_params, call_args_count,
+            "actual_arg_count");
+
+        // Clamp to MAX_CALL_ARGS to prevent overflow
+        Value* is_overflow = builder->CreateICmpUGT(actual_arg_count,
+            ConstantInt::get(int64_type, MAX_CALL_ARGS));
+        Value* clamped_arg_count = builder->CreateSelect(is_overflow,
+            ConstantInt::get(int64_type, MAX_CALL_ARGS), actual_arg_count);
+
+        // Generate nested switch on (clamped_arg_count * (MAX_CAPTURES+1) + num_captures)
+        // This handles all combinations of argument count and capture count
         BasicBlock* nonvar_switch_default = BasicBlock::Create(*context, "cap_default", current_func);
-        SwitchInst* sw = builder->CreateSwitch(num_captures, nonvar_switch_default, MAX_CAPTURES + 1);
+        Value* dispatch_idx = builder->CreateAdd(
+            builder->CreateMul(clamped_arg_count, ConstantInt::get(int64_type, MAX_CAPTURES + 1)),
+            num_captures);
+        SwitchInst* sw = builder->CreateSwitch(dispatch_idx, nonvar_switch_default,
+            (MAX_CALL_ARGS + 1) * (MAX_CAPTURES + 1));
 
         // Note: results vector is declared earlier (before arithmetic check)
 
-        // Generate a case for each capture count
-        for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
-            BasicBlock* case_bb = BasicBlock::Create(*context,
-                "cap_" + std::to_string(cap_count), current_func);
-            sw->addCase(ConstantInt::get(int64_type, cap_count), case_bb);
+        // Generate a case for each (arg_count, capture_count) combination
+        for (int arg_count = 0; arg_count <= MAX_CALL_ARGS; arg_count++) {
+            for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
+                int case_idx = arg_count * (MAX_CAPTURES + 1) + cap_count;
+                BasicBlock* case_bb = BasicBlock::Create(*context,
+                    "args_" + std::to_string(arg_count) + "_cap_" + std::to_string(cap_count), current_func);
+                sw->addCase(ConstantInt::get(int64_type, case_idx), case_bb);
 
-            builder->SetInsertPoint(case_bb);
+                builder->SetInsertPoint(case_bb);
 
-            // MUTABLE CAPTURE FIX: Pass capture pointers instead of values
-            // Build args with this many captures (as pointers to closure env slots)
-            std::vector<Value*> full_args = call_args;
-            for (int i = 0; i < cap_count; i++) {
-                Value* cap_ptr = builder->CreateGEP(tagged_value_type, captures_typed,
-                    ConstantInt::get(int64_type, i));
-                // Pass pointer to capture slot, not the loaded value
-                full_args.push_back(cap_ptr);
+                // Load args from padded array up to arg_count
+                std::vector<Value*> full_args;
+                for (int i = 0; i < arg_count; i++) {
+                    Value* arg_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
+                        {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
+                    full_args.push_back(builder->CreateLoad(tagged_value_type, arg_ptr));
+                }
+
+                // MUTABLE CAPTURE FIX: Pass capture pointers instead of values
+                for (int i = 0; i < cap_count; i++) {
+                    Value* cap_ptr = builder->CreateGEP(tagged_value_type, captures_typed,
+                        ConstantInt::get(int64_type, i));
+                    // Pass pointer to capture slot, not the loaded value
+                    full_args.push_back(cap_ptr);
+                }
+
+                // Build function type for this (arg_count, cap_count) combination
+                // Regular args are tagged_value, captures are pointer
+                std::vector<Type*> param_types;
+                for (int i = 0; i < arg_count; i++) {
+                    param_types.push_back(tagged_value_type);
+                }
+                for (int i = 0; i < cap_count; i++) {
+                    param_types.push_back(PointerType::getUnqual(*context));
+                }
+                FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+
+                Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
+
+                builder->CreateBr(merge_bb);
+                results.push_back({builder->GetInsertBlock(), result});
             }
-
-            // Build function type for this capture count
-            // Regular args are tagged_value, captures are pointer
-            std::vector<Type*> param_types;
-            for (size_t i = 0; i < call_args.size(); i++) {
-                param_types.push_back(tagged_value_type);
-            }
-            for (int i = 0; i < cap_count; i++) {
-                param_types.push_back(PointerType::getUnqual(*context));
-            }
-            FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
-
-            Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
-
-            builder->CreateBr(merge_bb);
-            results.push_back({builder->GetInsertBlock(), result});
         }
 
         // Default case (more than MAX_CAPTURES - shouldn't happen but handle gracefully)

@@ -1107,14 +1107,31 @@ llvm::Value* CollectionCodegen::isPair(const eshkol_operations_t* op) {
     llvm::Value* is_not_null = ctx_.builder().CreateICmpNE(data_val,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
 
-    // CONSOLIDATED FORMAT FIX: For HEAP_PTR, we must check the subtype in the object header
-    // to distinguish cons cells from strings, vectors, tensors, etc.
-    // Use checkHeapSubtype to verify subtype is HEAP_SUBTYPE_CONS (0)
-    llvm::Value* is_cons_subtype = tagged_.checkHeapSubtype(tagged_arg, HEAP_SUBTYPE_CONS);
+    // Combined pre-check: must be HEAP_PTR AND non-null
+    llvm::Value* is_valid_heap_ptr = ctx_.builder().CreateAnd(is_heap_ptr, is_not_null);
 
-    // Pair is HEAP_PTR with non-null pointer AND subtype CONS
-    llvm::Value* is_heap_cons = ctx_.builder().CreateAnd(is_heap_ptr, is_not_null);
-    llvm::Value* result = ctx_.builder().CreateAnd(is_heap_cons, is_cons_subtype);
+    // CONSOLIDATED FORMAT FIX: Must use control flow to avoid reading header for non-HEAP_PTR values
+    // This prevents segfaults when pair? is called on integers or other non-pointer types
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
+    llvm::BasicBlock* check_subtype_block = llvm::BasicBlock::Create(ctx_.context(), "pair.check_subtype", func);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "pair.merge", func);
+
+    // Only check subtype if it's a valid heap pointer
+    ctx_.builder().CreateCondBr(is_valid_heap_ptr, check_subtype_block, merge_block);
+
+    // Check subtype block - only entered when value is HEAP_PTR with non-null pointer
+    ctx_.builder().SetInsertPoint(check_subtype_block);
+    llvm::Value* is_cons_subtype = tagged_.checkHeapSubtype(tagged_arg, HEAP_SUBTYPE_CONS);
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* subtype_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge block - combine results with PHI
+    ctx_.builder().SetInsertPoint(merge_block);
+    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "is_pair.result");
+    result->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), current_block);
+    result->addIncoming(is_cons_subtype, subtype_exit);
+
     return tagged_.packBool(result);
 }
 
