@@ -77,7 +77,7 @@ class Eshkol < Formula
       To compile and run a program:
         eshkol-run yourfile.esk
 
-      Documentation: https://eshkol.ai/docs
+      Documentation: https://eshkol.ai/
     EOS
   end
 
