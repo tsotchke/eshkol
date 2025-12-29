@@ -1311,7 +1311,11 @@ static std::string find_stdlib_object()
         "../build/stdlib.o",
         // Installation paths
         "/usr/local/lib/eshkol/stdlib.o",
+        "/usr/local/lib/stdlib.o",
         "/usr/lib/eshkol/stdlib.o",
+        // Homebrew paths
+        "/opt/homebrew/lib/eshkol/stdlib.o",
+        "/opt/homebrew/lib/stdlib.o",
     };
 
     // Also check relative to the executable
@@ -1334,10 +1338,63 @@ static std::string find_stdlib_object()
     if (got_exe_path) {
         std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
         stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.o").string());
+        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/stdlib.o").string());
         stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.o").string());
     }
 
     for (const auto& path : stdlib_paths) {
+        if (std::filesystem::exists(path)) {
+            return std::filesystem::canonical(path).string();
+        }
+    }
+
+    return "";  // Not found
+}
+
+// Find the runtime library (libeshkol-static.a)
+static std::string find_runtime_library()
+{
+    std::vector<std::string> lib_paths = {
+        // Relative to current directory (development)
+        "libeshkol-static.a",
+        "build/libeshkol-static.a",
+        "../build/libeshkol-static.a",
+        // Installation paths (Linux)
+        "/usr/local/lib/libeshkol-static.a",
+        "/usr/local/lib/eshkol/libeshkol-static.a",
+        "/usr/lib/libeshkol-static.a",
+        "/usr/lib/eshkol/libeshkol-static.a",
+        // Homebrew paths (macOS)
+        "/opt/homebrew/lib/libeshkol-static.a",
+        "/opt/homebrew/lib/eshkol/libeshkol-static.a",
+    };
+
+    // Also check relative to the executable
+    char exe_path[4096];
+    bool got_exe_path = false;
+
+#ifdef __linux__
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len != -1) {
+        exe_path[len] = '\0';
+        got_exe_path = true;
+    }
+#elif defined(__APPLE__)
+    uint32_t size = sizeof(exe_path);
+    if (_NSGetExecutablePath(exe_path, &size) == 0) {
+        got_exe_path = true;
+    }
+#endif
+
+    if (got_exe_path) {
+        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
+        // Check relative to executable
+        lib_paths.insert(lib_paths.begin(), (exe_dir / "libeshkol-static.a").string());
+        lib_paths.insert(lib_paths.begin(), (exe_dir / "../lib/libeshkol-static.a").string());
+        lib_paths.insert(lib_paths.begin(), (exe_dir / "../lib/eshkol/libeshkol-static.a").string());
+    }
+
+    for (const auto& path : lib_paths) {
         if (std::filesystem::exists(path)) {
             return std::filesystem::canonical(path).string();
         }
@@ -2234,16 +2291,14 @@ int main(int argc, char **argv)
         }
 
         // Add libeshkol-static.a (needed for arena functions)
-        char cwd[4096];
-        if (getcwd(cwd, sizeof(cwd)) != nullptr) {
-            std::string cwd_str = std::string(cwd);
-            std::string lib_path;
-            if (cwd_str.length() >= 5 && cwd_str.substr(cwd_str.length() - 5) == "build") {
-                lib_path = cwd_str + "/libeshkol-static.a";
-            } else {
-                lib_path = cwd_str + "/build/libeshkol-static.a";
-            }
-            link_cmd += " " + lib_path;
+        std::string runtime_lib = find_runtime_library();
+        if (!runtime_lib.empty()) {
+            link_cmd += " " + runtime_lib;
+        } else {
+            eshkol_error("Could not find libeshkol-static.a");
+            eshkol_error("Searched: ./build/, /usr/local/lib/, /opt/homebrew/lib/, and relative to executable");
+            eshkol_error("Please install Eshkol properly or build from source");
+            return 1;
         }
 
         // Add linked libraries

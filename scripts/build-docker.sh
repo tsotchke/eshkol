@@ -122,6 +122,7 @@ mkdir -p "$ARCH_OUTPUT"
 docker cp "$CONTAINER_NAME:/app/build/eshkol-run" "$ARCH_OUTPUT/" 2>/dev/null || echo "Warning: eshkol-run not found"
 docker cp "$CONTAINER_NAME:/app/build/eshkol-repl" "$ARCH_OUTPUT/" 2>/dev/null || echo "Warning: eshkol-repl not found"
 docker cp "$CONTAINER_NAME:/app/build/stdlib.o" "$ARCH_OUTPUT/" 2>/dev/null || echo "Warning: stdlib.o not found"
+docker cp "$CONTAINER_NAME:/app/build/libeshkol-static.a" "$ARCH_OUTPUT/" 2>/dev/null || echo "Warning: libeshkol-static.a not found"
 
 # Copy .deb package if it exists
 DEB_FILE=$(docker run --rm --platform "$PLATFORM" "$IMAGE_NAME" find /app/build/_packages -name "*.deb" 2>/dev/null | head -1)
@@ -139,6 +140,7 @@ TARBALL_NAME="eshkol-${VERSION}-linux-${ARCH_NAME}.tar.gz"
     cp eshkol-run pkg/bin/ 2>/dev/null || true
     cp eshkol-repl pkg/bin/ 2>/dev/null || true
     cp stdlib.o pkg/lib/ 2>/dev/null || true
+    cp libeshkol-static.a pkg/lib/ 2>/dev/null || true
     cp "$PROJECT_ROOT/lib/stdlib.esk" pkg/share/eshkol/ 2>/dev/null || true
     if [ -d "$PROJECT_ROOT/lib/core" ]; then
         cp -r "$PROJECT_ROOT/lib/core" pkg/share/eshkol/

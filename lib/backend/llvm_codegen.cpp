@@ -118,6 +118,7 @@ namespace {
     std::unordered_map<std::string, std::string> g_repl_lambda_names;      // var_name -> lambda_name (e.g., "square" -> "lambda_name")
     std::unordered_map<std::string, uint64_t> g_repl_sexpr_values;         // sexpr_name -> s-expression pointer value
     std::unordered_map<std::string, std::vector<std::string>> g_repl_lambda_captures;  // lambda_name -> capture variable names
+    std::unordered_map<std::string, std::pair<size_t, bool>> g_repl_variadic_functions;  // func_name -> (fixed_params, is_variadic)
     std::mutex g_repl_mutex;  // Thread safety for REPL symbol access
 
     // CACHED TARGET INFO: Avoid recomputing on every compilation
@@ -2432,6 +2433,10 @@ private:
         // VARIADIC FIX: Register variadic function info
         if (is_variadic) {
             variadic_function_info[func_name] = std::make_pair(num_params, true);
+            // REPL MODE: Also register in global REPL context for cross-evaluation calls
+            if (g_repl_mode_enabled) {
+                eshkol_repl_register_variadic_function(func_name, num_params, true);
+            }
             eshkol_debug("Registered variadic function %s with %llu fixed params",
                         func_name, (unsigned long long)num_params);
         }
@@ -3716,6 +3721,29 @@ private:
             function_contexts.top().created_functions.push_back(name);
         }
         function_table[name] = func;
+
+        // REPL FORWARD REFERENCE FIX: Create a global function pointer for this function
+        // This allows forward references from other modules to call this function
+        if (g_repl_mode_enabled) {
+            std::string global_ptr_name = "__repl_fwd_" + name;
+            Type* func_ptr_type = PointerType::getUnqual(func->getFunctionType());
+
+            // Create or update the global function pointer
+            GlobalVariable* func_ptr_global = module->getGlobalVariable(global_ptr_name);
+            if (!func_ptr_global) {
+                // Create new global with the function pointer as initializer
+                func_ptr_global = new GlobalVariable(
+                    *module,
+                    func_ptr_type,
+                    false,  // not constant
+                    GlobalValue::ExternalLinkage,
+                    func,   // initialize with function pointer
+                    global_ptr_name
+                );
+            }
+            eshkol_debug("REPL: Created forward reference pointer %s for function %s",
+                        global_ptr_name.c_str(), name.c_str());
+        }
     }
 
     // REPL MODE: Check if a function exists in the global REPL context and create external declaration
@@ -5958,8 +5986,47 @@ private:
             // Don't hold lock while calling tryResolveReplFunction (it acquires its own lock)
             Function* repl_func = tryResolveReplFunction(var_name);
             if (repl_func) {
-                // Return the function pointer - display() will handle s-expression lookup
-                return repl_func;
+                // FIRST-CLASS FUNCTION FIX: Wrap REPL functions in closures like other user functions
+                // This ensures they work correctly when passed as arguments to other functions
+                // Get the arity from the REPL registry
+                size_t num_params = 0;
+                {
+                    std::lock_guard<std::mutex> lock(g_repl_mutex);
+                    auto arity_it = g_repl_function_arities.find(var_name);
+                    if (arity_it != g_repl_function_arities.end()) {
+                        num_params = arity_it->second;
+                    } else {
+                        // Try with _func suffix
+                        arity_it = g_repl_function_arities.find(var_name + "_func");
+                        if (arity_it != g_repl_function_arities.end()) {
+                            num_params = arity_it->second;
+                        }
+                    }
+                }
+
+                // Wrap in closure for proper first-class function use
+                Value* func_ptr_int = builder->CreatePtrToInt(repl_func, int64_type);
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+                // Pack closure info: no captures, arity in bits 16-31
+                uint64_t packed_info = 0;
+                packed_info |= (num_params & 0xFFFF) << 16;
+                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
+
+                // No S-expression for now
+                Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+
+                // Return type unknown
+                uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
+                Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+
+                // Use with_header allocator for consolidated CALLABLE type
+                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
+                eshkol_debug("Wrapped REPL function '%s' (arity=%zu) in closure for first-class use",
+                            var_name.c_str(), num_params);
+                // Pack as CALLABLE (subtype CLOSURE is in header)
+                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
 
             // Then check if it's a regular variable (stored in g_repl_symbol_addresses)
@@ -8842,36 +8909,108 @@ private:
                     }
                 }
 
-                // Not in symbol_table at all - truly unknown function
-                // Generate runtime error instead of silently returning null
-                eshkol_error("Unknown function: %s", func_name.c_str());
+                // REPL FORWARD REFERENCE FIX: In REPL mode, use indirect calls through
+                // global function pointers for unknown functions. This allows forward references
+                // to work across REPL evaluations.
+                if (g_repl_mode_enabled) {
+                    size_t arity = op->call_op.num_vars;
 
-                // Generate code to print error and exit at runtime
-                Function* printf_func = function_table["printf"];
-                Function* exit_func = function_table["exit"];
-                if (printf_func && exit_func) {
-                    // Create error message string
-                    std::string error_msg = "Error: Unknown function '" + func_name + "'\n";
-                    Value* error_str = builder->CreateGlobalStringPtr(error_msg, "unknown_func_error");
-                    builder->CreateCall(printf_func, {error_str});
-                    builder->CreateCall(exit_func, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
-                    // Create unreachable and continue block for LLVM
-                    builder->CreateUnreachable();
-                    // Create a new block for any code that might follow (won't be reached)
-                    Function* current_func = builder->GetInsertBlock()->getParent();
-                    BasicBlock* dead_block = BasicBlock::Create(*context, "unreachable_continue", current_func);
-                    builder->SetInsertPoint(dead_block);
+                    // Create function type for the indirect call
+                    std::vector<Type*> param_types(arity, tagged_value_type);
+                    FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+                    Type* func_ptr_type = PointerType::getUnqual(func_type);
+
+                    // Create or get the global function pointer variable
+                    std::string global_ptr_name = "__repl_fwd_" + func_name;
+                    GlobalVariable* func_ptr_global = module->getGlobalVariable(global_ptr_name);
+                    if (!func_ptr_global) {
+                        // Create external global variable for the function pointer
+                        func_ptr_global = new GlobalVariable(
+                            *module,
+                            func_ptr_type,
+                            false,  // not constant
+                            GlobalValue::ExternalLinkage,
+                            nullptr,  // no initializer (external)
+                            global_ptr_name
+                        );
+                    }
+
+                    // Register this pending forward reference in REPL context
+                    {
+                        std::lock_guard<std::mutex> lock(g_repl_mutex);
+                        // Track that this function needs to be resolved
+                        g_repl_function_arities[func_name] = arity;
+                    }
+
+                    // Generate arguments
+                    std::vector<Value*> call_args;
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        if (!arg) continue;
+                        if (arg->getType() != tagged_value_type) {
+                            TypedValue tv = detectValueType(arg);
+                            arg = typedValueToTaggedValue(tv);
+                        }
+                        call_args.push_back(arg);
+                    }
+
+                    // Load the function pointer from the global
+                    Value* func_ptr = builder->CreateLoad(func_ptr_type, func_ptr_global, func_name + "_ptr");
+
+                    // Generate indirect call
+                    Value* result = builder->CreateCall(func_type, func_ptr, call_args, func_name + "_result");
+
+                    eshkol_debug("REPL: Created indirect call for forward reference %s with %zu params",
+                                func_name.c_str(), arity);
+
+                    return result;
+                } else {
+                    // Not in symbol_table at all - truly unknown function
+                    // Generate runtime error instead of silently returning null
+                    eshkol_error("Unknown function: %s", func_name.c_str());
+
+                    // Generate code to print error and exit at runtime
+                    Function* printf_func = function_table["printf"];
+                    Function* exit_func = function_table["exit"];
+                    if (printf_func && exit_func) {
+                        // Create error message string
+                        std::string error_msg = "Error: Unknown function '" + func_name + "'\n";
+                        Value* error_str = builder->CreateGlobalStringPtr(error_msg, "unknown_func_error");
+                        builder->CreateCall(printf_func, {error_str});
+                        builder->CreateCall(exit_func, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
+                        // Create unreachable and continue block for LLVM
+                        builder->CreateUnreachable();
+                        // Create a new block for any code that might follow (won't be reached)
+                        Function* current_func = builder->GetInsertBlock()->getParent();
+                        BasicBlock* dead_block = BasicBlock::Create(*context, "unreachable_continue", current_func);
+                        builder->SetInsertPoint(dead_block);
+                    }
+                    return packNullToTaggedValue();
                 }
-                return packNullToTaggedValue();
             }
         }
 
         // VARIADIC FUNCTION HANDLING: Check if this is a variadic function call
         std::string callee_name = callee->getName().str();
         auto variadic_it = variadic_function_info.find(callee_name);
+        bool is_variadic_call = false;
+        uint64_t fixed_params = 0;
+
         if (variadic_it != variadic_function_info.end() && variadic_it->second.second) {
+            is_variadic_call = true;
+            fixed_params = variadic_it->second.first;
+        } else if (g_repl_mode_enabled) {
+            // REPL MODE: Also check the global REPL registry for variadic functions
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            auto repl_variadic_it = g_repl_variadic_functions.find(callee_name);
+            if (repl_variadic_it != g_repl_variadic_functions.end() && repl_variadic_it->second.second) {
+                is_variadic_call = true;
+                fixed_params = repl_variadic_it->second.first;
+            }
+        }
+
+        if (is_variadic_call) {
             // This is a variadic function call
-            uint64_t fixed_params = variadic_it->second.first;
 
             eshkol_debug("Variadic call to %s with %zu fixed params, %zu args provided",
                         callee_name.c_str(), fixed_params, op->call_op.num_vars);
@@ -13541,6 +13680,10 @@ private:
         // VARIADIC FIX: Register variadic function info for call-site handling
         if (is_variadic) {
             variadic_function_info[lambda_name] = std::make_pair(op->lambda_op.num_params, true);
+            // REPL MODE: Also register in global REPL context for cross-evaluation calls
+            if (g_repl_mode_enabled) {
+                eshkol_repl_register_variadic_function(lambda_name.c_str(), op->lambda_op.num_params, true);
+            }
             eshkol_debug("Registered variadic function %s with %llu fixed params",
                         lambda_name.c_str(), (unsigned long long)op->lambda_op.num_params);
         }
@@ -26927,6 +27070,12 @@ void eshkol_repl_register_function(const char* name, uint64_t address, size_t ar
     std::lock_guard<std::mutex> lock(g_repl_mutex);
     g_repl_function_addresses[name] = address;
     g_repl_function_arities[name] = arity;
+}
+
+void eshkol_repl_register_variadic_function(const char* name, size_t fixed_params, bool is_variadic) {
+    if (!name) return;
+    std::lock_guard<std::mutex> lock(g_repl_mutex);
+    g_repl_variadic_functions[name] = std::make_pair(fixed_params, is_variadic);
 }
 
 void eshkol_repl_register_lambda_name(const char* var_name, const char* lambda_name) {

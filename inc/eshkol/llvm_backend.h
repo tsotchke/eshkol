@@ -133,6 +133,14 @@ void eshkol_repl_register_symbol(const char* name, uint64_t address);
 void eshkol_repl_register_function(const char* name, uint64_t address, size_t arity);
 
 /*
+ * REPL Mode: Register variadic function info
+ * @param name Function name
+ * @param fixed_params Number of fixed parameters before the rest parameter
+ * @param is_variadic Whether the function is variadic
+ */
+void eshkol_repl_register_variadic_function(const char* name, size_t fixed_params, bool is_variadic);
+
+/*
  * REPL Mode: Register variable -> lambda name mapping for s-expression lookup
  * @param var_name Variable name (e.g., "square")
  * @param lambda_name Lambda function name (e.g., "lambda_0")
@@ -161,6 +169,7 @@ void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value);
 #define eshkol_repl_disable() do {} while(0)
 #define eshkol_repl_register_symbol(name, address) do {} while(0)
 #define eshkol_repl_register_function(name, address, arity) do {} while(0)
+#define eshkol_repl_register_variadic_function(name, fixed_params, is_variadic) do {} while(0)
 #define eshkol_repl_register_lambda_name(var_name, lambda_name) do {} while(0)
 #define eshkol_repl_register_sexpr(sexpr_name, sexpr_value) do {} while(0)
 

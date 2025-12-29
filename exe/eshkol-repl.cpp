@@ -968,6 +968,21 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        // Skip comment-only or whitespace-only input
+        {
+            bool is_comment_or_whitespace = true;
+            for (size_t i = 0; i < input_str.size(); i++) {
+                char c = input_str[i];
+                if (std::isspace(c)) continue;
+                if (c == ';') break;  // Rest is comment
+                is_comment_or_whitespace = false;
+                break;
+            }
+            if (is_comment_or_whitespace) {
+                continue;
+            }
+        }
+
         // Parse and evaluate
         try {
             eshkol_ast_t ast = parse_string(input_str);

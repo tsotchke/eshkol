@@ -359,8 +359,74 @@ std::unique_ptr<Module> ReplJITContext::createModule(const std::string& name) {
     return std::make_unique<Module>(name, getContext());
 }
 
+// Stub function called when a forward-referenced function hasn't been defined yet
+static eshkol_tagged_value __repl_forward_ref_stub() {
+    std::cerr << "Error: Called a forward-referenced function that was never defined" << std::endl;
+    exit(1);
+    return {0, 0};  // Never reached
+}
+
 void ReplJITContext::addModule(std::unique_ptr<Module> module) {
-    // Verify the module first
+    // Collect forward references and definitions to handle
+    std::vector<std::pair<std::string, std::string>> forward_ref_updates;  // (ptr_name, func_name)
+
+    // STEP 1: Scan for globals that define previously forward-referenced functions
+    // These need to be converted to external declarations, and we'll update the pointer slot later
+    for (auto& gv : module->globals()) {
+        if (gv.hasInitializer()) {
+            std::string name = gv.getName().str();
+            if (name.find("__repl_fwd_") == 0 && pending_forward_refs_.count(name)) {
+                // This module defines a function that was previously forward-referenced
+                // Get the function name from the initializer
+                if (auto* func = dyn_cast<Function>(gv.getInitializer())) {
+                    forward_ref_updates.push_back({name, func->getName().str()});
+                }
+                // Remove the initializer so it becomes an external declaration
+                // This prevents duplicate symbol errors
+                gv.setInitializer(nullptr);
+                gv.setExternallyInitialized(false);
+            }
+        }
+    }
+
+    // STEP 2: Scan for external references to __repl_fwd_* symbols and create stubs
+    for (auto& gv : module->globals()) {
+        if (gv.hasExternalLinkage() && !gv.hasInitializer()) {
+            std::string name = gv.getName().str();
+            if (name.find("__repl_fwd_") == 0) {
+                // Check if we already have this symbol
+                auto symbol = jit_->lookup(name);
+                if (!symbol) {
+                    consumeError(symbol.takeError());
+
+                    // Allocate actual memory for the function pointer
+                    // This allows us to update it when the real function is defined
+                    void** ptr_slot = new void*;
+                    *ptr_slot = reinterpret_cast<void*>(&__repl_forward_ref_stub);
+                    forward_ref_slots_[name] = ptr_slot;
+
+                    // Register the pointer slot address as the symbol
+                    // When the module loads __repl_fwd_X, it gets this address,
+                    // and loading from it gives the function pointer
+                    orc::SymbolMap stub_symbol;
+                    stub_symbol[jit_->mangleAndIntern(name)] = {
+                        orc::ExecutorAddr::fromPtr(ptr_slot),
+                        JITSymbolFlags::Exported
+                    };
+
+                    auto& main_dylib = jit_->getMainJITDylib();
+                    auto err = main_dylib.define(orc::absoluteSymbols(stub_symbol));
+                    if (err) {
+                        consumeError(std::move(err));
+                    }
+
+                    pending_forward_refs_.insert(name);
+                }
+            }
+        }
+    }
+
+    // Verify the module
     std::string error_msg;
     raw_string_ostream error_stream(error_msg);
     if (verifyModule(*module, &error_stream)) {
@@ -370,7 +436,6 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module) {
     }
 
     // Wrap module in ThreadSafeModule using shared context
-    // All modules share the same context so they can reference each other's symbols
     auto tsm = ThreadSafeModule(std::move(module), *ts_context_);
 
     auto err = jit_->addIRModule(std::move(tsm));
@@ -380,6 +445,23 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module) {
         err_stream << err;
         std::cerr << "Failed to add module to JIT: " << err_msg << std::endl;
         throw std::runtime_error("Failed to add module to JIT");
+    }
+
+    // STEP 3: Update forward reference pointers to point to the real functions
+    for (const auto& [ptr_name, func_name] : forward_ref_updates) {
+        auto func_symbol = jit_->lookup(func_name);
+        if (func_symbol) {
+            // Update the pointer slot to point to the real function
+            auto it = forward_ref_slots_.find(ptr_name);
+            if (it != forward_ref_slots_.end()) {
+                void** ptr_slot = it->second;
+                *ptr_slot = func_symbol->toPtr<void*>();
+                pending_forward_refs_.erase(ptr_name);
+            }
+        } else {
+            consumeError(func_symbol.takeError());
+            std::cerr << "Warning: Could not resolve forward reference to " << func_name << std::endl;
+        }
     }
 }
 

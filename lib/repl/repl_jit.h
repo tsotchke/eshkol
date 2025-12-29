@@ -192,6 +192,15 @@ private:
     // Maps variable name -> type (for now, just track names)
     std::unordered_set<std::string> defined_globals_;
 
+    // Track pending forward references that have stub symbols
+    // These will be resolved when the actual function is defined
+    std::unordered_set<std::string> pending_forward_refs_;
+
+    // Allocated pointer slots for forward references
+    // Maps symbol name -> pointer to allocated memory holding the function pointer
+    // This allows us to update the pointer when the real function is defined
+    std::unordered_map<std::string, void**> forward_ref_slots_;
+
     // SHARED ARENA: Single persistent arena shared across all evaluations
     // This ensures data allocated in one evaluation (lists, vectors, etc.)
     // is accessible in subsequent evaluations
