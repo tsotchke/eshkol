@@ -769,6 +769,114 @@ static eshkol_ast_t parse_quoted_list_internal(SchemeTokenizer& tokenizer) {
     return ast;
 }
 
+// Forward declarations for quasiquote parsing
+static eshkol_ast_t parse_quasiquoted_data(SchemeTokenizer& tokenizer);
+static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer, Token token);
+static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer);
+
+// Parse quasiquoted data - similar to quoted data but handles unquote/unquote-splicing
+static eshkol_ast_t parse_quasiquoted_data(SchemeTokenizer& tokenizer) {
+    Token token = tokenizer.nextToken();
+    return parse_quasiquoted_data_with_token(tokenizer, token);
+}
+
+// Parse quasiquoted data when we already have the first token
+static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer, Token token) {
+    if (token.type == TOKEN_LPAREN) {
+        // Parse a list without requiring a symbol as first element
+        return parse_quasiquoted_list_internal(tokenizer);
+    } else if (token.type == TOKEN_COMMA) {
+        // Unquote: ,expr - parse as code (not data)
+        eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
+        eshkol_ast_t ast;
+        ast.type = ESHKOL_OP;
+        ast.operation.op = ESHKOL_UNQUOTE_OP;
+        ast.operation.call_op.func = nullptr;
+        ast.operation.call_op.num_vars = 1;
+        ast.operation.call_op.variables = new eshkol_ast_t[1];
+        ast.operation.call_op.variables[0] = inner;
+        return ast;
+    } else if (token.type == TOKEN_COMMA_AT) {
+        // Unquote-splicing: ,@expr - parse as code
+        eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
+        eshkol_ast_t ast;
+        ast.type = ESHKOL_OP;
+        ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
+        ast.operation.call_op.func = nullptr;
+        ast.operation.call_op.num_vars = 1;
+        ast.operation.call_op.variables = new eshkol_ast_t[1];
+        ast.operation.call_op.variables[0] = inner;
+        return ast;
+    } else if (token.type == TOKEN_QUOTE) {
+        // Nested quote inside quasiquote
+        eshkol_ast_t quoted = parse_quoted_data(tokenizer);
+        eshkol_ast_t ast;
+        ast.type = ESHKOL_OP;
+        ast.operation.op = ESHKOL_QUOTE_OP;
+        ast.operation.call_op.func = nullptr;
+        ast.operation.call_op.num_vars = 1;
+        ast.operation.call_op.variables = new eshkol_ast_t[1];
+        ast.operation.call_op.variables[0] = quoted;
+        return ast;
+    } else if (token.type == TOKEN_BACKQUOTE) {
+        // Nested quasiquote
+        eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
+        eshkol_ast_t ast;
+        ast.type = ESHKOL_OP;
+        ast.operation.op = ESHKOL_QUASIQUOTE_OP;
+        ast.operation.call_op.func = nullptr;
+        ast.operation.call_op.num_vars = 1;
+        ast.operation.call_op.variables = new eshkol_ast_t[1];
+        ast.operation.call_op.variables[0] = inner;
+        return ast;
+    } else {
+        // Atom
+        return parse_atom(token);
+    }
+}
+
+// Parse a quasiquoted list - called after consuming '('
+static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer) {
+    std::vector<eshkol_ast_t> elements;
+
+    while (true) {
+        Token inner_token = tokenizer.nextToken();
+        if (inner_token.type == TOKEN_RPAREN) break;
+        if (inner_token.type == TOKEN_EOF) {
+            eshkol_error("Unexpected end of input in quasiquoted list");
+            return {.type = ESHKOL_INVALID};
+        }
+
+        // Recursively parse each element (handles unquote/unquote-splicing)
+        eshkol_ast_t elem = parse_quasiquoted_data_with_token(tokenizer, inner_token);
+        if (elem.type == ESHKOL_INVALID) {
+            return elem;
+        }
+        elements.push_back(elem);
+    }
+
+    // Build list as CALL_OP with "list" as function
+    // This allows codegenQuasiquotedAST to handle it correctly
+    eshkol_ast_t ast;
+    ast.type = ESHKOL_OP;
+    ast.operation.op = ESHKOL_CALL_OP;
+    ast.operation.call_op.func = new eshkol_ast_t;
+    ast.operation.call_op.func->type = ESHKOL_VAR;
+    ast.operation.call_op.func->variable.id = new char[5];
+    strcpy(ast.operation.call_op.func->variable.id, "list");
+    ast.operation.call_op.func->variable.data = nullptr;
+    ast.operation.call_op.num_vars = elements.size();
+    if (elements.size() > 0) {
+        ast.operation.call_op.variables = new eshkol_ast_t[elements.size()];
+        for (size_t i = 0; i < elements.size(); i++) {
+            ast.operation.call_op.variables[i] = elements[i];
+        }
+    } else {
+        ast.operation.call_op.variables = nullptr;
+    }
+    return ast;
+}
+
 // Forward declaration for scope tracking
 class ScopeTracker {
 private:
@@ -5149,6 +5257,35 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
+        } else if (ast.operation.op == ESHKOL_QUASIQUOTE_OP) {
+            // Special handling for quasiquote - its argument can be any data, with unquote/unquote-splicing
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_RPAREN) {
+                eshkol_error("quasiquote requires exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("Unexpected end of input in quasiquote");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Parse the quasiquoted expression using our special quasiquoted data parser
+            eshkol_ast_t quoted = parse_quasiquoted_data_with_token(tokenizer, token);
+            if (quoted.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            elements.push_back(quoted);
+
+            // Expect closing paren
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                eshkol_error("quasiquote requires exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
         } else {
             while (true) {
                 token = tokenizer.nextToken();
@@ -5232,6 +5369,18 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Store it in call_op.variables[0] for codegenQuotedAST to access
             if (elements.size() != 1) {
                 eshkol_error("quote requires exactly one argument");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            ast.operation.call_op.func = nullptr;
+            ast.operation.call_op.num_vars = 1;
+            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables[0] = elements[0];
+        } else if (ast.operation.op == ESHKOL_QUASIQUOTE_OP) {
+            // quasiquote takes exactly one argument - the expression to quasiquote
+            // Store it in call_op.variables[0] for codegenQuasiquotedAST to access
+            if (elements.size() != 1) {
+                eshkol_error("quasiquote requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }

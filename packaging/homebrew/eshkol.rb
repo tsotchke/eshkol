@@ -8,8 +8,8 @@
 class Eshkol < Formula
   desc "Functional programming language with HoTT types and autodiff"
   homepage "https://eshkol.ai"
-  url "https://github.com/tsotchke/eshkol/archive/v1.0.1.tar.gz"
-  sha256 "8d818fbd4c5c8033e3ec0006aeacc6e0824487aad6b14e79c57770c76ddd7975"
+  url "https://github.com/tsotchke/eshkol/archive/v1.0.1.1.tar.gz"
+  sha256 "PLACEHOLDER_UPDATE_AFTER_RELEASE"
   license "MIT"
   head "https://github.com/tsotchke/eshkol.git", branch: "master"
 
@@ -39,13 +39,15 @@ class Eshkol < Formula
            "-DCMAKE_MACOSX_RPATH=ON",
            *std_cmake_args
 
-    # Build eshkol-run and eshkol-repl (skip stdlib target - we'll generate it manually)
+    # Build eshkol-run, eshkol-repl, and static library (skip stdlib target - we'll generate it manually)
     system "cmake", "--build", "build", "--target", "eshkol-run"
     system "cmake", "--build", "build", "--target", "eshkol-repl"
+    system "cmake", "--build", "build", "--target", "eshkol-static"
 
     # Generate stdlib.o using the freshly built eshkol-run compiler
     # This compiles lib/stdlib.esk to build/stdlib.o
-    system "build/eshkol-run", "--shared-lib", "-o", "build/stdlib", "lib/stdlib.esk"
+    # Use --no-stdlib to avoid chicken-and-egg problem
+    system "build/eshkol-run", "--no-stdlib", "--shared-lib", "-o", "build/stdlib", "lib/stdlib.esk"
 
     # Verify stdlib.o was created
     odie "stdlib.o was not created - eshkol-run compilation failed" unless File.exist?("build/stdlib.o")
@@ -56,7 +58,9 @@ class Eshkol < Formula
 
     # Install library files
     lib.install "build/stdlib.o"
+    lib.install "build/libeshkol-static.a"
     (lib/"eshkol").install "build/stdlib.o"
+    (lib/"eshkol").install "build/libeshkol-static.a"
 
     # Install library source files
     (share/"eshkol").install "lib/stdlib.esk"
