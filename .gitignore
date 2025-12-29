@@ -2,6 +2,7 @@
 build/
 build-x86/
 build-test/
+dist/
 
 # Environment and secrets
 .env
