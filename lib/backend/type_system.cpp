@@ -26,6 +26,12 @@ TypeSystem::TypeSystem(llvm::LLVMContext& ctx) : context(ctx) {
     void_type = llvm::Type::getVoidTy(context);
     ptr_type = llvm::PointerType::getUnqual(context);
 
+    // Create SIMD vector types for tensor operations
+    // These are fixed-size vector types that map to SIMD registers
+    double2_type = llvm::FixedVectorType::get(double_type, 2);  // SSE2: 128-bit
+    double4_type = llvm::FixedVectorType::get(double_type, 4);  // AVX: 256-bit
+    double8_type = llvm::FixedVectorType::get(double_type, 8);  // AVX-512: 512-bit
+
     // Create struct types
     createStructTypes();
 }

@@ -50,6 +50,19 @@ public:
     llvm::Type* getVoidType() const { return void_type; }
     llvm::PointerType* getPtrType() const { return ptr_type; }
 
+    // SIMD vector types for tensor operations
+    // SSE2: 128-bit = 2 x double
+    llvm::VectorType* getDouble2Type() const { return double2_type; }
+    // AVX/AVX2: 256-bit = 4 x double
+    llvm::VectorType* getDouble4Type() const { return double4_type; }
+    // AVX-512: 512-bit = 8 x double (for future use)
+    llvm::VectorType* getDouble8Type() const { return double8_type; }
+
+    // SIMD configuration
+    static constexpr unsigned SIMD_SSE_WIDTH = 2;   // 2 doubles (128-bit)
+    static constexpr unsigned SIMD_AVX_WIDTH = 4;   // 4 doubles (256-bit)
+    static constexpr unsigned SIMD_AVX512_WIDTH = 8; // 8 doubles (512-bit)
+
     // Struct types for Eshkol runtime
     llvm::StructType* getTaggedValueType() const { return tagged_value_type; }
     llvm::StructType* getDualNumberType() const { return dual_number_type; }
@@ -96,6 +109,11 @@ private:
     llvm::Type* double_type;
     llvm::Type* void_type;
     llvm::PointerType* ptr_type;
+
+    // SIMD vector types
+    llvm::VectorType* double2_type;  // <2 x double> for SSE2
+    llvm::VectorType* double4_type;  // <4 x double> for AVX
+    llvm::VectorType* double8_type;  // <8 x double> for AVX-512
 
     // Cached struct types
     llvm::StructType* tagged_value_type;

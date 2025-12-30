@@ -15571,6 +15571,7 @@ private:
     }
 
     // matmul: (matmul A B) - Matrix multiplication [M x K] @ [K x N] -> [M x N]
+    // SIMD-accelerated: processes 4 columns at a time using AVX vectors
     Value* codegenMatmul(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_error("matmul requires exactly 2 arguments");
@@ -15615,120 +15616,8 @@ private:
                                               ConstantInt::get(int64_type, 1));
         Value* N = builder->CreateLoad(int64_type, b_dim1_ptr);
 
-        // Get elements pointers
-        Value* a_elements_field_ptr = builder->CreateStructGEP(tensor_type, ptr_a, 2);
-        Value* a_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), a_elements_field_ptr);
-        Value* typed_a_elements = builder->CreatePointerCast(a_elements_ptr, builder->getPtrTy());
-
-        Value* b_elements_field_ptr = builder->CreateStructGEP(tensor_type, ptr_b, 2);
-        Value* b_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), b_elements_field_ptr);
-        Value* typed_b_elements = builder->CreatePointerCast(b_elements_ptr, builder->getPtrTy());
-
-        // Create result tensor [M x N]
-        std::vector<Value*> result_dims = {M, N};
-        Value* result_ptr = tensor_->createTensorWithDims(result_dims, nullptr, true);  // Zero-fill
-        if (!result_ptr) return nullptr;
-
-        Value* result_elements_field_ptr = builder->CreateStructGEP(tensor_type, result_ptr, 2);
-        Value* result_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), result_elements_field_ptr);
-        Value* typed_result_elements = builder->CreatePointerCast(result_elements_ptr, builder->getPtrTy());
-
-        // Triple nested loop for matrix multiplication
-        // C[i][j] = sum_k(A[i][k] * B[k][j])
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* i_cond = BasicBlock::Create(*context, "mm_i_cond", current_func);
-        BasicBlock* i_body = BasicBlock::Create(*context, "mm_i_body", current_func);
-        BasicBlock* j_cond = BasicBlock::Create(*context, "mm_j_cond", current_func);
-        BasicBlock* j_body = BasicBlock::Create(*context, "mm_j_body", current_func);
-        BasicBlock* k_cond = BasicBlock::Create(*context, "mm_k_cond", current_func);
-        BasicBlock* k_body = BasicBlock::Create(*context, "mm_k_body", current_func);
-        BasicBlock* k_exit = BasicBlock::Create(*context, "mm_k_exit", current_func);
-        BasicBlock* j_exit = BasicBlock::Create(*context, "mm_j_exit", current_func);
-        BasicBlock* i_exit = BasicBlock::Create(*context, "mm_i_exit", current_func);
-
-        Value* i_counter = builder->CreateAlloca(int64_type, nullptr, "mm_i");
-        Value* j_counter = builder->CreateAlloca(int64_type, nullptr, "mm_j");
-        Value* k_counter = builder->CreateAlloca(int64_type, nullptr, "mm_k");
-        Value* sum_acc = builder->CreateAlloca(double_type, nullptr, "mm_sum");
-
-        builder->CreateStore(ConstantInt::get(int64_type, 0), i_counter);
-        builder->CreateBr(i_cond);
-
-        // i loop
-        builder->SetInsertPoint(i_cond);
-        Value* i = builder->CreateLoad(int64_type, i_counter);
-        Value* i_cmp = builder->CreateICmpULT(i, M);
-        builder->CreateCondBr(i_cmp, i_body, i_exit);
-
-        builder->SetInsertPoint(i_body);
-        builder->CreateStore(ConstantInt::get(int64_type, 0), j_counter);
-        builder->CreateBr(j_cond);
-
-        // j loop
-        builder->SetInsertPoint(j_cond);
-        Value* j = builder->CreateLoad(int64_type, j_counter);
-        Value* j_cmp = builder->CreateICmpULT(j, N);
-        builder->CreateCondBr(j_cmp, j_body, j_exit);
-
-        builder->SetInsertPoint(j_body);
-        builder->CreateStore(ConstantFP::get(double_type, 0.0), sum_acc);
-        builder->CreateStore(ConstantInt::get(int64_type, 0), k_counter);
-        builder->CreateBr(k_cond);
-
-        // k loop (inner accumulation)
-        builder->SetInsertPoint(k_cond);
-        Value* k = builder->CreateLoad(int64_type, k_counter);
-        Value* k_cmp = builder->CreateICmpULT(k, K);
-        builder->CreateCondBr(k_cmp, k_body, k_exit);
-
-        builder->SetInsertPoint(k_body);
-        // A[i][k] = A[i * K + k]
-        Value* a_idx = builder->CreateMul(i, K);
-        a_idx = builder->CreateAdd(a_idx, k);
-        Value* a_elem_ptr = builder->CreateGEP(int64_type, typed_a_elements, a_idx);
-        Value* a_bits = builder->CreateLoad(int64_type, a_elem_ptr);
-        Value* a_val = builder->CreateBitCast(a_bits, double_type);
-
-        // B[k][j] = B[k * N + j]
-        Value* b_idx = builder->CreateMul(k, N);
-        b_idx = builder->CreateAdd(b_idx, j);
-        Value* b_elem_ptr = builder->CreateGEP(int64_type, typed_b_elements, b_idx);
-        Value* b_bits = builder->CreateLoad(int64_type, b_elem_ptr);
-        Value* b_val = builder->CreateBitCast(b_bits, double_type);
-
-        // sum += A[i][k] * B[k][j]
-        Value* product = builder->CreateFMul(a_val, b_val);
-        Value* current_sum = builder->CreateLoad(double_type, sum_acc);
-        Value* new_sum = builder->CreateFAdd(current_sum, product);
-        builder->CreateStore(new_sum, sum_acc);
-
-        Value* next_k = builder->CreateAdd(k, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_k, k_counter);
-        builder->CreateBr(k_cond);
-
-        // k exit - store result
-        builder->SetInsertPoint(k_exit);
-        Value* final_sum = builder->CreateLoad(double_type, sum_acc);
-        Value* result_bits = builder->CreateBitCast(final_sum, int64_type);
-        // C[i][j] = C[i * N + j]
-        Value* c_idx = builder->CreateMul(i, N);
-        c_idx = builder->CreateAdd(c_idx, j);
-        Value* c_elem_ptr = builder->CreateGEP(int64_type, typed_result_elements, c_idx);
-        builder->CreateStore(result_bits, c_elem_ptr);
-
-        Value* next_j = builder->CreateAdd(j, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_j, j_counter);
-        builder->CreateBr(j_cond);
-
-        // j exit
-        builder->SetInsertPoint(j_exit);
-        Value* next_i = builder->CreateAdd(i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_i, i_counter);
-        builder->CreateBr(i_cond);
-
-        // i exit
-        builder->SetInsertPoint(i_exit);
-        return packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_HEAP_PTR);
+        // Use SIMD-accelerated matmul from TensorCodegen
+        return tensor_->matmulSIMD(ptr_a, ptr_b, M, K, N);
     }
 
 
