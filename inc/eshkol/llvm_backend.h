@@ -80,9 +80,26 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module, const char* filename)
  * @param num_linked_libs Number of libraries to link
  * @return 0 on success, non-zero on error
  */
-int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module, const char* filename, 
+int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module, const char* filename,
                                         const char* const* lib_paths, size_t num_lib_paths,
                                         const char* const* linked_libs, size_t num_linked_libs);
+
+/*
+ * Compile LLVM IR to WebAssembly binary
+ * @param module LLVM module reference
+ * @param output_buffer Pointer to receive allocated buffer (caller must free with free())
+ * @param output_size Pointer to receive buffer size in bytes
+ * @return 0 on success, non-zero on error
+ */
+int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module, uint8_t** output_buffer, size_t* output_size);
+
+/*
+ * Compile LLVM IR to WebAssembly file
+ * @param module LLVM module reference
+ * @param filename Output WASM filename (should end with .wasm)
+ * @return 0 on success, non-zero on error
+ */
+int eshkol_compile_llvm_ir_to_wasm_file(LLVMModuleRef module, const char* filename);
 
 /*
  * Clean up LLVM module
@@ -163,6 +180,8 @@ void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value);
 #define eshkol_dump_llvm_ir_to_file(module, filename) (-1)
 #define eshkol_compile_llvm_ir_to_object(module, filename) (-1)
 #define eshkol_compile_llvm_ir_to_executable(module, filename, lib_paths, num_lib_paths, linked_libs, num_linked_libs) (-1)
+#define eshkol_compile_llvm_ir_to_wasm(module, output_buffer, output_size) (-1)
+#define eshkol_compile_llvm_ir_to_wasm_file(module, filename) (-1)
 #define eshkol_dispose_llvm_module(module) do {} while(0)
 #define eshkol_print_llvm_ir(module) do {} while(0)
 #define eshkol_repl_enable() do {} while(0)

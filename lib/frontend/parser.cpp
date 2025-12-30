@@ -4760,27 +4760,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             
             // Initialize real_name to nullptr (will be set if :real modifier is used)
             ast.operation.extern_op.real_name = nullptr;
-            
-            // Check for :real modifier
-            token = tokenizer.nextToken();
-            if (token.type == TOKEN_SYMBOL && token.value == ":real") {
-                // Parse the real function name
-                token = tokenizer.nextToken();
-                if (token.type != TOKEN_SYMBOL) {
-                    eshkol_error("extern :real requires function name as argument");
-                    ast.type = ESHKOL_INVALID;
-                    return ast;
-                }
-                
-                ast.operation.extern_op.real_name = new char[strlen(token.value.c_str()) + 1];
-                strcpy(ast.operation.extern_op.real_name, token.value.c_str());
-                
-                // Get next token for parameter parsing
-                token = tokenizer.nextToken();
-            }
-            
-            // Parse parameter types
+
+            // Parse parameter types and :real modifier
+            // Syntax: (extern return-type func-name param-types... :real real-name)
+            // The :real modifier can appear at the end after all parameter types
             std::vector<eshkol_ast_t> param_types;
+            token = tokenizer.nextToken();
+
             while (true) {
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
@@ -4788,21 +4774,51 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
-                
+
+                // Check for :real modifier (TOKEN_COLON followed by "real")
+                if (token.type == TOKEN_COLON) {
+                    Token next = tokenizer.nextToken();
+                    if (next.type == TOKEN_SYMBOL && next.value == "real") {
+                        // Parse the real function name
+                        token = tokenizer.nextToken();
+                        if (token.type != TOKEN_SYMBOL) {
+                            eshkol_error("extern :real requires function name as argument");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+
+                        ast.operation.extern_op.real_name = new char[strlen(token.value.c_str()) + 1];
+                        strcpy(ast.operation.extern_op.real_name, token.value.c_str());
+
+                        // Expect closing paren after :real name
+                        token = tokenizer.nextToken();
+                        if (token.type != TOKEN_RPAREN) {
+                            eshkol_error(":real modifier must be at end of extern declaration");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+                        break;
+                    } else {
+                        eshkol_error("Unexpected ':' in extern declaration (did you mean :real?)");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                }
+
                 if (token.type != TOKEN_SYMBOL) {
                     eshkol_error("extern parameter types must be symbols");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
-                
+
                 // Create parameter type AST node
                 eshkol_ast_t param_type = {.type = ESHKOL_STRING};
                 param_type.str_val.size = strlen(token.value.c_str());
                 param_type.str_val.ptr = new char[param_type.str_val.size + 1];
                 strcpy(param_type.str_val.ptr, token.value.c_str());
-                
+
                 param_types.push_back(param_type);
-                
+
                 // Get next token
                 token = tokenizer.nextToken();
             }
