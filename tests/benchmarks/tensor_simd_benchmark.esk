@@ -1,0 +1,123 @@
+;;; Tensor SIMD Benchmark
+;;; Comprehensive performance test for tensor operations
+;;; With SIMD, processes 4 doubles at a time using AVX vectors
+
+(display "=== SIMD Tensor Benchmark ===" ) (newline)
+(newline)
+
+;; ========== 1D TENSOR TESTS ==========
+(display "--- 1D Tensor Tests ---") (newline)
+
+;; Create 1D tensors
+(define v1 (arange 1000))
+(define v2 (linspace 1.0 1000.0 1000))
+
+(display "v1 shape: ") (display (tensor-shape v1)) (newline)
+(display "v2 shape: ") (display (tensor-shape v2)) (newline)
+
+;; Element-wise operations (SIMD accelerated)
+(display "tensor-add: ")
+(define add-result (tensor-add v1 v2))
+(display (tensor-get add-result 0)) (display " ... ")
+(display (tensor-get add-result 999)) (newline)
+
+(display "tensor-sub: ")
+(define sub-result (tensor-sub v1 v2))
+(display (tensor-get sub-result 0)) (display " ... ")
+(display (tensor-get sub-result 999)) (newline)
+
+(display "tensor-mul: ")
+(define mul-result (tensor-mul v1 v2))
+(display (tensor-get mul-result 0)) (display " ... ")
+(display (tensor-get mul-result 999)) (newline)
+
+(display "tensor-div (v2/v1, skip 0): ")
+(define div-result (tensor-div v2 v1))
+(display (tensor-get div-result 1)) (display " ... ")
+(display (tensor-get div-result 999)) (newline)
+
+;; Dot product
+(display "tensor-dot: ")
+(display (tensor-dot (arange 10) (arange 10)))
+(display " (expected: 285)") (newline)
+
+(newline)
+
+;; ========== 2D MATRIX TESTS ==========
+(display "--- 2D Matrix Tests ---") (newline)
+
+;; Create matrices
+(define A (reshape (arange 6) 2 3))  ; 2x3 matrix
+(define B (reshape (arange 6) 3 2))  ; 3x2 matrix
+
+(display "A (2x3): ") (display A) (newline)
+(display "B (3x2): ") (display B) (newline)
+
+;; Matrix multiplication
+(display "matmul A*B (2x2): ")
+(define C (matmul A B))
+(display C) (newline)
+
+;; Transpose
+(display "transpose A: ")
+(display (transpose A)) (newline)
+
+;; Matrix element-wise ops
+(define M1 (reshape (arange 9) 3 3))
+(define M2 (ones 3 3))
+(display "M1 + M2 (3x3): ")
+(display (tensor-add M1 M2)) (newline)
+
+(newline)
+
+;; ========== STRESS TESTS ==========
+(display "--- Stress Tests ---") (newline)
+
+;; Large 1D tensor operations
+(display "Creating 10000-element tensors...") (newline)
+(define big1 (arange 10000))
+(define big2 (linspace 0.0 1.0 10000))
+
+(display "Running 100 iterations of tensor-add (10000 elements)...") (newline)
+(define (stress-add n)
+  (if (<= n 0) 'done
+      (begin (tensor-add big1 big2) (stress-add (- n 1)))))
+(stress-add 100)
+(display "  Complete!") (newline)
+
+(display "Running 100 iterations of tensor-mul (10000 elements)...") (newline)
+(define (stress-mul n)
+  (if (<= n 0) 'done
+      (begin (tensor-mul big1 big2) (stress-mul (- n 1)))))
+(stress-mul 100)
+(display "  Complete!") (newline)
+
+;; Matrix multiplication stress test
+(display "Running 50 iterations of matmul (100x100)...") (newline)
+(define M100a (reshape (arange 10000) 100 100))
+(define M100b (reshape (arange 10000) 100 100))
+(define (stress-matmul n)
+  (if (<= n 0) 'done
+      (begin (matmul M100a M100b) (stress-matmul (- n 1)))))
+(stress-matmul 50)
+(display "  Complete!") (newline)
+
+(newline)
+
+;; ========== VERIFICATION ==========
+(display "--- Verification ---") (newline)
+(define final-add (tensor-add big1 big2))
+(display "Element 9999 of big1+big2: ")
+(display (tensor-get final-add 9999))
+(display " (expected: ~10000)") (newline)
+
+;; Test SIMD tensor-sum
+(display "tensor-sum (arange 100): ")
+(display (tensor-sum (arange 100)))
+(display " (expected: 4950)") (newline)
+
+(display "tensor-sum (arange 1000): ")
+(display (tensor-sum (arange 1000)))
+(display " (expected: 499500)") (newline)
+
+(display "=== Benchmark Complete ===" ) (newline)

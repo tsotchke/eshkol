@@ -105,6 +105,19 @@ public:
      */
     llvm::Value* tensorDot(const eshkol_operations_t* op);
 
+    /**
+     * SIMD-accelerated matrix multiplication: (matmul A B)
+     * Uses vectorized operations to process 4 columns at a time.
+     * @param ptr_a Pointer to tensor A [M x K]
+     * @param ptr_b Pointer to tensor B [K x N]
+     * @param M Rows of A
+     * @param K Columns of A / Rows of B
+     * @param N Columns of B
+     * @return Result tensor [M x N]
+     */
+    llvm::Value* matmulSIMD(llvm::Value* ptr_a, llvm::Value* ptr_b,
+                            llvm::Value* M, llvm::Value* K, llvm::Value* N);
+
     // === Tensor Transformations ===
 
     /**
@@ -261,6 +274,17 @@ private:
      * @return Result tensor (tagged)
      */
     llvm::Value* rawTensorArithmetic(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
+
+    /**
+     * SIMD-accelerated tensor arithmetic for TENSOR_PTR type.
+     * Processes 4 doubles at a time using AVX vector operations.
+     * Falls back to scalar for tail elements (count % 4 != 0).
+     * @param tensor1 First tensor (tagged)
+     * @param tensor2 Second tensor (tagged)
+     * @param operation One of "add", "sub", "mul", "div"
+     * @return Result tensor (tagged)
+     */
+    llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
 
     /**
      * Extract a tagged value as double, handling both int64 and double types.
