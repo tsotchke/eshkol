@@ -277,14 +277,30 @@ private:
 
     /**
      * SIMD-accelerated tensor arithmetic for TENSOR_PTR type.
-     * Processes 4 doubles at a time using AVX vector operations.
-     * Falls back to scalar for tail elements (count % 4 != 0).
+     * Automatically selects optimal vector width based on CPU capabilities:
+     * - ARM NEON: 2 doubles (128-bit)
+     * - x86 SSE2: 2 doubles (128-bit)
+     * - x86 AVX/AVX2: 4 doubles (256-bit)
+     * - x86 AVX-512: 8 doubles (512-bit)
+     * Falls back to scalar for tail elements (count % SIMD_WIDTH != 0).
      * @param tensor1 First tensor (tagged)
      * @param tensor2 Second tensor (tagged)
      * @param operation One of "add", "sub", "mul", "div"
      * @return Result tensor (tagged)
      */
     llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
+
+    /**
+     * Get the optimal SIMD vector width based on detected CPU features.
+     * @return Vector width in number of doubles (1, 2, 4, or 8)
+     */
+    unsigned getSIMDWidth() const;
+
+    /**
+     * Get the LLVM vector type for the current SIMD width.
+     * @return <2 x double>, <4 x double>, or <8 x double> based on CPU
+     */
+    llvm::VectorType* getSIMDVectorType() const;
 
     /**
      * Extract a tagged value as double, handling both int64 and double types.

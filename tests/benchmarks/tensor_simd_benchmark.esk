@@ -120,4 +120,13 @@
 (display (tensor-sum (arange 1000)))
 (display " (expected: 499500)") (newline)
 
+;; Test SIMD tensor-mean
+(display "tensor-mean (arange 100): ")
+(display (tensor-mean (arange 100)))
+(display " (expected: 49.5)") (newline)
+
+(display "tensor-mean (arange 1000): ")
+(display (tensor-mean (arange 1000)))
+(display " (expected: 499.5)") (newline)
+
 (display "=== Benchmark Complete ===" ) (newline)
