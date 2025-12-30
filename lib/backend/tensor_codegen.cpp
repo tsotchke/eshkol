@@ -19,14 +19,37 @@
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 
+#ifdef ESHKOL_XLA_ENABLED
+#include <eshkol/backend/xla/xla_codegen.h>
+#endif
+
 namespace eshkol {
 
 TensorCodegen::TensorCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem)
     : ctx_(ctx)
     , tagged_(tagged)
     , mem_(mem) {
+#ifdef ESHKOL_XLA_ENABLED
+    // Initialize XLA backend for accelerated tensor operations
+    xla_ = std::make_unique<xla::XLACodegen>(ctx);
+    eshkol_debug("TensorCodegen initialized with SIMD width: %u, XLA: %s (threshold: %zu)",
+                 getSIMDWidth(),
+                 xla_->isAvailable() ? "available" : "stub",
+                 xla::xla_get_threshold());
+#else
     eshkol_debug("TensorCodegen initialized with SIMD width: %u", getSIMDWidth());
+#endif
 }
+
+#ifdef ESHKOL_XLA_ENABLED
+bool TensorCodegen::shouldUseXLA(size_t num_elements) const {
+    // Use XLA if available and tensor size exceeds threshold
+    return xla_ && xla_->shouldUseXLA(num_elements);
+}
+#endif
+
+// Destructor must be defined where XLACodegen is complete
+TensorCodegen::~TensorCodegen() = default;
 
 unsigned TensorCodegen::getSIMDWidth() const {
     return CPUCapabilities::instance().getVectorWidth();

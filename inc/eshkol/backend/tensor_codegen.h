@@ -22,8 +22,14 @@
 #include <eshkol/eshkol.h>
 #include <llvm/IR/Value.h>
 #include <string>
+#include <memory>
 
 namespace eshkol {
+
+// Forward declaration for XLA backend
+namespace xla {
+    class XLACodegen;
+}
 
 /**
  * TensorCodegen handles tensor operations.
@@ -39,6 +45,11 @@ public:
      * Construct TensorCodegen with context and helpers.
      */
     TensorCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem);
+
+    /**
+     * Destructor - defined in .cpp where XLACodegen is complete.
+     */
+    ~TensorCodegen();
 
     // === Tensor Creation ===
 
@@ -232,6 +243,18 @@ private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
     MemoryCodegen& mem_;
+
+#ifdef ESHKOL_XLA_ENABLED
+    // XLA backend for accelerated tensor operations on large tensors
+    std::unique_ptr<xla::XLACodegen> xla_;
+
+    /**
+     * Check if XLA should be used for an operation.
+     * @param num_elements Total elements in the operation
+     * @return true if XLA should be used (size > threshold and XLA available)
+     */
+    bool shouldUseXLA(size_t num_elements) const;
+#endif
 
     // Callback for AST code generation (matches other codegen modules)
     using CodegenASTFunc = llvm::Value* (*)(const void* ast, void* context);
