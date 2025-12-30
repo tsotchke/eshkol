@@ -24,6 +24,11 @@ option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
 option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer" OFF)
 option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 
+# XLA Backend Support (optional, default OFF)
+# When enabled, provides accelerated tensor operations via XLA/StableHLO
+# Requires MLIR and StableHLO libraries
+option(ESHKOL_XLA_ENABLED "Enable XLA backend for accelerated tensor operations" OFF)
+
 # LLVM backend is always enabled
 set(ESHKOL_BUILD_BACKEND ON)
 
@@ -88,6 +93,42 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     message(STATUS "LLVM CXXFLAGS: ${LLVM_CXXFLAGS}")
 endif()
 
+# ===== XLA Backend Configuration (Optional) =====
+if(ESHKOL_XLA_ENABLED)
+    message(STATUS "XLA backend: ENABLED")
+
+    # XLA source files list (for verification)
+    set(XLA_SOURCES
+        lib/backend/xla/xla_codegen.cpp
+        lib/backend/xla/stablehlo_emitter.cpp
+        lib/backend/xla/xla_compiler.cpp
+        lib/backend/xla/xla_runtime.cpp
+        lib/backend/xla/xla_types.cpp
+        lib/backend/xla/xla_memory.cpp
+    )
+
+    # Verify all XLA source files exist
+    set(XLA_FILES_EXIST TRUE)
+    foreach(xla_src ${XLA_SOURCES})
+        if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${xla_src}")
+            set(XLA_FILES_EXIST FALSE)
+            message(STATUS "XLA stub file missing: ${xla_src}")
+        endif()
+    endforeach()
+
+    if(XLA_FILES_EXIST)
+        # Note: XLA sources are included via GLOB_RECURSE when enabled
+        message(STATUS "XLA sources found and will be included in build")
+    else()
+        message(WARNING "XLA enabled but source files not found. Create stub files first.")
+    endif()
+
+    # Define XLA enabled for code
+    add_compile_definitions(ESHKOL_XLA_ENABLED)
+else()
+    message(STATUS "XLA backend: DISABLED (enable with -DESHKOL_XLA_ENABLED=ON)")
+endif()
+
 # Make uninstall.
 add_custom_target("uninstall" COMMENT "Uninstall installed files")
 add_custom_command(
@@ -113,6 +154,11 @@ file(GLOB_RECURSE LIB_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/*.c*")
 
 # Exclude REPL sources from main library (REPL will be separate)
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/repl/.*")
+
+# Exclude XLA sources from main library when XLA is disabled
+if(NOT ESHKOL_XLA_ENABLED)
+    list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/xla/.*")
+endif()
 
 # Get REPL sources separately
 file(GLOB REPL_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/repl/*.cpp")
