@@ -9,7 +9,7 @@ class Eshkol < Formula
   desc "Functional programming language with HoTT types and autodiff"
   homepage "https://eshkol.ai"
   url "https://github.com/tsotchke/eshkol/archive/v1.0.1.1.tar.gz"
-  sha256 "PLACEHOLDER_UPDATE_AFTER_RELEASE"
+  sha256 "cbddc4867e15ba915bf362cfa84124b131f2ef645dd72f0b646116c249844b29"
   license "MIT"
   head "https://github.com/tsotchke/eshkol.git", branch: "master"
 
@@ -36,31 +36,33 @@ class Eshkol < Formula
            "-DCMAKE_INSTALL_RPATH=#{llvm.opt_lib}",
            "-DCMAKE_BUILD_RPATH=#{llvm.opt_lib}",
            "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON",
+           "-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON",
            "-DCMAKE_MACOSX_RPATH=ON",
            *std_cmake_args
 
-    # Build eshkol-run, eshkol-repl, and static library (skip stdlib target - we'll generate it manually)
+    # Build eshkol-run first (without stdlib to avoid chicken-egg problem)
     system "cmake", "--build", "build", "--target", "eshkol-run"
     system "cmake", "--build", "build", "--target", "eshkol-repl"
     system "cmake", "--build", "build", "--target", "eshkol-static"
 
-    # Generate stdlib.o using the freshly built eshkol-run compiler
-    # This compiles lib/stdlib.esk to build/stdlib.o
-    # Use --no-stdlib to avoid chicken-and-egg problem
-    system "build/eshkol-run", "--no-stdlib", "--shared-lib", "-o", "build/stdlib", "lib/stdlib.esk"
+    # Compile stdlib using eshkol-run
+    system "build/eshkol-run", "--shared-lib", "-o", "build/stdlib", "lib/stdlib.esk"
 
     # Verify stdlib.o was created
-    odie "stdlib.o was not created - eshkol-run compilation failed" unless File.exist?("build/stdlib.o")
+    odie "stdlib.o was not created - compilation failed" unless File.exist?("build/stdlib.o")
 
     # Install binaries
     bin.install "build/eshkol-run"
     bin.install "build/eshkol-repl"
 
-    # Install library files
-    lib.install "build/stdlib.o"
-    lib.install "build/libeshkol-static.a"
+    # Install library files to lib/eshkol/ (primary location)
+    (lib/"eshkol").mkpath
     (lib/"eshkol").install "build/stdlib.o"
     (lib/"eshkol").install "build/libeshkol-static.a"
+
+    # Create symlinks in lib/ for convenience
+    lib.install_symlink (lib/"eshkol/stdlib.o")
+    lib.install_symlink (lib/"eshkol/libeshkol-static.a")
 
     # Install library source files
     (share/"eshkol").install "lib/stdlib.esk"

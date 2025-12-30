@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eshkol Web Test</title>
+</head>
+<body>
+    <div id="status">Loading...</div>
+
+    <script src="../eshkol-repl.js"></script>
+    <script>
+        const status = document.getElementById('status');
+
+        async function runTest() {
+            const repl = new EshkolRepl('http://localhost:8080');
+
+            status.textContent = 'Checking server...';
+
+            // Check server health
+            const healthy = await repl.checkHealth();
+            if (!healthy) {
+                status.innerHTML = '<span style="color:red">Server not available. Start with: ./build/eshkol-server</span>';
+                return;
+            }
+
+            status.textContent = 'Compiling Eshkol code...';
+
+            // Load and compile the Eshkol code
+            const code = `
+;; External declarations
+(extern i32 web-get-body :real web_get_body)
+(extern i32 web-create-element ptr :real web_create_element)
+(extern i32 web-append-child i32 i32 :real web_append_child)
+(extern i32 web-set-text-content i32 ptr :real web_set_text_content)
+(extern i32 web-set-style i32 ptr ptr :real web_set_style)
+(extern void web-console-log ptr :real web_console_log)
+
+;; Create and style elements
+(define (main)
+  (web-console-log "Eshkol starting...")
+
+  ;; Clear body and add content
+  (let ((body (web-get-body)))
+    (web-set-style body "margin" "0")
+    (web-set-style body "padding" "40px")
+    (web-set-style body "backgroundColor" "#1e1e2e")
+    (web-set-style body "color" "#e0e0e0")
+    (web-set-style body "fontFamily" "system-ui, sans-serif")
+    (web-set-style body "minHeight" "100vh")
+
+    ;; Create heading
+    (let ((h1 (web-create-element "h1")))
+      (web-set-text-content h1 "Eshkol Web Test")
+      (web-set-style h1 "color" "#a78bfa")
+      (web-set-style h1 "marginBottom" "20px")
+      (web-append-child body h1))
+
+    ;; Create success message
+    (let ((p (web-create-element "p")))
+      (web-set-text-content p "If you can see this, Eshkol is working in the browser!")
+      (web-set-style p "fontSize" "18px")
+      (web-set-style p "color" "#22c55e")
+      (web-append-child body p))
+
+    ;; Create feature list
+    (let ((ul (web-create-element "ul")))
+      (web-set-style ul "marginTop" "20px")
+      (web-set-style ul "fontSize" "16px")
+
+      (let ((li1 (web-create-element "li")))
+        (web-set-text-content li1 "DOM manipulation via web-create-element")
+        (web-append-child ul li1))
+
+      (let ((li2 (web-create-element "li")))
+        (web-set-text-content li2 "Styling via web-set-style")
+        (web-append-child ul li2))
+
+      (let ((li3 (web-create-element "li")))
+        (web-set-text-content li3 "Console output via web-console-log")
+        (web-append-child ul li3))
+
+      (web-append-child body ul)))
+
+  (web-console-log "Eshkol test complete!")
+  0)
+`;
+
+            try {
+                const result = await repl.compile(code);
+
+                if (!result.success) {
+                    status.innerHTML = `<span style="color:red">Compile error: ${result.error}</span>`;
+                    return;
+                }
+
+                status.textContent = `Compiled ${result.size} bytes. Running...`;
+
+                // Instantiate and run
+                const instance = await repl.instantiateLatest();
+
+                // Call main if it exists
+                if (instance.exports.main) {
+                    instance.exports.main();
+                }
+
+                // Remove status element since page will be rebuilt
+                status.remove();
+
+            } catch (e) {
+                status.innerHTML = `<span style="color:red">Error: ${e.message}</span>`;
+                console.error(e);
+            }
+        }
+
+        runTest();
+    </script>
+</body>
+</html>

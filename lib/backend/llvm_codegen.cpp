@@ -1041,6 +1041,15 @@ public:
             preGenerateTopLevelLambdas(asts_to_use, num_asts_to_use);
             eshkol_debug("Pre-generated all top-level lambdas");
 
+            // Step 1.9: Process extern declarations BEFORE function bodies
+            // This ensures extern functions are registered in function_table so they can be called
+            for (size_t i = 0; i < num_asts_to_use; i++) {
+                if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_EXTERN_OP) {
+                    codegenAST(&asts_to_use[i]);
+                }
+            }
+            eshkol_debug("Processed all extern declarations");
+
             // Step 2: Generate function definitions
             for (size_t i = 0; i < num_asts_to_use; i++) {
                 if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
@@ -12441,6 +12450,12 @@ private:
                 return PointerType::getUnqual(*context);
             }
             if (strcmp(type_str, "...") == 0) return nullptr;
+            // WASM-specific types
+            if (strcmp(type_str, "i32") == 0) return int32_type;
+            if (strcmp(type_str, "i64") == 0) return int64_type;
+            if (strcmp(type_str, "f32") == 0) return Type::getFloatTy(*context);
+            if (strcmp(type_str, "f64") == 0) return double_type;
+            if (strcmp(type_str, "ptr") == 0) return PointerType::getUnqual(*context);
             // Default to int64 for unknown types
             eshkol_warn("Unknown type '%s', defaulting to int64", type_str);
             return int64_type;
@@ -27341,6 +27356,143 @@ void eshkol_release_module_for_jit(LLVMModuleRef module_ref) {
         // Note: Context stays alive in g_llvm_modules until process exit
         // This is intentional - the context must outlive the JIT-compiled code
     }
+}
+
+// WebAssembly target initialization flag
+static bool g_wasm_target_initialized = false;
+
+static bool initialize_wasm_target() {
+    if (g_wasm_target_initialized) return true;
+
+    // Initialize WebAssembly target
+    LLVMInitializeWebAssemblyTargetInfo();
+    LLVMInitializeWebAssemblyTarget();
+    LLVMInitializeWebAssemblyTargetMC();
+    LLVMInitializeWebAssemblyAsmPrinter();
+
+    g_wasm_target_initialized = true;
+    return true;
+}
+
+int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_buffer, size_t* output_size) {
+    if (!module_ref || !output_buffer || !output_size) return -1;
+
+    auto it = g_llvm_modules.find(module_ref);
+    if (it == g_llvm_modules.end()) {
+        eshkol_error("Invalid LLVM module reference");
+        return -1;
+    }
+
+    Module* module = it->second->module.get();
+
+    try {
+        // Initialize WebAssembly target
+        if (!initialize_wasm_target()) {
+            eshkol_error("Failed to initialize WebAssembly target");
+            return -1;
+        }
+
+        // Set target triple for WebAssembly
+        std::string target_triple = "wasm32-unknown-unknown";
+
+#if LLVM_VERSION_MAJOR >= 18
+        Triple wasm_triple(target_triple);
+        module->setTargetTriple(wasm_triple);
+#else
+        module->setTargetTriple(target_triple);
+#endif
+
+        // Lookup WebAssembly target
+        std::string error;
+        const Target* target = TargetRegistry::lookupTarget(target_triple, error);
+        if (!target) {
+            eshkol_error("Failed to lookup WebAssembly target: %s", error.c_str());
+            return -1;
+        }
+
+        // Create target machine for WASM
+        TargetOptions target_options;
+        // WebAssembly doesn't use CPU features like native targets
+        std::string cpu = "generic";
+        std::string features = "";
+
+#if LLVM_VERSION_MAJOR >= 18
+        std::unique_ptr<TargetMachine> target_machine(
+            target->createTargetMachine(wasm_triple, cpu, features,
+                                       target_options, Reloc::PIC_, std::nullopt,
+                                       ESHKOL_CODEGEN_OPT_LEVEL));
+#else
+        std::unique_ptr<TargetMachine> target_machine(
+            target->createTargetMachine(target_triple, cpu, features,
+                                       target_options, Reloc::PIC_, std::nullopt,
+                                       ESHKOL_CODEGEN_OPT_LEVEL));
+#endif
+
+        if (!target_machine) {
+            eshkol_error("Failed to create WebAssembly target machine");
+            return -1;
+        }
+
+        // Set data layout for WASM
+        module->setDataLayout(target_machine->createDataLayout());
+
+        // Emit to memory buffer
+        SmallVector<char, 0> buffer;
+        raw_svector_ostream dest(buffer);
+
+        legacy::PassManager pass_manager;
+        if (target_machine->addPassesToEmitFile(pass_manager, dest, nullptr,
+                                              ESHKOL_CODEGEN_FILETYPE)) {
+            eshkol_error("WebAssembly target machine cannot emit object files");
+            return -1;
+        }
+
+        pass_manager.run(*module);
+
+        // Copy buffer to output
+        *output_size = buffer.size();
+        *output_buffer = (uint8_t*)malloc(*output_size);
+        if (!*output_buffer) {
+            eshkol_error("Failed to allocate output buffer for WASM");
+            return -1;
+        }
+        memcpy(*output_buffer, buffer.data(), *output_size);
+
+        eshkol_info("Successfully generated WebAssembly module (%zu bytes)", *output_size);
+        return 0;
+
+    } catch (const std::exception& e) {
+        eshkol_error("Exception during WebAssembly generation: %s", e.what());
+        return -1;
+    }
+}
+
+int eshkol_compile_llvm_ir_to_wasm_file(LLVMModuleRef module_ref, const char* filename) {
+    if (!module_ref || !filename) return -1;
+
+    uint8_t* buffer = nullptr;
+    size_t size = 0;
+
+    int result = eshkol_compile_llvm_ir_to_wasm(module_ref, &buffer, &size);
+    if (result != 0) {
+        return result;
+    }
+
+    // Write buffer to file
+    std::error_code ec;
+    raw_fd_ostream file(filename, ec, sys::fs::OF_None);
+    if (ec) {
+        eshkol_error("Failed to open WASM output file %s: %s", filename, ec.message().c_str());
+        free(buffer);
+        return -1;
+    }
+
+    file.write(reinterpret_cast<const char*>(buffer), size);
+    file.close();
+    free(buffer);
+
+    eshkol_info("Successfully wrote WebAssembly file: %s", filename);
+    return 0;
 }
 
 } // extern "C"

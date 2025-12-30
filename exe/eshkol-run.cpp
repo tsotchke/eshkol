@@ -39,6 +39,7 @@ static struct option long_options[] = {
     {"output", required_argument, nullptr, 'o'},
     {"compile-only", no_argument, nullptr, 'c'},
     {"shared-lib", no_argument, nullptr, 's'},
+    {"wasm", no_argument, nullptr, 'w'},
     {"lib", required_argument, nullptr, 'l'},
     {"lib-path", required_argument, nullptr, 'L'},
     {"no-stdlib", no_argument, nullptr, 'n'},
@@ -1146,6 +1147,7 @@ static void print_help(int x = 0)
         "\t--output:[-o] = Outputs into a binary file.\n"
         "\t--compile-only:[-c] = Compiles into an intermediate object file.\n"
         "\t--shared-lib:[-s] = Compiles it into a shared library.\n"
+        "\t--wasm:[-w] = Compiles to WebAssembly (.wasm) format.\n"
         "\t--lib:[-l] = Links a shared library to the resulting executable.\n"
         "\t--lib-path:[-L] = Adds a directory to the library search path.\n"
         "\t--no-stdlib:[-n] = Do not auto-load the standard library.\n\n"
@@ -1948,6 +1950,7 @@ int main(int argc, char **argv)
     uint8_t dump_ir = 0;
     uint8_t compile_only = 0;
     uint8_t shared_lib = 0;
+    uint8_t wasm_output = 0;
     uint8_t no_stdlib = 0;
 
     std::vector<char*> source_files;
@@ -1961,7 +1964,7 @@ int main(int argc, char **argv)
 
     if (argc == 1) print_help(1);
 
-    while ((ch = getopt_long(argc, argv, "hdaio:csl:L:n", long_options, nullptr)) != -1) {
+    while ((ch = getopt_long(argc, argv, "hdaio:cswl:L:n", long_options, nullptr)) != -1) {
         switch (ch) {
         case 'h':
             print_help(0);
@@ -1985,6 +1988,9 @@ int main(int argc, char **argv)
         case 's':
             shared_lib = 1;
             compile_only = 1;  // Library mode implies compile to object file
+            break;
+        case 'w':
+            wasm_output = 1;
             break;
         case 'l':
             linked_libs.push_back(optarg);
@@ -2226,6 +2232,25 @@ int main(int argc, char **argv)
             eshkol_info("Compiling to object file: %s", obj_filename.c_str());
             if (eshkol_compile_llvm_ir_to_object(llvm_module, obj_filename.c_str()) != 0) {
                 eshkol_error("Object file compilation failed");
+                eshkol_dispose_llvm_module(llvm_module);
+                return 1;
+            }
+        } else if (wasm_output) {
+            // Compile to WebAssembly
+            std::string wasm_filename;
+            if (output) {
+                wasm_filename = std::string(output);
+                // Add .wasm extension if not present
+                if (wasm_filename.size() < 5 || wasm_filename.substr(wasm_filename.size() - 5) != ".wasm") {
+                    wasm_filename += ".wasm";
+                }
+            } else {
+                wasm_filename = module_name + ".wasm";
+            }
+
+            eshkol_info("Compiling to WebAssembly: %s", wasm_filename.c_str());
+            if (eshkol_compile_llvm_ir_to_wasm_file(llvm_module, wasm_filename.c_str()) != 0) {
+                eshkol_error("WebAssembly compilation failed");
                 eshkol_dispose_llvm_module(llvm_module);
                 return 1;
             }
