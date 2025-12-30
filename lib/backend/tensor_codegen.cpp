@@ -15,6 +15,7 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+#include <eshkol/backend/cpu_features.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 
@@ -24,7 +25,26 @@ TensorCodegen::TensorCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, Me
     : ctx_(ctx)
     , tagged_(tagged)
     , mem_(mem) {
-    eshkol_debug("TensorCodegen initialized");
+    eshkol_debug("TensorCodegen initialized with SIMD width: %u", getSIMDWidth());
+}
+
+unsigned TensorCodegen::getSIMDWidth() const {
+    return CPUCapabilities::instance().getVectorWidth();
+}
+
+llvm::VectorType* TensorCodegen::getSIMDVectorType() const {
+    unsigned width = getSIMDWidth();
+    switch (width) {
+        case 8:
+            return ctx_.double8Type();
+        case 4:
+            return ctx_.double4Type();
+        case 2:
+            return ctx_.double2Type();
+        default:
+            // Width 1 = scalar mode, return nullptr to indicate no vectorization
+            return nullptr;
+    }
 }
 
 // Note: All tensor implementations are complex and depend on:
@@ -617,10 +637,12 @@ llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* 
 }
 
 // ===== SIMD-ACCELERATED TENSOR ARITHMETIC =====
-// Processes 4 doubles at a time using AVX vector operations (<4 x double>)
+// Processes SIMD_WIDTH doubles at a time using vector operations
+// Width is auto-detected: 2 (NEON/SSE2), 4 (AVX), or 8 (AVX-512)
 llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Value* arg2, const std::string& operation) {
     auto& builder = ctx_.builder();
-    constexpr unsigned SIMD_WIDTH = 4;  // AVX: 4 doubles per vector
+    const unsigned SIMD_WIDTH = getSIMDWidth();
+    llvm::VectorType* vec_type = getSIMDVectorType();
 
     // Get raw int64 values (tensor pointers)
     llvm::Value* tensor1_int = tagged_.unpackInt64(arg1);
@@ -679,75 +701,85 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
     llvm::Value* tensor2_elements_ptr = builder.CreateLoad(ctx_.ptrType(), tensor2_elements_field_ptr);
     llvm::Value* typed_tensor2_elements_ptr = builder.CreatePointerCast(tensor2_elements_ptr, ctx_.ptrType());
 
-    // Calculate number of full SIMD vectors and remaining scalar elements
-    llvm::Value* simd_count = builder.CreateUDiv(total_elements,
-        llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-    llvm::Value* simd_elements = builder.CreateMul(simd_count,
-        llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
 
-    // ===== SIMD VECTOR LOOP =====
-    llvm::BasicBlock* simd_cond = llvm::BasicBlock::Create(ctx_.context(), "simd_cond", current_func);
-    llvm::BasicBlock* simd_body = llvm::BasicBlock::Create(ctx_.context(), "simd_body", current_func);
-    llvm::BasicBlock* simd_exit = llvm::BasicBlock::Create(ctx_.context(), "simd_exit", current_func);
+    // Basic blocks for control flow
     llvm::BasicBlock* scalar_cond = llvm::BasicBlock::Create(ctx_.context(), "scalar_cond", current_func);
     llvm::BasicBlock* scalar_body = llvm::BasicBlock::Create(ctx_.context(), "scalar_body", current_func);
     llvm::BasicBlock* final_exit = llvm::BasicBlock::Create(ctx_.context(), "final_exit", current_func);
 
-    // SIMD loop counter (counts in steps of SIMD_WIDTH)
-    llvm::Value* simd_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "simd_i");
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), simd_counter);
-    builder.CreateBr(simd_cond);
-
-    // SIMD loop condition: i < simd_elements
-    builder.SetInsertPoint(simd_cond);
-    llvm::Value* simd_i = builder.CreateLoad(ctx_.int64Type(), simd_counter);
-    llvm::Value* simd_cmp = builder.CreateICmpULT(simd_i, simd_elements);
-    builder.CreateCondBr(simd_cmp, simd_body, simd_exit);
-
-    // SIMD loop body: process 4 doubles at once
-    builder.SetInsertPoint(simd_body);
-
-    // Get pointers to elements at index i (for vector load/store)
-    llvm::Value* vec1_ptr = builder.CreateGEP(ctx_.doubleType(), typed_tensor1_elements_ptr, simd_i);
-    llvm::Value* vec2_ptr = builder.CreateGEP(ctx_.doubleType(), typed_tensor2_elements_ptr, simd_i);
-    llvm::Value* result_vec_ptr = builder.CreateGEP(ctx_.doubleType(), typed_result_elements_ptr, simd_i);
-
-    // Load 4 doubles as vectors (unaligned load for safety)
-    llvm::Type* vec4_type = ctx_.double4Type();
-    llvm::Value* vec1 = builder.CreateAlignedLoad(vec4_type, vec1_ptr, llvm::MaybeAlign(8), "vec1");
-    llvm::Value* vec2 = builder.CreateAlignedLoad(vec4_type, vec2_ptr, llvm::MaybeAlign(8), "vec2");
-
-    // Perform vectorized operation
-    llvm::Value* result_vec = nullptr;
-    if (operation == "add") {
-        result_vec = builder.CreateFAdd(vec1, vec2, "vadd");
-    } else if (operation == "sub") {
-        result_vec = builder.CreateFSub(vec1, vec2, "vsub");
-    } else if (operation == "mul") {
-        result_vec = builder.CreateFMul(vec1, vec2, "vmul");
-    } else if (operation == "div") {
-        result_vec = builder.CreateFDiv(vec1, vec2, "vdiv");
-    }
-
-    // Store result vector
-    if (result_vec) {
-        builder.CreateAlignedStore(result_vec, result_vec_ptr, llvm::MaybeAlign(8));
-    }
-
-    // Increment counter by SIMD_WIDTH
-    llvm::Value* next_simd_i = builder.CreateAdd(simd_i,
-        llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-    builder.CreateStore(next_simd_i, simd_counter);
-    builder.CreateBr(simd_cond);
-
-    // ===== SCALAR TAIL LOOP =====
-    // Handle remaining elements (total_elements % SIMD_WIDTH)
-    builder.SetInsertPoint(simd_exit);
+    // Scalar loop counter - always needed
     llvm::Value* scalar_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "scalar_i");
-    builder.CreateStore(simd_elements, scalar_counter);  // Start from where SIMD ended
-    builder.CreateBr(scalar_cond);
+
+    // ===== SCALAR-ONLY PATH (when SIMD_WIDTH == 1 or no SIMD available) =====
+    if (SIMD_WIDTH == 1 || vec_type == nullptr) {
+        // Pure scalar fallback - process all elements one at a time
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), scalar_counter);
+        builder.CreateBr(scalar_cond);
+    } else {
+        // ===== SIMD VECTOR LOOP =====
+        // Calculate number of full SIMD vectors and remaining scalar elements
+        llvm::Value* simd_count = builder.CreateUDiv(total_elements,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+        llvm::Value* simd_elements = builder.CreateMul(simd_count,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+
+        llvm::BasicBlock* simd_cond = llvm::BasicBlock::Create(ctx_.context(), "simd_cond", current_func);
+        llvm::BasicBlock* simd_body = llvm::BasicBlock::Create(ctx_.context(), "simd_body", current_func);
+        llvm::BasicBlock* simd_exit = llvm::BasicBlock::Create(ctx_.context(), "simd_exit", current_func);
+
+        // SIMD loop counter (counts in steps of SIMD_WIDTH)
+        llvm::Value* simd_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "simd_i");
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), simd_counter);
+        builder.CreateBr(simd_cond);
+
+        // SIMD loop condition: i < simd_elements
+        builder.SetInsertPoint(simd_cond);
+        llvm::Value* simd_i = builder.CreateLoad(ctx_.int64Type(), simd_counter);
+        llvm::Value* simd_cmp = builder.CreateICmpULT(simd_i, simd_elements);
+        builder.CreateCondBr(simd_cmp, simd_body, simd_exit);
+
+        // SIMD loop body: process SIMD_WIDTH doubles at once
+        builder.SetInsertPoint(simd_body);
+
+        // Get pointers to elements at index i (for vector load/store)
+        llvm::Value* vec1_ptr = builder.CreateGEP(ctx_.doubleType(), typed_tensor1_elements_ptr, simd_i);
+        llvm::Value* vec2_ptr = builder.CreateGEP(ctx_.doubleType(), typed_tensor2_elements_ptr, simd_i);
+        llvm::Value* result_vec_ptr = builder.CreateGEP(ctx_.doubleType(), typed_result_elements_ptr, simd_i);
+
+        // Load SIMD_WIDTH doubles as vectors (unaligned load for safety)
+        llvm::Value* vec1 = builder.CreateAlignedLoad(vec_type, vec1_ptr, llvm::MaybeAlign(8), "vec1");
+        llvm::Value* vec2 = builder.CreateAlignedLoad(vec_type, vec2_ptr, llvm::MaybeAlign(8), "vec2");
+
+        // Perform vectorized operation
+        llvm::Value* result_vec = nullptr;
+        if (operation == "add") {
+            result_vec = builder.CreateFAdd(vec1, vec2, "vadd");
+        } else if (operation == "sub") {
+            result_vec = builder.CreateFSub(vec1, vec2, "vsub");
+        } else if (operation == "mul") {
+            result_vec = builder.CreateFMul(vec1, vec2, "vmul");
+        } else if (operation == "div") {
+            result_vec = builder.CreateFDiv(vec1, vec2, "vdiv");
+        }
+
+        // Store result vector
+        if (result_vec) {
+            builder.CreateAlignedStore(result_vec, result_vec_ptr, llvm::MaybeAlign(8));
+        }
+
+        // Increment counter by SIMD_WIDTH
+        llvm::Value* next_simd_i = builder.CreateAdd(simd_i,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+        builder.CreateStore(next_simd_i, simd_counter);
+        builder.CreateBr(simd_cond);
+
+        // ===== SCALAR TAIL LOOP =====
+        // Handle remaining elements (total_elements % SIMD_WIDTH)
+        builder.SetInsertPoint(simd_exit);
+        builder.CreateStore(simd_elements, scalar_counter);  // Start from where SIMD ended
+        builder.CreateBr(scalar_cond);
+    }
 
     // Scalar loop condition: i < total_elements
     builder.SetInsertPoint(scalar_cond);
@@ -790,12 +822,16 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
 }
 
 // ===== SIMD-ACCELERATED MATRIX MULTIPLICATION =====
-// Vectorizes the j-loop (columns) to process 4 columns at a time
-// C[i][j:j+4] += A[i][k] * B[k][j:j+4]
+// Vectorizes the j-loop (columns) to process SIMD_WIDTH columns at a time
+// C[i][j:j+SIMD_WIDTH] += A[i][k] * B[k][j:j+SIMD_WIDTH]
+// SIMD width is auto-detected: 2 (NEON/SSE2), 4 (AVX), or 8 (AVX-512)
+// Falls back to pure scalar when SIMD_WIDTH == 1
 llvm::Value* TensorCodegen::matmulSIMD(llvm::Value* ptr_a, llvm::Value* ptr_b,
                                         llvm::Value* M, llvm::Value* K, llvm::Value* N) {
     auto& builder = ctx_.builder();
-    constexpr unsigned SIMD_WIDTH = 4;  // AVX: 4 doubles per vector
+    const unsigned SIMD_WIDTH = getSIMDWidth();
+    llvm::VectorType* vec_type = getSIMDVectorType();
+    const bool use_simd = (SIMD_WIDTH > 1 && vec_type != nullptr);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
@@ -814,25 +850,34 @@ llvm::Value* TensorCodegen::matmulSIMD(llvm::Value* ptr_a, llvm::Value* ptr_b,
     llvm::Value* result_elements_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
     llvm::Value* result_elements = builder.CreateLoad(ctx_.ptrType(), result_elements_field);
 
-    // Calculate N_simd = N / 4 (number of full SIMD iterations)
-    llvm::Value* N_simd = builder.CreateUDiv(N, llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-    llvm::Value* N_simd_elems = builder.CreateMul(N_simd, llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
 
-    // Create all basic blocks
+    // Create basic blocks (some only used in SIMD mode)
     llvm::BasicBlock* i_cond = llvm::BasicBlock::Create(ctx_.context(), "mm_i_cond", current_func);
     llvm::BasicBlock* i_body = llvm::BasicBlock::Create(ctx_.context(), "mm_i_body", current_func);
     llvm::BasicBlock* k_cond = llvm::BasicBlock::Create(ctx_.context(), "mm_k_cond", current_func);
     llvm::BasicBlock* k_body = llvm::BasicBlock::Create(ctx_.context(), "mm_k_body", current_func);
-    llvm::BasicBlock* j_simd_cond = llvm::BasicBlock::Create(ctx_.context(), "mm_j_simd_cond", current_func);
-    llvm::BasicBlock* j_simd_body = llvm::BasicBlock::Create(ctx_.context(), "mm_j_simd_body", current_func);
-    llvm::BasicBlock* j_simd_exit = llvm::BasicBlock::Create(ctx_.context(), "mm_j_simd_exit", current_func);
     llvm::BasicBlock* j_scalar_cond = llvm::BasicBlock::Create(ctx_.context(), "mm_j_scalar_cond", current_func);
     llvm::BasicBlock* j_scalar_body = llvm::BasicBlock::Create(ctx_.context(), "mm_j_scalar_body", current_func);
     llvm::BasicBlock* k_inc = llvm::BasicBlock::Create(ctx_.context(), "mm_k_inc", current_func);
     llvm::BasicBlock* i_inc = llvm::BasicBlock::Create(ctx_.context(), "mm_i_inc", current_func);
     llvm::BasicBlock* final_exit = llvm::BasicBlock::Create(ctx_.context(), "mm_exit", current_func);
+
+    // SIMD-specific blocks (only created when using SIMD)
+    llvm::BasicBlock* j_simd_cond = nullptr;
+    llvm::BasicBlock* j_simd_body = nullptr;
+    llvm::BasicBlock* j_simd_exit = nullptr;
+    llvm::Value* N_simd_elems = nullptr;
+
+    if (use_simd) {
+        j_simd_cond = llvm::BasicBlock::Create(ctx_.context(), "mm_j_simd_cond", current_func);
+        j_simd_body = llvm::BasicBlock::Create(ctx_.context(), "mm_j_simd_body", current_func);
+        j_simd_exit = llvm::BasicBlock::Create(ctx_.context(), "mm_j_simd_exit", current_func);
+
+        // Calculate N_simd_elems = (N / SIMD_WIDTH) * SIMD_WIDTH
+        llvm::Value* N_simd = builder.CreateUDiv(N, llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+        N_simd_elems = builder.CreateMul(N_simd, llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+    }
 
     // Allocate loop counters
     llvm::Value* i_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "mm_i");
@@ -860,61 +905,68 @@ llvm::Value* TensorCodegen::matmulSIMD(llvm::Value* ptr_a, llvm::Value* ptr_b,
     builder.CreateCondBr(k_cmp, k_body, i_inc);
 
     builder.SetInsertPoint(k_body);
-    // Load A[i][k] and broadcast to vector
+    // Load A[i][k]
     // A[i][k] = A[i * K + k]
     llvm::Value* a_idx = builder.CreateMul(i, K);
     a_idx = builder.CreateAdd(a_idx, k);
     llvm::Value* a_ptr = builder.CreateGEP(ctx_.doubleType(), a_elements, a_idx);
     llvm::Value* a_val = builder.CreateLoad(ctx_.doubleType(), a_ptr);
 
-    // Broadcast a_val to <4 x double>
-    llvm::Value* a_vec = llvm::UndefValue::get(ctx_.double4Type());
-    for (unsigned lane = 0; lane < SIMD_WIDTH; ++lane) {
-        a_vec = builder.CreateInsertElement(a_vec, a_val,
-            llvm::ConstantInt::get(ctx_.int32Type(), lane));
-    }
-
-    // Initialize j = 0 for SIMD loop
+    // Initialize j = 0
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), j_counter);
-    builder.CreateBr(j_simd_cond);
 
-    // ===== j SIMD loop (process 4 columns at a time) =====
-    builder.SetInsertPoint(j_simd_cond);
-    llvm::Value* j = builder.CreateLoad(ctx_.int64Type(), j_counter);
-    llvm::Value* j_simd_cmp = builder.CreateICmpULT(j, N_simd_elems);
-    builder.CreateCondBr(j_simd_cmp, j_simd_body, j_simd_exit);
+    if (use_simd) {
+        // Broadcast a_val to vector for SIMD path
+        llvm::Value* a_vec = llvm::UndefValue::get(vec_type);
+        for (unsigned lane = 0; lane < SIMD_WIDTH; ++lane) {
+            a_vec = builder.CreateInsertElement(a_vec, a_val,
+                llvm::ConstantInt::get(ctx_.int32Type(), lane));
+        }
 
-    builder.SetInsertPoint(j_simd_body);
-    // Load B[k][j:j+4] - 4 consecutive elements from row k
-    // B[k][j] = B[k * N + j]
-    llvm::Value* b_idx = builder.CreateMul(k, N);
-    b_idx = builder.CreateAdd(b_idx, j);
-    llvm::Value* b_ptr = builder.CreateGEP(ctx_.doubleType(), b_elements, b_idx);
-    llvm::Value* b_vec = builder.CreateAlignedLoad(ctx_.double4Type(), b_ptr, llvm::MaybeAlign(8), "b_vec");
+        builder.CreateBr(j_simd_cond);
 
-    // Load C[i][j:j+4] - current accumulator
-    // C[i][j] = C[i * N + j]
-    llvm::Value* c_idx = builder.CreateMul(i, N);
-    c_idx = builder.CreateAdd(c_idx, j);
-    llvm::Value* c_ptr = builder.CreateGEP(ctx_.doubleType(), result_elements, c_idx);
-    llvm::Value* c_vec = builder.CreateAlignedLoad(ctx_.double4Type(), c_ptr, llvm::MaybeAlign(8), "c_vec");
+        // ===== j SIMD loop (process SIMD_WIDTH columns at a time) =====
+        builder.SetInsertPoint(j_simd_cond);
+        llvm::Value* j = builder.CreateLoad(ctx_.int64Type(), j_counter);
+        llvm::Value* j_simd_cmp = builder.CreateICmpULT(j, N_simd_elems);
+        builder.CreateCondBr(j_simd_cmp, j_simd_body, j_simd_exit);
 
-    // C[i][j:j+4] += A[i][k] * B[k][j:j+4]
-    llvm::Value* prod = builder.CreateFMul(a_vec, b_vec, "ab_prod");
-    llvm::Value* new_c = builder.CreateFAdd(c_vec, prod, "c_acc");
+        builder.SetInsertPoint(j_simd_body);
+        // Load B[k][j:j+SIMD_WIDTH] - consecutive elements from row k
+        // B[k][j] = B[k * N + j]
+        llvm::Value* b_idx = builder.CreateMul(k, N);
+        b_idx = builder.CreateAdd(b_idx, j);
+        llvm::Value* b_ptr = builder.CreateGEP(ctx_.doubleType(), b_elements, b_idx);
+        llvm::Value* b_vec = builder.CreateAlignedLoad(vec_type, b_ptr, llvm::MaybeAlign(8), "b_vec");
 
-    // Store result
-    builder.CreateAlignedStore(new_c, c_ptr, llvm::MaybeAlign(8));
+        // Load C[i][j:j+SIMD_WIDTH] - current accumulator
+        // C[i][j] = C[i * N + j]
+        llvm::Value* c_idx = builder.CreateMul(i, N);
+        c_idx = builder.CreateAdd(c_idx, j);
+        llvm::Value* c_ptr = builder.CreateGEP(ctx_.doubleType(), result_elements, c_idx);
+        llvm::Value* c_vec = builder.CreateAlignedLoad(vec_type, c_ptr, llvm::MaybeAlign(8), "c_vec");
 
-    // j += 4
-    llvm::Value* next_j = builder.CreateAdd(j, llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-    builder.CreateStore(next_j, j_counter);
-    builder.CreateBr(j_simd_cond);
+        // C[i][j:j+SIMD_WIDTH] += A[i][k] * B[k][j:j+SIMD_WIDTH]
+        llvm::Value* prod = builder.CreateFMul(a_vec, b_vec, "ab_prod");
+        llvm::Value* new_c = builder.CreateFAdd(c_vec, prod, "c_acc");
 
-    // ===== j scalar loop (handle remaining columns) =====
-    builder.SetInsertPoint(j_simd_exit);
-    // j_counter already has N_simd_elems value
-    builder.CreateBr(j_scalar_cond);
+        // Store result
+        builder.CreateAlignedStore(new_c, c_ptr, llvm::MaybeAlign(8));
+
+        // j += SIMD_WIDTH
+        llvm::Value* next_j = builder.CreateAdd(j, llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+        builder.CreateStore(next_j, j_counter);
+        builder.CreateBr(j_simd_cond);
+
+        // ===== j scalar loop entry from SIMD =====
+        builder.SetInsertPoint(j_simd_exit);
+        // j_counter already has N_simd_elems value
+        builder.CreateBr(j_scalar_cond);
+    } else {
+        // ===== SCALAR-ONLY PATH =====
+        // Skip SIMD, go directly to scalar loop
+        builder.CreateBr(j_scalar_cond);
+    }
 
     builder.SetInsertPoint(j_scalar_cond);
     llvm::Value* js = builder.CreateLoad(ctx_.int64Type(), j_counter);
@@ -1115,79 +1167,93 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     ctx_.builder().CreateCondBr(is_1d, dot_1d_block, dot_2d_block);
 
     // 1D Vector Dot Product: sum(a[i] * b[i]) - SIMD Accelerated
+    // Width is auto-detected: 2 (NEON/SSE2), 4 (AVX), or 8 (AVX-512)
+    // Falls back to scalar when SIMD_WIDTH == 1
     ctx_.builder().SetInsertPoint(dot_1d_block);
 
-    constexpr unsigned SIMD_WIDTH = 4;  // AVX: 4 doubles
+    const unsigned SIMD_WIDTH = getSIMDWidth();
+    llvm::VectorType* vec_type = getSIMDVectorType();
+    const bool use_simd = (SIMD_WIDTH > 1 && vec_type != nullptr);
 
-    // Calculate SIMD iteration count
-    llvm::Value* simd_count = ctx_.builder().CreateUDiv(a_total,
-        llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-    llvm::Value* simd_elements = ctx_.builder().CreateMul(simd_count,
-        llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-
-    // Initialize vector accumulator (4 doubles)
-    llvm::Value* vec_acc_alloca = ctx_.builder().CreateAlloca(ctx_.double4Type(), nullptr, "dot_vec_acc");
-    llvm::Value* zero_vec = llvm::ConstantVector::getSplat(
-        llvm::ElementCount::getFixed(SIMD_WIDTH), llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
-    ctx_.builder().CreateStore(zero_vec, vec_acc_alloca);
-
-    // SIMD loop blocks
-    llvm::BasicBlock* simd_cond = llvm::BasicBlock::Create(ctx_.context(), "dot1d_simd_cond", current_func);
-    llvm::BasicBlock* simd_body = llvm::BasicBlock::Create(ctx_.context(), "dot1d_simd_body", current_func);
-    llvm::BasicBlock* simd_exit = llvm::BasicBlock::Create(ctx_.context(), "dot1d_simd_exit", current_func);
+    // Scalar loop blocks (always needed)
     llvm::BasicBlock* scalar_cond = llvm::BasicBlock::Create(ctx_.context(), "dot1d_scalar_cond", current_func);
     llvm::BasicBlock* scalar_body = llvm::BasicBlock::Create(ctx_.context(), "dot1d_scalar_body", current_func);
     llvm::BasicBlock* loop_exit_1d = llvm::BasicBlock::Create(ctx_.context(), "dot1d_exit", current_func);
 
-    llvm::Value* simd_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "dot1d_simd_i");
-    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), simd_counter);
-    ctx_.builder().CreateBr(simd_cond);
-
-    // SIMD loop condition
-    ctx_.builder().SetInsertPoint(simd_cond);
-    llvm::Value* simd_i = ctx_.builder().CreateLoad(ctx_.int64Type(), simd_counter);
-    llvm::Value* simd_cmp = ctx_.builder().CreateICmpULT(simd_i, simd_elements);
-    ctx_.builder().CreateCondBr(simd_cmp, simd_body, simd_exit);
-
-    // SIMD loop body: load 4 elements, multiply, accumulate
-    ctx_.builder().SetInsertPoint(simd_body);
-    llvm::Value* a_vec_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_a_elements_ptr, simd_i);
-    llvm::Value* b_vec_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_b_elements_ptr, simd_i);
-
-    llvm::Value* a_vec = ctx_.builder().CreateAlignedLoad(ctx_.double4Type(), a_vec_ptr, llvm::MaybeAlign(8), "a_vec");
-    llvm::Value* b_vec = ctx_.builder().CreateAlignedLoad(ctx_.double4Type(), b_vec_ptr, llvm::MaybeAlign(8), "b_vec");
-    llvm::Value* prod_vec = ctx_.builder().CreateFMul(a_vec, b_vec, "prod_vec");
-
-    llvm::Value* old_acc = ctx_.builder().CreateLoad(ctx_.double4Type(), vec_acc_alloca);
-    llvm::Value* new_acc = ctx_.builder().CreateFAdd(old_acc, prod_vec, "acc_vec");
-    ctx_.builder().CreateStore(new_acc, vec_acc_alloca);
-
-    llvm::Value* next_simd_i = ctx_.builder().CreateAdd(simd_i,
-        llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-    ctx_.builder().CreateStore(next_simd_i, simd_counter);
-    ctx_.builder().CreateBr(simd_cond);
-
-    // SIMD exit: horizontal sum of vector accumulator
-    ctx_.builder().SetInsertPoint(simd_exit);
-    llvm::Value* final_vec = ctx_.builder().CreateLoad(ctx_.double4Type(), vec_acc_alloca);
-
-    // Horizontal sum: v[0] + v[1] + v[2] + v[3]
-    llvm::Value* v0 = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)0);
-    llvm::Value* v1 = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)1);
-    llvm::Value* v2 = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)2);
-    llvm::Value* v3 = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)3);
-    llvm::Value* sum01 = ctx_.builder().CreateFAdd(v0, v1);
-    llvm::Value* sum23 = ctx_.builder().CreateFAdd(v2, v3);
-    llvm::Value* simd_sum = ctx_.builder().CreateFAdd(sum01, sum23);
-
-    // Store partial sum for scalar tail
+    // Sum accumulator and scalar counter
     llvm::Value* sum_alloca = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "dot_sum");
-    ctx_.builder().CreateStore(simd_sum, sum_alloca);
-
-    // Scalar tail loop counter starts at simd_elements
     llvm::Value* scalar_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "dot1d_scalar_i");
-    ctx_.builder().CreateStore(simd_elements, scalar_counter);
-    ctx_.builder().CreateBr(scalar_cond);
+
+    if (use_simd) {
+        // Calculate SIMD iteration count
+        llvm::Value* simd_count = ctx_.builder().CreateUDiv(a_total,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+        llvm::Value* simd_elements = ctx_.builder().CreateMul(simd_count,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+
+        // Initialize vector accumulator
+        llvm::Value* vec_acc_alloca = ctx_.builder().CreateAlloca(vec_type, nullptr, "dot_vec_acc");
+        llvm::Value* zero_vec = llvm::ConstantVector::getSplat(
+            llvm::ElementCount::getFixed(SIMD_WIDTH), llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+        ctx_.builder().CreateStore(zero_vec, vec_acc_alloca);
+
+        // SIMD loop blocks
+        llvm::BasicBlock* simd_cond = llvm::BasicBlock::Create(ctx_.context(), "dot1d_simd_cond", current_func);
+        llvm::BasicBlock* simd_body = llvm::BasicBlock::Create(ctx_.context(), "dot1d_simd_body", current_func);
+        llvm::BasicBlock* simd_exit = llvm::BasicBlock::Create(ctx_.context(), "dot1d_simd_exit", current_func);
+
+        llvm::Value* simd_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "dot1d_simd_i");
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), simd_counter);
+        ctx_.builder().CreateBr(simd_cond);
+
+        // SIMD loop condition
+        ctx_.builder().SetInsertPoint(simd_cond);
+        llvm::Value* simd_i = ctx_.builder().CreateLoad(ctx_.int64Type(), simd_counter);
+        llvm::Value* simd_cmp = ctx_.builder().CreateICmpULT(simd_i, simd_elements);
+        ctx_.builder().CreateCondBr(simd_cmp, simd_body, simd_exit);
+
+        // SIMD loop body: load SIMD_WIDTH elements, multiply, accumulate
+        ctx_.builder().SetInsertPoint(simd_body);
+        llvm::Value* a_vec_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_a_elements_ptr, simd_i);
+        llvm::Value* b_vec_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_b_elements_ptr, simd_i);
+
+        llvm::Value* a_vec = ctx_.builder().CreateAlignedLoad(vec_type, a_vec_ptr, llvm::MaybeAlign(8), "a_vec");
+        llvm::Value* b_vec = ctx_.builder().CreateAlignedLoad(vec_type, b_vec_ptr, llvm::MaybeAlign(8), "b_vec");
+        llvm::Value* prod_vec = ctx_.builder().CreateFMul(a_vec, b_vec, "prod_vec");
+
+        llvm::Value* old_acc = ctx_.builder().CreateLoad(vec_type, vec_acc_alloca);
+        llvm::Value* new_acc = ctx_.builder().CreateFAdd(old_acc, prod_vec, "acc_vec");
+        ctx_.builder().CreateStore(new_acc, vec_acc_alloca);
+
+        llvm::Value* next_simd_i = ctx_.builder().CreateAdd(simd_i,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+        ctx_.builder().CreateStore(next_simd_i, simd_counter);
+        ctx_.builder().CreateBr(simd_cond);
+
+        // SIMD exit: horizontal sum of vector accumulator
+        ctx_.builder().SetInsertPoint(simd_exit);
+        llvm::Value* final_vec = ctx_.builder().CreateLoad(vec_type, vec_acc_alloca);
+
+        // Horizontal sum: v[0] + v[1] + ... + v[SIMD_WIDTH-1]
+        llvm::Value* simd_sum = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)0);
+        for (unsigned lane = 1; lane < SIMD_WIDTH; ++lane) {
+            llvm::Value* elem = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)lane);
+            simd_sum = ctx_.builder().CreateFAdd(simd_sum, elem);
+        }
+
+        // Store partial sum for scalar tail
+        ctx_.builder().CreateStore(simd_sum, sum_alloca);
+
+        // Scalar tail loop counter starts at simd_elements
+        ctx_.builder().CreateStore(simd_elements, scalar_counter);
+        ctx_.builder().CreateBr(scalar_cond);
+    } else {
+        // ===== SCALAR-ONLY PATH =====
+        // Initialize sum to 0 and counter to 0
+        ctx_.builder().CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), sum_alloca);
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), scalar_counter);
+        ctx_.builder().CreateBr(scalar_cond);
+    }
 
     // Scalar tail loop condition
     ctx_.builder().SetInsertPoint(scalar_cond);
@@ -2037,69 +2103,82 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     llvm::Value* src_total = ctx_.builder().CreateLoad(ctx_.int64Type(), src_total_field_ptr);
 
     // Sum all elements - SIMD Accelerated
-    constexpr unsigned SIMD_WIDTH = 4;  // AVX: 4 doubles
+    // Width is auto-detected: 2 (NEON/SSE2), 4 (AVX), or 8 (AVX-512)
+    // Falls back to scalar when SIMD_WIDTH == 1
+    const unsigned SIMD_WIDTH = getSIMDWidth();
+    llvm::VectorType* vec_type = getSIMDVectorType();
+    const bool use_simd = (SIMD_WIDTH > 1 && vec_type != nullptr);
 
-    // Calculate SIMD iteration count
-    llvm::Value* simd_count = ctx_.builder().CreateUDiv(src_total,
-        llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-    llvm::Value* simd_elements = ctx_.builder().CreateMul(simd_count,
-        llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-
-    // Initialize vector accumulator
-    llvm::Value* vec_acc = ctx_.builder().CreateAlloca(ctx_.double4Type(), nullptr, "sum_vec_acc");
-    llvm::Value* zero_vec = llvm::ConstantVector::getSplat(
-        llvm::ElementCount::getFixed(SIMD_WIDTH), llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
-    ctx_.builder().CreateStore(zero_vec, vec_acc);
-
-    // SIMD loop blocks
-    llvm::BasicBlock* simd_cond = llvm::BasicBlock::Create(ctx_.context(), "tsum_simd_cond", current_func);
-    llvm::BasicBlock* simd_body = llvm::BasicBlock::Create(ctx_.context(), "tsum_simd_body", current_func);
-    llvm::BasicBlock* simd_exit = llvm::BasicBlock::Create(ctx_.context(), "tsum_simd_exit", current_func);
+    // Scalar loop blocks (always needed)
     llvm::BasicBlock* scalar_cond = llvm::BasicBlock::Create(ctx_.context(), "tsum_scalar_cond", current_func);
     llvm::BasicBlock* scalar_body = llvm::BasicBlock::Create(ctx_.context(), "tsum_scalar_body", current_func);
     llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(ctx_.context(), "tsum_exit", current_func);
 
-    llvm::Value* simd_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "sum_simd_i");
-    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), simd_counter);
-    ctx_.builder().CreateBr(simd_cond);
-
-    // SIMD loop condition
-    ctx_.builder().SetInsertPoint(simd_cond);
-    llvm::Value* simd_i = ctx_.builder().CreateLoad(ctx_.int64Type(), simd_counter);
-    llvm::Value* simd_cmp = ctx_.builder().CreateICmpULT(simd_i, simd_elements);
-    ctx_.builder().CreateCondBr(simd_cmp, simd_body, simd_exit);
-
-    // SIMD loop body: load 4 elements, accumulate
-    ctx_.builder().SetInsertPoint(simd_body);
-    llvm::Value* vec_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_src_elements, simd_i);
-    llvm::Value* vec_val = ctx_.builder().CreateAlignedLoad(ctx_.double4Type(), vec_ptr, llvm::MaybeAlign(8), "sum_vec");
-    llvm::Value* old_acc = ctx_.builder().CreateLoad(ctx_.double4Type(), vec_acc);
-    llvm::Value* new_acc = ctx_.builder().CreateFAdd(old_acc, vec_val, "acc_vec");
-    ctx_.builder().CreateStore(new_acc, vec_acc);
-
-    llvm::Value* next_simd_i = ctx_.builder().CreateAdd(simd_i,
-        llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
-    ctx_.builder().CreateStore(next_simd_i, simd_counter);
-    ctx_.builder().CreateBr(simd_cond);
-
-    // SIMD exit: horizontal sum
-    ctx_.builder().SetInsertPoint(simd_exit);
-    llvm::Value* final_vec = ctx_.builder().CreateLoad(ctx_.double4Type(), vec_acc);
-    llvm::Value* v0 = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)0);
-    llvm::Value* v1 = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)1);
-    llvm::Value* v2 = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)2);
-    llvm::Value* v3 = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)3);
-    llvm::Value* sum01 = ctx_.builder().CreateFAdd(v0, v1);
-    llvm::Value* sum23 = ctx_.builder().CreateFAdd(v2, v3);
-    llvm::Value* simd_sum = ctx_.builder().CreateFAdd(sum01, sum23);
-
-    // Scalar accumulator for tail
+    // Scalar accumulator and counter
     llvm::Value* sum = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "sum_acc");
-    ctx_.builder().CreateStore(simd_sum, sum);
-
     llvm::Value* scalar_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "sum_scalar_i");
-    ctx_.builder().CreateStore(simd_elements, scalar_counter);
-    ctx_.builder().CreateBr(scalar_cond);
+
+    if (use_simd) {
+        // Calculate SIMD iteration count
+        llvm::Value* simd_count = ctx_.builder().CreateUDiv(src_total,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+        llvm::Value* simd_elements = ctx_.builder().CreateMul(simd_count,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+
+        // Initialize vector accumulator
+        llvm::Value* vec_acc = ctx_.builder().CreateAlloca(vec_type, nullptr, "sum_vec_acc");
+        llvm::Value* zero_vec = llvm::ConstantVector::getSplat(
+            llvm::ElementCount::getFixed(SIMD_WIDTH), llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+        ctx_.builder().CreateStore(zero_vec, vec_acc);
+
+        // SIMD loop blocks
+        llvm::BasicBlock* simd_cond = llvm::BasicBlock::Create(ctx_.context(), "tsum_simd_cond", current_func);
+        llvm::BasicBlock* simd_body = llvm::BasicBlock::Create(ctx_.context(), "tsum_simd_body", current_func);
+        llvm::BasicBlock* simd_exit = llvm::BasicBlock::Create(ctx_.context(), "tsum_simd_exit", current_func);
+
+        llvm::Value* simd_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "sum_simd_i");
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), simd_counter);
+        ctx_.builder().CreateBr(simd_cond);
+
+        // SIMD loop condition
+        ctx_.builder().SetInsertPoint(simd_cond);
+        llvm::Value* simd_i = ctx_.builder().CreateLoad(ctx_.int64Type(), simd_counter);
+        llvm::Value* simd_cmp = ctx_.builder().CreateICmpULT(simd_i, simd_elements);
+        ctx_.builder().CreateCondBr(simd_cmp, simd_body, simd_exit);
+
+        // SIMD loop body: load SIMD_WIDTH elements, accumulate
+        ctx_.builder().SetInsertPoint(simd_body);
+        llvm::Value* vec_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_src_elements, simd_i);
+        llvm::Value* vec_val = ctx_.builder().CreateAlignedLoad(vec_type, vec_ptr, llvm::MaybeAlign(8), "sum_vec");
+        llvm::Value* old_acc = ctx_.builder().CreateLoad(vec_type, vec_acc);
+        llvm::Value* new_acc = ctx_.builder().CreateFAdd(old_acc, vec_val, "acc_vec");
+        ctx_.builder().CreateStore(new_acc, vec_acc);
+
+        llvm::Value* next_simd_i = ctx_.builder().CreateAdd(simd_i,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+        ctx_.builder().CreateStore(next_simd_i, simd_counter);
+        ctx_.builder().CreateBr(simd_cond);
+
+        // SIMD exit: horizontal sum
+        ctx_.builder().SetInsertPoint(simd_exit);
+        llvm::Value* final_vec = ctx_.builder().CreateLoad(vec_type, vec_acc);
+        llvm::Value* simd_sum = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)0);
+        for (unsigned lane = 1; lane < SIMD_WIDTH; ++lane) {
+            llvm::Value* elem = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)lane);
+            simd_sum = ctx_.builder().CreateFAdd(simd_sum, elem);
+        }
+
+        // Store partial sum and start scalar tail from simd_elements
+        ctx_.builder().CreateStore(simd_sum, sum);
+        ctx_.builder().CreateStore(simd_elements, scalar_counter);
+        ctx_.builder().CreateBr(scalar_cond);
+    } else {
+        // ===== SCALAR-ONLY PATH =====
+        // Initialize sum to 0 and counter to 0
+        ctx_.builder().CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), sum);
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), scalar_counter);
+        ctx_.builder().CreateBr(scalar_cond);
+    }
 
     // Scalar tail loop condition
     ctx_.builder().SetInsertPoint(scalar_cond);
@@ -2211,34 +2290,103 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
     llvm::Value* src_total_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 3);
     llvm::Value* src_total = ctx_.builder().CreateLoad(ctx_.int64Type(), src_total_field_ptr);
 
-    // Sum all elements
-    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "tmean_cond", current_func);
-    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "tmean_body", current_func);
+    // Sum all elements - SIMD Accelerated (for mean calculation)
+    // Width is auto-detected: 2 (NEON/SSE2), 4 (AVX), or 8 (AVX-512)
+    // Falls back to scalar when SIMD_WIDTH == 1
+    const unsigned SIMD_WIDTH = getSIMDWidth();
+    llvm::VectorType* vec_type = getSIMDVectorType();
+    const bool use_simd = (SIMD_WIDTH > 1 && vec_type != nullptr);
+
+    // Scalar loop blocks (always needed)
+    llvm::BasicBlock* scalar_cond = llvm::BasicBlock::Create(ctx_.context(), "tmean_scalar_cond", current_func);
+    llvm::BasicBlock* scalar_body = llvm::BasicBlock::Create(ctx_.context(), "tmean_scalar_body", current_func);
     llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(ctx_.context(), "tmean_exit", current_func);
 
+    // Scalar accumulator and counter
     llvm::Value* sum = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "mean_acc");
-    llvm::Value* counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "mean_i");
-    ctx_.builder().CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), sum);
-    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
-    ctx_.builder().CreateBr(loop_cond);
+    llvm::Value* scalar_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "mean_scalar_i");
 
-    ctx_.builder().SetInsertPoint(loop_cond);
-    llvm::Value* i = ctx_.builder().CreateLoad(ctx_.int64Type(), counter);
-    llvm::Value* cmp = ctx_.builder().CreateICmpULT(i, src_total);
-    ctx_.builder().CreateCondBr(cmp, loop_body, loop_exit);
+    if (use_simd) {
+        // Calculate SIMD iteration count
+        llvm::Value* simd_count = ctx_.builder().CreateUDiv(src_total,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+        llvm::Value* simd_elements = ctx_.builder().CreateMul(simd_count,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
 
-    ctx_.builder().SetInsertPoint(loop_body);
-    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_src_elements, i);
-    llvm::Value* elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), elem_ptr);
-    llvm::Value* elem_val = ctx_.builder().CreateBitCast(elem_bits, ctx_.doubleType());
+        // Initialize vector accumulator
+        llvm::Value* vec_acc = ctx_.builder().CreateAlloca(vec_type, nullptr, "mean_vec_acc");
+        llvm::Value* zero_vec = llvm::ConstantVector::getSplat(
+            llvm::ElementCount::getFixed(SIMD_WIDTH), llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+        ctx_.builder().CreateStore(zero_vec, vec_acc);
+
+        // SIMD loop blocks
+        llvm::BasicBlock* simd_cond = llvm::BasicBlock::Create(ctx_.context(), "tmean_simd_cond", current_func);
+        llvm::BasicBlock* simd_body = llvm::BasicBlock::Create(ctx_.context(), "tmean_simd_body", current_func);
+        llvm::BasicBlock* simd_exit = llvm::BasicBlock::Create(ctx_.context(), "tmean_simd_exit", current_func);
+
+        llvm::Value* simd_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "mean_simd_i");
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), simd_counter);
+        ctx_.builder().CreateBr(simd_cond);
+
+        // SIMD loop condition
+        ctx_.builder().SetInsertPoint(simd_cond);
+        llvm::Value* simd_i = ctx_.builder().CreateLoad(ctx_.int64Type(), simd_counter);
+        llvm::Value* simd_cmp = ctx_.builder().CreateICmpULT(simd_i, simd_elements);
+        ctx_.builder().CreateCondBr(simd_cmp, simd_body, simd_exit);
+
+        // SIMD loop body: load SIMD_WIDTH elements, accumulate
+        ctx_.builder().SetInsertPoint(simd_body);
+        llvm::Value* vec_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_src_elements, simd_i);
+        llvm::Value* vec_val = ctx_.builder().CreateAlignedLoad(vec_type, vec_ptr, llvm::MaybeAlign(8), "mean_vec");
+        llvm::Value* old_acc = ctx_.builder().CreateLoad(vec_type, vec_acc);
+        llvm::Value* new_acc = ctx_.builder().CreateFAdd(old_acc, vec_val, "acc_vec");
+        ctx_.builder().CreateStore(new_acc, vec_acc);
+
+        llvm::Value* next_simd_i = ctx_.builder().CreateAdd(simd_i,
+            llvm::ConstantInt::get(ctx_.int64Type(), SIMD_WIDTH));
+        ctx_.builder().CreateStore(next_simd_i, simd_counter);
+        ctx_.builder().CreateBr(simd_cond);
+
+        // SIMD exit: horizontal sum
+        ctx_.builder().SetInsertPoint(simd_exit);
+        llvm::Value* final_vec = ctx_.builder().CreateLoad(vec_type, vec_acc);
+        llvm::Value* simd_sum = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)0);
+        for (unsigned lane = 1; lane < SIMD_WIDTH; ++lane) {
+            llvm::Value* elem = ctx_.builder().CreateExtractElement(final_vec, (uint64_t)lane);
+            simd_sum = ctx_.builder().CreateFAdd(simd_sum, elem);
+        }
+
+        // Store partial sum and start scalar tail from simd_elements
+        ctx_.builder().CreateStore(simd_sum, sum);
+        ctx_.builder().CreateStore(simd_elements, scalar_counter);
+        ctx_.builder().CreateBr(scalar_cond);
+    } else {
+        // ===== SCALAR-ONLY PATH =====
+        // Initialize sum to 0 and counter to 0
+        ctx_.builder().CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), sum);
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), scalar_counter);
+        ctx_.builder().CreateBr(scalar_cond);
+    }
+
+    // Scalar tail loop condition
+    ctx_.builder().SetInsertPoint(scalar_cond);
+    llvm::Value* scalar_i = ctx_.builder().CreateLoad(ctx_.int64Type(), scalar_counter);
+    llvm::Value* scalar_cmp = ctx_.builder().CreateICmpULT(scalar_i, src_total);
+    ctx_.builder().CreateCondBr(scalar_cmp, scalar_body, loop_exit);
+
+    // Scalar tail loop body
+    ctx_.builder().SetInsertPoint(scalar_body);
+    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_src_elements, scalar_i);
+    llvm::Value* elem_val = ctx_.builder().CreateLoad(ctx_.doubleType(), elem_ptr);
     llvm::Value* current_sum = ctx_.builder().CreateLoad(ctx_.doubleType(), sum);
     llvm::Value* new_sum = ctx_.builder().CreateFAdd(current_sum, elem_val);
     ctx_.builder().CreateStore(new_sum, sum);
 
-    llvm::Value* next_i = ctx_.builder().CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    ctx_.builder().CreateStore(next_i, counter);
-    ctx_.builder().CreateBr(loop_cond);
+    llvm::Value* next_scalar_i = ctx_.builder().CreateAdd(scalar_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_scalar_i, scalar_counter);
+    ctx_.builder().CreateBr(scalar_cond);
 
+    // Final result: sum / count
     ctx_.builder().SetInsertPoint(loop_exit);
     llvm::Value* total_sum = ctx_.builder().CreateLoad(ctx_.doubleType(), sum);
     llvm::Value* count_fp = ctx_.builder().CreateSIToFP(src_total, ctx_.doubleType());

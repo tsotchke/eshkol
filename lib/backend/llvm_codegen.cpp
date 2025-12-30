@@ -12436,9 +12436,26 @@ private:
         uint64_t num_params = op->extern_op.num_params;
 
         bool is_vaarg = false;
-        
+
         eshkol_debug("Creating external function declaration: %s (real: %s)", func_name, real_func_name);
-        
+
+        // EXTERN CONFLICT FIX: Check if function already exists in the module or function_table
+        // This avoids creating conflicting declarations (e.g., printf with void vs int return)
+        // which causes LLVM to create mangled names like printf.4
+        if (Function* existing_func = module->getFunction(real_func_name)) {
+            // Function already exists - use the existing declaration
+            function_table[func_name] = existing_func;
+            eshkol_info("External function '%s' already declared, reusing existing declaration", real_func_name);
+            return nullptr;
+        }
+
+        // Also check function_table in case it was declared with a different real name
+        auto ft_it = function_table.find(func_name);
+        if (ft_it != function_table.end() && ft_it->second) {
+            eshkol_info("External function '%s' already in function_table, skipping re-declaration", func_name);
+            return nullptr;
+        }
+
         // Map type strings to LLVM types
         auto mapStringToType = [this](const char* type_str) -> Type* {
             if (strcmp(type_str, "void") == 0) return void_type;
@@ -12460,10 +12477,10 @@ private:
             eshkol_warn("Unknown type '%s', defaulting to int64", type_str);
             return int64_type;
         };
-        
+
         // Get return type
         Type* return_type = mapStringToType(return_type_str);
-        
+
         // Get parameter types
         std::vector<Type*> param_types;
         for (uint64_t i = 0; i < num_params; i++) {
@@ -12478,12 +12495,12 @@ private:
                 param_types.push_back(int64_type);
             }
         }
-        
+
         // Create function type
         FunctionType* func_type = FunctionType::get(
             return_type, param_types, is_vaarg
         );
-        
+
         // Create function declaration using the real function name
         Function* extern_func = Function::Create(
             func_type,
@@ -12491,13 +12508,13 @@ private:
             real_func_name,
             module.get()
         );
-        
+
         // Add to function table using the given name so it can be called by that name
         function_table[func_name] = extern_func;
-        
-        eshkol_info("Declared external function: %s (real: %s) with %llu parameters", 
+
+        eshkol_info("Declared external function: %s (real: %s) with %llu parameters",
                    func_name, real_func_name, (unsigned long long)num_params);
-        
+
         // extern declarations don't return a value at runtime, just nullptr
         return nullptr;
     }
