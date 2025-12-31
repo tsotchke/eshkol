@@ -78,6 +78,10 @@ a.out
 #local specific files
 docs/private/*
 examples-dep/
+build-lite/
+build-xla/
+deps/
+
 
 compile_commands.json
 .aider*
