@@ -1,0 +1,42 @@
+;; BLAS Matmul Benchmark
+;; Compares performance of matmul at different sizes
+;; Uses Apple Accelerate (macOS) or OpenBLAS (Linux) for large matrices
+
+(require stdlib)
+
+;; Main benchmark
+(define (main)
+  (display "=== BLAS Matmul Benchmark ===\n")
+  (display "Using Apple Accelerate (BLAS) for large matrices\n")
+  (display "Threshold: 4096 elements (64x64)\n\n")
+
+  ;; Small matrix (below BLAS threshold - uses scalar/SIMD)
+  (display "--- 8x8 matrices (64 elements, scalar path) ---\n")
+  (define A8 (reshape (arange 64) 8 8))
+  (define B8 (reshape (arange 64) 8 8))
+  (define C8 (matmul A8 B8))
+  (display "C8[0,0] = ") (display (tensor-get C8 0 0)) (newline)
+
+  ;; Medium matrix (at threshold)
+  (display "\n--- 64x64 matrices (4096 elements, BLAS threshold) ---\n")
+  (define A64 (reshape (arange 4096) 64 64))
+  (define B64 (reshape (arange 4096) 64 64))
+  (define C64 (matmul A64 B64))
+  (display "C64[0,0] = ") (display (tensor-get C64 0 0)) (newline)
+
+  ;; Large matrix (above threshold - uses BLAS)
+  (display "\n--- 128x128 matrices (16384 elements, BLAS path) ---\n")
+  (define A128 (reshape (arange 16384) 128 128))
+  (define B128 (reshape (arange 16384) 128 128))
+  (define C128 (matmul A128 B128))
+  (display "C128[0,0] = ") (display (tensor-get C128 0 0)) (newline)
+
+  ;; Larger matrix for significant BLAS speedup
+  (display "\n--- 256x256 matrices (65536 elements, BLAS optimized) ---\n")
+  (define A256 (reshape (arange 65536) 256 256))
+  (define B256 (reshape (arange 65536) 256 256))
+  (define C256 (matmul A256 B256))
+  (display "C256[0,0] = ") (display (tensor-get C256 0 0)) (newline)
+
+  (display "\n=== Benchmark Complete ===\n")
+  0)

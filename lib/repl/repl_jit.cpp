@@ -8,6 +8,7 @@
 #include <eshkol/eshkol.h>
 #include <eshkol/llvm_backend.h>
 #include "../core/arena_memory.h"  // For runtime function declarations
+#include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
 
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/Core.h>
@@ -237,6 +238,13 @@ void ReplJITContext::registerRuntimeSymbols() {
     // ===== TENSOR MEMORY MANAGEMENT =====
     ADD_SYMBOL(arena_allocate_tensor_with_header);
     ADD_SYMBOL(arena_allocate_tensor_full);
+
+    // ===== BLAS ACCELERATION =====
+    // Runtime matmul with automatic BLAS/scalar dispatch
+    ADD_SYMBOL(eshkol_matmul_f64);
+    ADD_SYMBOL(eshkol_blas_available);
+    ADD_SYMBOL(eshkol_blas_get_threshold);
+    ADD_SYMBOL(eshkol_blas_set_threshold);
 
     // ===== HASH TABLE MEMORY MANAGEMENT =====
     ADD_SYMBOL(arena_allocate_hash_table);
