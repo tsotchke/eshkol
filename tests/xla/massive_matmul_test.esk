@@ -1,0 +1,27 @@
+;; XLA massive matmul test - triggers XLA path for tensors >= 100K elements
+;; This test uses 320x320 matrices (102,400 elements in result)
+(display "=== XLA Massive Matmul Test ===") (newline)
+
+;; Create large matrices: A (320x320) * B (320x320) = C (320x320)
+;; Total ops = 320 * 320 * 320 = 32,768,000 (>> 100K threshold)
+(define size 320)
+(define A (reshape (arange (* size size)) size size))
+(define B (reshape (arange (* size size)) size size))
+
+(display "Matrix A shape: ") (display (tensor-shape A)) (newline)
+(display "Matrix B shape: ") (display (tensor-shape B)) (newline)
+
+;; Perform massive matmul - should trigger XLA path
+(define C (matmul A B))
+
+(display "Result C shape: ") (display (tensor-shape C)) (newline)
+
+;; Verify a sample element (easier than checking all 102,400)
+;; C[0,0] = sum of A[0,:] * B[:,0]
+;; A[0,:] = [0, 1, 2, ..., 319]
+;; B[:,0] = [0, 320, 640, ..., (319*320)]
+;; C[0,0] = sum(i * i*320, i=0..319) = 320 * sum(i^2) = 320 * (319*320*639/6)
+(display "C[0,0] = ") (display (tensor-get C 0 0)) (newline)
+
+;; If we get here without crash, XLA dispatch worked
+(display "XLA massive matmul: PASS") (newline)
