@@ -1326,6 +1326,45 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int64Type(), 1));
     llvm::Value* b_cols = ctx_.builder().CreateLoad(ctx_.int64Type(), b_cols_ptr);  // N
 
+#ifdef ESHKOL_XLA_ENABLED
+    // ===== XLA DISPATCH FOR MASSIVE TENSORS =====
+    // Dispatch hierarchy: XLA (≥100K ops) → SIMD → scalar
+    // XLA is only used when StableHLO is available AND tensor is massive
+    //
+    // NOTE: Currently xla_->isAvailable() returns false because StableHLO is not installed.
+    // When StableHLO is installed and emitMatmul is implemented, this path will be active.
+    // The XLA path computes: total_ops = M * K * N, uses XLA if >= threshold (100K default)
+    if (xla_ && xla_->isAvailable()) {
+        // Compute total operations: M * K * N
+        llvm::Value* mk = ctx_.builder().CreateMul(a_rows, a_cols);
+        llvm::Value* total_ops = ctx_.builder().CreateMul(mk, b_cols);
+        llvm::Value* threshold = llvm::ConstantInt::get(ctx_.int64Type(), xla::xla_get_threshold());
+        llvm::Value* use_xla = ctx_.builder().CreateICmpUGE(total_ops, threshold);
+
+        // Create XLA and fallback blocks
+        llvm::BasicBlock* xla_block = llvm::BasicBlock::Create(ctx_.context(), "dot_xla", current_func);
+        llvm::BasicBlock* simd_block = llvm::BasicBlock::Create(ctx_.context(), "dot_simd_fallback", current_func);
+
+        ctx_.builder().CreateCondBr(use_xla, xla_block, simd_block);
+
+        // XLA path: emit StableHLO matmul
+        ctx_.builder().SetInsertPoint(xla_block);
+        llvm::Value* xla_result = xla_->emitMatmul(tensor_a_ptr, tensor_b_ptr);
+        if (xla_result) {
+            // XLA succeeded, pack result and branch to final merge
+            llvm::Value* xla_packed = tagged_.packHeapPtr(xla_result);
+            (void)xla_packed;  // TODO: Add to PHI when control flow is restructured
+            ctx_.builder().CreateBr(final_merge);
+        } else {
+            // XLA returned nullptr (e.g., not implemented yet), fall back to SIMD
+            ctx_.builder().CreateBr(simd_block);
+        }
+
+        // Continue with SIMD/scalar fallback
+        ctx_.builder().SetInsertPoint(simd_block);
+    }
+#endif
+
     // Result dimensions: M x N
     llvm::Value* c_rows = a_rows;  // M
     llvm::Value* c_cols = b_cols;  // N

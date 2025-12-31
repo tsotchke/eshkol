@@ -27,7 +27,9 @@ class CodegenContext;
 
 namespace xla {
 
-// Runtime-configurable threshold (default: 1000)
+// Runtime-configurable threshold (default: 100000 elements = ~320x320 matrix)
+// XLA is reserved for massive tensors only to amortize compilation overhead
+// Dispatch hierarchy: XLA (≥100K) → cBLAS (≥4K) → SIMD (≥64) → scalar
 // Override via ESHKOL_XLA_THRESHOLD environment variable
 extern size_t g_xla_threshold;
 
@@ -92,9 +94,9 @@ public:
     // ===== Backend Selection =====
 
     /**
-     * Set the threshold for using XLA vs SIMD.
-     * Tensors with fewer elements than this will use SIMD.
-     * @param min_elements Minimum elements to use XLA (default: 1000)
+     * Set the threshold for using XLA vs BLAS/SIMD.
+     * Tensors with fewer elements than this will use BLAS/SIMD.
+     * @param min_elements Minimum elements to use XLA (default: 100000)
      */
     void setThreshold(size_t min_elements);
 

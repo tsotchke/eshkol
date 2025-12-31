@@ -125,6 +125,61 @@ if(ESHKOL_XLA_ENABLED)
 
     # Define XLA enabled for code
     add_compile_definitions(ESHKOL_XLA_ENABLED)
+
+    # ===== MLIR/StableHLO Detection =====
+    # MLIR is typically bundled with LLVM 15+
+    # StableHLO requires separate installation
+    get_filename_component(LLVM_ROOT_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
+    get_filename_component(LLVM_ROOT_DIR "${LLVM_ROOT_DIR}" DIRECTORY)
+
+    # Check for MLIR headers
+    if(EXISTS "${LLVM_ROOT_DIR}/include/mlir/IR/MLIRContext.h")
+        set(MLIR_AVAILABLE ON)
+        set(MLIR_INCLUDE_DIR "${LLVM_ROOT_DIR}/include")
+        add_compile_definitions(ESHKOL_MLIR_AVAILABLE)
+        message(STATUS "MLIR: AVAILABLE at ${MLIR_INCLUDE_DIR}")
+
+        # Find MLIR libraries in LLVM lib directory
+        set(MLIR_LIB_DIR "${LLVM_ROOT_DIR}/lib")
+        set(MLIR_LIBS
+            MLIRIR
+            MLIRSupport
+            MLIRParser
+            MLIRFuncDialect
+            MLIRArithDialect
+            MLIRTransforms
+        )
+        set(MLIR_LIBRARIES "")
+        foreach(lib ${MLIR_LIBS})
+            find_library(${lib}_LIB ${lib} HINTS ${MLIR_LIB_DIR} NO_DEFAULT_PATH)
+            if(${lib}_LIB)
+                list(APPEND MLIR_LIBRARIES ${${lib}_LIB})
+            endif()
+        endforeach()
+
+        if(MLIR_LIBRARIES)
+            message(STATUS "MLIR libraries: FOUND")
+        else()
+            message(STATUS "MLIR libraries: NOT FOUND (headers only)")
+            # Disable MLIR if libs not found
+            set(MLIR_AVAILABLE OFF)
+            remove_definitions(-DESHKOL_MLIR_AVAILABLE)
+        endif()
+
+        # Check for StableHLO (may need separate installation)
+        if(EXISTS "${LLVM_ROOT_DIR}/include/stablehlo/dialect/StablehloOps.h")
+            set(STABLEHLO_AVAILABLE ON)
+            add_compile_definitions(ESHKOL_STABLEHLO_AVAILABLE)
+            message(STATUS "StableHLO: AVAILABLE")
+        else()
+            set(STABLEHLO_AVAILABLE OFF)
+            message(STATUS "StableHLO: NOT FOUND (XLA will use fallback, install from github.com/openxla/stablehlo)")
+        endif()
+    else()
+        set(MLIR_AVAILABLE OFF)
+        set(STABLEHLO_AVAILABLE OFF)
+        message(STATUS "MLIR: NOT FOUND (XLA will use stubs only)")
+    endif()
 else()
     message(STATUS "XLA backend: DISABLED (enable with -DESHKOL_XLA_ENABLED=ON)")
 endif()
@@ -247,6 +302,12 @@ endif()
 # Link BLAS libraries if available
 if(ESHKOL_BLAS_ENABLED AND BLAS_LIBRARIES)
     target_link_libraries(eshkol-static PUBLIC ${BLAS_LIBRARIES})
+endif()
+
+# Link MLIR libraries if both MLIR and StableHLO are available (for full XLA backend)
+# Without StableHLO, there's no point linking MLIR - we use stubs instead
+if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND STABLEHLO_AVAILABLE AND MLIR_LIBRARIES)
+    target_link_libraries(eshkol-static PUBLIC ${MLIR_LIBRARIES})
 endif()
 
 # For each executable inside the executable files create the executable with LLVM backend.
