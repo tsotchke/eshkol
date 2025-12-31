@@ -15588,7 +15588,7 @@ private:
     }
 
     // matmul: (matmul A B) - Matrix multiplication [M x K] @ [K x N] -> [M x N]
-    // SIMD-accelerated: processes 4 columns at a time using AVX vectors
+    // Uses BLAS (Accelerate/OpenBLAS) for large matrices via runtime dispatch
     Value* codegenMatmul(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_error("matmul requires exactly 2 arguments");
@@ -15633,8 +15633,44 @@ private:
                                               ConstantInt::get(int64_type, 1));
         Value* N = builder->CreateLoad(int64_type, b_dim1_ptr);
 
-        // Use SIMD-accelerated matmul from TensorCodegen
-        return tensor_->matmulSIMD(ptr_a, ptr_b, M, K, N);
+        // Get element pointers from tensors A and B
+        Value* a_elems_field = builder->CreateStructGEP(tensor_type, ptr_a, 2);
+        Value* a_elems = builder->CreateLoad(builder->getPtrTy(), a_elems_field);
+        Value* b_elems_field = builder->CreateStructGEP(tensor_type, ptr_b, 2);
+        Value* b_elems = builder->CreateLoad(builder->getPtrTy(), b_elems_field);
+
+        // Create result tensor [M x N] using TensorCodegen helper
+        std::vector<Value*> result_dims = {M, N};
+        Value* result_ptr = tensor_->createTensorWithDims(result_dims, nullptr, true);
+        if (!result_ptr) return packNullToTaggedValue();
+
+        // Get result element pointer
+        Value* c_elems_field = builder->CreateStructGEP(tensor_type, result_ptr, 2);
+        Value* c_elems = builder->CreateLoad(builder->getPtrTy(), c_elems_field);
+
+        // Declare and call eshkol_matmul_f64 runtime function
+        // void eshkol_matmul_f64(double* A, double* B, double* C, uint64_t M, uint64_t K, uint64_t N)
+        // This function handles BLAS vs scalar dispatch internally based on matrix size
+        Function* matmul_func = module->getFunction("eshkol_matmul_f64");
+        if (!matmul_func) {
+            std::vector<Type*> params = {
+                builder->getPtrTy(),   // A
+                builder->getPtrTy(),   // B
+                builder->getPtrTy(),   // C
+                int64_type,            // M
+                int64_type,            // K
+                int64_type             // N
+            };
+            FunctionType* func_type = FunctionType::get(builder->getVoidTy(), params, false);
+            matmul_func = Function::Create(func_type, Function::ExternalLinkage,
+                                           "eshkol_matmul_f64", module.get());
+        }
+
+        // Call the runtime matmul function
+        builder->CreateCall(matmul_func, {a_elems, b_elems, c_elems, M, K, N});
+
+        // Return tagged result tensor
+        return packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
 
@@ -27216,7 +27252,16 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
                 }
             }
         }
-        
+
+        // Add BLAS framework/library (required for libeshkol-static.a BLAS functions)
+#ifdef __APPLE__
+        // Link with Accelerate framework for BLAS (Apple Silicon optimized)
+        link_cmd += " -framework Accelerate";
+#elif defined(__linux__)
+        // Link with OpenBLAS on Linux
+        link_cmd += " -lopenblas";
+#endif
+
         link_cmd += " -o " + std::string(filename);
         
         eshkol_info("Linking executable: %s", link_cmd.c_str());

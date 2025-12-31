@@ -2331,6 +2331,15 @@ int main(int argc, char **argv)
             link_cmd += " -l" + std::string(linked_lib);
         }
 
+        // Add BLAS framework/library (required for libeshkol-static.a BLAS functions)
+#ifdef __APPLE__
+        // Link with Accelerate framework for BLAS (Apple Silicon optimized)
+        link_cmd += " -framework Accelerate";
+#elif defined(__linux__)
+        // Link with OpenBLAS on Linux
+        link_cmd += " -lopenblas";
+#endif
+
         // Add output
         link_cmd += " -o " + std::string(output) + " -lm";
         
