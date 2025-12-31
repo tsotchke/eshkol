@@ -29,64 +29,157 @@ option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 # Requires MLIR and StableHLO libraries
 option(ESHKOL_XLA_ENABLED "Enable XLA backend for accelerated tensor operations" OFF)
 
+# StableHLO Root (for XLA builds with bundled LLVM/MLIR/StableHLO)
+# Set this to the path where StableHLO was built (e.g., /tmp/stablehlo)
+# When set, uses the bundled LLVM/MLIR instead of system LLVM17
+set(STABLEHLO_ROOT "" CACHE PATH "Path to StableHLO installation with bundled LLVM/MLIR")
+
 # LLVM backend is always enabled
 set(ESHKOL_BUILD_BACKEND ON)
 
-# LLVM Configuration - Always required
-find_program(LLVM_CONFIG_EXECUTABLE NAMES llvm-config REQUIRED)
+# ===== LLVM Configuration =====
+# Two modes:
+# 1. STABLEHLO_ROOT set: Use StableHLO's bundled LLVM (XLA build)
+# 2. STABLEHLO_ROOT not set: Use system llvm-config (Lite build)
 
-# Get LLVM configuration
-execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --cxxflags OUTPUT_VARIABLE LLVM_CXXFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
-execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --ldflags OUTPUT_VARIABLE LLVM_LDFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
-execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --libs all OUTPUT_VARIABLE LLVM_LIBS OUTPUT_STRIP_TRAILING_WHITESPACE)
-execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --system-libs OUTPUT_VARIABLE LLVM_SYSTEM_LIBS OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(STABLEHLO_ROOT AND EXISTS "${STABLEHLO_ROOT}/llvm-build")
+    # ===== XLA BUILD: Use StableHLO's bundled LLVM =====
+    message(STATUS "=== XLA BUILD MODE: Using StableHLO's bundled LLVM ===")
+    set(USING_STABLEHLO_LLVM TRUE)
 
-# Enhanced LLVM include directory detection (backwards-compatible)
-# Extract include directories from CXXFLAGS for better cross-platform support
-string(REGEX MATCHALL "-I[^ ]+" LLVM_INCLUDE_FLAGS "${LLVM_CXXFLAGS}")
-set(LLVM_INCLUDE_DIRS "")
-foreach(include_flag ${LLVM_INCLUDE_FLAGS})
-    string(REGEX REPLACE "^-I" "" include_dir "${include_flag}")
-    list(APPEND LLVM_INCLUDE_DIRS "${include_dir}")
-endforeach()
+    set(STABLEHLO_LLVM_BUILD "${STABLEHLO_ROOT}/llvm-build")
+    set(STABLEHLO_LLVM_LIB "${STABLEHLO_LLVM_BUILD}/lib")
 
-# Fallback: Try --includedir if no includes found in CXXFLAGS
-if(NOT LLVM_INCLUDE_DIRS)
-    execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --includedir 
-                   OUTPUT_VARIABLE LLVM_INCLUDE_DIR 
-                   OUTPUT_STRIP_TRAILING_WHITESPACE
-                   ERROR_QUIET)
-    if(LLVM_INCLUDE_DIR AND EXISTS "${LLVM_INCLUDE_DIR}")
-        list(APPEND LLVM_INCLUDE_DIRS "${LLVM_INCLUDE_DIR}")
+    # StableHLO build may not include llvm-config, so use direct paths
+    # Include directories for bundled LLVM/MLIR
+    set(LLVM_INCLUDE_DIRS
+        "${STABLEHLO_LLVM_BUILD}/include"
+        "${STABLEHLO_ROOT}/llvm-project/llvm/include"
+        "${STABLEHLO_ROOT}/llvm-project/mlir/include"
+        "${STABLEHLO_LLVM_BUILD}/tools/mlir/include"
+    )
+
+    # LLVM compile flags for bundled LLVM (manual since no llvm-config)
+    # Don't include -std= since CMAKE_CXX_STANDARD handles it
+    # IMPORTANT: StableHLO's LLVM is built with RTTI disabled, so we must also disable RTTI
+    # Use separate_arguments to convert to list
+    set(LLVM_CXXFLAGS_RAW "-D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-rtti")
+    separate_arguments(LLVM_CXXFLAGS UNIX_COMMAND "${LLVM_CXXFLAGS_RAW}")
+
+    # LLVM link flags
+    set(LLVM_LDFLAGS "-L${STABLEHLO_LLVM_LIB}")
+
+    # Find LLVM libraries in the build directory - link ALL static libraries directly
+    # Use full paths to static libraries for proper symbol resolution on both ARM and x86
+    file(GLOB LLVM_STATIC_LIBS "${STABLEHLO_LLVM_LIB}/libLLVM*.a")
+    list(LENGTH LLVM_STATIC_LIBS LLVM_LIB_COUNT)
+    message(STATUS "Found ${LLVM_LIB_COUNT} LLVM libraries")
+
+    # Handle circular dependencies in LLVM static libraries
+    # On macOS: force-load LLVMSupport to ensure typeinfo symbols are exported
+    # On Linux: use linker groups
+    if(APPLE)
+        # Find LLVMSupport specifically for force loading
+        find_library(LLVM_SUPPORT_LIB LLVMSupport HINTS ${STABLEHLO_LLVM_LIB} NO_DEFAULT_PATH)
+        if(LLVM_SUPPORT_LIB)
+            set(LLVM_LIBS "-Wl,-force_load,${LLVM_SUPPORT_LIB}" ${LLVM_STATIC_LIBS})
+        else()
+            set(LLVM_LIBS ${LLVM_STATIC_LIBS})
+        endif()
+    else()
+        # On Linux, wrap with linker group to handle circular deps
+        set(LLVM_LIBS "-Wl,--start-group" ${LLVM_STATIC_LIBS} "-Wl,--end-group")
+    endif()
+
+    # System libraries
+    # Note: StableHLO's LLVM is built with zstd support
+    # Find zstd - try pkg-config first, then Homebrew
+    find_library(ZSTD_LIB zstd HINTS
+        /usr/local/opt/zstd/lib
+        /opt/homebrew/opt/zstd/lib
+        /usr/lib
+        /usr/local/lib
+    )
+    if(ZSTD_LIB)
+        message(STATUS "Found zstd: ${ZSTD_LIB}")
+        set(ZSTD_LINK "${ZSTD_LIB}")
+    else()
+        message(STATUS "zstd not found, trying -lzstd")
+        set(ZSTD_LINK "-lzstd")
+    endif()
+
+    if(APPLE)
+        set(LLVM_SYSTEM_LIBS "-lm -lz -lcurses -lxml2")
+    else()
+        set(LLVM_SYSTEM_LIBS "-lrt -ldl -lpthread -lm -lz")
+    endif()
+    # Append zstd separately (full path works better)
+    set(LLVM_SYSTEM_LIBS "${LLVM_SYSTEM_LIBS} ${ZSTD_LINK}")
+
+    set(LLVM_CONFIG_EXECUTABLE "STABLEHLO_BUNDLED")
+
+    message(STATUS "StableHLO LLVM Build: ${STABLEHLO_LLVM_BUILD}")
+    message(STATUS "StableHLO LLVM Include: ${STABLEHLO_LLVM_BUILD}/include")
+else()
+    # ===== LITE BUILD: Use system llvm-config =====
+    message(STATUS "=== LITE BUILD MODE: Using system LLVM ===")
+    set(USING_STABLEHLO_LLVM FALSE)
+
+    find_program(LLVM_CONFIG_EXECUTABLE NAMES llvm-config REQUIRED)
+
+    # Get LLVM configuration
+    execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --cxxflags OUTPUT_VARIABLE LLVM_CXXFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
+    execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --ldflags OUTPUT_VARIABLE LLVM_LDFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
+    execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --libs all OUTPUT_VARIABLE LLVM_LIBS OUTPUT_STRIP_TRAILING_WHITESPACE)
+    execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --system-libs OUTPUT_VARIABLE LLVM_SYSTEM_LIBS OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+    # Enhanced LLVM include directory detection (backwards-compatible)
+    # Extract include directories from CXXFLAGS for better cross-platform support
+    string(REGEX MATCHALL "-I[^ ]+" LLVM_INCLUDE_FLAGS "${LLVM_CXXFLAGS}")
+    set(LLVM_INCLUDE_DIRS "")
+    foreach(include_flag ${LLVM_INCLUDE_FLAGS})
+        string(REGEX REPLACE "^-I" "" include_dir "${include_flag}")
+        list(APPEND LLVM_INCLUDE_DIRS "${include_dir}")
+    endforeach()
+
+    # Fallback: Try --includedir if no includes found in CXXFLAGS
+    if(NOT LLVM_INCLUDE_DIRS)
+        execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --includedir
+                       OUTPUT_VARIABLE LLVM_INCLUDE_DIR
+                       OUTPUT_STRIP_TRAILING_WHITESPACE
+                       ERROR_QUIET)
+        if(LLVM_INCLUDE_DIR AND EXISTS "${LLVM_INCLUDE_DIR}")
+            list(APPEND LLVM_INCLUDE_DIRS "${LLVM_INCLUDE_DIR}")
+        endif()
+    endif()
+
+    # Additional fallback for common LLVM installation patterns
+    if(NOT LLVM_INCLUDE_DIRS)
+        # Try to derive include path from llvm-config executable location
+        get_filename_component(LLVM_CONFIG_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
+        get_filename_component(LLVM_ROOT "${LLVM_CONFIG_DIR}" DIRECTORY)
+        set(POTENTIAL_INCLUDE_DIRS
+            "${LLVM_ROOT}/include"
+            "${LLVM_ROOT}/include/llvm"
+            "/usr/include/llvm"
+            "/usr/local/include/llvm"
+        )
+        foreach(potential_dir ${POTENTIAL_INCLUDE_DIRS})
+            if(EXISTS "${potential_dir}/llvm/IR/LLVMContext.h")
+                list(APPEND LLVM_INCLUDE_DIRS "${potential_dir}")
+                break()
+            endif()
+        endforeach()
     endif()
 endif()
 
-# Additional fallback for common LLVM installation patterns
-if(NOT LLVM_INCLUDE_DIRS)
-    # Try to derive include path from llvm-config executable location
-    get_filename_component(LLVM_CONFIG_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
-    get_filename_component(LLVM_ROOT "${LLVM_CONFIG_DIR}" DIRECTORY)
-    set(POTENTIAL_INCLUDE_DIRS
-        "${LLVM_ROOT}/include"
-        "${LLVM_ROOT}/include/llvm"
-        "/usr/include/llvm"
-        "/usr/local/include/llvm"
-    )
-    foreach(potential_dir ${POTENTIAL_INCLUDE_DIRS})
-        if(EXISTS "${potential_dir}/llvm/IR/LLVMContext.h")
-            list(APPEND LLVM_INCLUDE_DIRS "${potential_dir}")
-            break()
-        endif()
-    endforeach()
-endif()
-
-# Convert to CMake format
+# Convert to CMake format (common for both modes)
 separate_arguments(LLVM_CXXFLAGS_LIST UNIX_COMMAND "${LLVM_CXXFLAGS}")
 separate_arguments(LLVM_LDFLAGS_LIST UNIX_COMMAND "${LLVM_LDFLAGS}")
 separate_arguments(LLVM_LIBS_LIST UNIX_COMMAND "${LLVM_LIBS}")
 separate_arguments(LLVM_SYSTEM_LIBS_LIST UNIX_COMMAND "${LLVM_SYSTEM_LIBS}")
 
-# Debug output for troubleshooting (can be removed in production)
+# Debug output for troubleshooting
 message(STATUS "LLVM Config: ${LLVM_CONFIG_EXECUTABLE}")
 message(STATUS "LLVM Include Dirs: ${LLVM_INCLUDE_DIRS}")
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -127,58 +220,146 @@ if(ESHKOL_XLA_ENABLED)
     add_compile_definitions(ESHKOL_XLA_ENABLED)
 
     # ===== MLIR/StableHLO Detection =====
-    # MLIR is typically bundled with LLVM 15+
-    # StableHLO requires separate installation
-    get_filename_component(LLVM_ROOT_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
-    get_filename_component(LLVM_ROOT_DIR "${LLVM_ROOT_DIR}" DIRECTORY)
+    # Two modes:
+    # 1. STABLEHLO_ROOT set: Use bundled LLVM/MLIR/StableHLO (XLA build)
+    # 2. STABLEHLO_ROOT not set: Try system LLVM17 (Lite build fallback)
 
-    # Check for MLIR headers
-    if(EXISTS "${LLVM_ROOT_DIR}/include/mlir/IR/MLIRContext.h")
-        set(MLIR_AVAILABLE ON)
-        set(MLIR_INCLUDE_DIR "${LLVM_ROOT_DIR}/include")
-        add_compile_definitions(ESHKOL_MLIR_AVAILABLE)
-        message(STATUS "MLIR: AVAILABLE at ${MLIR_INCLUDE_DIR}")
+    if(STABLEHLO_ROOT AND EXISTS "${STABLEHLO_ROOT}")
+        message(STATUS "Using StableHLO installation at: ${STABLEHLO_ROOT}")
 
-        # Find MLIR libraries in LLVM lib directory
-        set(MLIR_LIB_DIR "${LLVM_ROOT_DIR}/lib")
-        set(MLIR_LIBS
-            MLIRIR
-            MLIRSupport
-            MLIRParser
-            MLIRFuncDialect
-            MLIRArithDialect
-            MLIRTransforms
+        # StableHLO build structure:
+        # ${STABLEHLO_ROOT}/llvm-build/     - LLVM/MLIR libraries and includes
+        # ${STABLEHLO_ROOT}/stablehlo/      - StableHLO source headers
+        # ${STABLEHLO_ROOT}/build/          - StableHLO built libraries
+        set(STABLEHLO_LLVM_BUILD "${STABLEHLO_ROOT}/llvm-build")
+        set(STABLEHLO_BUILD "${STABLEHLO_ROOT}/build")
+
+        # Set CMake paths for find_package
+        set(MLIR_DIR "${STABLEHLO_LLVM_BUILD}/lib/cmake/mlir" CACHE PATH "MLIR CMake dir" FORCE)
+        set(LLVM_DIR "${STABLEHLO_LLVM_BUILD}/lib/cmake/llvm" CACHE PATH "LLVM CMake dir" FORCE)
+
+        # Include directories for StableHLO and MLIR
+        # Note: STABLEHLO_ROOT is the base so "stablehlo/dialect/..." resolves correctly
+        set(STABLEHLO_INCLUDE_DIRS
+            "${STABLEHLO_ROOT}"
+            "${STABLEHLO_ROOT}/llvm-project/mlir/include"
+            "${STABLEHLO_LLVM_BUILD}/include"
+            "${STABLEHLO_LLVM_BUILD}/tools/mlir/include"
+            "${STABLEHLO_BUILD}"
         )
-        set(MLIR_LIBRARIES "")
-        foreach(lib ${MLIR_LIBS})
-            find_library(${lib}_LIB ${lib} HINTS ${MLIR_LIB_DIR} NO_DEFAULT_PATH)
-            if(${lib}_LIB)
-                list(APPEND MLIR_LIBRARIES ${${lib}_LIB})
+
+        # Add include directories
+        foreach(inc_dir ${STABLEHLO_INCLUDE_DIRS})
+            if(EXISTS "${inc_dir}")
+                include_directories("${inc_dir}")
+                message(STATUS "  Include: ${inc_dir}")
             endif()
         endforeach()
 
-        if(MLIR_LIBRARIES)
-            message(STATUS "MLIR libraries: FOUND")
+        # Find MLIR/LLVM libraries from StableHLO build
+        set(MLIR_LIB_DIR "${STABLEHLO_LLVM_BUILD}/lib")
+        set(STABLEHLO_LIB_DIR "${STABLEHLO_BUILD}/lib")
+
+        # Link ALL MLIR libraries - the dependency chain is too complex to manage manually
+        file(GLOB MLIR_STATIC_LIBS "${MLIR_LIB_DIR}/libMLIR*.a")
+        set(MLIR_LIBRARIES ${MLIR_STATIC_LIBS})
+        message(STATUS "Found ${CMAKE_MATCH_COUNT} MLIR libraries")
+
+        # StableHLO libraries
+        set(STABLEHLO_LIBS
+            StablehloOps
+            StablehloBase
+            StablehloBroadcastUtils
+            StablehloAssemblyFormat
+            StablehloTypeInference
+        )
+
+        set(STABLEHLO_LIBRARIES "")
+        foreach(lib ${STABLEHLO_LIBS})
+            find_library(${lib}_LIB ${lib} HINTS ${STABLEHLO_LIB_DIR} NO_DEFAULT_PATH)
+            if(${lib}_LIB)
+                list(APPEND STABLEHLO_LIBRARIES ${${lib}_LIB})
+            endif()
+        endforeach()
+
+        # Enable full XLA if we have both MLIR and StableHLO
+        if(MLIR_LIBRARIES AND STABLEHLO_LIBRARIES)
+            set(MLIR_AVAILABLE ON)
+            set(STABLEHLO_AVAILABLE ON)
+            add_compile_definitions(ESHKOL_MLIR_AVAILABLE)
+            add_compile_definitions(ESHKOL_STABLEHLO_AVAILABLE)
+            add_compile_definitions(ESHKOL_XLA_FULL_MLIR)
+            message(STATUS "MLIR: AVAILABLE (bundled)")
+            message(STATUS "StableHLO: AVAILABLE (bundled)")
+            message(STATUS "XLA: FULL MLIR SUPPORT ENABLED")
+        elseif(MLIR_LIBRARIES)
+            set(MLIR_AVAILABLE ON)
+            set(STABLEHLO_AVAILABLE OFF)
+            add_compile_definitions(ESHKOL_MLIR_AVAILABLE)
+            message(STATUS "MLIR: AVAILABLE (bundled)")
+            message(STATUS "StableHLO: libraries not found in ${STABLEHLO_LIB_DIR}")
         else()
-            message(STATUS "MLIR libraries: NOT FOUND (headers only)")
-            # Disable MLIR if libs not found
             set(MLIR_AVAILABLE OFF)
-            remove_definitions(-DESHKOL_MLIR_AVAILABLE)
+            set(STABLEHLO_AVAILABLE OFF)
+            message(WARNING "STABLEHLO_ROOT set but MLIR libraries not found in ${MLIR_LIB_DIR}")
         endif()
 
-        # Check for StableHLO (may need separate installation)
-        if(EXISTS "${LLVM_ROOT_DIR}/include/stablehlo/dialect/StablehloOps.h")
-            set(STABLEHLO_AVAILABLE ON)
-            add_compile_definitions(ESHKOL_STABLEHLO_AVAILABLE)
-            message(STATUS "StableHLO: AVAILABLE")
-        else()
-            set(STABLEHLO_AVAILABLE OFF)
-            message(STATUS "StableHLO: NOT FOUND (XLA will use fallback, install from github.com/openxla/stablehlo)")
-        endif()
+        # Link directories for StableHLO build
+        link_directories("${MLIR_LIB_DIR}")
+        link_directories("${STABLEHLO_LIB_DIR}")
+
     else()
-        set(MLIR_AVAILABLE OFF)
-        set(STABLEHLO_AVAILABLE OFF)
-        message(STATUS "MLIR: NOT FOUND (XLA will use stubs only)")
+        # Fallback: Try system LLVM (Lite build mode)
+        get_filename_component(LLVM_ROOT_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
+        get_filename_component(LLVM_ROOT_DIR "${LLVM_ROOT_DIR}" DIRECTORY)
+
+        # Check for MLIR headers in system LLVM
+        if(EXISTS "${LLVM_ROOT_DIR}/include/mlir/IR/MLIRContext.h")
+            set(MLIR_AVAILABLE ON)
+            set(MLIR_INCLUDE_DIR "${LLVM_ROOT_DIR}/include")
+            add_compile_definitions(ESHKOL_MLIR_AVAILABLE)
+            message(STATUS "MLIR: AVAILABLE at ${MLIR_INCLUDE_DIR}")
+
+            # Find MLIR libraries in LLVM lib directory
+            set(MLIR_LIB_DIR "${LLVM_ROOT_DIR}/lib")
+            set(MLIR_LIBS
+                MLIRIR
+                MLIRSupport
+                MLIRParser
+                MLIRFuncDialect
+                MLIRArithDialect
+                MLIRTransforms
+            )
+            set(MLIR_LIBRARIES "")
+            foreach(lib ${MLIR_LIBS})
+                find_library(${lib}_LIB ${lib} HINTS ${MLIR_LIB_DIR} NO_DEFAULT_PATH)
+                if(${lib}_LIB)
+                    list(APPEND MLIR_LIBRARIES ${${lib}_LIB})
+                endif()
+            endforeach()
+
+            if(MLIR_LIBRARIES)
+                message(STATUS "MLIR libraries: FOUND")
+            else()
+                message(STATUS "MLIR libraries: NOT FOUND (headers only)")
+                set(MLIR_AVAILABLE OFF)
+                remove_definitions(-DESHKOL_MLIR_AVAILABLE)
+            endif()
+
+            # Check for StableHLO (rare in system LLVM)
+            if(EXISTS "${LLVM_ROOT_DIR}/include/stablehlo/dialect/StablehloOps.h")
+                set(STABLEHLO_AVAILABLE ON)
+                add_compile_definitions(ESHKOL_STABLEHLO_AVAILABLE)
+                message(STATUS "StableHLO: AVAILABLE")
+            else()
+                set(STABLEHLO_AVAILABLE OFF)
+                message(STATUS "StableHLO: NOT FOUND (use -DSTABLEHLO_ROOT=path for full XLA)")
+            endif()
+        else()
+            set(MLIR_AVAILABLE OFF)
+            set(STABLEHLO_AVAILABLE OFF)
+            message(STATUS "MLIR: NOT FOUND in system LLVM (XLA will use stubs)")
+        endif()
     endif()
 else()
     message(STATUS "XLA backend: DISABLED (enable with -DESHKOL_XLA_ENABLED=ON)")
@@ -304,10 +485,13 @@ if(ESHKOL_BLAS_ENABLED AND BLAS_LIBRARIES)
     target_link_libraries(eshkol-static PUBLIC ${BLAS_LIBRARIES})
 endif()
 
-# Link MLIR libraries if both MLIR and StableHLO are available (for full XLA backend)
-# Without StableHLO, there's no point linking MLIR - we use stubs instead
-if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND STABLEHLO_AVAILABLE AND MLIR_LIBRARIES)
+# Link MLIR and StableHLO libraries if available (for full XLA backend)
+if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND MLIR_LIBRARIES)
     target_link_libraries(eshkol-static PUBLIC ${MLIR_LIBRARIES})
+    if(STABLEHLO_AVAILABLE AND STABLEHLO_LIBRARIES)
+        target_link_libraries(eshkol-static PUBLIC ${STABLEHLO_LIBRARIES})
+        message(STATUS "Linking StableHLO libraries: ${STABLEHLO_LIBRARIES}")
+    endif()
 endif()
 
 # For each executable inside the executable files create the executable with LLVM backend.

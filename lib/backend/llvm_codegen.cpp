@@ -560,8 +560,8 @@ public:
 
         // Set target triple
         std::string target_triple_str = sys::getDefaultTargetTriple();
-#if LLVM_VERSION_MAJOR >= 18
         Triple target_triple(target_triple_str);
+#if LLVM_VERSION_MAJOR >= 18
         module->setTargetTriple(target_triple);
 #else
         module->setTargetTriple(target_triple_str);
@@ -570,12 +570,21 @@ public:
         // CRITICAL: Set DataLayout early so getTypeAllocSize returns correct values
         // This must be done before any allocations that depend on struct sizes
         std::string error;
+#if LLVM_VERSION_MAJOR >= 18
+        const Target* target = TargetRegistry::lookupTarget(target_triple, error);
+#else
         const Target* target = TargetRegistry::lookupTarget(target_triple_str, error);
+#endif
         if (target) {
             TargetOptions options;
             std::unique_ptr<TargetMachine> target_machine(
+#if LLVM_VERSION_MAJOR >= 18
+                target->createTargetMachine(target_triple, "generic", "",
+                                           options, Reloc::PIC_));
+#else
                 target->createTargetMachine(target_triple_str, "generic", "",
                                            options, Reloc::PIC_));
+#endif
             if (target_machine) {
                 module->setDataLayout(target_machine->createDataLayout());
                 eshkol_debug("Set data layout for target: %s", target_triple_str.c_str());
@@ -27126,7 +27135,11 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
 #endif
 
         std::string error;
+#if LLVM_VERSION_MAJOR >= 18
+        const Target* target = TargetRegistry::lookupTarget(cached_triple, error);
+#else
         const Target* target = TargetRegistry::lookupTarget(g_cached_target_triple, error);
+#endif
         if (!target) {
             eshkol_error("Failed to lookup target: %s", error.c_str());
             return -1;
@@ -27312,17 +27325,36 @@ void eshkol_release_module_for_jit(LLVMModuleRef module_ref) {
 // WebAssembly target initialization flag
 static bool g_wasm_target_initialized = false;
 
+// Check if WebAssembly target is available at compile time by checking Targets.def
+// When building with StableHLO's LLVM (ESHKOL_XLA_FULL_MLIR), we need to check
+// what targets were configured. The lite build uses system LLVM17 which includes all targets.
+#ifdef ESHKOL_XLA_FULL_MLIR
+// StableHLO/MLIR LLVM build - check if WebAssembly is in Targets.def
+// For now, assume not available unless CI configures it
+// TODO: CI should build StableHLO LLVM with -DLLVM_TARGETS_TO_BUILD="AArch64;X86;WebAssembly"
+#define ESHKOL_HAS_WASM_TARGET 0
+#else
+// System LLVM17 includes all standard targets including WebAssembly
+#define ESHKOL_HAS_WASM_TARGET 1
+#endif
+
 static bool initialize_wasm_target() {
     if (g_wasm_target_initialized) return true;
 
+#if ESHKOL_HAS_WASM_TARGET
     // Initialize WebAssembly target
     LLVMInitializeWebAssemblyTargetInfo();
     LLVMInitializeWebAssemblyTarget();
     LLVMInitializeWebAssemblyTargetMC();
     LLVMInitializeWebAssemblyAsmPrinter();
-
     g_wasm_target_initialized = true;
     return true;
+#else
+    // WebAssembly target not available in this LLVM build
+    // XLA builds using StableHLO LLVM need CI to enable WebAssembly target
+    eshkol_error("WebAssembly target not available. XLA build needs LLVM with WebAssembly enabled.");
+    return false;
+#endif
 }
 
 int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_buffer, size_t* output_size) {
@@ -27355,7 +27387,11 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
 
         // Lookup WebAssembly target
         std::string error;
+#if LLVM_VERSION_MAJOR >= 18
+        const Target* target = TargetRegistry::lookupTarget(wasm_triple, error);
+#else
         const Target* target = TargetRegistry::lookupTarget(target_triple, error);
+#endif
         if (!target) {
             eshkol_error("Failed to lookup WebAssembly target: %s", error.c_str());
             return -1;
