@@ -83,3 +83,9 @@ compile_commands.json
 .aider*
 .claude/
 .cache/
+
+*.cmake
+*.tcl
+CMakeCache.txt
+CMakeFiles/
+Makefile

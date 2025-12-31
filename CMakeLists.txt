@@ -129,6 +129,53 @@ else()
     message(STATUS "XLA backend: DISABLED (enable with -DESHKOL_XLA_ENABLED=ON)")
 endif()
 
+# ===== BLAS Acceleration (Platform-specific) =====
+# Provides optimized matrix operations via platform BLAS libraries
+option(ESHKOL_BLAS_ENABLED "Enable BLAS acceleration for matrix operations" ON)
+
+if(ESHKOL_BLAS_ENABLED)
+    set(BLAS_FOUND FALSE)
+    set(BLAS_LIBRARIES "")
+
+    if(APPLE)
+        # Use Apple Accelerate framework (built into macOS)
+        # Provides highly optimized BLAS for Apple Silicon (NEON, AMX)
+        find_library(ACCELERATE_FRAMEWORK Accelerate)
+        if(ACCELERATE_FRAMEWORK)
+            set(BLAS_FOUND TRUE)
+            set(BLAS_LIBRARIES ${ACCELERATE_FRAMEWORK})
+            add_compile_definitions(ESHKOL_BLAS_ACCELERATE)
+            message(STATUS "BLAS: Apple Accelerate framework")
+        endif()
+    else()
+        # Try OpenBLAS on Linux/other platforms
+        find_package(BLAS QUIET)
+        if(BLAS_FOUND)
+            add_compile_definitions(ESHKOL_BLAS_OPENBLAS)
+            message(STATUS "BLAS: ${BLAS_LIBRARIES}")
+        else()
+            # Try pkg-config for OpenBLAS
+            pkg_check_modules(OPENBLAS QUIET openblas)
+            if(OPENBLAS_FOUND)
+                set(BLAS_FOUND TRUE)
+                set(BLAS_LIBRARIES ${OPENBLAS_LIBRARIES})
+                add_compile_definitions(ESHKOL_BLAS_OPENBLAS)
+                message(STATUS "BLAS: OpenBLAS via pkg-config")
+            endif()
+        endif()
+    endif()
+
+    if(BLAS_FOUND)
+        add_compile_definitions(ESHKOL_BLAS_ENABLED)
+        message(STATUS "BLAS acceleration: ENABLED")
+    else()
+        message(STATUS "BLAS acceleration: DISABLED (no BLAS library found)")
+        set(ESHKOL_BLAS_ENABLED OFF)
+    endif()
+else()
+    message(STATUS "BLAS acceleration: DISABLED (enable with -DESHKOL_BLAS_ENABLED=ON)")
+endif()
+
 # Make uninstall.
 add_custom_target("uninstall" COMMENT "Uninstall installed files")
 add_custom_command(
@@ -195,6 +242,11 @@ endforeach()
 # Add library directories if found
 if(LLVM_LIBRARY_DIRS)
     target_link_directories(eshkol-static PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+
+# Link BLAS libraries if available
+if(ESHKOL_BLAS_ENABLED AND BLAS_LIBRARIES)
+    target_link_libraries(eshkol-static PUBLIC ${BLAS_LIBRARIES})
 endif()
 
 # For each executable inside the executable files create the executable with LLVM backend.
