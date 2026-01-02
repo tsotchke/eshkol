@@ -1,0 +1,228 @@
+;;; Eshkol Random Number Library
+;;; High-level random number generation utilities
+;;;
+;;; Provides both pseudorandom (drand48-based) and quantum random functions
+;;; The quantum RNG uses hardware entropy when available.
+;;;
+;;; Usage: (require "random")
+
+;;; Dependencies from core library
+(require core.list.convert)   ;; list->vector, vector->list
+(require core.list.search)    ;; list-ref
+
+;;; ============================================================
+;;; Basic Random Functions
+;;; These use standard pseudorandom number generation (drand48)
+;;; ============================================================
+
+;; random-float: Returns a random floating-point number in [0, 1)
+(define (random-float)
+  (random))
+
+;; random-int: Returns a random integer in range [low, high] (inclusive)
+(define (random-int low high)
+  (+ low (truncate (* (random) (+ 1 (- high low))))))
+
+;; random-bool: Returns #t or #f with 50/50 probability
+(define (random-bool)
+  (< (random) 0.5))
+
+;; random-choice: Select a random element from a list
+(define (random-choice lst)
+  (let ((len (length lst)))
+    (if (= len 0)
+        #f
+        (list-ref lst (random-int 0 (- len 1))))))
+
+;;; ============================================================
+;;; Quantum Random Functions
+;;; These use hardware entropy for cryptographically secure randomness
+;;; ============================================================
+
+;; qrandom: Returns a quantum random float in [0, 1)
+(define (qrandom)
+  (quantum-random))
+
+;; qrandom-int: Returns a quantum random integer in range [low, high]
+(define (qrandom-int low high)
+  (quantum-random-range low high))
+
+;; qrandom-bool: Returns #t or #f with quantum random selection
+(define (qrandom-bool)
+  (< (quantum-random) 0.5))
+
+;; qrandom-choice: Select a random element using quantum random
+(define (qrandom-choice lst)
+  (let ((len (length lst)))
+    (if (= len 0)
+        #f
+        (list-ref lst (quantum-random-range 0 (- len 1))))))
+
+;;; ============================================================
+;;; Distribution Sampling
+;;; ============================================================
+
+;; uniform: Random float in [low, high]
+(define (uniform low high)
+  (+ low (* (random) (- high low))))
+
+;; quniform: Quantum random float in [low, high]
+(define (quniform low high)
+  (+ low (* (quantum-random) (- high low))))
+
+;; normal-scalar: Sample from standard normal distribution using Box-Muller
+;; Returns a pair of independent normal random values
+(define (normal-pair)
+  (let ((u1 (random))
+        (u2 (random)))
+    (let ((r (sqrt (* -2.0 (log u1))))
+          (theta (* 6.283185307179586 u2)))
+      (list (* r (cos theta))
+            (* r (sin theta))))))
+
+;; normal: Sample from normal distribution with mean μ and std σ
+(define (normal mu sigma)
+  (let ((z (car (normal-pair))))
+    (+ mu (* sigma z))))
+
+;; exponential: Sample from exponential distribution with rate λ
+(define (exponential lambda)
+  (* (- (/ 1.0 lambda)) (log (random))))
+
+;; poisson: Sample from Poisson distribution with mean λ
+;; Uses the Knuth algorithm for small λ
+(define (poisson lambda)
+  (let ((L (exp (- lambda)))
+        (state (make-vector 2 0.0)))  ;; [k, p]
+    (vector-set! state 0 0.0)  ;; k = 0
+    (vector-set! state 1 1.0)  ;; p = 1
+    (letrec ((loop (lambda ()
+               (let ((p (vref state 1))
+                     (k (vref state 0)))
+                 (if (> p L)
+                     (begin
+                       (vector-set! state 1 (* p (random)))
+                       (vector-set! state 0 (+ k 1))
+                       (loop))
+                     (- k 1))))))
+      (loop))))
+
+;; bernoulli: Sample from Bernoulli distribution with probability p
+(define (bernoulli p)
+  (if (< (random) p) 1 0))
+
+;; geometric: Sample from geometric distribution
+;; Returns number of failures before first success
+(define (geometric p)
+  (truncate (/ (log (random)) (log (- 1 p)))))
+
+;; binomial: Sample from binomial distribution B(n, p)
+;; Using simple trial method (efficient for small n)
+(define (binomial n p)
+  (let ((state (make-vector 2 0.0)))  ;; [i, count]
+    (vector-set! state 0 0.0)
+    (vector-set! state 1 0.0)
+    (letrec ((loop (lambda ()
+               (let ((i (vref state 0)))
+                 (if (< i n)
+                     (begin
+                       (if (< (random) p)
+                           (vector-set! state 1 (+ (vref state 1) 1)))
+                       (vector-set! state 0 (+ i 1))
+                       (loop))
+                     (truncate (vref state 1)))))))
+      (loop))))
+
+;;; ============================================================
+;;; Vector/Tensor Random Functions
+;;; ============================================================
+
+;; random-vector: Create a vector of n random floats in [0, 1)
+(define (random-vector n)
+  (let ((v (make-vector n 0.0)))
+    (letrec ((fill (lambda (i)
+               (if (< i n)
+                   (begin
+                     (vector-set! v i (random))
+                     (fill (+ i 1)))
+                   v))))
+      (fill 0))))
+
+;; random-uniform-vector: Create a vector of n random floats in [low, high]
+(define (random-uniform-vector n low high)
+  (let ((v (make-vector n 0.0))
+        (range (- high low)))
+    (letrec ((fill (lambda (i)
+               (if (< i n)
+                   (begin
+                     (vector-set! v i (+ low (* (random) range)))
+                     (fill (+ i 1)))
+                   v))))
+      (fill 0))))
+
+;; random-normal-vector: Create a vector of n standard normal samples
+(define (random-normal-vector n)
+  (let ((v (make-vector n 0.0)))
+    (letrec ((fill (lambda (i)
+               (if (< i n)
+                   (begin
+                     (vector-set! v i (normal 0.0 1.0))
+                     (fill (+ i 1)))
+                   v))))
+      (fill 0))))
+
+;; shuffle: Random permutation of a list (Fisher-Yates)
+(define (shuffle lst)
+  (let ((v (list->vector lst))
+        (n (length lst)))
+    (letrec ((swap (lambda (i j)
+               (let ((tmp (vref v i)))
+                 (vector-set! v i (vref v j))
+                 (vector-set! v j tmp))))
+             (loop (lambda (i)
+               (if (> i 1)
+                   (let ((j (random-int 0 (- i 1))))
+                     (swap (- i 1) j)
+                     (loop (- i 1)))
+                   (vector->list v)))))
+      (loop n))))
+
+;; sample: Random sample of k elements from a list without replacement
+(define (sample lst k)
+  (let ((shuffled (shuffle lst)))
+    (letrec ((take-n (lambda (xs n acc)
+               (if (or (= n 0) (null? xs))
+                   (reverse acc)
+                   (take-n (cdr xs) (- n 1) (cons (car xs) acc))))))
+      (take-n shuffled k '()))))
+
+;; weighted-choice: Select from list with given weights
+;; weights should be a list of non-negative numbers
+(define (weighted-choice items weights)
+  (let ((total (apply + weights))
+        (r (* (random) total)))
+    (letrec ((select (lambda (items weights acc)
+               (if (null? items)
+                   #f
+                   (let ((next-acc (+ acc (car weights))))
+                     (if (<= r next-acc)
+                         (car items)
+                         (select (cdr items) (cdr weights) next-acc)))))))
+      (select items weights 0.0))))
+
+;;; ============================================================
+;;; Seed Control
+;;; ============================================================
+
+;; set-random-seed!: Set the pseudorandom number generator seed
+(define (set-random-seed! seed)
+  (srand48 seed))
+
+;; current-time-seed: Get a seed based on current time
+;; Returns seconds since epoch
+(define (current-time-seed)
+  (time 0))
+
+;; randomize!: Initialize RNG with time-based seed
+(define (randomize!)
+  (set-random-seed! (current-time-seed)))

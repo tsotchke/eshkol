@@ -8425,6 +8425,7 @@ private:
         if (func_name == "tensor-reduce-all") return tensor_->tensorReduceAll(op);
 
         // MIGRATED: ML tensor creation functions - now delegated to TensorCodegen
+        if (func_name == "make-tensor") return tensor_->tensor(op);
         if (func_name == "zeros") return tensor_->zeros(op);
         if (func_name == "ones") return tensor_->ones(op);
         if (func_name == "eye") return tensor_->eye(op);
@@ -8435,7 +8436,15 @@ private:
         if (func_name == "reshape") return tensor_->reshape(op);
         // MIGRATED: transpose - now delegated to TensorCodegen
         if (func_name == "transpose") return tensor_->transpose(op);
-        if (func_name == "flatten") return codegenFlatten(op);
+        if (func_name == "flatten") return tensor_->flatten(op);
+
+        // Shape operations (Phase 4)
+        if (func_name == "squeeze") return tensor_->squeeze(op);
+        if (func_name == "unsqueeze") return tensor_->unsqueeze(op);
+        if (func_name == "concatenate") return tensor_->concatenate(op);
+        if (func_name == "stack") return tensor_->stack(op);
+        if (func_name == "split") return tensor_->split(op);
+        if (func_name == "slice") return tensor_->slice(op);
 
         // ML linear algebra
         if (func_name == "matmul") return codegenMatmul(op);
@@ -8448,6 +8457,55 @@ private:
         // MIGRATED: ML statistics - now delegated to TensorCodegen
         if (func_name == "tensor-sum") return tensor_->tensorSum(op);
         if (func_name == "tensor-mean") return tensor_->tensorMean(op);
+
+        // Vector ↔ Tensor conversion builtins
+        if (func_name == "vector->tensor") return tensor_->vectorToTensor(op);
+        if (func_name == "tensor->vector") return tensor_->tensorToVector(op);
+
+        // Activation functions (SIMD-accelerated)
+        if (func_name == "relu") return tensor_->tensorRelu(op);
+        if (func_name == "sigmoid") return tensor_->tensorSigmoid(op);
+        if (func_name == "softmax") return tensor_->tensorSoftmax(op);
+        if (func_name == "gelu") return tensor_->tensorGelu(op);
+        if (func_name == "leaky-relu") return tensor_->tensorLeakyRelu(op);
+        if (func_name == "silu") return tensor_->tensorSilu(op);
+
+        // Statistics operations
+        if (func_name == "tensor-var") return tensor_->tensorVar(op);
+        if (func_name == "tensor-std") return tensor_->tensorStd(op);
+
+        // Random tensor generation
+        if (func_name == "rand") return tensor_->tensorRand(op);
+        if (func_name == "randn") return tensor_->tensorRandn(op);
+        if (func_name == "randint") return tensor_->tensorRandint(op);
+
+        // Additional Shape operations (Phase 4)
+        if (func_name == "tile") return tensor_->tile(op);
+        if (func_name == "pad") return tensor_->pad(op);
+
+        // Additional Statistics operations (Phase 5)
+        if (func_name == "tensor-min") return tensor_->tensorMin(op);
+        if (func_name == "tensor-max") return tensor_->tensorMax(op);
+        if (func_name == "tensor-argmin") return tensor_->tensorArgmin(op);
+        if (func_name == "tensor-argmax") return tensor_->tensorArgmax(op);
+        if (func_name == "tensor-cov") return tensor_->tensorCov(op);
+        if (func_name == "tensor-corrcoef") return tensor_->tensorCorrcoef(op);
+
+        // Convolution & Pooling operations (Phase 7)
+        if (func_name == "max-pool2d") return tensor_->maxPool2d(op);
+        if (func_name == "avg-pool2d") return tensor_->avgPool2d(op);
+        if (func_name == "conv1d") return tensor_->conv1d(op);
+        if (func_name == "conv2d") return tensor_->conv2d(op);
+        if (func_name == "conv3d") return tensor_->conv3d(op);
+        if (func_name == "batch-norm") return tensor_->batchNorm(op);
+        if (func_name == "layer-norm") return tensor_->layerNorm(op);
+
+        // Bitwise operations (Phase 8)
+        if (func_name == "bitwise-and") return codegenBitwiseAnd(op);
+        if (func_name == "bitwise-or") return codegenBitwiseOr(op);
+        if (func_name == "bitwise-xor") return codegenBitwiseXor(op);
+        if (func_name == "bitwise-not") return codegenBitwiseNot(op);
+        if (func_name == "arithmetic-shift") return codegenArithmeticShift(op);
 
         // Handle tensor-to-string conversions
         if (func_name == "vector-to-string") return codegenVectorToString(op);
@@ -11702,6 +11760,140 @@ private:
     // MIGRATED: Unless conditional - delegates to ControlFlowCodegen
     Value* codegenUnless(const eshkol_operations_t* op) {
         return flow_->codegenUnless(op);
+    }
+
+    // ============================================================
+    // Bitwise Operations (Phase 8)
+    // ============================================================
+
+    // bitwise-and: (bitwise-and a b) -> integer AND
+    Value* codegenBitwiseAnd(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 2) {
+            eshkol_error("bitwise-and requires exactly 2 arguments");
+            return nullptr;
+        }
+
+        TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
+        TypedValue tv_b = codegenTypedAST(&op->call_op.variables[1]);
+        if (!tv_a.llvm_value || !tv_b.llvm_value) return nullptr;
+
+        Value* a = typedValueToTaggedValue(tv_a);
+        Value* b = typedValueToTaggedValue(tv_b);
+
+        // Extract integer values
+        Value* a_int = tagged_->unpackInt64(a);
+        Value* b_int = tagged_->unpackInt64(b);
+
+        // Perform bitwise AND
+        Value* result = builder->CreateAnd(a_int, b_int, "bitwise_and");
+
+        return tagged_->packInt64(result);
+    }
+
+    // bitwise-or: (bitwise-or a b) -> integer OR
+    Value* codegenBitwiseOr(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 2) {
+            eshkol_error("bitwise-or requires exactly 2 arguments");
+            return nullptr;
+        }
+
+        TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
+        TypedValue tv_b = codegenTypedAST(&op->call_op.variables[1]);
+        if (!tv_a.llvm_value || !tv_b.llvm_value) return nullptr;
+
+        Value* a = typedValueToTaggedValue(tv_a);
+        Value* b = typedValueToTaggedValue(tv_b);
+
+        Value* a_int = tagged_->unpackInt64(a);
+        Value* b_int = tagged_->unpackInt64(b);
+
+        Value* result = builder->CreateOr(a_int, b_int, "bitwise_or");
+
+        return tagged_->packInt64(result);
+    }
+
+    // bitwise-xor: (bitwise-xor a b) -> integer XOR
+    Value* codegenBitwiseXor(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 2) {
+            eshkol_error("bitwise-xor requires exactly 2 arguments");
+            return nullptr;
+        }
+
+        TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
+        TypedValue tv_b = codegenTypedAST(&op->call_op.variables[1]);
+        if (!tv_a.llvm_value || !tv_b.llvm_value) return nullptr;
+
+        Value* a = typedValueToTaggedValue(tv_a);
+        Value* b = typedValueToTaggedValue(tv_b);
+
+        Value* a_int = tagged_->unpackInt64(a);
+        Value* b_int = tagged_->unpackInt64(b);
+
+        Value* result = builder->CreateXor(a_int, b_int, "bitwise_xor");
+
+        return tagged_->packInt64(result);
+    }
+
+    // bitwise-not: (bitwise-not a) -> integer NOT (one's complement)
+    Value* codegenBitwiseNot(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("bitwise-not requires exactly 1 argument");
+            return nullptr;
+        }
+
+        TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv_a.llvm_value) return nullptr;
+
+        Value* a = typedValueToTaggedValue(tv_a);
+        Value* a_int = tagged_->unpackInt64(a);
+
+        // NOT is XOR with all 1s (-1 in two's complement)
+        Value* result = builder->CreateNot(a_int, "bitwise_not");
+
+        return tagged_->packInt64(result);
+    }
+
+    // arithmetic-shift: (arithmetic-shift n count) -> shift n by count bits
+    // Positive count = left shift, negative count = right shift (arithmetic)
+    Value* codegenArithmeticShift(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 2) {
+            eshkol_error("arithmetic-shift requires exactly 2 arguments");
+            return nullptr;
+        }
+
+        TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
+        TypedValue tv_count = codegenTypedAST(&op->call_op.variables[1]);
+        if (!tv_n.llvm_value || !tv_count.llvm_value) return nullptr;
+
+        Value* n = typedValueToTaggedValue(tv_n);
+        Value* count = typedValueToTaggedValue(tv_count);
+
+        Value* n_int = tagged_->unpackInt64(n);
+        Value* count_int = tagged_->unpackInt64(count);
+
+        // Check if count is negative (right shift) or positive (left shift)
+        Value* zero = ConstantInt::get(int64_type, 0);
+        Value* is_left_shift = builder->CreateICmpSGE(count_int, zero, "is_left");
+
+        // For left shift: shl n, count
+        // For right shift: ashr n, -count
+        Value* neg_count = builder->CreateNeg(count_int, "neg_count");
+
+        // Clamp shift amount to valid range (0-63 for 64-bit)
+        Value* max_shift = ConstantInt::get(int64_type, 63);
+        Value* left_amt = builder->CreateSelect(
+            builder->CreateICmpUGT(count_int, max_shift),
+            max_shift, count_int);
+        Value* right_amt = builder->CreateSelect(
+            builder->CreateICmpUGT(neg_count, max_shift),
+            max_shift, neg_count);
+
+        Value* left_result = builder->CreateShl(n_int, left_amt, "shl");
+        Value* right_result = builder->CreateAShr(n_int, right_amt, "ashr");
+
+        Value* result = builder->CreateSelect(is_left_shift, left_result, right_result, "shift_result");
+
+        return tagged_->packInt64(result);
     }
 
     // Type predicates - MIGRATED to consolidated type system

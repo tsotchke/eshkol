@@ -166,6 +166,149 @@ public:
      */
     llvm::Value* tensorMean(const eshkol_operations_t* op);
 
+    // === Type Conversion ===
+
+    /**
+     * Convert Scheme vector to tensor: (vector->tensor vec)
+     * @param op The operation AST node
+     * @return 1D tensor with elements copied from vector
+     */
+    llvm::Value* vectorToTensor(const eshkol_operations_t* op);
+
+    /**
+     * Convert tensor to Scheme vector: (tensor->vector tensor)
+     * @param op The operation AST node
+     * @return Scheme vector with elements from flattened tensor
+     */
+    llvm::Value* tensorToVector(const eshkol_operations_t* op);
+
+    // === Activation Functions (SIMD-Accelerated) ===
+
+    /**
+     * ReLU activation: max(0, x)
+     * @param op The operation AST node
+     * @return Tensor with ReLU applied element-wise
+     */
+    llvm::Value* tensorRelu(const eshkol_operations_t* op);
+
+    /**
+     * Sigmoid activation: 1 / (1 + exp(-x))
+     * @param op The operation AST node
+     * @return Tensor with sigmoid applied element-wise
+     */
+    llvm::Value* tensorSigmoid(const eshkol_operations_t* op);
+
+    /**
+     * Softmax activation: exp(x_i) / sum(exp(x))
+     * Numerically stable version using max subtraction
+     * @param op The operation AST node
+     * @return Tensor with softmax applied
+     */
+    llvm::Value* tensorSoftmax(const eshkol_operations_t* op);
+
+    /**
+     * GELU activation: x * 0.5 * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))
+     * Uses fast sigmoid approximation: x * σ(1.702 * x)
+     * @param op The operation AST node
+     * @return Tensor with GELU applied element-wise
+     */
+    llvm::Value* tensorGelu(const eshkol_operations_t* op);
+
+    /**
+     * Leaky ReLU activation: x if x > 0, else alpha * x
+     * @param op The operation AST node (tensor, optional alpha=0.01)
+     * @return Tensor with leaky ReLU applied element-wise
+     */
+    llvm::Value* tensorLeakyRelu(const eshkol_operations_t* op);
+
+    /**
+     * SiLU/Swish activation: x * sigmoid(x)
+     * @param op The operation AST node
+     * @return Tensor with SiLU applied element-wise
+     */
+    llvm::Value* tensorSilu(const eshkol_operations_t* op);
+
+    // === Statistics Operations ===
+
+    /**
+     * Compute tensor variance: (tensor-var tensor)
+     * @param op The operation AST node
+     * @return Scalar variance value
+     */
+    llvm::Value* tensorVar(const eshkol_operations_t* op);
+
+    /**
+     * Compute tensor standard deviation: (tensor-std tensor)
+     * @param op The operation AST node
+     * @return Scalar standard deviation value
+     */
+    llvm::Value* tensorStd(const eshkol_operations_t* op);
+
+    /**
+     * Compute tensor minimum: (tensor-min tensor)
+     * @param op The operation AST node
+     * @return Scalar minimum value
+     */
+    llvm::Value* tensorMin(const eshkol_operations_t* op);
+
+    /**
+     * Compute tensor maximum: (tensor-max tensor)
+     * @param op The operation AST node
+     * @return Scalar maximum value
+     */
+    llvm::Value* tensorMax(const eshkol_operations_t* op);
+
+    /**
+     * Compute index of minimum: (tensor-argmin tensor)
+     * @param op The operation AST node
+     * @return Integer index of minimum value
+     */
+    llvm::Value* tensorArgmin(const eshkol_operations_t* op);
+
+    /**
+     * Compute index of maximum: (tensor-argmax tensor)
+     * @param op The operation AST node
+     * @return Integer index of maximum value
+     */
+    llvm::Value* tensorArgmax(const eshkol_operations_t* op);
+
+    /**
+     * Compute covariance matrix: (tensor-cov x y)
+     * @param op The operation AST node
+     * @return Covariance value or matrix
+     */
+    llvm::Value* tensorCov(const eshkol_operations_t* op);
+
+    /**
+     * Compute correlation coefficient: (tensor-corrcoef x y)
+     * @param op The operation AST node
+     * @return Correlation coefficient
+     */
+    llvm::Value* tensorCorrcoef(const eshkol_operations_t* op);
+
+    // === Random Tensor Generation ===
+
+    /**
+     * Create tensor with uniform random values [0, 1): (rand dim1 dim2 ...)
+     * @param op The operation AST node with dimensions
+     * @return Tensor filled with uniform random values
+     */
+    llvm::Value* tensorRand(const eshkol_operations_t* op);
+
+    /**
+     * Create tensor with normal random values: (randn dim1 dim2 ...)
+     * @param op The operation AST node with dimensions
+     * @return Tensor filled with standard normal values (mean=0, std=1)
+     */
+    llvm::Value* tensorRandn(const eshkol_operations_t* op);
+
+    /**
+     * Create tensor with random integers: (randint low high dim1 dim2 ...)
+     * @param op The operation AST node with low, high, and dimensions
+     * @return Tensor filled with random integers in [low, high)
+     */
+    llvm::Value* tensorRandint(const eshkol_operations_t* op);
+
     // === Shape Operations ===
 
     /**
@@ -189,7 +332,141 @@ public:
      */
     llvm::Value* reshape(const eshkol_operations_t* op);
 
+    /**
+     * Squeeze tensor: remove dimensions of size 1
+     * (squeeze tensor) - remove all size-1 dims
+     * (squeeze tensor dim) - remove specific dim if size is 1
+     * @param op The operation AST node
+     * @return Tensor with same data, fewer dimensions
+     */
+    llvm::Value* squeeze(const eshkol_operations_t* op);
+
+    /**
+     * Unsqueeze tensor: add a dimension of size 1 at position
+     * (unsqueeze tensor dim) - add size-1 dim at position
+     * @param op The operation AST node
+     * @return Tensor with same data, one more dimension
+     */
+    llvm::Value* unsqueeze(const eshkol_operations_t* op);
+
+    /**
+     * Concatenate tensors along an axis
+     * (concatenate axis tensor1 tensor2 ...)
+     * @param op The operation AST node
+     * @return Concatenated tensor
+     */
+    llvm::Value* concatenate(const eshkol_operations_t* op);
+
+    /**
+     * Stack tensors on a new axis
+     * (stack axis tensor1 tensor2 ...)
+     * @param op The operation AST node
+     * @return Stacked tensor with new dimension
+     */
+    llvm::Value* stack(const eshkol_operations_t* op);
+
+    /**
+     * Split tensor into chunks along an axis
+     * (split tensor num-chunks axis) - split into equal chunks
+     * @param op The operation AST node
+     * @return List of tensor views
+     */
+    llvm::Value* split(const eshkol_operations_t* op);
+
+    /**
+     * Slice tensor: extract a subtensor
+     * (slice tensor start end) - 1D slice
+     * (slice tensor starts ends) - multi-dim slice with lists
+     * @param op The operation AST node
+     * @return Sliced tensor (view or copy based on contiguity)
+     */
+    llvm::Value* slice(const eshkol_operations_t* op);
+
+    /**
+     * Flatten tensor to 1D
+     * (flatten tensor) - flatten all dimensions
+     * @param op The operation AST node
+     * @return 1D tensor with all elements
+     */
+    llvm::Value* flatten(const eshkol_operations_t* op);
+
+    /**
+     * Tile tensor: repeat tensor along dimensions
+     * (tile tensor reps) - repeat according to reps list
+     * @param op The operation AST node
+     * @return Tiled tensor
+     */
+    llvm::Value* tile(const eshkol_operations_t* op);
+
+    /**
+     * Pad tensor: add padding with a value
+     * (pad tensor pad-width value) - pad tensor on each side
+     * @param op The operation AST node
+     * @return Padded tensor
+     */
+    llvm::Value* pad(const eshkol_operations_t* op);
+
+    // === Convolution & Pooling Operations ===
+
+    /**
+     * 2D max pooling: (max-pool2d input kernel-size stride padding)
+     * @param op The operation AST node
+     * @return Pooled tensor
+     */
+    llvm::Value* maxPool2d(const eshkol_operations_t* op);
+
+    /**
+     * 2D average pooling: (avg-pool2d input kernel-size stride padding)
+     * @param op The operation AST node
+     * @return Pooled tensor
+     */
+    llvm::Value* avgPool2d(const eshkol_operations_t* op);
+
+    /**
+     * 1D convolution: (conv1d input kernel stride padding)
+     * @param op The operation AST node
+     * @return Convolved tensor
+     */
+    llvm::Value* conv1d(const eshkol_operations_t* op);
+
+    /**
+     * 2D convolution: (conv2d input kernel stride padding)
+     * Uses im2col + GEMM for efficient computation
+     * @param op The operation AST node
+     * @return Convolved tensor
+     */
+    llvm::Value* conv2d(const eshkol_operations_t* op);
+
+    /**
+     * 3D convolution: (conv3d input kernel stride padding)
+     * Uses im2col + GEMM for efficient computation
+     * @param op The operation AST node
+     * @return Convolved tensor
+     */
+    llvm::Value* conv3d(const eshkol_operations_t* op);
+
+    /**
+     * Batch normalization: (batch-norm input gamma beta epsilon)
+     * @param op The operation AST node
+     * @return Normalized tensor
+     */
+    llvm::Value* batchNorm(const eshkol_operations_t* op);
+
+    /**
+     * Layer normalization: (layer-norm input gamma beta epsilon)
+     * @param op The operation AST node
+     * @return Normalized tensor
+     */
+    llvm::Value* layerNorm(const eshkol_operations_t* op);
+
     // === Tensor Creation Functions ===
+
+    /**
+     * Create tensor from elements: (tensor e1 e2 e3 ...)
+     * @param op The operation AST node
+     * @return 1D tensor with the provided elements
+     */
+    llvm::Value* tensor(const eshkol_operations_t* op);
 
     /**
      * Create zero-filled tensor: (zeros dim1 dim2 ...)

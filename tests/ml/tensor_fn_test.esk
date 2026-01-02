@@ -1,0 +1,11 @@
+;;; Test make-tensor function
+
+(define (test-make-tensor)
+  (display "Testing make-tensor...")
+  (newline)
+  (let ((k (make-tensor 1.0 0.0 -1.0)))
+    (display "make-tensor 1.0 0.0 -1.0: ")
+    (display k)
+    (newline)))
+
+(test-make-tensor)

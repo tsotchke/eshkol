@@ -1,0 +1,11 @@
+;;; Test tensor literal syntax
+
+(define (test-tensor-literal)
+  (display "Testing tensor literal...")
+  (newline)
+  (let ((k (tensor 3 1.0 0.0 -1.0)))
+    (display "tensor 3 1.0 0.0 -1.0: ")
+    (display k)
+    (newline)))
+
+(test-tensor-literal)

@@ -1,0 +1,88 @@
+;;; Convolution and Pooling Test Suite (Simplified)
+;;; Tests N-dimensional conv/pool operations
+
+(define (run-tests)
+  (display "=== Convolution & Pooling Tests ===")
+  (newline)
+
+  ;; Test Max Pool 2D on 4x4 tensor
+  (display "-- Testing Max Pool 2D --")
+  (newline)
+  (let ((input (reshape (arange 16) 4 4)))
+    (display "input 4x4: ")
+    (display input)
+    (newline)
+    (let ((result (max-pool2d input 2 2)))
+      (display "max-pool2d (2x2, stride 2): ")
+      (display result)
+      (newline)))
+
+  ;; Test Avg Pool 2D on 4x4 tensor
+  (display "-- Testing Avg Pool 2D --")
+  (newline)
+  (let ((input (reshape (arange 16) 4 4)))
+    (let ((result (avg-pool2d input 2 2)))
+      (display "avg-pool2d (2x2, stride 2): ")
+      (display result)
+      (newline)))
+
+  ;; Test Conv1D on 1D tensor
+  (display "-- Testing Conv1D --")
+  (newline)
+  (let ((input (arange 1 9)))
+    (display "input 1D: ")
+    (display input)
+    (newline)
+    (let ((kernel (tensor 3 1.0 0.0 -1.0)))
+      (display "kernel (edge): ")
+      (display kernel)
+      (newline)
+      (let ((result (conv1d input kernel 1)))
+        (display "conv1d result: ")
+        (display result)
+        (newline))))
+
+  ;; Test Conv2D on 3x3 tensor
+  (display "-- Testing Conv2D --")
+  (newline)
+  (let ((input (reshape (arange 1 10) 3 3)))
+    (display "input 3x3: ")
+    (display input)
+    (newline)
+    (let ((kernel (reshape (tensor 9 1.0 0.0 -1.0 0.0 0.0 0.0 -1.0 0.0 1.0) 3 3)))
+      (display "kernel 3x3: ")
+      (display kernel)
+      (newline)
+      (let ((result (conv2d input kernel 1)))
+        (display "conv2d result: ")
+        (display result)
+        (newline))))
+
+  ;; Test Batch Norm
+  (display "-- Testing Batch Norm --")
+  (newline)
+  (let ((input (reshape (tensor 8 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0) 2 4)))
+    (display "input: ")
+    (display input)
+    (newline)
+    (let ((result (batch-norm input 1.0 0.0 0.00001)))
+      (display "batch-norm result: ")
+      (display result)
+      (newline)))
+
+  ;; Test Layer Norm
+  (display "-- Testing Layer Norm --")
+  (newline)
+  (let ((input (tensor 4 1.0 2.0 3.0 4.0)))
+    (display "input: ")
+    (display input)
+    (newline)
+    (let ((result (layer-norm input 1.0 0.0 0.00001)))
+      (display "layer-norm result: ")
+      (display result)
+      (newline)))
+
+  (display "=== Convolution & Pooling Tests Complete ===")
+  (newline))
+
+(run-tests)

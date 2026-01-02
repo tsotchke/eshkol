@@ -1,0 +1,84 @@
+;;; Activation Functions Test Suite
+;;; Tests for relu, sigmoid, softmax, gelu, leaky-relu
+
+(define (approx-equal? a b epsilon)
+  (< (abs (- a b)) epsilon))
+
+(define (run-tests)
+  (display "=== Activation Functions Tests ===")
+  (newline)
+
+  ;; Test ReLU
+  (display "-- Testing ReLU --")
+  (newline)
+  (let* ((t #(-2.0 -1.0 0.0 1.0 2.0))
+         (r (relu t)))
+    (display "input:  ")
+    (display t)
+    (newline)
+    (display "relu:   ")
+    (display r)
+    (newline)
+    ;; Expected: [0 0 0 1 2]
+    )
+
+  ;; Test Sigmoid
+  (display "-- Testing Sigmoid --")
+  (newline)
+  (let* ((t #(-2.0 0.0 2.0))
+         (s (sigmoid t)))
+    (display "input:    ")
+    (display t)
+    (newline)
+    (display "sigmoid:  ")
+    (display s)
+    (newline)
+    ;; Expected: ~[0.12, 0.5, 0.88]
+    )
+
+  ;; Test Softmax
+  (display "-- Testing Softmax --")
+  (newline)
+  (let* ((t #(1.0 2.0 3.0))
+         (s (softmax t)))
+    (display "input:    ")
+    (display t)
+    (newline)
+    (display "softmax:  ")
+    (display s)
+    (newline)
+    ;; Should sum to 1.0
+    (display "sum:      ")
+    (display (tensor-sum s))
+    (newline))
+
+  ;; Test GELU
+  (display "-- Testing GELU --")
+  (newline)
+  (let* ((t #(-2.0 -1.0 0.0 1.0 2.0))
+         (g (gelu t)))
+    (display "input:  ")
+    (display t)
+    (newline)
+    (display "gelu:   ")
+    (display g)
+    (newline))
+
+  ;; Test Leaky ReLU
+  (display "-- Testing Leaky ReLU --")
+  (newline)
+  (let* ((t #(-2.0 -1.0 0.0 1.0 2.0))
+         (lr (leaky-relu t)))
+    (display "input:       ")
+    (display t)
+    (newline)
+    (display "leaky-relu:  ")
+    (display lr)
+    (newline)
+    ;; Expected: [-0.02 -0.01 0 1 2] with alpha=0.01
+    )
+
+  (display "=== Activation Functions Tests Complete ===")
+  (newline))
+
+(run-tests)

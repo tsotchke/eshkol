@@ -1,0 +1,82 @@
+;;; Bitwise Operations Test Suite (Phase 8)
+
+(define (run-tests)
+  (display "=== Bitwise Operations Tests ===")
+  (newline)
+
+  ;; Test bitwise-and
+  (display "-- Testing bitwise-and --")
+  (newline)
+  (display "12 AND 10 = ")
+  (display (bitwise-and 12 10))  ; 1100 AND 1010 = 1000 = 8
+  (newline)
+  (display "255 AND 15 = ")
+  (display (bitwise-and 255 15))  ; 11111111 AND 00001111 = 00001111 = 15
+  (newline)
+  (display "7 AND 0 = ")
+  (display (bitwise-and 7 0))  ; Should be 0
+  (newline)
+
+  ;; Test bitwise-or
+  (display "-- Testing bitwise-or --")
+  (newline)
+  (display "12 OR 10 = ")
+  (display (bitwise-or 12 10))  ; 1100 OR 1010 = 1110 = 14
+  (newline)
+  (display "8 OR 4 = ")
+  (display (bitwise-or 8 4))  ; 1000 OR 0100 = 1100 = 12
+  (newline)
+  (display "0 OR 0 = ")
+  (display (bitwise-or 0 0))  ; Should be 0
+  (newline)
+
+  ;; Test bitwise-xor
+  (display "-- Testing bitwise-xor --")
+  (newline)
+  (display "12 XOR 10 = ")
+  (display (bitwise-xor 12 10))  ; 1100 XOR 1010 = 0110 = 6
+  (newline)
+  (display "255 XOR 255 = ")
+  (display (bitwise-xor 255 255))  ; Should be 0
+  (newline)
+  (display "5 XOR 3 = ")
+  (display (bitwise-xor 5 3))  ; 101 XOR 011 = 110 = 6
+  (newline)
+
+  ;; Test bitwise-not
+  (display "-- Testing bitwise-not --")
+  (newline)
+  (display "NOT 0 = ")
+  (display (bitwise-not 0))  ; Should be -1 (all 1s in two's complement)
+  (newline)
+  (display "NOT -1 = ")
+  (display (bitwise-not -1))  ; Should be 0
+  (newline)
+
+  ;; Test arithmetic-shift (left shift with positive count)
+  (display "-- Testing arithmetic-shift (left) --")
+  (newline)
+  (display "1 << 4 = ")
+  (display (arithmetic-shift 1 4))  ; 1 shifted left 4 = 16
+  (newline)
+  (display "3 << 2 = ")
+  (display (arithmetic-shift 3 2))  ; 3 shifted left 2 = 12
+  (newline)
+
+  ;; Test arithmetic-shift (right shift with negative count)
+  (display "-- Testing arithmetic-shift (right) --")
+  (newline)
+  (display "16 >> 2 = ")
+  (display (arithmetic-shift 16 -2))  ; 16 shifted right 2 = 4
+  (newline)
+  (display "100 >> 3 = ")
+  (display (arithmetic-shift 100 -3))  ; 100 shifted right 3 = 12
+  (newline)
+  (display "-8 >> 2 = ")
+  (display (arithmetic-shift -8 -2))  ; -8 arithmetic right 2 = -2 (sign-extended)
+  (newline)
+
+  (display "=== Bitwise Tests Complete ===")
+  (newline))
+
+(run-tests)

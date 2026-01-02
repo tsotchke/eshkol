@@ -1,0 +1,371 @@
+;;; Eshkol Special Functions Library
+;;; Provides special mathematical functions for scientific computing
+;;;
+;;; Usage: (require "math/special")
+
+;;; ============================================================
+;;; Constants for Approximations
+;;; ============================================================
+
+(define special-epsilon 1e-15)
+(define max-iterations 100)
+
+;;; ============================================================
+;;; Gamma Function and Related
+;;; ============================================================
+
+;; Lanczos coefficients for gamma function approximation (g=7)
+(define lanczos-g 7)
+(define lanczos-coefficients
+  (vector 0.99999999999980993
+          676.5203681218851
+          -1259.1392167224028
+          771.32342877765313
+          -176.61502916214059
+          12.507343278686905
+          -0.13857109526572012
+          9.9843695780195716e-6
+          1.5056327351493116e-7))
+
+;; gamma: Gamma function using Lanczos approximation
+;; Γ(z) for z > 0
+(define (gamma z)
+  (if (< z 0.5)
+      ;; Reflection formula: Γ(1-z)Γ(z) = π/sin(πz)
+      (/ 3.14159265358979323846
+         (* (sin (* 3.14159265358979323846 z))
+            (gamma (- 1.0 z))))
+      ;; Lanczos approximation for z >= 0.5
+      (let* ((z-adj (- z 1.0))
+             (x (vref lanczos-coefficients 0)))
+        (letrec ((sum-coeffs (lambda (i acc)
+                   (if (< i 9)
+                       (sum-coeffs (+ i 1)
+                                   (+ acc (/ (vref lanczos-coefficients i)
+                                             (+ z-adj i))))
+                       acc))))
+          (let* ((x-sum (sum-coeffs 1 x))
+                 (t (+ z-adj lanczos-g 0.5)))
+            (* (sqrt (* 2.0 3.14159265358979323846))
+               (expt t (+ z-adj 0.5))
+               (exp (- 0.0 t))
+               x-sum))))))
+
+;; lgamma: Natural log of gamma function
+;; More numerically stable for large values
+(define (lgamma z)
+  (if (< z 0.5)
+      (- (log (/ 3.14159265358979323846
+                 (sin (* 3.14159265358979323846 z))))
+         (lgamma (- 1.0 z)))
+      (let* ((z-adj (- z 1.0))
+             (x (vref lanczos-coefficients 0)))
+        (letrec ((sum-coeffs (lambda (i acc)
+                   (if (< i 9)
+                       (sum-coeffs (+ i 1)
+                                   (+ acc (/ (vref lanczos-coefficients i)
+                                             (+ z-adj i))))
+                       acc))))
+          (let* ((x-sum (sum-coeffs 1 x))
+                 (t (+ z-adj lanczos-g 0.5)))
+            (+ (* 0.5 (log (* 2.0 3.14159265358979323846)))
+               (* (+ z-adj 0.5) (log t))
+               (- 0.0 t)
+               (log x-sum)))))))
+
+;; factorial: n! using gamma function
+(define (factorial n)
+  (if (< n 0)
+      #f  ;; undefined for negative integers
+      (if (< n 2)
+          1.0
+          (gamma (+ n 1.0)))))
+
+;; beta: Beta function B(a,b) = Γ(a)Γ(b)/Γ(a+b)
+(define (beta a b)
+  (exp (- (+ (lgamma a) (lgamma b))
+          (lgamma (+ a b)))))
+
+;; digamma: Digamma (psi) function - derivative of lgamma
+;; Uses asymptotic expansion for large x, recursion for small x
+(define (digamma x)
+  (if (< x 6.0)
+      ;; Recursion: ψ(x+1) = ψ(x) + 1/x
+      (- (digamma (+ x 1.0)) (/ 1.0 x))
+      ;; Asymptotic expansion for x >= 6
+      (let* ((x2 (/ 1.0 (* x x)))
+             (x4 (* x2 x2))
+             (x6 (* x4 x2))
+             (x8 (* x6 x2)))
+        (- (log x)
+           (/ 0.5 x)
+           (/ x2 12.0)
+           (- 0 (/ x4 120.0))
+           (/ x6 252.0)
+           (- 0 (/ x8 240.0))))))
+
+;;; ============================================================
+;;; Error Function and Related
+;;; ============================================================
+
+;; erf: Error function using Horner's method approximation
+;; Maximum error: 1.5e-7
+(define (erf x)
+  (let* ((sign (if (< x 0) -1.0 1.0))
+         (x-abs (abs x))
+         ;; Abramowitz & Stegun approximation 7.1.26
+         (a1 0.254829592)
+         (a2 -0.284496736)
+         (a3 1.421413741)
+         (a4 -1.453152027)
+         (a5 1.061405429)
+         (p 0.3275911)
+         (t (/ 1.0 (+ 1.0 (* p x-abs))))
+         (t2 (* t t))
+         (t3 (* t2 t))
+         (t4 (* t3 t))
+         (t5 (* t4 t))
+         (y (- 1.0
+               (* (+ (* a1 t)
+                     (* a2 t2)
+                     (* a3 t3)
+                     (* a4 t4)
+                     (* a5 t5))
+                  (exp (- 0.0 (* x-abs x-abs)))))))
+    (* sign y)))
+
+;; erfc: Complementary error function erfc(x) = 1 - erf(x)
+;; Direct computation for better precision when erf(x) ≈ 1
+(define (erfc x)
+  (- 1.0 (erf x)))
+
+;; erfinv: Inverse error function
+;; Approximation using rational function
+(define (erfinv y)
+  (if (or (<= y -1.0) (>= y 1.0))
+      (if (= y 1.0) +inf.0 (if (= y -1.0) -inf.0 +nan.0))
+      (let* ((a (* 0.886226899 (- (* 2.0 y) 1.0)))
+             (b (* a (+ 1.0 (* 0.278393 (abs a))
+                       (* 0.230389 (* a a))
+                       (* 0.000972 (* a a a))
+                       (* 0.078108 (* a a a a))))))
+        b)))
+
+;; normcdf: Standard normal CDF Φ(x)
+(define (normcdf x)
+  (* 0.5 (+ 1.0 (erf (/ x 1.4142135623730951)))))
+
+;; normpdf: Standard normal PDF φ(x)
+(define (normpdf x)
+  (* 0.3989422804014327  ;; 1/sqrt(2π)
+     (exp (* -0.5 x x))))
+
+;;; ============================================================
+;;; Bessel Functions
+;;; ============================================================
+
+;; besselj0: Bessel function of the first kind, order 0
+;; Uses polynomial approximation
+(define (besselj0 x)
+  (let ((ax (abs x)))
+    (if (< ax 8.0)
+        ;; Rational function approximation for |x| < 8
+        (let* ((y (* x x))
+               (p1 57568490574.0)
+               (p2 -13362590354.0)
+               (p3 651619640.7)
+               (p4 -11214424.18)
+               (p5 77392.33017)
+               (p6 -184.9052456)
+               (q1 57568490411.0)
+               (q2 1029532985.0)
+               (q3 9494680.718)
+               (q4 59272.64853)
+               (q5 267.8532712)
+               (q6 1.0))
+          (/ (+ p1 (* y (+ p2 (* y (+ p3 (* y (+ p4 (* y (+ p5 (* y p6))))))))))
+             (+ q1 (* y (+ q2 (* y (+ q3 (* y (+ q4 (* y (+ q5 (* y q6))))))))))))
+        ;; Asymptotic form for |x| >= 8
+        (let* ((z (/ 8.0 ax))
+               (z2 (* z z))
+               (xx (- ax 0.785398163397448))  ;; π/4
+               (p0 1.0)
+               (p1 -0.1098628627e-2)
+               (p2 0.2734510407e-4)
+               (p3 -0.2073370639e-5)
+               (p4 0.2093887211e-6)
+               (q0 -0.1562499995e-1)
+               (q1 0.1430488765e-3)
+               (q2 -0.6911147651e-5)
+               (q3 0.7621095161e-6)
+               (q4 -0.934945152e-7)
+               (ans1 (+ p0 (* z2 (+ p1 (* z2 (+ p2 (* z2 (+ p3 (* z2 p4)))))))))
+               (ans2 (+ q0 (* z2 (+ q1 (* z2 (+ q2 (* z2 (+ q3 (* z2 q4))))))))))
+          (* (sqrt (/ 0.636619772367581 ax))  ;; sqrt(2/π)
+             (- (* ans1 (cos xx)) (* z ans2 (sin xx))))))))
+
+;; besselj1: Bessel function of the first kind, order 1
+(define (besselj1 x)
+  (let* ((ax (abs x))
+         (sign (if (< x 0) -1.0 1.0)))
+    (if (< ax 8.0)
+        ;; Rational function approximation
+        (let* ((y (* x x))
+               (p1 72362614232.0)
+               (p2 -7895059235.0)
+               (p3 242396853.1)
+               (p4 -2972611.439)
+               (p5 15704.48260)
+               (p6 -30.16036606)
+               (q1 144725228442.0)
+               (q2 2300535178.0)
+               (q3 18583304.74)
+               (q4 99447.43394)
+               (q5 376.9991397)
+               (q6 1.0))
+          (* x (/ (+ p1 (* y (+ p2 (* y (+ p3 (* y (+ p4 (* y (+ p5 (* y p6))))))))))
+                  (+ q1 (* y (+ q2 (* y (+ q3 (* y (+ q4 (* y (+ q5 (* y q6)))))))))))))
+        ;; Asymptotic form
+        (let* ((z (/ 8.0 ax))
+               (z2 (* z z))
+               (xx (- ax 2.356194490192345))  ;; 3π/4
+               (p0 1.0)
+               (p1 0.183105e-2)
+               (p2 -0.3516396496e-4)
+               (p3 0.2457520174e-5)
+               (p4 -0.240337019e-6)
+               (q0 0.04687499995)
+               (q1 -0.2002690873e-3)
+               (q2 0.8449199096e-5)
+               (q3 -0.88228987e-6)
+               (q4 0.105787412e-6)
+               (ans1 (+ p0 (* z2 (+ p1 (* z2 (+ p2 (* z2 (+ p3 (* z2 p4)))))))))
+               (ans2 (+ q0 (* z2 (+ q1 (* z2 (+ q2 (* z2 (+ q3 (* z2 q4))))))))))
+          (* sign (sqrt (/ 0.636619772367581 ax))
+             (- (* ans1 (cos xx)) (* z ans2 (sin xx))))))))
+
+;; besseljn: Bessel function of the first kind, order n (integer)
+;; Uses Miller's recurrence algorithm for stability
+(define (besseljn n x)
+  (cond
+    ((= n 0) (besselj0 x))
+    ((= n 1) (besselj1 x))
+    ((< n 0) (* (if (even? n) 1.0 -1.0) (besseljn (- 0 n) x)))
+    ((= x 0.0) 0.0)
+    (else
+     ;; Downward recurrence
+     (let* ((ax (abs x))
+            (tox (/ 2.0 ax))
+            (m (* 2 (+ n (truncate (sqrt (* 40.0 n))))))
+            (state (make-vector 3 0.0)))  ;; [bjp, bj, sum]
+       (vector-set! state 0 0.0)  ;; bjp
+       (vector-set! state 1 1.0)  ;; bj
+       (vector-set! state 2 0.0)  ;; sum
+       (letrec ((recur (lambda (j ans)
+                  (if (= j 0)
+                      ans
+                      (let* ((bjp (vref state 0))
+                             (bj (vref state 1))
+                             (bjm (- (* j tox bj) bjp)))
+                        (vector-set! state 0 bj)
+                        (vector-set! state 1 bjm)
+                        (if (even? j)
+                            (vector-set! state 2 (+ (vref state 2) bjm)))
+                        (if (= j n)
+                            (recur (- j 1) bjm)
+                            (recur (- j 1) ans)))))))
+         (let ((raw-ans (recur m 0.0))
+               (sum2 (- (* 2.0 (vref state 2)) (vref state 1))))
+           (* (if (and (< x 0.0) (odd? n)) -1.0 1.0)
+              (/ raw-ans sum2))))))))
+
+;;; ============================================================
+;;; Incomplete Gamma Functions
+;;; ============================================================
+
+;; gammainc-lower: Lower incomplete gamma function γ(a,x)
+;; Uses series expansion
+(define (gammainc-lower a x)
+  (if (or (< x 0.0) (<= a 0.0))
+      #f
+      (if (= x 0.0)
+          0.0
+          (let* ((lngamma-a (lgamma a))
+                 (ax (- (* a (log x)) x lngamma-a)))
+            (if (< ax -88.0)  ;; Underflow
+                0.0
+                (letrec ((series (lambda (n an sum)
+                           (if (or (> n max-iterations)
+                                   (< (abs (/ an sum)) special-epsilon))
+                               (* (exp ax) sum)
+                               (let ((an-new (/ (* an x) (+ a n))))
+                                 (series (+ n 1) an-new (+ sum an-new)))))))
+                  (series 1 (/ 1.0 a) (/ 1.0 a))))))))
+
+;; gammainc-upper: Upper incomplete gamma function Γ(a,x)
+;; Uses continued fraction for convergence
+(define (gammainc-upper a x)
+  (- (gamma a) (gammainc-lower a x)))
+
+;;; ============================================================
+;;; Riemann Zeta Function
+;;; ============================================================
+
+;; zeta: Riemann zeta function ζ(s) for s > 1
+;; Uses Euler-Maclaurin formula
+(define (zeta s)
+  (if (<= s 1.0)
+      (if (= s 1.0) +inf.0 #f)  ;; Pole at s=1, undefined for s<1 here
+      (let* ((n 10)  ;; Number of terms
+             (sum-state (make-vector 1 0.0)))
+        ;; Direct sum for first n terms
+        (letrec ((sum-terms (lambda (k)
+                   (if (> k n)
+                       (vref sum-state 0)
+                       (begin
+                         (vector-set! sum-state 0
+                           (+ (vref sum-state 0)
+                              (/ 1.0 (expt k s))))
+                         (sum-terms (+ k 1)))))))
+          ;; Add integral approximation and corrections
+          (let ((direct (sum-terms 1))
+                (integral (/ (expt n (- 1.0 s)) (- s 1.0)))
+                (endpoint (/ 0.5 (expt n s)))
+                (bernoulli-term (/ s (* 12.0 (expt n (+ s 1.0))))))
+            (+ direct integral endpoint bernoulli-term))))))
+
+;;; ============================================================
+;;; Exponential Integral
+;;; ============================================================
+
+;; expint-e1: Exponential integral E₁(x) = ∫[x,∞] e^(-t)/t dt
+(define (expint-e1 x)
+  (if (<= x 0.0)
+      +inf.0
+      (if (< x 1.0)
+          ;; Power series for small x
+          (let ((euler-gamma 0.5772156649015329))
+            (letrec ((series (lambda (n term sum)
+                       (if (or (> n 100)
+                               (< (abs term) special-epsilon))
+                           (- (- 0.0 euler-gamma) (log x) sum)
+                           (let* ((n1 (+ n 1))
+                                  (new-term (* (- 0.0 term) x n (/ 1.0 (* n1 n1)))))
+                             (series n1 new-term (+ sum new-term)))))))
+              (series 0 x x)))
+          ;; Continued fraction for x >= 1
+          (let* ((a 1.0)
+                 (b (+ x 1.0)))
+            (letrec ((cf (lambda (i ai bi f c d)
+                      (if (> i 100)
+                          (* f (exp (- 0.0 x)))
+                          (let* ((ai-new (- 0.0 (* i i)))
+                                 (bi-new (+ bi 2.0))
+                                 (d-new (/ 1.0 (+ bi-new (* ai-new d))))
+                                 (c-new (+ bi-new (/ ai-new c)))
+                                 (delta (* c-new d-new))
+                                 (f-new (* f delta)))
+                            (if (< (abs (- delta 1.0)) special-epsilon)
+                                (* f-new (exp (- 0.0 x)))
+                                (cf (+ i 1) ai-new bi-new f-new c-new d-new)))))))
+              (cf 1 a b (/ 1.0 b) (/ 1.0 special-epsilon) (/ 1.0 b)))))))

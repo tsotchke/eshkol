@@ -11,8 +11,11 @@
  */
 
 #include "eshkol/backend/xla/xla_codegen.h"
+#include "eshkol/backend/codegen_context.h"
 #include <cstdlib>
 #include <sstream>
+#include <vector>
+#include <unordered_map>
 
 // MLIR includes (conditional compilation)
 // Only include when BOTH MLIR and StableHLO are available
@@ -23,10 +26,18 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Location.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #endif
+
+// LLVM includes for IR generation
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Type.h>
+#include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/Constants.h>
 
 namespace eshkol {
 namespace xla {
@@ -66,12 +77,16 @@ public:
     CodegenContext* ctx_ = nullptr;
     size_t threshold_ = 100000;
     bool available_ = false;
+    size_t op_counter_ = 0;  // For generating unique function names
 
 #ifdef ESHKOL_XLA_FULL_MLIR
     // Full MLIR + StableHLO available - enable XLA
     std::unique_ptr<mlir::MLIRContext> mlir_ctx_;
     std::unique_ptr<mlir::OpBuilder> builder_;
     mlir::OwningOpRef<mlir::ModuleOp> module_;
+
+    // Cache of compiled operations for reuse
+    std::unordered_map<std::string, llvm::Function*> compiled_ops_;
 
     explicit Impl(CodegenContext& ctx) : ctx_(&ctx), threshold_(g_xla_threshold) {
         // Initialize MLIR context
@@ -95,6 +110,112 @@ public:
     mlir::MLIRContext* getMLIRContext() { return mlir_ctx_.get(); }
     mlir::OpBuilder* getBuilder() { return builder_.get(); }
     mlir::ModuleOp getModule() { return module_.get(); }
+
+    // Build a StableHLO matmul function
+    // Returns the MLIR function for the operation
+    mlir::func::FuncOp buildMatmulFunc(
+        const std::vector<int64_t>& a_shape,
+        const std::vector<int64_t>& b_shape,
+        const std::string& name) {
+
+        auto& builder = *builder_;
+        auto loc = builder.getUnknownLoc();
+
+        // Create tensor types for inputs and output
+        auto f64Type = mlir::Float64Type::get(mlir_ctx_.get());
+        auto aType = mlir::RankedTensorType::get(a_shape, f64Type);
+        auto bType = mlir::RankedTensorType::get(b_shape, f64Type);
+
+        // Output shape: [a_shape[0], b_shape[1]] for 2D matmul
+        std::vector<int64_t> out_shape;
+        if (a_shape.size() == 2 && b_shape.size() == 2) {
+            out_shape = {a_shape[0], b_shape[1]};
+        } else {
+            // General case: last dim of a contracts with second-to-last of b
+            out_shape = a_shape;
+            out_shape.back() = b_shape.back();
+        }
+        auto outType = mlir::RankedTensorType::get(out_shape, f64Type);
+
+        // Create function type: (tensor<...>, tensor<...>) -> tensor<...>
+        auto funcType = mlir::FunctionType::get(
+            mlir_ctx_.get(),
+            {aType, bType},
+            {outType});
+
+        // Create function
+        builder.setInsertionPointToEnd(module_.get().getBody());
+        auto funcOp = builder.create<mlir::func::FuncOp>(loc, name, funcType);
+        funcOp.setVisibility(mlir::SymbolTable::Visibility::Public);
+
+        // Create entry block
+        auto* entryBlock = funcOp.addEntryBlock();
+        builder.setInsertionPointToStart(entryBlock);
+
+        // Get function arguments
+        auto aArg = entryBlock->getArgument(0);
+        auto bArg = entryBlock->getArgument(1);
+
+        // Create dot_general operation for matrix multiplication
+        // For 2D matmul: contract dimension 1 of a with dimension 0 of b
+        auto dotDimNumbers = mlir::stablehlo::DotDimensionNumbersAttr::get(
+            mlir_ctx_.get(),
+            /*lhsBatchingDimensions=*/{},
+            /*rhsBatchingDimensions=*/{},
+            /*lhsContractingDimensions=*/{static_cast<int64_t>(a_shape.size() - 1)},
+            /*rhsContractingDimensions=*/{0});
+
+        auto dotOp = builder.create<mlir::stablehlo::DotGeneralOp>(
+            loc,
+            outType,
+            aArg,
+            bArg,
+            dotDimNumbers,
+            /*precision_config=*/nullptr,
+            /*algorithm=*/nullptr);
+
+        // Return result
+        builder.create<mlir::func::ReturnOp>(loc, dotOp.getResult());
+
+        return funcOp;
+    }
+
+    // Get or create the XLA matmul runtime function declaration
+    llvm::Function* getOrCreateMatmulRuntime() {
+        auto& llvm_ctx = ctx_->context();
+        auto& module = ctx_->module();
+
+        const char* funcName = "eshkol_xla_matmul";
+
+        // Check if already declared
+        if (auto* existing = module.getFunction(funcName)) {
+            return existing;
+        }
+
+        // Create function type: void* xla_matmul(void* a, void* b, i64* a_shape, i64* b_shape, i64 a_rank, i64 b_rank)
+        // Returns pointer to result tensor
+        auto* ptrTy = llvm::PointerType::get(llvm_ctx, 0);
+        auto* i64Ty = llvm::Type::getInt64Ty(llvm_ctx);
+
+        std::vector<llvm::Type*> paramTypes = {
+            ptrTy,  // arena
+            ptrTy,  // a_data
+            ptrTy,  // b_data
+            ptrTy,  // a_shape
+            ptrTy,  // b_shape
+            i64Ty,  // a_rank
+            i64Ty   // b_rank
+        };
+
+        auto* funcTy = llvm::FunctionType::get(ptrTy, paramTypes, false);
+        auto* func = llvm::Function::Create(
+            funcTy,
+            llvm::GlobalValue::ExternalLinkage,
+            funcName,
+            &module);
+
+        return func;
+    }
 
 #else
     // Fallback mode - MLIR or StableHLO not available
@@ -126,13 +247,86 @@ bool XLACodegen::shouldUseXLA(size_t num_elements) const {
     return impl_->available_ && num_elements >= impl_->threshold_;
 }
 
-// ===== Tensor Operations (Stubs) =====
+// ===== Tensor Operations =====
 
 llvm::Value* XLACodegen::emitMatmul(llvm::Value* a, llvm::Value* b) {
-    // STUB: Not implemented yet
+#ifdef ESHKOL_XLA_FULL_MLIR
+    if (!impl_->available_) {
+        return nullptr;
+    }
+
+    // Get LLVM IR builder
+    auto& builder = impl_->ctx_->builder();
+    auto& llvm_ctx = impl_->ctx_->context();
+
+    // Get runtime function
+    auto* matmulFunc = impl_->getOrCreateMatmulRuntime();
+
+    // Get arena pointer
+    auto* arenaPtrPtr = impl_->ctx_->globalArena();
+    auto* ptrTy = llvm::PointerType::get(llvm_ctx, 0);
+    auto* arenaPtr = builder.CreateLoad(ptrTy, arenaPtrPtr, "arena_ptr");
+
+    // Tensor struct layout:
+    // struct tensor { i64 num_dims; i64* dims; double* data; }
+    // a and b are pointers to tensor structs
+
+    // Extract data and shape from tensor a
+    auto* i64Ty = llvm::Type::getInt64Ty(llvm_ctx);
+
+    // Get num_dims from tensor a (first field)
+    auto* aNumDimsPtr = builder.CreateStructGEP(
+        llvm::StructType::get(llvm_ctx, {i64Ty, ptrTy, ptrTy}),
+        a, 0, "a_num_dims_ptr");
+    auto* aNumDims = builder.CreateLoad(i64Ty, aNumDimsPtr, "a_num_dims");
+
+    // Get dims pointer from tensor a (second field)
+    auto* aDimsPtr = builder.CreateStructGEP(
+        llvm::StructType::get(llvm_ctx, {i64Ty, ptrTy, ptrTy}),
+        a, 1, "a_dims_ptr");
+    auto* aDims = builder.CreateLoad(ptrTy, aDimsPtr, "a_dims");
+
+    // Get data pointer from tensor a (third field)
+    auto* aDataPtr = builder.CreateStructGEP(
+        llvm::StructType::get(llvm_ctx, {i64Ty, ptrTy, ptrTy}),
+        a, 2, "a_data_ptr");
+    auto* aData = builder.CreateLoad(ptrTy, aDataPtr, "a_data");
+
+    // Extract data and shape from tensor b
+    auto* bNumDimsPtr = builder.CreateStructGEP(
+        llvm::StructType::get(llvm_ctx, {i64Ty, ptrTy, ptrTy}),
+        b, 0, "b_num_dims_ptr");
+    auto* bNumDims = builder.CreateLoad(i64Ty, bNumDimsPtr, "b_num_dims");
+
+    auto* bDimsPtr = builder.CreateStructGEP(
+        llvm::StructType::get(llvm_ctx, {i64Ty, ptrTy, ptrTy}),
+        b, 1, "b_dims_ptr");
+    auto* bDims = builder.CreateLoad(ptrTy, bDimsPtr, "b_dims");
+
+    auto* bDataPtr = builder.CreateStructGEP(
+        llvm::StructType::get(llvm_ctx, {i64Ty, ptrTy, ptrTy}),
+        b, 2, "b_data_ptr");
+    auto* bData = builder.CreateLoad(ptrTy, bDataPtr, "b_data");
+
+    // Call runtime function
+    std::vector<llvm::Value*> args = {
+        arenaPtr,
+        aData,
+        bData,
+        aDims,
+        bDims,
+        aNumDims,
+        bNumDims
+    };
+
+    auto* result = builder.CreateCall(matmulFunc, args, "matmul_result");
+
+    return result;
+#else
     (void)a;
     (void)b;
     return nullptr;
+#endif
 }
 
 llvm::Value* XLACodegen::emitElementwise(llvm::Value* a, llvm::Value* b, ElementwiseOp op) {
