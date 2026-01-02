@@ -620,6 +620,50 @@ if(BUILD_REPL AND REPL_SRC)
   endif()
 endif()
 
+# ===== XLA Integration Tests =====
+if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_codegen_test.cpp")
+    message(STATUS "Building XLA integration tests")
+
+    add_executable(xla_codegen_test tests/xla/xla_codegen_test.cpp)
+
+    target_include_directories(xla_codegen_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+
+    target_compile_options(xla_codegen_test PRIVATE ${LLVM_CXXFLAGS})
+
+    if(LLVM_INCLUDE_DIRS)
+        target_include_directories(xla_codegen_test PRIVATE ${LLVM_INCLUDE_DIRS})
+    endif()
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(xla_codegen_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    # Link against the static library (includes XLA runtime)
+    target_link_libraries(xla_codegen_test PRIVATE
+        eshkol-static
+        ${LLVM_LIBS}
+        ${LLVM_SYSTEM_LIBS}
+    )
+
+    # Link MLIR/StableHLO if available
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(xla_codegen_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(xla_codegen_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+
+    # Platform-specific link options
+    if(APPLE)
+        target_link_options(xla_codegen_test PRIVATE "-Wl,-export_dynamic")
+        target_link_libraries(xla_codegen_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(xla_codegen_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
 # where to find our CMake modules
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Packing)

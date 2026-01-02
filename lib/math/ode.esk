@@ -1,0 +1,373 @@
+;;; Eshkol ODE Solvers Library
+;;; Provides numerical methods for solving ordinary differential equations
+;;;
+;;; Usage: (require "math/ode")
+;;;
+;;; All solvers take:
+;;; - f: derivative function (lambda (t y) ...) returning dy/dt
+;;; - t0: initial time
+;;; - y0: initial state (scalar or vector)
+;;; - tf: final time
+;;; - h: step size (for fixed-step methods)
+
+;;; ============================================================
+;;; Utilities
+;;; ============================================================
+
+;; Vector addition for state vectors
+(define (vec-add v1 v2)
+  (let* ((n (vector-length v1))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (+ (vref v1 i) (vref v2 i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; Scalar-vector multiplication
+(define (vec-scale s v)
+  (let* ((n (vector-length v))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (* s (vref v i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; Vector subtraction
+(define (vec-sub v1 v2)
+  (vec-add v1 (vec-scale -1.0 v2)))
+
+;; Maximum absolute value in vector
+(define (vec-max-abs v)
+  (let ((n (vector-length v)))
+    (letrec ((loop (lambda (i max-val)
+              (if (< i n)
+                  (loop (+ i 1) (max max-val (abs (vref v i))))
+                  max-val))))
+      (loop 0 0.0))))
+
+;; Check if value is a vector
+(define (state-vector? y)
+  (vector? y))
+
+;;; ============================================================
+;;; Euler Method (First-Order)
+;;; ============================================================
+
+;; euler-step: Single Euler step
+;; y_{n+1} = y_n + h * f(t_n, y_n)
+(define (euler-step f t y h)
+  (let ((dy (f t y)))
+    (if (state-vector? y)
+        (vec-add y (vec-scale h dy))
+        (+ y (* h dy)))))
+
+;; euler: Solve ODE using Euler's method
+;; Returns list of (t, y) pairs
+(define (euler f t0 y0 tf h)
+  (letrec ((step (lambda (t y acc)
+             (if (>= t tf)
+                 (reverse (cons (list t y) acc))
+                 (let* ((y-new (euler-step f t y h))
+                        (t-new (+ t h)))
+                   (step t-new y-new (cons (list t y) acc)))))))
+    (step t0 y0 '())))
+
+;; euler-final: Solve and return only final value
+(define (euler-final f t0 y0 tf h)
+  (letrec ((step (lambda (t y)
+             (if (>= t tf)
+                 y
+                 (step (+ t h) (euler-step f t y h))))))
+    (step t0 y0)))
+
+;;; ============================================================
+;;; Improved Euler (Heun's Method, Second-Order)
+;;; ============================================================
+
+;; heun-step: Single Heun step (predictor-corrector)
+;; y_{n+1} = y_n + h/2 * (f(t_n, y_n) + f(t_{n+1}, y_n + h*f(t_n, y_n)))
+(define (heun-step f t y h)
+  (let* ((k1 (f t y))
+         (y-predict (if (state-vector? y)
+                        (vec-add y (vec-scale h k1))
+                        (+ y (* h k1))))
+         (k2 (f (+ t h) y-predict)))
+    (if (state-vector? y)
+        (vec-add y (vec-scale (* 0.5 h) (vec-add k1 k2)))
+        (+ y (* 0.5 h (+ k1 k2))))))
+
+;; heun: Solve ODE using Heun's method
+(define (heun f t0 y0 tf h)
+  (letrec ((step (lambda (t y acc)
+             (if (>= t tf)
+                 (reverse (cons (list t y) acc))
+                 (step (+ t h) (heun-step f t y h) (cons (list t y) acc))))))
+    (step t0 y0 '())))
+
+;;; ============================================================
+;;; Classical Runge-Kutta (RK4, Fourth-Order)
+;;; ============================================================
+
+;; rk4-step: Single RK4 step
+;; k1 = f(t, y)
+;; k2 = f(t + h/2, y + h*k1/2)
+;; k3 = f(t + h/2, y + h*k2/2)
+;; k4 = f(t + h, y + h*k3)
+;; y_{n+1} = y_n + h/6 * (k1 + 2*k2 + 2*k3 + k4)
+(define (rk4-step f t y h)
+  (if (state-vector? y)
+      ;; Vector case
+      (let* ((k1 (f t y))
+             (k2 (f (+ t (* 0.5 h)) (vec-add y (vec-scale (* 0.5 h) k1))))
+             (k3 (f (+ t (* 0.5 h)) (vec-add y (vec-scale (* 0.5 h) k2))))
+             (k4 (f (+ t h) (vec-add y (vec-scale h k3)))))
+        (vec-add y
+          (vec-scale (/ h 6.0)
+            (vec-add k1
+              (vec-add (vec-scale 2.0 k2)
+                (vec-add (vec-scale 2.0 k3) k4))))))
+      ;; Scalar case
+      (let* ((k1 (f t y))
+             (k2 (f (+ t (* 0.5 h)) (+ y (* 0.5 h k1))))
+             (k3 (f (+ t (* 0.5 h)) (+ y (* 0.5 h k2))))
+             (k4 (f (+ t h) (+ y (* h k3)))))
+        (+ y (* (/ h 6.0) (+ k1 (* 2.0 k2) (* 2.0 k3) k4))))))
+
+;; rk4: Solve ODE using classical RK4
+;; Returns list of (t, y) pairs
+(define (rk4 f t0 y0 tf h)
+  (letrec ((step (lambda (t y acc)
+             (if (>= t tf)
+                 (reverse (cons (list t y) acc))
+                 (step (+ t h) (rk4-step f t y h) (cons (list t y) acc))))))
+    (step t0 y0 '())))
+
+;; rk4-final: Solve and return only final value
+(define (rk4-final f t0 y0 tf h)
+  (letrec ((step (lambda (t y)
+             (if (>= t tf)
+                 y
+                 (step (+ t h) (rk4-step f t y h))))))
+    (step t0 y0)))
+
+;;; ============================================================
+;;; Runge-Kutta-Fehlberg (RK45, Adaptive Step Size)
+;;; ============================================================
+
+;; RK45 Butcher tableau coefficients
+;; Cash-Karp parameters for better error estimation
+
+(define rk45-a21 0.2)
+(define rk45-a31 0.075)
+(define rk45-a32 0.225)
+(define rk45-a41 0.3)
+(define rk45-a42 -0.9)
+(define rk45-a43 1.2)
+(define rk45-a51 -0.203703703703704)
+(define rk45-a52 2.5)
+(define rk45-a53 -2.59259259259259)
+(define rk45-a54 1.29629629629630)
+(define rk45-a61 0.0294958043981481)
+(define rk45-a62 0.341796875)
+(define rk45-a63 0.0415943287037037)
+(define rk45-a64 0.400345413773148)
+(define rk45-a65 0.061767578125)
+
+;; Fifth-order weights
+(define rk45-b1 0.0978835978835979)
+(define rk45-b2 0.0)
+(define rk45-b3 0.402576489533011)
+(define rk45-b4 0.210437710437710)
+(define rk45-b5 0.0)
+(define rk45-b6 0.289102202145680)
+
+;; Fourth-order weights (for error estimation)
+(define rk45-b1s 0.102177372685185)
+(define rk45-b2s 0.0)
+(define rk45-b3s 0.383907903439153)
+(define rk45-b4s 0.244592737268519)
+(define rk45-b5s 0.019321986607143)
+(define rk45-b6s 0.250000000000000)
+
+;; rk45-step: Single adaptive RK45 step
+;; Returns (y-new, error-estimate, h-new)
+(define (rk45-step f t y h tol)
+  (let ((compute-step (lambda (h-try)
+    (if (state-vector? y)
+        ;; Vector case
+        (let* ((k1 (f t y))
+               (k2 (f (+ t (* rk45-a21 h-try))
+                      (vec-add y (vec-scale (* h-try rk45-a21) k1))))
+               (k3 (f (+ t (* 0.3 h-try))
+                      (vec-add y (vec-add (vec-scale (* h-try rk45-a31) k1)
+                                          (vec-scale (* h-try rk45-a32) k2)))))
+               (k4 (f (+ t (* 0.6 h-try))
+                      (vec-add y (vec-add (vec-scale (* h-try rk45-a41) k1)
+                                 (vec-add (vec-scale (* h-try rk45-a42) k2)
+                                          (vec-scale (* h-try rk45-a43) k3))))))
+               (k5 (f (+ t h-try)
+                      (vec-add y (vec-add (vec-scale (* h-try rk45-a51) k1)
+                                 (vec-add (vec-scale (* h-try rk45-a52) k2)
+                                 (vec-add (vec-scale (* h-try rk45-a53) k3)
+                                          (vec-scale (* h-try rk45-a54) k4)))))))
+               (k6 (f (+ t h-try)
+                      (vec-add y (vec-add (vec-scale (* h-try rk45-a61) k1)
+                                 (vec-add (vec-scale (* h-try rk45-a62) k2)
+                                 (vec-add (vec-scale (* h-try rk45-a63) k3)
+                                 (vec-add (vec-scale (* h-try rk45-a64) k4)
+                                          (vec-scale (* h-try rk45-a65) k5))))))))
+               ;; Fifth-order solution
+               (y5 (vec-add y
+                     (vec-scale h-try
+                       (vec-add (vec-scale rk45-b1 k1)
+                         (vec-add (vec-scale rk45-b3 k3)
+                           (vec-add (vec-scale rk45-b4 k4)
+                                    (vec-scale rk45-b6 k6)))))))
+               ;; Fourth-order solution for error estimate
+               (y4 (vec-add y
+                     (vec-scale h-try
+                       (vec-add (vec-scale rk45-b1s k1)
+                         (vec-add (vec-scale rk45-b3s k3)
+                           (vec-add (vec-scale rk45-b4s k4)
+                             (vec-add (vec-scale rk45-b5s k5)
+                                      (vec-scale rk45-b6s k6))))))))
+               ;; Error estimate
+               (err (vec-max-abs (vec-sub y5 y4))))
+          (list y5 err))
+        ;; Scalar case
+        (let* ((k1 (f t y))
+               (k2 (f (+ t (* rk45-a21 h-try))
+                      (+ y (* h-try rk45-a21 k1))))
+               (k3 (f (+ t (* 0.3 h-try))
+                      (+ y (* h-try rk45-a31 k1) (* h-try rk45-a32 k2))))
+               (k4 (f (+ t (* 0.6 h-try))
+                      (+ y (* h-try rk45-a41 k1) (* h-try rk45-a42 k2) (* h-try rk45-a43 k3))))
+               (k5 (f (+ t h-try)
+                      (+ y (* h-try rk45-a51 k1) (* h-try rk45-a52 k2)
+                           (* h-try rk45-a53 k3) (* h-try rk45-a54 k4))))
+               (k6 (f (+ t h-try)
+                      (+ y (* h-try rk45-a61 k1) (* h-try rk45-a62 k2)
+                           (* h-try rk45-a63 k3) (* h-try rk45-a64 k4)
+                           (* h-try rk45-a65 k5))))
+               (y5 (+ y (* h-try (+ (* rk45-b1 k1) (* rk45-b3 k3)
+                                    (* rk45-b4 k4) (* rk45-b6 k6)))))
+               (y4 (+ y (* h-try (+ (* rk45-b1s k1) (* rk45-b3s k3)
+                                    (* rk45-b4s k4) (* rk45-b5s k5)
+                                    (* rk45-b6s k6)))))
+               (err (abs (- y5 y4))))
+          (list y5 err))))))
+    ;; Try step and adapt
+    (let* ((result (compute-step h))
+           (y-new (car result))
+           (err (car (cdr result)))
+           (err-ratio (if (< err 1e-15) 1e-15 (/ err tol))))
+      (if (<= err-ratio 1.0)
+          ;; Step accepted
+          (let ((h-new (min (* h 5.0)
+                            (* h 0.9 (expt err-ratio -0.2)))))
+            (list y-new h-new #t))
+          ;; Step rejected, reduce h
+          (let ((h-new (max (* h 0.1)
+                            (* h 0.9 (expt err-ratio -0.25)))))
+            (list y h-new #f))))))
+
+;; rk45: Solve ODE with adaptive step size
+;; tol: error tolerance (default 1e-6)
+;; Returns list of (t, y) pairs
+(define (rk45 f t0 y0 tf h0 tol)
+  (let ((h-min 1e-12)
+        (h-max (- tf t0)))
+    (letrec ((step (lambda (t y h acc)
+               (if (>= t tf)
+                   (reverse (cons (list t y) acc))
+                   (let* ((h-use (min h (- tf t)))
+                          (result (rk45-step f t y h-use tol))
+                          (y-new (car result))
+                          (h-new (max h-min (min h-max (car (cdr result)))))
+                          (accepted (car (cdr (cdr result)))))
+                     (if accepted
+                         (step (+ t h-use) y-new h-new (cons (list t y) acc))
+                         (step t y h-new acc)))))))
+      (step t0 y0 h0 '()))))
+
+;; rk45-final: Solve with RK45 and return only final value
+(define (rk45-final f t0 y0 tf h0 tol)
+  (let ((result (rk45 f t0 y0 tf h0 tol)))
+    (car (cdr (car (reverse result))))))
+
+;;; ============================================================
+;;; Midpoint Method (Second-Order, Explicit)
+;;; ============================================================
+
+;; midpoint-step: Single midpoint step
+;; y_{n+1} = y_n + h * f(t + h/2, y + h/2 * f(t, y))
+(define (midpoint-step f t y h)
+  (let* ((k1 (f t y))
+         (y-mid (if (state-vector? y)
+                    (vec-add y (vec-scale (* 0.5 h) k1))
+                    (+ y (* 0.5 h k1))))
+         (k2 (f (+ t (* 0.5 h)) y-mid)))
+    (if (state-vector? y)
+        (vec-add y (vec-scale h k2))
+        (+ y (* h k2)))))
+
+;; midpoint: Solve using midpoint method
+(define (midpoint f t0 y0 tf h)
+  (letrec ((step (lambda (t y acc)
+             (if (>= t tf)
+                 (reverse (cons (list t y) acc))
+                 (step (+ t h) (midpoint-step f t y h) (cons (list t y) acc))))))
+    (step t0 y0 '())))
+
+;;; ============================================================
+;;; Backward Euler (Implicit, First-Order)
+;;; Uses Newton iteration for implicit step
+;;; ============================================================
+
+;; backward-euler-step: Single implicit Euler step
+;; Solves: y_{n+1} = y_n + h * f(t_{n+1}, y_{n+1})
+;; Using Newton iteration with numerical Jacobian
+(define (backward-euler-step f t y h max-newton-iters newton-tol)
+  (if (state-vector? y)
+      ;; Vector case - simplified fixed-point iteration
+      (letrec ((iterate (lambda (y-guess k)
+                 (if (>= k max-newton-iters)
+                     y-guess
+                     (let* ((fy (f (+ t h) y-guess))
+                            (y-new (vec-add y (vec-scale h fy)))
+                            (diff (vec-max-abs (vec-sub y-new y-guess))))
+                       (if (< diff newton-tol)
+                           y-new
+                           (iterate y-new (+ k 1))))))))
+        (iterate (euler-step f t y h) 0))
+      ;; Scalar case - Newton iteration
+      (letrec ((iterate (lambda (y-guess k)
+                 (if (>= k max-newton-iters)
+                     y-guess
+                     (let* ((fy (f (+ t h) y-guess))
+                            (g (- y-guess y (* h fy)))
+                            ;; Numerical derivative of g
+                            (eps 1e-8)
+                            (fy-eps (f (+ t h) (+ y-guess eps)))
+                            (dg (- 1.0 (* h (/ (- fy-eps fy) eps))))
+                            (y-new (- y-guess (/ g dg))))
+                       (if (< (abs (- y-new y-guess)) newton-tol)
+                           y-new
+                           (iterate y-new (+ k 1))))))))
+        (iterate (+ y (* h (f t y))) 0))))
+
+;; backward-euler: Solve with implicit Euler
+(define (backward-euler f t0 y0 tf h)
+  (letrec ((step (lambda (t y acc)
+             (if (>= t tf)
+                 (reverse (cons (list t y) acc))
+                 (step (+ t h)
+                       (backward-euler-step f t y h 10 1e-10)
+                       (cons (list t y) acc))))))
+    (step t0 y0 '())))

@@ -1,0 +1,53 @@
+;; XLA Integration Test: Large Matrix Multiplication
+;; Tests large tensor operations that should trigger XLA dispatch
+;; XLA threshold is 100,000 elements by default
+
+(display "=== XLA Large Matrix Tests ===") (newline)
+
+;; Test 1: Medium matrix (below XLA threshold)
+;; 50x50 = 2,500 elements (uses BLAS/SIMD)
+(display "Test 1: 50x50 matmul (BLAS/SIMD path)") (newline)
+(define size1 50)
+(define A1 (reshape (arange (* size1 size1)) size1 size1))
+(define B1 (ones size1 size1))
+(define C1 (matmul A1 B1))
+(display "A = arange(2500) reshaped to 50x50") (newline)
+(display "B = ones(50x50)") (newline)
+(display "C shape: ") (display (tensor-shape C1)) (newline)
+(display "C[0,0] = ") (display (tensor-get C1 0 0)) (newline)
+(newline)
+
+;; Test 2: Larger matrix (still below threshold)
+;; 100x100 = 10,000 elements (uses BLAS)
+(display "Test 2: 100x100 matmul (BLAS path)") (newline)
+(define size2 100)
+(define A2 (reshape (arange (* size2 size2)) size2 size2))
+(define I2 (eye size2))
+(define C2 (matmul A2 I2))
+(display "A = arange(10000) reshaped to 100x100") (newline)
+(display "I = identity(100)") (newline)
+(display "C = A * I (should equal A)") (newline)
+(display "C shape: ") (display (tensor-shape C2)) (newline)
+;; Check that A * I = A (spot check)
+(display "Verifying A * I = A... ")
+(define check-val (tensor-get A2 50 50))
+(define result-val (tensor-get C2 50 50))
+(if (< (abs (- check-val result-val)) 0.0001)
+    (display "PASS")
+    (display "FAIL"))
+(newline)
+(newline)
+
+;; Test 3: Matrix chain
+(display "Test 3: Matrix chain A * B * C") (newline)
+(define sizeN 30)
+(define Ma (reshape (arange (* sizeN sizeN)) sizeN sizeN))
+(define Mb (ones sizeN sizeN))
+(define Mc (eye sizeN))
+(define Mab (matmul Ma Mb))
+(define Mabc (matmul Mab Mc))
+(display "Ma = arange, Mb = ones, Mc = identity") (newline)
+(display "(Ma * Mb) * Mc shape: ") (display (tensor-shape Mabc)) (newline)
+(newline)
+
+(display "=== Large Matrix Tests Complete ===") (newline)

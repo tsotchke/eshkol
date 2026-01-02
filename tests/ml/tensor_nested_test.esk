@@ -1,0 +1,15 @@
+;;; Test nested let with tensor operations
+
+(define (test-tensor-nested)
+  (display "Testing nested let with tensors...")
+  (newline)
+  (let ((input (reshape (arange 16) 4 4)))
+    (display "input: ")
+    (display input)
+    (newline)
+    (let ((result (max-pool2d input 2 2)))
+      (display "result: ")
+      (display result)
+      (newline))))
+
+(test-tensor-nested)

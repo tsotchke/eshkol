@@ -1,0 +1,39 @@
+;;; Pooling Test Suite
+;;; Tests for max-pool2d and avg-pool2d
+
+(define (run-tests)
+  (display "=== Pooling Tests ===")
+  (newline)
+
+  ;; Test Max Pool 2D on a simple 4x4 input
+  (display "-- Testing Max Pool 2D --")
+  (newline)
+  (let* ((input (reshape (arange 16) 4 4))
+         (result (max-pool2d input 2 2)))
+    (display "input (4x4): ")
+    (display input)
+    (newline)
+    (display "max-pool2d (2x2, stride 2): ")
+    (display result)
+    (newline)
+    (display "expected: 2x2 with values 5,7,13,15")
+    (newline))
+
+  ;; Test Avg Pool 2D on a simple 4x4 input
+  (display "-- Testing Avg Pool 2D --")
+  (newline)
+  (let* ((input (reshape (arange 16) 4 4))
+         (result (avg-pool2d input 2 2)))
+    (display "input (4x4): ")
+    (display input)
+    (newline)
+    (display "avg-pool2d (2x2, stride 2): ")
+    (display result)
+    (newline)
+    (display "expected: 2x2 with averages")
+    (newline))
+
+  (display "=== Pooling Tests Complete ===")
+  (newline))
+
+(run-tests)

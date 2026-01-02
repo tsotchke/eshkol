@@ -4014,14 +4014,27 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             } else {
                 // Generic tensor: (tensor dim1 dim2 ... dimN element1 element2 ...)
                 std::vector<uint64_t> dimensions;
-                
-                // Parse dimensions until we hit a non-number token
+
+                // Parse dimensions until we hit a non-integer token
+                // Dimensions must be integers (no decimal point or exponent)
                 while (true) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_NUMBER) {
-                        dimensions.push_back(std::stoull(token.value));
+                        // Check if it's an integer (no decimal point or exponent)
+                        bool is_integer = true;
+                        for (char c : token.value) {
+                            if (c == '.' || c == 'e' || c == 'E') {
+                                is_integer = false;
+                                break;
+                            }
+                        }
+                        if (is_integer) {
+                            dimensions.push_back(std::stoull(token.value));
+                        } else {
+                            break; // Float starts the elements
+                        }
                     } else {
-                        break; // First non-number token starts the elements
+                        break; // Non-number token starts the elements
                     }
                 }
                 

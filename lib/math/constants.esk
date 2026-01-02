@@ -1,0 +1,161 @@
+;;; Eshkol Mathematical Constants Library
+;;; Provides high-precision mathematical constants for scientific computing
+;;;
+;;; Usage: (require "math/constants")
+
+;;; ============================================================
+;;; Fundamental Constants
+;;; ============================================================
+
+;; Circle constant (ratio of circumference to diameter)
+(define pi 3.14159265358979323846264338327950288)
+
+;; Euler's number (base of natural logarithm)
+(define e 2.71828182845904523536028747135266250)
+
+;; Golden ratio: (1 + sqrt(5)) / 2
+(define phi 1.61803398874989484820458683436563812)
+
+;; Euler-Mascheroni constant
+(define euler-gamma 0.57721566490153286060651209008240243)
+
+;;; ============================================================
+;;; Related Constants
+;;; ============================================================
+
+;; 2 * pi (full circle in radians)
+(define tau 6.28318530717958647692528676655900577)
+
+;; pi / 2 (quarter circle)
+(define pi/2 1.57079632679489661923132169163975144)
+
+;; pi / 4 (eighth circle)
+(define pi/4 0.78539816339744830961566084581987572)
+
+;; sqrt(pi)
+(define sqrt-pi 1.77245385090551602729816748334114518)
+
+;; sqrt(2*pi) - useful for Gaussian normalization
+(define sqrt-2pi 2.50662827463100050241576528481104525)
+
+;;; ============================================================
+;;; Logarithmic Constants
+;;; ============================================================
+
+;; Natural log of 2
+(define ln2 0.69314718055994530941723212145817657)
+
+;; Natural log of 10
+(define ln10 2.30258509299404568401799145468436421)
+
+;; Log base 2 of e
+(define log2e 1.44269504088896340735992468100189214)
+
+;; Log base 10 of e
+(define log10e 0.43429448190325182765112891891660508)
+
+;;; ============================================================
+;;; Square Roots
+;;; ============================================================
+
+;; sqrt(2)
+(define sqrt2 1.41421356237309504880168872420969808)
+
+;; sqrt(3)
+(define sqrt3 1.73205080756887729352744634150587237)
+
+;; sqrt(5)
+(define sqrt5 2.23606797749978969640917366873127624)
+
+;; 1/sqrt(2) = sqrt(2)/2
+(define inv-sqrt2 0.70710678118654752440084436210484904)
+
+;;; ============================================================
+;;; Machine Precision
+;;; ============================================================
+
+;; Machine epsilon (smallest x such that 1.0 + x != 1.0 for double)
+(define machine-epsilon 2.220446049250313e-16)
+
+;; Smallest positive normalized double
+(define double-min 2.2250738585072014e-308)
+
+;; Largest finite double
+(define double-max 1.7976931348623157e+308)
+
+;; Small value for numerical comparisons
+(define epsilon 1e-15)
+
+;;; ============================================================
+;;; Physical Constants (SI Units)
+;;; These are the 2019 CODATA recommended values
+;;; ============================================================
+
+;; Speed of light in vacuum (m/s) - exact
+(define c 299792458.0)
+
+;; Planck constant (J·s)
+(define h 6.62607015e-34)
+
+;; Reduced Planck constant (J·s)
+(define hbar 1.054571817e-34)
+
+;; Elementary charge (C) - exact
+(define elementary-charge 1.602176634e-19)
+
+;; Boltzmann constant (J/K) - exact
+(define k-boltzmann 1.380649e-23)
+
+;; Avogadro constant (1/mol) - exact
+(define avogadro 6.02214076e23)
+
+;; Gravitational constant (m³/(kg·s²))
+(define G 6.67430e-11)
+
+;; Electron mass (kg)
+(define m-electron 9.1093837015e-31)
+
+;; Proton mass (kg)
+(define m-proton 1.67262192369e-27)
+
+;; Neutron mass (kg)
+(define m-neutron 1.67492749804e-27)
+
+;; Fine-structure constant (dimensionless)
+(define alpha 7.2973525693e-3)
+
+;; Bohr radius (m)
+(define a0 5.29177210903e-11)
+
+;; Electron volt (J)
+(define eV 1.602176634e-19)
+
+;;; ============================================================
+;;; Angle Conversion
+;;; ============================================================
+
+;; Degrees to radians multiplier
+(define deg->rad 0.01745329251994329576923690768488613)
+
+;; Radians to degrees multiplier
+(define rad->deg 57.2957795130823208767981548141051703)
+
+;;; ============================================================
+;;; Utility Functions
+;;; ============================================================
+
+;; Convert degrees to radians
+(define (degrees->radians deg)
+  (* deg deg->rad))
+
+;; Convert radians to degrees
+(define (radians->degrees rad)
+  (* rad rad->deg))
+
+;; Check if two values are approximately equal
+(define (approx= a b tolerance)
+  (< (abs (- a b)) tolerance))
+
+;; Check if a value is approximately zero
+(define (approx-zero? x tolerance)
+  (< (abs x) tolerance))

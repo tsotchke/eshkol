@@ -1,0 +1,30 @@
+;;; Statistics Operations Test Suite
+;;; Tests tensor-var, tensor-std
+
+(define (run-tests)
+  (display "=== Statistics Operations Tests ===")
+  (newline)
+
+  ;; Test tensor-var
+  (display "-- Testing tensor-var --")
+  (newline)
+  (let ((input (tensor 4 1.0 2.0 3.0 4.0)))
+    (display "input: ")
+    (display input)
+    (newline)
+    (display "variance: ")
+    (display (tensor-var input))
+    (newline))
+
+  ;; Test tensor-std
+  (display "-- Testing tensor-std --")
+  (newline)
+  (let ((input (tensor 4 1.0 2.0 3.0 4.0)))
+    (display "std dev: ")
+    (display (tensor-std input))
+    (newline))
+
+  (display "=== Statistics Tests Complete ===")
+  (newline))
+
+(run-tests)
