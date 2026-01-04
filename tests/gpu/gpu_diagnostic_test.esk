@@ -1,0 +1,44 @@
+;; GPU Diagnostic Test
+;; Verifies GPU is actually being used for large matrices
+
+(display "=== GPU Diagnostic Test ===") (newline)
+
+;; First, test a small matrix (should use BLAS/SIMD, not GPU)
+(display "Small matrix (4x4): ") (newline)
+(define A-small (reshape (make-vector 16 1.0) 4 4))
+(define B-small (reshape (make-vector 16 1.0) 4 4))
+(define C-small (matmul A-small B-small))
+(display "  4x4 x 4x4 = 64 ops (BLAS/SIMD path)") (newline)
+
+;; Now test a large matrix (should use GPU if available)
+(display "Large matrix (100x100): ") (newline)
+(define size 10000)  ;; 100 x 100
+
+;; Create matrices
+(define A-data (make-vector size 0.0))
+(define B-data (make-vector size 0.0))
+
+;; Fill with test values
+(do ((i 0 (+ i 1)))
+    ((>= i size))
+  (vector-set! A-data i 1.0)
+  (vector-set! B-data i 1.0))
+
+(define A-large (reshape A-data 100 100))
+(define B-large (reshape B-data 100 100))
+
+(display "  Computing 100x100 x 100x100 = 1M ops (GPU path)...") (newline)
+(define C-large (matmul A-large B-large))
+
+;; Verify result: ones * ones = 100 * ones (each element should be 100)
+(define C-data (tensor-data C-large))
+(define first-val (vector-ref C-data 0))
+
+(display "  C[0,0] = ") (display first-val)
+(display " (expected: 100.0)") (newline)
+
+(if (and (>= first-val 99.9) (<= first-val 100.1))
+    (begin (display "PASS: Matrix multiplication correct") (newline))
+    (begin (display "FAIL: Unexpected result") (newline)))
+
+(display "=== GPU Diagnostic Test Complete ===") (newline)

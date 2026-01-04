@@ -19,8 +19,8 @@ extern "C" {
                            uint64_t M, uint64_t K, uint64_t N);
 }
 
-// Arena allocation function
-extern "C" void* eshkol_arena_alloc(void* arena, size_t size, size_t alignment);
+// Arena allocation function - use the actual Eshkol arena allocator
+extern "C" void* arena_allocate_aligned(void* arena, size_t size, size_t alignment);
 
 // Tensor struct layout (matches LLVM IR generation in xla_codegen.cpp)
 // struct tensor { int64_t num_dims; int64_t* dims; double* data; }
@@ -65,13 +65,13 @@ extern "C" void* eshkol_xla_matmul(
 
     // Allocate result tensor struct
     auto* result = static_cast<EshkolTensor*>(
-        eshkol_arena_alloc(arena, sizeof(EshkolTensor), alignof(EshkolTensor)));
+        arena_allocate_aligned(arena, sizeof(EshkolTensor), alignof(EshkolTensor)));
     if (!result) return nullptr;
 
     // Allocate shape array for result (2 dimensions)
     result->num_dims = 2;
     result->dims = static_cast<int64_t*>(
-        eshkol_arena_alloc(arena, 2 * sizeof(int64_t), alignof(int64_t)));
+        arena_allocate_aligned(arena, 2 * sizeof(int64_t), alignof(int64_t)));
     if (!result->dims) return nullptr;
     result->dims[0] = M;
     result->dims[1] = N;
@@ -79,7 +79,7 @@ extern "C" void* eshkol_xla_matmul(
     // Allocate data for result tensor
     size_t result_size = static_cast<size_t>(M * N) * sizeof(double);
     result->data = static_cast<double*>(
-        eshkol_arena_alloc(arena, result_size, alignof(double)));
+        arena_allocate_aligned(arena, result_size, alignof(double)));
     if (!result->data) return nullptr;
 
     // Perform matrix multiplication using BLAS/SIMD backend

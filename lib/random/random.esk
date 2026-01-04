@@ -137,6 +137,16 @@
 ;;; Vector/Tensor Random Functions
 ;;; ============================================================
 
+;; random-tensor: Create a tensor with random uniform values [0, 1)
+;; Takes a list of dimensions: (random-tensor (list h w)) -> HxW tensor
+(define (random-tensor dims)
+  (apply rand dims))
+
+;; random-normal-tensor: Create a tensor with standard normal values
+;; Takes a list of dimensions: (random-normal-tensor (list h w)) -> HxW tensor
+(define (random-normal-tensor dims)
+  (apply randn dims))
+
 ;; random-vector: Create a vector of n random floats in [0, 1)
 (define (random-vector n)
   (let ((v (make-vector n 0.0)))

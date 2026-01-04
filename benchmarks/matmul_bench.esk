@@ -1,0 +1,88 @@
+;;; Matrix Multiplication Benchmark
+;;; Tests matmul performance across different sizes
+;;; Dispatch: XLA (>=100K) -> cBLAS (>=4K) -> SIMD (>=64) -> scalar
+
+(require stdlib)
+
+(define (format-time-ns ns)
+  "Format nanoseconds to appropriate unit"
+  (cond
+    ((>= ns 1e9) (string-append (number->string (round (/ ns 1e6) 0.1)) " ms"))
+    ((>= ns 1e6) (string-append (number->string (round (/ ns 1e3) 0.1)) " us"))
+    (else (string-append (number->string (round ns 0.1)) " ns"))))
+
+(define (format-gflops gflops)
+  "Format GFLOPS with appropriate precision"
+  (cond
+    ((>= gflops 1000) (string-append (number->string (round gflops 1)) " GFLOPS"))
+    ((>= gflops 100) (string-append (number->string (round gflops 0.1)) " GFLOPS"))
+    ((>= gflops 10) (string-append (number->string (round gflops 0.01)) " GFLOPS"))
+    (else (string-append (number->string (round gflops 0.001)) " GFLOPS"))))
+
+(define (benchmark-matmul m k n iterations)
+  "Benchmark MxK * KxN matmul with nanosecond precision"
+  (let* ((a (random-tensor (list m k)))
+         (b (random-tensor (list k n)))
+         (time-ns (time-it (lambda () (matmul a b)) iterations))
+         (flops (* 2.0 m k n))
+         (time-s (/ time-ns 1e9))
+         (gflops (/ flops (* time-s 1e9))))
+    (display "  ")
+    (display m) (display "x") (display k)
+    (display " * ")
+    (display k) (display "x") (display n)
+    (display ": ")
+    (display (format-time-ns time-ns))
+    (display " (")
+    (display (format-gflops gflops))
+    (display ")")
+    (newline)
+    gflops))
+
+(define (run-benchmarks)
+  (display "=== Matrix Multiplication Benchmarks ===")
+  (newline)
+  (display "Dispatch: XLA (>=100K elem) -> cBLAS (>=4K) -> SIMD (>=64) -> scalar")
+  (newline)
+  (newline)
+
+  ;; Small matrices (scalar/SIMD path)
+  (display "Small matrices (scalar/SIMD path):")
+  (newline)
+  (benchmark-matmul 4 4 4 10000)
+  (benchmark-matmul 8 8 8 5000)
+  (benchmark-matmul 16 16 16 2000)
+  (benchmark-matmul 32 32 32 500)
+  (newline)
+
+  ;; Medium matrices (cBLAS path, >= 4K elements)
+  (display "Medium matrices (cBLAS path):")
+  (newline)
+  (benchmark-matmul 64 64 64 200)
+  (benchmark-matmul 128 128 128 100)
+  (benchmark-matmul 256 256 256 50)
+  (newline)
+
+  ;; Large matrices (XLA path, >= 100K elements)
+  (display "Large matrices (XLA/cBLAS path):")
+  (newline)
+  (benchmark-matmul 320 320 320 20)
+  (benchmark-matmul 512 512 512 10)
+  (benchmark-matmul 1024 1024 1024 3)
+  (benchmark-matmul 2048 2048 2048 1)
+  (newline)
+
+  ;; Non-square matrices (stress test different shapes)
+  (display "Non-square matrices:")
+  (newline)
+  (benchmark-matmul 1000 100 10 100)    ; Tall * narrow
+  (benchmark-matmul 100 1000 100 50)    ; Wide inner dimension
+  (benchmark-matmul 10 100 1000 100)    ; Narrow * wide
+  (benchmark-matmul 4096 64 64 20)      ; Batch-like (tall)
+  (benchmark-matmul 64 64 4096 20)      ; Projection (wide output)
+  (newline)
+
+  (display "=== Benchmark Complete ===")
+  (newline))
+
+(run-benchmarks)

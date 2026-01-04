@@ -412,6 +412,60 @@ else()
     message(STATUS "BLAS acceleration: DISABLED (enable with -DESHKOL_BLAS_ENABLED=ON)")
 endif()
 
+# ===== GPU Acceleration (Platform-specific) =====
+# Provides GPU-accelerated tensor operations via Metal (macOS) or CUDA (Linux/Windows)
+option(ESHKOL_GPU_ENABLED "Enable GPU acceleration for tensor operations" ON)
+
+if(ESHKOL_GPU_ENABLED)
+    set(GPU_FOUND FALSE)
+    set(GPU_LIBRARIES "")
+    set(GPU_SOURCES "")
+
+    if(APPLE)
+        # Use Apple Metal framework (macOS/iOS)
+        find_library(METAL_FRAMEWORK Metal)
+        find_library(MPS_FRAMEWORK MetalPerformanceShaders)
+        find_library(FOUNDATION_FRAMEWORK Foundation)
+
+        if(METAL_FRAMEWORK AND MPS_FRAMEWORK)
+            set(GPU_FOUND TRUE)
+            set(GPU_LIBRARIES ${METAL_FRAMEWORK} ${MPS_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+            add_compile_definitions(ESHKOL_GPU_METAL_ENABLED)
+            message(STATUS "GPU: Apple Metal (unified memory)")
+
+            # Add GPU source file (Objective-C++)
+            set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory.mm")
+
+            # Enable Objective-C++ with ARC for the GPU source
+            set_source_files_properties(${GPU_SOURCES} PROPERTIES
+                COMPILE_FLAGS "-x objective-c++ -fobjc-arc"
+            )
+        endif()
+    else()
+        # Try CUDA on Linux/Windows
+        find_package(CUDA QUIET)
+        if(CUDA_FOUND)
+            set(GPU_FOUND TRUE)
+            set(GPU_LIBRARIES ${CUDA_LIBRARIES} ${CUDA_CUBLAS_LIBRARIES})
+            add_compile_definitions(ESHKOL_GPU_CUDA_ENABLED)
+            message(STATUS "GPU: NVIDIA CUDA")
+
+            # Add GPU source file
+            set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory.mm")
+        endif()
+    endif()
+
+    if(GPU_FOUND)
+        add_compile_definitions(ESHKOL_GPU_ENABLED)
+        message(STATUS "GPU acceleration: ENABLED")
+    else()
+        message(STATUS "GPU acceleration: DISABLED (no GPU framework found)")
+        set(ESHKOL_GPU_ENABLED OFF)
+    endif()
+else()
+    message(STATUS "GPU acceleration: DISABLED (enable with -DESHKOL_GPU_ENABLED=ON)")
+endif()
+
 # Make uninstall.
 add_custom_target("uninstall" COMMENT "Uninstall installed files")
 add_custom_command(
@@ -492,6 +546,13 @@ if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND MLIR_LIBRARIES)
         target_link_libraries(eshkol-static PUBLIC ${STABLEHLO_LIBRARIES})
         message(STATUS "Linking StableHLO libraries: ${STABLEHLO_LIBRARIES}")
     endif()
+endif()
+
+# Link GPU libraries if available (Metal on macOS, CUDA on Linux/Windows)
+if(GPU_FOUND)
+    target_sources(eshkol-static PRIVATE ${GPU_SOURCES})
+    target_link_libraries(eshkol-static PUBLIC ${GPU_LIBRARIES})
+    message(STATUS "Linking GPU libraries: ${GPU_LIBRARIES}")
 endif()
 
 # For each executable inside the executable files create the executable with LLVM backend.

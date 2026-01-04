@@ -669,6 +669,27 @@ llvm::Value* AutodiffCodegen::recordADNodeBinary(uint32_t op_type, llvm::Value* 
         case 5: // AD_NODE_DIV
             result_value = ctx_.builder().CreateFDiv(left_value, right_value);
             break;
+        case 10: // AD_NODE_POW
+            {
+                llvm::Function* pow_func = getMathFunc("pow");
+                if (!pow_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(pow_func, {left_value, right_value});
+            }
+            break;
+        case 44: // AD_NODE_MAX
+            {
+                // max(a, b) = a if a > b else b
+                llvm::Value* cmp = ctx_.builder().CreateFCmpOGT(left_value, right_value);
+                result_value = ctx_.builder().CreateSelect(cmp, left_value, right_value);
+            }
+            break;
+        case 45: // AD_NODE_MIN
+            {
+                // min(a, b) = a if a < b else b
+                llvm::Value* cmp = ctx_.builder().CreateFCmpOLT(left_value, right_value);
+                result_value = ctx_.builder().CreateSelect(cmp, left_value, right_value);
+            }
+            break;
         default:
             eshkol_warn("Unknown binary AD operation type: %u", op_type);
             return nullptr;
@@ -762,13 +783,113 @@ llvm::Value* AutodiffCodegen::recordADNodeUnary(uint32_t op_type, llvm::Value* i
         case 11: // AD_NODE_NEG
             result_value = ctx_.builder().CreateFNeg(input_value);
             break;
-        case 12: // AD_NODE_ABS
+
+        // === Activation functions (12-18) ===
+        case 12: // AD_NODE_RELU
+            {
+                // relu(x) = max(0, x)
+                llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+                llvm::Value* cmp = ctx_.builder().CreateFCmpOGT(input_value, zero);
+                result_value = ctx_.builder().CreateSelect(cmp, input_value, zero);
+            }
+            break;
+        case 13: // AD_NODE_SIGMOID
+            {
+                // sigmoid(x) = 1 / (1 + exp(-x))
+                llvm::Function* exp_func = getMathFunc("exp");
+                if (!exp_func) return nullptr;
+                llvm::Value* neg_x = ctx_.builder().CreateFNeg(input_value);
+                llvm::Value* exp_neg_x = ctx_.builder().CreateCall(exp_func, {neg_x});
+                llvm::Value* one_plus = ctx_.builder().CreateFAdd(
+                    llvm::ConstantFP::get(ctx_.doubleType(), 1.0), exp_neg_x);
+                result_value = ctx_.builder().CreateFDiv(
+                    llvm::ConstantFP::get(ctx_.doubleType(), 1.0), one_plus);
+            }
+            break;
+        case 15: // AD_NODE_TANH
+            {
+                // tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
+                llvm::Function* exp_func = getMathFunc("exp");
+                if (!exp_func) return nullptr;
+                llvm::Value* two_x = ctx_.builder().CreateFMul(
+                    llvm::ConstantFP::get(ctx_.doubleType(), 2.0), input_value);
+                llvm::Value* exp_2x = ctx_.builder().CreateCall(exp_func, {two_x});
+                llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+                llvm::Value* numer = ctx_.builder().CreateFSub(exp_2x, one);
+                llvm::Value* denom = ctx_.builder().CreateFAdd(exp_2x, one);
+                result_value = ctx_.builder().CreateFDiv(numer, denom);
+            }
+            break;
+        case 16: // AD_NODE_GELU
+            {
+                // GELU(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))
+                llvm::Function* exp_func = getMathFunc("exp");
+                if (!exp_func) return nullptr;
+                llvm::Value* sqrt_2_pi = llvm::ConstantFP::get(ctx_.doubleType(), 0.7978845608028654);
+                llvm::Value* coeff = llvm::ConstantFP::get(ctx_.doubleType(), 0.044715);
+                llvm::Value* x_cubed = ctx_.builder().CreateFMul(input_value,
+                    ctx_.builder().CreateFMul(input_value, input_value));
+                llvm::Value* inner = ctx_.builder().CreateFMul(sqrt_2_pi,
+                    ctx_.builder().CreateFAdd(input_value,
+                        ctx_.builder().CreateFMul(coeff, x_cubed)));
+                // tanh via exp
+                llvm::Value* two_inner = ctx_.builder().CreateFMul(
+                    llvm::ConstantFP::get(ctx_.doubleType(), 2.0), inner);
+                llvm::Value* exp_2x = ctx_.builder().CreateCall(exp_func, {two_inner});
+                llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+                llvm::Value* tanh_val = ctx_.builder().CreateFDiv(
+                    ctx_.builder().CreateFSub(exp_2x, one),
+                    ctx_.builder().CreateFAdd(exp_2x, one));
+                result_value = ctx_.builder().CreateFMul(
+                    llvm::ConstantFP::get(ctx_.doubleType(), 0.5),
+                    ctx_.builder().CreateFMul(input_value,
+                        ctx_.builder().CreateFAdd(one, tanh_val)));
+            }
+            break;
+        case 17: // AD_NODE_LEAKY_RELU
+            {
+                // leaky_relu(x) = x > 0 ? x : 0.01 * x
+                llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+                llvm::Value* leak = llvm::ConstantFP::get(ctx_.doubleType(), 0.01);
+                llvm::Value* cmp = ctx_.builder().CreateFCmpOGT(input_value, zero);
+                llvm::Value* leaked = ctx_.builder().CreateFMul(leak, input_value);
+                result_value = ctx_.builder().CreateSelect(cmp, input_value, leaked);
+            }
+            break;
+        case 18: // AD_NODE_SILU (Swish)
+            {
+                // silu(x) = x * sigmoid(x) = x / (1 + exp(-x))
+                llvm::Function* exp_func = getMathFunc("exp");
+                if (!exp_func) return nullptr;
+                llvm::Value* neg_x = ctx_.builder().CreateFNeg(input_value);
+                llvm::Value* exp_neg_x = ctx_.builder().CreateCall(exp_func, {neg_x});
+                llvm::Value* one_plus = ctx_.builder().CreateFAdd(
+                    llvm::ConstantFP::get(ctx_.doubleType(), 1.0), exp_neg_x);
+                result_value = ctx_.builder().CreateFDiv(input_value, one_plus);
+            }
+            break;
+
+        // === Additional math operations (41-44) ===
+        case 41: // AD_NODE_SQRT
+            {
+                llvm::Function* sqrt_func = getMathFunc("sqrt");
+                if (!sqrt_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(sqrt_func, {input_value});
+            }
+            break;
+        case 42: // AD_NODE_ABS
             {
                 llvm::Function* fabs_func = getMathFunc("fabs");
                 if (!fabs_func) return nullptr;
                 result_value = ctx_.builder().CreateCall(fabs_func, {input_value});
             }
             break;
+        case 43: // AD_NODE_SQUARE
+            {
+                result_value = ctx_.builder().CreateFMul(input_value, input_value);
+            }
+            break;
+
         default:
             eshkol_warn("Unknown unary AD operation type: %u", op_type);
             return nullptr;
@@ -1439,7 +1560,8 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     // Check for COS
     ctx_.builder().SetInsertPoint(check_cos);
     llvm::Value* is_cos = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 7));
-    ctx_.builder().CreateCondBr(is_cos, cos_block, done_block); // Default to done if unknown
+    llvm::BasicBlock* check_exp = llvm::BasicBlock::Create(ctx_.context(), "check_exp", current_func);
+    ctx_.builder().CreateCondBr(is_cos, cos_block, check_exp);
 
     // COS: dL/dx = dL/dz * (-sin(x))
     ctx_.builder().SetInsertPoint(cos_block);
@@ -1452,6 +1574,424 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
             llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, neg_sin);
             accumulateGradient(input1, grad_input);
         }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Create blocks for additional operations
+    llvm::BasicBlock* exp_block = llvm::BasicBlock::Create(ctx_.context(), "grad_exp", current_func);
+    llvm::BasicBlock* log_block = llvm::BasicBlock::Create(ctx_.context(), "grad_log", current_func);
+    llvm::BasicBlock* pow_block = llvm::BasicBlock::Create(ctx_.context(), "grad_pow", current_func);
+    llvm::BasicBlock* neg_block = llvm::BasicBlock::Create(ctx_.context(), "grad_neg", current_func);
+    llvm::BasicBlock* relu_block = llvm::BasicBlock::Create(ctx_.context(), "grad_relu", current_func);
+    llvm::BasicBlock* sigmoid_block = llvm::BasicBlock::Create(ctx_.context(), "grad_sigmoid", current_func);
+    llvm::BasicBlock* softmax_block = llvm::BasicBlock::Create(ctx_.context(), "grad_softmax", current_func);
+    llvm::BasicBlock* tanh_block = llvm::BasicBlock::Create(ctx_.context(), "grad_tanh", current_func);
+    llvm::BasicBlock* gelu_block = llvm::BasicBlock::Create(ctx_.context(), "grad_gelu", current_func);
+    llvm::BasicBlock* leaky_relu_block = llvm::BasicBlock::Create(ctx_.context(), "grad_leaky_relu", current_func);
+    llvm::BasicBlock* silu_block = llvm::BasicBlock::Create(ctx_.context(), "grad_silu", current_func);
+    llvm::BasicBlock* matmul_block = llvm::BasicBlock::Create(ctx_.context(), "grad_matmul", current_func);
+    llvm::BasicBlock* sum_block = llvm::BasicBlock::Create(ctx_.context(), "grad_sum", current_func);
+    llvm::BasicBlock* mean_block = llvm::BasicBlock::Create(ctx_.context(), "grad_mean", current_func);
+    llvm::BasicBlock* sqrt_block = llvm::BasicBlock::Create(ctx_.context(), "grad_sqrt", current_func);
+    llvm::BasicBlock* abs_block = llvm::BasicBlock::Create(ctx_.context(), "grad_abs", current_func);
+    llvm::BasicBlock* square_block = llvm::BasicBlock::Create(ctx_.context(), "grad_square", current_func);
+    llvm::BasicBlock* max_block = llvm::BasicBlock::Create(ctx_.context(), "grad_max", current_func);
+    llvm::BasicBlock* min_block = llvm::BasicBlock::Create(ctx_.context(), "grad_min", current_func);
+
+    // Check for EXP (type=8)
+    ctx_.builder().SetInsertPoint(check_exp);
+    llvm::Value* is_exp = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 8));
+    llvm::BasicBlock* check_log = llvm::BasicBlock::Create(ctx_.context(), "check_log", current_func);
+    ctx_.builder().CreateCondBr(is_exp, exp_block, check_log);
+
+    // EXP: dL/dx = dL/dz * exp(x)
+    ctx_.builder().SetInsertPoint(exp_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Function* exp_func = getMathFunc("exp");
+        if (exp_func) {
+            llvm::Value* exp_val = ctx_.builder().CreateCall(exp_func, {input_val});
+            llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, exp_val);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for LOG (type=9)
+    ctx_.builder().SetInsertPoint(check_log);
+    llvm::Value* is_log = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 9));
+    llvm::BasicBlock* check_pow = llvm::BasicBlock::Create(ctx_.context(), "check_pow", current_func);
+    ctx_.builder().CreateCondBr(is_log, log_block, check_pow);
+
+    // LOG: dL/dx = dL/dz / x
+    ctx_.builder().SetInsertPoint(log_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* grad_input = ctx_.builder().CreateFDiv(node_grad, input_val);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for POW (type=10)
+    ctx_.builder().SetInsertPoint(check_pow);
+    llvm::Value* is_pow = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 10));
+    llvm::BasicBlock* check_neg = llvm::BasicBlock::Create(ctx_.context(), "check_neg", current_func);
+    ctx_.builder().CreateCondBr(is_pow, pow_block, check_neg);
+
+    // POW: dL/dx = dL/dz * y * x^(y-1), dL/dy = dL/dz * x^y * ln(x)
+    ctx_.builder().SetInsertPoint(pow_block);
+    if (input1 && input2) {
+        llvm::Value* base_val = loadNodeValue(input1);
+        llvm::Value* exp_val = loadNodeValue(input2);
+
+        llvm::Function* pow_func = getMathFunc("pow");
+        llvm::Function* log_func = getMathFunc("log");
+
+        if (pow_func && log_func) {
+            // Gradient w.r.t. base: y * x^(y-1) = y * x^y / x
+            llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+            llvm::Value* exp_minus_1 = ctx_.builder().CreateFSub(exp_val, one);
+            llvm::Value* pow_val = ctx_.builder().CreateCall(pow_func, {base_val, exp_minus_1});
+            llvm::Value* base_deriv = ctx_.builder().CreateFMul(exp_val, pow_val);
+            llvm::Value* grad_base = ctx_.builder().CreateFMul(node_grad, base_deriv);
+            accumulateGradient(input1, grad_base);
+
+            // Gradient w.r.t. exponent: x^y * ln(x)
+            llvm::Value* pow_full = ctx_.builder().CreateCall(pow_func, {base_val, exp_val});
+            llvm::Value* log_base = ctx_.builder().CreateCall(log_func, {base_val});
+            llvm::Value* exp_deriv = ctx_.builder().CreateFMul(pow_full, log_base);
+            llvm::Value* grad_exp = ctx_.builder().CreateFMul(node_grad, exp_deriv);
+            accumulateGradient(input2, grad_exp);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for NEG (type=11)
+    ctx_.builder().SetInsertPoint(check_neg);
+    llvm::Value* is_neg = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 11));
+    llvm::BasicBlock* check_relu = llvm::BasicBlock::Create(ctx_.context(), "check_relu", current_func);
+    ctx_.builder().CreateCondBr(is_neg, neg_block, check_relu);
+
+    // NEG: dL/dx = -dL/dz
+    ctx_.builder().SetInsertPoint(neg_block);
+    if (input1) {
+        llvm::Value* neg_grad = ctx_.builder().CreateFNeg(node_grad);
+        accumulateGradient(input1, neg_grad);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // === ML ACTIVATION GRADIENTS ===
+
+    // Check for RELU (type=12)
+    ctx_.builder().SetInsertPoint(check_relu);
+    llvm::Value* is_relu = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 12));
+    llvm::BasicBlock* check_sigmoid = llvm::BasicBlock::Create(ctx_.context(), "check_sigmoid", current_func);
+    ctx_.builder().CreateCondBr(is_relu, relu_block, check_sigmoid);
+
+    // RELU: dL/dx = dL/dz * (x > 0 ? 1 : 0)
+    ctx_.builder().SetInsertPoint(relu_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* is_positive = ctx_.builder().CreateFCmpOGT(input_val, zero);
+        llvm::Value* local_grad = ctx_.builder().CreateSelect(is_positive, one, zero);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, local_grad);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for SIGMOID (type=13)
+    ctx_.builder().SetInsertPoint(check_sigmoid);
+    llvm::Value* is_sigmoid = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 13));
+    llvm::BasicBlock* check_softmax = llvm::BasicBlock::Create(ctx_.context(), "check_softmax", current_func);
+    ctx_.builder().CreateCondBr(is_sigmoid, sigmoid_block, check_softmax);
+
+    // SIGMOID: dL/dx = dL/dz * σ(x) * (1 - σ(x))
+    // Note: We can use the node's output value which is σ(x)
+    ctx_.builder().SetInsertPoint(sigmoid_block);
+    if (input1) {
+        llvm::Value* node_val_ptr = ctx_.builder().CreateStructGEP(ad_node_type, node_ptr, 1);
+        llvm::Value* sigma_x = ctx_.builder().CreateLoad(ctx_.doubleType(), node_val_ptr);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* one_minus_sigma = ctx_.builder().CreateFSub(one, sigma_x);
+        llvm::Value* sigma_deriv = ctx_.builder().CreateFMul(sigma_x, one_minus_sigma);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, sigma_deriv);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for SOFTMAX (type=14) - Note: Softmax gradient requires full Jacobian for vectors
+    // For scalar case, we simplify to: dL/dx = dL/dz * softmax(x) * (1 - softmax(x))
+    ctx_.builder().SetInsertPoint(check_softmax);
+    llvm::Value* is_softmax = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 14));
+    llvm::BasicBlock* check_tanh = llvm::BasicBlock::Create(ctx_.context(), "check_tanh", current_func);
+    ctx_.builder().CreateCondBr(is_softmax, softmax_block, check_tanh);
+
+    // SOFTMAX (scalar approximation): Similar to sigmoid
+    ctx_.builder().SetInsertPoint(softmax_block);
+    if (input1) {
+        // For full tensor softmax, this would need to be more complex
+        // For now, treat as scalar softmax = sigmoid
+        llvm::Value* node_val_ptr = ctx_.builder().CreateStructGEP(ad_node_type, node_ptr, 1);
+        llvm::Value* softmax_x = ctx_.builder().CreateLoad(ctx_.doubleType(), node_val_ptr);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* one_minus = ctx_.builder().CreateFSub(one, softmax_x);
+        llvm::Value* softmax_deriv = ctx_.builder().CreateFMul(softmax_x, one_minus);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, softmax_deriv);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for TANH (type=15)
+    ctx_.builder().SetInsertPoint(check_tanh);
+    llvm::Value* is_tanh = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 15));
+    llvm::BasicBlock* check_gelu = llvm::BasicBlock::Create(ctx_.context(), "check_gelu", current_func);
+    ctx_.builder().CreateCondBr(is_tanh, tanh_block, check_gelu);
+
+    // TANH: dL/dx = dL/dz * (1 - tanh²(x))
+    ctx_.builder().SetInsertPoint(tanh_block);
+    if (input1) {
+        llvm::Value* node_val_ptr = ctx_.builder().CreateStructGEP(ad_node_type, node_ptr, 1);
+        llvm::Value* tanh_x = ctx_.builder().CreateLoad(ctx_.doubleType(), node_val_ptr);
+        llvm::Value* tanh_sq = ctx_.builder().CreateFMul(tanh_x, tanh_x);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* tanh_deriv = ctx_.builder().CreateFSub(one, tanh_sq);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, tanh_deriv);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for GELU (type=16)
+    ctx_.builder().SetInsertPoint(check_gelu);
+    llvm::Value* is_gelu = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 16));
+    llvm::BasicBlock* check_leaky_relu = llvm::BasicBlock::Create(ctx_.context(), "check_leaky_relu", current_func);
+    ctx_.builder().CreateCondBr(is_gelu, gelu_block, check_leaky_relu);
+
+    // GELU: approximate derivative using sigmoid approximation
+    // gelu(x) ≈ x * σ(1.702x), so gelu'(x) ≈ σ(1.702x) + 1.702x * σ(1.702x) * (1 - σ(1.702x))
+    ctx_.builder().SetInsertPoint(gelu_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Function* exp_func = getMathFunc("exp");
+        if (exp_func) {
+            llvm::Value* coeff = llvm::ConstantFP::get(ctx_.doubleType(), 1.702);
+            llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+
+            llvm::Value* scaled_x = ctx_.builder().CreateFMul(coeff, input_val);
+            llvm::Value* neg_scaled = ctx_.builder().CreateFNeg(scaled_x);
+            llvm::Value* exp_neg = ctx_.builder().CreateCall(exp_func, {neg_scaled});
+            llvm::Value* denom = ctx_.builder().CreateFAdd(one, exp_neg);
+            llvm::Value* sigma = ctx_.builder().CreateFDiv(one, denom);
+
+            llvm::Value* one_minus_sigma = ctx_.builder().CreateFSub(one, sigma);
+            llvm::Value* sigma_deriv = ctx_.builder().CreateFMul(sigma, one_minus_sigma);
+            llvm::Value* scaled_sigma_deriv = ctx_.builder().CreateFMul(coeff, sigma_deriv);
+            llvm::Value* x_times_deriv = ctx_.builder().CreateFMul(input_val, scaled_sigma_deriv);
+            llvm::Value* gelu_deriv = ctx_.builder().CreateFAdd(sigma, x_times_deriv);
+            llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, gelu_deriv);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for LEAKY_RELU (type=17)
+    ctx_.builder().SetInsertPoint(check_leaky_relu);
+    llvm::Value* is_leaky_relu = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 17));
+    llvm::BasicBlock* check_silu = llvm::BasicBlock::Create(ctx_.context(), "check_silu", current_func);
+    ctx_.builder().CreateCondBr(is_leaky_relu, leaky_relu_block, check_silu);
+
+    // LEAKY_RELU: dL/dx = dL/dz * (x > 0 ? 1 : α)
+    // Default α = 0.01
+    ctx_.builder().SetInsertPoint(leaky_relu_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* alpha = llvm::ConstantFP::get(ctx_.doubleType(), 0.01);
+        llvm::Value* is_positive = ctx_.builder().CreateFCmpOGT(input_val, zero);
+        llvm::Value* local_grad = ctx_.builder().CreateSelect(is_positive, one, alpha);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, local_grad);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for SILU (type=18)
+    ctx_.builder().SetInsertPoint(check_silu);
+    llvm::Value* is_silu = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 18));
+    llvm::BasicBlock* check_matmul = llvm::BasicBlock::Create(ctx_.context(), "check_matmul", current_func);
+    ctx_.builder().CreateCondBr(is_silu, silu_block, check_matmul);
+
+    // SILU (Swish): dL/dx = dL/dz * σ(x) * (1 + x * (1 - σ(x)))
+    ctx_.builder().SetInsertPoint(silu_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Function* exp_func = getMathFunc("exp");
+        if (exp_func) {
+            llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+            llvm::Value* neg_x = ctx_.builder().CreateFNeg(input_val);
+            llvm::Value* exp_neg = ctx_.builder().CreateCall(exp_func, {neg_x});
+            llvm::Value* denom = ctx_.builder().CreateFAdd(one, exp_neg);
+            llvm::Value* sigma = ctx_.builder().CreateFDiv(one, denom);
+
+            llvm::Value* one_minus_sigma = ctx_.builder().CreateFSub(one, sigma);
+            llvm::Value* x_times_one_minus = ctx_.builder().CreateFMul(input_val, one_minus_sigma);
+            llvm::Value* one_plus_term = ctx_.builder().CreateFAdd(one, x_times_one_minus);
+            llvm::Value* silu_deriv = ctx_.builder().CreateFMul(sigma, one_plus_term);
+            llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, silu_deriv);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for MATMUL (type=24) - Tensor operation gradients are more complex
+    // For now, we'll add a placeholder that can be extended for tensor autodiff
+    ctx_.builder().SetInsertPoint(check_matmul);
+    llvm::Value* is_matmul = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 24));
+    llvm::BasicBlock* check_sum = llvm::BasicBlock::Create(ctx_.context(), "check_sum", current_func);
+    ctx_.builder().CreateCondBr(is_matmul, matmul_block, check_sum);
+
+    // MATMUL: For scalar case, acts like MUL
+    // Full tensor matmul: dL/dA = dL/dC @ B^T, dL/dB = A^T @ dL/dC
+    // Placeholder for tensor autodiff integration
+    ctx_.builder().SetInsertPoint(matmul_block);
+    if (input1 && input2) {
+        // Scalar approximation: treat as multiply
+        llvm::Value* input1_val = loadNodeValue(input1);
+        llvm::Value* input2_val = loadNodeValue(input2);
+        llvm::Value* grad_input1 = ctx_.builder().CreateFMul(node_grad, input2_val);
+        llvm::Value* grad_input2 = ctx_.builder().CreateFMul(node_grad, input1_val);
+        accumulateGradient(input1, grad_input1);
+        accumulateGradient(input2, grad_input2);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for SUM (type=27)
+    ctx_.builder().SetInsertPoint(check_sum);
+    llvm::Value* is_sum = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 27));
+    llvm::BasicBlock* check_mean = llvm::BasicBlock::Create(ctx_.context(), "check_mean", current_func);
+    ctx_.builder().CreateCondBr(is_sum, sum_block, check_mean);
+
+    // SUM: dL/dx_i = dL/dz for all i (gradient broadcasts to all elements)
+    ctx_.builder().SetInsertPoint(sum_block);
+    if (input1) {
+        // For scalar, gradient passes through unchanged
+        accumulateGradient(input1, node_grad);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for MEAN (type=28)
+    ctx_.builder().SetInsertPoint(check_mean);
+    llvm::Value* is_mean = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 28));
+    llvm::BasicBlock* check_sqrt = llvm::BasicBlock::Create(ctx_.context(), "check_sqrt", current_func);
+    ctx_.builder().CreateCondBr(is_mean, mean_block, check_sqrt);
+
+    // MEAN: dL/dx_i = dL/dz / n for all i
+    // For scalar, gradient passes through unchanged (n=1)
+    ctx_.builder().SetInsertPoint(mean_block);
+    if (input1) {
+        accumulateGradient(input1, node_grad);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for SQRT (type=41)
+    ctx_.builder().SetInsertPoint(check_sqrt);
+    llvm::Value* is_sqrt = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 41));
+    llvm::BasicBlock* check_abs = llvm::BasicBlock::Create(ctx_.context(), "check_abs", current_func);
+    ctx_.builder().CreateCondBr(is_sqrt, sqrt_block, check_abs);
+
+    // SQRT: dL/dx = dL/dz * 0.5 / sqrt(x)
+    // Note: We can use the node's output value which is sqrt(x)
+    ctx_.builder().SetInsertPoint(sqrt_block);
+    if (input1) {
+        llvm::Value* node_val_ptr = ctx_.builder().CreateStructGEP(ad_node_type, node_ptr, 1);
+        llvm::Value* sqrt_x = ctx_.builder().CreateLoad(ctx_.doubleType(), node_val_ptr);
+        llvm::Value* half = llvm::ConstantFP::get(ctx_.doubleType(), 0.5);
+        llvm::Value* sqrt_deriv = ctx_.builder().CreateFDiv(half, sqrt_x);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, sqrt_deriv);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for ABS (type=42)
+    ctx_.builder().SetInsertPoint(check_abs);
+    llvm::Value* is_abs = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 42));
+    llvm::BasicBlock* check_square = llvm::BasicBlock::Create(ctx_.context(), "check_square", current_func);
+    ctx_.builder().CreateCondBr(is_abs, abs_block, check_square);
+
+    // ABS: dL/dx = dL/dz * sign(x)
+    // sign(x) = 1 if x > 0, -1 if x < 0, 0 if x == 0
+    ctx_.builder().SetInsertPoint(abs_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+        llvm::Value* pos_one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* neg_one = llvm::ConstantFP::get(ctx_.doubleType(), -1.0);
+        llvm::Value* is_positive = ctx_.builder().CreateFCmpOGT(input_val, zero);
+        llvm::Value* is_negative = ctx_.builder().CreateFCmpOLT(input_val, zero);
+        // sign = is_positive ? 1.0 : (is_negative ? -1.0 : 0.0)
+        llvm::Value* neg_or_zero = ctx_.builder().CreateSelect(is_negative, neg_one, zero);
+        llvm::Value* sign_val = ctx_.builder().CreateSelect(is_positive, pos_one, neg_or_zero);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, sign_val);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for SQUARE (type=43)
+    ctx_.builder().SetInsertPoint(check_square);
+    llvm::Value* is_square = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 43));
+    llvm::BasicBlock* check_max = llvm::BasicBlock::Create(ctx_.context(), "check_max", current_func);
+    ctx_.builder().CreateCondBr(is_square, square_block, check_max);
+
+    // SQUARE: dL/dx = dL/dz * 2x
+    ctx_.builder().SetInsertPoint(square_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+        llvm::Value* two_x = ctx_.builder().CreateFMul(two, input_val);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, two_x);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for MAX (type=44)
+    ctx_.builder().SetInsertPoint(check_max);
+    llvm::Value* is_max = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 44));
+    llvm::BasicBlock* check_min = llvm::BasicBlock::Create(ctx_.context(), "check_min", current_func);
+    ctx_.builder().CreateCondBr(is_max, max_block, check_min);
+
+    // MAX: dL/dx = dL/dz if x > y, dL/dy = dL/dz if y >= x
+    // Gradient goes entirely to the larger input
+    ctx_.builder().SetInsertPoint(max_block);
+    if (input1 && input2) {
+        llvm::Value* input1_val = loadNodeValue(input1);
+        llvm::Value* input2_val = loadNodeValue(input2);
+        llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+        llvm::Value* cmp = ctx_.builder().CreateFCmpOGT(input1_val, input2_val);
+        llvm::Value* grad_input1 = ctx_.builder().CreateSelect(cmp, node_grad, zero);
+        llvm::Value* grad_input2 = ctx_.builder().CreateSelect(cmp, zero, node_grad);
+        accumulateGradient(input1, grad_input1);
+        accumulateGradient(input2, grad_input2);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Check for MIN (type=45)
+    ctx_.builder().SetInsertPoint(check_min);
+    llvm::Value* is_min = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 45));
+    ctx_.builder().CreateCondBr(is_min, min_block, done_block); // Default to done for unknown types
+
+    // MIN: dL/dx = dL/dz if x < y, dL/dy = dL/dz if y <= x
+    // Gradient goes entirely to the smaller input
+    ctx_.builder().SetInsertPoint(min_block);
+    if (input1 && input2) {
+        llvm::Value* input1_val = loadNodeValue(input1);
+        llvm::Value* input2_val = loadNodeValue(input2);
+        llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+        llvm::Value* cmp = ctx_.builder().CreateFCmpOLT(input1_val, input2_val);
+        llvm::Value* grad_input1 = ctx_.builder().CreateSelect(cmp, node_grad, zero);
+        llvm::Value* grad_input2 = ctx_.builder().CreateSelect(cmp, zero, node_grad);
+        accumulateGradient(input1, grad_input1);
+        accumulateGradient(input2, grad_input2);
     }
     ctx_.builder().CreateBr(done_block);
 
@@ -1664,6 +2204,27 @@ llvm::Value* AutodiffCodegen::recordADNodeBinaryOnTape(llvm::Value* tape_ptr, ui
         case 5: // AD_NODE_DIV
             result_value = ctx_.builder().CreateFDiv(left_value, right_value);
             break;
+        case 10: // AD_NODE_POW
+            {
+                llvm::Function* pow_func = getMathFunc("pow");
+                if (!pow_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(pow_func, {left_value, right_value});
+            }
+            break;
+        case 44: // AD_NODE_MAX
+            {
+                // max(a, b) = a if a > b else b
+                llvm::Value* cmp = ctx_.builder().CreateFCmpOGT(left_value, right_value);
+                result_value = ctx_.builder().CreateSelect(cmp, left_value, right_value);
+            }
+            break;
+        case 45: // AD_NODE_MIN
+            {
+                // min(a, b) = a if a < b else b
+                llvm::Value* cmp = ctx_.builder().CreateFCmpOLT(left_value, right_value);
+                result_value = ctx_.builder().CreateSelect(cmp, left_value, right_value);
+            }
+            break;
         default:
             eshkol_warn("Unknown binary AD operation type: %u", op_type);
             return nullptr;
@@ -1767,6 +2328,205 @@ void AutodiffCodegen::accumulateGradient(llvm::Value* node_ptr, llvm::Value* gra
 
     // Merge point: continue from here
     ctx_.builder().SetInsertPoint(merge_accumulate);
+}
+
+// ===== ML ACTIVATION FUNCTION DUAL NUMBER OPERATIONS =====
+// These implement chain rule for ML activation functions
+
+// ReLU: relu(a, a') = (max(0, a), a > 0 ? a' : 0)
+// Derivative: d/dx[relu(f(x))] = f'(x) if f(x) > 0, else 0
+llvm::Value* AutodiffCodegen::dualRelu(llvm::Value* dual) {
+    if (!dual) return nullptr;
+
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+
+    // Value: max(0, a)
+    llvm::Value* is_positive = ctx_.builder().CreateFCmpOGT(a, zero);
+    llvm::Value* value = ctx_.builder().CreateSelect(is_positive, a, zero);
+
+    // Derivative: a > 0 ? a' : 0
+    llvm::Value* deriv = ctx_.builder().CreateSelect(is_positive, a_prime, zero);
+
+    return createDualNumber(value, deriv);
+}
+
+// Sigmoid: σ(a, a') = (σ(a), a' * σ(a) * (1 - σ(a)))
+// Chain rule: d/dx[σ(f(x))] = σ(f(x)) * (1 - σ(f(x))) * f'(x)
+llvm::Value* AutodiffCodegen::dualSigmoid(llvm::Value* dual) {
+    if (!dual) return nullptr;
+
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Function* exp_func = getMathFunc("exp");
+    if (!exp_func) return nullptr;
+
+    // σ(a) = 1 / (1 + exp(-a))
+    llvm::Value* neg_a = ctx_.builder().CreateFNeg(a);
+    llvm::Value* exp_neg_a = ctx_.builder().CreateCall(exp_func, {neg_a});
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* denom = ctx_.builder().CreateFAdd(one, exp_neg_a);
+    llvm::Value* sigma_a = ctx_.builder().CreateFDiv(one, denom);
+
+    // Derivative: a' * σ(a) * (1 - σ(a))
+    llvm::Value* one_minus_sigma = ctx_.builder().CreateFSub(one, sigma_a);
+    llvm::Value* sigma_deriv = ctx_.builder().CreateFMul(sigma_a, one_minus_sigma);
+    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, sigma_deriv);
+
+    return createDualNumber(sigma_a, deriv);
+}
+
+// GELU: Gaussian Error Linear Unit
+// Approximation: gelu(x) ≈ x * σ(1.702 * x)
+// d/dx[x * σ(1.702*x)] = σ(1.702*x) + x * 1.702 * σ(1.702*x) * (1 - σ(1.702*x))
+llvm::Value* AutodiffCodegen::dualGelu(llvm::Value* dual) {
+    if (!dual) return nullptr;
+
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Function* exp_func = getMathFunc("exp");
+    if (!exp_func) return nullptr;
+
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* coeff = llvm::ConstantFP::get(ctx_.doubleType(), 1.702);
+
+    // σ(1.702 * a)
+    llvm::Value* scaled_a = ctx_.builder().CreateFMul(coeff, a);
+    llvm::Value* neg_scaled_a = ctx_.builder().CreateFNeg(scaled_a);
+    llvm::Value* exp_neg = ctx_.builder().CreateCall(exp_func, {neg_scaled_a});
+    llvm::Value* denom = ctx_.builder().CreateFAdd(one, exp_neg);
+    llvm::Value* sigma = ctx_.builder().CreateFDiv(one, denom);
+
+    // Value: a * σ(1.702 * a)
+    llvm::Value* value = ctx_.builder().CreateFMul(a, sigma);
+
+    // Derivative: a' * (σ(1.702*a) + a * 1.702 * σ(1.702*a) * (1 - σ(1.702*a)))
+    llvm::Value* one_minus_sigma = ctx_.builder().CreateFSub(one, sigma);
+    llvm::Value* sigma_deriv = ctx_.builder().CreateFMul(sigma, one_minus_sigma);
+    llvm::Value* scaled_sigma_deriv = ctx_.builder().CreateFMul(coeff, sigma_deriv);
+    llvm::Value* a_times_scaled = ctx_.builder().CreateFMul(a, scaled_sigma_deriv);
+    llvm::Value* total_deriv = ctx_.builder().CreateFAdd(sigma, a_times_scaled);
+    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, total_deriv);
+
+    return createDualNumber(value, deriv);
+}
+
+// Leaky ReLU: leaky_relu(a, a') = (a > 0 ? a : α*a, a > 0 ? a' : α*a')
+// Derivative: d/dx[leaky_relu(f(x))] = f'(x) if f(x) > 0, else α * f'(x)
+llvm::Value* AutodiffCodegen::dualLeakyRelu(llvm::Value* dual, double alpha) {
+    if (!dual) return nullptr;
+
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* alpha_val = llvm::ConstantFP::get(ctx_.doubleType(), alpha);
+
+    // Value: a > 0 ? a : α * a
+    llvm::Value* is_positive = ctx_.builder().CreateFCmpOGT(a, zero);
+    llvm::Value* alpha_a = ctx_.builder().CreateFMul(alpha_val, a);
+    llvm::Value* value = ctx_.builder().CreateSelect(is_positive, a, alpha_a);
+
+    // Derivative: a > 0 ? a' : α * a'
+    llvm::Value* alpha_a_prime = ctx_.builder().CreateFMul(alpha_val, a_prime);
+    llvm::Value* deriv = ctx_.builder().CreateSelect(is_positive, a_prime, alpha_a_prime);
+
+    return createDualNumber(value, deriv);
+}
+
+// SiLU (Swish): silu(a) = a * σ(a)
+// d/dx[x * σ(x)] = σ(x) + x * σ(x) * (1 - σ(x)) = σ(x) * (1 + x * (1 - σ(x)))
+llvm::Value* AutodiffCodegen::dualSilu(llvm::Value* dual) {
+    if (!dual) return nullptr;
+
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Function* exp_func = getMathFunc("exp");
+    if (!exp_func) return nullptr;
+
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+
+    // σ(a) = 1 / (1 + exp(-a))
+    llvm::Value* neg_a = ctx_.builder().CreateFNeg(a);
+    llvm::Value* exp_neg_a = ctx_.builder().CreateCall(exp_func, {neg_a});
+    llvm::Value* denom = ctx_.builder().CreateFAdd(one, exp_neg_a);
+    llvm::Value* sigma_a = ctx_.builder().CreateFDiv(one, denom);
+
+    // Value: a * σ(a)
+    llvm::Value* value = ctx_.builder().CreateFMul(a, sigma_a);
+
+    // Derivative: a' * σ(a) * (1 + a * (1 - σ(a)))
+    llvm::Value* one_minus_sigma = ctx_.builder().CreateFSub(one, sigma_a);
+    llvm::Value* a_times_one_minus = ctx_.builder().CreateFMul(a, one_minus_sigma);
+    llvm::Value* one_plus_term = ctx_.builder().CreateFAdd(one, a_times_one_minus);
+    llvm::Value* sigma_times_term = ctx_.builder().CreateFMul(sigma_a, one_plus_term);
+    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, sigma_times_term);
+
+    return createDualNumber(value, deriv);
+}
+
+// Square: square(a, a') = (a², 2 * a * a')
+llvm::Value* AutodiffCodegen::dualSquare(llvm::Value* dual) {
+    if (!dual) return nullptr;
+
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+
+    // Value: a²
+    llvm::Value* value = ctx_.builder().CreateFMul(a, a);
+
+    // Derivative: 2 * a * a'
+    llvm::Value* two_a = ctx_.builder().CreateFMul(two, a);
+    llvm::Value* deriv = ctx_.builder().CreateFMul(two_a, a_prime);
+
+    return createDualNumber(value, deriv);
+}
+
+// Max: max(a, b, a', b') = (max(a, b), a > b ? a' : b')
+// Subgradient selection: when a == b, we arbitrarily choose a'
+llvm::Value* AutodiffCodegen::dualMax(llvm::Value* dual_a, llvm::Value* dual_b) {
+    if (!dual_a || !dual_b) return nullptr;
+
+    llvm::Value* a = getDualPrimal(dual_a);
+    llvm::Value* a_prime = getDualTangent(dual_a);
+    llvm::Value* b = getDualPrimal(dual_b);
+    llvm::Value* b_prime = getDualTangent(dual_b);
+
+    // Value: max(a, b)
+    llvm::Value* a_gt_b = ctx_.builder().CreateFCmpOGT(a, b);
+    llvm::Value* value = ctx_.builder().CreateSelect(a_gt_b, a, b);
+
+    // Derivative: a > b ? a' : b'
+    llvm::Value* deriv = ctx_.builder().CreateSelect(a_gt_b, a_prime, b_prime);
+
+    return createDualNumber(value, deriv);
+}
+
+// Min: min(a, b, a', b') = (min(a, b), a < b ? a' : b')
+// Subgradient selection: when a == b, we arbitrarily choose a'
+llvm::Value* AutodiffCodegen::dualMin(llvm::Value* dual_a, llvm::Value* dual_b) {
+    if (!dual_a || !dual_b) return nullptr;
+
+    llvm::Value* a = getDualPrimal(dual_a);
+    llvm::Value* a_prime = getDualTangent(dual_a);
+    llvm::Value* b = getDualPrimal(dual_b);
+    llvm::Value* b_prime = getDualTangent(dual_b);
+
+    // Value: min(a, b)
+    llvm::Value* a_lt_b = ctx_.builder().CreateFCmpOLT(a, b);
+    llvm::Value* value = ctx_.builder().CreateSelect(a_lt_b, a, b);
+
+    // Derivative: a < b ? a' : b'
+    llvm::Value* deriv = ctx_.builder().CreateSelect(a_lt_b, a_prime, b_prime);
+
+    return createDualNumber(value, deriv);
 }
 
 } // namespace eshkol

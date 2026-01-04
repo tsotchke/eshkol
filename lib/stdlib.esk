@@ -40,3 +40,34 @@
 ;;; Data formats - CSV, Base64
 (require core.data.csv)
 (require core.data.base64)
+
+;;; Tensor utilities
+(define (random-tensor dims)
+  (apply rand dims))
+
+(define (random-normal-tensor dims)
+  (apply randn dims))
+
+;;; High-precision timing utilities (derived from current-time-ns)
+(define (current-time-us)
+  "Current Unix time in microseconds"
+  (/ (current-time-ns) 1000.0))
+
+(define (time-ns thunk)
+  "Execute thunk and return elapsed time in nanoseconds"
+  (let ((start (current-time-ns)))
+    (thunk)
+    (- (current-time-ns) start)))
+
+(define (time-us thunk)
+  "Execute thunk and return elapsed time in microseconds"
+  (/ (time-ns thunk) 1000.0))
+
+(define (time-it thunk iterations)
+  "Execute thunk N times, return average time in nanoseconds"
+  (let ((start (current-time-ns)))
+    (let loop ((i 0))
+      (when (< i iterations)
+        (thunk)
+        (loop (+ i 1))))
+    (/ (- (current-time-ns) start) iterations)))

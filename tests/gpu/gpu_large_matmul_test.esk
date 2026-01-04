@@ -1,0 +1,66 @@
+;; GPU Large Matrix Test
+;; Tests GPU dispatch for large matrices (>100K operations)
+;; GPU threshold: 100K ops (e.g., 50x50x50 = 125K)
+
+(display "=== GPU Large Matrix Test ===") (newline)
+
+;; Create 50x50 matrices (50*50*50 = 125K ops > 100K threshold)
+;; This should trigger GPU path on supported systems
+
+(display "Creating 50x50 matrices...") (newline)
+
+;; Create a 50x50 matrix filled with 1.0
+(define N 50)
+(define size (* N N))
+
+;; Create identity-like test: A * I = A
+;; For simplicity, test with sequential values
+(define A-data (make-vector size 0.0))
+(define B-data (make-vector size 0.0))
+
+;; Fill A with sequential values 1.0, 2.0, 3.0, ...
+(do ((i 0 (+ i 1)))
+    ((>= i size))
+  (vector-set! A-data i (+ 1.0 i)))
+
+;; Fill B as identity matrix
+(do ((i 0 (+ i 1)))
+    ((>= i N))
+  (vector-set! B-data (+ (* i N) i) 1.0))
+
+(define A (reshape A-data N N))
+(define B (reshape B-data N N))
+
+(display "A[0,0..4] = ")
+(display (vector-ref A-data 0)) (display " ")
+(display (vector-ref A-data 1)) (display " ")
+(display (vector-ref A-data 2)) (display " ")
+(display (vector-ref A-data 3)) (display " ")
+(display (vector-ref A-data 4))
+(newline)
+
+(display "Computing C = A * B (50x50 x 50x50 = 125K ops)...") (newline)
+(define C (matmul A B))
+
+;; A * I should equal A
+(display "C[0,0..4] = ")
+(define C-data (tensor-data C))
+(display (vector-ref C-data 0)) (display " ")
+(display (vector-ref C-data 1)) (display " ")
+(display (vector-ref C-data 2)) (display " ")
+(display (vector-ref C-data 3)) (display " ")
+(display (vector-ref C-data 4))
+(newline)
+
+;; Verify: A * I = A
+(define correct #t)
+(do ((i 0 (+ i 1)))
+    ((or (>= i 10) (not correct)))
+  (when (> (abs (- (vector-ref A-data i) (vector-ref C-data i))) 0.0001)
+    (set! correct #f)))
+
+(if correct
+    (begin (display "PASS: A * I = A (first 10 elements match)") (newline))
+    (begin (display "FAIL: Matrix multiply incorrect") (newline)))
+
+(display "=== GPU Large Matrix Test Complete ===") (newline)

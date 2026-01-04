@@ -77,6 +77,19 @@ public:
     llvm::Value* currentSeconds(const eshkol_operations_t* op);
 
     /**
+     * Get current time in milliseconds: (current-time-ms)
+     * @return Time in milliseconds as double
+     */
+    llvm::Value* currentTimeMs(const eshkol_operations_t* op);
+
+    /**
+     * Get current time in nanoseconds: (current-time-ns)
+     * Uses clock_gettime with CLOCK_UPTIME_RAW (macOS) or CLOCK_MONOTONIC (Linux)
+     * @return Time in nanoseconds as double
+     */
+    llvm::Value* currentTimeNs(const eshkol_operations_t* op);
+
+    /**
      * Exit the program: (exit code)
      * @param code Exit code (integer)
      * @return Does not return
