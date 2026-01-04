@@ -228,6 +228,60 @@ public:
      */
     llvm::Value* tensorSilu(const eshkol_operations_t* op);
 
+    // === Activation Backward Functions (for autodiff) ===
+
+    /**
+     * Softmax backward pass: computes gradient through softmax
+     * Formula: dL/dx_i = s_i * (g_i - sum_j(g_j * s_j))
+     * where s = softmax output, g = upstream gradient
+     *
+     * @param softmax_output The softmax forward pass output tensor
+     * @param upstream_grad The gradient from the next layer
+     * @return Tensor containing input gradients
+     */
+    llvm::Value* tensorSoftmaxBackward(llvm::Value* softmax_output, llvm::Value* upstream_grad);
+
+    /**
+     * ReLU backward pass: dL/dx = dL/dy * (x > 0 ? 1 : 0)
+     * @param input The original input tensor (for sign check)
+     * @param upstream_grad The gradient from the next layer
+     * @return Tensor containing input gradients
+     */
+    llvm::Value* tensorReluBackward(llvm::Value* input, llvm::Value* upstream_grad);
+
+    /**
+     * Sigmoid backward pass: dL/dx = dL/dy * σ(x) * (1 - σ(x))
+     * @param sigmoid_output The sigmoid forward pass output
+     * @param upstream_grad The gradient from the next layer
+     * @return Tensor containing input gradients
+     */
+    llvm::Value* tensorSigmoidBackward(llvm::Value* sigmoid_output, llvm::Value* upstream_grad);
+
+    /**
+     * GELU backward pass
+     * @param input The original input tensor
+     * @param upstream_grad The gradient from the next layer
+     * @return Tensor containing input gradients
+     */
+    llvm::Value* tensorGeluBackward(llvm::Value* input, llvm::Value* upstream_grad);
+
+    /**
+     * Leaky ReLU backward pass: dL/dx = dL/dy * (x > 0 ? 1 : alpha)
+     * @param input The original input tensor
+     * @param upstream_grad The gradient from the next layer
+     * @param alpha The negative slope (default 0.01)
+     * @return Tensor containing input gradients
+     */
+    llvm::Value* tensorLeakyReluBackward(llvm::Value* input, llvm::Value* upstream_grad, double alpha = 0.01);
+
+    /**
+     * SiLU backward pass: dL/dx = dL/dy * (σ(x) + x * σ(x) * (1 - σ(x)))
+     * @param input The original input tensor
+     * @param upstream_grad The gradient from the next layer
+     * @return Tensor containing input gradients
+     */
+    llvm::Value* tensorSiluBackward(llvm::Value* input, llvm::Value* upstream_grad);
+
     // === Statistics Operations ===
 
     /**
@@ -515,6 +569,366 @@ public:
     llvm::Value* createTensorWithDims(const std::vector<llvm::Value*>& dims,
                                        llvm::Value* fill_value = nullptr,
                                        bool use_memset_zero = false);
+
+    // === Optimizers (Track 10.1) ===
+
+    /**
+     * SGD optimizer step with momentum: (sgd-step! params grads lr [momentum velocity])
+     *
+     * Updates parameters in-place using SGD with optional momentum.
+     * Without momentum: param = param - lr * grad
+     * With momentum: v = momentum * v + grad; param = param - lr * v
+     *
+     * @param op The operation AST node containing:
+     *   - params: tensor of parameters to update (modified in-place)
+     *   - grads: tensor of gradients (same shape as params)
+     *   - lr: learning rate (scalar)
+     *   - momentum: optional momentum coefficient (default 0.0, no momentum)
+     *   - velocity: optional velocity tensor (required if momentum > 0, modified in-place)
+     * @return The updated params tensor
+     */
+    llvm::Value* sgdStep(const eshkol_operations_t* op);
+
+    /**
+     * Adam optimizer step: (adam-step! params grads lr m v t [beta1 beta2 eps])
+     *
+     * Implements the Adam optimizer algorithm (Kingma & Ba, 2014):
+     * m_t = β₁ * m_{t-1} + (1 - β₁) * g_t
+     * v_t = β₂ * v_{t-1} + (1 - β₂) * g_t²
+     * m̂_t = m_t / (1 - β₁^t)
+     * v̂_t = v_t / (1 - β₂^t)
+     * θ_t = θ_{t-1} - α * m̂_t / (√v̂_t + ε)
+     *
+     * @param op The operation AST node containing:
+     *   - params: tensor of parameters to update (modified in-place)
+     *   - grads: tensor of gradients (same shape as params)
+     *   - lr: learning rate (scalar, typically 0.001)
+     *   - m: first moment estimate tensor (modified in-place)
+     *   - v: second moment estimate tensor (modified in-place)
+     *   - t: timestep (integer, starts at 1)
+     *   - beta1: optional first moment decay (default 0.9)
+     *   - beta2: optional second moment decay (default 0.999)
+     *   - eps: optional numerical stability term (default 1e-8)
+     * @return The updated params tensor
+     */
+    llvm::Value* adamStep(const eshkol_operations_t* op);
+
+    /**
+     * Zero gradients: (zero-grad! grad-tensor)
+     *
+     * Zeros out all elements of a gradient tensor in-place.
+     * Should be called before each forward pass in training loop.
+     *
+     * @param op The operation AST node containing gradient tensor
+     * @return The zeroed tensor
+     */
+    llvm::Value* zeroGrad(const eshkol_operations_t* op);
+
+    /**
+     * Clip gradient norm: (clip-grad-norm! grads max-norm)
+     *
+     * Clips gradients by global norm. If ||grads|| > max_norm,
+     * scales all gradients by max_norm / ||grads||.
+     * Helps prevent gradient explosion in training.
+     *
+     * @param op The operation AST node containing:
+     *   - grads: tensor of gradients (modified in-place)
+     *   - max_norm: maximum allowed norm (scalar)
+     * @return Total norm of gradients before clipping
+     */
+    llvm::Value* clipGradNorm(const eshkol_operations_t* op);
+
+    /**
+     * RMSprop optimizer step: (rmsprop-step! params grads lr v [alpha eps])
+     *
+     * Implements RMSprop optimizer:
+     * v_t = α * v_{t-1} + (1 - α) * g_t²
+     * θ_t = θ_{t-1} - lr * g_t / (√v_t + ε)
+     *
+     * @param op The operation AST node
+     * @return The updated params tensor
+     */
+    llvm::Value* rmspropStep(const eshkol_operations_t* op);
+
+    // === Loss Functions (Track 6.3) ===
+
+    /**
+     * Mean Squared Error loss: (mse-loss predictions targets)
+     *
+     * MSE = (1/n) * Σ(pred_i - target_i)²
+     *
+     * @param op The operation AST node
+     * @return Scalar MSE loss value
+     */
+    llvm::Value* mseLoss(const eshkol_operations_t* op);
+
+    /**
+     * Cross-entropy loss: (cross-entropy-loss logits targets)
+     *
+     * For classification: -Σ target_i * log(softmax(logits)_i)
+     *
+     * @param op The operation AST node containing:
+     *   - logits: raw unnormalized predictions
+     *   - targets: one-hot encoded or class indices
+     * @return Scalar cross-entropy loss value
+     */
+    llvm::Value* crossEntropyLoss(const eshkol_operations_t* op);
+
+    /**
+     * Binary cross-entropy loss: (bce-loss predictions targets)
+     *
+     * BCE = -Σ(target_i * log(pred_i) + (1 - target_i) * log(1 - pred_i))
+     *
+     * @param op The operation AST node
+     * @return Scalar BCE loss value
+     */
+    llvm::Value* bceLoss(const eshkol_operations_t* op);
+
+    /**
+     * Huber loss (smooth L1): (huber-loss predictions targets [delta])
+     *
+     * L_δ(a) = 0.5 * a² if |a| ≤ δ, else δ * (|a| - 0.5 * δ)
+     * Less sensitive to outliers than MSE.
+     *
+     * @param op The operation AST node
+     * @return Scalar Huber loss value
+     */
+    llvm::Value* huberLoss(const eshkol_operations_t* op);
+
+    /**
+     * Mean Absolute Error loss: (mae-loss predictions targets)
+     *
+     * Computes MAE = (1/n) * sum(|pred - target|)
+     * Also known as L1 loss. More robust to outliers than MSE.
+     *
+     * @param op The operation AST node
+     * @return Scalar MAE loss value
+     */
+    llvm::Value* maeLoss(const eshkol_operations_t* op);
+
+    /**
+     * Binary Cross-Entropy loss: (binary-cross-entropy-loss predictions targets)
+     *
+     * For binary classification where predictions are probabilities [0, 1].
+     * BCE = -(1/n) * sum(target * log(pred) + (1-target) * log(1-pred))
+     *
+     * @param op The operation AST node containing:
+     *   - predictions: tensor of predicted probabilities (after sigmoid)
+     *   - targets: tensor of binary labels (0 or 1)
+     * @return Scalar binary cross-entropy loss value
+     */
+    llvm::Value* binaryCrossEntropyLoss(const eshkol_operations_t* op);
+
+    // === Data Loading Infrastructure ===
+
+    /**
+     * Create a dataloader: (make-dataloader data-tensor batch-size [shuffle])
+     *
+     * Creates a dataloader that iterates over a dataset tensor in batches.
+     * The dataloader maintains internal state for current position.
+     *
+     * @param op The operation AST node containing:
+     *   - data: tensor of shape [num_samples, ...] containing all data
+     *   - batch_size: number of samples per batch
+     *   - shuffle: optional boolean to shuffle indices (default: false)
+     * @return Dataloader object (opaque pointer)
+     */
+    llvm::Value* makeDataloader(const eshkol_operations_t* op);
+
+    /**
+     * Get next batch from dataloader: (dataloader-next loader)
+     *
+     * Returns the next batch of data, or null if end of epoch.
+     *
+     * @param op The operation AST node containing the dataloader
+     * @return Tensor containing the next batch, or null if exhausted
+     */
+    llvm::Value* dataloaderNext(const eshkol_operations_t* op);
+
+    /**
+     * Reset dataloader to beginning: (dataloader-reset! loader)
+     *
+     * Resets the dataloader to the first batch, optionally re-shuffling.
+     *
+     * @param op The operation AST node containing the dataloader
+     * @return The dataloader object (for chaining)
+     */
+    llvm::Value* dataloaderReset(const eshkol_operations_t* op);
+
+    /**
+     * Get number of batches in dataloader: (dataloader-length loader)
+     *
+     * @param op The operation AST node containing the dataloader
+     * @return Integer number of batches
+     */
+    llvm::Value* dataloaderLength(const eshkol_operations_t* op);
+
+    /**
+     * Check if dataloader has more batches: (dataloader-has-next? loader)
+     *
+     * @param op The operation AST node containing the dataloader
+     * @return Boolean indicating if more batches available
+     */
+    llvm::Value* dataloaderHasNext(const eshkol_operations_t* op);
+
+    /**
+     * Create train/test split: (train-test-split data labels ratio [shuffle])
+     *
+     * Splits dataset into training and test sets.
+     *
+     * @param op The operation AST node containing:
+     *   - data: tensor of samples
+     *   - labels: tensor of labels (optional)
+     *   - ratio: fraction for training (e.g., 0.8)
+     *   - shuffle: whether to shuffle before splitting
+     * @return Vector of (train-data train-labels test-data test-labels)
+     */
+    llvm::Value* trainTestSplit(const eshkol_operations_t* op);
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // TRANSFORMER ARCHITECTURE (Track 8)
+    // ════════════════════════════════════════════════════════════════════════════
+
+    // === Track 8.1: Scaled Dot-Product Attention ===
+
+    /**
+     * Scaled dot-product attention: (scaled-dot-attention Q K V [mask])
+     *
+     * Implements the attention mechanism from "Attention Is All You Need":
+     *   scores = Q @ K^T / sqrt(d_k)
+     *   attention = softmax(scores + mask)  ; mask is optional
+     *   output = attention @ V
+     *
+     * @param op The operation AST node containing:
+     *   - Q: Query tensor of shape (batch, seq_len, d_k) or (seq_len, d_k)
+     *   - K: Key tensor of shape (batch, seq_len, d_k) or (seq_len, d_k)
+     *   - V: Value tensor of shape (batch, seq_len, d_v) or (seq_len, d_v)
+     *   - mask: Optional attention mask (0 for attend, -inf for mask)
+     * @return Output tensor of shape (batch, seq_len, d_v) or (seq_len, d_v)
+     */
+    llvm::Value* scaledDotProductAttention(const eshkol_operations_t* op);
+
+    // === Track 8.2: Multi-Head Attention ===
+
+    /**
+     * Multi-head attention: (multi-head-attention Q K V num-heads W_Q W_K W_V W_O [mask])
+     *
+     * Projects Q, K, V through learned weight matrices, splits into num_heads,
+     * applies scaled dot-product attention to each head, concatenates, and
+     * projects through output weights.
+     *
+     * @param op The operation AST node containing:
+     *   - Q: Query tensor (batch, seq_len, d_model) or (seq_len, d_model)
+     *   - K: Key tensor (batch, seq_len, d_model) or (seq_len, d_model)
+     *   - V: Value tensor (batch, seq_len, d_model) or (seq_len, d_model)
+     *   - num_heads: Number of attention heads (must divide d_model evenly)
+     *   - W_Q: Query projection weights (d_model, d_model)
+     *   - W_K: Key projection weights (d_model, d_model)
+     *   - W_V: Value projection weights (d_model, d_model)
+     *   - W_O: Output projection weights (d_model, d_model)
+     *   - mask: Optional attention mask
+     * @return Output tensor of shape (batch, seq_len, d_model)
+     */
+    llvm::Value* multiHeadAttention(const eshkol_operations_t* op);
+
+    // === Track 8.3: Positional Encoding ===
+
+    /**
+     * Sinusoidal positional encoding: (positional-encoding max-len d-model)
+     *
+     * Generates positional embeddings using sine and cosine functions:
+     *   PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
+     *   PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+     *
+     * @param op The operation AST node containing:
+     *   - max_len: Maximum sequence length
+     *   - d_model: Model dimension (embedding size)
+     * @return Positional encoding tensor of shape (max_len, d_model)
+     */
+    llvm::Value* positionalEncoding(const eshkol_operations_t* op);
+
+    /**
+     * Rotary positional encoding (RoPE): (rotary-embedding x seq-positions dim)
+     *
+     * Implements RoPE from "RoFormer: Enhanced Transformer with Rotary
+     * Position Embedding". Applies rotation matrices to queries and keys
+     * based on position.
+     *
+     * @param op The operation AST node containing:
+     *   - x: Input tensor to embed (batch, seq_len, d_model)
+     *   - seq_positions: Position indices (seq_len,)
+     *   - dim: Embedding dimension (typically d_model / num_heads)
+     * @return Tensor with rotary embeddings applied
+     */
+    llvm::Value* rotaryEmbedding(const eshkol_operations_t* op);
+
+    // === Track 8.4-8.6: Transformer Layers (Building Blocks) ===
+
+    /**
+     * Causal attention mask: (causal-mask seq-len)
+     *
+     * Creates a lower-triangular mask for autoregressive (decoder) attention.
+     * Positions that should not attend get -infinity, others get 0.
+     *
+     * @param op The operation AST node containing:
+     *   - seq_len: Sequence length
+     * @return Mask tensor of shape (seq_len, seq_len)
+     */
+    llvm::Value* causalMask(const eshkol_operations_t* op);
+
+    /**
+     * Padding mask: (padding-mask lengths max-len)
+     *
+     * Creates mask to ignore padding tokens. Returns 0 for valid positions,
+     * -infinity for padding positions.
+     *
+     * @param op The operation AST node containing:
+     *   - lengths: Actual sequence lengths (batch,)
+     *   - max_len: Maximum sequence length
+     * @return Mask tensor of shape (batch, max_len)
+     */
+    llvm::Value* paddingMask(const eshkol_operations_t* op);
+
+    /**
+     * Feed-forward network: (feed-forward x W1 b1 W2 b2)
+     *
+     * Two-layer MLP with ReLU/GELU activation:
+     *   FFN(x) = W2 * ReLU(W1 * x + b1) + b2
+     *
+     * @param op The operation AST node containing:
+     *   - x: Input tensor (batch, seq_len, d_model)
+     *   - W1: First layer weights (d_model, d_ff)
+     *   - b1: First layer bias (d_ff,)
+     *   - W2: Second layer weights (d_ff, d_model)
+     *   - b2: Second layer bias (d_model,)
+     * @return Output tensor (batch, seq_len, d_model)
+     */
+    llvm::Value* feedForward(const eshkol_operations_t* op);
+
+    /**
+     * Dropout layer: (dropout x rate training)
+     *
+     * Randomly zeros elements during training, scales by 1/(1-rate).
+     *
+     * @param op The operation AST node containing:
+     *   - x: Input tensor
+     *   - rate: Dropout probability (0.0 to 1.0)
+     *   - training: Boolean - apply dropout only if true
+     * @return Tensor with dropout applied (or unchanged if not training)
+     */
+    llvm::Value* dropout(const eshkol_operations_t* op);
+
+    /**
+     * Embedding lookup: (embedding indices weights)
+     *
+     * Looks up embeddings from a weight matrix by indices.
+     *
+     * @param op The operation AST node containing:
+     *   - indices: Integer tensor of token indices (batch, seq_len)
+     *   - weights: Embedding matrix (vocab_size, d_model)
+     * @return Embedded tensor (batch, seq_len, d_model)
+     */
+    llvm::Value* embedding(const eshkol_operations_t* op);
 
 private:
     CodegenContext& ctx_;

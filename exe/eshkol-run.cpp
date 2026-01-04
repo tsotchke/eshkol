@@ -2340,6 +2340,15 @@ int main(int argc, char **argv)
         link_cmd += " -lopenblas";
 #endif
 
+        // Add GPU frameworks/libraries (for GPU-accelerated tensor operations)
+        // Metal: System framework on macOS, always safe to link (like Accelerate)
+        // CUDA: Not a system library, requires explicit detection (handled by cmake)
+#ifdef __APPLE__
+        // Metal and MetalPerformanceShaders for GPU on macOS
+        link_cmd += " -framework Metal -framework MetalPerformanceShaders -framework Foundation";
+        link_cmd += " -lobjc";  // Objective-C runtime
+#endif
+
         // Add output
         link_cmd += " -o " + std::string(output) + " -lm";
         

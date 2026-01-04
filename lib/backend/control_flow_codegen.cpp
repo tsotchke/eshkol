@@ -541,15 +541,27 @@ llvm::Value* ControlFlowCodegen::codegenWhen(const eshkol_operations_t* op) {
     }
     if (!result) result = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
     llvm::BasicBlock* then_exit = ctx_.builder().GetInsertBlock();
-    ctx_.builder().CreateBr(done_block);
+
+    // Only add branch if block doesn't already have a terminator (e.g., from TCO tail call)
+    bool then_branches_to_done = !then_exit->getTerminator();
+    if (then_branches_to_done) {
+        ctx_.builder().CreateBr(done_block);
+    }
 
     // Done block - PHI for result
     ctx_.builder().SetInsertPoint(done_block);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "when_result");
-    phi->addIncoming(result, then_exit);
-    phi->addIncoming(false_result, branch_block);
 
-    return phi;
+    // If then block doesn't branch to done (TCO case), we only have one incoming edge
+    if (then_branches_to_done) {
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "when_result");
+        phi->addIncoming(result, then_exit);
+        phi->addIncoming(false_result, branch_block);
+        return phi;
+    } else {
+        // TCO case - condition was false, just return false_result
+        // The then block jumped elsewhere, so only the false path reaches here
+        return false_result;
+    }
 }
 
 llvm::Value* ControlFlowCodegen::codegenUnless(const eshkol_operations_t* op) {
@@ -589,15 +601,27 @@ llvm::Value* ControlFlowCodegen::codegenUnless(const eshkol_operations_t* op) {
     }
     if (!result) result = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
     llvm::BasicBlock* else_exit = ctx_.builder().GetInsertBlock();
-    ctx_.builder().CreateBr(done_block);
+
+    // Only add branch if block doesn't already have a terminator (e.g., from TCO tail call)
+    bool else_branches_to_done = !else_exit->getTerminator();
+    if (else_branches_to_done) {
+        ctx_.builder().CreateBr(done_block);
+    }
 
     // Done block - PHI for result
     ctx_.builder().SetInsertPoint(done_block);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "unless_result");
-    phi->addIncoming(result, else_exit);
-    phi->addIncoming(false_result, branch_block);
 
-    return phi;
+    // If else block doesn't branch to done (TCO case), we only have one incoming edge
+    if (else_branches_to_done) {
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "unless_result");
+        phi->addIncoming(result, else_exit);
+        phi->addIncoming(false_result, branch_block);
+        return phi;
+    } else {
+        // TCO case - condition was true, just return false_result
+        // The else block jumped elsewhere, so only the true path reaches here
+        return false_result;
+    }
 }
 
 // ============================================================================

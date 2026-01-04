@@ -578,6 +578,7 @@ static inline double eshkol_dual_derivative(const eshkol_dual_number_t* d) {
 // AD node types for reverse-mode automatic differentiation
 
 typedef enum {
+    // Core operations (0-11)
     AD_NODE_CONSTANT,
     AD_NODE_VARIABLE,
     AD_NODE_ADD,
@@ -589,18 +590,100 @@ typedef enum {
     AD_NODE_EXP,
     AD_NODE_LOG,
     AD_NODE_POW,
-    AD_NODE_NEG
+    AD_NODE_NEG,
+
+    // Activation gradients (12-18)
+    AD_NODE_RELU,
+    AD_NODE_SIGMOID,
+    AD_NODE_SOFTMAX,
+    AD_NODE_TANH,
+    AD_NODE_GELU,
+    AD_NODE_LEAKY_RELU,
+    AD_NODE_SILU,
+
+    // Tensor operation gradients (19-28)
+    AD_NODE_CONV2D,
+    AD_NODE_MAXPOOL2D,
+    AD_NODE_AVGPOOL2D,
+    AD_NODE_BATCHNORM,
+    AD_NODE_LAYERNORM,
+    AD_NODE_MATMUL,
+    AD_NODE_TRANSPOSE,
+    AD_NODE_RESHAPE,
+    AD_NODE_SUM,
+    AD_NODE_MEAN,
+
+    // Transformer gradients (29-32)
+    AD_NODE_ATTENTION,
+    AD_NODE_MULTIHEAD_ATTENTION,
+    AD_NODE_POSITIONAL_ENCODING,
+    AD_NODE_EMBEDDING,
+
+    // qLLM Geometric gradients (33-40)
+    AD_NODE_HYPERBOLIC_DISTANCE,
+    AD_NODE_POINCARE_EXP_MAP,
+    AD_NODE_POINCARE_LOG_MAP,
+    AD_NODE_TANGENT_PROJECT,
+    AD_NODE_GEODESIC_ATTENTION,
+    AD_NODE_MOBIUS_ADD,
+    AD_NODE_MOBIUS_MATMUL,
+    AD_NODE_GYROVECTOR_SPACE,
+
+    // Additional math operations (41-44)
+    AD_NODE_SQRT,
+    AD_NODE_ABS,
+    AD_NODE_SQUARE,
+    AD_NODE_MAX,
+    AD_NODE_MIN,
+
+    // Sentinel for bounds checking
+    AD_NODE_TYPE_COUNT
 } ad_node_type_t;
 
 // Computational graph node for reverse-mode AD
 // Stores the computational graph for backpropagation
 typedef struct ad_node {
     ad_node_type_t type;     // Type of operation
-    double value;            // Computed value during forward pass
-    double gradient;         // Accumulated gradient during backward pass
+    double value;            // Computed value during forward pass (scalar)
+    double gradient;         // Accumulated gradient during backward pass (scalar)
     struct ad_node* input1;  // First parent node (null for constants/variables)
     struct ad_node* input2;  // Second parent node (null for unary ops)
     size_t id;              // Unique node ID for topological sorting
+
+    // === Extended fields for tensor operations ===
+    // These are optional and only used for tensor-based AD nodes
+
+    // Tensor data (when operating on tensors instead of scalars)
+    void* tensor_value;      // Pointer to tensor value (null for scalar nodes)
+    void* tensor_gradient;   // Pointer to tensor gradient (null for scalar nodes)
+
+    // Additional inputs for multi-input operations (attention, etc.)
+    struct ad_node* input3;  // Third input (e.g., V in attention)
+    struct ad_node* input4;  // Fourth input (e.g., mask in attention)
+
+    // Saved tensors for backward pass (e.g., softmax output, conv indices)
+    void** saved_tensors;    // Array of saved tensors for backward
+    size_t num_saved;        // Number of saved tensors
+
+    // Operation parameters
+    union {
+        double alpha;        // For leaky_relu, dropout rate, etc.
+        double curvature;    // For hyperbolic/Poincare operations
+        int64_t axis;        // For reduction operations (sum, mean)
+        struct {
+            int64_t kernel_h, kernel_w;   // For conv2d, pooling
+            int64_t stride_h, stride_w;
+            int64_t pad_h, pad_w;
+        } conv_params;
+        struct {
+            int64_t num_heads;            // For multi-head attention
+            int64_t head_dim;
+        } attention_params;
+    } params;
+
+    // Shape information for tensor operations
+    int64_t* shape;          // Output shape
+    size_t ndim;             // Number of dimensions
 } ad_node_t;
 
 // Computational graph tape for recording operations

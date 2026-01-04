@@ -306,6 +306,51 @@ public:
      */
     llvm::Value* dualTanh(llvm::Value* dual);
 
+    // === ML Activation Function Dual Number Operations ===
+
+    /**
+     * ReLU of dual number: (max(0, a), a > 0 ? a' : 0)
+     */
+    llvm::Value* dualRelu(llvm::Value* dual);
+
+    /**
+     * Sigmoid of dual number: (σ(a), a' * σ(a) * (1 - σ(a)))
+     */
+    llvm::Value* dualSigmoid(llvm::Value* dual);
+
+    /**
+     * GELU of dual number (Gaussian Error Linear Unit)
+     * Uses approximate formula: x * σ(1.702 * x)
+     */
+    llvm::Value* dualGelu(llvm::Value* dual);
+
+    /**
+     * Leaky ReLU of dual number: (a > 0 ? a : α*a, a > 0 ? a' : α*a')
+     * @param dual The input dual number
+     * @param alpha The negative slope (typically 0.01)
+     */
+    llvm::Value* dualLeakyRelu(llvm::Value* dual, double alpha = 0.01);
+
+    /**
+     * SiLU (Swish) of dual number: (a * σ(a), a' * (σ(a) + a * σ(a) * (1 - σ(a))))
+     */
+    llvm::Value* dualSilu(llvm::Value* dual);
+
+    /**
+     * Square of dual number: (a², 2 * a * a')
+     */
+    llvm::Value* dualSquare(llvm::Value* dual);
+
+    /**
+     * Maximum of two dual numbers: (max(a,b), a > b ? a' : b')
+     */
+    llvm::Value* dualMax(llvm::Value* dual_a, llvm::Value* dual_b);
+
+    /**
+     * Minimum of two dual numbers: (min(a,b), a < b ? a' : b')
+     */
+    llvm::Value* dualMin(llvm::Value* dual_a, llvm::Value* dual_b);
+
     // === Tape Management ===
     // These enable nested gradient computations via a tape stack
 

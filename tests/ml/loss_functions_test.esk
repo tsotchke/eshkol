@@ -1,0 +1,89 @@
+;;; Loss Functions Test Suite
+;;; Tests for Track 6.3: Loss Functions
+
+(define (run-tests)
+  (display "=== Loss Functions Tests ===")
+  (newline)
+  (newline)
+
+  ;; Test 1: MSE Loss
+  (display "-- Test 1: MSE Loss --")
+  (newline)
+  (let* ((pred (tensor 3 1.0 2.0 3.0))
+         (target (tensor 3 1.5 2.0 2.5)))
+    (display "Predictions: [1.0, 2.0, 3.0]")
+    (newline)
+    (display "Targets: [1.5, 2.0, 2.5]")
+    (newline)
+    (let ((loss (mse-loss pred target)))
+      (display "MSE Loss: ")
+      (display loss)
+      (newline)
+      ;; Expected: ((0.5)^2 + 0^2 + (0.5)^2) / 3 = 0.5/3 = 0.1667
+      (newline)))
+
+  ;; Test 2: MAE Loss
+  (display "-- Test 2: MAE Loss --")
+  (newline)
+  (let* ((pred (tensor 3 1.0 2.0 3.0))
+         (target (tensor 3 1.5 2.0 2.5)))
+    (display "Predictions: [1.0, 2.0, 3.0]")
+    (newline)
+    (display "Targets: [1.5, 2.0, 2.5]")
+    (newline)
+    (let ((loss (mae-loss pred target)))
+      (display "MAE Loss: ")
+      (display loss)
+      (newline)
+      ;; Expected: (0.5 + 0 + 0.5) / 3 = 0.333
+      (newline)))
+
+  ;; Test 3: Cross-Entropy Loss
+  (display "-- Test 3: Cross-Entropy Loss --")
+  (newline)
+  (let* ((logits (tensor 3 2.0 1.0 0.1))
+         (targets (tensor 3 1.0 0.0 0.0)))  ; one-hot for class 0
+    (display "Logits: [2.0, 1.0, 0.1]")
+    (newline)
+    (display "Targets (one-hot): [1.0, 0.0, 0.0]")
+    (newline)
+    (let ((loss (cross-entropy-loss logits targets)))
+      (display "Cross-Entropy Loss: ")
+      (display loss)
+      (newline)
+      (newline)))
+
+  ;; Test 4: BCE Loss
+  (display "-- Test 4: BCE Loss --")
+  (newline)
+  (let* ((pred (tensor 3 0.9 0.1 0.8))
+         (target (tensor 3 1.0 0.0 1.0)))
+    (display "Predictions: [0.9, 0.1, 0.8]")
+    (newline)
+    (display "Targets: [1.0, 0.0, 1.0]")
+    (newline)
+    (let ((loss (bce-loss pred target)))
+      (display "BCE Loss: ")
+      (display loss)
+      (newline)
+      (newline)))
+
+  ;; Test 5: Huber Loss
+  (display "-- Test 5: Huber Loss --")
+  (newline)
+  (let* ((pred (tensor 4 1.0 2.0 3.0 10.0))
+         (target (tensor 4 1.5 2.0 2.5 0.0)))
+    (display "Predictions: [1.0, 2.0, 3.0, 10.0]")
+    (newline)
+    (display "Targets: [1.5, 2.0, 2.5, 0.0]")
+    (newline)
+    (let ((loss (huber-loss pred target)))
+      (display "Huber Loss (default delta=1.0): ")
+      (display loss)
+      (newline)
+      (newline)))
+
+  (display "=== Loss Functions Tests Complete ===")
+  (newline))
+
+(run-tests)

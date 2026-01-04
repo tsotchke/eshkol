@@ -289,6 +289,8 @@ namespace ControlFlowCallbacks {
     static bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
     static llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
+    // Wrapper for applying tensor/vector builtin functions
+    static llvm::Value* applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
 }
 
 class EshkolLLVMCodeGen {
@@ -317,6 +319,7 @@ class EshkolLLVMCodeGen {
     friend void ControlFlowCallbacks::popFunctionContextWrapper(void* context);
     friend bool ControlFlowCallbacks::isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     friend llvm::Function* ControlFlowCallbacks::getBuiltinArithmeticWrapper(const std::string& op, void* context);
+    friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
 
 private:
     std::unique_ptr<LLVMContext> context;
@@ -1643,6 +1646,18 @@ private:
             time_type, Function::ExternalLinkage, "time", module.get());
         function_table["time"] = time_func;
 
+        // gettimeofday: int gettimeofday(struct timeval* tv, struct timezone* tz)
+        // struct timeval { time_t tv_sec; suseconds_t tv_usec; }
+        // We'll use i64 for both fields for simplicity
+        std::vector<Type*> gettimeofday_args;
+        gettimeofday_args.push_back(PointerType::get(*context, 0));  // timeval*
+        gettimeofday_args.push_back(PointerType::get(*context, 0));  // timezone* (can be NULL)
+        FunctionType* gettimeofday_type = FunctionType::get(
+            int32_type, gettimeofday_args, false);
+        Function* gettimeofday_func = Function::Create(
+            gettimeofday_type, Function::ExternalLinkage, "gettimeofday", module.get());
+        function_table["gettimeofday"] = gettimeofday_func;
+
         // ============================================================================
         // SYSTEM & ENVIRONMENT FUNCTIONS (from stdlib.h, unistd.h)
         // ============================================================================
@@ -1995,6 +2010,7 @@ private:
         call_apply_->setGetConsAccessorCallback(ControlFlowCallbacks::getConsAccessorWrapper);
         call_apply_->setCreateConsCallback(ControlFlowCallbacks::consCreateWrapper);
         call_apply_->setGetBuiltinArithmeticCallback(ControlFlowCallbacks::getBuiltinArithmeticWrapper);
+        call_apply_->setApplyBuiltinCallback(ControlFlowCallbacks::applyBuiltinWrapper);
         eshkol_debug("Created CallApplyCodegen with callbacks");
 
         // Initialize MapCodegen - higher-order list mapping operations
@@ -8115,7 +8131,7 @@ private:
         if (func_name == "floor") return codegenMathFunction(op, "floor");
         if (func_name == "ceiling") return codegenMathFunction(op, "ceil");
         if (func_name == "ceil") return codegenMathFunction(op, "ceil");
-        if (func_name == "round") return codegenMathFunction(op, "round");
+        if (func_name == "round") return codegenRound(op);
         if (func_name == "truncate") return codegenMathFunction(op, "trunc");
         if (func_name == "trunc") return codegenMathFunction(op, "trunc");
         if (func_name == "cbrt") return codegenMathFunction(op, "cbrt");
@@ -8258,6 +8274,8 @@ private:
         if (func_name == "system") return system_->systemCall(op);
         if (func_name == "sleep") return system_->sleep(op);
         if (func_name == "current-seconds") return system_->currentSeconds(op);
+        if (func_name == "current-time-ms") return system_->currentTimeMs(op);
+        if (func_name == "current-time-ns") return system_->currentTimeNs(op);
         if (func_name == "exit") return system_->exitProgram(op);
         if (func_name == "command-line") return system_->commandLine(op);
 
@@ -8461,6 +8479,7 @@ private:
         // Vector ↔ Tensor conversion builtins
         if (func_name == "vector->tensor") return tensor_->vectorToTensor(op);
         if (func_name == "tensor->vector") return tensor_->tensorToVector(op);
+        if (func_name == "tensor-data") return tensor_->tensorToVector(op);  // Alias for tensor->vector
 
         // Activation functions (SIMD-accelerated)
         if (func_name == "relu") return tensor_->tensorRelu(op);
@@ -8499,6 +8518,37 @@ private:
         if (func_name == "conv3d") return tensor_->conv3d(op);
         if (func_name == "batch-norm") return tensor_->batchNorm(op);
         if (func_name == "layer-norm") return tensor_->layerNorm(op);
+
+        // Loss functions (Track 6.3)
+        if (func_name == "mse-loss") return tensor_->mseLoss(op);
+        if (func_name == "mae-loss") return tensor_->maeLoss(op);
+        if (func_name == "cross-entropy-loss") return tensor_->crossEntropyLoss(op);
+        if (func_name == "bce-loss") return tensor_->bceLoss(op);
+        if (func_name == "binary-cross-entropy-loss") return tensor_->binaryCrossEntropyLoss(op);
+        if (func_name == "huber-loss") return tensor_->huberLoss(op);
+
+        // Optimizer functions (Track 10.1)
+        if (func_name == "sgd-step") return tensor_->sgdStep(op);
+        if (func_name == "adam-step") return tensor_->adamStep(op);
+
+        // Data loading infrastructure (Track 10.3)
+        if (func_name == "make-dataloader") return tensor_->makeDataloader(op);
+        if (func_name == "dataloader-next") return tensor_->dataloaderNext(op);
+        if (func_name == "dataloader-reset") return tensor_->dataloaderReset(op);
+        if (func_name == "dataloader-length") return tensor_->dataloaderLength(op);
+        if (func_name == "dataloader-has-next") return tensor_->dataloaderHasNext(op);
+        if (func_name == "train-test-split") return tensor_->trainTestSplit(op);
+
+        // Transformer architecture (Track 8.1-8.3)
+        if (func_name == "scaled-dot-attention") return tensor_->scaledDotProductAttention(op);
+        if (func_name == "multi-head-attention") return tensor_->multiHeadAttention(op);
+        if (func_name == "positional-encoding") return tensor_->positionalEncoding(op);
+        if (func_name == "rotary-embedding") return tensor_->rotaryEmbedding(op);
+        if (func_name == "causal-mask") return tensor_->causalMask(op);
+        if (func_name == "padding-mask") return tensor_->paddingMask(op);
+        if (func_name == "feed-forward") return tensor_->feedForward(op);
+        if (func_name == "dropout") return tensor_->dropout(op);
+        if (func_name == "embedding") return tensor_->embedding(op);
 
         // Bitwise operations (Phase 8)
         if (func_name == "bitwise-and") return codegenBitwiseAnd(op);
@@ -10083,6 +10133,32 @@ private:
         result_phi->addIncoming(tagged_double_result, double_exit);
 
         return result_phi;
+    }
+
+    Value* codegenRound(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+            eshkol_warn("round requires 1 or 2 arguments");
+            return nullptr;
+        }
+
+        Value* arg = codegenAST(&op->call_op.variables[0]);
+        if (!arg) return nullptr;
+
+        Value* val = extractDoubleFromTagged(arg);
+
+        if (op->call_op.num_vars == 1) {
+            Value* result = builder->CreateCall(function_table["round"], {val});
+            return packDoubleToTaggedValue(result);
+        }
+
+        Value* precision_arg = codegenAST(&op->call_op.variables[1]);
+        if (!precision_arg) return nullptr;
+        Value* precision = extractDoubleFromTagged(precision_arg);
+
+        Value* scaled = builder->CreateFDiv(val, precision);
+        Value* rounded = builder->CreateCall(function_table["round"], {scaled});
+        Value* result = builder->CreateFMul(rounded, precision);
+        return packDoubleToTaggedValue(result);
     }
 
     // Binary math function codegen (for atan2, fmod, fmin, fmax, remainder, etc.)
@@ -13171,7 +13247,7 @@ private:
                 const eshkol_operations_t* op = &ast->operation;
                 switch (op->op) {
                     case ESHKOL_CALL_OP: {
-                        // CRITICAL: Also check the function expression - it could be a captured lambda!
+                        // Check the function expression - it could be a captured lambda or variable
                         if (op->call_op.func) {
                             findFreeVariablesImpl(op->call_op.func, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -13385,6 +13461,14 @@ private:
                         }
                         if (op->directional_deriv_op.direction) {
                             findFreeVariablesImpl(op->directional_deriv_op.direction, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_WHEN_OP:
+                    case ESHKOL_UNLESS_OP:
+                    case ESHKOL_DO_OP:
+                        // These use call_op: search all variables
+                        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                            findFreeVariablesImpl(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
                     default:
@@ -14845,7 +14929,7 @@ private:
         std::string func_name = "named_let_" + loop_name + "_" + std::to_string(current_counter);
         Function* loop_func = Function::Create(
             loop_func_type,
-            Function::ExternalLinkage,
+            Function::InternalLinkage,  // Internal to avoid symbol collisions across compilation units
             func_name,
             module.get()
         );
@@ -14889,30 +14973,66 @@ private:
             }
         }
 
-        // Add parameters to symbol table (these shadow any outer vars with same name)
+        // TCO SETUP: Named let is always self-recursive, so always enable TCO
+        eshkol_debug("TCO: Enabling tail call optimization for named let '%s'", loop_name.c_str());
+
+        // Set up TCO context in binding module
+        auto& tco_ctx = binding_->getTCOContext();
+        tco_ctx.func_name = loop_name;
+        tco_ctx.enabled = true;
+        tco_ctx.param_allocas.clear();
+        tco_ctx.param_names.clear();
+
+        // Add parameters to symbol table with TCO allocas
         arg_it = loop_func->arg_begin();
         for (size_t i = 0; i < param_names.size(); i++, ++arg_it) {
-            // Create alloca for parameter
+            // Create alloca for parameter (TCO-style)
             AllocaInst* param_alloca = builder->CreateAlloca(tagged_value_type, nullptr,
-                                                              param_names[i] + "_storage");
+                                                              param_names[i] + "_tco");
             builder->CreateStore(&*arg_it, param_alloca);
             symbol_table[param_names[i]] = param_alloca;
+
+            // Register in TCO context
+            tco_ctx.param_allocas.push_back(param_alloca);
+            tco_ctx.param_names.push_back(param_names[i]);
         }
+
+        // Create loop header block for TCO
+        BasicBlock* tco_loop_bb = BasicBlock::Create(*context, "tco_loop", loop_func);
+        tco_ctx.loop_header = tco_loop_bb;
+
+        // Branch to loop header
+        builder->CreateBr(tco_loop_bb);
+        builder->SetInsertPoint(tco_loop_bb);
 
         // Generate body
         Value* body_result = codegenAST(op->let_op.body);
-        if (!body_result) {
-            body_result = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-        }
-        // Ensure body result is tagged_value type
-        if (body_result->getType() != tagged_value_type) {
-            if (body_result->getType()->isDoubleTy()) {
-                body_result = packDoubleToTaggedValue(body_result);
-            } else if (body_result->getType()->isIntegerTy(64)) {
-                body_result = packInt64ToTaggedValue(body_result, true);
+
+        // Clear TCO context after body generation
+        tco_ctx.enabled = false;
+        tco_ctx.func_name = "";
+        tco_ctx.loop_header = nullptr;
+
+        // TCO FIX: Check if block is already terminated (tail call path)
+        BasicBlock* current_bb = builder->GetInsertBlock();
+        if (current_bb && current_bb->getTerminator()) {
+            // Block was terminated by a tail call jump - this is expected for TCO
+            eshkol_debug("Named let '%s': block already terminated (TCO path)", loop_name.c_str());
+        } else {
+            // Normal return path - need to add return
+            if (!body_result) {
+                body_result = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
             }
+            // Ensure body result is tagged_value type
+            if (body_result->getType() != tagged_value_type) {
+                if (body_result->getType()->isDoubleTy()) {
+                    body_result = packDoubleToTaggedValue(body_result);
+                } else if (body_result->getType()->isIntegerTy(64)) {
+                    body_result = packInt64ToTaggedValue(body_result, true);
+                }
+            }
+            builder->CreateRet(body_result);
         }
-        builder->CreateRet(body_result);
 
         // Restore context
         current_function = prev_function;
@@ -27147,6 +27267,180 @@ namespace ControlFlowCallbacks {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return codegen->createBuiltinArithmeticFunction(op, 2);
     }
+
+    llvm::Value* applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        auto& builder = *codegen->builder;
+        auto& ctx = codegen->ctx_;
+        llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+
+        // Extract dimensions from arguments (unpack int64 from tagged values)
+        std::vector<llvm::Value*> all_dims;
+        for (size_t i = 0; i < args.size(); i++) {
+            llvm::Value* dim = codegen->tagged_->unpackInt64(args[i]);
+            all_dims.push_back(dim);
+        }
+
+        // Ensure we have at least one dimension value (use 1 as default)
+        while (all_dims.size() < 4) {
+            all_dims.push_back(llvm::ConstantInt::get(ctx->int64Type(), 1));
+        }
+
+        // Branch based on arg_count to handle 1D, 2D, 3D, 4D
+        llvm::BasicBlock* check_1d = llvm::BasicBlock::Create(*codegen->context, "apply_check_1d", current_func);
+        llvm::BasicBlock* create_1d = llvm::BasicBlock::Create(*codegen->context, "apply_1d", current_func);
+        llvm::BasicBlock* check_2d = llvm::BasicBlock::Create(*codegen->context, "apply_check_2d", current_func);
+        llvm::BasicBlock* create_2d = llvm::BasicBlock::Create(*codegen->context, "apply_2d", current_func);
+        llvm::BasicBlock* check_3d = llvm::BasicBlock::Create(*codegen->context, "apply_check_3d", current_func);
+        llvm::BasicBlock* create_3d = llvm::BasicBlock::Create(*codegen->context, "apply_3d", current_func);
+        llvm::BasicBlock* create_4d = llvm::BasicBlock::Create(*codegen->context, "apply_4d", current_func);
+        llvm::BasicBlock* done_block = llvm::BasicBlock::Create(*codegen->context, "apply_done", current_func);
+
+        builder.CreateBr(check_1d);
+
+        // Check for 1D
+        builder.SetInsertPoint(check_1d);
+        llvm::Value* is_1d = builder.CreateICmpEQ(arg_count, llvm::ConstantInt::get(ctx->int64Type(), 1));
+        builder.CreateCondBr(is_1d, create_1d, check_2d);
+
+        // Lambda to create tensor and fill it
+        auto createAndFillTensor = [&](const std::vector<llvm::Value*>& dims, llvm::BasicBlock* block) -> llvm::Value* {
+            builder.SetInsertPoint(block);
+
+            // Compute total
+            llvm::Value* total = dims[0];
+            for (size_t i = 1; i < dims.size(); i++) {
+                total = builder.CreateMul(total, dims[i]);
+            }
+
+            // Determine fill value and memset flag based on func_name
+            llvm::Value* fill_value = nullptr;
+            bool use_memset = false;
+
+            if (func_name == "zeros") {
+                use_memset = true;
+            } else if (func_name == "ones") {
+                llvm::Value* one_double = llvm::ConstantFP::get(ctx->doubleType(), 1.0);
+                fill_value = builder.CreateBitCast(one_double, ctx->int64Type());
+            }
+
+            // Create tensor
+            llvm::Value* tensor_ptr = codegen->tensor_->createTensorWithDims(dims, fill_value, use_memset);
+            if (!tensor_ptr) return codegen->tagged_->packNull();
+
+            // For rand/randn, fill with random values
+            if (func_name == "rand" || func_name == "randn") {
+                llvm::StructType* tensor_type = ctx->tensorType();
+                llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+                llvm::Value* elems_ptr = builder.CreateLoad(ctx->ptrType(), elems_field);
+
+                llvm::Function* drand48_func = codegen->module->getFunction("drand48");
+                if (!drand48_func) {
+                    llvm::FunctionType* drand48_type = llvm::FunctionType::get(ctx->doubleType(), {}, false);
+                    drand48_func = llvm::Function::Create(drand48_type, llvm::Function::ExternalLinkage, "drand48", codegen->module.get());
+                }
+
+                llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(*codegen->context, "fill_cond", current_func);
+                llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(*codegen->context, "fill_body", current_func);
+                llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(*codegen->context, "fill_exit", current_func);
+
+                llvm::Value* counter = builder.CreateAlloca(ctx->int64Type(), nullptr, "fill_i");
+                builder.CreateStore(llvm::ConstantInt::get(ctx->int64Type(), 0), counter);
+                builder.CreateBr(loop_cond);
+
+                builder.SetInsertPoint(loop_cond);
+                llvm::Value* i = builder.CreateLoad(ctx->int64Type(), counter);
+                llvm::Value* cmp = builder.CreateICmpULT(i, total);
+                builder.CreateCondBr(cmp, loop_body, loop_exit);
+
+                builder.SetInsertPoint(loop_body);
+                llvm::Value* val;
+                if (func_name == "rand") {
+                    val = builder.CreateCall(drand48_func, {});
+                } else {
+                    // randn: Box-Muller transform
+                    llvm::Function* log_func = codegen->module->getFunction("log");
+                    if (!log_func) {
+                        llvm::FunctionType* log_type = llvm::FunctionType::get(ctx->doubleType(), {ctx->doubleType()}, false);
+                        log_func = llvm::Function::Create(log_type, llvm::Function::ExternalLinkage, "log", codegen->module.get());
+                    }
+                    llvm::Function* sqrt_func = codegen->module->getFunction("sqrt");
+                    if (!sqrt_func) {
+                        llvm::FunctionType* sqrt_type = llvm::FunctionType::get(ctx->doubleType(), {ctx->doubleType()}, false);
+                        sqrt_func = llvm::Function::Create(sqrt_type, llvm::Function::ExternalLinkage, "sqrt", codegen->module.get());
+                    }
+                    llvm::Function* cos_func = codegen->module->getFunction("cos");
+                    if (!cos_func) {
+                        llvm::FunctionType* cos_type = llvm::FunctionType::get(ctx->doubleType(), {ctx->doubleType()}, false);
+                        cos_func = llvm::Function::Create(cos_type, llvm::Function::ExternalLinkage, "cos", codegen->module.get());
+                    }
+
+                    llvm::Value* u1 = builder.CreateCall(drand48_func, {});
+                    llvm::Value* u2 = builder.CreateCall(drand48_func, {});
+                    llvm::Value* log_u1 = builder.CreateCall(log_func, {u1});
+                    llvm::Value* neg_two = llvm::ConstantFP::get(ctx->doubleType(), -2.0);
+                    llvm::Value* radius = builder.CreateCall(sqrt_func, {builder.CreateFMul(neg_two, log_u1)});
+                    llvm::Value* two_pi = llvm::ConstantFP::get(ctx->doubleType(), 6.283185307179586);
+                    llvm::Value* theta = builder.CreateFMul(two_pi, u2);
+                    val = builder.CreateFMul(radius, builder.CreateCall(cos_func, {theta}));
+                }
+                llvm::Value* val_bits = builder.CreateBitCast(val, ctx->int64Type());
+                llvm::Value* elem_ptr = builder.CreateGEP(ctx->int64Type(), elems_ptr, i);
+                builder.CreateStore(val_bits, elem_ptr);
+                llvm::Value* next_i = builder.CreateAdd(i, llvm::ConstantInt::get(ctx->int64Type(), 1));
+                builder.CreateStore(next_i, counter);
+                builder.CreateBr(loop_cond);
+
+                builder.SetInsertPoint(loop_exit);
+            }
+
+            return codegen->tagged_->packHeapPtr(tensor_ptr);
+        };
+
+        // Create 1D tensor
+        std::vector<llvm::Value*> dims_1d = {all_dims[0]};
+        llvm::Value* result_1d = createAndFillTensor(dims_1d, create_1d);
+        llvm::BasicBlock* exit_1d = builder.GetInsertBlock();
+        builder.CreateBr(done_block);
+
+        // Check for 2D
+        builder.SetInsertPoint(check_2d);
+        llvm::Value* is_2d = builder.CreateICmpEQ(arg_count, llvm::ConstantInt::get(ctx->int64Type(), 2));
+        builder.CreateCondBr(is_2d, create_2d, check_3d);
+
+        // Create 2D tensor
+        std::vector<llvm::Value*> dims_2d = {all_dims[0], all_dims[1]};
+        llvm::Value* result_2d = createAndFillTensor(dims_2d, create_2d);
+        llvm::BasicBlock* exit_2d = builder.GetInsertBlock();
+        builder.CreateBr(done_block);
+
+        // Check for 3D
+        builder.SetInsertPoint(check_3d);
+        llvm::Value* is_3d = builder.CreateICmpEQ(arg_count, llvm::ConstantInt::get(ctx->int64Type(), 3));
+        builder.CreateCondBr(is_3d, create_3d, create_4d);
+
+        // Create 3D tensor
+        std::vector<llvm::Value*> dims_3d = {all_dims[0], all_dims[1], all_dims[2]};
+        llvm::Value* result_3d = createAndFillTensor(dims_3d, create_3d);
+        llvm::BasicBlock* exit_3d = builder.GetInsertBlock();
+        builder.CreateBr(done_block);
+
+        // Create 4D tensor (default for 4+ dims)
+        std::vector<llvm::Value*> dims_4d = {all_dims[0], all_dims[1], all_dims[2], all_dims[3]};
+        llvm::Value* result_4d = createAndFillTensor(dims_4d, create_4d);
+        llvm::BasicBlock* exit_4d = builder.GetInsertBlock();
+        builder.CreateBr(done_block);
+
+        // Merge results with PHI
+        builder.SetInsertPoint(done_block);
+        llvm::PHINode* result_phi = builder.CreatePHI(ctx->taggedValueType(), 4, "apply_result");
+        result_phi->addIncoming(result_1d, exit_1d);
+        result_phi->addIncoming(result_2d, exit_2d);
+        result_phi->addIncoming(result_3d, exit_3d);
+        result_phi->addIncoming(result_4d, exit_4d);
+
+        return result_phi;
+    }
 }
 
 extern "C" {
@@ -27465,6 +27759,15 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
 #elif defined(__linux__)
         // Link with OpenBLAS on Linux
         link_cmd += " -lopenblas";
+#endif
+
+        // Add GPU frameworks/libraries (for GPU-accelerated tensor operations)
+        // Metal: System framework on macOS, always safe to link (like Accelerate)
+        // CUDA: Not a system library, requires explicit detection (handled by cmake)
+#ifdef __APPLE__
+        // Metal and MetalPerformanceShaders for GPU on macOS
+        link_cmd += " -framework Metal -framework MetalPerformanceShaders -framework Foundation";
+        link_cmd += " -lobjc";  // Objective-C runtime
 #endif
 
         link_cmd += " -o " + std::string(filename);

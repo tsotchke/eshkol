@@ -1,0 +1,87 @@
+;;; Convolution Benchmark
+;;; Tests conv2d and pooling performance
+
+(define (time-ms thunk iterations)
+  "Execute thunk multiple times and return average time in ms"
+  (let ((start (current-time-ms)))
+    (let loop ((i 0))
+      (when (< i iterations)
+        (thunk)
+        (loop (+ i 1))))
+    (/ (- (current-time-ms) start) iterations)))
+
+(define (benchmark-conv2d h w kh kw stride iterations)
+  "Benchmark HxW input with KHxKW kernel"
+  (let* ((input (random-tensor (list h w)))
+         (kernel (random-tensor (list kh kw)))
+         (time (time-ms (lambda () (conv2d input kernel stride)) iterations)))
+    (display "  Input ")
+    (display h) (display "x") (display w)
+    (display ", Kernel ")
+    (display kh) (display "x") (display kw)
+    (display ", Stride ") (display stride)
+    (display ": ") (display (round time)) (display " ms")
+    (newline)
+    time))
+
+(define (benchmark-maxpool h w pool-size stride iterations)
+  "Benchmark max pooling"
+  (let* ((input (random-tensor (list h w)))
+         (time (time-ms (lambda () (max-pool2d input pool-size stride)) iterations)))
+    (display "  Input ")
+    (display h) (display "x") (display w)
+    (display ", Pool ") (display pool-size)
+    (display ", Stride ") (display stride)
+    (display ": ") (display (round time)) (display " ms")
+    (newline)
+    time))
+
+(define (benchmark-avgpool h w pool-size stride iterations)
+  "Benchmark average pooling"
+  (let* ((input (random-tensor (list h w)))
+         (time (time-ms (lambda () (avg-pool2d input pool-size stride)) iterations)))
+    (display "  Input ")
+    (display h) (display "x") (display w)
+    (display ", Pool ") (display pool-size)
+    (display ", Stride ") (display stride)
+    (display ": ") (display (round time)) (display " ms")
+    (newline)
+    time))
+
+(define (run-benchmarks)
+  (display "=== Convolution & Pooling Benchmarks ===")
+  (newline)
+  (newline)
+
+  ;; Conv2D benchmarks
+  (display "Conv2D (various sizes):")
+  (newline)
+  (benchmark-conv2d 28 28 3 3 1 100)    ; Small (MNIST-like)
+  (benchmark-conv2d 64 64 3 3 1 50)
+  (benchmark-conv2d 128 128 3 3 1 20)
+  (benchmark-conv2d 224 224 3 3 1 10)   ; ImageNet input size
+  (benchmark-conv2d 224 224 7 7 2 10)   ; Large kernel, stride 2
+  (newline)
+
+  ;; Max pooling benchmarks
+  (display "Max Pool 2D:")
+  (newline)
+  (benchmark-maxpool 28 28 2 2 200)
+  (benchmark-maxpool 64 64 2 2 100)
+  (benchmark-maxpool 128 128 2 2 50)
+  (benchmark-maxpool 224 224 2 2 20)
+  (newline)
+
+  ;; Average pooling benchmarks
+  (display "Avg Pool 2D:")
+  (newline)
+  (benchmark-avgpool 28 28 2 2 200)
+  (benchmark-avgpool 64 64 2 2 100)
+  (benchmark-avgpool 128 128 2 2 50)
+  (benchmark-avgpool 224 224 2 2 20)
+  (newline)
+
+  (display "=== Benchmark Complete ===")
+  (newline))
+
+(run-benchmarks)

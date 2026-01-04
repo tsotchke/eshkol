@@ -7,8 +7,14 @@
 
 #include "eshkol/backend/blas_backend.h"
 #include "eshkol/backend/cpu_features.h"
+#include "eshkol/logger.h"
 #include <cstdlib>
 #include <cstring>
+
+// GPU backend for hardware acceleration
+#ifdef ESHKOL_GPU_ENABLED
+#include "eshkol/backend/gpu/gpu_memory.h"
+#endif
 
 // SIMD intrinsics headers
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -284,6 +290,43 @@ void eshkol_matmul_f64(const double* A, const double* B, double* C,
                         uint64_t M, uint64_t K, uint64_t N) {
     size_t total_elements = M * N;  // Result matrix size
     size_t total_ops = M * K * N;   // Computational complexity
+
+#ifdef ESHKOL_GPU_ENABLED
+    // Ensure GPU is initialized (idempotent - no-op if already done)
+    eshkol_gpu_init();
+
+    // Dispatch hierarchy: GPU (≥100K) → BLAS (≥4K) → SIMD (≥64) → scalar
+    // GPU threshold: 100K operations (e.g., 100x100x10 or 46x46x46)
+    static const size_t GPU_THRESHOLD = 100000;
+
+    if (total_ops >= GPU_THRESHOLD && eshkol_gpu_get_backend() != ESHKOL_GPU_NONE) {
+        // Wrap host pointers in GPU buffers (unified memory on Metal)
+        EshkolGPUBuffer buf_a, buf_b, buf_c;
+        size_t a_size = M * K * sizeof(double);
+        size_t b_size = K * N * sizeof(double);
+        size_t c_size = M * N * sizeof(double);
+
+        if (eshkol_gpu_wrap_host((void*)A, a_size, &buf_a) == 0 &&
+            eshkol_gpu_wrap_host((void*)B, b_size, &buf_b) == 0 &&
+            eshkol_gpu_wrap_host((void*)C, c_size, &buf_c) == 0) {
+
+            // GPU matmul (uses unified memory, no explicit copy needed)
+            if (eshkol_gpu_matmul_f64(&buf_a, &buf_b, &buf_c, M, K, N) == 0) {
+                // On unified memory, result is already in C
+                eshkol_gpu_free(&buf_a);
+                eshkol_gpu_free(&buf_b);
+                eshkol_gpu_free(&buf_c);
+                eshkol_debug("matmul: GPU path used (%lux%lux%lu = %zu ops)", M, K, N, total_ops);
+                return;
+            }
+            // GPU failed, fall through to CPU path
+            eshkol_gpu_free(&buf_a);
+            eshkol_gpu_free(&buf_b);
+            eshkol_gpu_free(&buf_c);
+            eshkol_debug("matmul: GPU dispatch failed, falling back to CPU");
+        }
+    }
+#endif
 
 #ifdef ESHKOL_BLAS_ENABLED
     // Use BLAS for large matrices (threshold based on ops)

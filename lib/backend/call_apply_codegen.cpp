@@ -91,6 +91,80 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             return applyCons(list_int);
         }
 
+        // Handle tensor/vector creation functions via callback
+        if (apply_builtin_callback_ &&
+            (func_name == "rand" || func_name == "randn" || func_name == "randint" ||
+             func_name == "zeros" || func_name == "ones" || func_name == "full" ||
+             func_name == "arange" || func_name == "linspace" ||
+             func_name == "eye" || func_name == "diag" ||
+             func_name == "reshape" || func_name == "transpose" ||
+             func_name == "tensor" || func_name == "make-tensor")) {
+
+            Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+            Function* cons_get_ptr = getTaggedConsGetPtrFunc();
+            if (!cons_get_ptr) return tagged_.packNull();
+
+            ArrayType* args_array_type = ArrayType::get(ctx_.taggedValueType(), MAX_APPLY_ARGS);
+            IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
+            BasicBlock& entry = current_func->getEntryBlock();
+            ctx_.builder().SetInsertPoint(&entry, entry.begin());
+            Value* args_array = ctx_.builder().CreateAlloca(args_array_type, nullptr, "builtin_args");
+            Value* count_ptr = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "builtin_count");
+            ctx_.builder().restoreIP(saved_ip);
+
+            ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), count_ptr);
+
+            BasicBlock* extract_loop = BasicBlock::Create(ctx_.context(), "builtin_extract_loop", current_func);
+            BasicBlock* extract_body = BasicBlock::Create(ctx_.context(), "builtin_extract_body", current_func);
+            BasicBlock* extract_done = BasicBlock::Create(ctx_.context(), "builtin_extract_done", current_func);
+
+            BasicBlock* pre_loop = ctx_.builder().GetInsertBlock();
+            ctx_.builder().CreateBr(extract_loop);
+
+            ctx_.builder().SetInsertPoint(extract_loop);
+            PHINode* list_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "builtin_list");
+            list_phi->addIncoming(list_int, pre_loop);
+
+            Value* count = ctx_.builder().CreateLoad(ctx_.int64Type(), count_ptr);
+            Value* list_null = ctx_.builder().CreateICmpEQ(list_phi, ConstantInt::get(ctx_.int64Type(), 0));
+            Value* max_reached = ctx_.builder().CreateICmpUGE(count, ConstantInt::get(ctx_.int64Type(), MAX_APPLY_ARGS));
+            Value* done_cond = ctx_.builder().CreateOr(list_null, max_reached);
+            ctx_.builder().CreateCondBr(done_cond, extract_done, extract_body);
+
+            ctx_.builder().SetInsertPoint(extract_body);
+            Value* cons_ptr = ctx_.builder().CreateIntToPtr(list_phi, ctx_.ptrType());
+            Value* elem = extractConsCarAsTaggedValue(cons_ptr);
+
+            Value* idx_gep = ctx_.builder().CreateGEP(args_array_type, args_array,
+                {ConstantInt::get(ctx_.int64Type(), 0), count});
+            ctx_.builder().CreateStore(elem, idx_gep);
+
+            Value* new_count = ctx_.builder().CreateAdd(count, ConstantInt::get(ctx_.int64Type(), 1));
+            ctx_.builder().CreateStore(new_count, count_ptr);
+
+            Value* is_cdr = ConstantInt::get(ctx_.int1Type(), 1);
+            Value* next_list = ctx_.builder().CreateCall(cons_get_ptr, {cons_ptr, is_cdr});
+
+            BasicBlock* loop_back = ctx_.builder().GetInsertBlock();
+            ctx_.builder().CreateBr(extract_loop);
+            list_phi->addIncoming(next_list, loop_back);
+
+            ctx_.builder().SetInsertPoint(extract_done);
+            Value* final_count = ctx_.builder().CreateLoad(ctx_.int64Type(), count_ptr);
+
+            std::vector<Value*> builtin_args;
+            for (int i = 0; i < MAX_APPLY_ARGS; i++) {
+                Value* arg_gep = ctx_.builder().CreateGEP(args_array_type, args_array,
+                    {ConstantInt::get(ctx_.int64Type(), 0), ConstantInt::get(ctx_.int64Type(), i)});
+                builtin_args.push_back(ctx_.builder().CreateLoad(ctx_.taggedValueType(), arg_gep));
+            }
+
+            Value* result = apply_builtin_callback_(func_name, builtin_args, final_count, callback_context_);
+            if (result) {
+                return result;
+            }
+        }
+
         // Try to find function by name in the module
         Function* named_func = ctx_.module().getFunction(func_name);
         if (named_func) {
