@@ -1183,6 +1183,7 @@ typedef enum {
     ESHKOL_LET_OP,
     ESHKOL_LET_STAR_OP,  // let* - sequential bindings
     ESHKOL_LETREC_OP,    // letrec - recursive bindings (all bindings visible to all values)
+    ESHKOL_LETREC_STAR_OP, // letrec* - sequential recursive bindings (R7RS: left-to-right evaluation)
     ESHKOL_AND_OP,       // short-circuit and
     ESHKOL_OR_OP,        // short-circuit or
     ESHKOL_COND_OP,      // multi-branch conditional

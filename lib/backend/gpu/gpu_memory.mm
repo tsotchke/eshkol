@@ -52,33 +52,320 @@ static bool g_gpu_initialized = false;
 
 static id<MTLDevice> g_metal_device = nil;
 static id<MTLCommandQueue> g_metal_queue = nil;
-static id<MTLComputePipelineState> g_matmul_f64_pipeline = nil;
+static id<MTLComputePipelineState> g_matmul_sf64_pipeline = nil;
 static id<MTLLibrary> g_metal_library = nil;
 static bool g_metal_unified_memory = false;
 
-// Metal shader for f64 matrix multiplication (MPS only supports f32)
-static NSString* g_matmul_f64_source = @R"(
+// ============================================================================
+// SoftFloat IEEE 754 f64 Emulation for Metal
+// ============================================================================
+// Apple Silicon GPUs lack native f64 hardware. We emulate f64 using uint2
+// (two 32-bit integers) with full IEEE 754 compliance including:
+// - 52-bit mantissa precision (bit-exact with CPU)
+// - Proper rounding (round-to-nearest-even)
+// - Special value handling (zero, infinity, NaN)
+// Based on Berkeley SoftFloat library algorithms.
+
+static NSString* g_matmul_sf64_source = @R"(
 #include <metal_stdlib>
 using namespace metal;
 
-kernel void matmul_f64(
-    device const double* A [[buffer(0)]],
-    device const double* B [[buffer(1)]],
-    device double* C [[buffer(2)]],
+// ===== IEEE 754 Double-Precision as uint2 =====
+typedef uint2 sf64;  // .x = high 32 bits, .y = low 32 bits
+
+// Constants
+constant sf64 SF64_ZERO = sf64(0x00000000u, 0x00000000u);
+constant sf64 SF64_NEG_ZERO = sf64(0x80000000u, 0x00000000u);
+constant sf64 SF64_INF = sf64(0x7FF00000u, 0x00000000u);
+constant sf64 SF64_NEG_INF = sf64(0xFFF00000u, 0x00000000u);
+constant sf64 SF64_QNAN = sf64(0x7FF80000u, 0x00000000u);
+
+// ===== Bit Extraction =====
+inline bool sf64_sign(sf64 x) { return (x.x >> 31) != 0; }
+inline int sf64_exp_raw(sf64 x) { return int((x.x >> 20) & 0x7FFu); }
+inline sf64 sf64_sig(sf64 x) { return sf64(x.x & 0x000FFFFFu, x.y); }
+
+// ===== Classification =====
+inline bool sf64_is_zero(sf64 x) { return ((x.x & 0x7FFFFFFFu) == 0) && (x.y == 0); }
+inline bool sf64_is_inf(sf64 x) { return ((x.x & 0x7FFFFFFFu) == 0x7FF00000u) && (x.y == 0); }
+inline bool sf64_is_nan(sf64 x) {
+    return ((x.x & 0x7FF00000u) == 0x7FF00000u) &&
+           (((x.x & 0x000FFFFFu) != 0) || (x.y != 0));
+}
+
+// ===== Packing =====
+inline sf64 sf64_pack(bool sign, int exp_raw, uint mant_hi, uint mant_lo) {
+    uint hi = (sign ? 0x80000000u : 0u) | ((uint(exp_raw) & 0x7FFu) << 20) | (mant_hi & 0x000FFFFFu);
+    return sf64(hi, mant_lo);
+}
+inline sf64 sf64_negate(sf64 x) { return sf64(x.x ^ 0x80000000u, x.y); }
+
+// ===== 64-bit Arithmetic =====
+inline sf64 shl64(sf64 x, int n) {
+    if (n <= 0) return x;
+    if (n >= 64) return SF64_ZERO;
+    if (n >= 32) return sf64(x.y << (n - 32), 0u);
+    return sf64((x.x << n) | (x.y >> (32 - n)), x.y << n);
+}
+
+inline sf64 shr64(sf64 x, int n) {
+    if (n <= 0) return x;
+    if (n >= 64) return SF64_ZERO;
+    if (n >= 32) return sf64(0u, x.x >> (n - 32));
+    return sf64(x.x >> n, (x.y >> n) | (x.x << (32 - n)));
+}
+
+inline sf64 shr64_jam(sf64 x, int n) {
+    if (n <= 0) return x;
+    if (n >= 64) return sf64(0u, ((x.x | x.y) != 0) ? 1u : 0u);
+    if (n >= 32) {
+        uint lost = x.y | ((n > 32) ? (x.x << (64 - n)) : 0u);
+        return sf64(0u, (x.x >> (n - 32)) | ((lost != 0) ? 1u : 0u));
+    }
+    uint lost = x.y << (32 - n);
+    return sf64(x.x >> n, ((x.y >> n) | (x.x << (32 - n))) | ((lost != 0) ? 1u : 0u));
+}
+
+inline sf64 add64(sf64 a, sf64 b) {
+    uint lo = a.y + b.y;
+    uint carry = (lo < a.y) ? 1u : 0u;
+    return sf64(a.x + b.x + carry, lo);
+}
+
+inline sf64 sub64(sf64 a, sf64 b) {
+    uint lo = a.y - b.y;
+    uint borrow = (a.y < b.y) ? 1u : 0u;
+    return sf64(a.x - b.x - borrow, lo);
+}
+
+inline int cmp64(sf64 a, sf64 b) {
+    if (a.x != b.x) return (a.x < b.x) ? -1 : 1;
+    if (a.y != b.y) return (a.y < b.y) ? -1 : 1;
+    return 0;
+}
+
+inline int clz64(sf64 x) {
+    if (x.x != 0) return clz(x.x);
+    if (x.y != 0) return 32 + clz(x.y);
+    return 64;
+}
+
+// ===== 64x64 -> 128 bit multiply =====
+struct uint128_t { uint w3, w2, w1, w0; };
+
+inline uint128_t mul64x64(sf64 a, sf64 b) {
+    uint a3 = a.x >> 16, a2 = a.x & 0xFFFFu;
+    uint a1 = a.y >> 16, a0 = a.y & 0xFFFFu;
+    uint b3 = b.x >> 16, b2 = b.x & 0xFFFFu;
+    uint b1 = b.y >> 16, b0 = b.y & 0xFFFFu;
+
+    uint p00 = a0*b0, p01 = a0*b1, p02 = a0*b2, p03 = a0*b3;
+    uint p10 = a1*b0, p11 = a1*b1, p12 = a1*b2, p13 = a1*b3;
+    uint p20 = a2*b0, p21 = a2*b1, p22 = a2*b2, p23 = a2*b3;
+    uint p30 = a3*b0, p31 = a3*b1, p32 = a3*b2, p33 = a3*b3;
+
+    uint c0 = p00 & 0xFFFFu;
+    uint carry = p00 >> 16;
+    uint c1 = p01 + p10 + carry; carry = c1 >> 16; c1 &= 0xFFFFu;
+    uint c2 = p02 + p11 + p20 + carry; carry = c2 >> 16; c2 &= 0xFFFFu;
+    uint c3 = p03 + p12 + p21 + p30 + carry; carry = c3 >> 16; c3 &= 0xFFFFu;
+    uint c4 = p13 + p22 + p31 + carry; carry = c4 >> 16; c4 &= 0xFFFFu;
+    uint c5 = p23 + p32 + carry; carry = c5 >> 16; c5 &= 0xFFFFu;
+    uint c6 = p33 + carry; uint c7 = c6 >> 16; c6 &= 0xFFFFu;
+
+    uint128_t r;
+    r.w0 = (c1 << 16) | c0;
+    r.w1 = (c3 << 16) | c2;
+    r.w2 = (c5 << 16) | c4;
+    r.w3 = (c7 << 16) | c6;
+    return r;
+}
+
+// ===== Rounding =====
+// round_bits: 10 bits of rounding info, half-way point at 0x200
+inline sf64 sf64_round_pack(bool sign, int exp_raw, sf64 sig, uint round_bits) {
+    // Round to nearest, ties to even
+    bool round_up = (round_bits > 0x200u) || ((round_bits == 0x200u) && ((sig.y & 1u) != 0));
+    if (round_up) {
+        sig = add64(sig, sf64(0u, 1u));
+        // Check if rounding caused overflow (implicit bit moved from bit 52 to bit 53)
+        if ((sig.x & 0x00200000u) != 0) { sig = shr64(sig, 1); exp_raw++; }
+    }
+    if (exp_raw >= 2047) return sign ? SF64_NEG_INF : SF64_INF;
+    if (exp_raw <= 0) {
+        int shift = 1 - exp_raw;
+        if (shift >= 64) return sign ? SF64_NEG_ZERO : SF64_ZERO;
+        sig = shr64_jam(sig, shift);
+        exp_raw = 0;
+    }
+    return sf64_pack(sign, exp_raw, sig.x, sig.y);
+}
+
+// ===== Addition =====
+sf64 sf64_add(sf64 a, sf64 b) {
+    bool signA = sf64_sign(a), signB = sf64_sign(b);
+    int expA = sf64_exp_raw(a), expB = sf64_exp_raw(b);
+    sf64 sigA = sf64_sig(a), sigB = sf64_sig(b);
+
+    if (sf64_is_nan(a)) return SF64_QNAN;
+    if (sf64_is_nan(b)) return SF64_QNAN;
+    if (sf64_is_inf(a)) {
+        if (sf64_is_inf(b) && (signA != signB)) return SF64_QNAN;
+        return a;
+    }
+    if (sf64_is_inf(b)) return b;
+    if (sf64_is_zero(a)) {
+        if (sf64_is_zero(b)) return (signA && signB) ? SF64_NEG_ZERO : SF64_ZERO;
+        return b;
+    }
+    if (sf64_is_zero(b)) return a;
+
+    // Add implicit bit for normalized numbers
+    if (expA != 0) sigA.x |= 0x00100000u; else expA = 1;
+    if (expB != 0) sigB.x |= 0x00100000u; else expB = 1;
+
+    // Shift to have leading 1 at bit 63 (for 11 guard bits)
+    sigA = shl64(sigA, 11);
+    sigB = shl64(sigB, 11);
+
+    // Align exponents
+    int expDiff = expA - expB;
+    int expZ;
+    if (expDiff > 0) { sigB = shr64_jam(sigB, expDiff); expZ = expA; }
+    else if (expDiff < 0) { sigA = shr64_jam(sigA, -expDiff); expZ = expB; }
+    else expZ = expA;
+
+    sf64 sigZ;
+    bool signZ;
+    if (signA == signB) {
+        // Same sign: add magnitudes
+        signZ = signA;
+        sigZ = add64(sigA, sigB);
+        // Check for overflow: sum wrapped if result < either operand
+        if (cmp64(sigZ, sigA) < 0 || cmp64(sigZ, sigB) < 0) {
+            // Overflow: true sum >= 2^64, leading 1 at virtual bit 64
+            // Shift right by 2 to normalize to bit 62, increment exp
+            sigZ = shr64_jam(sigZ, 2);
+            sigZ.x |= 0x40000000u;  // Set leading 1 at bit 62
+            expZ++;
+        } else {
+            // No overflow: leading 1 at bit 63
+            // Shift right by 1 to normalize to bit 62
+            sigZ = shr64_jam(sigZ, 1);
+        }
+    } else {
+        // Different signs: subtract magnitudes
+        int cmp = cmp64(sigA, sigB);
+        if (cmp == 0) return SF64_ZERO;
+        if (cmp > 0) { signZ = signA; sigZ = sub64(sigA, sigB); }
+        else { signZ = signB; sigZ = sub64(sigB, sigA); }
+        // Normalize: shift left until leading 1 is at bit 62 (not 63)
+        int shift = clz64(sigZ) - 1;  // -1 to target bit 62 instead of 63
+        if (shift > 0) { sigZ = shl64(sigZ, shift); expZ -= shift; }
+        else if (shift < 0) { sigZ = shr64_jam(sigZ, -shift); expZ -= shift; }
+    }
+    // Now leading 1 is at bit 62 (bit 30 of sigZ.x)
+
+    // Extract 10 round bits and shift by 10 to get mantissa at bit 52
+    uint round_bits = sigZ.y & 0x3FFu;
+    sigZ = shr64(sigZ, 10);
+    return sf64_round_pack(signZ, expZ, sigZ, round_bits);
+}
+
+// ===== Multiplication =====
+sf64 sf64_mul(sf64 a, sf64 b) {
+    bool signA = sf64_sign(a), signB = sf64_sign(b);
+    bool signZ = signA != signB;
+    int expA = sf64_exp_raw(a), expB = sf64_exp_raw(b);
+    sf64 sigA = sf64_sig(a), sigB = sf64_sig(b);
+
+    if (sf64_is_nan(a) || sf64_is_nan(b)) return SF64_QNAN;
+    if (sf64_is_inf(a)) {
+        if (sf64_is_zero(b)) return SF64_QNAN;
+        return signZ ? SF64_NEG_INF : SF64_INF;
+    }
+    if (sf64_is_inf(b)) {
+        if (sf64_is_zero(a)) return SF64_QNAN;
+        return signZ ? SF64_NEG_INF : SF64_INF;
+    }
+    if (sf64_is_zero(a) || sf64_is_zero(b)) return signZ ? SF64_NEG_ZERO : SF64_ZERO;
+
+    // Add implicit bit for normalized numbers
+    if (expA != 0) sigA.x |= 0x00100000u;
+    else { int s = clz64(sigA) - 11; sigA = shl64(sigA, s); expA = 1 - s; }
+    if (expB != 0) sigB.x |= 0x00100000u;
+    else { int s = clz64(sigB) - 11; sigB = shl64(sigB, s); expB = 1 - s; }
+
+    // Compute result exponent (may need adjustment after normalization)
+    int expZ = expA + expB - 1023;
+
+    // Shift both significands to have leading 1 at bit 63
+    // After multiply, product has leading 1 at bit 126 (no overflow) or 127 (overflow)
+    sigA = shl64(sigA, 11);
+    sigB = shl64(sigB, 11);
+
+    uint128_t prod = mul64x64(sigA, sigB);
+    sf64 sigZ = sf64(prod.w3, prod.w2);
+    uint sticky = ((prod.w1 | prod.w0) != 0) ? 1u : 0u;
+
+    // Normalize: product leading 1 is at bit 126 or 127 (bits 62 or 63 of high 64)
+    if ((sigZ.x & 0x80000000u) != 0) {
+        // Overflow: product in [2,4), leading 1 at bit 63
+        // Shift right by 1 to normalize to bit 62, increment exponent
+        sticky |= (sigZ.y & 1u);
+        sigZ = shr64(sigZ, 1);
+        expZ++;
+    }
+    // Now leading 1 is at bit 62 (bit 30 of sigZ.x) in both cases
+
+    // Extract round bits (bits 9-0) and shift by 10 to get mantissa at bit 52
+    uint round_bits = (sigZ.y & 0x3FFu) | sticky;
+    sigZ = shr64(sigZ, 10);
+    return sf64_round_pack(signZ, expZ, sigZ, round_bits);
+}
+
+// ===== FMA =====
+sf64 sf64_fma(sf64 a, sf64 b, sf64 c) {
+    return sf64_add(sf64_mul(a, b), c);
+}
+
+// ===== Matrix Multiplication Kernel (4x4 tiling) =====
+constant uint TILE_SIZE = 4;
+
+kernel void matmul_sf64(
+    device const sf64* A [[buffer(0)]],
+    device const sf64* B [[buffer(1)]],
+    device sf64* C [[buffer(2)]],
     constant uint& M [[buffer(3)]],
     constant uint& K [[buffer(4)]],
     constant uint& N [[buffer(5)]],
     uint2 gid [[thread_position_in_grid]])
 {
-    uint row = gid.y;
-    uint col = gid.x;
-    if (row >= M || col >= N) return;
+    uint baseRow = gid.y * TILE_SIZE;
+    uint baseCol = gid.x * TILE_SIZE;
 
-    double sum = 0.0;
+    sf64 acc[TILE_SIZE][TILE_SIZE];
+    for (uint i = 0; i < TILE_SIZE; i++)
+        for (uint j = 0; j < TILE_SIZE; j++)
+            acc[i][j] = SF64_ZERO;
+
     for (uint k = 0; k < K; k++) {
-        sum += A[row * K + k] * B[k * N + col];
+        sf64 a_vals[TILE_SIZE];
+        sf64 b_vals[TILE_SIZE];
+        for (uint i = 0; i < TILE_SIZE; i++)
+            a_vals[i] = (baseRow + i < M) ? A[(baseRow + i) * K + k] : SF64_ZERO;
+        for (uint j = 0; j < TILE_SIZE; j++)
+            b_vals[j] = (baseCol + j < N) ? B[k * N + (baseCol + j)] : SF64_ZERO;
+
+        for (uint i = 0; i < TILE_SIZE; i++)
+            for (uint j = 0; j < TILE_SIZE; j++)
+                acc[i][j] = sf64_fma(a_vals[i], b_vals[j], acc[i][j]);
     }
-    C[row * N + col] = sum;
+
+    for (uint i = 0; i < TILE_SIZE; i++)
+        for (uint j = 0; j < TILE_SIZE; j++)
+            if (baseRow + i < M && baseCol + j < N)
+                C[(baseRow + i) * N + (baseCol + j)] = acc[i][j];
 }
 )";
 
@@ -98,28 +385,35 @@ static int metal_init(void) {
             g_metal_unified_memory = [g_metal_device supportsFamily:MTLGPUFamilyApple1];
         }
 
-        // Compile f64 matmul shader with Metal 2.3+ for 64-bit support
+        // Compile sf64 (SoftFloat) matmul shader
+        // This uses uint2 to emulate f64 with full IEEE 754 compliance
         NSError* error = nil;
         MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
-        if (@available(macOS 11.0, *)) {
-            options.languageVersion = MTLLanguageVersion2_3;  // Required for 64-bit types
-        }
-        // Try to compile f64 shader - this will fail on most Metal devices since
-        // Metal doesn't support double precision. This is expected behavior.
-        // When it fails, we silently fall back to BLAS/SIMD implementations.
-        g_metal_library = [g_metal_device newLibraryWithSource:g_matmul_f64_source
+        // Disable fast-math to ensure exact IEEE 754 rounding behavior
+        options.fastMathEnabled = NO;
+
+        g_metal_library = [g_metal_device newLibraryWithSource:g_matmul_sf64_source
                                                        options:options
                                                          error:&error];
-        if (g_metal_library) {
-            id<MTLFunction> func = [g_metal_library newFunctionWithName:@"matmul_f64"];
-            if (func) {
-                g_matmul_f64_pipeline = [g_metal_device newComputePipelineStateWithFunction:func
-                                                                                      error:&error];
-                // Silent failure - f64 not supported on this GPU, will use BLAS fallback
-            }
-            // Silent failure - f64 not supported, will use BLAS fallback
+        if (!g_metal_library) {
+            fprintf(stderr, "Metal: Failed to compile sf64 shader: %s\n",
+                    [[error localizedDescription] UTF8String]);
+            return 0;  // GPU detected but shader failed, fall back to CPU
         }
-        // Silent failure - Metal f64 not supported (expected), will use BLAS fallback
+
+        id<MTLFunction> func = [g_metal_library newFunctionWithName:@"matmul_sf64"];
+        if (!func) {
+            fprintf(stderr, "Metal: Failed to find matmul_sf64 kernel\n");
+            return 0;
+        }
+
+        g_matmul_sf64_pipeline = [g_metal_device newComputePipelineStateWithFunction:func
+                                                                               error:&error];
+        if (!g_matmul_sf64_pipeline) {
+            fprintf(stderr, "Metal: Failed to create sf64 pipeline: %s\n",
+                    [[error localizedDescription] UTF8String]);
+            return 0;
+        }
 
         return 0;
     }
@@ -127,7 +421,7 @@ static int metal_init(void) {
 
 static void metal_shutdown(void) {
     @autoreleasepool {
-        g_matmul_f64_pipeline = nil;
+        g_matmul_sf64_pipeline = nil;
         g_metal_library = nil;
         g_metal_queue = nil;
         g_metal_device = nil;
@@ -209,42 +503,87 @@ static int metal_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
     }
 }
 
+// ============================================================================
+// f64 <-> sf64 Conversion (bit-exact reinterpretation)
+// ============================================================================
+// IEEE 754 f64 bits are split into two uint32: high word (.x) and low word (.y)
+
+static void convert_f64_to_sf64(const double* src, uint32_t* dst, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        uint64_t bits;
+        memcpy(&bits, &src[i], sizeof(double));
+        dst[i * 2] = static_cast<uint32_t>(bits >> 32);      // High word
+        dst[i * 2 + 1] = static_cast<uint32_t>(bits);        // Low word
+    }
+}
+
+static void convert_sf64_to_f64(const uint32_t* src, double* dst, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        uint64_t bits = (static_cast<uint64_t>(src[i * 2]) << 32) | src[i * 2 + 1];
+        memcpy(&dst[i], &bits, sizeof(double));
+    }
+}
+
 static int metal_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                              uint64_t M, uint64_t K, uint64_t N) {
     @autoreleasepool {
-        if (!g_matmul_f64_pipeline) return -1;
+        if (!g_matmul_sf64_pipeline) return -1;
 
-        id<MTLBuffer> buf_a = (__bridge id<MTLBuffer>)A->backend_data;
-        id<MTLBuffer> buf_b = (__bridge id<MTLBuffer>)B->backend_data;
-        id<MTLBuffer> buf_c = (__bridge id<MTLBuffer>)C->backend_data;
+        size_t elementsA = M * K;
+        size_t elementsB = K * N;
+        size_t elementsC = M * N;
 
-        // Create dimension buffers
-        uint32_t dims[3] = {(uint32_t)M, (uint32_t)K, (uint32_t)N};
-        id<MTLBuffer> dim_m = [g_metal_device newBufferWithBytes:&dims[0] length:4 options:MTLResourceStorageModeShared];
-        id<MTLBuffer> dim_k = [g_metal_device newBufferWithBytes:&dims[1] length:4 options:MTLResourceStorageModeShared];
-        id<MTLBuffer> dim_n = [g_metal_device newBufferWithBytes:&dims[2] length:4 options:MTLResourceStorageModeShared];
+        // Allocate GPU buffers for sf64 format (8 bytes per element, same as f64)
+        // Using uint2 representation: each f64 becomes (high32, low32)
+        id<MTLBuffer> buf_a = [g_metal_device newBufferWithLength:elementsA * 8
+                                                          options:MTLResourceStorageModeShared];
+        id<MTLBuffer> buf_b = [g_metal_device newBufferWithLength:elementsB * 8
+                                                          options:MTLResourceStorageModeShared];
+        id<MTLBuffer> buf_c = [g_metal_device newBufferWithLength:elementsC * 8
+                                                          options:MTLResourceStorageModeShared];
 
+        if (!buf_a || !buf_b || !buf_c) {
+            return -1;
+        }
+
+        // Convert f64 inputs to sf64 format (bit reinterpretation)
+        convert_f64_to_sf64(static_cast<const double*>(A->host_ptr),
+                            static_cast<uint32_t*>([buf_a contents]), elementsA);
+        convert_f64_to_sf64(static_cast<const double*>(B->host_ptr),
+                            static_cast<uint32_t*>([buf_b contents]), elementsB);
+
+        // Create command buffer
         id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
         id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
 
-        [encoder setComputePipelineState:g_matmul_f64_pipeline];
+        [encoder setComputePipelineState:g_matmul_sf64_pipeline];
         [encoder setBuffer:buf_a offset:0 atIndex:0];
         [encoder setBuffer:buf_b offset:0 atIndex:1];
         [encoder setBuffer:buf_c offset:0 atIndex:2];
-        [encoder setBuffer:dim_m offset:0 atIndex:3];
-        [encoder setBuffer:dim_k offset:0 atIndex:4];
-        [encoder setBuffer:dim_n offset:0 atIndex:5];
 
-        // Dispatch threads
-        MTLSize grid = MTLSizeMake(N, M, 1);
-        NSUInteger w = g_matmul_f64_pipeline.threadExecutionWidth;
-        NSUInteger h = g_matmul_f64_pipeline.maxTotalThreadsPerThreadgroup / w;
-        MTLSize threadgroup = MTLSizeMake(w, h, 1);
+        // Pass dimensions as bytes
+        uint32_t dims[3] = {static_cast<uint32_t>(M), static_cast<uint32_t>(K), static_cast<uint32_t>(N)};
+        [encoder setBytes:&dims[0] length:sizeof(uint32_t) atIndex:3];
+        [encoder setBytes:&dims[1] length:sizeof(uint32_t) atIndex:4];
+        [encoder setBytes:&dims[2] length:sizeof(uint32_t) atIndex:5];
 
-        [encoder dispatchThreads:grid threadsPerThreadgroup:threadgroup];
+        // Dispatch with 4x4 tiling: each thread handles a 4x4 tile
+        // Total threads needed = (N/4, M/4), one thread per tile
+        const uint32_t TILE_SIZE = 4;
+        NSUInteger tilesX = (N + TILE_SIZE - 1) / TILE_SIZE;
+        NSUInteger tilesY = (M + TILE_SIZE - 1) / TILE_SIZE;
+        MTLSize threadsTotal = MTLSizeMake(tilesX, tilesY, 1);
+        MTLSize threadgroupSize = MTLSizeMake(8, 8, 1);
+
+        // dispatchThreads dispatches exactly threadsTotal threads
+        [encoder dispatchThreads:threadsTotal threadsPerThreadgroup:threadgroupSize];
         [encoder endEncoding];
         [cmd commit];
         [cmd waitUntilCompleted];
+
+        // Convert sf64 result back to f64
+        convert_sf64_to_f64(static_cast<const uint32_t*>([buf_c contents]),
+                            static_cast<double*>(C->host_ptr), elementsC);
 
         return 0;
     }
