@@ -1599,6 +1599,7 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_LET_OP:
                 case ESHKOL_LET_STAR_OP:
                 case ESHKOL_LETREC_OP:
+                case ESHKOL_LETREC_STAR_OP:  // R7RS letrec* - used for internal defines
                     // Each binding is a CONS cell: (var . value)
                     for (uint64_t i = 0; i < ast->operation.let_op.num_bindings; i++) {
                         eshkol_ast_t* binding = &ast->operation.let_op.bindings[i];

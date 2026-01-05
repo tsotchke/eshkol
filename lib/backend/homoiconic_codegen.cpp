@@ -235,10 +235,12 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
 
         case ESHKOL_LET_OP:
         case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP: {
-            // Build (let/let*/letrec ((var1 val1) ...) body)
+        case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP: {
+            // Build (let/let*/letrec/letrec* ((var1 val1) ...) body)
             const char* let_name = op->op == ESHKOL_LET_OP ? "let" :
-                                   op->op == ESHKOL_LET_STAR_OP ? "let*" : "letrec";
+                                   op->op == ESHKOL_LET_STAR_OP ? "let*" :
+                                   op->op == ESHKOL_LETREC_OP ? "letrec" : "letrec*";
             Value* let_sym = tagged_.packPtr(
                 string_io_.createStringWithHeader(let_name), ESHKOL_VALUE_HEAP_PTR);
 

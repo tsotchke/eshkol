@@ -93,6 +93,18 @@ public:
      */
     llvm::Value* letStar(const eshkol_operations_t* op);
 
+    /**
+     * Letrec* expression: (letrec* ((f ...) (g ...)) body)
+     *
+     * R7RS sequential recursive bindings. Like letrec, all bindings are
+     * mutually visible, but they are evaluated left-to-right and each
+     * binding's value is stored immediately so subsequent bindings can use it.
+     *
+     * @param op The letrec* operation AST node
+     * @return Result of body evaluation
+     */
+    llvm::Value* letrecStar(const eshkol_operations_t* op);
+
     // === Mutation ===
 
     /**

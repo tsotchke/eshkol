@@ -375,6 +375,7 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "let") return ESHKOL_LET_OP;
     if (op == "let*") return ESHKOL_LET_STAR_OP;
     if (op == "letrec") return ESHKOL_LETREC_OP;
+    if (op == "letrec*") return ESHKOL_LETREC_STAR_OP;
     if (op == "and") return ESHKOL_AND_OP;
     if (op == "or") return ESHKOL_OR_OP;
     if (op == "cond") return ESHKOL_COND_OP;
@@ -1148,11 +1149,12 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
         }
     }
 
-    eshkol_debug("Transforming %zu internal defines to letrec", defines.size());
+    eshkol_debug("Transforming %zu internal defines to letrec*", defines.size());
 
-    // Create letrec AST
+    // Create letrec* AST (R7RS: internal defines use letrec* semantics)
+    // letrec* evaluates bindings left-to-right, each can see previous bindings
     result.type = ESHKOL_OP;
-    result.operation.op = ESHKOL_LETREC_OP;
+    result.operation.op = ESHKOL_LETREC_STAR_OP;
 
     // Convert defines to bindings
     result.operation.let_op.num_bindings = defines.size();
@@ -2366,12 +2368,14 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             return ast;
         }
         
-        // Special handling for let/let*/letrec - local variable bindings
+        // Special handling for let/let*/letrec/letrec* - local variable bindings
         // let: bindings can't reference each other
         // let*: sequential (each binding can reference previous ones)
         // letrec: all bindings visible to all values (mutual recursion)
+        // letrec*: sequential + recursive (R7RS: left-to-right with mutual visibility)
         // We use the same parsing - codegen handles the difference
-        if (ast.operation.op == ESHKOL_LET_OP || ast.operation.op == ESHKOL_LET_STAR_OP || ast.operation.op == ESHKOL_LETREC_OP) {
+        if (ast.operation.op == ESHKOL_LET_OP || ast.operation.op == ESHKOL_LET_STAR_OP ||
+            ast.operation.op == ESHKOL_LETREC_OP || ast.operation.op == ESHKOL_LETREC_STAR_OP) {
             // Syntax: (let ((var1 val1) (var2 val2) ...) body)
             // Named let: (let name ((var1 init1) ...) body)
 
@@ -5254,6 +5258,77 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             return ast;
+        }
+
+        // Special handling for begin - transform internal defines to letrec
+        // This implements R6RS/R7RS semantics where internal defines in begin are letrec*
+        if (first_symbol == "begin") {
+            // Parse all expressions in the begin block
+            std::vector<eshkol_ast_t> begin_expressions;
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    eshkol_error("Unexpected end of input in begin expression");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+
+                eshkol_ast_t expr;
+                if (token.type == TOKEN_LPAREN) {
+                    expr = parse_list(tokenizer);
+                } else if (token.type == TOKEN_QUOTE) {
+                    eshkol_ast_t quoted = parse_quoted_data(tokenizer);
+                    expr.type = ESHKOL_OP;
+                    expr.operation.op = ESHKOL_QUOTE_OP;
+                    expr.operation.call_op.func = nullptr;
+                    expr.operation.call_op.num_vars = 1;
+                    expr.operation.call_op.variables = new eshkol_ast_t[1];
+                    expr.operation.call_op.variables[0] = quoted;
+                } else {
+                    expr = parse_atom(token);
+                }
+
+                if (expr.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                begin_expressions.push_back(expr);
+            }
+
+            if (begin_expressions.empty()) {
+                eshkol_error("begin requires at least one expression");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            // Check if there are any internal defines
+            bool has_defines = false;
+            for (const auto& expr : begin_expressions) {
+                if (expr.type == ESHKOL_OP && expr.operation.op == ESHKOL_DEFINE_OP) {
+                    has_defines = true;
+                    break;
+                }
+            }
+
+            if (has_defines) {
+                // Transform internal defines to letrec - this handles nested function defines correctly
+                eshkol_debug("Transforming begin with internal defines to letrec");
+                return transformInternalDefinesToLetrec(begin_expressions);
+            } else {
+                // No defines - create a simple sequence
+                if (begin_expressions.size() == 1) {
+                    return begin_expressions[0];
+                }
+                ast.type = ESHKOL_OP;
+                ast.operation.op = ESHKOL_SEQUENCE_OP;
+                ast.operation.sequence_op.num_expressions = begin_expressions.size();
+                ast.operation.sequence_op.expressions = new eshkol_ast_t[begin_expressions.size()];
+                for (size_t i = 0; i < begin_expressions.size(); i++) {
+                    ast.operation.sequence_op.expressions[i] = begin_expressions[i];
+                }
+                return ast;
+            }
         }
 
         // Parse arguments for non-define operations

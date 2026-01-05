@@ -434,9 +434,11 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
     // so that the enclosing scope sees the modified value after set! inside the lambda.
     std::unordered_map<std::string, Value*> entries_to_preserve;
     for (auto& entry : *symbol_table_) {
-        // Preserve function references (_func entries)
+        // Preserve function references (_func entries) - ONLY scoped keys
+        // NESTED DEFINE COLLISION FIX: Unscoped keys like "loop_func" collide between functions
         if (entry.first.length() > 5 &&
-            entry.first.substr(entry.first.length() - 5) == "_func") {
+            entry.first.substr(entry.first.length() - 5) == "_func" &&
+            entry.first.find('.') != std::string::npos) {
             entries_to_preserve[entry.first] = entry.second;
             if (global_symbol_table_) {
                 (*global_symbol_table_)[entry.first] = entry.second;
@@ -679,9 +681,11 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     // Preserve _func entries and GlobalVariable captures
     std::unordered_map<std::string, Value*> entries_to_preserve;
     for (auto& entry : *symbol_table_) {
-        // Preserve function references (_func entries)
+        // Preserve function references (_func entries) - ONLY scoped keys
+        // NESTED DEFINE COLLISION FIX: Unscoped keys like "loop_func" collide between functions
         if (entry.first.length() > 5 &&
-            entry.first.substr(entry.first.length() - 5) == "_func") {
+            entry.first.substr(entry.first.length() - 5) == "_func" &&
+            entry.first.find('.') != std::string::npos) {
             entries_to_preserve[entry.first] = entry.second;
             if (global_symbol_table_) {
                 (*global_symbol_table_)[entry.first] = entry.second;
@@ -800,9 +804,11 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
     // Preserve _func entries and GlobalVariable captures
     std::unordered_map<std::string, Value*> entries_to_preserve;
     for (auto& entry : *symbol_table_) {
-        // Preserve function references (_func entries)
+        // Preserve function references (_func entries) - ONLY scoped keys
+        // NESTED DEFINE COLLISION FIX: Unscoped keys like "loop_func" collide between functions
         if (entry.first.length() > 5 &&
-            entry.first.substr(entry.first.length() - 5) == "_func") {
+            entry.first.substr(entry.first.length() - 5) == "_func" &&
+            entry.first.find('.') != std::string::npos) {
             entries_to_preserve[entry.first] = entry.second;
             if (global_symbol_table_) {
                 (*global_symbol_table_)[entry.first] = entry.second;
@@ -825,6 +831,171 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
     }
 
     eshkol_debug("let*: completed, restored scope");
+
+    return body_result ? body_result : ConstantInt::get(ctx_.int64Type(), 0);
+}
+
+Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
+    // letrec* (R7RS): Sequential recursive bindings
+    // - Like letrec: all bindings are mutually visible (can call each other)
+    // - Like let*: bindings are evaluated left-to-right
+    // - Each binding's value is stored immediately, so subsequent bindings can use it
+
+    if (!op || !op->let_op.body) {
+        eshkol_error("letrec*: missing body");
+        return nullptr;
+    }
+
+    if (!symbol_table_) {
+        eshkol_error("letrec*: symbol table not set");
+        return nullptr;
+    }
+
+    eshkol_debug("BindingCodegen::letrec*: %llu bindings", (unsigned long long)op->let_op.num_bindings);
+
+    // Save current symbol table
+    std::unordered_map<std::string, Value*> saved_symbols = *symbol_table_;
+
+    // Collect all variable names for exclusion set
+    std::vector<std::string> var_names;
+    for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+        const eshkol_ast_t* binding = &op->let_op.bindings[i];
+        if (binding->type == ESHKOL_CONS && binding->cons_cell.car &&
+            binding->cons_cell.car->type == ESHKOL_VAR && binding->cons_cell.car->variable.id) {
+            var_names.push_back(binding->cons_cell.car->variable.id);
+        }
+    }
+
+    // Add all names to exclusion set (for recursive reference handling)
+    if (letrec_excluded_capture_names_) {
+        for (const std::string& name : var_names) {
+            letrec_excluded_capture_names_->insert(name);
+            eshkol_debug("letrec*: added %s to exclusion set", name.c_str());
+        }
+    }
+
+    // Create GlobalVariables for all bindings upfront (enables mutual recursion)
+    std::vector<GlobalVariable*> globals;
+    static int letrec_star_global_counter = 0;
+
+    for (size_t i = 0; i < var_names.size(); i++) {
+        const std::string& var_name = var_names[i];
+
+        std::string global_name = "letrecstar_" + var_name + "_" + std::to_string(letrec_star_global_counter++);
+        GlobalVariable* global = new GlobalVariable(
+            ctx_.module(),
+            ctx_.taggedValueType(),
+            false,
+            GlobalValue::InternalLinkage,
+            Constant::getNullValue(ctx_.taggedValueType()),
+            global_name
+        );
+
+        globals.push_back(global);
+        (*symbol_table_)[var_name] = global;
+        eshkol_debug("letrec*: created global %s for %s", global_name.c_str(), var_name.c_str());
+    }
+
+    // Evaluate and store bindings left-to-right (key difference from letrec)
+    for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+        const eshkol_ast_t* binding = &op->let_op.bindings[i];
+
+        if (binding->type != ESHKOL_CONS || !binding->cons_cell.car || !binding->cons_cell.cdr) {
+            eshkol_error("letrec*: invalid binding structure");
+            continue;
+        }
+
+        const eshkol_ast_t* var_ast = binding->cons_cell.car;
+        std::string var_name = var_ast->variable.id;
+        const eshkol_ast_t* val_ast = binding->cons_cell.cdr;
+
+        bool is_lambda = val_ast && val_ast->type == ESHKOL_OP &&
+                         val_ast->operation.op == ESHKOL_LAMBDA_OP;
+
+        // Check for TCO on lambda bindings
+        if (is_lambda && is_tail_recursive_callback_) {
+            bool use_tco = is_tail_recursive_callback_(&val_ast->operation, var_name.c_str(), callback_context_);
+            if (use_tco) {
+                eshkol_debug("TCO: Enabling tail call optimization for letrec* lambda %s", var_name.c_str());
+                tco_context_.func_name = var_name;
+                tco_context_.enabled = true;
+                tco_context_.param_allocas.clear();
+                tco_context_.param_names.clear();
+            }
+        }
+
+        // Evaluate value (can see ALL bindings, and VALUES of previous bindings)
+        void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
+
+        // Clear TCO context after lambda generation
+        if (is_lambda) {
+            tco_context_.enabled = false;
+            tco_context_.func_name = "";
+        }
+
+        if (!typed_ptr) {
+            eshkol_warn("letrec*: failed to evaluate binding for %s", var_name.c_str());
+            continue;
+        }
+
+        Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
+
+        // Store immediately (key for letrec* left-to-right semantics)
+        ctx_.builder().CreateStore(tagged_val, globals[i]);
+        eshkol_debug("letrec*: stored %s", var_name.c_str());
+
+        // Register lambda binding immediately so subsequent bindings can use it
+        if (is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
+            registerLambdaBinding(var_name, *last_generated_lambda_name_);
+            eshkol_debug("letrec*: registered lambda binding %s -> %s", var_name.c_str(), last_generated_lambda_name_->c_str());
+        }
+    }
+
+    // Clear exclusion set
+    if (letrec_excluded_capture_names_) {
+        for (const std::string& name : var_names) {
+            letrec_excluded_capture_names_->erase(name);
+        }
+    }
+
+    // Evaluate body
+    Value* body_result = nullptr;
+    if (codegen_ast_callback_) {
+        body_result = static_cast<Value*>(codegen_ast_callback_(op->let_op.body, callback_context_));
+    }
+
+    // Preserve _func entries and GlobalVariable captures
+    std::unordered_map<std::string, Value*> entries_to_preserve;
+    for (auto& entry : *symbol_table_) {
+        if (entry.first.length() > 5 &&
+            entry.first.substr(entry.first.length() - 5) == "_func") {
+            // NESTED DEFINE COLLISION FIX: Only preserve SCOPED _func keys.
+            // Unscoped keys like "loop_func" would collide with other functions' same-named
+            // nested helpers. Scoped keys have a "." (e.g., "outer_func.loop_func").
+            if (entry.first.find('.') != std::string::npos) {
+                entries_to_preserve[entry.first] = entry.second;
+                if (global_symbol_table_) {
+                    (*global_symbol_table_)[entry.first] = entry.second;
+                }
+            }
+        }
+        auto saved_it = saved_symbols.find(entry.first);
+        if (saved_it != saved_symbols.end() && saved_it->second != entry.second) {
+            if (entry.first.find("_capture_") == std::string::npos) {
+                entries_to_preserve[entry.first] = entry.second;
+            }
+        }
+    }
+
+    // Restore symbol table
+    *symbol_table_ = saved_symbols;
+
+    // Re-add preserved entries
+    for (auto& entry : entries_to_preserve) {
+        (*symbol_table_)[entry.first] = entry.second;
+    }
+
+    eshkol_debug("letrec*: completed, restored scope");
 
     return body_result ? body_result : ConstantInt::get(ctx_.int64Type(), 0);
 }

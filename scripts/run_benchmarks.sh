@@ -26,14 +26,8 @@ run_benchmark() {
     echo "Running $bench_name..."
     echo "----------------------------------------"
 
-    # Compile
-    "$BUILD_DIR/eshkol-run" -c "$bench_file" -o "/tmp/${bench_name}.o" 2>&1
-
-    # Link
-    clang "/tmp/${bench_name}.o" "$BUILD_DIR/stdlib.o" \
-        -L/opt/homebrew/opt/llvm/lib \
-        -lc -lm \
-        -o "/tmp/${bench_name}" 2>&1
+    # Compile and link (using same mode as test scripts)
+    "$BUILD_DIR/eshkol-run" "$bench_file" -L"$BUILD_DIR" -o "/tmp/${bench_name}" 2>&1
 
     # Run
     "/tmp/${bench_name}"

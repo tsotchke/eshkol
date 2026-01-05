@@ -2589,6 +2589,7 @@ private:
                 case ESHKOL_LET_OP:
                 case ESHKOL_LET_STAR_OP:
                 case ESHKOL_LETREC_OP:
+                case ESHKOL_LETREC_STAR_OP:
                     // Check bindings for function definitions (bindings are cons cells: (var . value))
                     for (uint64_t i = 0; i < ast->operation.let_op.num_bindings; i++) {
                         const eshkol_ast_t* binding = &ast->operation.let_op.bindings[i];
@@ -6013,6 +6014,28 @@ private:
             }
         }
 
+        // GLOBAL SYMBOL TABLE FIX: Check global_symbol_table for top-level defines
+        // Top-level defines (constants, functions) are stored in global_symbol_table
+        // but may not be in local symbol_table inside nested lambdas
+        auto global_it = global_symbol_table.find(var_name);
+        if (global_it != global_symbol_table.end()) {
+            Value* var_ptr = global_it->second;
+
+            // If it's a GlobalVariable, load its value
+            if (isa<GlobalVariable>(var_ptr)) {
+                GlobalVariable* global = dyn_cast<GlobalVariable>(var_ptr);
+                return builder->CreateLoad(global->getValueType(), var_ptr);
+            }
+            // If it's a Function, return it directly (for first-class functions)
+            else if (isa<Function>(var_ptr)) {
+                return var_ptr;
+            }
+            // Otherwise return as-is
+            else {
+                return var_ptr;
+            }
+        }
+
         // REPL MODE: Check if variable exists in REPL registries
         // Variables from previous REPL evaluations are stored here
         if (g_repl_mode_enabled) {
@@ -6135,6 +6158,10 @@ private:
             case ESHKOL_LETREC_OP:
                 // REFACTOR: Delegate to BindingCodegen (letrec has recursive semantics)
                 return binding_->letrec(op);
+
+            case ESHKOL_LETREC_STAR_OP:
+                // REFACTOR: Delegate to BindingCodegen (letrec* has sequential recursive semantics)
+                return binding_->letrecStar(op);
 
             case ESHKOL_AND_OP:
                 return codegenAnd(op);
@@ -6564,8 +6591,19 @@ private:
 
         // Find free variables in the function body
         std::vector<std::string> free_vars;
+
+        // NESTED CLOSURE FIX: Temporarily clear letrec exclusion set
+        // The exclusion set prevents direct letrec-bound variable captures (they use GlobalVariables),
+        // but nested functions INSIDE lambda bodies should still capture those variables.
+        // Save and clear the set, then restore after finding free variables.
+        std::set<std::string> saved_exclusions = letrec_excluded_capture_names;
+        letrec_excluded_capture_names.clear();
+
         findFreeVariables(op->define_op.value, symbol_table,
                           op->define_op.parameters, op->define_op.num_params, free_vars);
+
+        // Restore exclusion set
+        letrec_excluded_capture_names = saved_exclusions;
 
         // RECURSIVE FUNCTION FIX: Remove the function's own name from free_vars
         // Recursive calls to the function should not be captured as free variables -
@@ -12891,6 +12929,7 @@ private:
                 case ESHKOL_LET_OP:
                 case ESHKOL_LET_STAR_OP:
                 case ESHKOL_LETREC_OP:
+                case ESHKOL_LETREC_STAR_OP:
                     // Body of let is in tail position
                     return isInTailPosition(expr, op->let_op.body);
 
@@ -12953,6 +12992,7 @@ private:
                 case ESHKOL_LET_OP:
                 case ESHKOL_LET_STAR_OP:
                 case ESHKOL_LETREC_OP:
+                case ESHKOL_LETREC_STAR_OP:
                     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                         const eshkol_ast_t* binding = &op->let_op.bindings[i];
                         if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
@@ -13046,6 +13086,7 @@ private:
                 case ESHKOL_LET_OP:
                 case ESHKOL_LET_STAR_OP:
                 case ESHKOL_LETREC_OP:
+                case ESHKOL_LETREC_STAR_OP:
                     // Search bindings
                     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                         const eshkol_ast_t* binding = &op->let_op.bindings[i];
@@ -13298,8 +13339,9 @@ private:
                         break;
                     }
                     case ESHKOL_LET_STAR_OP:
-                    case ESHKOL_LETREC_OP: {
-                        // Handle let* and letrec expressions the same way as let
+                    case ESHKOL_LETREC_OP:
+                    case ESHKOL_LETREC_STAR_OP: {
+                        // Handle let*, letrec, and letrec* expressions the same way as let
                         std::vector<std::string> let_bound_names;
                         for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                             const eshkol_ast_t* binding = &op->let_op.bindings[i];
@@ -16982,11 +17024,13 @@ private:
 
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP: {
-                // Build (let/let*/letrec ((var1 val1) ...) body)
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP: {
+                // Build (let/let*/letrec/letrec* ((var1 val1) ...) body)
                 // let_op has bindings (array of cons cells), num_bindings, and body
                 const char* let_name = op->op == ESHKOL_LET_OP ? "let" :
-                                       op->op == ESHKOL_LET_STAR_OP ? "let*" : "letrec";
+                                       op->op == ESHKOL_LET_STAR_OP ? "let*" :
+                                       op->op == ESHKOL_LETREC_OP ? "letrec" : "letrec*";
                 Value* let_sym = packPtrToTaggedValue(ctx_->internStringWithHeader(let_name, HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
 
                 // Build bindings list

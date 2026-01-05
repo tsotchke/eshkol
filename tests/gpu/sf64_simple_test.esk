@@ -1,0 +1,26 @@
+;; Simple SF64 Test
+(display "=== SF64 Simple Test ===") (newline)
+
+;; Test 1: Basic 1x1 multiplication
+(define A1 (reshape (vector 2.0) 1 1))
+(define B1 (reshape (vector 3.0) 1 1))
+(define C1 (matmul A1 B1))
+(display "2.0 * 3.0 = ") (display (vector-ref (tensor-data C1) 0)) (newline)
+
+;; Test 2: Identity 2x2
+(define A2 (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
+(define I2 (reshape (vector 1.0 0.0 0.0 1.0) 2 2))
+(define C2 (matmul A2 I2))
+(display "[[1,2],[3,4]] * I = ")
+(display (tensor-data C2)) (newline)
+
+;; Test 3: GPU path (50x50)
+(define size50 (* 50 50))
+(define A50 (reshape (make-vector size50 1.0) 50 50))
+(define B50 (reshape (make-vector size50 1.0) 50 50))
+(define C50 (matmul A50 B50))
+(display "50x50 ones matmul C[0,0] = ")
+(display (vector-ref (tensor-data C50) 0))
+(display " (expected 50)") (newline)
+
+(display "=== Done ===") (newline)

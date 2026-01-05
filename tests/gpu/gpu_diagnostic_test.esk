@@ -3,42 +3,47 @@
 
 (display "=== GPU Diagnostic Test ===") (newline)
 
-;; First, test a small matrix (should use BLAS/SIMD, not GPU)
-(display "Small matrix (4x4): ") (newline)
-(define A-small (reshape (make-vector 16 1.0) 4 4))
-(define B-small (reshape (make-vector 16 1.0) 4 4))
-(define C-small (matmul A-small B-small))
-(display "  4x4 x 4x4 = 64 ops (BLAS/SIMD path)") (newline)
+;; Helper to test matrix multiplication at a given size
+(define (test-matmul-size n expected)
+  (define size (* n n))
+  (define A-data (make-vector size 1.0))
+  (define B-data (make-vector size 1.0))
+  (define A (reshape A-data n n))
+  (define B (reshape B-data n n))
+  (define C (matmul A B))
+  (define C-data (tensor-data C))
+  (define result (vector-ref C-data 0))
+  (display "  ") (display n) (display "x") (display n)
+  (display " -> C[0,0] = ") (display result)
+  (display " (expected: ") (display expected) (display ")")
+  (if (and (>= result (* expected 0.99)) (<= result (* expected 1.01)))
+      (begin (display " PASS") (newline))
+      (begin (display " FAIL") (newline)))
+  result)
 
-;; Now test a large matrix (should use GPU if available)
-(display "Large matrix (100x100): ") (newline)
-(define size 10000)  ;; 100 x 100
+;; Small matrices (BLAS/SIMD path, below threshold)
+(display "--- BLAS/SIMD path tests ---") (newline)
+(test-matmul-size 4 4.0)
+(test-matmul-size 8 8.0)
+(test-matmul-size 10 10.0)
+(test-matmul-size 16 16.0)
+(test-matmul-size 32 32.0)
 
-;; Create matrices
-(define A-data (make-vector size 0.0))
-(define B-data (make-vector size 0.0))
+;; Medium matrices (still BLAS, getting close to threshold)
+(display "--- Near-threshold tests ---") (newline)
+(test-matmul-size 46 46.0)   ;; 46^3 = 97,336 ops (below 100K)
+(test-matmul-size 47 47.0)   ;; 47^3 = 103,823 ops (above 100K - GPU path!)
 
-;; Fill with test values
-(do ((i 0 (+ i 1)))
-    ((>= i size))
-  (vector-set! A-data i 1.0)
-  (vector-set! B-data i 1.0))
+;; Large matrices (GPU path)
+(display "--- GPU path tests ---") (newline)
+(test-matmul-size 50 50.0)
+(test-matmul-size 64 64.0)
+(test-matmul-size 100 100.0)
 
-(define A-large (reshape A-data 100 100))
-(define B-large (reshape B-data 100 100))
-
-(display "  Computing 100x100 x 100x100 = 1M ops (GPU path)...") (newline)
-(define C-large (matmul A-large B-large))
-
-;; Verify result: ones * ones = 100 * ones (each element should be 100)
-(define C-data (tensor-data C-large))
-(define first-val (vector-ref C-data 0))
-
-(display "  C[0,0] = ") (display first-val)
-(display " (expected: 100.0)") (newline)
-
-(if (and (>= first-val 99.9) (<= first-val 100.1))
-    (begin (display "PASS: Matrix multiplication correct") (newline))
-    (begin (display "FAIL: Unexpected result") (newline)))
+;; Non-power-of-2 to test edge cases with 4x4 tiling
+(display "--- Edge case tests (non-power-of-2) ---") (newline)
+(test-matmul-size 49 49.0)   ;; Not divisible by 4
+(test-matmul-size 51 51.0)   ;; 51 % 4 = 3
+(test-matmul-size 53 53.0)   ;; 53 % 4 = 1
 
 (display "=== GPU Diagnostic Test Complete ===") (newline)

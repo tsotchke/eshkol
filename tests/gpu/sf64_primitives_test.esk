@@ -1,0 +1,222 @@
+;; SoftFloat64 Primitives Test
+;; Tests sf64 operations through matmul with carefully chosen values
+;; to verify IEEE 754 compliance
+
+(display "=== SF64 Primitives Test ===") (newline)
+
+;; Helper to create 2x2 matmul test with specific values
+;; For matrices [[a,b],[c,d]] * [[e,f],[g,h]] = [[ae+bg, af+bh],[ce+dg, cf+dh]]
+(define (test-2x2-matmul name a b c d e f g h expected-00 expected-01 expected-10 expected-11)
+  (define A-data (vector a b c d))
+  (define B-data (vector e f g h))
+  (define A (reshape A-data 2 2))
+  (define B (reshape B-data 2 2))
+  (define C (matmul A B))
+  (define C-data (tensor-data C))
+  (define c00 (vector-ref C-data 0))
+  (define c01 (vector-ref C-data 1))
+  (define c10 (vector-ref C-data 2))
+  (define c11 (vector-ref C-data 3))
+  (display "  ") (display name) (display ": ")
+  (define pass (and (= c00 expected-00) (= c01 expected-01)
+                    (= c10 expected-10) (= c11 expected-11)))
+  (if pass
+      (begin (display "PASS") (newline))
+      (begin (display "FAIL") (newline)
+             (display "    Got: [") (display c00) (display ", ") (display c01)
+             (display ", ") (display c10) (display ", ") (display c11) (display "]") (newline)
+             (display "    Expected: [") (display expected-00) (display ", ") (display expected-01)
+             (display ", ") (display expected-10) (display ", ") (display expected-11) (display "]") (newline)))
+  pass)
+
+;; Helper for 1x1 "matmul" which is just multiplication
+(define (test-mul name a b expected)
+  (define A-data (vector a))
+  (define B-data (vector b))
+  (define A (reshape A-data 1 1))
+  (define B (reshape B-data 1 1))
+  (define C (matmul A B))
+  (define C-data (tensor-data C))
+  (define result (vector-ref C-data 0))
+  (display "  ") (display name) (display ": ")
+  (define pass (= result expected))
+  (if pass
+      (begin (display result) (display " PASS") (newline))
+      (begin (display "FAIL (got ") (display result)
+             (display ", expected ") (display expected) (display ")") (newline)))
+  pass)
+
+;; Helper for approximate comparison (within 1e-10 relative error)
+(define (approx= a b)
+  (if (= b 0.0)
+      (< (abs a) 1e-15)
+      (< (abs (/ (- a b) b)) 1e-10)))
+
+(define (test-mul-approx name a b expected)
+  (define A-data (vector a))
+  (define B-data (vector b))
+  (define A (reshape A-data 1 1))
+  (define B (reshape B-data 1 1))
+  (define C (matmul A B))
+  (define C-data (tensor-data C))
+  (define result (vector-ref C-data 0))
+  (display "  ") (display name) (display ": ")
+  (define pass (approx= result expected))
+  (if pass
+      (begin (display result) (display " PASS") (newline))
+      (begin (display "FAIL (got ") (display result)
+             (display ", expected ") (display expected) (display ")") (newline)))
+  pass)
+
+;; ===== Test 1: Basic Multiplication =====
+(display "--- Basic Multiplication ---") (newline)
+(test-mul "1.0 * 1.0" 1.0 1.0 1.0)
+(test-mul "2.0 * 3.0" 2.0 3.0 6.0)
+(test-mul "0.5 * 2.0" 0.5 2.0 1.0)
+(test-mul "-1.0 * 1.0" -1.0 1.0 -1.0)
+(test-mul "-1.0 * -1.0" -1.0 -1.0 1.0)
+
+;; ===== Test 2: Powers of 2 =====
+(display "--- Powers of 2 ---") (newline)
+(test-mul "2^10 * 2^10" 1024.0 1024.0 1048576.0)
+(test-mul "2^20 * 2^20" 1048576.0 1048576.0 1099511627776.0)
+(test-mul "2^-10 * 2^10" 0.0009765625 1024.0 1.0)
+(test-mul "2^-20 * 2^-20" 0.00000095367431640625 0.00000095367431640625 9.094947017729282e-13)
+
+;; ===== Test 3: Zero Handling =====
+(display "--- Zero Handling ---") (newline)
+(test-mul "0.0 * 1.0" 0.0 1.0 0.0)
+(test-mul "1.0 * 0.0" 1.0 0.0 0.0)
+(test-mul "0.0 * 0.0" 0.0 0.0 0.0)
+(test-mul "-0.0 * 1.0" -0.0 1.0 0.0)  ;; Result sign may vary
+
+;; ===== Test 4: Addition via Matmul (dot product) =====
+;; [a, b] * [[1], [1]] = [a + b]
+(display "--- Addition via Dot Product ---") (newline)
+
+(define (test-add name a b expected)
+  (define A-data (vector a b))
+  (define B-data (vector 1.0 1.0))
+  (define A (reshape A-data 1 2))
+  (define B (reshape B-data 2 1))
+  (define C (matmul A B))
+  (define C-data (tensor-data C))
+  (define result (vector-ref C-data 0))
+  (display "  ") (display name) (display ": ")
+  (define pass (approx= result expected))
+  (if pass
+      (begin (display result) (display " PASS") (newline))
+      (begin (display "FAIL (got ") (display result)
+             (display ", expected ") (display expected) (display ")") (newline)))
+  pass)
+
+(test-add "1.0 + 1.0" 1.0 1.0 2.0)
+(test-add "0.0 + 0.0" 0.0 0.0 0.0)
+(test-add "1.0 + 0.0" 1.0 0.0 1.0)
+(test-add "1.0 + -1.0" 1.0 -1.0 0.0)
+(test-add "1e10 + 1e-10" 1e10 1e-10 1e10)  ;; Tests exponent alignment
+
+;; ===== Test 5: FMA Accumulation =====
+;; Matrix mul is sum of products, tests fma-like behavior
+(display "--- FMA Accumulation ---") (newline)
+
+(define (test-dot-product name vec-a vec-b expected)
+  (define n (vector-length vec-a))
+  (define A (reshape vec-a 1 n))
+  (define B (reshape vec-b n 1))
+  (define C (matmul A B))
+  (define C-data (tensor-data C))
+  (define result (vector-ref C-data 0))
+  (display "  ") (display name) (display ": ")
+  (define pass (approx= result expected))
+  (if pass
+      (begin (display result) (display " PASS") (newline))
+      (begin (display "FAIL (got ") (display result)
+             (display ", expected ") (display expected) (display ")") (newline)))
+  pass)
+
+(test-dot-product "3-elem dot" (vector 1.0 2.0 3.0) (vector 4.0 5.0 6.0) 32.0)
+(test-dot-product "4-elem dot" (vector 1.0 1.0 1.0 1.0) (vector 1.0 1.0 1.0 1.0) 4.0)
+(test-dot-product "alternating signs" (vector 1.0 -1.0 1.0 -1.0) (vector 1.0 1.0 1.0 1.0) 0.0)
+
+;; ===== Test 6: Large Values (Exponent Tests) =====
+(display "--- Large Values ---") (newline)
+(test-mul-approx "1e100 * 1e100" 1e100 1e100 1e200)
+(test-mul-approx "1e150 * 1e150" 1e150 1e150 1e300)
+(test-mul-approx "1e-100 * 1e-100" 1e-100 1e-100 1e-200)
+
+;; ===== Test 7: Precision Tests =====
+(display "--- Precision Tests ---") (newline)
+;; These test the full 52-bit mantissa precision
+(test-mul "1.0000000000000002 * 1.0" 1.0000000000000002 1.0 1.0000000000000002)
+(test-mul "(1 + 2^-52) * 1" 1.0000000000000002 1.0 1.0000000000000002)
+
+;; ===== Test 8: Identity and Commutative Properties =====
+(display "--- Mathematical Properties ---") (newline)
+
+;; Identity matrix test
+(define (test-identity-2x2 name a b c d)
+  (define A-data (vector a b c d))
+  (define I-data (vector 1.0 0.0 0.0 1.0))
+  (define A (reshape A-data 2 2))
+  (define I (reshape I-data 2 2))
+  (define C (matmul A I))
+  (define C-data (tensor-data C))
+  (define c00 (vector-ref C-data 0))
+  (define c01 (vector-ref C-data 1))
+  (define c10 (vector-ref C-data 2))
+  (define c11 (vector-ref C-data 3))
+  (display "  ") (display name) (display " * I: ")
+  (define pass (and (= c00 a) (= c01 b) (= c10 c) (= c11 d)))
+  (if pass
+      (begin (display "PASS") (newline))
+      (begin (display "FAIL") (newline)))
+  pass)
+
+(test-identity-2x2 "[[1,2],[3,4]]" 1.0 2.0 3.0 4.0)
+(test-identity-2x2 "[[5,6],[7,8]]" 5.0 6.0 7.0 8.0)
+
+;; ===== Test 9: GPU Threshold Boundary =====
+;; Tests around the 100K ops threshold (n^3 for nxn matmul)
+(display "--- Threshold Boundary ---") (newline)
+
+(define (test-matmul-correctness n)
+  ;; Test that nxn identity matmul gives correct result
+  (define size (* n n))
+  (define A-data (make-vector size 0.0))
+  (define I-data (make-vector size 0.0))
+  ;; Set diagonal elements to 1.0
+  (define (set-diagonal! i)
+    (if (< i n)
+        (begin
+          (vector-set! A-data (+ (* i n) i) (+ i 1.0))  ;; A[i,i] = i+1
+          (vector-set! I-data (+ (* i n) i) 1.0)        ;; I[i,i] = 1
+          (set-diagonal! (+ i 1)))
+        #t))
+  (set-diagonal! 0)
+  (define A (reshape A-data n n))
+  (define I (reshape I-data n n))
+  (define C (matmul A I))
+  (define C-data (tensor-data C))
+  ;; Check diagonal elements
+  (define (check-diagonal i pass)
+    (if (< i n)
+        (let ((expected (+ i 1.0))
+              (actual (vector-ref C-data (+ (* i n) i))))
+          (if (= actual expected)
+              (check-diagonal (+ i 1) pass)
+              #f))
+        pass))
+  (define pass (check-diagonal 0 #t))
+  (display "  ") (display n) (display "x") (display n) (display " diagonal: ")
+  (if pass
+      (begin (display "PASS") (newline))
+      (begin (display "FAIL") (newline)))
+  pass)
+
+(test-matmul-correctness 32)  ;; 32768 ops - BLAS path
+(test-matmul-correctness 46)  ;; 97336 ops - BLAS path
+(test-matmul-correctness 47)  ;; 103823 ops - GPU path
+(test-matmul-correctness 50)  ;; 125000 ops - GPU path
+
+(display "=== SF64 Primitives Test Complete ===") (newline)

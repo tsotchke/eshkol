@@ -66,7 +66,8 @@ bool TailCallCodegen::isOperationInTailPosition(const eshkol_operations_t* op,
         case ESHKOL_LET_OP:
         case ESHKOL_LET_STAR_OP:
         case ESHKOL_LETREC_OP:
-            // Body of let/let*/letrec is in tail position
+        case ESHKOL_LETREC_STAR_OP:
+            // Body of let/let*/letrec/letrec* is in tail position
             if (parent->let_op.body && parent->let_op.body->type == ESHKOL_OP) {
                 return &parent->let_op.body->operation == op;
             }

@@ -1,0 +1,40 @@
+;; Test closure with mutation
+(display "=== Closure Mutation Test ===") (newline)
+
+;; Test 1: Simple mutation in nested function
+(define (test1)
+  (define v (make-vector 5 0.0))
+  (define (set-elem i val)
+    (vector-set! v i val))
+  (set-elem 0 42.0)
+  (vector-ref v 0))
+
+(display "Test 1 (single nest mutation): ") (display (test1)) (display " (expected 42)") (newline)
+
+;; Test 2: Doubly nested mutation
+(define (test2)
+  (define v (make-vector 5 0.0))
+  (define (outer-set)
+    (define (inner-set)
+      (vector-set! v 0 99.0))
+    (inner-set))
+  (outer-set)
+  (vector-ref v 0))
+
+(display "Test 2 (double nest mutation): ") (display (test2)) (display " (expected 99)") (newline)
+
+;; Test 3: Loop-like pattern
+(define (test3)
+  (define v (make-vector 3 0.0))
+  (define (fill i)
+    (if (< i 3)
+        (begin
+          (vector-set! v i (+ i 1.0))
+          (fill (+ i 1)))
+        #t))
+  (fill 0)
+  (vector-ref v 2))
+
+(display "Test 3 (recursive mutation): ") (display (test3)) (display " (expected 3)") (newline)
+
+(display "=== Done ===") (newline)
