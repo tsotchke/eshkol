@@ -171,6 +171,19 @@ void eshkol_repl_register_lambda_name(const char* var_name, const char* lambda_n
  */
 void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value);
 
+/*
+ * REPL Mode: Register a private (non-exported) symbol from a module
+ * @param name Symbol name that is private to its defining module
+ */
+void eshkol_repl_register_private_symbol(const char* name);
+
+/*
+ * REPL Mode: Check if a symbol is private (non-exported)
+ * @param name Symbol name to check
+ * @return true if the symbol is private and should not be accessible
+ */
+bool eshkol_repl_is_private_symbol(const char* name);
+
 #else
 
 // Stub implementations when LLVM backend is disabled
@@ -191,6 +204,8 @@ void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value);
 #define eshkol_repl_register_variadic_function(name, fixed_params, is_variadic) do {} while(0)
 #define eshkol_repl_register_lambda_name(var_name, lambda_name) do {} while(0)
 #define eshkol_repl_register_sexpr(sexpr_name, sexpr_value) do {} while(0)
+#define eshkol_repl_register_private_symbol(name) do {} while(0)
+#define eshkol_repl_is_private_symbol(name) (false)
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED
 

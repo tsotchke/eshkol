@@ -123,9 +123,11 @@ void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity);
 
 // Allocate closure with object header (for consolidated CALLABLE type)
 // Returns pointer to closure data (header is at offset -8)
+// name: bound procedure name from (define name ...) or NULL for anonymous lambdas
 eshkol_closure_t* arena_allocate_closure_with_header(arena_t* arena, uint64_t func_ptr,
                                                       size_t num_captures, uint64_t sexpr_ptr,
-                                                      uint64_t return_type_info);
+                                                      uint64_t return_type_info,
+                                                      const char* name);
 
 // Convenience constructors
 arena_tagged_cons_cell_t* arena_create_int64_cons(arena_t* arena,
@@ -265,8 +267,10 @@ eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_capt
 
 // Allocate full closure structure (func_ptr + environment + sexpr for homoiconicity)
 // return_type_info: packed return type metadata (return_type | (input_arity << 8) | (hott_type_id << 16))
+// name: bound procedure name from (define name ...) or NULL for anonymous lambdas
 eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures,
-                                         uint64_t sexpr_ptr, uint64_t return_type_info);
+                                         uint64_t sexpr_ptr, uint64_t return_type_info,
+                                         const char* name);
 
 // ===== END CLOSURE ENVIRONMENT MEMORY MANAGEMENT =====
 

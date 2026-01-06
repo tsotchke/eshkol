@@ -119,6 +119,7 @@ namespace {
     std::unordered_map<std::string, uint64_t> g_repl_sexpr_values;         // sexpr_name -> s-expression pointer value
     std::unordered_map<std::string, std::vector<std::string>> g_repl_lambda_captures;  // lambda_name -> capture variable names
     std::unordered_map<std::string, std::pair<size_t, bool>> g_repl_variadic_functions;  // func_name -> (fixed_params, is_variadic)
+    std::unordered_set<std::string> g_repl_private_symbols;                // Private symbols (not exported from modules)
     std::mutex g_repl_mutex;  // Thread safety for REPL symbol access
 
     // CACHED TARGET INFO: Avoid recomputing on every compilation
@@ -3767,11 +3768,12 @@ private:
             GlobalVariable* func_ptr_global = module->getGlobalVariable(global_ptr_name);
             if (!func_ptr_global) {
                 // Create new global with the function pointer as initializer
+                // Use WeakODRLinkage to allow duplicate definitions across REPL modules
                 func_ptr_global = new GlobalVariable(
                     *module,
                     func_ptr_type,
                     false,  // not constant
-                    GlobalValue::ExternalLinkage,
+                    GlobalValue::WeakODRLinkage,
                     func,   // initialize with function pointer
                     global_ptr_name
                 );
@@ -3789,6 +3791,12 @@ private:
         }
 
         std::lock_guard<std::mutex> lock(g_repl_mutex);
+
+        // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
+        if (g_repl_private_symbols.find(func_name) != g_repl_private_symbols.end()) {
+            // Private symbol - treat as not found
+            return nullptr;
+        }
 
         // Check multiple name variations and track which one matched
         std::string actual_func_name;
@@ -4337,16 +4345,17 @@ private:
 
         // Null env path - 0 captures, but need to get arity and variadic flag from closure
         builder->SetInsertPoint(env_null);
-        // Closure structure: func_ptr(8) + env(8) + sexpr_ptr(8) + return_type(1) + input_arity(1) + flags(1)
-        // So input_arity is at offset 25, flags is at offset 26 from closure_ptr
+        // Closure structure (eshkol_closure_t from eshkol.h):
+        //   func_ptr(8) + env(8) + sexpr_ptr(8) + name(8) + return_type(1) + input_arity(1) + flags(1) + reserved(1) + hott_type_id(4)
+        // So input_arity is at offset 33, flags is at offset 34 from closure_ptr
         Value* input_arity_ptr = builder->CreateGEP(int8_type, closure_ptr,
-            ConstantInt::get(int64_type, 25));
+            ConstantInt::get(int64_type, 33));
         Value* input_arity_byte = builder->CreateLoad(int8_type, input_arity_ptr);
         Value* input_arity_i64 = builder->CreateZExt(input_arity_byte, int64_type);
 
         // VARIADIC FIX: Read flags from closure and check for CLOSURE_FLAG_VARIADIC (0x01)
         Value* flags_ptr = builder->CreateGEP(int8_type, closure_ptr,
-            ConstantInt::get(int64_type, 26));
+            ConstantInt::get(int64_type, 34));
         Value* flags_byte = builder->CreateLoad(int8_type, flags_ptr);
         Value* flags_i64 = builder->CreateZExt(flags_byte, int64_type);
         Value* is_variadic_from_flags = builder->CreateAnd(flags_i64, ConstantInt::get(int64_type, 1)); // CLOSURE_FLAG_VARIADIC
@@ -5803,9 +5812,10 @@ private:
                 Value* packed_info = ConstantInt::get(int64_type, 0);  // No captures
                 Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
                 Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR);  // Math builtins return scalars
+                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info, sexpr_ptr, return_type_info});
+                                                         {arena_ptr, func_ptr_int, packed_info, sexpr_ptr, return_type_info, closure_name});
                 // Pack as CALLABLE (subtype CLOSURE is in header)
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
@@ -5839,10 +5849,11 @@ private:
                 // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
                 uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
                 Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
                 eshkol_debug("Wrapped user function '%s' (arity=%llu) in closure for first-class use",
                             var_name.c_str(), (unsigned long long)num_params);
                 // Pack as CALLABLE (subtype CLOSURE is in header)
@@ -5869,9 +5880,10 @@ private:
                 // Comparison builtins return booleans
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
                 Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
                 // Pack as CALLABLE (subtype CLOSURE is in header)
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
@@ -5893,9 +5905,10 @@ private:
                 // Arithmetic builtins return scalars
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
                 Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
                 // Pack as CALLABLE (subtype CLOSURE is in header)
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
@@ -5918,9 +5931,10 @@ private:
                 // Predicates return booleans
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (1 << 8);
                 Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
                 // Pack as CALLABLE (subtype CLOSURE is in header)
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
@@ -5952,9 +5966,10 @@ private:
                 uint64_t return_type = (var_name == "cons") ? CLOSURE_RETURN_LIST : CLOSURE_RETURN_UNKNOWN;
                 uint64_t return_type_info_val = return_type | (arity << 8);
                 Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
                 // Pack as CALLABLE (subtype CLOSURE is in header)
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
@@ -6076,10 +6091,11 @@ private:
                 // Return type unknown
                 uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
                 Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info});
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
                 eshkol_debug("Wrapped REPL function '%s' (arity=%zu) in closure for first-class use",
                             var_name.c_str(), num_params);
                 // Pack as CALLABLE (subtype CLOSURE is in header)
@@ -6088,6 +6104,12 @@ private:
 
             // Then check if it's a regular variable (stored in g_repl_symbol_addresses)
             std::lock_guard<std::mutex> lock(g_repl_mutex);
+
+            // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
+            if (g_repl_private_symbols.find(var_name) != g_repl_private_symbols.end()) {
+                // Private symbol - treat as undefined (will generate error below)
+            } else {
+
             auto repl_it = g_repl_symbol_addresses.find(var_name);
             if (repl_it != g_repl_symbol_addresses.end()) {
                 // Variable exists in REPL context - create external global declaration
@@ -6108,6 +6130,7 @@ private:
                 // Load and return the value
                 return builder->CreateLoad(global_var->getValueType(), global_var);
             }
+            } // end else (not private symbol)
         }
 
         // NOTE: math_builtins are now handled at the top of this function
@@ -8086,7 +8109,8 @@ private:
 
         // USER-DEFINED FUNCTION SHADOWING: Check if this function name is user-defined
         // before checking builtins. User-defined functions should shadow builtins.
-        // Check: symbol_table (for _func entries), function_table (for direct definitions)
+        // Check: symbol_table (for _func entries AND closure variables),
+        //        global_symbol_table (for direct definitions)
         {
             std::string func_key = func_name + "_func";
             bool is_user_defined = false;
@@ -8104,15 +8128,30 @@ private:
                 is_user_defined = true;
             }
 
+            // CLOSURE VARIABLE SHADOWING FIX: Also check for the variable name directly
+            // (without _func suffix). This handles cases like (define outer (make-nested))
+            // where 'outer' is a closure stored in a variable, not a direct function definition.
+            // The closure should shadow any builtin function with the same name.
+            if (!is_user_defined && symbol_table.find(func_name) != symbol_table.end()) {
+                is_user_defined = true;
+                eshkol_debug("Variable '%s' shadows builtin (found in symbol_table)", func_name.c_str());
+            }
+
             // NOTE: Do NOT check function_table here! function_table contains both
             // user-defined functions AND C library functions (sin, cos, exp, etc.).
             // Checking function_table would incorrectly treat math functions as user-defined,
             // bypassing polymorphic dispatch (e.g., dual number support for autodiff).
             // Only check _func keys which are exclusively for user-defined functions.
 
-            // Check global symbol table
+            // Check global symbol table for _func key
             if (!is_user_defined && global_symbol_table.find(func_key) != global_symbol_table.end()) {
                 is_user_defined = true;
+            }
+
+            // Check global symbol table for variable name (closure variable)
+            if (!is_user_defined && global_symbol_table.find(func_name) != global_symbol_table.end()) {
+                is_user_defined = true;
+                eshkol_debug("Variable '%s' shadows builtin (found in global_symbol_table)", func_name.c_str());
             }
 
             // If user-defined, skip all builtin checks and go directly to user function handling
@@ -14206,8 +14245,11 @@ private:
                         free_vars.size(), (unsigned long long)op->lambda_op.num_params, is_variadic ? 1 : 0,
                         return_type_category);
             // Use with_header allocator for consolidated CALLABLE type
+            // Name is nullptr for anonymous lambdas - named closures get their name
+            // set when processed through (define name ...)
+            Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
             Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                     {arena_ptr, func_ptr, packed_captures, sexpr_ptr, return_type_val});
+                                                     {arena_ptr, func_ptr, packed_captures, sexpr_ptr, return_type_val, closure_name});
 
             // Store captured values into closure environment
             // The closure struct is: { uint64_t func_ptr, eshkol_closure_env_t* env }
@@ -14495,10 +14537,11 @@ private:
         return_type_info_val |= ((uint64_t)(op->lambda_op.num_params & 0xFF)) << 8;
         return_type_info_val |= ((uint64_t)hott_type_id) << 16;  // Pack HoTT type ID into bits 16-47
         Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
         // Use with_header allocator for consolidated CALLABLE type
         Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                 {arena_ptr, func_ptr, num_captures, sexpr_ptr, return_type_info});
+                                                 {arena_ptr, func_ptr, num_captures, sexpr_ptr, return_type_info, closure_name});
 
         // Pack as CALLABLE (subtype CLOSURE is in header)
         Value* closure_tagged = packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
@@ -17794,10 +17837,11 @@ private:
                         Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
                         // Derivative function returns a scalar
                         Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR | (1 << 8));
+                        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
                         // Use with_header allocator for consolidated CALLABLE type
                         Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
+                                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
 
                         // Store captured function
                         Value* env_ptr_ptr = builder->CreateGEP(int8_type, closure_ptr, ConstantInt::get(int64_type, 8));
@@ -17958,10 +18002,11 @@ private:
             Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
             // Derivative function returns a scalar
             Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR | (1 << 8));
+            Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
             // Use with_header allocator for consolidated CALLABLE type
             Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                     {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
+                                                     {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
 
             // Store captures
             Value* env_ptr_ptr = builder->CreateGEP(int8_type, closure_ptr, ConstantInt::get(int64_type, 8));
@@ -17986,10 +18031,11 @@ private:
             Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
             // Derivative function returns a scalar
             Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR | (1 << 8));
+            Value* closure_name_no_cap = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
             // Use with_header allocator for consolidated CALLABLE type
             Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                     {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
+                                                     {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name_no_cap});
 
             // Return closure as CALLABLE tagged value
             return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
@@ -18594,8 +18640,9 @@ private:
             Value* static_packed = ConstantInt::get(int64_type, static_packed_info);
             Value* static_sexpr = ConstantInt::get(int64_type, 0);
             Value* static_return_type = ConstantInt::get(int64_type, 0);  // Default return type
+            Value* static_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
             Value* static_closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                {static_arena, static_func_ptr_int, static_packed, static_sexpr, static_return_type});
+                {static_arena, static_func_ptr_int, static_packed, static_sexpr, static_return_type, static_name});
             closure_val = packPtrToTaggedValue(static_closure_ptr, ESHKOL_VALUE_CALLABLE);
         }
 
@@ -18608,9 +18655,10 @@ private:
         Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
         // Gradient returns a vector
         Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_VECTOR | (1 << 8));
+        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
         // Use with_header allocator for consolidated CALLABLE type
         Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                 {arena, func_ptr_int, packed_captures, sexpr_ptr, return_type_info});
+                                                 {arena, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
 
         // Store captured function in closure environment
         Value* env_ptr_ptr = builder->CreateGEP(int8_type, closure_ptr, ConstantInt::get(int64_type, 8));
@@ -27584,6 +27632,18 @@ void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value) {
     if (!sexpr_name) return;
     std::lock_guard<std::mutex> lock(g_repl_mutex);
     g_repl_sexpr_values[sexpr_name] = sexpr_value;
+}
+
+void eshkol_repl_register_private_symbol(const char* name) {
+    if (!name) return;
+    std::lock_guard<std::mutex> lock(g_repl_mutex);
+    g_repl_private_symbols.insert(name);
+}
+
+bool eshkol_repl_is_private_symbol(const char* name) {
+    if (!name) return false;
+    std::lock_guard<std::mutex> lock(g_repl_mutex);
+    return g_repl_private_symbols.find(name) != g_repl_private_symbols.end();
 }
 
 void eshkol_register_external_functions(const eshkol_ast_t* asts, size_t num_asts) {

@@ -7,6 +7,7 @@
 #include "repl_jit.h"
 #include <eshkol/eshkol.h>
 #include <eshkol/llvm_backend.h>
+#include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
 
@@ -43,6 +44,14 @@
 #endif
 
 using namespace llvm;
+
+// ===== EXTERN DECLARATIONS FOR RUNTIME SYMBOLS =====
+// These are defined in runtime.cpp with extern "C" linkage
+extern "C" {
+    void eshkol_type_error(const char* proc_name, const char* expected_type);
+    void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
+                                       const char* actual_type);
+}
 
 // Track already-loaded modules to prevent circular imports
 static std::set<std::string> loaded_modules;
@@ -215,6 +224,17 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_exception_type_matches);
     ADD_DATA_SYMBOL(g_current_exception);
     ADD_DATA_SYMBOL(g_exception_handler_stack);
+
+    // ===== TYPE ERRORS (R7RS Compliance) =====
+    // Use global scope since these are declared extern "C" in global namespace
+    symbols[ES.intern("eshkol_type_error")] = {
+        orc::ExecutorAddr::fromPtr((void*)&::eshkol_type_error),
+        JITSymbolFlags::Callable | JITSymbolFlags::Exported
+    };
+    symbols[ES.intern("eshkol_type_error_with_value")] = {
+        orc::ExecutorAddr::fromPtr((void*)&::eshkol_type_error_with_value),
+        JITSymbolFlags::Callable | JITSymbolFlags::Exported
+    };
 
     // ===== AUTOMATIC DIFFERENTIATION =====
     ADD_SYMBOL(arena_allocate_dual_number);
@@ -794,6 +814,45 @@ bool ReplJITContext::loadModule(const std::string& module_name) {
     // Parse all ASTs from the module
     std::vector<eshkol_ast_t> module_asts = parseAllAstsFromString(content);
 
+    // MODULE VISIBILITY: First pass - collect exported symbols from provide statements
+    std::unordered_set<std::string> exported_symbols;
+    std::unordered_set<std::string> defined_symbols;
+    bool has_provide = false;
+
+    for (auto& ast_item : module_asts) {
+        if (ast_item.type == ESHKOL_OP) {
+            // Collect exported symbols from provide
+            if (ast_item.operation.op == ESHKOL_PROVIDE_OP) {
+                has_provide = true;
+                for (size_t i = 0; i < ast_item.operation.provide_op.num_exports; i++) {
+                    if (ast_item.operation.provide_op.export_names[i]) {
+                        exported_symbols.insert(ast_item.operation.provide_op.export_names[i]);
+                    }
+                }
+            }
+            // Collect defined symbols (functions and variables)
+            else if (ast_item.operation.op == ESHKOL_DEFINE_OP) {
+                if (ast_item.operation.define_op.name) {
+                    defined_symbols.insert(ast_item.operation.define_op.name);
+                }
+            }
+        }
+    }
+
+    // Store module exports for visibility checking
+    module_exports_[module_name] = exported_symbols;
+
+    // Mark private symbols (defined but not exported) - only if module has provide
+    if (has_provide) {
+        for (const auto& sym : defined_symbols) {
+            if (exported_symbols.find(sym) == exported_symbols.end()) {
+                private_symbols_.insert(sym);
+                // Register with codegen so variable lookups will fail for private symbols
+                eshkol_repl_register_private_symbol(sym.c_str());
+            }
+        }
+    }
+
     // SINGLE-PASS MODULE LOADING with deferred batch compilation:
     // - Process require/import immediately (load dependencies)
     // - Collect other ASTs for batch compilation (allows forward references)
@@ -813,7 +872,7 @@ bool ReplJITContext::loadModule(const std::string& module_name) {
                 continue;
             }
             if (ast_item.operation.op == ESHKOL_PROVIDE_OP) {
-                // Skip provide statements (no-op in REPL)
+                // Already processed above, skip
                 continue;
             }
         }
@@ -1324,6 +1383,19 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         }
     }
 
+    // Pre-register function/lambda variables so they're tracked for REPL cross-evaluation
+    // This mirrors what executeBatch does for batch compilations
+    if (ast->type == ESHKOL_OP && ast->operation.op == ESHKOL_DEFINE_OP) {
+        const char* name = ast->operation.define_op.name;
+        bool is_lambda = ast->operation.define_op.is_function ||
+            (ast->operation.define_op.value &&
+             ast->operation.define_op.value->type == ESHKOL_OP &&
+             ast->operation.define_op.value->operation.op == ESHKOL_LAMBDA_OP);
+        if (name && is_lambda) {
+            registerLambdaVar(name);
+        }
+    }
+
     // Generate LLVM IR using the existing Eshkol compiler
     std::string module_name = "__repl_module_" + std::to_string(eval_counter_);
 
@@ -1570,6 +1642,283 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     int64_t* result_ptr = new int64_t(result_value);
 
     return result_ptr;
+}
+
+eshkol_tagged_value_t ReplJITContext::executeTagged(eshkol_ast_t* ast) {
+    eshkol_tagged_value_t result;
+    result.type = ESHKOL_VALUE_NULL;
+    result.flags = 0;
+    result.reserved = 0;
+    result.data.raw_val = 0;
+
+    if (!ast) {
+        return result;
+    }
+
+    // Execute the AST and get raw result
+    void* raw_result = execute(ast);
+
+    if (!raw_result) {
+        // Execution returned null - return null tagged value
+        return result;
+    }
+
+    // Get the raw result value (currently JIT returns int32 promoted to int64)
+    int64_t raw_val = *static_cast<int64_t*>(raw_result);
+    delete static_cast<int64_t*>(raw_result);
+
+    // Determine the result type from the AST's inferred HoTT type
+    // The inferred_hott_type is packed: bits 0-15 = TypeId.id, bits 16-23 = universe, bits 24-31 = flags
+    uint32_t packed_type = ast->inferred_hott_type;
+
+    // If type wasn't inferred (value 0), fall back to analyzing AST structure
+    if (packed_type == 0) {
+        // Analyze the AST node type to determine result type
+        switch (ast->type) {
+            case ESHKOL_INT8:
+            case ESHKOL_INT16:
+            case ESHKOL_INT32:
+            case ESHKOL_INT64:
+            case ESHKOL_UINT8:
+            case ESHKOL_UINT16:
+            case ESHKOL_UINT32:
+            case ESHKOL_UINT64:
+                result.type = ESHKOL_VALUE_INT64;
+                result.flags = ESHKOL_VALUE_EXACT_FLAG;
+                result.data.int_val = raw_val;
+                return result;
+
+            case ESHKOL_DOUBLE:
+                result.type = ESHKOL_VALUE_DOUBLE;
+                result.flags = ESHKOL_VALUE_INEXACT_FLAG;
+                result.data.double_val = *reinterpret_cast<double*>(&raw_val);
+                return result;
+
+            case ESHKOL_BOOL:
+                result.type = ESHKOL_VALUE_BOOL;
+                result.data.int_val = (raw_val != 0) ? 1 : 0;
+                return result;
+
+            case ESHKOL_CHAR:
+                result.type = ESHKOL_VALUE_CHAR;
+                result.data.int_val = raw_val;
+                return result;
+
+            case ESHKOL_STRING:
+                result.type = ESHKOL_VALUE_HEAP_PTR;
+                result.data.ptr_val = static_cast<uint64_t>(raw_val);
+                return result;
+
+            case ESHKOL_CONS:
+                result.type = ESHKOL_VALUE_HEAP_PTR;
+                result.data.ptr_val = static_cast<uint64_t>(raw_val);
+                return result;
+
+            case ESHKOL_FUNC:
+                result.type = ESHKOL_VALUE_CALLABLE;
+                result.data.ptr_val = static_cast<uint64_t>(raw_val);
+                return result;
+
+            case ESHKOL_TENSOR:
+                result.type = ESHKOL_VALUE_HEAP_PTR;
+                result.data.ptr_val = static_cast<uint64_t>(raw_val);
+                return result;
+
+            case ESHKOL_NULL:
+                result.type = ESHKOL_VALUE_NULL;
+                result.data.raw_val = 0;
+                return result;
+
+            case ESHKOL_VAR:
+            case ESHKOL_OP:
+            default:
+                // For VAR, OP, and other complex AST nodes without type info,
+                // we cannot determine the type - return as null with warning
+                // The caller should ensure type checking runs before eval
+                result.type = ESHKOL_VALUE_NULL;
+                result.data.raw_val = 0;
+                return result;
+        }
+    }
+
+    // Unpack the HoTT TypeId from the packed format
+    // TypeId.id is in bits 0-15
+    uint16_t type_id = static_cast<uint16_t>(packed_type & 0xFFFF);
+    uint8_t type_flags = static_cast<uint8_t>((packed_type >> 24) & 0xFF);
+
+    // Map HoTT TypeId to runtime value type using the BuiltinTypes constants
+    using namespace eshkol::hott;
+
+    // Numeric types
+    if (type_id == BuiltinTypes::Int64.id ||
+        type_id == BuiltinTypes::Integer.id ||
+        type_id == BuiltinTypes::Natural.id ||
+        type_id == BuiltinTypes::Number.id) {
+        result.type = ESHKOL_VALUE_INT64;
+        result.flags = (type_flags & TYPE_FLAG_EXACT) ? ESHKOL_VALUE_EXACT_FLAG : 0;
+        result.data.int_val = raw_val;
+        return result;
+    }
+
+    if (type_id == BuiltinTypes::Float64.id ||
+        type_id == BuiltinTypes::Float32.id ||
+        type_id == BuiltinTypes::Real.id) {
+        result.type = ESHKOL_VALUE_DOUBLE;
+        result.flags = ESHKOL_VALUE_INEXACT_FLAG;
+        result.data.double_val = *reinterpret_cast<double*>(&raw_val);
+        return result;
+    }
+
+    // Complex number types
+    if (type_id == BuiltinTypes::Complex.id ||
+        type_id == BuiltinTypes::Complex64.id ||
+        type_id == BuiltinTypes::Complex128.id) {
+        // Complex numbers are stored as heap pointers to (real, imag) pairs
+        result.type = ESHKOL_VALUE_HEAP_PTR;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    // Boolean type
+    if (type_id == BuiltinTypes::Boolean.id) {
+        result.type = ESHKOL_VALUE_BOOL;
+        result.data.int_val = (raw_val != 0) ? 1 : 0;
+        return result;
+    }
+
+    // Character type
+    if (type_id == BuiltinTypes::Char.id) {
+        result.type = ESHKOL_VALUE_CHAR;
+        result.data.int_val = raw_val;
+        return result;
+    }
+
+    // Text/String types
+    if (type_id == BuiltinTypes::String.id ||
+        type_id == BuiltinTypes::Text.id) {
+        result.type = ESHKOL_VALUE_HEAP_PTR;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    // Symbol type
+    if (type_id == BuiltinTypes::Symbol.id) {
+        result.type = ESHKOL_VALUE_SYMBOL;
+        result.data.int_val = raw_val;
+        return result;
+    }
+
+    // Null type
+    if (type_id == BuiltinTypes::Null.id) {
+        result.type = ESHKOL_VALUE_NULL;
+        result.data.raw_val = 0;
+        return result;
+    }
+
+    // Collection types (List, Vector, Pair) - heap allocated
+    if (type_id == BuiltinTypes::List.id ||
+        type_id == BuiltinTypes::Vector.id ||
+        type_id == BuiltinTypes::Pair.id) {
+        result.type = ESHKOL_VALUE_HEAP_PTR;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    // Tensor type
+    if (type_id == BuiltinTypes::Tensor.id) {
+        result.type = ESHKOL_VALUE_HEAP_PTR;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    // HashTable type
+    if (type_id == BuiltinTypes::HashTable.id) {
+        result.type = ESHKOL_VALUE_HEAP_PTR;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    // Function/Closure types - callables
+    if (type_id == BuiltinTypes::Function.id ||
+        type_id == BuiltinTypes::Closure.id) {
+        result.type = ESHKOL_VALUE_CALLABLE;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    // Autodiff types
+    if (type_id == BuiltinTypes::DualNumber.id) {
+        result.type = ESHKOL_VALUE_DUAL_NUMBER;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    if (type_id == BuiltinTypes::ADNode.id) {
+        result.type = ESHKOL_VALUE_CALLABLE;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    // Resource types (Handle, Buffer, Stream)
+    if (type_id == BuiltinTypes::Handle.id) {
+        result.type = ESHKOL_VALUE_HANDLE;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    if (type_id == BuiltinTypes::Buffer.id) {
+        result.type = ESHKOL_VALUE_BUFFER;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    if (type_id == BuiltinTypes::Stream.id) {
+        result.type = ESHKOL_VALUE_STREAM;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    // Root Value type - treat as generic heap pointer
+    if (type_id == BuiltinTypes::Value.id) {
+        result.type = ESHKOL_VALUE_HEAP_PTR;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    // Function types (TypeIds >= 500 are dynamically allocated function types)
+    // These are created by makeFunctionType() for specific function signatures
+    if (type_id >= 500) {
+        result.type = ESHKOL_VALUE_CALLABLE;
+        result.data.ptr_val = static_cast<uint64_t>(raw_val);
+        return result;
+    }
+
+    // Universe types and proof types (runtime-erased)
+    if (type_id == BuiltinTypes::TypeU0.id ||
+        type_id == BuiltinTypes::TypeU1.id ||
+        type_id == BuiltinTypes::TypeU2.id ||
+        type_id == BuiltinTypes::Eq.id ||
+        type_id == BuiltinTypes::LessThan.id ||
+        type_id == BuiltinTypes::Bounded.id ||
+        type_id == BuiltinTypes::Subtype.id) {
+        // These are type-level values, return as null at runtime
+        result.type = ESHKOL_VALUE_NULL;
+        result.data.raw_val = 0;
+        return result;
+    }
+
+    // Invalid or unknown type - return null
+    if (type_id == BuiltinTypes::Invalid.id) {
+        result.type = ESHKOL_VALUE_NULL;
+        result.data.raw_val = 0;
+        return result;
+    }
+
+    // Fallback for user-defined types (TypeIds 1000+) or unrecognized types
+    // Treat as heap pointer since user types are typically allocated
+    result.type = ESHKOL_VALUE_HEAP_PTR;
+    result.data.ptr_val = static_cast<uint64_t>(raw_val);
+    return result;
 }
 
 } // namespace eshkol
