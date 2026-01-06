@@ -6,8 +6,11 @@
  */
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
+#include <eshkol/core/runtime.h>
+#include <eshkol/core/resource_limits.h>
 
 #include <eshkol/llvm_backend.h>
+#include "../lib/repl/repl_jit.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -43,6 +46,8 @@ static struct option long_options[] = {
     {"lib", required_argument, nullptr, 'l'},
     {"lib-path", required_argument, nullptr, 'L'},
     {"no-stdlib", no_argument, nullptr, 'n'},
+    {"eval", required_argument, nullptr, 'e'},
+    {"run", no_argument, nullptr, 'r'},
     {0, 0, 0, 0}
 };
 
@@ -1139,7 +1144,9 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
 static void print_help(int x = 0)
 {
     printf(
-        "Usage: eshkol-run [options] <input.esk|input.o> [input.esk|input.o]\n\n"
+        "Usage: eshkol-run [options] <input.esk|input.o> [input.esk|input.o]\n"
+        "       eshkol-run -e '<expression>'   (JIT evaluate expression)\n"
+        "       eshkol-run -r <file.esk>       (JIT run file)\n\n"
         "\t--help:[-h] = Print this help message.\n"
         "\t--debug:[-d] = Debugging information added inside the program.\n"
         "\t--dump-ast:[-a] = Dumps the AST into a .ast file.\n"
@@ -1150,7 +1157,9 @@ static void print_help(int x = 0)
         "\t--wasm:[-w] = Compiles to WebAssembly (.wasm) format.\n"
         "\t--lib:[-l] = Links a shared library to the resulting executable.\n"
         "\t--lib-path:[-L] = Adds a directory to the library search path.\n"
-        "\t--no-stdlib:[-n] = Do not auto-load the standard library.\n\n"
+        "\t--no-stdlib:[-n] = Do not auto-load the standard library.\n"
+        "\t--eval:[-e] = JIT evaluate an expression and print the result.\n"
+        "\t--run:[-r] = JIT run a file (interpret without compiling).\n\n"
         "This is an early developer release (%s) of the Eshkol Compiler/Interpreter.\n",
         ESHKOL_VER
     );
@@ -1962,10 +1971,12 @@ int main(int argc, char **argv)
     std::vector<eshkol_ast_t> asts;
 
     char *output = nullptr;
+    char *eval_expr = nullptr;  // For -e/--eval flag
+    uint8_t run_mode = 0;       // For -r/--run flag (JIT run file)
 
     if (argc == 1) print_help(1);
 
-    while ((ch = getopt_long(argc, argv, "hdaio:cswl:L:n", long_options, nullptr)) != -1) {
+    while ((ch = getopt_long(argc, argv, "hdaio:cswl:L:ne:r", long_options, nullptr)) != -1) {
         switch (ch) {
         case 'h':
             print_help(0);
@@ -2002,12 +2013,190 @@ int main(int argc, char **argv)
         case 'n':
             no_stdlib = 1;
             break;
+        case 'e':
+            eval_expr = optarg;
+            break;
+        case 'r':
+            run_mode = 1;
+            break;
         default:
             print_help(1);
         }
     }
 
+    // If we have an eval expression, use JIT mode
+    if (eval_expr) {
+        // Initialize runtime system
+        if (eshkol_runtime_init() != 0) {
+            eshkol_error("Failed to initialize runtime system");
+            return 1;
+        }
+        eshkol_init_limits_from_env();
+
+        // Create JIT context
+        eshkol::ReplJITContext jit_ctx;
+
+        // Load stdlib for eval mode
+        if (!no_stdlib) {
+            jit_ctx.loadStdlib();
+        }
+
+        // Parse the expression using temp file (parser requires ifstream)
+        char temp_name[] = "/tmp/eshkol_eval_XXXXXX";
+        int fd = mkstemp(temp_name);
+        if (fd < 0) {
+            eshkol_error("Failed to create temp file");
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+
+        std::ofstream temp_out(temp_name);
+        temp_out << eval_expr << "\n";
+        temp_out.close();
+        close(fd);
+
+        std::ifstream temp_in(temp_name);
+
+        // Parse and execute ALL expressions from the input (not just one)
+        eshkol_ast_t ast = eshkol_parse_next_ast(temp_in);
+        bool parsed_any = false;
+
+        while (ast.type != ESHKOL_INVALID) {
+            parsed_any = true;
+
+            if (debug_mode) {
+                printf("=== AST ===\n");
+                eshkol_ast_pretty_print(&ast, 0);
+                printf("===========\n");
+            }
+
+            // Execute the AST (definitions don't print, expressions do via display)
+            bool is_define = (ast.type == ESHKOL_OP &&
+                (ast.operation.op == ESHKOL_DEFINE_OP ||
+                 ast.operation.op == ESHKOL_REQUIRE_OP ||
+                 ast.operation.op == ESHKOL_IMPORT_OP));
+
+            // Check if it's a display/print call (don't wrap these)
+            bool is_output_call = false;
+            if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_CALL_OP &&
+                ast.operation.call_op.func && ast.operation.call_op.func->type == ESHKOL_VAR) {
+                const char* name = ast.operation.call_op.func->variable.id;
+                if (name && (strcmp(name, "display") == 0 || strcmp(name, "newline") == 0 ||
+                             strcmp(name, "print") == 0 || strcmp(name, "write") == 0)) {
+                    is_output_call = true;
+                }
+            }
+
+            // Execute directly (don't auto-wrap with display - let user control output)
+            jit_ctx.execute(&ast);
+
+            // Parse next expression
+            ast = eshkol_parse_next_ast(temp_in);
+        }
+
+        temp_in.close();
+        unlink(temp_name);
+
+        if (!parsed_any) {
+            eshkol_error("Failed to parse expression: %s", eval_expr);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+        return 0;
+    }
+
+    // If run mode, JIT execute all expressions from file(s)
+    if (run_mode) {
+        if (optind == argc) {
+            eshkol_error("No input file specified for --run mode");
+            print_help(1);
+        }
+
+        // Initialize runtime system
+        if (eshkol_runtime_init() != 0) {
+            eshkol_error("Failed to initialize runtime system");
+            return 1;
+        }
+        eshkol_init_limits_from_env();
+
+        // Create JIT context
+        eshkol::ReplJITContext jit_ctx;
+
+        // Load stdlib for run mode
+        if (!no_stdlib) {
+            jit_ctx.loadStdlib();
+        }
+
+        // Process each input file
+        for (int i = optind; i < argc; i++) {
+            std::string filepath = argv[i];
+
+            if (!std::filesystem::exists(filepath)) {
+                eshkol_error("File not found: %s", filepath.c_str());
+                continue;
+            }
+
+            std::ifstream file(filepath);
+            if (!file.is_open()) {
+                eshkol_error("Failed to open file: %s", filepath.c_str());
+                continue;
+            }
+
+            if (debug_mode) {
+                eshkol_info("JIT running: %s", filepath.c_str());
+            }
+
+            // Parse and execute all expressions in the file
+            eshkol_ast_t ast = eshkol_parse_next_ast(file);
+            while (ast.type != ESHKOL_INVALID) {
+                if (debug_mode) {
+                    printf("=== AST ===\n");
+                    eshkol_ast_pretty_print(&ast, 0);
+                    printf("===========\n");
+                }
+
+                // Execute the AST (definitions don't print, expressions do via display)
+                bool is_define = (ast.type == ESHKOL_OP &&
+                    (ast.operation.op == ESHKOL_DEFINE_OP ||
+                     ast.operation.op == ESHKOL_REQUIRE_OP ||
+                     ast.operation.op == ESHKOL_IMPORT_OP));
+
+                // Check if it's a display/print call
+                bool is_output_call = false;
+                if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_CALL_OP &&
+                    ast.operation.call_op.func && ast.operation.call_op.func->type == ESHKOL_VAR) {
+                    const char* name = ast.operation.call_op.func->variable.id;
+                    if (name && (strcmp(name, "display") == 0 || strcmp(name, "newline") == 0 ||
+                                 strcmp(name, "print") == 0 || strcmp(name, "write") == 0)) {
+                        is_output_call = true;
+                    }
+                }
+
+                jit_ctx.execute(&ast);
+
+                // Parse next expression
+                ast = eshkol_parse_next_ast(file);
+            }
+            file.close();
+        }
+
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+        return 0;
+    }
+
     if (optind == argc) print_help(1);
+
+    // Initialize runtime system (signal handlers, shutdown hooks)
+    if (eshkol_runtime_init() != 0) {
+        eshkol_error("Failed to initialize runtime system");
+        return 1;
+    }
+
+    // Initialize resource limits from environment variables
+    // Supported: ESHKOL_MAX_HEAP, ESHKOL_TIMEOUT_MS, ESHKOL_MAX_STACK, etc.
+    eshkol_init_limits_from_env();
 
     // Helper function to check string suffix (C++17 compatible)
     auto ends_with = [](const std::string& str, const std::string& suffix) {
@@ -2303,7 +2492,8 @@ int main(int argc, char **argv)
     }
 
     // Process compiled object files if we have them and an output target
-    if (!compiled_files.empty() && output) {
+    // Don't link in compile-only mode (-c flag) - user can link manually
+    if (!compiled_files.empty() && output && !compile_only) {
         std::string link_cmd = "c++ -fPIE";
 
         // Add all object files
@@ -2366,14 +2556,20 @@ int main(int argc, char **argv)
 
         if (result != 0) {
             eshkol_error("Linking failed with exit code %d", result);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
             return 1;
         }
 
         eshkol_info("Successfully created executable: %s", output);
-    } else if (!compiled_files.empty()) {
+    } else if (!compiled_files.empty() && !compile_only) {
+        // Only warn about unused object files if we're not in compile-only mode
+        // In compile-only mode, we intentionally don't link
         eshkol_warn("Object files provided but no output specified. Use -o to specify output executable.");
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
         return 1;
     }
 
+    // Graceful shutdown - calls all registered shutdown hooks
+    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
     return 0;
 }

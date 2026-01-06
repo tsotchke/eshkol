@@ -76,9 +76,9 @@ void MemoryCodegen::createClosureFunctions() {
     auto ptr = types.getPtrType();
     auto i64 = types.getInt64Type();
 
-    // arena_allocate_closure: eshkol_closure_t* (arena_t*, uint64_t func_ptr, size_t num_captures, uint64_t sexpr_ptr, uint64_t return_type_info)
+    // arena_allocate_closure: eshkol_closure_t* (arena_t*, uint64_t func_ptr, size_t num_captures, uint64_t sexpr_ptr, uint64_t return_type_info, const char* name)
     arena_allocate_closure = createFunc("arena_allocate_closure",
-        llvm::FunctionType::get(ptr, {ptr, i64, i64, i64, i64}, false));
+        llvm::FunctionType::get(ptr, {ptr, i64, i64, i64, i64, ptr}, false));
 }
 
 void MemoryCodegen::createTaggedConsGetters() {
@@ -210,12 +210,12 @@ void MemoryCodegen::createTypedAllocatorFunctions() {
         llvm::FunctionType::get(ptr, {ptr, i64}, false));
 
     // arena_allocate_closure_with_header: eshkol_closure_t* (arena_t*, uint64_t func_ptr,
-    //                                     size_t num_captures, uint64_t sexpr_ptr, uint64_t return_type_info)
+    //                                     size_t num_captures, uint64_t sexpr_ptr, uint64_t return_type_info, const char* name)
     // Allocates closure with object header prepended for CALLABLE type.
     // Returns pointer to closure data (header is at offset -8).
     // C signature matches arena_allocate_closure but prepends header.
     arena_allocate_closure_with_header = createFunc("arena_allocate_closure_with_header",
-        llvm::FunctionType::get(ptr, {ptr, i64, i64, i64, i64}, false));
+        llvm::FunctionType::get(ptr, {ptr, i64, i64, i64, i64, ptr}, false));
 
     // arena_allocate_ad_node_with_header: ad_node_t* (arena_t*)
     // Allocates AD node with object header prepended for CALLABLE type.

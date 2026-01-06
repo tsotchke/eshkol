@@ -405,9 +405,10 @@ void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity) {
 // Allocate a closure with object header (new consolidated format)
 // Returns pointer to closure data (header is at offset -8)
 // This is for new allocations - existing arena_allocate_closure remains for compatibility
-eshkol_closure_t* arena_allocate_closure_with_header(arena_t* arena, uint64_t func_ptr,
+extern "C" eshkol_closure_t* arena_allocate_closure_with_header(arena_t* arena, uint64_t func_ptr,
                                                       size_t packed_info, uint64_t sexpr_ptr,
-                                                      uint64_t return_type_info) {
+                                                      uint64_t return_type_info,
+                                                      const char* name) {
     if (!arena) {
         eshkol_error("Cannot allocate closure with header: null arena");
         return nullptr;
@@ -443,11 +444,15 @@ eshkol_closure_t* arena_allocate_closure_with_header(arena_t* arena, uint64_t fu
     eshkol_closure_t* closure = (eshkol_closure_t*)(mem + sizeof(eshkol_object_header_t));
     closure->func_ptr = func_ptr;
     closure->sexpr_ptr = sexpr_ptr;
+    closure->name = name;  // Store procedure name (NULL for anonymous lambdas)
     closure->return_type = (uint8_t)(return_type_info & 0xFF);
     closure->input_arity = (uint8_t)((return_type_info >> 8) & 0xFF);
 
     // VARIADIC FIX: Store variadic flag in closure->flags so it's available even when env is NULL
     closure->flags = CLOSURE_ENV_IS_VARIADIC(packed_info) ? CLOSURE_FLAG_VARIADIC : 0;
+    if (name) {
+        closure->flags |= ESHKOL_CLOSURE_FLAG_NAMED;
+    }
     closure->reserved = 0;
     closure->hott_type_id = (uint32_t)((return_type_info >> 16) & 0xFFFFFFFF);
 
@@ -1738,8 +1743,9 @@ eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_capt
     return env;
 }
 
-eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t packed_info,
-                                         uint64_t sexpr_ptr, uint64_t return_type_info) {
+extern "C" eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t packed_info,
+                                         uint64_t sexpr_ptr, uint64_t return_type_info,
+                                         const char* name) {
     if (!arena) {
         eshkol_error("Cannot allocate closure: null arena");
         return nullptr;
@@ -1763,6 +1769,7 @@ eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size
 
     closure->func_ptr = func_ptr;
     closure->sexpr_ptr = sexpr_ptr;  // Store S-expression for homoiconicity
+    closure->name = name;            // Store procedure name (NULL for anonymous lambdas)
 
     // Unpack return type metadata:
     //   - Bits 0-7:   return_type (CLOSURE_RETURN_*)
@@ -1770,7 +1777,10 @@ eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size
     //   - Bits 16-47: hott_type_id
     closure->return_type = (uint8_t)(return_type_info & 0xFF);
     closure->input_arity = (uint8_t)((return_type_info >> 8) & 0xFF);
-    closure->flags = 0;
+    closure->flags = CLOSURE_ENV_IS_VARIADIC(packed_info) ? CLOSURE_FLAG_VARIADIC : 0;
+    if (name) {
+        closure->flags |= ESHKOL_CLOSURE_FLAG_NAMED;
+    }
     closure->reserved = 0;
     closure->hott_type_id = (uint32_t)((return_type_info >> 16) & 0xFFFFFFFF);
 
@@ -1788,9 +1798,9 @@ eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size
         closure->env = nullptr;
     }
 
-    eshkol_debug("Allocated closure at %p with func_ptr=%p, env=%p (%zu captures), return_type=%d, arity=%d",
+    eshkol_debug("Allocated closure at %p with func_ptr=%p, env=%p (%zu captures), return_type=%d, arity=%d, name=%s",
                 (void*)closure, (void*)func_ptr, (void*)closure->env, actual_num_captures,
-                closure->return_type, closure->input_arity);
+                closure->return_type, closure->input_arity, name ? name : "(anonymous)");
 
     return closure;
 }

@@ -679,6 +679,17 @@ if(BUILD_REPL AND REPL_SRC)
 
     message(STATUS "REPL build enabled - target: eshkol-repl")
   endif()
+
+  # ===== Link eshkol-run with REPL library for -e/--eval JIT support =====
+  # This must come after eshkol-repl-lib is defined
+  target_link_libraries(eshkol-run PRIVATE eshkol-repl-lib)
+  # Export symbols for JIT when using -e flag
+  if(APPLE)
+    target_link_options(eshkol-run PRIVATE "-Wl,-export_dynamic")
+  else()
+    target_link_options(eshkol-run PRIVATE "-Wl,--export-dynamic")
+  endif()
+  message(STATUS "eshkol-run linked with REPL JIT for -e/--eval support")
 endif()
 
 # ===== XLA Integration Tests =====

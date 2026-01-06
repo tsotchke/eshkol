@@ -71,6 +71,19 @@ public:
     void* execute(eshkol_ast_t* ast);
 
     /**
+     * Compile and execute an AST node, returning a properly typed tagged value.
+     *
+     * Unlike execute() which returns a raw pointer, this method:
+     * - Infers the result type from the AST
+     * - Wraps the result in an appropriate eshkol_tagged_value_t
+     * - Handles all Eshkol types (integers, doubles, strings, lists, closures)
+     *
+     * @param ast The AST to execute
+     * @return Tagged value containing the result
+     */
+    eshkol_tagged_value_t executeTagged(eshkol_ast_t* ast);
+
+    /**
      * Add a module to the JIT for execution.
      * Used for incremental compilation of REPL inputs.
      *
@@ -200,6 +213,14 @@ private:
     // Maps symbol name -> pointer to allocated memory holding the function pointer
     // This allows us to update the pointer when the real function is defined
     std::unordered_map<std::string, void**> forward_ref_slots_;
+
+    // MODULE VISIBILITY: Track which symbols are exported from each module
+    // Maps module name -> set of exported symbol names
+    std::unordered_map<std::string, std::unordered_set<std::string>> module_exports_;
+
+    // Track private symbols (defined but not exported)
+    // These are only accessible within their defining module
+    std::unordered_set<std::string> private_symbols_;
 
     // SHARED ARENA: Single persistent arena shared across all evaluations
     // This ensures data allocated in one evaluation (lists, vectors, etc.)

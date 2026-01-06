@@ -737,7 +737,10 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_closure_env_t) == sizeof(size_t),
 #define CLOSURE_RETURN_VOID        0x07  // Returns null/void
 
 // Closure flags (stored in closure->flags field)
-#define CLOSURE_FLAG_VARIADIC      0x01  // Closure accepts variadic arguments
+#define CLOSURE_FLAG_VARIADIC              0x01  // Closure accepts variadic arguments
+#define CLOSURE_FLAG_NAMED                 0x02  // Closure has a bound name
+#define ESHKOL_CLOSURE_FLAG_VARIADIC       CLOSURE_FLAG_VARIADIC  // Alias for consistency
+#define ESHKOL_CLOSURE_FLAG_NAMED          CLOSURE_FLAG_NAMED     // Alias for consistency
 
 // Full closure structure combining function pointer and environment
 // This is what gets allocated when a closure-returning function is called
@@ -745,12 +748,17 @@ typedef struct eshkol_closure {
     uint64_t func_ptr;                    // Pointer to the lambda function
     eshkol_closure_env_t* env;            // Pointer to captured environment (may be NULL for no captures)
     uint64_t sexpr_ptr;                   // Pointer to S-expression representation for homoiconicity
+    const char* name;                     // Bound name from (define name ...) or NULL for anonymous lambdas
     uint8_t return_type;                  // Return type category (CLOSURE_RETURN_*)
     uint8_t input_arity;                  // Number of expected input arguments (0-255)
-    uint8_t flags;                        // Additional flags (reserved for future use)
+    uint8_t flags;                        // Additional flags (CLOSURE_FLAG_VARIADIC, etc.)
     uint8_t reserved;                     // Padding for alignment
     uint32_t hott_type_id;                // HoTT TypeId for the return type (0 = unknown)
 } eshkol_closure_t;
+
+// Compile-time size validation for closure structure
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_closure_t) == 40,
+                     "Closure structure must be 40 bytes for alignment");
 
 // Helper macros for closure type queries
 #define CLOSURE_RETURNS_VECTOR(closure) ((closure)->return_type == CLOSURE_RETURN_VECTOR)
@@ -795,6 +803,40 @@ static inline bool eshkol_closure_returns_vector(eshkol_tagged_value_t tagged) {
 static inline bool eshkol_closure_returns_scalar(eshkol_tagged_value_t tagged) {
     return eshkol_closure_get_return_type(tagged) == CLOSURE_RETURN_SCALAR;
 }
+
+// ===== PRIMITIVE FUNCTION STRUCTURE =====
+// Primitive functions are built-in operations that are not closures.
+// Unlike closures, they don't have captured environments or S-expression representations.
+// The object header's subtype field indicates CALLABLE_SUBTYPE_PRIMITIVE.
+
+// Primitive flags
+#define PRIMITIVE_FLAG_VARIADIC    0x01  // Primitive accepts variadic arguments
+#define PRIMITIVE_FLAG_PURE        0x02  // Primitive has no side effects
+
+/**
+ * Runtime representation of a primitive/builtin function.
+ *
+ * Primitives are similar to closures but without captured environments.
+ * They store metadata needed for introspection (arity, name, type).
+ */
+typedef struct eshkol_primitive {
+    uint64_t func_ptr;                    // Pointer to the native function implementation
+    const char* name;                     // Name of the primitive (e.g., "car", "cdr", "+")
+    uint8_t input_arity;                  // Number of expected input arguments (0-255)
+    uint8_t flags;                        // Primitive flags (variadic, pure, etc.)
+    uint16_t reserved;                    // Padding for alignment
+    uint32_t hott_type_id;                // HoTT TypeId for function signature (0 = unknown)
+} eshkol_primitive_t;
+
+// Compile-time size validation for primitive structure
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_primitive_t) == 24,
+                     "Primitive structure must be 24 bytes for alignment");
+
+// Helper to check if primitive is variadic
+#define PRIMITIVE_IS_VARIADIC(prim) (((prim)->flags & PRIMITIVE_FLAG_VARIADIC) != 0)
+
+// Helper to check if primitive is pure (no side effects)
+#define PRIMITIVE_IS_PURE(prim) (((prim)->flags & PRIMITIVE_FLAG_PURE) != 0)
 
 // ===== END CLOSURE ENVIRONMENT STRUCTURES =====
 

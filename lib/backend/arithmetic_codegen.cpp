@@ -1002,6 +1002,8 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
 }
 
 // === Polymorphic Comparison ===
+// R7RS: Numeric comparison operators (= < > <= >=) only work on numbers.
+// Non-numeric operands should signal an error.
 
 llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
                                          const std::string& operation) {
@@ -1018,28 +1020,61 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     llvm::Value* left_base = tagged_.getBaseType(left_type);
     llvm::Value* right_base = tagged_.getBaseType(right_type);
 
-    // Check if either operand is double
+    // Check if operands are numeric types (int64 or double)
     llvm::Value* left_is_double = ctx_.builder().CreateICmpEQ(left_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
     llvm::Value* right_is_double = ctx_.builder().CreateICmpEQ(right_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
     llvm::Value* any_double = ctx_.builder().CreateOr(left_is_double, right_is_double);
 
-    // Check if either operand is a STRING_PTR (symbol)
-    llvm::Value* left_is_string = ctx_.builder().CreateICmpEQ(left_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-    llvm::Value* right_is_string = ctx_.builder().CreateICmpEQ(right_base,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-    llvm::Value* both_strings = ctx_.builder().CreateAnd(left_is_string, right_is_string);
+    llvm::Value* left_is_int = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    llvm::Value* right_is_int = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+
+    // R7RS compliance: Both operands must be numbers
+    llvm::Value* left_is_number = ctx_.builder().CreateOr(left_is_double, left_is_int);
+    llvm::Value* right_is_number = ctx_.builder().CreateOr(right_is_double, right_is_int);
+    llvm::Value* both_numbers = ctx_.builder().CreateAnd(left_is_number, right_is_number);
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* type_error_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_type_error", func);
+    llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_numeric", func);
     llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_double_path", func);
-    llvm::BasicBlock* check_string = llvm::BasicBlock::Create(ctx_.context(), "cmp_check_string", func);
-    llvm::BasicBlock* string_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_string_path", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_int_path", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "cmp_merge", func);
 
-    ctx_.builder().CreateCondBr(any_double, double_path, check_string);
+    // R7RS: Error if not both numbers
+    ctx_.builder().CreateCondBr(both_numbers, numeric_path, type_error_path);
+
+    // Type error path: call runtime error for non-numeric comparison
+    ctx_.builder().SetInsertPoint(type_error_path);
+    // Get or create eshkol_type_error function
+    llvm::Function* type_error_func = ctx_.module().getFunction("eshkol_type_error");
+    if (!type_error_func) {
+        llvm::FunctionType* error_type = llvm::FunctionType::get(
+            ctx_.builder().getVoidTy(),
+            {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()},
+            false);
+        type_error_func = llvm::Function::Create(error_type, llvm::Function::ExternalLinkage,
+            "eshkol_type_error", &ctx_.module());
+    }
+    // Create error message
+    std::string op_name = (operation == "eq") ? "=" :
+                          (operation == "lt") ? "<" :
+                          (operation == "gt") ? ">" :
+                          (operation == "le") ? "<=" : ">=";
+    llvm::Value* proc_name = ctx_.builder().CreateGlobalStringPtr(op_name, "cmp_proc_name");
+    llvm::Value* expected_type = ctx_.builder().CreateGlobalStringPtr("number", "cmp_expected_type");
+    ctx_.builder().CreateCall(type_error_func, {proc_name, expected_type});
+    // Return false after error (in case error handler returns)
+    llvm::Value* error_result = tagged_.packBool(ctx_.builder().getFalse());
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* error_exit = ctx_.builder().GetInsertBlock();
+
+    // Numeric path: dispatch to double or int comparison
+    ctx_.builder().SetInsertPoint(numeric_path);
+    ctx_.builder().CreateCondBr(any_double, double_path, int_path);
 
     // Double path: promote both to double and compare
     ctx_.builder().SetInsertPoint(double_path);
@@ -1066,27 +1101,7 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
 
-    // Check if both are strings/symbols
-    ctx_.builder().SetInsertPoint(check_string);
-    ctx_.builder().CreateCondBr(both_strings, string_path, int_path);
-
-    // String/symbol path: compare pointers (interned symbols)
-    ctx_.builder().SetInsertPoint(string_path);
-    llvm::Value* left_ptr = tagged_.unpackPtr(left);
-    llvm::Value* right_ptr = tagged_.unpackPtr(right);
-
-    llvm::Value* string_cmp = nullptr;
-    if (operation == "eq") {
-        string_cmp = ctx_.builder().CreateICmpEQ(left_ptr, right_ptr);
-    } else {
-        // For other comparisons on strings, compare pointers (same as eq?)
-        string_cmp = ctx_.builder().CreateICmpEQ(left_ptr, right_ptr);
-    }
-    llvm::Value* tagged_string_result = tagged_.packBool(string_cmp);
-    ctx_.builder().CreateBr(merge);
-    llvm::BasicBlock* string_exit = ctx_.builder().GetInsertBlock();
-
-    // Int path: compare as int64
+    // Int path: compare as int64 (R7RS: no string path - use eq?/equal? for non-numbers)
     ctx_.builder().SetInsertPoint(int_path);
     llvm::Value* left_int = tagged_.unpackInt64(left);
     llvm::Value* right_int = tagged_.unpackInt64(right);
@@ -1110,8 +1125,8 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     // Merge results
     ctx_.builder().SetInsertPoint(merge);
     llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3);
+    result_phi->addIncoming(error_result, error_exit);
     result_phi->addIncoming(tagged_double_result, double_exit);
-    result_phi->addIncoming(tagged_string_result, string_exit);
     result_phi->addIncoming(tagged_int_result, int_exit);
 
     return result_phi;
