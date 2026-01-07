@@ -1,0 +1,190 @@
+;; Control Flow Test: cond
+;; Tests multi-way conditionals
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Basic Cond
+;; ============================================================================
+
+(display "=== Testing Basic Cond ===\n")
+
+;; First clause true
+(test-case "cond first true" 'a
+  (cond (#t 'a)
+        (#t 'b)
+        (else 'c)))
+
+;; Second clause true
+(test-case "cond second true" 'b
+  (cond (#f 'a)
+        (#t 'b)
+        (else 'c)))
+
+;; Else clause
+(test-case "cond else" 'c
+  (cond (#f 'a)
+        (#f 'b)
+        (else 'c)))
+
+;; ============================================================================
+;; Test: Cond with Expressions
+;; ============================================================================
+
+(display "=== Testing Cond with Expressions ===\n")
+
+;; Comparison expressions
+(define (sign n)
+  (cond ((< n 0) 'negative)
+        ((= n 0) 'zero)
+        (else 'positive)))
+
+(test-case "sign negative" 'negative (sign -5))
+(test-case "sign zero" 'zero (sign 0))
+(test-case "sign positive" 'positive (sign 5))
+
+;; Multiple expressions in consequence
+(test-case "cond multi-expr" 3
+  (cond (#t 1 2 3)
+        (else 0)))
+
+;; Complex conditions
+(define (classify-number n)
+  (cond ((and (> n 0) (even? n)) 'positive-even)
+        ((and (> n 0) (odd? n)) 'positive-odd)
+        ((and (< n 0) (even? n)) 'negative-even)
+        ((and (< n 0) (odd? n)) 'negative-odd)
+        (else 'zero)))
+
+(test-case "classify 4" 'positive-even (classify-number 4))
+(test-case "classify 3" 'positive-odd (classify-number 3))
+(test-case "classify -4" 'negative-even (classify-number -4))
+(test-case "classify -3" 'negative-odd (classify-number -3))
+(test-case "classify 0" 'zero (classify-number 0))
+
+;; ============================================================================
+;; Test: Cond with Computations
+;; ============================================================================
+
+(display "=== Testing Cond with Computations ===\n")
+
+;; Computed results
+(define (abs-cond n)
+  (cond ((< n 0) (- n))
+        (else n)))
+
+(test-case "abs-cond positive" 5 (abs-cond 5))
+(test-case "abs-cond negative" 5 (abs-cond -5))
+(test-case "abs-cond zero" 0 (abs-cond 0))
+
+;; Grade calculator
+(define (letter-grade score)
+  (cond ((>= score 90) 'A)
+        ((>= score 80) 'B)
+        ((>= score 70) 'C)
+        ((>= score 60) 'D)
+        (else 'F)))
+
+(test-case "grade A" 'A (letter-grade 95))
+(test-case "grade B" 'B (letter-grade 85))
+(test-case "grade C" 'C (letter-grade 75))
+(test-case "grade D" 'D (letter-grade 65))
+(test-case "grade F" 'F (letter-grade 55))
+
+;; ============================================================================
+;; Test: Nested Cond
+;; ============================================================================
+
+(display "=== Testing Nested Cond ===\n")
+
+;; Cond inside cond
+(define (classify-point x y)
+  (cond ((= x 0)
+         (cond ((= y 0) 'origin)
+               ((> y 0) 'positive-y-axis)
+               (else 'negative-y-axis)))
+        ((> x 0)
+         (cond ((> y 0) 'quadrant-1)
+               ((< y 0) 'quadrant-4)
+               (else 'positive-x-axis)))
+        (else
+         (cond ((> y 0) 'quadrant-2)
+               ((< y 0) 'quadrant-3)
+               (else 'negative-x-axis)))))
+
+(test-case "point origin" 'origin (classify-point 0 0))
+(test-case "point q1" 'quadrant-1 (classify-point 1 1))
+(test-case "point q2" 'quadrant-2 (classify-point -1 1))
+(test-case "point q3" 'quadrant-3 (classify-point -1 -1))
+(test-case "point q4" 'quadrant-4 (classify-point 1 -1))
+(test-case "point +x axis" 'positive-x-axis (classify-point 5 0))
+(test-case "point +y axis" 'positive-y-axis (classify-point 0 5))
+
+;; ============================================================================
+;; Test: Cond Short-Circuit
+;; ============================================================================
+
+(display "=== Testing Cond Short-Circuit ===\n")
+
+;; Only evaluate conditions until one is true
+(define eval-count 0)
+
+(define (counting-pred x expected)
+  (set! eval-count (+ eval-count 1))
+  (= x expected))
+
+(set! eval-count 0)
+(cond ((counting-pred 1 1) 'found)
+      ((counting-pred 1 2) 'not-found)
+      (else 'else))
+(test-case "short-circuit count" 1 eval-count)
+
+;; ============================================================================
+;; Test: Cond as Expression
+;; ============================================================================
+
+(display "=== Testing Cond as Expression ===\n")
+
+;; Cond in arithmetic
+(test-case "cond in arithmetic" 15
+  (+ 5 (cond (#t 10)
+             (else 20))))
+
+;; Cond in let
+(test-case "cond in let" 50
+  (let ((x (cond ((> 5 3) 10)
+                 (else 20))))
+    (* x 5)))
+
+;; Cond in function call
+(test-case "cond as arg" 8
+  ((cond (#t +)
+         (else -))
+   3 5))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

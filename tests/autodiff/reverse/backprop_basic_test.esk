@@ -1,0 +1,180 @@
+;; Reverse Autodiff Test: Basic Backpropagation
+;; Tests basic gradient computation via reverse-mode autodiff
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (approx-equal? a b epsilon)
+  (< (abs (- a b)) epsilon))
+
+(define (test-approx name expected actual)
+  (if (approx-equal? expected actual 0.001)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Simple Derivatives
+;; ============================================================================
+
+(display "=== Testing Simple Derivatives ===\n")
+
+;; Identity function: f(x) = x, f'(x) = 1
+(define (identity x) x)
+(test-approx "d/dx(x) at x=5" 1.0 ((gradient identity) 5.0))
+(test-approx "d/dx(x) at x=-3" 1.0 ((gradient identity) -3.0))
+
+;; Constant function: f(x) = 5, f'(x) = 0
+(define (constant-five x) 5.0)
+(test-approx "d/dx(5) at x=3" 0.0 ((gradient constant-five) 3.0))
+
+;; Linear function: f(x) = 2x + 1, f'(x) = 2
+(define (linear x) (+ (* 2.0 x) 1.0))
+(test-approx "d/dx(2x+1) at x=0" 2.0 ((gradient linear) 0.0))
+(test-approx "d/dx(2x+1) at x=5" 2.0 ((gradient linear) 5.0))
+
+;; ============================================================================
+;; Test: Polynomial Derivatives
+;; ============================================================================
+
+(display "=== Testing Polynomial Derivatives ===\n")
+
+;; Quadratic: f(x) = x^2, f'(x) = 2x
+(define (square x) (* x x))
+(test-approx "d/dx(x^2) at x=3" 6.0 ((gradient square) 3.0))
+(test-approx "d/dx(x^2) at x=-2" -4.0 ((gradient square) -2.0))
+(test-approx "d/dx(x^2) at x=0" 0.0 ((gradient square) 0.0))
+
+;; Cubic: f(x) = x^3, f'(x) = 3x^2
+(define (cube x) (* x (* x x)))
+(test-approx "d/dx(x^3) at x=2" 12.0 ((gradient cube) 2.0))
+(test-approx "d/dx(x^3) at x=-2" 12.0 ((gradient cube) -2.0))
+
+;; General polynomial: f(x) = 3x^2 + 2x + 1, f'(x) = 6x + 2
+(define (poly x) (+ (+ (* 3.0 (* x x)) (* 2.0 x)) 1.0))
+(test-approx "d/dx(3x^2+2x+1) at x=0" 2.0 ((gradient poly) 0.0))
+(test-approx "d/dx(3x^2+2x+1) at x=1" 8.0 ((gradient poly) 1.0))
+(test-approx "d/dx(3x^2+2x+1) at x=2" 14.0 ((gradient poly) 2.0))
+
+;; ============================================================================
+;; Test: Arithmetic Operations
+;; ============================================================================
+
+(display "=== Testing Arithmetic Operations ===\n")
+
+;; Sum rule: d/dx(f + g) = f' + g'
+;; f(x) = x + x^2, f'(x) = 1 + 2x
+(define (sum-fn x) (+ x (* x x)))
+(test-approx "sum rule at x=2" 5.0 ((gradient sum-fn) 2.0))
+
+;; Difference rule: d/dx(f - g) = f' - g'
+;; f(x) = x^2 - x, f'(x) = 2x - 1
+(define (diff-fn x) (- (* x x) x))
+(test-approx "diff rule at x=3" 5.0 ((gradient diff-fn) 3.0))
+
+;; Product rule: d/dx(f * g) = f'g + fg'
+;; f(x) = x * x^2 = x^3, f'(x) = 3x^2
+(define (prod-fn x) (* x (* x x)))
+(test-approx "product rule at x=2" 12.0 ((gradient prod-fn) 2.0))
+
+;; Quotient rule: d/dx(f / g) = (f'g - fg') / g^2
+;; f(x) = 1/x, f'(x) = -1/x^2
+(define (recip x) (/ 1.0 x))
+(test-approx "quotient at x=2" -0.25 ((gradient recip) 2.0))
+(test-approx "quotient at x=4" -0.0625 ((gradient recip) 4.0))
+
+;; ============================================================================
+;; Test: Transcendental Functions
+;; ============================================================================
+
+(display "=== Testing Transcendental Functions ===\n")
+
+;; Exponential: d/dx(e^x) = e^x
+(test-approx "d/dx(exp) at x=0" 1.0 ((gradient exp) 0.0))
+(test-approx "d/dx(exp) at x=1" 2.7182 ((gradient exp) 1.0))
+
+;; Natural log: d/dx(ln(x)) = 1/x
+(test-approx "d/dx(log) at x=1" 1.0 ((gradient log) 1.0))
+(test-approx "d/dx(log) at x=2" 0.5 ((gradient log) 2.0))
+
+;; Square root: d/dx(sqrt(x)) = 1/(2*sqrt(x))
+(test-approx "d/dx(sqrt) at x=4" 0.25 ((gradient sqrt) 4.0))
+(test-approx "d/dx(sqrt) at x=1" 0.5 ((gradient sqrt) 1.0))
+
+;; Sine: d/dx(sin(x)) = cos(x)
+(test-approx "d/dx(sin) at x=0" 1.0 ((gradient sin) 0.0))
+
+;; Cosine: d/dx(cos(x)) = -sin(x)
+(test-approx "d/dx(cos) at x=0" 0.0 ((gradient cos) 0.0))
+
+;; ============================================================================
+;; Test: Chain Rule
+;; ============================================================================
+
+(display "=== Testing Chain Rule ===\n")
+
+;; f(x) = (2x)^2 = 4x^2, f'(x) = 8x
+(define (chain1 x) (square (* 2.0 x)))
+(test-approx "chain (2x)^2 at x=3" 24.0 ((gradient chain1) 3.0))
+
+;; f(x) = sin(x^2), f'(x) = 2x*cos(x^2)
+(define (chain2 x) (sin (* x x)))
+(test-approx "chain sin(x^2) at x=0" 0.0 ((gradient chain2) 0.0))
+
+;; f(x) = exp(2x), f'(x) = 2*exp(2x)
+(define (chain3 x) (exp (* 2.0 x)))
+(test-approx "chain exp(2x) at x=0" 2.0 ((gradient chain3) 0.0))
+
+;; f(x) = sqrt(x^2 + 1), f'(x) = x/sqrt(x^2+1)
+(define (chain4 x) (sqrt (+ (* x x) 1.0)))
+(test-approx "chain sqrt(x^2+1) at x=0" 0.0 ((gradient chain4) 0.0))
+
+;; ============================================================================
+;; Test: Composed Functions
+;; ============================================================================
+
+(display "=== Testing Composed Functions ===\n")
+
+;; Deep composition: f(x) = ((x^2)^2)^2 = x^8, f'(x) = 8x^7
+(define (deep-square x)
+  (square (square (square x))))
+;; At x=1: f'(1) = 8
+(test-approx "deep composition at x=1" 8.0 ((gradient deep-square) 1.0))
+
+;; Mix of operations
+;; f(x) = x * exp(-x^2), f'(x) = exp(-x^2) - 2x^2*exp(-x^2) = (1-2x^2)*exp(-x^2)
+(define (gaussian-like x)
+  (* x (exp (- (* x x)))))
+;; At x=0: f'(0) = 1
+(test-approx "gaussian-like at x=0" 1.0 ((gradient gaussian-like) 0.0))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

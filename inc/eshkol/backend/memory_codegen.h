@@ -54,6 +54,7 @@ public:
     llvm::Function* getArenaAllocateConsWithHeader() const { return arena_allocate_cons_with_header; }
     llvm::Function* getArenaAllocateStringWithHeader() const { return arena_allocate_string_with_header; }
     llvm::Function* getArenaAllocateVectorWithHeader() const { return arena_allocate_vector_with_header; }
+    llvm::Function* getArenaAllocateSymbolWithHeader() const { return arena_allocate_symbol_with_header; }
     llvm::Function* getArenaAllocateClosureWithHeader() const { return arena_allocate_closure_with_header; }
 
     // Tagged cons cell getters
@@ -115,6 +116,7 @@ private:
     llvm::Function* arena_allocate_cons_with_header;
     llvm::Function* arena_allocate_string_with_header;
     llvm::Function* arena_allocate_vector_with_header;
+    llvm::Function* arena_allocate_symbol_with_header;
     llvm::Function* arena_allocate_closure_with_header;
 
     // Tagged cons cell getters

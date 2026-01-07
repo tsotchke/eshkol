@@ -2305,6 +2305,24 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t expr;
                 if (token.type == TOKEN_LPAREN) {
                     expr = parse_list(tokenizer);
+                } else if (token.type == TOKEN_QUOTE) {
+                    // Handle quoted expressions in lambda body: (lambda () 'ok)
+                    eshkol_ast_t quoted = parse_quoted_data(tokenizer);
+                    expr.type = ESHKOL_OP;
+                    expr.operation.op = ESHKOL_QUOTE_OP;
+                    expr.operation.call_op.func = nullptr;
+                    expr.operation.call_op.num_vars = 1;
+                    expr.operation.call_op.variables = new eshkol_ast_t[1];
+                    expr.operation.call_op.variables[0] = quoted;
+                } else if (token.type == TOKEN_BACKQUOTE) {
+                    // Handle quasiquoted expressions in lambda body: (lambda () `expr)
+                    eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
+                    expr.type = ESHKOL_OP;
+                    expr.operation.op = ESHKOL_QUASIQUOTE_OP;
+                    expr.operation.call_op.func = nullptr;
+                    expr.operation.call_op.num_vars = 1;
+                    expr.operation.call_op.variables = new eshkol_ast_t[1];
+                    expr.operation.call_op.variables[0] = inner;
                 } else {
                     expr = parse_atom(token);
                 }
@@ -5494,10 +5512,70 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.call_op.variables[0] = elements[0];
         }
     } else {
-        eshkol_error("Expected symbol as first element of list");
-        ast.type = ESHKOL_INVALID;
+        // Non-symbol first element - parse as a cons structure
+        // This handles cases like (#t 'yes) or ((null? lst) #f) in cond clauses
+        // Structure: CALL_OP with func=first_element, variables=rest
+
+        eshkol_ast_t first_elem;
+        if (token.type == TOKEN_LPAREN) {
+            first_elem = parse_list(tokenizer);
+        } else {
+            first_elem = parse_atom(token);
+        }
+
+        if (first_elem.type == ESHKOL_INVALID) {
+            ast.type = ESHKOL_INVALID;
+            return ast;
+        }
+
+        // Parse remaining elements
+        while (true) {
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_RPAREN) break;
+            if (token.type == TOKEN_EOF) {
+                eshkol_error("Unexpected end of input in list");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            eshkol_ast_t element;
+            if (token.type == TOKEN_LPAREN) {
+                element = parse_list(tokenizer);
+            } else if (token.type == TOKEN_QUOTE) {
+                // Handle quoted expressions
+                eshkol_ast_t quoted = parse_quoted_data(tokenizer);
+                if (quoted.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                element.type = ESHKOL_OP;
+                element.operation.op = ESHKOL_QUOTE_OP;
+                element.operation.call_op.func = nullptr;
+                element.operation.call_op.num_vars = 1;
+                element.operation.call_op.variables = new eshkol_ast_t[1];
+                element.operation.call_op.variables[0] = quoted;
+            } else {
+                element = parse_atom(token);
+            }
+            elements.push_back(element);
+        }
+
+        // Create as CALL_OP structure: func=first_elem, variables=rest
+        ast.operation.op = ESHKOL_CALL_OP;
+        ast.operation.call_op.func = new eshkol_ast_t;
+        *ast.operation.call_op.func = first_elem;
+
+        ast.operation.call_op.num_vars = elements.size();
+        if (ast.operation.call_op.num_vars > 0) {
+            ast.operation.call_op.variables = new eshkol_ast_t[ast.operation.call_op.num_vars];
+            for (size_t i = 0; i < ast.operation.call_op.num_vars; i++) {
+                ast.operation.call_op.variables[i] = elements[i];
+            }
+        } else {
+            ast.operation.call_op.variables = nullptr;
+        }
     }
-    
+
     return ast;
 }
 

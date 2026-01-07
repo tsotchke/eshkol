@@ -217,13 +217,72 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     bool is_lambda = op->define_op.value->type == ESHKOL_OP &&
                      op->define_op.value->operation.op == ESHKOL_LAMBDA_OP;
 
-    // Get typed value from callback
+    // FIX FOR RECURSIVE DEFINES: Pre-declare binding for lambda expressions
+    // so the lambda can reference itself (like letrec does)
+    Function* current = getCurrentFunction(current_function_);
+    bool is_global_init = current && current->getName() == "__global_init";
+    bool is_lib_init = current && current->getName() == "__eshkol_lib_init__";
+    bool is_repl = isReplMode(repl_mode_);
+    bool is_main = current && current->getName() == "main";
+    GlobalVariable* existing_global = ctx_.module().getNamedGlobal(var_name);
+    // Top-level defines in main should always be global, not local
+    bool use_global = !current || is_global_init || is_lib_init || is_repl || is_main;
+
+    Value* pre_declared_binding = nullptr;
+    if (is_lambda) {
+        if (use_global) {
+            // Pre-declare global variable
+            GlobalVariable* gv = ctx_.module().getNamedGlobal(var_name);
+            if (!gv) {
+                Constant* zero_init = ConstantAggregateZero::get(ctx_.taggedValueType());
+                gv = new GlobalVariable(
+                    ctx_.module(),
+                    ctx_.taggedValueType(),
+                    false,
+                    GlobalValue::ExternalLinkage,
+                    zero_init,
+                    var_name
+                );
+                gv->setAlignment(Align(16));
+            }
+            pre_declared_binding = gv;
+            if (symbol_table_) (*symbol_table_)[var_name] = gv;
+            if (global_symbol_table_) (*global_symbol_table_)[var_name] = gv;
+        } else {
+            // Pre-declare local alloca
+            AllocaInst* alloca = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(),
+                nullptr,
+                var_name
+            );
+            alloca->setAlignment(Align(16));
+            pre_declared_binding = alloca;
+            if (symbol_table_) (*symbol_table_)[var_name] = alloca;
+        }
+        eshkol_debug("Pre-declared binding for recursive lambda: %s", var_name);
+    }
+
+    // RECURSIVE LAMBDA FIX: Add to exclusion set to prevent self-capture
+    // This is the same mechanism letrec uses for self-recursive bindings (see lines 601-606)
+    // Prevents the lambda from capturing itself while allowing recursive calls via dynamic lookup
+    if (is_lambda && letrec_excluded_capture_names_) {
+        letrec_excluded_capture_names_->insert(var_name);
+        eshkol_debug("Added %s to letrec_excluded_capture_names for recursive define", var_name);
+    }
+
+    // Get typed value from callback (lambda generation happens here)
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_error("define: callbacks not set");
         return nullptr;
     }
 
     void* typed_ptr = codegen_typed_ast_callback_(op->define_op.value, callback_context_);
+
+    // RECURSIVE LAMBDA FIX: Remove from exclusion set after lambda generation
+    if (is_lambda && letrec_excluded_capture_names_) {
+        letrec_excluded_capture_names_->erase(var_name);
+        eshkol_debug("Removed %s from letrec_excluded_capture_names after lambda generation", var_name);
+    }
     if (!typed_ptr) {
         eshkol_error("define: failed to evaluate value for %s", var_name);
         return nullptr;
@@ -257,16 +316,6 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
         register_func_binding_callback_(var_name, typed_ptr, callback_context_);
     }
 
-    // Determine if this should be global
-    Function* current = getCurrentFunction(current_function_);
-    bool is_global_init = current && current->getName() == "__global_init";
-    bool is_lib_init = current && current->getName() == "__eshkol_lib_init__";
-    bool is_repl = isReplMode(repl_mode_);
-    bool is_main = current && current->getName() == "main";
-
-    // Check if a global already exists for this variable (pre-declared in pass 1.5)
-    GlobalVariable* existing_global = ctx_.module().getNamedGlobal(var_name);
-
     // Debug: log what function we're in
     if (current) {
         eshkol_debug("BindingCodegen::define: in function %s (global_init=%d, lib_init=%d, repl=%d, main=%d, existing=%d)",
@@ -275,12 +324,6 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     } else {
         eshkol_debug("BindingCodegen::define: no current function (repl=%d)", is_repl);
     }
-
-    // Top-level defines or REPL mode: use global
-    // Nested defines inside functions: use local (alloca)
-    // CRITICAL: If a global already exists (pre-declared), use it even in main
-    // LIBRARY MODE: __eshkol_lib_init__ is like __global_init for libraries
-    bool use_global = !current || is_global_init || is_lib_init || is_repl || (is_main && existing_global);
 
     // Store the binding
     if (use_global) {
@@ -458,11 +501,16 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
         // and updates symbol_table[var_name]. This arena storage is the result of a CallInst
         // (not GlobalVariable), so we need to preserve it by detecting modification.
         // Check if the entry existed in saved_symbols with a DIFFERENT value.
+        // CRITICAL: Do NOT preserve AllocaInst entries - those are let bindings that
+        // should be discarded when the let scope ends. Only preserve non-alloca modifications
+        // (like arena storage for captures).
         auto saved_it = saved_symbols.find(entry.first);
         if (saved_it != saved_symbols.end() && saved_it->second != entry.second) {
-            // Entry was modified - preserve the new value
+            // Entry was modified - preserve the new value ONLY if it's not an alloca
+            // Allocas are let bindings that should NOT leak out of the let scope
             // Skip internal capture storage entries
-            if (entry.first.find("_capture_") == std::string::npos) {
+            if (entry.first.find("_capture_") == std::string::npos &&
+                !isa<AllocaInst>(entry.second)) {
                 entries_to_preserve[entry.first] = entry.second;
                 eshkol_debug("let: preserving modified entry %s (arena capture)", entry.first.c_str());
             }
@@ -702,11 +750,14 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         // and updates symbol_table[var_name]. This arena storage is the result of a CallInst
         // (not GlobalVariable), so we need to preserve it by detecting modification.
         // Check if the entry existed in saved_symbols with a DIFFERENT value.
+        // CRITICAL: Do NOT preserve AllocaInst entries - those are let bindings that
+        // should be discarded when the let scope ends.
         auto saved_it = saved_symbols.find(entry.first);
         if (saved_it != saved_symbols.end() && saved_it->second != entry.second) {
-            // Entry was modified - preserve the new value
+            // Entry was modified - preserve the new value ONLY if it's not an alloca
             // Skip internal capture storage entries
-            if (entry.first.find("_capture_") == std::string::npos) {
+            if (entry.first.find("_capture_") == std::string::npos &&
+                !isa<AllocaInst>(entry.second)) {
                 entries_to_preserve[entry.first] = entry.second;
                 eshkol_debug("letrec: preserving modified entry %s (arena capture)", entry.first.c_str());
             }
@@ -979,9 +1030,12 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
                 }
             }
         }
+        // CRITICAL: Do NOT preserve AllocaInst entries - those are let bindings
+        // that should be discarded when the let scope ends.
         auto saved_it = saved_symbols.find(entry.first);
         if (saved_it != saved_symbols.end() && saved_it->second != entry.second) {
-            if (entry.first.find("_capture_") == std::string::npos) {
+            if (entry.first.find("_capture_") == std::string::npos &&
+                !isa<AllocaInst>(entry.second)) {
                 entries_to_preserve[entry.first] = entry.second;
             }
         }

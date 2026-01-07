@@ -1,0 +1,9 @@
+;; Simple test: Use + before shadowing it
+
+(require stdlib)
+
+(display "Test 1: + before shadowing\n")
+(define result1 (+ 2 3))
+(display "2 + 3 = ") (display result1) (display "\n")
+
+(display "Test complete!\n")

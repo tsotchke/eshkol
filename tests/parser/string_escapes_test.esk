@@ -1,0 +1,178 @@
+;; Parser Test: String Literals and Escape Sequences
+;; Tests parsing of strings, escape sequences, and string operations
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Basic String Literals
+;; ============================================================================
+
+(display "=== Testing Basic String Literals ===\n")
+
+;; Simple strings
+(test-case "empty string length" 0 (string-length ""))
+(test-case "single char string" 1 (string-length "a"))
+(test-case "hello world length" 11 (string-length "hello world"))
+
+;; String equality
+(test-case "string equality" #t (string=? "hello" "hello"))
+(test-case "string inequality" #f (string=? "hello" "world"))
+(test-case "empty string equality" #t (string=? "" ""))
+
+;; ============================================================================
+;; Test: Escape Sequences
+;; ============================================================================
+
+(display "=== Testing Escape Sequences ===\n")
+
+;; Newline
+(define str-with-newline "line1\nline2")
+(test-case "newline escape length" 11 (string-length str-with-newline))
+
+;; Tab
+(define str-with-tab "col1\tcol2")
+(test-case "tab escape length" 9 (string-length str-with-tab))
+
+;; Carriage return
+(define str-with-cr "text\rmore")
+(test-case "cr escape length" 9 (string-length str-with-cr))
+
+;; Backslash
+(define str-with-backslash "path\\to\\file")
+(test-case "backslash escape length" 12 (string-length str-with-backslash))
+
+;; Double quote
+(define str-with-quote "say \"hello\"")
+(test-case "quote escape length" 11 (string-length str-with-quote))
+
+;; Multiple escapes
+(define multi-escape "a\tb\nc\\d\"e")
+(test-case "multiple escapes length" 9 (string-length multi-escape))
+
+;; ============================================================================
+;; Test: String Operations
+;; ============================================================================
+
+(display "=== Testing String Operations ===\n")
+
+;; string-ref
+(test-case "string-ref first" #\h (string-ref "hello" 0))
+(test-case "string-ref middle" #\l (string-ref "hello" 2))
+(test-case "string-ref last" #\o (string-ref "hello" 4))
+
+;; string-append
+(test-case "string-append two" "helloworld" (string-append "hello" "world"))
+(test-case "string-append empty" "hello" (string-append "hello" ""))
+(test-case "string-append three" "abc" (string-append "a" "b" "c"))
+
+;; substring
+(test-case "substring start" "hel" (substring "hello" 0 3))
+(test-case "substring middle" "ll" (substring "hello" 2 4))
+(test-case "substring end" "lo" (substring "hello" 3 5))
+(test-case "substring empty" "" (substring "hello" 2 2))
+
+;; ============================================================================
+;; Test: String Comparisons
+;; ============================================================================
+
+(display "=== Testing String Comparisons ===\n")
+
+;; Equality
+(test-case "string=? same" #t (string=? "abc" "abc"))
+(test-case "string=? diff" #f (string=? "abc" "abd"))
+(test-case "string=? case" #f (string=? "ABC" "abc"))
+
+;; Ordering
+(test-case "string<? less" #t (string<? "abc" "abd"))
+(test-case "string<? equal" #f (string<? "abc" "abc"))
+(test-case "string<? greater" #f (string<? "abd" "abc"))
+
+(test-case "string>? greater" #t (string>? "abd" "abc"))
+(test-case "string>? equal" #f (string>? "abc" "abc"))
+(test-case "string>? less" #f (string>? "abc" "abd"))
+
+(test-case "string<=? less" #t (string<=? "abc" "abd"))
+(test-case "string<=? equal" #t (string<=? "abc" "abc"))
+(test-case "string<=? greater" #f (string<=? "abd" "abc"))
+
+(test-case "string>=? greater" #t (string>=? "abd" "abc"))
+(test-case "string>=? equal" #t (string>=? "abc" "abc"))
+(test-case "string>=? less" #f (string>=? "abc" "abd"))
+
+;; ============================================================================
+;; Test: String Predicates
+;; ============================================================================
+
+(display "=== Testing String Predicates ===\n")
+
+(test-case "string? true" #t (string? "hello"))
+(test-case "string? empty" #t (string? ""))
+(test-case "string? number" #f (string? 42))
+(test-case "string? symbol" #f (string? 'hello))
+
+;; ============================================================================
+;; Test: String Conversion
+;; ============================================================================
+
+(display "=== Testing String Conversion ===\n")
+
+;; number->string
+(test-case "number->string int" "42" (number->string 42))
+(test-case "number->string neg" "-17" (number->string -17))
+(test-case "number->string zero" "0" (number->string 0))
+
+;; string->number
+(test-case "string->number int" 42 (string->number "42"))
+(test-case "string->number neg" -17 (string->number "-17"))
+(test-case "string->number float" 3.14 (string->number "3.14"))
+
+;; symbol->string
+(test-case "symbol->string" "hello" (symbol->string 'hello))
+
+;; string->symbol
+(test-case "string->symbol" 'world (string->symbol "world"))
+
+;; ============================================================================
+;; Test: String Building
+;; ============================================================================
+
+(display "=== Testing String Building ===\n")
+
+;; make-string
+(test-case "make-string length" 5 (string-length (make-string 5 #\x)))
+(test-case "make-string content" #\x (string-ref (make-string 3 #\x) 1))
+
+;; list->string
+(test-case "list->string" "abc" (list->string '(#\a #\b #\c)))
+(test-case "list->string empty" "" (list->string '()))
+
+;; string->list
+(test-case "string->list" '(#\h #\i) (string->list "hi"))
+(test-case "string->list empty" '() (string->list ""))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

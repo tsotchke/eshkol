@@ -121,6 +121,10 @@ char* arena_allocate_string_with_header(arena_t* arena, size_t length);
 // Returns pointer to vector data (header is at offset -8)
 void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity);
 
+// Allocate symbol with object header (for symbol->string conversion)
+// Returns pointer to symbol data (header is at offset -8)
+void* arena_allocate_symbol_with_header(arena_t* arena, size_t length);
+
 // Allocate closure with object header (for consolidated CALLABLE type)
 // Returns pointer to closure data (header is at offset -8)
 // name: bound procedure name from (define name ...) or NULL for anonymous lambdas

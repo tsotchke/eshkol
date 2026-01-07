@@ -612,11 +612,59 @@ eshkol_ast_t* convert_cond(eshkol_tagged_value_t sexp) {
             malloc(clause_sexps.size() * sizeof(eshkol_ast_t)));
         for (size_t i = 0; i < clause_sexps.size(); i++) {
             // Each clause is a list (test expr...)
-            eshkol_ast_t* clause_ast = convert_sexp(clause_sexps[i]);
-            if (clause_ast) {
-                ast->operation.call_op.variables[i] = *clause_ast;
-                free(clause_ast);
+            // We need to parse it as CALL_OP: func=test, variables=exprs
+            eshkol_tagged_value_t clause_sexp = clause_sexps[i];
+
+            if (!is_pair(clause_sexp)) {
+                eshkol_warn("cond clause must be a list");
+                continue;
             }
+
+            eshkol_tagged_value_t test_sexp = pair_car(clause_sexp);
+            eshkol_tagged_value_t body_start = pair_cdr(clause_sexp);
+            std::vector<eshkol_tagged_value_t> body_sexps = list_to_vector(body_start);
+
+            // Check if this is an else clause
+            bool is_else = false;
+            if (is_symbol(test_sexp)) {
+                const char* test_name = get_symbol_name(test_sexp);
+                if (test_name && strcmp(test_name, "else") == 0) {
+                    is_else = true;
+                }
+            }
+
+            // Create a CALL_OP structure for this clause
+            eshkol_ast_t clause_ast;
+            clause_ast.type = ESHKOL_OP;
+            clause_ast.operation.op = ESHKOL_CALL_OP;
+            clause_ast.operation.call_op.num_vars = body_sexps.size();
+
+            // If it's an else clause, the test is #t
+            if (is_else) {
+                clause_ast.operation.call_op.func = static_cast<eshkol_ast_t*>(
+                    malloc(sizeof(eshkol_ast_t)));
+                clause_ast.operation.call_op.func->type = ESHKOL_BOOL;
+                clause_ast.operation.call_op.func->int64_val = 1;  // true
+            } else {
+                clause_ast.operation.call_op.func = convert_sexp(test_sexp);
+            }
+
+            // Convert body expressions
+            if (body_sexps.empty()) {
+                clause_ast.operation.call_op.variables = nullptr;
+            } else {
+                clause_ast.operation.call_op.variables = static_cast<eshkol_ast_t*>(
+                    malloc(body_sexps.size() * sizeof(eshkol_ast_t)));
+                for (size_t j = 0; j < body_sexps.size(); j++) {
+                    eshkol_ast_t* body_ast = convert_sexp(body_sexps[j]);
+                    if (body_ast) {
+                        clause_ast.operation.call_op.variables[j] = *body_ast;
+                        free(body_ast);
+                    }
+                }
+            }
+
+            ast->operation.call_op.variables[i] = clause_ast;
         }
     }
 

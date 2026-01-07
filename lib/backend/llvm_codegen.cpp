@@ -6471,6 +6471,12 @@ private:
             builder->SetInsertPoint(tco_loop_bb);
         }
 
+        // RECURSIVE SHADOWING FIX: Register _func key BEFORE generating body
+        // This allows recursive calls to shadow builtins (e.g., user's flatten vs tensor flatten)
+        // The shadowing check at line 8120-8166 looks for func_name + "_func" in symbol tables
+        symbol_table[std::string(func_name) + "_func"] = function;
+        global_symbol_table[std::string(func_name) + "_func"] = function;
+
         // Generate function body
         Value* body_result = nullptr;
         if (op->define_op.value) {
@@ -8055,7 +8061,9 @@ private:
             eshkol_op_t inner_op = op->call_op.func->operation.op;
             // Check if this is an operation that returns a callable closure
             if (inner_op == ESHKOL_DERIVATIVE_OP || inner_op == ESHKOL_GRADIENT_OP ||
-                inner_op == ESHKOL_LAMBDA_OP || inner_op == ESHKOL_JACOBIAN_OP) {
+                inner_op == ESHKOL_LAMBDA_OP || inner_op == ESHKOL_JACOBIAN_OP ||
+                inner_op == ESHKOL_COND_OP || inner_op == ESHKOL_IF_OP ||
+                inner_op == ESHKOL_LET_OP || inner_op == ESHKOL_LETREC_OP) {
                 // Evaluate the operation to get the closure value
                 Value* func_result = codegenAST(op->call_op.func);
                 if (!func_result) {
@@ -8090,7 +8098,11 @@ private:
 
         // Handle variable function references (existing code)
         if (op->call_op.func->type != ESHKOL_VAR || !op->call_op.func->variable.id) {
-            eshkol_error("Call expression requires variable or inline lambda");
+            ESHKOL_ERROR("Call expression requires variable or inline lambda (func type: %d, is OP: %d, op_type: %d)",
+                         op->call_op.func ? op->call_op.func->type : -1,
+                         op->call_op.func && op->call_op.func->type == ESHKOL_OP ? 1 : 0,
+                         op->call_op.func && op->call_op.func->type == ESHKOL_OP ? op->call_op.func->operation.op : -1);
+            eshkol_error_stacktrace();
             return nullptr;
         }
         
@@ -8267,7 +8279,7 @@ private:
         if (func_name == "list?") return codegenListPredicate(op);
         if (func_name == "string?") return codegenHeapSubtypePredicate(op, HEAP_SUBTYPE_STRING);
         if (func_name == "boolean?") return codegenBooleanPredicate(op);
-        if (func_name == "symbol?") return codegenTypePredicate(op, ESHKOL_VALUE_SYMBOL);
+        if (func_name == "symbol?") return codegenHeapSubtypePredicate(op, HEAP_SUBTYPE_SYMBOL);
         if (func_name == "procedure?") return codegenProcedurePredicate(op);
 
         // HoTT TYPE INTROSPECTION: type-of returns the type tag as an integer
@@ -8290,6 +8302,8 @@ private:
         if (func_name == "string>=?") return strio_->stringCompare(op, "ge");
         if (func_name == "number->string") return strio_->numberToString(op);
         if (func_name == "string->number") return strio_->stringToNumber(op);
+        if (func_name == "symbol->string") return codegenSymbolToString(op);
+        if (func_name == "string->symbol") return codegenStringToSymbol(op);
         if (func_name == "make-string") return strio_->makeString(op);
         if (func_name == "string-set!") return strio_->stringSet(op);
         if (func_name == "string->list") return strio_->stringToList(op);
@@ -8493,7 +8507,8 @@ private:
         if (func_name == "tensor-set") return tensor_->tensorSet(op);
 
         // Scheme vectors (heterogeneous - can hold any type) - MIGRATED to CollectionCodegen
-        if (func_name == "vector?") return codegenHeapSubtypePredicate(op, HEAP_SUBTYPE_VECTOR);
+        // NOTE: vector? returns #t for both Scheme vectors AND tensor literals (#(...))
+        if (func_name == "vector?") return codegenVectorPredicate(op);
         if (func_name == "make-vector") return coll_->makeVector(op);
         if (func_name == "vector") return coll_->vector(op);
         if (func_name == "vector-ref") return coll_->vectorRef(op);
@@ -8639,6 +8654,83 @@ private:
         if (func_name == "matrix-to-string") return codegenMatrixToString(op);
 
     user_defined_function_call:
+        // AOT SCOPING BUG FIX: Check if the shadowed variable is actually callable
+        // This prevents segfaults when non-callable values (integers, strings, etc.)
+        // are used in function call position
+        {
+            Value* var_check = nullptr;
+            auto local_check = symbol_table.find(func_name);
+            if (local_check != symbol_table.end()) {
+                var_check = local_check->second;
+            } else {
+                auto global_check = global_symbol_table.find(func_name);
+                if (global_check != global_symbol_table.end()) {
+                    var_check = global_check->second;
+                }
+            }
+
+            if (var_check) {
+                // Load the actual value to check its type
+                Value* actual_value = nullptr;
+                if (isa<GlobalVariable>(var_check)) {
+                    GlobalVariable* gv = cast<GlobalVariable>(var_check);
+                    actual_value = builder->CreateLoad(gv->getValueType(), var_check);
+                } else if (isa<AllocaInst>(var_check)) {
+                    AllocaInst* ai = cast<AllocaInst>(var_check);
+                    actual_value = builder->CreateLoad(ai->getAllocatedType(), var_check);
+                } else if (isa<LoadInst>(var_check) && var_check->getType() == tagged_value_type) {
+                    actual_value = var_check;
+                } else if (isa<Argument>(var_check) && var_check->getType() == tagged_value_type) {
+                    actual_value = var_check;
+                }
+
+                // Check if it's a tagged_value with a non-callable type
+                if (actual_value && actual_value->getType() == tagged_value_type) {
+                    Value* type_tag = getTaggedValueType(actual_value);
+                    Value* base_type = getBaseType(type_tag);
+
+                    // Check for non-callable primitive types
+                    Value* is_int64 = builder->CreateICmpEQ(base_type,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+                    Value* is_double = builder->CreateICmpEQ(base_type,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+                    Value* is_bool = builder->CreateICmpEQ(base_type,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL));
+                    Value* is_char = builder->CreateICmpEQ(base_type,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_CHAR));
+                    Value* is_null = builder->CreateICmpEQ(base_type,
+                        ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
+
+                    Value* is_non_callable = builder->CreateOr(is_int64,
+                        builder->CreateOr(is_double,
+                        builder->CreateOr(is_bool,
+                        builder->CreateOr(is_char, is_null))));
+
+                    Function* current_func = builder->GetInsertBlock()->getParent();
+                    BasicBlock* error_block = BasicBlock::Create(*context, "non_callable_error", current_func);
+                    BasicBlock* callable_block = BasicBlock::Create(*context, "is_callable", current_func);
+
+                    builder->CreateCondBr(is_non_callable, error_block, callable_block);
+
+                    // Error block: print error and exit
+                    builder->SetInsertPoint(error_block);
+                    Function* printf_func = function_table["printf"];
+                    Function* exit_func = function_table["exit"];
+                    if (printf_func && exit_func) {
+                        std::string error_msg = "Error: variable '" + func_name +
+                            "' is not a procedure; cannot be used in function call position\n";
+                        Value* error_str = builder->CreateGlobalStringPtr(error_msg);
+                        builder->CreateCall(printf_func, {error_str});
+                        builder->CreateCall(exit_func, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
+                    }
+                    builder->CreateUnreachable();
+
+                    // Continue with callable path
+                    builder->SetInsertPoint(callable_block);
+                }
+            }
+        }
+
         // Handle function calls - check local bindings FIRST for proper shadowing
         // LOCAL SHADOWING FIX: Check local symbol_table before function_table
         // This ensures letrec/let bindings shadow global functions (e.g., local 'partition'
@@ -12084,6 +12176,26 @@ private:
         return packBoolToTaggedValue(matches);
     }
 
+    // vector? predicate - returns #t for both Scheme vectors (HEAP_SUBTYPE_VECTOR)
+    // and tensor literals created with #(...) syntax (HEAP_SUBTYPE_TENSOR)
+    Value* codegenVectorPredicate(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("vector? requires exactly 1 argument");
+            return nullptr;
+        }
+
+        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv.llvm_value) return nullptr;
+        Value* arg = typedValueToTaggedValue(tv);
+
+        // Check for both HEAP_SUBTYPE_VECTOR (Scheme vectors) and HEAP_SUBTYPE_TENSOR (numeric tensors)
+        // In Eshkol, #(...) syntax creates tensors, but vector? should return #t for them
+        Value* is_vector = isHeapSubtype(arg, HEAP_SUBTYPE_VECTOR);
+        Value* is_tensor = isHeapSubtype(arg, HEAP_SUBTYPE_TENSOR);
+        Value* matches = builder->CreateOr(is_vector, is_tensor);
+        return packBoolToTaggedValue(matches);
+    }
+
     Value* codegenCallableSubtypePredicate(const eshkol_operations_t* op, uint8_t expected_subtype) {
         if (op->call_op.num_vars != 1) {
             eshkol_warn("Type predicate requires exactly 1 argument");
@@ -12108,7 +12220,85 @@ private:
         return builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
     }
 
+    // symbol->string: Convert a symbol to its string representation
+    // Symbols and strings share the same data layout, just differ in header subtype
+    // Layout: header at offset -8, string data starts at offset 0 (null-terminated)
+    // Header has: subtype(i8), flags(i8), ref_count(i16), size(i32)
+    // Size field at offset -4 contains string length + 1 (for null terminator)
+    Value* codegenSymbolToString(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("symbol->string requires exactly 1 argument");
+            return nullptr;
+        }
 
+        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv.llvm_value) return nullptr;
+        Value* arg = typedValueToTaggedValue(tv);
+
+        // Get pointer to symbol data (points directly to string chars)
+        Value* ptr_int = unpackInt64FromTaggedValue(arg);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+
+        // Get string length from header->size at offset -4 (i32)
+        // Header layout: subtype(1) + flags(1) + ref_count(2) + size(4) = 8 bytes total
+        // size field starts at offset 4 in header, so from data pointer it's at -4
+        Value* size_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -4));
+        Value* size_val = builder->CreateLoad(int32_type, size_ptr);
+        // Size includes null terminator, so subtract 1 to get actual string length
+        Value* length = builder->CreateZExt(
+            builder->CreateSub(size_val, ConstantInt::get(int32_type, 1)),
+            int64_type);
+
+        // Allocate new string with header
+        Value* arena_ptr = builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* new_str = builder->CreateCall(mem->getArenaAllocateStringWithHeader(),
+            {arena_ptr, length});
+
+        // Copy string data (source and dest both point to string chars at offset 0)
+        // Copy length+1 bytes to include null terminator
+        Value* copy_len = builder->CreateAdd(length, ConstantInt::get(int64_type, 1));
+        builder->CreateMemCpy(new_str, MaybeAlign(1), ptr, MaybeAlign(1), copy_len);
+
+        return tagged_->packHeapPtr(new_str);
+    }
+
+    // string->symbol: Convert a string to a symbol
+    // Creates a new symbol with the string's content
+    // Same layout as strings but with HEAP_SUBTYPE_SYMBOL in header
+    Value* codegenStringToSymbol(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("string->symbol requires exactly 1 argument");
+            return nullptr;
+        }
+
+        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv.llvm_value) return nullptr;
+        Value* arg = typedValueToTaggedValue(tv);
+
+        // Get pointer to string data (points directly to string chars)
+        Value* ptr_int = unpackInt64FromTaggedValue(arg);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+
+        // Get string length from header->size at offset -4 (i32)
+        Value* size_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -4));
+        Value* size_val = builder->CreateLoad(int32_type, size_ptr);
+        // Size includes null terminator, so subtract 1 to get actual string length
+        Value* length = builder->CreateZExt(
+            builder->CreateSub(size_val, ConstantInt::get(int32_type, 1)),
+            int64_type);
+
+        // Allocate new symbol with header
+        Value* arena_ptr = builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* new_sym = builder->CreateCall(mem->getArenaAllocateSymbolWithHeader(),
+            {arena_ptr, length});
+
+        // Copy string data (source and dest both point to string chars at offset 0)
+        // Copy length+1 bytes to include null terminator
+        Value* copy_len = builder->CreateAdd(length, ConstantInt::get(int64_type, 1));
+        builder->CreateMemCpy(new_sym, MaybeAlign(1), ptr, MaybeAlign(1), copy_len);
+
+        return tagged_->packHeapPtr(new_sym);
+    }
 
     // ============================================================================
     // CHARACTER FUNCTIONS
@@ -15061,8 +15251,16 @@ private:
         // TCO SETUP: Named let is always self-recursive, so always enable TCO
         eshkol_debug("TCO: Enabling tail call optimization for named let '%s'", loop_name.c_str());
 
-        // Set up TCO context in binding module
+        // NESTED NAMED LET FIX: Save TCO context to prevent corruption by nested named lets
+        // Each named let saves the outer TCO state, does its work, then restores it
         auto& tco_ctx = binding_->getTCOContext();
+        std::string saved_tco_func_name = tco_ctx.func_name;
+        bool saved_tco_enabled = tco_ctx.enabled;
+        BasicBlock* saved_tco_loop_header = tco_ctx.loop_header;
+        std::vector<AllocaInst*> saved_tco_param_allocas = tco_ctx.param_allocas;
+        std::vector<std::string> saved_tco_param_names = tco_ctx.param_names;
+
+        // Set up TCO context for this named let
         tco_ctx.func_name = loop_name;
         tco_ctx.enabled = true;
         tco_ctx.param_allocas.clear();
@@ -15092,11 +15290,6 @@ private:
 
         // Generate body
         Value* body_result = codegenAST(op->let_op.body);
-
-        // Clear TCO context after body generation
-        tco_ctx.enabled = false;
-        tco_ctx.func_name = "";
-        tco_ctx.loop_header = nullptr;
 
         // TCO FIX: Check if block is already terminated (tail call path)
         BasicBlock* current_bb = builder->GetInsertBlock();
@@ -15142,6 +15335,14 @@ private:
         for (auto& entry : globals_to_preserve) {
             symbol_table[entry.first] = entry.second;
         }
+
+        // NESTED NAMED LET FIX: Restore outer TCO context after body generation
+        // This ensures nested named lets don't corrupt the outer's TCO state
+        tco_ctx.func_name = saved_tco_func_name;
+        tco_ctx.enabled = saved_tco_enabled;
+        tco_ctx.loop_header = saved_tco_loop_header;
+        tco_ctx.param_allocas = saved_tco_param_allocas;
+        tco_ctx.param_names = saved_tco_param_names;
 
         // Call the loop function with initial values
         // Ensure initial values are tagged_value type
@@ -16881,9 +17082,9 @@ private:
                     ConstantFP::get(double_type, ast->double_val));
 
             case ESHKOL_VAR:
-                // Return symbol as string with header for HEAP_PTR
+                // Return symbol with HEAP_SUBTYPE_SYMBOL (distinct from strings)
                 return packPtrToTaggedValue(
-                    ctx_->internStringWithHeader(ast->variable.id, HEAP_SUBTYPE_STRING),
+                    ctx_->internStringWithHeader(ast->variable.id, HEAP_SUBTYPE_SYMBOL),
                     ESHKOL_VALUE_HEAP_PTR);
 
             case ESHKOL_BOOL:
@@ -16900,18 +17101,10 @@ private:
                     ESHKOL_VALUE_HEAP_PTR);
 
             case ESHKOL_CHAR:
-                // Return character as #\char symbol with header for HEAP_PTR
-                {
-                    char char_buf[16];
-                    char ch = (char)ast->int64_val;
-                    if (ch == ' ') snprintf(char_buf, sizeof(char_buf), "#\\space");
-                    else if (ch == '\n') snprintf(char_buf, sizeof(char_buf), "#\\newline");
-                    else if (ch == '\t') snprintf(char_buf, sizeof(char_buf), "#\\tab");
-                    else snprintf(char_buf, sizeof(char_buf), "#\\%c", ch);
-                    return packPtrToTaggedValue(
-                        ctx_->internStringWithHeader(char_buf, HEAP_SUBTYPE_STRING),
-                        ESHKOL_VALUE_HEAP_PTR);
-                }
+                // Return character as proper ESHKOL_VALUE_CHAR
+                // This is needed for list->string to work correctly on quoted char lists
+                return packCharToTaggedValue(
+                    ConstantInt::get(int64_type, ast->int64_val));
 
             case ESHKOL_OP:
                 return codegenQuotedOperation(&ast->operation);
@@ -16983,7 +17176,7 @@ private:
             case ESHKOL_IF_OP: {
                 // Build (if test then else)
                 // IF_OP uses call_op structure: variables[0]=condition, variables[1]=then, variables[2]=else
-                Value* if_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("if", HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
+                Value* if_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("if", HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
 
                 // Build from right to left: else -> then -> test -> if
                 Value* result = packNullToTaggedValue();
@@ -17028,7 +17221,7 @@ private:
             case ESHKOL_COND_OP: {
                 // Build (cond (test1 expr1) (test2 expr2) ...)
                 // COND_OP uses call_op structure where each variable is a clause
-                Value* cond_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("cond", HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
+                Value* cond_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("cond", HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
                 Value* result = packNullToTaggedValue();
 
                 // Build clauses from right to left
@@ -17074,7 +17267,7 @@ private:
                 const char* let_name = op->op == ESHKOL_LET_OP ? "let" :
                                        op->op == ESHKOL_LET_STAR_OP ? "let*" :
                                        op->op == ESHKOL_LETREC_OP ? "letrec" : "letrec*";
-                Value* let_sym = packPtrToTaggedValue(ctx_->internStringWithHeader(let_name, HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
+                Value* let_sym = packPtrToTaggedValue(ctx_->internStringWithHeader(let_name, HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
 
                 // Build bindings list
                 Value* bindings = packNullToTaggedValue();
@@ -17087,7 +17280,7 @@ private:
                         const eshkol_ast_t* var_ast = binding_cons->cons_cell.car;
                         Value* var;
                         if (var_ast->type == ESHKOL_VAR && var_ast->variable.id) {
-                            var = packPtrToTaggedValue(ctx_->internStringWithHeader(var_ast->variable.id, HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
+                            var = packPtrToTaggedValue(ctx_->internStringWithHeader(var_ast->variable.id, HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
                         } else {
                             var = codegenQuotedAST(var_ast);
                         }
@@ -17124,8 +17317,8 @@ private:
 
             case ESHKOL_DEFINE_OP: {
                 // Build (define name value) or (define (name params) body)
-                Value* define_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("define", HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
-                Value* name = packPtrToTaggedValue(ctx_->internStringWithHeader(op->define_op.name, HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
+                Value* define_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("define", HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
+                Value* name = packPtrToTaggedValue(ctx_->internStringWithHeader(op->define_op.name, HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
 
                 if (op->define_op.is_function) {
                     // Build (define (name params...) body)
@@ -17133,7 +17326,7 @@ private:
                     Value* name_params = packNullToTaggedValue();
                     for (int64_t i = op->define_op.num_params - 1; i >= 0; i--) {
                         Value* param = packPtrToTaggedValue(
-                            ctx_->internStringWithHeader(op->define_op.parameters[i].variable.id, HEAP_SUBTYPE_STRING),
+                            ctx_->internStringWithHeader(op->define_op.parameters[i].variable.id, HEAP_SUBTYPE_SYMBOL),
                             ESHKOL_VALUE_HEAP_PTR);
                         name_params = codegenTaggedArenaConsCellFromTaggedValue(param, name_params);
                         name_params = packPtrToTaggedValue(builder->CreateIntToPtr(name_params, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
@@ -17163,6 +17356,31 @@ private:
                 }
             }
 
+            case ESHKOL_QUOTE_OP: {
+                // Build (quote expr) - homoiconic representation of nested quote
+                // This handles ''x -> (quote x) correctly
+                Value* quote_sym = packPtrToTaggedValue(
+                    ctx_->internStringWithHeader("quote", HEAP_SUBTYPE_SYMBOL),
+                    ESHKOL_VALUE_HEAP_PTR);
+
+                // Get the quoted expression
+                Value* quoted_expr = packNullToTaggedValue();
+                if (op->call_op.num_vars > 0) {
+                    quoted_expr = codegenQuotedAST(&op->call_op.variables[0]);
+                }
+
+                // Build (quote expr) as a cons list
+                Value* result = packNullToTaggedValue();
+                result = codegenTaggedArenaConsCellFromTaggedValue(quoted_expr, result);
+                result = packPtrToTaggedValue(
+                    builder->CreateIntToPtr(result, builder->getPtrTy()),
+                    ESHKOL_VALUE_HEAP_PTR);
+                result = codegenTaggedArenaConsCellFromTaggedValue(quote_sym, result);
+                return packPtrToTaggedValue(
+                    builder->CreateIntToPtr(result, builder->getPtrTy()),
+                    ESHKOL_VALUE_HEAP_PTR);
+            }
+
             default:
                 eshkol_debug("codegenQuotedOperation: unhandled op type %d", op->op);
                 return packNullToTaggedValue();
@@ -17171,7 +17389,7 @@ private:
 
     // Helper to build (op arg1 arg2 ...) for n-ary operations
     Value* codegenQuotedNaryOp(const char* op_name, const eshkol_ast_t* args, uint64_t num_args) {
-        Value* op_sym = packPtrToTaggedValue(ctx_->internStringWithHeader(op_name, HEAP_SUBTYPE_STRING), ESHKOL_VALUE_HEAP_PTR);
+        Value* op_sym = packPtrToTaggedValue(ctx_->internStringWithHeader(op_name, HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
         Value* result = packNullToTaggedValue();
 
         // Build args from right to left
@@ -17231,7 +17449,7 @@ private:
                 return result_int;
             }
 
-            Value* op_string = ctx_->internStringWithHeader(op->call_op.func->variable.id, HEAP_SUBTYPE_STRING);
+            Value* op_string = ctx_->internStringWithHeader(op->call_op.func->variable.id, HEAP_SUBTYPE_SYMBOL);
             TypedValue op_symbol(op_string, ESHKOL_VALUE_HEAP_PTR, true);
             Value* op_tagged = typedValueToTaggedValue(op_symbol);
 
@@ -17270,7 +17488,7 @@ private:
             if (params[i].type != ESHKOL_VAR || !params[i].variable.id) continue;
             
             // Create parameter symbol string with header for HEAP_PTR
-            Value* param_name = ctx_->internStringWithHeader(params[i].variable.id, HEAP_SUBTYPE_STRING);
+            Value* param_name = ctx_->internStringWithHeader(params[i].variable.id, HEAP_SUBTYPE_SYMBOL);
             Value* param_tagged = packPtrToTaggedValue(param_name, ESHKOL_VALUE_HEAP_PTR);
             
             // Get rest of list as tagged value
@@ -17335,7 +17553,7 @@ private:
         // Step 3: Build complete structure: (lambda (params) body)
         
         // 3a: Create "lambda" symbol string with header for HEAP_PTR
-        Value* lambda_symbol = ctx_->internStringWithHeader("lambda", HEAP_SUBTYPE_STRING);
+        Value* lambda_symbol = ctx_->internStringWithHeader("lambda", HEAP_SUBTYPE_SYMBOL);
         Value* lambda_tagged = packPtrToTaggedValue(lambda_symbol, ESHKOL_VALUE_HEAP_PTR);
         
         // 3b: Pack param_list as tagged value

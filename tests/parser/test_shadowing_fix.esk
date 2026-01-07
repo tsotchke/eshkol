@@ -1,0 +1,14 @@
+;; Test that non-callable shadowing gives proper error instead of segfault
+;;; Expected: Error
+
+(require stdlib)
+
+(display "=== AOT Scoping Fix Test ===\n")
+
+;; This should give a clear error message, not segfault
+(display "Defining + as integer 999\n")
+(define + 999)
+
+(display "Attempting to call shadowed +...\n")
+(define result (+ 1 1))  ; Should error: "+ is not a procedure"
+(display "Result: ") (display result) (display "\n")

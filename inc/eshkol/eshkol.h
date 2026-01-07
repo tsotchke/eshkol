@@ -310,7 +310,8 @@ typedef enum {
     HEAP_SUBTYPE_RECORD      = 7,   // User-defined record type
     HEAP_SUBTYPE_BYTEVECTOR  = 8,   // Raw byte vector (R7RS)
     HEAP_SUBTYPE_PORT        = 9,   // I/O port
-    // Reserved: 10-255 for future heap types
+    HEAP_SUBTYPE_SYMBOL      = 10,  // Interned symbol (distinct from string)
+    // Reserved: 11-255 for future heap types
 } heap_subtype_t;
 
 // ───────────────────────────────────────────────────────────────────────────
