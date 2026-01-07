@@ -1,0 +1,192 @@
+;; Control Flow Test: if-then-else
+;; Tests basic conditional expressions
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Basic If Expressions
+;; ============================================================================
+
+(display "=== Testing Basic If Expressions ===\n")
+
+;; True condition
+(test-case "if true literal" 1 (if #t 1 2))
+(test-case "if true expression" 10 (if #t (* 2 5) 0))
+
+;; False condition
+(test-case "if false literal" 2 (if #f 1 2))
+(test-case "if false expression" 0 (if #f 10 0))
+
+;; Comparison conditions
+(test-case "if > true" 'greater (if (> 5 3) 'greater 'not-greater))
+(test-case "if > false" 'not-greater (if (> 3 5) 'greater 'not-greater))
+(test-case "if < true" 'less (if (< 3 5) 'less 'not-less))
+(test-case "if = true" 'equal (if (= 5 5) 'equal 'not-equal))
+(test-case "if = false" 'not-equal (if (= 5 6) 'equal 'not-equal))
+
+;; ============================================================================
+;; Test: Truthiness
+;; ============================================================================
+
+(display "=== Testing Truthiness ===\n")
+
+;; Only #f is false in Scheme
+(test-case "0 is truthy" 'yes (if 0 'yes 'no))
+(test-case "empty string truthy" 'yes (if "" 'yes 'no))
+(test-case "empty list truthy" 'yes (if '() 'yes 'no))
+(test-case "symbol truthy" 'yes (if 'x 'yes 'no))
+(test-case "number truthy" 'yes (if 42 'yes 'no))
+
+;; Boolean expressions
+(test-case "and true true" 'yes (if (and #t #t) 'yes 'no))
+(test-case "and true false" 'no (if (and #t #f) 'yes 'no))
+(test-case "or false true" 'yes (if (or #f #t) 'yes 'no))
+(test-case "or false false" 'no (if (or #f #f) 'yes 'no))
+(test-case "not true" 'no (if (not #t) 'yes 'no))
+(test-case "not false" 'yes (if (not #f) 'yes 'no))
+
+;; ============================================================================
+;; Test: If with Side Effects
+;; ============================================================================
+
+(display "=== Testing If with Side Effects ===\n")
+
+;; Only one branch should execute
+(define side-effect-var 0)
+
+(if #t (set! side-effect-var 1) (set! side-effect-var 2))
+(test-case "true branch executes" 1 side-effect-var)
+
+(if #f (set! side-effect-var 10) (set! side-effect-var 20))
+(test-case "false branch executes" 20 side-effect-var)
+
+;; ============================================================================
+;; Test: If Return Values
+;; ============================================================================
+
+(display "=== Testing If Return Values ===\n")
+
+;; If returns the value of the executed branch
+(test-case "if returns then" 100 (if #t 100 200))
+(test-case "if returns else" 200 (if #f 100 200))
+
+;; Complex expressions in branches
+(test-case "if complex then" 15 (if #t (+ 5 10) (- 5 10)))
+(test-case "if complex else" -5 (if #f (+ 5 10) (- 5 10)))
+
+;; If with begin in branches
+(test-case "if with begin" 3
+  (if #t
+      (begin 1 2 3)
+      (begin 4 5 6)))
+
+;; ============================================================================
+;; Test: If in Different Contexts
+;; ============================================================================
+
+(display "=== Testing If in Contexts ===\n")
+
+;; If as function argument
+(test-case "if as arg" 15 (+ 5 (if #t 10 20)))
+
+;; If in let binding
+(test-case "if in let" 50
+  (let ((x (if (> 5 3) 10 20)))
+    (* x 5)))
+
+;; If in lambda body
+(define (abs-value n)
+  (if (< n 0) (- n) n))
+(test-case "if in lambda pos" 5 (abs-value 5))
+(test-case "if in lambda neg" 5 (abs-value -5))
+
+;; If in list operations
+(test-case "if in map" '(1 -1 1 -1)
+  (map (lambda (x) (if (> x 0) 1 -1)) '(5 -3 2 -8)))
+
+;; ============================================================================
+;; Test: Nested If
+;; ============================================================================
+
+(display "=== Testing Nested If ===\n")
+
+;; If in then branch
+(test-case "nested in then" 'a
+  (if #t
+      (if #t 'a 'b)
+      'c))
+
+;; If in else branch
+(test-case "nested in else" 'd
+  (if #f
+      'c
+      (if #t 'd 'e)))
+
+;; Multiple levels of nesting
+(define (classify n)
+  (if (< n 0)
+      'negative
+      (if (= n 0)
+          'zero
+          'positive)))
+
+(test-case "classify negative" 'negative (classify -5))
+(test-case "classify zero" 'zero (classify 0))
+(test-case "classify positive" 'positive (classify 5))
+
+;; Deep nesting
+(test-case "deep nest 1" 1
+  (if #t (if #t (if #t (if #t 1 2) 3) 4) 5))
+(test-case "deep nest 2" 2
+  (if #t (if #t (if #t (if #f 1 2) 3) 4) 5))
+
+;; ============================================================================
+;; Test: If with Complex Conditions
+;; ============================================================================
+
+(display "=== Testing Complex Conditions ===\n")
+
+;; Multiple comparisons with and
+(define (in-range? x low high)
+  (if (and (>= x low) (<= x high)) #t #f))
+(test-case "in range true" #t (in-range? 5 0 10))
+(test-case "in range false low" #f (in-range? -1 0 10))
+(test-case "in range false high" #f (in-range? 11 0 10))
+
+;; Multiple comparisons with or
+(define (is-boundary? x low high)
+  (if (or (= x low) (= x high)) #t #f))
+(test-case "boundary low" #t (is-boundary? 0 0 10))
+(test-case "boundary high" #t (is-boundary? 10 0 10))
+(test-case "boundary middle" #f (is-boundary? 5 0 10))
+
+;; Negated conditions
+(test-case "not condition true" 'yes (if (not (= 1 2)) 'yes 'no))
+(test-case "not condition false" 'no (if (not (= 1 1)) 'yes 'no))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

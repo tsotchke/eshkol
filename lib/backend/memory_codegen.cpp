@@ -209,6 +209,13 @@ void MemoryCodegen::createTypedAllocatorFunctions() {
     arena_allocate_vector_with_header = createFunc("arena_allocate_vector_with_header",
         llvm::FunctionType::get(ptr, {ptr, i64}, false));
 
+    // arena_allocate_symbol_with_header: void* (arena_t*, size_t length)
+    // Allocates symbol with object header prepended (HEAP_SUBTYPE_SYMBOL).
+    // Returns pointer to symbol data (header is at offset -8).
+    // C signature: void* arena_allocate_symbol_with_header(arena_t* arena, size_t length)
+    arena_allocate_symbol_with_header = createFunc("arena_allocate_symbol_with_header",
+        llvm::FunctionType::get(ptr, {ptr, i64}, false));
+
     // arena_allocate_closure_with_header: eshkol_closure_t* (arena_t*, uint64_t func_ptr,
     //                                     size_t num_captures, uint64_t sexpr_ptr, uint64_t return_type_info, const char* name)
     // Allocates closure with object header prepended for CALLABLE type.

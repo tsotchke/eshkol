@@ -1,0 +1,160 @@
+;; Parser Test: Numeric Literals
+;; Tests parsing of integers, floats, scientific notation, and edge cases
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+(define (approx-equal? a b epsilon)
+  (< (abs (- a b)) epsilon))
+
+(define (test-approx name expected actual)
+  (if (approx-equal? expected actual 0.0001)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Integer Literals
+;; ============================================================================
+
+(display "=== Testing Integer Literals ===\n")
+
+;; Basic integers
+(test-case "zero" 0 0)
+(test-case "positive integer" 42 42)
+(test-case "negative integer" -17 -17)
+(test-case "large positive" 1000000 1000000)
+(test-case "large negative" -999999 -999999)
+
+;; Integer arithmetic verification
+(test-case "int addition" 100 (+ 50 50))
+(test-case "int subtraction" 25 (- 100 75))
+(test-case "int multiplication" 144 (* 12 12))
+(test-case "int division" 7 (quotient 50 7))
+
+;; ============================================================================
+;; Test: Floating Point Literals
+;; ============================================================================
+
+(display "=== Testing Floating Point Literals ===\n")
+
+;; Basic floats
+(test-approx "float zero" 0.0 0.0)
+(test-approx "positive float" 3.14159 3.14159)
+(test-approx "negative float" -2.718 -2.718)
+(test-approx "float with leading zero" 0.5 0.5)
+(test-approx "float with trailing zero" 2.0 2.0)
+
+;; Float arithmetic
+(test-approx "float addition" 5.5 (+ 2.5 3.0))
+(test-approx "float subtraction" 1.5 (- 4.0 2.5))
+(test-approx "float multiplication" 6.25 (* 2.5 2.5))
+(test-approx "float division" 2.5 (/ 5.0 2.0))
+
+;; ============================================================================
+;; Test: Scientific Notation
+;; ============================================================================
+
+(display "=== Testing Scientific Notation ===\n")
+
+;; Positive exponents
+(test-approx "scientific 1e2" 100.0 1e2)
+(test-approx "scientific 1.5e2" 150.0 1.5e2)
+(test-approx "scientific 2.5e3" 2500.0 2.5e3)
+
+;; Negative exponents
+(test-approx "scientific 1e-2" 0.01 1e-2)
+(test-approx "scientific 5e-3" 0.005 5e-3)
+(test-approx "scientific 1.5e-1" 0.15 1.5e-1)
+
+;; Uppercase E
+(test-approx "scientific 1E2" 100.0 1E2)
+(test-approx "scientific 2.5E-2" 0.025 2.5E-2)
+
+;; Explicit positive exponent
+(test-approx "scientific 1e+2" 100.0 1e+2)
+(test-approx "scientific 3.0e+1" 30.0 3.0e+1)
+
+;; ============================================================================
+;; Test: Mixed Integer/Float Operations
+;; ============================================================================
+
+(display "=== Testing Mixed Operations ===\n")
+
+;; Integer to float coercion
+(test-approx "int + float" 5.5 (+ 2 3.5))
+(test-approx "float + int" 5.5 (+ 3.5 2))
+(test-approx "int * float" 7.5 (* 3 2.5))
+(test-approx "float / int" 2.5 (/ 5.0 2))
+
+;; ============================================================================
+;; Test: Edge Cases
+;; ============================================================================
+
+(display "=== Testing Edge Cases ===\n")
+
+;; Very small/large numbers
+(test-approx "very small" 0.000001 1e-6)
+(test-approx "very large" 1000000.0 1e6)
+
+;; Precision tests
+(test-approx "precision test 1" 0.1 (/ 1.0 10.0))
+(test-approx "precision test 2" 0.333333 (/ 1.0 3.0))
+
+;; Negative zero (should equal positive zero)
+(test-case "neg zero equals zero" #t (= 0 (- 0)))
+(test-approx "neg float zero" 0.0 (- 0.0))
+
+;; ============================================================================
+;; Test: Number Predicates
+;; ============================================================================
+
+(display "=== Testing Number Predicates ===\n")
+
+(test-case "number? int" #t (number? 42))
+(test-case "number? float" #t (number? 3.14))
+(test-case "number? negative" #t (number? -5))
+(test-case "number? zero" #t (number? 0))
+
+(test-case "zero? 0" #t (zero? 0))
+(test-case "zero? 0.0" #t (zero? 0.0))
+(test-case "zero? non-zero" #f (zero? 1))
+
+(test-case "positive? 5" #t (positive? 5))
+(test-case "positive? -5" #f (positive? -5))
+(test-case "positive? 0" #f (positive? 0))
+
+(test-case "negative? -5" #t (negative? -5))
+(test-case "negative? 5" #f (negative? 5))
+(test-case "negative? 0" #f (negative? 0))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

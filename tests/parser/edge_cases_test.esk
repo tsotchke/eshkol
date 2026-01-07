@@ -1,0 +1,219 @@
+;; Parser Test: Edge Cases
+;; Tests parser handling of unusual but valid inputs
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Empty and Minimal Constructs
+;; ============================================================================
+
+(display "=== Testing Empty/Minimal Constructs ===\n")
+
+;; Empty begin
+(test-case "begin single" 42 (begin 42))
+
+;; Single element lists
+(test-case "single list" 1 (car '(1)))
+(test-case "single length" 1 (length '(42)))
+
+;; Empty string
+(test-case "empty string" "" "")
+(test-case "empty string len" 0 (string-length ""))
+
+;; ============================================================================
+;; Test: Deeply Nested Parentheses
+;; ============================================================================
+
+(display "=== Testing Deep Nesting ===\n")
+
+;; Many levels of nesting - 5 nested lambdas need 6 call parens to fully evaluate
+(test-case "deep parens" 1 ((((((lambda () (lambda () (lambda () (lambda () (lambda () 1)))))))))))
+
+;; Deep arithmetic
+(test-case "deep arithmetic" 10
+  (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 1))))))))))
+
+;; Deep conditionals
+(test-case "deep if" 42
+  (if #t (if #t (if #t (if #t (if #t 42 0) 0) 0) 0) 0))
+
+;; Deep let
+(test-case "deep let binding" 46
+  (let ((a 1))
+    (let ((b (+ a 1)))
+      (let ((c (+ b 2)))
+        (let ((d (+ c 3)))
+          (let ((e (+ d 4)))
+            (let ((f (+ e 5)))
+              (let ((g (+ f 6)))
+                (let ((h (+ g 7)))
+                  (let ((i (+ h 8)))
+                    (let ((j (+ i 9)))
+                      j)))))))))))
+
+;; ============================================================================
+;; Test: Long Expressions
+;; ============================================================================
+
+(display "=== Testing Long Expressions ===\n")
+
+;; Many arguments
+(test-case "many args sum" 55
+  (+ 1 2 3 4 5 6 7 8 9 10))
+
+;; Long list
+(define long-list '(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20))
+(test-case "long list length" 20 (length long-list))
+
+;; Many let bindings
+(test-case "many let bindings" 210
+  (let ((a 1) (b 2) (c 3) (d 4) (e 5)
+        (f 6) (g 7) (h 8) (i 9) (j 10)
+        (k 11) (l 12) (m 13) (n 14) (o 15)
+        (p 16) (q 17) (r 18) (s 19) (t 20))
+    (+ a b c d e f g h i j k l m n o p q r s t)))
+
+;; ============================================================================
+;; Test: Unusual Identifier Names
+;; ============================================================================
+
+(display "=== Testing Unusual Identifiers ===\n")
+
+;; Can shadow built-in operators in let
+(test-case "can use + as var in let" 100
+  (let ((+ 100)) +))
+
+;; Very long identifier
+(define this-is-a-very-long-identifier-name-that-should-still-work 42)
+(test-case "very long identifier" 42 this-is-a-very-long-identifier-name-that-should-still-work)
+
+;; Numbers in identifier
+(define x1y2z3 123)
+(test-case "numbers in identifier" 123 x1y2z3)
+
+;; All hyphens between
+(define a-b-c-d-e 54321)
+(test-case "many hyphens" 54321 a-b-c-d-e)
+
+;; ============================================================================
+;; Test: Whitespace Variations
+;; ============================================================================
+
+(display "=== Testing Whitespace Variations ===\n")
+
+;; No spaces
+(test-case "no spaces" 6 (+(* 2 2)(+ 1 1)))
+
+;; Extra spaces everywhere
+(test-case "extra spaces" 10 (  +  5  5  ))
+
+;; Newlines in expression
+(test-case "newlines" 15
+  (+
+   5
+   5
+   5))
+
+;; Tab-separated
+(test-case "tabs" 8 (+	4	4))
+
+;; ============================================================================
+;; Test: Quote Variations
+;; ============================================================================
+
+(display "=== Testing Quote Variations ===\n")
+
+;; Quoted empty list
+(test-case "quoted empty" '() '())
+
+;; Quote in list
+(test-case "quote in list" 3 (length '(a 'b c)))
+
+;; Double quote
+(test-case "double quote type" #t (pair? ''x))
+
+;; Quoted expressions
+(test-case "quoted expr" '(+ 1 2) '(+ 1 2))
+
+;; ============================================================================
+;; Test: Boolean Edge Cases
+;; ============================================================================
+
+(display "=== Testing Boolean Edge Cases ===\n")
+
+;; Boolean in conditions
+(test-case "if #t" 1 (if #t 1 2))
+(test-case "if #f" 2 (if #f 1 2))
+
+;; Boolean operations
+(test-case "not #t" #f (not #t))
+(test-case "not #f" #t (not #f))
+(test-case "not 0" #f (not 0))  ; 0 is truthy in Scheme
+(test-case "not empty string" #f (not ""))  ; "" is truthy
+
+;; Scheme truthiness - only #f is false
+(test-case "0 is truthy" 1 (if 0 1 2))
+(test-case "empty string truthy" 1 (if "" 1 2))
+(test-case "empty list truthy" 1 (if '() 1 2))
+
+;; ============================================================================
+;; Test: Numeric Edge Cases
+;; ============================================================================
+
+(display "=== Testing Numeric Edge Cases ===\n")
+
+;; Zero variations
+(test-case "positive zero" 0 0)
+(test-case "negative zero" 0 -0)
+(test-case "zeros equal" #t (= 0 -0))
+
+;; Sign handling
+(test-case "double negative" 5 (- (- 5)))
+(test-case "neg neg mul" 25 (* -5 -5))
+
+;; ============================================================================
+;; Test: Lambda Edge Cases
+;; ============================================================================
+
+(display "=== Testing Lambda Edge Cases ===\n")
+
+;; No parameters
+(test-case "nullary lambda" 42 ((lambda () 42)))
+
+;; Immediate application
+(test-case "immediate apply" 6 ((lambda (x y) (+ x y)) 2 4))
+
+;; Lambda returning lambda
+(test-case "curried function" 7 (((lambda (x) (lambda (y) (+ x y))) 3) 4))
+
+;; Self-application (Y combinator style)
+(define (self-app f) (f f))
+(test-case "self application" 'ok
+  (self-app (lambda (x) 'ok)))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

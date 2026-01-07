@@ -399,6 +399,41 @@ void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// SYMBOL WITH HEADER (for symbol->string conversion)
+// ───────────────────────────────────────────────────────────────────────────
+
+// Allocate a symbol with object header (same structure as string, different subtype)
+// Layout: [header(8)] + [length(8)] + [char data]
+// Returns pointer to length field (header is at offset -8)
+void* arena_allocate_symbol_with_header(arena_t* arena, size_t length) {
+    if (!arena) {
+        eshkol_error("Cannot allocate symbol with header: null arena");
+        return nullptr;
+    }
+
+    // Calculate size: header + length field + character data + null terminator
+    size_t data_size = 8 + length + 1;  // length field + chars + null
+    size_t total = sizeof(eshkol_object_header_t) + data_size;
+    total = (total + 7) & ~7;  // Align to 8 bytes
+
+    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 8);
+    if (!mem) {
+        eshkol_error("Failed to allocate symbol with header (length=%zu)", length);
+        return nullptr;
+    }
+
+    // Initialize header with HEAP_SUBTYPE_SYMBOL
+    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
+    hdr->subtype = HEAP_SUBTYPE_SYMBOL;
+    hdr->flags = 0;
+    hdr->ref_count = 0;
+    hdr->size = (uint32_t)data_size;
+
+    // Return pointer to data (length field at offset 0)
+    return mem + sizeof(eshkol_object_header_t);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // CLOSURE WITH HEADER (for consolidated CALLABLE type)
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -942,6 +977,15 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_va
         return false;
     };
 
+    // Helper to check if a value is a symbol (consolidated HEAP_PTR with HEAP_SUBTYPE_SYMBOL)
+    auto is_symbol = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
+        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
+            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
+            return hdr->subtype == HEAP_SUBTYPE_SYMBOL;
+        }
+        return false;
+    };
+
     bool empty1 = is_empty_list(type1, val1);
     bool empty2 = is_empty_list(type2, val2);
 
@@ -986,6 +1030,16 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_va
     if (is_str1 && is_str2) {
         if (val1->data.ptr_val == val2->data.ptr_val) return true;
         if (!val1->data.ptr_val || !val2->data.ptr_val) return false;
+        return strcmp((const char*)val1->data.ptr_val, (const char*)val2->data.ptr_val) == 0;
+    }
+
+    // Both symbols (consolidated HEAP_PTR): compare content like strings
+    bool is_sym1 = is_symbol(type1, val1);
+    bool is_sym2 = is_symbol(type2, val2);
+    if (is_sym1 && is_sym2) {
+        if (val1->data.ptr_val == val2->data.ptr_val) return true;
+        if (!val1->data.ptr_val || !val2->data.ptr_val) return false;
+        // Symbol data is a null-terminated string starting at the pointer
         return strcmp((const char*)val1->data.ptr_val, (const char*)val2->data.ptr_val) == 0;
     }
 
@@ -2000,6 +2054,10 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                     } else {
                         fprintf(get_output(opts), "%s", (const char*)data_ptr);
                     }
+                    break;
+                case HEAP_SUBTYPE_SYMBOL:
+                    // Display symbol name without quotes (homoiconic representation)
+                    fprintf(get_output(opts), "%s", (const char*)data_ptr);
                     break;
                 case HEAP_SUBTYPE_VECTOR:
                     display_vector(value->data.ptr_val, opts);
