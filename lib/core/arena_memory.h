@@ -49,11 +49,18 @@ struct arena {
     size_t default_block_size;     // Default size for new blocks
     size_t total_allocated;        // Total memory allocated
     size_t alignment;              // Memory alignment requirement
+    void* mutex;                   // Optional mutex for thread-safe access (pthread_mutex_t*)
+    bool thread_safe;              // Whether this arena uses mutex locking
 };
 
 // Arena management functions
 arena_t* arena_create(size_t default_block_size);
+arena_t* arena_create_threadsafe(size_t default_block_size);  // Thread-safe variant with mutex
 void arena_destroy(arena_t* arena);
+
+// Thread-safety control
+void arena_lock(arena_t* arena);
+void arena_unlock(arena_t* arena);
 
 // Memory allocation
 void* arena_allocate(arena_t* arena, size_t size);
