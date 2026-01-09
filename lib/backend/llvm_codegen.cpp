@@ -26,6 +26,7 @@
 #include <eshkol/backend/tail_call_codegen.h>
 #include <eshkol/backend/system_codegen.h>
 #include <eshkol/backend/hash_codegen.h>
+#include <eshkol/backend/parallel_codegen.h>
 #include <eshkol/types/type_checker.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/logger.h>
@@ -400,6 +401,9 @@ private:
     // HashCodegen - Hash table operations
     std::unique_ptr<eshkol::HashCodegen> hash_;
 
+    // ParallelCodegen - Parallel execution primitives (parallel-map, parallel-fold, etc.)
+    std::unique_ptr<eshkol::ParallelCodegen> parallel_;
+
     // Local type pointers (initialized from TypeSystem for backward compatibility)
     // TODO: Gradually migrate code to use types-> accessors directly
     StructType* tagged_value_type;
@@ -667,6 +671,20 @@ public:
         // IO returns Null
         function_return_types["display"] = BuiltinTypes::Null;
         function_return_types["newline"] = BuiltinTypes::Null;
+
+        // Parallel primitives
+        function_return_types["parallel-map"] = BuiltinTypes::List;
+        function_return_types["parallel-fold"] = BuiltinTypes::Value;
+        function_return_types["parallel-filter"] = BuiltinTypes::List;
+        function_return_types["parallel-for-each"] = BuiltinTypes::Null;
+        function_return_types["thread-pool-info"] = BuiltinTypes::Int64;
+        function_return_types["thread-pool-size"] = BuiltinTypes::Int64;  // Alias for thread-pool-info
+        function_return_types["thread-pool-stats"] = BuiltinTypes::Null;
+
+        // Future primitives
+        function_return_types["future"] = BuiltinTypes::Value;      // Returns future handle
+        function_return_types["force"] = BuiltinTypes::Value;       // Returns result of computation
+        function_return_types["future-ready?"] = BuiltinTypes::Boolean; // Returns boolean
     }
     
     std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts) {
@@ -2124,6 +2142,14 @@ private:
         // Note: The main implementations remain in this file for now
         func_ = std::make_unique<eshkol::FunctionCodegen>(*ctx_, *tagged_, *mem);
         eshkol_debug("Created FunctionCodegen");
+
+        // Initialize ParallelCodegen - parallel execution primitives
+        parallel_ = std::make_unique<eshkol::ParallelCodegen>(*ctx_);
+        parallel_->setCodegenASTCallback(
+            ControlFlowCallbacks::codegenASTWrapper,
+            this
+        );
+        eshkol_debug("Created ParallelCodegen");
 
         // Populate function_table for backward compatibility
         registerArenaFunctions();
@@ -8489,6 +8515,20 @@ private:
         if (func_name == "quantum-random") return codegenQuantumRandom(op);
         if (func_name == "quantum-random-int") return codegenQuantumRandomInt(op);
         if (func_name == "quantum-random-range") return codegenQuantumRandomRange(op);
+
+        // Handle parallel execution primitives - DELEGATED to ParallelCodegen
+        if (func_name == "parallel-map") return parallel_->parallelMap(op);
+        if (func_name == "parallel-fold") return parallel_->parallelFold(op);
+        if (func_name == "parallel-filter") return parallel_->parallelFilter(op);
+        if (func_name == "parallel-for-each") return parallel_->parallelForEach(op);
+        if (func_name == "thread-pool-info") return parallel_->threadPoolInfo(op);
+        if (func_name == "thread-pool-size") return parallel_->threadPoolInfo(op);  // Alias
+        if (func_name == "thread-pool-stats") return parallel_->threadPoolStats(op);
+
+        // Handle future primitives - DELEGATED to ParallelCodegen
+        if (func_name == "future") return parallel_->future(op);
+        if (func_name == "force") return parallel_->force(op);
+        if (func_name == "future-ready?") return parallel_->futureReady(op);
 
         // Handle list removal operations
         // remove kept as builtin for performance (iterative LLVM IR vs recursive stdlib)

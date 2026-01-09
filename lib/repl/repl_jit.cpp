@@ -53,6 +53,32 @@ extern "C" {
                                        const char* actual_type);
 }
 
+// ===== PARALLEL EXECUTION RUNTIME (parallel_codegen.cpp) =====
+// eshkol_tagged_value_t and arena_t are already declared via eshkol.h included above
+extern "C" {
+    eshkol_tagged_value_t eshkol_parallel_map(eshkol_tagged_value_t fn,
+                                               eshkol_tagged_value_t list,
+                                               arena_t* arena);
+    eshkol_tagged_value_t eshkol_parallel_fold(eshkol_tagged_value_t fn,
+                                                eshkol_tagged_value_t init,
+                                                eshkol_tagged_value_t list,
+                                                arena_t* arena);
+    eshkol_tagged_value_t eshkol_parallel_filter(eshkol_tagged_value_t pred,
+                                                  eshkol_tagged_value_t list,
+                                                  arena_t* arena);
+    void eshkol_parallel_for_each(eshkol_tagged_value_t fn,
+                                   eshkol_tagged_value_t list,
+                                   arena_t* arena);
+    int64_t eshkol_thread_pool_num_threads(void);
+    void eshkol_thread_pool_print_stats(void);
+
+    // Worker registration function (called by LLVM-generated module initializer)
+    void __eshkol_register_parallel_workers(void* map_worker, void* fold_worker,
+                                            void* filter_worker, void* unary_dispatcher,
+                                            void* binary_dispatcher);
+    bool eshkol_parallel_workers_registered(void);
+}
+
 // Track already-loaded modules to prevent circular imports
 static std::set<std::string> loaded_modules;
 using namespace llvm::orc;
@@ -360,6 +386,16 @@ void ReplJITContext::registerRuntimeSymbols() {
 
     // Global arena (default allocation target)
     ADD_DATA_SYMBOL(__global_arena);
+
+    // ===== PARALLEL EXECUTION RUNTIME =====
+    ADD_SYMBOL(eshkol_parallel_map);
+    ADD_SYMBOL(eshkol_parallel_fold);
+    ADD_SYMBOL(eshkol_parallel_filter);
+    ADD_SYMBOL(eshkol_parallel_for_each);
+    ADD_SYMBOL(eshkol_thread_pool_num_threads);
+    ADD_SYMBOL(eshkol_thread_pool_print_stats);
+    ADD_SYMBOL(__eshkol_register_parallel_workers);
+    ADD_SYMBOL(eshkol_parallel_workers_registered);
 
     #undef ADD_SYMBOL
     #undef ADD_DATA_SYMBOL

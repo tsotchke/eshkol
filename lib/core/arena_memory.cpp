@@ -14,6 +14,7 @@
 #include <string.h>
 #include <assert.h>
 #include <setjmp.h>
+#include <pthread.h>
 
 #ifdef __cplusplus
 #include <new>      // for std::bad_alloc
@@ -109,31 +110,81 @@ arena_t* arena_create(size_t default_block_size) {
     if (default_block_size < 1024) {
         default_block_size = 1024; // Minimum block size
     }
-    
+
     arena_t* arena = (arena_t*)malloc(sizeof(arena_t));
     if (!arena) {
         eshkol_error("Failed to allocate arena structure");
         return nullptr;
     }
-    
+
     arena->current_block = create_arena_block(default_block_size);
     if (!arena->current_block) {
         free(arena);
         return nullptr;
     }
-    
+
     arena->current_scope = nullptr;
     arena->default_block_size = default_block_size;
     arena->total_allocated = default_block_size;
     arena->alignment = DEFAULT_ALIGNMENT;
-    
+    arena->mutex = nullptr;
+    arena->thread_safe = false;
+
     eshkol_debug("Created arena with default block size %zu", default_block_size);
     return arena;
 }
 
+// Thread-safe arena creation
+arena_t* arena_create_threadsafe(size_t default_block_size) {
+    arena_t* arena = arena_create(default_block_size);
+    if (!arena) {
+        return nullptr;
+    }
+
+    // Allocate and initialize mutex
+    pthread_mutex_t* mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+    if (!mutex) {
+        eshkol_error("Failed to allocate mutex for thread-safe arena");
+        arena_destroy(arena);
+        return nullptr;
+    }
+
+    if (pthread_mutex_init(mutex, nullptr) != 0) {
+        eshkol_error("Failed to initialize mutex for thread-safe arena");
+        free(mutex);
+        arena_destroy(arena);
+        return nullptr;
+    }
+
+    arena->mutex = mutex;
+    arena->thread_safe = true;
+
+    eshkol_debug("Created thread-safe arena with default block size %zu", default_block_size);
+    return arena;
+}
+
+// Thread-safety control functions
+void arena_lock(arena_t* arena) {
+    if (arena && arena->thread_safe && arena->mutex) {
+        pthread_mutex_lock((pthread_mutex_t*)arena->mutex);
+    }
+}
+
+void arena_unlock(arena_t* arena) {
+    if (arena && arena->thread_safe && arena->mutex) {
+        pthread_mutex_unlock((pthread_mutex_t*)arena->mutex);
+    }
+}
+
 void arena_destroy(arena_t* arena) {
     if (!arena) return;
-    
+
+    // Destroy mutex if thread-safe
+    if (arena->thread_safe && arena->mutex) {
+        pthread_mutex_destroy((pthread_mutex_t*)arena->mutex);
+        free(arena->mutex);
+    }
+
     // Free all blocks
     arena_block_t* block = arena->current_block;
     while (block) {
@@ -141,7 +192,7 @@ void arena_destroy(arena_t* arena) {
         free_arena_block(block);
         block = next;
     }
-    
+
     // Free all scopes
     arena_scope_t* scope = arena->current_scope;
     while (scope) {
@@ -149,48 +200,55 @@ void arena_destroy(arena_t* arena) {
         free(scope);
         scope = parent;
     }
-    
+
     eshkol_debug("Destroyed arena, freed %zu bytes", arena->total_allocated);
     free(arena);
 }
 
-// Core allocation function
+// Core allocation function (thread-safe if arena was created with arena_create_threadsafe)
 void* arena_allocate_aligned(arena_t* arena, size_t size, size_t alignment) {
     if (!arena || size == 0) return nullptr;
-    
+
+    // Lock if thread-safe arena
+    arena_lock(arena);
+
     if (alignment == 0) alignment = DEFAULT_ALIGNMENT;
-    
+
     // Align the size
     size_t aligned_size = align_size(size, alignment);
-    
+
     // Check if current block has enough space
     arena_block_t* block = arena->current_block;
     size_t current_used = align_size(block->used, alignment);
-    
+
     if (current_used + aligned_size > block->size) {
         // Need a new block
-        size_t new_block_size = (aligned_size > arena->default_block_size) ? 
+        size_t new_block_size = (aligned_size > arena->default_block_size) ?
                                aligned_size : arena->default_block_size;
-        
+
         arena_block_t* new_block = create_arena_block(new_block_size);
         if (!new_block) {
             eshkol_error("Failed to allocate new arena block of size %zu", new_block_size);
+            arena_unlock(arena);
             return nullptr;
         }
-        
+
         // Link the new block to the front
         new_block->next = arena->current_block;
         arena->current_block = new_block;
         arena->total_allocated += new_block_size;
-        
+
         block = new_block;
         current_used = 0;
     }
-    
+
     // Allocate from current block
     void* ptr = block->memory + current_used;
     block->used = current_used + aligned_size;
-    
+
+    // Unlock if thread-safe arena
+    arena_unlock(arena);
+
     return ptr;
 }
 
@@ -1315,11 +1373,22 @@ uint64_t __region_stack_depth = 0;
 // Use weak linkage so generated code can override in standalone mode
 __attribute__((weak)) arena_t* __global_arena = nullptr;
 
-// Get or create the global arena
-arena_t* get_global_arena() {
+// Thread-safe global arena initialization
+static pthread_once_t global_arena_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t global_arena_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void init_global_arena_internal() {
+    // Create a thread-safe arena for global allocations
+    __global_arena = arena_create_threadsafe(65536);  // 64KB default, thread-safe
     if (!__global_arena) {
-        __global_arena = arena_create(65536);  // 64KB default
+        eshkol_error("Failed to create global arena");
     }
+}
+
+// Get or create the global arena (thread-safe)
+arena_t* get_global_arena() {
+    // Use pthread_once for thread-safe initialization
+    pthread_once(&global_arena_once, init_global_arena_internal);
     return __global_arena;
 }
 
