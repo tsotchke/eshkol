@@ -1,0 +1,129 @@
+;;; SIMD Activation Functions Test Suite
+;;; Tests activation functions with large tensors to exercise SIMD code paths
+;;; SIMD vectorization triggers for tensors with >= SIMD_WIDTH elements (2+ on ARM64)
+
+(define (approx-equal? a b epsilon)
+  (< (abs (- a b)) epsilon))
+
+(display "=== SIMD Activation Tests ===") (newline)
+
+;; ---- ReLU (large tensor) ----
+(display "-- ReLU (1000 elements) --") (newline)
+(define relu-input (linspace -5.0 5.0 1000))
+(define relu-result (relu relu-input))
+;; Element 0 should be 0 (input is negative)
+(display "relu[-5.0] = ")
+(display (tensor-get relu-result 0))
+(display " (expected: 0.0)") (newline)
+;; Middle element should be ~0
+(display "relu[~0.0] = ")
+(display (tensor-get relu-result 500))
+(newline)
+;; Last element should be ~5.0
+(display "relu[5.0] = ")
+(display (tensor-get relu-result 999))
+(display " (expected: ~5.0)") (newline)
+
+;; ---- Sigmoid (large tensor) ----
+(display "-- Sigmoid (1000 elements) --") (newline)
+(define sig-input (linspace -10.0 10.0 1000))
+(define sig-result (sigmoid sig-input))
+;; Sigmoid(-10) should be ~0
+(display "sigmoid(-10) = ")
+(display (tensor-get sig-result 0))
+(display " (expected: ~0.0000454)") (newline)
+;; Sigmoid(0) should be 0.5
+(display "sigmoid(0) = ")
+(display (tensor-get sig-result 500))
+(display " (expected: ~0.5)") (newline)
+;; Sigmoid(10) should be ~1
+(display "sigmoid(10) = ")
+(display (tensor-get sig-result 999))
+(display " (expected: ~0.9999546)") (newline)
+;; Verify monotonicity: every element should be >= previous
+(define (check-monotone t n i)
+  (if (>= i n) #t
+      (if (< (tensor-get t i) (tensor-get t (- i 1)))
+          #f
+          (check-monotone t n (+ i 1)))))
+(display "sigmoid monotone: ")
+(display (check-monotone sig-result 1000 1))
+(display " (expected: #t)") (newline)
+
+;; ---- Sigmoid (10000 elements - stress) ----
+(display "-- Sigmoid (10000 elements stress) --") (newline)
+(define sig-big (sigmoid (linspace -20.0 20.0 10000)))
+(display "sigmoid(-20) = ")
+(display (tensor-get sig-big 0))
+(display " (expected: ~0)") (newline)
+(display "sigmoid(20) = ")
+(display (tensor-get sig-big 9999))
+(display " (expected: ~1)") (newline)
+
+;; ---- Softmax (large tensor) ----
+(display "-- Softmax (1000 elements) --") (newline)
+(define sm-input (linspace -5.0 5.0 1000))
+(define sm-result (softmax sm-input))
+;; Sum should be 1.0
+(define sm-sum (tensor-sum sm-result))
+(display "softmax sum = ")
+(display sm-sum)
+(display " (expected: 1.0)") (newline)
+;; All values should be positive
+(define sm-min (tensor-get sm-result 0))
+(display "softmax min element = ")
+(display sm-min)
+(display " (expected: > 0)") (newline)
+;; Values should be monotonically increasing (since input is monotone)
+(display "softmax monotone: ")
+(display (check-monotone sm-result 1000 1))
+(display " (expected: #t)") (newline)
+
+;; ---- Softmax (10000 elements - stress) ----
+(display "-- Softmax (10000 elements stress) --") (newline)
+(define sm-big (softmax (linspace -10.0 10.0 10000)))
+(display "softmax big sum = ")
+(display (tensor-sum sm-big))
+(display " (expected: 1.0)") (newline)
+
+;; ---- GELU (large tensor) ----
+(display "-- GELU (1000 elements) --") (newline)
+(define gelu-input (linspace -5.0 5.0 1000))
+(define gelu-result (gelu gelu-input))
+;; GELU(-5) should be ~0 (negative saturation)
+(display "gelu(-5) = ")
+(display (tensor-get gelu-result 0))
+(display " (expected: ~0)") (newline)
+;; GELU(0) should be 0
+(display "gelu(0) = ")
+(display (tensor-get gelu-result 500))
+(display " (expected: ~0)") (newline)
+;; GELU(5) should be ~5 (positive = identity-like)
+(display "gelu(5) = ")
+(display (tensor-get gelu-result 999))
+(display " (expected: ~5.0)") (newline)
+
+;; ---- Leaky ReLU (large tensor) ----
+(display "-- Leaky ReLU (1000 elements) --") (newline)
+(define lr-input (linspace -5.0 5.0 1000))
+(define lr-result (leaky-relu lr-input))
+;; leaky-relu(-5) = -5 * 0.01 = -0.05
+(display "leaky-relu(-5) = ")
+(display (tensor-get lr-result 0))
+(display " (expected: -0.05)") (newline)
+;; leaky-relu(5) = 5
+(display "leaky-relu(5) = ")
+(display (tensor-get lr-result 999))
+(display " (expected: ~5.0)") (newline)
+
+;; ---- Numerical accuracy: sigmoid vs manual computation ----
+(display "-- Numerical Accuracy Check --") (newline)
+;; Compute sigmoid manually: 1/(1+exp(-x)) for x=1.0
+;; sigmoid(1.0) = 1/(1+exp(-1)) = 1/1.36787944... = 0.73105857...
+(define acc-input #(1.0))
+(define acc-result (sigmoid acc-input))
+(display "sigmoid(1.0) = ")
+(display (tensor-get acc-result 0))
+(display " (expected: 0.7310585...)") (newline)
+
+(display "=== SIMD Activation Tests Complete ===") (newline)

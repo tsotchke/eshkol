@@ -135,6 +135,14 @@ public:
      */
     llvm::Value* emitReduce(llvm::Value* input, int64_t axis, ReduceOp op);
 
+    /**
+     * Emit XLA-accelerated tensor transpose.
+     * For 2D tensors, swaps rows and columns (permutation [1,0]).
+     * @param input Input tensor (struct pointer)
+     * @return Transposed tensor (struct pointer)
+     */
+    llvm::Value* emitTranspose(llvm::Value* input);
+
     // ===== Autodiff Integration =====
 
     /**

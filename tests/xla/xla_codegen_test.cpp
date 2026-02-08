@@ -46,39 +46,21 @@ extern "C" void* eshkol_xla_matmul(
     int64_t a_rank,
     int64_t b_rank);
 
-// Simple arena for testing
-class TestArena {
-public:
-    TestArena(size_t size) : buffer_(new char[size]), offset_(0), size_(size) {}
-    ~TestArena() { delete[] buffer_; }
+// Arena allocator — use the real Eshkol arena
+typedef struct arena arena_t;
+extern "C" arena_t* arena_create(size_t default_block_size);
+extern "C" void arena_destroy(arena_t* arena);
 
-    void* alloc(size_t size, size_t alignment) {
-        // Align offset
-        size_t aligned = (offset_ + alignment - 1) & ~(alignment - 1);
-        if (aligned + size > size_) return nullptr;
-        void* ptr = buffer_ + aligned;
-        offset_ = aligned + size;
-        return ptr;
-    }
-
-    void reset() { offset_ = 0; }
-
-private:
-    char* buffer_;
-    size_t offset_;
-    size_t size_;
+// Canonical tensor struct (must match arena_memory.h eshkol_tensor_t)
+struct EshkolTensor {
+    uint64_t* dimensions;     // idx 0: dimension sizes
+    uint64_t  num_dimensions; // idx 1: rank
+    int64_t*  elements;       // idx 2: doubles as int64 bit patterns
+    uint64_t  total_elements; // idx 3: product of all dimensions
 };
 
 // Global test arena
-static TestArena* g_test_arena = nullptr;
-
-// Arena allocator for tests
-extern "C" void* eshkol_arena_alloc(void* arena, size_t size, size_t alignment) {
-    if (arena == g_test_arena) {
-        return g_test_arena->alloc(size, alignment);
-    }
-    return nullptr;
-}
+static arena_t* g_test_arena = nullptr;
 
 // ===== Test: XLA Runtime Initialization =====
 bool test_xla_runtime_init() {
@@ -110,6 +92,13 @@ bool test_xla_runtime_description() {
     return true;
 }
 
+// Helper: read double from int64 bit pattern
+static double read_element(const EshkolTensor* t, size_t idx) {
+    double val;
+    memcpy(&val, &t->elements[idx], sizeof(double));
+    return val;
+}
+
 // ===== Test: XLA Matmul 2x2 =====
 bool test_xla_matmul_2x2() {
     std::cout << "Test: XLA Matmul 2x2... ";
@@ -123,8 +112,6 @@ bool test_xla_matmul_2x2() {
     int64_t a_shape[] = {2, 2};
     int64_t b_shape[] = {2, 2};
 
-    g_test_arena->reset();
-
     void* result = eshkol_xla_matmul(
         g_test_arena,
         a_data, b_data,
@@ -133,22 +120,16 @@ bool test_xla_matmul_2x2() {
 
     TEST_ASSERT(result != nullptr, "Matmul should return non-null result");
 
-    // Extract result tensor
-    struct Tensor {
-        int64_t num_dims;
-        int64_t* dims;
-        double* data;
-    };
-    auto* tensor = static_cast<Tensor*>(result);
+    auto* tensor = static_cast<EshkolTensor*>(result);
 
-    TEST_ASSERT(tensor->num_dims == 2, "Result should have 2 dimensions");
-    TEST_ASSERT(tensor->dims[0] == 2, "Result dim 0 should be 2");
-    TEST_ASSERT(tensor->dims[1] == 2, "Result dim 1 should be 2");
+    TEST_ASSERT(tensor->num_dimensions == 2, "Result should have 2 dimensions");
+    TEST_ASSERT(tensor->dimensions[0] == 2, "Result dim 0 should be 2");
+    TEST_ASSERT(tensor->dimensions[1] == 2, "Result dim 1 should be 2");
 
     // Verify values
     double expected[] = {19.0, 22.0, 43.0, 50.0};
     for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_NEAR(tensor->data[i], expected[i], 1e-10,
+        TEST_ASSERT_NEAR(read_element(tensor, i), expected[i], 1e-10,
             "Result value mismatch at index " + std::to_string(i));
     }
 
@@ -169,8 +150,6 @@ bool test_xla_matmul_3x2_2x4() {
     int64_t a_shape[] = {3, 2};
     int64_t b_shape[] = {2, 4};
 
-    g_test_arena->reset();
-
     void* result = eshkol_xla_matmul(
         g_test_arena,
         a_data, b_data,
@@ -179,21 +158,13 @@ bool test_xla_matmul_3x2_2x4() {
 
     TEST_ASSERT(result != nullptr, "Matmul should return non-null result");
 
-    struct Tensor {
-        int64_t num_dims;
-        int64_t* dims;
-        double* data;
-    };
-    auto* tensor = static_cast<Tensor*>(result);
+    auto* tensor = static_cast<EshkolTensor*>(result);
 
-    TEST_ASSERT(tensor->num_dims == 2, "Result should have 2 dimensions");
-    TEST_ASSERT(tensor->dims[0] == 3, "Result dim 0 should be 3");
-    TEST_ASSERT(tensor->dims[1] == 4, "Result dim 1 should be 4");
+    TEST_ASSERT(tensor->num_dimensions == 2, "Result should have 2 dimensions");
+    TEST_ASSERT(tensor->dimensions[0] == 3, "Result dim 0 should be 3");
+    TEST_ASSERT(tensor->dimensions[1] == 4, "Result dim 1 should be 4");
 
     // Expected: C[i][j] = sum_k A[i][k] * B[k][j]
-    // C[0][0] = 1*1 + 2*5 = 11
-    // C[0][1] = 1*2 + 2*6 = 14
-    // etc.
     double expected[] = {
         11.0, 14.0, 17.0, 20.0,
         23.0, 30.0, 37.0, 44.0,
@@ -201,7 +172,7 @@ bool test_xla_matmul_3x2_2x4() {
     };
 
     for (int i = 0; i < 12; i++) {
-        TEST_ASSERT_NEAR(tensor->data[i], expected[i], 1e-10,
+        TEST_ASSERT_NEAR(read_element(tensor, i), expected[i], 1e-10,
             "Result value mismatch at index " + std::to_string(i));
     }
 
@@ -217,8 +188,6 @@ bool test_xla_matmul_dim_mismatch() {
     double b_data[] = {1.0, 2.0, 3.0};
     int64_t a_shape[] = {2, 2};  // 2x2
     int64_t b_shape[] = {3, 1};  // 3x1 - incompatible!
-
-    g_test_arena->reset();
 
     void* result = eshkol_xla_matmul(
         g_test_arena,
@@ -240,8 +209,6 @@ bool test_xla_matmul_invalid_rank() {
     double b_data[] = {1.0, 2.0, 3.0};
     int64_t a_shape[] = {3};     // 1D - invalid
     int64_t b_shape[] = {3, 1};  // 2D
-
-    g_test_arena->reset();
 
     void* result = eshkol_xla_matmul(
         g_test_arena,
@@ -273,8 +240,6 @@ bool test_xla_matmul_large() {
 
     int64_t shape[] = {N, N};
 
-    g_test_arena->reset();
-
     void* result = eshkol_xla_matmul(
         g_test_arena,
         a_data.data(), b_data.data(),
@@ -283,19 +248,14 @@ bool test_xla_matmul_large() {
 
     TEST_ASSERT(result != nullptr, "Matmul should return non-null result");
 
-    struct Tensor {
-        int64_t num_dims;
-        int64_t* dims;
-        double* data;
-    };
-    auto* tensor = static_cast<Tensor*>(result);
+    auto* tensor = static_cast<EshkolTensor*>(result);
 
-    TEST_ASSERT(tensor->dims[0] == N, "Result dim 0 should be N");
-    TEST_ASSERT(tensor->dims[1] == N, "Result dim 1 should be N");
+    TEST_ASSERT(tensor->dimensions[0] == static_cast<uint64_t>(N), "Result dim 0 should be N");
+    TEST_ASSERT(tensor->dimensions[1] == static_cast<uint64_t>(N), "Result dim 1 should be N");
 
     // Identity * B = B
     for (int i = 0; i < N * N; i++) {
-        TEST_ASSERT_NEAR(tensor->data[i], b_data[i], 1e-10,
+        TEST_ASSERT_NEAR(read_element(tensor, i), b_data[i], 1e-10,
             "Identity multiplication should preserve B");
     }
 
@@ -323,22 +283,6 @@ bool test_xla_threshold() {
     return true;
 }
 
-#ifdef ESHKOL_XLA_FULL_MLIR
-// ===== Test: XLA Codegen Availability =====
-bool test_xla_codegen_available() {
-    std::cout << "Test: XLA Codegen Availability... ";
-
-    // This test only runs when full MLIR is available
-    // We can't easily test XLACodegen without a CodegenContext,
-    // so we just verify the headers compile and threshold works
-
-    TEST_ASSERT(eshkol::xla::xla_get_threshold() > 0, "Threshold should be positive");
-
-    std::cout << "PASS (MLIR available)" << std::endl;
-    return true;
-}
-#endif
-
 // ===== Main Test Runner =====
 int main() {
     std::cout << "=========================================" << std::endl;
@@ -346,8 +290,12 @@ int main() {
     std::cout << "=========================================" << std::endl;
     std::cout << std::endl;
 
-    // Initialize test arena (1MB)
-    g_test_arena = new TestArena(1024 * 1024);
+    // Create real arena (4MB — enough for all tests)
+    g_test_arena = arena_create(4 * 1024 * 1024);
+    if (!g_test_arena) {
+        std::cerr << "FATAL: Could not create test arena" << std::endl;
+        return 1;
+    }
 
     // Run tests
     auto run_test = [](bool (*test_func)()) {
@@ -372,12 +320,8 @@ int main() {
     // Threshold tests
     run_test(test_xla_threshold);
 
-#ifdef ESHKOL_XLA_FULL_MLIR
-    run_test(test_xla_codegen_available);
-#endif
-
     // Cleanup
-    delete g_test_arena;
+    arena_destroy(g_test_arena);
 
     // Summary
     std::cout << std::endl;

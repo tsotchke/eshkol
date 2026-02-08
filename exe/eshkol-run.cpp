@@ -401,7 +401,7 @@ private:
                     bool is_owned = transfersOwnership(op->define_op.value);
                     currentScope().variables[name] = {
                         is_owned ? State::OWNED : State::UNOWNED,
-                        "",  // TODO: add location tracking
+                        name,  // Use variable name as location identifier
                         is_owned
                     };
                     // Analyze the value (this handles the move marking)

@@ -1,0 +1,114 @@
+;;; Complex Number Arithmetic Test Suite
+;;; Tests make-rectangular, make-polar, real-part, imag-part,
+;;; magnitude, angle, and complex +,-,*,/
+
+(define (approx-equal? a b epsilon)
+  (< (abs (- a b)) epsilon))
+
+(display "=== Complex Arithmetic Tests ===") (newline)
+
+;; ---- Construction ----
+(display "-- Construction --") (newline)
+(define z1 (make-rectangular 3.0 4.0))
+(display "z1 = 3+4i") (newline)
+(display "  real-part: ") (display (real-part z1))
+(display " (expected: 3.0)") (newline)
+(display "  imag-part: ") (display (imag-part z1))
+(display " (expected: 4.0)") (newline)
+(display "  magnitude: ") (display (magnitude z1))
+(display " (expected: 5.0)") (newline)
+
+;; Polar construction
+(define z-polar (make-polar 5.0 0.9272952180016122))
+(display "z-polar = 5 @ 0.927 rad") (newline)
+(display "  real-part: ") (display (real-part z-polar))
+(display " (expected: ~3.0)") (newline)
+(display "  imag-part: ") (display (imag-part z-polar))
+(display " (expected: ~4.0)") (newline)
+
+;; ---- Addition ----
+(display "-- Addition --") (newline)
+(define z2 (make-rectangular 1.0 2.0))
+(define z-add (+ z1 z2))
+(display "(3+4i) + (1+2i) = ")
+(display (real-part z-add)) (display "+")
+(display (imag-part z-add)) (display "i")
+(display " (expected: 4+6i)") (newline)
+
+;; ---- Subtraction ----
+(display "-- Subtraction --") (newline)
+(define z-sub (- z1 z2))
+(display "(3+4i) - (1+2i) = ")
+(display (real-part z-sub)) (display "+")
+(display (imag-part z-sub)) (display "i")
+(display " (expected: 2+2i)") (newline)
+
+;; ---- Multiplication ----
+(display "-- Multiplication --") (newline)
+(define z-mul (* z1 z2))
+;; (3+4i)(1+2i) = 3+6i+4i+8i^2 = 3+10i-8 = -5+10i
+(display "(3+4i) * (1+2i) = ")
+(display (real-part z-mul)) (display "+")
+(display (imag-part z-mul)) (display "i")
+(display " (expected: -5+10i)") (newline)
+
+;; ---- Division ----
+(display "-- Division --") (newline)
+(define z-div (/ z1 z2))
+;; (3+4i)/(1+2i) = (3+4i)(1-2i)/|1+2i|^2 = (3-6i+4i-8i^2)/(1+4) = (11-2i)/5 = 2.2-0.4i
+(display "(3+4i) / (1+2i) = ")
+(display (real-part z-div)) (display "+")
+(display (imag-part z-div)) (display "i")
+(display " (expected: 2.2-0.4i)") (newline)
+
+;; ---- Angle (argument) ----
+(display "-- Angle --") (newline)
+(define z-pure-real (make-rectangular 5.0 0.0))
+(define z-pure-imag (make-rectangular 0.0 3.0))
+(display "angle(5+0i) = ") (display (angle z-pure-real))
+(display " (expected: 0.0)") (newline)
+(display "angle(0+3i) = ") (display (angle z-pure-imag))
+(display " (expected: ~1.5708 = pi/2)") (newline)
+
+;; ---- Conjugate-like: multiply by conjugate gives magnitude^2 ----
+(display "-- Magnitude verification --") (newline)
+(define z-conj (make-rectangular 3.0 -4.0))
+(define z-prod (* z1 z-conj))
+;; (3+4i)(3-4i) = 9+16 = 25+0i
+(display "(3+4i) * (3-4i) = ")
+(display (real-part z-prod)) (display "+")
+(display (imag-part z-prod)) (display "i")
+(display " (expected: 25+0i)") (newline)
+
+;; ---- Complex-real mixed arithmetic ----
+(display "-- Mixed complex-real arithmetic --") (newline)
+(define z-scale (* z1 2.0))
+(display "(3+4i) * 2 = ")
+(display (real-part z-scale)) (display "+")
+(display (imag-part z-scale)) (display "i")
+(display " (expected: 6+8i)") (newline)
+
+(define z-offset (+ z1 5.0))
+(display "(3+4i) + 5 = ")
+(display (real-part z-offset)) (display "+")
+(display (imag-part z-offset)) (display "i")
+(display " (expected: 8+4i)") (newline)
+
+;; ---- Edge cases ----
+(display "-- Edge Cases --") (newline)
+;; Zero
+(define z-zero (make-rectangular 0.0 0.0))
+(display "magnitude(0+0i) = ") (display (magnitude z-zero))
+(display " (expected: 0.0)") (newline)
+
+;; Very small numbers
+(define z-tiny (make-rectangular 1e-300 1e-300))
+(display "magnitude(1e-300+1e-300i) = ") (display (magnitude z-tiny))
+(display " (expected: ~1.414e-300)") (newline)
+
+;; Large numbers (overflow safety test)
+(define z-big (make-rectangular 1e154 1e154))
+(display "magnitude(1e154+1e154i) = ") (display (magnitude z-big))
+(display " (expected: ~1.414e154)") (newline)
+
+(display "=== Complex Arithmetic Tests Complete ===") (newline)

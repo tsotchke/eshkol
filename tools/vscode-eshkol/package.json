@@ -1,0 +1,126 @@
+{
+  "name": "eshkol",
+  "displayName": "Eshkol",
+  "description": "Language support for Eshkol — a compiled functional language with tensors, autodiff, and GPU acceleration",
+  "version": "1.1.0",
+  "publisher": "tsotchke",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Snippets"
+  ],
+  "keywords": [
+    "eshkol",
+    "scheme",
+    "lisp",
+    "functional",
+    "tensor",
+    "autodiff",
+    "gpu"
+  ],
+  "activationEvents": [
+    "onLanguage:eshkol"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "eshkol",
+        "aliases": [
+          "Eshkol",
+          "eshkol"
+        ],
+        "extensions": [
+          ".esk"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/eshkol-light.png",
+          "dark": "./icons/eshkol-dark.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "eshkol",
+        "scopeName": "source.eshkol",
+        "path": "./syntaxes/eshkol.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "eshkol",
+        "path": "./snippets/eshkol.json"
+      }
+    ],
+    "configuration": {
+      "title": "Eshkol",
+      "properties": {
+        "eshkol.lsp.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the eshkol-lsp executable. Leave empty to use PATH."
+        },
+        "eshkol.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Eshkol Language Server for diagnostics, completions, and navigation."
+        },
+        "eshkol.compiler.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the eshkol-run compiler executable. Leave empty to use PATH."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "eshkol.compile",
+        "title": "Eshkol: Compile Current File"
+      },
+      {
+        "command": "eshkol.run",
+        "title": "Eshkol: Compile and Run Current File"
+      },
+      {
+        "command": "eshkol.restartLsp",
+        "title": "Eshkol: Restart Language Server"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "eshkol",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "The eshkol task to run"
+          },
+          "file": {
+            "type": "string",
+            "description": "The file to compile"
+          }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.0.0"
+  }
+}

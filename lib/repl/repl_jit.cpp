@@ -1673,8 +1673,8 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         eshkol_repl_register_sexpr(var_name.c_str(), sexpr_value);
     }
 
-    // For now, return the result as a heap-allocated int64_t (promoted from i32)
-    // TODO: Handle different return types (double, string, closure, etc.)
+    // Return result as heap-allocated int64_t (promoted from i32 main return).
+    // For typed return value handling, use executeTagged() instead.
     int64_t* result_ptr = new int64_t(result_value);
 
     return result_ptr;
@@ -1810,7 +1810,7 @@ eshkol_tagged_value_t ReplJITContext::executeTagged(eshkol_ast_t* ast) {
         type_id == BuiltinTypes::Complex64.id ||
         type_id == BuiltinTypes::Complex128.id) {
         // Complex numbers are stored as heap pointers to (real, imag) pairs
-        result.type = ESHKOL_VALUE_HEAP_PTR;
+        result.type = ESHKOL_VALUE_COMPLEX;
         result.data.ptr_val = static_cast<uint64_t>(raw_val);
         return result;
     }

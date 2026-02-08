@@ -232,6 +232,40 @@ void matmul(const double* A, const double* B, double* C,
                 C, static_cast<int>(N));  // ldc = N for row-major C[M][N]
 }
 
+// Matmul backward: given C = A @ B, accumulate gradients dA and dB
+// dA += grad_C @ B^T : (M×N) @ (N×K) = (M×K)
+// dB += A^T @ grad_C : (K×M) @ (M×N) = (K×N)
+void matmul_backward(const double* grad_c, const double* a, const double* b,
+                     double* grad_a, double* grad_b,
+                     size_t M, size_t K, size_t N) {
+    // dA += grad_C @ B^T
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                static_cast<int>(M), static_cast<int>(K), static_cast<int>(N),
+                1.0,
+                grad_c, static_cast<int>(N),
+                b, static_cast<int>(N),
+                1.0,   // beta=1 to accumulate
+                grad_a, static_cast<int>(K));
+
+    // dB += A^T @ grad_C
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                static_cast<int>(K), static_cast<int>(N), static_cast<int>(M),
+                1.0,
+                a, static_cast<int>(K),
+                grad_c, static_cast<int>(N),
+                1.0,   // beta=1 to accumulate
+                grad_b, static_cast<int>(N));
+}
+
+// Matrix-vector multiply: y = alpha * A * x + beta * y
+void dgemv(char trans, int M, int N,
+           double alpha, const double* A, int lda,
+           const double* x, int incx,
+           double beta, double* y, int incy) {
+    CBLAS_TRANSPOSE t = (trans == 'T' || trans == 't') ? CblasTrans : CblasNoTrans;
+    cblas_dgemv(CblasRowMajor, t, M, N, alpha, A, lda, x, incx, beta, y, incy);
+}
+
 // ===== Vector Operations =====
 
 double ddot(int n, const double* x, int incx, const double* y, int incy) {

@@ -60,6 +60,7 @@ typedef void* (*parallel_worker_fn)(void*);
 static parallel_worker_fn g_parallel_map_worker = nullptr;
 static parallel_worker_fn g_parallel_fold_worker = nullptr;
 static parallel_worker_fn g_parallel_filter_worker = nullptr;
+static parallel_worker_fn g_parallel_execute_worker = nullptr;
 
 // Function pointer types for closure dispatchers
 typedef eshkol_tagged_value_t (*unary_closure_fn)(
@@ -89,16 +90,18 @@ void __eshkol_register_parallel_workers(
     void* fold_worker,
     void* filter_worker,
     void* unary_dispatcher,
-    void* binary_dispatcher)
+    void* binary_dispatcher,
+    void* execute_worker)
 {
     g_parallel_map_worker = reinterpret_cast<parallel_worker_fn>(map_worker);
     g_parallel_fold_worker = reinterpret_cast<parallel_worker_fn>(fold_worker);
     g_parallel_filter_worker = reinterpret_cast<parallel_worker_fn>(filter_worker);
     g_call_unary_closure = reinterpret_cast<unary_closure_fn>(unary_dispatcher);
     g_call_binary_closure = reinterpret_cast<binary_closure_fn>(binary_dispatcher);
+    g_parallel_execute_worker = reinterpret_cast<parallel_worker_fn>(execute_worker);
 
-    eshkol_debug("Parallel workers registered: map=%p, fold=%p, filter=%p, unary=%p, binary=%p",
-                 map_worker, fold_worker, filter_worker, unary_dispatcher, binary_dispatcher);
+    eshkol_debug("Parallel workers registered: map=%p, fold=%p, filter=%p, unary=%p, binary=%p, execute=%p",
+                 map_worker, fold_worker, filter_worker, unary_dispatcher, binary_dispatcher, execute_worker);
 }
 
 /**
@@ -130,6 +133,14 @@ struct llvm_parallel_fold_task {
     uint64_t arg2_type;     // offset 24: second arg type
     uint64_t arg2_data;     // offset 32: second arg data
     uint64_t result_ptr;    // offset 40: pointer for result
+};
+
+// Task data for parallel execute (nullary closure / thunk)
+struct llvm_parallel_execute_task {
+    uint64_t closure_ptr;   // offset 0: pointer to closure struct (from fn.data.ptr_val)
+    uint64_t closure_type;  // offset 8: type field (i64-extended from i8)
+    uint64_t closure_flags; // offset 16: flags field (i64-extended from i8)
+    uint64_t result_ptr;    // offset 24: pointer to eshkol_tagged_value_t for result
 };
 
 // ============================================================================
@@ -549,6 +560,124 @@ eshkol_tagged_value_t eshkol_parallel_filter(
 
     eshkol_debug("parallel-filter: filtered %zu items to %zu", n, filtered.size());
     return vector_to_list(filtered, arena);
+}
+
+// ============================================================================
+// C API: Parallel Execute
+// ============================================================================
+
+/**
+ * eshkol_parallel_execute - Execute N thunks in parallel, collect results
+ *
+ * @param thunks_ptr  Pointer to array of tagged values (each a zero-arg closure)
+ * @param num_thunks  Number of thunks in the array
+ * @param arena       Arena for building result list
+ * @return            List of results in order matching input thunks
+ *
+ * Each thunk is a zero-argument closure. They are submitted to the thread pool
+ * for parallel execution. Results are collected in order and returned as a list.
+ */
+eshkol_tagged_value_t eshkol_parallel_execute(
+    eshkol_tagged_value_t* thunks_ptr,
+    int64_t num_thunks,
+    arena_t* arena)
+{
+    eshkol_debug("parallel-execute: num_thunks=%lld", (long long)num_thunks);
+
+    eshkol_tagged_value_t null_val = {};
+    null_val.type = ESHKOL_VALUE_NULL;
+    null_val.flags = 0;
+    null_val.reserved = 0;
+    null_val.data.raw_val = 0;
+
+    if (num_thunks <= 0) {
+        return null_val;
+    }
+
+    if (!thunks_ptr) {
+        eshkol_error("parallel-execute: null thunks array");
+        return null_val;
+    }
+
+    // Check if execute worker is registered
+    if (!g_parallel_execute_worker) {
+        eshkol_error("parallel-execute: execute worker not registered (stdlib not loaded?)");
+        return null_val;
+    }
+
+    size_t n = static_cast<size_t>(num_thunks);
+
+    // Allocate result storage (workers write results via pointer)
+    std::vector<eshkol_tagged_value_t> results(n);
+    for (size_t i = 0; i < n; ++i) {
+        results[i] = null_val;
+    }
+
+    // Validate all thunks are callable
+    for (size_t i = 0; i < n; ++i) {
+        if (thunks_ptr[i].type != ESHKOL_VALUE_CALLABLE) {
+            eshkol_error("parallel-execute: argument %zu is not callable (type=%d)", i, thunks_ptr[i].type);
+            return null_val;
+        }
+    }
+
+    // For a single thunk, execute sequentially (no parallelism benefit)
+    if (n == 1) {
+        eshkol_debug("parallel-execute: sequential path for single thunk");
+        llvm_parallel_execute_task task;
+        task.closure_ptr = thunks_ptr[0].data.ptr_val;
+        task.closure_type = static_cast<uint64_t>(thunks_ptr[0].type);
+        task.closure_flags = static_cast<uint64_t>(thunks_ptr[0].flags);
+        task.result_ptr = reinterpret_cast<uint64_t>(&results[0]);
+        g_parallel_execute_worker(&task);
+        return vector_to_list(results, arena);
+    }
+
+    // Get global thread pool
+    eshkol_thread_pool_t* pool = thread_pool_global();
+    if (!pool) {
+        // Fallback to sequential execution
+        eshkol_warn("parallel-execute: no thread pool, falling back to sequential");
+        for (size_t i = 0; i < n; ++i) {
+            llvm_parallel_execute_task task;
+            task.closure_ptr = thunks_ptr[i].data.ptr_val;
+            task.closure_type = static_cast<uint64_t>(thunks_ptr[i].type);
+            task.closure_flags = static_cast<uint64_t>(thunks_ptr[i].flags);
+            task.result_ptr = reinterpret_cast<uint64_t>(&results[i]);
+            g_parallel_execute_worker(&task);
+        }
+        return vector_to_list(results, arena);
+    }
+
+    // Create task data and submit to thread pool
+    std::vector<llvm_parallel_execute_task> tasks(n);
+    std::vector<eshkol_future_t*> futures(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        tasks[i].closure_ptr = thunks_ptr[i].data.ptr_val;
+        tasks[i].closure_type = static_cast<uint64_t>(thunks_ptr[i].type);
+        tasks[i].closure_flags = static_cast<uint64_t>(thunks_ptr[i].flags);
+        tasks[i].result_ptr = reinterpret_cast<uint64_t>(&results[i]);
+    }
+
+    eshkol_debug("parallel-execute: submitting %zu thunks to thread pool", n);
+    for (size_t i = 0; i < n; ++i) {
+        futures[i] = thread_pool_submit(pool, g_parallel_execute_worker, &tasks[i]);
+        if (!futures[i]) {
+            eshkol_error("parallel-execute: failed to submit thunk %zu to thread pool", i);
+        }
+    }
+
+    // Wait for all thunks to complete
+    for (size_t i = 0; i < n; ++i) {
+        if (futures[i]) {
+            future_get(futures[i]);
+            future_release(futures[i]);
+        }
+    }
+
+    eshkol_debug("parallel-execute: all %zu thunks completed, building result list", n);
+    return vector_to_list(results, arena);
 }
 
 // ============================================================================

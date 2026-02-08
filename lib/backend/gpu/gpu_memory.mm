@@ -11,6 +11,7 @@
  */
 
 #include "eshkol/backend/gpu/gpu_memory.h"
+#include <eshkol/logger.h>
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -148,6 +149,96 @@ inline int clz64(sf64 x) {
     if (x.x != 0) return clz(x.x);
     if (x.y != 0) return 32 + clz(x.y);
     return 64;
+}
+
+// ===== 128-bit Arithmetic (for FMA) =====
+struct sf128 { sf64 hi; sf64 lo; };
+
+inline sf128 shr128(sf128 x, int n) {
+    if (n <= 0) return x;
+    if (n >= 128) return sf128{SF64_ZERO, SF64_ZERO};
+    if (n >= 64) {
+        return sf128{SF64_ZERO, shr64(x.hi, n - 64)};
+    }
+    // n < 64
+    sf64 new_lo;
+    new_lo.x = (x.lo.x >> n) | (x.hi.y << (32 - n));
+    new_lo.y = (x.lo.y >> n) | (x.lo.x << (32 - n));
+    if (n >= 32) {
+        new_lo.x = (x.hi.y >> (n - 32)) | (x.hi.x << (64 - n));
+        new_lo.y = (x.lo.x >> (n - 32)) | (x.hi.y << (64 - n));
+    }
+    return sf128{shr64(x.hi, n), new_lo};
+}
+
+inline sf128 shr128_jam(sf128 x, int n) {
+    if (n <= 0) return x;
+    if (n >= 128) {
+        uint sticky = ((x.hi.x | x.hi.y | x.lo.x | x.lo.y) != 0) ? 1u : 0u;
+        return sf128{SF64_ZERO, sf64(0u, sticky)};
+    }
+    // Collect sticky bits from what will be shifted out
+    uint sticky = 0;
+    if (n >= 64) {
+        sticky = ((x.lo.x | x.lo.y) != 0) ? 1u : 0u;
+        sf64 new_lo = shr64_jam(x.hi, n - 64);
+        new_lo.y |= sticky;
+        return sf128{SF64_ZERO, new_lo};
+    }
+    // n < 64: sticky from low bits of lo
+    sticky = (x.lo.y << (32 - (n % 32))) != 0 ? 1u : 0u;
+    sf128 result = shr128(x, n);
+    result.lo.y |= sticky;
+    return result;
+}
+
+inline sf128 shl128(sf128 x, int n) {
+    if (n <= 0) return x;
+    if (n >= 128) return sf128{SF64_ZERO, SF64_ZERO};
+    if (n >= 64) {
+        return sf128{shl64(x.lo, n - 64), SF64_ZERO};
+    }
+    // n < 64
+    sf64 new_hi;
+    new_hi.x = (x.hi.x << n) | (x.hi.y >> (32 - n));
+    new_hi.y = (x.hi.y << n) | (x.lo.x >> (32 - n));
+    if (n >= 32) {
+        new_hi.x = (x.hi.y << (n - 32)) | (x.lo.x >> (64 - n));
+        new_hi.y = (x.lo.x << (n - 32)) | (x.lo.y >> (64 - n));
+    }
+    return sf128{new_hi, shl64(x.lo, n)};
+}
+
+inline sf128 add128(sf128 a, sf128 b) {
+    sf64 lo = add64(a.lo, b.lo);
+    uint carry = (cmp64(lo, a.lo) < 0 || cmp64(lo, b.lo) < 0) ? 1u : 0u;
+    sf64 hi = add64(a.hi, b.hi);
+    hi = add64(hi, sf64(0u, carry));
+    return sf128{hi, lo};
+}
+
+inline sf128 sub128(sf128 a, sf128 b) {
+    uint borrow = (cmp64(a.lo, b.lo) < 0) ? 1u : 0u;
+    sf64 lo = sub64(a.lo, b.lo);
+    sf64 hi = sub64(a.hi, b.hi);
+    hi = sub64(hi, sf64(0u, borrow));
+    return sf128{hi, lo};
+}
+
+inline int cmp128(sf128 a, sf128 b) {
+    int cmp_hi = cmp64(a.hi, b.hi);
+    if (cmp_hi != 0) return cmp_hi;
+    return cmp64(a.lo, b.lo);
+}
+
+inline int clz128(sf128 x) {
+    int clz_hi = clz64(x.hi);
+    if (clz_hi < 64) return clz_hi;
+    return 64 + clz64(x.lo);
+}
+
+inline bool is_zero128(sf128 x) {
+    return (x.hi.x | x.hi.y | x.lo.x | x.lo.y) == 0;
 }
 
 // ===== 64x64 -> 128 bit multiply =====
@@ -324,13 +415,126 @@ sf64 sf64_mul(sf64 a, sf64 b) {
     return sf64_round_pack(signZ, expZ, sigZ, round_bits);
 }
 
-// ===== FMA =====
+// ===== True Fused Multiply-Add =====
+// Computes a*b+c with only ONE rounding at the end (IEEE 754 compliant)
 sf64 sf64_fma(sf64 a, sf64 b, sf64 c) {
-    return sf64_add(sf64_mul(a, b), c);
+    // Handle special cases
+    if (sf64_is_nan(a) || sf64_is_nan(b) || sf64_is_nan(c)) return SF64_QNAN;
+
+    bool signA = sf64_sign(a), signB = sf64_sign(b), signC = sf64_sign(c);
+    bool signP = signA != signB;
+
+    // Handle infinities
+    if (sf64_is_inf(a)) {
+        if (sf64_is_zero(b)) return SF64_QNAN;
+        if (sf64_is_inf(c) && (signP != signC)) return SF64_QNAN;
+        return signP ? SF64_NEG_INF : SF64_INF;
+    }
+    if (sf64_is_inf(b)) {
+        if (sf64_is_zero(a)) return SF64_QNAN;
+        if (sf64_is_inf(c) && (signP != signC)) return SF64_QNAN;
+        return signP ? SF64_NEG_INF : SF64_INF;
+    }
+    if (sf64_is_inf(c)) return c;
+
+    // Handle zeros
+    if (sf64_is_zero(a) || sf64_is_zero(b)) return c;
+    if (sf64_is_zero(c)) return sf64_mul(a, b);
+
+    // Extract components
+    int expA = sf64_exp_raw(a), expB = sf64_exp_raw(b), expC = sf64_exp_raw(c);
+    sf64 sigA = sf64_sig(a), sigB = sf64_sig(b), sigC = sf64_sig(c);
+
+    // Add implicit bits, handle denormals
+    if (expA != 0) sigA.x |= 0x00100000u;
+    else { int s = clz64(sigA) - 11; sigA = shl64(sigA, s); expA = 1 - s; }
+    if (expB != 0) sigB.x |= 0x00100000u;
+    else { int s = clz64(sigB) - 11; sigB = shl64(sigB, s); expB = 1 - s; }
+    if (expC != 0) sigC.x |= 0x00100000u;
+    else { int s = clz64(sigC) - 11; sigC = shl64(sigC, s); expC = 1 - s; }
+
+    // Product exponent
+    int expP = expA + expB - 1023;
+
+    // Shift significands to bit 63 for full-precision multiply
+    sigA = shl64(sigA, 11);
+    sigB = shl64(sigB, 11);
+
+    // Full 128-bit product
+    uint128_t prod = mul64x64(sigA, sigB);
+    sf128 P = sf128{sf64(prod.w3, prod.w2), sf64(prod.w1, prod.w0)};
+
+    // Normalize product to leading 1 at bit 126 (bit 62 of hi)
+    if ((P.hi.x & 0x80000000u) != 0) {
+        P = shr128_jam(P, 1);
+        expP++;
+    }
+
+    // Prepare addend C: shift sigC (leading 1 at bit 52) to bit 126
+    sf128 C = sf128{shl64(sigC, 10), SF64_ZERO};
+
+    // Align to common exponent
+    int expDiff = expP - expC;
+    int expZ = expP;
+
+    if (expDiff > 0) {
+        C = shr128_jam(C, expDiff);
+    } else if (expDiff < 0) {
+        P = shr128_jam(P, -expDiff);
+        expZ = expC;
+    }
+
+    // Add or subtract based on signs
+    sf128 R;
+    bool signZ;
+
+    if (signP == signC) {
+        signZ = signP;
+        R = add128(P, C);
+        // Check for overflow
+        if ((R.hi.x & 0x80000000u) != 0) {
+            R = shr128_jam(R, 1);
+            expZ++;
+        }
+    } else {
+        int cmp = cmp128(P, C);
+        if (cmp == 0) return SF64_ZERO;
+
+        if (cmp > 0) {
+            signZ = signP;
+            R = sub128(P, C);
+        } else {
+            signZ = signC;
+            R = sub128(C, P);
+        }
+
+        // Normalize: shift left until leading 1 at bit 62 of hi
+        int shift = clz128(R) - 1;
+        if (shift > 0) {
+            R = shl128(R, shift);
+            expZ -= shift;
+        } else if (shift < 0) {
+            R = shr128_jam(R, -shift);
+            expZ -= shift;
+        }
+    }
+
+    // Extract result: leading 1 at bit 62, round bits in 9-0
+    uint sticky = (R.lo.x | R.lo.y) != 0 ? 1u : 0u;
+    uint round_bits = (R.hi.y & 0x3FFu) | sticky;
+    sf64 sigZ = shr64(R.hi, 10);
+
+    return sf64_round_pack(signZ, expZ, sigZ, round_bits);
 }
 
-// ===== Matrix Multiplication Kernel (4x4 tiling) =====
-constant uint TILE_SIZE = 4;
+// ===== Matrix Multiplication Kernel — Threadgroup Shared Memory Optimized =====
+// 64 threads (8×8) per threadgroup, each computing a 4×4 sub-tile.
+// Threadgroup computes 32×32 output block. K processed in chunks of 8.
+// Cooperative loading into shared memory reduces bandwidth ~8x.
+constant uint TG = 8;       // Threadgroup dimension
+constant uint TT = 4;       // Thread tile dimension
+constant uint BLK = 32;     // Block dimension (TG * TT)
+constant uint TILE_K = 8;   // K-dimension blocking factor
 
 kernel void matmul_sf64(
     device const sf64* A [[buffer(0)]],
@@ -339,33 +543,67 @@ kernel void matmul_sf64(
     constant uint& M [[buffer(3)]],
     constant uint& K [[buffer(4)]],
     constant uint& N [[buffer(5)]],
-    uint2 gid [[thread_position_in_grid]])
+    uint2 group_id [[threadgroup_position_in_grid]],
+    uint2 lid [[thread_position_in_threadgroup]])
 {
-    uint baseRow = gid.y * TILE_SIZE;
-    uint baseCol = gid.x * TILE_SIZE;
+    uint baseRow = group_id.y * BLK;
+    uint baseCol = group_id.x * BLK;
+    uint threadRow = lid.y * TT;
+    uint threadCol = lid.x * TT;
 
-    sf64 acc[TILE_SIZE][TILE_SIZE];
-    for (uint i = 0; i < TILE_SIZE; i++)
-        for (uint j = 0; j < TILE_SIZE; j++)
+    sf64 acc[TT][TT];
+    for (uint i = 0; i < TT; i++)
+        for (uint j = 0; j < TT; j++)
             acc[i][j] = SF64_ZERO;
 
-    for (uint k = 0; k < K; k++) {
-        sf64 a_vals[TILE_SIZE];
-        sf64 b_vals[TILE_SIZE];
-        for (uint i = 0; i < TILE_SIZE; i++)
-            a_vals[i] = (baseRow + i < M) ? A[(baseRow + i) * K + k] : SF64_ZERO;
-        for (uint j = 0; j < TILE_SIZE; j++)
-            b_vals[j] = (baseCol + j < N) ? B[k * N + (baseCol + j)] : SF64_ZERO;
+    threadgroup sf64 sA[BLK * TILE_K];   // 32×8 = 256 sf64 = 2KB
+    threadgroup sf64 sB[TILE_K * BLK];    // 8×32 = 256 sf64 = 2KB
+    uint tid = lid.y * TG + lid.x;
 
-        for (uint i = 0; i < TILE_SIZE; i++)
-            for (uint j = 0; j < TILE_SIZE; j++)
-                acc[i][j] = sf64_fma(a_vals[i], b_vals[j], acc[i][j]);
+    for (uint kBlock = 0; kBlock < K; kBlock += TILE_K) {
+        // Cooperative load A[32×8] — 4 elements per thread
+        for (uint i = 0; i < 4; i++) {
+            uint idx = tid * 4 + i;
+            uint row = idx >> 3;
+            uint col = idx & 7u;
+            uint gRow = baseRow + row;
+            uint gCol = kBlock + col;
+            sA[row * TILE_K + col] =
+                (gRow < M && gCol < K) ? A[gRow * K + gCol] : SF64_ZERO;
+        }
+        // Cooperative load B[8×32] — 4 elements per thread
+        for (uint i = 0; i < 4; i++) {
+            uint idx = tid * 4 + i;
+            uint row = idx >> 5;
+            uint col = idx & 31u;
+            uint gRow = kBlock + row;
+            uint gCol = baseCol + col;
+            sB[row * BLK + col] =
+                (gRow < K && gCol < N) ? B[gRow * N + gCol] : SF64_ZERO;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // 8 K-values × 16 FMAs = 128 FMA calls per K-chunk
+        for (uint kk = 0; kk < TILE_K; kk++) {
+            sf64 a_val[TT], b_val[TT];
+            for (uint i = 0; i < TT; i++)
+                a_val[i] = sA[(threadRow + i) * TILE_K + kk];
+            for (uint j = 0; j < TT; j++)
+                b_val[j] = sB[kk * BLK + threadCol + j];
+            for (uint i = 0; i < TT; i++)
+                for (uint j = 0; j < TT; j++)
+                    acc[i][j] = sf64_fma(a_val[i], b_val[j], acc[i][j]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    for (uint i = 0; i < TILE_SIZE; i++)
-        for (uint j = 0; j < TILE_SIZE; j++)
-            if (baseRow + i < M && baseCol + j < N)
-                C[(baseRow + i) * N + (baseCol + j)] = acc[i][j];
+    for (uint i = 0; i < TT; i++)
+        for (uint j = 0; j < TT; j++) {
+            uint row = baseRow + threadRow + i;
+            uint col = baseCol + threadCol + j;
+            if (row < M && col < N)
+                C[row * N + col] = acc[i][j];
+        }
 }
 )";
 
@@ -396,21 +634,21 @@ static int metal_init(void) {
                                                        options:options
                                                          error:&error];
         if (!g_metal_library) {
-            fprintf(stderr, "Metal: Failed to compile sf64 shader: %s\n",
+            eshkol_error("Metal: failed to compile sf64 shader: %s",
                     [[error localizedDescription] UTF8String]);
             return 0;  // GPU detected but shader failed, fall back to CPU
         }
 
         id<MTLFunction> func = [g_metal_library newFunctionWithName:@"matmul_sf64"];
         if (!func) {
-            fprintf(stderr, "Metal: Failed to find matmul_sf64 kernel\n");
+            eshkol_error("Metal: failed to find matmul_sf64 kernel in compiled library");
             return 0;
         }
 
         g_matmul_sf64_pipeline = [g_metal_device newComputePipelineStateWithFunction:func
                                                                                error:&error];
         if (!g_matmul_sf64_pipeline) {
-            fprintf(stderr, "Metal: Failed to create sf64 pipeline: %s\n",
+            eshkol_error("Metal: failed to create sf64 compute pipeline: %s",
                     [[error localizedDescription] UTF8String]);
             return 0;
         }
@@ -567,16 +805,16 @@ static int metal_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuf
         [encoder setBytes:&dims[1] length:sizeof(uint32_t) atIndex:4];
         [encoder setBytes:&dims[2] length:sizeof(uint32_t) atIndex:5];
 
-        // Dispatch with 4x4 tiling: each thread handles a 4x4 tile
-        // Total threads needed = (N/4, M/4), one thread per tile
-        const uint32_t TILE_SIZE = 4;
-        NSUInteger tilesX = (N + TILE_SIZE - 1) / TILE_SIZE;
-        NSUInteger tilesY = (M + TILE_SIZE - 1) / TILE_SIZE;
-        MTLSize threadsTotal = MTLSizeMake(tilesX, tilesY, 1);
+        // Dispatch with shared-memory tiled kernel:
+        // Each threadgroup (8×8 = 64 threads) computes a 32×32 output block.
+        // Each thread computes a 4×4 sub-tile from shared memory.
+        const uint32_t BLK_SIZE = 32;
+        NSUInteger groupsX = (N + BLK_SIZE - 1) / BLK_SIZE;
+        NSUInteger groupsY = (M + BLK_SIZE - 1) / BLK_SIZE;
+        MTLSize threadgroupCount = MTLSizeMake(groupsX, groupsY, 1);
         MTLSize threadgroupSize = MTLSizeMake(8, 8, 1);
 
-        // dispatchThreads dispatches exactly threadsTotal threads
-        [encoder dispatchThreads:threadsTotal threadsPerThreadgroup:threadgroupSize];
+        [encoder dispatchThreadgroups:threadgroupCount threadsPerThreadgroup:threadgroupSize];
         [encoder endEncoding];
         [cmd commit];
         [cmd waitUntilCompleted];
@@ -1079,9 +1317,24 @@ int eshkol_gpu_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffe
     }
 #endif
 
-    // CPU fallback: convert and use f64
-    // TODO: Add f32 SIMD path
-    return -1;
+    // CPU fallback: f32 scalar matmul
+    {
+        const float* a = (const float*)A->host_ptr;
+        const float* b = (const float*)B->host_ptr;
+        float* c = (float*)C->host_ptr;
+        if (!a || !b || !c) return -1;
+
+        for (uint64_t i = 0; i < M; i++) {
+            for (uint64_t j = 0; j < N; j++) {
+                float sum = 0.0f;
+                for (uint64_t k = 0; k < K; k++) {
+                    sum += a[i * K + k] * b[k * N + j];
+                }
+                c[i * N + j] = sum;
+            }
+        }
+        return 0;
+    }
 }
 
 void eshkol_gpu_set_threshold(size_t threshold) {

@@ -25,6 +25,8 @@
 #elif defined(ESHKOL_BLAS_OPENBLAS)
 // OpenBLAS
 #include <cblas.h>
+#else
+#error "ESHKOL_BLAS_ENABLED is set but no BLAS backend defined. Define ESHKOL_BLAS_ACCELERATE (macOS) or ESHKOL_BLAS_OPENBLAS (Linux)."
 #endif
 
 namespace eshkol {
@@ -115,6 +117,22 @@ void dgemm(char transA, char transB,
  */
 void matmul(const double* A, const double* B, double* C,
             size_t M, size_t K, size_t N);
+
+/**
+ * Matmul backward: given C = A @ B, accumulate gradients
+ * dA += grad_C @ B^T, dB += A^T @ grad_C
+ */
+void matmul_backward(const double* grad_c, const double* a, const double* b,
+                     double* grad_a, double* grad_b,
+                     size_t M, size_t K, size_t N);
+
+/**
+ * Matrix-vector multiply: y = alpha * A * x + beta * y
+ */
+void dgemv(char trans, int M, int N,
+           double alpha, const double* A, int lda,
+           const double* x, int incx,
+           double beta, double* y, int incy);
 
 // ===== Vector Operations =====
 

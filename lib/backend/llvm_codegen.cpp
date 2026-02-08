@@ -123,6 +123,15 @@ namespace {
     std::unordered_set<std::string> g_repl_private_symbols;                // Private symbols (not exported from modules)
     std::mutex g_repl_mutex;  // Thread safety for REPL symbol access
 
+    // External library function registry
+    // Populated by eshkol_register_external_functions(), consumed during codegen
+    struct ExternalFuncInfo {
+        size_t num_params;      // Number of fixed parameters
+        bool is_variadic;       // Whether function accepts variadic arguments
+    };
+    std::unordered_map<std::string, ExternalFuncInfo> g_external_functions;
+    std::mutex g_external_mutex;
+
     // CACHED TARGET INFO: Avoid recomputing on every compilation
     bool g_target_info_cached = false;
     std::string g_cached_target_triple;
@@ -349,6 +358,9 @@ private:
     // BuiltinDeclarations - External runtime function declarations
     // Handles deep_equal, display_value, lambda_registry functions
     std::unique_ptr<eshkol::BuiltinDeclarations> builtins_;
+
+    // ComplexCodegen - Complex number arithmetic operations
+    std::unique_ptr<eshkol::ComplexCodegen> complex_;
 
     // ArithmeticCodegen - Polymorphic arithmetic operations
     // Note: Main polymorphic implementations still in this file; module provides interface
@@ -680,11 +692,34 @@ public:
         function_return_types["thread-pool-info"] = BuiltinTypes::Int64;
         function_return_types["thread-pool-size"] = BuiltinTypes::Int64;  // Alias for thread-pool-info
         function_return_types["thread-pool-stats"] = BuiltinTypes::Null;
+        function_return_types["parallel-execute"] = BuiltinTypes::List;
 
         // Future primitives
         function_return_types["future"] = BuiltinTypes::Value;      // Returns future handle
         function_return_types["force"] = BuiltinTypes::Value;       // Returns result of computation
         function_return_types["future-ready?"] = BuiltinTypes::Boolean; // Returns boolean
+
+        // Complex number operations
+        function_return_types["make-rectangular"] = BuiltinTypes::Complex128;  // Create complex from real,imag
+        function_return_types["make-polar"] = BuiltinTypes::Complex128;        // Create complex from magnitude,angle
+        function_return_types["real-part"] = BuiltinTypes::Float64;            // Extract real component
+        function_return_types["imag-part"] = BuiltinTypes::Float64;            // Extract imaginary component
+        function_return_types["magnitude"] = BuiltinTypes::Float64;            // |z| = sqrt(r² + i²)
+        function_return_types["angle"] = BuiltinTypes::Float64;                // arg(z) = atan2(imag, real)
+        function_return_types["complex?"] = BuiltinTypes::Boolean;             // Type predicate
+        function_return_types["conjugate"] = BuiltinTypes::Complex128;         // Complex conjugate
+
+        // HoTT sum type operations (discriminated unions)
+        function_return_types["inject-left"] = BuiltinTypes::Pair;     // (0 . value) tagged pair
+        function_return_types["inject-right"] = BuiltinTypes::Pair;    // (1 . value) tagged pair
+        function_return_types["sum-tag"] = BuiltinTypes::Int64;        // Returns 0 (left) or 1 (right)
+        function_return_types["sum-value"] = BuiltinTypes::Value;      // Extracts inner value
+        function_return_types["left?"] = BuiltinTypes::Boolean;        // Is left variant?
+        function_return_types["right?"] = BuiltinTypes::Boolean;       // Is right variant?
+
+        // FFT/IFFT operations (Signal Processing)
+        function_return_types["fft"] = BuiltinTypes::Value;    // Returns vector of complex numbers
+        function_return_types["ifft"] = BuiltinTypes::Value;   // Returns vector of complex numbers
     }
     
     std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts) {
@@ -1041,6 +1076,39 @@ public:
                 declareNestedFunctions(&asts_to_use[i]);
             }
             eshkol_debug("Created all function declarations (including nested)");
+
+            // Step 1.25: Register external function declarations from library imports
+            // These are functions registered via eshkol_register_external_functions()
+            // before IR generation. Create external declarations so codegen can call them.
+            {
+                std::lock_guard<std::mutex> lock(g_external_mutex);
+                for (const auto& [func_name, info] : g_external_functions) {
+                    // Skip if already declared (local definition takes precedence)
+                    if (module->getFunction(func_name) || function_table.count(func_name)) {
+                        continue;
+                    }
+
+                    // Create function type: all params are tagged_value, returns tagged_value
+                    std::vector<Type*> param_types(info.num_params, tagged_value_type);
+                    FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, info.is_variadic);
+                    Function* ext_func = Function::Create(
+                        func_type,
+                        GlobalValue::ExternalLinkage,
+                        func_name,
+                        module.get()
+                    );
+
+                    // Register in function table and symbol table
+                    function_table[func_name] = ext_func;
+                    symbol_table[func_name] = ext_func;
+                    global_symbol_table[func_name] = ext_func;
+                    symbol_table[func_name + "_func"] = ext_func;
+                    global_symbol_table[func_name + "_func"] = ext_func;
+
+                    eshkol_debug("Injected external function declaration: %s (params=%zu, variadic=%s)",
+                               func_name.c_str(), info.num_params, info.is_variadic ? "yes" : "no");
+                }
+            }
 
             // Step 1.5: Pre-declare global variables so functions can reference them
             // This creates GlobalVariables for non-function top-level defines
@@ -2015,9 +2083,13 @@ private:
         autodiff_->setResolveLambdaCallback(ControlFlowCallbacks::resolveLambdaWrapper);
         eshkol_debug("Created AutodiffCodegen with function table and callbacks");
 
+        // Initialize ComplexCodegen - complex number arithmetic
+        complex_ = std::make_unique<eshkol::ComplexCodegen>(*ctx_, *tagged_, *mem);
+        eshkol_debug("Created ComplexCodegen");
+
         // Initialize ArithmeticCodegen - polymorphic arithmetic operations
-        // Now fully functional with tensor and autodiff support
-        arith_ = std::make_unique<eshkol::ArithmeticCodegen>(*ctx_, *tagged_, *tensor_, *autodiff_);
+        // Now fully functional with tensor, autodiff, and complex support
+        arith_ = std::make_unique<eshkol::ArithmeticCodegen>(*ctx_, *tagged_, *tensor_, *autodiff_, *complex_);
         eshkol_debug("Created ArithmeticCodegen");
 
         // Initialize CallApplyCodegen - function call and apply operations
@@ -3134,6 +3206,11 @@ private:
         // DEPRECATED: Arena initialization is now handled globally in createMainWrapper()
         // This function is kept for compatibility but does nothing
         // All functions now share the global arena automatically
+        if (!global_arena) {
+            eshkol_error("initializeArena() called but global_arena is null — "
+                         "createMainWrapper() must be called first to initialize the arena");
+            return;
+        }
         eshkol_debug("initializeArena() called but using global arena (no-op)");
     }
     
@@ -3154,6 +3231,8 @@ private:
             builder->CreateCall(getArenaPushScopeFunc(), {arena_ptr});
             arena_scope_depth++;
             eshkol_debug("Arena scope pushed (depth: %zu)", arena_scope_depth);
+        } else {
+            eshkol_error("Arena not initialized: cannot push scope");
         }
     }
     
@@ -3820,7 +3899,7 @@ private:
 
         // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
         if (g_repl_private_symbols.find(func_name) != g_repl_private_symbols.end()) {
-            // Private symbol - treat as not found
+            eshkol_error("Function '%s' is private (not exported from its module)", func_name.c_str());
             return nullptr;
         }
 
@@ -5740,6 +5819,135 @@ private:
         return strio_->createString(str);
     }
 
+    // OWNERSHIP ENFORCEMENT: Emit a runtime check for use-after-move
+    // For heap-allocated values (HEAP_PTR, CALLABLE), checks if CONSUMED flag (0x08) is set
+    // on the object header. If so, raises an exception.
+    Value* emitUseAfterMoveCheck(Value* loaded_val, const std::string& var_name) {
+        if (!loaded_val || loaded_val->getType() != tagged_value_type) return loaded_val;
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        if (!func) return loaded_val;
+
+        // Check if value is heap-allocated (has object header)
+        Value* type_tag = getTaggedValueType(loaded_val);
+        Value* base_type = getBaseType(type_tag);
+        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* has_header = builder->CreateOr(is_heap, is_callable);
+
+        BasicBlock* check_consumed_bb = BasicBlock::Create(*context, "check_consumed", func);
+        BasicBlock* continue_bb = BasicBlock::Create(*context, "use_ok", func);
+        builder->CreateCondBr(has_header, check_consumed_bb, continue_bb);
+
+        // Check CONSUMED flag on object header
+        builder->SetInsertPoint(check_consumed_bb);
+        Value* ptr_int = unpackInt64FromTaggedValue(loaded_val);
+        // Guard: if pointer is null, skip the header check (no object to inspect)
+        Value* ptr_is_null = builder->CreateICmpEQ(ptr_int, ConstantInt::get(int64_type, 0));
+        BasicBlock* nonnull_bb = BasicBlock::Create(*context, "uam_nonnull", func);
+        builder->CreateCondBr(ptr_is_null, continue_bb, nonnull_bb);
+
+        builder->SetInsertPoint(nonnull_bb);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+        // Flags byte at data_ptr - 7
+        Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
+        Value* flags = builder->CreateLoad(int8_type, flags_ptr, "uam_flags");
+        Value* consumed = builder->CreateAnd(flags, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_CONSUMED));
+        Value* is_consumed = builder->CreateICmpNE(consumed, ConstantInt::get(int8_type, 0));
+
+        BasicBlock* error_bb = BasicBlock::Create(*context, "use_after_move", func);
+        builder->CreateCondBr(is_consumed, error_bb, continue_bb);
+
+        // Emit error: use after move
+        builder->SetInsertPoint(error_bb);
+        {
+            Function* raise_func = module->getFunction("eshkol_raise");
+            if (!raise_func) {
+                FunctionType* raise_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+                raise_func = Function::Create(raise_type, Function::ExternalLinkage, "eshkol_raise", module.get());
+                raise_func->setDoesNotReturn();
+            }
+            Function* make_exc_func = module->getFunction("eshkol_make_exception_with_header");
+            if (!make_exc_func) {
+                FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
+                    {builder->getInt32Ty(), builder->getPtrTy()}, false);
+                make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
+                    "eshkol_make_exception_with_header", module.get());
+            }
+            std::string msg = "use after move: variable '" + var_name + "' has been consumed";
+            Value* error_msg = codegenString(msg.c_str());
+            Value* exc_type = ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+            Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
+            builder->CreateCall(raise_func, {exception});
+        }
+        builder->CreateUnreachable();
+
+        builder->SetInsertPoint(continue_bb);
+        return loaded_val;
+    }
+
+    // OWNERSHIP ENFORCEMENT: Check if a value has the BORROWED flag set
+    // Used by codegenSet to prevent mutation of borrowed references
+    Value* emitBorrowMutationCheck(Value* var_val, const std::string& var_name) {
+        if (!var_val || var_val->getType() != tagged_value_type) return nullptr; // null = no error
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        if (!func) return nullptr;
+
+        Value* type_tag = getTaggedValueType(var_val);
+        Value* base_type = getBaseType(type_tag);
+        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* has_header = builder->CreateOr(is_heap, is_callable);
+
+        BasicBlock* check_bb = BasicBlock::Create(*context, "check_borrow", func);
+        BasicBlock* continue_bb = BasicBlock::Create(*context, "set_ok", func);
+        builder->CreateCondBr(has_header, check_bb, continue_bb);
+
+        builder->SetInsertPoint(check_bb);
+        Value* ptr_int = unpackInt64FromTaggedValue(var_val);
+        // Guard: if pointer is null, skip the header check
+        Value* borrow_ptr_null = builder->CreateICmpEQ(ptr_int, ConstantInt::get(int64_type, 0));
+        BasicBlock* borrow_nonnull_bb = BasicBlock::Create(*context, "borrow_nonnull", func);
+        builder->CreateCondBr(borrow_ptr_null, continue_bb, borrow_nonnull_bb);
+
+        builder->SetInsertPoint(borrow_nonnull_bb);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+        Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
+        Value* flags = builder->CreateLoad(int8_type, flags_ptr, "borrow_flags");
+        Value* borrowed = builder->CreateAnd(flags, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_BORROWED));
+        Value* is_borrowed = builder->CreateICmpNE(borrowed, ConstantInt::get(int8_type, 0));
+
+        BasicBlock* error_bb = BasicBlock::Create(*context, "borrow_violation", func);
+        builder->CreateCondBr(is_borrowed, error_bb, continue_bb);
+
+        builder->SetInsertPoint(error_bb);
+        {
+            Function* raise_func = module->getFunction("eshkol_raise");
+            if (!raise_func) {
+                FunctionType* raise_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+                raise_func = Function::Create(raise_type, Function::ExternalLinkage, "eshkol_raise", module.get());
+                raise_func->setDoesNotReturn();
+            }
+            Function* make_exc_func = module->getFunction("eshkol_make_exception_with_header");
+            if (!make_exc_func) {
+                FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
+                    {builder->getInt32Ty(), builder->getPtrTy()}, false);
+                make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
+                    "eshkol_make_exception_with_header", module.get());
+            }
+            std::string msg = "mutation of borrowed value: variable '" + var_name + "' is currently borrowed";
+            Value* error_msg = codegenString(msg.c_str());
+            Value* exc_type = ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+            Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
+            builder->CreateCall(raise_func, {exception});
+        }
+        builder->CreateUnreachable();
+
+        builder->SetInsertPoint(continue_bb);
+        return nullptr; // success
+    }
+
     Value* codegenVariable(const eshkol_ast_t* ast) {
         if (!ast->variable.id) return nullptr;
 
@@ -5752,21 +5960,25 @@ private:
             Value* sym_val = sym_it->second;
             // If it's an alloca (TCO parameter), load from it
             if (isa<AllocaInst>(sym_val)) {
-                return builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+                Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+                return emitUseAfterMoveCheck(loaded, var_name);
             }
             // If it's a GlobalVariable, load from it
             if (isa<GlobalVariable>(sym_val)) {
-                return builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+                Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+                return emitUseAfterMoveCheck(loaded, var_name);
             }
             // MUTABLE CAPTURE FIX: If it's an Argument with pointer type (closure capture storage),
             // load the value from the pointed-to storage
             if (isa<Argument>(sym_val) && sym_val->getType()->isPointerTy()) {
-                return builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+                Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+                return emitUseAfterMoveCheck(loaded, var_name);
             }
             // MUTABLE CAPTURE FIX: If it's any other pointer (e.g., IntToPtr result from
             // unpacking an alloca pointer stored in closure env), load from it
             if (sym_val->getType()->isPointerTy()) {
-                return builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+                Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+                return emitUseAfterMoveCheck(loaded, var_name);
             }
             // CROSS-FUNCTION ARGUMENT FIX: If sym_val is an Argument, verify it belongs to the current function
             // Stale symbol_table entries from previous function compilations could reference Arguments
@@ -6133,7 +6345,8 @@ private:
 
             // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
             if (g_repl_private_symbols.find(var_name) != g_repl_private_symbols.end()) {
-                // Private symbol - treat as undefined (will generate error below)
+                eshkol_error("Variable '%s' is private (not exported from its module)", var_name.c_str());
+                return nullptr;
             } else {
 
             auto repl_it = g_repl_symbol_addresses.find(var_name);
@@ -7957,6 +8170,12 @@ private:
             return packNullToTaggedValue();
         }
 
+        // OWNERSHIP ENFORCEMENT: Check if value is borrowed (immutable during borrow scope)
+        if (isa<AllocaInst>(var_ptr) || isa<GlobalVariable>(var_ptr) || var_ptr->getType()->isPointerTy()) {
+            Value* current_val = builder->CreateLoad(tagged_value_type, var_ptr, std::string(var_name) + ".borrow_check");
+            emitBorrowMutationCheck(current_val, var_name);
+        }
+
         // Determine if var_ptr is a pointer we can store to
         // MUTABLE CAPTURE FIX: Also accept any pointer type (for closure capture storage)
         // Valid storage types: GlobalVariable, AllocaInst, Argument pointer, or any pointer value
@@ -8416,6 +8635,14 @@ private:
         if (func_name == "append-file") return system_->appendFile(op);
 
         // =========================================================================
+        // R7RS ENVIRONMENT PRIMITIVES
+        // =========================================================================
+        if (func_name == "null-environment") return codegenNullEnvironment(op);
+        if (func_name == "scheme-report-environment") return codegenSchemeReportEnvironment(op);
+        if (func_name == "interaction-environment") return codegenInteractionEnvironment(op);
+        if (func_name == "current-environment") return codegenInteractionEnvironment(op);
+
+        // =========================================================================
         // HASH TABLE OPERATIONS (delegated to HashCodegen)
         // =========================================================================
         if (func_name == "make-hash-table") return hash_->makeHashTable(op);
@@ -8521,6 +8748,7 @@ private:
         if (func_name == "parallel-fold") return parallel_->parallelFold(op);
         if (func_name == "parallel-filter") return parallel_->parallelFilter(op);
         if (func_name == "parallel-for-each") return parallel_->parallelForEach(op);
+        if (func_name == "parallel-execute") return parallel_->parallelExecute(op);
         if (func_name == "thread-pool-info") return parallel_->threadPoolInfo(op);
         if (func_name == "thread-pool-size") return parallel_->threadPoolInfo(op);  // Alias
         if (func_name == "thread-pool-stats") return parallel_->threadPoolStats(op);
@@ -8529,6 +8757,28 @@ private:
         if (func_name == "future") return parallel_->future(op);
         if (func_name == "force") return parallel_->force(op);
         if (func_name == "future-ready?") return parallel_->futureReady(op);
+
+        // Handle complex number operations
+        if (func_name == "make-rectangular") return codegenMakeRectangular(op);
+        if (func_name == "make-polar") return codegenMakePolar(op);
+        if (func_name == "real-part") return codegenRealPart(op);
+        if (func_name == "imag-part") return codegenImagPart(op);
+        if (func_name == "magnitude") return codegenMagnitude(op);
+        if (func_name == "angle") return codegenAngle(op);
+        if (func_name == "complex?") return codegenComplexPredicate(op);
+        if (func_name == "conjugate") return codegenConjugate(op);
+
+        // Handle HoTT sum type operations (discriminated unions)
+        if (func_name == "inject-left") return codegenSumInject(op, 0);
+        if (func_name == "inject-right") return codegenSumInject(op, 1);
+        if (func_name == "sum-tag") return codegenSumTag(op);
+        if (func_name == "sum-value") return codegenSumValue(op);
+        if (func_name == "left?") return codegenSumPredicate(op, 0);
+        if (func_name == "right?") return codegenSumPredicate(op, 1);
+
+        // Handle FFT/IFFT operations (Signal Processing)
+        if (func_name == "fft") return codegenFFT(op, false);
+        if (func_name == "ifft") return codegenFFT(op, true);
 
         // Handle list removal operations
         // remove kept as builtin for performance (iterative LLVM IR vs recursive stdlib)
@@ -13103,6 +13353,118 @@ private:
         return nullptr;
     }
     
+    // =========================================================================
+    // R7RS ENVIRONMENT PRIMITIVES IMPLEMENTATION
+    // =========================================================================
+
+    // (null-environment 7) → Returns empty environment (only syntax keywords)
+    Value* codegenNullEnvironment(const eshkol_operations_t* op) {
+        (void)op;  // Version argument ignored — only R7RS (7) is supported
+        return packNullToTaggedValue();  // '() — empty alist
+    }
+
+    // (scheme-report-environment 7) → Returns R7RS standard environment
+    // Builds an alist of standard procedure names as symbols.
+    // Since all standard bindings are always available through builtin dispatch,
+    // the alist serves as introspection data for the R7RS standard set.
+    Value* codegenSchemeReportEnvironment(const eshkol_operations_t* op) {
+        (void)op;  // Version argument ignored
+
+        // R7RS base library procedure names
+        static const std::vector<std::string> r7rs_procs = {
+            // Numeric
+            "+", "-", "*", "/", "=", "<", ">", "<=", ">=",
+            "abs", "max", "min", "modulo", "remainder", "quotient",
+            "floor", "ceiling", "truncate", "round",
+            "exact?", "inexact?", "zero?", "positive?", "negative?",
+            "number?", "integer?", "real?", "complex?",
+            "exact->inexact", "inexact->exact",
+            "number->string", "string->number",
+            "sin", "cos", "tan", "exp", "log", "sqrt", "expt",
+            // Boolean
+            "not", "boolean?",
+            // Pairs and lists
+            "cons", "car", "cdr", "pair?", "null?", "list?",
+            "list", "length", "append", "reverse", "map", "for-each", "filter",
+            "assoc", "assv", "assq", "member", "memv", "memq",
+            "caar", "cadr", "cdar", "cddr",
+            // Symbols
+            "symbol?", "symbol->string", "string->symbol",
+            // Characters
+            "char?", "char->integer", "integer->char",
+            "char-alphabetic?", "char-numeric?", "char-whitespace?",
+            "char-upper-case?", "char-lower-case?",
+            // Strings
+            "string?", "string-length", "string-ref",
+            "string-append", "substring", "string-copy",
+            "string->list", "list->string",
+            "string=?", "string<?",
+            // Vectors
+            "vector?", "make-vector", "vector", "vector-length",
+            "vector-ref", "vector-set!",
+            // Control
+            "procedure?", "apply", "map", "for-each",
+            "call-with-current-continuation", "values", "call-with-values",
+            // I/O
+            "display", "newline", "write", "read",
+            "open-input-file", "read-line", "close-port", "eof-object?",
+            // Exceptions
+            "error", "with-exception-handler", "raise", "guard",
+            // Eval
+            "eval",
+        };
+
+        // Build alist: ((symbol . symbol) ...) — each entry is (name . name)
+        // Start from null, prepend each symbol
+        Value* result = packNullToTaggedValue();
+
+        for (auto it = r7rs_procs.rbegin(); it != r7rs_procs.rend(); ++it) {
+            // Create symbol for the procedure name
+            Value* sym = packPtrToTaggedValue(
+                ctx_->internStringWithHeader(it->c_str(), HEAP_SUBTYPE_SYMBOL),
+                ESHKOL_VALUE_HEAP_PTR);
+
+            // cons symbol onto the list
+            Value* cons_i64 = codegenTaggedArenaConsCellFromTaggedValue(sym, result);
+            result = packPtrToTaggedValue(cons_i64, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        return result;
+    }
+
+    // (interaction-environment) / (current-environment) → Returns current bindings
+    // Builds an alist of all globally defined symbol names at compile time.
+    Value* codegenInteractionEnvironment(const eshkol_operations_t* op) {
+        (void)op;
+
+        // Collect unique symbol names from global symbol table
+        // Skip internal names (those containing "_func", "_sexpr", etc.)
+        std::vector<std::string> names;
+        for (const auto& [name, _] : global_symbol_table) {
+            // Skip internal/implementation entries
+            if (name.find("_func") != std::string::npos) continue;
+            if (name.find("_sexpr") != std::string::npos) continue;
+            if (name.find("lambda_") == 0) continue;
+            if (name.empty()) continue;
+            names.push_back(name);
+        }
+        std::sort(names.begin(), names.end());
+
+        // Build alist of (symbol-name . symbol-name) pairs
+        Value* result = packNullToTaggedValue();
+
+        for (auto it = names.rbegin(); it != names.rend(); ++it) {
+            Value* sym = packPtrToTaggedValue(
+                ctx_->internStringWithHeader(it->c_str(), HEAP_SUBTYPE_SYMBOL),
+                ESHKOL_VALUE_HEAP_PTR);
+
+            Value* cons_i64 = codegenTaggedArenaConsCellFromTaggedValue(sym, result);
+            result = packPtrToTaggedValue(cons_i64, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        return result;
+    }
+
     // If expression - delegate to control flow module
     Value* codegenIfCall(const eshkol_operations_t* op) {
         return flow_->codegenIf(op);
@@ -14799,6 +15161,9 @@ private:
         std::unordered_map<std::string, eshkol::hott::TypeId> prev_hott_types = symbol_hott_types;
         std::unordered_map<std::string, eshkol::hott::ParameterizedType> prev_param_types = symbol_param_types;
 
+        // OWNERSHIP ENFORCEMENT: Track let binding allocas for shared ref count cleanup
+        std::vector<AllocaInst*> let_binding_allocas;
+
         // Process all bindings: evaluate values and add to symbol table
         for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
             const eshkol_ast_t* binding = &op->let_op.bindings[i];
@@ -15054,6 +15419,11 @@ private:
                 builder->CreateStore(val_to_store, var_alloca);
                 symbol_table[var_name] = var_alloca;
 
+                // OWNERSHIP: Track alloca for shared ref count cleanup at scope exit
+                if (actual_storage_type == tagged_value_type) {
+                    let_binding_allocas.push_back(var_alloca);
+                }
+
                 // HoTT TYPE TRACKING: Store compile-time type for let bindings
                 symbol_hott_types[var_name] = typed_val.hott_type;
                 // HoTT PARAMETERIZED TYPE: Store element type for List<T>, Vector<T>
@@ -15077,7 +15447,51 @@ private:
         
         // Evaluate body in the new scope with bindings
         Value* body_result = codegenAST(op->let_op.body);
-        
+
+        // OWNERSHIP ENFORCEMENT: Decrement ref count for shared objects at scope exit
+        if (!let_binding_allocas.empty() && builder->GetInsertBlock()) {
+            Function* scope_func = builder->GetInsertBlock()->getParent();
+            if (scope_func) {
+                for (AllocaInst* alloca : let_binding_allocas) {
+                    Value* val = builder->CreateLoad(tagged_value_type, alloca, "scope_exit_val");
+                    Value* type_tag = getTaggedValueType(val);
+                    Value* base_type = getBaseType(type_tag);
+                    Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+                    Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+                    Value* has_header = builder->CreateOr(is_heap, is_callable);
+
+                    BasicBlock* check_shared_bb = BasicBlock::Create(*context, "check_shared", scope_func);
+                    BasicBlock* next_bb = BasicBlock::Create(*context, "scope_next", scope_func);
+                    builder->CreateCondBr(has_header, check_shared_bb, next_bb);
+
+                    builder->SetInsertPoint(check_shared_bb);
+                    Value* ptr_int = unpackInt64FromTaggedValue(val);
+                    Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+                    // Flags at data_ptr - 7
+                    Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
+                    Value* flags = builder->CreateLoad(int8_type, flags_ptr, "scope_flags");
+                    Value* shared_bit = builder->CreateAnd(flags, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_SHARED));
+                    Value* is_shared = builder->CreateICmpNE(shared_bit, ConstantInt::get(int8_type, 0));
+
+                    BasicBlock* dec_rc_bb = BasicBlock::Create(*context, "dec_refcount", scope_func);
+                    builder->CreateCondBr(is_shared, dec_rc_bb, next_bb);
+
+                    // Decrement ref count (at data_ptr - 6, i16)
+                    builder->SetInsertPoint(dec_rc_bb);
+                    Value* rc_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -6));
+                    Type* int16_type = builder->getInt16Ty();
+                    Value* rc_typed = builder->CreateBitCast(rc_ptr, PointerType::get(int16_type, 0));
+                    Value* old_rc = builder->CreateLoad(int16_type, rc_typed, "old_rc");
+                    Value* new_rc = builder->CreateSub(old_rc, ConstantInt::get(int16_type, 1));
+                    builder->CreateStore(new_rc, rc_typed);
+                    // Note: when rc reaches 0, memory will be reclaimed by arena GC
+                    builder->CreateBr(next_bb);
+
+                    builder->SetInsertPoint(next_bb);
+                }
+            }
+        }
+
         // CRITICAL FIX (Bug #2): Preserve _func entries before restoring symbol table
         // Local functions defined in let bindings must be accessible for autodiff
         std::unordered_map<std::string, Value*> func_refs_to_preserve;
@@ -17056,7 +17470,7 @@ private:
         }
         
         // POWER RULE: d/dx(f^n) = n * f^(n-1) * f' (constant exponent)
-        if (strcmp(func_name, "pow") == 0 && op->call_op.num_vars == 2) {
+        if ((strcmp(func_name, "pow") == 0 || strcmp(func_name, "expt") == 0) && op->call_op.num_vars == 2) {
             const eshkol_ast_t* f = &op->call_op.variables[0];
             const eshkol_ast_t* n = &op->call_op.variables[1];
             
@@ -21861,190 +22275,6 @@ private:
         return result_phi;
     }
 
-    // Dead code below - kept temporarily for reference during cleanup
-    // TODO: Remove after validation that 2D tensor return works correctly
-    #if 0
-    // OLD NESTED LIST CONVERSION CODE (BROKEN - treated list pointers as doubles)
-        // Get Jacobian elements for conversion
-        Value* jac_convert_elems_field = builder->CreateStructGEP(tensor_type, typed_jac_ptr, 2);
-        Value* jac_convert_elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), jac_convert_elems_field);
-        Value* typed_jac_convert_elems = builder->CreatePointerCast(jac_convert_elems_ptr, builder->getPtrTy());
-        
-        // Build nested list: start from last row, build backwards
-        Value* outer_list = builder->CreateAlloca(int64_type, nullptr, "jac_outer_list");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), outer_list); // Start with null
-        
-        // Outer loop: i from m-1 down to 0 (build list backwards)
-        BasicBlock* convert_outer_cond = BasicBlock::Create(*context, "jac_convert_outer_cond", current_func);
-        BasicBlock* convert_outer_body = BasicBlock::Create(*context, "jac_convert_outer_body", current_func);
-        BasicBlock* convert_outer_exit = BasicBlock::Create(*context, "jac_convert_outer_exit", current_func);
-        
-        Value* convert_row_idx = builder->CreateAlloca(int64_type, nullptr, "convert_row_idx");
-        builder->CreateStore(m, convert_row_idx); // Start at m (will decrement before use)
-        builder->CreateBr(convert_outer_cond);
-        
-        builder->SetInsertPoint(convert_outer_cond);
-        Value* row_count = builder->CreateLoad(int64_type, convert_row_idx);
-        Value* row_gt_zero = builder->CreateICmpUGT(row_count, ConstantInt::get(int64_type, 0));
-        builder->CreateCondBr(row_gt_zero, convert_outer_body, convert_outer_exit);
-        
-        builder->SetInsertPoint(convert_outer_body);
-        
-        // Decrement to get current row index (0-based)
-        Value* current_row = builder->CreateSub(row_count, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(current_row, convert_row_idx);
-        
-        // Build row list: collect n elements from this row
-        Value* row_list = builder->CreateAlloca(int64_type, nullptr, "jac_row_list");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), row_list); // Start with null
-        
-        // Inner loop: j from n-1 down to 0 (build row list backwards)
-        BasicBlock* convert_inner_cond = BasicBlock::Create(*context, "jac_convert_inner_cond", current_func);
-        BasicBlock* convert_inner_body = BasicBlock::Create(*context, "jac_convert_inner_body", current_func);
-        BasicBlock* convert_inner_exit = BasicBlock::Create(*context, "jac_convert_inner_exit", current_func);
-        
-        Value* convert_col_idx = builder->CreateAlloca(int64_type, nullptr, "convert_col_idx");
-        builder->CreateStore(n, convert_col_idx); // Start at n (will decrement before use)
-        builder->CreateBr(convert_inner_cond);
-        
-        builder->SetInsertPoint(convert_inner_cond);
-        Value* col_count = builder->CreateLoad(int64_type, convert_col_idx);
-        Value* col_gt_zero = builder->CreateICmpUGT(col_count, ConstantInt::get(int64_type, 0));
-        builder->CreateCondBr(col_gt_zero, convert_inner_body, convert_inner_exit);
-        
-        builder->SetInsertPoint(convert_inner_body);
-        
-        // Decrement to get current column index (0-based)
-        Value* current_col = builder->CreateSub(col_count, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(current_col, convert_col_idx);
-        
-        // Get element at [current_row, current_col]
-        Value* elem_linear_idx = builder->CreateMul(current_row, n);
-        elem_linear_idx = builder->CreateAdd(elem_linear_idx, current_col);
-        Value* elem_ptr = builder->CreateGEP(double_type, typed_jac_convert_elems, elem_linear_idx);
-        Value* elem_double = builder->CreateLoad(double_type, elem_ptr);
-        
-        // Pack element as tagged_value
-        Value* elem_tagged = packDoubleToTaggedValue(elem_double);
-        
-        // Get current row list
-        Value* current_row_list = builder->CreateLoad(int64_type, row_list);
-        Value* row_list_tagged = (current_row_list == ConstantInt::get(int64_type, 0)) ?
-            packNullToTaggedValue() :
-            packPtrToTaggedValue(builder->CreateIntToPtr(current_row_list, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-        
-        // Cons element onto row list
-        Value* new_row_cons = codegenTaggedArenaConsCellFromTaggedValue(elem_tagged, row_list_tagged);
-        builder->CreateStore(new_row_cons, row_list);
-        
-        builder->CreateBr(convert_inner_cond);
-        
-        builder->SetInsertPoint(convert_inner_exit);
-        
-        // Row complete - cons it onto outer list
-        Value* completed_row_list = builder->CreateLoad(int64_type, row_list);
-        Value* completed_row_tagged = packPtrToTaggedValue(
-            builder->CreateIntToPtr(completed_row_list, builder->getPtrTy()),
-            ESHKOL_VALUE_HEAP_PTR);
-        
-        Value* current_outer_list = builder->CreateLoad(int64_type, outer_list);
-        Value* outer_list_tagged = (current_outer_list == ConstantInt::get(int64_type, 0)) ?
-            packNullToTaggedValue() :
-            packPtrToTaggedValue(builder->CreateIntToPtr(current_outer_list, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-        
-        // Cons row onto outer list
-        Value* new_outer_cons = codegenTaggedArenaConsCellFromTaggedValue(completed_row_tagged, outer_list_tagged);
-        builder->CreateStore(new_outer_cons, outer_list);
-        
-        builder->CreateBr(convert_outer_cond);
-        
-        builder->SetInsertPoint(convert_outer_exit);
-        
-        // JACOBIAN FIX: Create 1D tensor containing row lists as elements
-        // This displays as #((row1) (row2)) - tensor prefix with nested row structure
-        
-        // Allocate result tensor via arena (OALR compliant - no malloc)
-        Value* typed_result_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
-
-        // Set dimensions: [m] (1D vector of m rows)
-        Value* result_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* result_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, result_dims_size});
-        Value* typed_result_dims = builder->CreatePointerCast(result_dims_ptr, builder->getPtrTy());
-        builder->CreateStore(m, typed_result_dims);
-
-        // Set tensor fields
-        builder->CreateStore(typed_result_dims,
-            builder->CreateStructGEP(tensor_type, typed_result_tensor, 0)); // dimensions
-        builder->CreateStore(ConstantInt::get(int64_type, 1),
-            builder->CreateStructGEP(tensor_type, typed_result_tensor, 1)); // num_dimensions = 1
-        builder->CreateStore(m,
-            builder->CreateStructGEP(tensor_type, typed_result_tensor, 3)); // total_elements = m
-
-        // Allocate elements array (m pointers to row lists)
-        Value* result_elems_size = builder->CreateMul(m,
-            ConstantInt::get(int64_type, sizeof(uint64_t)));
-        Value* result_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, result_elems_size});
-        Value* typed_result_elems = builder->CreatePointerCast(result_elems_ptr, builder->getPtrTy());
-        
-        builder->CreateStore(typed_result_elems,
-            builder->CreateStructGEP(tensor_type, typed_result_tensor, 2)); // elements
-        
-        // Fill elements array with row list pointers (extract from nested list)
-        BasicBlock* fill_tensor_cond = BasicBlock::Create(*context, "jac_fill_tensor_cond", current_func);
-        BasicBlock* fill_tensor_body = BasicBlock::Create(*context, "jac_fill_tensor_body", current_func);
-        BasicBlock* fill_tensor_exit = BasicBlock::Create(*context, "jac_fill_tensor_exit", current_func);
-        
-        Value* fill_idx = builder->CreateAlloca(int64_type, nullptr, "fill_idx");
-        Value* list_walker = builder->CreateAlloca(int64_type, nullptr, "list_walker");
-        
-        Value* final_nested_list = builder->CreateLoad(int64_type, outer_list);
-        builder->CreateStore(ConstantInt::get(int64_type, 0), fill_idx);
-        builder->CreateStore(final_nested_list, list_walker);
-        builder->CreateBr(fill_tensor_cond);
-        
-        builder->SetInsertPoint(fill_tensor_cond);
-        Value* fill_i = builder->CreateLoad(int64_type, fill_idx);
-        Value* walker_val = builder->CreateLoad(int64_type, list_walker);
-        Value* fill_i_less_m = builder->CreateICmpULT(fill_i, m);
-        Value* walker_not_null = builder->CreateICmpNE(walker_val, ConstantInt::get(int64_type, 0));
-        Value* continue_fill = builder->CreateAnd(fill_i_less_m, walker_not_null);
-        builder->CreateCondBr(continue_fill, fill_tensor_body, fill_tensor_exit);
-        
-        builder->SetInsertPoint(fill_tensor_body);
-        
-        // Extract car (row list pointer) from current cons cell
-        Value* walker_cons_ptr = builder->CreateIntToPtr(walker_val, builder->getPtrTy());
-        Value* row_list_tagged_fill = extractCarAsTaggedValue(walker_val);
-        Value* row_list_ptr = unpackInt64FromTaggedValue(row_list_tagged_fill);
-        
-        // Store row list pointer in tensor elements array
-        Value* elem_slot = builder->CreateGEP(int64_type, typed_result_elems, fill_i);
-        builder->CreateStore(row_list_ptr, elem_slot);
-        
-        // Move to next row (cdr)
-        Value* is_cdr_walker = ConstantInt::get(int1_type, 1);
-        Value* next_walker = builder->CreateCall(getTaggedConsGetPtrFunc(),
-            {walker_cons_ptr, is_cdr_walker});
-        builder->CreateStore(next_walker, list_walker);
-        
-        Value* next_fill_idx = builder->CreateAdd(fill_i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_fill_idx, fill_idx);
-        builder->CreateBr(fill_tensor_cond);
-        
-        builder->SetInsertPoint(fill_tensor_exit);
-        
-        // Return tensor of row lists as TENSOR_PTR
-        Value* jac_result_int = builder->CreatePtrToInt(typed_result_tensor, int64_type);
-        Value* jac_result = packPtrToTaggedValue(jac_result_int, ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(jac_return_block);
-        
-        // Merge null and valid results
-        builder->SetInsertPoint(jac_return_block);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, "jac_result");
-        result_phi->addIncoming(null_jac_tagged, output_invalid_block);
-        result_phi->addIncoming(jac_result, fill_tensor_exit);
-        
-#endif
     // ===== PHASE 3: HESSIAN OPERATOR IMPLEMENTATION =====
     // Matrix of second derivatives (Jacobian of gradient)
     
@@ -23577,7 +23807,7 @@ private:
     }
 
     // Codegen for (owned expr) - marks a value as owned (linear type)
-    // For now, this is a pass-through; ownership tracking is compile-time
+    // Sets ESHKOL_OBJ_FLAG_LINEAR on the object header so the value must be consumed exactly once
     Value* codegenOwned(const eshkol_operations_t* op) {
         if (!op || !op->owned_op.value) {
             eshkol_error("Invalid owned expression: missing value");
@@ -23586,16 +23816,39 @@ private:
 
         eshkol_debug("Generating owned expression");
 
-        // Evaluate the inner expression
         Value* value = codegenAST(op->owned_op.value);
+        if (!value) return packNullToTaggedValue();
 
-        // For now, owned is a pass-through
-        // Future: Add metadata or runtime tracking for ownership
-        return value ? value : packNullToTaggedValue();
+        // Only set LINEAR flag for heap-allocated values that have object headers
+        Value* type = getTaggedValueType(value);
+        Value* base_type = getBaseType(type);
+        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* has_header = builder->CreateOr(is_heap, is_callable);
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* set_linear_bb = BasicBlock::Create(*context, "owned_set_linear", func);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "owned_done", func);
+        builder->CreateCondBr(has_header, set_linear_bb, done_bb);
+
+        // Set LINEAR flag on object header
+        builder->SetInsertPoint(set_linear_bb);
+        Value* ptr_int = unpackInt64FromTaggedValue(value);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+        // Object header: [subtype(1)][flags(1)][ref_count(2)][size(4)]
+        // Flags byte is at data_ptr - 7
+        Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
+        Value* old_flags = builder->CreateLoad(int8_type, flags_ptr, "owned_flags");
+        Value* new_flags = builder->CreateOr(old_flags, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_LINEAR));
+        builder->CreateStore(new_flags, flags_ptr);
+        builder->CreateBr(done_bb);
+
+        builder->SetInsertPoint(done_bb);
+        return value;
     }
 
     // Codegen for (move value) - transfers ownership
-    // For now, this is a pass-through; actual ownership transfer is compile-time
+    // Sets CONSUMED flag on source object and nulls out the source binding
     Value* codegenMove(const eshkol_operations_t* op) {
         if (!op || !op->move_op.value) {
             eshkol_error("Invalid move expression: missing value");
@@ -23604,14 +23857,58 @@ private:
 
         eshkol_debug("Generating move expression");
 
-        // Evaluate the value being moved
         Value* value = codegenAST(op->move_op.value);
+        if (!value) return packNullToTaggedValue();
 
-        // Future: Mark original binding as consumed
-        return value ? value : packNullToTaggedValue();
+        // Check if value is heap-allocated (has object header)
+        Value* type = getTaggedValueType(value);
+        Value* base_type = getBaseType(type);
+        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* has_header = builder->CreateOr(is_heap, is_callable);
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* consume_bb = BasicBlock::Create(*context, "move_consume", func);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "move_done", func);
+        builder->CreateCondBr(has_header, consume_bb, done_bb);
+
+        // Set CONSUMED flag on the source object header
+        builder->SetInsertPoint(consume_bb);
+        Value* ptr_int = unpackInt64FromTaggedValue(value);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+        Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
+        Value* old_flags = builder->CreateLoad(int8_type, flags_ptr, "move_flags");
+        Value* new_flags = builder->CreateOr(old_flags, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_CONSUMED));
+        builder->CreateStore(new_flags, flags_ptr);
+
+        // Null out the source binding if it's a variable reference
+        if (op->move_op.value->type == ESHKOL_VAR && op->move_op.value->variable.id) {
+            std::string var_name = op->move_op.value->variable.id;
+            auto it = symbol_table.find(var_name);
+            if (it != symbol_table.end()) {
+                Value* binding = it->second;
+                if (isa<AllocaInst>(binding) || isa<GlobalVariable>(binding)) {
+                    builder->CreateStore(packNullToTaggedValue(), binding);
+                }
+            }
+        }
+
+        // Clear the CONSUMED flag on the object for the new owner.
+        // The source binding is nulled out above, so the CONSUMED flag
+        // only needs to live on the source (which is now null).
+        // The new owner (receiver of move) gets a clean object.
+        Value* cleared_flags = builder->CreateAnd(old_flags,
+            ConstantInt::get(int8_type, ~ESHKOL_OBJ_FLAG_CONSUMED));
+        builder->CreateStore(cleared_flags, flags_ptr);
+
+        builder->CreateBr(done_bb);
+
+        builder->SetInsertPoint(done_bb);
+        return value;
     }
 
-    // Codegen for (borrow value body ...) - temporary read-only access
+    // Codegen for (borrow value body ...) - temporary read-only access with scope guard
+    // Sets BORROWED flag before body, clears it after body completes
     Value* codegenBorrow(const eshkol_operations_t* op) {
         if (!op || !op->borrow_op.value || !op->borrow_op.body) {
             eshkol_error("Invalid borrow expression: missing value or body");
@@ -23621,24 +23918,67 @@ private:
         eshkol_debug("Generating borrow expression with %llu body expressions",
                     (unsigned long long)op->borrow_op.num_body_exprs);
 
-        // Evaluate the value being borrowed
         Value* borrowed_value = codegenAST(op->borrow_op.value);
-        if (!borrowed_value) {
-            return packNullToTaggedValue();
-        }
+        if (!borrowed_value) return packNullToTaggedValue();
 
-        // Evaluate body expressions - the borrowed value is in scope
-        // Future: Mark it as immutable during this scope
+        // Alloca to save the flags pointer (null if not heap-allocated)
+        Value* flags_ptr_alloca = builder->CreateAlloca(builder->getPtrTy(), nullptr, "borrow_fptr");
+        builder->CreateStore(ConstantPointerNull::get(PointerType::get(*context, 0)), flags_ptr_alloca);
+
+        // Check if heap-allocated (has object header)
+        Value* type = getTaggedValueType(borrowed_value);
+        Value* base_type = getBaseType(type);
+        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* has_header = builder->CreateOr(is_heap, is_callable);
+
+        // Save has_header in alloca for use after body (body may change insert block)
+        Value* has_header_alloca = builder->CreateAlloca(int1_type, nullptr, "borrow_has_hdr");
+        builder->CreateStore(has_header, has_header_alloca);
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* set_borrow_bb = BasicBlock::Create(*context, "borrow_set", func);
+        BasicBlock* body_bb = BasicBlock::Create(*context, "borrow_body", func);
+        builder->CreateCondBr(has_header, set_borrow_bb, body_bb);
+
+        // Set BORROWED flag
+        builder->SetInsertPoint(set_borrow_bb);
+        Value* ptr_int = unpackInt64FromTaggedValue(borrowed_value);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+        Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
+        Value* old_flags = builder->CreateLoad(int8_type, flags_ptr, "borrow_flags");
+        Value* new_flags = builder->CreateOr(old_flags, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_BORROWED));
+        builder->CreateStore(new_flags, flags_ptr);
+        builder->CreateStore(flags_ptr, flags_ptr_alloca);  // Save for cleanup
+        builder->CreateBr(body_bb);
+
+        // Execute body expressions
+        builder->SetInsertPoint(body_bb);
         Value* result = nullptr;
         for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
             result = codegenAST(&op->borrow_op.body[i]);
         }
 
+        // Clear BORROWED flag (scope guard)
+        BasicBlock* clear_borrow_bb = BasicBlock::Create(*context, "borrow_clear", func);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "borrow_done", func);
+        Value* had_header = builder->CreateLoad(int1_type, has_header_alloca);
+        builder->CreateCondBr(had_header, clear_borrow_bb, done_bb);
+
+        builder->SetInsertPoint(clear_borrow_bb);
+        Value* saved_flags_ptr = builder->CreateLoad(builder->getPtrTy(), flags_ptr_alloca);
+        Value* current_flags = builder->CreateLoad(int8_type, saved_flags_ptr, "borrow_cur_flags");
+        Value* cleared_flags = builder->CreateAnd(current_flags,
+            ConstantInt::get(int8_type, static_cast<uint8_t>(~ESHKOL_OBJ_FLAG_BORROWED)));
+        builder->CreateStore(cleared_flags, saved_flags_ptr);
+        builder->CreateBr(done_bb);
+
+        builder->SetInsertPoint(done_bb);
         return result ? result : packNullToTaggedValue();
     }
 
     // Codegen for (shared expr) - creates a reference-counted value
-    // For now, this is a pass-through until we implement ref-counting runtime
+    // Sets SHARED flag and initializes ref_count to 1 in the object header
     Value* codegenShared(const eshkol_operations_t* op) {
         if (!op || !op->shared_op.value) {
             eshkol_error("Invalid shared expression: missing value");
@@ -23647,16 +23987,48 @@ private:
 
         eshkol_debug("Generating shared expression");
 
-        // Evaluate the inner expression
         Value* value = codegenAST(op->shared_op.value);
+        if (!value) return packNullToTaggedValue();
 
-        // Future: Wrap in ref-counted header
-        // For now, just pass through
-        return value ? value : packNullToTaggedValue();
+        // Only set SHARED flag for heap-allocated values
+        Value* type = getTaggedValueType(value);
+        Value* base_type = getBaseType(type);
+        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* has_header = builder->CreateOr(is_heap, is_callable);
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* set_shared_bb = BasicBlock::Create(*context, "shared_set", func);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "shared_done", func);
+        builder->CreateCondBr(has_header, set_shared_bb, done_bb);
+
+        // Set SHARED flag and initialize ref_count to 1
+        builder->SetInsertPoint(set_shared_bb);
+        Value* ptr_int = unpackInt64FromTaggedValue(value);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+        // Object header: [subtype(1)][flags(1)][ref_count(2)][size(4)]
+        // flags at data_ptr - 7, ref_count at data_ptr - 6
+        Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
+        Value* old_flags = builder->CreateLoad(int8_type, flags_ptr, "shared_flags");
+        // Set SHARED, clear LINEAR (shared and owned are mutually exclusive)
+        Value* cleared_linear = builder->CreateAnd(old_flags,
+            ConstantInt::get(int8_type, static_cast<uint8_t>(~ESHKOL_OBJ_FLAG_LINEAR)));
+        Value* new_flags = builder->CreateOr(cleared_linear, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_SHARED));
+        builder->CreateStore(new_flags, flags_ptr);
+
+        // Set ref_count to 1 (atomic store for thread safety)
+        // ref_count is i16 at data_ptr - 6
+        Value* refcount_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -6));
+        Value* refcount_typed = builder->CreatePointerCast(refcount_ptr, builder->getPtrTy());
+        builder->CreateStore(ConstantInt::get(int16_type, 1), refcount_typed);
+        builder->CreateBr(done_bb);
+
+        builder->SetInsertPoint(done_bb);
+        return value;
     }
 
-    // Codegen for (weak-ref value) - creates a weak reference
-    // For now, this is a pass-through until we implement ref-counting runtime
+    // Codegen for (weak-ref value) - creates a weak reference to a shared value
+    // Sets WEAK flag on the object header without incrementing ref_count
     Value* codegenWeakRef(const eshkol_operations_t* op) {
         if (!op || !op->weak_ref_op.value) {
             eshkol_error("Invalid weak-ref expression: missing value");
@@ -23665,12 +24037,33 @@ private:
 
         eshkol_debug("Generating weak-ref expression");
 
-        // Evaluate the shared value
         Value* value = codegenAST(op->weak_ref_op.value);
+        if (!value) return packNullToTaggedValue();
 
-        // Future: Create weak reference to ref-counted value
-        // For now, just pass through
-        return value ? value : packNullToTaggedValue();
+        // Only set WEAK flag for heap-allocated values
+        Value* type = getTaggedValueType(value);
+        Value* base_type = getBaseType(type);
+        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* has_header = builder->CreateOr(is_heap, is_callable);
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* set_weak_bb = BasicBlock::Create(*context, "weak_set", func);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "weak_done", func);
+        builder->CreateCondBr(has_header, set_weak_bb, done_bb);
+
+        // Set WEAK flag (does NOT increment ref_count — weak refs don't prevent collection)
+        builder->SetInsertPoint(set_weak_bb);
+        Value* ptr_int = unpackInt64FromTaggedValue(value);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+        Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
+        Value* old_flags = builder->CreateLoad(int8_type, flags_ptr, "weak_flags");
+        Value* new_flags = builder->CreateOr(old_flags, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_WEAK));
+        builder->CreateStore(new_flags, flags_ptr);
+        builder->CreateBr(done_bb);
+
+        builder->SetInsertPoint(done_bb);
+        return value;
     }
 
     // ===== END OALR CODEGEN =====
@@ -23924,9 +24317,9 @@ private:
                 return createTypedDiv(f_prime, f, &op->call_op.variables[0]);
             }
             
-            // Power rule: d/dx(f^n) = n * f^(n-1) * f' (for constant exponent)
-            // PHASE 0: NEW - Power rule (constant exponent only)
-            else if (func_name == "pow" && op->call_op.num_vars == 2) {
+            // Power rule: d/dx(f^n) = n * f^(n-1) * f' (constant exponent)
+            // Generalized: d/dx[f^g] = f^g * (g' * ln(f) + g * f'/f) (variable exponent)
+            else if ((func_name == "pow" || func_name == "expt") && op->call_op.num_vars == 2) {
                 // Check if exponent is constant
                 if (op->call_op.variables[1].type == ESHKOL_INT64 ||
                     op->call_op.variables[1].type == ESHKOL_DOUBLE) {
@@ -23964,10 +24357,48 @@ private:
                     }
                     return builder->CreateFMul(n_times_power, f_prime);
                 }
-                // For non-constant exponent, return 0 for now (will implement in Phase 2)
+                // Non-constant exponent: d/dx[f^g] = f^g * (g' * ln(f) + g * f'/f)
                 else {
-                    eshkol_warn("Power rule with non-constant exponent not yet implemented");
-                    return ConstantFP::get(double_type, 0.0);
+                    Value* f = codegenAST(&op->call_op.variables[0]);
+                    Value* g = codegenAST(&op->call_op.variables[1]);
+
+                    if (f && f->getType() == tagged_value_type) f = safeExtractInt64(f);
+                    if (g && g->getType() == tagged_value_type) g = safeExtractInt64(g);
+
+                    Value* f_prime = differentiate(&op->call_op.variables[0], var);
+                    Value* g_prime = differentiate(&op->call_op.variables[1], var);
+
+                    if (!f || !g || !f_prime || !g_prime) {
+                        eshkol_error("derivative: null operand in power rule with variable exponent");
+                        return ConstantFP::get(double_type, 0.0);
+                    }
+
+                    if (f->getType()->isIntegerTy()) f = builder->CreateSIToFP(f, double_type);
+                    if (g->getType()->isIntegerTy()) g = builder->CreateSIToFP(g, double_type);
+                    if (f_prime->getType()->isIntegerTy()) f_prime = builder->CreateSIToFP(f_prime, double_type);
+                    if (g_prime->getType()->isIntegerTy()) g_prime = builder->CreateSIToFP(g_prime, double_type);
+
+                    // Ensure log is declared
+                    if (function_table.find("log") == function_table.end()) {
+                        FunctionType* log_type = FunctionType::get(double_type, {double_type}, false);
+                        function_table["log"] = Function::Create(
+                            log_type, Function::ExternalLinkage, "log", module.get());
+                    }
+
+                    // f^g
+                    Value* f_to_g = builder->CreateCall(function_table["pow"], {f, g}, "f_to_g");
+                    // ln(f)
+                    Value* ln_f = builder->CreateCall(function_table["log"], {f}, "ln_f");
+                    // g' * ln(f)
+                    Value* term1 = builder->CreateFMul(g_prime, ln_f, "gp_ln_f");
+                    // f'/f
+                    Value* fp_over_f = builder->CreateFDiv(f_prime, f, "fp_over_f");
+                    // g * f'/f
+                    Value* term2 = builder->CreateFMul(g, fp_over_f, "g_fp_f");
+                    // g' * ln(f) + g * f'/f
+                    Value* sum = builder->CreateFAdd(term1, term2, "deriv_sum");
+                    // f^g * (g' * ln(f) + g * f'/f)
+                    return builder->CreateFMul(f_to_g, sum, "pow_deriv");
                 }
             }
             
@@ -25188,6 +25619,1074 @@ private:
 
         Value* result = builder->CreateCall(qrng_range_func, {min_val, max_val});
         return result;  // Return raw int64
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COMPLEX NUMBER OPERATIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Helper: Create complex number from real and imaginary parts
+    Value* createComplexNumber(Value* real_val, Value* imag_val) {
+        // Allocate complex struct on stack
+        Value* complex_ptr = builder->CreateAlloca(ctx_->complexNumberType(), nullptr, "complex_alloca");
+
+        // Store real component (field 0)
+        Value* real_ptr = builder->CreateStructGEP(ctx_->complexNumberType(), complex_ptr,
+            0, "real_ptr");
+        builder->CreateStore(real_val, real_ptr);
+
+        // Store imaginary component (field 1)
+        Value* imag_ptr = builder->CreateStructGEP(ctx_->complexNumberType(), complex_ptr,
+            1, "imag_ptr");
+        builder->CreateStore(imag_val, imag_ptr);
+
+        // Load the struct
+        return builder->CreateLoad(ctx_->complexNumberType(), complex_ptr, "complex");
+    }
+
+    // Helper: Pack complex struct to tagged value (heap allocate)
+    Value* packComplexToTagged(Value* complex_struct) {
+        // Get global arena
+        GlobalVariable* arena_global = module->getNamedGlobal("__global_arena");
+        Value* arena_ptr = builder->CreateLoad(ptr_type, arena_global, "arena");
+
+        // Allocate 16 bytes for complex number
+        Value* size = ConstantInt::get(int64_type, 16);
+        Function* alloc_func = function_table["arena_allocate"];
+        Value* complex_heap_ptr = builder->CreateCall(alloc_func, {arena_ptr, size}, "complex_ptr");
+
+        // Store complex struct to heap
+        builder->CreateStore(complex_struct, complex_heap_ptr);
+
+        // Pack as tagged value with COMPLEX type
+        Value* ptr_int = builder->CreatePtrToInt(complex_heap_ptr, int64_type);
+
+        // Build tagged value struct
+        Value* tagged = UndefValue::get(tagged_value_type);
+        tagged = builder->CreateInsertValue(tagged, ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX), {0});
+        tagged = builder->CreateInsertValue(tagged, ConstantInt::get(int8_type, ESHKOL_VALUE_INEXACT_FLAG), {1});
+        tagged = builder->CreateInsertValue(tagged, ConstantInt::get(int16_type, 0), {2});
+        tagged = builder->CreateInsertValue(tagged, ConstantInt::get(int32_type, 0), {3});
+        tagged = builder->CreateInsertValue(tagged, ptr_int, {4});
+
+        return tagged;
+    }
+
+    // Helper: Unpack complex struct from tagged value
+    Value* unpackComplexFromTagged(Value* tagged_val) {
+        Value* ptr_int = builder->CreateExtractValue(tagged_val, {4}, "complex_ptr_int");
+        Value* ptr = builder->CreateIntToPtr(ptr_int, ptr_type, "complex_ptr");
+        return builder->CreateLoad(ctx_->complexNumberType(), ptr, "complex");
+    }
+
+    // Helper: Extract real part from complex struct
+    Value* getComplexReal(Value* complex_struct) {
+        return builder->CreateExtractValue(complex_struct, {0}, "real");
+    }
+
+    // Helper: Extract imaginary part from complex struct
+    Value* getComplexImag(Value* complex_struct) {
+        return builder->CreateExtractValue(complex_struct, {1}, "imag");
+    }
+
+    // (make-rectangular real imag) - Create complex from rectangular coordinates
+    Value* codegenMakeRectangular(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 2) {
+            eshkol_error("make-rectangular requires exactly 2 arguments");
+            return nullptr;
+        }
+
+        Value* real_tagged = codegenAST(&op->call_op.variables[0]);
+        Value* imag_tagged = codegenAST(&op->call_op.variables[1]);
+        if (!real_tagged || !imag_tagged) return nullptr;
+
+        // Extract as doubles
+        Value* real_val = extractDoubleFromTagged(real_tagged);
+        Value* imag_val = extractDoubleFromTagged(imag_tagged);
+
+        // Create complex struct and pack to tagged
+        Value* complex_struct = createComplexNumber(real_val, imag_val);
+        return packComplexToTagged(complex_struct);
+    }
+
+    // (make-polar magnitude angle) - Create complex from polar coordinates
+    Value* codegenMakePolar(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 2) {
+            eshkol_error("make-polar requires exactly 2 arguments");
+            return nullptr;
+        }
+
+        Value* mag_tagged = codegenAST(&op->call_op.variables[0]);
+        Value* ang_tagged = codegenAST(&op->call_op.variables[1]);
+        if (!mag_tagged || !ang_tagged) return nullptr;
+
+        Value* mag = extractDoubleFromTagged(mag_tagged);
+        Value* ang = extractDoubleFromTagged(ang_tagged);
+
+        // real = mag * cos(angle), imag = mag * sin(angle)
+        Function* cos_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::cos, {double_type});
+        Function* sin_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::sin, {double_type});
+
+        Value* cos_ang = builder->CreateCall(cos_fn, {ang}, "cos_ang");
+        Value* sin_ang = builder->CreateCall(sin_fn, {ang}, "sin_ang");
+
+        Value* real_val = builder->CreateFMul(mag, cos_ang, "polar_real");
+        Value* imag_val = builder->CreateFMul(mag, sin_ang, "polar_imag");
+
+        Value* complex_struct = createComplexNumber(real_val, imag_val);
+        return packComplexToTagged(complex_struct);
+    }
+
+    // (real-part z) - Extract real component
+    Value* codegenRealPart(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("real-part requires exactly 1 argument");
+            return nullptr;
+        }
+
+        Value* z_tagged = codegenAST(&op->call_op.variables[0]);
+        if (!z_tagged) return nullptr;
+
+        // Check if it's a complex number or just a real
+        Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
+        Value* is_complex = builder->CreateICmpEQ(type_tag,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX), "is_complex");
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* complex_bb = BasicBlock::Create(*context, "real_complex", current_func);
+        BasicBlock* real_bb = BasicBlock::Create(*context, "real_real", current_func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "real_merge", current_func);
+
+        builder->CreateCondBr(is_complex, complex_bb, real_bb);
+
+        // Complex path: extract real part
+        builder->SetInsertPoint(complex_bb);
+        Value* complex_struct = unpackComplexFromTagged(z_tagged);
+        Value* real_from_complex = getComplexReal(complex_struct);
+        builder->CreateBr(merge_bb);
+
+        // Real path: return as-is (real part of real is itself)
+        builder->SetInsertPoint(real_bb);
+        Value* real_from_real = extractDoubleFromTagged(z_tagged);
+        builder->CreateBr(merge_bb);
+
+        // Merge
+        builder->SetInsertPoint(merge_bb);
+        PHINode* real_val = builder->CreatePHI(double_type, 2, "real_result");
+        real_val->addIncoming(real_from_complex, complex_bb);
+        real_val->addIncoming(real_from_real, real_bb);
+
+        return packDoubleToTaggedValue(real_val);
+    }
+
+    // (imag-part z) - Extract imaginary component
+    Value* codegenImagPart(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("imag-part requires exactly 1 argument");
+            return nullptr;
+        }
+
+        Value* z_tagged = codegenAST(&op->call_op.variables[0]);
+        if (!z_tagged) return nullptr;
+
+        // Check if it's a complex number or just a real
+        Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
+        Value* is_complex = builder->CreateICmpEQ(type_tag,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX), "is_complex");
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* complex_bb = BasicBlock::Create(*context, "imag_complex", current_func);
+        BasicBlock* real_bb = BasicBlock::Create(*context, "imag_real", current_func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "imag_merge", current_func);
+
+        builder->CreateCondBr(is_complex, complex_bb, real_bb);
+
+        // Complex path: extract imaginary part
+        builder->SetInsertPoint(complex_bb);
+        Value* complex_struct = unpackComplexFromTagged(z_tagged);
+        Value* imag_from_complex = getComplexImag(complex_struct);
+        builder->CreateBr(merge_bb);
+
+        // Real path: imaginary part of real is 0
+        builder->SetInsertPoint(real_bb);
+        Value* zero = ConstantFP::get(double_type, 0.0);
+        builder->CreateBr(merge_bb);
+
+        // Merge
+        builder->SetInsertPoint(merge_bb);
+        PHINode* imag_val = builder->CreatePHI(double_type, 2, "imag_result");
+        imag_val->addIncoming(imag_from_complex, complex_bb);
+        imag_val->addIncoming(zero, real_bb);
+
+        return packDoubleToTaggedValue(imag_val);
+    }
+
+    // (magnitude z) - |z| = sqrt(real² + imag²)
+    Value* codegenMagnitude(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("magnitude requires exactly 1 argument");
+            return nullptr;
+        }
+
+        Value* z_tagged = codegenAST(&op->call_op.variables[0]);
+        if (!z_tagged) return nullptr;
+
+        // Check if complex or real
+        Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
+        Value* is_complex = builder->CreateICmpEQ(type_tag,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX), "is_complex");
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* complex_bb = BasicBlock::Create(*context, "mag_complex", current_func);
+        BasicBlock* real_bb = BasicBlock::Create(*context, "mag_real", current_func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "mag_merge", current_func);
+
+        builder->CreateCondBr(is_complex, complex_bb, real_bb);
+
+        // Complex path: overflow-safe magnitude
+        // max(|a|,|b|) * sqrt((a/max)² + (b/max)²)
+        builder->SetInsertPoint(complex_bb);
+        Value* complex_struct = unpackComplexFromTagged(z_tagged);
+        Value* real = getComplexReal(complex_struct);
+        Value* imag = getComplexImag(complex_struct);
+        Function* fabs_mag_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::fabs, {double_type});
+        Function* sqrt_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::sqrt, {double_type});
+        Function* maxnum_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::maxnum, {double_type});
+        Value* abs_real = builder->CreateCall(fabs_mag_fn, {real}, "abs_real_mag");
+        Value* abs_imag = builder->CreateCall(fabs_mag_fn, {imag}, "abs_imag_mag");
+        Value* max_ri = builder->CreateCall(maxnum_fn, {abs_real, abs_imag}, "max_ri");
+        Value* max_is_zero = builder->CreateFCmpOEQ(max_ri,
+            ConstantFP::get(double_type, 0.0), "max_zero");
+        Value* r_scaled = builder->CreateFDiv(real, max_ri, "r_scaled");
+        Value* i_scaled = builder->CreateFDiv(imag, max_ri, "i_scaled");
+        Value* r2 = builder->CreateFMul(r_scaled, r_scaled, "r2");
+        Value* i2 = builder->CreateFMul(i_scaled, i_scaled, "i2");
+        Value* sum = builder->CreateFAdd(r2, i2, "sum_sq");
+        Value* safe_mag = builder->CreateFMul(max_ri,
+            builder->CreateCall(sqrt_fn, {sum}, "sqrt_sum"), "safe_mag");
+        Value* mag_complex = builder->CreateSelect(max_is_zero,
+            ConstantFP::get(double_type, 0.0), safe_mag, "magnitude");
+        builder->CreateBr(merge_bb);
+
+        // Real path: abs(real)
+        builder->SetInsertPoint(real_bb);
+        Value* real_val = extractDoubleFromTagged(z_tagged);
+        Function* fabs_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::fabs, {double_type});
+        Value* mag_real = builder->CreateCall(fabs_fn, {real_val}, "abs_real");
+        builder->CreateBr(merge_bb);
+
+        // Merge
+        builder->SetInsertPoint(merge_bb);
+        PHINode* mag_val = builder->CreatePHI(double_type, 2, "mag_result");
+        mag_val->addIncoming(mag_complex, complex_bb);
+        mag_val->addIncoming(mag_real, real_bb);
+
+        return packDoubleToTaggedValue(mag_val);
+    }
+
+    // (angle z) - arg(z) = atan2(imag, real)
+    Value* codegenAngle(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("angle requires exactly 1 argument");
+            return nullptr;
+        }
+
+        Value* z_tagged = codegenAST(&op->call_op.variables[0]);
+        if (!z_tagged) return nullptr;
+
+        // Check if complex or real
+        Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
+        Value* is_complex = builder->CreateICmpEQ(type_tag,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX), "is_complex");
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* complex_bb = BasicBlock::Create(*context, "ang_complex", current_func);
+        BasicBlock* real_bb = BasicBlock::Create(*context, "ang_real", current_func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "ang_merge", current_func);
+
+        builder->CreateCondBr(is_complex, complex_bb, real_bb);
+
+        // Complex path: atan2(imag, real)
+        builder->SetInsertPoint(complex_bb);
+        Value* complex_struct = unpackComplexFromTagged(z_tagged);
+        Value* real = getComplexReal(complex_struct);
+        Value* imag = getComplexImag(complex_struct);
+
+        // Get or declare atan2
+        Function* atan2_fn = module->getFunction("atan2");
+        if (!atan2_fn) {
+            FunctionType* atan2_type = FunctionType::get(double_type, {double_type, double_type}, false);
+            atan2_fn = Function::Create(atan2_type, Function::ExternalLinkage, "atan2", module.get());
+        }
+        Value* ang_complex = builder->CreateCall(atan2_fn, {imag, real}, "angle");
+        builder->CreateBr(merge_bb);
+
+        // Real path: 0 for positive, pi for negative
+        builder->SetInsertPoint(real_bb);
+        Value* real_val = extractDoubleFromTagged(z_tagged);
+        Value* is_negative = builder->CreateFCmpOLT(real_val, ConstantFP::get(double_type, 0.0));
+        Value* ang_real = builder->CreateSelect(is_negative,
+            ConstantFP::get(double_type, 3.14159265358979323846), // pi
+            ConstantFP::get(double_type, 0.0));
+        builder->CreateBr(merge_bb);
+
+        // Merge
+        builder->SetInsertPoint(merge_bb);
+        PHINode* ang_val = builder->CreatePHI(double_type, 2, "ang_result");
+        ang_val->addIncoming(ang_complex, complex_bb);
+        ang_val->addIncoming(ang_real, real_bb);
+
+        return packDoubleToTaggedValue(ang_val);
+    }
+
+    // (complex? x) - Type predicate
+    Value* codegenComplexPredicate(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("complex? requires exactly 1 argument");
+            return nullptr;
+        }
+
+        Value* x_tagged = codegenAST(&op->call_op.variables[0]);
+        if (!x_tagged) return nullptr;
+
+        Value* type_tag = builder->CreateExtractValue(x_tagged, {0}, "type");
+        Value* is_complex = builder->CreateICmpEQ(type_tag,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX), "is_complex");
+
+        return packBoolToTaggedValue(is_complex);
+    }
+
+    // (conjugate z) - Complex conjugate: conj(a+bi) = a-bi
+    Value* codegenConjugate(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("conjugate requires exactly 1 argument");
+            return nullptr;
+        }
+
+        Value* z_tagged = codegenAST(&op->call_op.variables[0]);
+        if (!z_tagged) return nullptr;
+
+        // Check if complex or real
+        Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
+        Value* is_complex = builder->CreateICmpEQ(type_tag,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX), "is_complex");
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* complex_bb = BasicBlock::Create(*context, "conj_complex", current_func);
+        BasicBlock* real_bb = BasicBlock::Create(*context, "conj_real", current_func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "conj_merge", current_func);
+
+        builder->CreateCondBr(is_complex, complex_bb, real_bb);
+
+        // Complex path: negate imaginary part
+        builder->SetInsertPoint(complex_bb);
+        Value* complex_struct = unpackComplexFromTagged(z_tagged);
+        Value* real = getComplexReal(complex_struct);
+        Value* imag = getComplexImag(complex_struct);
+        Value* neg_imag = builder->CreateFNeg(imag, "neg_imag");
+        Value* conj_struct = createComplexNumber(real, neg_imag);
+        Value* conj_tagged = packComplexToTagged(conj_struct);
+        builder->CreateBr(merge_bb);
+
+        // Real path: conjugate of real is itself
+        builder->SetInsertPoint(real_bb);
+        builder->CreateBr(merge_bb);
+
+        // Merge
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, "conj_result");
+        result->addIncoming(conj_tagged, complex_bb);
+        result->addIncoming(z_tagged, real_bb);
+
+        return result;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // HoTT SUM TYPE OPERATIONS (Discriminated Unions)
+    // Sum types are represented as cons pairs: (tag . value)
+    // where tag is 0 (left) or 1 (right).
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // (inject-left value) or (inject-right value) — construct sum type variant
+    Value* codegenSumInject(const eshkol_operations_t* op, int tag) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("%s requires exactly 1 argument", tag == 0 ? "inject-left" : "inject-right");
+            return nullptr;
+        }
+
+        Value* val = codegenAST(&op->call_op.variables[0]);
+        if (!val) return nullptr;
+
+        // Create cons cell: (tag . value)
+        Value* tag_val = tagged_->packInt64(ConstantInt::get(int64_type, tag), true);
+        Value* cons_int = codegenArenaConsCell(tag_val, val);
+
+        // Pack as HEAP_PTR tagged value (same as regular cons cells)
+        Value* cons_ptr = builder->CreateIntToPtr(cons_int, ptr_type);
+        return tagged_->packHeapPtr(cons_ptr);
+    }
+
+    // (sum-tag sum-val) — extract tag from sum type (0 = left, 1 = right)
+    Value* codegenSumTag(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("sum-tag requires exactly 1 argument");
+            return nullptr;
+        }
+
+        Value* sum_tagged = codegenAST(&op->call_op.variables[0]);
+        if (!sum_tagged) return nullptr;
+
+        // Extract cons pointer and get car (the tag)
+        Value* ptr_int = tagged_->safeExtractInt64(sum_tagged);
+        Value* cons_ptr = builder->CreateIntToPtr(ptr_int, ptr_type);
+
+        // Read car (tag) from cons cell offset 0
+        Value* car_ptr = builder->CreateStructGEP(
+            StructType::get(int64_type, int64_type), cons_ptr, 0);
+        return builder->CreateLoad(tagged_value_type, car_ptr);
+    }
+
+    // (sum-value sum-val) — extract inner value from sum type
+    Value* codegenSumValue(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("sum-value requires exactly 1 argument");
+            return nullptr;
+        }
+
+        Value* sum_tagged = codegenAST(&op->call_op.variables[0]);
+        if (!sum_tagged) return nullptr;
+
+        // Extract cons pointer and get cdr (the value)
+        Value* ptr_int = tagged_->safeExtractInt64(sum_tagged);
+        Value* cons_ptr = builder->CreateIntToPtr(ptr_int, ptr_type);
+
+        // Read cdr (value) from cons cell offset 1
+        Value* cdr_ptr = builder->CreateStructGEP(
+            StructType::get(int64_type, int64_type), cons_ptr, 1);
+        return builder->CreateLoad(tagged_value_type, cdr_ptr);
+    }
+
+    // (left? sum-val) or (right? sum-val) — check sum variant
+    Value* codegenSumPredicate(const eshkol_operations_t* op, int expected_tag) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("%s requires exactly 1 argument", expected_tag == 0 ? "left?" : "right?");
+            return nullptr;
+        }
+
+        Value* sum_tagged = codegenAST(&op->call_op.variables[0]);
+        if (!sum_tagged) return nullptr;
+
+        // Extract cons pointer and get car (the tag)
+        Value* ptr_int = tagged_->safeExtractInt64(sum_tagged);
+        Value* cons_ptr = builder->CreateIntToPtr(ptr_int, ptr_type);
+
+        Value* car_ptr = builder->CreateStructGEP(
+            StructType::get(int64_type, int64_type), cons_ptr, 0);
+        Value* tag_tagged = builder->CreateLoad(tagged_value_type, car_ptr);
+
+        // Extract the int64 from the tag
+        Value* tag_int = tagged_->unpackInt64(tag_tagged);
+        Value* matches = builder->CreateICmpEQ(tag_int,
+            ConstantInt::get(int64_type, expected_tag));
+
+        return tagged_->packBool(matches);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FFT/IFFT Implementation (Cooley-Tukey Radix-2 DIT)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Helper: Check if n is a power of 2
+    Value* isPowerOfTwo(Value* n) {
+        // n > 0 && (n & (n-1)) == 0
+        Value* gt_zero = builder->CreateICmpSGT(n, ConstantInt::get(int64_type, 0));
+        Value* n_minus_1 = builder->CreateSub(n, ConstantInt::get(int64_type, 1));
+        Value* and_result = builder->CreateAnd(n, n_minus_1);
+        Value* is_zero = builder->CreateICmpEQ(and_result, ConstantInt::get(int64_type, 0));
+        return builder->CreateAnd(gt_zero, is_zero);
+    }
+
+    // Helper: Bit-reverse an index for FFT
+    Value* bitReverse(Value* idx, Value* log2n) {
+        Function* current_func = builder->GetInsertBlock()->getParent();
+
+        Value* result_ptr = builder->CreateAlloca(int64_type, nullptr, "br_result");
+        Value* val_ptr = builder->CreateAlloca(int64_type, nullptr, "br_val");
+        Value* bits_ptr = builder->CreateAlloca(int64_type, nullptr, "br_bits");
+
+        builder->CreateStore(ConstantInt::get(int64_type, 0), result_ptr);
+        builder->CreateStore(idx, val_ptr);
+        builder->CreateStore(log2n, bits_ptr);
+
+        BasicBlock* loop_cond = BasicBlock::Create(*context, "br_loop_cond", current_func);
+        BasicBlock* loop_body = BasicBlock::Create(*context, "br_loop_body", current_func);
+        BasicBlock* loop_exit = BasicBlock::Create(*context, "br_loop_exit", current_func);
+
+        builder->CreateBr(loop_cond);
+
+        builder->SetInsertPoint(loop_cond);
+        Value* bits = builder->CreateLoad(int64_type, bits_ptr);
+        Value* continue_loop = builder->CreateICmpSGT(bits, ConstantInt::get(int64_type, 0));
+        builder->CreateCondBr(continue_loop, loop_body, loop_exit);
+
+        builder->SetInsertPoint(loop_body);
+        Value* result_val = builder->CreateLoad(int64_type, result_ptr);
+        Value* val = builder->CreateLoad(int64_type, val_ptr);
+
+        // result = (result << 1) | (val & 1)
+        Value* shifted = builder->CreateShl(result_val, ConstantInt::get(int64_type, 1));
+        Value* low_bit = builder->CreateAnd(val, ConstantInt::get(int64_type, 1));
+        Value* new_result = builder->CreateOr(shifted, low_bit);
+        builder->CreateStore(new_result, result_ptr);
+
+        // val >>= 1
+        Value* new_val = builder->CreateLShr(val, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(new_val, val_ptr);
+
+        // bits--
+        Value* new_bits = builder->CreateSub(bits, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(new_bits, bits_ptr);
+
+        builder->CreateBr(loop_cond);
+
+        builder->SetInsertPoint(loop_exit);
+        return builder->CreateLoad(int64_type, result_ptr);
+    }
+
+    // Helper: Compute log2(n) for power-of-2 n
+    Value* computeLog2(Value* n) {
+        Function* current_func = builder->GetInsertBlock()->getParent();
+
+        Value* result_ptr = builder->CreateAlloca(int64_type, nullptr, "log2_result");
+        Value* val_ptr = builder->CreateAlloca(int64_type, nullptr, "log2_val");
+
+        builder->CreateStore(ConstantInt::get(int64_type, 0), result_ptr);
+        Value* n_div_2 = builder->CreateLShr(n, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(n_div_2, val_ptr);
+
+        BasicBlock* loop_cond = BasicBlock::Create(*context, "log2_cond", current_func);
+        BasicBlock* loop_body = BasicBlock::Create(*context, "log2_body", current_func);
+        BasicBlock* loop_exit = BasicBlock::Create(*context, "log2_exit", current_func);
+
+        builder->CreateBr(loop_cond);
+
+        builder->SetInsertPoint(loop_cond);
+        Value* val = builder->CreateLoad(int64_type, val_ptr);
+        Value* continue_loop = builder->CreateICmpSGT(val, ConstantInt::get(int64_type, 0));
+        builder->CreateCondBr(continue_loop, loop_body, loop_exit);
+
+        builder->SetInsertPoint(loop_body);
+        Value* result = builder->CreateLoad(int64_type, result_ptr);
+        Value* new_result = builder->CreateAdd(result, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(new_result, result_ptr);
+
+        Value* new_val = builder->CreateLShr(val, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(new_val, val_ptr);
+
+        builder->CreateBr(loop_cond);
+
+        builder->SetInsertPoint(loop_exit);
+        return builder->CreateLoad(int64_type, result_ptr);
+    }
+
+    // (fft vec) or (ifft vec) - Cooley-Tukey radix-2 DIT FFT
+    // Input: vector of real or complex numbers (length must be power of 2)
+    // Output: vector of complex numbers
+    Value* codegenFFT(const eshkol_operations_t* op, bool inverse) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("%s requires exactly 1 argument", inverse ? "ifft" : "fft");
+            return nullptr;
+        }
+
+        Value* input_tagged = codegenAST(&op->call_op.variables[0]);
+        if (!input_tagged) return nullptr;
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+
+        // Extract pointer from tagged value
+        Value* data_ptr_int = builder->CreateExtractValue(input_tagged, {4}, "data_ptr_int");
+        Value* data_ptr = builder->CreateIntToPtr(data_ptr_int, ptr_type, "data_ptr");
+
+        // Detect whether input is a tensor or a Scheme vector by reading the
+        // object header subtype byte directly at (data_ptr - 8).
+        // No extra basic blocks needed — just GEP + load + compare.
+        // Tensor: eshkol_tensor_t struct {dimensions*, num_dimensions, elements*, total_elements}
+        // Vector: [length:i64][elem0:tagged_value][elem1:tagged_value]...
+        Value* subtype = getObjectSubtype(data_ptr_int);
+        Value* is_tensor_input = builder->CreateICmpEQ(subtype,
+            ConstantInt::get(int8_type, HEAP_SUBTYPE_TENSOR), "is_tensor");
+
+        // Extract length based on input type
+        BasicBlock* tensor_len_bb = BasicBlock::Create(*context, "fft_tensor_len", current_func);
+        BasicBlock* vector_len_bb = BasicBlock::Create(*context, "fft_vector_len", current_func);
+        BasicBlock* len_merge_bb = BasicBlock::Create(*context, "fft_len_merge", current_func);
+
+        builder->CreateCondBr(is_tensor_input, tensor_len_bb, vector_len_bb);
+
+        // Tensor path: length = tensor->total_elements (field 3)
+        builder->SetInsertPoint(tensor_len_bb);
+        Value* tensor_len_ptr = builder->CreateStructGEP(types->getTensorType(), data_ptr,
+            eshkol::TypeSystem::TENSOR_TOTAL_ELEMENTS_IDX, "tensor_total_elems_ptr");
+        Value* tensor_len = builder->CreateLoad(int64_type, tensor_len_ptr, "tensor_len");
+        builder->CreateBr(len_merge_bb);
+        BasicBlock* tensor_len_exit = builder->GetInsertBlock();
+
+        // Vector path: length = *(int64_t*)data_ptr (first 8 bytes)
+        builder->SetInsertPoint(vector_len_bb);
+        Value* vector_len = builder->CreateLoad(int64_type, data_ptr, "vec_len");
+        builder->CreateBr(len_merge_bb);
+        BasicBlock* vector_len_exit = builder->GetInsertBlock();
+
+        // Merge length
+        builder->SetInsertPoint(len_merge_bb);
+        PHINode* len = builder->CreatePHI(int64_type, 2, "fft_len");
+        len->addIncoming(tensor_len, tensor_len_exit);
+        len->addIncoming(vector_len, vector_len_exit);
+
+        // Check power of 2
+        Value* is_pow2 = isPowerOfTwo(len);
+        BasicBlock* valid_bb = BasicBlock::Create(*context, "fft_valid", current_func);
+        BasicBlock* error_bb = BasicBlock::Create(*context, "fft_error", current_func);
+        builder->CreateCondBr(is_pow2, valid_bb, error_bb);
+
+        // Error path: report error and exit for non-power-of-2
+        builder->SetInsertPoint(error_bb);
+        {
+            Function* printf_fn = function_table["printf"];
+            Function* exit_fn = function_table["exit"];
+            if (printf_fn && exit_fn) {
+                Value* err_msg = builder->CreateGlobalStringPtr(
+                    "Error: FFT requires input length to be a power of 2\n");
+                builder->CreateCall(printf_fn, {err_msg});
+                builder->CreateCall(exit_fn, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
+            }
+        }
+        builder->CreateUnreachable();
+
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "fft_merge", current_func);
+
+        // Valid path: compute FFT
+        builder->SetInsertPoint(valid_bb);
+
+        // Compute log2(N)
+        Value* log2n = computeLog2(len);
+
+        // Get arena for allocations
+        GlobalVariable* arena_global = module->getNamedGlobal("__global_arena");
+        Value* arena_ptr = builder->CreateLoad(ptr_type, arena_global, "arena");
+
+        // Guard against int64 overflow: len > 2^57 would overflow len * 8
+        Value* len_too_large = builder->CreateICmpSGT(len,
+            ConstantInt::get(int64_type, (1LL << 57)), "fft_len_overflow");
+        BasicBlock* fft_size_ok_bb = BasicBlock::Create(*context, "fft_size_ok", current_func);
+        BasicBlock* fft_size_err_bb = BasicBlock::Create(*context, "fft_size_err", current_func);
+        builder->CreateCondBr(len_too_large, fft_size_err_bb, fft_size_ok_bb);
+
+        builder->SetInsertPoint(fft_size_err_bb);
+        {
+            Function* printf_fn = function_table["printf"];
+            Function* exit_fn = function_table["exit"];
+            if (printf_fn && exit_fn) {
+                Value* err_msg = builder->CreateGlobalStringPtr(
+                    "Error: FFT input too large (exceeds 2^57 elements)\n");
+                builder->CreateCall(printf_fn, {err_msg});
+                builder->CreateCall(exit_fn, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
+            }
+            builder->CreateUnreachable();
+        }
+
+        builder->SetInsertPoint(fft_size_ok_bb);
+
+        // Allocate working arrays for real and imaginary parts (doubles)
+        Value* array_size = builder->CreateMul(len, ConstantInt::get(int64_type, 8));
+        Function* alloc_func = function_table["arena_allocate"];
+        Value* real_arr = builder->CreateCall(alloc_func, {arena_ptr, array_size}, "fft_real");
+        Value* imag_arr = builder->CreateCall(alloc_func, {arena_ptr, array_size}, "fft_imag");
+
+        // Null check arena allocations
+        Value* real_null = builder->CreateICmpEQ(real_arr,
+            ConstantPointerNull::get(PointerType::get(*context, 0)), "fft_real_null");
+        Value* imag_null = builder->CreateICmpEQ(imag_arr,
+            ConstantPointerNull::get(PointerType::get(*context, 0)), "fft_imag_null");
+        Value* any_null = builder->CreateOr(real_null, imag_null, "fft_alloc_fail");
+        BasicBlock* fft_alloc_ok_bb = BasicBlock::Create(*context, "fft_alloc_ok", current_func);
+        BasicBlock* fft_alloc_err_bb = BasicBlock::Create(*context, "fft_alloc_err", current_func);
+        builder->CreateCondBr(any_null, fft_alloc_err_bb, fft_alloc_ok_bb);
+
+        builder->SetInsertPoint(fft_alloc_err_bb);
+        {
+            Function* printf_fn = function_table["printf"];
+            Function* exit_fn = function_table["exit"];
+            if (printf_fn && exit_fn) {
+                Value* err_msg = builder->CreateGlobalStringPtr(
+                    "Error: arena allocation failed for FFT working arrays\n");
+                builder->CreateCall(printf_fn, {err_msg});
+                builder->CreateCall(exit_fn, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
+            }
+            builder->CreateUnreachable();
+        }
+
+        builder->SetInsertPoint(fft_alloc_ok_bb);
+
+        // Initialize working arrays with bit-reversed input
+        // Branch based on input type: tensor elements are raw doubles, vector elements are tagged values
+        BasicBlock* init_tensor_bb = BasicBlock::Create(*context, "fft_init_tensor", current_func);
+        BasicBlock* init_vector_bb = BasicBlock::Create(*context, "fft_init_vector", current_func);
+        BasicBlock* init_done_bb = BasicBlock::Create(*context, "fft_init_done", current_func);
+
+        builder->CreateCondBr(is_tensor_input, init_tensor_bb, init_vector_bb);
+
+        // === Tensor init path: elements are i64 bit patterns of doubles ===
+        builder->SetInsertPoint(init_tensor_bb);
+        {
+            // Get tensor elements pointer: tensor->elements (field 2)
+            Value* tensor_elems_ptr = builder->CreateStructGEP(types->getTensorType(), data_ptr,
+                eshkol::TypeSystem::TENSOR_ELEMENTS_IDX, "tensor_elems_field");
+            Value* tensor_elems = builder->CreateLoad(ptr_type, tensor_elems_ptr, "tensor_elems");
+
+            Value* ti_ptr = builder->CreateAlloca(int64_type, nullptr, "fft_ti");
+            builder->CreateStore(ConstantInt::get(int64_type, 0), ti_ptr);
+
+            BasicBlock* t_cond = BasicBlock::Create(*context, "fft_tinit_cond", current_func);
+            BasicBlock* t_body = BasicBlock::Create(*context, "fft_tinit_body", current_func);
+            BasicBlock* t_exit = BasicBlock::Create(*context, "fft_tinit_exit", current_func);
+
+            builder->CreateBr(t_cond);
+
+            builder->SetInsertPoint(t_cond);
+            Value* ti_val = builder->CreateLoad(int64_type, ti_ptr);
+            Value* t_continue = builder->CreateICmpSLT(ti_val, len);
+            builder->CreateCondBr(t_continue, t_body, t_exit);
+
+            builder->SetInsertPoint(t_body);
+            Value* t_br_idx = bitReverse(ti_val, log2n);
+
+            // Load element as i64 bit pattern, bitcast to double
+            Value* t_elem_ptr = builder->CreateGEP(int64_type, tensor_elems, t_br_idx);
+            Value* t_elem_i64 = builder->CreateLoad(int64_type, t_elem_ptr, "t_elem_bits");
+            Value* t_elem_dbl = builder->CreateBitCast(t_elem_i64, double_type, "t_elem_dbl");
+
+            // Store real part, imag = 0 (tensor elements are real-valued)
+            Value* t_out_real_ptr = builder->CreateGEP(double_type, real_arr, ti_val);
+            Value* t_out_imag_ptr = builder->CreateGEP(double_type, imag_arr, ti_val);
+            builder->CreateStore(t_elem_dbl, t_out_real_ptr);
+            builder->CreateStore(ConstantFP::get(double_type, 0.0), t_out_imag_ptr);
+
+            Value* ti_next = builder->CreateAdd(ti_val, ConstantInt::get(int64_type, 1));
+            builder->CreateStore(ti_next, ti_ptr);
+            builder->CreateBr(t_cond);
+
+            builder->SetInsertPoint(t_exit);
+            builder->CreateBr(init_done_bb);
+        }
+
+        // === Vector init path: elements are tagged values (may be complex or real) ===
+        builder->SetInsertPoint(init_vector_bb);
+        {
+            // Element base of input vector (skip 8-byte length field)
+            Value* elem_base = builder->CreateGEP(int8_type, data_ptr, ConstantInt::get(int64_type, 8));
+
+            Value* vi_ptr = builder->CreateAlloca(int64_type, nullptr, "fft_vi");
+            builder->CreateStore(ConstantInt::get(int64_type, 0), vi_ptr);
+
+            BasicBlock* v_cond = BasicBlock::Create(*context, "fft_vinit_cond", current_func);
+            BasicBlock* v_body = BasicBlock::Create(*context, "fft_vinit_body", current_func);
+            BasicBlock* v_exit = BasicBlock::Create(*context, "fft_vinit_exit", current_func);
+
+            builder->CreateBr(v_cond);
+
+            builder->SetInsertPoint(v_cond);
+            Value* vi_val = builder->CreateLoad(int64_type, vi_ptr);
+            Value* v_continue = builder->CreateICmpSLT(vi_val, len);
+            builder->CreateCondBr(v_continue, v_body, v_exit);
+
+            builder->SetInsertPoint(v_body);
+
+            Value* v_br_idx = bitReverse(vi_val, log2n);
+
+            // Load input element at br_idx as tagged value
+            Value* elem_ptr = builder->CreateGEP(tagged_value_type, elem_base, v_br_idx);
+            Value* elem_tagged = builder->CreateLoad(tagged_value_type, elem_ptr, "elem");
+
+            // Check if element is complex or real
+            Value* elem_type = builder->CreateExtractValue(elem_tagged, {0}, "elem_type");
+            Value* is_complex = builder->CreateICmpEQ(elem_type, ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+
+            BasicBlock* elem_complex_bb = BasicBlock::Create(*context, "elem_complex", current_func);
+            BasicBlock* elem_real_bb = BasicBlock::Create(*context, "elem_real", current_func);
+            BasicBlock* elem_merge_bb = BasicBlock::Create(*context, "elem_merge", current_func);
+
+            builder->CreateCondBr(is_complex, elem_complex_bb, elem_real_bb);
+
+            // Complex element path
+            builder->SetInsertPoint(elem_complex_bb);
+            Value* complex_struct = unpackComplexFromTagged(elem_tagged);
+            Value* c_real = getComplexReal(complex_struct);
+            Value* c_imag = getComplexImag(complex_struct);
+            builder->CreateBr(elem_merge_bb);
+            BasicBlock* elem_complex_exit = builder->GetInsertBlock();
+
+            // Real element path
+            builder->SetInsertPoint(elem_real_bb);
+            Value* r_real = extractDoubleFromTagged(elem_tagged);
+            Value* r_imag = ConstantFP::get(double_type, 0.0);
+            builder->CreateBr(elem_merge_bb);
+            BasicBlock* elem_real_exit = builder->GetInsertBlock();
+
+            // Merge
+            builder->SetInsertPoint(elem_merge_bb);
+            PHINode* elem_real_val = builder->CreatePHI(double_type, 2, "elem_real");
+            elem_real_val->addIncoming(c_real, elem_complex_exit);
+            elem_real_val->addIncoming(r_real, elem_real_exit);
+            PHINode* elem_imag_val = builder->CreatePHI(double_type, 2, "elem_imag");
+            elem_imag_val->addIncoming(c_imag, elem_complex_exit);
+            elem_imag_val->addIncoming(r_imag, elem_real_exit);
+
+            // Store at position i in working arrays
+            Value* v_out_real_ptr = builder->CreateGEP(double_type, real_arr, vi_val);
+            Value* v_out_imag_ptr = builder->CreateGEP(double_type, imag_arr, vi_val);
+            builder->CreateStore(elem_real_val, v_out_real_ptr);
+            builder->CreateStore(elem_imag_val, v_out_imag_ptr);
+
+            Value* vi_next = builder->CreateAdd(vi_val, ConstantInt::get(int64_type, 1));
+            builder->CreateStore(vi_next, vi_ptr);
+            builder->CreateBr(v_cond);
+
+            builder->SetInsertPoint(v_exit);
+            builder->CreateBr(init_done_bb);
+        }
+
+        // Both init paths merge here
+        builder->SetInsertPoint(init_done_bb);
+
+        // Butterfly computation
+        // for (s = 1; s <= log2n; s++)
+        Value* s_ptr = builder->CreateAlloca(int64_type, nullptr, "fft_s");
+        builder->CreateStore(ConstantInt::get(int64_type, 1), s_ptr);
+
+        BasicBlock* stage_cond = BasicBlock::Create(*context, "fft_stage_cond", current_func);
+        BasicBlock* stage_body = BasicBlock::Create(*context, "fft_stage_body", current_func);
+        BasicBlock* stage_exit = BasicBlock::Create(*context, "fft_stage_exit", current_func);
+
+        builder->CreateBr(stage_cond);
+
+        builder->SetInsertPoint(stage_cond);
+        Value* s_val = builder->CreateLoad(int64_type, s_ptr);
+        Value* stage_continue = builder->CreateICmpSLE(s_val, log2n);
+        builder->CreateCondBr(stage_continue, stage_body, stage_exit);
+
+        builder->SetInsertPoint(stage_body);
+
+        // m = 2^s
+        Value* m = builder->CreateShl(ConstantInt::get(int64_type, 1), s_val, "m");
+        Value* m_half = builder->CreateLShr(m, ConstantInt::get(int64_type, 1), "m_half");
+
+        // Twiddle factor angle: -2*pi/m for FFT, +2*pi/m for IFFT
+        Value* m_double = builder->CreateSIToFP(m, double_type);
+        Value* angle_base = builder->CreateFDiv(
+            ConstantFP::get(double_type, inverse ? 6.283185307179586476925286766559 : -6.283185307179586476925286766559),
+            m_double, "angle_base");
+
+        // Inner loop: for (k = 0; k < N; k += m)
+        Value* k_ptr = builder->CreateAlloca(int64_type, nullptr, "fft_k");
+        builder->CreateStore(ConstantInt::get(int64_type, 0), k_ptr);
+
+        BasicBlock* k_cond = BasicBlock::Create(*context, "fft_k_cond", current_func);
+        BasicBlock* k_body = BasicBlock::Create(*context, "fft_k_body", current_func);
+        BasicBlock* k_exit = BasicBlock::Create(*context, "fft_k_exit", current_func);
+
+        builder->CreateBr(k_cond);
+
+        builder->SetInsertPoint(k_cond);
+        Value* k_val = builder->CreateLoad(int64_type, k_ptr);
+        Value* k_continue = builder->CreateICmpSLT(k_val, len);
+        builder->CreateCondBr(k_continue, k_body, k_exit);
+
+        builder->SetInsertPoint(k_body);
+
+        // Innermost loop: for (j = 0; j < m/2; j++)
+        Value* j_ptr = builder->CreateAlloca(int64_type, nullptr, "fft_j");
+        builder->CreateStore(ConstantInt::get(int64_type, 0), j_ptr);
+
+        BasicBlock* j_cond = BasicBlock::Create(*context, "fft_j_cond", current_func);
+        BasicBlock* j_body = BasicBlock::Create(*context, "fft_j_body", current_func);
+        BasicBlock* j_exit = BasicBlock::Create(*context, "fft_j_exit", current_func);
+
+        builder->CreateBr(j_cond);
+
+        builder->SetInsertPoint(j_cond);
+        Value* j_val = builder->CreateLoad(int64_type, j_ptr);
+        Value* j_continue = builder->CreateICmpSLT(j_val, m_half);
+        builder->CreateCondBr(j_continue, j_body, j_exit);
+
+        builder->SetInsertPoint(j_body);
+
+        // Compute twiddle factor: w = e^(i * j * angle_base)
+        Value* j_double = builder->CreateSIToFP(j_val, double_type);
+        Value* angle = builder->CreateFMul(j_double, angle_base, "angle");
+
+        // Get cos and sin intrinsics
+        Function* cos_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::cos, {double_type});
+        Function* sin_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::sin, {double_type});
+        Value* w_real = builder->CreateCall(cos_fn, {angle}, "w_real");
+        Value* w_imag = builder->CreateCall(sin_fn, {angle}, "w_imag");
+
+        // Indices
+        Value* idx_u = builder->CreateAdd(k_val, j_val, "idx_u");
+        Value* idx_t = builder->CreateAdd(idx_u, m_half, "idx_t");
+
+        // Load values at indices
+        Value* u_real_ptr = builder->CreateGEP(double_type, real_arr, idx_u);
+        Value* u_imag_ptr = builder->CreateGEP(double_type, imag_arr, idx_u);
+        Value* t_real_ptr = builder->CreateGEP(double_type, real_arr, idx_t);
+        Value* t_imag_ptr = builder->CreateGEP(double_type, imag_arr, idx_t);
+
+        Value* u_real = builder->CreateLoad(double_type, u_real_ptr, "u_real");
+        Value* u_imag = builder->CreateLoad(double_type, u_imag_ptr, "u_imag");
+        Value* t_real = builder->CreateLoad(double_type, t_real_ptr, "t_real");
+        Value* t_imag = builder->CreateLoad(double_type, t_imag_ptr, "t_imag");
+
+        // Complex multiply: w * t = (w_real * t_real - w_imag * t_imag, w_real * t_imag + w_imag * t_real)
+        Value* wt_real_1 = builder->CreateFMul(w_real, t_real);
+        Value* wt_real_2 = builder->CreateFMul(w_imag, t_imag);
+        Value* wt_real = builder->CreateFSub(wt_real_1, wt_real_2, "wt_real");
+
+        Value* wt_imag_1 = builder->CreateFMul(w_real, t_imag);
+        Value* wt_imag_2 = builder->CreateFMul(w_imag, t_real);
+        Value* wt_imag = builder->CreateFAdd(wt_imag_1, wt_imag_2, "wt_imag");
+
+        // Butterfly: x[u] = u + wt, x[t] = u - wt
+        Value* new_u_real = builder->CreateFAdd(u_real, wt_real);
+        Value* new_u_imag = builder->CreateFAdd(u_imag, wt_imag);
+        Value* new_t_real = builder->CreateFSub(u_real, wt_real);
+        Value* new_t_imag = builder->CreateFSub(u_imag, wt_imag);
+
+        builder->CreateStore(new_u_real, u_real_ptr);
+        builder->CreateStore(new_u_imag, u_imag_ptr);
+        builder->CreateStore(new_t_real, t_real_ptr);
+        builder->CreateStore(new_t_imag, t_imag_ptr);
+
+        // j++
+        Value* j_next = builder->CreateAdd(j_val, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(j_next, j_ptr);
+        builder->CreateBr(j_cond);
+
+        // Exit j loop
+        builder->SetInsertPoint(j_exit);
+
+        // k += m
+        Value* k_next = builder->CreateAdd(k_val, m);
+        builder->CreateStore(k_next, k_ptr);
+        builder->CreateBr(k_cond);
+
+        // Exit k loop
+        builder->SetInsertPoint(k_exit);
+
+        // s++
+        Value* s_next = builder->CreateAdd(s_val, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(s_next, s_ptr);
+        builder->CreateBr(stage_cond);
+
+        // Exit stage loop
+        builder->SetInsertPoint(stage_exit);
+
+        // For IFFT: divide all elements by N
+        if (inverse) {
+            Value* n_double = builder->CreateSIToFP(len, double_type, "n_double");
+
+            Value* div_i_ptr = builder->CreateAlloca(int64_type, nullptr, "div_i");
+            builder->CreateStore(ConstantInt::get(int64_type, 0), div_i_ptr);
+
+            BasicBlock* div_cond = BasicBlock::Create(*context, "ifft_div_cond", current_func);
+            BasicBlock* div_body = BasicBlock::Create(*context, "ifft_div_body", current_func);
+            BasicBlock* div_exit = BasicBlock::Create(*context, "ifft_div_exit", current_func);
+
+            builder->CreateBr(div_cond);
+
+            builder->SetInsertPoint(div_cond);
+            Value* div_i = builder->CreateLoad(int64_type, div_i_ptr);
+            Value* div_continue = builder->CreateICmpSLT(div_i, len);
+            builder->CreateCondBr(div_continue, div_body, div_exit);
+
+            builder->SetInsertPoint(div_body);
+            Value* div_real_ptr = builder->CreateGEP(double_type, real_arr, div_i);
+            Value* div_imag_ptr = builder->CreateGEP(double_type, imag_arr, div_i);
+            Value* div_real = builder->CreateLoad(double_type, div_real_ptr);
+            Value* div_imag = builder->CreateLoad(double_type, div_imag_ptr);
+            Value* scaled_real = builder->CreateFDiv(div_real, n_double);
+            Value* scaled_imag = builder->CreateFDiv(div_imag, n_double);
+            builder->CreateStore(scaled_real, div_real_ptr);
+            builder->CreateStore(scaled_imag, div_imag_ptr);
+
+            Value* div_i_next = builder->CreateAdd(div_i, ConstantInt::get(int64_type, 1));
+            builder->CreateStore(div_i_next, div_i_ptr);
+            builder->CreateBr(div_cond);
+
+            builder->SetInsertPoint(div_exit);
+        }
+
+        // Allocate output vector of complex numbers
+        Function* alloc_vec_func = mem->getArenaAllocateVectorWithHeader();
+        Value* out_vec = builder->CreateCall(alloc_vec_func, {arena_ptr, len}, "fft_out_vec");
+
+        // Store length
+        builder->CreateStore(len, out_vec);
+
+        // Store complex results
+        Value* out_elem_base = builder->CreateGEP(int8_type, out_vec, ConstantInt::get(int64_type, 8));
+
+        Value* out_i_ptr = builder->CreateAlloca(int64_type, nullptr, "out_i");
+        builder->CreateStore(ConstantInt::get(int64_type, 0), out_i_ptr);
+
+        BasicBlock* out_cond = BasicBlock::Create(*context, "fft_out_cond", current_func);
+        BasicBlock* out_body = BasicBlock::Create(*context, "fft_out_body", current_func);
+        BasicBlock* out_exit = BasicBlock::Create(*context, "fft_out_exit", current_func);
+
+        builder->CreateBr(out_cond);
+
+        builder->SetInsertPoint(out_cond);
+        Value* out_i = builder->CreateLoad(int64_type, out_i_ptr);
+        Value* out_continue = builder->CreateICmpSLT(out_i, len);
+        builder->CreateCondBr(out_continue, out_body, out_exit);
+
+        builder->SetInsertPoint(out_body);
+
+        // Load final real/imag values
+        Value* final_real_ptr = builder->CreateGEP(double_type, real_arr, out_i);
+        Value* final_imag_ptr = builder->CreateGEP(double_type, imag_arr, out_i);
+        Value* final_real = builder->CreateLoad(double_type, final_real_ptr);
+        Value* final_imag = builder->CreateLoad(double_type, final_imag_ptr);
+
+        // Create complex number and pack to tagged value
+        Value* complex_result = createComplexNumber(final_real, final_imag);
+        Value* complex_tagged = packComplexToTagged(complex_result);
+
+        // Store in output vector
+        Value* out_elem_ptr = builder->CreateGEP(tagged_value_type, out_elem_base, out_i);
+        builder->CreateStore(complex_tagged, out_elem_ptr);
+
+        // out_i++
+        Value* out_i_next = builder->CreateAdd(out_i, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(out_i_next, out_i_ptr);
+        builder->CreateBr(out_cond);
+
+        builder->SetInsertPoint(out_exit);
+
+        // Pack output vector as tagged value
+        Value* out_vec_int = builder->CreatePtrToInt(out_vec, int64_type);
+        Value* result_tagged = UndefValue::get(tagged_value_type);
+        result_tagged = builder->CreateInsertValue(result_tagged, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR), {0});
+        result_tagged = builder->CreateInsertValue(result_tagged, ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR), {1});
+        result_tagged = builder->CreateInsertValue(result_tagged, ConstantInt::get(int16_type, 0), {2});
+        result_tagged = builder->CreateInsertValue(result_tagged, ConstantInt::get(int32_type, 0), {3});
+        result_tagged = builder->CreateInsertValue(result_tagged, out_vec_int, {4});
+
+        BasicBlock* valid_exit_bb = builder->GetInsertBlock();
+        builder->CreateBr(merge_bb);
+
+        // Final merge (error path terminates with unreachable, only valid path reaches here)
+        builder->SetInsertPoint(merge_bb);
+        return result_tagged;
     }
 
     // codegenRange removed - now in stdlib.esk (core/list/generate.esk)
@@ -27730,7 +29229,7 @@ namespace ControlFlowCallbacks {
                     llvm::Value* log_u1 = builder.CreateCall(log_func, {u1});
                     llvm::Value* neg_two = llvm::ConstantFP::get(ctx->doubleType(), -2.0);
                     llvm::Value* radius = builder.CreateCall(sqrt_func, {builder.CreateFMul(neg_two, log_u1)});
-                    llvm::Value* two_pi = llvm::ConstantFP::get(ctx->doubleType(), 6.283185307179586);
+                    llvm::Value* two_pi = llvm::ConstantFP::get(ctx->doubleType(), 6.283185307179586476925286766559);
                     llvm::Value* theta = builder.CreateFMul(two_pi, u2);
                     val = builder.CreateFMul(radius, builder.CreateCall(cos_func, {theta}));
                 }
@@ -27905,9 +29404,28 @@ bool eshkol_repl_is_private_symbol(const char* name) {
 }
 
 void eshkol_register_external_functions(const eshkol_ast_t* asts, size_t num_asts) {
-    // Stub - library compilation is not yet implemented
-    (void)asts;
-    (void)num_asts;
+    if (!asts || num_asts == 0) return;
+
+    std::lock_guard<std::mutex> lock(g_external_mutex);
+
+    for (size_t i = 0; i < num_asts; i++) {
+        const eshkol_ast_t* ast = &asts[i];
+
+        // Look for define operations that are function definitions
+        if (ast->type != ESHKOL_OP) continue;
+        if (ast->operation.op != ESHKOL_DEFINE_OP) continue;
+        if (!ast->operation.define_op.is_function) continue;
+        if (!ast->operation.define_op.name) continue;
+
+        std::string func_name = ast->operation.define_op.name;
+        size_t num_params = ast->operation.define_op.num_params;
+        bool is_variadic = ast->operation.define_op.is_variadic != 0;
+
+        g_external_functions[func_name] = {num_params, is_variadic};
+
+        eshkol_info("Registered external function: %s (params=%zu, variadic=%s)",
+                   func_name.c_str(), num_params, is_variadic ? "yes" : "no");
+    }
 }
 
 void eshkol_print_llvm_ir(LLVMModuleRef module_ref) {

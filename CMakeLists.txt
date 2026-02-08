@@ -5,7 +5,7 @@
 #
 cmake_minimum_required(VERSION 3.14)
 
-set(ESHKOL_VERSION "1.0.0")
+set(ESHKOL_VERSION "1.1.0")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
 
@@ -33,6 +33,19 @@ option(ESHKOL_XLA_ENABLED "Enable XLA backend for accelerated tensor operations"
 # Set this to the path where StableHLO was built (e.g., /tmp/stablehlo)
 # When set, uses the bundled LLVM/MLIR instead of system LLVM17
 set(STABLEHLO_ROOT "" CACHE PATH "Path to StableHLO installation with bundled LLVM/MLIR")
+
+# ===== Sanitizers =====
+if(ESHKOL_ENABLE_ASAN)
+    message(STATUS "Address Sanitizer: ENABLED")
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+endif()
+
+if(ESHKOL_ENABLE_UBSAN)
+    message(STATUS "Undefined Behavior Sanitizer: ENABLED")
+    add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=undefined)
+endif()
 
 # LLVM backend is always enabled
 set(ESHKOL_BUILD_BACKEND ON)
@@ -93,13 +106,8 @@ if(STABLEHLO_ROOT AND EXISTS "${STABLEHLO_ROOT}/llvm-build")
 
     # System libraries
     # Note: StableHLO's LLVM is built with zstd support
-    # Find zstd - try pkg-config first, then Homebrew
-    find_library(ZSTD_LIB zstd HINTS
-        /usr/local/opt/zstd/lib
-        /opt/homebrew/opt/zstd/lib
-        /usr/lib
-        /usr/local/lib
-    )
+    # Find zstd - search standard paths (no hardcoded Homebrew paths)
+    find_library(ZSTD_LIB zstd)
     if(ZSTD_LIB)
         message(STATUS "Found zstd: ${ZSTD_LIB}")
         set(ZSTD_LINK "${ZSTD_LIB}")
@@ -405,7 +413,10 @@ if(ESHKOL_BLAS_ENABLED)
         add_compile_definitions(ESHKOL_BLAS_ENABLED)
         message(STATUS "BLAS acceleration: ENABLED")
     else()
-        message(STATUS "BLAS acceleration: DISABLED (no BLAS library found)")
+        message(WARNING "BLAS acceleration: DISABLED (no BLAS library found). "
+            "On Ubuntu/Debian: sudo apt install libopenblas-dev. "
+            "On Fedora/RHEL: sudo dnf install openblas-devel. "
+            "On Arch: sudo pacman -S openblas.")
         set(ESHKOL_BLAS_ENABLED OFF)
     endif()
 else()
@@ -443,15 +454,17 @@ if(ESHKOL_GPU_ENABLED)
         endif()
     else()
         # Try CUDA on Linux/Windows
-        find_package(CUDA QUIET)
-        if(CUDA_FOUND)
+        find_package(CUDAToolkit QUIET)
+        if(CUDAToolkit_FOUND)
             set(GPU_FOUND TRUE)
-            set(GPU_LIBRARIES ${CUDA_LIBRARIES} ${CUDA_CUBLAS_LIBRARIES})
+            set(GPU_LIBRARIES CUDA::cudart CUDA::cublas)
             add_compile_definitions(ESHKOL_GPU_CUDA_ENABLED)
             message(STATUS "GPU: NVIDIA CUDA")
 
-            # Add GPU source file
-            set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory.mm")
+            # CUDA backend — NOT the .mm file (Objective-C++ is macOS only)
+            set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_cuda.cpp")
+        else()
+            message(STATUS "GPU: CUDA not found (install NVIDIA CUDA Toolkit for GPU support)")
         endif()
     endif()
 
@@ -460,6 +473,8 @@ if(ESHKOL_GPU_ENABLED)
         message(STATUS "GPU acceleration: ENABLED")
     else()
         message(STATUS "GPU acceleration: DISABLED (no GPU framework found)")
+        # Still compile the stub so GPU API symbols resolve at link time
+        set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_stub.cpp")
         set(ESHKOL_GPU_ENABLED OFF)
     endif()
 else()
@@ -492,6 +507,10 @@ file(GLOB_RECURSE LIB_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/*.c*")
 # Exclude REPL sources from main library (REPL will be separate)
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/repl/.*")
 
+# Exclude GPU backend sources — they are added explicitly via GPU_SOURCES
+# (Metal .mm on macOS, stub .cpp on Linux/no-GPU)
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/gpu/.*")
+
 # Exclude XLA sources from main library when XLA is disabled
 if(NOT ESHKOL_XLA_ENABLED)
     list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/xla/.*")
@@ -513,7 +532,8 @@ target_include_directories(
 )
 
 # Always add LLVM support to static library
-target_compile_options(eshkol-static PRIVATE ${LLVM_CXXFLAGS})
+# Enable strict warnings for code quality
+target_compile_options(eshkol-static PRIVATE ${LLVM_CXXFLAGS} -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare)
 target_compile_definitions(eshkol-static PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
 
 # Add LLVM include directories for enhanced cross-platform support
@@ -548,9 +568,11 @@ if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND MLIR_LIBRARIES)
     endif()
 endif()
 
-# Link GPU libraries if available (Metal on macOS, CUDA on Linux/Windows)
-if(GPU_FOUND)
+# Add GPU sources (Metal on macOS, CUDA on Linux, or stub for no-GPU builds)
+if(GPU_SOURCES)
     target_sources(eshkol-static PRIVATE ${GPU_SOURCES})
+endif()
+if(GPU_FOUND AND GPU_LIBRARIES)
     target_link_libraries(eshkol-static PUBLIC ${GPU_LIBRARIES})
     message(STATUS "Linking GPU libraries: ${GPU_LIBRARIES}")
 endif()
@@ -690,6 +712,39 @@ if(BUILD_REPL AND REPL_SRC)
     target_link_options(eshkol-run PRIVATE "-Wl,--export-dynamic")
   endif()
   message(STATUS "eshkol-run linked with REPL JIT for -e/--eval support")
+endif()
+
+# ===== Package Manager =====
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/pkg/eshkol_pkg.cpp")
+    message(STATUS "Building package manager: eshkol-pkg")
+
+    add_executable(eshkol-pkg tools/pkg/eshkol_pkg.cpp)
+    target_compile_features(eshkol-pkg PRIVATE cxx_std_17)
+
+    install(TARGETS eshkol-pkg DESTINATION bin)
+endif()
+
+# ===== LSP Server =====
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/lsp/eshkol_lsp.cpp")
+    message(STATUS "Building LSP server: eshkol-lsp")
+
+    add_executable(eshkol-lsp tools/lsp/eshkol_lsp.cpp)
+
+    target_compile_options(eshkol-lsp PRIVATE ${LLVM_CXXFLAGS})
+    target_compile_definitions(eshkol-lsp PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+    target_include_directories(eshkol-lsp PRIVATE inc/)
+
+    if(LLVM_INCLUDE_DIRS)
+        target_include_directories(eshkol-lsp PRIVATE ${LLVM_INCLUDE_DIRS})
+    endif()
+
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(eshkol-lsp PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+
+    target_link_libraries(eshkol-lsp PRIVATE eshkol-static ${LLVM_LIBS} ${LLVM_SYSTEM_LIBS})
+
+    install(TARGETS eshkol-lsp DESTINATION bin)
 endif()
 
 # ===== XLA Integration Tests =====

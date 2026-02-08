@@ -1323,6 +1323,7 @@ static std::set<std::string> buildScopeContext(const eshkol_ast_t* enclosing_fun
 
 static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer);
 static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer);
+static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer);
 static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer);
 
 static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
@@ -1645,20 +1646,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t element;
-            if (token.type == TOKEN_LPAREN) {
-                element = parse_list(tokenizer);
-            } else if (token.type == TOKEN_QUOTE) {
-                // Handle quoted expressions in nested list arguments
-                eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                element.type = ESHKOL_OP;
-                element.operation.op = ESHKOL_QUOTE_OP;
-                element.operation.call_op.func = nullptr;
-                element.operation.call_op.num_vars = 1;
-                element.operation.call_op.variables = new eshkol_ast_t[1];
-                element.operation.call_op.variables[0] = quoted;
-            } else {
-                element = parse_atom(token);
+            // Use parse_expression for full expression support in arguments
+            tokenizer.pushBack(token);
+            eshkol_ast_t element = parse_expression(tokenizer);
+            if (element.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
             }
             elements.push_back(element);
         }
@@ -1830,62 +1823,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             } else if (token.type == TOKEN_SYMBOL) {
                 // Variable definition: (define name value)
                 eshkol_ast_t name_ast = parse_atom(token);
-                
-                token = tokenizer.nextToken();
-                if (token.type == TOKEN_EOF) {
-                    eshkol_error("Expected value after variable name in define");
-                    ast.type = ESHKOL_INVALID;
-                    return ast;
-                }
-                
-                eshkol_ast_t value;
-                if (token.type == TOKEN_LPAREN) {
-                    value = parse_list(tokenizer);
-                } else if (token.type == TOKEN_VECTOR_START) {
-                    // Handle vector literal #(...)
-                    value.type = ESHKOL_OP;
-                    value.operation.op = ESHKOL_TENSOR_OP;
-                    std::vector<eshkol_ast_t> elements;
-                    while (true) {
-                        Token elem_token = tokenizer.nextToken();
-                        if (elem_token.type == TOKEN_RPAREN) break;
-                        if (elem_token.type == TOKEN_EOF) {
-                            eshkol_error("Unexpected end of input in vector literal");
-                            ast.type = ESHKOL_INVALID;
-                            return ast;
-                        }
-                        eshkol_ast_t element;
-                        if (elem_token.type == TOKEN_LPAREN) {
-                            element = parse_list(tokenizer);
-                        } else {
-                            element = parse_atom(elem_token);
-                        }
-                        if (element.type == ESHKOL_INVALID) {
-                            ast.type = ESHKOL_INVALID;
-                            return ast;
-                        }
-                        elements.push_back(element);
-                    }
-                    value.operation.tensor_op.num_dimensions = 1;
-                    value.operation.tensor_op.dimensions = new uint64_t[1];
-                    value.operation.tensor_op.dimensions[0] = elements.size();
-                    value.operation.tensor_op.total_elements = elements.size();
-                    value.operation.tensor_op.elements = new eshkol_ast_t[elements.size()];
-                    for (size_t i = 0; i < elements.size(); i++) {
-                        value.operation.tensor_op.elements[i] = elements[i];
-                    }
-                } else if (token.type == TOKEN_QUOTE) {
-                    // Handle quoted expressions
-                    eshkol_ast_t quoted_expr = parse_quoted_data(tokenizer);
-                    value.type = ESHKOL_OP;
-                    value.operation.op = ESHKOL_QUOTE_OP;
-                    value.operation.call_op.func = nullptr;
-                    value.operation.call_op.num_vars = 1;
-                    value.operation.call_op.variables = new eshkol_ast_t[1];
-                    value.operation.call_op.variables[0] = quoted_expr;
-                } else {
-                    value = parse_atom(token);
-                }
+
+                // Parse value expression using parse_expression for full syntax support
+                eshkol_ast_t value = parse_expression(tokenizer);
                 
                 // Check for closing paren
                 token = tokenizer.nextToken();
@@ -2135,8 +2075,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
             }
             
-            // Store the if operation as a call operation with 3 arguments
-            // This is a workaround since the if_op structure is incomplete
+            // Store the if operation as a call to builtin "if" with 3 arguments.
+            // The codegen recognizes "if" calls and emits proper conditional branches.
             ast.operation.op = ESHKOL_CALL_OP;
             
             // Create function name AST node for "if"
@@ -2462,62 +2402,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     eshkol_debug("Parsed type annotation for let binding '%s'", var_ast.variable.id);
                 }
 
-                // Parse value expression
-                token = tokenizer.nextToken();
-                if (token.type == TOKEN_EOF) {
-                    eshkol_error("Expected value in let binding");
-                    ast.type = ESHKOL_INVALID;
-                    return ast;
-                }
-                
-                eshkol_ast_t val_ast;
-                if (token.type == TOKEN_LPAREN) {
-                    val_ast = parse_list(tokenizer);
-                } else if (token.type == TOKEN_VECTOR_START) {
-                    // Handle vector literal #(...) in let binding value
-                    val_ast.type = ESHKOL_OP;
-                    val_ast.operation.op = ESHKOL_TENSOR_OP;
-                    std::vector<eshkol_ast_t> elements;
-                    while (true) {
-                        Token elem_token = tokenizer.nextToken();
-                        if (elem_token.type == TOKEN_RPAREN) break;
-                        if (elem_token.type == TOKEN_EOF) {
-                            eshkol_error("Unexpected end of input in vector literal in let binding");
-                            ast.type = ESHKOL_INVALID;
-                            return ast;
-                        }
-                        eshkol_ast_t element;
-                        if (elem_token.type == TOKEN_LPAREN) {
-                            element = parse_list(tokenizer);
-                        } else {
-                            element = parse_atom(elem_token);
-                        }
-                        if (element.type == ESHKOL_INVALID) {
-                            ast.type = ESHKOL_INVALID;
-                            return ast;
-                        }
-                        elements.push_back(element);
-                    }
-                    val_ast.operation.tensor_op.num_dimensions = 1;
-                    val_ast.operation.tensor_op.dimensions = new uint64_t[1];
-                    val_ast.operation.tensor_op.dimensions[0] = elements.size();
-                    val_ast.operation.tensor_op.total_elements = elements.size();
-                    val_ast.operation.tensor_op.elements = new eshkol_ast_t[elements.size()];
-                    for (size_t i = 0; i < elements.size(); i++) {
-                        val_ast.operation.tensor_op.elements[i] = elements[i];
-                    }
-                } else if (token.type == TOKEN_QUOTE) {
-                    // Handle quoted expressions in let binding value: (let ((x '())) ...)
-                    eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                    val_ast.type = ESHKOL_OP;
-                    val_ast.operation.op = ESHKOL_QUOTE_OP;
-                    val_ast.operation.call_op.func = nullptr;
-                    val_ast.operation.call_op.num_vars = 1;
-                    val_ast.operation.call_op.variables = new eshkol_ast_t[1];
-                    val_ast.operation.call_op.variables[0] = quoted;
-                } else {
-                    val_ast = parse_atom(token);
-                }
+                // Parse value expression using parse_expression for full syntax support
+                eshkol_ast_t val_ast = parse_expression(tokenizer);
                 
                 if (val_ast.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
@@ -5418,24 +5304,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t element;
-                if (token.type == TOKEN_LPAREN) {
-                    element = parse_list(tokenizer);
-                } else if (token.type == TOKEN_QUOTE) {
-                    // Handle quoted expressions as arguments: (car '(1 2 3))
-                    eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                    if (quoted.type == ESHKOL_INVALID) {
-                        ast.type = ESHKOL_INVALID;
-                        return ast;
-                    }
-                    element.type = ESHKOL_OP;
-                    element.operation.op = ESHKOL_QUOTE_OP;
-                    element.operation.call_op.func = nullptr;
-                    element.operation.call_op.num_vars = 1;
-                    element.operation.call_op.variables = new eshkol_ast_t[1];
-                    element.operation.call_op.variables[0] = quoted;
-                } else {
-                    element = parse_atom(token);
+                // Use parse_expression for full expression support in arguments
+                // (handles #(...) vector literals, quoted expressions, nested lists, atoms, etc.)
+                tokenizer.pushBack(token);
+                eshkol_ast_t element = parse_expression(tokenizer);
+                if (element.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
                 }
                 elements.push_back(element);
             }
@@ -5579,6 +5454,132 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
     return ast;
 }
 
+/**
+ * Parse the body of a vector literal after the opening #( has been consumed.
+ * Handles recursive nesting: #(#(1 2) #(3 4)) → 2D tensor [2,2]
+ * Also supports arbitrary depth: #(#(#(1 2) #(3 4)) #(#(5 6) #(7 8))) → 3D tensor [2,2,2]
+ *
+ * When all elements are sub-tensors with identical shapes, they are flattened
+ * into an N+1-dimensional tensor. Otherwise, elements are kept as a 1D vector.
+ */
+static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.operation.op = ESHKOL_TENSOR_OP;
+
+    std::vector<eshkol_ast_t> elements;
+
+    while (true) {
+        Token elem_token = tokenizer.nextToken();
+        if (elem_token.type == TOKEN_RPAREN) break;
+        if (elem_token.type == TOKEN_EOF) {
+            eshkol_error("Unexpected end of input in vector literal #(...)");
+            ast.type = ESHKOL_INVALID;
+            return ast;
+        }
+
+        // Push back the token and use parse_expression to handle ALL expression
+        // types uniformly: nested #(...), quoted 'expr, lists, atoms, etc.
+        tokenizer.pushBack(elem_token);
+        eshkol_ast_t element = parse_expression(tokenizer);
+
+        if (element.type == ESHKOL_INVALID) {
+            ast.type = ESHKOL_INVALID;
+            return ast;
+        }
+        elements.push_back(element);
+    }
+
+    if (elements.empty()) {
+        // Empty vector: #() → 1D tensor with 0 elements
+        ast.operation.tensor_op.num_dimensions = 1;
+        ast.operation.tensor_op.dimensions = new uint64_t[1];
+        ast.operation.tensor_op.dimensions[0] = 0;
+        ast.operation.tensor_op.total_elements = 0;
+        ast.operation.tensor_op.elements = nullptr;
+        return ast;
+    }
+
+    // Check if ALL elements are tensor_ops with identical shapes → nested vector flattening
+    bool all_sub_tensors = true;
+    for (auto& elem : elements) {
+        if (elem.type != ESHKOL_OP || elem.operation.op != ESHKOL_TENSOR_OP) {
+            all_sub_tensors = false;
+            break;
+        }
+    }
+
+    if (all_sub_tensors && elements.size() > 0) {
+        // Verify all sub-tensors have the same shape
+        uint64_t sub_ndim = elements[0].operation.tensor_op.num_dimensions;
+        uint64_t* sub_dims = elements[0].operation.tensor_op.dimensions;
+        uint64_t sub_total = elements[0].operation.tensor_op.total_elements;
+        bool shapes_match = true;
+
+        for (size_t i = 1; i < elements.size(); i++) {
+            if (elements[i].operation.tensor_op.num_dimensions != sub_ndim) {
+                eshkol_error("Nested vector dimension mismatch: element 0 has %llu dimensions, element %zu has %llu",
+                    (unsigned long long)sub_ndim, i,
+                    (unsigned long long)elements[i].operation.tensor_op.num_dimensions);
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            for (uint64_t d = 0; d < sub_ndim; d++) {
+                if (elements[i].operation.tensor_op.dimensions[d] != sub_dims[d]) {
+                    eshkol_error("Nested vector shape mismatch at dimension %llu: element 0 has %llu, element %zu has %llu",
+                        (unsigned long long)d, (unsigned long long)sub_dims[d], i,
+                        (unsigned long long)elements[i].operation.tensor_op.dimensions[d]);
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+            }
+        }
+
+        if (shapes_match) {
+            // Flatten into N+1 dimensional tensor
+            // #(#(1 2) #(3 4)) with sub_dims=[2] → dims=[2, 2], elements=[1, 2, 3, 4]
+            uint64_t outer_count = elements.size();
+            uint64_t new_ndim = sub_ndim + 1;
+            uint64_t* new_dims = new uint64_t[new_ndim];
+            new_dims[0] = outer_count;
+            for (uint64_t d = 0; d < sub_ndim; d++) {
+                new_dims[d + 1] = sub_dims[d];
+            }
+
+            uint64_t new_total = outer_count * sub_total;
+            eshkol_ast_t* new_elements = new eshkol_ast_t[new_total];
+
+            uint64_t idx = 0;
+            for (auto& elem : elements) {
+                for (uint64_t i = 0; i < sub_total; i++) {
+                    new_elements[idx++] = elem.operation.tensor_op.elements[i];
+                }
+                // Free the sub-tensor's allocated arrays (they've been flattened)
+                delete[] elem.operation.tensor_op.dimensions;
+                delete[] elem.operation.tensor_op.elements;
+            }
+
+            ast.operation.tensor_op.num_dimensions = new_ndim;
+            ast.operation.tensor_op.dimensions = new_dims;
+            ast.operation.tensor_op.total_elements = new_total;
+            ast.operation.tensor_op.elements = new_elements;
+            return ast;
+        }
+    }
+
+    // Default: 1D vector of scalar elements
+    ast.operation.tensor_op.num_dimensions = 1;
+    ast.operation.tensor_op.dimensions = new uint64_t[1];
+    ast.operation.tensor_op.dimensions[0] = elements.size();
+    ast.operation.tensor_op.total_elements = elements.size();
+    ast.operation.tensor_op.elements = new eshkol_ast_t[elements.size()];
+    for (size_t i = 0; i < elements.size(); i++) {
+        ast.operation.tensor_op.elements[i] = elements[i];
+    }
+
+    return ast;
+}
+
 static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
     Token token = tokenizer.nextToken();
 
@@ -5586,59 +5587,10 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
         case TOKEN_LPAREN:
             return parse_list(tokenizer);
 
-        case TOKEN_VECTOR_START: {
+        case TOKEN_VECTOR_START:
             // Handle vector literal: #(element1 element2 ...)
-            // Creates a 1D tensor (same as (vector ...))
-            eshkol_ast_t ast = {};  // Zero-initialize all fields
-            ast.type = ESHKOL_OP;
-            ast.operation.op = ESHKOL_TENSOR_OP;
-
-            std::vector<eshkol_ast_t> elements;
-
-            while (true) {
-                Token elem_token = tokenizer.nextToken();
-                if (elem_token.type == TOKEN_RPAREN) break;
-                if (elem_token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in vector literal #(...)");
-                    ast.type = ESHKOL_INVALID;
-                    return ast;
-                }
-
-                // Put token back and parse as expression
-                // Since we can't easily "unget" a token, handle atoms directly here
-                eshkol_ast_t element;
-                if (elem_token.type == TOKEN_LPAREN) {
-                    element = parse_list(tokenizer);
-                } else if (elem_token.type == TOKEN_VECTOR_START) {
-                    // Nested vector - recursively handle
-                    // Put this logic in a helper or handle inline
-                    // For simplicity, create a temporary tokenizer state
-                    eshkol_error("Nested vector literals not yet supported");
-                    ast.type = ESHKOL_INVALID;
-                    return ast;
-                } else {
-                    element = parse_atom(elem_token);
-                }
-
-                if (element.type == ESHKOL_INVALID) {
-                    ast.type = ESHKOL_INVALID;
-                    return ast;
-                }
-                elements.push_back(element);
-            }
-
-            // Set up 1D tensor (vector)
-            ast.operation.tensor_op.num_dimensions = 1;
-            ast.operation.tensor_op.dimensions = new uint64_t[1];
-            ast.operation.tensor_op.dimensions[0] = elements.size();
-            ast.operation.tensor_op.total_elements = elements.size();
-            ast.operation.tensor_op.elements = new eshkol_ast_t[elements.size()];
-            for (size_t i = 0; i < elements.size(); i++) {
-                ast.operation.tensor_op.elements[i] = elements[i];
-            }
-
-            return ast;
-        }
+            // Supports nested vectors: #(#(1 2) #(3 4)) → 2D tensor
+            return parse_vector_body(tokenizer);
 
         case TOKEN_QUOTE: {
             // Handle quoted expressions - use parse_quoted_data for proper data list handling
