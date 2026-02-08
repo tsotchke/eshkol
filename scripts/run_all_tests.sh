@@ -40,6 +40,7 @@ TEST_SCRIPTS=(
     "run_neural_tests.sh"
     "run_json_tests.sh"
     "run_system_tests.sh"
+    "run_complex_tests.sh"
     "run_cpp_type_tests.sh"
 )
 

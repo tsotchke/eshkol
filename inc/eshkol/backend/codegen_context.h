@@ -89,6 +89,7 @@ public:
     llvm::PointerType* ptrType() { return types_.getPtrType(); }
     llvm::StructType* taggedValueType() { return types_.getTaggedValueType(); }
     llvm::StructType* dualNumberType() { return types_.getDualNumberType(); }
+    llvm::StructType* complexNumberType() { return types_.getComplexNumberType(); }
     llvm::StructType* adNodeType() { return types_.getAdNodeType(); }
     llvm::StructType* tensorType() { return types_.getTensorType(); }
 

@@ -1,9 +1,13 @@
 /*
  * XLA Memory Integration Implementation for Eshkol
  *
- * STUB IMPLEMENTATION - Phase 1
- * This is a skeleton that compiles but doesn't integrate with XLA yet.
- * Actual memory integration will be added in Phase 2.
+ * Bridges Eshkol's OALR (Ownership-Aware Lexical Regions) arena memory
+ * model with XLA buffer management. CPU path uses zero-copy arena access;
+ * GPU paths will use pinned or unified memory when those targets are active.
+ *
+ * In LLVM-direct mode (v1.1), allocation functions emit IR calls to the
+ * arena runtime (arena_allocate_aligned) with 64-byte alignment for
+ * AVX-512/cache-line compatibility.
  *
  * Copyright (C) tsotchke
  * SPDX-License-Identifier: MIT
@@ -12,6 +16,12 @@
 #include "eshkol/backend/xla/xla_memory.h"
 #include "eshkol/backend/xla/xla_codegen.h"
 #include "eshkol/backend/xla/xla_types.h"
+#include "eshkol/backend/codegen_context.h"
+
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Type.h>
+#include <llvm/IR/Constants.h>
 
 namespace eshkol {
 namespace xla {
@@ -24,12 +34,27 @@ public:
     MemoryStrategy cpu_strategy_ = MemoryStrategy::ZERO_COPY;
     MemoryStrategy gpu_strategy_ = MemoryStrategy::PINNED;
 
-    // Statistics
+    // Allocation statistics for diagnostics
     size_t arena_allocated_ = 0;
     size_t device_allocated_ = 0;
     size_t transfers_ = 0;
 
     explicit Impl(CodegenContext& ctx) : ctx_(&ctx) {}
+
+    /// Get or declare the arena_allocate_aligned runtime function.
+    /// Signature: void* arena_allocate_aligned(void* arena, int64_t size, int64_t alignment)
+    llvm::Function* getOrDeclareArenaAllocateAligned() {
+        auto& mod = ctx_->module();
+        auto* existing = mod.getFunction("arena_allocate_aligned");
+        if (existing) return existing;
+
+        auto& llvm_ctx = ctx_->context();
+        auto* ptrTy = llvm::PointerType::get(llvm_ctx, 0);
+        auto* i64Ty = llvm::Type::getInt64Ty(llvm_ctx);
+        auto* funcTy = llvm::FunctionType::get(ptrTy, {ptrTy, i64Ty, i64Ty}, false);
+        return llvm::Function::Create(funcTy, llvm::GlobalValue::ExternalLinkage,
+                                      "arena_allocate_aligned", &mod);
+    }
 };
 
 XLAMemoryIntegration::XLAMemoryIntegration(CodegenContext& ctx)
@@ -37,87 +62,138 @@ XLAMemoryIntegration::XLAMemoryIntegration(CodegenContext& ctx)
 
 XLAMemoryIntegration::~XLAMemoryIntegration() = default;
 
-// ===== Buffer Wrapping (Stubs) =====
+// ===== Buffer Wrapping =====
 
+/// Wrap an existing arena tensor for XLA use.
+/// CPU path: zero-copy -- the arena tensor is already in host memory, so we
+/// simply return the tensor pointer as the XLA buffer handle.
 llvm::Value* XLAMemoryIntegration::wrapArenaTensor(llvm::Value* arena_ptr,
                                                     llvm::Value* tensor_ptr,
                                                     Target target) {
     (void)arena_ptr;
-    (void)tensor_ptr;
     (void)target;
-    // STUB: Return tensor_ptr as-is for now
+    // CPU: zero-copy -- arena tensor IS the XLA buffer.
+    // GPU targets would pin or transfer here; handled at runtime dispatch level.
     return tensor_ptr;
 }
 
+/// Wrap a raw data pointer as an XLA-compatible buffer.
+/// For CPU/LLVM-direct mode, the raw data pointer is returned directly --
+/// the caller (xla_codegen.cpp) handles tensor struct creation when needed.
 llvm::Value* XLAMemoryIntegration::wrapRawBuffer(llvm::Value* data_ptr,
                                                    const std::vector<int64_t>& shape,
                                                    size_t element_size,
                                                    Target target) {
-    (void)data_ptr;
     (void)shape;
     (void)element_size;
     (void)target;
-    // STUB: Return nullptr
-    return nullptr;
+    // CPU/LLVM-direct: return the data pointer; caller wraps into tensor struct.
+    return data_ptr;
 }
 
-// ===== Buffer Allocation (Stubs) =====
+// ===== Buffer Allocation =====
 
+/// Allocate an XLA buffer in the arena with 64-byte alignment.
+/// Emits LLVM IR that calls arena_allocate_aligned at runtime.
+/// The arena manages lifetime via OALR regions, so no explicit free is needed.
 llvm::Value* XLAMemoryIntegration::allocateXLABuffer(llvm::Value* arena_ptr,
                                                        const TensorType& type,
                                                        BufferScope scope) {
-    (void)arena_ptr;
-    (void)type;
-    (void)scope;
-    // STUB: Return nullptr
-    return nullptr;
+    (void)scope;  // Arena scoping handles lifetime; BufferScope is advisory.
+
+    size_t size_bytes = type.sizeInBytes();
+    if (size_bytes == 0) {
+        // Dynamic-sized tensor -- caller must handle dynamic allocation.
+        // Return nullptr to signal that static allocation is not possible.
+        return nullptr;
+    }
+
+    // Track allocation for diagnostics
+    impl_->arena_allocated_ += size_bytes;
+
+    auto& builder = impl_->ctx_->builder();
+    auto& llvm_ctx = impl_->ctx_->context();
+    auto* ptrTy = llvm::PointerType::get(llvm_ctx, 0);
+    auto* i64Ty = llvm::Type::getInt64Ty(llvm_ctx);
+
+    // Get or declare arena_allocate_aligned
+    auto* allocFunc = impl_->getOrDeclareArenaAllocateAligned();
+
+    // Load the arena pointer from the global
+    auto* arenaPtr = arena_ptr;
+    auto* sizeVal = llvm::ConstantInt::get(i64Ty, size_bytes);
+    auto* alignVal = llvm::ConstantInt::get(i64Ty, 64);  // 64-byte alignment for AVX-512/XLA
+    return builder.CreateCall(allocFunc, {arenaPtr, sizeVal, alignVal}, "xla_buffer");
 }
 
+/// Allocate a raw aligned buffer in the arena with caller-specified alignment.
+/// Emits LLVM IR that calls arena_allocate_aligned at runtime.
 llvm::Value* XLAMemoryIntegration::allocateAligned(llvm::Value* arena_ptr,
                                                      size_t size_bytes,
                                                      size_t alignment) {
-    (void)arena_ptr;
-    (void)size_bytes;
-    (void)alignment;
-    // STUB: Return nullptr
-    return nullptr;
+    // Track allocation for diagnostics
+    impl_->arena_allocated_ += size_bytes;
+
+    auto& builder = impl_->ctx_->builder();
+    auto& llvm_ctx = impl_->ctx_->context();
+    auto* i64Ty = llvm::Type::getInt64Ty(llvm_ctx);
+
+    // Get or declare arena_allocate_aligned
+    auto* allocFunc = impl_->getOrDeclareArenaAllocateAligned();
+
+    auto* sizeVal = llvm::ConstantInt::get(i64Ty, size_bytes);
+    auto* alignVal = llvm::ConstantInt::get(i64Ty, alignment);
+    return builder.CreateCall(allocFunc, {arena_ptr, sizeVal, alignVal}, "xla_aligned_buffer");
 }
 
-// ===== Device Transfer (Stubs) =====
+// ===== Device Transfer =====
 
+/// Ensure tensor is on the specified device.
+/// CPU path: no-op -- data is already in host memory.
+/// GPU targets would emit transfer IR here.
 llvm::Value* XLAMemoryIntegration::ensureDevice(llvm::Value* tensor_ptr, Target target) {
     (void)target;
-    // STUB: Return tensor_ptr as-is for CPU
+    // CPU: tensor is already on the host device. Return as-is.
     return tensor_ptr;
 }
 
+/// Synchronize device tensor back to host memory.
+/// CPU path: no-op -- host and device are the same.
 void XLAMemoryIntegration::syncToHost(llvm::Value* tensor_ptr) {
     (void)tensor_ptr;
-    // STUB: No-op for CPU
+    // CPU: no synchronization needed; arena memory is directly accessible.
 }
 
-// ===== Region Integration (Stubs) =====
+// ===== Region Integration =====
 
+/// Register buffer with OALR region for automatic cleanup.
+/// CPU path: no-op -- the arena itself tracks all allocations and frees them
+/// when the region exits. GPU targets would register device-side cleanup callbacks.
 void XLAMemoryIntegration::registerWithRegion(llvm::Value* buffer,
                                                 llvm::Value* region_ptr,
                                                 Target target) {
     (void)buffer;
     (void)region_ptr;
     (void)target;
-    // STUB: No-op - arena handles cleanup for CPU
+    // Arena handles all cleanup for CPU allocations.
 }
 
+/// Begin an XLA computation scope. Enables memory reuse optimization.
+/// CPU path: no-op -- arena scoping is handled by the OALR region system.
 void XLAMemoryIntegration::beginComputationScope(llvm::Value* region_ptr) {
     (void)region_ptr;
-    // STUB: No-op
+    // Arena region scoping manages computation-local memory.
 }
 
+/// End an XLA computation scope. Releases temporary buffers.
+/// CPU path: no-op -- arena handles deallocation at region exit.
 void XLAMemoryIntegration::endComputationScope() {
-    // STUB: No-op
+    // Arena region exit handles cleanup.
 }
 
 // ===== Memory Strategy =====
 
+/// Set the memory strategy for a given target backend.
 void XLAMemoryIntegration::setStrategy(Target target, MemoryStrategy strategy) {
     switch (target) {
         case Target::CPU:
@@ -131,6 +207,7 @@ void XLAMemoryIntegration::setStrategy(Target target, MemoryStrategy strategy) {
     }
 }
 
+/// Get the current memory strategy for a given target backend.
 MemoryStrategy XLAMemoryIntegration::getStrategy(Target target) const {
     switch (target) {
         case Target::CPU:
@@ -143,21 +220,25 @@ MemoryStrategy XLAMemoryIntegration::getStrategy(Target target) const {
     return MemoryStrategy::ZERO_COPY;
 }
 
+/// Return the recommended memory strategy for the given target.
+/// CPU uses zero-copy (arena memory directly), CUDA/Vulkan use pinned memory
+/// for efficient DMA transfer, Metal uses Apple unified memory.
 MemoryStrategy XLAMemoryIntegration::recommendedStrategy(Target target) {
     switch (target) {
         case Target::CPU:
-            return MemoryStrategy::ZERO_COPY;  // Use arena memory directly
+            return MemoryStrategy::ZERO_COPY;
         case Target::CUDA:
         case Target::Vulkan:
-            return MemoryStrategy::PINNED;     // Pin for efficient transfer
+            return MemoryStrategy::PINNED;
         case Target::Metal:
-            return MemoryStrategy::UNIFIED;    // Apple unified memory
+            return MemoryStrategy::UNIFIED;
     }
     return MemoryStrategy::ZERO_COPY;
 }
 
 // ===== Diagnostics =====
 
+/// Retrieve memory allocation statistics.
 void XLAMemoryIntegration::getStats(size_t& arena_allocated,
                                       size_t& device_allocated,
                                       size_t& transfers) const {
@@ -166,6 +247,7 @@ void XLAMemoryIntegration::getStats(size_t& arena_allocated,
     transfers = impl_->transfers_;
 }
 
+/// Reset all statistics counters to zero.
 void XLAMemoryIntegration::resetStats() {
     impl_->arena_allocated_ = 0;
     impl_->device_allocated_ = 0;

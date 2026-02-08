@@ -884,10 +884,75 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
 }
 
 Value* CallApplyCodegen::closureCall(Value* closure, const std::vector<Value*>& args) {
-    // TODO: Implement direct closure call with pre-evaluated arguments
-    // For now, this is a placeholder - the main codegen uses codegenClosureCall
-    eshkol_warn("closureCall not yet implemented in CallApplyCodegen");
-    return tagged_.packNull();
+    // Direct closure call: extract function pointer, load captures, call with captures + args.
+    // This mirrors the closure call convention in codegenClosureCall but uses
+    // a simplified path for pre-evaluated arguments.
+
+    if (!closure) {
+        eshkol_error("closureCall: null closure value");
+        return tagged_.packNull();
+    }
+
+    // Extract closure pointer from tagged value
+    llvm::Value* closure_ptr_i64 = tagged_.unpackInt64(closure);
+    llvm::Value* closure_ptr = ctx_.builder().CreateIntToPtr(
+        closure_ptr_i64, ctx_.ptrType(), "closure_ptr");
+
+    // Load function pointer (offset 0 in closure struct)
+    llvm::Value* func_ptr_i64 = ctx_.builder().CreateLoad(
+        ctx_.int64Type(), closure_ptr, "func_ptr_i64");
+    llvm::Value* func_ptr = ctx_.builder().CreateIntToPtr(
+        func_ptr_i64, ctx_.ptrType(), "func_ptr");
+
+    // Load capture count (offset 8)
+    llvm::Value* cap_count_gep = ctx_.builder().CreateGEP(
+        ctx_.int64Type(), closure_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1), "cap_count_gep");
+    llvm::Value* cap_count = ctx_.builder().CreateLoad(
+        ctx_.int64Type(), cap_count_gep, "cap_count");
+
+    // For the common case (0 captures), call directly with user args only.
+    // Other cases fall through to a non-capture call (captures are part of function ABI).
+    llvm::Value* has_no_captures = ctx_.builder().CreateICmpEQ(
+        cap_count, llvm::ConstantInt::get(ctx_.int64Type(), 0), "no_caps");
+
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* no_cap_bb = llvm::BasicBlock::Create(ctx_.context(), "closure_nocap", current_func);
+    llvm::BasicBlock* has_cap_bb = llvm::BasicBlock::Create(ctx_.context(), "closure_hascap", current_func);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "closure_merge", current_func);
+
+    ctx_.builder().CreateCondBr(has_no_captures, no_cap_bb, has_cap_bb);
+
+    // No captures: call func_ptr directly with args
+    ctx_.builder().SetInsertPoint(no_cap_bb);
+    std::vector<llvm::Type*> arg_types(args.size(), ctx_.taggedValueType());
+    llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.taggedValueType(), arg_types, false);
+    llvm::Value* result_nocap = ctx_.builder().CreateCall(ft, func_ptr, args, "closure_result");
+    llvm::BasicBlock* nocap_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_bb);
+
+    // Has captures: load capture[0] and prepend to args (handles 1-capture case)
+    ctx_.builder().SetInsertPoint(has_cap_bb);
+    llvm::Value* captures_base = ctx_.builder().CreateGEP(
+        llvm::Type::getInt8Ty(ctx_.context()), closure_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 16), "captures_base");
+    llvm::Value* cap0 = ctx_.builder().CreateLoad(
+        ctx_.taggedValueType(), captures_base, "cap0");
+    std::vector<llvm::Value*> cap_args;
+    cap_args.push_back(cap0);
+    for (auto* arg : args) cap_args.push_back(arg);
+    std::vector<llvm::Type*> cap_arg_types(cap_args.size(), ctx_.taggedValueType());
+    llvm::FunctionType* ft_cap = llvm::FunctionType::get(ctx_.taggedValueType(), cap_arg_types, false);
+    llvm::Value* result_cap = ctx_.builder().CreateCall(ft_cap, func_ptr, cap_args, "closure_cap_result");
+    llvm::BasicBlock* cap_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_bb);
+
+    // Merge
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "closure_result");
+    result->addIncoming(result_nocap, nocap_exit);
+    result->addIncoming(result_cap, cap_exit);
+    return result;
 }
 
 } // namespace eshkol

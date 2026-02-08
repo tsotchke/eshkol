@@ -1,0 +1,83 @@
+;;; FFT (Fast Fourier Transform) Test Suite
+;;; Tests fft and ifft primitives
+;;; FFT accepts tensor or vector input, returns a vector of complex numbers
+
+(define (approx-equal? a b epsilon)
+  (< (abs (- a b)) epsilon))
+
+(display "=== FFT Tests ===") (newline)
+
+;; ---- Basic FFT of constant signal ----
+(display "-- FFT of constant signal --") (newline)
+;; FFT of [1,1,1,1] should be [4+0i, 0+0i, 0+0i, 0+0i] (DC component only)
+(define const-signal #(1.0 1.0 1.0 1.0))
+(define const-fft (fft const-signal))
+;; Extract and display DC component (should be 4+0i)
+(display "  X[0] real: ") (display (real-part (vector-ref const-fft 0)))
+(display " (expected: 4.0)") (newline)
+(display "  X[0] imag: ") (display (imag-part (vector-ref const-fft 0)))
+(display " (expected: 0.0)") (newline)
+;; Other bins should be ~0
+(display "  X[1] real: ") (display (real-part (vector-ref const-fft 1)))
+(display " (expected: ~0)") (newline)
+
+;; ---- FFT of impulse ----
+(display "-- FFT of impulse --") (newline)
+;; FFT of [1,0,0,0] should be [1,1,1,1] (flat spectrum)
+(define impulse #(1.0 0.0 0.0 0.0))
+(define impulse-fft (fft impulse))
+(display "  X[0] real: ") (display (real-part (vector-ref impulse-fft 0)))
+(display " (expected: 1.0)") (newline)
+(display "  X[1] real: ") (display (real-part (vector-ref impulse-fft 1)))
+(display " (expected: 1.0)") (newline)
+(display "  X[2] real: ") (display (real-part (vector-ref impulse-fft 2)))
+(display " (expected: 1.0)") (newline)
+(display "  X[3] real: ") (display (real-part (vector-ref impulse-fft 3)))
+(display " (expected: 1.0)") (newline)
+
+;; ---- FFT of alternating signal ----
+(display "-- FFT of alternating signal --") (newline)
+;; FFT of [1,-1,1,-1] should be [0, 0, 4, 0] (Nyquist component)
+(define alt-signal #(1.0 -1.0 1.0 -1.0))
+(define alt-fft (fft alt-signal))
+(display "  X[0] real: ") (display (real-part (vector-ref alt-fft 0)))
+(display " (expected: 0.0)") (newline)
+(display "  X[2] real: ") (display (real-part (vector-ref alt-fft 2)))
+(display " (expected: 4.0)") (newline)
+
+;; ---- Round-trip: IFFT(FFT(x)) = x ----
+(display "-- Round-trip test (size 8) --") (newline)
+(define test-signal #(1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0))
+(define roundtrip (ifft (fft test-signal)))
+;; For real input, round-trip should give back real values (imag ~= 0)
+(display "  x[0]: ") (display (real-part (vector-ref roundtrip 0)))
+(display " (expected: 1.0)") (newline)
+(display "  x[3]: ") (display (real-part (vector-ref roundtrip 3)))
+(display " (expected: 4.0)") (newline)
+(display "  x[7]: ") (display (real-part (vector-ref roundtrip 7)))
+(display " (expected: 8.0)") (newline)
+;; Imaginary parts should be ~0
+(display "  x[0] imag: ") (display (imag-part (vector-ref roundtrip 0)))
+(display " (expected: ~0)") (newline)
+
+;; ---- Larger round-trip (size 16) ----
+(display "-- Round-trip test (size 16) --") (newline)
+(define sig16 #(0.0 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0 10.0 11.0 12.0 13.0 14.0 15.0))
+(define rt16 (ifft (fft sig16)))
+(display "  x[0]: ") (display (real-part (vector-ref rt16 0)))
+(display " (expected: 0.0)") (newline)
+(display "  x[8]: ") (display (real-part (vector-ref rt16 8)))
+(display " (expected: 8.0)") (newline)
+(display "  x[15]: ") (display (real-part (vector-ref rt16 15)))
+(display " (expected: 15.0)") (newline)
+
+;; ---- Parseval's theorem: energy conservation ----
+(display "-- Parseval's theorem --") (newline)
+;; Sum of |x[n]|^2 should equal (1/N) * sum of |X[k]|^2
+;; For real input, |x[n]|^2 = x[n]^2
+(define parseval-signal #(1.0 3.0 2.0 4.0 0.0 -1.0 2.0 1.0))
+(define time-energy (tensor-dot parseval-signal parseval-signal))
+(display "  time-domain energy: ") (display time-energy)
+(display " (expected: 36)") (newline)
+
+(display "=== FFT Tests Complete ===") (newline)

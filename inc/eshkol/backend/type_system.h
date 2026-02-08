@@ -66,6 +66,7 @@ public:
     // Struct types for Eshkol runtime
     llvm::StructType* getTaggedValueType() const { return tagged_value_type; }
     llvm::StructType* getDualNumberType() const { return dual_number_type; }
+    llvm::StructType* getComplexNumberType() const { return complex_number_type; }
     llvm::StructType* getAdNodeType() const { return ad_node_type; }
     llvm::StructType* getTensorType() const { return tensor_type; }
 
@@ -83,13 +84,28 @@ public:
     static constexpr unsigned DUAL_VALUE_IDX = 0;      // double value
     static constexpr unsigned DUAL_DERIVATIVE_IDX = 1; // double derivative
 
-    // AD node field indices
+    // Complex number field indices
+    static constexpr unsigned COMPLEX_REAL_IDX = 0;    // double real
+    static constexpr unsigned COMPLEX_IMAG_IDX = 1;    // double imag
+
+    // AD node field indices (matches ad_node_t in eshkol.h)
+    // Base fields (scalar AD)
     static constexpr unsigned AD_NODE_TYPE_IDX = 0;    // int32_t type (enum)
     static constexpr unsigned AD_NODE_VALUE_IDX = 1;   // double value
     static constexpr unsigned AD_NODE_GRADIENT_IDX = 2; // double gradient
     static constexpr unsigned AD_NODE_INPUT1_IDX = 3;  // ad_node* input1
     static constexpr unsigned AD_NODE_INPUT2_IDX = 4;  // ad_node* input2
     static constexpr unsigned AD_NODE_ID_IDX = 5;      // size_t id
+    // Extended fields (tensor AD)
+    static constexpr unsigned AD_NODE_TENSOR_VALUE_IDX = 6;    // void* tensor_value
+    static constexpr unsigned AD_NODE_TENSOR_GRADIENT_IDX = 7;  // void* tensor_gradient
+    static constexpr unsigned AD_NODE_INPUT3_IDX = 8;           // ad_node* input3
+    static constexpr unsigned AD_NODE_INPUT4_IDX = 9;           // ad_node* input4
+    static constexpr unsigned AD_NODE_SAVED_TENSORS_IDX = 10;   // void** saved_tensors
+    static constexpr unsigned AD_NODE_NUM_SAVED_IDX = 11;       // size_t num_saved
+    static constexpr unsigned AD_NODE_PARAMS_IDX = 12;          // [6 x i64] params union
+    static constexpr unsigned AD_NODE_SHAPE_IDX = 13;           // int64_t* shape
+    static constexpr unsigned AD_NODE_NDIM_IDX = 14;            // size_t ndim
 
     // Tensor field indices
     static constexpr unsigned TENSOR_DIMENSIONS_IDX = 0;     // uint64_t* dimensions
@@ -118,6 +134,7 @@ private:
     // Cached struct types
     llvm::StructType* tagged_value_type;
     llvm::StructType* dual_number_type;
+    llvm::StructType* complex_number_type;
     llvm::StructType* ad_node_type;
     llvm::StructType* tensor_type;
 

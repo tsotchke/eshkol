@@ -1,9 +1,16 @@
 /*
  * XLA Type Mapping Implementation for Eshkol
  *
- * STUB IMPLEMENTATION - Phase 1
- * This is a skeleton that compiles but doesn't connect to MLIR yet.
- * Actual type mapping will be added in Phase 2.
+ * Maps Eshkol's type system to XLA tensor types. Provides conversion
+ * utilities for element types, shapes, and broadcasting rules.
+ *
+ * MLIR type conversion (toMLIRType, toMLIRElementType) is conditional on
+ * MLIR availability. When MLIR is not linked, these functions return nullptr,
+ * and the LLVM-direct codegen path handles all type mapping natively.
+ *
+ * HoTT type integration (fromHoTT) returns F64 scalar as the default mapping.
+ * Full HoTT-to-XLA type extraction requires the MLIR path and will be
+ * activated when MLIR+StableHLO are available.
  *
  * Copyright (C) tsotchke
  * SPDX-License-Identifier: MIT
@@ -18,10 +25,12 @@ namespace xla {
 
 // ===== TensorType Implementation =====
 
+/// Create a scalar tensor type (rank 0, empty shape).
 TensorType TensorType::scalar(ElementType elem) {
     return TensorType{.element_type = elem, .shape = {}, .is_dynamic = false};
 }
 
+/// Create a 1-D vector tensor type.
 TensorType TensorType::vector(ElementType elem, int64_t size) {
     return TensorType{
         .element_type = elem,
@@ -30,6 +39,7 @@ TensorType TensorType::vector(ElementType elem, int64_t size) {
     };
 }
 
+/// Create a 2-D matrix tensor type.
 TensorType TensorType::matrix(ElementType elem, int64_t rows, int64_t cols) {
     return TensorType{
         .element_type = elem,
@@ -38,6 +48,7 @@ TensorType TensorType::matrix(ElementType elem, int64_t rows, int64_t cols) {
     };
 }
 
+/// Create an N-D tensor type with arbitrary shape.
 TensorType TensorType::tensor(ElementType elem, std::vector<int64_t> shape) {
     bool dynamic = false;
     for (auto dim : shape) {
@@ -53,6 +64,7 @@ TensorType TensorType::tensor(ElementType elem, std::vector<int64_t> shape) {
     };
 }
 
+/// Return total number of elements, or -1 for dynamic tensors.
 int64_t TensorType::numElements() const {
     if (shape.empty()) return 1;  // Scalar
     if (is_dynamic) return -1;    // Unknown
@@ -65,18 +77,21 @@ int64_t TensorType::numElements() const {
     return total;
 }
 
+/// Return total size in bytes, or 0 for dynamic tensors.
 size_t TensorType::sizeInBytes() const {
     int64_t elems = numElements();
     if (elems < 0) return 0;  // Dynamic
     return static_cast<size_t>(elems) * XLATypes::elementSize(element_type);
 }
 
+/// Structural equality comparison.
 bool TensorType::operator==(const TensorType& other) const {
     return element_type == other.element_type &&
            shape == other.shape &&
            is_dynamic == other.is_dynamic;
 }
 
+/// Human-readable string representation, e.g. "f64[3, 4]".
 std::string TensorType::toString() const {
     std::ostringstream oss;
     oss << XLATypes::elementTypeName(element_type) << "[";
@@ -96,7 +111,8 @@ std::string TensorType::toString() const {
 
 class XLATypes::Impl {
 public:
-    // TODO: Add MLIR context reference in Phase 2
+    // Reserved for MLIR context reference when MLIR integration is active.
+    // In LLVM-direct mode, no MLIR state is needed.
 };
 
 XLATypes::XLATypes()
@@ -104,41 +120,57 @@ XLATypes::XLATypes()
 
 XLATypes::~XLATypes() = default;
 
-// ===== HoTT to XLA (Stubs) =====
+// ===== HoTT to XLA =====
 
+/// Convert a HoTT ParameterizedType to an XLA TensorType.
+/// In the current LLVM-direct mode, ParameterizedType is opaque to this
+/// translation unit. The default mapping returns an F64 scalar, which matches
+/// Eshkol's native numeric type. Full HoTT type extraction (extracting shape,
+/// rank, element type from the parameterized type) requires the MLIR path
+/// where HoTT types are fully resolved before lowering to StableHLO.
 std::optional<TensorType> XLATypes::fromHoTT(const ParameterizedType& hott_type) {
     (void)hott_type;
-    // STUB: Return a default tensor type for now
-    // Will be implemented when HoTT types are integrated
+    // Default: F64 scalar -- matches Eshkol's native double-precision numeric type.
+    // Full HoTT integration extracts shape/rank/element from the parameterized type
+    // and is activated with the MLIR compilation path.
     return TensorType::scalar(ElementType::F64);
 }
 
+/// Map an Eshkol type tag to an XLA element type.
+/// Based on Eshkol's tagged value type system.
 ElementType XLATypes::elementTypeFromTag(uint8_t type_tag) {
-    // Based on Eshkol tagged value types
-    // 1 = int64, 2 = double, etc.
     switch (type_tag) {
         case 1: return ElementType::I64;   // Integer
         case 2: return ElementType::F64;   // Double
-        default: return ElementType::F64;  // Default to double
+        default: return ElementType::F64;  // Default to double (Eshkol's native numeric)
     }
 }
 
-// ===== XLA to MLIR (Stubs) =====
+// ===== XLA to MLIR =====
 
+/// Convert an XLA TensorType to an MLIR RankedTensorType.
+/// Returns nullptr when MLIR is not available. The LLVM-direct codegen path
+/// handles all tensor type mapping natively through LLVM IR types, so MLIR
+/// type conversion is only needed when compiling via the StableHLO pipeline.
 void* XLATypes::toMLIRType(const TensorType& xla_type) {
     (void)xla_type;
-    // STUB: Will be implemented with MLIR integration
+    // MLIR not available in LLVM-direct mode. Returns nullptr to signal
+    // that the caller should use LLVM IR types directly.
     return nullptr;
 }
 
+/// Convert an XLA ElementType to an MLIR element type.
+/// Returns nullptr when MLIR is not available. Same rationale as toMLIRType.
 void* XLATypes::toMLIRElementType(ElementType elem) {
     (void)elem;
-    // STUB: Will be implemented with MLIR integration
+    // MLIR not available in LLVM-direct mode. Returns nullptr to signal
+    // that the caller should use LLVM IR types directly.
     return nullptr;
 }
 
 // ===== Utilities =====
 
+/// Return the size in bytes for a given element type.
 size_t XLATypes::elementSize(ElementType elem) {
     switch (elem) {
         case ElementType::F16:
@@ -163,9 +195,10 @@ size_t XLATypes::elementSize(ElementType elem) {
         case ElementType::U16:
             return 2;
     }
-    return 8;  // Default to 8 bytes
+    return 8;  // Default to 8 bytes (f64)
 }
 
+/// Return the canonical string name for an element type.
 std::string XLATypes::elementTypeName(ElementType elem) {
     switch (elem) {
         case ElementType::F16: return "f16";
@@ -187,9 +220,11 @@ std::string XLATypes::elementTypeName(ElementType elem) {
     return "unknown";
 }
 
+/// Compute the broadcast-compatible result shape for two tensor types.
+/// Follows NumPy-style broadcasting rules: dimensions are compared from
+/// the trailing end, and must be equal, 1, or dynamic to be compatible.
 std::vector<int64_t> XLATypes::broadcastShape(const TensorType& lhs,
                                                 const TensorType& rhs) {
-    // Implement NumPy-style broadcasting rules
     std::vector<int64_t> result;
 
     size_t max_rank = std::max(lhs.shape.size(), rhs.shape.size());
@@ -220,6 +255,7 @@ std::vector<int64_t> XLATypes::broadcastShape(const TensorType& lhs,
     return result;
 }
 
+/// Check if two tensor types are broadcast-compatible.
 bool XLATypes::areBroadcastCompatible(const TensorType& lhs,
                                         const TensorType& rhs) {
     return !broadcastShape(lhs, rhs).empty();

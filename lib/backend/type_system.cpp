@@ -63,22 +63,51 @@ void TypeSystem::createStructTypes() {
     dual_fields.push_back(double_type);  // derivative
     dual_number_type = llvm::StructType::create(context, dual_fields, "dual_number");
 
+    // Complex number struct type for signal processing and complex analysis
+    // struct eshkol_complex_number {
+    //     double real;        // Real component
+    //     double imag;        // Imaginary component
+    // }
+    std::vector<llvm::Type*> complex_fields;
+    complex_fields.push_back(double_type);  // real
+    complex_fields.push_back(double_type);  // imag
+    complex_number_type = llvm::StructType::create(context, complex_fields, "complex_number");
+
     // AD node struct type for reverse-mode automatic differentiation
+    // Matches ad_node_t in eshkol.h (15 fields total)
     // struct ad_node {
-    //     int32_t type;       // ad_node_type_t enum
-    //     double value;       // computed value
-    //     double gradient;    // accumulated gradient
-    //     ad_node* input1;    // first input (or null)
-    //     ad_node* input2;    // second input (or null)
-    //     size_t id;          // unique node ID
+    //     int32_t type;          // 0: ad_node_type_t enum
+    //     double value;          // 1: computed value (scalar)
+    //     double gradient;       // 2: accumulated gradient (scalar)
+    //     ad_node* input1;       // 3: first input (or null)
+    //     ad_node* input2;       // 4: second input (or null)
+    //     size_t id;             // 5: unique node ID
+    //     void* tensor_value;    // 6: tensor value ptr (null for scalar)
+    //     void* tensor_gradient; // 7: tensor gradient ptr (null for scalar)
+    //     ad_node* input3;       // 8: third input (e.g. V in attention)
+    //     ad_node* input4;       // 9: fourth input (e.g. mask)
+    //     void** saved_tensors;  // 10: array of saved tensors for backward
+    //     size_t num_saved;      // 11: number of saved tensors
+    //     [6 x i64] params;     // 12: operation params union (conv, attention, etc.)
+    //     int64_t* shape;        // 13: output shape
+    //     size_t ndim;           // 14: number of dimensions
     // }
     std::vector<llvm::Type*> ad_node_fields;
-    ad_node_fields.push_back(int32_type);  // type (enum, 4 bytes)
-    ad_node_fields.push_back(double_type); // value
-    ad_node_fields.push_back(double_type); // gradient
-    ad_node_fields.push_back(ptr_type);    // input1
-    ad_node_fields.push_back(ptr_type);    // input2
-    ad_node_fields.push_back(int64_type);  // id
+    ad_node_fields.push_back(int32_type);  // 0: type (enum, 4 bytes)
+    ad_node_fields.push_back(double_type); // 1: value
+    ad_node_fields.push_back(double_type); // 2: gradient
+    ad_node_fields.push_back(ptr_type);    // 3: input1
+    ad_node_fields.push_back(ptr_type);    // 4: input2
+    ad_node_fields.push_back(int64_type);  // 5: id
+    ad_node_fields.push_back(ptr_type);    // 6: tensor_value
+    ad_node_fields.push_back(ptr_type);    // 7: tensor_gradient
+    ad_node_fields.push_back(ptr_type);    // 8: input3
+    ad_node_fields.push_back(ptr_type);    // 9: input4
+    ad_node_fields.push_back(ptr_type);    // 10: saved_tensors
+    ad_node_fields.push_back(int64_type);  // 11: num_saved
+    ad_node_fields.push_back(llvm::ArrayType::get(int64_type, 6)); // 12: params union (6 x i64)
+    ad_node_fields.push_back(ptr_type);    // 13: shape
+    ad_node_fields.push_back(int64_type);  // 14: ndim
     ad_node_type = llvm::StructType::create(context, ad_node_fields, "ad_node");
 
     // Tensor struct type for N-dimensional arrays

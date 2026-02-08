@@ -75,6 +75,21 @@ math_test_outputs/
 *.backup
 a.out
 
+# Test artifacts (root-level)
+*_test.txt
+test_*.txt
+inline_test.txt
+port_test.txt
+simple_test.txt
+trace_test.txt
+
+# Package manager
+eshkol_deps/
+
+# VS Code extension build
+tools/vscode-eshkol/out/
+tools/vscode-eshkol/node_modules/
+
 #local specific files
 docs/private/*
 examples-dep/

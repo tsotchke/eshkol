@@ -160,6 +160,39 @@ public:
         const eshkol_ast_t* body
     );
 
+    // === Iterative Transform Query ===
+
+    /**
+     * Info about an active iterative transformation.
+     * Main codegen queries this to redirect self-calls in the body.
+     */
+    struct IterativeInfo {
+        llvm::Function* func = nullptr;
+        std::string func_name;
+        std::vector<llvm::AllocaInst*> param_allocas;
+        llvm::BasicBlock* loop_header = nullptr;
+        const eshkol_ast_t* body = nullptr;
+        bool active = false;
+    };
+
+    /**
+     * Get the active iterative transformation info.
+     * Returns info with active=false if no transformation is in progress.
+     */
+    const IterativeInfo& getIterativeInfo() const { return iterative_info_; }
+
+    /**
+     * Clear iterative transformation state after body codegen is complete.
+     */
+    void clearIterativeInfo() { iterative_info_ = {}; }
+
+    /**
+     * Generate a self-call redirect: store new args to allocas and branch to loop.
+     * Used by main codegen when it detects a self-call during iterative transform.
+     * @param new_args The new argument values for the recursive call
+     */
+    void emitIterativeSelfCall(const std::vector<llvm::Value*>& new_args);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
@@ -167,6 +200,9 @@ private:
 
     // Trampoline runtime function
     llvm::Function* trampoline_func_ = nullptr;
+
+    // Active iterative transformation state
+    IterativeInfo iterative_info_;
 
     // Helper to determine if an expression is the last in a sequence
     bool isLastInSequence(const eshkol_ast_t* expr, const eshkol_operations_t* parent) const;

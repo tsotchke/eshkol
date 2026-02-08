@@ -9,9 +9,9 @@
 
 // Version information
 #define ESHKOL_VERSION_MAJOR 1
-#define ESHKOL_VERSION_MINOR 0
+#define ESHKOL_VERSION_MINOR 1
 #define ESHKOL_VERSION_PATCH 0
-#define ESHKOL_VERSION_STRING "1.0.0-foundation"
+#define ESHKOL_VERSION_STRING "1.1.0-acceleration"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -72,7 +72,7 @@ typedef enum {
     ESHKOL_VALUE_CHAR        = 4,   // Unicode character
     ESHKOL_VALUE_SYMBOL      = 5,   // Interned symbol
     ESHKOL_VALUE_DUAL_NUMBER = 6,   // Forward-mode AD dual number
-    // Reserved: 7
+    ESHKOL_VALUE_COMPLEX     = 7,   // Complex number (real + imaginary)
 
     // ═══════════════════════════════════════════════════════════════════════
     // CONSOLIDATED POINTER TYPES (8-9) - subtype in object header
@@ -155,6 +155,17 @@ typedef struct eshkol_dual_number {
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 16,
                      "Dual number must be 16 bytes for cache efficiency");
 
+// Complex number for signal processing, FFT, and general complex analysis
+// Stores real and imaginary components as IEEE 754 double-precision floats
+typedef struct eshkol_complex_number {
+    double real;        // Real component (ℜ)
+    double imag;        // Imaginary component (𝕴)
+} eshkol_complex_number_t;
+
+// Compile-time size validation for complex numbers
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_complex_number_t) == 16,
+                     "Complex number must be 16 bytes for cache efficiency");
+
 // Helper functions for tagged value manipulation
 static inline eshkol_tagged_value_t eshkol_make_int64(int64_t val, bool exact) {
     eshkol_tagged_value_t result;
@@ -178,6 +189,15 @@ static inline eshkol_tagged_value_t eshkol_make_ptr(uint64_t ptr, uint8_t type) 
     eshkol_tagged_value_t result;
     result.type = type;
     result.flags = 0;
+    result.reserved = 0;
+    result.data.ptr_val = ptr;
+    return result;
+}
+
+static inline eshkol_tagged_value_t eshkol_make_complex(uint64_t ptr) {
+    eshkol_tagged_value_t result;
+    result.type = ESHKOL_VALUE_COMPLEX;
+    result.flags = ESHKOL_VALUE_INEXACT_FLAG;  // Complex numbers are always inexact
     result.reserved = 0;
     result.data.ptr_val = ptr;
     return result;
@@ -207,6 +227,7 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 #define ESHKOL_IS_CHAR_TYPE(type)        ((type) == ESHKOL_VALUE_CHAR)
 #define ESHKOL_IS_SYMBOL_TYPE(type)      ((type) == ESHKOL_VALUE_SYMBOL)
 #define ESHKOL_IS_DUAL_NUMBER_TYPE(type) ((type) == ESHKOL_VALUE_DUAL_NUMBER)
+#define ESHKOL_IS_COMPLEX_TYPE(type)     ((type) == ESHKOL_VALUE_COMPLEX)
 
 // Storage type checks - for cons cell setters that take int64 or double storage
 // INT64 storage: INT64, BOOL, CHAR, SYMBOL (types that use int_val in the union)

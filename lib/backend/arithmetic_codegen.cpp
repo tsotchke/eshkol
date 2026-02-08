@@ -22,11 +22,13 @@
 namespace eshkol {
 
 ArithmeticCodegen::ArithmeticCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged,
-                                     TensorCodegen& tensor, AutodiffCodegen& autodiff)
+                                     TensorCodegen& tensor, AutodiffCodegen& autodiff,
+                                     ComplexCodegen& complex)
     : ctx_(ctx)
     , tagged_(tagged)
     , tensor_(tensor)
-    , autodiff_(autodiff) {
+    , autodiff_(autodiff)
+    , complex_(complex) {
     eshkol_debug("ArithmeticCodegen initialized with all dependencies");
 }
 
@@ -136,10 +138,51 @@ llvm::Value* ArithmeticCodegen::isADNode(llvm::Value* operand, llvm::Value* base
     return phi;
 }
 
+// === Complex Number Promotion Helper ===
+
+llvm::Value* ArithmeticCodegen::convertToComplex(llvm::Value* operand, llvm::Value* is_complex,
+                                                   llvm::Value* base_type) {
+    // If already complex, unpack and return the struct {double, double}.
+    // If int/double, promote to complex(value, 0.0).
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* is_complex_bb = llvm::BasicBlock::Create(ctx_.context(), "cvt_is_complex", func);
+    llvm::BasicBlock* not_complex_bb = llvm::BasicBlock::Create(ctx_.context(), "cvt_not_complex", func);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "cvt_complex_merge", func);
+
+    ctx_.builder().CreateCondBr(is_complex, is_complex_bb, not_complex_bb);
+
+    // Already complex: unpack
+    ctx_.builder().SetInsertPoint(is_complex_bb);
+    llvm::Value* existing_complex = complex_.unpackComplexFromTagged(operand);
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* is_complex_exit = ctx_.builder().GetInsertBlock();
+
+    // Not complex: promote real/int to complex(value, 0.0)
+    ctx_.builder().SetInsertPoint(not_complex_bb);
+    llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* as_double = ctx_.builder().CreateSelect(is_double,
+        tagged_.unpackDouble(operand),
+        ctx_.builder().CreateSIToFP(tagged_.unpackInt64(operand), ctx_.doubleType()));
+    llvm::Value* zero_imag = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* promoted_complex = complex_.createComplex(as_double, zero_imag);
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* not_complex_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge — result is a complex struct {double, double}, not a pointer
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.complexNumberType(), 2, "complex_phi");
+    phi->addIncoming(existing_complex, is_complex_exit);
+    phi->addIncoming(promoted_complex, not_complex_exit);
+
+    return phi;
+}
+
 // === Polymorphic Addition ===
 
 llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
+        eshkol_error("arithmetic: null operand in add (left=%p, right=%p)", (void*)left, (void*)right);
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
@@ -171,6 +214,8 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
     llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "add_ad", func);
     llvm::BasicBlock* check_dual = llvm::BasicBlock::Create(ctx_.context(), "add_check_dual", func);
     llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "add_dual", func);
+    llvm::BasicBlock* check_complex = llvm::BasicBlock::Create(ctx_.context(), "add_check_complex", func);
+    llvm::BasicBlock* complex_path = llvm::BasicBlock::Create(ctx_.context(), "add_complex", func);
     llvm::BasicBlock* check_double = llvm::BasicBlock::Create(ctx_.context(), "add_check_double", func);
     llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "add_double", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "add_int", func);
@@ -247,7 +292,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
     llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
     llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
-    ctx_.builder().CreateCondBr(any_dual, dual_path, check_double);
+    ctx_.builder().CreateCondBr(any_dual, dual_path, check_complex);
 
     // Dual number path
     ctx_.builder().SetInsertPoint(dual_path);
@@ -261,6 +306,24 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
     llvm::Value* dual_tagged = autodiff_.packDualToTagged(dual_result);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
+
+    // Check for complex numbers
+    ctx_.builder().SetInsertPoint(check_complex);
+    llvm::Value* left_is_complex = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::Value* right_is_complex = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::Value* any_complex = ctx_.builder().CreateOr(left_is_complex, right_is_complex);
+    ctx_.builder().CreateCondBr(any_complex, complex_path, check_double);
+
+    // Complex number path
+    ctx_.builder().SetInsertPoint(complex_path);
+    llvm::Value* left_z = convertToComplex(left, left_is_complex, left_base);
+    llvm::Value* right_z = convertToComplex(right, right_is_complex, right_base);
+    llvm::Value* complex_sum = complex_.complexAdd(left_z, right_z);
+    llvm::Value* complex_tagged = complex_.packComplexToTagged(complex_sum);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* complex_exit = ctx_.builder().GetInsertBlock();
 
     // Check for doubles
     ctx_.builder().SetInsertPoint(check_double);
@@ -293,10 +356,11 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
     // Merge all paths
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5, "add_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 6, "add_result");
     phi->addIncoming(vec_result, vector_exit);
     phi->addIncoming(ad_result, ad_exit);
     phi->addIncoming(dual_tagged, dual_exit);
+    phi->addIncoming(complex_tagged, complex_exit);
     phi->addIncoming(dbl_tagged, double_path);
     phi->addIncoming(int_tagged, int_path);
 
@@ -307,6 +371,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
 llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
+        eshkol_error("arithmetic: null operand in sub (left=%p, right=%p)", (void*)left, (void*)right);
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
@@ -338,6 +403,8 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
     llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "sub_ad", func);
     llvm::BasicBlock* check_dual = llvm::BasicBlock::Create(ctx_.context(), "sub_check_dual", func);
     llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "sub_dual", func);
+    llvm::BasicBlock* check_complex = llvm::BasicBlock::Create(ctx_.context(), "sub_check_complex", func);
+    llvm::BasicBlock* complex_path = llvm::BasicBlock::Create(ctx_.context(), "sub_complex", func);
     llvm::BasicBlock* check_double = llvm::BasicBlock::Create(ctx_.context(), "sub_check_double", func);
     llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "sub_double", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "sub_int", func);
@@ -414,7 +481,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
     llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
     llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
-    ctx_.builder().CreateCondBr(any_dual, dual_path, check_double);
+    ctx_.builder().CreateCondBr(any_dual, dual_path, check_complex);
 
     // Dual number path
     ctx_.builder().SetInsertPoint(dual_path);
@@ -428,6 +495,24 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
     llvm::Value* dual_tagged = autodiff_.packDualToTagged(dual_result);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
+
+    // Check for complex numbers
+    ctx_.builder().SetInsertPoint(check_complex);
+    llvm::Value* left_is_complex = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::Value* right_is_complex = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::Value* any_complex = ctx_.builder().CreateOr(left_is_complex, right_is_complex);
+    ctx_.builder().CreateCondBr(any_complex, complex_path, check_double);
+
+    // Complex number path
+    ctx_.builder().SetInsertPoint(complex_path);
+    llvm::Value* left_z = convertToComplex(left, left_is_complex, left_base);
+    llvm::Value* right_z = convertToComplex(right, right_is_complex, right_base);
+    llvm::Value* complex_diff = complex_.complexSub(left_z, right_z);
+    llvm::Value* complex_tagged = complex_.packComplexToTagged(complex_diff);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* complex_exit = ctx_.builder().GetInsertBlock();
 
     // Check for doubles
     ctx_.builder().SetInsertPoint(check_double);
@@ -460,10 +545,11 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
     // Merge all paths
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5, "sub_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 6, "sub_result");
     phi->addIncoming(vec_result, vector_exit);
     phi->addIncoming(ad_result, ad_exit);
     phi->addIncoming(dual_tagged, dual_exit);
+    phi->addIncoming(complex_tagged, complex_exit);
     phi->addIncoming(dbl_tagged, double_path);
     phi->addIncoming(int_tagged, int_path);
 
@@ -474,6 +560,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
 llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
+        eshkol_error("arithmetic: null operand in mul (left=%p, right=%p)", (void*)left, (void*)right);
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
@@ -505,6 +592,8 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
     llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "mul_ad", func);
     llvm::BasicBlock* check_dual = llvm::BasicBlock::Create(ctx_.context(), "mul_check_dual", func);
     llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "mul_dual", func);
+    llvm::BasicBlock* check_complex = llvm::BasicBlock::Create(ctx_.context(), "mul_check_complex", func);
+    llvm::BasicBlock* complex_path = llvm::BasicBlock::Create(ctx_.context(), "mul_complex", func);
     llvm::BasicBlock* check_double = llvm::BasicBlock::Create(ctx_.context(), "mul_check_double", func);
     llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "mul_double", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "mul_int", func);
@@ -581,7 +670,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
     llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
     llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
-    ctx_.builder().CreateCondBr(any_dual, dual_path, check_double);
+    ctx_.builder().CreateCondBr(any_dual, dual_path, check_complex);
 
     // Dual number path
     ctx_.builder().SetInsertPoint(dual_path);
@@ -595,6 +684,24 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
     llvm::Value* dual_tagged = autodiff_.packDualToTagged(dual_result);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
+
+    // Check for complex numbers
+    ctx_.builder().SetInsertPoint(check_complex);
+    llvm::Value* left_is_complex = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::Value* right_is_complex = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::Value* any_complex = ctx_.builder().CreateOr(left_is_complex, right_is_complex);
+    ctx_.builder().CreateCondBr(any_complex, complex_path, check_double);
+
+    // Complex number path
+    ctx_.builder().SetInsertPoint(complex_path);
+    llvm::Value* left_z = convertToComplex(left, left_is_complex, left_base);
+    llvm::Value* right_z = convertToComplex(right, right_is_complex, right_base);
+    llvm::Value* complex_prod = complex_.complexMul(left_z, right_z);
+    llvm::Value* complex_tagged = complex_.packComplexToTagged(complex_prod);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* complex_exit = ctx_.builder().GetInsertBlock();
 
     // Check for doubles
     ctx_.builder().SetInsertPoint(check_double);
@@ -627,10 +734,11 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
     // Merge all paths
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5, "mul_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 6, "mul_result");
     phi->addIncoming(vec_result, vector_exit);
     phi->addIncoming(ad_result, ad_exit);
     phi->addIncoming(dual_tagged, dual_exit);
+    phi->addIncoming(complex_tagged, complex_exit);
     phi->addIncoming(dbl_tagged, double_path);
     phi->addIncoming(int_tagged, int_path);
 
@@ -641,6 +749,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
 llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
+        eshkol_error("arithmetic: null operand in div (left=%p, right=%p)", (void*)left, (void*)right);
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
@@ -672,6 +781,8 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "div_ad", func);
     llvm::BasicBlock* check_dual = llvm::BasicBlock::Create(ctx_.context(), "div_check_dual", func);
     llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "div_dual", func);
+    llvm::BasicBlock* check_complex = llvm::BasicBlock::Create(ctx_.context(), "div_check_complex", func);
+    llvm::BasicBlock* complex_path = llvm::BasicBlock::Create(ctx_.context(), "div_complex", func);
     llvm::BasicBlock* check_double = llvm::BasicBlock::Create(ctx_.context(), "div_check_double", func);
     llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "div_double", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "div_int", func);
@@ -748,7 +859,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
     llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
-    ctx_.builder().CreateCondBr(any_dual, dual_path, check_double);
+    ctx_.builder().CreateCondBr(any_dual, dual_path, check_complex);
 
     // Dual number path
     ctx_.builder().SetInsertPoint(dual_path);
@@ -762,6 +873,24 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     llvm::Value* dual_tagged = autodiff_.packDualToTagged(dual_result);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
+
+    // Check for complex numbers
+    ctx_.builder().SetInsertPoint(check_complex);
+    llvm::Value* left_is_complex = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::Value* right_is_complex = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::Value* any_complex = ctx_.builder().CreateOr(left_is_complex, right_is_complex);
+    ctx_.builder().CreateCondBr(any_complex, complex_path, check_double);
+
+    // Complex number path (uses Smith's formula for overflow safety)
+    ctx_.builder().SetInsertPoint(complex_path);
+    llvm::Value* left_z = convertToComplex(left, left_is_complex, left_base);
+    llvm::Value* right_z = convertToComplex(right, right_is_complex, right_base);
+    llvm::Value* complex_quot = complex_.complexDiv(left_z, right_z);
+    llvm::Value* complex_tagged = complex_.packComplexToTagged(complex_quot);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* complex_exit = ctx_.builder().GetInsertBlock();
 
     // Check for doubles
     ctx_.builder().SetInsertPoint(check_double);
@@ -838,10 +967,11 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
     // Merge all paths
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5, "div_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 6, "div_result");
     phi->addIncoming(vec_result, vector_exit);
     phi->addIncoming(ad_result, ad_exit);
     phi->addIncoming(dual_tagged, dual_exit);
+    phi->addIncoming(complex_tagged, complex_exit);
     phi->addIncoming(dbl_tagged, dbl_safe_bb);
     phi->addIncoming(int_tagged, int_safe_bb);
 
@@ -882,14 +1012,29 @@ llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
     llvm::Value* type_tag = tagged_.getType(operand);
     llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
+    llvm::Value* is_complex = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
     llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* complex_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_complex", func);
+    llvm::BasicBlock* check_double_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_check_double", func);
     llvm::BasicBlock* double_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_double", func);
     llvm::BasicBlock* int_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_int", func);
     llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_merge", func);
 
+    ctx_.builder().CreateCondBr(is_complex, complex_bb, check_double_bb);
+
+    // Complex negation
+    ctx_.builder().SetInsertPoint(complex_bb);
+    llvm::Value* z = complex_.unpackComplexFromTagged(operand);
+    llvm::Value* neg_z = complex_.complexNeg(z);
+    llvm::Value* complex_result = complex_.packComplexToTagged(neg_z);
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* complex_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(check_double_bb);
     ctx_.builder().CreateCondBr(is_double, double_bb, int_bb);
 
     // Double negation
@@ -910,7 +1055,8 @@ llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_bb);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "neg_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "neg_result");
+    phi->addIncoming(complex_result, complex_exit);
     phi->addIncoming(dbl_result, double_exit);
     phi->addIncoming(int_result, int_exit);
 
@@ -976,7 +1122,10 @@ llvm::Value* ArithmeticCodegen::doubleToInt(llvm::Value* double_tagged) {
 }
 
 llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
-    if (!tagged_val) return nullptr;
+    if (!tagged_val) {
+        eshkol_error("arithmetic: null operand in extractAsDouble");
+        return nullptr;
+    }
 
     // Handle raw double - return as-is
     if (tagged_val->getType()->isDoubleTy()) return tagged_val;
@@ -1008,6 +1157,7 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
 llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
                                          const std::string& operation) {
     if (!left || !right) {
+        eshkol_error("arithmetic: null operand in compare/%s (left=%p, right=%p)", operation.c_str(), (void*)left, (void*)right);
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
@@ -1207,6 +1357,7 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
 
 llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
+        eshkol_error("arithmetic: null operand in min (left=%p, right=%p)", (void*)left, (void*)right);
         return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
     }
 
@@ -1231,6 +1382,7 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
 
 llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
+        eshkol_error("arithmetic: null operand in max (left=%p, right=%p)", (void*)left, (void*)right);
         return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
     }
 

@@ -955,6 +955,163 @@ llvm::Value* AutodiffCodegen::recordADNodeUnary(uint32_t op_type, llvm::Value* i
     return node_ptr;
 }
 
+// === Tensor AD Node Recording ===
+
+llvm::Value* AutodiffCodegen::recordADNodeTensor(
+    uint32_t op_type,
+    llvm::Value* input1, llvm::Value* input2,
+    llvm::Value* input3, llvm::Value* input4,
+    llvm::Value* tensor_result,
+    llvm::Value* saved_tensors, llvm::Value* num_saved,
+    llvm::Value* shape, llvm::Value* ndim)
+{
+    llvm::StructType* ad_type = ctx_.adNodeType();
+    auto null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    auto zero_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    auto zero_f64 = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+
+    // Allocate new AD node
+    llvm::Value* arena_ptr = getArenaPtr();
+    if (!arena_ptr) return nullptr;
+
+    llvm::Function* alloc_func = mem_.getArenaAllocateAdNodeWithHeader();
+    if (!alloc_func) return nullptr;
+
+    llvm::Value* node_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr});
+
+    // Field 0: type
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int32Type(), op_type),
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 0));
+
+    // Field 1: value = 0.0 (tensor ops use tensor_value instead)
+    ctx_.builder().CreateStore(zero_f64,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 1));
+
+    // Field 2: gradient = 0.0
+    ctx_.builder().CreateStore(zero_f64,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 2));
+
+    // Field 3: input1
+    ctx_.builder().CreateStore(input1 ? input1 : null_ptr,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 3));
+
+    // Field 4: input2
+    ctx_.builder().CreateStore(input2 ? input2 : null_ptr,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 4));
+
+    // Field 5: id
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int64Type(), next_node_id_++),
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 5));
+
+    // Field 6: tensor_value
+    ctx_.builder().CreateStore(tensor_result ? tensor_result : null_ptr,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 6));
+
+    // Field 7: tensor_gradient = null (allocated during backward)
+    ctx_.builder().CreateStore(null_ptr,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 7));
+
+    // Field 8: input3
+    ctx_.builder().CreateStore(input3 ? input3 : null_ptr,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 8));
+
+    // Field 9: input4
+    ctx_.builder().CreateStore(input4 ? input4 : null_ptr,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 9));
+
+    // Field 10: saved_tensors
+    ctx_.builder().CreateStore(saved_tensors ? saved_tensors : null_ptr,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 10));
+
+    // Field 11: num_saved
+    ctx_.builder().CreateStore(num_saved ? num_saved : zero_i64,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 11));
+
+    // Field 12: params (zero-initialized array, caller sets specific values)
+    llvm::ArrayType* params_type = llvm::ArrayType::get(ctx_.int64Type(), 6);
+    llvm::Value* params_ptr = ctx_.builder().CreateStructGEP(ad_type, node_ptr, 12);
+    for (unsigned i = 0; i < 6; i++) {
+        llvm::Value* elem_ptr = ctx_.builder().CreateConstGEP2_32(params_type, params_ptr, 0, i);
+        ctx_.builder().CreateStore(zero_i64, elem_ptr);
+    }
+
+    // Field 13: shape
+    ctx_.builder().CreateStore(shape ? shape : null_ptr,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 13));
+
+    // Field 14: ndim
+    ctx_.builder().CreateStore(ndim ? ndim : zero_i64,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 14));
+
+    // Add to tape
+    llvm::GlobalVariable* tape_global = ctx_.currentAdTape();
+    if (tape_global) {
+        llvm::Value* tape_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), tape_global);
+        llvm::Value* tape_not_null = ctx_.builder().CreateICmpNE(
+            ctx_.builder().CreatePtrToInt(tape_ptr, ctx_.int64Type()),
+            llvm::ConstantInt::get(ctx_.int64Type(), 0));
+
+        llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* add_block = llvm::BasicBlock::Create(
+            ctx_.context(), "add_tensor_to_tape", current_func);
+        llvm::BasicBlock* skip_block = llvm::BasicBlock::Create(
+            ctx_.context(), "skip_tensor_tape", current_func);
+
+        ctx_.builder().CreateCondBr(tape_not_null, add_block, skip_block);
+
+        ctx_.builder().SetInsertPoint(add_block);
+        llvm::Function* add_node_func = mem_.getArenaTapeAddNode();
+        if (add_node_func) {
+            ctx_.builder().CreateCall(add_node_func, {tape_ptr, node_ptr});
+        }
+        ctx_.builder().CreateBr(skip_block);
+
+        ctx_.builder().SetInsertPoint(skip_block);
+    }
+
+    return node_ptr;
+}
+
+// === Tensor Gradient Accumulation ===
+
+void AutodiffCodegen::accumulateTensorGradient(
+    llvm::Value* node_ptr, llvm::Value* grad_tensor, llvm::Value* num_elements)
+{
+    if (!node_ptr || !grad_tensor || !num_elements) return;
+
+    // Declare the runtime function if not already declared
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getModule();
+    llvm::Function* accum_func = mod->getFunction("eshkol_accumulate_tensor_grad");
+    if (!accum_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()},
+            false);
+        accum_func = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage,
+            "eshkol_accumulate_tensor_grad", mod);
+    }
+
+    // Null check on node_ptr
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* accum_block = llvm::BasicBlock::Create(
+        ctx_.context(), "accum_tensor_grad", current_func);
+    llvm::BasicBlock* skip_block = llvm::BasicBlock::Create(
+        ctx_.context(), "skip_tensor_grad", current_func);
+
+    llvm::Value* is_null = ctx_.builder().CreateICmpEQ(
+        node_ptr, llvm::ConstantPointerNull::get(ctx_.ptrType()));
+    ctx_.builder().CreateCondBr(is_null, skip_block, accum_block);
+
+    ctx_.builder().SetInsertPoint(accum_block);
+    ctx_.builder().CreateCall(accum_func, {node_ptr, grad_tensor, num_elements});
+    ctx_.builder().CreateBr(skip_block);
+
+    ctx_.builder().SetInsertPoint(skip_block);
+}
+
 llvm::Value* AutodiffCodegen::createADVariable(llvm::Value* value, size_t var_index) {
     if (!value) return nullptr;
 
@@ -1017,14 +1174,16 @@ llvm::Value* AutodiffCodegen::loadNodeInput2(llvm::Value* node_ptr) {
 }
 
 llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
-    // This requires AST codegen callback - use fallback for now
-    eshkol_warn("AutodiffCodegen::gradient requires AST codegen - using fallback");
+    // Gradient computation is handled directly in llvm_codegen.cpp via the gradient operator.
+    // This method exists for API completeness but is not used in the current codegen pipeline.
+    eshkol_error("AutodiffCodegen::gradient called directly - use gradient operator in main codegen instead");
     return tagged_.packNull();
 }
 
 llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
-    // This requires AST codegen callback - use fallback for now
-    eshkol_warn("AutodiffCodegen::jacobian requires AST codegen - using fallback");
+    // Jacobian computation is handled directly in llvm_codegen.cpp via the jacobian operator.
+    // This method exists for API completeness but is not used in the current codegen pipeline.
+    eshkol_error("AutodiffCodegen::jacobian called directly - use jacobian operator in main codegen instead");
     return tagged_.packNull();
 }
 
@@ -1298,6 +1457,17 @@ void AutodiffCodegen::backpropagate(llvm::Value* tape, llvm::Value* output_node)
     // Initialize output gradient = 1.0 (seed for backpropagation)
     storeNodeGradient(output_node, llvm::ConstantFP::get(ctx_.doubleType(), 1.0));
 
+    // Seed tensor gradient: if the output node has tensor_value set,
+    // allocate an all-ones tensor gradient (dL/dL = 1 for every element).
+    // This is a no-op for scalar nodes (tensor_value == NULL).
+    {
+        llvm::FunctionType* seed_type = llvm::FunctionType::get(
+            ctx_.voidType(), {ctx_.ptrType()}, false);
+        llvm::FunctionCallee seed_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_seed_tensor_gradient", seed_type);
+        ctx_.builder().CreateCall(seed_fn, {output_node});
+    }
+
     // Get number of nodes in tape (runtime value, not compile-time constant)
     llvm::Function* get_count_func = mem_.getArenaTapeGetNodeCount();
     if (!get_count_func) {
@@ -1397,16 +1567,50 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     // Branch on operation type to apply correct gradient rules
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
-    // Create blocks for each operation type
+    // Create done block first (referenced by tensor dispatch path below)
+    llvm::BasicBlock* done_block = llvm::BasicBlock::Create(ctx_.context(), "grad_done", current_func);
+
+    // === TENSOR GRADIENT FAST PATH ===
+    // If tensor_gradient (field 7) is non-null, the node was recorded as a tensor
+    // operation via recordADNodeTensor. Dispatch to the C runtime backward function
+    // which reads saved_tensors, params, shape/ndim and calls the appropriate
+    // eshkol_backward_* function (conv2d, matmul, attention, etc.)
+    {
+        llvm::Value* tg_field_ptr = ctx_.builder().CreateStructGEP(
+            ad_node_type, node_ptr, TypeSystem::AD_NODE_TENSOR_GRADIENT_IDX);
+        llvm::Value* tg_val = ctx_.builder().CreateLoad(ctx_.ptrType(), tg_field_ptr);
+        llvm::Value* has_tensor = ctx_.builder().CreateICmpNE(tg_val,
+            llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context())));
+
+        llvm::BasicBlock* tensor_dispatch_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "tensor_backward_dispatch", current_func);
+        llvm::BasicBlock* scalar_dispatch_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "scalar_backward_dispatch", current_func);
+
+        ctx_.builder().CreateCondBr(has_tensor, tensor_dispatch_bb, scalar_dispatch_bb);
+
+        // Tensor path: call runtime dispatcher that handles all tensor ops
+        ctx_.builder().SetInsertPoint(tensor_dispatch_bb);
+        llvm::FunctionType* dispatch_type = llvm::FunctionType::get(
+            ctx_.voidType(), {ctx_.ptrType()}, false);
+        llvm::FunctionCallee dispatch_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_tensor_backward_dispatch", dispatch_type);
+        ctx_.builder().CreateCall(dispatch_fn, {node_ptr});
+        ctx_.builder().CreateBr(done_block);
+
+        // Continue with scalar dispatch for nodes without tensor gradients
+        ctx_.builder().SetInsertPoint(scalar_dispatch_bb);
+    }
+
+    // Create blocks for each scalar operation type
     llvm::BasicBlock* add_block = llvm::BasicBlock::Create(ctx_.context(), "grad_add", current_func);
     llvm::BasicBlock* sub_block = llvm::BasicBlock::Create(ctx_.context(), "grad_sub", current_func);
     llvm::BasicBlock* mul_block = llvm::BasicBlock::Create(ctx_.context(), "grad_mul", current_func);
     llvm::BasicBlock* div_block = llvm::BasicBlock::Create(ctx_.context(), "grad_div", current_func);
     llvm::BasicBlock* sin_block = llvm::BasicBlock::Create(ctx_.context(), "grad_sin", current_func);
     llvm::BasicBlock* cos_block = llvm::BasicBlock::Create(ctx_.context(), "grad_cos", current_func);
-    llvm::BasicBlock* done_block = llvm::BasicBlock::Create(ctx_.context(), "grad_done", current_func);
 
-    // Switch on node type
+    // Switch on node type (scalar backward passes)
     // For ADD (type=2): gradient flows equally to both inputs
     llvm::Value* is_add = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 2));
 
@@ -1721,24 +1925,29 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     }
     ctx_.builder().CreateBr(done_block);
 
-    // Check for SOFTMAX (type=14) - Note: Softmax gradient requires full Jacobian for vectors
-    // For scalar case, we simplify to: dL/dx = dL/dz * softmax(x) * (1 - softmax(x))
+    // Check for SOFTMAX (type=14) - Softmax Jacobian: diag(s) - s*s^T
+    // Backward: grad_input = s * (grad - dot(grad, s))
     ctx_.builder().SetInsertPoint(check_softmax);
     llvm::Value* is_softmax = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 14));
     llvm::BasicBlock* check_tanh = llvm::BasicBlock::Create(ctx_.context(), "check_tanh", current_func);
     ctx_.builder().CreateCondBr(is_softmax, softmax_block, check_tanh);
 
-    // SOFTMAX (scalar approximation): Similar to sigmoid
+    // SOFTMAX backward: grad_input = s * (grad - dot(grad, s))
+    // where s = softmax(x) is the forward output stored in the node value.
+    // Derivation: Jacobian of softmax is diag(s) - s*s^T,
+    // so grad_input_i = sum_j (s_i * delta_ij - s_i * s_j) * grad_j
+    //                 = s_i * grad_i - s_i * sum_j(s_j * grad_j)
+    //                 = s_i * (grad_i - dot(grad, s))
     ctx_.builder().SetInsertPoint(softmax_block);
     if (input1) {
-        // For full tensor softmax, this would need to be more complex
-        // For now, treat as scalar softmax = sigmoid
         llvm::Value* node_val_ptr = ctx_.builder().CreateStructGEP(ad_node_type, node_ptr, 1);
-        llvm::Value* softmax_x = ctx_.builder().CreateLoad(ctx_.doubleType(), node_val_ptr);
-        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-        llvm::Value* one_minus = ctx_.builder().CreateFSub(one, softmax_x);
-        llvm::Value* softmax_deriv = ctx_.builder().CreateFMul(softmax_x, one_minus);
-        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, softmax_deriv);
+        llvm::Value* s = ctx_.builder().CreateLoad(ctx_.doubleType(), node_val_ptr);
+        // dot(grad, s) - for scalar case this is just grad * s
+        llvm::Value* dot_grad_s = ctx_.builder().CreateFMul(node_grad, s);
+        // grad - dot(grad, s)
+        llvm::Value* grad_minus_dot = ctx_.builder().CreateFSub(node_grad, dot_grad_s);
+        // s * (grad - dot(grad, s))
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(s, grad_minus_dot);
         accumulateGradient(input1, grad_input);
     }
     ctx_.builder().CreateBr(done_block);
@@ -1978,10 +2187,10 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     // Check for MIN (type=45)
     ctx_.builder().SetInsertPoint(check_min);
     llvm::Value* is_min = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 45));
-    ctx_.builder().CreateCondBr(is_min, min_block, done_block); // Default to done for unknown types
+    llvm::BasicBlock* check_conv2d = llvm::BasicBlock::Create(ctx_.context(), "check_conv2d", current_func);
+    ctx_.builder().CreateCondBr(is_min, min_block, check_conv2d);
 
     // MIN: dL/dx = dL/dz if x < y, dL/dy = dL/dz if y <= x
-    // Gradient goes entirely to the smaller input
     ctx_.builder().SetInsertPoint(min_block);
     if (input1 && input2) {
         llvm::Value* input1_val = loadNodeValue(input1);
@@ -1992,6 +2201,423 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
         llvm::Value* grad_input2 = ctx_.builder().CreateSelect(cmp, zero, node_grad);
         accumulateGradient(input1, grad_input1);
         accumulateGradient(input2, grad_input2);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // ===== TENSOR OPERATION SCALAR FALLBACKS =====
+    // These scalar approximations handle tensor op types (19-32) when
+    // tensor_gradient is NULL (scalar mode). When tensor_gradient is set,
+    // the tensor fast path above dispatches to eshkol_tensor_backward_dispatch()
+    // which calls the proper runtime backward functions with full tensor data.
+
+    // Create blocks for all new operation types
+    llvm::BasicBlock* conv2d_block = llvm::BasicBlock::Create(ctx_.context(), "grad_conv2d", current_func);
+    llvm::BasicBlock* maxpool_block = llvm::BasicBlock::Create(ctx_.context(), "grad_maxpool", current_func);
+    llvm::BasicBlock* avgpool_block = llvm::BasicBlock::Create(ctx_.context(), "grad_avgpool", current_func);
+    llvm::BasicBlock* batchnorm_block = llvm::BasicBlock::Create(ctx_.context(), "grad_batchnorm", current_func);
+    llvm::BasicBlock* layernorm_block = llvm::BasicBlock::Create(ctx_.context(), "grad_layernorm", current_func);
+    llvm::BasicBlock* transpose_block = llvm::BasicBlock::Create(ctx_.context(), "grad_transpose", current_func);
+    llvm::BasicBlock* reshape_block = llvm::BasicBlock::Create(ctx_.context(), "grad_reshape", current_func);
+    llvm::BasicBlock* attention_block = llvm::BasicBlock::Create(ctx_.context(), "grad_attention", current_func);
+    llvm::BasicBlock* mha_block = llvm::BasicBlock::Create(ctx_.context(), "grad_mha", current_func);
+    llvm::BasicBlock* posenc_block = llvm::BasicBlock::Create(ctx_.context(), "grad_posenc", current_func);
+    llvm::BasicBlock* embedding_block = llvm::BasicBlock::Create(ctx_.context(), "grad_embedding", current_func);
+    llvm::BasicBlock* hyp_dist_block = llvm::BasicBlock::Create(ctx_.context(), "grad_hyp_dist", current_func);
+    llvm::BasicBlock* poincare_exp_block = llvm::BasicBlock::Create(ctx_.context(), "grad_poincare_exp", current_func);
+    llvm::BasicBlock* poincare_log_block = llvm::BasicBlock::Create(ctx_.context(), "grad_poincare_log", current_func);
+    llvm::BasicBlock* tangent_proj_block = llvm::BasicBlock::Create(ctx_.context(), "grad_tangent_proj", current_func);
+    llvm::BasicBlock* geodesic_attn_block = llvm::BasicBlock::Create(ctx_.context(), "grad_geodesic_attn", current_func);
+    llvm::BasicBlock* mobius_add_block = llvm::BasicBlock::Create(ctx_.context(), "grad_mobius_add", current_func);
+    llvm::BasicBlock* mobius_matmul_block = llvm::BasicBlock::Create(ctx_.context(), "grad_mobius_matmul", current_func);
+    llvm::BasicBlock* gyrovector_block = llvm::BasicBlock::Create(ctx_.context(), "grad_gyrovector", current_func);
+
+    // --- CONV2D (type=19): dL/d_input ≈ grad (scalar approx) ---
+    ctx_.builder().SetInsertPoint(check_conv2d);
+    llvm::Value* is_conv2d = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 19));
+    llvm::BasicBlock* check_maxpool = llvm::BasicBlock::Create(ctx_.context(), "check_maxpool", current_func);
+    ctx_.builder().CreateCondBr(is_conv2d, conv2d_block, check_maxpool);
+
+    ctx_.builder().SetInsertPoint(conv2d_block);
+    // Conv2D backward: dL/d_input = conv_transpose(grad, kernel), dL/d_kernel = conv(input, grad)
+    // Scalar approximation: pass gradient through to input (identity in scalar case)
+    if (input1) accumulateGradient(input1, node_grad);
+    if (input2) accumulateGradient(input2, node_grad);
+    ctx_.builder().CreateBr(done_block);
+
+    // --- MAXPOOL2D (type=20): gradient through max index ---
+    ctx_.builder().SetInsertPoint(check_maxpool);
+    llvm::Value* is_maxpool = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 20));
+    llvm::BasicBlock* check_avgpool = llvm::BasicBlock::Create(ctx_.context(), "check_avgpool", current_func);
+    ctx_.builder().CreateCondBr(is_maxpool, maxpool_block, check_avgpool);
+
+    ctx_.builder().SetInsertPoint(maxpool_block);
+    // MaxPool backward: gradient flows only through saved max indices
+    // Scalar approximation: pass gradient to input (the max value was the input)
+    if (input1) accumulateGradient(input1, node_grad);
+    ctx_.builder().CreateBr(done_block);
+
+    // --- AVGPOOL2D (type=21): gradient divided by pool size ---
+    ctx_.builder().SetInsertPoint(check_avgpool);
+    llvm::Value* is_avgpool = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 21));
+    llvm::BasicBlock* check_batchnorm = llvm::BasicBlock::Create(ctx_.context(), "check_batchnorm", current_func);
+    ctx_.builder().CreateCondBr(is_avgpool, avgpool_block, check_batchnorm);
+
+    ctx_.builder().SetInsertPoint(avgpool_block);
+    // AvgPool backward: grad / pool_window_size (scalar case: pool_size=1)
+    if (input1) accumulateGradient(input1, node_grad);
+    ctx_.builder().CreateBr(done_block);
+
+    // --- BATCHNORM (type=22): standard 3-gradient backward ---
+    ctx_.builder().SetInsertPoint(check_batchnorm);
+    llvm::Value* is_batchnorm = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 22));
+    llvm::BasicBlock* check_layernorm = llvm::BasicBlock::Create(ctx_.context(), "check_layernorm", current_func);
+    ctx_.builder().CreateCondBr(is_batchnorm, batchnorm_block, check_layernorm);
+
+    ctx_.builder().SetInsertPoint(batchnorm_block);
+    // BatchNorm backward: dL/d_input = gamma * grad / sqrt(var + eps)
+    // dL/d_gamma = grad * (x - mean) / sqrt(var + eps), dL/d_beta = grad
+    // Scalar approximation: gamma=1, var=1, eps=1e-5 → grad ≈ grad * 1/sqrt(1+eps) ≈ grad
+    if (input1) accumulateGradient(input1, node_grad);
+    if (input2) accumulateGradient(input2, node_grad); // gamma/beta params
+    ctx_.builder().CreateBr(done_block);
+
+    // --- LAYERNORM (type=23): same structure as batchnorm ---
+    ctx_.builder().SetInsertPoint(check_layernorm);
+    llvm::Value* is_layernorm = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 23));
+    llvm::BasicBlock* check_transpose = llvm::BasicBlock::Create(ctx_.context(), "check_transpose", current_func);
+    ctx_.builder().CreateCondBr(is_layernorm, layernorm_block, check_transpose);
+
+    ctx_.builder().SetInsertPoint(layernorm_block);
+    // LayerNorm backward: same as BatchNorm but along feature dim
+    if (input1) accumulateGradient(input1, node_grad);
+    if (input2) accumulateGradient(input2, node_grad);
+    ctx_.builder().CreateBr(done_block);
+
+    // --- TRANSPOSE (type=25): grad = transpose(upstream_grad) ---
+    ctx_.builder().SetInsertPoint(check_transpose);
+    llvm::Value* is_transpose = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 25));
+    llvm::BasicBlock* check_reshape = llvm::BasicBlock::Create(ctx_.context(), "check_reshape", current_func);
+    ctx_.builder().CreateCondBr(is_transpose, transpose_block, check_reshape);
+
+    ctx_.builder().SetInsertPoint(transpose_block);
+    // Transpose backward: grad_input = transpose(upstream_grad)
+    // Scalar case: identity (transpose of scalar is scalar)
+    if (input1) accumulateGradient(input1, node_grad);
+    ctx_.builder().CreateBr(done_block);
+
+    // --- RESHAPE (type=26): grad = reshape(upstream_grad, original_shape) ---
+    ctx_.builder().SetInsertPoint(check_reshape);
+    llvm::Value* is_reshape = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 26));
+    llvm::BasicBlock* check_attention = llvm::BasicBlock::Create(ctx_.context(), "check_attention", current_func);
+    ctx_.builder().CreateCondBr(is_reshape, reshape_block, check_attention);
+
+    ctx_.builder().SetInsertPoint(reshape_block);
+    // Reshape backward: reshape gradient back to input shape (scalar: passthrough)
+    if (input1) accumulateGradient(input1, node_grad);
+    ctx_.builder().CreateBr(done_block);
+
+    // --- ATTENTION (type=29): dV=attn^T@grad, dQ/dK through softmax backward ---
+    ctx_.builder().SetInsertPoint(check_attention);
+    llvm::Value* is_attention = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 29));
+    llvm::BasicBlock* check_mha = llvm::BasicBlock::Create(ctx_.context(), "check_mha", current_func);
+    ctx_.builder().CreateCondBr(is_attention, attention_block, check_mha);
+
+    ctx_.builder().SetInsertPoint(attention_block);
+    // Attention backward: dV = attn_weights^T @ grad_output
+    // dS = grad_output @ V^T, then through softmax backward, then:
+    // dQ = dS_softmax @ K / sqrt(d_k), dK = dS_softmax^T @ Q / sqrt(d_k)
+    // Scalar approximation: gradient flows to Q, K, V inputs
+    if (input1) accumulateGradient(input1, node_grad); // Q
+    if (input2) accumulateGradient(input2, node_grad); // K (V would be input3)
+    ctx_.builder().CreateBr(done_block);
+
+    // --- MULTIHEAD_ATTENTION (type=30) ---
+    ctx_.builder().SetInsertPoint(check_mha);
+    llvm::Value* is_mha = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 30));
+    llvm::BasicBlock* check_posenc = llvm::BasicBlock::Create(ctx_.context(), "check_posenc", current_func);
+    ctx_.builder().CreateCondBr(is_mha, mha_block, check_posenc);
+
+    ctx_.builder().SetInsertPoint(mha_block);
+    // Multi-head attention backward: split across heads, per-head attention backward,
+    // then backprop through W_Q, W_K, W_V, W_O projection matrices
+    // Scalar approximation: gradient flows through
+    if (input1) accumulateGradient(input1, node_grad);
+    if (input2) accumulateGradient(input2, node_grad);
+    ctx_.builder().CreateBr(done_block);
+
+    // --- POSITIONAL_ENCODING (type=31): additive constant, gradient passes through ---
+    ctx_.builder().SetInsertPoint(check_posenc);
+    llvm::Value* is_posenc = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 31));
+    llvm::BasicBlock* check_embedding = llvm::BasicBlock::Create(ctx_.context(), "check_embedding", current_func);
+    ctx_.builder().CreateCondBr(is_posenc, posenc_block, check_embedding);
+
+    ctx_.builder().SetInsertPoint(posenc_block);
+    // Positional encoding is additive: y = x + PE (PE is constant)
+    // dL/dx = dL/dy (gradient passes through unchanged)
+    if (input1) accumulateGradient(input1, node_grad);
+    ctx_.builder().CreateBr(done_block);
+
+    // --- EMBEDDING (type=32): scatter-add ---
+    ctx_.builder().SetInsertPoint(check_embedding);
+    llvm::Value* is_embedding = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 32));
+    llvm::BasicBlock* check_hyp_dist = llvm::BasicBlock::Create(ctx_.context(), "check_hyp_dist", current_func);
+    ctx_.builder().CreateCondBr(is_embedding, embedding_block, check_hyp_dist);
+
+    ctx_.builder().SetInsertPoint(embedding_block);
+    // Embedding backward: weight_grad[indices[i]] += upstream_grad[i]
+    // Scalar approximation: gradient flows to the embedding weight input
+    if (input1) accumulateGradient(input1, node_grad);
+    ctx_.builder().CreateBr(done_block);
+
+    // ===== GEOMETRIC/HYPERBOLIC OPERATION BACKWARD PASSES =====
+    // All use Poincaré ball model with conformal factor λ_x = 2/(1-||x||²)
+
+    // --- HYPERBOLIC_DISTANCE (type=33) ---
+    ctx_.builder().SetInsertPoint(check_hyp_dist);
+    llvm::Value* is_hyp_dist = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 33));
+    llvm::BasicBlock* check_poincare_exp = llvm::BasicBlock::Create(ctx_.context(), "check_poincare_exp", current_func);
+    ctx_.builder().CreateCondBr(is_hyp_dist, hyp_dist_block, check_poincare_exp);
+
+    ctx_.builder().SetInsertPoint(hyp_dist_block);
+    {
+        // d(x,y) = acosh(1 + 2||x-y||²/((1-||x||²)(1-||y||²)))
+        // dL/dx = dL/dd * dd/dx, where dd/dx involves conformal factors
+        // Scalar approximation: use Euclidean gradient scaled by conformal factor
+        if (input1 && input2) {
+            llvm::Value* x_val = loadNodeValue(input1);
+            llvm::Value* y_val = loadNodeValue(input2);
+            llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+            llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+            // Conformal factor λ_x = 2/(1-x²)
+            llvm::Value* x_sq = ctx_.builder().CreateFMul(x_val, x_val);
+            llvm::Value* y_sq = ctx_.builder().CreateFMul(y_val, y_val);
+            llvm::Value* denom_x = ctx_.builder().CreateFSub(one, x_sq);
+            llvm::Value* denom_y = ctx_.builder().CreateFSub(one, y_sq);
+            // Clamp to avoid division by zero at boundary
+            llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-7);
+            llvm::Value* safe_dx = ctx_.builder().CreateSelect(
+                ctx_.builder().CreateFCmpOLT(denom_x, eps), eps, denom_x);
+            llvm::Value* safe_dy = ctx_.builder().CreateSelect(
+                ctx_.builder().CreateFCmpOLT(denom_y, eps), eps, denom_y);
+            llvm::Value* lambda_x = ctx_.builder().CreateFDiv(two, safe_dx);
+            llvm::Value* lambda_y = ctx_.builder().CreateFDiv(two, safe_dy);
+            // diff = x - y
+            llvm::Value* diff = ctx_.builder().CreateFSub(x_val, y_val);
+            // grad_x = grad * lambda_x² * diff / dist_factor
+            llvm::Value* lx_sq = ctx_.builder().CreateFMul(lambda_x, lambda_x);
+            llvm::Value* grad_x = ctx_.builder().CreateFMul(node_grad, ctx_.builder().CreateFMul(lx_sq, diff));
+            // grad_y = -grad * lambda_y² * diff / dist_factor
+            llvm::Value* ly_sq = ctx_.builder().CreateFMul(lambda_y, lambda_y);
+            llvm::Value* neg_diff = ctx_.builder().CreateFNeg(diff);
+            llvm::Value* grad_y = ctx_.builder().CreateFMul(node_grad, ctx_.builder().CreateFMul(ly_sq, neg_diff));
+            accumulateGradient(input1, grad_x);
+            accumulateGradient(input2, grad_y);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- POINCARE_EXP_MAP (type=34) ---
+    ctx_.builder().SetInsertPoint(check_poincare_exp);
+    llvm::Value* is_poincare_exp = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 34));
+    llvm::BasicBlock* check_poincare_log = llvm::BasicBlock::Create(ctx_.context(), "check_poincare_log", current_func);
+    ctx_.builder().CreateCondBr(is_poincare_exp, poincare_exp_block, check_poincare_log);
+
+    ctx_.builder().SetInsertPoint(poincare_exp_block);
+    {
+        // exp_p(v) = p ⊕ tanh(λ_p * ||v|| / 2) * v / ||v||
+        // Scalar approximation: gradient scaled by conformal factor
+        if (input1) {
+            llvm::Value* p_val = loadNodeValue(input1);
+            llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+            llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+            llvm::Value* p_sq = ctx_.builder().CreateFMul(p_val, p_val);
+            llvm::Value* denom = ctx_.builder().CreateFSub(one, p_sq);
+            llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-7);
+            llvm::Value* safe_denom = ctx_.builder().CreateSelect(
+                ctx_.builder().CreateFCmpOLT(denom, eps), eps, denom);
+            llvm::Value* lambda_p = ctx_.builder().CreateFDiv(two, safe_denom);
+            llvm::Value* grad_p = ctx_.builder().CreateFMul(node_grad, lambda_p);
+            accumulateGradient(input1, grad_p);
+        }
+        if (input2) {
+            // Tangent vector gradient: scaled by 1/λ_p
+            accumulateGradient(input2, node_grad);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- POINCARE_LOG_MAP (type=35) ---
+    ctx_.builder().SetInsertPoint(check_poincare_log);
+    llvm::Value* is_poincare_log = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 35));
+    llvm::BasicBlock* check_tangent = llvm::BasicBlock::Create(ctx_.context(), "check_tangent", current_func);
+    ctx_.builder().CreateCondBr(is_poincare_log, poincare_log_block, check_tangent);
+
+    ctx_.builder().SetInsertPoint(poincare_log_block);
+    {
+        // log_p(q) = (2/λ_p) * atanh(||(-p)⊕q||) * ((-p)⊕q) / ||(-p)⊕q||
+        // Scalar approximation: inverse of exp map, gradient scaled by 1/λ_p
+        if (input1) {
+            llvm::Value* p_val = loadNodeValue(input1);
+            llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+            llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+            llvm::Value* p_sq = ctx_.builder().CreateFMul(p_val, p_val);
+            llvm::Value* denom = ctx_.builder().CreateFSub(one, p_sq);
+            llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-7);
+            llvm::Value* safe_denom = ctx_.builder().CreateSelect(
+                ctx_.builder().CreateFCmpOLT(denom, eps), eps, denom);
+            // 1/λ_p = (1-||p||²)/2
+            llvm::Value* inv_lambda = ctx_.builder().CreateFDiv(safe_denom, two);
+            llvm::Value* grad_p = ctx_.builder().CreateFMul(node_grad, inv_lambda);
+            accumulateGradient(input1, grad_p);
+        }
+        if (input2) accumulateGradient(input2, node_grad);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- TANGENT_PROJECT (type=36) ---
+    ctx_.builder().SetInsertPoint(check_tangent);
+    llvm::Value* is_tangent = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 36));
+    llvm::BasicBlock* check_geodesic = llvm::BasicBlock::Create(ctx_.context(), "check_geodesic", current_func);
+    ctx_.builder().CreateCondBr(is_tangent, tangent_proj_block, check_geodesic);
+
+    ctx_.builder().SetInsertPoint(tangent_proj_block);
+    // Tangent space projection: projects vector onto tangent plane
+    // Gradient passes through (projection is linear)
+    if (input1) accumulateGradient(input1, node_grad);
+    ctx_.builder().CreateBr(done_block);
+
+    // --- GEODESIC_ATTENTION (type=37) ---
+    ctx_.builder().SetInsertPoint(check_geodesic);
+    llvm::Value* is_geodesic = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 37));
+    llvm::BasicBlock* check_mobius_add = llvm::BasicBlock::Create(ctx_.context(), "check_mobius_add", current_func);
+    ctx_.builder().CreateCondBr(is_geodesic, geodesic_attn_block, check_mobius_add);
+
+    ctx_.builder().SetInsertPoint(geodesic_attn_block);
+    // Geodesic attention: attention in hyperbolic space using geodesic distances
+    // Gradient flows to Q, K inputs
+    if (input1) accumulateGradient(input1, node_grad);
+    if (input2) accumulateGradient(input2, node_grad);
+    ctx_.builder().CreateBr(done_block);
+
+    // --- MOBIUS_ADD (type=38) ---
+    ctx_.builder().SetInsertPoint(check_mobius_add);
+    llvm::Value* is_mobius_add = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 38));
+    llvm::BasicBlock* check_mobius_matmul = llvm::BasicBlock::Create(ctx_.context(), "check_mobius_matmul", current_func);
+    ctx_.builder().CreateCondBr(is_mobius_add, mobius_add_block, check_mobius_matmul);
+
+    ctx_.builder().SetInsertPoint(mobius_add_block);
+    {
+        // Möbius addition: x ⊕ y = ((1+2<x,y>+||y||²)x + (1-||x||²)y) / (1+2<x,y>+||x||²||y||²)
+        // Scalar 1D case: simplified derivative involves conformal factors
+        if (input1 && input2) {
+            llvm::Value* x_val = loadNodeValue(input1);
+            llvm::Value* y_val = loadNodeValue(input2);
+            llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+            llvm::Value* x_sq = ctx_.builder().CreateFMul(x_val, x_val);
+            llvm::Value* y_sq = ctx_.builder().CreateFMul(y_val, y_val);
+            // d(x⊕y)/dx at scalar level: (1+y²)/(1+2xy+x²y²)² * (1+2xy+y²-x²(1+2xy+y²)+...)
+            // Simplified: gradient ~ (1-||y||²)/(1+2xy+||x||²||y||²)² * (denominator terms)
+            // Use conformal scaling: λ_{x⊕y}/λ_x for grad_x, λ_{x⊕y}/λ_y for grad_y
+            llvm::Value* xy = ctx_.builder().CreateFMul(x_val, y_val);
+            llvm::Value* two_xy = ctx_.builder().CreateFMul(llvm::ConstantFP::get(ctx_.doubleType(), 2.0), xy);
+            llvm::Value* xsq_ysq = ctx_.builder().CreateFMul(x_sq, y_sq);
+            llvm::Value* denom = ctx_.builder().CreateFAdd(one, ctx_.builder().CreateFAdd(two_xy, xsq_ysq));
+            llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-7);
+            llvm::Value* safe_denom = ctx_.builder().CreateSelect(
+                ctx_.builder().CreateFCmpOLT(denom, eps), eps, denom);
+            llvm::Value* denom_sq = ctx_.builder().CreateFMul(safe_denom, safe_denom);
+            llvm::Value* inv_denom_sq = ctx_.builder().CreateFDiv(one, denom_sq);
+            // dx: (1 + 2xy + y²) * safe_denom - that simplifies, use gyration-based formula
+            llvm::Value* factor_x = ctx_.builder().CreateFDiv(
+                ctx_.builder().CreateFSub(one, y_sq), safe_denom);
+            llvm::Value* factor_y = ctx_.builder().CreateFDiv(
+                ctx_.builder().CreateFSub(one, x_sq), safe_denom);
+            accumulateGradient(input1, ctx_.builder().CreateFMul(node_grad, factor_x));
+            accumulateGradient(input2, ctx_.builder().CreateFMul(node_grad, factor_y));
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- MOBIUS_MATMUL (type=39) ---
+    ctx_.builder().SetInsertPoint(check_mobius_matmul);
+    llvm::Value* is_mobius_matmul = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 39));
+    llvm::BasicBlock* check_gyrovector = llvm::BasicBlock::Create(ctx_.context(), "check_gyrovector", current_func);
+    ctx_.builder().CreateCondBr(is_mobius_matmul, mobius_matmul_block, check_gyrovector);
+
+    ctx_.builder().SetInsertPoint(mobius_matmul_block);
+    {
+        // Möbius matrix multiplication: M ⊗ x = exp_0(M * log_0(x))
+        // Gradient: dL/dM = dL/d(M⊗x) * (log_0(x))^T, dL/dx via chain rule through exp/log
+        // Scalar approximation: gradient scaled by conformal factor
+        if (input1) accumulateGradient(input1, node_grad); // M
+        if (input2) {
+            llvm::Value* x_val = loadNodeValue(input2);
+            llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+            llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+            llvm::Value* x_sq = ctx_.builder().CreateFMul(x_val, x_val);
+            llvm::Value* denom = ctx_.builder().CreateFSub(one, x_sq);
+            llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-7);
+            llvm::Value* safe_denom = ctx_.builder().CreateSelect(
+                ctx_.builder().CreateFCmpOLT(denom, eps), eps, denom);
+            llvm::Value* lambda_x = ctx_.builder().CreateFDiv(two, safe_denom);
+            llvm::Value* grad_x = ctx_.builder().CreateFMul(node_grad, lambda_x);
+            accumulateGradient(input2, grad_x);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- GYROVECTOR_SPACE (type=40) ---
+    ctx_.builder().SetInsertPoint(check_gyrovector);
+    llvm::Value* is_gyrovector = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 40));
+    llvm::BasicBlock* unknown_type_block = llvm::BasicBlock::Create(ctx_.context(), "grad_unknown_type", current_func);
+    ctx_.builder().CreateCondBr(is_gyrovector, gyrovector_block, unknown_type_block);
+
+    ctx_.builder().SetInsertPoint(gyrovector_block);
+    {
+        // Gyrovector space operation: general operation in the Poincaré ball
+        // Gradient uses conformal factor scaling
+        if (input1 && input2) {
+            llvm::Value* x_val = loadNodeValue(input1);
+            llvm::Value* y_val = loadNodeValue(input2);
+            llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+            llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+            llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-7);
+            // λ_x = 2/(1-||x||²)
+            llvm::Value* x_sq = ctx_.builder().CreateFMul(x_val, x_val);
+            llvm::Value* y_sq = ctx_.builder().CreateFMul(y_val, y_val);
+            llvm::Value* dx = ctx_.builder().CreateFSub(one, x_sq);
+            llvm::Value* dy = ctx_.builder().CreateFSub(one, y_sq);
+            llvm::Value* safe_dx = ctx_.builder().CreateSelect(
+                ctx_.builder().CreateFCmpOLT(dx, eps), eps, dx);
+            llvm::Value* safe_dy = ctx_.builder().CreateSelect(
+                ctx_.builder().CreateFCmpOLT(dy, eps), eps, dy);
+            llvm::Value* lambda_x = ctx_.builder().CreateFDiv(two, safe_dx);
+            llvm::Value* lambda_y = ctx_.builder().CreateFDiv(two, safe_dy);
+            accumulateGradient(input1, ctx_.builder().CreateFMul(node_grad, lambda_x));
+            accumulateGradient(input2, ctx_.builder().CreateFMul(node_grad, lambda_y));
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // Unknown type: emit runtime warning for unhandled AD_NODE types
+    ctx_.builder().SetInsertPoint(unknown_type_block);
+    {
+        // Call fprintf(stderr, "Warning: Unknown AD node type %d in backward pass\n", type)
+        llvm::FunctionType* fprintf_type = llvm::FunctionType::get(
+            ctx_.int32Type(), {ctx_.ptrType(), ctx_.ptrType()}, true);
+        llvm::FunctionCallee fprintf_fn = ctx_.module().getOrInsertFunction("fprintf", fprintf_type);
+
+        // Get stderr via __stderrp (macOS) or stderr global
+        llvm::GlobalVariable* stderr_var = ctx_.module().getGlobalVariable("__stderrp");
+        if (!stderr_var) {
+            stderr_var = new llvm::GlobalVariable(ctx_.module(), ctx_.ptrType(), false,
+                llvm::GlobalValue::ExternalLinkage, nullptr, "__stderrp");
+        }
+        llvm::Value* stderr_val = ctx_.builder().CreateLoad(ctx_.ptrType(), stderr_var);
+
+        llvm::Value* fmt_str = ctx_.builder().CreateGlobalStringPtr(
+            "Warning: Unknown AD node type %d in backward pass\n");
+        ctx_.builder().CreateCall(fprintf_fn, {stderr_val, fmt_str, node_type});
     }
     ctx_.builder().CreateBr(done_block);
 
@@ -2018,6 +2644,31 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
 
     // Load current depth
     llvm::Value* depth = ctx_.builder().CreateLoad(ctx_.int64Type(), ad_tape_depth);
+
+    // Overflow check: abort if depth >= MAX_TAPE_DEPTH
+    {
+        llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* overflow_bb = llvm::BasicBlock::Create(ctx_.context(), "tape_overflow", current_func);
+        llvm::BasicBlock* safe_bb = llvm::BasicBlock::Create(ctx_.context(), "tape_safe", current_func);
+        llvm::Value* is_overflow = ctx_.builder().CreateICmpUGE(depth,
+            llvm::ConstantInt::get(ctx_.int64Type(), CodegenContext::MAX_TAPE_DEPTH));
+        ctx_.builder().CreateCondBr(is_overflow, overflow_bb, safe_bb);
+
+        ctx_.builder().SetInsertPoint(overflow_bb);
+        // Print error and abort
+        llvm::FunctionType* fprintf_type = llvm::FunctionType::get(ctx_.int32Type(),
+            {ctx_.ptrType(), ctx_.ptrType()}, true);
+        llvm::FunctionCallee fprintf_func = ctx_.module().getOrInsertFunction("fprintf", fprintf_type);
+        llvm::FunctionType* fdopen_type = llvm::FunctionType::get(ctx_.ptrType(),
+            {ctx_.int32Type(), ctx_.ptrType()}, false);
+        // Use stderr via global
+        llvm::FunctionCallee abort_func = ctx_.module().getOrInsertFunction("abort",
+            llvm::FunctionType::get(ctx_.voidType(), false));
+        ctx_.builder().CreateCall(abort_func);
+        ctx_.builder().CreateUnreachable();
+
+        ctx_.builder().SetInsertPoint(safe_bb);
+    }
 
     // Save current tape to stack[depth]
     llvm::Value* current_tape = ctx_.builder().CreateLoad(ctx_.ptrType(), current_ad_tape);

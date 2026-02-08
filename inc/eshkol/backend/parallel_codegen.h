@@ -88,6 +88,14 @@ public:
     llvm::Value* parallelForEach(const eshkol_operations_t* op);
 
     /**
+     * Generate code for (parallel-execute thunk1 thunk2 ... thunkN)
+     * Executes N zero-argument closures in parallel, returns list of results.
+     * @param op The operation AST node (variadic: 1+ thunk arguments)
+     * @return List of results in order matching the input thunks
+     */
+    llvm::Value* parallelExecute(const eshkol_operations_t* op);
+
+    /**
      * Generate code for (thread-pool-info)
      * @param op The operation AST node
      * @return Int64 number of worker threads
@@ -129,6 +137,7 @@ public:
     llvm::Function* getParallelFoldFunc() const { return parallel_fold_func_; }
     llvm::Function* getParallelFilterFunc() const { return parallel_filter_func_; }
     llvm::Function* getParallelForEachFunc() const { return parallel_for_each_func_; }
+    llvm::Function* getParallelExecuteFunc() const { return parallel_execute_func_; }
     llvm::Function* getThreadPoolNumThreadsFunc() const { return thread_pool_num_threads_func_; }
     llvm::Function* getThreadPoolPrintStatsFunc() const { return thread_pool_print_stats_func_; }
 
@@ -140,6 +149,7 @@ private:
     llvm::Function* parallel_fold_func_;
     llvm::Function* parallel_filter_func_;
     llvm::Function* parallel_for_each_func_;
+    llvm::Function* parallel_execute_func_;
     llvm::Function* thread_pool_num_threads_func_;
     llvm::Function* thread_pool_print_stats_func_;
 
@@ -148,6 +158,7 @@ private:
     void declareParallelFold();
     void declareParallelFilter();
     void declareParallelForEach();
+    void declareParallelExecute();
     void declareThreadPoolInfo();
 
     // Dispatcher function generation
@@ -167,9 +178,10 @@ private:
 
     // Generate LLVM worker functions: void* worker(void* task_data)
     // These call the dispatchers directly (LLVM→LLVM, no ABI crossing)
-    void generateMapWorker();    // __parallel_map_worker
-    void generateFoldWorker();   // __parallel_fold_worker
-    void generateFilterWorker(); // __parallel_filter_worker
+    void generateMapWorker();      // __parallel_map_worker
+    void generateFoldWorker();     // __parallel_fold_worker
+    void generateFilterWorker();   // __parallel_filter_worker
+    void generateExecuteWorker();  // __parallel_execute_worker (nullary thunks)
 
     // Generate module initializer that registers workers with C runtime
     void generateWorkerRegistration();
@@ -180,6 +192,7 @@ private:
     llvm::Function* map_worker_func_ = nullptr;
     llvm::Function* fold_worker_func_ = nullptr;
     llvm::Function* filter_worker_func_ = nullptr;
+    llvm::Function* execute_worker_func_ = nullptr;
 
     // Dispatcher function references (for workers to call)
     llvm::Function* nullary_dispatcher_func_ = nullptr;  // For thunks (0-arg closures)

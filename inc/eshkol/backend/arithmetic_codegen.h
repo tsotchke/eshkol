@@ -22,6 +22,7 @@
 #include <eshkol/backend/tagged_value_codegen.h>
 #include <eshkol/backend/tensor_codegen.h>
 #include <eshkol/backend/autodiff_codegen.h>
+#include <eshkol/backend/complex_codegen.h>
 #include <llvm/IR/Value.h>
 
 namespace eshkol {
@@ -48,7 +49,8 @@ public:
      * @param autodiff Automatic differentiation helper
      */
     ArithmeticCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged,
-                      TensorCodegen& tensor, AutodiffCodegen& autodiff);
+                      TensorCodegen& tensor, AutodiffCodegen& autodiff,
+                      ComplexCodegen& complex);
 
     // === Binary Arithmetic Operations ===
 
@@ -201,6 +203,7 @@ private:
     TaggedValueCodegen& tagged_;
     TensorCodegen& tensor_;
     AutodiffCodegen& autodiff_;
+    ComplexCodegen& complex_;
 
     // === Internal Helpers ===
 
@@ -237,6 +240,17 @@ private:
      * Creates an exception object and calls eshkol_raise().
      */
     void raiseDivideByZeroException();
+
+    /**
+     * Convert a tagged value to a complex number.
+     * Promotes int/double to complex with zero imaginary part.
+     * @param operand Tagged value operand
+     * @param is_complex Whether operand is already complex
+     * @param base_type The base type of the operand
+     * @return Complex number struct pointer
+     */
+    llvm::Value* convertToComplex(llvm::Value* operand, llvm::Value* is_complex,
+                                   llvm::Value* base_type);
 };
 
 } // namespace eshkol

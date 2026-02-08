@@ -49,6 +49,7 @@ ParallelCodegen::ParallelCodegen(CodegenContext& ctx)
     , parallel_fold_func_(nullptr)
     , parallel_filter_func_(nullptr)
     , parallel_for_each_func_(nullptr)
+    , parallel_execute_func_(nullptr)
     , thread_pool_num_threads_func_(nullptr)
     , thread_pool_print_stats_func_(nullptr) {
 
@@ -57,6 +58,7 @@ ParallelCodegen::ParallelCodegen(CodegenContext& ctx)
     declareParallelFold();
     declareParallelFilter();
     declareParallelForEach();
+    declareParallelExecute();
     declareThreadPoolInfo();
 
     // Generate dispatcher functions that handle closure calling conventions
@@ -68,6 +70,7 @@ ParallelCodegen::ParallelCodegen(CodegenContext& ctx)
     generateMapWorker();
     generateFoldWorker();
     generateFilterWorker();
+    generateExecuteWorker();
 
     // Generate module initializer that registers workers with C runtime
     // This runs at module load time and sets up function pointers
@@ -149,6 +152,23 @@ void ParallelCodegen::declareParallelForEach() {
         "eshkol_parallel_for_each", &ctx_.module());
 
     ctx_.defineFunction("eshkol_parallel_for_each", parallel_for_each_func_);
+}
+
+void ParallelCodegen::declareParallelExecute() {
+    // eshkol_parallel_execute(thunks_ptr, num_thunks, arena) -> tagged_value (list)
+    std::vector<llvm::Type*> args;
+    args.push_back(ctx_.ptrType());          // thunks array pointer
+    args.push_back(ctx_.int64Type());        // num_thunks
+    args.push_back(ctx_.ptrType());          // arena
+
+    llvm::FunctionType* func_type = llvm::FunctionType::get(
+        ctx_.taggedValueType(), args, false);
+
+    parallel_execute_func_ = llvm::Function::Create(
+        func_type, llvm::Function::ExternalLinkage,
+        "eshkol_parallel_execute", &ctx_.module());
+
+    ctx_.defineFunction("eshkol_parallel_execute", parallel_execute_func_);
 }
 
 void ParallelCodegen::declareThreadPoolInfo() {
@@ -1074,6 +1094,114 @@ void ParallelCodegen::generateFilterWorker() {
 }
 
 // ============================================================================
+// Execute Worker (Nullary Thunk Worker)
+// ============================================================================
+
+/**
+ * Generate __parallel_execute_worker(void* task) -> void*
+ *
+ * Worker for parallel-execute that calls a nullary closure (thunk).
+ * Task struct: { closure_ptr_i64, closure_type_i64, closure_flags_i64, result_ptr_i64 }
+ * All fields are i64 to avoid struct-by-value ABI issues.
+ */
+void ParallelCodegen::generateExecuteWorker() {
+    // Check if worker already exists in this module
+    if (llvm::Function* existing = ctx_.module().getFunction("__parallel_execute_worker")) {
+        execute_worker_func_ = existing;
+        eshkol_debug("__parallel_execute_worker already exists in module, reusing");
+        return;
+    }
+
+    llvm::FunctionType* func_type = llvm::FunctionType::get(
+        ctx_.ptrType(), {ctx_.ptrType()}, false);
+
+    // Check if we should generate full body or just declaration
+    std::string module_name = ctx_.module().getName().str();
+    if (!shouldGenerateWorkerBodies(module_name)) {
+        llvm::Function* worker = llvm::Function::Create(
+            func_type, llvm::Function::ExternalLinkage,
+            "__parallel_execute_worker", &ctx_.module());
+        execute_worker_func_ = worker;
+        ctx_.defineFunction("__parallel_execute_worker", worker);
+        eshkol_debug("__parallel_execute_worker: created declaration (resolved from stdlib.o)");
+        return;
+    }
+
+    llvm::LLVMContext& llvm_ctx = ctx_.context();
+
+    llvm::BasicBlock* saved_bb = ctx_.builder().GetInsertBlock();
+    llvm::BasicBlock::iterator saved_pt;
+    if (saved_bb) {
+        saved_pt = ctx_.builder().GetInsertPoint();
+    }
+
+    // Task struct: { i64 closure_ptr, i64 closure_type, i64 closure_flags, i64 result_ptr }
+    llvm::StructType* exec_task_type = llvm::StructType::create(llvm_ctx,
+        {ctx_.int64Type(), ctx_.int64Type(), ctx_.int64Type(), ctx_.int64Type()},
+        "parallel_execute_task");
+
+    llvm::Function* worker = llvm::Function::Create(
+        func_type, llvm::Function::LinkOnceODRLinkage,
+        "__parallel_execute_worker", &ctx_.module());
+
+    llvm::Value* arg = worker->arg_begin();
+    arg->setName("task_arg");
+
+    llvm::BasicBlock* entry_bb = llvm::BasicBlock::Create(llvm_ctx, "entry", worker);
+    ctx_.builder().SetInsertPoint(entry_bb);
+
+    // Cast void* to task struct pointer
+    llvm::Value* task = ctx_.builder().CreateBitCast(arg,
+        llvm::PointerType::getUnqual(exec_task_type), "task");
+
+    // Load task fields
+    llvm::Value* closure_ptr_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateStructGEP(exec_task_type, task, 0), "closure_ptr_i64");
+    llvm::Value* closure_type_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateStructGEP(exec_task_type, task, 1), "closure_type_i64");
+    llvm::Value* closure_flags_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateStructGEP(exec_task_type, task, 2), "closure_flags_i64");
+    llvm::Value* result_ptr_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateStructGEP(exec_task_type, task, 3), "result_ptr_i64");
+
+    // Reconstruct closure as tagged value
+    llvm::Value* closure = llvm::UndefValue::get(ctx_.taggedValueType());
+    closure = ctx_.builder().CreateInsertValue(closure,
+        ctx_.builder().CreateTrunc(closure_type_i64, ctx_.int8Type()), {0});
+    closure = ctx_.builder().CreateInsertValue(closure,
+        ctx_.builder().CreateTrunc(closure_flags_i64, ctx_.int8Type()), {1});
+    closure = ctx_.builder().CreateInsertValue(closure,
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});  // reserved
+    closure = ctx_.builder().CreateInsertValue(closure,
+        llvm::ConstantInt::get(ctx_.int32Type(), 0), {3});  // padding
+    closure = ctx_.builder().CreateInsertValue(closure, closure_ptr_i64, {4});
+
+    // Call nullary dispatcher (thunks take no args)
+    llvm::Function* dispatcher = ctx_.module().getFunction("__eshkol_call_nullary_closure");
+    if (!dispatcher) {
+        eshkol_error("__parallel_execute_worker: nullary dispatcher not found");
+        ctx_.builder().CreateRet(llvm::ConstantPointerNull::get(ctx_.ptrType()));
+        if (saved_bb) ctx_.builder().SetInsertPoint(saved_bb, saved_pt);
+        return;
+    }
+
+    llvm::Value* result = ctx_.builder().CreateCall(dispatcher, {closure}, "result");
+
+    // Store result at result_ptr
+    llvm::Value* result_dest = ctx_.builder().CreateIntToPtr(result_ptr_i64,
+        llvm::PointerType::getUnqual(ctx_.taggedValueType()), "result_dest");
+    ctx_.builder().CreateStore(result, result_dest);
+
+    ctx_.builder().CreateRet(llvm::ConstantPointerNull::get(ctx_.ptrType()));
+
+    execute_worker_func_ = worker;
+    ctx_.defineFunction("__parallel_execute_worker", worker);
+    eshkol_debug("Generated __parallel_execute_worker");
+
+    if (saved_bb) ctx_.builder().SetInsertPoint(saved_bb, saved_pt);
+}
+
+// ============================================================================
 // Parallel Primitive Codegen
 // ============================================================================
 
@@ -1759,6 +1887,57 @@ llvm::Value* ParallelCodegen::parallelForEach(const eshkol_operations_t* op) {
     return null_val;
 }
 
+llvm::Value* ParallelCodegen::parallelExecute(const eshkol_operations_t* op) {
+    if (!op || op->call_op.num_vars < 1) {
+        eshkol_error("parallel-execute requires at least 1 argument: thunk(s)");
+        return nullptr;
+    }
+
+    if (!codegen_ast_callback_) {
+        eshkol_error("ParallelCodegen: codegen callback not set");
+        return nullptr;
+    }
+
+    int num_thunks = op->call_op.num_vars;
+    eshkol_debug("parallel-execute: generating code for %d thunks", num_thunks);
+
+    // Evaluate all thunk arguments and store in a stack-allocated array
+    llvm::Value* array_alloca = ctx_.builder().CreateAlloca(
+        ctx_.taggedValueType(),
+        llvm::ConstantInt::get(ctx_.int64Type(), num_thunks),
+        "thunks_array");
+
+    for (int i = 0; i < num_thunks; ++i) {
+        llvm::Value* thunk_raw = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+        if (!thunk_raw) {
+            eshkol_error("parallel-execute: failed to generate thunk argument %d", i);
+            return nullptr;
+        }
+        llvm::Value* thunk_val = ensureTaggedValue(thunk_raw);
+
+        // Store in array
+        llvm::Value* slot = ctx_.builder().CreateGEP(
+            ctx_.taggedValueType(), array_alloca,
+            llvm::ConstantInt::get(ctx_.int64Type(), i),
+            "thunk_slot_" + std::to_string(i));
+        ctx_.builder().CreateStore(thunk_val, slot);
+    }
+
+    // Get arena pointer
+    llvm::Value* arena_ptr = getArenaPtr();
+    if (!arena_ptr) return nullptr;
+
+    // Call C runtime: eshkol_parallel_execute(thunks_ptr, num_thunks, arena)
+    llvm::Value* result = ctx_.builder().CreateCall(parallel_execute_func_, {
+        array_alloca,
+        llvm::ConstantInt::get(ctx_.int64Type(), num_thunks),
+        arena_ptr
+    }, "pexec_result");
+
+    eshkol_debug("Generated parallel-execute call for %d thunks", num_thunks);
+    return result;
+}
+
 llvm::Value* ParallelCodegen::threadPoolInfo(const eshkol_operations_t* op) {
     (void)op;
 
@@ -1835,8 +2014,8 @@ void ParallelCodegen::generateWorkerRegistration() {
     llvm::BasicBlock* saved_bb = ctx_.builder().GetInsertBlock();
     auto saved_pt = saved_bb ? ctx_.builder().GetInsertPoint() : llvm::BasicBlock::iterator();
 
-    // 1. Declare __eshkol_register_parallel_workers(void*, void*, void*, void*, void*)
-    std::vector<llvm::Type*> reg_args(5, ctx_.ptrType());
+    // 1. Declare __eshkol_register_parallel_workers(void*, void*, void*, void*, void*, void*)
+    std::vector<llvm::Type*> reg_args(6, ctx_.ptrType());
     llvm::FunctionType* reg_type = llvm::FunctionType::get(ctx_.voidType(), reg_args, false);
     llvm::Function* register_func = llvm::Function::Create(
         reg_type, llvm::Function::ExternalLinkage,
@@ -1859,9 +2038,12 @@ void ParallelCodegen::generateWorkerRegistration() {
     llvm::Value* filter_ptr = ctx_.builder().CreateBitCast(filter_worker_func_, ctx_.ptrType());
     llvm::Value* unary_ptr = ctx_.builder().CreateBitCast(unary_dispatcher_func_, ctx_.ptrType());
     llvm::Value* binary_ptr = ctx_.builder().CreateBitCast(binary_dispatcher_func_, ctx_.ptrType());
+    llvm::Value* execute_ptr = execute_worker_func_
+        ? ctx_.builder().CreateBitCast(execute_worker_func_, ctx_.ptrType())
+        : llvm::ConstantPointerNull::get(ctx_.ptrType());
 
     // Call registration function
-    ctx_.builder().CreateCall(register_func, {map_ptr, fold_ptr, filter_ptr, unary_ptr, binary_ptr});
+    ctx_.builder().CreateCall(register_func, {map_ptr, fold_ptr, filter_ptr, unary_ptr, binary_ptr, execute_ptr});
     ctx_.builder().CreateRetVoid();
 
     // 3. Add to llvm.global_ctors

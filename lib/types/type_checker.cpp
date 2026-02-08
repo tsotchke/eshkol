@@ -1309,13 +1309,18 @@ TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
             return BuiltinTypes::Pair;
 
         case HOTT_TYPE_PRODUCT:
-            return BuiltinTypes::Pair;  // Represent as pair for now
+            return BuiltinTypes::Pair;  // Product types represented as pairs at runtime
 
         case HOTT_TYPE_SUM:
-            return BuiltinTypes::Value;  // Sum types need more work
+            return BuiltinTypes::Pair;  // Sum types represented as tagged cons pairs: (tag . value)
 
         case HOTT_TYPE_FORALL:
-            // Polymorphic - return Value for now
+            // Polymorphic types are erased at runtime — tagged values handle polymorphism
+            // naturally since every value carries its own type tag. The type checker
+            // performs substitution/instantiation at compile time (see substituteTypeVars).
+            if (type_expr->forall.body) {
+                return resolveType(type_expr->forall.body);
+            }
             return BuiltinTypes::Value;
 
         default:

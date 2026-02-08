@@ -4,6 +4,9 @@
  * Implements full f64 arithmetic using uint2 (two 32-bit integers)
  * Based on Berkeley SoftFloat library algorithms
  *
+ * This header MUST be kept in sync with the embedded Metal shader in
+ * gpu_memory.mm. The gpu_memory.mm version is the canonical reference.
+ *
  * Copyright (C) tsotchke
  * SPDX-License-Identifier: MIT
  */
@@ -88,6 +91,32 @@ inline bool sf64_is_signaling_nan(sf64 x) {
 }
 
 // ============================================================================
+// NaN Propagation
+// ============================================================================
+// IEEE 754: preserve NaN payload, quiet signaling NaNs
+
+inline sf64 sf64_propagate_nan(sf64 a, sf64 b) {
+    // Prefer signaling NaN (to signal the exception), then first NaN operand
+    if (sf64_is_signaling_nan(a)) {
+        return sf64(a.x | 0x00080000u, a.y);  // Quiet the signaling NaN
+    }
+    if (sf64_is_signaling_nan(b)) {
+        return sf64(b.x | 0x00080000u, b.y);
+    }
+    if (sf64_is_nan(a)) return a;
+    return b;
+}
+
+inline sf64 sf64_propagate_nan3(sf64 a, sf64 b, sf64 c) {
+    if (sf64_is_signaling_nan(a)) return sf64(a.x | 0x00080000u, a.y);
+    if (sf64_is_signaling_nan(b)) return sf64(b.x | 0x00080000u, b.y);
+    if (sf64_is_signaling_nan(c)) return sf64(c.x | 0x00080000u, c.y);
+    if (sf64_is_nan(a)) return a;
+    if (sf64_is_nan(b)) return b;
+    return c;
+}
+
+// ============================================================================
 // Packing
 // ============================================================================
 
@@ -115,7 +144,6 @@ inline sf64 sf64_abs(sf64 x) {
 // 64-bit Arithmetic Helpers
 // ============================================================================
 
-// 64-bit left shift
 inline sf64 shl64(sf64 x, int n) {
     if (n <= 0) return x;
     if (n >= 64) return SF64_ZERO;
@@ -125,7 +153,6 @@ inline sf64 shl64(sf64 x, int n) {
     return sf64((x.x << n) | (x.y >> (32 - n)), x.y << n);
 }
 
-// 64-bit right shift (logical)
 inline sf64 shr64(sf64 x, int n) {
     if (n <= 0) return x;
     if (n >= 64) return SF64_ZERO;
@@ -135,8 +162,8 @@ inline sf64 shr64(sf64 x, int n) {
     return sf64(x.x >> n, (x.y >> n) | (x.x << (32 - n)));
 }
 
-// 64-bit right shift with sticky bit (jam)
-// Preserves rounding information by setting LSB if any bits are lost
+// Right shift with sticky bit preservation (jam)
+// Sets LSB if any bits are shifted out, preserving rounding information
 inline sf64 shr64_jam(sf64 x, int n) {
     if (n <= 0) return x;
     if (n >= 64) {
@@ -153,7 +180,6 @@ inline sf64 shr64_jam(sf64 x, int n) {
     return sf64(x.x >> n, ((x.y >> n) | (x.x << (32 - n))) | sticky);
 }
 
-// 64-bit addition
 inline sf64 add64(sf64 a, sf64 b) {
     uint lo = a.y + b.y;
     uint carry = (lo < a.y) ? 1u : 0u;
@@ -161,7 +187,6 @@ inline sf64 add64(sf64 a, sf64 b) {
     return sf64(hi, lo);
 }
 
-// 64-bit addition with carry out
 inline sf64 add64_carry(sf64 a, sf64 b, thread bool& carry_out) {
     uint lo = a.y + b.y;
     uint c1 = (lo < a.y) ? 1u : 0u;
@@ -170,7 +195,6 @@ inline sf64 add64_carry(sf64 a, sf64 b, thread bool& carry_out) {
     return sf64(hi, lo);
 }
 
-// 64-bit subtraction
 inline sf64 sub64(sf64 a, sf64 b) {
     uint lo = a.y - b.y;
     uint borrow = (a.y < b.y) ? 1u : 0u;
@@ -193,6 +217,95 @@ inline int clz64(sf64 x) {
 }
 
 // ============================================================================
+// 128-bit Arithmetic (required for true FMA and division)
+// ============================================================================
+
+struct sf128 { sf64 hi; sf64 lo; };
+
+inline sf128 shr128(sf128 x, int n) {
+    if (n <= 0) return x;
+    if (n >= 128) return sf128{SF64_ZERO, SF64_ZERO};
+    if (n >= 64) {
+        return sf128{SF64_ZERO, shr64(x.hi, n - 64)};
+    }
+    sf64 new_lo;
+    new_lo.x = (x.lo.x >> n) | (x.hi.y << (32 - n));
+    new_lo.y = (x.lo.y >> n) | (x.lo.x << (32 - n));
+    if (n >= 32) {
+        new_lo.x = (x.hi.y >> (n - 32)) | (x.hi.x << (64 - n));
+        new_lo.y = (x.lo.x >> (n - 32)) | (x.hi.y << (64 - n));
+    }
+    return sf128{shr64(x.hi, n), new_lo};
+}
+
+inline sf128 shr128_jam(sf128 x, int n) {
+    if (n <= 0) return x;
+    if (n >= 128) {
+        uint sticky = ((x.hi.x | x.hi.y | x.lo.x | x.lo.y) != 0) ? 1u : 0u;
+        return sf128{SF64_ZERO, sf64(0u, sticky)};
+    }
+    uint sticky = 0;
+    if (n >= 64) {
+        sticky = ((x.lo.x | x.lo.y) != 0) ? 1u : 0u;
+        sf64 new_lo = shr64_jam(x.hi, n - 64);
+        new_lo.y |= sticky;
+        return sf128{SF64_ZERO, new_lo};
+    }
+    sticky = (x.lo.y << (32 - (n % 32))) != 0 ? 1u : 0u;
+    sf128 result = shr128(x, n);
+    result.lo.y |= sticky;
+    return result;
+}
+
+inline sf128 shl128(sf128 x, int n) {
+    if (n <= 0) return x;
+    if (n >= 128) return sf128{SF64_ZERO, SF64_ZERO};
+    if (n >= 64) {
+        return sf128{shl64(x.lo, n - 64), SF64_ZERO};
+    }
+    sf64 new_hi;
+    new_hi.x = (x.hi.x << n) | (x.hi.y >> (32 - n));
+    new_hi.y = (x.hi.y << n) | (x.lo.x >> (32 - n));
+    if (n >= 32) {
+        new_hi.x = (x.hi.y << (n - 32)) | (x.lo.x >> (64 - n));
+        new_hi.y = (x.lo.x << (n - 32)) | (x.lo.y >> (64 - n));
+    }
+    return sf128{new_hi, shl64(x.lo, n)};
+}
+
+inline sf128 add128(sf128 a, sf128 b) {
+    sf64 lo = add64(a.lo, b.lo);
+    uint carry = (cmp64(lo, a.lo) < 0 || cmp64(lo, b.lo) < 0) ? 1u : 0u;
+    sf64 hi = add64(a.hi, b.hi);
+    hi = add64(hi, sf64(0u, carry));
+    return sf128{hi, lo};
+}
+
+inline sf128 sub128(sf128 a, sf128 b) {
+    uint borrow = (cmp64(a.lo, b.lo) < 0) ? 1u : 0u;
+    sf64 lo = sub64(a.lo, b.lo);
+    sf64 hi = sub64(a.hi, b.hi);
+    hi = sub64(hi, sf64(0u, borrow));
+    return sf128{hi, lo};
+}
+
+inline int cmp128(sf128 a, sf128 b) {
+    int cmp_hi = cmp64(a.hi, b.hi);
+    if (cmp_hi != 0) return cmp_hi;
+    return cmp64(a.lo, b.lo);
+}
+
+inline int clz128(sf128 x) {
+    int clz_hi = clz64(x.hi);
+    if (clz_hi < 64) return clz_hi;
+    return 64 + clz64(x.lo);
+}
+
+inline bool is_zero128(sf128 x) {
+    return (x.hi.x | x.hi.y | x.lo.x | x.lo.y) == 0;
+}
+
+// ============================================================================
 // 128-bit Multiplication Support
 // ============================================================================
 
@@ -203,85 +316,37 @@ struct uint128_t {
 // 64x64 -> 128 bit multiplication
 // Uses 16-bit pieces to avoid overflow
 inline uint128_t mul64x64(sf64 a, sf64 b) {
-    // Split each 64-bit value into four 16-bit pieces
-    uint a3 = a.x >> 16;
-    uint a2 = a.x & 0xFFFFu;
-    uint a1 = a.y >> 16;
-    uint a0 = a.y & 0xFFFFu;
-    uint b3 = b.x >> 16;
-    uint b2 = b.x & 0xFFFFu;
-    uint b1 = b.y >> 16;
-    uint b0 = b.y & 0xFFFFu;
+    uint a3 = a.x >> 16, a2 = a.x & 0xFFFFu;
+    uint a1 = a.y >> 16, a0 = a.y & 0xFFFFu;
+    uint b3 = b.x >> 16, b2 = b.x & 0xFFFFu;
+    uint b1 = b.y >> 16, b0 = b.y & 0xFFFFu;
 
-    // Compute all 16 partial products (each max 32 bits)
-    uint p00 = a0 * b0;
-    uint p01 = a0 * b1;
-    uint p02 = a0 * b2;
-    uint p03 = a0 * b3;
-    uint p10 = a1 * b0;
-    uint p11 = a1 * b1;
-    uint p12 = a1 * b2;
-    uint p13 = a1 * b3;
-    uint p20 = a2 * b0;
-    uint p21 = a2 * b1;
-    uint p22 = a2 * b2;
-    uint p23 = a2 * b3;
-    uint p30 = a3 * b0;
-    uint p31 = a3 * b1;
-    uint p32 = a3 * b2;
-    uint p33 = a3 * b3;
+    uint p00 = a0*b0, p01 = a0*b1, p02 = a0*b2, p03 = a0*b3;
+    uint p10 = a1*b0, p11 = a1*b1, p12 = a1*b2, p13 = a1*b3;
+    uint p20 = a2*b0, p21 = a2*b1, p22 = a2*b2, p23 = a2*b3;
+    uint p30 = a3*b0, p31 = a3*b1, p32 = a3*b2, p33 = a3*b3;
 
-    // Accumulate partial products column by column
-    // Column 0 (bits 0-15)
     uint c0 = p00 & 0xFFFFu;
     uint carry = p00 >> 16;
+    uint c1 = p01 + p10 + carry; carry = c1 >> 16; c1 &= 0xFFFFu;
+    uint c2 = p02 + p11 + p20 + carry; carry = c2 >> 16; c2 &= 0xFFFFu;
+    uint c3 = p03 + p12 + p21 + p30 + carry; carry = c3 >> 16; c3 &= 0xFFFFu;
+    uint c4 = p13 + p22 + p31 + carry; carry = c4 >> 16; c4 &= 0xFFFFu;
+    uint c5 = p23 + p32 + carry; carry = c5 >> 16; c5 &= 0xFFFFu;
+    uint c6 = p33 + carry; uint c7 = c6 >> 16; c6 &= 0xFFFFu;
 
-    // Column 1 (bits 16-31)
-    uint c1 = p01 + p10 + carry;
-    carry = c1 >> 16;
-    c1 &= 0xFFFFu;
-
-    // Column 2 (bits 32-47)
-    uint c2 = p02 + p11 + p20 + carry;
-    carry = c2 >> 16;
-    c2 &= 0xFFFFu;
-
-    // Column 3 (bits 48-63)
-    uint c3 = p03 + p12 + p21 + p30 + carry;
-    carry = c3 >> 16;
-    c3 &= 0xFFFFu;
-
-    // Column 4 (bits 64-79)
-    uint c4 = p13 + p22 + p31 + carry;
-    carry = c4 >> 16;
-    c4 &= 0xFFFFu;
-
-    // Column 5 (bits 80-95)
-    uint c5 = p23 + p32 + carry;
-    carry = c5 >> 16;
-    c5 &= 0xFFFFu;
-
-    // Column 6 (bits 96-111)
-    uint c6 = p33 + carry;
-    carry = c6 >> 16;
-    c6 &= 0xFFFFu;
-
-    // Column 7 (bits 112-127)
-    uint c7 = carry;
-
-    uint128_t result;
-    result.w0 = (c1 << 16) | c0;
-    result.w1 = (c3 << 16) | c2;
-    result.w2 = (c5 << 16) | c4;
-    result.w3 = (c7 << 16) | c6;
-    return result;
+    uint128_t r;
+    r.w0 = (c1 << 16) | c0;
+    r.w1 = (c3 << 16) | c2;
+    r.w2 = (c5 << 16) | c4;
+    r.w3 = (c7 << 16) | c6;
+    return r;
 }
 
 // ============================================================================
 // Normalization Helpers
 // ============================================================================
 
-// Normalize subnormal significand and return shift amount
 inline int sf64_normalize_subnormal(thread sf64& sig) {
     int shift = clz64(sig) - 11;  // Target: leading 1 at bit 52
     if (shift > 0) {
@@ -293,24 +358,18 @@ inline int sf64_normalize_subnormal(thread sf64& sig) {
 // ============================================================================
 // Rounding (Round-to-Nearest-Even)
 // ============================================================================
+// Synced to gpu_memory.mm canonical implementation.
+// round_bits: 10 bits of rounding info, half-way point at 0x200
 
-// Round and pack f64 result
-// sig is assumed to be shifted left with leading 1 at appropriate position
-// round_bits contains the bits to be rounded off
 inline sf64 sf64_round_pack(bool sign, int exp_raw, sf64 sig, uint round_bits) {
-    // Round to nearest even
-    // round_bits: bit 10 is the rounding bit, bits 0-9 are sticky
-    bool round_up = false;
-    if (round_bits > 0x400u) {
-        round_up = true;
-    } else if (round_bits == 0x400u) {
-        // Tie: round to even (round up if LSB of result is 1)
-        round_up = (sig.y & 1u) != 0;
-    }
+    // Round to nearest, ties to even
+    // round_bits: 10 bits, half-way point at 0x200
+    bool round_up = (round_bits > 0x200u) ||
+                    ((round_bits == 0x200u) && ((sig.y & 1u) != 0));
 
     if (round_up) {
         sig = add64(sig, sf64(0u, 1u));
-        // Check for overflow from rounding
+        // Check if rounding caused mantissa overflow (bit 52 carried into bit 53)
         if ((sig.x & 0x00200000u) != 0) {
             sig = shr64(sig, 1);
             exp_raw++;
@@ -322,12 +381,10 @@ inline sf64 sf64_round_pack(bool sign, int exp_raw, sf64 sig, uint round_bits) {
         return sign ? SF64_NEG_INF : SF64_INF;
     }
 
-    // Check for underflow to zero/subnormal
+    // Check for underflow to subnormal/zero
     if (exp_raw <= 0) {
-        // Subnormal result
         int shift = 1 - exp_raw;
         if (shift >= 64) {
-            // Complete underflow to zero
             return sign ? SF64_NEG_ZERO : SF64_ZERO;
         }
         sig = shr64_jam(sig, shift);
@@ -340,6 +397,9 @@ inline sf64 sf64_round_pack(bool sign, int exp_raw, sf64 sig, uint round_bits) {
 // ============================================================================
 // Addition
 // ============================================================================
+// Uses 11 guard bits (shift left by 11) with 10 round bits and sticky.
+// After operation, leading 1 is normalized to bit 62 (bit 30 of .x).
+// Extract 10 round bits from low 10 bits, shift right by 10.
 
 sf64 sf64_add(sf64 a, sf64 b) {
     bool signA = sf64_sign(a);
@@ -349,9 +409,8 @@ sf64 sf64_add(sf64 a, sf64 b) {
     sf64 sigA = sf64_sig(a);
     sf64 sigB = sf64_sig(b);
 
-    // Handle NaN
-    if (sf64_is_nan(a)) return SF64_QNAN;
-    if (sf64_is_nan(b)) return SF64_QNAN;
+    // Handle NaN — propagate payload per IEEE 754
+    if (sf64_is_nan(a) || sf64_is_nan(b)) return sf64_propagate_nan(a, b);
 
     // Handle infinity
     if (sf64_is_inf(a)) {
@@ -365,7 +424,6 @@ sf64 sf64_add(sf64 a, sf64 b) {
     // Handle zero
     if (sf64_is_zero(a)) {
         if (sf64_is_zero(b)) {
-            // -0 + -0 = -0, otherwise +0
             return (signA && signB) ? SF64_NEG_ZERO : SF64_ZERO;
         }
         return b;
@@ -373,28 +431,17 @@ sf64 sf64_add(sf64 a, sf64 b) {
     if (sf64_is_zero(b)) return a;
 
     // Add implicit bit for normalized numbers
-    if (expA != 0) {
-        sigA.x |= 0x00100000u;
-    } else {
-        // Subnormal: normalize
-        expA = 1;
-    }
-    if (expB != 0) {
-        sigB.x |= 0x00100000u;
-    } else {
-        expB = 1;
-    }
+    if (expA != 0) sigA.x |= 0x00100000u; else expA = 1;
+    if (expB != 0) sigB.x |= 0x00100000u; else expB = 1;
 
-    // Shift significands left by 10 bits for guard/round/sticky bits
-    sigA = shl64(sigA, 10);
-    sigB = shl64(sigB, 10);
+    // Shift significands left by 11 bits for guard/round/sticky bits
+    // This places the leading 1 at bit 63
+    sigA = shl64(sigA, 11);
+    sigB = shl64(sigB, 11);
 
-    // Align exponents by shifting the smaller one
+    // Align exponents by shifting the smaller significand right
     int expDiff = expA - expB;
     int expZ;
-    sf64 sigZ;
-    bool signZ;
-
     if (expDiff > 0) {
         sigB = shr64_jam(sigB, expDiff);
         expZ = expA;
@@ -405,23 +452,31 @@ sf64 sf64_add(sf64 a, sf64 b) {
         expZ = expA;
     }
 
-    // Add or subtract based on signs
+    sf64 sigZ;
+    bool signZ;
+
     if (signA == signB) {
         // Same sign: add magnitudes
         signZ = signA;
         sigZ = add64(sigA, sigB);
 
-        // Check for overflow (carry out)
-        if ((sigZ.x & 0x00400000u) != 0) {
-            sigZ = shr64_jam(sigZ, 1);
+        // Check for 64-bit overflow (carry out) using magnitude comparison
+        if (cmp64(sigZ, sigA) < 0 || cmp64(sigZ, sigB) < 0) {
+            // Overflow: true sum >= 2^64, virtual leading 1 at bit 64
+            // Shift right by 2 to normalize to bit 62, increment exponent
+            sigZ = shr64_jam(sigZ, 2);
+            sigZ.x |= 0x40000000u;  // Set leading 1 at bit 62
             expZ++;
+        } else {
+            // No overflow: leading 1 at bit 63
+            // Shift right by 1 to normalize to bit 62
+            sigZ = shr64_jam(sigZ, 1);
         }
     } else {
         // Different signs: subtract magnitudes
         int cmp = cmp64(sigA, sigB);
         if (cmp == 0) {
-            // Exact cancellation
-            return SF64_ZERO;  // Positive zero for round-to-nearest
+            return SF64_ZERO;  // Exact cancellation → positive zero
         }
         if (cmp > 0) {
             signZ = signA;
@@ -431,17 +486,21 @@ sf64 sf64_add(sf64 a, sf64 b) {
             sigZ = sub64(sigB, sigA);
         }
 
-        // Normalize: shift left until leading bit is in position
-        int shift = clz64(sigZ) - 11;
+        // Normalize: shift left until leading 1 is at bit 62 (not 63)
+        int shift = clz64(sigZ) - 1;  // -1 targets bit 62
         if (shift > 0) {
             sigZ = shl64(sigZ, shift);
+            expZ -= shift;
+        } else if (shift < 0) {
+            sigZ = shr64_jam(sigZ, -shift);
             expZ -= shift;
         }
     }
 
-    // Extract rounding bits and shift down
-    uint round_bits = sigZ.y & 0x7FFu;
-    sigZ = shr64(sigZ, 11);
+    // Leading 1 is now at bit 62 (bit 30 of sigZ.x)
+    // Extract 10 round bits from low 10 bits of sigZ, then shift by 10
+    uint round_bits = sigZ.y & 0x3FFu;
+    sigZ = shr64(sigZ, 10);
 
     return sf64_round_pack(signZ, expZ, sigZ, round_bits);
 }
@@ -457,6 +516,9 @@ inline sf64 sf64_sub(sf64 a, sf64 b) {
 // ============================================================================
 // Multiplication
 // ============================================================================
+// Both significands shifted left by 11 to place leading 1 at bit 63.
+// Product has leading 1 at bit 126 or 127. Normalize to bit 62 of high word.
+// Extract 10 round bits, shift by 10.
 
 sf64 sf64_mul(sf64 a, sf64 b) {
     bool signA = sf64_sign(a);
@@ -468,8 +530,8 @@ sf64 sf64_mul(sf64 a, sf64 b) {
     sf64 sigA = sf64_sig(a);
     sf64 sigB = sf64_sig(b);
 
-    // Handle NaN
-    if (sf64_is_nan(a) || sf64_is_nan(b)) return SF64_QNAN;
+    // Handle NaN — propagate payload
+    if (sf64_is_nan(a) || sf64_is_nan(b)) return sf64_propagate_nan(a, b);
 
     // Handle infinity
     if (sf64_is_inf(a)) {
@@ -486,81 +548,257 @@ sf64 sf64_mul(sf64 a, sf64 b) {
         return signZ ? SF64_NEG_ZERO : SF64_ZERO;
     }
 
-    // Add implicit bit for normalized numbers
-    if (expA != 0) {
-        sigA.x |= 0x00100000u;
-    } else {
-        // Subnormal: normalize
-        int shift = sf64_normalize_subnormal(sigA);
-        expA = 1 - shift;
-    }
-    if (expB != 0) {
-        sigB.x |= 0x00100000u;
-    } else {
-        int shift = sf64_normalize_subnormal(sigB);
-        expB = 1 - shift;
-    }
+    // Add implicit bit, normalize subnormals
+    if (expA != 0) sigA.x |= 0x00100000u;
+    else { int s = clz64(sigA) - 11; sigA = shl64(sigA, s); expA = 1 - s; }
+    if (expB != 0) sigB.x |= 0x00100000u;
+    else { int s = clz64(sigB) - 11; sigB = shl64(sigB, s); expB = 1 - s; }
 
-    // Compute result exponent: expA + expB - bias
+    // Result exponent
     int expZ = expA + expB - SF64_EXP_BIAS;
 
-    // Shift significands for multiplication
-    // sigA has 53 bits (1.52), sigB has 53 bits
-    // After shifting: sigA << 10 and sigB << 11 gives proper alignment
-    sigA = shl64(sigA, 10);
+    // Shift both significands to have leading 1 at bit 63
+    sigA = shl64(sigA, 11);
     sigB = shl64(sigB, 11);
 
-    // 64x64 -> 128 multiplication
+    // 64x64 → 128 multiplication
     uint128_t prod = mul64x64(sigA, sigB);
-
-    // The product has leading 1 at bit 125 or 126 (depending on whether
-    // the two 1.xxx values multiplied to >= 2.0)
-    // We need to get the top 53 bits plus rounding info
-
     sf64 sigZ = sf64(prod.w3, prod.w2);
-
-    // Include sticky bits from low 64 bits
     uint sticky = ((prod.w1 | prod.w0) != 0) ? 1u : 0u;
 
-    // Normalize: check if leading bit is at position 63 or 62
-    if ((sigZ.x & 0x80000000u) == 0) {
-        // Leading bit at position 62, shift left
-        sigZ = shl64(sigZ, 1);
-        sigZ.y |= (prod.w1 >> 31);
-        expZ--;
+    // Normalize: product leading 1 at bit 126 or 127 of 128-bit result
+    if ((sigZ.x & 0x80000000u) != 0) {
+        // Overflow: product in [2,4), leading 1 at bit 63 of high word
+        // Shift right by 1 to normalize to bit 62
+        sticky |= (sigZ.y & 1u);
+        sigZ = shr64(sigZ, 1);
+        expZ++;
     }
+    // Leading 1 now at bit 62 (bit 30 of sigZ.x)
 
-    // Now leading bit is at position 63
-    // We need bits 63-11 for the result (53 bits)
-    // Bits 10-0 are round/sticky
-
-    uint round_bits = ((sigZ.y & 0x7FFu) | sticky);
-    sigZ = shr64(sigZ, 11);
+    // Extract 10 round bits and shift by 10 to get mantissa at bit 52
+    uint round_bits = (sigZ.y & 0x3FFu) | sticky;
+    sigZ = shr64(sigZ, 10);
 
     return sf64_round_pack(signZ, expZ, sigZ, round_bits);
 }
 
 // ============================================================================
-// Fused Multiply-Add (FMA)
+// Division
 // ============================================================================
+// Implements long division with proper IEEE 754 rounding.
+// Dividend significand is placed in a 128-bit register, divided by 64-bit divisor.
 
-// Note: This is a simplified FMA using mul + add (two roundings)
-// A true IEEE FMA would keep the full product precision before adding
+sf64 sf64_div(sf64 a, sf64 b) {
+    bool signA = sf64_sign(a);
+    bool signB = sf64_sign(b);
+    bool signZ = signA != signB;
+
+    int expA = sf64_exp_raw(a);
+    int expB = sf64_exp_raw(b);
+    sf64 sigA = sf64_sig(a);
+    sf64 sigB = sf64_sig(b);
+
+    // Handle NaN
+    if (sf64_is_nan(a) || sf64_is_nan(b)) return sf64_propagate_nan(a, b);
+
+    // Handle infinity
+    if (sf64_is_inf(a)) {
+        if (sf64_is_inf(b)) return SF64_QNAN;  // inf / inf = NaN
+        return signZ ? SF64_NEG_INF : SF64_INF;
+    }
+    if (sf64_is_inf(b)) {
+        return signZ ? SF64_NEG_ZERO : SF64_ZERO;  // x / inf = 0
+    }
+
+    // Handle zero
+    if (sf64_is_zero(b)) {
+        if (sf64_is_zero(a)) return SF64_QNAN;  // 0 / 0 = NaN
+        return signZ ? SF64_NEG_INF : SF64_INF;  // x / 0 = inf
+    }
+    if (sf64_is_zero(a)) {
+        return signZ ? SF64_NEG_ZERO : SF64_ZERO;
+    }
+
+    // Add implicit bit, normalize subnormals
+    if (expA != 0) sigA.x |= 0x00100000u;
+    else { int s = clz64(sigA) - 11; sigA = shl64(sigA, s); expA = 1 - s; }
+    if (expB != 0) sigB.x |= 0x00100000u;
+    else { int s = clz64(sigB) - 11; sigB = shl64(sigB, s); expB = 1 - s; }
+
+    // Result exponent
+    int expZ = expA - expB + SF64_EXP_BIAS;
+
+    // Shift dividend to have leading 1 at bit 62 (aligned with our convention)
+    sigA = shl64(sigA, 10);
+    sigB = shl64(sigB, 10);
+
+    // Check if dividend < divisor (quotient < 1.0)
+    if (cmp64(sigA, sigB) < 0) {
+        sigA = shl64(sigA, 1);
+        expZ--;
+    }
+
+    // Long division: compute 64 bits of quotient
+    // We compute quotient bit by bit for the top ~54 bits we need
+    sf64 quotient = SF64_ZERO;
+    sf64 remainder = sigA;
+
+    // We need 53 bits of quotient plus rounding info
+    for (int i = 62; i >= 0; i--) {
+        // Shift quotient left by 1
+        quotient = shl64(quotient, 1);
+
+        if (cmp64(remainder, sigB) >= 0) {
+            remainder = sub64(remainder, sigB);
+            // Set bit i of quotient
+            if (i >= 32) {
+                quotient.x |= (1u << (i - 32));
+            } else {
+                quotient.y |= (1u << i);
+            }
+        }
+
+        // Shift remainder left by 1 for next iteration
+        remainder = shl64(remainder, 1);
+    }
+
+    // quotient has leading 1 at bit 62
+    // Extract 10 round bits and compute sticky from remainder
+    uint sticky = !sf64_is_zero(remainder) ? 1u : 0u;
+    uint round_bits = (quotient.y & 0x3FFu) | sticky;
+    sf64 sigZ = shr64(quotient, 10);
+
+    return sf64_round_pack(signZ, expZ, sigZ, round_bits);
+}
+
+// ============================================================================
+// Fused Multiply-Add (FMA) — True IEEE 754 Single-Rounding
+// ============================================================================
+// Computes a*b+c with only ONE rounding at the end.
+// Uses 128-bit intermediate to preserve full product precision.
+// Synced to gpu_memory.mm canonical implementation.
+
 sf64 sf64_fma(sf64 a, sf64 b, sf64 c) {
-    // For most practical purposes, mul + add is sufficient
-    // A true single-rounding FMA is much more complex
-    sf64 prod = sf64_mul(a, b);
-    return sf64_add(prod, c);
+    // Handle special cases
+    if (sf64_is_nan(a) || sf64_is_nan(b) || sf64_is_nan(c)) {
+        return sf64_propagate_nan3(a, b, c);
+    }
+
+    bool signA = sf64_sign(a), signB = sf64_sign(b), signC = sf64_sign(c);
+    bool signP = signA != signB;
+
+    // Handle infinities
+    if (sf64_is_inf(a)) {
+        if (sf64_is_zero(b)) return SF64_QNAN;
+        if (sf64_is_inf(c) && (signP != signC)) return SF64_QNAN;
+        return signP ? SF64_NEG_INF : SF64_INF;
+    }
+    if (sf64_is_inf(b)) {
+        if (sf64_is_zero(a)) return SF64_QNAN;
+        if (sf64_is_inf(c) && (signP != signC)) return SF64_QNAN;
+        return signP ? SF64_NEG_INF : SF64_INF;
+    }
+    if (sf64_is_inf(c)) return c;
+
+    // Handle zeros — fast path when c==0 (common in matmul accumulation)
+    if (sf64_is_zero(a) || sf64_is_zero(b)) return c;
+    if (sf64_is_zero(c)) return sf64_mul(a, b);
+
+    // Extract components
+    int expA = sf64_exp_raw(a), expB = sf64_exp_raw(b), expC = sf64_exp_raw(c);
+    sf64 sigA = sf64_sig(a), sigB = sf64_sig(b), sigC = sf64_sig(c);
+
+    // Add implicit bits, handle denormals
+    if (expA != 0) sigA.x |= 0x00100000u;
+    else { int s = clz64(sigA) - 11; sigA = shl64(sigA, s); expA = 1 - s; }
+    if (expB != 0) sigB.x |= 0x00100000u;
+    else { int s = clz64(sigB) - 11; sigB = shl64(sigB, s); expB = 1 - s; }
+    if (expC != 0) sigC.x |= 0x00100000u;
+    else { int s = clz64(sigC) - 11; sigC = shl64(sigC, s); expC = 1 - s; }
+
+    // Product exponent
+    int expP = expA + expB - SF64_EXP_BIAS;
+
+    // Shift significands to bit 63 for full-precision multiply
+    sigA = shl64(sigA, 11);
+    sigB = shl64(sigB, 11);
+
+    // Full 128-bit product
+    uint128_t prod = mul64x64(sigA, sigB);
+    sf128 P = sf128{sf64(prod.w3, prod.w2), sf64(prod.w1, prod.w0)};
+
+    // Normalize product to leading 1 at bit 126 (bit 62 of hi)
+    if ((P.hi.x & 0x80000000u) != 0) {
+        P = shr128_jam(P, 1);
+        expP++;
+    }
+
+    // Prepare addend C: shift sigC (leading 1 at bit 52) to bit 126
+    sf128 C = sf128{shl64(sigC, 10), SF64_ZERO};
+
+    // Align to common exponent
+    int expDiff = expP - expC;
+    int expZ = expP;
+
+    if (expDiff > 0) {
+        C = shr128_jam(C, expDiff);
+    } else if (expDiff < 0) {
+        P = shr128_jam(P, -expDiff);
+        expZ = expC;
+    }
+
+    // Add or subtract based on signs
+    sf128 R;
+    bool signZ;
+
+    if (signP == signC) {
+        signZ = signP;
+        R = add128(P, C);
+        // Check for overflow
+        if ((R.hi.x & 0x80000000u) != 0) {
+            R = shr128_jam(R, 1);
+            expZ++;
+        }
+    } else {
+        int cmp = cmp128(P, C);
+        if (cmp == 0) return SF64_ZERO;
+
+        if (cmp > 0) {
+            signZ = signP;
+            R = sub128(P, C);
+        } else {
+            signZ = signC;
+            R = sub128(C, P);
+        }
+
+        // Normalize: shift left until leading 1 at bit 62 of hi
+        int shift = clz128(R) - 1;
+        if (shift > 0) {
+            R = shl128(R, shift);
+            expZ -= shift;
+        } else if (shift < 0) {
+            R = shr128_jam(R, -shift);
+            expZ -= shift;
+        }
+    }
+
+    // Extract result: leading 1 at bit 62, round bits in 9-0 of hi.lo
+    uint sticky = (R.lo.x | R.lo.y) != 0 ? 1u : 0u;
+    uint round_bits = (R.hi.y & 0x3FFu) | sticky;
+    sf64 sigZ = shr64(R.hi, 10);
+
+    return sf64_round_pack(signZ, expZ, sigZ, round_bits);
 }
 
 // ============================================================================
 // Comparison
 // ============================================================================
+// Returns -1 if a < b, 0 if a == b, 1 if a > b, 2 if unordered (NaN)
 
-// Returns -1 if a < b, 0 if a == b, 1 if a > b
-// NaN comparisons return 0 (unordered)
 inline int sf64_compare(sf64 a, sf64 b) {
-    if (sf64_is_nan(a) || sf64_is_nan(b)) return 0;
+    // NaN comparisons are unordered — return 2 per IEEE 754
+    if (sf64_is_nan(a) || sf64_is_nan(b)) return 2;
 
     bool signA = sf64_sign(a);
     bool signB = sf64_sign(b);
@@ -582,34 +820,77 @@ inline int sf64_compare(sf64 a, sf64 b) {
 }
 
 inline bool sf64_eq(sf64 a, sf64 b) {
-    if (sf64_is_nan(a) || sf64_is_nan(b)) return false;
-    if (sf64_is_zero(a) && sf64_is_zero(b)) return true;
+    if (sf64_is_nan(a) || sf64_is_nan(b)) return false;  // NaN != NaN
+    if (sf64_is_zero(a) && sf64_is_zero(b)) return true;  // +0 == -0
     return (a.x == b.x) && (a.y == b.y);
 }
 
+inline bool sf64_ne(sf64 a, sf64 b) {
+    return !sf64_eq(a, b);
+}
+
 inline bool sf64_lt(sf64 a, sf64 b) {
-    return sf64_compare(a, b) < 0;
+    int c = sf64_compare(a, b);
+    return c == -1;  // Only true for ordered less-than (not NaN)
 }
 
 inline bool sf64_le(sf64 a, sf64 b) {
-    return sf64_compare(a, b) <= 0;
+    int c = sf64_compare(a, b);
+    return c == -1 || c == 0;  // Only true for ordered (not NaN)
 }
 
 inline bool sf64_gt(sf64 a, sf64 b) {
-    return sf64_compare(a, b) > 0;
+    int c = sf64_compare(a, b);
+    return c == 1;  // Only true for ordered greater-than
 }
 
 inline bool sf64_ge(sf64 a, sf64 b) {
-    return sf64_compare(a, b) >= 0;
+    int c = sf64_compare(a, b);
+    return c == 1 || c == 0;  // Only true for ordered
 }
 
 // ============================================================================
-// Matrix Multiplication Kernel
+// Conversions
 // ============================================================================
 
-// Each thread computes a 4x4 sub-matrix of C for optimal performance
-// Based on Metal Performance Testing optimization techniques
-constant uint SF64_TILE_SIZE = 4;
+// Convert integer to sf64
+inline sf64 sf64_from_int(int val) {
+    if (val == 0) return SF64_ZERO;
+    bool sign = val < 0;
+    uint abs_val = sign ? uint(-val) : uint(val);
+
+    // Find position of leading 1
+    int lz = clz(abs_val);
+    int exp_raw = SF64_EXP_BIAS + 31 - lz;
+
+    // Shift mantissa into position (leading 1 at bit 52)
+    sf64 sig;
+    int shift = 20 - (31 - lz);  // Position relative to bit 20 of .x
+    if (shift >= 0) {
+        sig = sf64(abs_val >> shift, abs_val << (32 - shift));
+    } else {
+        sig = sf64(abs_val << (-shift), 0u);
+    }
+    sig.x &= SF64_MANT_HI_MASK;  // Remove implicit bit
+
+    return sf64_pack(sign, exp_raw, sig.x, sig.y);
+}
+
+// ============================================================================
+// Matrix Multiplication Kernel — Optimized with Threadgroup Shared Memory
+// ============================================================================
+// Each threadgroup (8×8 = 64 threads) computes a 32×32 output block.
+// Each thread computes a 4×4 sub-tile of the output.
+// K dimension is processed in chunks of TILE_K=8.
+// A and B tiles are cooperatively loaded into threadgroup shared memory,
+// reducing device memory bandwidth by ~8x vs naive per-thread loads.
+// Register budget: ~100 registers/thread (safe for M1+ at 256 limit).
+// Shared memory: 4KB per threadgroup (safe for 32KB limit).
+
+constant uint SF64_TG = 8;       // Threadgroup dimension (8×8 = 64 threads)
+constant uint SF64_TT = 4;       // Thread tile dimension (4×4 per thread)
+constant uint SF64_BLK = 32;     // Block dimension (TG * TT = 8*4 = 32)
+constant uint SF64_TILE_K = 8;   // K-dimension blocking factor
 
 kernel void matmul_sf64(
     device const sf64* A [[buffer(0)]],
@@ -618,52 +899,86 @@ kernel void matmul_sf64(
     constant uint& M [[buffer(3)]],
     constant uint& K [[buffer(4)]],
     constant uint& N [[buffer(5)]],
-    uint2 gid [[thread_position_in_grid]])
+    uint2 group_id [[threadgroup_position_in_grid]],
+    uint2 lid [[thread_position_in_threadgroup]])
 {
-    // Each thread handles a 4x4 tile of output
-    uint baseRow = gid.y * SF64_TILE_SIZE;
-    uint baseCol = gid.x * SF64_TILE_SIZE;
+    // Output block origin for this threadgroup
+    uint baseRow = group_id.y * SF64_BLK;
+    uint baseCol = group_id.x * SF64_BLK;
 
-    // Accumulator for 4x4 tile (16 sf64 values)
-    sf64 acc[SF64_TILE_SIZE][SF64_TILE_SIZE];
-    for (uint i = 0; i < SF64_TILE_SIZE; i++) {
-        for (uint j = 0; j < SF64_TILE_SIZE; j++) {
+    // Thread's sub-tile origin within the 32×32 block
+    uint threadRow = lid.y * SF64_TT;
+    uint threadCol = lid.x * SF64_TT;
+
+    // Accumulators for 4×4 sub-tile
+    sf64 acc[SF64_TT][SF64_TT];
+    for (uint i = 0; i < SF64_TT; i++)
+        for (uint j = 0; j < SF64_TT; j++)
             acc[i][j] = SF64_ZERO;
+
+    // Shared memory tiles — cooperatively loaded by all 64 threads
+    // sA: 32 rows × 8 cols = 256 sf64 = 2KB
+    // sB: 8 rows × 32 cols = 256 sf64 = 2KB
+    threadgroup sf64 sA[SF64_BLK * SF64_TILE_K];   // [row * TILE_K + col]
+    threadgroup sf64 sB[SF64_TILE_K * SF64_BLK];    // [row * BLK + col]
+
+    uint tid = lid.y * SF64_TG + lid.x;  // Linear thread ID (0..63)
+
+    // Process K in chunks of TILE_K
+    for (uint kBlock = 0; kBlock < K; kBlock += SF64_TILE_K) {
+
+        // === Cooperative load A tile [32 × TILE_K] ===
+        // 256 elements / 64 threads = 4 elements per thread
+        for (uint i = 0; i < 4; i++) {
+            uint idx = tid * 4 + i;
+            uint row = idx >> 3;       // idx / TILE_K (TILE_K=8)
+            uint col = idx & 7u;       // idx % TILE_K
+            uint gRow = baseRow + row;
+            uint gCol = kBlock + col;
+            sA[row * SF64_TILE_K + col] =
+                (gRow < M && gCol < K) ? A[gRow * K + gCol] : SF64_ZERO;
         }
+
+        // === Cooperative load B tile [TILE_K × 32] ===
+        // 256 elements / 64 threads = 4 elements per thread
+        for (uint i = 0; i < 4; i++) {
+            uint idx = tid * 4 + i;
+            uint row = idx >> 5;       // idx / BLK (BLK=32)
+            uint col = idx & 31u;      // idx % BLK
+            uint gRow = kBlock + row;
+            uint gCol = baseCol + col;
+            sB[row * SF64_BLK + col] =
+                (gRow < K && gCol < N) ? B[gRow * N + gCol] : SF64_ZERO;
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // === Compute: each thread processes TILE_K values from shared memory ===
+        // 8 K-values × 16 FMAs = 128 FMA calls per thread per K-chunk
+        for (uint kk = 0; kk < SF64_TILE_K; kk++) {
+            sf64 a_val[SF64_TT];
+            sf64 b_val[SF64_TT];
+
+            for (uint i = 0; i < SF64_TT; i++)
+                a_val[i] = sA[(threadRow + i) * SF64_TILE_K + kk];
+            for (uint j = 0; j < SF64_TT; j++)
+                b_val[j] = sB[kk * SF64_BLK + threadCol + j];
+
+            for (uint i = 0; i < SF64_TT; i++)
+                for (uint j = 0; j < SF64_TT; j++)
+                    acc[i][j] = sf64_fma(a_val[i], b_val[j], acc[i][j]);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    // Compute dot products for the 4x4 tile
-    for (uint k = 0; k < K; k++) {
-        // Load 4 elements from A column (for this k)
-        sf64 a_vals[SF64_TILE_SIZE];
-        for (uint i = 0; i < SF64_TILE_SIZE; i++) {
-            uint row = baseRow + i;
-            a_vals[i] = (row < M) ? A[row * K + k] : SF64_ZERO;
-        }
-
-        // Load 4 elements from B row (for this k)
-        sf64 b_vals[SF64_TILE_SIZE];
-        for (uint j = 0; j < SF64_TILE_SIZE; j++) {
-            uint col = baseCol + j;
-            b_vals[j] = (col < N) ? B[k * N + col] : SF64_ZERO;
-        }
-
-        // Accumulate 4x4 outer product: acc += a_vals * b_vals^T
-        for (uint i = 0; i < SF64_TILE_SIZE; i++) {
-            for (uint j = 0; j < SF64_TILE_SIZE; j++) {
-                acc[i][j] = sf64_fma(a_vals[i], b_vals[j], acc[i][j]);
-            }
-        }
-    }
-
-    // Store results to C
-    for (uint i = 0; i < SF64_TILE_SIZE; i++) {
-        for (uint j = 0; j < SF64_TILE_SIZE; j++) {
-            uint row = baseRow + i;
-            uint col = baseCol + j;
-            if (row < M && col < N) {
+    // === Store results ===
+    for (uint i = 0; i < SF64_TT; i++) {
+        for (uint j = 0; j < SF64_TT; j++) {
+            uint row = baseRow + threadRow + i;
+            uint col = baseCol + threadCol + j;
+            if (row < M && col < N)
                 C[row * N + col] = acc[i][j];
-            }
         }
     }
 }

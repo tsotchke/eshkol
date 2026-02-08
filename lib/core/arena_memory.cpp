@@ -25,6 +25,8 @@
 #define DEFAULT_ALIGNMENT 8
 
 // Global tape pointer for AD operations (shared across JIT modules in REPL)
+// NOTE: Not thread_local because REPL JIT resolves these via dlsym/ADD_DATA_SYMBOL.
+// For parallel-map with AD, the codegen should use per-task tape allocation.
 ad_tape_t* __current_ad_tape = nullptr;
 
 // Global AD mode flag (shared across JIT modules in REPL)
@@ -45,7 +47,7 @@ void debug_print_ptr(const char* context, void* ptr) {
 
 // NESTED GRADIENT FIX: Tape stack for arbitrary-depth nested gradients
 // MAX_TAPE_DEPTH must match the value in llvm_codegen.cpp
-static const size_t MAX_TAPE_DEPTH = 32;
+#define MAX_TAPE_DEPTH 32
 ad_tape_t* __ad_tape_stack[MAX_TAPE_DEPTH] = {nullptr};
 uint64_t __ad_tape_depth = 0;
 
@@ -57,7 +59,7 @@ void* __inner_var_node_ptr = nullptr;
 uint64_t __gradient_x_degree = 0;
 
 // N-DIMENSIONAL DERIVATIVES: Stack of outer AD nodes for arbitrary depth nesting
-#define MAX_TAPE_DEPTH 16
+// Uses same MAX_TAPE_DEPTH (32)
 void* __outer_ad_node_stack[MAX_TAPE_DEPTH] = {nullptr};
 uint64_t __outer_ad_node_depth = 0;
 
@@ -1199,6 +1201,16 @@ ad_node_t* arena_allocate_ad_node(arena_t* arena) {
         node->input1 = nullptr;
         node->input2 = nullptr;
         node->id = 0;
+        // Zero-initialize extended tensor AD fields
+        node->tensor_value = nullptr;
+        node->tensor_gradient = nullptr;
+        node->input3 = nullptr;
+        node->input4 = nullptr;
+        node->saved_tensors = nullptr;
+        node->num_saved = 0;
+        memset(&node->params, 0, sizeof(node->params));
+        node->shape = nullptr;
+        node->ndim = 0;
     }
 
     return node;
@@ -1229,7 +1241,7 @@ ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena) {
     hdr->ref_count = 0;
     hdr->size = (uint32_t)data_size;
 
-    // Initialize AD node
+    // Initialize AD node (all 15 fields)
     ad_node_t* node = (ad_node_t*)(mem + sizeof(eshkol_object_header_t));
     node->type = AD_NODE_CONSTANT;
     node->value = 0.0;
@@ -1237,6 +1249,16 @@ ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena) {
     node->input1 = nullptr;
     node->input2 = nullptr;
     node->id = 0;
+    // Zero-initialize extended tensor AD fields
+    node->tensor_value = nullptr;
+    node->tensor_gradient = nullptr;
+    node->input3 = nullptr;
+    node->input4 = nullptr;
+    node->saved_tensors = nullptr;
+    node->num_saved = 0;
+    memset(&node->params, 0, sizeof(node->params));
+    node->shape = nullptr;
+    node->ndim = 0;
 
     return node;
 }
@@ -1259,6 +1281,16 @@ ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count) {
             nodes[i].input1 = nullptr;
             nodes[i].input2 = nullptr;
             nodes[i].id = 0;
+            // Zero-initialize extended tensor AD fields
+            nodes[i].tensor_value = nullptr;
+            nodes[i].tensor_gradient = nullptr;
+            nodes[i].input3 = nullptr;
+            nodes[i].input4 = nullptr;
+            nodes[i].saved_tensors = nullptr;
+            nodes[i].num_saved = 0;
+            memset(&nodes[i].params, 0, sizeof(nodes[i].params));
+            nodes[i].shape = nullptr;
+            nodes[i].ndim = 0;
         }
     }
     
@@ -2235,6 +2267,27 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                 fprintf(get_output(opts), "(dual %g %g)", dual->value, dual->derivative);
             } else {
                 fprintf(get_output(opts), "(dual 0 0)");
+            }
+            break;
+        }
+
+        case ESHKOL_VALUE_COMPLEX: {
+            // Complex number: data.ptr_val points to {double real, double imag}
+            double* parts = (double*)value->data.ptr_val;
+            if (parts) {
+                double re = parts[0];
+                double im = parts[1];
+                if (im == 0.0) {
+                    fprintf(get_output(opts), "%g", re);
+                } else if (re == 0.0) {
+                    fprintf(get_output(opts), "%gi", im);
+                } else if (im < 0.0) {
+                    fprintf(get_output(opts), "%g%gi", re, im);
+                } else {
+                    fprintf(get_output(opts), "%g+%gi", re, im);
+                }
+            } else {
+                fprintf(get_output(opts), "0");
             }
             break;
         }

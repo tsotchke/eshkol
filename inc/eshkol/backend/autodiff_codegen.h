@@ -126,6 +126,40 @@ public:
     llvm::Value* recordADNodeUnary(uint32_t op_type, llvm::Value* input);
 
     /**
+     * Record a tensor operation on the AD tape.
+     * Sets extended fields: tensor_value, saved_tensors, params, shape, ndim.
+     * @param op_type Operation type (AD_NODE_CONV2D=19, etc.)
+     * @param input1 First input AD node (or null)
+     * @param input2 Second input AD node (or null)
+     * @param input3 Third input AD node (or null, e.g. V in attention)
+     * @param input4 Fourth input AD node (or null, e.g. mask)
+     * @param tensor_result Pointer to output tensor elements (double*)
+     * @param saved_tensors Array of void* pointers to saved data for backward
+     * @param num_saved Number of saved tensors
+     * @param shape Pointer to output shape array (int64_t*)
+     * @param ndim Number of dimensions
+     * @return Result AD node
+     */
+    llvm::Value* recordADNodeTensor(
+        uint32_t op_type,
+        llvm::Value* input1, llvm::Value* input2,
+        llvm::Value* input3, llvm::Value* input4,
+        llvm::Value* tensor_result,
+        llvm::Value* saved_tensors, llvm::Value* num_saved,
+        llvm::Value* shape, llvm::Value* ndim);
+
+    /**
+     * Accumulate a tensor gradient onto an AD node's tensor_gradient field.
+     * If tensor_gradient is NULL, allocates and zero-fills it first.
+     * @param node_ptr Pointer to AD node
+     * @param grad_tensor Pointer to gradient tensor (double*)
+     * @param num_elements Number of elements in the gradient tensor
+     */
+    void accumulateTensorGradient(llvm::Value* node_ptr,
+                                  llvm::Value* grad_tensor,
+                                  llvm::Value* num_elements);
+
+    /**
      * Create a constant AD node (leaf node with no dependencies).
      * @param value The constant value
      * @return AD node

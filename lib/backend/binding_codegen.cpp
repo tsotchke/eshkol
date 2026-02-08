@@ -87,7 +87,7 @@ Value* BindingCodegen::ensureTaggedValue(Value* value, eshkol_value_type_t value
     }
 
     // Fallback: pack as INT64
-    eshkol_warn("ensureTaggedValue: fallback to INT64 for type %d", (int)value_type);
+    eshkol_error("ensureTaggedValue: fallback to INT64 for type %d", (int)value_type);
     if (value->getType()->isIntegerTy(64)) {
         return tagged_.packInt64(value, true);
     } else if (value->getType()->isIntegerTy()) {
@@ -413,13 +413,13 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
         // Evaluate value
         void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
         if (!typed_ptr) {
-            eshkol_warn("let: failed to evaluate binding for %s", var_name.c_str());
+            eshkol_error("let: failed to evaluate binding for '%s'", var_name.c_str());
             continue;
         }
 
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
         if (!tagged_val) {
-            eshkol_warn("let: failed to convert binding for %s", var_name.c_str());
+            eshkol_error("let: failed to convert binding for '%s'", var_name.c_str());
             continue;
         }
 
@@ -654,7 +654,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         }
 
         if (!typed_ptr) {
-            eshkol_warn("letrec: failed to evaluate lambda binding for %s", var_names[i].c_str());
+            eshkol_error("letrec: failed to evaluate lambda binding for '%s'", var_names[i].c_str());
             continue;
         }
 
@@ -700,7 +700,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         // Evaluate value
         void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
         if (!typed_ptr) {
-            eshkol_warn("letrec: failed to evaluate binding for %s", var_names[i].c_str());
+            eshkol_error("letrec: failed to evaluate binding for '%s'", var_names[i].c_str());
             continue;
         }
 
@@ -816,13 +816,13 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
         // Evaluate value (can see previous bindings)
         void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
         if (!typed_ptr) {
-            eshkol_warn("let*: failed to evaluate binding for %s", var_name.c_str());
+            eshkol_error("let*: failed to evaluate binding for '%s'", var_name.c_str());
             continue;
         }
 
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
         if (!tagged_val) {
-            eshkol_warn("let*: failed to convert binding for %s", var_name.c_str());
+            eshkol_error("let*: failed to convert binding for '%s'", var_name.c_str());
             continue;
         }
 
@@ -985,7 +985,7 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         }
 
         if (!typed_ptr) {
-            eshkol_warn("letrec*: failed to evaluate binding for %s", var_name.c_str());
+            eshkol_error("letrec*: failed to evaluate binding for '%s'", var_name.c_str());
             continue;
         }
 
