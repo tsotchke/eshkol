@@ -578,6 +578,147 @@ llvm::Value* AutodiffCodegen::dualTanh(llvm::Value* dual) {
     return createDualNumber(tanh_a, deriv);
 }
 
+llvm::Value* AutodiffCodegen::dualAsinh(llvm::Value* dual) {
+    if (!dual) return nullptr;
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Function* asinh_func = getMathFunc("asinh");
+    llvm::Function* sqrt_func = getMathFunc("sqrt");
+    if (!asinh_func || !sqrt_func) return nullptr;
+
+    // Value: asinh(a)
+    llvm::Value* asinh_a = ctx_.builder().CreateCall(asinh_func, {a});
+
+    // Derivative: a' / sqrt(1 + a²)
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* a_sq = ctx_.builder().CreateFMul(a, a);
+    llvm::Value* under = ctx_.builder().CreateFAdd(one, a_sq);
+    llvm::Value* sqrt_under = ctx_.builder().CreateCall(sqrt_func, {under});
+    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, sqrt_under);
+
+    return createDualNumber(asinh_a, deriv);
+}
+
+llvm::Value* AutodiffCodegen::dualAcosh(llvm::Value* dual) {
+    if (!dual) return nullptr;
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Function* acosh_func = getMathFunc("acosh");
+    llvm::Function* sqrt_func = getMathFunc("sqrt");
+    if (!acosh_func || !sqrt_func) return nullptr;
+
+    // Value: acosh(a)
+    llvm::Value* acosh_a = ctx_.builder().CreateCall(acosh_func, {a});
+
+    // Derivative: a' / sqrt(a² - 1)
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* a_sq = ctx_.builder().CreateFMul(a, a);
+    llvm::Value* under = ctx_.builder().CreateFSub(a_sq, one);
+    llvm::Value* sqrt_under = ctx_.builder().CreateCall(sqrt_func, {under});
+    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, sqrt_under);
+
+    return createDualNumber(acosh_a, deriv);
+}
+
+llvm::Value* AutodiffCodegen::dualAtanh(llvm::Value* dual) {
+    if (!dual) return nullptr;
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Function* atanh_func = getMathFunc("atanh");
+    if (!atanh_func) return nullptr;
+
+    // Value: atanh(a)
+    llvm::Value* atanh_a = ctx_.builder().CreateCall(atanh_func, {a});
+
+    // Derivative: a' / (1 - a²)
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* a_sq = ctx_.builder().CreateFMul(a, a);
+    llvm::Value* denom = ctx_.builder().CreateFSub(one, a_sq);
+    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, denom);
+
+    return createDualNumber(atanh_a, deriv);
+}
+
+llvm::Value* AutodiffCodegen::dualLog10(llvm::Value* dual) {
+    if (!dual) return nullptr;
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Function* log10_func = getMathFunc("log10");
+    if (!log10_func) return nullptr;
+
+    // Value: log10(a)
+    llvm::Value* log10_a = ctx_.builder().CreateCall(log10_func, {a});
+
+    // Derivative: a' / (a * ln(10))
+    llvm::Value* ln10 = llvm::ConstantFP::get(ctx_.doubleType(), 2.302585092994046);
+    llvm::Value* a_times_ln10 = ctx_.builder().CreateFMul(a, ln10);
+    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, a_times_ln10);
+
+    return createDualNumber(log10_a, deriv);
+}
+
+llvm::Value* AutodiffCodegen::dualLog2(llvm::Value* dual) {
+    if (!dual) return nullptr;
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Function* log2_func = getMathFunc("log2");
+    if (!log2_func) return nullptr;
+
+    // Value: log2(a)
+    llvm::Value* log2_a = ctx_.builder().CreateCall(log2_func, {a});
+
+    // Derivative: a' / (a * ln(2))
+    llvm::Value* ln2 = llvm::ConstantFP::get(ctx_.doubleType(), 0.6931471805599453);
+    llvm::Value* a_times_ln2 = ctx_.builder().CreateFMul(a, ln2);
+    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, a_times_ln2);
+
+    return createDualNumber(log2_a, deriv);
+}
+
+llvm::Value* AutodiffCodegen::dualExp2(llvm::Value* dual) {
+    if (!dual) return nullptr;
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Function* exp2_func = getMathFunc("exp2");
+    if (!exp2_func) return nullptr;
+
+    // Value: exp2(a) = 2^a
+    llvm::Value* exp2_a = ctx_.builder().CreateCall(exp2_func, {a});
+
+    // Derivative: a' * 2^a * ln(2)
+    llvm::Value* ln2 = llvm::ConstantFP::get(ctx_.doubleType(), 0.6931471805599453);
+    llvm::Value* exp2_times_ln2 = ctx_.builder().CreateFMul(exp2_a, ln2);
+    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, exp2_times_ln2);
+
+    return createDualNumber(exp2_a, deriv);
+}
+
+llvm::Value* AutodiffCodegen::dualCbrt(llvm::Value* dual) {
+    if (!dual) return nullptr;
+    llvm::Value* a = getDualPrimal(dual);
+    llvm::Value* a_prime = getDualTangent(dual);
+
+    llvm::Function* cbrt_func = getMathFunc("cbrt");
+    if (!cbrt_func) return nullptr;
+
+    // Value: cbrt(a)
+    llvm::Value* cbrt_a = ctx_.builder().CreateCall(cbrt_func, {a});
+
+    // Derivative: a' / (3 * cbrt(a)²)
+    llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
+    llvm::Value* cbrt_sq = ctx_.builder().CreateFMul(cbrt_a, cbrt_a);
+    llvm::Value* denom = ctx_.builder().CreateFMul(three, cbrt_sq);
+    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, denom);
+
+    return createDualNumber(cbrt_a, deriv);
+}
+
 // Helper to get arena pointer from global
 llvm::Value* AutodiffCodegen::getArenaPtr() {
     llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
@@ -887,6 +1028,99 @@ llvm::Value* AutodiffCodegen::recordADNodeUnary(uint32_t op_type, llvm::Value* i
         case 43: // AD_NODE_SQUARE
             {
                 result_value = ctx_.builder().CreateFMul(input_value, input_value);
+            }
+            break;
+
+        // === Complete math functions (54-66) ===
+        case 54: // AD_NODE_TAN
+            {
+                llvm::Function* tan_func = getMathFunc("tan");
+                if (!tan_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(tan_func, {input_value});
+            }
+            break;
+        case 55: // AD_NODE_ASIN
+            {
+                llvm::Function* asin_func = getMathFunc("asin");
+                if (!asin_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(asin_func, {input_value});
+            }
+            break;
+        case 56: // AD_NODE_ACOS
+            {
+                llvm::Function* acos_func = getMathFunc("acos");
+                if (!acos_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(acos_func, {input_value});
+            }
+            break;
+        case 57: // AD_NODE_ATAN
+            {
+                llvm::Function* atan_func = getMathFunc("atan");
+                if (!atan_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(atan_func, {input_value});
+            }
+            break;
+        case 58: // AD_NODE_SINH
+            {
+                llvm::Function* sinh_func = getMathFunc("sinh");
+                if (!sinh_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(sinh_func, {input_value});
+            }
+            break;
+        case 59: // AD_NODE_COSH
+            {
+                llvm::Function* cosh_func = getMathFunc("cosh");
+                if (!cosh_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(cosh_func, {input_value});
+            }
+            break;
+        case 60: // AD_NODE_ASINH
+            {
+                llvm::Function* asinh_func = getMathFunc("asinh");
+                if (!asinh_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(asinh_func, {input_value});
+            }
+            break;
+        case 61: // AD_NODE_ACOSH
+            {
+                llvm::Function* acosh_func = getMathFunc("acosh");
+                if (!acosh_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(acosh_func, {input_value});
+            }
+            break;
+        case 62: // AD_NODE_ATANH
+            {
+                llvm::Function* atanh_func = getMathFunc("atanh");
+                if (!atanh_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(atanh_func, {input_value});
+            }
+            break;
+        case 63: // AD_NODE_LOG10
+            {
+                llvm::Function* log10_func = getMathFunc("log10");
+                if (!log10_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(log10_func, {input_value});
+            }
+            break;
+        case 64: // AD_NODE_LOG2
+            {
+                llvm::Function* log2_func = getMathFunc("log2");
+                if (!log2_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(log2_func, {input_value});
+            }
+            break;
+        case 65: // AD_NODE_EXP2
+            {
+                llvm::Function* exp2_func = getMathFunc("exp2");
+                if (!exp2_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(exp2_func, {input_value});
+            }
+            break;
+        case 66: // AD_NODE_CBRT
+            {
+                llvm::Function* cbrt_func = getMathFunc("cbrt");
+                if (!cbrt_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(cbrt_func, {input_value});
             }
             break;
 
@@ -1610,6 +1844,15 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     llvm::BasicBlock* sin_block = llvm::BasicBlock::Create(ctx_.context(), "grad_sin", current_func);
     llvm::BasicBlock* cos_block = llvm::BasicBlock::Create(ctx_.context(), "grad_cos", current_func);
 
+    // === LEAF NODES (types 0, 1): constants and variables have no inputs to propagate to ===
+    llvm::Value* is_constant = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 0));
+    llvm::Value* is_variable = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 1));
+    llvm::Value* is_leaf = ctx_.builder().CreateOr(is_constant, is_variable);
+    llvm::BasicBlock* check_ops = llvm::BasicBlock::Create(ctx_.context(), "check_ops", current_func);
+    ctx_.builder().CreateCondBr(is_leaf, done_block, check_ops);
+
+    ctx_.builder().SetInsertPoint(check_ops);
+
     // Switch on node type (scalar backward passes)
     // For ADD (type=2): gradient flows equally to both inputs
     llvm::Value* is_add = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 2));
@@ -2187,8 +2430,8 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     // Check for MIN (type=45)
     ctx_.builder().SetInsertPoint(check_min);
     llvm::Value* is_min = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 45));
-    llvm::BasicBlock* check_conv2d = llvm::BasicBlock::Create(ctx_.context(), "check_conv2d", current_func);
-    ctx_.builder().CreateCondBr(is_min, min_block, check_conv2d);
+    llvm::BasicBlock* check_tan = llvm::BasicBlock::Create(ctx_.context(), "check_tan", current_func);
+    ctx_.builder().CreateCondBr(is_min, min_block, check_tan);
 
     // MIN: dL/dx = dL/dz if x < y, dL/dy = dL/dz if y <= x
     ctx_.builder().SetInsertPoint(min_block);
@@ -2201,6 +2444,266 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
         llvm::Value* grad_input2 = ctx_.builder().CreateSelect(cmp, zero, node_grad);
         accumulateGradient(input1, grad_input1);
         accumulateGradient(input2, grad_input2);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // ===== COMPLETE MATH FUNCTION BACKWARD PASSES (types 54-66) =====
+    // All standard math functions with proper derivative computation
+
+    // Create blocks for all math function backward passes
+    llvm::BasicBlock* tan_block = llvm::BasicBlock::Create(ctx_.context(), "grad_tan", current_func);
+    llvm::BasicBlock* asin_block2 = llvm::BasicBlock::Create(ctx_.context(), "grad_asin", current_func);
+    llvm::BasicBlock* acos_block2 = llvm::BasicBlock::Create(ctx_.context(), "grad_acos", current_func);
+    llvm::BasicBlock* atan_block = llvm::BasicBlock::Create(ctx_.context(), "grad_atan", current_func);
+    llvm::BasicBlock* sinh_block2 = llvm::BasicBlock::Create(ctx_.context(), "grad_sinh", current_func);
+    llvm::BasicBlock* cosh_block2 = llvm::BasicBlock::Create(ctx_.context(), "grad_cosh", current_func);
+    llvm::BasicBlock* asinh_block = llvm::BasicBlock::Create(ctx_.context(), "grad_asinh", current_func);
+    llvm::BasicBlock* acosh_block = llvm::BasicBlock::Create(ctx_.context(), "grad_acosh", current_func);
+    llvm::BasicBlock* atanh_block = llvm::BasicBlock::Create(ctx_.context(), "grad_atanh", current_func);
+    llvm::BasicBlock* log10_block = llvm::BasicBlock::Create(ctx_.context(), "grad_log10", current_func);
+    llvm::BasicBlock* log2_block = llvm::BasicBlock::Create(ctx_.context(), "grad_log2", current_func);
+    llvm::BasicBlock* exp2_block = llvm::BasicBlock::Create(ctx_.context(), "grad_exp2", current_func);
+    llvm::BasicBlock* cbrt_block = llvm::BasicBlock::Create(ctx_.context(), "grad_cbrt", current_func);
+
+    // --- TAN (type=54): dL/dx = dL/dz * (1 + tan²(x)) = dL/dz / cos²(x) ---
+    ctx_.builder().SetInsertPoint(check_tan);
+    llvm::Value* is_tan = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 54));
+    llvm::BasicBlock* check_asin = llvm::BasicBlock::Create(ctx_.context(), "check_asin", current_func);
+    ctx_.builder().CreateCondBr(is_tan, tan_block, check_asin);
+
+    ctx_.builder().SetInsertPoint(tan_block);
+    if (input1) {
+        llvm::Value* node_val_ptr = ctx_.builder().CreateStructGEP(ad_node_type, node_ptr, 1);
+        llvm::Value* tan_x = ctx_.builder().CreateLoad(ctx_.doubleType(), node_val_ptr);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* tan_sq = ctx_.builder().CreateFMul(tan_x, tan_x);
+        llvm::Value* sec_sq = ctx_.builder().CreateFAdd(one, tan_sq);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, sec_sq);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- ASIN (type=55): dL/dx = dL/dz / sqrt(1 - x²) ---
+    ctx_.builder().SetInsertPoint(check_asin);
+    llvm::Value* is_asin = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 55));
+    llvm::BasicBlock* check_acos = llvm::BasicBlock::Create(ctx_.context(), "check_acos", current_func);
+    ctx_.builder().CreateCondBr(is_asin, asin_block2, check_acos);
+
+    ctx_.builder().SetInsertPoint(asin_block2);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* x_sq = ctx_.builder().CreateFMul(input_val, input_val);
+        llvm::Value* under = ctx_.builder().CreateFSub(one, x_sq);
+        llvm::Function* sqrt_func = getMathFunc("sqrt");
+        if (sqrt_func) {
+            llvm::Value* sqrt_under = ctx_.builder().CreateCall(sqrt_func, {under});
+            llvm::Value* grad_input = ctx_.builder().CreateFDiv(node_grad, sqrt_under);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- ACOS (type=56): dL/dx = -dL/dz / sqrt(1 - x²) ---
+    ctx_.builder().SetInsertPoint(check_acos);
+    llvm::Value* is_acos = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 56));
+    llvm::BasicBlock* check_atan = llvm::BasicBlock::Create(ctx_.context(), "check_atan", current_func);
+    ctx_.builder().CreateCondBr(is_acos, acos_block2, check_atan);
+
+    ctx_.builder().SetInsertPoint(acos_block2);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* x_sq = ctx_.builder().CreateFMul(input_val, input_val);
+        llvm::Value* under = ctx_.builder().CreateFSub(one, x_sq);
+        llvm::Function* sqrt_func = getMathFunc("sqrt");
+        if (sqrt_func) {
+            llvm::Value* sqrt_under = ctx_.builder().CreateCall(sqrt_func, {under});
+            llvm::Value* neg_grad = ctx_.builder().CreateFNeg(node_grad);
+            llvm::Value* grad_input = ctx_.builder().CreateFDiv(neg_grad, sqrt_under);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- ATAN (type=57): dL/dx = dL/dz / (1 + x²) ---
+    ctx_.builder().SetInsertPoint(check_atan);
+    llvm::Value* is_atan = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 57));
+    llvm::BasicBlock* check_sinh = llvm::BasicBlock::Create(ctx_.context(), "check_sinh", current_func);
+    ctx_.builder().CreateCondBr(is_atan, atan_block, check_sinh);
+
+    ctx_.builder().SetInsertPoint(atan_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* x_sq = ctx_.builder().CreateFMul(input_val, input_val);
+        llvm::Value* denom = ctx_.builder().CreateFAdd(one, x_sq);
+        llvm::Value* grad_input = ctx_.builder().CreateFDiv(node_grad, denom);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- SINH (type=58): dL/dx = dL/dz * cosh(x) ---
+    ctx_.builder().SetInsertPoint(check_sinh);
+    llvm::Value* is_sinh = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 58));
+    llvm::BasicBlock* check_cosh = llvm::BasicBlock::Create(ctx_.context(), "check_cosh", current_func);
+    ctx_.builder().CreateCondBr(is_sinh, sinh_block2, check_cosh);
+
+    ctx_.builder().SetInsertPoint(sinh_block2);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Function* cosh_func = getMathFunc("cosh");
+        if (cosh_func) {
+            llvm::Value* cosh_val = ctx_.builder().CreateCall(cosh_func, {input_val});
+            llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, cosh_val);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- COSH (type=59): dL/dx = dL/dz * sinh(x) ---
+    ctx_.builder().SetInsertPoint(check_cosh);
+    llvm::Value* is_cosh = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 59));
+    llvm::BasicBlock* check_asinh = llvm::BasicBlock::Create(ctx_.context(), "check_asinh", current_func);
+    ctx_.builder().CreateCondBr(is_cosh, cosh_block2, check_asinh);
+
+    ctx_.builder().SetInsertPoint(cosh_block2);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Function* sinh_func = getMathFunc("sinh");
+        if (sinh_func) {
+            llvm::Value* sinh_val = ctx_.builder().CreateCall(sinh_func, {input_val});
+            llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, sinh_val);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- ASINH (type=60): dL/dx = dL/dz / sqrt(1 + x²) ---
+    ctx_.builder().SetInsertPoint(check_asinh);
+    llvm::Value* is_asinh = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 60));
+    llvm::BasicBlock* check_acosh = llvm::BasicBlock::Create(ctx_.context(), "check_acosh", current_func);
+    ctx_.builder().CreateCondBr(is_asinh, asinh_block, check_acosh);
+
+    ctx_.builder().SetInsertPoint(asinh_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* x_sq = ctx_.builder().CreateFMul(input_val, input_val);
+        llvm::Value* under = ctx_.builder().CreateFAdd(one, x_sq);
+        llvm::Function* sqrt_func = getMathFunc("sqrt");
+        if (sqrt_func) {
+            llvm::Value* sqrt_under = ctx_.builder().CreateCall(sqrt_func, {under});
+            llvm::Value* grad_input = ctx_.builder().CreateFDiv(node_grad, sqrt_under);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- ACOSH (type=61): dL/dx = dL/dz / sqrt(x² - 1) ---
+    ctx_.builder().SetInsertPoint(check_acosh);
+    llvm::Value* is_acosh = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 61));
+    llvm::BasicBlock* check_atanh = llvm::BasicBlock::Create(ctx_.context(), "check_atanh", current_func);
+    ctx_.builder().CreateCondBr(is_acosh, acosh_block, check_atanh);
+
+    ctx_.builder().SetInsertPoint(acosh_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* x_sq = ctx_.builder().CreateFMul(input_val, input_val);
+        llvm::Value* under = ctx_.builder().CreateFSub(x_sq, one);
+        llvm::Function* sqrt_func = getMathFunc("sqrt");
+        if (sqrt_func) {
+            llvm::Value* sqrt_under = ctx_.builder().CreateCall(sqrt_func, {under});
+            llvm::Value* grad_input = ctx_.builder().CreateFDiv(node_grad, sqrt_under);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- ATANH (type=62): dL/dx = dL/dz / (1 - x²) ---
+    ctx_.builder().SetInsertPoint(check_atanh);
+    llvm::Value* is_atanh = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 62));
+    llvm::BasicBlock* check_log10 = llvm::BasicBlock::Create(ctx_.context(), "check_log10", current_func);
+    ctx_.builder().CreateCondBr(is_atanh, atanh_block, check_log10);
+
+    ctx_.builder().SetInsertPoint(atanh_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* x_sq = ctx_.builder().CreateFMul(input_val, input_val);
+        llvm::Value* denom = ctx_.builder().CreateFSub(one, x_sq);
+        llvm::Value* grad_input = ctx_.builder().CreateFDiv(node_grad, denom);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- LOG10 (type=63): dL/dx = dL/dz / (x * ln(10)) ---
+    ctx_.builder().SetInsertPoint(check_log10);
+    llvm::Value* is_log10 = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 63));
+    llvm::BasicBlock* check_log2 = llvm::BasicBlock::Create(ctx_.context(), "check_log2", current_func);
+    ctx_.builder().CreateCondBr(is_log10, log10_block, check_log2);
+
+    ctx_.builder().SetInsertPoint(log10_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* ln10 = llvm::ConstantFP::get(ctx_.doubleType(), 2.302585092994046);
+        llvm::Value* denom = ctx_.builder().CreateFMul(input_val, ln10);
+        llvm::Value* grad_input = ctx_.builder().CreateFDiv(node_grad, denom);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- LOG2 (type=64): dL/dx = dL/dz / (x * ln(2)) ---
+    ctx_.builder().SetInsertPoint(check_log2);
+    llvm::Value* is_log2 = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 64));
+    llvm::BasicBlock* check_exp2 = llvm::BasicBlock::Create(ctx_.context(), "check_exp2", current_func);
+    ctx_.builder().CreateCondBr(is_log2, log2_block, check_exp2);
+
+    ctx_.builder().SetInsertPoint(log2_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* ln2 = llvm::ConstantFP::get(ctx_.doubleType(), 0.6931471805599453);
+        llvm::Value* denom = ctx_.builder().CreateFMul(input_val, ln2);
+        llvm::Value* grad_input = ctx_.builder().CreateFDiv(node_grad, denom);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- EXP2 (type=65): dL/dx = dL/dz * 2^x * ln(2) ---
+    ctx_.builder().SetInsertPoint(check_exp2);
+    llvm::Value* is_exp2 = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 65));
+    llvm::BasicBlock* check_cbrt = llvm::BasicBlock::Create(ctx_.context(), "check_cbrt", current_func);
+    ctx_.builder().CreateCondBr(is_exp2, exp2_block, check_cbrt);
+
+    ctx_.builder().SetInsertPoint(exp2_block);
+    if (input1) {
+        // node value = 2^x (stored during forward pass)
+        llvm::Value* node_val_ptr = ctx_.builder().CreateStructGEP(ad_node_type, node_ptr, 1);
+        llvm::Value* exp2_x = ctx_.builder().CreateLoad(ctx_.doubleType(), node_val_ptr);
+        llvm::Value* ln2 = llvm::ConstantFP::get(ctx_.doubleType(), 0.6931471805599453);
+        llvm::Value* exp2_times_ln2 = ctx_.builder().CreateFMul(exp2_x, ln2);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, exp2_times_ln2);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- CBRT (type=66): dL/dx = dL/dz / (3 * cbrt(x)²) ---
+    ctx_.builder().SetInsertPoint(check_cbrt);
+    llvm::Value* is_cbrt = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 66));
+    llvm::BasicBlock* check_conv2d = llvm::BasicBlock::Create(ctx_.context(), "check_conv2d", current_func);
+    ctx_.builder().CreateCondBr(is_cbrt, cbrt_block, check_conv2d);
+
+    ctx_.builder().SetInsertPoint(cbrt_block);
+    if (input1) {
+        // node value = cbrt(x) (stored during forward pass)
+        llvm::Value* node_val_ptr = ctx_.builder().CreateStructGEP(ad_node_type, node_ptr, 1);
+        llvm::Value* cbrt_x = ctx_.builder().CreateLoad(ctx_.doubleType(), node_val_ptr);
+        llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
+        llvm::Value* cbrt_sq = ctx_.builder().CreateFMul(cbrt_x, cbrt_x);
+        llvm::Value* denom = ctx_.builder().CreateFMul(three, cbrt_sq);
+        llvm::Value* grad_input = ctx_.builder().CreateFDiv(node_grad, denom);
+        accumulateGradient(input1, grad_input);
     }
     ctx_.builder().CreateBr(done_block);
 
@@ -2599,10 +3102,11 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     }
     ctx_.builder().CreateBr(done_block);
 
-    // Unknown type: emit runtime warning for unhandled AD_NODE types
+    // Unknown type: emit runtime error and abort for unhandled AD_NODE types
+    // This prevents silently producing zero gradients for unrecognized operations
     ctx_.builder().SetInsertPoint(unknown_type_block);
     {
-        // Call fprintf(stderr, "Warning: Unknown AD node type %d in backward pass\n", type)
+        // Print diagnostic to stderr
         llvm::FunctionType* fprintf_type = llvm::FunctionType::get(
             ctx_.int32Type(), {ctx_.ptrType(), ctx_.ptrType()}, true);
         llvm::FunctionCallee fprintf_fn = ctx_.module().getOrInsertFunction("fprintf", fprintf_type);
@@ -2615,11 +3119,16 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
         }
         llvm::Value* stderr_val = ctx_.builder().CreateLoad(ctx_.ptrType(), stderr_var);
 
-        llvm::Value* fmt_str = ctx_.builder().CreateGlobalStringPtr(
-            "Warning: Unknown AD node type %d in backward pass\n");
+        llvm::Value* fmt_str = ctx_.builder().CreateGlobalString(
+            "Error: Unknown AD node type %d in backward pass — cannot compute gradient\n");
         ctx_.builder().CreateCall(fprintf_fn, {stderr_val, fmt_str, node_type});
+
+        // Abort: unknown types must not silently produce zero gradients
+        llvm::FunctionType* abort_type = llvm::FunctionType::get(ctx_.voidType(), {}, false);
+        llvm::FunctionCallee abort_fn = ctx_.module().getOrInsertFunction("abort", abort_type);
+        ctx_.builder().CreateCall(abort_fn, {});
+        ctx_.builder().CreateUnreachable();
     }
-    ctx_.builder().CreateBr(done_block);
 
     // Done
     ctx_.builder().SetInsertPoint(done_block);

@@ -134,6 +134,54 @@ void dgemv(char trans, int M, int N,
            const double* x, int incx,
            double beta, double* y, int incy);
 
+// ===== Batched Matrix Operations =====
+
+/**
+ * Batched general matrix multiply: C[b] = alpha * A[b] * B[b] + beta * C[b]
+ *
+ * Performs batch_count independent matrix multiplications. Matrices are stored
+ * contiguously: A[b] starts at A + b * M * K, etc.
+ *
+ * @param transA 'N' for A, 'T' for A^T
+ * @param transB 'N' for B, 'T' for B^T
+ * @param M Rows of each op(A[b]) and C[b]
+ * @param N Columns of each op(B[b]) and C[b]
+ * @param K Columns of each op(A[b]) / Rows of each op(B[b])
+ * @param alpha Scalar multiplier for A*B
+ * @param A Batched matrix A (batch_count * M * K)
+ * @param lda Leading dimension of each A[b]
+ * @param B Batched matrix B (batch_count * K * N)
+ * @param ldb Leading dimension of each B[b]
+ * @param beta Scalar multiplier for C
+ * @param C Batched result matrix (batch_count * M * N)
+ * @param ldc Leading dimension of each C[b]
+ * @param batch_count Number of matrices in the batch
+ */
+void batched_dgemm(char transA, char transB,
+                   int M, int N, int K,
+                   double alpha,
+                   const double* A, int lda,
+                   const double* B, int ldb,
+                   double beta,
+                   double* C, int ldc,
+                   int batch_count);
+
+/**
+ * Simple batched matmul: C[b] = A[b] * B[b] for b=0..batch_count-1
+ *
+ * Convenience wrapper. Matrices stored contiguously in row-major order.
+ *
+ * @param A Batched matrix A (batch_count * M * K), row-major
+ * @param B Batched matrix B (batch_count * K * N), row-major
+ * @param C Batched result (batch_count * M * N), row-major
+ * @param M Rows of each A[b] and C[b]
+ * @param K Columns of each A[b] / Rows of each B[b]
+ * @param N Columns of each B[b] and C[b]
+ * @param batch_count Number of matrices in the batch
+ */
+void batched_matmul(const double* A, const double* B, double* C,
+                    size_t M, size_t K, size_t N, size_t batch_count);
+
 // ===== Vector Operations =====
 
 /**
@@ -206,6 +254,22 @@ extern "C" {
  */
 void eshkol_matmul_f64(const double* A, const double* B, double* C,
                         uint64_t M, uint64_t K, uint64_t N);
+
+/**
+ * Runtime batched matrix multiplication with automatic BLAS dispatch.
+ * Called from generated LLVM IR for transformer batch operations.
+ *
+ * @param A Batched matrix A data (row-major, batch_count * M * K)
+ * @param B Batched matrix B data (row-major, batch_count * K * N)
+ * @param C Output batched matrix (row-major, batch_count * M * N)
+ * @param M Rows of each A[b] and C[b]
+ * @param K Columns of each A[b] / Rows of each B[b]
+ * @param N Columns of each B[b] and C[b]
+ * @param batch_count Number of matrices in the batch
+ */
+void eshkol_batched_matmul_f64(const double* A, const double* B, double* C,
+                                uint64_t M, uint64_t K, uint64_t N,
+                                uint64_t batch_count);
 
 /**
  * Check if BLAS is available at runtime.

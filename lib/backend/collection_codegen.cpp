@@ -1500,10 +1500,53 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(merge_path);
     llvm::BasicBlock* tensor_exit = ctx_.builder().GetInsertBlock();
 
-    // VECTOR PATH: Original Scheme vector logic
+    // VECTOR PATH: Original Scheme vector logic with bounds checking
     ctx_.builder().SetInsertPoint(vector_path);
     llvm::Value* vec_ptr_int = tagged_.unpackInt64(vec_arg);
     llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(vec_ptr_int, ctx_.ptrType());
+
+    // Load vector length from offset 0 (int64)
+    llvm::Value* vec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vec_len");
+
+    // Bounds check: index must be >= 0 and < length
+    llvm::Value* idx_negative = ctx_.builder().CreateICmpSLT(idx,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* idx_too_large = ctx_.builder().CreateICmpSGE(idx, vec_len);
+    llvm::Value* out_of_bounds = ctx_.builder().CreateOr(idx_negative, idx_too_large);
+
+    llvm::BasicBlock* bounds_ok = llvm::BasicBlock::Create(ctx_.context(), "vref_bounds_ok", current_func);
+    llvm::BasicBlock* bounds_fail = llvm::BasicBlock::Create(ctx_.context(), "vref_bounds_fail", current_func);
+    ctx_.builder().CreateCondBr(out_of_bounds, bounds_fail, bounds_ok);
+
+    // Bounds check failure: emit runtime error
+    ctx_.builder().SetInsertPoint(bounds_fail);
+    {
+        llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+        if (!raise_func) {
+            llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+            raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                "eshkol_raise", &ctx_.module());
+            raise_func->setDoesNotReturn();
+        }
+        llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+            make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", &ctx_.module());
+        }
+        // Create error message string
+        llvm::Value* fmt_str = ctx_.builder().CreateGlobalString(
+            "vector-ref: index out of bounds");
+        llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, fmt_str});
+        ctx_.builder().CreateCall(raise_func, {exception});
+        ctx_.builder().CreateUnreachable();
+    }
+
+    // Bounds OK: proceed with element access
+    ctx_.builder().SetInsertPoint(bounds_ok);
 
     // Get pointer to elements (after length field)
     llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
@@ -1548,11 +1591,6 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
     llvm::Value* vec_ptr_int = tagged_.unpackInt64(vec_arg);
     llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(vec_ptr_int, ctx_.ptrType());
 
-    // Get pointer to elements (after length field)
-    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
-
     // Extract index
     llvm::Value* idx = idx_tagged;
     if (idx->getType() == ctx_.taggedValueType()) {
@@ -1564,6 +1602,52 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
             idx = ctx_.builder().CreateFPToSI(idx, ctx_.int64Type());
         }
     }
+
+    // Bounds check: load vector length and validate index
+    llvm::Value* vec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vset_len");
+    llvm::Value* idx_negative = ctx_.builder().CreateICmpSLT(idx,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* idx_too_large = ctx_.builder().CreateICmpSGE(idx, vec_len);
+    llvm::Value* out_of_bounds = ctx_.builder().CreateOr(idx_negative, idx_too_large);
+
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bounds_ok = llvm::BasicBlock::Create(ctx_.context(), "vset_ok", current_func);
+    llvm::BasicBlock* bounds_fail = llvm::BasicBlock::Create(ctx_.context(), "vset_fail", current_func);
+    ctx_.builder().CreateCondBr(out_of_bounds, bounds_fail, bounds_ok);
+
+    // Bounds check failure: emit runtime error
+    ctx_.builder().SetInsertPoint(bounds_fail);
+    {
+        llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+        if (!raise_func) {
+            llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+            raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                "eshkol_raise", &ctx_.module());
+            raise_func->setDoesNotReturn();
+        }
+        llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+            make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", &ctx_.module());
+        }
+        llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
+            "vector-set!: index out of bounds");
+        llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
+        ctx_.builder().CreateCall(raise_func, {exception});
+        ctx_.builder().CreateUnreachable();
+    }
+
+    // Bounds OK: proceed with element store
+    ctx_.builder().SetInsertPoint(bounds_ok);
+
+    // Get pointer to elements (after length field)
+    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
 
     llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base_typed, idx);
     ctx_.builder().CreateStore(tagged_val, elem_ptr);

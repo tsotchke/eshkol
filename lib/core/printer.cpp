@@ -33,6 +33,7 @@ static const char* type_to_string(eshkol_type_t type) {
         case ESHKOL_FUNC: return "FUNC";
         case ESHKOL_VAR: return "VAR";
         case ESHKOL_OP: return "OP";
+        case ESHKOL_BIGNUM_LITERAL: return "BIGNUM_LITERAL";
         default: return "UNKNOWN";
     }
 }
@@ -263,11 +264,17 @@ void eshkol_ast_pretty_print(const eshkol_ast_t *ast, int indent) {
             
         case ESHKOL_STRING:
             print_indent(indent + 1);
-            printf("Value: \"%s\" (size: %llu)\n", 
+            printf("Value: \"%s\" (size: %llu)\n",
                    ast->str_val.ptr ? ast->str_val.ptr : "(null)",
                    (unsigned long long)ast->str_val.size);
             break;
-            
+
+        case ESHKOL_BIGNUM_LITERAL:
+            print_indent(indent + 1);
+            printf("Value: %s (bignum literal)\n",
+                   ast->str_val.ptr ? ast->str_val.ptr : "(null)");
+            break;
+
         case ESHKOL_VAR:
             print_indent(indent + 1);
             printf("ID: %s\n", ast->variable.id ? ast->variable.id : "(null)");

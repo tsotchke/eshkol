@@ -18,6 +18,14 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Intrinsics.h>
+#include <llvm/Config/llvm-config.h>
+
+// LLVM VERSION COMPATIBILITY
+#if LLVM_VERSION_MAJOR >= 18
+#define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getOrInsertDeclaration(mod, id, types)
+#else
+#define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getDeclaration(mod, id, types)
+#endif
 
 namespace eshkol {
 
@@ -101,7 +109,7 @@ llvm::Value* ComplexCodegen::packComplexToTagged(llvm::Value* complex) {
     llvm::Function* printf_func = ctx_.lookupFunction("printf");
     llvm::Function* exit_func = ctx_.lookupFunction("exit");
     if (printf_func && exit_func) {
-        llvm::Value* err_msg = ctx_.builder().CreateGlobalStringPtr(
+        llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
             "Error: arena allocation failed for complex number (16 bytes)\n");
         ctx_.builder().CreateCall(printf_func, {err_msg});
         ctx_.builder().CreateCall(exit_func, {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_.context()), 1)});
@@ -188,7 +196,7 @@ llvm::Value* ComplexCodegen::complexDiv(llvm::Value* z1, llvm::Value* z2) {
     llvm::Value* c = getComplexReal(z2);
     llvm::Value* d = getComplexImag(z2);
 
-    llvm::Function* fabs_fn = llvm::Intrinsic::getDeclaration(
+    llvm::Function* fabs_fn = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::fabs, {ctx_.doubleType()});
     llvm::Value* abs_c = ctx_.builder().CreateCall(fabs_fn, {c}, "abs_c");
     llvm::Value* abs_d = ctx_.builder().CreateCall(fabs_fn, {d}, "abs_d");
@@ -274,10 +282,10 @@ llvm::Value* ComplexCodegen::complexMagnitude(llvm::Value* z) {
     llvm::Value* a = getComplexReal(z);
     llvm::Value* b = getComplexImag(z);
 
-    llvm::Function* fabs_fn = llvm::Intrinsic::getDeclaration(
+    llvm::Function* fabs_fn = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::fabs, {ctx_.doubleType()});
     llvm::Function* sqrt_fn = getSqrtIntrinsic();
-    llvm::Function* maxnum_fn = llvm::Intrinsic::getDeclaration(
+    llvm::Function* maxnum_fn = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::maxnum, {ctx_.doubleType()});
 
     llvm::Value* abs_a = ctx_.builder().CreateCall(fabs_fn, {a}, "abs_a");
@@ -447,27 +455,27 @@ llvm::Value* ComplexCodegen::makeFromPolar(llvm::Value* magnitude, llvm::Value* 
 // ═══════════════════════════════════════════════════════════════════════════
 
 llvm::Function* ComplexCodegen::getSqrtIntrinsic() {
-    return llvm::Intrinsic::getDeclaration(&ctx_.module(),
+    return ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
 }
 
 llvm::Function* ComplexCodegen::getSinIntrinsic() {
-    return llvm::Intrinsic::getDeclaration(&ctx_.module(),
+    return ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sin, {ctx_.doubleType()});
 }
 
 llvm::Function* ComplexCodegen::getCosIntrinsic() {
-    return llvm::Intrinsic::getDeclaration(&ctx_.module(),
+    return ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::cos, {ctx_.doubleType()});
 }
 
 llvm::Function* ComplexCodegen::getExpIntrinsic() {
-    return llvm::Intrinsic::getDeclaration(&ctx_.module(),
+    return ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::exp, {ctx_.doubleType()});
 }
 
 llvm::Function* ComplexCodegen::getLogIntrinsic() {
-    return llvm::Intrinsic::getDeclaration(&ctx_.module(),
+    return ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::log, {ctx_.doubleType()});
 }
 

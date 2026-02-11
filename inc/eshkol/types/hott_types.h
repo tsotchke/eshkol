@@ -181,6 +181,7 @@ namespace BuiltinTypes {
     inline constexpr TypeId Integer{12, Universe::U0, TYPE_FLAG_EXACT};
     inline constexpr TypeId Int64{13, Universe::U0, TYPE_FLAG_EXACT};
     inline constexpr TypeId Natural{14, Universe::U0, TYPE_FLAG_EXACT};
+    inline constexpr TypeId BigInt{24, Universe::U0, TYPE_FLAG_EXACT};  // Arbitrary-precision integer
     inline constexpr TypeId Real{15, Universe::U0, 0};
     inline constexpr TypeId Float64{16, Universe::U0, 0};
     inline constexpr TypeId Float32{17, Universe::U0, 0};  // Single precision float

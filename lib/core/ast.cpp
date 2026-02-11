@@ -15,6 +15,7 @@ void eshkol_ast_clean(eshkol_ast_t *ast)
 
     switch (ast->type) {
     case ESHKOL_STRING:
+    case ESHKOL_BIGNUM_LITERAL:
         if (ast->str_val.ptr != nullptr) delete [] ast->str_val.ptr;
         ast->str_val.ptr = nullptr;
         break;
@@ -118,6 +119,10 @@ eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast) {
     // Deep copy string fields if needed
     if (ast->type == ESHKOL_VAR && ast->variable.id) {
         copy->variable.id = strdup(ast->variable.id);
+    }
+    if ((ast->type == ESHKOL_STRING || ast->type == ESHKOL_BIGNUM_LITERAL) && ast->str_val.ptr) {
+        copy->str_val.ptr = new char[ast->str_val.size];
+        memcpy(copy->str_val.ptr, ast->str_val.ptr, ast->str_val.size);
     }
     
     // Deep copy nested structures

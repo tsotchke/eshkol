@@ -254,7 +254,7 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
         llvm::Function* printf_fn = ctx_.lookupFunction("printf");
         llvm::Function* exit_fn = ctx_.lookupFunction("exit");
         if (printf_fn && exit_fn) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalStringPtr(
+            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
                 "Error: tensor index out of bounds (dimension %lld)\n");
             ctx_.builder().CreateCall(printf_fn, {fmt, dim_i});
             ctx_.builder().CreateCall(exit_fn, {llvm::ConstantInt::get(
@@ -697,6 +697,121 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
+    // Load shapes from both tensors for broadcast check
+    llvm::Value* t1_dims_field = builder.CreateStructGEP(tensor_type, tensor1_ptr, 0);
+    llvm::Value* t1_dims_ptr = builder.CreateLoad(ctx_.ptrType(), t1_dims_field);
+    llvm::Value* t1_ndim_field = builder.CreateStructGEP(tensor_type, tensor1_ptr, 1);
+    llvm::Value* t1_ndim = builder.CreateLoad(ctx_.int64Type(), t1_ndim_field);
+    llvm::Value* t2_dims_field = builder.CreateStructGEP(tensor_type, tensor2_ptr, 0);
+    llvm::Value* t2_dims_ptr = builder.CreateLoad(ctx_.ptrType(), t2_dims_field);
+    llvm::Value* t2_ndim_field = builder.CreateStructGEP(tensor_type, tensor2_ptr, 1);
+    llvm::Value* t2_ndim = builder.CreateLoad(ctx_.int64Type(), t2_ndim_field);
+
+    // Runtime shape comparison: if shapes identical, use fast SIMD path
+    auto* shapes_eq_ft = llvm::FunctionType::get(ctx_.int64Type(),
+        {ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType(), ctx_.int64Type()}, false);
+    llvm::Function* shapes_eq_fn = ctx_.module().getFunction("eshkol_shapes_equal");
+    if (!shapes_eq_fn) {
+        shapes_eq_fn = llvm::Function::Create(shapes_eq_ft,
+            llvm::Function::ExternalLinkage, "eshkol_shapes_equal", &ctx_.module());
+    }
+    llvm::Value* shapes_match = builder.CreateCall(shapes_eq_fn,
+        {t1_dims_ptr, t1_ndim, t2_dims_ptr, t2_ndim}, "shapes_match");
+    llvm::Value* is_same_shape = builder.CreateICmpNE(shapes_match,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+
+    // Shared result storage - declared before branch so both paths can write to it
+    llvm::Value* shared_result = builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "arith_shared_result");
+
+    llvm::Function* current_top_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* fast_path = llvm::BasicBlock::Create(ctx_.context(), "arith_fast_path", current_top_func);
+    llvm::BasicBlock* broadcast_path = llvm::BasicBlock::Create(ctx_.context(), "arith_broadcast_path", current_top_func);
+    llvm::BasicBlock* arith_done = llvm::BasicBlock::Create(ctx_.context(), "arith_done", current_top_func);
+
+    builder.CreateCondBr(is_same_shape, fast_path, broadcast_path);
+
+    // ===== BROADCAST PATH: shapes differ, use runtime broadcast =====
+    builder.SetInsertPoint(broadcast_path);
+    {
+        llvm::Value* bcast_arena = builder.CreateLoad(
+            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Function* arena_alloc_fn = mem_.getArenaAllocate();
+
+        // Get elements from both tensors
+        llvm::Value* t1_elems_field = builder.CreateStructGEP(tensor_type, tensor1_ptr, 2);
+        llvm::Value* t1_elems = builder.CreateLoad(ctx_.ptrType(), t1_elems_field);
+        llvm::Value* t2_elems_field = builder.CreateStructGEP(tensor_type, tensor2_ptr, 2);
+        llvm::Value* t2_elems = builder.CreateLoad(ctx_.ptrType(), t2_elems_field);
+
+        // Allocate output dims array (max 16 dims)
+        llvm::Value* out_dims_buf = builder.CreateCall(arena_alloc_fn,
+            {bcast_arena, llvm::ConstantInt::get(ctx_.int64Type(), 16 * sizeof(int64_t))}, "bcast_out_dims");
+        // Allocate space for out_ndim and out_total (stack alloca)
+        llvm::Value* out_ndim_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bcast_ndim");
+        llvm::Value* out_total_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bcast_total");
+
+        // Compute upper bound for output allocation: sum of totals * max expansion
+        llvm::Value* t1_total_field = builder.CreateStructGEP(tensor_type, tensor1_ptr, 3);
+        llvm::Value* t1_total = builder.CreateLoad(ctx_.int64Type(), t1_total_field);
+        llvm::Value* t2_total_field = builder.CreateStructGEP(tensor_type, tensor2_ptr, 3);
+        llvm::Value* t2_total = builder.CreateLoad(ctx_.int64Type(), t2_total_field);
+        llvm::Value* max_alloc = builder.CreateMul(t1_total, t2_total);
+        llvm::Value* cap = llvm::ConstantInt::get(ctx_.int64Type(), 16 * 1024 * 1024);
+        llvm::Value* use_cap = builder.CreateICmpUGT(max_alloc, cap);
+        llvm::Value* safe_alloc = builder.CreateSelect(use_cap, cap, max_alloc);
+        llvm::Value* alloc_bytes = builder.CreateMul(safe_alloc,
+            llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+        llvm::Value* out_data_buf = builder.CreateCall(arena_alloc_fn,
+            {bcast_arena, alloc_bytes}, "bcast_out_data");
+
+        // Map operation string to int: 0=add, 1=sub, 2=mul, 3=div
+        int64_t op_code = 0;
+        if (operation == "add") op_code = 0;
+        else if (operation == "sub") op_code = 1;
+        else if (operation == "mul") op_code = 2;
+        else if (operation == "div") op_code = 3;
+
+        // Call runtime: eshkol_broadcast_elementwise_f64
+        auto* bcast_ft = llvm::FunctionType::get(ctx_.int64Type(),
+            {ctx_.int64Type(),
+             ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type(),
+             ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type(),
+             ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false);
+        llvm::Function* bcast_fn = ctx_.module().getFunction("eshkol_broadcast_elementwise_f64");
+        if (!bcast_fn) {
+            bcast_fn = llvm::Function::Create(bcast_ft,
+                llvm::Function::ExternalLinkage, "eshkol_broadcast_elementwise_f64", &ctx_.module());
+        }
+        builder.CreateCall(bcast_fn,
+            {llvm::ConstantInt::get(ctx_.int64Type(), op_code),
+             t1_elems, t1_dims_ptr, t1_ndim,
+             t2_elems, t2_dims_ptr, t2_ndim,
+             out_data_buf, out_dims_buf, out_ndim_alloca, out_total_alloca});
+
+        // Load actual ndim and total
+        llvm::Value* bcast_ndim = builder.CreateLoad(ctx_.int64Type(), out_ndim_alloca);
+        llvm::Value* bcast_total = builder.CreateLoad(ctx_.int64Type(), out_total_alloca);
+
+        // Build result tensor
+        llvm::Function* alloc_tensor_fn = mem_.getArenaAllocateTensorWithHeader();
+        llvm::Value* bcast_tensor = builder.CreateCall(alloc_tensor_fn, {bcast_arena}, "bcast_tensor");
+
+        builder.CreateStore(out_dims_buf,
+            builder.CreateStructGEP(tensor_type, bcast_tensor, 0));
+        builder.CreateStore(bcast_ndim,
+            builder.CreateStructGEP(tensor_type, bcast_tensor, 1));
+        builder.CreateStore(out_data_buf,
+            builder.CreateStructGEP(tensor_type, bcast_tensor, 2));
+        builder.CreateStore(bcast_total,
+            builder.CreateStructGEP(tensor_type, bcast_tensor, 3));
+
+        builder.CreateStore(tagged_.packHeapPtr(bcast_tensor), shared_result);
+        builder.CreateBr(arith_done);
+    }
+
+    // ===== FAST PATH: shapes match, use SIMD =====
+    builder.SetInsertPoint(fast_path);
+
     // Get arena pointer
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
@@ -860,9 +975,14 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
     builder.CreateStore(next_scalar_i, scalar_counter);
     builder.CreateBr(scalar_cond);
 
-    // Final exit - pack tensor result as consolidated HEAP_PTR
+    // Final exit from SIMD fast path - store result and branch to merge
     builder.SetInsertPoint(final_exit);
-    return tagged_.packHeapPtr(typed_result_tensor_ptr);
+    builder.CreateStore(tagged_.packHeapPtr(typed_result_tensor_ptr), shared_result);
+    builder.CreateBr(arith_done);
+
+    // ===== MERGE: return result from whichever path was taken =====
+    builder.SetInsertPoint(arith_done);
+    return builder.CreateLoad(ctx_.taggedValueType(), shared_result);
 }
 
 // ===== SIMD-ACCELERATED MATRIX MULTIPLICATION =====
@@ -1411,7 +1531,7 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
         llvm::Function* printf_fn_matmul = ctx_.lookupFunction("printf");
         llvm::Function* exit_fn_matmul = ctx_.lookupFunction("exit");
         if (printf_fn_matmul && exit_fn_matmul) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalStringPtr(
+            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
                 "Error: tensor-dot matmul only supports 1D and 2D tensors (got %lld dimensions)\n");
             ctx_.builder().CreateCall(printf_fn_matmul, {fmt, a_num_dims});
             ctx_.builder().CreateCall(exit_fn_matmul, {llvm::ConstantInt::get(
@@ -2114,7 +2234,7 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     llvm::Function* printf_fn_guard = ctx_.lookupFunction("printf");
     llvm::Function* exit_fn_guard = ctx_.lookupFunction("exit");
     if (printf_fn_guard && exit_fn_guard) {
-        llvm::Value* fmt = ctx_.builder().CreateGlobalStringPtr(
+        llvm::Value* fmt = ctx_.builder().CreateGlobalString(
             "Error: tensor-reduce with dimension only supports 1D and 2D tensors (got %lld dimensions)\n");
         ctx_.builder().CreateCall(printf_fn_guard, {fmt, src_num_dims});
         ctx_.builder().CreateCall(exit_fn_guard, {llvm::ConstantInt::get(
@@ -3869,6 +3989,936 @@ llvm::Value* TensorCodegen::tensorSilu(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+llvm::Value* TensorCodegen::tensorElu(const eshkol_operations_t* op) {
+    // ELU: x > 0 ? x : alpha * (exp(x) - 1)
+    // Default alpha = 1.0
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_error("elu requires 1 or 2 arguments (tensor [, alpha])");
+        return nullptr;
+    }
+
+    llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_val) return nullptr;
+
+    auto& builder = ctx_.builder();
+
+    llvm::Value* alpha;
+    if (op->call_op.num_vars == 2) {
+        llvm::Value* alpha_tagged = codegenAST(&op->call_op.variables[1]);
+        if (!alpha_tagged) return nullptr;
+        alpha = tagged_.unpackDouble(alpha_tagged);
+    } else {
+        alpha = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    }
+
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+
+    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
+    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Type* tensor_type = ctx_.tensorType();
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* ndim_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 1);
+    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), ndim_field);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+    llvm::Value* total_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_field);
+
+    llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "elu_result");
+
+    llvm::Value* dims_size = builder.CreateMul(num_dims,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_size}, "elu_dims");
+    builder.CreateMemCpy(result_dims, llvm::MaybeAlign(8), dims_ptr, llvm::MaybeAlign(8), dims_size);
+
+    llvm::Value* elems_size = builder.CreateMul(total_elements,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "elu_elems");
+
+    llvm::Function* exp_func = ctx_.module().getFunction("exp");
+    if (!exp_func) {
+        llvm::FunctionType* exp_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        exp_func = llvm::Function::Create(exp_type, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
+    }
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "elu_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "elu_body", current_func);
+    llvm::BasicBlock* elu_pos = llvm::BasicBlock::Create(ctx_.context(), "elu_pos", current_func);
+    llvm::BasicBlock* elu_neg = llvm::BasicBlock::Create(ctx_.context(), "elu_neg", current_func);
+    llvm::BasicBlock* elu_merge = llvm::BasicBlock::Create(ctx_.context(), "elu_merge", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "elu_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "elu_i");
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    llvm::Value* cmp = builder.CreateICmpULT(i, total_elements);
+    builder.CreateCondBr(cmp, loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    llvm::Value* src_ptr = builder.CreateGEP(ctx_.int64Type(), src_elems, i);
+    llvm::Value* val_bits = builder.CreateLoad(ctx_.int64Type(), src_ptr);
+    llvm::Value* val = builder.CreateBitCast(val_bits, ctx_.doubleType());
+
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* is_positive = builder.CreateFCmpOGT(val, zero);
+    builder.CreateCondBr(is_positive, elu_pos, elu_neg);
+
+    // Positive branch: output = x
+    builder.SetInsertPoint(elu_pos);
+    builder.CreateBr(elu_merge);
+
+    // Negative branch: output = alpha * (exp(x) - 1)
+    builder.SetInsertPoint(elu_neg);
+    llvm::Value* exp_val = builder.CreateCall(exp_func, {val});
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* exp_minus_1 = builder.CreateFSub(exp_val, one);
+    llvm::Value* neg_result = builder.CreateFMul(alpha, exp_minus_1);
+    builder.CreateBr(elu_merge);
+
+    // Merge
+    builder.SetInsertPoint(elu_merge);
+    llvm::PHINode* result_val = builder.CreatePHI(ctx_.doubleType(), 2, "elu_val");
+    result_val->addIncoming(val, elu_pos);
+    result_val->addIncoming(neg_result, elu_neg);
+
+    llvm::Value* result_bits = builder.CreateBitCast(result_val, ctx_.int64Type());
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, i);
+    builder.CreateStore(result_bits, dst_ptr);
+
+    llvm::Value* next_i = builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    builder.CreateStore(next_i, counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    llvm::Value* r_dims_field = builder.CreateStructGEP(tensor_type, result_ptr, 0);
+    builder.CreateStore(result_dims, r_dims_field);
+    llvm::Value* r_ndim_field = builder.CreateStructGEP(tensor_type, result_ptr, 1);
+    builder.CreateStore(num_dims, r_ndim_field);
+    llvm::Value* r_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    builder.CreateStore(result_elems, r_elems_field);
+    llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
+    builder.CreateStore(total_elements, r_total_field);
+
+    return tagged_.packHeapPtr(result_ptr);
+}
+
+llvm::Value* TensorCodegen::tensorSelu(const eshkol_operations_t* op) {
+    // SELU: lambda * (x > 0 ? x : alpha * (exp(x) - 1))
+    // lambda = 1.0507009873554804934193349852946
+    // alpha  = 1.6732632423543772848170429916717
+    if (op->call_op.num_vars != 1) {
+        eshkol_error("selu requires exactly 1 argument");
+        return nullptr;
+    }
+
+    llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_val) return nullptr;
+
+    auto& builder = ctx_.builder();
+
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+
+    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
+    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Type* tensor_type = ctx_.tensorType();
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* ndim_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 1);
+    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), ndim_field);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+    llvm::Value* total_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_field);
+
+    llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "selu_result");
+
+    llvm::Value* dims_size = builder.CreateMul(num_dims,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_size}, "selu_dims");
+    builder.CreateMemCpy(result_dims, llvm::MaybeAlign(8), dims_ptr, llvm::MaybeAlign(8), dims_size);
+
+    llvm::Value* elems_size = builder.CreateMul(total_elements,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "selu_elems");
+
+    llvm::Function* exp_func = ctx_.module().getFunction("exp");
+    if (!exp_func) {
+        llvm::FunctionType* exp_type = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        exp_func = llvm::Function::Create(exp_type, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
+    }
+
+    llvm::Value* selu_lambda = llvm::ConstantFP::get(ctx_.doubleType(), 1.0507009873554804934193349852946);
+    llvm::Value* selu_alpha = llvm::ConstantFP::get(ctx_.doubleType(), 1.6732632423543772848170429916717);
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "selu_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "selu_body", current_func);
+    llvm::BasicBlock* selu_pos = llvm::BasicBlock::Create(ctx_.context(), "selu_pos", current_func);
+    llvm::BasicBlock* selu_neg = llvm::BasicBlock::Create(ctx_.context(), "selu_neg", current_func);
+    llvm::BasicBlock* selu_merge = llvm::BasicBlock::Create(ctx_.context(), "selu_merge", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "selu_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "selu_i");
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    llvm::Value* cmp = builder.CreateICmpULT(i, total_elements);
+    builder.CreateCondBr(cmp, loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    llvm::Value* src_ptr = builder.CreateGEP(ctx_.int64Type(), src_elems, i);
+    llvm::Value* val_bits = builder.CreateLoad(ctx_.int64Type(), src_ptr);
+    llvm::Value* val = builder.CreateBitCast(val_bits, ctx_.doubleType());
+
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* is_positive = builder.CreateFCmpOGT(val, zero);
+    builder.CreateCondBr(is_positive, selu_pos, selu_neg);
+
+    // Positive: lambda * x
+    builder.SetInsertPoint(selu_pos);
+    llvm::Value* pos_result = builder.CreateFMul(selu_lambda, val);
+    builder.CreateBr(selu_merge);
+
+    // Negative: lambda * alpha * (exp(x) - 1)
+    builder.SetInsertPoint(selu_neg);
+    llvm::Value* exp_val = builder.CreateCall(exp_func, {val});
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* exp_minus_1 = builder.CreateFSub(exp_val, one);
+    llvm::Value* alpha_exp = builder.CreateFMul(selu_alpha, exp_minus_1);
+    llvm::Value* neg_result = builder.CreateFMul(selu_lambda, alpha_exp);
+    builder.CreateBr(selu_merge);
+
+    builder.SetInsertPoint(selu_merge);
+    llvm::PHINode* result_val = builder.CreatePHI(ctx_.doubleType(), 2, "selu_val");
+    result_val->addIncoming(pos_result, selu_pos);
+    result_val->addIncoming(neg_result, selu_neg);
+
+    llvm::Value* result_bits = builder.CreateBitCast(result_val, ctx_.int64Type());
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, i);
+    builder.CreateStore(result_bits, dst_ptr);
+
+    llvm::Value* next_i = builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    builder.CreateStore(next_i, counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    llvm::Value* r_dims_field = builder.CreateStructGEP(tensor_type, result_ptr, 0);
+    builder.CreateStore(result_dims, r_dims_field);
+    llvm::Value* r_ndim_field = builder.CreateStructGEP(tensor_type, result_ptr, 1);
+    builder.CreateStore(num_dims, r_ndim_field);
+    llvm::Value* r_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    builder.CreateStore(result_elems, r_elems_field);
+    llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
+    builder.CreateStore(total_elements, r_total_field);
+
+    return tagged_.packHeapPtr(result_ptr);
+}
+
+llvm::Value* TensorCodegen::tensorMish(const eshkol_operations_t* op) {
+    // Mish: x * tanh(softplus(x)) = x * tanh(ln(1 + exp(x)))
+    // Numerically stable: for x > 20, softplus(x) ≈ x, so mish ≈ x * tanh(x)
+    if (op->call_op.num_vars != 1) {
+        eshkol_error("mish requires exactly 1 argument");
+        return nullptr;
+    }
+
+    llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_val) return nullptr;
+
+    auto& builder = ctx_.builder();
+
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+
+    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
+    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Type* tensor_type = ctx_.tensorType();
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* ndim_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 1);
+    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), ndim_field);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+    llvm::Value* total_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_field);
+
+    llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "mish_result");
+
+    llvm::Value* dims_size = builder.CreateMul(num_dims,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_size}, "mish_dims");
+    builder.CreateMemCpy(result_dims, llvm::MaybeAlign(8), dims_ptr, llvm::MaybeAlign(8), dims_size);
+
+    llvm::Value* elems_size = builder.CreateMul(total_elements,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "mish_elems");
+
+    // Declare math functions
+    llvm::Function* exp_func = ctx_.module().getFunction("exp");
+    if (!exp_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        exp_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
+    }
+    llvm::Function* log_func = ctx_.module().getFunction("log");
+    if (!log_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
+    }
+    llvm::Function* tanh_func = ctx_.module().getFunction("tanh");
+    if (!tanh_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        tanh_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "tanh", &ctx_.module());
+    }
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "mish_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "mish_body", current_func);
+    llvm::BasicBlock* mish_large = llvm::BasicBlock::Create(ctx_.context(), "mish_large", current_func);
+    llvm::BasicBlock* mish_normal = llvm::BasicBlock::Create(ctx_.context(), "mish_normal", current_func);
+    llvm::BasicBlock* mish_merge = llvm::BasicBlock::Create(ctx_.context(), "mish_merge", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "mish_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "mish_i");
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    llvm::Value* cmp = builder.CreateICmpULT(i, total_elements);
+    builder.CreateCondBr(cmp, loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    llvm::Value* src_ptr = builder.CreateGEP(ctx_.int64Type(), src_elems, i);
+    llvm::Value* val_bits = builder.CreateLoad(ctx_.int64Type(), src_ptr);
+    llvm::Value* val = builder.CreateBitCast(val_bits, ctx_.doubleType());
+
+    // Stability: if x > 20, softplus(x) ≈ x, so mish ≈ x * tanh(x)
+    llvm::Value* threshold = llvm::ConstantFP::get(ctx_.doubleType(), 20.0);
+    llvm::Value* is_large = builder.CreateFCmpOGT(val, threshold);
+    builder.CreateCondBr(is_large, mish_large, mish_normal);
+
+    // Large x: x * tanh(x)
+    builder.SetInsertPoint(mish_large);
+    llvm::Value* tanh_x = builder.CreateCall(tanh_func, {val});
+    llvm::Value* large_result = builder.CreateFMul(val, tanh_x);
+    builder.CreateBr(mish_merge);
+
+    // Normal: x * tanh(log(1 + exp(x)))
+    builder.SetInsertPoint(mish_normal);
+    llvm::Value* exp_x = builder.CreateCall(exp_func, {val});
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* one_plus_exp = builder.CreateFAdd(one, exp_x);
+    llvm::Value* softplus = builder.CreateCall(log_func, {one_plus_exp});
+    llvm::Value* tanh_sp = builder.CreateCall(tanh_func, {softplus});
+    llvm::Value* normal_result = builder.CreateFMul(val, tanh_sp);
+    builder.CreateBr(mish_merge);
+
+    builder.SetInsertPoint(mish_merge);
+    llvm::PHINode* result_val = builder.CreatePHI(ctx_.doubleType(), 2, "mish_val");
+    result_val->addIncoming(large_result, mish_large);
+    result_val->addIncoming(normal_result, mish_normal);
+
+    llvm::Value* result_bits = builder.CreateBitCast(result_val, ctx_.int64Type());
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, i);
+    builder.CreateStore(result_bits, dst_ptr);
+
+    llvm::Value* next_i = builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    builder.CreateStore(next_i, counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    llvm::Value* r_dims_field = builder.CreateStructGEP(tensor_type, result_ptr, 0);
+    builder.CreateStore(result_dims, r_dims_field);
+    llvm::Value* r_ndim_field = builder.CreateStructGEP(tensor_type, result_ptr, 1);
+    builder.CreateStore(num_dims, r_ndim_field);
+    llvm::Value* r_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    builder.CreateStore(result_elems, r_elems_field);
+    llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
+    builder.CreateStore(total_elements, r_total_field);
+
+    return tagged_.packHeapPtr(result_ptr);
+}
+
+llvm::Value* TensorCodegen::tensorHardSwish(const eshkol_operations_t* op) {
+    // Hard Swish: x * min(max(x + 3, 0), 6) / 6
+    // Piecewise: x <= -3 → 0, x >= 3 → x, else → x * (x + 3) / 6
+    if (op->call_op.num_vars != 1) {
+        eshkol_error("hard-swish requires exactly 1 argument");
+        return nullptr;
+    }
+
+    llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_val) return nullptr;
+
+    auto& builder = ctx_.builder();
+
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+
+    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
+    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Type* tensor_type = ctx_.tensorType();
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* ndim_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 1);
+    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), ndim_field);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+    llvm::Value* total_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_field);
+
+    llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "hswish_result");
+
+    llvm::Value* dims_size = builder.CreateMul(num_dims,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_size}, "hswish_dims");
+    builder.CreateMemCpy(result_dims, llvm::MaybeAlign(8), dims_ptr, llvm::MaybeAlign(8), dims_size);
+
+    llvm::Value* elems_size = builder.CreateMul(total_elements,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "hswish_elems");
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "hswish_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "hswish_body", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "hswish_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "hswish_i");
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    llvm::Value* cmp = builder.CreateICmpULT(i, total_elements);
+    builder.CreateCondBr(cmp, loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    llvm::Value* src_ptr = builder.CreateGEP(ctx_.int64Type(), src_elems, i);
+    llvm::Value* val_bits = builder.CreateLoad(ctx_.int64Type(), src_ptr);
+    llvm::Value* val = builder.CreateBitCast(val_bits, ctx_.doubleType());
+
+    // Compute min(max(x + 3, 0), 6)
+    llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
+    llvm::Value* six = llvm::ConstantFP::get(ctx_.doubleType(), 6.0);
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+
+    llvm::Value* x_plus_3 = builder.CreateFAdd(val, three);
+    // max(x + 3, 0)
+    llvm::Value* cmp_zero = builder.CreateFCmpOGT(x_plus_3, zero);
+    llvm::Value* clamped_low = builder.CreateSelect(cmp_zero, x_plus_3, zero);
+    // min(clamped, 6)
+    llvm::Value* cmp_six = builder.CreateFCmpOLT(clamped_low, six);
+    llvm::Value* clamped = builder.CreateSelect(cmp_six, clamped_low, six);
+    // x * clamped / 6
+    llvm::Value* scaled = builder.CreateFMul(val, clamped);
+    llvm::Value* result_val = builder.CreateFDiv(scaled, six);
+
+    llvm::Value* result_bits = builder.CreateBitCast(result_val, ctx_.int64Type());
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, i);
+    builder.CreateStore(result_bits, dst_ptr);
+
+    llvm::Value* next_i = builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    builder.CreateStore(next_i, counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    llvm::Value* r_dims_field = builder.CreateStructGEP(tensor_type, result_ptr, 0);
+    builder.CreateStore(result_dims, r_dims_field);
+    llvm::Value* r_ndim_field = builder.CreateStructGEP(tensor_type, result_ptr, 1);
+    builder.CreateStore(num_dims, r_ndim_field);
+    llvm::Value* r_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    builder.CreateStore(result_elems, r_elems_field);
+    llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
+    builder.CreateStore(total_elements, r_total_field);
+
+    return tagged_.packHeapPtr(result_ptr);
+}
+
+llvm::Value* TensorCodegen::tensorHardSigmoid(const eshkol_operations_t* op) {
+    // Hard Sigmoid: clip((x + 3) / 6, 0, 1) = min(max((x + 3) / 6, 0), 1)
+    if (op->call_op.num_vars != 1) {
+        eshkol_error("hard-sigmoid requires exactly 1 argument");
+        return nullptr;
+    }
+
+    llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_val) return nullptr;
+
+    auto& builder = ctx_.builder();
+
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+
+    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
+    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Type* tensor_type = ctx_.tensorType();
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* ndim_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 1);
+    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), ndim_field);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+    llvm::Value* total_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_field);
+
+    llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "hsigmoid_result");
+
+    llvm::Value* dims_size = builder.CreateMul(num_dims,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_size}, "hsigmoid_dims");
+    builder.CreateMemCpy(result_dims, llvm::MaybeAlign(8), dims_ptr, llvm::MaybeAlign(8), dims_size);
+
+    llvm::Value* elems_size = builder.CreateMul(total_elements,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "hsigmoid_elems");
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "hsigmoid_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "hsigmoid_body", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "hsigmoid_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "hsigmoid_i");
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    llvm::Value* cmp = builder.CreateICmpULT(i, total_elements);
+    builder.CreateCondBr(cmp, loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    llvm::Value* src_ptr = builder.CreateGEP(ctx_.int64Type(), src_elems, i);
+    llvm::Value* val_bits = builder.CreateLoad(ctx_.int64Type(), src_ptr);
+    llvm::Value* val = builder.CreateBitCast(val_bits, ctx_.doubleType());
+
+    // (x + 3) / 6
+    llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
+    llvm::Value* six = llvm::ConstantFP::get(ctx_.doubleType(), 6.0);
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+
+    llvm::Value* x_plus_3 = builder.CreateFAdd(val, three);
+    llvm::Value* divided = builder.CreateFDiv(x_plus_3, six);
+    // clip to [0, 1]
+    llvm::Value* cmp_zero = builder.CreateFCmpOGT(divided, zero);
+    llvm::Value* clamped_low = builder.CreateSelect(cmp_zero, divided, zero);
+    llvm::Value* cmp_one = builder.CreateFCmpOLT(clamped_low, one);
+    llvm::Value* result_val = builder.CreateSelect(cmp_one, clamped_low, one);
+
+    llvm::Value* result_bits = builder.CreateBitCast(result_val, ctx_.int64Type());
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, i);
+    builder.CreateStore(result_bits, dst_ptr);
+
+    llvm::Value* next_i = builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    builder.CreateStore(next_i, counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    llvm::Value* r_dims_field = builder.CreateStructGEP(tensor_type, result_ptr, 0);
+    builder.CreateStore(result_dims, r_dims_field);
+    llvm::Value* r_ndim_field = builder.CreateStructGEP(tensor_type, result_ptr, 1);
+    builder.CreateStore(num_dims, r_ndim_field);
+    llvm::Value* r_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    builder.CreateStore(result_elems, r_elems_field);
+    llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
+    builder.CreateStore(total_elements, r_total_field);
+
+    return tagged_.packHeapPtr(result_ptr);
+}
+
+llvm::Value* TensorCodegen::tensorSoftplus(const eshkol_operations_t* op) {
+    // Softplus: (1/beta) * log(1 + exp(beta * x))
+    // Default beta = 1.0, threshold = 20.0
+    // For numerical stability: if beta*x > threshold, return x
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_error("softplus requires 1 or 2 arguments (tensor [, beta])");
+        return nullptr;
+    }
+
+    llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_val) return nullptr;
+
+    auto& builder = ctx_.builder();
+
+    llvm::Value* beta;
+    if (op->call_op.num_vars == 2) {
+        llvm::Value* beta_tagged = codegenAST(&op->call_op.variables[1]);
+        if (!beta_tagged) return nullptr;
+        beta = tagged_.unpackDouble(beta_tagged);
+    } else {
+        beta = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    }
+
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+
+    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
+    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Type* tensor_type = ctx_.tensorType();
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* ndim_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 1);
+    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), ndim_field);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+    llvm::Value* total_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_field);
+
+    llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "softplus_result");
+
+    llvm::Value* dims_size = builder.CreateMul(num_dims,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_size}, "softplus_dims");
+    builder.CreateMemCpy(result_dims, llvm::MaybeAlign(8), dims_ptr, llvm::MaybeAlign(8), dims_size);
+
+    llvm::Value* elems_size = builder.CreateMul(total_elements,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "softplus_elems");
+
+    llvm::Function* exp_func = ctx_.module().getFunction("exp");
+    if (!exp_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        exp_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
+    }
+    llvm::Function* log_func = ctx_.module().getFunction("log");
+    if (!log_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
+    }
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "sp_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "sp_body", current_func);
+    llvm::BasicBlock* sp_large = llvm::BasicBlock::Create(ctx_.context(), "sp_large", current_func);
+    llvm::BasicBlock* sp_normal = llvm::BasicBlock::Create(ctx_.context(), "sp_normal", current_func);
+    llvm::BasicBlock* sp_merge = llvm::BasicBlock::Create(ctx_.context(), "sp_merge", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "sp_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "sp_i");
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    llvm::Value* cmp = builder.CreateICmpULT(i, total_elements);
+    builder.CreateCondBr(cmp, loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    llvm::Value* src_ptr = builder.CreateGEP(ctx_.int64Type(), src_elems, i);
+    llvm::Value* val_bits = builder.CreateLoad(ctx_.int64Type(), src_ptr);
+    llvm::Value* val = builder.CreateBitCast(val_bits, ctx_.doubleType());
+
+    // beta * x
+    llvm::Value* beta_x = builder.CreateFMul(beta, val);
+    // Threshold check: if beta*x > 20, just return x
+    llvm::Value* threshold = llvm::ConstantFP::get(ctx_.doubleType(), 20.0);
+    llvm::Value* is_large = builder.CreateFCmpOGT(beta_x, threshold);
+    builder.CreateCondBr(is_large, sp_large, sp_normal);
+
+    // Large: return x directly (softplus saturates to identity)
+    builder.SetInsertPoint(sp_large);
+    builder.CreateBr(sp_merge);
+
+    // Normal: (1/beta) * log(1 + exp(beta * x))
+    builder.SetInsertPoint(sp_normal);
+    llvm::Value* exp_bx = builder.CreateCall(exp_func, {beta_x});
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* one_plus_exp = builder.CreateFAdd(one, exp_bx);
+    llvm::Value* log_val = builder.CreateCall(log_func, {one_plus_exp});
+    llvm::Value* inv_beta = builder.CreateFDiv(one, beta);
+    llvm::Value* normal_result = builder.CreateFMul(inv_beta, log_val);
+    builder.CreateBr(sp_merge);
+
+    builder.SetInsertPoint(sp_merge);
+    llvm::PHINode* result_val = builder.CreatePHI(ctx_.doubleType(), 2, "sp_val");
+    result_val->addIncoming(val, sp_large);
+    result_val->addIncoming(normal_result, sp_normal);
+
+    llvm::Value* result_bits = builder.CreateBitCast(result_val, ctx_.int64Type());
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, i);
+    builder.CreateStore(result_bits, dst_ptr);
+
+    llvm::Value* next_i = builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    builder.CreateStore(next_i, counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    llvm::Value* r_dims_field = builder.CreateStructGEP(tensor_type, result_ptr, 0);
+    builder.CreateStore(result_dims, r_dims_field);
+    llvm::Value* r_ndim_field = builder.CreateStructGEP(tensor_type, result_ptr, 1);
+    builder.CreateStore(num_dims, r_ndim_field);
+    llvm::Value* r_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    builder.CreateStore(result_elems, r_elems_field);
+    llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
+    builder.CreateStore(total_elements, r_total_field);
+
+    return tagged_.packHeapPtr(result_ptr);
+}
+
+llvm::Value* TensorCodegen::tensorDropout(const eshkol_operations_t* op) {
+    // Dropout: x_i * mask_i / (1 - p), where mask_i ~ Bernoulli(1 - p)
+    // During training, randomly zeros elements with probability p and scales survivors
+    // Args: tensor, p (drop probability, 0 < p < 1)
+    if (op->call_op.num_vars != 2) {
+        eshkol_error("dropout requires exactly 2 arguments (tensor, drop_probability)");
+        return nullptr;
+    }
+
+    llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_val) return nullptr;
+    llvm::Value* p_tagged = codegenAST(&op->call_op.variables[1]);
+    if (!p_tagged) return nullptr;
+
+    auto& builder = ctx_.builder();
+    llvm::Value* p = tagged_.unpackDouble(p_tagged);
+
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+
+    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
+    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Type* tensor_type = ctx_.tensorType();
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* ndim_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 1);
+    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), ndim_field);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+    llvm::Value* total_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_field);
+
+    llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "dropout_result");
+
+    llvm::Value* dims_size = builder.CreateMul(num_dims,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_size}, "dropout_dims");
+    builder.CreateMemCpy(result_dims, llvm::MaybeAlign(8), dims_ptr, llvm::MaybeAlign(8), dims_size);
+
+    llvm::Value* elems_size = builder.CreateMul(total_elements,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "dropout_elems");
+
+    // Get drand48 for random number generation
+    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    if (!drand_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
+        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+    }
+
+    // Compute scale = 1.0 / (1.0 - p) for inverted dropout
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* one_minus_p = builder.CreateFSub(one, p);
+    llvm::Value* scale = builder.CreateFDiv(one, one_minus_p);
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "drop_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "drop_body", current_func);
+    llvm::BasicBlock* drop_keep = llvm::BasicBlock::Create(ctx_.context(), "drop_keep", current_func);
+    llvm::BasicBlock* drop_zero = llvm::BasicBlock::Create(ctx_.context(), "drop_zero", current_func);
+    llvm::BasicBlock* drop_merge = llvm::BasicBlock::Create(ctx_.context(), "drop_merge", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "drop_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "drop_i");
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    llvm::Value* cmp = builder.CreateICmpULT(i, total_elements);
+    builder.CreateCondBr(cmp, loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    llvm::Value* src_ptr = builder.CreateGEP(ctx_.int64Type(), src_elems, i);
+    llvm::Value* val_bits = builder.CreateLoad(ctx_.int64Type(), src_ptr);
+    llvm::Value* val = builder.CreateBitCast(val_bits, ctx_.doubleType());
+
+    // Generate random number in [0, 1)
+    llvm::Value* rand_val = builder.CreateCall(drand_func, {});
+    // Keep if rand >= p (probability 1-p of keeping)
+    llvm::Value* keep = builder.CreateFCmpOGE(rand_val, p);
+    builder.CreateCondBr(keep, drop_keep, drop_zero);
+
+    // Keep: scale the value
+    builder.SetInsertPoint(drop_keep);
+    llvm::Value* scaled_val = builder.CreateFMul(val, scale);
+    builder.CreateBr(drop_merge);
+
+    // Drop: zero
+    builder.SetInsertPoint(drop_zero);
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    builder.CreateBr(drop_merge);
+
+    builder.SetInsertPoint(drop_merge);
+    llvm::PHINode* result_val = builder.CreatePHI(ctx_.doubleType(), 2, "drop_val");
+    result_val->addIncoming(scaled_val, drop_keep);
+    result_val->addIncoming(zero, drop_zero);
+
+    llvm::Value* result_bits = builder.CreateBitCast(result_val, ctx_.int64Type());
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, i);
+    builder.CreateStore(result_bits, dst_ptr);
+
+    llvm::Value* next_i = builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    builder.CreateStore(next_i, counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    llvm::Value* r_dims_field = builder.CreateStructGEP(tensor_type, result_ptr, 0);
+    builder.CreateStore(result_dims, r_dims_field);
+    llvm::Value* r_ndim_field = builder.CreateStructGEP(tensor_type, result_ptr, 1);
+    builder.CreateStore(num_dims, r_ndim_field);
+    llvm::Value* r_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    builder.CreateStore(result_elems, r_elems_field);
+    llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
+    builder.CreateStore(total_elements, r_total_field);
+
+    return tagged_.packHeapPtr(result_ptr);
+}
+
+llvm::Value* TensorCodegen::tensorCelu(const eshkol_operations_t* op) {
+    // CELU: max(0, x) + min(0, alpha * (exp(x / alpha) - 1))
+    // Default alpha = 1.0
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_error("celu requires 1 or 2 arguments (tensor [, alpha])");
+        return nullptr;
+    }
+
+    llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_val) return nullptr;
+
+    auto& builder = ctx_.builder();
+
+    llvm::Value* alpha;
+    if (op->call_op.num_vars == 2) {
+        llvm::Value* alpha_tagged = codegenAST(&op->call_op.variables[1]);
+        if (!alpha_tagged) return nullptr;
+        alpha = tagged_.unpackDouble(alpha_tagged);
+    } else {
+        alpha = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    }
+
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+
+    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
+    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Type* tensor_type = ctx_.tensorType();
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* ndim_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 1);
+    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), ndim_field);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+    llvm::Value* total_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_field);
+
+    llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "celu_result");
+
+    llvm::Value* dims_size = builder.CreateMul(num_dims,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_size}, "celu_dims");
+    builder.CreateMemCpy(result_dims, llvm::MaybeAlign(8), dims_ptr, llvm::MaybeAlign(8), dims_size);
+
+    llvm::Value* elems_size = builder.CreateMul(total_elements,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_size}, "celu_elems");
+
+    llvm::Function* exp_func = ctx_.module().getFunction("exp");
+    if (!exp_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        exp_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
+    }
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "celu_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "celu_body", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "celu_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "celu_i");
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    llvm::Value* cmp = builder.CreateICmpULT(i, total_elements);
+    builder.CreateCondBr(cmp, loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    llvm::Value* src_ptr = builder.CreateGEP(ctx_.int64Type(), src_elems, i);
+    llvm::Value* val_bits = builder.CreateLoad(ctx_.int64Type(), src_ptr);
+    llvm::Value* val = builder.CreateBitCast(val_bits, ctx_.doubleType());
+
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+
+    // max(0, x)
+    llvm::Value* cmp_pos = builder.CreateFCmpOGT(val, zero);
+    llvm::Value* pos_part = builder.CreateSelect(cmp_pos, val, zero);
+
+    // min(0, alpha * (exp(x / alpha) - 1))
+    llvm::Value* x_over_alpha = builder.CreateFDiv(val, alpha);
+    llvm::Value* exp_val = builder.CreateCall(exp_func, {x_over_alpha});
+    llvm::Value* exp_minus_1 = builder.CreateFSub(exp_val, one);
+    llvm::Value* alpha_exp = builder.CreateFMul(alpha, exp_minus_1);
+    llvm::Value* cmp_neg = builder.CreateFCmpOLT(alpha_exp, zero);
+    llvm::Value* neg_part = builder.CreateSelect(cmp_neg, alpha_exp, zero);
+
+    // CELU = max(0,x) + min(0, alpha*(exp(x/alpha)-1))
+    llvm::Value* result_val = builder.CreateFAdd(pos_part, neg_part);
+
+    llvm::Value* result_bits = builder.CreateBitCast(result_val, ctx_.int64Type());
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, i);
+    builder.CreateStore(result_bits, dst_ptr);
+
+    llvm::Value* next_i = builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    builder.CreateStore(next_i, counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    llvm::Value* r_dims_field = builder.CreateStructGEP(tensor_type, result_ptr, 0);
+    builder.CreateStore(result_dims, r_dims_field);
+    llvm::Value* r_ndim_field = builder.CreateStructGEP(tensor_type, result_ptr, 1);
+    builder.CreateStore(num_dims, r_ndim_field);
+    llvm::Value* r_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    builder.CreateStore(result_elems, r_elems_field);
+    llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
+    builder.CreateStore(total_elements, r_total_field);
+
+    return tagged_.packHeapPtr(result_ptr);
+}
+
 // ============================================================
 // Activation Backward Functions (for autodiff)
 // ============================================================
@@ -5376,28 +6426,73 @@ llvm::Value* TensorCodegen::concatenate(const eshkol_operations_t* op) {
     builder.SetInsertPoint(stride_done);
     llvm::Value* stride_after = builder.CreateLoad(ctx_.int64Type(), stride_after_var);
 
-    // Copy data from each tensor (simplified: assumes contiguous and row-major)
-    // For each tensor, copy all its elements in order
-    llvm::Value* dst_offset = builder.CreateAlloca(ctx_.int64Type(), nullptr, "dst_offset");
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), dst_offset);
+    // Stride-aware copy via runtime function for correct ND concatenation.
+    // Compute outer_count = product of result_dims[0..axis-1]
+    llvm::BasicBlock* outer_cond = llvm::BasicBlock::Create(ctx_.context(), "concat_outer_cond", current_func);
+    llvm::BasicBlock* outer_body = llvm::BasicBlock::Create(ctx_.context(), "concat_outer_body", current_func);
+    llvm::BasicBlock* outer_done = llvm::BasicBlock::Create(ctx_.context(), "concat_outer_done", current_func);
 
-    for (size_t i = 0; i < tensor_ptrs.size(); ++i) {
+    llvm::Value* outer_count_var = builder.CreateAlloca(ctx_.int64Type(), nullptr, "outer_count");
+    llvm::Value* outer_i_var = builder.CreateAlloca(ctx_.int64Type(), nullptr, "outer_i");
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), outer_count_var);
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), outer_i_var);
+    builder.CreateBr(outer_cond);
+
+    builder.SetInsertPoint(outer_cond);
+    llvm::Value* oi = builder.CreateLoad(ctx_.int64Type(), outer_i_var);
+    llvm::Value* outer_cmp = builder.CreateICmpULT(oi, axis);
+    builder.CreateCondBr(outer_cmp, outer_body, outer_done);
+
+    builder.SetInsertPoint(outer_body);
+    llvm::Value* od_ptr = builder.CreateGEP(ctx_.int64Type(), result_dims, oi);
+    llvm::Value* od_val = builder.CreateLoad(ctx_.int64Type(), od_ptr);
+    llvm::Value* oc_curr = builder.CreateLoad(ctx_.int64Type(), outer_count_var);
+    builder.CreateStore(builder.CreateMul(oc_curr, od_val), outer_count_var);
+    builder.CreateStore(builder.CreateAdd(oi, llvm::ConstantInt::get(ctx_.int64Type(), 1)), outer_i_var);
+    builder.CreateBr(outer_cond);
+
+    builder.SetInsertPoint(outer_done);
+    llvm::Value* outer_count = builder.CreateLoad(ctx_.int64Type(), outer_count_var);
+
+    // Build arrays of tensor element pointers and axis dims for runtime function
+    size_t num_tensors = tensor_ptrs.size();
+    llvm::Value* src_datas_buf = builder.CreateCall(concat_arena_alloc,
+        {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), num_tensors * sizeof(double*))}, "src_datas");
+    llvm::Value* src_axis_dims_buf = builder.CreateCall(concat_arena_alloc,
+        {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), num_tensors * sizeof(int64_t))}, "src_axis_dims");
+
+    for (size_t i = 0; i < num_tensors; ++i) {
         llvm::Value* t_ptr = tensor_ptrs[i];
         llvm::Value* t_elems_field = builder.CreateStructGEP(tensor_type, t_ptr, 2);
         llvm::Value* t_elems = builder.CreateLoad(ctx_.ptrType(), t_elems_field);
-        llvm::Value* t_total_field = builder.CreateStructGEP(tensor_type, t_ptr, 3);
-        llvm::Value* t_total = builder.CreateLoad(ctx_.int64Type(), t_total_field);
 
-        // Copy this tensor's elements
-        llvm::Value* copy_size = builder.CreateMul(t_total,
-            llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
-        llvm::Value* curr_offset = builder.CreateLoad(ctx_.int64Type(), dst_offset);
-        llvm::Value* dst_ptr = builder.CreateGEP(ctx_.doubleType(), result_elems, curr_offset);
-        builder.CreateMemCpy(dst_ptr, llvm::MaybeAlign(8), t_elems, llvm::MaybeAlign(8), copy_size);
+        // Store element pointer
+        llvm::Value* slot = builder.CreateGEP(ctx_.ptrType(), src_datas_buf,
+            llvm::ConstantInt::get(ctx_.int64Type(), i));
+        builder.CreateStore(t_elems, slot);
 
-        // Update offset
-        builder.CreateStore(builder.CreateAdd(curr_offset, t_total), dst_offset);
+        // Store axis dimension
+        llvm::Value* t_dims_field = builder.CreateStructGEP(tensor_type, t_ptr, 0);
+        llvm::Value* t_dims_ptr = builder.CreateLoad(ctx_.ptrType(), t_dims_field);
+        llvm::Value* t_axis_dim_ptr = builder.CreateGEP(ctx_.int64Type(), t_dims_ptr, axis);
+        llvm::Value* t_axis_dim = builder.CreateLoad(ctx_.int64Type(), t_axis_dim_ptr);
+        llvm::Value* adim_slot = builder.CreateGEP(ctx_.int64Type(), src_axis_dims_buf,
+            llvm::ConstantInt::get(ctx_.int64Type(), i));
+        builder.CreateStore(t_axis_dim, adim_slot);
     }
+
+    // Call runtime: eshkol_concat_strided(result_data, num_tensors, src_datas, src_axis_dims, stride_after, outer_count)
+    auto* concat_ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_.context()),
+        {ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType(), ctx_.ptrType(),
+         ctx_.int64Type(), ctx_.int64Type()}, false);
+    llvm::Function* concat_fn = ctx_.module().getFunction("eshkol_concat_strided");
+    if (!concat_fn) {
+        concat_fn = llvm::Function::Create(concat_ft,
+            llvm::Function::ExternalLinkage, "eshkol_concat_strided", &ctx_.module());
+    }
+    builder.CreateCall(concat_fn,
+        {result_elems, llvm::ConstantInt::get(ctx_.int64Type(), num_tensors),
+         src_datas_buf, src_axis_dims_buf, stride_after, outer_count});
 
     // Populate result tensor
     llvm::Value* r_dims_field = builder.CreateStructGEP(tensor_type, result_ptr, 0);
@@ -6012,7 +7107,7 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
         llvm::Function* printf_fn_trans = ctx_.lookupFunction("printf");
         llvm::Function* exit_fn_trans = ctx_.lookupFunction("exit");
         if (printf_fn_trans && exit_fn_trans) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalStringPtr(
+            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
                 "Error: transpose only supports 2D tensors (got %lld dimensions)\n");
             ctx_.builder().CreateCall(printf_fn_trans, {fmt, src_ndim});
             ctx_.builder().CreateCall(exit_fn_trans, {llvm::ConstantInt::get(
@@ -6225,105 +7320,149 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     src_ptr->addIncoming(conv_tensor_ptr, svec_exit_block);
     src_ptr->addIncoming(direct_tensor_ptr, tensor_exit_block);
 
-    // Get new dimensions - need to handle two cases:
+    // Get new dimensions - three cases:
     // 1. Individual args: (reshape tensor 3 3) -> num_vars > 2
-    // 2. List arg: (reshape tensor (list 3 3)) -> num_vars == 2 and arg is CONS_PTR
+    // 2. List arg: (reshape tensor (list 3 3 2)) -> num_vars == 2 and arg is list
+    // 3. Single dim: (reshape tensor 9) -> num_vars == 2 and arg is integer
+    // All paths produce: final_dims_ptr (int64_t*), final_ndim (i64), final_total (i64)
 
-    std::vector<llvm::Value*> new_dims;
+    llvm::Value* final_dims_ptr = nullptr;
+    llvm::Value* final_ndim = nullptr;
+    llvm::Value* final_total = nullptr;
+
+    // Get source tensor properties (needed for all paths)
+    llvm::Value* src_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 2);
+    llvm::Value* src_elements_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), src_elements_field_ptr);
+
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
 
     if (op->call_op.num_vars == 2) {
         // Could be a single dimension OR a list of dimensions
         llvm::Value* dim_arg = codegenAST(&op->call_op.variables[1]);
         if (!dim_arg) return nullptr;
 
-        // Check if it's a list (CONS_PTR or HEAP_PTR) at runtime
+        // Check if it's a list (HEAP_PTR) at runtime
         llvm::Value* type_tag = tagged_.getType(dim_arg);
         llvm::Value* base_type = tagged_.getBaseType(type_tag);
-        llvm::Value* is_cons_legacy = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::Value* is_list = ctx_.builder().CreateICmpEQ(base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-        llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-        llvm::Value* is_list = ctx_.builder().CreateOr(is_cons_legacy, is_heap_ptr);
 
-        llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-        llvm::BasicBlock* list_path = llvm::BasicBlock::Create(ctx_.context(), "reshape_list", current_func);
-        llvm::BasicBlock* single_path = llvm::BasicBlock::Create(ctx_.context(), "reshape_single", current_func);
-        llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "reshape_merge", current_func);
+        llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* list_path = llvm::BasicBlock::Create(ctx_.context(), "reshape_list", func);
+        llvm::BasicBlock* single_path = llvm::BasicBlock::Create(ctx_.context(), "reshape_single", func);
+        llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "reshape_merge", func);
 
         ctx_.builder().CreateCondBr(is_list, list_path, single_path);
 
-        // LIST PATH: Extract dimensions from the list (supports 2D reshape via list of 2 elements)
+        // LIST PATH: Walk cons list to extract N dimensions via runtime helper
         ctx_.builder().SetInsertPoint(list_path);
         llvm::Value* list_ptr_int = tagged_.unpackInt64(dim_arg);
-
-        // Get cons cell pointer
         llvm::Value* cons_ptr = ctx_.builder().CreateIntToPtr(list_ptr_int, ctx_.ptrType());
-        llvm::Value* is_car = llvm::ConstantInt::get(ctx_.int1Type(), 0);  // false = car
-        llvm::Value* is_cdr = llvm::ConstantInt::get(ctx_.int1Type(), 1);  // true = cdr
 
-        // Extract first element (car) - use arena_tagged_cons_get_int64
-        llvm::Value* dim1_from_list = ctx_.builder().CreateCall(
-            mem_.getTaggedConsGetInt64(), {cons_ptr, is_car});
+        // Allocate dims array for up to 16 dimensions
+        llvm::Value* list_arena = ctx_.builder().CreateLoad(
+            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* max_dims_bytes = llvm::ConstantInt::get(ctx_.int64Type(), 16 * sizeof(int64_t));
+        llvm::Value* list_dims_array = ctx_.builder().CreateCall(
+            arena_alloc, {list_arena, max_dims_bytes}, "list_dims");
 
-        // Get cdr (rest of list) - use arena_tagged_cons_get_ptr
-        llvm::Value* cdr_ptr_int = ctx_.builder().CreateCall(
-            mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
+        // Call runtime: int64_t eshkol_cons_list_to_dims(void*, int64_t*, int64_t)
+        auto* list_to_dims_ft = llvm::FunctionType::get(ctx_.int64Type(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+        llvm::Function* list_to_dims_fn = ctx_.module().getFunction("eshkol_cons_list_to_dims");
+        if (!list_to_dims_fn) {
+            list_to_dims_fn = llvm::Function::Create(list_to_dims_ft,
+                llvm::Function::ExternalLinkage, "eshkol_cons_list_to_dims", &ctx_.module());
+        }
+        llvm::Value* list_ndim = ctx_.builder().CreateCall(
+            list_to_dims_fn,
+            {cons_ptr, list_dims_array, llvm::ConstantInt::get(ctx_.int64Type(), 16)},
+            "list_ndim");
 
-        // Extract second element (cadr) from the cdr cons cell
-        llvm::Value* cdr_cons_ptr = ctx_.builder().CreateIntToPtr(cdr_ptr_int, ctx_.ptrType());
-        llvm::Value* dim2_from_list = ctx_.builder().CreateCall(
-            mem_.getTaggedConsGetInt64(), {cdr_cons_ptr, is_car});
+        // Compute total via runtime: int64_t eshkol_compute_dims_total(int64_t*, int64_t)
+        auto* total_ft = llvm::FunctionType::get(ctx_.int64Type(),
+            {ctx_.ptrType(), ctx_.int64Type()}, false);
+        llvm::Function* total_fn = ctx_.module().getFunction("eshkol_compute_dims_total");
+        if (!total_fn) {
+            total_fn = llvm::Function::Create(total_ft,
+                llvm::Function::ExternalLinkage, "eshkol_compute_dims_total", &ctx_.module());
+        }
+        llvm::Value* list_total = ctx_.builder().CreateCall(
+            total_fn, {list_dims_array, list_ndim}, "list_total");
 
         ctx_.builder().CreateBr(merge_block);
         llvm::BasicBlock* list_exit = ctx_.builder().GetInsertBlock();
 
-        // SINGLE PATH: Use the value as a single dimension
+        // SINGLE PATH: Treat as 1D reshape
         ctx_.builder().SetInsertPoint(single_path);
         llvm::Value* single_dim = dim_arg;
         if (single_dim->getType() == ctx_.taggedValueType()) {
             single_dim = tagged_.unpackInt64(single_dim);
         }
-        // For single dimension, treat as 1D reshape (dim2 = 1 as placeholder, but only 1 dim used)
-        llvm::Value* dim1_from_single = single_dim;
-        llvm::Value* dim2_from_single = llvm::ConstantInt::get(ctx_.int64Type(), 1);
+        // Allocate 1-element dims array
+        llvm::Value* single_arena = ctx_.builder().CreateLoad(
+            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* single_bytes = llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t));
+        llvm::Value* single_dims_array = ctx_.builder().CreateCall(
+            arena_alloc, {single_arena, single_bytes}, "single_dims");
+        ctx_.builder().CreateStore(single_dim, single_dims_array);
+        llvm::Value* single_ndim = llvm::ConstantInt::get(ctx_.int64Type(), 1);
+        llvm::Value* single_total = single_dim;
+
         ctx_.builder().CreateBr(merge_block);
         llvm::BasicBlock* single_exit = ctx_.builder().GetInsertBlock();
 
-        // MERGE: Use phi nodes to get final dimensions
+        // MERGE: PHI nodes for dims_ptr, ndim, total
         ctx_.builder().SetInsertPoint(merge_block);
 
-        llvm::PHINode* is_2d_phi = ctx_.builder().CreatePHI(ctx_.builder().getInt1Ty(), 2, "is_2d");
-        is_2d_phi->addIncoming(ctx_.builder().getTrue(), list_exit);
-        is_2d_phi->addIncoming(ctx_.builder().getFalse(), single_exit);
+        llvm::PHINode* dims_phi = ctx_.builder().CreatePHI(ctx_.ptrType(), 2, "merged_dims");
+        dims_phi->addIncoming(list_dims_array, list_exit);
+        dims_phi->addIncoming(single_dims_array, single_exit);
 
-        llvm::PHINode* final_dim1_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "final_dim1");
-        final_dim1_phi->addIncoming(dim1_from_list, list_exit);
-        final_dim1_phi->addIncoming(dim1_from_single, single_exit);
+        llvm::PHINode* ndim_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "merged_ndim");
+        ndim_phi->addIncoming(list_ndim, list_exit);
+        ndim_phi->addIncoming(single_ndim, single_exit);
 
-        llvm::PHINode* final_dim2_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "final_dim2");
-        final_dim2_phi->addIncoming(dim2_from_list, list_exit);
-        final_dim2_phi->addIncoming(dim2_from_single, single_exit);
+        llvm::PHINode* total_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "merged_total");
+        total_phi->addIncoming(list_total, list_exit);
+        total_phi->addIncoming(single_total, single_exit);
 
-        new_dims.push_back(final_dim1_phi);
-        // Always push dim2 - for single dimension case it's 1, for list case it's the actual value
-        new_dims.push_back(final_dim2_phi);
+        final_dims_ptr = dims_phi;
+        final_ndim = ndim_phi;
+        final_total = total_phi;
     } else {
-        // Multiple explicit dimension arguments
+        // Multiple explicit dimension arguments: (reshape tensor 3 3 2)
+        size_t ndim_count = op->call_op.num_vars - 1;
+
+        llvm::Value* multi_arena = ctx_.builder().CreateLoad(
+            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* multi_bytes = llvm::ConstantInt::get(ctx_.int64Type(), ndim_count * sizeof(int64_t));
+        llvm::Value* multi_dims_array = ctx_.builder().CreateCall(
+            arena_alloc, {multi_arena, multi_bytes}, "multi_dims");
+
+        llvm::Value* multi_total = nullptr;
         for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
             llvm::Value* dim = codegenAST(&op->call_op.variables[i]);
             if (!dim) return nullptr;
             if (dim->getType() == ctx_.taggedValueType()) {
                 dim = tagged_.unpackInt64(dim);
             }
-            new_dims.push_back(dim);
-        }
-    }
+            llvm::Value* dim_slot = ctx_.builder().CreateGEP(
+                ctx_.int64Type(), multi_dims_array,
+                llvm::ConstantInt::get(ctx_.int64Type(), i - 1));
+            ctx_.builder().CreateStore(dim, dim_slot);
 
-    // Get source tensor properties
-    llvm::Value* src_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 2);
-    llvm::Value* src_elements_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), src_elements_field_ptr);
-    llvm::Value* src_total_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 3);
-    llvm::Value* src_total = ctx_.builder().CreateLoad(ctx_.int64Type(), src_total_field_ptr);
+            if (multi_total == nullptr) {
+                multi_total = dim;
+            } else {
+                multi_total = ctx_.builder().CreateMul(multi_total, dim);
+            }
+        }
+
+        final_dims_ptr = multi_dims_array;
+        final_ndim = llvm::ConstantInt::get(ctx_.int64Type(), ndim_count);
+        final_total = multi_total;
+    }
 
     // Allocate using arena
     llvm::Value* reshape_arena_ptr = ctx_.builder().CreateLoad(
@@ -6331,37 +7470,21 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
 
     // Create new tensor structure with header (reuse elements - no copy needed for reshape)
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
-    llvm::Value* typed_new_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_func, {reshape_arena_ptr}, "reshape_tensor");
+    llvm::Value* typed_new_tensor_ptr = ctx_.builder().CreateCall(
+        alloc_tensor_func, {reshape_arena_ptr}, "reshape_tensor");
 
-    // Allocate new dimensions array using arena
-    llvm::Value* dims_size = llvm::ConstantInt::get(ctx_.int64Type(), new_dims.size() * sizeof(uint64_t));
-    llvm::Function* arena_alloc = mem_.getArenaAllocate();
-    llvm::Value* dims_ptr = ctx_.builder().CreateCall(arena_alloc, {reshape_arena_ptr, dims_size}, "reshape_dims");
-    llvm::Value* typed_dims_ptr = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.ptrType());
-
-    // Store new dimensions and compute new total
-    llvm::Value* new_total = new_dims[0];
-    for (size_t i = 0; i < new_dims.size(); i++) {
-        llvm::Value* dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims_ptr,
-            llvm::ConstantInt::get(ctx_.int64Type(), i));
-        ctx_.builder().CreateStore(new_dims[i], dim_ptr);
-        if (i > 0) {
-            new_total = ctx_.builder().CreateMul(new_total, new_dims[i]);
-        }
-    }
-
-    // Store tensor fields (reuse source elements pointer - zero-copy reshape)
+    // Store tensor fields: dims_ptr, ndim, elements (reused), total
     llvm::Value* dims_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_new_tensor_ptr, 0);
-    ctx_.builder().CreateStore(typed_dims_ptr, dims_field_ptr);
+    ctx_.builder().CreateStore(final_dims_ptr, dims_field_ptr);
 
     llvm::Value* num_dims_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_new_tensor_ptr, 1);
-    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), new_dims.size()), num_dims_field_ptr);
+    ctx_.builder().CreateStore(final_ndim, num_dims_field_ptr);
 
     llvm::Value* elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_new_tensor_ptr, 2);
-    ctx_.builder().CreateStore(src_elements_ptr, elements_field_ptr);  // Reuse source elements!
+    ctx_.builder().CreateStore(src_elements_ptr, elements_field_ptr);
 
     llvm::Value* total_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_new_tensor_ptr, 3);
-    ctx_.builder().CreateStore(new_total, total_elements_field_ptr);
+    ctx_.builder().CreateStore(final_total, total_elements_field_ptr);
 
     // Pack as consolidated HEAP_PTR
     return tagged_.packHeapPtr(typed_new_tensor_ptr);
@@ -10413,6 +11536,1708 @@ llvm::Value* TensorCodegen::rmspropStep(const eshkol_operations_t* op) {
     return params_tagged;
 }
 
+llvm::Value* TensorCodegen::adamwStep(const eshkol_operations_t* op) {
+    // adamw-step!: (adamw-step! params grads lr m v t [beta1 beta2 eps weight_decay])
+    // AdamW: Decoupled weight decay — weight decay is applied directly to params,
+    // NOT through the gradient (unlike L2 regularization in vanilla Adam)
+    if (op->call_op.num_vars < 6) {
+        eshkol_error("adamw-step! requires at least 6 arguments: params, grads, lr, m, v, t");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* params_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* grads_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* lr_tagged = codegenAST(&op->call_op.variables[2]);
+    llvm::Value* m_tagged = codegenAST(&op->call_op.variables[3]);
+    llvm::Value* v_tagged = codegenAST(&op->call_op.variables[4]);
+    llvm::Value* t_tagged = codegenAST(&op->call_op.variables[5]);
+
+    if (!params_tagged || !grads_tagged || !lr_tagged || !m_tagged || !v_tagged || !t_tagged)
+        return nullptr;
+
+    llvm::Value* params_ptr = tagged_.unpackPtr(params_tagged);
+    llvm::Value* grads_ptr = tagged_.unpackPtr(grads_tagged);
+    llvm::Value* lr = tagged_.unpackDouble(lr_tagged);
+    llvm::Value* m_ptr = tagged_.unpackPtr(m_tagged);
+    llvm::Value* v_ptr = tagged_.unpackPtr(v_tagged);
+    llvm::Value* t = tagged_.unpackInt64(t_tagged);
+    llvm::Value* t_double = builder.CreateSIToFP(t, ctx_.doubleType());
+
+    llvm::Value* beta1 = llvm::ConstantFP::get(ctx_.doubleType(), 0.9);
+    llvm::Value* beta2 = llvm::ConstantFP::get(ctx_.doubleType(), 0.999);
+    llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-8);
+    llvm::Value* weight_decay = llvm::ConstantFP::get(ctx_.doubleType(), 0.01);
+
+    if (op->call_op.num_vars >= 7) {
+        llvm::Value* b1_tagged = codegenAST(&op->call_op.variables[6]);
+        if (b1_tagged) beta1 = tagged_.unpackDouble(b1_tagged);
+    }
+    if (op->call_op.num_vars >= 8) {
+        llvm::Value* b2_tagged = codegenAST(&op->call_op.variables[7]);
+        if (b2_tagged) beta2 = tagged_.unpackDouble(b2_tagged);
+    }
+    if (op->call_op.num_vars >= 9) {
+        llvm::Value* eps_tagged = codegenAST(&op->call_op.variables[8]);
+        if (eps_tagged) eps = tagged_.unpackDouble(eps_tagged);
+    }
+    if (op->call_op.num_vars >= 10) {
+        llvm::Value* wd_tagged = codegenAST(&op->call_op.variables[9]);
+        if (wd_tagged) weight_decay = tagged_.unpackDouble(wd_tagged);
+    }
+
+    // Bias corrections
+    llvm::Function* pow_func = ctx_.module().getFunction("pow");
+    if (!pow_func) {
+        llvm::FunctionType* pow_type = llvm::FunctionType::get(ctx_.doubleType(),
+            {ctx_.doubleType(), ctx_.doubleType()}, false);
+        pow_func = llvm::Function::Create(pow_type, llvm::Function::ExternalLinkage, "pow", ctx_.module());
+    }
+
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* beta1_t = builder.CreateCall(pow_func, {beta1, t_double});
+    llvm::Value* beta2_t = builder.CreateCall(pow_func, {beta2, t_double});
+    llvm::Value* bias_corr1 = builder.CreateFSub(one, beta1_t);
+    llvm::Value* bias_corr2 = builder.CreateFSub(one, beta2_t);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, params_ptr, 3);
+    llvm::Value* num_elements = builder.CreateLoad(ctx_.int64Type(), total_ptr);
+
+    llvm::Value* params_elems_ptr = builder.CreateStructGEP(tensor_type, params_ptr, 2);
+    llvm::Value* params_elems = builder.CreateLoad(ctx_.ptrType(), params_elems_ptr);
+    llvm::Value* grads_elems_ptr = builder.CreateStructGEP(tensor_type, grads_ptr, 2);
+    llvm::Value* grads_elems = builder.CreateLoad(ctx_.ptrType(), grads_elems_ptr);
+    llvm::Value* m_elems_ptr = builder.CreateStructGEP(tensor_type, m_ptr, 2);
+    llvm::Value* m_elems = builder.CreateLoad(ctx_.ptrType(), m_elems_ptr);
+    llvm::Value* v_elems_ptr = builder.CreateStructGEP(tensor_type, v_ptr, 2);
+    llvm::Value* v_elems = builder.CreateLoad(ctx_.ptrType(), v_elems_ptr);
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* update_loop = llvm::BasicBlock::Create(ctx_.context(), "adamw_loop", current_func);
+    llvm::BasicBlock* update_body = llvm::BasicBlock::Create(ctx_.context(), "adamw_body", current_func);
+    llvm::BasicBlock* update_done = llvm::BasicBlock::Create(ctx_.context(), "adamw_done", current_func);
+
+    llvm::Value* elem_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), elem_idx);
+    builder.CreateBr(update_loop);
+
+    builder.SetInsertPoint(update_loop);
+    llvm::Value* ei = builder.CreateLoad(ctx_.int64Type(), elem_idx);
+    builder.CreateCondBr(builder.CreateICmpULT(ei, num_elements), update_body, update_done);
+
+    builder.SetInsertPoint(update_body);
+    llvm::Value* grad_ptr = builder.CreateGEP(ctx_.int64Type(), grads_elems, ei);
+    llvm::Value* grad_bits = builder.CreateLoad(ctx_.int64Type(), grad_ptr);
+    llvm::Value* grad = builder.CreateBitCast(grad_bits, ctx_.doubleType());
+
+    llvm::Value* param_ptr = builder.CreateGEP(ctx_.int64Type(), params_elems, ei);
+    llvm::Value* param_bits = builder.CreateLoad(ctx_.int64Type(), param_ptr);
+    llvm::Value* param = builder.CreateBitCast(param_bits, ctx_.doubleType());
+
+    llvm::Value* m_elem_ptr = builder.CreateGEP(ctx_.int64Type(), m_elems, ei);
+    llvm::Value* m_bits = builder.CreateLoad(ctx_.int64Type(), m_elem_ptr);
+    llvm::Value* m_val = builder.CreateBitCast(m_bits, ctx_.doubleType());
+
+    llvm::Value* v_elem_ptr = builder.CreateGEP(ctx_.int64Type(), v_elems, ei);
+    llvm::Value* v_bits = builder.CreateLoad(ctx_.int64Type(), v_elem_ptr);
+    llvm::Value* v_val = builder.CreateBitCast(v_bits, ctx_.doubleType());
+
+    // STEP 1: Decoupled weight decay — applied to params directly, NOT through gradient
+    // param = param * (1 - lr * weight_decay)
+    llvm::Value* decay_factor = builder.CreateFSub(one, builder.CreateFMul(lr, weight_decay));
+    llvm::Value* decayed_param = builder.CreateFMul(param, decay_factor);
+
+    // STEP 2: Standard Adam moment updates
+    llvm::Value* one_minus_beta1 = builder.CreateFSub(one, beta1);
+    llvm::Value* m_new = builder.CreateFAdd(
+        builder.CreateFMul(beta1, m_val),
+        builder.CreateFMul(one_minus_beta1, grad));
+
+    llvm::Value* one_minus_beta2 = builder.CreateFSub(one, beta2);
+    llvm::Value* grad_sq = builder.CreateFMul(grad, grad);
+    llvm::Value* v_new = builder.CreateFAdd(
+        builder.CreateFMul(beta2, v_val),
+        builder.CreateFMul(one_minus_beta2, grad_sq));
+
+    builder.CreateStore(builder.CreateBitCast(m_new, ctx_.int64Type()), m_elem_ptr);
+    builder.CreateStore(builder.CreateBitCast(v_new, ctx_.int64Type()), v_elem_ptr);
+
+    // STEP 3: Bias-corrected Adam update on already-decayed param
+    llvm::Value* m_hat = builder.CreateFDiv(m_new, bias_corr1);
+    llvm::Value* v_hat = builder.CreateFDiv(v_new, bias_corr2);
+
+    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+        llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+    llvm::Value* sqrt_v_hat = builder.CreateCall(sqrt_func, {v_hat});
+    llvm::Value* denom = builder.CreateFAdd(sqrt_v_hat, eps);
+    llvm::Value* update = builder.CreateFDiv(m_hat, denom);
+    llvm::Value* scaled_update = builder.CreateFMul(lr, update);
+    llvm::Value* new_param = builder.CreateFSub(decayed_param, scaled_update);
+
+    builder.CreateStore(builder.CreateBitCast(new_param, ctx_.int64Type()), param_ptr);
+
+    builder.CreateStore(builder.CreateAdd(ei, llvm::ConstantInt::get(ctx_.int64Type(), 1)), elem_idx);
+    builder.CreateBr(update_loop);
+
+    builder.SetInsertPoint(update_done);
+    return params_tagged;
+}
+
+llvm::Value* TensorCodegen::adagradStep(const eshkol_operations_t* op) {
+    // adagrad-step!: (adagrad-step! params grads lr accum [eps])
+    // Adagrad: Per-parameter adaptive learning rate via accumulated squared gradients
+    // accum_new = accum + grad^2
+    // param = param - lr * grad / (sqrt(accum_new) + eps)
+    if (op->call_op.num_vars < 4) {
+        eshkol_error("adagrad-step! requires at least 4 arguments: params, grads, lr, accum");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* params_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* grads_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* lr_tagged = codegenAST(&op->call_op.variables[2]);
+    llvm::Value* accum_tagged = codegenAST(&op->call_op.variables[3]);
+    if (!params_tagged || !grads_tagged || !lr_tagged || !accum_tagged) return nullptr;
+
+    llvm::Value* params_ptr = tagged_.unpackPtr(params_tagged);
+    llvm::Value* grads_ptr = tagged_.unpackPtr(grads_tagged);
+    llvm::Value* lr = tagged_.unpackDouble(lr_tagged);
+    llvm::Value* accum_ptr = tagged_.unpackPtr(accum_tagged);
+
+    llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-10);
+    if (op->call_op.num_vars >= 5) {
+        llvm::Value* eps_tagged = codegenAST(&op->call_op.variables[4]);
+        if (eps_tagged) eps = tagged_.unpackDouble(eps_tagged);
+    }
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, params_ptr, 3);
+    llvm::Value* num_elements = builder.CreateLoad(ctx_.int64Type(), total_ptr);
+
+    llvm::Value* params_elems_ptr = builder.CreateStructGEP(tensor_type, params_ptr, 2);
+    llvm::Value* params_elems = builder.CreateLoad(ctx_.ptrType(), params_elems_ptr);
+    llvm::Value* grads_elems_ptr = builder.CreateStructGEP(tensor_type, grads_ptr, 2);
+    llvm::Value* grads_elems = builder.CreateLoad(ctx_.ptrType(), grads_elems_ptr);
+    llvm::Value* accum_elems_ptr = builder.CreateStructGEP(tensor_type, accum_ptr, 2);
+    llvm::Value* accum_elems = builder.CreateLoad(ctx_.ptrType(), accum_elems_ptr);
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* update_loop = llvm::BasicBlock::Create(ctx_.context(), "adagrad_loop", current_func);
+    llvm::BasicBlock* update_body = llvm::BasicBlock::Create(ctx_.context(), "adagrad_body", current_func);
+    llvm::BasicBlock* update_done = llvm::BasicBlock::Create(ctx_.context(), "adagrad_done", current_func);
+
+    llvm::Value* elem_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), elem_idx);
+    builder.CreateBr(update_loop);
+
+    builder.SetInsertPoint(update_loop);
+    llvm::Value* ei = builder.CreateLoad(ctx_.int64Type(), elem_idx);
+    builder.CreateCondBr(builder.CreateICmpULT(ei, num_elements), update_body, update_done);
+
+    builder.SetInsertPoint(update_body);
+    llvm::Value* grad_ptr = builder.CreateGEP(ctx_.int64Type(), grads_elems, ei);
+    llvm::Value* grad_bits = builder.CreateLoad(ctx_.int64Type(), grad_ptr);
+    llvm::Value* grad = builder.CreateBitCast(grad_bits, ctx_.doubleType());
+
+    llvm::Value* param_ptr = builder.CreateGEP(ctx_.int64Type(), params_elems, ei);
+    llvm::Value* param_bits = builder.CreateLoad(ctx_.int64Type(), param_ptr);
+    llvm::Value* param = builder.CreateBitCast(param_bits, ctx_.doubleType());
+
+    llvm::Value* acc_ptr = builder.CreateGEP(ctx_.int64Type(), accum_elems, ei);
+    llvm::Value* acc_bits = builder.CreateLoad(ctx_.int64Type(), acc_ptr);
+    llvm::Value* acc_val = builder.CreateBitCast(acc_bits, ctx_.doubleType());
+
+    // accum += grad^2
+    llvm::Value* grad_sq = builder.CreateFMul(grad, grad);
+    llvm::Value* acc_new = builder.CreateFAdd(acc_val, grad_sq);
+    builder.CreateStore(builder.CreateBitCast(acc_new, ctx_.int64Type()), acc_ptr);
+
+    // param -= lr * grad / (sqrt(accum) + eps)
+    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+        llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+    llvm::Value* sqrt_acc = builder.CreateCall(sqrt_func, {acc_new});
+    llvm::Value* denom = builder.CreateFAdd(sqrt_acc, eps);
+    llvm::Value* update = builder.CreateFDiv(grad, denom);
+    llvm::Value* scaled_update = builder.CreateFMul(lr, update);
+    llvm::Value* new_param = builder.CreateFSub(param, scaled_update);
+    builder.CreateStore(builder.CreateBitCast(new_param, ctx_.int64Type()), param_ptr);
+
+    builder.CreateStore(builder.CreateAdd(ei, llvm::ConstantInt::get(ctx_.int64Type(), 1)), elem_idx);
+    builder.CreateBr(update_loop);
+
+    builder.SetInsertPoint(update_done);
+    return params_tagged;
+}
+
+llvm::Value* TensorCodegen::checkGradHealth(const eshkol_operations_t* op) {
+    // check-grad-health: (check-grad-health tensor) → #t if all finite, #f if NaN/Inf found
+    if (op->call_op.num_vars != 1) {
+        eshkol_error("check-grad-health requires exactly 1 argument");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* tensor_tagged = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_tagged) return nullptr;
+
+    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_ptr);
+    llvm::Value* elems_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_ptr);
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "health_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "health_body", current_func);
+    llvm::BasicBlock* loop_inc = llvm::BasicBlock::Create(ctx_.context(), "health_inc", current_func);
+    llvm::BasicBlock* health_bad = llvm::BasicBlock::Create(ctx_.context(), "health_bad", current_func);
+    llvm::BasicBlock* health_good = llvm::BasicBlock::Create(ctx_.context(), "health_good", current_func);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "health_merge", current_func);
+
+    llvm::Value* idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), idx);
+    builder.CreateCondBr(builder.CreateICmpULT(i, total_elements), loop_body, health_good);
+
+    builder.SetInsertPoint(loop_body);
+    llvm::Value* elem_ptr = builder.CreateGEP(ctx_.int64Type(), elems, i);
+    llvm::Value* bits = builder.CreateLoad(ctx_.int64Type(), elem_ptr);
+    llvm::Value* val = builder.CreateBitCast(bits, ctx_.doubleType());
+
+    // Detect NaN or Inf: for finite values, (x - x) == 0.0 (ordered).
+    // For NaN or Inf, (x - x) is NaN (unordered).
+    llvm::Value* diff = builder.CreateFSub(val, val);
+    llvm::Value* not_finite = builder.CreateFCmpUNO(diff, diff);
+    builder.CreateCondBr(not_finite, health_bad, loop_inc);
+
+    // Increment and loop back
+    builder.SetInsertPoint(loop_inc);
+    llvm::Value* next_i = builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    builder.CreateStore(next_i, idx);
+    builder.CreateBr(loop_cond);
+
+    // All elements finite → return true
+    builder.SetInsertPoint(health_good);
+    llvm::Value* true_val = tagged_.packBool(builder.getInt1(1));
+    builder.CreateBr(merge_block);
+
+    // Found NaN/Inf → return false
+    builder.SetInsertPoint(health_bad);
+    llvm::Value* false_val = tagged_.packBool(builder.getInt1(0));
+    builder.CreateBr(merge_block);
+
+    builder.SetInsertPoint(merge_block);
+    llvm::PHINode* result = builder.CreatePHI(true_val->getType(), 2, "health_result");
+    result->addIncoming(true_val, health_good);
+    result->addIncoming(false_val, health_bad);
+    return result;
+}
+
+// ===== WEIGHT INITIALIZATION =====
+
+llvm::Value* TensorCodegen::xavierUniform(const eshkol_operations_t* op) {
+    // xavier-uniform!: (xavier-uniform! tensor fan_in fan_out)
+    // Fills tensor with U(-limit, limit) where limit = sqrt(6 / (fan_in + fan_out))
+    if (op->call_op.num_vars != 3) {
+        eshkol_error("xavier-uniform! requires 3 arguments: tensor, fan_in, fan_out");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* tensor_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* fan_in_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* fan_out_tagged = codegenAST(&op->call_op.variables[2]);
+    if (!tensor_tagged || !fan_in_tagged || !fan_out_tagged) return nullptr;
+
+    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* fan_in = tagged_.unpackDouble(fan_in_tagged);
+    llvm::Value* fan_out = tagged_.unpackDouble(fan_out_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_ptr);
+    llvm::Value* elems_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_ptr);
+
+    // limit = sqrt(6 / (fan_in + fan_out))
+    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+        llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+    llvm::Value* fan_sum = builder.CreateFAdd(fan_in, fan_out);
+    llvm::Value* six = llvm::ConstantFP::get(ctx_.doubleType(), 6.0);
+    llvm::Value* ratio = builder.CreateFDiv(six, fan_sum);
+    llvm::Value* limit = builder.CreateCall(sqrt_func, {ratio});
+    llvm::Value* neg_limit = builder.CreateFNeg(limit);
+    llvm::Value* range = builder.CreateFMul(llvm::ConstantFP::get(ctx_.doubleType(), 2.0), limit);
+
+    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    if (!drand_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
+        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+    }
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "xu_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "xu_body", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "xu_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    builder.CreateCondBr(builder.CreateICmpULT(i, total_elements), loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    // Generate U(-limit, limit) = drand48() * 2 * limit - limit
+    llvm::Value* rand_val = builder.CreateCall(drand_func, {});
+    llvm::Value* scaled = builder.CreateFMul(rand_val, range);
+    llvm::Value* result = builder.CreateFAdd(scaled, neg_limit);
+
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), elems, i);
+    builder.CreateStore(builder.CreateBitCast(result, ctx_.int64Type()), dst_ptr);
+
+    builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    return tensor_tagged;
+}
+
+llvm::Value* TensorCodegen::xavierNormal(const eshkol_operations_t* op) {
+    // xavier-normal!: (xavier-normal! tensor fan_in fan_out)
+    // Fills tensor with N(0, std) where std = sqrt(2 / (fan_in + fan_out))
+    // Uses Box-Muller transform for normal distribution
+    if (op->call_op.num_vars != 3) {
+        eshkol_error("xavier-normal! requires 3 arguments: tensor, fan_in, fan_out");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* tensor_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* fan_in_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* fan_out_tagged = codegenAST(&op->call_op.variables[2]);
+    if (!tensor_tagged || !fan_in_tagged || !fan_out_tagged) return nullptr;
+
+    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* fan_in = tagged_.unpackDouble(fan_in_tagged);
+    llvm::Value* fan_out = tagged_.unpackDouble(fan_out_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_ptr);
+    llvm::Value* elems_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_ptr);
+
+    // std = sqrt(2 / (fan_in + fan_out))
+    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+        llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+    llvm::Value* fan_sum = builder.CreateFAdd(fan_in, fan_out);
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* ratio = builder.CreateFDiv(two, fan_sum);
+    llvm::Value* std_dev = builder.CreateCall(sqrt_func, {ratio});
+
+    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    if (!drand_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
+        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+    }
+    llvm::Function* log_func = ctx_.module().getFunction("log");
+    if (!log_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
+    }
+    llvm::Function* cos_func = ctx_.module().getFunction("cos");
+    if (!cos_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        cos_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "cos", &ctx_.module());
+    }
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "xn_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "xn_body", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "xn_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    builder.CreateCondBr(builder.CreateICmpULT(i, total_elements), loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    // Box-Muller transform: z = sqrt(-2*ln(u1)) * cos(2*pi*u2)
+    llvm::Value* u1 = builder.CreateCall(drand_func, {});
+    llvm::Value* u2 = builder.CreateCall(drand_func, {});
+    // Clamp u1 away from 0 for log safety
+    llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-10);
+    llvm::Value* u1_cmp = builder.CreateFCmpOGT(u1, eps);
+    llvm::Value* u1_safe = builder.CreateSelect(u1_cmp, u1, eps);
+
+    llvm::Value* neg_two = llvm::ConstantFP::get(ctx_.doubleType(), -2.0);
+    llvm::Value* log_u1 = builder.CreateCall(log_func, {u1_safe});
+    llvm::Value* inner = builder.CreateFMul(neg_two, log_u1);
+    llvm::Value* radius = builder.CreateCall(sqrt_func, {inner});
+
+    llvm::Value* two_pi = llvm::ConstantFP::get(ctx_.doubleType(), 6.283185307179586);
+    llvm::Value* angle = builder.CreateFMul(two_pi, u2);
+    llvm::Value* cos_val = builder.CreateCall(cos_func, {angle});
+
+    llvm::Value* z = builder.CreateFMul(radius, cos_val);
+    llvm::Value* result = builder.CreateFMul(z, std_dev);
+
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), elems, i);
+    builder.CreateStore(builder.CreateBitCast(result, ctx_.int64Type()), dst_ptr);
+
+    builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    return tensor_tagged;
+}
+
+llvm::Value* TensorCodegen::kaimingUniform(const eshkol_operations_t* op) {
+    // kaiming-uniform!: (kaiming-uniform! tensor fan_in)
+    // Fills tensor with U(-limit, limit) where limit = sqrt(6 / fan_in)
+    // For ReLU networks (He initialization)
+    if (op->call_op.num_vars < 2 || op->call_op.num_vars > 2) {
+        eshkol_error("kaiming-uniform! requires 2 arguments: tensor, fan_in");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* tensor_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* fan_in_tagged = codegenAST(&op->call_op.variables[1]);
+    if (!tensor_tagged || !fan_in_tagged) return nullptr;
+
+    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* fan_in = tagged_.unpackDouble(fan_in_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_ptr);
+    llvm::Value* elems_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_ptr);
+
+    // limit = sqrt(6 / fan_in)
+    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+        llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+    llvm::Value* six = llvm::ConstantFP::get(ctx_.doubleType(), 6.0);
+    llvm::Value* ratio = builder.CreateFDiv(six, fan_in);
+    llvm::Value* limit = builder.CreateCall(sqrt_func, {ratio});
+    llvm::Value* neg_limit = builder.CreateFNeg(limit);
+    llvm::Value* range = builder.CreateFMul(llvm::ConstantFP::get(ctx_.doubleType(), 2.0), limit);
+
+    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    if (!drand_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
+        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+    }
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "ku_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "ku_body", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "ku_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    builder.CreateCondBr(builder.CreateICmpULT(i, total_elements), loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    llvm::Value* rand_val = builder.CreateCall(drand_func, {});
+    llvm::Value* scaled = builder.CreateFMul(rand_val, range);
+    llvm::Value* result = builder.CreateFAdd(scaled, neg_limit);
+
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), elems, i);
+    builder.CreateStore(builder.CreateBitCast(result, ctx_.int64Type()), dst_ptr);
+
+    builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    return tensor_tagged;
+}
+
+llvm::Value* TensorCodegen::kaimingNormal(const eshkol_operations_t* op) {
+    // kaiming-normal!: (kaiming-normal! tensor fan_in)
+    // Fills tensor with N(0, std) where std = sqrt(2 / fan_in)
+    if (op->call_op.num_vars != 2) {
+        eshkol_error("kaiming-normal! requires 2 arguments: tensor, fan_in");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* tensor_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* fan_in_tagged = codegenAST(&op->call_op.variables[1]);
+    if (!tensor_tagged || !fan_in_tagged) return nullptr;
+
+    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* fan_in = tagged_.unpackDouble(fan_in_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_ptr);
+    llvm::Value* elems_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_ptr);
+
+    // std = sqrt(2 / fan_in)
+    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+        llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* ratio = builder.CreateFDiv(two, fan_in);
+    llvm::Value* std_dev = builder.CreateCall(sqrt_func, {ratio});
+
+    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    if (!drand_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
+        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+    }
+    llvm::Function* log_func = ctx_.module().getFunction("log");
+    if (!log_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
+    }
+    llvm::Function* cos_func = ctx_.module().getFunction("cos");
+    if (!cos_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        cos_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "cos", &ctx_.module());
+    }
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "kn_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "kn_body", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "kn_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    builder.CreateCondBr(builder.CreateICmpULT(i, total_elements), loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    // Box-Muller: z = sqrt(-2*ln(u1)) * cos(2*pi*u2)
+    llvm::Value* u1 = builder.CreateCall(drand_func, {});
+    llvm::Value* u2 = builder.CreateCall(drand_func, {});
+    llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-10);
+    llvm::Value* u1_cmp = builder.CreateFCmpOGT(u1, eps);
+    llvm::Value* u1_safe = builder.CreateSelect(u1_cmp, u1, eps);
+
+    llvm::Value* neg_two = llvm::ConstantFP::get(ctx_.doubleType(), -2.0);
+    llvm::Value* log_u1 = builder.CreateCall(log_func, {u1_safe});
+    llvm::Value* inner = builder.CreateFMul(neg_two, log_u1);
+    llvm::Value* radius = builder.CreateCall(sqrt_func, {inner});
+
+    llvm::Value* two_pi = llvm::ConstantFP::get(ctx_.doubleType(), 6.283185307179586);
+    llvm::Value* angle = builder.CreateFMul(two_pi, u2);
+    llvm::Value* cos_val = builder.CreateCall(cos_func, {angle});
+
+    llvm::Value* z = builder.CreateFMul(radius, cos_val);
+    llvm::Value* result = builder.CreateFMul(z, std_dev);
+
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), elems, i);
+    builder.CreateStore(builder.CreateBitCast(result, ctx_.int64Type()), dst_ptr);
+
+    builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    return tensor_tagged;
+}
+
+llvm::Value* TensorCodegen::lecunNormal(const eshkol_operations_t* op) {
+    // lecun-normal!: (lecun-normal! tensor fan_in)
+    // Fills tensor with N(0, std) where std = sqrt(1 / fan_in)
+    // For SELU activation
+    if (op->call_op.num_vars != 2) {
+        eshkol_error("lecun-normal! requires 2 arguments: tensor, fan_in");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* tensor_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* fan_in_tagged = codegenAST(&op->call_op.variables[1]);
+    if (!tensor_tagged || !fan_in_tagged) return nullptr;
+
+    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* fan_in = tagged_.unpackDouble(fan_in_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), total_ptr);
+    llvm::Value* elems_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
+    llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_ptr);
+
+    // std = sqrt(1 / fan_in) = 1 / sqrt(fan_in)
+    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+        llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* ratio = builder.CreateFDiv(one, fan_in);
+    llvm::Value* std_dev = builder.CreateCall(sqrt_func, {ratio});
+
+    llvm::Function* drand_func = ctx_.module().getFunction("drand48");
+    if (!drand_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
+        drand_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+    }
+    llvm::Function* log_func = ctx_.module().getFunction("log");
+    if (!log_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
+    }
+    llvm::Function* cos_func = ctx_.module().getFunction("cos");
+    if (!cos_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        cos_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "cos", &ctx_.module());
+    }
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "ln_cond", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "ln_body", current_func);
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "ln_exit", current_func);
+
+    llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(loop_cond);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+    builder.CreateCondBr(builder.CreateICmpULT(i, total_elements), loop_body, exit_block);
+
+    builder.SetInsertPoint(loop_body);
+    // Box-Muller: z = sqrt(-2*ln(u1)) * cos(2*pi*u2)
+    llvm::Value* u1 = builder.CreateCall(drand_func, {});
+    llvm::Value* u2 = builder.CreateCall(drand_func, {});
+    llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-10);
+    llvm::Value* u1_cmp = builder.CreateFCmpOGT(u1, eps);
+    llvm::Value* u1_safe = builder.CreateSelect(u1_cmp, u1, eps);
+
+    llvm::Value* neg_two = llvm::ConstantFP::get(ctx_.doubleType(), -2.0);
+    llvm::Value* log_u1 = builder.CreateCall(log_func, {u1_safe});
+    llvm::Value* inner = builder.CreateFMul(neg_two, log_u1);
+    llvm::Value* radius = builder.CreateCall(sqrt_func, {inner});
+
+    llvm::Value* two_pi = llvm::ConstantFP::get(ctx_.doubleType(), 6.283185307179586);
+    llvm::Value* angle = builder.CreateFMul(two_pi, u2);
+    llvm::Value* cos_val = builder.CreateCall(cos_func, {angle});
+
+    llvm::Value* z = builder.CreateFMul(radius, cos_val);
+    llvm::Value* result = builder.CreateFMul(z, std_dev);
+
+    llvm::Value* dst_ptr = builder.CreateGEP(ctx_.int64Type(), elems, i);
+    builder.CreateStore(builder.CreateBitCast(result, ctx_.int64Type()), dst_ptr);
+
+    builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), counter);
+    builder.CreateBr(loop_cond);
+
+    builder.SetInsertPoint(exit_block);
+    return tensor_tagged;
+}
+
+// ===== LEARNING RATE SCHEDULERS =====
+
+llvm::Value* TensorCodegen::cosineAnnealingLR(const eshkol_operations_t* op) {
+    // cosine-annealing-lr: (cosine-annealing-lr base_lr min_lr current_step total_steps) → lr
+    // lr = min_lr + 0.5 * (base_lr - min_lr) * (1 + cos(pi * t / T))
+    if (op->call_op.num_vars != 4) {
+        eshkol_error("cosine-annealing-lr requires 4 arguments: base_lr, min_lr, current_step, total_steps");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* base_lr_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* min_lr_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* step_tagged = codegenAST(&op->call_op.variables[2]);
+    llvm::Value* total_tagged = codegenAST(&op->call_op.variables[3]);
+    if (!base_lr_tagged || !min_lr_tagged || !step_tagged || !total_tagged) return nullptr;
+
+    llvm::Value* base_lr = tagged_.unpackDouble(base_lr_tagged);
+    llvm::Value* min_lr = tagged_.unpackDouble(min_lr_tagged);
+    llvm::Value* step = tagged_.unpackDouble(step_tagged);
+    llvm::Value* total = tagged_.unpackDouble(total_tagged);
+
+    llvm::Function* cos_func = ctx_.module().getFunction("cos");
+    if (!cos_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        cos_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "cos", &ctx_.module());
+    }
+
+    // lr = min_lr + 0.5 * (base_lr - min_lr) * (1 + cos(pi * step / total))
+    llvm::Value* pi = llvm::ConstantFP::get(ctx_.doubleType(), 3.14159265358979323846);
+    llvm::Value* half = llvm::ConstantFP::get(ctx_.doubleType(), 0.5);
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+
+    llvm::Value* lr_range = builder.CreateFSub(base_lr, min_lr);
+    llvm::Value* progress = builder.CreateFDiv(step, total);
+    llvm::Value* angle = builder.CreateFMul(pi, progress);
+    llvm::Value* cos_val = builder.CreateCall(cos_func, {angle});
+    llvm::Value* one_plus_cos = builder.CreateFAdd(one, cos_val);
+    llvm::Value* scaled = builder.CreateFMul(half, builder.CreateFMul(lr_range, one_plus_cos));
+    llvm::Value* result = builder.CreateFAdd(min_lr, scaled);
+
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* TensorCodegen::stepDecayLR(const eshkol_operations_t* op) {
+    // step-decay-lr: (step-decay-lr base_lr gamma epoch step_size) → lr
+    // lr = base_lr * gamma^(floor(epoch / step_size))
+    if (op->call_op.num_vars != 4) {
+        eshkol_error("step-decay-lr requires 4 arguments: base_lr, gamma, epoch, step_size");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* base_lr_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* gamma_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* epoch_tagged = codegenAST(&op->call_op.variables[2]);
+    llvm::Value* step_tagged = codegenAST(&op->call_op.variables[3]);
+    if (!base_lr_tagged || !gamma_tagged || !epoch_tagged || !step_tagged) return nullptr;
+
+    llvm::Value* base_lr = tagged_.unpackDouble(base_lr_tagged);
+    llvm::Value* gamma = tagged_.unpackDouble(gamma_tagged);
+    llvm::Value* epoch = tagged_.unpackDouble(epoch_tagged);
+    llvm::Value* step_size = tagged_.unpackDouble(step_tagged);
+
+    llvm::Function* pow_func = ctx_.module().getFunction("pow");
+    if (!pow_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType(), ctx_.doubleType()}, false);
+        pow_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "pow", &ctx_.module());
+    }
+    llvm::Function* floor_func = ctx_.module().getFunction("floor");
+    if (!floor_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        floor_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "floor", &ctx_.module());
+    }
+
+    // exponent = floor(epoch / step_size)
+    llvm::Value* ratio = builder.CreateFDiv(epoch, step_size);
+    llvm::Value* exponent = builder.CreateCall(floor_func, {ratio});
+    // lr = base_lr * gamma^exponent
+    llvm::Value* decay = builder.CreateCall(pow_func, {gamma, exponent});
+    llvm::Value* result = builder.CreateFMul(base_lr, decay);
+
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* TensorCodegen::linearWarmupLR(const eshkol_operations_t* op) {
+    // linear-warmup-lr: (linear-warmup-lr base_lr current_step warmup_steps) → lr
+    // lr = base_lr * min(1.0, current_step / warmup_steps)
+    if (op->call_op.num_vars != 3) {
+        eshkol_error("linear-warmup-lr requires 3 arguments: base_lr, current_step, warmup_steps");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* base_lr_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* step_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* warmup_tagged = codegenAST(&op->call_op.variables[2]);
+    if (!base_lr_tagged || !step_tagged || !warmup_tagged) return nullptr;
+
+    llvm::Value* base_lr = tagged_.unpackDouble(base_lr_tagged);
+    llvm::Value* step = tagged_.unpackDouble(step_tagged);
+    llvm::Value* warmup = tagged_.unpackDouble(warmup_tagged);
+
+    // ratio = step / warmup
+    llvm::Value* ratio = builder.CreateFDiv(step, warmup);
+    // min(1.0, ratio)
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* cmp = builder.CreateFCmpOLT(ratio, one);
+    llvm::Value* factor = builder.CreateSelect(cmp, ratio, one);
+    llvm::Value* result = builder.CreateFMul(base_lr, factor);
+
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* TensorCodegen::exponentialDecayLR(const eshkol_operations_t* op) {
+    // exponential-decay-lr: (exponential-decay-lr base_lr gamma epoch) → lr
+    // lr = base_lr * gamma^epoch
+    if (op->call_op.num_vars != 3) {
+        eshkol_error("exponential-decay-lr requires 3 arguments: base_lr, gamma, epoch");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    llvm::Value* base_lr_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* gamma_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* epoch_tagged = codegenAST(&op->call_op.variables[2]);
+    if (!base_lr_tagged || !gamma_tagged || !epoch_tagged) return nullptr;
+
+    llvm::Value* base_lr = tagged_.unpackDouble(base_lr_tagged);
+    llvm::Value* gamma = tagged_.unpackDouble(gamma_tagged);
+    llvm::Value* epoch = tagged_.unpackDouble(epoch_tagged);
+
+    llvm::Function* pow_func = ctx_.module().getFunction("pow");
+    if (!pow_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType(), ctx_.doubleType()}, false);
+        pow_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "pow", &ctx_.module());
+    }
+
+    llvm::Value* decay = builder.CreateCall(pow_func, {gamma, epoch});
+    llvm::Value* result = builder.CreateFMul(base_lr, decay);
+
+    return tagged_.packDouble(result);
+}
+
+// ===== LINEAR ALGEBRA (Phase 4.4) =====
+
+// Helper: declare or get an extern "C" runtime function
+static llvm::Function* getOrDeclareRuntimeFunc(
+    llvm::Module& mod, llvm::LLVMContext& ctx,
+    const char* name, llvm::FunctionType* ft) {
+    llvm::Function* f = mod.getFunction(name);
+    if (!f) {
+        f = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, &mod);
+    }
+    return f;
+}
+
+llvm::Value* TensorCodegen::tensorLU(const eshkol_operations_t* op) {
+    // tensor-lu: (tensor-lu A) -> returns list (LU-matrix, pivot-vector, sign)
+    // LU decomposition with partial pivoting
+    if (op->call_op.num_vars != 1) {
+        eshkol_error("tensor-lu requires 1 argument: square matrix");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
+    if (!a_tagged) return nullptr;
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+
+    // Get dimensions - must be 2D square
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* n = builder.CreateLoad(ctx_.int64Type(), dims_ptr);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, a_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+
+    // Allocate working copy of A as doubles (n*n doubles)
+    llvm::Value* nn = builder.CreateMul(n, n);
+    llvm::Value* byte_size = builder.CreateMul(nn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Function* alloc_fn = mem_.getArenaAllocate();
+    llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "lu_data");
+
+    // Copy source tensor elements (int64 bitpatterns) to double array
+    // Loop: for i = 0..n*n: lu_data[i] = bitcast(src[i])
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* copy_cond = llvm::BasicBlock::Create(ctx_.context(), "lu_copy_cond", current_func);
+    llvm::BasicBlock* copy_body = llvm::BasicBlock::Create(ctx_.context(), "lu_copy_body", current_func);
+    llvm::BasicBlock* copy_done = llvm::BasicBlock::Create(ctx_.context(), "lu_copy_done", current_func);
+
+    llvm::Value* copy_i = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), copy_i);
+    builder.CreateBr(copy_cond);
+
+    builder.SetInsertPoint(copy_cond);
+    llvm::Value* ci = builder.CreateLoad(ctx_.int64Type(), copy_i);
+    builder.CreateCondBr(builder.CreateICmpULT(ci, nn), copy_body, copy_done);
+
+    builder.SetInsertPoint(copy_body);
+    llvm::Value* src_p = builder.CreateGEP(ctx_.int64Type(), src_elems, ci);
+    llvm::Value* bits = builder.CreateLoad(ctx_.int64Type(), src_p);
+    llvm::Value* dval = builder.CreateBitCast(bits, ctx_.doubleType());
+    llvm::Value* dst_p = builder.CreateGEP(ctx_.doubleType(), lu_data, ci);
+    builder.CreateStore(dval, dst_p);
+    builder.CreateStore(builder.CreateAdd(ci, llvm::ConstantInt::get(ctx_.int64Type(), 1)), copy_i);
+    builder.CreateBr(copy_cond);
+
+    builder.SetInsertPoint(copy_done);
+
+    // Allocate pivot array (n int64s)
+    llvm::Value* piv_size = builder.CreateMul(n, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* piv_data = builder.CreateCall(alloc_fn, {arena_ptr, piv_size}, "lu_piv");
+
+    // Call runtime LU decomposition
+    llvm::FunctionType* lu_ft = llvm::FunctionType::get(
+        ctx_.int64Type(),
+        {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()},
+        false);
+    llvm::Function* lu_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_lu_decompose", lu_ft);
+    llvm::Value* sign = builder.CreateCall(lu_fn, {lu_data, piv_data, n}, "lu_sign");
+
+    // Create result tensor from LU data (copy doubles back to int64 bitpatterns)
+    std::vector<llvm::Value*> dims = {n, n};
+    llvm::Value* result_ptr = createTensorWithDims(dims);
+    if (!result_ptr) return nullptr;
+
+    llvm::Value* res_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    llvm::Value* res_elems = builder.CreateLoad(ctx_.ptrType(), res_elems_field);
+
+    // Copy loop: double -> int64 bitcast
+    llvm::BasicBlock* cp2_cond = llvm::BasicBlock::Create(ctx_.context(), "lu_cp2_cond", current_func);
+    llvm::BasicBlock* cp2_body = llvm::BasicBlock::Create(ctx_.context(), "lu_cp2_body", current_func);
+    llvm::BasicBlock* cp2_done = llvm::BasicBlock::Create(ctx_.context(), "lu_cp2_done", current_func);
+
+    llvm::Value* cp2_i = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), cp2_i);
+    builder.CreateBr(cp2_cond);
+
+    builder.SetInsertPoint(cp2_cond);
+    llvm::Value* ci2 = builder.CreateLoad(ctx_.int64Type(), cp2_i);
+    builder.CreateCondBr(builder.CreateICmpULT(ci2, nn), cp2_body, cp2_done);
+
+    builder.SetInsertPoint(cp2_body);
+    llvm::Value* lu_p = builder.CreateGEP(ctx_.doubleType(), lu_data, ci2);
+    llvm::Value* lu_val = builder.CreateLoad(ctx_.doubleType(), lu_p);
+    llvm::Value* lu_bits = builder.CreateBitCast(lu_val, ctx_.int64Type());
+    llvm::Value* res_p = builder.CreateGEP(ctx_.int64Type(), res_elems, ci2);
+    builder.CreateStore(lu_bits, res_p);
+    builder.CreateStore(builder.CreateAdd(ci2, llvm::ConstantInt::get(ctx_.int64Type(), 1)), cp2_i);
+    builder.CreateBr(cp2_cond);
+
+    builder.SetInsertPoint(cp2_done);
+
+    // Return the LU matrix as a tensor (sign is encoded in the return)
+    // For simplicity, return just the LU tensor. Users can call tensor-det separately.
+    return tagged_.packHeapPtr(result_ptr);
+}
+
+llvm::Value* TensorCodegen::tensorDet(const eshkol_operations_t* op) {
+    // tensor-det: (tensor-det A) -> scalar determinant
+    if (op->call_op.num_vars != 1) {
+        eshkol_error("tensor-det requires 1 argument: square matrix");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
+    if (!a_tagged) return nullptr;
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* n = builder.CreateLoad(ctx_.int64Type(), dims_ptr);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, a_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+
+    // Allocate working copy + pivot array
+    llvm::Value* nn = builder.CreateMul(n, n);
+    llvm::Value* byte_size = builder.CreateMul(nn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Function* alloc_fn = mem_.getArenaAllocate();
+    llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "det_lu");
+    llvm::Value* piv_size = builder.CreateMul(n, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* piv_data = builder.CreateCall(alloc_fn, {arena_ptr, piv_size}, "det_piv");
+
+    // Copy tensor elements to double array
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* copy_cond = llvm::BasicBlock::Create(ctx_.context(), "det_cp_cond", current_func);
+    llvm::BasicBlock* copy_body = llvm::BasicBlock::Create(ctx_.context(), "det_cp_body", current_func);
+    llvm::BasicBlock* copy_done = llvm::BasicBlock::Create(ctx_.context(), "det_cp_done", current_func);
+
+    llvm::Value* copy_i = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), copy_i);
+    builder.CreateBr(copy_cond);
+
+    builder.SetInsertPoint(copy_cond);
+    llvm::Value* ci = builder.CreateLoad(ctx_.int64Type(), copy_i);
+    builder.CreateCondBr(builder.CreateICmpULT(ci, nn), copy_body, copy_done);
+
+    builder.SetInsertPoint(copy_body);
+    llvm::Value* sp = builder.CreateGEP(ctx_.int64Type(), src_elems, ci);
+    llvm::Value* bits = builder.CreateLoad(ctx_.int64Type(), sp);
+    llvm::Value* dval = builder.CreateBitCast(bits, ctx_.doubleType());
+    llvm::Value* dp = builder.CreateGEP(ctx_.doubleType(), lu_data, ci);
+    builder.CreateStore(dval, dp);
+    builder.CreateStore(builder.CreateAdd(ci, llvm::ConstantInt::get(ctx_.int64Type(), 1)), copy_i);
+    builder.CreateBr(copy_cond);
+
+    builder.SetInsertPoint(copy_done);
+
+    // Call LU decomposition
+    llvm::FunctionType* lu_ft = llvm::FunctionType::get(
+        ctx_.int64Type(),
+        {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()},
+        false);
+    llvm::Function* lu_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_lu_decompose", lu_ft);
+    llvm::Value* sign = builder.CreateCall(lu_fn, {lu_data, piv_data, n}, "det_sign");
+
+    // Call det_from_lu
+    llvm::FunctionType* det_ft = llvm::FunctionType::get(
+        ctx_.doubleType(),
+        {ctx_.ptrType(), ctx_.int64Type(), ctx_.int64Type()},
+        false);
+    llvm::Function* det_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_det_from_lu", det_ft);
+    llvm::Value* det = builder.CreateCall(det_fn, {lu_data, n, sign}, "det_val");
+
+    return tagged_.packDouble(det);
+}
+
+llvm::Value* TensorCodegen::tensorInverse(const eshkol_operations_t* op) {
+    // tensor-inverse: (tensor-inverse A) -> A^{-1}
+    if (op->call_op.num_vars != 1) {
+        eshkol_error("tensor-inverse requires 1 argument: square matrix");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
+    if (!a_tagged) return nullptr;
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* n = builder.CreateLoad(ctx_.int64Type(), dims_ptr);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, a_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+
+    llvm::Value* nn = builder.CreateMul(n, n);
+    llvm::Value* byte_size = builder.CreateMul(nn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Function* alloc_fn = mem_.getArenaAllocate();
+    llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "inv_lu");
+    llvm::Value* piv_size = builder.CreateMul(n, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* piv_data = builder.CreateCall(alloc_fn, {arena_ptr, piv_size}, "inv_piv");
+    llvm::Value* inv_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "inv_data");
+
+    // Copy tensor elements to double array
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* copy_cond = llvm::BasicBlock::Create(ctx_.context(), "inv_cp_cond", current_func);
+    llvm::BasicBlock* copy_body = llvm::BasicBlock::Create(ctx_.context(), "inv_cp_body", current_func);
+    llvm::BasicBlock* copy_done = llvm::BasicBlock::Create(ctx_.context(), "inv_cp_done", current_func);
+
+    llvm::Value* copy_i = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), copy_i);
+    builder.CreateBr(copy_cond);
+
+    builder.SetInsertPoint(copy_cond);
+    llvm::Value* ci = builder.CreateLoad(ctx_.int64Type(), copy_i);
+    builder.CreateCondBr(builder.CreateICmpULT(ci, nn), copy_body, copy_done);
+
+    builder.SetInsertPoint(copy_body);
+    llvm::Value* sp = builder.CreateGEP(ctx_.int64Type(), src_elems, ci);
+    llvm::Value* bits = builder.CreateLoad(ctx_.int64Type(), sp);
+    llvm::Value* dval = builder.CreateBitCast(bits, ctx_.doubleType());
+    llvm::Value* dp = builder.CreateGEP(ctx_.doubleType(), lu_data, ci);
+    builder.CreateStore(dval, dp);
+    builder.CreateStore(builder.CreateAdd(ci, llvm::ConstantInt::get(ctx_.int64Type(), 1)), copy_i);
+    builder.CreateBr(copy_cond);
+
+    builder.SetInsertPoint(copy_done);
+
+    // LU decompose
+    llvm::FunctionType* lu_ft = llvm::FunctionType::get(
+        ctx_.int64Type(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+    llvm::Function* lu_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_lu_decompose", lu_ft);
+    builder.CreateCall(lu_fn, {lu_data, piv_data, n});
+
+    // Compute inverse
+    llvm::FunctionType* inv_ft = llvm::FunctionType::get(
+        ctx_.voidType(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+    llvm::Function* inv_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_lu_inverse", inv_ft);
+    builder.CreateCall(inv_fn, {lu_data, piv_data, inv_data, n});
+
+    // Create result tensor and copy doubles back as int64 bitpatterns
+    std::vector<llvm::Value*> dims = {n, n};
+    llvm::Value* result_ptr = createTensorWithDims(dims);
+    if (!result_ptr) return nullptr;
+
+    llvm::Value* res_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    llvm::Value* res_elems = builder.CreateLoad(ctx_.ptrType(), res_elems_field);
+
+    llvm::BasicBlock* cp2_cond = llvm::BasicBlock::Create(ctx_.context(), "inv_cp2_cond", current_func);
+    llvm::BasicBlock* cp2_body = llvm::BasicBlock::Create(ctx_.context(), "inv_cp2_body", current_func);
+    llvm::BasicBlock* cp2_done = llvm::BasicBlock::Create(ctx_.context(), "inv_cp2_done", current_func);
+
+    llvm::Value* cp2_i = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), cp2_i);
+    builder.CreateBr(cp2_cond);
+
+    builder.SetInsertPoint(cp2_cond);
+    llvm::Value* ci2 = builder.CreateLoad(ctx_.int64Type(), cp2_i);
+    builder.CreateCondBr(builder.CreateICmpULT(ci2, nn), cp2_body, cp2_done);
+
+    builder.SetInsertPoint(cp2_body);
+    llvm::Value* inv_p = builder.CreateGEP(ctx_.doubleType(), inv_data, ci2);
+    llvm::Value* inv_val = builder.CreateLoad(ctx_.doubleType(), inv_p);
+    llvm::Value* inv_bits = builder.CreateBitCast(inv_val, ctx_.int64Type());
+    llvm::Value* res_p = builder.CreateGEP(ctx_.int64Type(), res_elems, ci2);
+    builder.CreateStore(inv_bits, res_p);
+    builder.CreateStore(builder.CreateAdd(ci2, llvm::ConstantInt::get(ctx_.int64Type(), 1)), cp2_i);
+    builder.CreateBr(cp2_cond);
+
+    builder.SetInsertPoint(cp2_done);
+
+    return tagged_.packHeapPtr(result_ptr);
+}
+
+llvm::Value* TensorCodegen::tensorSolve(const eshkol_operations_t* op) {
+    // tensor-solve: (tensor-solve A b) -> x where Ax = b
+    if (op->call_op.num_vars != 2) {
+        eshkol_error("tensor-solve requires 2 arguments: matrix A, vector b");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* b_tagged = codegenAST(&op->call_op.variables[1]);
+    if (!a_tagged || !b_tagged) return nullptr;
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+    llvm::Value* b_ptr = tagged_.unpackPtr(b_tagged);
+
+    llvm::Value* a_dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
+    llvm::Value* a_dims_ptr = builder.CreateLoad(ctx_.ptrType(), a_dims_field);
+    llvm::Value* n = builder.CreateLoad(ctx_.int64Type(), a_dims_ptr);
+
+    llvm::Value* a_elems_field = builder.CreateStructGEP(tensor_type, a_ptr, 2);
+    llvm::Value* a_elems = builder.CreateLoad(ctx_.ptrType(), a_elems_field);
+    llvm::Value* b_elems_field = builder.CreateStructGEP(tensor_type, b_ptr, 2);
+    llvm::Value* b_elems = builder.CreateLoad(ctx_.ptrType(), b_elems_field);
+
+    llvm::Value* nn = builder.CreateMul(n, n);
+    llvm::Value* a_bytes = builder.CreateMul(nn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* b_bytes = builder.CreateMul(n, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Function* alloc_fn = mem_.getArenaAllocate();
+    llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, a_bytes}, "solve_lu");
+    llvm::Value* piv_data = builder.CreateCall(alloc_fn, {arena_ptr, b_bytes}, "solve_piv");
+    llvm::Value* b_data = builder.CreateCall(alloc_fn, {arena_ptr, b_bytes}, "solve_b");
+
+    // Copy A to lu_data, b to b_data
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+
+    // Copy A
+    {
+        llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), "solve_cpa_cond", current_func);
+        llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), "solve_cpa_body", current_func);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "solve_cpa_done", current_func);
+        llvm::Value* idx = builder.CreateAlloca(ctx_.int64Type());
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(cond);
+        llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), idx);
+        builder.CreateCondBr(builder.CreateICmpULT(i, nn), body, done);
+
+        builder.SetInsertPoint(body);
+        llvm::Value* sp = builder.CreateGEP(ctx_.int64Type(), a_elems, i);
+        llvm::Value* bits = builder.CreateLoad(ctx_.int64Type(), sp);
+        llvm::Value* dval = builder.CreateBitCast(bits, ctx_.doubleType());
+        llvm::Value* dp = builder.CreateGEP(ctx_.doubleType(), lu_data, i);
+        builder.CreateStore(dval, dp);
+        builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+        builder.CreateBr(cond);
+        builder.SetInsertPoint(done);
+    }
+
+    // Copy b
+    {
+        llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), "solve_cpb_cond", current_func);
+        llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), "solve_cpb_body", current_func);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "solve_cpb_done", current_func);
+        llvm::Value* idx = builder.CreateAlloca(ctx_.int64Type());
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(cond);
+        llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), idx);
+        builder.CreateCondBr(builder.CreateICmpULT(i, n), body, done);
+
+        builder.SetInsertPoint(body);
+        llvm::Value* sp = builder.CreateGEP(ctx_.int64Type(), b_elems, i);
+        llvm::Value* bits = builder.CreateLoad(ctx_.int64Type(), sp);
+        llvm::Value* dval = builder.CreateBitCast(bits, ctx_.doubleType());
+        llvm::Value* dp = builder.CreateGEP(ctx_.doubleType(), b_data, i);
+        builder.CreateStore(dval, dp);
+        builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+        builder.CreateBr(cond);
+        builder.SetInsertPoint(done);
+    }
+
+    // LU decompose
+    llvm::FunctionType* lu_ft = llvm::FunctionType::get(
+        ctx_.int64Type(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+    llvm::Function* lu_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_lu_decompose", lu_ft);
+    builder.CreateCall(lu_fn, {lu_data, piv_data, n});
+
+    // Solve
+    llvm::FunctionType* solve_ft = llvm::FunctionType::get(
+        ctx_.voidType(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+    llvm::Function* solve_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_lu_solve", solve_ft);
+    builder.CreateCall(solve_fn, {lu_data, piv_data, b_data, n});
+
+    // Create result 1D tensor from solution
+    std::vector<llvm::Value*> dims = {n};
+    llvm::Value* result_ptr = createTensorWithDims(dims);
+    if (!result_ptr) return nullptr;
+
+    llvm::Value* res_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    llvm::Value* res_elems = builder.CreateLoad(ctx_.ptrType(), res_elems_field);
+
+    // Copy solution back
+    {
+        llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), "solve_cp_cond", current_func);
+        llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), "solve_cp_body", current_func);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "solve_cp_done", current_func);
+        llvm::Value* idx = builder.CreateAlloca(ctx_.int64Type());
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(cond);
+        llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), idx);
+        builder.CreateCondBr(builder.CreateICmpULT(i, n), body, done);
+
+        builder.SetInsertPoint(body);
+        llvm::Value* sp = builder.CreateGEP(ctx_.doubleType(), b_data, i);
+        llvm::Value* dval = builder.CreateLoad(ctx_.doubleType(), sp);
+        llvm::Value* ibits = builder.CreateBitCast(dval, ctx_.int64Type());
+        llvm::Value* rp = builder.CreateGEP(ctx_.int64Type(), res_elems, i);
+        builder.CreateStore(ibits, rp);
+        builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+        builder.CreateBr(cond);
+        builder.SetInsertPoint(done);
+    }
+
+    return tagged_.packHeapPtr(result_ptr);
+}
+
+llvm::Value* TensorCodegen::tensorCholesky(const eshkol_operations_t* op) {
+    // tensor-cholesky: (tensor-cholesky A) -> L where A = L @ L^T
+    if (op->call_op.num_vars != 1) {
+        eshkol_error("tensor-cholesky requires 1 argument: SPD matrix");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
+    if (!a_tagged) return nullptr;
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* n = builder.CreateLoad(ctx_.int64Type(), dims_ptr);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, a_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+
+    llvm::Value* nn = builder.CreateMul(n, n);
+    llvm::Value* byte_size = builder.CreateMul(nn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Function* alloc_fn = mem_.getArenaAllocate();
+    llvm::Value* a_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "chol_a");
+    llvm::Value* l_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "chol_l");
+
+    // Copy tensor to double array
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    {
+        llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), "chol_cp_cond", current_func);
+        llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), "chol_cp_body", current_func);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "chol_cp_done", current_func);
+        llvm::Value* idx = builder.CreateAlloca(ctx_.int64Type());
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(cond);
+        llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), idx);
+        builder.CreateCondBr(builder.CreateICmpULT(i, nn), body, done);
+
+        builder.SetInsertPoint(body);
+        llvm::Value* sp = builder.CreateGEP(ctx_.int64Type(), src_elems, i);
+        llvm::Value* bits = builder.CreateLoad(ctx_.int64Type(), sp);
+        llvm::Value* dval = builder.CreateBitCast(bits, ctx_.doubleType());
+        llvm::Value* dp = builder.CreateGEP(ctx_.doubleType(), a_data, i);
+        builder.CreateStore(dval, dp);
+        builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+        builder.CreateBr(cond);
+        builder.SetInsertPoint(done);
+    }
+
+    // Call Cholesky
+    llvm::FunctionType* chol_ft = llvm::FunctionType::get(
+        ctx_.int64Type(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+    llvm::Function* chol_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_cholesky", chol_ft);
+    builder.CreateCall(chol_fn, {a_data, l_data, n});
+
+    // Create result tensor
+    std::vector<llvm::Value*> dims = {n, n};
+    llvm::Value* result_ptr = createTensorWithDims(dims);
+    if (!result_ptr) return nullptr;
+
+    llvm::Value* res_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
+    llvm::Value* res_elems = builder.CreateLoad(ctx_.ptrType(), res_elems_field);
+
+    // Copy L back
+    {
+        llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), "chol_cp2_cond", current_func);
+        llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), "chol_cp2_body", current_func);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "chol_cp2_done", current_func);
+        llvm::Value* idx = builder.CreateAlloca(ctx_.int64Type());
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(cond);
+        llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), idx);
+        builder.CreateCondBr(builder.CreateICmpULT(i, nn), body, done);
+
+        builder.SetInsertPoint(body);
+        llvm::Value* sp = builder.CreateGEP(ctx_.doubleType(), l_data, i);
+        llvm::Value* dval = builder.CreateLoad(ctx_.doubleType(), sp);
+        llvm::Value* ibits = builder.CreateBitCast(dval, ctx_.int64Type());
+        llvm::Value* rp = builder.CreateGEP(ctx_.int64Type(), res_elems, i);
+        builder.CreateStore(ibits, rp);
+        builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+        builder.CreateBr(cond);
+        builder.SetInsertPoint(done);
+    }
+
+    return tagged_.packHeapPtr(result_ptr);
+}
+
+llvm::Value* TensorCodegen::tensorQR(const eshkol_operations_t* op) {
+    // tensor-qr: (tensor-qr A) -> returns Q matrix (R can be obtained via Q^T @ A)
+    // Full QR via Householder reflections
+    if (op->call_op.num_vars != 1) {
+        eshkol_error("tensor-qr requires 1 argument: matrix");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
+    if (!a_tagged) return nullptr;
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+
+    llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
+    llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
+    llvm::Value* m = builder.CreateLoad(ctx_.int64Type(), dims_ptr);
+    llvm::Value* dim1_ptr = builder.CreateGEP(ctx_.int64Type(), dims_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* n_val = builder.CreateLoad(ctx_.int64Type(), dim1_ptr);
+    llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, a_ptr, 2);
+    llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
+
+    llvm::Value* mn = builder.CreateMul(m, n_val);
+    llvm::Value* mm = builder.CreateMul(m, m);
+    llvm::Value* a_bytes = builder.CreateMul(mn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* q_bytes = builder.CreateMul(mm, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* r_bytes = a_bytes; // m×n
+
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Function* alloc_fn = mem_.getArenaAllocate();
+    llvm::Value* a_data = builder.CreateCall(alloc_fn, {arena_ptr, a_bytes}, "qr_a");
+    llvm::Value* q_data = builder.CreateCall(alloc_fn, {arena_ptr, q_bytes}, "qr_q");
+    llvm::Value* r_data = builder.CreateCall(alloc_fn, {arena_ptr, r_bytes}, "qr_r");
+
+    // Copy tensor to double array
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    {
+        llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), "qr_cp_cond", current_func);
+        llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), "qr_cp_body", current_func);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "qr_cp_done", current_func);
+        llvm::Value* idx = builder.CreateAlloca(ctx_.int64Type());
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(cond);
+        llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), idx);
+        builder.CreateCondBr(builder.CreateICmpULT(i, mn), body, done);
+
+        builder.SetInsertPoint(body);
+        llvm::Value* sp = builder.CreateGEP(ctx_.int64Type(), src_elems, i);
+        llvm::Value* bits = builder.CreateLoad(ctx_.int64Type(), sp);
+        llvm::Value* dval = builder.CreateBitCast(bits, ctx_.doubleType());
+        llvm::Value* dp = builder.CreateGEP(ctx_.doubleType(), a_data, i);
+        builder.CreateStore(dval, dp);
+        builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+        builder.CreateBr(cond);
+        builder.SetInsertPoint(done);
+    }
+
+    // Call QR decomposition
+    llvm::FunctionType* qr_ft = llvm::FunctionType::get(
+        ctx_.voidType(),
+        {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type(), ctx_.int64Type()},
+        false);
+    llvm::Function* qr_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_qr_decompose", qr_ft);
+    builder.CreateCall(qr_fn, {a_data, q_data, r_data, m, n_val});
+
+    // Create Q result tensor (m×m)
+    std::vector<llvm::Value*> q_dims = {m, m};
+    llvm::Value* q_result = createTensorWithDims(q_dims);
+    if (!q_result) return nullptr;
+
+    llvm::Value* q_res_elems_field = builder.CreateStructGEP(tensor_type, q_result, 2);
+    llvm::Value* q_res_elems = builder.CreateLoad(ctx_.ptrType(), q_res_elems_field);
+
+    // Copy Q back
+    {
+        llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), "qr_cpq_cond", current_func);
+        llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), "qr_cpq_body", current_func);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "qr_cpq_done", current_func);
+        llvm::Value* idx = builder.CreateAlloca(ctx_.int64Type());
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(cond);
+        llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), idx);
+        builder.CreateCondBr(builder.CreateICmpULT(i, mm), body, done);
+
+        builder.SetInsertPoint(body);
+        llvm::Value* sp = builder.CreateGEP(ctx_.doubleType(), q_data, i);
+        llvm::Value* dval = builder.CreateLoad(ctx_.doubleType(), sp);
+        llvm::Value* ibits = builder.CreateBitCast(dval, ctx_.int64Type());
+        llvm::Value* rp = builder.CreateGEP(ctx_.int64Type(), q_res_elems, i);
+        builder.CreateStore(ibits, rp);
+        builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+        builder.CreateBr(cond);
+        builder.SetInsertPoint(done);
+    }
+
+    return tagged_.packHeapPtr(q_result);
+}
+
+llvm::Value* TensorCodegen::tensorEinsum(const eshkol_operations_t* op) {
+    // einsum: (einsum "ij,jk->ik" A B) - Einstein summation
+    // For now, support the most common cases:
+    //   "ij,jk->ik" = matmul
+    //   "ij->ji" = transpose
+    //   "ii->" = trace
+    //   "ij,ij->" = element-wise multiply and sum (Frobenius inner product)
+    //   "i,i->" = dot product
+    if (op->call_op.num_vars < 2) {
+        eshkol_error("einsum requires at least 2 arguments: notation string and tensor(s)");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+
+    // First argument is the notation string - we need to get it at compile time
+    // For production use, einsum notation is a string literal.
+    // We dispatch to existing optimized implementations based on the pattern.
+    const eshkol_ast_t* notation_ast = &op->call_op.variables[0];
+    if (notation_ast->type != ESHKOL_STRING) {
+        eshkol_error("einsum first argument must be a string literal notation");
+        return nullptr;
+    }
+    const char* notation = notation_ast->str_val.ptr;
+
+    // Parse notation to determine operation
+    // Format: "subscripts_input1,subscripts_input2->subscripts_output"
+    std::string nota(notation);
+    size_t arrow_pos = nota.find("->");
+
+    if (nota == "ij,jk->ik" && op->call_op.num_vars == 3) {
+        // Matrix multiplication - delegate to existing matmul
+        llvm::Value* a_tagged = codegenAST(&op->call_op.variables[1]);
+        llvm::Value* b_tagged = codegenAST(&op->call_op.variables[2]);
+        if (!a_tagged || !b_tagged) return nullptr;
+
+        llvm::StructType* tensor_type = ctx_.tensorType();
+        llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+        llvm::Value* b_ptr = tagged_.unpackPtr(b_tagged);
+
+        // Get dimensions
+        llvm::Value* a_dims_f = builder.CreateStructGEP(tensor_type, a_ptr, 0);
+        llvm::Value* a_dims = builder.CreateLoad(ctx_.ptrType(), a_dims_f);
+        llvm::Value* M = builder.CreateLoad(ctx_.int64Type(), a_dims);
+        llvm::Value* K_ptr = builder.CreateGEP(ctx_.int64Type(), a_dims, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        llvm::Value* K = builder.CreateLoad(ctx_.int64Type(), K_ptr);
+
+        llvm::Value* b_dims_f = builder.CreateStructGEP(tensor_type, b_ptr, 0);
+        llvm::Value* b_dims = builder.CreateLoad(ctx_.ptrType(), b_dims_f);
+        llvm::Value* N_ptr = builder.CreateGEP(ctx_.int64Type(), b_dims, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        llvm::Value* N = builder.CreateLoad(ctx_.int64Type(), N_ptr);
+
+        llvm::Value* a_elems_f = builder.CreateStructGEP(tensor_type, a_ptr, 2);
+        llvm::Value* a_elems = builder.CreateLoad(ctx_.ptrType(), a_elems_f);
+        llvm::Value* b_elems_f = builder.CreateStructGEP(tensor_type, b_ptr, 2);
+        llvm::Value* b_elems = builder.CreateLoad(ctx_.ptrType(), b_elems_f);
+
+        return matmulSIMD(a_elems, b_elems, M, K, N);
+    }
+
+    if (nota == "ij->ji" && op->call_op.num_vars == 2) {
+        // Transpose - delegate
+        return transpose(op);
+    }
+
+    if (nota == "ii->" && op->call_op.num_vars == 2) {
+        // Trace - sum of diagonal
+        llvm::Value* a_tagged = codegenAST(&op->call_op.variables[1]);
+        if (!a_tagged) return nullptr;
+
+        llvm::StructType* tensor_type = ctx_.tensorType();
+        llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+        llvm::Value* dims_f = builder.CreateStructGEP(tensor_type, a_ptr, 0);
+        llvm::Value* dims = builder.CreateLoad(ctx_.ptrType(), dims_f);
+        llvm::Value* n = builder.CreateLoad(ctx_.int64Type(), dims);
+        llvm::Value* elems_f = builder.CreateStructGEP(tensor_type, a_ptr, 2);
+        llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_f);
+
+        // Sum diagonal: sum(A[i,i]) for i=0..n-1
+        llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), "trace_cond", current_func);
+        llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), "trace_body", current_func);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "trace_done", current_func);
+
+        llvm::Value* acc = builder.CreateAlloca(ctx_.doubleType());
+        builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), acc);
+        llvm::Value* idx = builder.CreateAlloca(ctx_.int64Type());
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(cond);
+        llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), idx);
+        builder.CreateCondBr(builder.CreateICmpULT(i, n), body, done);
+
+        builder.SetInsertPoint(body);
+        // Index = i * n + i = i * (n + 1)
+        llvm::Value* stride = builder.CreateAdd(n, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        llvm::Value* flat_idx = builder.CreateMul(i, stride);
+        llvm::Value* ep = builder.CreateGEP(ctx_.int64Type(), elems, flat_idx);
+        llvm::Value* bits = builder.CreateLoad(ctx_.int64Type(), ep);
+        llvm::Value* dval = builder.CreateBitCast(bits, ctx_.doubleType());
+        llvm::Value* cur = builder.CreateLoad(ctx_.doubleType(), acc);
+        builder.CreateStore(builder.CreateFAdd(cur, dval), acc);
+        builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(done);
+        return tagged_.packDouble(builder.CreateLoad(ctx_.doubleType(), acc));
+    }
+
+    if (nota == "i,i->" && op->call_op.num_vars == 3) {
+        // Dot product
+        llvm::Value* a_tagged = codegenAST(&op->call_op.variables[1]);
+        llvm::Value* b_tagged = codegenAST(&op->call_op.variables[2]);
+        if (!a_tagged || !b_tagged) return nullptr;
+
+        llvm::StructType* tensor_type = ctx_.tensorType();
+        llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+        llvm::Value* b_ptr = tagged_.unpackPtr(b_tagged);
+        llvm::Value* a_total_f = builder.CreateStructGEP(tensor_type, a_ptr, 3);
+        llvm::Value* total = builder.CreateLoad(ctx_.int64Type(), a_total_f);
+        llvm::Value* a_elems_f = builder.CreateStructGEP(tensor_type, a_ptr, 2);
+        llvm::Value* a_elems = builder.CreateLoad(ctx_.ptrType(), a_elems_f);
+        llvm::Value* b_elems_f = builder.CreateStructGEP(tensor_type, b_ptr, 2);
+        llvm::Value* b_elems = builder.CreateLoad(ctx_.ptrType(), b_elems_f);
+
+        llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), "dot_cond", current_func);
+        llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), "dot_body", current_func);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "dot_done", current_func);
+
+        llvm::Value* acc = builder.CreateAlloca(ctx_.doubleType());
+        builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), acc);
+        llvm::Value* idx = builder.CreateAlloca(ctx_.int64Type());
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(cond);
+        llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), idx);
+        builder.CreateCondBr(builder.CreateICmpULT(i, total), body, done);
+
+        builder.SetInsertPoint(body);
+        llvm::Value* ap = builder.CreateGEP(ctx_.int64Type(), a_elems, i);
+        llvm::Value* a_bits = builder.CreateLoad(ctx_.int64Type(), ap);
+        llvm::Value* a_val = builder.CreateBitCast(a_bits, ctx_.doubleType());
+        llvm::Value* bp = builder.CreateGEP(ctx_.int64Type(), b_elems, i);
+        llvm::Value* b_bits = builder.CreateLoad(ctx_.int64Type(), bp);
+        llvm::Value* b_val = builder.CreateBitCast(b_bits, ctx_.doubleType());
+        llvm::Value* prod = builder.CreateFMul(a_val, b_val);
+        llvm::Value* cur = builder.CreateLoad(ctx_.doubleType(), acc);
+        builder.CreateStore(builder.CreateFAdd(cur, prod), acc);
+        builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(done);
+        return tagged_.packDouble(builder.CreateLoad(ctx_.doubleType(), acc));
+    }
+
+    if (nota == "ij,ij->" && op->call_op.num_vars == 3) {
+        // Frobenius inner product: sum of element-wise products
+        // Same as dot product but for 2D tensors
+        llvm::Value* a_tagged = codegenAST(&op->call_op.variables[1]);
+        llvm::Value* b_tagged = codegenAST(&op->call_op.variables[2]);
+        if (!a_tagged || !b_tagged) return nullptr;
+
+        llvm::StructType* tensor_type = ctx_.tensorType();
+        llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+        llvm::Value* b_ptr = tagged_.unpackPtr(b_tagged);
+        llvm::Value* a_total_f = builder.CreateStructGEP(tensor_type, a_ptr, 3);
+        llvm::Value* total = builder.CreateLoad(ctx_.int64Type(), a_total_f);
+        llvm::Value* a_elems_f = builder.CreateStructGEP(tensor_type, a_ptr, 2);
+        llvm::Value* a_elems = builder.CreateLoad(ctx_.ptrType(), a_elems_f);
+        llvm::Value* b_elems_f = builder.CreateStructGEP(tensor_type, b_ptr, 2);
+        llvm::Value* b_elems = builder.CreateLoad(ctx_.ptrType(), b_elems_f);
+
+        llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), "frob_cond", current_func);
+        llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), "frob_body", current_func);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "frob_done", current_func);
+
+        llvm::Value* acc = builder.CreateAlloca(ctx_.doubleType());
+        builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), acc);
+        llvm::Value* idx = builder.CreateAlloca(ctx_.int64Type());
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(cond);
+        llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), idx);
+        builder.CreateCondBr(builder.CreateICmpULT(i, total), body, done);
+
+        builder.SetInsertPoint(body);
+        llvm::Value* ap = builder.CreateGEP(ctx_.int64Type(), a_elems, i);
+        llvm::Value* a_bits = builder.CreateLoad(ctx_.int64Type(), ap);
+        llvm::Value* a_val = builder.CreateBitCast(a_bits, ctx_.doubleType());
+        llvm::Value* bp = builder.CreateGEP(ctx_.int64Type(), b_elems, i);
+        llvm::Value* b_bits = builder.CreateLoad(ctx_.int64Type(), bp);
+        llvm::Value* b_val = builder.CreateBitCast(b_bits, ctx_.doubleType());
+        llvm::Value* prod = builder.CreateFMul(a_val, b_val);
+        llvm::Value* cur = builder.CreateLoad(ctx_.doubleType(), acc);
+        builder.CreateStore(builder.CreateFAdd(cur, prod), acc);
+        builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+        builder.CreateBr(cond);
+
+        builder.SetInsertPoint(done);
+        return tagged_.packDouble(builder.CreateLoad(ctx_.doubleType(), acc));
+    }
+
+    eshkol_error("einsum: unsupported notation '%s'. Supported: 'ij,jk->ik', 'ij->ji', 'ii->', 'i,i->', 'ij,ij->'", notation);
+    return nullptr;
+}
+
 // ===== LOSS FUNCTIONS (Track 6.3) =====
 
 llvm::Value* TensorCodegen::mseLoss(const eshkol_operations_t* op) {
@@ -11120,6 +13945,947 @@ llvm::Value* TensorCodegen::binaryCrossEntropyLoss(const eshkol_operations_t* op
     llvm::Value* bce = builder.CreateFNeg(mean_bce);
 
     return tagged_.packDouble(bce);
+}
+
+llvm::Value* TensorCodegen::klDivLoss(const eshkol_operations_t* op) {
+    // KL Divergence: KL(P || Q) = sum(P * log(P / Q))
+    // Args: P (true distribution), Q (predicted distribution)
+    // Both must be probability distributions (non-negative, sum to 1)
+    // Returns: scalar KL divergence
+    if (op->call_op.num_vars != 2) {
+        eshkol_error("kl-div-loss requires 2 arguments: P (true), Q (predicted)");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+
+    llvm::Value* p_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* q_tagged = codegenAST(&op->call_op.variables[1]);
+    if (!p_tagged || !q_tagged) return nullptr;
+
+    llvm::Value* p_ptr = tagged_.unpackPtr(p_tagged);
+    llvm::Value* q_ptr = tagged_.unpackPtr(q_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* p_dims_ptr = builder.CreateStructGEP(tensor_type, p_ptr, 0);
+    llvm::Value* p_dims = builder.CreateLoad(ctx_.ptrType(), p_dims_ptr);
+    llvm::Value* p_ndims_ptr = builder.CreateStructGEP(tensor_type, p_ptr, 1);
+    llvm::Value* p_ndims = builder.CreateLoad(ctx_.int64Type(), p_ndims_ptr);
+    llvm::Value* p_elems_ptr = builder.CreateStructGEP(tensor_type, p_ptr, 2);
+    llvm::Value* p_elems = builder.CreateLoad(ctx_.ptrType(), p_elems_ptr);
+    llvm::Value* q_elems_ptr = builder.CreateStructGEP(tensor_type, q_ptr, 2);
+    llvm::Value* q_elems = builder.CreateLoad(ctx_.ptrType(), q_elems_ptr);
+
+    // Compute total elements
+    llvm::BasicBlock* size_loop = llvm::BasicBlock::Create(ctx_.context(), "kl_size_loop", current_func);
+    llvm::BasicBlock* size_body = llvm::BasicBlock::Create(ctx_.context(), "kl_size_body", current_func);
+    llvm::BasicBlock* size_done = llvm::BasicBlock::Create(ctx_.context(), "kl_size_done", current_func);
+    llvm::BasicBlock* sum_loop = llvm::BasicBlock::Create(ctx_.context(), "kl_sum_loop", current_func);
+    llvm::BasicBlock* sum_body = llvm::BasicBlock::Create(ctx_.context(), "kl_sum_body", current_func);
+    llvm::BasicBlock* sum_done = llvm::BasicBlock::Create(ctx_.context(), "kl_sum_done", current_func);
+
+    llvm::Value* num_elements = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), num_elements);
+    llvm::Value* size_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), size_idx);
+    builder.CreateBr(size_loop);
+
+    builder.SetInsertPoint(size_loop);
+    llvm::Value* si = builder.CreateLoad(ctx_.int64Type(), size_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(si, p_ndims), size_body, size_done);
+
+    builder.SetInsertPoint(size_body);
+    llvm::Value* dim_ptr = builder.CreateGEP(ctx_.int64Type(), p_dims, si);
+    llvm::Value* dim_val = builder.CreateLoad(ctx_.int64Type(), dim_ptr);
+    llvm::Value* cur_size = builder.CreateLoad(ctx_.int64Type(), num_elements);
+    builder.CreateStore(builder.CreateMul(cur_size, dim_val), num_elements);
+    builder.CreateStore(builder.CreateAdd(si, llvm::ConstantInt::get(ctx_.int64Type(), 1)), size_idx);
+    builder.CreateBr(size_loop);
+
+    builder.SetInsertPoint(size_done);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), num_elements);
+
+    llvm::Function* log_func = ctx_.module().getFunction("log");
+    if (!log_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
+    }
+
+    // Sum P * log(P / Q) with epsilon guard
+    llvm::Value* kl_sum = builder.CreateAlloca(ctx_.doubleType());
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), kl_sum);
+    llvm::Value* sum_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), sum_idx);
+    builder.CreateBr(sum_loop);
+
+    builder.SetInsertPoint(sum_loop);
+    llvm::Value* sui = builder.CreateLoad(ctx_.int64Type(), sum_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(sui, total_elements), sum_body, sum_done);
+
+    builder.SetInsertPoint(sum_body);
+    llvm::Value* p_elem_ptr = builder.CreateGEP(ctx_.int64Type(), p_elems, sui);
+    llvm::Value* p_bits = builder.CreateLoad(ctx_.int64Type(), p_elem_ptr);
+    llvm::Value* p_val = builder.CreateBitCast(p_bits, ctx_.doubleType());
+    llvm::Value* q_elem_ptr = builder.CreateGEP(ctx_.int64Type(), q_elems, sui);
+    llvm::Value* q_bits = builder.CreateLoad(ctx_.int64Type(), q_elem_ptr);
+    llvm::Value* q_val = builder.CreateBitCast(q_bits, ctx_.doubleType());
+
+    // Clamp Q to avoid log(0): max(Q, epsilon)
+    llvm::Value* epsilon = llvm::ConstantFP::get(ctx_.doubleType(), 1e-10);
+    llvm::Value* q_clamped_cmp = builder.CreateFCmpOGT(q_val, epsilon);
+    llvm::Value* q_safe = builder.CreateSelect(q_clamped_cmp, q_val, epsilon);
+
+    // Only contribute when P > 0 (avoid 0 * log(0) = NaN)
+    llvm::Value* p_positive = builder.CreateFCmpOGT(p_val, llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+    // P * log(P / Q) = P * (log(P) - log(Q))
+    llvm::Value* p_safe_cmp = builder.CreateFCmpOGT(p_val, epsilon);
+    llvm::Value* p_safe = builder.CreateSelect(p_safe_cmp, p_val, epsilon);
+    llvm::Value* log_p = builder.CreateCall(log_func, {p_safe});
+    llvm::Value* log_q = builder.CreateCall(log_func, {q_safe});
+    llvm::Value* log_ratio = builder.CreateFSub(log_p, log_q);
+    llvm::Value* kl_term = builder.CreateFMul(p_val, log_ratio);
+    // Zero out contribution if P <= 0
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* safe_term = builder.CreateSelect(p_positive, kl_term, zero);
+
+    llvm::Value* cur_sum = builder.CreateLoad(ctx_.doubleType(), kl_sum);
+    builder.CreateStore(builder.CreateFAdd(cur_sum, safe_term), kl_sum);
+    builder.CreateStore(builder.CreateAdd(sui, llvm::ConstantInt::get(ctx_.int64Type(), 1)), sum_idx);
+    builder.CreateBr(sum_loop);
+
+    builder.SetInsertPoint(sum_done);
+    llvm::Value* result = builder.CreateLoad(ctx_.doubleType(), kl_sum);
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* TensorCodegen::hingeLoss(const eshkol_operations_t* op) {
+    // Hinge Loss: (1/n) * sum(max(0, 1 - y * f(x)))
+    // Args: predictions (f(x)), targets (y, should be +1 or -1)
+    if (op->call_op.num_vars != 2) {
+        eshkol_error("hinge-loss requires 2 arguments: predictions, targets");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+
+    llvm::Value* pred_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* target_tagged = codegenAST(&op->call_op.variables[1]);
+    if (!pred_tagged || !target_tagged) return nullptr;
+
+    llvm::Value* pred_ptr = tagged_.unpackPtr(pred_tagged);
+    llvm::Value* target_ptr = tagged_.unpackPtr(target_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* pred_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 0);
+    llvm::Value* pred_dims = builder.CreateLoad(ctx_.ptrType(), pred_dims_ptr);
+    llvm::Value* pred_ndims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 1);
+    llvm::Value* pred_ndims = builder.CreateLoad(ctx_.int64Type(), pred_ndims_ptr);
+    llvm::Value* pred_elems_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 2);
+    llvm::Value* pred_elems = builder.CreateLoad(ctx_.ptrType(), pred_elems_ptr);
+    llvm::Value* target_elems_ptr = builder.CreateStructGEP(tensor_type, target_ptr, 2);
+    llvm::Value* target_elems = builder.CreateLoad(ctx_.ptrType(), target_elems_ptr);
+
+    // Compute total elements
+    llvm::BasicBlock* size_loop = llvm::BasicBlock::Create(ctx_.context(), "hinge_size_loop", current_func);
+    llvm::BasicBlock* size_body = llvm::BasicBlock::Create(ctx_.context(), "hinge_size_body", current_func);
+    llvm::BasicBlock* size_done = llvm::BasicBlock::Create(ctx_.context(), "hinge_size_done", current_func);
+    llvm::BasicBlock* sum_loop = llvm::BasicBlock::Create(ctx_.context(), "hinge_sum_loop", current_func);
+    llvm::BasicBlock* sum_body = llvm::BasicBlock::Create(ctx_.context(), "hinge_sum_body", current_func);
+    llvm::BasicBlock* sum_done = llvm::BasicBlock::Create(ctx_.context(), "hinge_sum_done", current_func);
+
+    llvm::Value* num_elements = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), num_elements);
+    llvm::Value* size_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), size_idx);
+    builder.CreateBr(size_loop);
+
+    builder.SetInsertPoint(size_loop);
+    llvm::Value* si = builder.CreateLoad(ctx_.int64Type(), size_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(si, pred_ndims), size_body, size_done);
+
+    builder.SetInsertPoint(size_body);
+    llvm::Value* dim_ptr = builder.CreateGEP(ctx_.int64Type(), pred_dims, si);
+    llvm::Value* dim_val = builder.CreateLoad(ctx_.int64Type(), dim_ptr);
+    llvm::Value* cur_size = builder.CreateLoad(ctx_.int64Type(), num_elements);
+    builder.CreateStore(builder.CreateMul(cur_size, dim_val), num_elements);
+    builder.CreateStore(builder.CreateAdd(si, llvm::ConstantInt::get(ctx_.int64Type(), 1)), size_idx);
+    builder.CreateBr(size_loop);
+
+    builder.SetInsertPoint(size_done);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), num_elements);
+
+    llvm::Value* hinge_sum = builder.CreateAlloca(ctx_.doubleType());
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), hinge_sum);
+    llvm::Value* sum_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), sum_idx);
+    builder.CreateBr(sum_loop);
+
+    builder.SetInsertPoint(sum_loop);
+    llvm::Value* sui = builder.CreateLoad(ctx_.int64Type(), sum_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(sui, total_elements), sum_body, sum_done);
+
+    builder.SetInsertPoint(sum_body);
+    llvm::Value* pred_elem_ptr = builder.CreateGEP(ctx_.int64Type(), pred_elems, sui);
+    llvm::Value* pred_bits = builder.CreateLoad(ctx_.int64Type(), pred_elem_ptr);
+    llvm::Value* pred_val = builder.CreateBitCast(pred_bits, ctx_.doubleType());
+    llvm::Value* target_elem_ptr = builder.CreateGEP(ctx_.int64Type(), target_elems, sui);
+    llvm::Value* target_bits = builder.CreateLoad(ctx_.int64Type(), target_elem_ptr);
+    llvm::Value* target_val = builder.CreateBitCast(target_bits, ctx_.doubleType());
+
+    // max(0, 1 - y * f(x))
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* y_fx = builder.CreateFMul(target_val, pred_val);
+    llvm::Value* margin = builder.CreateFSub(one, y_fx);
+    llvm::Value* cmp = builder.CreateFCmpOGT(margin, zero);
+    llvm::Value* hinge_val = builder.CreateSelect(cmp, margin, zero);
+
+    llvm::Value* cur_sum = builder.CreateLoad(ctx_.doubleType(), hinge_sum);
+    builder.CreateStore(builder.CreateFAdd(cur_sum, hinge_val), hinge_sum);
+    builder.CreateStore(builder.CreateAdd(sui, llvm::ConstantInt::get(ctx_.int64Type(), 1)), sum_idx);
+    builder.CreateBr(sum_loop);
+
+    builder.SetInsertPoint(sum_done);
+    llvm::Value* total_sum = builder.CreateLoad(ctx_.doubleType(), hinge_sum);
+    llvm::Value* n_double = builder.CreateSIToFP(total_elements, ctx_.doubleType());
+    llvm::Value* result = builder.CreateFDiv(total_sum, n_double);
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* TensorCodegen::smoothL1Loss(const eshkol_operations_t* op) {
+    // Smooth L1 (Huber variant):
+    // if |x| < beta: 0.5 * x^2 / beta
+    // else: |x| - 0.5 * beta
+    // Default beta = 1.0 (reduces to standard Huber loss)
+    // Args: predictions, targets [, beta]
+    if (op->call_op.num_vars < 2 || op->call_op.num_vars > 3) {
+        eshkol_error("smooth-l1-loss requires 2 or 3 arguments: predictions, targets [, beta]");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+
+    llvm::Value* pred_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* target_tagged = codegenAST(&op->call_op.variables[1]);
+    if (!pred_tagged || !target_tagged) return nullptr;
+
+    llvm::Value* beta;
+    if (op->call_op.num_vars == 3) {
+        llvm::Value* beta_tagged = codegenAST(&op->call_op.variables[2]);
+        if (!beta_tagged) return nullptr;
+        beta = tagged_.unpackDouble(beta_tagged);
+    } else {
+        beta = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    }
+
+    llvm::Value* pred_ptr = tagged_.unpackPtr(pred_tagged);
+    llvm::Value* target_ptr = tagged_.unpackPtr(target_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* pred_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 0);
+    llvm::Value* pred_dims = builder.CreateLoad(ctx_.ptrType(), pred_dims_ptr);
+    llvm::Value* pred_ndims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 1);
+    llvm::Value* pred_ndims = builder.CreateLoad(ctx_.int64Type(), pred_ndims_ptr);
+    llvm::Value* pred_elems_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 2);
+    llvm::Value* pred_elems = builder.CreateLoad(ctx_.ptrType(), pred_elems_ptr);
+    llvm::Value* target_elems_ptr = builder.CreateStructGEP(tensor_type, target_ptr, 2);
+    llvm::Value* target_elems = builder.CreateLoad(ctx_.ptrType(), target_elems_ptr);
+
+    // Compute total elements
+    llvm::BasicBlock* size_loop = llvm::BasicBlock::Create(ctx_.context(), "sl1_size_loop", current_func);
+    llvm::BasicBlock* size_body = llvm::BasicBlock::Create(ctx_.context(), "sl1_size_body", current_func);
+    llvm::BasicBlock* size_done = llvm::BasicBlock::Create(ctx_.context(), "sl1_size_done", current_func);
+    llvm::BasicBlock* sum_loop = llvm::BasicBlock::Create(ctx_.context(), "sl1_sum_loop", current_func);
+    llvm::BasicBlock* sum_body = llvm::BasicBlock::Create(ctx_.context(), "sl1_sum_body", current_func);
+    llvm::BasicBlock* sl1_quad = llvm::BasicBlock::Create(ctx_.context(), "sl1_quad", current_func);
+    llvm::BasicBlock* sl1_linear = llvm::BasicBlock::Create(ctx_.context(), "sl1_linear", current_func);
+    llvm::BasicBlock* sl1_merge = llvm::BasicBlock::Create(ctx_.context(), "sl1_merge", current_func);
+    llvm::BasicBlock* sum_done = llvm::BasicBlock::Create(ctx_.context(), "sl1_sum_done", current_func);
+
+    llvm::Value* num_elements = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), num_elements);
+    llvm::Value* size_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), size_idx);
+    builder.CreateBr(size_loop);
+
+    builder.SetInsertPoint(size_loop);
+    llvm::Value* si = builder.CreateLoad(ctx_.int64Type(), size_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(si, pred_ndims), size_body, size_done);
+
+    builder.SetInsertPoint(size_body);
+    llvm::Value* dim_ptr = builder.CreateGEP(ctx_.int64Type(), pred_dims, si);
+    llvm::Value* dim_val = builder.CreateLoad(ctx_.int64Type(), dim_ptr);
+    llvm::Value* cur_size = builder.CreateLoad(ctx_.int64Type(), num_elements);
+    builder.CreateStore(builder.CreateMul(cur_size, dim_val), num_elements);
+    builder.CreateStore(builder.CreateAdd(si, llvm::ConstantInt::get(ctx_.int64Type(), 1)), size_idx);
+    builder.CreateBr(size_loop);
+
+    builder.SetInsertPoint(size_done);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), num_elements);
+
+    llvm::Function* fabs_func = llvm::Intrinsic::getOrInsertDeclaration(
+        &ctx_.module(), llvm::Intrinsic::fabs, {ctx_.doubleType()});
+
+    llvm::Value* loss_sum = builder.CreateAlloca(ctx_.doubleType());
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), loss_sum);
+    llvm::Value* sum_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), sum_idx);
+    builder.CreateBr(sum_loop);
+
+    builder.SetInsertPoint(sum_loop);
+    llvm::Value* sui = builder.CreateLoad(ctx_.int64Type(), sum_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(sui, total_elements), sum_body, sum_done);
+
+    builder.SetInsertPoint(sum_body);
+    llvm::Value* pred_elem_ptr = builder.CreateGEP(ctx_.int64Type(), pred_elems, sui);
+    llvm::Value* pred_bits = builder.CreateLoad(ctx_.int64Type(), pred_elem_ptr);
+    llvm::Value* pred_val = builder.CreateBitCast(pred_bits, ctx_.doubleType());
+    llvm::Value* target_elem_ptr = builder.CreateGEP(ctx_.int64Type(), target_elems, sui);
+    llvm::Value* target_bits = builder.CreateLoad(ctx_.int64Type(), target_elem_ptr);
+    llvm::Value* target_val = builder.CreateBitCast(target_bits, ctx_.doubleType());
+
+    llvm::Value* diff = builder.CreateFSub(pred_val, target_val);
+    llvm::Value* abs_diff = builder.CreateCall(fabs_func, {diff});
+    llvm::Value* is_small = builder.CreateFCmpOLT(abs_diff, beta);
+    builder.CreateCondBr(is_small, sl1_quad, sl1_linear);
+
+    // Quadratic region: 0.5 * diff^2 / beta
+    builder.SetInsertPoint(sl1_quad);
+    llvm::Value* half = llvm::ConstantFP::get(ctx_.doubleType(), 0.5);
+    llvm::Value* diff_sq = builder.CreateFMul(diff, diff);
+    llvm::Value* quad_val = builder.CreateFMul(half, builder.CreateFDiv(diff_sq, beta));
+    builder.CreateBr(sl1_merge);
+
+    // Linear region: |diff| - 0.5 * beta
+    builder.SetInsertPoint(sl1_linear);
+    llvm::Value* half_beta = builder.CreateFMul(llvm::ConstantFP::get(ctx_.doubleType(), 0.5), beta);
+    llvm::Value* linear_val = builder.CreateFSub(abs_diff, half_beta);
+    builder.CreateBr(sl1_merge);
+
+    builder.SetInsertPoint(sl1_merge);
+    llvm::PHINode* loss_val = builder.CreatePHI(ctx_.doubleType(), 2, "sl1_val");
+    loss_val->addIncoming(quad_val, sl1_quad);
+    loss_val->addIncoming(linear_val, sl1_linear);
+
+    llvm::Value* cur_sum = builder.CreateLoad(ctx_.doubleType(), loss_sum);
+    builder.CreateStore(builder.CreateFAdd(cur_sum, loss_val), loss_sum);
+    builder.CreateStore(builder.CreateAdd(sui, llvm::ConstantInt::get(ctx_.int64Type(), 1)), sum_idx);
+    builder.CreateBr(sum_loop);
+
+    builder.SetInsertPoint(sum_done);
+    llvm::Value* total_sum = builder.CreateLoad(ctx_.doubleType(), loss_sum);
+    llvm::Value* n_double = builder.CreateSIToFP(total_elements, ctx_.doubleType());
+    llvm::Value* result = builder.CreateFDiv(total_sum, n_double);
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* TensorCodegen::focalLoss(const eshkol_operations_t* op) {
+    // Focal Loss: -(1 - p_t)^gamma * log(p_t)
+    // where p_t = p if target=1, (1-p) if target=0
+    // Default gamma = 2.0 (RetinaNet default)
+    // Args: predictions (probabilities), targets (0 or 1) [, gamma]
+    if (op->call_op.num_vars < 2 || op->call_op.num_vars > 3) {
+        eshkol_error("focal-loss requires 2 or 3 arguments: predictions, targets [, gamma]");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+
+    llvm::Value* pred_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* target_tagged = codegenAST(&op->call_op.variables[1]);
+    if (!pred_tagged || !target_tagged) return nullptr;
+
+    llvm::Value* gamma;
+    if (op->call_op.num_vars == 3) {
+        llvm::Value* gamma_tagged = codegenAST(&op->call_op.variables[2]);
+        if (!gamma_tagged) return nullptr;
+        gamma = tagged_.unpackDouble(gamma_tagged);
+    } else {
+        gamma = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    }
+
+    llvm::Value* pred_ptr = tagged_.unpackPtr(pred_tagged);
+    llvm::Value* target_ptr = tagged_.unpackPtr(target_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* pred_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 0);
+    llvm::Value* pred_dims = builder.CreateLoad(ctx_.ptrType(), pred_dims_ptr);
+    llvm::Value* pred_ndims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 1);
+    llvm::Value* pred_ndims = builder.CreateLoad(ctx_.int64Type(), pred_ndims_ptr);
+    llvm::Value* pred_elems_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 2);
+    llvm::Value* pred_elems = builder.CreateLoad(ctx_.ptrType(), pred_elems_ptr);
+    llvm::Value* target_elems_ptr = builder.CreateStructGEP(tensor_type, target_ptr, 2);
+    llvm::Value* target_elems = builder.CreateLoad(ctx_.ptrType(), target_elems_ptr);
+
+    // Compute total elements
+    llvm::BasicBlock* size_loop = llvm::BasicBlock::Create(ctx_.context(), "focal_size_loop", current_func);
+    llvm::BasicBlock* size_body = llvm::BasicBlock::Create(ctx_.context(), "focal_size_body", current_func);
+    llvm::BasicBlock* size_done = llvm::BasicBlock::Create(ctx_.context(), "focal_size_done", current_func);
+    llvm::BasicBlock* sum_loop = llvm::BasicBlock::Create(ctx_.context(), "focal_sum_loop", current_func);
+    llvm::BasicBlock* sum_body = llvm::BasicBlock::Create(ctx_.context(), "focal_sum_body", current_func);
+    llvm::BasicBlock* sum_done = llvm::BasicBlock::Create(ctx_.context(), "focal_sum_done", current_func);
+
+    llvm::Value* num_elements = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), num_elements);
+    llvm::Value* size_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), size_idx);
+    builder.CreateBr(size_loop);
+
+    builder.SetInsertPoint(size_loop);
+    llvm::Value* si = builder.CreateLoad(ctx_.int64Type(), size_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(si, pred_ndims), size_body, size_done);
+
+    builder.SetInsertPoint(size_body);
+    llvm::Value* dim_ptr = builder.CreateGEP(ctx_.int64Type(), pred_dims, si);
+    llvm::Value* dim_val = builder.CreateLoad(ctx_.int64Type(), dim_ptr);
+    llvm::Value* cur_size = builder.CreateLoad(ctx_.int64Type(), num_elements);
+    builder.CreateStore(builder.CreateMul(cur_size, dim_val), num_elements);
+    builder.CreateStore(builder.CreateAdd(si, llvm::ConstantInt::get(ctx_.int64Type(), 1)), size_idx);
+    builder.CreateBr(size_loop);
+
+    builder.SetInsertPoint(size_done);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), num_elements);
+
+    llvm::Function* log_func = ctx_.module().getFunction("log");
+    if (!log_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
+    }
+    llvm::Function* pow_func = ctx_.module().getFunction("pow");
+    if (!pow_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType(), ctx_.doubleType()}, false);
+        pow_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "pow", &ctx_.module());
+    }
+
+    llvm::Value* focal_sum = builder.CreateAlloca(ctx_.doubleType());
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), focal_sum);
+    llvm::Value* sum_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), sum_idx);
+    builder.CreateBr(sum_loop);
+
+    builder.SetInsertPoint(sum_loop);
+    llvm::Value* sui = builder.CreateLoad(ctx_.int64Type(), sum_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(sui, total_elements), sum_body, sum_done);
+
+    builder.SetInsertPoint(sum_body);
+    llvm::Value* pred_elem_ptr = builder.CreateGEP(ctx_.int64Type(), pred_elems, sui);
+    llvm::Value* pred_bits = builder.CreateLoad(ctx_.int64Type(), pred_elem_ptr);
+    llvm::Value* pred_val = builder.CreateBitCast(pred_bits, ctx_.doubleType());
+    llvm::Value* target_elem_ptr = builder.CreateGEP(ctx_.int64Type(), target_elems, sui);
+    llvm::Value* target_bits = builder.CreateLoad(ctx_.int64Type(), target_elem_ptr);
+    llvm::Value* target_val = builder.CreateBitCast(target_bits, ctx_.doubleType());
+
+    // Clamp prediction to [epsilon, 1-epsilon]
+    llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-7);
+    llvm::Value* one_minus_eps = llvm::ConstantFP::get(ctx_.doubleType(), 1.0 - 1e-7);
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* cmp_low = builder.CreateFCmpOGT(pred_val, eps);
+    llvm::Value* p_clamped = builder.CreateSelect(cmp_low, pred_val, eps);
+    llvm::Value* cmp_high = builder.CreateFCmpOLT(p_clamped, one_minus_eps);
+    llvm::Value* p_safe = builder.CreateSelect(cmp_high, p_clamped, one_minus_eps);
+
+    // p_t = target * p + (1 - target) * (1 - p)
+    llvm::Value* one_minus_t = builder.CreateFSub(one, target_val);
+    llvm::Value* one_minus_p = builder.CreateFSub(one, p_safe);
+    llvm::Value* pt_pos = builder.CreateFMul(target_val, p_safe);
+    llvm::Value* pt_neg = builder.CreateFMul(one_minus_t, one_minus_p);
+    llvm::Value* pt = builder.CreateFAdd(pt_pos, pt_neg);
+
+    // -(1 - p_t)^gamma * log(p_t)
+    llvm::Value* one_minus_pt = builder.CreateFSub(one, pt);
+    llvm::Value* modulating = builder.CreateCall(pow_func, {one_minus_pt, gamma});
+    llvm::Value* log_pt = builder.CreateCall(log_func, {pt});
+    llvm::Value* focal_term = builder.CreateFMul(modulating, log_pt);
+    llvm::Value* neg_focal = builder.CreateFNeg(focal_term);
+
+    llvm::Value* cur_sum = builder.CreateLoad(ctx_.doubleType(), focal_sum);
+    builder.CreateStore(builder.CreateFAdd(cur_sum, neg_focal), focal_sum);
+    builder.CreateStore(builder.CreateAdd(sui, llvm::ConstantInt::get(ctx_.int64Type(), 1)), sum_idx);
+    builder.CreateBr(sum_loop);
+
+    builder.SetInsertPoint(sum_done);
+    llvm::Value* total_sum = builder.CreateLoad(ctx_.doubleType(), focal_sum);
+    llvm::Value* n_double = builder.CreateSIToFP(total_elements, ctx_.doubleType());
+    llvm::Value* result = builder.CreateFDiv(total_sum, n_double);
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* TensorCodegen::tripletLoss(const eshkol_operations_t* op) {
+    // Triplet Loss: max(d(anchor, positive) - d(anchor, negative) + margin, 0)
+    // Args: anchor tensor, positive tensor, negative tensor [, margin]
+    // Default margin = 1.0
+    // Uses L2 (Euclidean) distance
+    if (op->call_op.num_vars < 3 || op->call_op.num_vars > 4) {
+        eshkol_error("triplet-loss requires 3 or 4 arguments: anchor, positive, negative [, margin]");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+
+    llvm::Value* anchor_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* positive_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* negative_tagged = codegenAST(&op->call_op.variables[2]);
+    if (!anchor_tagged || !positive_tagged || !negative_tagged) return nullptr;
+
+    llvm::Value* margin;
+    if (op->call_op.num_vars == 4) {
+        llvm::Value* margin_tagged = codegenAST(&op->call_op.variables[3]);
+        if (!margin_tagged) return nullptr;
+        margin = tagged_.unpackDouble(margin_tagged);
+    } else {
+        margin = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    }
+
+    llvm::Value* anchor_ptr = tagged_.unpackPtr(anchor_tagged);
+    llvm::Value* pos_ptr = tagged_.unpackPtr(positive_tagged);
+    llvm::Value* neg_ptr = tagged_.unpackPtr(negative_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    // Get anchor total elements from field 3
+    llvm::Value* anchor_total_ptr = builder.CreateStructGEP(tensor_type, anchor_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), anchor_total_ptr);
+    llvm::Value* anchor_elems_ptr = builder.CreateStructGEP(tensor_type, anchor_ptr, 2);
+    llvm::Value* anchor_elems = builder.CreateLoad(ctx_.ptrType(), anchor_elems_ptr);
+    llvm::Value* pos_elems_ptr = builder.CreateStructGEP(tensor_type, pos_ptr, 2);
+    llvm::Value* pos_elems = builder.CreateLoad(ctx_.ptrType(), pos_elems_ptr);
+    llvm::Value* neg_elems_ptr = builder.CreateStructGEP(tensor_type, neg_ptr, 2);
+    llvm::Value* neg_elems = builder.CreateLoad(ctx_.ptrType(), neg_elems_ptr);
+
+    // Compute squared L2 distances: d(a,p)^2 and d(a,n)^2
+    llvm::BasicBlock* dist_loop = llvm::BasicBlock::Create(ctx_.context(), "trip_dist_loop", current_func);
+    llvm::BasicBlock* dist_body = llvm::BasicBlock::Create(ctx_.context(), "trip_dist_body", current_func);
+    llvm::BasicBlock* dist_done = llvm::BasicBlock::Create(ctx_.context(), "trip_dist_done", current_func);
+
+    llvm::Value* dist_pos_sq = builder.CreateAlloca(ctx_.doubleType());
+    llvm::Value* dist_neg_sq = builder.CreateAlloca(ctx_.doubleType());
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), dist_pos_sq);
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), dist_neg_sq);
+    llvm::Value* dist_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), dist_idx);
+    builder.CreateBr(dist_loop);
+
+    builder.SetInsertPoint(dist_loop);
+    llvm::Value* di = builder.CreateLoad(ctx_.int64Type(), dist_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(di, total_elements), dist_body, dist_done);
+
+    builder.SetInsertPoint(dist_body);
+    // Load anchor, positive, negative elements
+    llvm::Value* a_ptr = builder.CreateGEP(ctx_.int64Type(), anchor_elems, di);
+    llvm::Value* a_bits = builder.CreateLoad(ctx_.int64Type(), a_ptr);
+    llvm::Value* a_val = builder.CreateBitCast(a_bits, ctx_.doubleType());
+    llvm::Value* p_ptr = builder.CreateGEP(ctx_.int64Type(), pos_elems, di);
+    llvm::Value* p_bits = builder.CreateLoad(ctx_.int64Type(), p_ptr);
+    llvm::Value* p_val = builder.CreateBitCast(p_bits, ctx_.doubleType());
+    llvm::Value* n_ptr = builder.CreateGEP(ctx_.int64Type(), neg_elems, di);
+    llvm::Value* n_bits = builder.CreateLoad(ctx_.int64Type(), n_ptr);
+    llvm::Value* n_val = builder.CreateBitCast(n_bits, ctx_.doubleType());
+
+    // d(a,p)^2 += (a - p)^2
+    llvm::Value* diff_ap = builder.CreateFSub(a_val, p_val);
+    llvm::Value* sq_ap = builder.CreateFMul(diff_ap, diff_ap);
+    llvm::Value* cur_dp = builder.CreateLoad(ctx_.doubleType(), dist_pos_sq);
+    builder.CreateStore(builder.CreateFAdd(cur_dp, sq_ap), dist_pos_sq);
+
+    // d(a,n)^2 += (a - n)^2
+    llvm::Value* diff_an = builder.CreateFSub(a_val, n_val);
+    llvm::Value* sq_an = builder.CreateFMul(diff_an, diff_an);
+    llvm::Value* cur_dn = builder.CreateLoad(ctx_.doubleType(), dist_neg_sq);
+    builder.CreateStore(builder.CreateFAdd(cur_dn, sq_an), dist_neg_sq);
+
+    builder.CreateStore(builder.CreateAdd(di, llvm::ConstantInt::get(ctx_.int64Type(), 1)), dist_idx);
+    builder.CreateBr(dist_loop);
+
+    builder.SetInsertPoint(dist_done);
+    // sqrt distances
+    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(
+        &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+    llvm::Value* dp_sq_final = builder.CreateLoad(ctx_.doubleType(), dist_pos_sq);
+    llvm::Value* dn_sq_final = builder.CreateLoad(ctx_.doubleType(), dist_neg_sq);
+    llvm::Value* dist_pos = builder.CreateCall(sqrt_func, {dp_sq_final});
+    llvm::Value* dist_neg = builder.CreateCall(sqrt_func, {dn_sq_final});
+
+    // max(d_pos - d_neg + margin, 0)
+    llvm::Value* diff_dist = builder.CreateFSub(dist_pos, dist_neg);
+    llvm::Value* with_margin = builder.CreateFAdd(diff_dist, margin);
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* cmp = builder.CreateFCmpOGT(with_margin, zero);
+    llvm::Value* result = builder.CreateSelect(cmp, with_margin, zero);
+
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* TensorCodegen::contrastiveLoss(const eshkol_operations_t* op) {
+    // Contrastive Loss: (1-y)*d^2 + y*max(margin-d, 0)^2
+    // Args: tensor1, tensor2, labels (0=similar, 1=dissimilar) [, margin]
+    // Default margin = 1.0
+    // d = Euclidean distance between tensor1 and tensor2
+    if (op->call_op.num_vars < 3 || op->call_op.num_vars > 4) {
+        eshkol_error("contrastive-loss requires 3 or 4 arguments: tensor1, tensor2, labels [, margin]");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+
+    llvm::Value* t1_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* t2_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* label_tagged = codegenAST(&op->call_op.variables[2]);
+    if (!t1_tagged || !t2_tagged || !label_tagged) return nullptr;
+
+    llvm::Value* margin;
+    if (op->call_op.num_vars == 4) {
+        llvm::Value* margin_tagged = codegenAST(&op->call_op.variables[3]);
+        if (!margin_tagged) return nullptr;
+        margin = tagged_.unpackDouble(margin_tagged);
+    } else {
+        margin = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    }
+
+    llvm::Value* y = tagged_.unpackDouble(label_tagged);
+
+    llvm::Value* t1_ptr = tagged_.unpackPtr(t1_tagged);
+    llvm::Value* t2_ptr = tagged_.unpackPtr(t2_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* t1_total_ptr = builder.CreateStructGEP(tensor_type, t1_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), t1_total_ptr);
+    llvm::Value* t1_elems_ptr = builder.CreateStructGEP(tensor_type, t1_ptr, 2);
+    llvm::Value* t1_elems = builder.CreateLoad(ctx_.ptrType(), t1_elems_ptr);
+    llvm::Value* t2_elems_ptr = builder.CreateStructGEP(tensor_type, t2_ptr, 2);
+    llvm::Value* t2_elems = builder.CreateLoad(ctx_.ptrType(), t2_elems_ptr);
+
+    // Compute squared L2 distance
+    llvm::BasicBlock* dist_loop = llvm::BasicBlock::Create(ctx_.context(), "contr_dist_loop", current_func);
+    llvm::BasicBlock* dist_body = llvm::BasicBlock::Create(ctx_.context(), "contr_dist_body", current_func);
+    llvm::BasicBlock* dist_done = llvm::BasicBlock::Create(ctx_.context(), "contr_dist_done", current_func);
+
+    llvm::Value* dist_sq = builder.CreateAlloca(ctx_.doubleType());
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), dist_sq);
+    llvm::Value* dist_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), dist_idx);
+    builder.CreateBr(dist_loop);
+
+    builder.SetInsertPoint(dist_loop);
+    llvm::Value* di = builder.CreateLoad(ctx_.int64Type(), dist_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(di, total_elements), dist_body, dist_done);
+
+    builder.SetInsertPoint(dist_body);
+    llvm::Value* e1_ptr = builder.CreateGEP(ctx_.int64Type(), t1_elems, di);
+    llvm::Value* e1_bits = builder.CreateLoad(ctx_.int64Type(), e1_ptr);
+    llvm::Value* e1_val = builder.CreateBitCast(e1_bits, ctx_.doubleType());
+    llvm::Value* e2_ptr = builder.CreateGEP(ctx_.int64Type(), t2_elems, di);
+    llvm::Value* e2_bits = builder.CreateLoad(ctx_.int64Type(), e2_ptr);
+    llvm::Value* e2_val = builder.CreateBitCast(e2_bits, ctx_.doubleType());
+
+    llvm::Value* diff = builder.CreateFSub(e1_val, e2_val);
+    llvm::Value* sq = builder.CreateFMul(diff, diff);
+    llvm::Value* cur_d = builder.CreateLoad(ctx_.doubleType(), dist_sq);
+    builder.CreateStore(builder.CreateFAdd(cur_d, sq), dist_sq);
+
+    builder.CreateStore(builder.CreateAdd(di, llvm::ConstantInt::get(ctx_.int64Type(), 1)), dist_idx);
+    builder.CreateBr(dist_loop);
+
+    builder.SetInsertPoint(dist_done);
+    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(
+        &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+    llvm::Value* d_sq_final = builder.CreateLoad(ctx_.doubleType(), dist_sq);
+    llvm::Value* d = builder.CreateCall(sqrt_func, {d_sq_final});
+
+    // (1 - y) * d^2 + y * max(margin - d, 0)^2
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* one_minus_y = builder.CreateFSub(one, y);
+    llvm::Value* similar_term = builder.CreateFMul(one_minus_y, d_sq_final);
+
+    llvm::Value* margin_minus_d = builder.CreateFSub(margin, d);
+    llvm::Value* cmp = builder.CreateFCmpOGT(margin_minus_d, zero);
+    llvm::Value* clamped = builder.CreateSelect(cmp, margin_minus_d, zero);
+    llvm::Value* clamped_sq = builder.CreateFMul(clamped, clamped);
+    llvm::Value* dissimilar_term = builder.CreateFMul(y, clamped_sq);
+
+    llvm::Value* half = llvm::ConstantFP::get(ctx_.doubleType(), 0.5);
+    llvm::Value* result = builder.CreateFMul(half, builder.CreateFAdd(similar_term, dissimilar_term));
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* TensorCodegen::labelSmoothingLoss(const eshkol_operations_t* op) {
+    // Label Smoothing Cross-Entropy: CE with softened targets
+    // smoothed_target = (1 - epsilon) * one_hot + epsilon / num_classes
+    // Loss = -sum(smoothed_target * log(softmax(logits)))
+    // Args: logits, targets (class indices or one-hot), num_classes [, epsilon]
+    // Default epsilon = 0.1
+    if (op->call_op.num_vars < 3 || op->call_op.num_vars > 4) {
+        eshkol_error("label-smoothing-loss requires 3 or 4 arguments: logits, targets, num_classes [, epsilon]");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+
+    llvm::Value* logits_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* targets_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* nclasses_tagged = codegenAST(&op->call_op.variables[2]);
+    if (!logits_tagged || !targets_tagged || !nclasses_tagged) return nullptr;
+
+    llvm::Value* epsilon;
+    if (op->call_op.num_vars == 4) {
+        llvm::Value* eps_tagged = codegenAST(&op->call_op.variables[3]);
+        if (!eps_tagged) return nullptr;
+        epsilon = tagged_.unpackDouble(eps_tagged);
+    } else {
+        epsilon = llvm::ConstantFP::get(ctx_.doubleType(), 0.1);
+    }
+
+    llvm::Value* num_classes_double = tagged_.unpackDouble(nclasses_tagged);
+
+    llvm::Value* logits_ptr = tagged_.unpackPtr(logits_tagged);
+    llvm::Value* targets_ptr = tagged_.unpackPtr(targets_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* logits_total_ptr = builder.CreateStructGEP(tensor_type, logits_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), logits_total_ptr);
+    llvm::Value* logits_elems_ptr = builder.CreateStructGEP(tensor_type, logits_ptr, 2);
+    llvm::Value* logits_elems = builder.CreateLoad(ctx_.ptrType(), logits_elems_ptr);
+    llvm::Value* targets_elems_ptr = builder.CreateStructGEP(tensor_type, targets_ptr, 2);
+    llvm::Value* targets_elems = builder.CreateLoad(ctx_.ptrType(), targets_elems_ptr);
+
+    llvm::Function* log_func = ctx_.module().getFunction("log");
+    if (!log_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
+    }
+    llvm::Function* exp_func = ctx_.module().getFunction("exp");
+    if (!exp_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
+        exp_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
+    }
+
+    // Compute logsumexp for log-softmax stability
+    // First pass: find max for numerical stability
+    llvm::BasicBlock* max_loop = llvm::BasicBlock::Create(ctx_.context(), "ls_max_loop", current_func);
+    llvm::BasicBlock* max_body = llvm::BasicBlock::Create(ctx_.context(), "ls_max_body", current_func);
+    llvm::BasicBlock* max_done = llvm::BasicBlock::Create(ctx_.context(), "ls_max_done", current_func);
+    llvm::BasicBlock* lse_loop = llvm::BasicBlock::Create(ctx_.context(), "ls_lse_loop", current_func);
+    llvm::BasicBlock* lse_body = llvm::BasicBlock::Create(ctx_.context(), "ls_lse_body", current_func);
+    llvm::BasicBlock* lse_done = llvm::BasicBlock::Create(ctx_.context(), "ls_lse_done", current_func);
+    llvm::BasicBlock* loss_loop = llvm::BasicBlock::Create(ctx_.context(), "ls_loss_loop", current_func);
+    llvm::BasicBlock* loss_body = llvm::BasicBlock::Create(ctx_.context(), "ls_loss_body", current_func);
+    llvm::BasicBlock* loss_done = llvm::BasicBlock::Create(ctx_.context(), "ls_loss_done", current_func);
+
+    // Find max logit
+    llvm::Value* max_val = builder.CreateAlloca(ctx_.doubleType());
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), -1e308), max_val);
+    llvm::Value* max_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), max_idx);
+    builder.CreateBr(max_loop);
+
+    builder.SetInsertPoint(max_loop);
+    llvm::Value* mi = builder.CreateLoad(ctx_.int64Type(), max_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(mi, total_elements), max_body, max_done);
+
+    builder.SetInsertPoint(max_body);
+    llvm::Value* l_ptr = builder.CreateGEP(ctx_.int64Type(), logits_elems, mi);
+    llvm::Value* l_bits = builder.CreateLoad(ctx_.int64Type(), l_ptr);
+    llvm::Value* l_val = builder.CreateBitCast(l_bits, ctx_.doubleType());
+    llvm::Value* cur_max = builder.CreateLoad(ctx_.doubleType(), max_val);
+    llvm::Value* is_greater = builder.CreateFCmpOGT(l_val, cur_max);
+    llvm::Value* new_max = builder.CreateSelect(is_greater, l_val, cur_max);
+    builder.CreateStore(new_max, max_val);
+    builder.CreateStore(builder.CreateAdd(mi, llvm::ConstantInt::get(ctx_.int64Type(), 1)), max_idx);
+    builder.CreateBr(max_loop);
+
+    builder.SetInsertPoint(max_done);
+    llvm::Value* logit_max = builder.CreateLoad(ctx_.doubleType(), max_val);
+
+    // Compute logsumexp = max + log(sum(exp(x - max)))
+    llvm::Value* exp_sum = builder.CreateAlloca(ctx_.doubleType());
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), exp_sum);
+    llvm::Value* lse_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), lse_idx);
+    builder.CreateBr(lse_loop);
+
+    builder.SetInsertPoint(lse_loop);
+    llvm::Value* li = builder.CreateLoad(ctx_.int64Type(), lse_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(li, total_elements), lse_body, lse_done);
+
+    builder.SetInsertPoint(lse_body);
+    llvm::Value* lse_ptr = builder.CreateGEP(ctx_.int64Type(), logits_elems, li);
+    llvm::Value* lse_bits = builder.CreateLoad(ctx_.int64Type(), lse_ptr);
+    llvm::Value* lse_val = builder.CreateBitCast(lse_bits, ctx_.doubleType());
+    llvm::Value* shifted = builder.CreateFSub(lse_val, logit_max);
+    llvm::Value* exp_shifted = builder.CreateCall(exp_func, {shifted});
+    llvm::Value* cur_exp_sum = builder.CreateLoad(ctx_.doubleType(), exp_sum);
+    builder.CreateStore(builder.CreateFAdd(cur_exp_sum, exp_shifted), exp_sum);
+    builder.CreateStore(builder.CreateAdd(li, llvm::ConstantInt::get(ctx_.int64Type(), 1)), lse_idx);
+    builder.CreateBr(lse_loop);
+
+    builder.SetInsertPoint(lse_done);
+    llvm::Value* total_exp = builder.CreateLoad(ctx_.doubleType(), exp_sum);
+    llvm::Value* log_sum_exp = builder.CreateFAdd(logit_max, builder.CreateCall(log_func, {total_exp}));
+
+    // Compute loss: -sum(smoothed_target * log_softmax)
+    // log_softmax(x_i) = x_i - logsumexp
+    // smoothed_target_i = (1-eps)*target_i + eps/K
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* one_minus_eps = builder.CreateFSub(one, epsilon);
+    llvm::Value* eps_over_k = builder.CreateFDiv(epsilon, num_classes_double);
+
+    llvm::Value* loss_acc = builder.CreateAlloca(ctx_.doubleType());
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), loss_acc);
+    llvm::Value* loss_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), loss_idx);
+    builder.CreateBr(loss_loop);
+
+    builder.SetInsertPoint(loss_loop);
+    llvm::Value* loi = builder.CreateLoad(ctx_.int64Type(), loss_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(loi, total_elements), loss_body, loss_done);
+
+    builder.SetInsertPoint(loss_body);
+    llvm::Value* logit_ptr = builder.CreateGEP(ctx_.int64Type(), logits_elems, loi);
+    llvm::Value* logit_bits = builder.CreateLoad(ctx_.int64Type(), logit_ptr);
+    llvm::Value* logit = builder.CreateBitCast(logit_bits, ctx_.doubleType());
+    llvm::Value* target_ptr2 = builder.CreateGEP(ctx_.int64Type(), targets_elems, loi);
+    llvm::Value* target_bits2 = builder.CreateLoad(ctx_.int64Type(), target_ptr2);
+    llvm::Value* target_oh = builder.CreateBitCast(target_bits2, ctx_.doubleType());
+
+    // log_softmax = logit - logsumexp
+    llvm::Value* log_sm = builder.CreateFSub(logit, log_sum_exp);
+    // smoothed_target = (1-eps)*target + eps/K
+    llvm::Value* smooth_t = builder.CreateFAdd(
+        builder.CreateFMul(one_minus_eps, target_oh), eps_over_k);
+    // -smoothed_target * log_softmax
+    llvm::Value* term = builder.CreateFMul(smooth_t, log_sm);
+    llvm::Value* neg_term = builder.CreateFNeg(term);
+    llvm::Value* cur_loss = builder.CreateLoad(ctx_.doubleType(), loss_acc);
+    builder.CreateStore(builder.CreateFAdd(cur_loss, neg_term), loss_acc);
+    builder.CreateStore(builder.CreateAdd(loi, llvm::ConstantInt::get(ctx_.int64Type(), 1)), loss_idx);
+    builder.CreateBr(loss_loop);
+
+    builder.SetInsertPoint(loss_done);
+    llvm::Value* result = builder.CreateLoad(ctx_.doubleType(), loss_acc);
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* TensorCodegen::cosineEmbeddingLoss(const eshkol_operations_t* op) {
+    // Cosine Embedding Loss:
+    // if y == 1:  1 - cos(x1, x2)
+    // if y == -1: max(0, cos(x1, x2) - margin)
+    // Args: tensor1, tensor2, label (+1 or -1) [, margin]
+    // Default margin = 0.0
+    if (op->call_op.num_vars < 3 || op->call_op.num_vars > 4) {
+        eshkol_error("cosine-embedding-loss requires 3 or 4 arguments: tensor1, tensor2, label [, margin]");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+
+    llvm::Value* t1_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* t2_tagged = codegenAST(&op->call_op.variables[1]);
+    llvm::Value* label_tagged = codegenAST(&op->call_op.variables[2]);
+    if (!t1_tagged || !t2_tagged || !label_tagged) return nullptr;
+
+    llvm::Value* margin;
+    if (op->call_op.num_vars == 4) {
+        llvm::Value* margin_tagged = codegenAST(&op->call_op.variables[3]);
+        if (!margin_tagged) return nullptr;
+        margin = tagged_.unpackDouble(margin_tagged);
+    } else {
+        margin = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    }
+
+    llvm::Value* y = tagged_.unpackDouble(label_tagged);
+
+    llvm::Value* t1_ptr = tagged_.unpackPtr(t1_tagged);
+    llvm::Value* t2_ptr = tagged_.unpackPtr(t2_tagged);
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* t1_total_ptr = builder.CreateStructGEP(tensor_type, t1_ptr, 3);
+    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), t1_total_ptr);
+    llvm::Value* t1_elems_ptr = builder.CreateStructGEP(tensor_type, t1_ptr, 2);
+    llvm::Value* t1_elems = builder.CreateLoad(ctx_.ptrType(), t1_elems_ptr);
+    llvm::Value* t2_elems_ptr = builder.CreateStructGEP(tensor_type, t2_ptr, 2);
+    llvm::Value* t2_elems = builder.CreateLoad(ctx_.ptrType(), t2_elems_ptr);
+
+    // Compute dot product and norms in single pass
+    llvm::BasicBlock* cos_loop = llvm::BasicBlock::Create(ctx_.context(), "cos_loop", current_func);
+    llvm::BasicBlock* cos_body = llvm::BasicBlock::Create(ctx_.context(), "cos_body", current_func);
+    llvm::BasicBlock* cos_done = llvm::BasicBlock::Create(ctx_.context(), "cos_done", current_func);
+
+    llvm::Value* dot_prod = builder.CreateAlloca(ctx_.doubleType());
+    llvm::Value* norm1_sq = builder.CreateAlloca(ctx_.doubleType());
+    llvm::Value* norm2_sq = builder.CreateAlloca(ctx_.doubleType());
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), dot_prod);
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), norm1_sq);
+    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), norm2_sq);
+    llvm::Value* cos_idx = builder.CreateAlloca(ctx_.int64Type());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), cos_idx);
+    builder.CreateBr(cos_loop);
+
+    builder.SetInsertPoint(cos_loop);
+    llvm::Value* ci = builder.CreateLoad(ctx_.int64Type(), cos_idx);
+    builder.CreateCondBr(builder.CreateICmpSLT(ci, total_elements), cos_body, cos_done);
+
+    builder.SetInsertPoint(cos_body);
+    llvm::Value* e1_ptr = builder.CreateGEP(ctx_.int64Type(), t1_elems, ci);
+    llvm::Value* e1_bits = builder.CreateLoad(ctx_.int64Type(), e1_ptr);
+    llvm::Value* e1 = builder.CreateBitCast(e1_bits, ctx_.doubleType());
+    llvm::Value* e2_ptr = builder.CreateGEP(ctx_.int64Type(), t2_elems, ci);
+    llvm::Value* e2_bits = builder.CreateLoad(ctx_.int64Type(), e2_ptr);
+    llvm::Value* e2 = builder.CreateBitCast(e2_bits, ctx_.doubleType());
+
+    // Accumulate dot product and squared norms
+    llvm::Value* prod = builder.CreateFMul(e1, e2);
+    llvm::Value* cur_dot = builder.CreateLoad(ctx_.doubleType(), dot_prod);
+    builder.CreateStore(builder.CreateFAdd(cur_dot, prod), dot_prod);
+    llvm::Value* e1_sq = builder.CreateFMul(e1, e1);
+    llvm::Value* cur_n1 = builder.CreateLoad(ctx_.doubleType(), norm1_sq);
+    builder.CreateStore(builder.CreateFAdd(cur_n1, e1_sq), norm1_sq);
+    llvm::Value* e2_sq = builder.CreateFMul(e2, e2);
+    llvm::Value* cur_n2 = builder.CreateLoad(ctx_.doubleType(), norm2_sq);
+    builder.CreateStore(builder.CreateFAdd(cur_n2, e2_sq), norm2_sq);
+
+    builder.CreateStore(builder.CreateAdd(ci, llvm::ConstantInt::get(ctx_.int64Type(), 1)), cos_idx);
+    builder.CreateBr(cos_loop);
+
+    builder.SetInsertPoint(cos_done);
+    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(
+        &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+
+    llvm::Value* final_dot = builder.CreateLoad(ctx_.doubleType(), dot_prod);
+    llvm::Value* final_n1 = builder.CreateLoad(ctx_.doubleType(), norm1_sq);
+    llvm::Value* final_n2 = builder.CreateLoad(ctx_.doubleType(), norm2_sq);
+    llvm::Value* n1 = builder.CreateCall(sqrt_func, {final_n1});
+    llvm::Value* n2 = builder.CreateCall(sqrt_func, {final_n2});
+    llvm::Value* norm_product = builder.CreateFMul(n1, n2);
+
+    // Guard against division by zero
+    llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-8);
+    llvm::Value* safe_denom_cmp = builder.CreateFCmpOGT(norm_product, eps);
+    llvm::Value* safe_denom = builder.CreateSelect(safe_denom_cmp, norm_product, eps);
+
+    llvm::Value* cosine_sim = builder.CreateFDiv(final_dot, safe_denom);
+
+    // Result depends on label y
+    // y == 1: loss = 1 - cos_sim
+    // y == -1: loss = max(0, cos_sim - margin)
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* pos_loss = builder.CreateFSub(one, cosine_sim);
+    llvm::Value* cos_minus_margin = builder.CreateFSub(cosine_sim, margin);
+    llvm::Value* neg_cmp = builder.CreateFCmpOGT(cos_minus_margin, zero);
+    llvm::Value* neg_loss = builder.CreateSelect(neg_cmp, cos_minus_margin, zero);
+
+    // Select based on y: if y > 0, positive case; else negative case
+    llvm::Value* is_similar = builder.CreateFCmpOGT(y, zero);
+    llvm::Value* result = builder.CreateSelect(is_similar, pos_loss, neg_loss);
+
+    return tagged_.packDouble(result);
 }
 
 // ============================================================

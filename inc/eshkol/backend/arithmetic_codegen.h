@@ -242,6 +242,12 @@ private:
     void raiseDivideByZeroException();
 
     /**
+     * Emit code to raise an integer overflow exception.
+     * Creates an exception object and calls eshkol_raise(), then emits unreachable.
+     */
+    void emitOverflowError(const char* message);
+
+    /**
      * Convert a tagged value to a complex number.
      * Promotes int/double to complex with zero imaginary part.
      * @param operand Tagged value operand
@@ -251,6 +257,33 @@ private:
      */
     llvm::Value* convertToComplex(llvm::Value* operand, llvm::Value* is_complex,
                                    llvm::Value* base_type);
+
+    /**
+     * Emit a call to eshkol_bignum_binary_tagged runtime dispatch.
+     * Handles alloca/store/call/load for pointer-based passing.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @param op_code Operation: 0=add,1=sub,2=mul,3=div,4=mod,5=quot,6=rem,7=neg
+     * @return Result as tagged_value
+     */
+    llvm::Value* emitBignumBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
+
+    /**
+     * Emit a call to eshkol_bignum_compare_tagged runtime dispatch.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @param op_code Comparison: 0=lt,1=gt,2=eq,3=le,4=ge
+     * @return Result as tagged_value (boolean)
+     */
+    llvm::Value* emitBignumCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
+
+    /**
+     * Check if either tagged value is a bignum via runtime call.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @return i1 true if either is bignum
+     */
+    llvm::Value* emitIsBignumCheck(llvm::Value* left, llvm::Value* right);
 };
 
 } // namespace eshkol

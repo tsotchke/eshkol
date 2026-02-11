@@ -601,6 +601,7 @@ TypeCheckResult TypeChecker::synthesize(eshkol_ast_t* expr) {
         case ESHKOL_BOOL:
         case ESHKOL_NULL:
         case ESHKOL_CHAR:
+        case ESHKOL_BIGNUM_LITERAL:
             result = synthesizeLiteral(expr);
             break;
 
@@ -659,6 +660,8 @@ TypeCheckResult TypeChecker::synthesizeLiteral(eshkol_ast_t* expr) {
     switch (expr->type) {
         case ESHKOL_INT64:
             return TypeCheckResult::ok(BuiltinTypes::Int64);
+        case ESHKOL_BIGNUM_LITERAL:
+            return TypeCheckResult::ok(BuiltinTypes::BigInt);
 
         case ESHKOL_DOUBLE:
             return TypeCheckResult::ok(BuiltinTypes::Float64);

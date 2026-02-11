@@ -5,6 +5,7 @@
  *
  */
 #include <eshkol/eshkol.h>
+#include <eshkol/core/logic.h>
 #include <eshkol/logger.h>
 
 #include <string.h>
@@ -336,8 +337,18 @@ static eshkol_ast_t parse_atom(const Token& token) {
                 ast.type = ESHKOL_DOUBLE;
                 ast.double_val = std::stod(token.value);
             } else {
-                ast.type = ESHKOL_INT64;
-                ast.int64_val = std::stoll(token.value);
+                try {
+                    ast.type = ESHKOL_INT64;
+                    ast.int64_val = std::stoll(token.value);
+                } catch (const std::out_of_range&) {
+                    // Integer literal too large for int64 — store as string for bignum construction at codegen
+                    ast.type = ESHKOL_BIGNUM_LITERAL;
+                    ast.str_val.size = token.value.length() + 1;
+                    ast.str_val.ptr = new char[ast.str_val.size];
+                    if (ast.str_val.ptr) {
+                        strcpy(ast.str_val.ptr, token.value.c_str());
+                    }
+                }
             }
             break;
         }
@@ -354,12 +365,24 @@ static eshkol_ast_t parse_atom(const Token& token) {
             break;
 
         case TOKEN_SYMBOL:
-            ast.type = ESHKOL_VAR;
-            ast.variable.id = new char[token.value.length() + 1];
-            if (ast.variable.id) {
-                strcpy(ast.variable.id, token.value.c_str());
+            // Check for logic variable syntax: ?x, ?name, etc.
+            if (!token.value.empty() && token.value[0] == '?' && token.value.length() > 1) {
+                ast.type = ESHKOL_OP;
+                ast.operation.op = ESHKOL_LOGIC_VAR_OP;
+                uint64_t var_id = eshkol_make_logic_var(token.value.c_str());
+                ast.operation.logic_var_op.var_id = var_id;
+                ast.operation.logic_var_op.name = new char[token.value.length() + 1];
+                if (ast.operation.logic_var_op.name) {
+                    strcpy(const_cast<char*>(ast.operation.logic_var_op.name), token.value.c_str());
+                }
+            } else {
+                ast.type = ESHKOL_VAR;
+                ast.variable.id = new char[token.value.length() + 1];
+                if (ast.variable.id) {
+                    strcpy(ast.variable.id, token.value.c_str());
+                }
+                ast.variable.data = nullptr;
             }
-            ast.variable.data = nullptr;
             break;
 
         default:
@@ -427,6 +450,32 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "call-with-values") return ESHKOL_CALL_WITH_VALUES_OP;
     if (op == "let-values") return ESHKOL_LET_VALUES_OP;
     if (op == "let*-values") return ESHKOL_LET_STAR_VALUES_OP;
+    // Neuro-symbolic consciousness engine operations
+    if (op == "unify") return ESHKOL_UNIFY_OP;
+    if (op == "make-substitution") return ESHKOL_MAKE_SUBST_OP;
+    if (op == "walk") return ESHKOL_WALK_OP;
+    if (op == "make-fact") return ESHKOL_MAKE_FACT_OP;
+    if (op == "make-kb") return ESHKOL_MAKE_KB_OP;
+    if (op == "kb-assert!") return ESHKOL_KB_ASSERT_OP;
+    if (op == "kb-query") return ESHKOL_KB_QUERY_OP;
+    if (op == "logic-var?") return ESHKOL_LOGIC_VAR_PRED_OP;
+    if (op == "substitution?") return ESHKOL_SUBSTITUTION_PRED_OP;
+    if (op == "kb?") return ESHKOL_KB_PRED_OP;
+    // Active inference operations
+    if (op == "make-factor-graph") return ESHKOL_MAKE_FACTOR_GRAPH_OP;
+    if (op == "fg-add-factor!") return ESHKOL_FG_ADD_FACTOR_OP;
+    if (op == "fg-infer!") return ESHKOL_FG_INFER_OP;
+    if (op == "free-energy") return ESHKOL_FREE_ENERGY_OP;
+    if (op == "expected-free-energy") return ESHKOL_EXPECTED_FREE_ENERGY_OP;
+    // Global workspace operations
+    if (op == "make-workspace") return ESHKOL_MAKE_WORKSPACE_OP;
+    if (op == "ws-register!") return ESHKOL_WS_REGISTER_OP;
+    if (op == "ws-step!") return ESHKOL_WS_STEP_OP;
+    if (op == "fg-update-cpt!") return ESHKOL_FG_UPDATE_CPT_OP;
+    // Type predicates
+    if (op == "fact?") return ESHKOL_FACT_PRED_OP;
+    if (op == "factor-graph?") return ESHKOL_FACTOR_GRAPH_PRED_OP;
+    if (op == "workspace?") return ESHKOL_WORKSPACE_PRED_OP;
     // Treat arithmetic operations as special CALL_OPs so they get proper argument handling
     // We'll store the operation type in the function name and handle display in the printer
     return ESHKOL_CALL_OP;
@@ -5385,6 +5434,19 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.call_op.num_vars = 1;
             ast.operation.call_op.variables = new eshkol_ast_t[1];
             ast.operation.call_op.variables[0] = elements[0];
+        } else if (ast.operation.op >= ESHKOL_UNIFY_OP && ast.operation.op <= ESHKOL_WORKSPACE_PRED_OP) {
+            // Neuro-symbolic consciousness engine operations
+            // All use call_op structure: func=nullptr, variables=arguments
+            ast.operation.call_op.func = nullptr;
+            ast.operation.call_op.num_vars = elements.size();
+            if (ast.operation.call_op.num_vars > 0) {
+                ast.operation.call_op.variables = new eshkol_ast_t[ast.operation.call_op.num_vars];
+                for (size_t i = 0; i < ast.operation.call_op.num_vars; i++) {
+                    ast.operation.call_op.variables[i] = elements[i];
+                }
+            } else {
+                ast.operation.call_op.variables = nullptr;
+            }
         }
     } else {
         // Non-symbol first element - parse as a cons structure

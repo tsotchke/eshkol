@@ -1,0 +1,54 @@
+;; Logic Variable Tests — v1.1-accelerate (production)
+;; Tests: logic variable creation, display, type predicates, substitutions
+
+;; === Basic Logic Variables ===
+(define x ?x)
+(define y ?y)
+(define z ?z)
+
+(display "?x: ") (display x) (newline)
+(display "?y: ") (display y) (newline)
+(display "?z: ") (display z) (newline)
+
+;; === Type Predicates ===
+(display "logic-var? ?x: ") (display (logic-var? x)) (newline)
+(display "logic-var? ?y: ") (display (logic-var? y)) (newline)
+(display "logic-var? 42: ") (display (logic-var? 42)) (newline)
+(display "logic-var? #t: ") (display (logic-var? #t)) (newline)
+(display "logic-var? 3.14: ") (display (logic-var? 3.14)) (newline)
+(display "logic-var? \"hi\": ") (display (logic-var? "hello")) (newline)
+
+;; === Empty Substitution ===
+(define s (make-substitution))
+(display "empty subst: ") (display s) (newline)
+(display "substitution? s: ") (display (substitution? s)) (newline)
+(display "substitution? 42: ") (display (substitution? 42)) (newline)
+(display "substitution? #f: ") (display (substitution? #f)) (newline)
+(display "substitution? ?x: ") (display (substitution? x)) (newline)
+
+;; === Logic Variables in Expressions ===
+;; Logic vars can be stored in lists and cons pairs
+(define pair (cons ?a ?b))
+(display "cons pair: ") (display pair) (newline)
+(display "car is logic-var?: ") (display (logic-var? (car pair))) (newline)
+(display "cdr is logic-var?: ") (display (logic-var? (cdr pair))) (newline)
+
+;; === Fact Predicate ===
+(define f (make-fact 'color 'sky 'blue))
+(display "fact? f: ") (display (fact? f)) (newline)
+(display "fact? 42: ") (display (fact? 42)) (newline)
+(display "fact? s: ") (display (fact? s)) (newline)
+
+;; === Walk on Unbound Variable ===
+;; Walking an unbound variable returns the variable itself
+(define walk-unbound (walk ?x s))
+(display "walk unbound ?x: ") (display walk-unbound) (newline)
+(display "walk unbound is logic-var?: ") (display (logic-var? walk-unbound)) (newline)
+
+;; === Multiple Substitutions ===
+(define s1 (unify ?x 42 (make-substitution)))
+(define s2 (unify ?y 99 s1))
+(display "multi-subst walk ?x: ") (display (walk ?x s2)) (newline)
+(display "multi-subst walk ?y: ") (display (walk ?y s2)) (newline)
+
+(display "=== Logic var test complete ===") (newline)

@@ -1,0 +1,54 @@
+;; Knowledge Base Tests — v1.1-accelerate (production)
+;; Tests: fact creation, KB CRUD, queries, predicates
+
+;; === KB Creation and Predicates ===
+(define kb (make-kb))
+(display "kb? kb: ") (display (kb? kb)) (newline)
+(display "kb? 42: ") (display (kb? 42)) (newline)
+(display "kb? #t: ") (display (kb? #t)) (newline)
+
+;; === Fact Creation and Predicates ===
+(define f1 (make-fact 'parent 'alice 'bob))
+(display "fact? f1: ") (display (fact? f1)) (newline)
+(display "fact? 42: ") (display (fact? 42)) (newline)
+(display "fact? kb: ") (display (fact? kb)) (newline)
+
+;; === Assert Facts ===
+(kb-assert! kb f1)
+(kb-assert! kb (make-fact 'parent 'bob 'charlie))
+(kb-assert! kb (make-fact 'parent 'alice 'diana))
+(kb-assert! kb (make-fact 'color 'sky 'blue))
+(kb-assert! kb (make-fact 'color 'grass 'green))
+(kb-assert! kb (make-fact 'color 'sun 'yellow))
+(kb-assert! kb (make-fact 'likes 'alice 'ice-cream))
+(kb-assert! kb (make-fact 'likes 'bob 'pizza))
+(kb-assert! kb (make-fact 'likes 'charlie 'ice-cream))
+(kb-assert! kb (make-fact 'age 'alice 30))
+(display "KB (10 facts): ") (display kb) (newline)
+
+;; === Single-Result Query ===
+(define r1 (kb-query kb (make-fact 'parent ?p 'bob)))
+(display "bob's parent: ") (display r1) (newline)
+
+;; === Multi-Result Query ===
+(define r2 (kb-query kb (make-fact 'parent 'alice ?child)))
+(display "alice's children: ") (display r2) (newline)
+
+;; === Query by Predicate ===
+(define r3 (kb-query kb (make-fact 'color ?obj ?col)))
+(display "all colors: ") (display r3) (newline)
+
+;; === No-Result Query ===
+(define r4 (kb-query kb (make-fact 'parent 'eve ?child)))
+(display "eve's children (none): ") (display r4) (newline)
+
+;; === Query with Numeric Values ===
+(define r5 (kb-query kb (make-fact 'age ?who 30)))
+(display "age 30: ") (display r5) (newline)
+
+;; === Building on Queries ===
+;; Find shared interests: who likes ice-cream?
+(define r6 (kb-query kb (make-fact 'likes ?who 'ice-cream)))
+(display "likes ice-cream: ") (display r6) (newline)
+
+(display "=== KB test complete ===") (newline)

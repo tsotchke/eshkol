@@ -1,0 +1,47 @@
+;; Bignum (Arbitrary-Precision Integer) Tests
+;; Tests that integer overflow promotes to bignum automatically
+
+;; Test 1: Large addition that overflows int64
+(display "=== BIGNUM TESTS ===")
+(newline)
+
+;; INT64_MAX = 9223372036854775807
+;; Adding 1 should produce a bignum
+(define max-int 9223372036854775807)
+(display "INT64_MAX: ")
+(display max-int)
+(newline)
+
+(display "INT64_MAX + 1: ")
+(display (+ max-int 1))
+(newline)
+
+;; Test 2: Large multiplication (use variable to avoid constant folding)
+(display "Large multiply: ")
+(display (* max-int 2))
+(newline)
+
+;; Test 3: Subtraction overflow
+(define min-int -9223372036854775807)
+(display "Near INT64_MIN - 2: ")
+(display (- min-int 2))
+(newline)
+
+;; Test 4: Chained operations that build up big numbers
+(define (power-of-2 n)
+  (if (<= n 0) 1 (* 2 (power-of-2 (- n 1)))))
+
+(display "2^63 = ")
+(display (power-of-2 63))
+(newline)
+
+(display "2^64 = ")
+(display (power-of-2 64))
+(newline)
+
+(display "2^100 = ")
+(display (power-of-2 100))
+(newline)
+
+(display "=== BIGNUM TESTS COMPLETE ===")
+(newline)
