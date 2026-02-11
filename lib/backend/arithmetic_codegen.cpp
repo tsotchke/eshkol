@@ -17,9 +17,71 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+#include <llvm/IR/Intrinsics.h>
+#include <llvm/Config/llvm-config.h>
 #include <eshkol/logger.h>
 
+// LLVM VERSION COMPATIBILITY
+#if LLVM_VERSION_MAJOR >= 18
+#define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getOrInsertDeclaration(mod, id, types)
+#else
+#define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getDeclaration(mod, id, types)
+#endif
+
 namespace eshkol {
+
+// Helper: Get arena pointer from __global_arena global variable
+static llvm::Value* getArenaPtr(CodegenContext& ctx) {
+    llvm::GlobalVariable* arena_global = ctx.module().getNamedGlobal("__global_arena");
+    if (!arena_global) return nullptr;
+    return ctx.builder().CreateLoad(ctx.ptrType(), arena_global);
+}
+
+// Helper: Get or declare eshkol_bignum_from_overflow(arena, a, b, op)
+static llvm::Function* getBignumFromOverflowFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_bignum_from_overflow");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            ctx.ptrType(),  // returns eshkol_bignum_t*
+            {ctx.ptrType(),     // arena_t* arena
+             ctx.int64Type(),   // int64_t a
+             ctx.int64Type(),   // int64_t b
+             ctx.int32Type()},  // int op (0=add, 1=sub, 2=mul)
+            false);
+        func = llvm::Function::Create(fn_type,
+            llvm::Function::ExternalLinkage,
+            "eshkol_bignum_from_overflow", &ctx.module());
+    }
+    return func;
+}
+
+// Helper: Emit bignum promotion for integer overflow
+// Calls eshkol_bignum_from_overflow(arena, left, right, op) and packs as HEAP_PTR
+static llvm::Value* emitBignumPromotion(CodegenContext& ctx, TaggedValueCodegen& tagged,
+                                         llvm::Value* left_int, llvm::Value* right_int,
+                                         int op_code) {
+    llvm::Value* arena_ptr = getArenaPtr(ctx);
+    if (!arena_ptr) {
+        // Fallback: promote to double if arena not available
+        llvm::Value* l = ctx.builder().CreateSIToFP(left_int, ctx.doubleType());
+        llvm::Value* r = ctx.builder().CreateSIToFP(right_int, ctx.doubleType());
+        llvm::Value* result;
+        switch (op_code) {
+            case 0: result = ctx.builder().CreateFAdd(l, r); break;
+            case 1: result = ctx.builder().CreateFSub(l, r); break;
+            case 2: result = ctx.builder().CreateFMul(l, r); break;
+            default: result = ctx.builder().CreateFAdd(l, r); break;
+        }
+        return tagged.packDouble(result);
+    }
+    llvm::Function* bignum_func = getBignumFromOverflowFunc(ctx);
+    llvm::Value* bignum_ptr = ctx.builder().CreateCall(bignum_func, {
+        arena_ptr, left_int, right_int,
+        llvm::ConstantInt::get(ctx.int32Type(), op_code)
+    }, "bignum_result");
+    // Pack as tagged value: type = ESHKOL_VALUE_HEAP_PTR (8)
+    return tagged.packPtr(bignum_ptr, ESHKOL_VALUE_HEAP_PTR);
+}
 
 ArithmeticCodegen::ArithmeticCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged,
                                      TensorCodegen& tensor, AutodiffCodegen& autodiff,
@@ -178,6 +240,91 @@ llvm::Value* ArithmeticCodegen::convertToComplex(llvm::Value* operand, llvm::Val
     return phi;
 }
 
+// === Bignum Runtime Dispatch ===
+
+// Declare eshkol_is_bignum_tagged(const tagged_value_t*) -> bool
+static llvm::Function* getIsBignumTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_is_bignum_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            ctx.int1Type(), {ctx.ptrType()}, false);
+        func = llvm::Function::Create(fn_type,
+            llvm::Function::ExternalLinkage, "eshkol_is_bignum_tagged", &ctx.module());
+    }
+    return func;
+}
+
+// Declare eshkol_bignum_binary_tagged(arena, left*, right*, op, result*)
+static llvm::Function* getBignumBinaryTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_bignum_binary_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx.context()),
+            {ctx.ptrType(), ctx.ptrType(), ctx.ptrType(),
+             ctx.int32Type(), ctx.ptrType()}, false);
+        func = llvm::Function::Create(fn_type,
+            llvm::Function::ExternalLinkage, "eshkol_bignum_binary_tagged", &ctx.module());
+    }
+    return func;
+}
+
+// Declare eshkol_bignum_compare_tagged(left*, right*, op, result*)
+static llvm::Function* getBignumCompareTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_bignum_compare_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx.context()),
+            {ctx.ptrType(), ctx.ptrType(), ctx.int32Type(), ctx.ptrType()}, false);
+        func = llvm::Function::Create(fn_type,
+            llvm::Function::ExternalLinkage, "eshkol_bignum_compare_tagged", &ctx.module());
+    }
+    return func;
+}
+
+// === Bignum Codegen Helpers ===
+
+llvm::Value* ArithmeticCodegen::emitIsBignumCheck(llvm::Value* left, llvm::Value* right) {
+    // Alloca + store both operands, call eshkol_is_bignum_tagged on each, OR results
+    llvm::Value* left_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "bn_chk_l");
+    llvm::Value* right_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "bn_chk_r");
+    ctx_.builder().CreateStore(left, left_alloca);
+    ctx_.builder().CreateStore(right, right_alloca);
+    llvm::Function* is_bn = getIsBignumTaggedFunc(ctx_);
+    llvm::Value* l_is = ctx_.builder().CreateCall(is_bn, {left_alloca}, "l_is_bn");
+    llvm::Value* r_is = ctx_.builder().CreateCall(is_bn, {right_alloca}, "r_is_bn");
+    return ctx_.builder().CreateOr(l_is, r_is, "any_bn");
+}
+
+llvm::Value* ArithmeticCodegen::emitBignumBinaryCall(llvm::Value* left, llvm::Value* right, int op_code) {
+    // Stack-allocate tagged values, call runtime, load result
+    llvm::Value* left_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "bn_l");
+    llvm::Value* right_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "bn_r");
+    llvm::Value* result_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "bn_res");
+    ctx_.builder().CreateStore(left, left_alloca);
+    ctx_.builder().CreateStore(right, right_alloca);
+    llvm::Value* arena_ptr = getArenaPtr(ctx_);
+    ctx_.builder().CreateCall(getBignumBinaryTaggedFunc(ctx_), {
+        arena_ptr, left_alloca, right_alloca,
+        llvm::ConstantInt::get(ctx_.int32Type(), op_code),
+        result_alloca
+    });
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "bn_result");
+}
+
+llvm::Value* ArithmeticCodegen::emitBignumCompareCall(llvm::Value* left, llvm::Value* right, int op_code) {
+    llvm::Value* left_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "bn_cmp_l");
+    llvm::Value* right_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "bn_cmp_r");
+    llvm::Value* result_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "bn_cmp_res");
+    ctx_.builder().CreateStore(left, left_alloca);
+    ctx_.builder().CreateStore(right, right_alloca);
+    ctx_.builder().CreateCall(getBignumCompareTaggedFunc(ctx_), {
+        left_alloca, right_alloca,
+        llvm::ConstantInt::get(ctx_.int32Type(), op_code),
+        result_alloca
+    });
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "bn_cmp_result");
+}
+
 // === Polymorphic Addition ===
 
 llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
@@ -209,6 +356,8 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateOr(left_is_tensor, right_is_tensor));
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bignum_path = llvm::BasicBlock::Create(ctx_.context(), "add_bignum", func);
+    llvm::BasicBlock* check_heap = llvm::BasicBlock::Create(ctx_.context(), "add_check_heap", func);
     llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "add_vector", func);
     llvm::BasicBlock* check_ad = llvm::BasicBlock::Create(ctx_.context(), "add_check_ad", func);
     llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "add_ad", func);
@@ -221,6 +370,18 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "add_int", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "add_merge", func);
 
+    // Check bignum first via safe runtime call
+    llvm::Value* any_bignum = emitIsBignumCheck(left, right);
+    ctx_.builder().CreateCondBr(any_bignum, bignum_path, check_heap);
+
+    // Bignum path: runtime dispatch handles type checking and conversion
+    ctx_.builder().SetInsertPoint(bignum_path);
+    llvm::Value* bn_add_tagged = emitBignumBinaryCall(left, right, 0);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* bignum_exit = ctx_.builder().GetInsertBlock();
+
+    // Check for vector/tensor heap pointers
+    ctx_.builder().SetInsertPoint(check_heap);
     ctx_.builder().CreateCondBr(any_vector, vector_path, check_ad);
 
     // Vector/tensor path
@@ -346,23 +507,41 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
     llvm::Value* dbl_tagged = tagged_.packDouble(dbl_result);
     ctx_.builder().CreateBr(merge);
 
-    // Integer path
+    // Integer path with overflow detection
     ctx_.builder().SetInsertPoint(int_path);
     llvm::Value* left_int = tagged_.unpackInt64(left);
     llvm::Value* right_int = tagged_.unpackInt64(right);
-    llvm::Value* int_result = ctx_.builder().CreateAdd(left_int, right_int);
-    llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
+    llvm::Function* sadd_ovf = ESHKOL_GET_INTRINSIC(
+        &ctx_.module(), llvm::Intrinsic::sadd_with_overflow, {ctx_.int64Type()});
+    llvm::Value* add_ovf_result = ctx_.builder().CreateCall(sadd_ovf, {left_int, right_int});
+    llvm::Value* add_int_val = ctx_.builder().CreateExtractValue(add_ovf_result, 0);
+    llvm::Value* add_overflowed = ctx_.builder().CreateExtractValue(add_ovf_result, 1);
+
+    llvm::BasicBlock* add_ok = llvm::BasicBlock::Create(ctx_.context(), "add_int_ok", func);
+    llvm::BasicBlock* add_ovf_bb = llvm::BasicBlock::Create(ctx_.context(), "add_int_ovf", func);
+    ctx_.builder().CreateCondBr(add_overflowed, add_ovf_bb, add_ok);
+
+    // Overflow: promote to bignum (exact) — R7RS requires arbitrary-precision integers
+    ctx_.builder().SetInsertPoint(add_ovf_bb);
+    llvm::Value* add_promoted_tagged = emitBignumPromotion(ctx_, tagged_, left_int, right_int, 0);
+    ctx_.builder().CreateBr(merge);
+
+    // No overflow: pack result
+    ctx_.builder().SetInsertPoint(add_ok);
+    llvm::Value* int_tagged = tagged_.packInt64(add_int_val, true);
     ctx_.builder().CreateBr(merge);
 
     // Merge all paths
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 6, "add_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 8, "add_result");
+    phi->addIncoming(bn_add_tagged, bignum_exit);
     phi->addIncoming(vec_result, vector_exit);
     phi->addIncoming(ad_result, ad_exit);
     phi->addIncoming(dual_tagged, dual_exit);
     phi->addIncoming(complex_tagged, complex_exit);
     phi->addIncoming(dbl_tagged, double_path);
-    phi->addIncoming(int_tagged, int_path);
+    phi->addIncoming(add_promoted_tagged, add_ovf_bb);
+    phi->addIncoming(int_tagged, add_ok);
 
     return phi;
 }
@@ -398,6 +577,8 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateOr(left_is_tensor, right_is_tensor));
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bignum_path = llvm::BasicBlock::Create(ctx_.context(), "sub_bignum", func);
+    llvm::BasicBlock* check_heap = llvm::BasicBlock::Create(ctx_.context(), "sub_check_heap", func);
     llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "sub_vector", func);
     llvm::BasicBlock* check_ad = llvm::BasicBlock::Create(ctx_.context(), "sub_check_ad", func);
     llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "sub_ad", func);
@@ -410,9 +591,17 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "sub_int", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "sub_merge", func);
 
+    llvm::Value* any_bignum = emitIsBignumCheck(left, right);
+    ctx_.builder().CreateCondBr(any_bignum, bignum_path, check_heap);
+
+    ctx_.builder().SetInsertPoint(bignum_path);
+    llvm::Value* bn_sub_tagged = emitBignumBinaryCall(left, right, 1);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* bignum_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(check_heap);
     ctx_.builder().CreateCondBr(any_vector, vector_path, check_ad);
 
-    // Vector/tensor path
     ctx_.builder().SetInsertPoint(vector_path);
     llvm::Value* vec_result = tensor_.tensorArithmeticInternal(left, right, "sub");
     ctx_.builder().CreateBr(merge);
@@ -535,23 +724,40 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
     llvm::Value* dbl_tagged = tagged_.packDouble(dbl_result);
     ctx_.builder().CreateBr(merge);
 
-    // Integer path
+    // Integer path with overflow detection
     ctx_.builder().SetInsertPoint(int_path);
     llvm::Value* left_int = tagged_.unpackInt64(left);
     llvm::Value* right_int = tagged_.unpackInt64(right);
-    llvm::Value* int_result = ctx_.builder().CreateSub(left_int, right_int);
-    llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
+    llvm::Function* ssub_ovf = ESHKOL_GET_INTRINSIC(
+        &ctx_.module(), llvm::Intrinsic::ssub_with_overflow, {ctx_.int64Type()});
+    llvm::Value* sub_ovf_result = ctx_.builder().CreateCall(ssub_ovf, {left_int, right_int});
+    llvm::Value* sub_int_val = ctx_.builder().CreateExtractValue(sub_ovf_result, 0);
+    llvm::Value* sub_overflowed = ctx_.builder().CreateExtractValue(sub_ovf_result, 1);
+
+    llvm::BasicBlock* sub_ok = llvm::BasicBlock::Create(ctx_.context(), "sub_int_ok", func);
+    llvm::BasicBlock* sub_ovf_bb = llvm::BasicBlock::Create(ctx_.context(), "sub_int_ovf", func);
+    ctx_.builder().CreateCondBr(sub_overflowed, sub_ovf_bb, sub_ok);
+
+    // Overflow: promote to bignum (exact) — R7RS requires arbitrary-precision integers
+    ctx_.builder().SetInsertPoint(sub_ovf_bb);
+    llvm::Value* sub_promoted_tagged = emitBignumPromotion(ctx_, tagged_, left_int, right_int, 1);
+    ctx_.builder().CreateBr(merge);
+
+    ctx_.builder().SetInsertPoint(sub_ok);
+    llvm::Value* int_tagged = tagged_.packInt64(sub_int_val, true);
     ctx_.builder().CreateBr(merge);
 
     // Merge all paths
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 6, "sub_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 8, "sub_result");
+    phi->addIncoming(bn_sub_tagged, bignum_exit);
     phi->addIncoming(vec_result, vector_exit);
     phi->addIncoming(ad_result, ad_exit);
     phi->addIncoming(dual_tagged, dual_exit);
     phi->addIncoming(complex_tagged, complex_exit);
     phi->addIncoming(dbl_tagged, double_path);
-    phi->addIncoming(int_tagged, int_path);
+    phi->addIncoming(sub_promoted_tagged, sub_ovf_bb);
+    phi->addIncoming(int_tagged, sub_ok);
 
     return phi;
 }
@@ -587,6 +793,8 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateOr(left_is_tensor, right_is_tensor));
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bignum_path = llvm::BasicBlock::Create(ctx_.context(), "mul_bignum", func);
+    llvm::BasicBlock* check_heap = llvm::BasicBlock::Create(ctx_.context(), "mul_check_heap", func);
     llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "mul_vector", func);
     llvm::BasicBlock* check_ad = llvm::BasicBlock::Create(ctx_.context(), "mul_check_ad", func);
     llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "mul_ad", func);
@@ -599,9 +807,17 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "mul_int", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "mul_merge", func);
 
+    llvm::Value* any_bignum = emitIsBignumCheck(left, right);
+    ctx_.builder().CreateCondBr(any_bignum, bignum_path, check_heap);
+
+    ctx_.builder().SetInsertPoint(bignum_path);
+    llvm::Value* bn_mul_tagged = emitBignumBinaryCall(left, right, 2);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* bignum_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(check_heap);
     ctx_.builder().CreateCondBr(any_vector, vector_path, check_ad);
 
-    // Vector/tensor path
     ctx_.builder().SetInsertPoint(vector_path);
     llvm::Value* vec_result = tensor_.tensorArithmeticInternal(left, right, "mul");
     ctx_.builder().CreateBr(merge);
@@ -724,23 +940,40 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
     llvm::Value* dbl_tagged = tagged_.packDouble(dbl_result);
     ctx_.builder().CreateBr(merge);
 
-    // Integer path
+    // Integer path with overflow detection
     ctx_.builder().SetInsertPoint(int_path);
     llvm::Value* left_int = tagged_.unpackInt64(left);
     llvm::Value* right_int = tagged_.unpackInt64(right);
-    llvm::Value* int_result = ctx_.builder().CreateMul(left_int, right_int);
-    llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
+    llvm::Function* smul_ovf = ESHKOL_GET_INTRINSIC(
+        &ctx_.module(), llvm::Intrinsic::smul_with_overflow, {ctx_.int64Type()});
+    llvm::Value* mul_ovf_result = ctx_.builder().CreateCall(smul_ovf, {left_int, right_int});
+    llvm::Value* mul_int_val = ctx_.builder().CreateExtractValue(mul_ovf_result, 0);
+    llvm::Value* mul_overflowed = ctx_.builder().CreateExtractValue(mul_ovf_result, 1);
+
+    llvm::BasicBlock* mul_ok = llvm::BasicBlock::Create(ctx_.context(), "mul_int_ok", func);
+    llvm::BasicBlock* mul_ovf_bb = llvm::BasicBlock::Create(ctx_.context(), "mul_int_ovf", func);
+    ctx_.builder().CreateCondBr(mul_overflowed, mul_ovf_bb, mul_ok);
+
+    // Overflow: promote to bignum (exact) — R7RS requires arbitrary-precision integers
+    ctx_.builder().SetInsertPoint(mul_ovf_bb);
+    llvm::Value* mul_promoted_tagged = emitBignumPromotion(ctx_, tagged_, left_int, right_int, 2);
+    ctx_.builder().CreateBr(merge);
+
+    ctx_.builder().SetInsertPoint(mul_ok);
+    llvm::Value* int_tagged = tagged_.packInt64(mul_int_val, true);
     ctx_.builder().CreateBr(merge);
 
     // Merge all paths
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 6, "mul_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 8, "mul_result");
+    phi->addIncoming(bn_mul_tagged, bignum_exit);
     phi->addIncoming(vec_result, vector_exit);
     phi->addIncoming(ad_result, ad_exit);
     phi->addIncoming(dual_tagged, dual_exit);
     phi->addIncoming(complex_tagged, complex_exit);
     phi->addIncoming(dbl_tagged, double_path);
-    phi->addIncoming(int_tagged, int_path);
+    phi->addIncoming(mul_promoted_tagged, mul_ovf_bb);
+    phi->addIncoming(int_tagged, mul_ok);
 
     return phi;
 }
@@ -776,6 +1009,8 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateOr(left_is_tensor, right_is_tensor));
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bignum_path = llvm::BasicBlock::Create(ctx_.context(), "div_bignum", func);
+    llvm::BasicBlock* check_heap = llvm::BasicBlock::Create(ctx_.context(), "div_check_heap", func);
     llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "div_vector", func);
     llvm::BasicBlock* check_ad = llvm::BasicBlock::Create(ctx_.context(), "div_check_ad", func);
     llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "div_ad", func);
@@ -788,9 +1023,18 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "div_int", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "div_merge", func);
 
+    llvm::Value* any_bignum = emitIsBignumCheck(left, right);
+    ctx_.builder().CreateCondBr(any_bignum, bignum_path, check_heap);
+
+    // Bignum division: runtime handles exact/inexact logic
+    ctx_.builder().SetInsertPoint(bignum_path);
+    llvm::Value* bn_div_tagged = emitBignumBinaryCall(left, right, 3);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* bignum_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(check_heap);
     ctx_.builder().CreateCondBr(any_vector, vector_path, check_ad);
 
-    // Vector/tensor path
     ctx_.builder().SetInsertPoint(vector_path);
     llvm::Value* vec_result = tensor_.tensorArithmeticInternal(left, right, "div");
     ctx_.builder().CreateBr(merge);
@@ -967,7 +1211,8 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
     // Merge all paths
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 6, "div_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 7, "div_result");
+    phi->addIncoming(bn_div_tagged, bignum_exit);
     phi->addIncoming(vec_result, vector_exit);
     phi->addIncoming(ad_result, ad_exit);
     phi->addIncoming(dual_tagged, dual_exit);
@@ -981,7 +1226,22 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 // === Other Operations (mod, neg, abs, type coercion) ===
 
 llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
-    // Integer modulo - simpler implementation
+    // R7RS modulo: result has same sign as divisor
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "mod_bn", func);
+    llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "mod_int", func);
+    llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "mod_merge", func);
+
+    llvm::Value* any_bignum = emitIsBignumCheck(left, right);
+    ctx_.builder().CreateCondBr(any_bignum, bn_path, int_path);
+
+    ctx_.builder().SetInsertPoint(bn_path);
+    llvm::Value* bn_mod_tagged = emitBignumBinaryCall(left, right, 4);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* bn_exit = ctx_.builder().GetInsertBlock();
+
+    // Integer path
+    ctx_.builder().SetInsertPoint(int_path);
     llvm::Value* left_int = tagged_.unpackInt64(left);
     llvm::Value* right_int = tagged_.unpackInt64(right);
 
@@ -989,7 +1249,6 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
     llvm::Value* is_zero = ctx_.builder().CreateICmpEQ(right_int,
         llvm::ConstantInt::get(ctx_.int64Type(), 0), "mod_zero_check");
 
-    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* zero_bb = llvm::BasicBlock::Create(ctx_.context(), "mod_zero", func);
     llvm::BasicBlock* safe_bb = llvm::BasicBlock::Create(ctx_.context(), "mod_safe", func);
 
@@ -1002,28 +1261,49 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
 
     // Safe path - perform modulo
     ctx_.builder().SetInsertPoint(safe_bb);
-    llvm::Value* result = ctx_.builder().CreateSRem(left_int, right_int, "mod_result");
-    return tagged_.packInt64(result, true);
+    llvm::Value* int_result = ctx_.builder().CreateSRem(left_int, right_int, "mod_result");
+    llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge
+    ctx_.builder().SetInsertPoint(merge);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "mod_result_phi");
+    phi->addIncoming(bn_mod_tagged, bn_exit);
+    phi->addIncoming(int_tagged, int_exit);
+
+    return phi;
 }
 
 llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
-    // Check type and negate appropriately
-    // Use getBaseType() to properly handle legacy types (>=32)
     llvm::Value* type_tag = tagged_.getType(operand);
     llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
+    llvm::Value* is_heap = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* is_complex = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
     llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bignum_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_bignum", func);
+    llvm::BasicBlock* check_complex = llvm::BasicBlock::Create(ctx_.context(), "neg_check_complex", func);
     llvm::BasicBlock* complex_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_complex", func);
     llvm::BasicBlock* check_double_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_check_double", func);
     llvm::BasicBlock* double_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_double", func);
     llvm::BasicBlock* int_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_int", func);
     llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "neg_merge", func);
 
+    ctx_.builder().CreateCondBr(is_heap, bignum_bb, check_complex);
+
+    // Bignum negation via runtime dispatch (op 7 = neg)
+    ctx_.builder().SetInsertPoint(bignum_bb);
+    llvm::Value* bn_neg_result = emitBignumBinaryCall(operand, operand, 7);
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* bignum_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(check_complex);
     ctx_.builder().CreateCondBr(is_complex, complex_bb, check_double_bb);
 
     // Complex negation
@@ -1055,7 +1335,8 @@ llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_bb);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "neg_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "neg_result");
+    phi->addIncoming(bn_neg_result, bignum_exit);
     phi->addIncoming(complex_result, complex_exit);
     phi->addIncoming(dbl_result, double_exit);
     phi->addIncoming(int_result, int_exit);
@@ -1064,21 +1345,68 @@ llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
 }
 
 llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
-    // Use getBaseType() to properly handle legacy types (>=32)
     llvm::Value* type_tag = tagged_.getType(operand);
     llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
+    llvm::Value* is_heap = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
     llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* heap_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_heap", func);
     llvm::BasicBlock* double_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_double", func);
+    llvm::BasicBlock* check_dbl = llvm::BasicBlock::Create(ctx_.context(), "abs_check_dbl", func);
     llvm::BasicBlock* int_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_int", func);
     llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_merge", func);
 
+    ctx_.builder().CreateCondBr(is_heap, heap_bb, check_dbl);
+
+    // Bignum abs: if negative, negate; else return unchanged
+    ctx_.builder().SetInsertPoint(heap_bb);
+    {
+        llvm::Value* bn_ptr = tagged_.unpackPtr(operand);
+        llvm::Value* arena = getArenaPtr(ctx_);
+
+        // Check if negative
+        llvm::FunctionType* is_neg_type = llvm::FunctionType::get(
+            ctx_.builder().getInt1Ty(), {ctx_.ptrType()}, false);
+        llvm::FunctionCallee is_neg_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_bignum_is_negative", is_neg_type);
+        llvm::Value* bn_is_neg = ctx_.builder().CreateCall(is_neg_fn, {bn_ptr}, "bn_is_neg");
+
+        llvm::BasicBlock* neg_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_bn_neg", func);
+        llvm::BasicBlock* pos_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_bn_pos", func);
+        llvm::BasicBlock* bn_merge = llvm::BasicBlock::Create(ctx_.context(), "abs_bn_merge", func);
+        ctx_.builder().CreateCondBr(bn_is_neg, neg_bb, pos_bb);
+
+        ctx_.builder().SetInsertPoint(neg_bb);
+        llvm::FunctionType* neg_type = llvm::FunctionType::get(
+            ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false);
+        llvm::FunctionCallee neg_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_bignum_neg", neg_type);
+        llvm::Value* negated = ctx_.builder().CreateCall(neg_fn, {arena, bn_ptr}, "abs_bn_negated");
+        llvm::Value* neg_tagged = tagged_.packPtr(negated, ESHKOL_VALUE_HEAP_PTR);
+        ctx_.builder().CreateBr(bn_merge);
+        llvm::BasicBlock* neg_exit = ctx_.builder().GetInsertBlock();
+
+        ctx_.builder().SetInsertPoint(pos_bb);
+        // Return operand unchanged (already non-negative)
+        ctx_.builder().CreateBr(bn_merge);
+        llvm::BasicBlock* pos_exit = ctx_.builder().GetInsertBlock();
+
+        ctx_.builder().SetInsertPoint(bn_merge);
+        llvm::PHINode* bn_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "abs_bn");
+        bn_phi->addIncoming(neg_tagged, neg_exit);
+        bn_phi->addIncoming(operand, pos_exit);
+        ctx_.builder().CreateBr(merge_bb);
+    }
+    llvm::BasicBlock* heap_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(check_dbl);
     ctx_.builder().CreateCondBr(is_double, double_bb, int_bb);
 
-    // Double abs using fneg + select for abs since we may not have fabs intrinsic set up
+    // Double abs
     ctx_.builder().SetInsertPoint(double_bb);
     llvm::Value* dbl_val = tagged_.unpackDouble(operand);
     llvm::Value* neg_dbl = ctx_.builder().CreateFNeg(dbl_val);
@@ -1102,7 +1430,8 @@ llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_bb);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "abs_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "abs_result");
+    phi->addIncoming(heap_exit->getTerminator()->getPrevNonDebugInstruction(), heap_exit);
     phi->addIncoming(dbl_result, double_exit);
     phi->addIncoming(int_result, int_exit);
 
@@ -1135,19 +1464,59 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
         return ctx_.builder().CreateSIToFP(tagged_val, ctx_.doubleType());
     }
 
-    // Handle tagged value
-    // Use getBaseType() to properly handle legacy types (>=32)
+    // Handle tagged value with 3-way dispatch: DOUBLE, HEAP_PTR(bignum), INT64
     llvm::Value* type_tag = tagged_.getType(tagged_val);
     llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
     llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* dbl_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_dbl", func);
+    llvm::BasicBlock* heap_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_heap", func);
+    llvm::BasicBlock* int_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_int", func);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_merge", func);
+
+    ctx_.builder().CreateCondBr(is_double, dbl_bb, heap_bb);
+
+    // Double path: unpack directly
+    ctx_.builder().SetInsertPoint(dbl_bb);
     llvm::Value* dbl_val = tagged_.unpackDouble(tagged_val);
+    ctx_.builder().CreateBr(merge_bb);
+    dbl_bb = ctx_.builder().GetInsertBlock();
+
+    // Heap pointer path: check for bignum, convert to double
+    ctx_.builder().SetInsertPoint(heap_bb);
+    llvm::BasicBlock* bignum_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_bignum", func);
+    ctx_.builder().CreateCondBr(is_heap_ptr, bignum_bb, int_bb);
+
+    ctx_.builder().SetInsertPoint(bignum_bb);
+    // Call eshkol_bignum_to_double(ptr)
+    llvm::Value* bn_ptr = tagged_.unpackPtr(tagged_val);
+    llvm::FunctionType* bn_to_dbl_type = llvm::FunctionType::get(
+        ctx_.doubleType(), {ctx_.ptrType()}, false);
+    llvm::FunctionCallee bn_to_dbl = ctx_.module().getOrInsertFunction(
+        "eshkol_bignum_to_double", bn_to_dbl_type);
+    llvm::Value* bn_dbl = ctx_.builder().CreateCall(bn_to_dbl, {bn_ptr}, "bn_to_dbl");
+    ctx_.builder().CreateBr(merge_bb);
+    bignum_bb = ctx_.builder().GetInsertBlock();
+
+    // Int path: SIToFP
+    ctx_.builder().SetInsertPoint(int_bb);
     llvm::Value* int_val = tagged_.unpackInt64(tagged_val);
     llvm::Value* int_as_dbl = ctx_.builder().CreateSIToFP(int_val, ctx_.doubleType());
+    ctx_.builder().CreateBr(merge_bb);
+    int_bb = ctx_.builder().GetInsertBlock();
 
-    return ctx_.builder().CreateSelect(is_double, dbl_val, int_as_dbl, "as_double");
+    // Merge
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 3, "as_double");
+    phi->addIncoming(dbl_val, dbl_bb);
+    phi->addIncoming(bn_dbl, bignum_bb);
+    phi->addIncoming(int_as_dbl, int_bb);
+    return phi;
 }
 
 // === Polymorphic Comparison ===
@@ -1170,7 +1539,7 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     llvm::Value* left_base = tagged_.getBaseType(left_type);
     llvm::Value* right_base = tagged_.getBaseType(right_type);
 
-    // Check if operands are numeric types (int64 or double)
+    // Check operand types
     llvm::Value* left_is_double = ctx_.builder().CreateICmpEQ(left_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
     llvm::Value* right_is_double = ctx_.builder().CreateICmpEQ(right_base,
@@ -1182,24 +1551,32 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     llvm::Value* right_is_int = ctx_.builder().CreateICmpEQ(right_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
 
-    // R7RS compliance: Both operands must be numbers
-    llvm::Value* left_is_number = ctx_.builder().CreateOr(left_is_double, left_is_int);
-    llvm::Value* right_is_number = ctx_.builder().CreateOr(right_is_double, right_is_int);
+    llvm::Value* left_is_heap = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    llvm::Value* right_is_heap = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+    // R7RS compliance: Both operands must be numbers (int64, double, or bignum)
+    llvm::Value* left_is_number = ctx_.builder().CreateOr(
+        ctx_.builder().CreateOr(left_is_double, left_is_int), left_is_heap);
+    llvm::Value* right_is_number = ctx_.builder().CreateOr(
+        ctx_.builder().CreateOr(right_is_double, right_is_int), right_is_heap);
     llvm::Value* both_numbers = ctx_.builder().CreateAnd(left_is_number, right_is_number);
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* type_error_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_type_error", func);
     llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_numeric", func);
-    llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_double_path", func);
-    llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_int_path", func);
+    llvm::BasicBlock* bn_cmp_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_bn", func);
+    llvm::BasicBlock* check_double = llvm::BasicBlock::Create(ctx_.context(), "cmp_check_dbl", func);
+    llvm::BasicBlock* dbl_cmp_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_dbl", func);
+    llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "cmp_int", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "cmp_merge", func);
 
     // R7RS: Error if not both numbers
     ctx_.builder().CreateCondBr(both_numbers, numeric_path, type_error_path);
 
-    // Type error path: call runtime error for non-numeric comparison
+    // Type error path
     ctx_.builder().SetInsertPoint(type_error_path);
-    // Get or create eshkol_type_error function
     llvm::Function* type_error_func = ctx_.module().getFunction("eshkol_type_error");
     if (!type_error_func) {
         llvm::FunctionType* error_type = llvm::FunctionType::get(
@@ -1209,73 +1586,73 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
         type_error_func = llvm::Function::Create(error_type, llvm::Function::ExternalLinkage,
             "eshkol_type_error", &ctx_.module());
     }
-    // Create error message
     std::string op_name = (operation == "eq") ? "=" :
                           (operation == "lt") ? "<" :
                           (operation == "gt") ? ">" :
                           (operation == "le") ? "<=" : ">=";
-    llvm::Value* proc_name = ctx_.builder().CreateGlobalStringPtr(op_name, "cmp_proc_name");
-    llvm::Value* expected_type = ctx_.builder().CreateGlobalStringPtr("number", "cmp_expected_type");
+    llvm::Value* proc_name = ctx_.builder().CreateGlobalString(op_name, "cmp_proc_name");
+    llvm::Value* expected_type = ctx_.builder().CreateGlobalString("number", "cmp_expected_type");
     ctx_.builder().CreateCall(type_error_func, {proc_name, expected_type});
-    // Return false after error (in case error handler returns)
     llvm::Value* error_result = tagged_.packBool(ctx_.builder().getFalse());
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* error_exit = ctx_.builder().GetInsertBlock();
 
-    // Numeric path: dispatch to double or int comparison
+    // Numeric path: check for bignum first via runtime
     ctx_.builder().SetInsertPoint(numeric_path);
-    ctx_.builder().CreateCondBr(any_double, double_path, int_path);
+    llvm::Value* any_bignum = emitIsBignumCheck(left, right);
+    ctx_.builder().CreateCondBr(any_bignum, bn_cmp_path, check_double);
 
-    // Double path: promote both to double and compare
-    ctx_.builder().SetInsertPoint(double_path);
+    // Bignum comparison via runtime dispatch (handles all bignum combinations)
+    ctx_.builder().SetInsertPoint(bn_cmp_path);
+    int cmp_op = (operation == "lt") ? 0 :
+                 (operation == "gt") ? 1 :
+                 (operation == "eq") ? 2 :
+                 (operation == "le") ? 3 : 4;
+    llvm::Value* bn_cmp_result = emitBignumCompareCall(left, right, cmp_op);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* bn_cmp_exit = ctx_.builder().GetInsertBlock();
+
+    // Check for double operands
+    ctx_.builder().SetInsertPoint(check_double);
+    ctx_.builder().CreateCondBr(any_double, dbl_cmp_path, int_path);
+
+    // Double comparison: promote both to double
+    ctx_.builder().SetInsertPoint(dbl_cmp_path);
     llvm::Value* left_double = ctx_.builder().CreateSelect(left_is_double,
         tagged_.unpackDouble(left),
         ctx_.builder().CreateSIToFP(tagged_.unpackInt64(left), ctx_.doubleType()));
     llvm::Value* right_double = ctx_.builder().CreateSelect(right_is_double,
         tagged_.unpackDouble(right),
         ctx_.builder().CreateSIToFP(tagged_.unpackInt64(right), ctx_.doubleType()));
-
     llvm::Value* double_cmp = nullptr;
-    if (operation == "lt") {
-        double_cmp = ctx_.builder().CreateFCmpOLT(left_double, right_double);
-    } else if (operation == "gt") {
-        double_cmp = ctx_.builder().CreateFCmpOGT(left_double, right_double);
-    } else if (operation == "eq") {
-        double_cmp = ctx_.builder().CreateFCmpOEQ(left_double, right_double);
-    } else if (operation == "le") {
-        double_cmp = ctx_.builder().CreateFCmpOLE(left_double, right_double);
-    } else if (operation == "ge") {
-        double_cmp = ctx_.builder().CreateFCmpOGE(left_double, right_double);
-    }
+    if (operation == "lt")      double_cmp = ctx_.builder().CreateFCmpOLT(left_double, right_double);
+    else if (operation == "gt") double_cmp = ctx_.builder().CreateFCmpOGT(left_double, right_double);
+    else if (operation == "eq") double_cmp = ctx_.builder().CreateFCmpOEQ(left_double, right_double);
+    else if (operation == "le") double_cmp = ctx_.builder().CreateFCmpOLE(left_double, right_double);
+    else if (operation == "ge") double_cmp = ctx_.builder().CreateFCmpOGE(left_double, right_double);
     llvm::Value* tagged_double_result = tagged_.packBool(double_cmp);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
 
-    // Int path: compare as int64 (R7RS: no string path - use eq?/equal? for non-numbers)
+    // Int path: compare as int64
     ctx_.builder().SetInsertPoint(int_path);
     llvm::Value* left_int = tagged_.unpackInt64(left);
     llvm::Value* right_int = tagged_.unpackInt64(right);
-
     llvm::Value* int_cmp = nullptr;
-    if (operation == "lt") {
-        int_cmp = ctx_.builder().CreateICmpSLT(left_int, right_int);
-    } else if (operation == "gt") {
-        int_cmp = ctx_.builder().CreateICmpSGT(left_int, right_int);
-    } else if (operation == "ge") {
-        int_cmp = ctx_.builder().CreateICmpSGE(left_int, right_int);
-    } else if (operation == "le") {
-        int_cmp = ctx_.builder().CreateICmpSLE(left_int, right_int);
-    } else if (operation == "eq") {
-        int_cmp = ctx_.builder().CreateICmpEQ(left_int, right_int);
-    }
+    if (operation == "lt")      int_cmp = ctx_.builder().CreateICmpSLT(left_int, right_int);
+    else if (operation == "gt") int_cmp = ctx_.builder().CreateICmpSGT(left_int, right_int);
+    else if (operation == "eq") int_cmp = ctx_.builder().CreateICmpEQ(left_int, right_int);
+    else if (operation == "le") int_cmp = ctx_.builder().CreateICmpSLE(left_int, right_int);
+    else if (operation == "ge") int_cmp = ctx_.builder().CreateICmpSGE(left_int, right_int);
     llvm::Value* tagged_int_result = tagged_.packBool(int_cmp);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
 
     // Merge results
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3);
+    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4);
     result_phi->addIncoming(error_result, error_exit);
+    result_phi->addIncoming(bn_cmp_result, bn_cmp_exit);
     result_phi->addIncoming(tagged_double_result, double_exit);
     result_phi->addIncoming(tagged_int_result, int_exit);
 
@@ -1361,23 +1738,29 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
     }
 
-    // Extract both operands as doubles
+    // Extract both as double for comparison, then select the original tagged value
     llvm::Value* left_dbl = extractAsDouble(left);
     llvm::Value* right_dbl = extractAsDouble(right);
+    llvm::Value* is_le = ctx_.builder().CreateFCmpOLE(left_dbl, right_dbl, "min_le");
 
-    // Call fmin intrinsic
-    llvm::Function* fmin_func = ctx_.module().getFunction("fmin");
-    if (!fmin_func) {
-        llvm::FunctionType* fmin_type = llvm::FunctionType::get(
-            ctx_.doubleType(),
-            {ctx_.doubleType(), ctx_.doubleType()},
-            false);
-        fmin_func = llvm::Function::Create(fmin_type, llvm::Function::ExternalLinkage,
-                                           "fmin", &ctx_.module());
-    }
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* pick_left = llvm::BasicBlock::Create(ctx_.context(), "min_left", func);
+    llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "min_right", func);
+    llvm::BasicBlock* min_merge = llvm::BasicBlock::Create(ctx_.context(), "min_merge", func);
 
-    llvm::Value* result = ctx_.builder().CreateCall(fmin_func, {left_dbl, right_dbl}, "min_result");
-    return tagged_.packDouble(result);
+    ctx_.builder().CreateCondBr(is_le, pick_left, pick_right);
+
+    ctx_.builder().SetInsertPoint(pick_left);
+    ctx_.builder().CreateBr(min_merge);
+
+    ctx_.builder().SetInsertPoint(pick_right);
+    ctx_.builder().CreateBr(min_merge);
+
+    ctx_.builder().SetInsertPoint(min_merge);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "min_result");
+    phi->addIncoming(left, pick_left);
+    phi->addIncoming(right, pick_right);
+    return phi;
 }
 
 llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
@@ -1386,23 +1769,29 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
     }
 
-    // Extract both operands as doubles
+    // Extract both as double for comparison, then select the original tagged value
     llvm::Value* left_dbl = extractAsDouble(left);
     llvm::Value* right_dbl = extractAsDouble(right);
+    llvm::Value* is_ge = ctx_.builder().CreateFCmpOGE(left_dbl, right_dbl, "max_ge");
 
-    // Call fmax intrinsic
-    llvm::Function* fmax_func = ctx_.module().getFunction("fmax");
-    if (!fmax_func) {
-        llvm::FunctionType* fmax_type = llvm::FunctionType::get(
-            ctx_.doubleType(),
-            {ctx_.doubleType(), ctx_.doubleType()},
-            false);
-        fmax_func = llvm::Function::Create(fmax_type, llvm::Function::ExternalLinkage,
-                                           "fmax", &ctx_.module());
-    }
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* pick_left = llvm::BasicBlock::Create(ctx_.context(), "max_left", func);
+    llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "max_right", func);
+    llvm::BasicBlock* max_merge = llvm::BasicBlock::Create(ctx_.context(), "max_merge", func);
 
-    llvm::Value* result = ctx_.builder().CreateCall(fmax_func, {left_dbl, right_dbl}, "max_result");
-    return tagged_.packDouble(result);
+    ctx_.builder().CreateCondBr(is_ge, pick_left, pick_right);
+
+    ctx_.builder().SetInsertPoint(pick_left);
+    ctx_.builder().CreateBr(max_merge);
+
+    ctx_.builder().SetInsertPoint(pick_right);
+    ctx_.builder().CreateBr(max_merge);
+
+    ctx_.builder().SetInsertPoint(max_merge);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "max_result");
+    phi->addIncoming(left, pick_left);
+    phi->addIncoming(right, pick_right);
+    return phi;
 }
 
 // === Remainder Function ===
@@ -1413,14 +1802,13 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
     }
 
     // Extract type information
-    // Use getBaseType() to properly handle legacy types (>=32)
     llvm::Value* dividend_type = tagged_.getType(dividend);
     llvm::Value* divisor_type = tagged_.getType(divisor);
 
     llvm::Value* dividend_base = tagged_.getBaseType(dividend_type);
     llvm::Value* divisor_base = tagged_.getBaseType(divisor_type);
 
-    // Check if both are integers
+    // Check operand types
     llvm::Value* dividend_is_int = ctx_.builder().CreateICmpEQ(dividend_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
     llvm::Value* divisor_is_int = ctx_.builder().CreateICmpEQ(divisor_base,
@@ -1428,10 +1816,22 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
     llvm::Value* both_int = ctx_.builder().CreateAnd(dividend_is_int, divisor_is_int);
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "rem_bn", func);
+    llvm::BasicBlock* scalar_path = llvm::BasicBlock::Create(ctx_.context(), "rem_scalar", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "rem_int", func);
     llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "rem_double", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "rem_merge", func);
 
+    llvm::Value* any_bignum = emitIsBignumCheck(dividend, divisor);
+    ctx_.builder().CreateCondBr(any_bignum, bn_path, scalar_path);
+
+    ctx_.builder().SetInsertPoint(bn_path);
+    llvm::Value* bn_rem_tagged = emitBignumBinaryCall(dividend, divisor, 6);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* bn_exit = ctx_.builder().GetInsertBlock();
+
+    // Scalar path: existing int64/double dispatch
+    ctx_.builder().SetInsertPoint(scalar_path);
     ctx_.builder().CreateCondBr(both_int, int_path, double_path);
 
     // Integer path: use srem
@@ -1482,7 +1882,8 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
 
     // Merge
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "remainder_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "remainder_result");
+    phi->addIncoming(bn_rem_tagged, bn_exit);
     phi->addIncoming(int_tagged, int_exit);
     phi->addIncoming(dbl_tagged, dbl_exit);
 
@@ -1497,14 +1898,13 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     }
 
     // Extract type information
-    // Use getBaseType() to properly handle legacy types (>=32)
     llvm::Value* dividend_type = tagged_.getType(dividend);
     llvm::Value* divisor_type = tagged_.getType(divisor);
 
     llvm::Value* dividend_base = tagged_.getBaseType(dividend_type);
     llvm::Value* divisor_base = tagged_.getBaseType(divisor_type);
 
-    // Check if both are integers
+    // Check operand types
     llvm::Value* dividend_is_int = ctx_.builder().CreateICmpEQ(dividend_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
     llvm::Value* divisor_is_int = ctx_.builder().CreateICmpEQ(divisor_base,
@@ -1512,10 +1912,22 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     llvm::Value* both_int = ctx_.builder().CreateAnd(dividend_is_int, divisor_is_int);
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "quot_bn", func);
+    llvm::BasicBlock* scalar_path = llvm::BasicBlock::Create(ctx_.context(), "quot_scalar", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "quot_int", func);
     llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "quot_double", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "quot_merge", func);
 
+    llvm::Value* any_bignum = emitIsBignumCheck(dividend, divisor);
+    ctx_.builder().CreateCondBr(any_bignum, bn_path, scalar_path);
+
+    ctx_.builder().SetInsertPoint(bn_path);
+    llvm::Value* bn_quot_tagged = emitBignumBinaryCall(dividend, divisor, 5);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* bn_exit = ctx_.builder().GetInsertBlock();
+
+    // Scalar path: existing int64/double dispatch
+    ctx_.builder().SetInsertPoint(scalar_path);
     ctx_.builder().CreateCondBr(both_int, int_path, double_path);
 
     // Integer path: use sdiv (truncates toward zero)
@@ -1568,7 +1980,8 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
 
     // Merge
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "quotient_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "quotient_result");
+    phi->addIncoming(bn_quot_tagged, bn_exit);
     phi->addIncoming(int_tagged, int_exit);
     phi->addIncoming(dbl_tagged, dbl_exit);
 
@@ -1628,7 +2041,7 @@ void ArithmeticCodegen::raiseDivideByZeroException() {
     }
 
     // Create error message string
-    llvm::Value* error_msg = ctx_.builder().CreateGlobalStringPtr("division by zero");
+    llvm::Value* error_msg = ctx_.builder().CreateGlobalString("division by zero");
 
     // Create exception object: eshkol_make_exception_with_header(ESHKOL_EXCEPTION_DIVIDE_BY_ZERO, msg)
     llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {
@@ -1638,6 +2051,37 @@ void ArithmeticCodegen::raiseDivideByZeroException() {
 
     // Raise the exception
     ctx_.builder().CreateCall(raise_func, {exc});
+}
+
+void ArithmeticCodegen::emitOverflowError(const char* message) {
+    llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+    if (!make_exc_func) {
+        llvm::FunctionType* make_type = llvm::FunctionType::get(
+            llvm::PointerType::getUnqual(ctx_.context()),
+            {ctx_.int32Type(), llvm::PointerType::getUnqual(ctx_.context())},
+            false);
+        make_exc_func = llvm::Function::Create(make_type,
+            llvm::Function::ExternalLinkage, "eshkol_make_exception_with_header", &ctx_.module());
+    }
+
+    llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+    if (!raise_func) {
+        llvm::FunctionType* raise_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx_.context()),
+            {llvm::PointerType::getUnqual(ctx_.context())},
+            false);
+        raise_func = llvm::Function::Create(raise_type,
+            llvm::Function::ExternalLinkage, "eshkol_raise", &ctx_.module());
+        raise_func->setDoesNotReturn();
+    }
+
+    llvm::Value* error_msg = ctx_.builder().CreateGlobalString(message);
+    llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {
+        llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_EXCEPTION_ERROR),
+        error_msg
+    }, "overflow_exception");
+    ctx_.builder().CreateCall(raise_func, {exc});
+    ctx_.builder().CreateUnreachable();
 }
 
 } // namespace eshkol

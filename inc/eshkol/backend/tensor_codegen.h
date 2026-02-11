@@ -228,6 +228,100 @@ public:
      */
     llvm::Value* tensorSilu(const eshkol_operations_t* op);
 
+    // === Phase 4.1: Additional Activation Functions ===
+
+    /** ELU: x > 0 ? x : alpha * (exp(x) - 1), default alpha=1.0 */
+    llvm::Value* tensorElu(const eshkol_operations_t* op);
+    /** SELU: lambda * ELU(x, alpha), lambda=1.0507, alpha=1.6733 */
+    llvm::Value* tensorSelu(const eshkol_operations_t* op);
+    /** Mish: x * tanh(softplus(x)) = x * tanh(ln(1 + exp(x))) */
+    llvm::Value* tensorMish(const eshkol_operations_t* op);
+    /** Hard Swish: x * min(max(x+3, 0), 6) / 6 */
+    llvm::Value* tensorHardSwish(const eshkol_operations_t* op);
+    /** Hard Sigmoid: min(max(x+3, 0), 6) / 6 */
+    llvm::Value* tensorHardSigmoid(const eshkol_operations_t* op);
+    /** Softplus: log(1 + exp(x)), numerically stable */
+    llvm::Value* tensorSoftplus(const eshkol_operations_t* op);
+    /** Dropout: x * mask / (1-p) during training, x during eval */
+    llvm::Value* tensorDropout(const eshkol_operations_t* op);
+    /** CELU: max(0,x) + min(0, alpha * (exp(x/alpha) - 1)) */
+    llvm::Value* tensorCelu(const eshkol_operations_t* op);
+
+    // === Phase 4.2: Additional Loss Functions ===
+
+    /** KL Divergence: sum(p * log(p / q)) */
+    llvm::Value* klDivLoss(const eshkol_operations_t* op);
+    /** Hinge loss: max(0, 1 - y * f(x)) */
+    llvm::Value* hingeLoss(const eshkol_operations_t* op);
+    /** Smooth L1 loss: Huber with delta=1.0 */
+    llvm::Value* smoothL1Loss(const eshkol_operations_t* op);
+    /** Focal loss: -(1-p)^gamma * log(p) */
+    llvm::Value* focalLoss(const eshkol_operations_t* op);
+    /** Triplet loss: max(d(a,p) - d(a,n) + margin, 0) */
+    llvm::Value* tripletLoss(const eshkol_operations_t* op);
+    /** Contrastive loss: (1-y)*d^2 + y*max(margin-d,0)^2 */
+    llvm::Value* contrastiveLoss(const eshkol_operations_t* op);
+    /** Label smoothing cross-entropy */
+    llvm::Value* labelSmoothingLoss(const eshkol_operations_t* op);
+    /** Cosine embedding loss */
+    llvm::Value* cosineEmbeddingLoss(const eshkol_operations_t* op);
+
+    // === Phase 4.3: Additional Optimizers ===
+
+    /** AdamW: Adam with decoupled weight decay */
+    llvm::Value* adamwStep(const eshkol_operations_t* op);
+    /** Adagrad: per-parameter adaptive learning rate */
+    llvm::Value* adagradStep(const eshkol_operations_t* op);
+
+    // === Phase 4.3: Training Utilities ===
+
+    /** Check gradients for NaN/Inf: (check-grad-health tensor) */
+    llvm::Value* checkGradHealth(const eshkol_operations_t* op);
+
+    // === Phase 4.3b: Weight Initialization ===
+
+    /** Xavier/Glorot uniform initialization */
+    llvm::Value* xavierUniform(const eshkol_operations_t* op);
+    /** Xavier/Glorot normal initialization */
+    llvm::Value* xavierNormal(const eshkol_operations_t* op);
+    /** Kaiming/He uniform initialization */
+    llvm::Value* kaimingUniform(const eshkol_operations_t* op);
+    /** Kaiming/He normal initialization */
+    llvm::Value* kaimingNormal(const eshkol_operations_t* op);
+    /** Lecun normal initialization */
+    llvm::Value* lecunNormal(const eshkol_operations_t* op);
+
+    // === Phase 4.3: Learning Rate Schedulers ===
+
+    /** Cosine annealing LR scheduler */
+    llvm::Value* cosineAnnealingLR(const eshkol_operations_t* op);
+    /** Step decay LR scheduler */
+    llvm::Value* stepDecayLR(const eshkol_operations_t* op);
+    /** Linear warmup LR scheduler */
+    llvm::Value* linearWarmupLR(const eshkol_operations_t* op);
+    /** Exponential decay LR scheduler */
+    llvm::Value* exponentialDecayLR(const eshkol_operations_t* op);
+
+    // === Phase 4.4: Linear Algebra ===
+
+    /** LU decomposition: returns (L, U, P) as a list of tensors */
+    llvm::Value* tensorLU(const eshkol_operations_t* op);
+    /** Determinant via LU decomposition */
+    llvm::Value* tensorDet(const eshkol_operations_t* op);
+    /** Matrix inverse via LU decomposition */
+    llvm::Value* tensorInverse(const eshkol_operations_t* op);
+    /** Solve linear system Ax=b via LU decomposition */
+    llvm::Value* tensorSolve(const eshkol_operations_t* op);
+    /** Cholesky decomposition for SPD matrices: A = L @ L^T */
+    llvm::Value* tensorCholesky(const eshkol_operations_t* op);
+    /** QR decomposition via Householder reflections: A = Q @ R */
+    llvm::Value* tensorQR(const eshkol_operations_t* op);
+
+    // === Phase 4.6: Einsum ===
+
+    /** Einsum: Einstein summation notation */
+    llvm::Value* tensorEinsum(const eshkol_operations_t* op);
+
     // === Activation Backward Functions (for autodiff) ===
 
     /**

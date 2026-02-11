@@ -280,6 +280,51 @@ void daxpy(int n, double alpha, const double* x, int incx, double* y, int incy) 
     cblas_daxpy(n, alpha, x, incx, y, incy);
 }
 
+// ===== Batched Matrix Operations =====
+
+void batched_dgemm(char transA, char transB,
+                   int M, int N, int K,
+                   double alpha,
+                   const double* A, int lda,
+                   const double* B, int ldb,
+                   double beta,
+                   double* C, int ldc,
+                   int batch_count) {
+    CBLAS_TRANSPOSE ta = (transA == 'T' || transA == 't') ? CblasTrans : CblasNoTrans;
+    CBLAS_TRANSPOSE tb = (transB == 'T' || transB == 't') ? CblasTrans : CblasNoTrans;
+
+    size_t a_stride = static_cast<size_t>(M) * static_cast<size_t>(K);
+    size_t b_stride = static_cast<size_t>(K) * static_cast<size_t>(N);
+    size_t c_stride = static_cast<size_t>(M) * static_cast<size_t>(N);
+
+    for (int b = 0; b < batch_count; b++) {
+        cblas_dgemm(CblasRowMajor, ta, tb,
+                    M, N, K,
+                    alpha,
+                    A + b * a_stride, lda,
+                    B + b * b_stride, ldb,
+                    beta,
+                    C + b * c_stride, ldc);
+    }
+}
+
+void batched_matmul(const double* A, const double* B, double* C,
+                    size_t M, size_t K, size_t N, size_t batch_count) {
+    size_t a_stride = M * K;
+    size_t b_stride = K * N;
+    size_t c_stride = M * N;
+
+    for (size_t b = 0; b < batch_count; b++) {
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    static_cast<int>(M), static_cast<int>(N), static_cast<int>(K),
+                    1.0,
+                    A + b * a_stride, static_cast<int>(K),
+                    B + b * b_stride, static_cast<int>(N),
+                    0.0,
+                    C + b * c_stride, static_cast<int>(N));
+    }
+}
+
 } // namespace blas
 } // namespace eshkol
 
@@ -796,6 +841,24 @@ void eshkol_blas_set_threshold(uint64_t threshold) {
 #else
     (void)threshold;
 #endif
+}
+
+void eshkol_batched_matmul_f64(const double* A, const double* B, double* C,
+                                uint64_t M, uint64_t K, uint64_t N,
+                                uint64_t batch_count) {
+    size_t a_stride = M * K;
+    size_t b_stride = K * N;
+    size_t c_stride = M * N;
+
+    for (uint64_t b = 0; b < batch_count; b++) {
+#ifdef ESHKOL_BLAS_ENABLED
+        eshkol::blas::matmul(A + b * a_stride, B + b * b_stride, C + b * c_stride,
+                             M, K, N);
+#else
+        matmul_simd(A + b * a_stride, B + b * b_stride, C + b * c_stride,
+                    M, K, N);
+#endif
+    }
 }
 
 } // extern "C"

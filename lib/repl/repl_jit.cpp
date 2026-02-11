@@ -1741,6 +1741,7 @@ eshkol_tagged_value_t ReplJITContext::executeTagged(eshkol_ast_t* ast) {
                 return result;
 
             case ESHKOL_STRING:
+            case ESHKOL_BIGNUM_LITERAL:
                 result.type = ESHKOL_VALUE_HEAP_PTR;
                 result.data.ptr_val = static_cast<uint64_t>(raw_val);
                 return result;

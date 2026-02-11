@@ -340,6 +340,41 @@ public:
      */
     llvm::Value* dualTanh(llvm::Value* dual);
 
+    /**
+     * Inverse hyperbolic sine: (asinh(a), a' / sqrt(1 + a²))
+     */
+    llvm::Value* dualAsinh(llvm::Value* dual);
+
+    /**
+     * Inverse hyperbolic cosine: (acosh(a), a' / sqrt(a² - 1))
+     */
+    llvm::Value* dualAcosh(llvm::Value* dual);
+
+    /**
+     * Inverse hyperbolic tangent: (atanh(a), a' / (1 - a²))
+     */
+    llvm::Value* dualAtanh(llvm::Value* dual);
+
+    /**
+     * Base-10 logarithm: (log10(a), a' / (a * ln(10)))
+     */
+    llvm::Value* dualLog10(llvm::Value* dual);
+
+    /**
+     * Base-2 logarithm: (log2(a), a' / (a * ln(2)))
+     */
+    llvm::Value* dualLog2(llvm::Value* dual);
+
+    /**
+     * Base-2 exponential: (exp2(a), a' * exp2(a) * ln(2))
+     */
+    llvm::Value* dualExp2(llvm::Value* dual);
+
+    /**
+     * Cube root: (cbrt(a), a' / (3 * cbrt(a)²))
+     */
+    llvm::Value* dualCbrt(llvm::Value* dual);
+
     // === ML Activation Function Dual Number Operations ===
 
     /**

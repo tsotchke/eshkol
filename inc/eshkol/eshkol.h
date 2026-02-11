@@ -54,7 +54,8 @@ typedef enum {
     ESHKOL_NULL,
     ESHKOL_TENSOR,
     ESHKOL_CHAR,
-    ESHKOL_BOOL
+    ESHKOL_BOOL,
+    ESHKOL_BIGNUM_LITERAL   // Integer literal too large for int64 (stored as string)
 } eshkol_type_t;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -81,7 +82,8 @@ typedef enum {
     ESHKOL_VALUE_HEAP_PTR    = 8,   // Heap data: cons, string, vector, tensor, hash, exception
     ESHKOL_VALUE_CALLABLE    = 9,   // Callables: closure, lambda-sexpr, ad-node
 
-    // Reserved: 10-15 (for future core types)
+    // Neuro-symbolic consciousness engine types
+    ESHKOL_VALUE_LOGIC_VAR   = 10,  // Logic variable ?x (data = var_id : int64)
 
     // ═══════════════════════════════════════════════════════════════════════
     // MULTIMEDIA TYPES (16-19) - linear resources with lifecycle management
@@ -244,6 +246,11 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 // Consolidated type checks
 #define ESHKOL_IS_HEAP_PTR_TYPE(type)    ((type) == ESHKOL_VALUE_HEAP_PTR)
 #define ESHKOL_IS_CALLABLE_TYPE(type)    ((type) == ESHKOL_VALUE_CALLABLE)
+#define ESHKOL_IS_LOGIC_VAR_TYPE(type)   ((type) == ESHKOL_VALUE_LOGIC_VAR)
+
+// Neuro-symbolic consciousness engine macros
+#define ESHKOL_IS_LOGIC_VAR(tv)  ((tv).type == ESHKOL_VALUE_LOGIC_VAR)
+#define ESHKOL_LOGIC_VAR_ID(tv)  ((tv).data.int_val)
 
 // ───────────────────────────────────────────────────────────────────────────
 // DEPRECATED Legacy type checks - for display system backward compatibility
@@ -332,7 +339,15 @@ typedef enum {
     HEAP_SUBTYPE_BYTEVECTOR  = 8,   // Raw byte vector (R7RS)
     HEAP_SUBTYPE_PORT        = 9,   // I/O port
     HEAP_SUBTYPE_SYMBOL      = 10,  // Interned symbol (distinct from string)
-    // Reserved: 11-255 for future heap types
+    HEAP_SUBTYPE_BIGNUM      = 11,  // Arbitrary-precision integer (R7RS exact)
+    // Neuro-symbolic consciousness engine types
+    HEAP_SUBTYPE_SUBSTITUTION    = 12,  // Immutable binding map {var_id -> tagged_value}
+    HEAP_SUBTYPE_FACT            = 13,  // Predicate + arguments: (pred arg1 arg2 ...)
+    // Reserved: 14 for RULE (v1.2 backward chaining)
+    HEAP_SUBTYPE_KNOWLEDGE_BASE  = 15,  // Collection of facts with query support
+    HEAP_SUBTYPE_FACTOR_GRAPH    = 16,  // Factor graph for probabilistic inference
+    HEAP_SUBTYPE_WORKSPACE       = 17,  // Global workspace for cognitive competition
+    // Reserved: 18-255 for future heap types
 } heap_subtype_t;
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -526,6 +541,12 @@ typedef enum {
      (val).data.ptr_val != 0 && \
      ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_MULTI_VALUE)
 
+// Check if value is a bignum
+#define ESHKOL_IS_BIGNUM(val) \
+    ((val).type == ESHKOL_VALUE_HEAP_PTR && \
+     (val).data.ptr_val != 0 && \
+     ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_BIGNUM)
+
 // Check if value is a closure (legacy CLOSURE_PTR or new CALLABLE with CLOSURE subtype)
 #define ESHKOL_IS_CLOSURE_COMPAT(val) \
     ((val).type == ESHKOL_VALUE_CLOSURE_PTR || \
@@ -657,6 +678,31 @@ typedef enum {
     AD_NODE_SQUARE,
     AD_NODE_MAX,
     AD_NODE_MIN,
+
+    // Phase 4 activation gradients (46-53)
+    AD_NODE_ELU = 46,
+    AD_NODE_SELU,
+    AD_NODE_MISH,
+    AD_NODE_HARDSWISH,
+    AD_NODE_HARDSIGMOID,
+    AD_NODE_SOFTPLUS,
+    AD_NODE_DROPOUT,
+    AD_NODE_CELU,
+
+    // Complete math function gradients (54-66)
+    AD_NODE_TAN = 54,
+    AD_NODE_ASIN,
+    AD_NODE_ACOS,
+    AD_NODE_ATAN,
+    AD_NODE_SINH,
+    AD_NODE_COSH,
+    AD_NODE_ASINH,
+    AD_NODE_ACOSH,
+    AD_NODE_ATANH,
+    AD_NODE_LOG10,
+    AD_NODE_LOG2,
+    AD_NODE_EXP2,
+    AD_NODE_CBRT,
 
     // Sentinel for bounds checking
     AD_NODE_TYPE_COUNT
@@ -1295,7 +1341,31 @@ typedef enum {
     ESHKOL_VALUES_OP,           // (values v1 v2 ...) - return multiple values
     ESHKOL_CALL_WITH_VALUES_OP, // (call-with-values producer consumer)
     // Macro system operators
-    ESHKOL_DEFINE_SYNTAX_OP     // (define-syntax name (syntax-rules ...))
+    ESHKOL_DEFINE_SYNTAX_OP,    // (define-syntax name (syntax-rules ...))
+    // Neuro-symbolic consciousness engine operations
+    ESHKOL_LOGIC_VAR_OP,              // ?x - create/reference logic variable
+    ESHKOL_UNIFY_OP,                  // (unify t1 t2 subst) -> subst|#f
+    ESHKOL_MAKE_SUBST_OP,             // (make-substitution) -> empty subst
+    ESHKOL_WALK_OP,                   // (walk term subst) -> resolved term
+    ESHKOL_MAKE_FACT_OP,              // (make-fact 'pred arg...) -> fact
+    ESHKOL_MAKE_KB_OP,                // (make-kb) -> empty KB
+    ESHKOL_KB_ASSERT_OP,              // (kb-assert! kb fact) -> void
+    ESHKOL_KB_QUERY_OP,               // (kb-query kb pattern) -> list of substs
+    ESHKOL_MAKE_FACTOR_GRAPH_OP,      // (make-factor-graph n-vars dims) -> fg
+    ESHKOL_FG_ADD_FACTOR_OP,          // (fg-add-factor! fg vars cpt) -> void
+    ESHKOL_FG_INFER_OP,               // (fg-infer! fg iterations) -> beliefs
+    ESHKOL_FREE_ENERGY_OP,            // (free-energy beliefs log-joint) -> scalar
+    ESHKOL_EXPECTED_FREE_ENERGY_OP,   // (efe model action-var action-state) -> scalar
+    ESHKOL_MAKE_WORKSPACE_OP,         // (make-workspace dim max-modules) -> ws
+    ESHKOL_WS_REGISTER_OP,            // (ws-register! ws name module) -> void
+    ESHKOL_WS_STEP_OP,                // (ws-step! ws) -> broadcast-content
+    ESHKOL_FG_UPDATE_CPT_OP,          // (fg-update-cpt! fg factor-idx new-cpt) -> fg
+    ESHKOL_LOGIC_VAR_PRED_OP,         // (logic-var? x) -> bool
+    ESHKOL_SUBSTITUTION_PRED_OP,      // (substitution? x) -> bool
+    ESHKOL_KB_PRED_OP,                // (kb? x) -> bool
+    ESHKOL_FACT_PRED_OP,              // (fact? x) -> bool
+    ESHKOL_FACTOR_GRAPH_PRED_OP,      // (factor-graph? x) -> bool
+    ESHKOL_WORKSPACE_PRED_OP,         // (workspace? x) -> bool
 } eshkol_op_t;
 
 struct eshkol_ast;
@@ -1513,6 +1583,11 @@ typedef struct eshkol_operation {
             eshkol_macro_def_t *macro;           // Macro definition
         } define_syntax_op;
         // ===== END MACRO OPERATIONS =====
+        // ===== NEURO-SYMBOLIC CONSCIOUSNESS ENGINE OPERATIONS =====
+        struct {
+            uint64_t var_id;                     // Logic variable ID (global registry)
+            const char *name;                    // Logic variable name (e.g., "?x")
+        } logic_var_op;
     };
 } eshkol_operations_t;
 

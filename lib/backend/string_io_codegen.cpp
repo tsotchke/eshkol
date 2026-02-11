@@ -183,6 +183,55 @@ llvm::Value* StringIOCodegen::stringRef(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
+    // Bounds check: compute strlen and validate index
+    llvm::Function* strlen_func = ctx_.module().getFunction("strlen");
+    if (!strlen_func) {
+        llvm::FunctionType* strlen_type = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType()}, false);
+        strlen_func = llvm::Function::Create(
+            strlen_type, llvm::Function::ExternalLinkage, "strlen", &ctx_.module());
+    }
+    llvm::Value* str_len = ctx_.builder().CreateCall(strlen_func, {str_ptr});
+
+    llvm::Value* idx_negative = ctx_.builder().CreateICmpSLT(idx,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* idx_too_large = ctx_.builder().CreateICmpSGE(idx, str_len);
+    llvm::Value* out_of_bounds = ctx_.builder().CreateOr(idx_negative, idx_too_large);
+
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bounds_ok = llvm::BasicBlock::Create(ctx_.context(), "sref_ok", current_func);
+    llvm::BasicBlock* bounds_fail = llvm::BasicBlock::Create(ctx_.context(), "sref_fail", current_func);
+    ctx_.builder().CreateCondBr(out_of_bounds, bounds_fail, bounds_ok);
+
+    // Bounds check failure: emit runtime error
+    ctx_.builder().SetInsertPoint(bounds_fail);
+    {
+        llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+        if (!raise_func) {
+            llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+            raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                "eshkol_raise", &ctx_.module());
+            raise_func->setDoesNotReturn();
+        }
+        llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+            make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", &ctx_.module());
+        }
+        llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
+            "string-ref: index out of bounds");
+        llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
+        ctx_.builder().CreateCall(raise_func, {exception});
+        ctx_.builder().CreateUnreachable();
+    }
+
+    // Bounds OK: access character
+    ctx_.builder().SetInsertPoint(bounds_ok);
+
     // Get character at index
     llvm::Value* char_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, idx);
     llvm::Value* char_val = ctx_.builder().CreateLoad(ctx_.int8Type(), char_ptr);

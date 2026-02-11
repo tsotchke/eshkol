@@ -1,0 +1,113 @@
+;; Eshkol Continuous Learning Demo — v1.1-accelerate
+;; A compiled neuro-symbolic agent that combines:
+;; - Symbolic knowledge base (logic engine)
+;; - Probabilistic inference (factor graph + belief propagation)
+;; - Active inference (free energy minimization)
+;; - Online learning via fg-update-cpt! (CPT mutation)
+
+(display "=== Eshkol Consciousness Engine v1.1-accelerate ===") (newline)
+
+;; === 1. SYMBOLIC KNOWLEDGE BASE ===
+(define kb (make-kb))
+(kb-assert! kb (make-fact 'color 'sky 'blue))
+(kb-assert! kb (make-fact 'color 'grass 'green))
+(kb-assert! kb (make-fact 'color 'sun 'yellow))
+(display "KB initialized: ") (display kb) (newline)
+
+;; Query the KB
+(define sky-facts (kb-query kb (make-fact 'color 'sky ?value)))
+(display "sky color query: ") (display sky-facts) (newline)
+
+;; === 2. UNIFICATION ENGINE ===
+(define s1 (unify ?x 42 (make-substitution)))
+(display "unify ?x=42: walk ?x = ") (display (walk ?x s1)) (newline)
+
+;; Chained resolution
+(define s2 (unify ?a ?b (make-substitution)))
+(define s3 (unify ?b 'blue s2))
+(display "chain ?a->?b->blue: ") (display (walk ?a s3)) (newline)
+
+;; === 3. GENERATIVE MODEL (FACTOR GRAPH) ===
+;; 2-variable model: concept(4 states), observation(4 states)
+;; Variable 0 = concept (sky, grass, sun, other)
+;; Variable 1 = observation (blue, green, yellow, other)
+(define model (make-factor-graph 2 #(4 4)))
+
+;; Prior over concepts: uniform initially (log(0.25) = -1.3863)
+(fg-add-factor! model #(0) #(-1.3863 -1.3863 -1.3863 -1.3863))
+
+;; Observation model: P(obs|concept) — 4x4 CPT (log-space)
+;; Initially weak diagonal: 40% correct, 20% each wrong
+(fg-add-factor! model #(0 1)
+  #(-0.9163 -1.6094 -1.6094 -1.6094
+    -1.6094 -0.9163 -1.6094 -1.6094
+    -1.6094 -1.6094 -0.9163 -1.6094
+    -1.6094 -1.6094 -1.6094 -0.9163))
+
+;; === 4. LEARNING LOOP WITH CPT UPDATES ===
+;; Observation: variable 1 is in state 0 (we see "blue")
+;; Format: #(var_index observed_state) = #(1.0 0.0)
+(define obs #(1.0 0.0))
+
+(display "--- Learning (observing blue) ---") (newline)
+
+;; Epoch 1: initial uniform prior
+(fg-infer! model 20)
+(define fe1 (free-energy model obs))
+(display "  epoch 1 | F = ") (display fe1) (newline)
+
+;; Epoch 2: shift prior toward concept 0 (sky → blue)
+(fg-update-cpt! model 0 #(-0.5108 -1.2040 -1.6094 -1.6094))
+(fg-infer! model 20)
+(define fe2 (free-energy model obs))
+(display "  epoch 2 | F = ") (display fe2) (newline)
+
+;; Epoch 3: sharpen prior further
+(fg-update-cpt! model 0 #(-0.2231 -1.6094 -2.3026 -2.3026))
+(fg-infer! model 20)
+(define fe3 (free-energy model obs))
+(display "  epoch 3 | F = ") (display fe3) (newline)
+
+;; Epoch 4: strong prior on concept 0
+(fg-update-cpt! model 0 #(-0.1054 -2.3026 -3.0 -3.0))
+(fg-infer! model 20)
+(define fe4 (free-energy model obs))
+(display "  epoch 4 | F = ") (display fe4) (newline)
+
+;; Epoch 5: also sharpen observation model (sky → blue becomes 95%)
+(fg-update-cpt! model 1
+  #(-0.0513 -3.5066 -3.5066 -3.5066
+    -3.5066 -0.0513 -3.5066 -3.5066
+    -3.5066 -3.5066 -0.0513 -3.5066
+    -3.5066 -3.5066 -3.5066 -0.0513))
+(fg-infer! model 20)
+(define fe5 (free-energy model obs))
+(display "  epoch 5 | F = ") (display fe5) (newline)
+
+(define final-beliefs (fg-infer! model 20))
+(display "Final beliefs: ") (display final-beliefs) (newline)
+
+;; === 5. KB GROWTH (learning discovers new facts) ===
+(kb-assert! kb (make-fact 'learned 'model 'converged))
+(display "KB after learning: ") (display kb) (newline)
+
+;; === 6. EXPECTED FREE ENERGY (action selection) ===
+(define efe0 (expected-free-energy model 0 0))
+(define efe1 (expected-free-energy model 0 1))
+(define efe2 (expected-free-energy model 0 2))
+(define efe3 (expected-free-energy model 0 3))
+(display "EFE[concept=0]: ") (display efe0) (newline)
+(display "EFE[concept=1]: ") (display efe1) (newline)
+(display "EFE[concept=2]: ") (display efe2) (newline)
+(display "EFE[concept=3]: ") (display efe3) (newline)
+
+;; === 7. GLOBAL WORKSPACE ===
+(define ws (make-workspace 4 3))
+(ws-register! ws "perception"
+  (lambda (content) (cons 0.9 #(1.0 0.0 0.0 0.0))))
+(ws-register! ws "reasoning"
+  (lambda (content) (cons 0.3 #(0.0 1.0 0.0 0.0))))
+(ws-step! ws)
+(display "Workspace after step: ") (display ws) (newline)
+
+(display "=== Demo complete ===") (newline)

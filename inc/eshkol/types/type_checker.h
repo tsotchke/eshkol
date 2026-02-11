@@ -43,11 +43,11 @@ struct TypeCheckResult {
 
     // Factory methods
     static TypeCheckResult ok(TypeId type) {
-        return {true, type, ""};
+        return {true, type, "", 0, 0, "", "", "", ""};
     }
 
     static TypeCheckResult error(const std::string& msg, int line = 0, int col = 0) {
-        return {false, TypeId{}, msg, line, col};
+        return {false, TypeId{}, msg, line, col, "", "", "", ""};
     }
 
     // Enhanced error factory with context

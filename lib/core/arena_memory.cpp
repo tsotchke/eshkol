@@ -9,6 +9,10 @@
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
 #include "../../inc/eshkol/eshkol.h"
+#include "../../inc/eshkol/core/bignum.h"
+#include "../../inc/eshkol/core/logic.h"
+#include "../../inc/eshkol/core/inference.h"
+#include "../../inc/eshkol/core/workspace.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -320,6 +324,11 @@ void* arena_allocate_with_header_zeroed(arena_t* arena, size_t data_size, uint8_
 // Allocate a multi-value container (for multiple return values)
 // count: number of tagged values to hold
 void* arena_allocate_multi_value(arena_t* arena, size_t count) {
+    // Overflow check: count * sizeof(eshkol_tagged_value_t) + sizeof(size_t)
+    if (count > (SIZE_MAX - sizeof(size_t)) / sizeof(eshkol_tagged_value_t)) {
+        eshkol_error("integer overflow in multi-value allocation size (count=%zu)", count);
+        return nullptr;
+    }
     size_t data_size = sizeof(size_t) + count * sizeof(eshkol_tagged_value_t);
     void* ptr = arena_allocate_with_header(arena, data_size, HEAP_SUBTYPE_MULTI_VALUE, 0);
     if (ptr) {
@@ -2175,6 +2184,24 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                 case HEAP_SUBTYPE_MULTI_VALUE:
                     fprintf(get_output(opts), "#<values>");
                     break;
+                case HEAP_SUBTYPE_BIGNUM:
+                    eshkol_bignum_display((const eshkol_bignum_t*)data_ptr, get_output(opts));
+                    break;
+                case HEAP_SUBTYPE_SUBSTITUTION:
+                    eshkol_display_substitution((const eshkol_substitution_t*)data_ptr, get_output(opts));
+                    break;
+                case HEAP_SUBTYPE_FACT:
+                    eshkol_display_fact((const eshkol_fact_t*)data_ptr, get_output(opts));
+                    break;
+                case HEAP_SUBTYPE_KNOWLEDGE_BASE:
+                    eshkol_display_kb((const eshkol_knowledge_base_t*)data_ptr, get_output(opts));
+                    break;
+                case HEAP_SUBTYPE_FACTOR_GRAPH:
+                    eshkol_display_factor_graph((const eshkol_factor_graph_t*)data_ptr, get_output(opts));
+                    break;
+                case HEAP_SUBTYPE_WORKSPACE:
+                    eshkol_display_workspace((const eshkol_workspace_t*)data_ptr, get_output(opts));
+                    break;
                 default:
                     fprintf(get_output(opts), "#<heap:%d>", header->subtype);
                     break;
@@ -2212,6 +2239,10 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             }
             break;
         }
+
+        case ESHKOL_VALUE_LOGIC_VAR:
+            eshkol_display_logic_var(value->data.int_val, get_output(opts));
+            break;
 
         case ESHKOL_VALUE_INT64:
             fprintf(get_output(opts), "%lld", (long long)value->data.int_val);
@@ -3396,5 +3427,480 @@ extern "C" void eshkol_display_exception(eshkol_exception_t* exc) {
 }
 
 // ===== END EXCEPTION HANDLING IMPLEMENTATION =====
+
+// ===== LINEAR ALGEBRA RUNTIME FUNCTIONS =====
+// These are called from LLVM-generated code via extern "C" linkage.
+// They operate on raw double arrays in row-major order.
+
+#include <cmath>
+#include <cstring>
+#include <cstdlib>
+
+// LU decomposition with partial pivoting (in-place)
+// A is n×n row-major, piv[i] stores the row swapped with row i.
+// Returns the sign of the permutation (+1 or -1), or 0 if singular.
+extern "C" int64_t eshkol_lu_decompose(double* A, int64_t* piv, int64_t n) {
+    int64_t sign = 1;
+    for (int64_t i = 0; i < n; i++) piv[i] = i;
+
+    for (int64_t k = 0; k < n; k++) {
+        // Find pivot: largest absolute value in column k, rows k..n-1
+        double max_val = 0.0;
+        int64_t max_row = k;
+        for (int64_t i = k; i < n; i++) {
+            double v = fabs(A[i * n + k]);
+            if (v > max_val) { max_val = v; max_row = i; }
+        }
+        if (max_val < 1e-15) return 0; // Singular
+
+        // Swap rows k and max_row
+        if (max_row != k) {
+            sign = -sign;
+            int64_t tmp_piv = piv[k]; piv[k] = piv[max_row]; piv[max_row] = tmp_piv;
+            for (int64_t j = 0; j < n; j++) {
+                double tmp = A[k * n + j];
+                A[k * n + j] = A[max_row * n + j];
+                A[max_row * n + j] = tmp;
+            }
+        }
+
+        // Eliminate below pivot
+        double pivot = A[k * n + k];
+        for (int64_t i = k + 1; i < n; i++) {
+            double factor = A[i * n + k] / pivot;
+            A[i * n + k] = factor; // Store L factor in-place
+            for (int64_t j = k + 1; j < n; j++) {
+                A[i * n + j] -= factor * A[k * n + j];
+            }
+        }
+    }
+    return sign;
+}
+
+// Determinant from LU-decomposed matrix: product of diagonal * sign
+extern "C" double eshkol_det_from_lu(const double* LU, int64_t n, int64_t sign) {
+    double det = (double)sign;
+    for (int64_t i = 0; i < n; i++) {
+        det *= LU[i * n + i];
+    }
+    return det;
+}
+
+// Solve Ax=b using LU decomposition (LU and piv from eshkol_lu_decompose)
+// b is overwritten with the solution x.
+extern "C" void eshkol_lu_solve(const double* LU, const int64_t* piv, double* b, int64_t n) {
+    // Apply permutation: create permuted b
+    double* pb = (double*)malloc(n * sizeof(double));
+    if (!pb) return;
+    for (int64_t i = 0; i < n; i++) pb[i] = b[piv[i]];
+
+    // Forward substitution: Ly = pb (L has 1s on diagonal, factors below)
+    for (int64_t i = 0; i < n; i++) {
+        for (int64_t j = 0; j < i; j++) {
+            pb[i] -= LU[i * n + j] * pb[j];
+        }
+    }
+
+    // Back substitution: Ux = y
+    for (int64_t i = n - 1; i >= 0; i--) {
+        for (int64_t j = i + 1; j < n; j++) {
+            pb[i] -= LU[i * n + j] * pb[j];
+        }
+        pb[i] /= LU[i * n + i];
+    }
+
+    memcpy(b, pb, n * sizeof(double));
+    free(pb);
+}
+
+// Matrix inverse via LU decomposition
+// inv is n×n output, LU and piv from eshkol_lu_decompose
+extern "C" void eshkol_lu_inverse(const double* LU, const int64_t* piv, double* inv, int64_t n) {
+    // Solve LU * x_col = e_col for each column of identity
+    for (int64_t col = 0; col < n; col++) {
+        // Set up identity column
+        double* b = (double*)malloc(n * sizeof(double));
+        if (!b) return;
+        memset(b, 0, n * sizeof(double));
+        b[col] = 1.0;
+
+        eshkol_lu_solve(LU, piv, b, n);
+
+        // Copy solution to inv column
+        for (int64_t row = 0; row < n; row++) {
+            inv[row * n + col] = b[row];
+        }
+        free(b);
+    }
+}
+
+// Cholesky decomposition: A = L @ L^T (A must be SPD)
+// L is output (lower triangular), n×n. Returns 0 on success, -1 if not SPD.
+extern "C" int64_t eshkol_cholesky(const double* A, double* L, int64_t n) {
+    memset(L, 0, n * n * sizeof(double));
+
+    for (int64_t i = 0; i < n; i++) {
+        for (int64_t j = 0; j <= i; j++) {
+            double sum = 0.0;
+            if (j == i) {
+                // Diagonal element
+                for (int64_t k = 0; k < j; k++) {
+                    sum += L[j * n + k] * L[j * n + k];
+                }
+                double val = A[j * n + j] - sum;
+                if (val <= 0.0) return -1; // Not SPD
+                L[j * n + j] = sqrt(val);
+            } else {
+                // Off-diagonal element
+                for (int64_t k = 0; k < j; k++) {
+                    sum += L[i * n + k] * L[j * n + k];
+                }
+                L[i * n + j] = (A[i * n + j] - sum) / L[j * n + j];
+            }
+        }
+    }
+    return 0;
+}
+
+// QR decomposition via Householder reflections
+// A is m×n input, Q is m×m output, R is m×n output
+extern "C" void eshkol_qr_decompose(const double* A, double* Q, double* R, int64_t m, int64_t n) {
+    // Copy A to R (we modify R in place)
+    memcpy(R, A, m * n * sizeof(double));
+
+    // Initialize Q to identity
+    memset(Q, 0, m * m * sizeof(double));
+    for (int64_t i = 0; i < m; i++) Q[i * m + i] = 1.0;
+
+    int64_t min_mn = (m < n) ? m : n;
+
+    for (int64_t k = 0; k < min_mn; k++) {
+        // Extract column k of R below diagonal
+        double* v = (double*)malloc(m * sizeof(double));
+        if (!v) return;
+        memset(v, 0, m * sizeof(double));
+
+        double norm_sq = 0.0;
+        for (int64_t i = k; i < m; i++) {
+            v[i] = R[i * n + k];
+            norm_sq += v[i] * v[i];
+        }
+        double norm = sqrt(norm_sq);
+        if (norm < 1e-15) { free(v); continue; }
+
+        // Compute Householder vector
+        double sign = (v[k] >= 0.0) ? 1.0 : -1.0;
+        v[k] += sign * norm;
+
+        // Recompute norm of v for normalization
+        double v_norm_sq = 0.0;
+        for (int64_t i = k; i < m; i++) v_norm_sq += v[i] * v[i];
+        if (v_norm_sq < 1e-30) { free(v); continue; }
+
+        double scale = 2.0 / v_norm_sq;
+
+        // Apply H = I - scale * v * v^T to R: R = H * R
+        for (int64_t j = k; j < n; j++) {
+            double dot = 0.0;
+            for (int64_t i = k; i < m; i++) dot += v[i] * R[i * n + j];
+            for (int64_t i = k; i < m; i++) R[i * n + j] -= scale * v[i] * dot;
+        }
+
+        // Apply H to Q: Q = Q * H (accumulate from right)
+        for (int64_t i = 0; i < m; i++) {
+            double dot = 0.0;
+            for (int64_t j2 = k; j2 < m; j2++) dot += Q[i * m + j2] * v[j2];
+            for (int64_t j2 = k; j2 < m; j2++) Q[i * m + j2] -= scale * dot * v[j2];
+        }
+
+        free(v);
+    }
+}
+
+// ===== ND BROADCAST RUNTIME FUNCTION =====
+
+// Broadcast a source tensor to a target shape.
+// src_data: source elements (doubles), src_dims: source shape, src_ndim: source rank
+// dst_data: output elements (doubles), dst_dims: target shape, dst_ndim: target rank
+// Returns 0 on success, -1 on incompatible shapes.
+// NumPy broadcasting rules: dimensions are compared from trailing end.
+// dim is compatible if equal, or one of them is 1.
+extern "C" int64_t eshkol_broadcast_copy(
+    const double* src_data, const int64_t* src_dims, int64_t src_ndim,
+    double* dst_data, const int64_t* dst_dims, int64_t dst_ndim)
+{
+    // Compute total destination elements
+    int64_t dst_total = 1;
+    for (int64_t d = 0; d < dst_ndim; d++) dst_total *= dst_dims[d];
+
+    // Precompute source strides (row-major)
+    int64_t src_strides[16]; // max 16 dimensions
+    if (src_ndim > 16) return -1;
+    if (src_ndim > 0) {
+        src_strides[src_ndim - 1] = 1;
+        for (int64_t d = src_ndim - 2; d >= 0; d--) {
+            src_strides[d] = src_strides[d + 1] * src_dims[d + 1];
+        }
+    }
+
+    // Precompute destination strides
+    int64_t dst_strides[16];
+    if (dst_ndim > 16) return -1;
+    if (dst_ndim > 0) {
+        dst_strides[dst_ndim - 1] = 1;
+        for (int64_t d = dst_ndim - 2; d >= 0; d--) {
+            dst_strides[d] = dst_strides[d + 1] * dst_dims[d + 1];
+        }
+    }
+
+    // Validate broadcast compatibility and build mapping
+    int64_t offset = dst_ndim - src_ndim;
+    for (int64_t d = 0; d < src_ndim; d++) {
+        int64_t dd = d + offset;
+        if (src_dims[d] != 1 && src_dims[d] != dst_dims[dd]) {
+            return -1; // Incompatible shapes
+        }
+    }
+
+    // For each destination element, compute source index
+    for (int64_t flat = 0; flat < dst_total; flat++) {
+        // Decompose flat index into dst multi-dimensional indices
+        int64_t remaining = flat;
+        int64_t src_flat = 0;
+
+        for (int64_t d = 0; d < dst_ndim; d++) {
+            int64_t idx = remaining / dst_strides[d];
+            remaining %= dst_strides[d];
+
+            // Map to source dimension
+            int64_t src_d = d - offset;
+            if (src_d >= 0 && src_d < src_ndim) {
+                if (src_dims[src_d] != 1) {
+                    src_flat += idx * src_strides[src_d];
+                }
+                // If src_dims[src_d] == 1, index is 0 (broadcast)
+            }
+        }
+
+        dst_data[flat] = src_data[src_flat];
+    }
+    return 0;
+}
+
+// Walk a Scheme cons list and extract int64 dimension values into an array.
+// Returns the number of dimensions extracted.
+extern "C" int64_t eshkol_cons_list_to_dims(
+    const void* cons_ptr, int64_t* dims_out, int64_t max_dims)
+{
+    int64_t count = 0;
+    const arena_tagged_cons_cell_t* current =
+        (const arena_tagged_cons_cell_t*)cons_ptr;
+
+    while (current != NULL && count < max_dims) {
+        // Extract car as int64 dimension value
+        dims_out[count] = arena_tagged_cons_get_int64(current, false);
+        count++;
+
+        // Check cdr type — if null, we've reached end of list
+        uint8_t cdr_type = arena_tagged_cons_get_type(current, true);
+        uint8_t cdr_base = ESHKOL_GET_BASE_TYPE(cdr_type);
+        if (cdr_base == ESHKOL_VALUE_NULL) break;
+
+        // Get cdr pointer to next cons cell
+        uint64_t cdr_ptr = arena_tagged_cons_get_ptr(current, true);
+        if (cdr_ptr == 0) break;
+        current = (const arena_tagged_cons_cell_t*)(uintptr_t)cdr_ptr;
+    }
+
+    return count;
+}
+
+// Compute the product of an int64 dimensions array.
+extern "C" int64_t eshkol_compute_dims_total(
+    const int64_t* dims, int64_t ndim)
+{
+    int64_t total = 1;
+    for (int64_t i = 0; i < ndim; i++) {
+        total *= dims[i];
+    }
+    return total;
+}
+
+// Check if two tensor shapes are identical.
+// Returns 1 if shapes match, 0 otherwise.
+extern "C" int64_t eshkol_shapes_equal(
+    const int64_t* dims1, int64_t ndim1,
+    const int64_t* dims2, int64_t ndim2)
+{
+    if (ndim1 != ndim2) return 0;
+    for (int64_t i = 0; i < ndim1; i++) {
+        if (dims1[i] != dims2[i]) return 0;
+    }
+    return 1;
+}
+
+// Compute broadcast output shape from two input shapes.
+// Returns output ndim (<=16), or -1 if shapes are incompatible.
+// out_dims must have space for at least 16 int64s.
+static int64_t compute_broadcast_shape(
+    const int64_t* a_dims, int64_t a_ndim,
+    const int64_t* b_dims, int64_t b_ndim,
+    int64_t* out_dims)
+{
+    int64_t out_ndim = (a_ndim > b_ndim) ? a_ndim : b_ndim;
+    if (out_ndim > 16) return -1;
+
+    for (int64_t i = 0; i < out_ndim; i++) {
+        int64_t ai = (i < a_ndim) ? a_dims[a_ndim - 1 - i] : 1;
+        int64_t bi = (i < b_ndim) ? b_dims[b_ndim - 1 - i] : 1;
+
+        if (ai == bi) {
+            out_dims[out_ndim - 1 - i] = ai;
+        } else if (ai == 1) {
+            out_dims[out_ndim - 1 - i] = bi;
+        } else if (bi == 1) {
+            out_dims[out_ndim - 1 - i] = ai;
+        } else {
+            return -1; // Incompatible
+        }
+    }
+    return out_ndim;
+}
+
+// Perform broadcast elementwise operation on two tensors.
+// op: 0=add, 1=sub, 2=mul, 3=div
+// Writes result into out_data (caller must allocate out_total doubles).
+// out_dims/out_ndim/out_total are written by this function.
+// Returns 0 on success, -1 on incompatible shapes.
+extern "C" int64_t eshkol_broadcast_elementwise_f64(
+    int64_t op,
+    const double* a_data, const int64_t* a_dims, int64_t a_ndim,
+    const double* b_data, const int64_t* b_dims, int64_t b_ndim,
+    double* out_data, int64_t* out_dims, int64_t* out_ndim_out,
+    int64_t* out_total_out)
+{
+    int64_t bcast_dims[16];
+    int64_t out_ndim = compute_broadcast_shape(a_dims, a_ndim, b_dims, b_ndim, bcast_dims);
+    if (out_ndim < 0) return -1;
+
+    // Copy broadcast dims to output
+    for (int64_t i = 0; i < out_ndim; i++) out_dims[i] = bcast_dims[i];
+    *out_ndim_out = out_ndim;
+
+    int64_t out_total = 1;
+    for (int64_t d = 0; d < out_ndim; d++) out_total *= bcast_dims[d];
+    *out_total_out = out_total;
+
+    // Precompute strides for output, a, and b
+    int64_t out_strides[16], a_strides[16], b_strides[16];
+    if (out_ndim > 0) {
+        out_strides[out_ndim - 1] = 1;
+        for (int64_t d = out_ndim - 2; d >= 0; d--)
+            out_strides[d] = out_strides[d + 1] * bcast_dims[d + 1];
+    }
+    if (a_ndim > 0) {
+        a_strides[a_ndim - 1] = 1;
+        for (int64_t d = a_ndim - 2; d >= 0; d--)
+            a_strides[d] = a_strides[d + 1] * a_dims[d + 1];
+    }
+    if (b_ndim > 0) {
+        b_strides[b_ndim - 1] = 1;
+        for (int64_t d = b_ndim - 2; d >= 0; d--)
+            b_strides[d] = b_strides[d + 1] * b_dims[d + 1];
+    }
+
+    int64_t a_offset = out_ndim - a_ndim;
+    int64_t b_offset = out_ndim - b_ndim;
+
+    for (int64_t flat = 0; flat < out_total; flat++) {
+        int64_t remaining = flat;
+        int64_t a_flat = 0, b_flat = 0;
+
+        for (int64_t d = 0; d < out_ndim; d++) {
+            int64_t idx = remaining / out_strides[d];
+            remaining %= out_strides[d];
+
+            int64_t ad = d - a_offset;
+            if (ad >= 0 && ad < a_ndim && a_dims[ad] != 1)
+                a_flat += idx * a_strides[ad];
+
+            int64_t bd = d - b_offset;
+            if (bd >= 0 && bd < b_ndim && b_dims[bd] != 1)
+                b_flat += idx * b_strides[bd];
+        }
+
+        double a_val = a_data[a_flat];
+        double b_val = b_data[b_flat];
+        double result;
+
+        switch (op) {
+            case 0: result = a_val + b_val; break;
+            case 1: result = a_val - b_val; break;
+            case 2: result = a_val * b_val; break;
+            case 3: result = (b_val != 0.0) ? a_val / b_val : 0.0; break;
+            default: result = 0.0; break;
+        }
+
+        out_data[flat] = result;
+    }
+    return 0;
+}
+
+// Stride-aware tensor concatenation along an arbitrary axis.
+// result_data: pre-allocated output buffer
+// num_tensors: number of input tensors
+// src_datas: array of pointers to each input tensor's elements
+// src_axis_dims: each tensor's size along the concat axis
+// stride_after: product of dims after the concat axis
+// outer_count: product of dims before the concat axis
+extern "C" void eshkol_concat_strided(
+    double* result_data,
+    int64_t num_tensors,
+    const double** src_datas,
+    const int64_t* src_axis_dims,
+    int64_t stride_after,
+    int64_t outer_count)
+{
+    double* dst = result_data;
+    for (int64_t outer = 0; outer < outer_count; outer++) {
+        for (int64_t t = 0; t < num_tensors; t++) {
+            int64_t chunk = src_axis_dims[t] * stride_after;
+            int64_t src_offset = outer * chunk;
+            memcpy(dst, src_datas[t] + src_offset, (size_t)(chunk * (int64_t)sizeof(double)));
+            dst += chunk;
+        }
+    }
+}
+
+// ===== END LINEAR ALGEBRA RUNTIME FUNCTIONS =====
+
+// ===== STACK OVERFLOW PROTECTION =====
+
+// Global recursion depth counter
+// Not thread_local for REPL JIT dlsym compatibility (same as AD tape globals)
+static int64_t __eshkol_recursion_depth = 0;
+static const int64_t ESHKOL_MAX_RECURSION_DEPTH = 10000;
+
+extern "C" int64_t eshkol_check_recursion_depth(void) {
+    __eshkol_recursion_depth++;
+    if (__eshkol_recursion_depth > ESHKOL_MAX_RECURSION_DEPTH) {
+        fprintf(stderr, "Error: maximum recursion depth (%lld) exceeded\n",
+                (long long)ESHKOL_MAX_RECURSION_DEPTH);
+        abort();
+    }
+    return __eshkol_recursion_depth;
+}
+
+extern "C" void eshkol_decrement_recursion_depth(void) {
+    if (__eshkol_recursion_depth > 0) {
+        __eshkol_recursion_depth--;
+    }
+}
+
+extern "C" void eshkol_reset_recursion_depth(void) {
+    __eshkol_recursion_depth = 0;
+}
+
+// ===== END STACK OVERFLOW PROTECTION =====
 
 #endif // __cplusplus

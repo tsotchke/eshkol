@@ -80,6 +80,8 @@ void TypeEnvironment::initializeBuiltinTypes() {
                         RuntimeRep::Int64, Integer);
     registerBuiltinType(Natural.id, "Natural", Universe::U0, TYPE_FLAG_EXACT,
                         RuntimeRep::Int64, Integer);
+    registerBuiltinType(BigInt.id, "BigInt", Universe::U0, TYPE_FLAG_EXACT,
+                        RuntimeRep::Pointer, Integer);  // Heap-allocated arbitrary precision
 
     // Real branch: inexact numbers
     registerBuiltinType(Real.id, "Real", Universe::U0, 0,
