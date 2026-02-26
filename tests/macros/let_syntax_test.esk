@@ -1,0 +1,72 @@
+; let-syntax tests
+
+; Basic let-syntax with simple macro
+(let-syntax ((double (syntax-rules ()
+              ((double x) (+ x x)))))
+  (display (double 5))
+  (newline))
+; Expected: 10
+
+; let-syntax with multiple macro bindings
+(let-syntax ((square (syntax-rules ()
+               ((square x) (* x x))))
+             (cube (syntax-rules ()
+               ((cube x) (* x (* x x))))))
+  (display (square 4))
+  (display " ")
+  (display (cube 3))
+  (newline))
+; Expected: 16 27
+
+; let-syntax scoping - macro not visible outside
+(define-syntax outer-swap
+  (syntax-rules ()
+    ((outer-swap a b) (list b a))))
+
+(let-syntax ((my-add (syntax-rules ()
+               ((my-add a b) (+ a b)))))
+  (display (my-add 10 20))
+  (newline))
+; Expected: 30
+
+; After let-syntax, my-add should not be visible (can't easily test this at runtime
+; but the macro should be scoped). We test that the outer macro still works:
+(display (outer-swap 1 2))
+(newline)
+; Expected: (2 1)
+
+; Nested let-syntax
+(let-syntax ((add1 (syntax-rules ()
+               ((add1 x) (+ x 1)))))
+  (let-syntax ((add2 (syntax-rules ()
+                 ((add2 x) (+ x 2)))))
+    (display (+ (add1 10) (add2 20)))
+    (newline)))
+; Expected: 33
+
+; letrec-syntax basic test
+(letrec-syntax ((my-inc (syntax-rules ()
+                  ((my-inc x) (+ x 1)))))
+  (display (my-inc 99))
+  (newline))
+; Expected: 100
+
+; let-syntax shadowing global macro
+(define-syntax my-op
+  (syntax-rules ()
+    ((my-op x) (* x 2))))
+
+(display (my-op 5))
+(newline)
+; Expected: 10
+
+(let-syntax ((my-op (syntax-rules ()
+               ((my-op x) (+ x 100)))))
+  (display (my-op 5))
+  (newline))
+; Expected: 105
+
+; After let-syntax scope ends, global macro is restored
+(display (my-op 5))
+(newline)
+; Expected: 10

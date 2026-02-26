@@ -213,9 +213,18 @@ private:
                 ss << "]";
                 break;
             }
-            case TomlValue::Table:
-                ss << "{}"; // inline tables not supported for now
+            case TomlValue::Table: {
+                ss << "{";
+                bool first = true;
+                for (const auto& [k, v] : val.table_val) {
+                    if (!first) ss << ", ";
+                    first = false;
+                    ss << k << " = ";
+                    serialize_value(ss, v);
+                }
+                ss << "}";
                 break;
+            }
         }
     }
 };

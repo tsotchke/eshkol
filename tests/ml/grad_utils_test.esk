@@ -1,0 +1,128 @@
+;;; Gradient Utility Functions Test Suite
+;;; Tests clip-grad-norm!, zero-grad!, check-grad-health
+
+(require stdlib)
+
+;; Helper: approximate equality for scalars
+(define (approx= a b tol)
+  (< (abs (- a b)) tol))
+
+(display "=== GRADIENT UTILITY FUNCTIONS TESTS ===") (newline)
+
+;; ============================================================
+;; Test 1: clip-grad-norm! returns the original L2 norm
+;; g = #(3.0 4.0), norm = sqrt(9 + 16) = 5.0
+;; ============================================================
+(display "TEST: clip-grad-norm! returns original norm") (newline)
+(let* ((g #(3.0 4.0))
+       (orig-norm (clip-grad-norm! g 2.5)))
+  (display (if (approx= orig-norm 5.0 0.01)
+               "PASS" "FAIL"))
+  (display ": clip-grad-norm! should return 5.0 as original norm") (newline))
+
+;; ============================================================
+;; Test 2: clip-grad-norm! scales elements when norm > max-norm
+;; After clipping with max-norm=2.5, elements scaled by 2.5/5.0=0.5
+;; g should be approximately #(1.5 2.0)
+;; ============================================================
+(display "TEST: clip-grad-norm! scales elements down") (newline)
+(let* ((g #(3.0 4.0))
+       (orig-norm (clip-grad-norm! g 2.5)))
+  (display (if (and (approx= (tensor-ref g 0) 1.5 0.01)
+                    (approx= (tensor-ref g 1) 2.0 0.01))
+               "PASS" "FAIL"))
+  (display ": clipped g should be approximately #(1.5 2.0)") (newline))
+
+;; ============================================================
+;; Test 3: clip-grad-norm! resulting L2 norm equals max-norm
+;; After clipping, norm of g should be approximately 2.5
+;; ============================================================
+(display "TEST: clip-grad-norm! resulting norm equals max-norm") (newline)
+(let* ((g #(3.0 4.0))
+       (orig-norm (clip-grad-norm! g 2.5))
+       (new-norm (sqrt (+ (* (tensor-ref g 0) (tensor-ref g 0))
+                          (* (tensor-ref g 1) (tensor-ref g 1))))))
+  (display (if (approx= new-norm 2.5 0.01)
+               "PASS" "FAIL"))
+  (display ": L2 norm after clipping should be approximately 2.5") (newline))
+
+;; ============================================================
+;; Test 4: clip-grad-norm! does not modify when norm <= max-norm
+;; g2 = #(1.0 1.0), norm = sqrt(2) ~ 1.414, max-norm = 5.0
+;; ============================================================
+(display "TEST: clip-grad-norm! no-op when norm <= max-norm") (newline)
+(let* ((g2 #(1.0 1.0))
+       (orig-norm (clip-grad-norm! g2 5.0)))
+  (display (if (and (approx= (tensor-ref g2 0) 1.0 0.01)
+                    (approx= (tensor-ref g2 1) 1.0 0.01)
+                    (approx= orig-norm (sqrt 2.0) 0.01))
+               "PASS" "FAIL"))
+  (display ": gradients unchanged when norm already below max-norm") (newline))
+
+;; ============================================================
+;; Test 5: zero-grad! sets all elements to 0.0
+;; ============================================================
+(display "TEST: zero-grad! zeros all elements") (newline)
+(let ((g #(3.0 4.0 5.0)))
+  (zero-grad! g)
+  (display (if (and (approx= (tensor-ref g 0) 0.0 0.01)
+                    (approx= (tensor-ref g 1) 0.0 0.01)
+                    (approx= (tensor-ref g 2) 0.0 0.01))
+               "PASS" "FAIL"))
+  (display ": all gradient elements should be 0.0 after zero-grad!") (newline))
+
+;; ============================================================
+;; Test 6: zero-grad! on already-zero tensor
+;; ============================================================
+(display "TEST: zero-grad! on zero tensor is no-op") (newline)
+(let ((g #(0.0 0.0 0.0)))
+  (zero-grad! g)
+  (display (if (and (approx= (tensor-ref g 0) 0.0 0.01)
+                    (approx= (tensor-ref g 1) 0.0 0.01)
+                    (approx= (tensor-ref g 2) 0.0 0.01))
+               "PASS" "FAIL"))
+  (display ": zero-grad! on zero tensor should remain zero") (newline))
+
+;; ============================================================
+;; Test 7: check-grad-health returns #t for finite gradients
+;; ============================================================
+(display "TEST: check-grad-health with finite gradients") (newline)
+(display (if (check-grad-health #(1.0 2.0 3.0))
+             "PASS" "FAIL"))
+(display ": finite gradients should be healthy") (newline)
+
+;; ============================================================
+;; Test 8: check-grad-health returns #f for NaN
+;; ============================================================
+(display "TEST: check-grad-health detects NaN") (newline)
+(display (if (not (check-grad-health #(1.0 +nan.0 3.0)))
+             "PASS" "FAIL"))
+(display ": gradients with NaN should be unhealthy") (newline)
+
+;; ============================================================
+;; Test 9: check-grad-health returns #f for Inf
+;; ============================================================
+(display "TEST: check-grad-health detects Inf") (newline)
+(display (if (not (check-grad-health #(1.0 +inf.0 3.0)))
+             "PASS" "FAIL"))
+(display ": gradients with Inf should be unhealthy") (newline)
+
+;; ============================================================
+;; Test 10: clip then zero workflow
+;; Simulates a training loop: clip gradients, use them, then zero
+;; ============================================================
+(display "TEST: clip-grad-norm! then zero-grad! workflow") (newline)
+(let* ((g #(6.0 8.0))
+       (orig-norm (clip-grad-norm! g 5.0)))
+  ;; orig norm = sqrt(36+64) = 10.0, clipped to 5.0
+  ;; g should be #(3.0 4.0) after clip (scaled by 5/10 = 0.5)
+  (let ((clip-ok (and (approx= (tensor-ref g 0) 3.0 0.01)
+                      (approx= (tensor-ref g 1) 4.0 0.01))))
+    (zero-grad! g)
+    (let ((zero-ok (and (approx= (tensor-ref g 0) 0.0 0.01)
+                        (approx= (tensor-ref g 1) 0.0 0.01))))
+      (display (if (and clip-ok zero-ok (approx= orig-norm 10.0 0.01))
+                   "PASS" "FAIL"))
+      (display ": clip then zero workflow should produce correct results") (newline))))
+
+(display "=== GRADIENT UTILITY FUNCTIONS TESTS COMPLETE ===") (newline)

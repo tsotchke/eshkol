@@ -23,6 +23,9 @@
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Constants.h>
 
+// GPU memory functions for device transfer
+#include "eshkol/backend/gpu/gpu_memory.h"
+
 namespace eshkol {
 namespace xla {
 
@@ -150,18 +153,32 @@ llvm::Value* XLAMemoryIntegration::allocateAligned(llvm::Value* arena_ptr,
 
 /// Ensure tensor is on the specified device.
 /// CPU path: no-op -- data is already in host memory.
-/// GPU targets would emit transfer IR here.
+/// GPU targets: emit IR to call eshkol_gpu_wrap_host + eshkol_gpu_sync(HOST_TO_DEVICE).
+/// Note: In v1.1, actual GPU dispatch happens at the runtime level (xla_runtime.cpp),
+/// so this function primarily serves as a target-aware passthrough. The runtime functions
+/// handle GPU buffer wrapping/sync internally per-operation.
 llvm::Value* XLAMemoryIntegration::ensureDevice(llvm::Value* tensor_ptr, Target target) {
-    (void)target;
-    // CPU: tensor is already on the host device. Return as-is.
+    if (target == Target::CPU) {
+        return tensor_ptr;
+    }
+
+    // For GPU targets, track the transfer for diagnostics
+    impl_->transfers_++;
+
+    // In v1.1, GPU dispatch is handled per-operation in xla_runtime.cpp
+    // (eshkol_xla_matmul, eshkol_xla_elementwise, etc. call eshkol_gpu_wrap_host
+    // internally). The tensor pointer is returned as-is since the runtime dispatch
+    // layer handles the actual device transfer transparently.
     return tensor_ptr;
 }
 
 /// Synchronize device tensor back to host memory.
 /// CPU path: no-op -- host and device are the same.
+/// GPU targets: runtime dispatch handles sync internally per-operation.
 void XLAMemoryIntegration::syncToHost(llvm::Value* tensor_ptr) {
     (void)tensor_ptr;
-    // CPU: no synchronization needed; arena memory is directly accessible.
+    // In v1.1, GPU sync is handled per-operation in xla_runtime.cpp.
+    // Each XLA runtime function wraps/syncs GPU buffers internally.
 }
 
 // ===== Region Integration =====

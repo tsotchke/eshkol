@@ -90,6 +90,12 @@ public:
     StableHLOEmitter(const StableHLOEmitter&) = delete;
     StableHLOEmitter& operator=(const StableHLOEmitter&) = delete;
 
+    /**
+     * Check if the StableHLO emitter has a real MLIR backend.
+     * @return true if MLIR+StableHLO dialects are loaded and ready
+     */
+    bool isAvailable() const;
+
     // ===== Arithmetic Operations =====
 
     /**

@@ -1,256 +1,94 @@
 ;;; Transformer Architecture Test Suite
-;;; Tests for Track 8.1-8.3: Attention, Multi-Head Attention, Positional Encoding
+;;; Tests for positional-encoding, causal-mask, padding-mask
+;;; Causal mask and padding mask use additive convention:
+;;;   0.0 = attend, -inf = don't attend
 
-(define (approx-equal? a b epsilon)
-  (< (abs (- a b)) epsilon))
+(require stdlib)
 
-(define (run-tests)
-  (display "=== Transformer Architecture Tests ===")
-  (newline)
-  (newline)
+;; Test 1: Positional encoding returns correct number of elements
+(display "TEST: positional-encoding tensor length") (newline)
+(let ((pe (positional-encoding 4 2)))
+  (display (if (= (tensor-length pe) 8) "PASS" "FAIL"))
+  (display ": positional-encoding(4, 2) should have 8 elements (4*2)") (newline))
 
-  ;; ============================================
-  ;; Test 1: Causal Mask
-  ;; ============================================
-  (display "-- Test 1: Causal Mask --")
-  (newline)
-  (let ((mask (causal-mask 4)))
-    (display "causal-mask(4):")
-    (newline)
-    (display mask)
-    (newline)
-    ;; Expected: Additive mask (0 = attend, -inf = don't attend)
-    ;; [[0, -inf, -inf, -inf],
-    ;;  [0,    0, -inf, -inf],
-    ;;  [0,    0,    0, -inf],
-    ;;  [0,    0,    0,    0]]
-    (newline))
+;; Test 2: PE at position 0 even dim should be sin(0) = 0.0
+(display "TEST: positional-encoding pos=0 even dim is sin(0)") (newline)
+(let ((pe (positional-encoding 4 2)))
+  (display (if (< (abs (- (vref pe 0) 0.0)) 0.01) "PASS" "FAIL"))
+  (display ": PE(0, 0) = sin(0) should be 0.0") (newline))
 
-  ;; ============================================
-  ;; Test 2: Positional Encoding
-  ;; ============================================
-  (display "-- Test 2: Positional Encoding --")
-  (newline)
-  (let ((pe (positional-encoding 4 8)))
-    (display "positional-encoding(seq_len=4, d_model=8):")
-    (newline)
-    (display pe)
-    (newline)
-    ;; Sinusoidal encoding: PE(pos, 2i) = sin(pos/10000^(2i/d))
-    ;;                      PE(pos, 2i+1) = cos(pos/10000^(2i/d))
-    (newline))
+;; Test 3: PE at position 0 odd dim should be cos(0) = 1.0
+(display "TEST: positional-encoding pos=0 odd dim is cos(0)") (newline)
+(let ((pe (positional-encoding 4 2)))
+  (display (if (< (abs (- (vref pe 1) 1.0)) 0.01) "PASS" "FAIL"))
+  (display ": PE(0, 1) = cos(0) should be 1.0") (newline))
 
-  ;; ============================================
-  ;; Test 3: Embedding Lookup
-  ;; ============================================
-  (display "-- Test 3: Embedding Lookup --")
-  (newline)
-  (let* ((vocab-size 5)
-         (embed-dim 4)
-         ;; Create embedding weights: vocab_size x embed_dim
-         (weights (reshape (arange 0.0 20.0 1.0) (list vocab-size embed-dim)))
-         ;; Token indices to look up
-         (indices #(0 2 4)))
-    (display "Embedding weights (5x4):")
-    (newline)
-    (display weights)
-    (newline)
-    (display "Token indices: ")
-    (display indices)
-    (newline)
-    (let ((embedded (embedding indices weights)))
-      (display "Embedded output:")
-      (newline)
-      (display embedded)
-      (newline))
-    (newline))
+;; Test 4: PE at position 1 even dim should be sin(1) ~ 0.8415
+(display "TEST: positional-encoding pos=1 even dim is sin(1)") (newline)
+(let ((pe (positional-encoding 4 2)))
+  (display (if (< (abs (- (vref pe 2) 0.8415)) 0.01) "PASS" "FAIL"))
+  (display ": PE(1, 0) = sin(1/10000^0) should be ~0.8415") (newline))
 
-  ;; ============================================
-  ;; Test 4: Scaled Dot-Product Attention
-  ;; ============================================
-  (display "-- Test 4: Scaled Dot-Product Attention --")
-  (newline)
-  (let* ((seq-len 3)
-         (d-k 4)
-         ;; Create Q, K, V matrices (seq_len x d_k)
-         (Q (reshape (arange 1.0 13.0 1.0) (list seq-len d-k)))
-         (K (reshape (arange 1.0 13.0 1.0) (list seq-len d-k)))
-         (V (reshape (arange 0.1 1.3 0.1) (list seq-len d-k))))
-    (display "Q (3x4):")
-    (newline)
-    (display Q)
-    (newline)
-    (display "K (3x4):")
-    (newline)
-    (display K)
-    (newline)
-    (display "V (3x4):")
-    (newline)
-    (display V)
-    (newline)
-    (let ((attn-output (scaled-dot-attention Q K V)))
-      (display "Attention output:")
-      (newline)
-      (display attn-output)
-      (newline))
-    (newline))
+;; Test 5: Causal mask size is seq_len * seq_len
+(display "TEST: causal-mask tensor length") (newline)
+(let ((mask (causal-mask 3)))
+  (display (if (= (tensor-length mask) 9) "PASS" "FAIL"))
+  (display ": causal-mask(3) should have 9 elements (3*3)") (newline))
 
-  ;; ============================================
-  ;; Test 5: Feed-Forward Network
-  ;; ============================================
-  (display "-- Test 5: Feed-Forward Network --")
-  (newline)
-  (let* ((d-model 4)
-         (d-ff 8)
-         ;; Input: batch x seq x d_model (using 2D for simplicity)
-         (input (reshape (arange 0.1 0.5 0.1) (list 1 d-model)))
-         ;; W1: d_model x d_ff
-         (W1 (reshape (arange 0.01 0.33 0.01) (list d-model d-ff)))
-         ;; W2: d_ff x d_model
-         (W2 (reshape (arange 0.01 0.33 0.01) (list d-ff d-model)))
-         ;; Biases
-         (b1 (zeros (list d-ff)))
-         (b2 (zeros (list d-model))))
-    (display "Input (1x4):")
-    (newline)
-    (display input)
-    (newline)
-    ;; feed-forward signature: x W1 b1 W2 b2
-    (let ((ffn-output (feed-forward input W1 b1 W2 b2)))
-      (display "FFN output:")
-      (newline)
-      (display ffn-output)
-      (newline))
-    (newline))
+;; Test 6: Causal mask diagonal and below are 0.0 (attend)
+(display "TEST: causal-mask diagonal and below are 0.0") (newline)
+(let ((mask (causal-mask 3)))
+  ;; Flat layout for 3x3: row 0=[0,1,2], row 1=[3,4,5], row 2=[6,7,8]
+  ;; Diagonal and below: [0,0]=idx0, [1,0]=idx3, [1,1]=idx4, [2,0]=idx6, [2,1]=idx7, [2,2]=idx8
+  (display (if (and (< (abs (vref mask 0)) 0.01)   ;; [0,0]
+                    (< (abs (vref mask 3)) 0.01)   ;; [1,0]
+                    (< (abs (vref mask 4)) 0.01)   ;; [1,1]
+                    (< (abs (vref mask 6)) 0.01)   ;; [2,0]
+                    (< (abs (vref mask 7)) 0.01)   ;; [2,1]
+                    (< (abs (vref mask 8)) 0.01))  ;; [2,2]
+               "PASS" "FAIL"))
+  (display ": lower triangle and diagonal should all be 0.0") (newline))
 
-  ;; ============================================
-  ;; Test 6: Dropout (training mode)
-  ;; ============================================
-  (display "-- Test 6: Dropout (training mode) --")
-  (newline)
-  (let* ((input (ones (list 2 4)))
-         (rate 0.5)
-         (training #t))
-    (display "Input (all ones, 2x4):")
-    (newline)
-    (display input)
-    (newline)
-    (display "Dropout rate: 0.5, training=true")
-    (newline)
-    (let ((dropped (dropout input rate training)))
-      (display "After dropout:")
-      (newline)
-      (display dropped)
-      (newline)
-      ;; Some values should be 0, others scaled by 1/(1-rate)=2
-      ))
-  (newline)
+;; Test 7: Causal mask above diagonal are -inf (masked)
+(display "TEST: causal-mask above diagonal are -inf") (newline)
+(let ((mask (causal-mask 3)))
+  ;; Above diagonal: [0,1]=idx1, [0,2]=idx2, [1,2]=idx5
+  ;; -inf values should be very large negative numbers
+  (display (if (and (< (vref mask 1) -1000.0)   ;; [0,1] future
+                    (< (vref mask 2) -1000.0)   ;; [0,2] future
+                    (< (vref mask 5) -1000.0))  ;; [1,2] future
+               "PASS" "FAIL"))
+  (display ": upper triangle should be -inf (< -1000)") (newline))
 
-  ;; ============================================
-  ;; Test 7: Dropout (inference mode)
-  ;; ============================================
-  (display "-- Test 7: Dropout (inference mode) --")
-  (newline)
-  (let* ((input (ones (list 2 4)))
-         (rate 0.5)
-         (training #f))
-    (display "Input (all ones, 2x4):")
-    (newline)
-    (display input)
-    (newline)
-    (display "Dropout rate: 0.5, training=false")
-    (newline)
-    (let ((output (dropout input rate training)))
-      (display "After dropout (should be unchanged):")
-      (newline)
-      (display output)
-      (newline)))
-  (newline)
+;; Test 8: Causal mask size 1 is just [0.0]
+(display "TEST: causal-mask size 1 is single 0.0") (newline)
+(let ((mask (causal-mask 1)))
+  (display (if (and (= (tensor-length mask) 1)
+                    (< (abs (vref mask 0)) 0.01))
+               "PASS" "FAIL"))
+  (display ": causal-mask(1) should be single element 0.0") (newline))
 
-  ;; ============================================
-  ;; Test 8: Padding Mask
-  ;; ============================================
-  (display "-- Test 8: Padding Mask --")
-  (newline)
-  (let* ((lengths #(3 2 4))  ;; Actual sequence lengths
-         (max-len 5))
-    (display "Sequence lengths: ")
-    (display lengths)
-    (newline)
-    (display "Max length: 5")
-    (newline)
-    (let ((mask (padding-mask lengths max-len)))
-      (display "Padding mask:")
-      (newline)
-      (display mask)
-      (newline)
-      ;; Expected: Additive mask (0 = attend, -inf = don't attend)
-      ;; [[0, 0, 0, -inf, -inf],
-      ;;  [0, 0, -inf, -inf, -inf],
-      ;;  [0, 0, 0, 0, -inf]]
-      ))
-  (newline)
+;; Test 9: Padding mask basic structure
+(display "TEST: padding-mask structure") (newline)
+(let ((pm (padding-mask #(2 3) 4)))
+  ;; 2 sequences, max length 4 => 8 elements
+  ;; Seq 0 (length 2): [0, 0, -inf, -inf] (positions 0,1 valid; 2,3 padded)
+  ;; Seq 1 (length 3): [0, 0, 0, -inf]    (positions 0,1,2 valid; 3 padded)
+  (display (if (= (tensor-length pm) 8) "PASS" "FAIL"))
+  (display ": padding-mask for 2 seqs, max_len 4 should have 8 elements") (newline))
 
-  ;; ============================================
-  ;; Test 9: Rotary Position Embedding (RoPE)
-  ;; ============================================
-  (display "-- Test 9: Rotary Position Embedding --")
-  (newline)
-  (let* ((seq-len 4)
-         (head-dim 8)
-         ;; Input: seq_len x head_dim
-         (input (reshape (arange 1.0 33.0 1.0) (list seq-len head-dim)))
-         ;; Position indices
-         (positions #(0 1 2 3)))
-    (display "Input (4x8):")
-    (newline)
-    (display input)
-    (newline)
-    (display "Positions: ")
-    (display positions)
-    (newline)
-    ;; rotary-embedding signature: x seq-positions dim
-    (let ((rope-output (rotary-embedding input positions head-dim)))
-      (display "After RoPE:")
-      (newline)
-      (display rope-output)
-      (newline)))
-  (newline)
-
-  ;; ============================================
-  ;; Test 10: Multi-Head Attention
-  ;; ============================================
-  (display "-- Test 10: Multi-Head Attention --")
-  (newline)
-  (let* ((batch 1)
-         (seq-len 2)
-         (d-model 4)
-         (num-heads 2)
-         (d-k 2)  ;; d_model / num_heads
-         ;; Q, K, V: seq_len x d_model
-         (Q (reshape (arange 0.1 0.9 0.1) (list seq-len d-model)))
-         (K (reshape (arange 0.1 0.9 0.1) (list seq-len d-model)))
-         (V (reshape (arange 0.1 0.9 0.1) (list seq-len d-model)))
-         ;; Projection weights
-         (Wq (reshape (arange 0.01 0.17 0.01) (list d-model d-model)))
-         (Wk (reshape (arange 0.01 0.17 0.01) (list d-model d-model)))
-         (Wv (reshape (arange 0.01 0.17 0.01) (list d-model d-model)))
-         (Wo (reshape (arange 0.01 0.17 0.01) (list d-model d-model))))
-    (display "Q, K, V (2x4):")
-    (newline)
-    (display Q)
-    (newline)
-    (display "num_heads: 2, d_k: 2")
-    (newline)
-    ;; multi-head-attention signature: Q K V num-heads W_Q W_K W_V W_O
-    (let ((mha-output (multi-head-attention Q K V num-heads Wq Wk Wv Wo)))
-      (display "Multi-Head Attention output:")
-      (newline)
-      (display mha-output)
-      (newline)))
-  (newline)
-
-  (display "=== Transformer Architecture Tests Complete ===")
-  (newline))
-
-(run-tests)
+;; Test 10: Padding mask valid positions are 0.0, padded are -inf
+(display "TEST: padding-mask valid vs padded values") (newline)
+(let ((pm (padding-mask #(2 3) 4)))
+  ;; Seq 0 (length 2): idx 0,1 = 0.0; idx 2,3 = -inf
+  ;; Seq 1 (length 3): idx 4,5,6 = 0.0; idx 7 = -inf
+  (display (if (and (< (abs (vref pm 0)) 0.01)    ;; seq 0, pos 0: valid
+                    (< (abs (vref pm 1)) 0.01)    ;; seq 0, pos 1: valid
+                    (< (vref pm 2) -1000.0)       ;; seq 0, pos 2: padded
+                    (< (vref pm 3) -1000.0)       ;; seq 0, pos 3: padded
+                    (< (abs (vref pm 4)) 0.01)    ;; seq 1, pos 0: valid
+                    (< (abs (vref pm 5)) 0.01)    ;; seq 1, pos 1: valid
+                    (< (abs (vref pm 6)) 0.01)    ;; seq 1, pos 2: valid
+                    (< (vref pm 7) -1000.0))      ;; seq 1, pos 3: padded
+               "PASS" "FAIL"))
+  (display ": valid positions should be 0.0, padded should be -inf") (newline))

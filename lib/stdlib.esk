@@ -41,6 +41,13 @@
 (require core.data.csv)
 (require core.data.base64)
 
+;;; Signal Processing - FFT/IFFT and FIR/IIR filters, windowing, Butterworth design
+(require signal.fft)
+(require signal.filters)
+
+;;; Machine Learning - optimization algorithms (gradient descent, Adam, L-BFGS, CG)
+(require ml.optimization)
+
 ;;; Tensor utilities
 (define (random-tensor dims)
   (apply rand dims))

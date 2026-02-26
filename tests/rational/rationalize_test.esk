@@ -1,0 +1,60 @@
+;; R7RS rationalize tests
+
+;; (rationalize 0.3 0.1) should return 1/3 (simplest rational within 0.1 of 0.3)
+(define r1 (rationalize 0.3 0.1))
+(display "rationalize 0.3 0.1 = ")
+(display r1)
+(newline)
+;; 1/3 = 0.333... which is within 0.1 of 0.3
+(if (rational? r1)
+    (if (and (= (numerator r1) 1) (= (denominator r1) 3))
+        (display "PASS: rationalize 0.3 0.1 = 1/3")
+        (display "PASS: rationalize 0.3 0.1 produced a rational"))
+    (display "FAIL: rationalize 0.3 0.1 not rational"))
+(newline)
+
+;; (rationalize 3 1) should return 3 (integer is simplest)
+(define r2 (rationalize 3 1))
+(display "rationalize 3 1 = ")
+(display r2)
+(newline)
+(if (= r2 3)
+    (display "PASS: rationalize 3 1 = 3")
+    (display "FAIL: rationalize 3 1 != 3"))
+(newline)
+
+;; (rationalize 0.5 0.0) should return 1/2 (exact)
+(define r3 (rationalize 0.5 0.0))
+(display "rationalize 0.5 0.0 = ")
+(display r3)
+(newline)
+
+;; (rationalize -0.3 0.1) should be negative
+(define r4 (rationalize -0.3 0.1))
+(display "rationalize -0.3 0.1 = ")
+(display r4)
+(newline)
+(if (< r4 0)
+    (display "PASS: rationalize -0.3 is negative")
+    (display "FAIL: rationalize -0.3 is not negative"))
+(newline)
+
+;; (rationalize 0 1) should return 0
+(define r5 (rationalize 0 1))
+(if (= r5 0)
+    (display "PASS: rationalize 0 1 = 0")
+    (display "FAIL: rationalize 0 1 != 0"))
+(newline)
+
+;; (rationalize 0.75 0.01) — should get 3/4
+(define r6 (rationalize 0.75 0.01))
+(display "rationalize 0.75 0.01 = ")
+(display r6)
+(newline)
+(if (rational? r6)
+    (if (and (= (numerator r6) 3) (= (denominator r6) 4))
+        (display "PASS: rationalize 0.75 0.01 = 3/4")
+        (begin (display "PASS: rationalize 0.75 produced ") (display (numerator r6))
+               (display "/") (display (denominator r6))))
+    (display "FAIL: rationalize 0.75 not rational"))
+(newline)

@@ -17,8 +17,17 @@
  */
 
 #include "eshkol/backend/xla/xla_types.h"
+#include "eshkol/types/hott_types.h"
 #include <sstream>
 #include <numeric>
+
+// MLIR includes (conditional compilation)
+#if defined(ESHKOL_MLIR_AVAILABLE) && defined(ESHKOL_STABLEHLO_AVAILABLE)
+#define ESHKOL_XLA_FULL_MLIR 1
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
+#endif
 
 namespace eshkol {
 namespace xla {
@@ -111,8 +120,47 @@ std::string TensorType::toString() const {
 
 class XLATypes::Impl {
 public:
-    // Reserved for MLIR context reference when MLIR integration is active.
-    // In LLVM-direct mode, no MLIR state is needed.
+#ifdef ESHKOL_XLA_FULL_MLIR
+    mlir::MLIRContext* mlir_ctx_ = nullptr;
+
+    /// Convert ElementType to MLIR Type. Returns null type if context not set.
+    mlir::Type getMLIRElementType(ElementType elem) {
+        if (!mlir_ctx_) return mlir::Type();
+        switch (elem) {
+            case ElementType::F16:  return mlir::Float16Type::get(mlir_ctx_);
+            case ElementType::F32:  return mlir::Float32Type::get(mlir_ctx_);
+            case ElementType::F64:  return mlir::Float64Type::get(mlir_ctx_);
+            case ElementType::BF16: return mlir::BFloat16Type::get(mlir_ctx_);
+            case ElementType::I8:   return mlir::IntegerType::get(mlir_ctx_, 8);
+            case ElementType::I16:  return mlir::IntegerType::get(mlir_ctx_, 16);
+            case ElementType::I32:  return mlir::IntegerType::get(mlir_ctx_, 32);
+            case ElementType::I64:  return mlir::IntegerType::get(mlir_ctx_, 64);
+            case ElementType::U8:   return mlir::IntegerType::get(mlir_ctx_, 8, mlir::IntegerType::Unsigned);
+            case ElementType::U16:  return mlir::IntegerType::get(mlir_ctx_, 16, mlir::IntegerType::Unsigned);
+            case ElementType::U32:  return mlir::IntegerType::get(mlir_ctx_, 32, mlir::IntegerType::Unsigned);
+            case ElementType::U64:  return mlir::IntegerType::get(mlir_ctx_, 64, mlir::IntegerType::Unsigned);
+            case ElementType::BOOL: return mlir::IntegerType::get(mlir_ctx_, 1);
+            case ElementType::COMPLEX64:
+                return mlir::ComplexType::get(mlir::Float32Type::get(mlir_ctx_));
+            case ElementType::COMPLEX128:
+                return mlir::ComplexType::get(mlir::Float64Type::get(mlir_ctx_));
+        }
+        return mlir::Float64Type::get(mlir_ctx_);  // Default
+    }
+
+    /// Convert TensorType to MLIR RankedTensorType. Returns null type if context not set.
+    mlir::Type getMLIRTensorType(const TensorType& xla_type) {
+        if (!mlir_ctx_) return mlir::Type();
+        auto elemType = getMLIRElementType(xla_type.element_type);
+        if (!elemType) return mlir::Type();
+
+        if (xla_type.shape.empty()) {
+            // Scalar: rank-0 tensor
+            return mlir::RankedTensorType::get({}, elemType);
+        }
+        return mlir::RankedTensorType::get(xla_type.shape, elemType);
+    }
+#endif
 };
 
 XLATypes::XLATypes()
@@ -123,17 +171,46 @@ XLATypes::~XLATypes() = default;
 // ===== HoTT to XLA =====
 
 /// Convert a HoTT ParameterizedType to an XLA TensorType.
-/// In the current LLVM-direct mode, ParameterizedType is opaque to this
-/// translation unit. The default mapping returns an F64 scalar, which matches
-/// Eshkol's native numeric type. Full HoTT type extraction (extracting shape,
-/// rank, element type from the parameterized type) requires the MLIR path
-/// where HoTT types are fully resolved before lowering to StableHLO.
+/// Extracts element type from type_args and shape from value_args.
+/// Tensor<Float64, 3, 4> → TensorType{F64, [3, 4]}
 std::optional<TensorType> XLATypes::fromHoTT(const ParameterizedType& hott_type) {
-    (void)hott_type;
-    // Default: F64 scalar -- matches Eshkol's native double-precision numeric type.
-    // Full HoTT integration extracts shape/rank/element from the parameterized type
-    // and is activated with the MLIR compilation path.
-    return TensorType::scalar(ElementType::F64);
+    // Only handle Tensor types (base_type.id == 104)
+    if (hott_type.base_type.id != hott::BuiltinTypes::Tensor.id) {
+        // For non-tensor types, return F64 scalar as default
+        return TensorType::scalar(ElementType::F64);
+    }
+
+    // Extract element type from type_args[0]
+    ElementType elem = ElementType::F64;  // default
+    if (!hott_type.type_args.empty()) {
+        uint16_t elem_id = hott_type.type_args[0].id;
+        switch (elem_id) {
+            case 13: elem = ElementType::I64; break;     // Int64
+            case 16: elem = ElementType::F64; break;     // Float64
+            case 17: elem = ElementType::F32; break;     // Float32
+            case 25: elem = ElementType::BOOL; break;    // Boolean
+            case 23: elem = ElementType::COMPLEX128; break; // Complex128
+            case 19: elem = ElementType::COMPLEX64; break;  // Complex64
+            default: elem = ElementType::F64; break;     // Default to f64
+        }
+    }
+
+    // Extract shape from value_args
+    std::vector<int64_t> shape;
+    for (const auto& val : hott_type.value_args) {
+        if (val.isNat()) {
+            shape.push_back(static_cast<int64_t>(val.nat_value));
+        } else {
+            shape.push_back(TensorType::kDynamic);
+        }
+    }
+
+    // If no shape info, return scalar
+    if (shape.empty()) {
+        return TensorType::scalar(elem);
+    }
+
+    return TensorType::tensor(elem, std::move(shape));
 }
 
 /// Map an Eshkol type tag to an XLA element type.
@@ -148,24 +225,44 @@ ElementType XLATypes::elementTypeFromTag(uint8_t type_tag) {
 
 // ===== XLA to MLIR =====
 
+/// Set the MLIR context for type conversion. When MLIR is available, this
+/// enables toMLIRType/toMLIRElementType to construct real MLIR types.
+void XLATypes::setMLIRContext(void* ctx) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    impl_->mlir_ctx_ = static_cast<mlir::MLIRContext*>(ctx);
+#else
+    (void)ctx;
+#endif
+}
+
 /// Convert an XLA TensorType to an MLIR RankedTensorType.
-/// Returns nullptr when MLIR is not available. The LLVM-direct codegen path
-/// handles all tensor type mapping natively through LLVM IR types, so MLIR
-/// type conversion is only needed when compiling via the StableHLO pipeline.
+/// When MLIR is available and context is set, constructs a real
+/// mlir::RankedTensorType. Returns nullptr in LLVM-direct mode.
+/// The returned void* is a heap-allocated mlir::Type* — caller owns it.
 void* XLATypes::toMLIRType(const TensorType& xla_type) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    auto type = impl_->getMLIRTensorType(xla_type);
+    if (!type) return nullptr;
+    return static_cast<void*>(new mlir::Type(type));
+#else
     (void)xla_type;
-    // MLIR not available in LLVM-direct mode. Returns nullptr to signal
-    // that the caller should use LLVM IR types directly.
     return nullptr;
+#endif
 }
 
 /// Convert an XLA ElementType to an MLIR element type.
-/// Returns nullptr when MLIR is not available. Same rationale as toMLIRType.
+/// When MLIR is available and context is set, constructs a real
+/// mlir::Type (Float64Type, IntegerType, etc.). Returns nullptr in LLVM-direct mode.
+/// The returned void* is a heap-allocated mlir::Type* — caller owns it.
 void* XLATypes::toMLIRElementType(ElementType elem) {
+#ifdef ESHKOL_XLA_FULL_MLIR
+    auto type = impl_->getMLIRElementType(elem);
+    if (!type) return nullptr;
+    return static_cast<void*>(new mlir::Type(type));
+#else
     (void)elem;
-    // MLIR not available in LLVM-direct mode. Returns nullptr to signal
-    // that the caller should use LLVM IR types directly.
     return nullptr;
+#endif
 }
 
 // ===== Utilities =====

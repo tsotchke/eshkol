@@ -26,6 +26,11 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/DynamicLibrary.h>
 #include <llvm/Support/MemoryBuffer.h>  // For loading object files
+#include <llvm/Bitcode/BitcodeReader.h>  // For loading .bc files
+#include <llvm/TargetParser/SubtargetFeature.h>  // For SubtargetFeatures
+#include <llvm/MC/TargetRegistry.h>              // For TargetRegistry
+#include <llvm/Target/TargetMachine.h>           // For TargetMachine
+#include <llvm/TargetParser/Host.h>              // For sys::getHostCPUName/Features
 #include <llvm-c/Core.h>  // For LLVMModuleRef unwrapping
 
 #include <iostream>
@@ -44,6 +49,10 @@
 #endif
 
 using namespace llvm;
+
+// Forward declaration — defined in llvm_codegen.cpp (C++ linkage)
+// Extracts the module's original LLVMContext and releases module ownership from g_llvm_modules.
+std::unique_ptr<LLVMContext> eshkol_extract_module_context_for_jit(LLVMModuleRef module_ref);
 
 // ===== EXTERN DECLARATIONS FOR RUNTIME SYMBOLS =====
 // These are defined in runtime.cpp with extern "C" linkage
@@ -91,8 +100,6 @@ static std::string resolveModulePath(const std::string& module_name, const std::
 
 ReplJITContext::ReplJITContext()
     : jit_(nullptr)
-    , ts_context_(nullptr)
-    , raw_context_(nullptr)
     , eval_counter_(0)
     , shared_arena_(nullptr)
 {
@@ -100,7 +107,13 @@ ReplJITContext::ReplJITContext()
 }
 
 ReplJITContext::~ReplJITContext() {
-    // LLJIT destructor handles cleanup
+    // Free all forward-reference pointer slots allocated with 'new void*'
+    for (auto& [name, ptr_slot] : forward_ref_slots_) {
+        delete ptr_slot;
+    }
+    forward_ref_slots_.clear();
+
+    // LLJIT destructor handles remaining cleanup
 }
 
 void ReplJITContext::initializeJIT() {
@@ -113,13 +126,26 @@ void ReplJITContext::initializeJIT() {
     // This makes arena_*, printf, malloc, etc. available to JIT code
     sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
 
-    // Create thread-safe context (shared across all modules)
-    auto ctx = std::make_unique<LLVMContext>();
-    raw_context_ = ctx.get();  // Cache raw pointer
-    ts_context_ = std::make_shared<ThreadSafeContext>(std::move(ctx));
+    // CRITICAL: Build a JITTargetMachineBuilder with the ACTUAL host CPU and features.
+    // Without this, LLJIT's ConcurrentIRCompiler uses a default TM that may scalarize
+    // struct arguments differently from stdlib.o's TM, breaking 3+ arg function calls.
+    auto jtmb = orc::JITTargetMachineBuilder::detectHost();
+    if (!jtmb) {
+        std::cerr << "Failed to detect host for JIT: " << toString(jtmb.takeError()) << std::endl;
+        std::exit(1);
+    }
+    // Ensure PIC relocation model (matches stdlib.o compilation)
+    jtmb->setRelocationModel(Reloc::PIC_);
+    // CRITICAL: Match the batch compiler's optimization level (CodeGenOptLevel::None = -O0).
+    // JITTargetMachineBuilder::detectHost() defaults to CodeGenOptLevel::Default (-O2),
+    // which causes LLVM to generate different struct argument stack layouts on ARM64.
+    // stdlib.o is compiled at -O0, so the JIT must use the same level to ensure
+    // matching ABI for {i8,i8,i16,i32,i64} tagged value arguments.
+    jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);
 
-    // Create LLJIT instance with dynamic library search
+    // Create LLJIT instance with explicit host-matched TM
     auto jit_or_err = LLJITBuilder()
+        .setJITTargetMachineBuilder(std::move(*jtmb))
         .setNumCompileThreads(1)  // Single-threaded for simplicity
         .create();
 
@@ -160,8 +186,8 @@ void ReplJITContext::initializeJIT() {
 
     // CRITICAL: Create shared arena for all REPL evaluations
     // Set the global variable that will be accessed by JIT-compiled code
-    __repl_shared_arena = arena_create(8192);  // 8KB default block size
-    shared_arena_ = __repl_shared_arena;  // Keep local copy for cleanup
+    __repl_shared_arena.store(arena_create(8192));  // 8KB default block size
+    shared_arena_ = __repl_shared_arena.load();  // Keep local copy for cleanup
 
     // REPL JIT initialized silently
 }
@@ -415,22 +441,21 @@ void ReplJITContext::registerRuntimeSymbols() {
     // std::cout << "Registered " << symbols.size() << " runtime symbols" << std::endl;
 }
 
-LLVMContext& ReplJITContext::getContext() {
-    return *raw_context_;
-}
-
-std::unique_ptr<Module> ReplJITContext::createModule(const std::string& name) {
-    return std::make_unique<Module>(name, getContext());
-}
-
 // Stub function called when a forward-referenced function hasn't been defined yet
 static eshkol_tagged_value __repl_forward_ref_stub() {
-    std::cerr << "Error: Called a forward-referenced function that was never defined" << std::endl;
-    exit(1);
-    return {0, 0};  // Never reached
+    // Raise an exception so that (guard ...) can catch it in user code
+    eshkol_exception_t* exc = eshkol_make_exception(
+        ESHKOL_EXCEPTION_ERROR,
+        "called a forward-referenced function that was never defined");
+    if (exc) {
+        eshkol_raise(exc);
+    }
+    // If raise returns (no handler installed), fall back to returning null
+    eshkol_tagged_value result = {};
+    return result;
 }
 
-void ReplJITContext::addModule(std::unique_ptr<Module> module) {
+void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<LLVMContext> module_context) {
     // Collect forward references and definitions to handle
     std::vector<std::pair<std::string, std::string>> forward_ref_updates;  // (ptr_name, func_name)
 
@@ -490,6 +515,51 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module) {
         }
     }
 
+    // HOT RELOAD: Only remove user-defined symbols being redefined.
+    // Skip LinkOnceODR (shared codegen like builtin_+_2arg) and internal functions.
+    {
+        orc::SymbolNameSet to_remove;
+        for (auto& func : *module) {
+            if (func.isDeclaration() || func.hasLocalLinkage()) continue;
+            if (func.getName().starts_with("llvm.")) continue;
+            if (func.getLinkage() == GlobalValue::LinkOnceODRLinkage) continue;
+            std::string fname = func.getName().str();
+            if (fname.starts_with("__repl_") || fname.starts_with("lambda_")) continue;
+            if (defined_lambdas_.count(fname) == 0) continue;
+            auto sym = jit_->lookup(func.getName());
+            if (sym) {
+                to_remove.insert(jit_->mangleAndIntern(func.getName()));
+            } else {
+                consumeError(sym.takeError());
+            }
+        }
+        for (auto& gv : module->globals()) {
+            if (!gv.hasInitializer() || gv.hasLocalLinkage()) continue;
+            if (gv.getName().starts_with("llvm.")) continue;
+            if (gv.getLinkage() == GlobalValue::LinkOnceODRLinkage) continue;
+            std::string gvname = gv.getName().str();
+            bool is_user_global = false;
+            for (const auto& [var_name, lambda_info] : defined_lambdas_) {
+                if (gvname == var_name + "_sexpr") {
+                    is_user_global = true;
+                    break;
+                }
+            }
+            if (!is_user_global) continue;
+            auto sym = jit_->lookup(gv.getName());
+            if (sym) {
+                to_remove.insert(jit_->mangleAndIntern(gv.getName()));
+            } else {
+                consumeError(sym.takeError());
+            }
+        }
+        if (!to_remove.empty()) {
+            if (auto err = jit_->getMainJITDylib().remove(to_remove)) {
+                consumeError(std::move(err));
+            }
+        }
+    }
+
     // Verify the module
     std::string error_msg;
     raw_string_ostream error_stream(error_msg);
@@ -499,8 +569,20 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module) {
         throw std::runtime_error("Invalid LLVM module");
     }
 
-    // Wrap module in ThreadSafeModule using shared context
-    auto tsm = ThreadSafeModule(std::move(module), *ts_context_);
+    // DEBUG: Dump module IR or DataLayout info
+    if (getenv("ESHKOL_DUMP_REPL_IR")) {
+        module->print(errs(), nullptr);
+    }
+    if (getenv("ESHKOL_DEBUG_DL")) {
+        std::cerr << "[REPL] Module DataLayout: " << module->getDataLayoutStr() << std::endl;
+        std::cerr << "[REPL] Module Triple: " << module->getTargetTriple().str() << std::endl;
+        std::cerr << "[REPL] LLJIT DataLayout: " << jit_->getDataLayout().getStringRepresentation() << std::endl;
+    }
+
+    // Wrap module with its OWN context (each module gets its own ThreadSafeContext).
+    // This is LLVM's recommended ORC JIT pattern — module and context must match.
+    auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
+    auto tsm = ThreadSafeModule(std::move(module), ts_ctx);
 
     auto err = jit_->addIRModule(std::move(tsm));
     if (err) {
@@ -658,151 +740,152 @@ static std::string findStdlibObject() {
     return "";
 }
 
-bool ReplJITContext::loadStdlib() {
-    // Try to load pre-compiled stdlib.o for fast loading
-    std::string stdlib_obj_path = findStdlibObject();
+// Find the pre-compiled stdlib.bc bitcode file
+static std::string findStdlibBitcode() {
+    std::vector<std::string> stdlib_paths = {
+        "stdlib.bc",
+        "build/stdlib.bc",
+        "../build/stdlib.bc",
+        "/usr/local/lib/eshkol/stdlib.bc",
+        "/usr/lib/eshkol/stdlib.bc",
+    };
 
-    if (!stdlib_obj_path.empty()) {
-        // Load the object file into memory
-        auto buffer_or_err = MemoryBuffer::getFile(stdlib_obj_path);
-        if (buffer_or_err) {
-            auto& main_dylib = jit_->getMainJITDylib();
+    // Check relative to executable
+    char exe_path[4096];
+    bool got_exe_path = false;
 
-            // Add the object file to the JIT
-            auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
-            if (!err) {
-                // Mark stdlib modules as loaded to prevent re-loading
-                loaded_modules.insert("stdlib");
-                loaded_modules.insert("core.io");
-                loaded_modules.insert("core.operators.arithmetic");
-                loaded_modules.insert("core.operators.compare");
-                loaded_modules.insert("core.logic.predicates");
-                loaded_modules.insert("core.logic.types");
-                loaded_modules.insert("core.logic.boolean");
-                loaded_modules.insert("core.functional.compose");
-                loaded_modules.insert("core.functional.curry");
-                loaded_modules.insert("core.functional.flip");
-                loaded_modules.insert("core.control.trampoline");
-                loaded_modules.insert("core.list.compound");
-                loaded_modules.insert("core.list.generate");
-                loaded_modules.insert("core.list.transform");
-                loaded_modules.insert("core.list.query");
-                loaded_modules.insert("core.list.sort");
-                loaded_modules.insert("core.list.higher_order");
-                loaded_modules.insert("core.list.search");
-                loaded_modules.insert("core.list.convert");
-                loaded_modules.insert("core.strings");
-                loaded_modules.insert("core.json");
-                loaded_modules.insert("core.data.csv");
-                loaded_modules.insert("core.data.base64");
+#ifdef __linux__
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len != -1) {
+        exe_path[len] = '\0';
+        got_exe_path = true;
+    }
+#elif defined(__APPLE__)
+    uint32_t size = sizeof(exe_path);
+    if (_NSGetExecutablePath(exe_path, &size) == 0) {
+        got_exe_path = true;
+    }
+#endif
 
-                // Register ALL stdlib symbols so the REPL codegen knows they're external
-                // This prevents duplicate definition errors when compiling user code
-                const std::vector<std::pair<std::string, size_t>> stdlib_funcs = {
-                    // Arithmetic operators
-                    {"add", 2}, {"sub", 2}, {"mul", 2}, {"div", 2}, {"negate", 1},
-                    // Comparison
-                    {"lt", 2}, {"le", 2}, {"gt", 2}, {"ge", 2}, {"eq", 2},
-                    // List operations
-                    {"filter", 2}, {"map1", 2}, {"map2", 3}, {"map3", 4},
-                    {"fold", 3}, {"fold-right", 3}, {"length", 1},
-                    {"reverse", 1}, {"append", 2}, {"take", 2}, {"drop", 2},
-                    {"member", 2}, {"member?", 2}, {"assoc", 2}, {"assq", 2}, {"assv", 2},
-                    {"memq", 2}, {"memv", 2}, {"range", 2},
-                    {"list-ref", 2}, {"list-tail", 2}, {"list->vector", 1}, {"vector->list", 1},
-                    {"partition", 2}, {"unzip", 1}, {"zip", 2},
-                    {"first", 1}, {"second", 1}, {"third", 1}, {"fourth", 1}, {"fifth", 1},
-                    {"sixth", 1}, {"seventh", 1}, {"eighth", 1}, {"ninth", 1}, {"tenth", 1},
-                    {"find", 2}, {"count-if", 2}, {"every", 2}, {"any", 2},
-                    {"all?", 2}, {"none?", 2}, {"make-list", 2}, {"repeat", 2}, {"iota", 1},
-                    {"iota-from", 2}, {"iota-step", 3}, {"for-each", 2},
-                    // Car/cdr variants
-                    {"cadr", 1}, {"caddr", 1}, {"cadddr", 1}, {"caar", 1}, {"cdar", 1},
-                    {"cddr", 1}, {"cdddr", 1}, {"cddddr", 1}, {"caaar", 1}, {"caadr", 1},
-                    {"cadar", 1}, {"caddr", 1}, {"cdaar", 1}, {"cdadr", 1}, {"cddar", 1},
-                    {"caaaar", 1}, {"caaadr", 1}, {"caadar", 1}, {"caaddr", 1},
-                    {"cadaar", 1}, {"cadadr", 1}, {"caddar", 1}, {"cadddr", 1},
-                    {"cdaaar", 1}, {"cdaadr", 1}, {"cdadar", 1}, {"cdaddr", 1},
-                    {"cddaar", 1}, {"cddadr", 1}, {"cdddar", 1}, {"cddddr", 1},
-                    // Higher-order
-                    {"compose", 2}, {"compose3", 3}, {"identity", 1}, {"constantly", 1},
-                    {"curry2", 1}, {"curry3", 1}, {"uncurry2", 1}, {"flip", 1},
-                    {"partial", 2}, {"partial1", 2}, {"partial2", 2}, {"partial3", 2},
-                    // Predicates
-                    {"is-zero?", 1}, {"is-positive?", 1}, {"is-negative?", 1},
-                    {"is-even?", 1}, {"is-odd?", 1}, {"is-null?", 1}, {"is-pair?", 1},
-                    // Trampoline
-                    {"trampoline", 1}, {"bounce", 1}, {"done", 1},
-                    // String functions
-                    {"string-join", 2}, {"string-trim", 1}, {"string-trim-left", 1}, {"string-trim-right", 1},
-                    {"string-upcase", 1}, {"string-downcase", 1}, {"string-reverse", 1},
-                    {"string-replace", 3}, {"string-repeat", 2}, {"string-copy", 1},
-                    {"string-contains", 2}, {"string-index", 2}, {"string-last-index", 2},
-                    {"string-starts-with?", 2}, {"string-ends-with?", 2}, {"string-count", 2},
-                    {"string-split-ordered", 2}, {"string->bytes", 1}, {"bytes->string", 1},
-                    // Sorting
-                    {"sort", 2},
-                    // JSON
-                    {"json-parse", 1}, {"json-stringify", 1}, {"json-get", 2}, {"json-array-ref", 2},
-                    {"json-read-file", 1}, {"json-write-file", 2},
-                    {"alist->json", 1}, {"alist-write-json", 2}, {"alist->hash-table", 1}, {"hash-table->alist", 1},
-                    // Base64
-                    {"base64-encode", 1}, {"base64-decode", 1},
-                    {"base64-encode-string", 1}, {"base64-decode-string", 1},
-                    {"base64-char-at", 2}, {"base64-value", 1}, {"base64-remove-padding", 1},
-                    // CSV
-                    {"csv-parse", 1}, {"csv-stringify", 1}, {"csv-parse-file", 1}, {"csv-write-file", 2},
-                    {"csv-parse-line", 1}, {"csv-parse-lines", 1}, {"csv-split-fields", 1}, {"csv-stringify-row", 1},
-                    // I/O
-                    {"print", 1}, {"println", 1},
-                };
+    if (got_exe_path) {
+        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
+        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.bc").string());
+        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.bc").string());
+    }
 
-                for (const auto& [name, arity] : stdlib_funcs) {
-                    auto sym = jit_->lookup(name);
-                    if (sym) {
-                        uint64_t addr = sym->getValue();
-                        eshkol_repl_register_function(name.c_str(), addr, arity);
-                        defined_lambdas_[name] = {name, arity};
-                        registered_lambdas_.insert(name);
-                    }
+    for (const auto& path : stdlib_paths) {
+        if (std::filesystem::exists(path)) {
+            return std::filesystem::canonical(path).string();
+        }
+    }
+    return "";
+}
+
+// Discover and register stdlib symbols dynamically from .bc metadata.
+// No hardcoded function lists — iterates the bitcode module's IR to find
+// all exported functions (names + arities) and _sexpr globals.
+void ReplJITContext::registerStdlibSymbols() {
+    // Mark stdlib modules as loaded to prevent re-loading
+    loaded_modules.insert("stdlib");
+    loaded_modules.insert("core.io");
+    loaded_modules.insert("core.operators.arithmetic");
+    loaded_modules.insert("core.operators.compare");
+    loaded_modules.insert("core.logic.predicates");
+    loaded_modules.insert("core.logic.types");
+    loaded_modules.insert("core.logic.boolean");
+    loaded_modules.insert("core.functional.compose");
+    loaded_modules.insert("core.functional.curry");
+    loaded_modules.insert("core.functional.flip");
+    loaded_modules.insert("core.control.trampoline");
+    loaded_modules.insert("core.list.compound");
+    loaded_modules.insert("core.list.generate");
+    loaded_modules.insert("core.list.transform");
+    loaded_modules.insert("core.list.query");
+    loaded_modules.insert("core.list.sort");
+    loaded_modules.insert("core.list.higher_order");
+    loaded_modules.insert("core.list.search");
+    loaded_modules.insert("core.list.convert");
+    loaded_modules.insert("core.strings");
+    loaded_modules.insert("core.json");
+    loaded_modules.insert("core.data.csv");
+    loaded_modules.insert("core.data.base64");
+
+    // Dynamic discovery: parse .bc to find all exported functions and globals.
+    // Bitcode preserves original IR types (struct params, not scalarized),
+    // so F.arg_size() gives the real arity.
+    std::string bc_path = findStdlibBitcode();
+    if (!bc_path.empty()) {
+        auto buf_or_err = MemoryBuffer::getFile(bc_path);
+        if (buf_or_err) {
+            auto ctx = std::make_unique<LLVMContext>();
+            auto mod_or_err = parseBitcodeFile(buf_or_err->get()->getMemBufferRef(), *ctx);
+            if (mod_or_err) {
+                Module& mod = **mod_or_err;
+                size_t func_count = 0, global_count = 0;
+
+                for (auto& F : mod) {
+                    if (F.isDeclaration()) continue;
+                    if (F.hasInternalLinkage()) continue;
+                    std::string name = F.getName().str();
+                    // Skip internal compiler-generated names
+                    if (name.rfind("__eshkol_", 0) == 0) continue;
+                    if (name.rfind("lambda_", 0) == 0) continue;
+                    if (name == "main") continue;
+
+                    size_t arity = F.arg_size();
+                    eshkol_repl_register_function(name.c_str(), 0, arity);
+                    defined_lambdas_[name] = {name, arity};
+                    registered_lambdas_.insert(name);
+                    func_count++;
                 }
 
-                // Also register all _sexpr globals so codegen doesn't try to redefine them
-                const std::vector<std::string> stdlib_globals = {
-                    "add_sexpr", "sub_sexpr", "mul_sexpr", "div_sexpr", "negate_sexpr",
-                    "lt_sexpr", "le_sexpr", "gt_sexpr", "ge_sexpr", "eq_sexpr",
-                    "filter_sexpr", "map1_sexpr", "map2_sexpr", "map3_sexpr",
-                    "fold_sexpr", "fold-right_sexpr", "length_sexpr",
-                    "reverse_sexpr", "append_sexpr", "take_sexpr", "drop_sexpr",
-                    "partition_sexpr", "sort_sexpr", "list->vector_sexpr",
-                    "all?_sexpr", "is-positive?_sexpr", "is-pair?_sexpr",
-                    "compose3_sexpr", "partial3_sexpr", "flip_sexpr", "bounce_sexpr",
-                    "cadadr_sexpr", "find_sexpr", "make-list_sexpr", "assoc_sexpr",
-                    "string-trim-right_sexpr", "json-parse_sexpr", "csv-stringify_sexpr",
-                    "base64-encode-string_sexpr", "print_sexpr",
-                };
-
-                for (const auto& name : stdlib_globals) {
-                    auto sym = jit_->lookup(name);
-                    if (sym) {
-                        uint64_t addr = sym->getValue();
-                        eshkol_repl_register_symbol(name.c_str(), addr);
+                for (auto& G : mod.globals()) {
+                    std::string name = G.getName().str();
+                    // Register _sexpr globals so codegen doesn't redefine them
+                    if (name.size() > 6 && name.compare(name.size() - 6, 6, "_sexpr") == 0) {
+                        eshkol_repl_register_symbol(name.c_str(), 0);
                         defined_globals_.insert(name);
+                        global_count++;
                     }
                 }
 
-                return true;
+                std::cerr << "[REPL] Discovered " << func_count << " functions, "
+                          << global_count << " globals from stdlib.bc" << std::endl;
+                return;
             } else {
-                // Log the error but fall through
-                std::string err_msg;
-                raw_string_ostream err_stream(err_msg);
-                err_stream << err;
-                std::cerr << "Warning: Failed to load stdlib.o (" << err_msg << "), falling back to JIT compilation" << std::endl;
+                consumeError(mod_or_err.takeError());
             }
         }
     }
 
-    // Fallback: JIT compile from source (slow)
+    // Fallback: if .bc not available, we can't discover symbols dynamically.
+    // This means tryResolveReplFunction won't find stdlib symbols.
+    std::cerr << "Warning: stdlib.bc not found — stdlib symbol discovery unavailable" << std::endl;
+}
+
+bool ReplJITContext::loadStdlib() {
+    // Load pre-compiled stdlib.o via addObjectFile (fast, instant availability).
+    std::string stdlib_obj_path = findStdlibObject();
+    if (!stdlib_obj_path.empty()) {
+        auto buffer_or_err = MemoryBuffer::getFile(stdlib_obj_path);
+        if (buffer_or_err) {
+            auto& main_dylib = jit_->getMainJITDylib();
+            auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
+            if (!err) {
+                registerStdlibSymbols();
+                std::cerr << "[REPL] Loaded stdlib from: " << stdlib_obj_path << std::endl;
+                return true;
+            } else {
+                std::string err_msg;
+                raw_string_ostream err_stream(err_msg);
+                err_stream << err;
+                std::cerr << "Warning: Failed to load stdlib.o (" << err_msg
+                          << "), falling back to JIT compilation" << std::endl;
+            }
+        }
+    }
+
+    // Fallback: JIT compile from source (slowest but always correct)
     return loadModule("stdlib");
 }
 
@@ -1147,6 +1230,16 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
                  ast_item.operation.define_op.value->type == ESHKOL_OP &&
                  ast_item.operation.define_op.value->operation.op == ESHKOL_LAMBDA_OP);
             if (name && is_lambda) {
+                // HOT RELOAD: Clear old lambda registration so the new lambda can be tracked.
+                // See execute() for detailed explanation.
+                auto old_lambda_it = defined_lambdas_.find(name);
+                if (old_lambda_it != defined_lambdas_.end()) {
+                    const auto& old_lambda_name = old_lambda_it->second.first;
+                    if (!old_lambda_name.empty()) {
+                        registered_lambdas_.erase(old_lambda_name);
+                    }
+                }
+                symbol_table_.erase(std::string(name));
                 registerLambdaVar(name);
             }
         }
@@ -1259,9 +1352,9 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
         global_var_names.push_back(var_name);
     }
 
-    // Release ownership and add module to JIT
-    eshkol_release_module_for_jit(c_module);
-    addModule(std::unique_ptr<Module>(cpp_module));
+    // Release module + extract its context for proper ThreadSafeModule pairing
+    auto module_context = eshkol_extract_module_context_for_jit(c_module);
+    addModule(std::unique_ptr<Module>(cpp_module), std::move(module_context));
 
     // Register all lambda functions
     for (const auto& [var_name, lambda_info] : defined_lambdas_) {
@@ -1295,9 +1388,9 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
         uint64_t func_addr = lookupSymbol(func_name);
         if (func_addr != 0) {
             incrementEvalCounter();
-            typedef int32_t (*EvalFunc)();
+            typedef int32_t (*EvalFunc)(int32_t, char**);
             EvalFunc eval_func = reinterpret_cast<EvalFunc>(func_addr);
-            int32_t result_value = eval_func();
+            int32_t result_value = eval_func(0, nullptr);
             result = new int64_t(result_value);
         }
     } else {
@@ -1428,6 +1521,19 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
              ast->operation.define_op.value->type == ESHKOL_OP &&
              ast->operation.define_op.value->operation.op == ESHKOL_LAMBDA_OP);
         if (name && is_lambda) {
+            // HOT RELOAD: Clear old lambda registration so the new lambda can be tracked.
+            // Each codegen invocation creates a new lambda_N, so the new definition gets
+            // a fresh name. We clear the old entry from registered_lambdas_ to allow
+            // the new lambda to be registered, and clear symbol_table_ cache to force
+            // JIT re-lookup with the updated address maps.
+            auto old_lambda_it = defined_lambdas_.find(name);
+            if (old_lambda_it != defined_lambdas_.end()) {
+                const auto& old_lambda_name = old_lambda_it->second.first;
+                if (!old_lambda_name.empty()) {
+                    registered_lambdas_.erase(old_lambda_name);
+                }
+            }
+            symbol_table_.erase(std::string(name));
             registerLambdaVar(name);
         }
     }
@@ -1570,14 +1676,9 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         global_var_names.push_back(var_name);
     }
 
-    // CRITICAL FIX: Release ownership from g_llvm_modules before JIT takes it
-    // The module is stored in g_llvm_modules by eshkol_generate_llvm_ir().
-    // Without this, both g_llvm_modules and JIT think they own the module,
-    // causing double-free/use-after-free crashes on subsequent evaluations.
-    eshkol_release_module_for_jit(c_module);
-
-    // Add module to JIT (takes ownership)
-    addModule(std::unique_ptr<Module>(cpp_module));
+    // Release module + extract its context for proper ThreadSafeModule pairing
+    auto module_context = eshkol_extract_module_context_for_jit(c_module);
+    addModule(std::unique_ptr<Module>(cpp_module), std::move(module_context));
 
     // REPL MODE: Register all lambda functions from this module with global REPL context
     // This enables cross-evaluation function calls
@@ -1657,11 +1758,11 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     incrementEvalCounter();
 
     // Cast to function pointer and call it
-    // The compiler generates main as i32(), so cast appropriately
-    typedef int32_t (*EvalFunc)();
+    // The compiler generates main as i32(i32, char**), so match the ABI
+    typedef int32_t (*EvalFunc)(int32_t, char**);
     EvalFunc eval_func = reinterpret_cast<EvalFunc>(func_addr);
 
-    int32_t result_value = eval_func();
+    int32_t result_value = eval_func(0, nullptr);
 
     // CRITICAL: NOW capture s-expression values AFTER execution
     // The entry function has initialized these globals, so now they contain valid values

@@ -12,7 +12,6 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
-
 // Forward declarations for LLVM types
 namespace llvm {
     class LLVMContext;
@@ -86,10 +85,12 @@ public:
     /**
      * Add a module to the JIT for execution.
      * Used for incremental compilation of REPL inputs.
+     * The module_context MUST be the LLVMContext the module was created in.
      *
      * @param module The LLVM module to add (takes ownership)
+     * @param module_context The module's original LLVMContext (takes ownership)
      */
-    void addModule(std::unique_ptr<llvm::Module> module);
+    void addModule(std::unique_ptr<llvm::Module> module, std::unique_ptr<llvm::LLVMContext> module_context);
 
     /**
      * Look up a symbol (function or global variable) by name.
@@ -164,27 +165,10 @@ public:
      */
     void incrementEvalCounter() { ++eval_counter_; }
 
-    /**
-     * Get the LLVM context for this REPL session.
-     * Used by CodeGenerator to emit IR.
-     */
-    llvm::LLVMContext& getContext();
-
-    /**
-     * Create a new module for the current evaluation.
-     * Each REPL input gets its own module, which is added to the JIT.
-     */
-    std::unique_ptr<llvm::Module> createModule(const std::string& name);
 
 private:
     // LLVM ORC JIT instance (using LLJIT for simplicity)
     std::unique_ptr<llvm::orc::LLJIT> jit_;
-
-    // Thread-safe context shared across all modules
-    std::shared_ptr<llvm::orc::ThreadSafeContext> ts_context_;
-
-    // Raw context pointer for convenience (points into ts_context_)
-    llvm::LLVMContext* raw_context_;
 
     // Evaluation counter for generating unique function names
     int eval_counter_;
@@ -232,6 +216,9 @@ private:
 
     // Register runtime symbols (arena functions, stdlib, etc.)
     void registerRuntimeSymbols();
+
+    // Register stdlib symbols after loading via .bc or .o
+    void registerStdlibSymbols();
 
     // Inject external declarations for previously-defined symbols
     void injectPreviousSymbols(llvm::Module* module);

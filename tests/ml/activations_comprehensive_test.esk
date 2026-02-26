@@ -1,0 +1,76 @@
+;;; Comprehensive Activation Functions Test Suite
+;;; Tests for celu, selu, mish, hard-sigmoid, hard-swish, softplus
+
+(require stdlib)
+
+(define (approx-equal? a b epsilon)
+  (< (abs (- a b)) epsilon))
+
+(display "=== Comprehensive Activation Functions Tests ===") (newline)
+
+;; --- softplus ---
+
+(display "TEST: softplus(0) = ln(2)") (newline)
+(let ((result (vref (softplus #(0.0)) 0)))
+  (display (if (approx-equal? result 0.6931 0.01) "PASS" "FAIL")) (display ": softplus(0) approx 0.6931") (newline))
+
+(display "TEST: softplus(5) approx 5.0 for large positive input") (newline)
+(let ((result (vref (softplus #(5.0)) 0)))
+  (display (if (approx-equal? result 5.0067 0.01) "PASS" "FAIL")) (display ": softplus(5) approx 5.0067") (newline))
+
+;; --- mish ---
+
+(display "TEST: mish(0) approx 0") (newline)
+(let ((result (vref (mish #(0.0)) 0)))
+  (display (if (approx-equal? result 0.0 0.01) "PASS" "FAIL")) (display ": mish(0) approx 0") (newline))
+
+(display "TEST: mish(1) is positive") (newline)
+(let ((result (vref (mish #(1.0)) 0)))
+  (display (if (> result 0.0) "PASS" "FAIL")) (display ": mish(1) > 0") (newline))
+
+;; mish(1) = 1 * tanh(ln(1+e)) = 1 * tanh(1.3133) approx 0.8651
+(display "TEST: mish(1) approx 0.8651") (newline)
+(let ((result (vref (mish #(1.0)) 0)))
+  (display (if (approx-equal? result 0.8651 0.01) "PASS" "FAIL")) (display ": mish(1) approx 0.8651") (newline))
+
+;; --- selu ---
+
+(display "TEST: selu(0) = 0") (newline)
+(let ((result (vref (selu #(0.0)) 0)))
+  (display (if (approx-equal? result 0.0 0.01) "PASS" "FAIL")) (display ": selu(0) approx 0") (newline))
+
+;; selu(1) = lambda * 1 = 1.0507 * 1.0 = 1.0507
+(display "TEST: selu(1) approx 1.0507") (newline)
+(let ((result (vref (selu #(1.0)) 0)))
+  (display (if (approx-equal? result 1.0507 0.01) "PASS" "FAIL")) (display ": selu(1) approx 1.0507") (newline))
+
+;; selu(-1) = lambda * alpha * (exp(-1) - 1) = 1.0507 * 1.6733 * (0.3679 - 1) = -1.1113
+(display "TEST: selu(-1) is negative") (newline)
+(let ((result (vref (selu #(-1.0)) 0)))
+  (display (if (< result 0.0) "PASS" "FAIL")) (display ": selu(-1) < 0") (newline))
+
+;; --- celu ---
+
+(display "TEST: celu(2, 1) approx 2 for positive input") (newline)
+(let ((result (vref (celu #(2.0) 1.0) 0)))
+  (display (if (approx-equal? result 2.0 0.01) "PASS" "FAIL")) (display ": celu(2, 1) approx 2") (newline))
+
+;; celu(-1, 1) = max(0,-1) + min(0, 1*(exp(-1/1)-1)) = 0 + 1*(0.3679-1) = -0.6321
+(display "TEST: celu(-1, 1) approx -0.6321") (newline)
+(let ((result (vref (celu #(-1.0) 1.0) 0)))
+  (display (if (approx-equal? result -0.6321 0.01) "PASS" "FAIL")) (display ": celu(-1, 1) approx -0.6321") (newline))
+
+;; --- hard-sigmoid ---
+
+(display "TEST: hard-sigmoid(0) approx 0.5") (newline)
+(let ((result (vref (hard-sigmoid #(0.0)) 0)))
+  (display (if (approx-equal? result 0.5 0.01) "PASS" "FAIL")) (display ": hard-sigmoid(0) approx 0.5") (newline))
+
+;; --- hard-swish ---
+
+;; hard-swish(0) = 0 * hard-sigmoid(0) = 0 * 0.5 = 0
+(display "TEST: hard-swish(0) approx 0") (newline)
+(let ((result (vref (hard-swish #(0.0)) 0)))
+  (display (if (approx-equal? result 0.0 0.01) "PASS" "FAIL")) (display ": hard-swish(0) approx 0") (newline))
+
+(display "=== Comprehensive Activation Functions Tests Complete ===") (newline)

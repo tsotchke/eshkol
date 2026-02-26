@@ -1,0 +1,238 @@
+;;; TCO Regression Tests
+;;; Tests that tail call optimization works correctly with nested letrec expressions.
+;;; These patterns previously caused stack overflow due to TCO context corruption.
+
+;; ================================================================
+;; Test 1: Simple tail-recursive letrec (baseline)
+;; ================================================================
+(define (test-simple-tco)
+  (letrec ((countdown (lambda (n)
+              (if (<= n 0) 0 (countdown (- n 1))))))
+    (countdown 100000)))
+
+(display "Test 1 (simple TCO): ")
+(let ((r (test-simple-tco)))
+  (if (= r 0) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 2: Letrec with one inner letrec (nested TCO)
+;; ================================================================
+(define (test-nested-inner-letrec)
+  ;; Outer letrec: step is tail-recursive
+  ;; Inner letrec: loop is also tail-recursive
+  ;; The inner letrec must not destroy the outer TCO context
+  (letrec ((step (lambda (n acc)
+              (if (>= n 10000)
+                  acc
+                  (let* ((inner-result
+                           (letrec ((loop (lambda (i sum)
+                                     (if (>= i 3)
+                                         sum
+                                         (loop (+ i 1) (+ sum i))))))
+                             (loop 0 0))))
+                    (step (+ n 1) (+ acc inner-result)))))))
+    (step 0 0)))
+
+(display "Test 2 (nested inner letrec): ")
+(let ((r (test-nested-inner-letrec)))
+  ;; sum of 0+1+2 = 3, repeated 10000 times = 30000
+  (if (= r 30000) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 3: Two inner letrecs at same level (Adam pattern)
+;; ================================================================
+(define (test-two-inner-letrecs)
+  ;; This is the pattern from the Adam optimizer:
+  ;; step has two inner letrecs (loop and loop2) for different computations
+  (letrec ((step (lambda (x iter)
+              (if (>= iter 5000)
+                  x
+                  (let* (;; First inner letrec: compute squared values
+                         (sq (letrec ((loop (lambda (i acc)
+                                       (if (>= i 3)
+                                           acc
+                                           (loop (+ i 1) (+ acc (* i i)))))))
+                               (loop 0 0)))
+                         ;; Second inner letrec: compute cubed values
+                         (cu (letrec ((loop2 (lambda (j acc)
+                                       (if (>= j 3)
+                                           acc
+                                           (loop2 (+ j 1) (+ acc (* j j j)))))))
+                               (loop2 0 0))))
+                    (step (+ x sq cu) (+ iter 1)))))))
+    (step 0 0)))
+
+(display "Test 3 (two inner letrecs): ")
+(let ((r (test-two-inner-letrecs)))
+  ;; sq = 0+1+4 = 5, cu = 0+1+8 = 9, total per iter = 14
+  ;; 5000 iters * 14 = 70000
+  (if (= r 70000) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 4: 3-level nesting (letrec in letrec in letrec, all with TCO)
+;; ================================================================
+(define (test-3level-tco)
+  (letrec ((outer (lambda (n)
+              (if (<= n 0)
+                  0
+                  (let* ((mid-result
+                           (letrec ((mid (lambda (m acc)
+                                     (if (<= m 0)
+                                         acc
+                                         (let* ((inner-result
+                                                  (letrec ((inner (lambda (k sum)
+                                                             (if (<= k 0)
+                                                                 sum
+                                                                 (inner (- k 1) (+ sum 1))))))
+                                                    (inner 3 0))))
+                                           (mid (- m 1) (+ acc inner-result)))))))
+                             (mid 4 0))))
+                    (+ mid-result (outer (- n 1))))))))
+    (outer 10000)))
+
+(display "Test 4 (3-level nesting): ")
+(let ((r (test-3level-tco)))
+  ;; inner returns 3, mid loops 4 times = 12, outer loops 10000 times = 120000
+  (if (= r 120000) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 5: Top-level define with inner letrec
+;; ================================================================
+(define (test-define-with-inner-letrec n acc)
+  (if (>= n 50000)
+      acc
+      (let* ((partial
+               (letrec ((helper (lambda (i sum)
+                          (if (>= i 5)
+                              sum
+                              (helper (+ i 1) (+ sum 1))))))
+                 (helper 0 0))))
+        (test-define-with-inner-letrec (+ n 1) (+ acc partial)))))
+
+(display "Test 5 (define with inner letrec): ")
+(let ((r (test-define-with-inner-letrec 0 0)))
+  ;; helper returns 5, 50000 iters = 250000
+  (if (= r 250000) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 6: Vector operations with nested letrec (Adam-like)
+;; ================================================================
+(define (test-vector-nested-tco)
+  (letrec ((step (lambda (x iter)
+              (if (>= iter 1000)
+                  x
+                  (let* ((n (vector-length x))
+                         ;; Inner letrec 1: element-wise square
+                         (sq (let* ((r (make-vector n 0.0)))
+                               (letrec ((loop (lambda (i)
+                                          (if (>= i n)
+                                              r
+                                              (begin
+                                                (vector-set! r i (* (vref x i) (vref x i)))
+                                                (loop (+ i 1)))))))
+                                 (loop 0))))
+                         ;; Inner letrec 2: scale and update
+                         (x-new (let* ((r2 (make-vector n 0.0)))
+                                  (letrec ((loop2 (lambda (j)
+                                             (if (>= j n)
+                                                 r2
+                                                 (begin
+                                                   (vector-set! r2 j (- (vref x j) (* 0.01 (vref sq j))))
+                                                   (loop2 (+ j 1)))))))
+                                    (loop2 0)))))
+                    (step x-new (+ iter 1)))))))
+    (step (vector 5.0 3.0) 0)))
+
+(display "Test 6 (vector nested TCO): ")
+(let ((result (test-vector-nested-tco)))
+  ;; After 1000 iterations of gradient-descent-like updates, values should be small
+  (if (and (< (abs (vref result 0)) 0.1)
+           (< (abs (vref result 1)) 0.1))
+      (display "PASS")
+      (begin (display "FAIL: ") (display (vref result 0)) (display " ") (display (vref result 1)))))
+(newline)
+
+;; ================================================================
+;; Test 7: Full Adam optimizer pattern (the original crash case)
+;; ================================================================
+(define (adam-test-dot a b)
+  (let* ((n (vector-length a)))
+    (letrec ((loop (lambda (i acc)
+              (if (< i n)
+                  (loop (+ i 1) (+ acc (* (vref a i) (vref b i))))
+                  acc))))
+      (loop 0 0.0))))
+
+(define (adam-test-norm v) (sqrt (adam-test-dot v v)))
+
+(define (adam-test-vec-add a b)
+  (let* ((n (vector-length a))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n) (begin (vector-set! result i (+ (vref a i) (vref b i))) (loop (+ i 1))) result))))
+      (loop 0))))
+
+(define (adam-test-vec-scale s v)
+  (let* ((n (vector-length v))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n) (begin (vector-set! result i (* s (vref v i))) (loop (+ i 1))) result))))
+      (loop 0))))
+
+(define (adam-test f x0 lr)
+  (let ((beta1 0.9) (beta2 0.999) (epsilon 1e-8)
+        (max-iter 1000) (tol 1e-8) (n (vector-length x0)))
+    (letrec ((step (lambda (x m v t)
+              (if (> t max-iter)
+                  x
+                  (let* ((g (gradient f x))
+                         (gnorm (adam-test-norm g)))
+                    (if (< gnorm tol)
+                        x
+                        (let* ((m-new (adam-test-vec-add (adam-test-vec-scale beta1 m)
+                                                         (adam-test-vec-scale (- 1.0 beta1) g)))
+                               ;; 3rd level: inline vec-sq
+                               (g-sq (let* ((ni (vector-length g))
+                                            (r (make-vector ni 0.0)))
+                                       (letrec ((loop (lambda (i)
+                                                 (if (< i ni)
+                                                     (begin (vector-set! r i (* (vref g i) (vref g i)))
+                                                            (loop (+ i 1)))
+                                                     r))))
+                                         (loop 0))))
+                               (v-new (adam-test-vec-add (adam-test-vec-scale beta2 v)
+                                                         (adam-test-vec-scale (- 1.0 beta2) g-sq)))
+                               (m-hat (adam-test-vec-scale (/ 1.0 (- 1.0 (expt beta1 t))) m-new))
+                               (v-hat (adam-test-vec-scale (/ 1.0 (- 1.0 (expt beta2 t))) v-new))
+                               ;; 3rd level: inline adam-apply-update
+                               (x-new (let* ((n2 (vector-length x))
+                                             (res (make-vector n2 0.0)))
+                                        (letrec ((loop2 (lambda (i)
+                                                  (if (< i n2)
+                                                      (begin
+                                                        (vector-set! res i
+                                                          (- (vref x i)
+                                                             (* lr (/ (vref m-hat i)
+                                                                      (+ (sqrt (vref v-hat i)) epsilon)))))
+                                                        (loop2 (+ i 1)))
+                                                      res))))
+                                          (loop2 0)))))
+                          (step x-new m-new v-new (+ t 1)))))))))
+      (step x0 (make-vector n 0.0) (make-vector n 0.0) 1))))
+
+(define (sphere x)
+  (+ (* (vref x 0) (vref x 0))
+     (* (vref x 1) (vref x 1))))
+
+(display "Test 7 (full Adam optimizer): ")
+(let ((result (adam-test sphere (vector 5.0 3.0) 0.1)))
+  (if (and (< (abs (vref result 0)) 0.1)
+           (< (abs (vref result 1)) 0.1))
+      (display "PASS")
+      (begin (display "FAIL: ") (display (vref result 0)) (display " ") (display (vref result 1)))))
+(newline)

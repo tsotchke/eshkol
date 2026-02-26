@@ -1,0 +1,41 @@
+; String port tests
+
+; open-output-string + get-output-string
+(let ((p (open-output-string)))
+  (write-string "hello" p)
+  (write-string " world" p)
+  (display (get-output-string p))
+  (newline))
+; Expected: hello world
+
+; open-input-string + read-char
+(let ((p (open-input-string "abc")))
+  (display (read-char p))
+  (display (read-char p))
+  (display (read-char p))
+  (newline))
+; Expected: abc
+
+; open-input-string + read-line
+(let ((p (open-input-string "hello\nworld")))
+  (display (read-line p))
+  (newline))
+; Expected: hello
+
+; write-char to string output port
+(let ((p (open-output-string)))
+  (write-char #\H p)
+  (write-char #\i p)
+  (display (get-output-string p))
+  (newline))
+; Expected: Hi
+
+; get-output-string can be called multiple times (accumulates)
+(let ((p (open-output-string)))
+  (write-string "first" p)
+  (display (get-output-string p))
+  (write-string " second" p)
+  (display " then ")
+  (display (get-output-string p))
+  (newline))
+; Expected: first then first second

@@ -85,14 +85,6 @@ public:
      */
     llvm::Value* createTailCall(llvm::Function* func, const std::vector<llvm::Value*>& args);
 
-    /**
-     * Create a tail call to a closure.
-     * @param closure The closure tagged value
-     * @param args The arguments
-     * @return The result of the tail call
-     */
-    llvm::Value* createClosureTailCall(llvm::Value* closure, const std::vector<llvm::Value*>& args);
-
     // === Trampoline Support ===
 
     /**
@@ -102,32 +94,14 @@ public:
     static constexpr uint64_t BOUNCE_TAG = 0x0F00000000000000ULL;
 
     /**
-     * Create a bounce value (a thunk that continues the computation).
-     * @param thunk_func The 0-argument function to call
-     * @return Tagged bounce value
-     */
-    llvm::Value* createBounce(llvm::Value* thunk_func);
-
-    /**
      * Check if a value is a bounce (continuation).
-     * @param value The tagged value to check
-     * @return Boolean indicating if it's a bounce
      */
     llvm::Value* isBounce(llvm::Value* value);
 
     /**
      * Extract the thunk function from a bounce value.
-     * @param bounce The bounce value
-     * @return The thunk function pointer
      */
     llvm::Value* extractBounceThunk(llvm::Value* bounce);
-
-    /**
-     * Create a trampoline that evaluates a thunk until it returns a non-bounce value.
-     * @param initial_thunk The initial thunk to evaluate
-     * @return The final result
-     */
-    llvm::Value* createTrampoline(llvm::Value* initial_thunk);
 
     /**
      * Generate the trampoline runtime function.

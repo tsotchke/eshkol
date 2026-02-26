@@ -1,0 +1,190 @@
+;; FFT Comprehensive Test Suite
+;; Tests FFT, IFFT, and window functions for signal processing
+
+(require stdlib)
+(require signal.fft)
+(require signal.filters)
+
+(display "=== FFT COMPREHENSIVE TESTS ===") (newline)
+
+;; Helper: approximate equality
+(define (approx= a b tol)
+  (< (abs (- a b)) tol))
+
+;; ============================================================
+;; Test 1: FFT of constant signal — DC component equals N*value
+;; ============================================================
+(display "TEST: FFT of constant signal") (newline)
+(let* ((signal (make-vector 4 3.0))
+       (result (fft signal))
+       (dc (magnitude (vref result 0))))
+  (display (if (approx= dc 12.0 0.01) "PASS" "FAIL"))
+  (display ": DC component of constant signal 3.0 with N=4 should be 12.0")
+  (newline))
+
+;; ============================================================
+;; Test 2: FFT of constant signal — non-DC components near zero
+;; ============================================================
+(display "TEST: FFT non-DC components of constant signal") (newline)
+(let* ((signal (make-vector 4 2.0))
+       (result (fft signal))
+       (bin1 (magnitude (vref result 1)))
+       (bin2 (magnitude (vref result 2)))
+       (bin3 (magnitude (vref result 3))))
+  (display (if (and (< bin1 0.01) (< bin2 0.01) (< bin3 0.01)) "PASS" "FAIL"))
+  (display ": non-DC bins of constant signal should be near zero")
+  (newline))
+
+;; ============================================================
+;; Test 3: FFT output length matches input length
+;; ============================================================
+(display "TEST: FFT output length") (newline)
+(let* ((signal (make-vector 8 1.0))
+       (result (fft signal)))
+  (display (if (= (vector-length result) 8) "PASS" "FAIL"))
+  (display ": FFT of length-8 input should produce length-8 output")
+  (newline))
+
+;; ============================================================
+;; Test 4: FFT of alternating signal #(1 -1 1 -1)
+;; DC = 0, Nyquist bin (index N/2) = N
+;; ============================================================
+(display "TEST: FFT of alternating signal") (newline)
+(let* ((signal (make-vector 4 0.0)))
+  (vector-set! signal 0 1.0)
+  (vector-set! signal 1 -1.0)
+  (vector-set! signal 2 1.0)
+  (vector-set! signal 3 -1.0)
+  (let* ((result (fft signal))
+         (dc (magnitude (vref result 0)))
+         (nyquist (magnitude (vref result 2))))
+    (display (if (and (< dc 0.01) (approx= nyquist 4.0 0.01)) "PASS" "FAIL"))
+    (display ": alternating signal DC=0, Nyquist bin=4.0")
+    (newline)))
+
+;; ============================================================
+;; Test 5: FFT -> IFFT roundtrip recovers original signal
+;; ============================================================
+(display "TEST: FFT-IFFT roundtrip") (newline)
+(let* ((signal (make-vector 4 0.0)))
+  (vector-set! signal 0 1.0)
+  (vector-set! signal 1 2.0)
+  (vector-set! signal 2 3.0)
+  (vector-set! signal 3 4.0)
+  (let* ((spectrum (fft signal))
+         (recovered (ifft spectrum))
+         (ok (and (approx= (real-part (vref recovered 0)) 1.0 0.01)
+                  (approx= (real-part (vref recovered 1)) 2.0 0.01)
+                  (approx= (real-part (vref recovered 2)) 3.0 0.01)
+                  (approx= (real-part (vref recovered 3)) 4.0 0.01))))
+    (display (if ok "PASS" "FAIL"))
+    (display ": IFFT(FFT(signal)) should recover original signal")
+    (newline)))
+
+;; ============================================================
+;; Test 6: FFT-IFFT roundtrip with length 8
+;; ============================================================
+(display "TEST: FFT-IFFT roundtrip length 8") (newline)
+(let* ((signal (make-vector 8 0.0)))
+  (vector-set! signal 0 0.5)
+  (vector-set! signal 1 1.5)
+  (vector-set! signal 2 2.5)
+  (vector-set! signal 3 3.5)
+  (vector-set! signal 4 4.5)
+  (vector-set! signal 5 3.5)
+  (vector-set! signal 6 2.5)
+  (vector-set! signal 7 1.5)
+  (let* ((spectrum (fft signal))
+         (recovered (ifft spectrum))
+         (ok (and (approx= (real-part (vref recovered 0)) 0.5 0.01)
+                  (approx= (real-part (vref recovered 4)) 4.5 0.01)
+                  (approx= (real-part (vref recovered 7)) 1.5 0.01))))
+    (display (if ok "PASS" "FAIL"))
+    (display ": IFFT(FFT(signal)) roundtrip for 8-element signal")
+    (newline)))
+
+;; ============================================================
+;; Test 7: Hamming window properties
+;; ============================================================
+(display "TEST: Hamming window properties") (newline)
+(let ((w (hamming-window 8)))
+  (display (if (and (approx= (vref w 0) 0.08 0.01)
+                    (> (vref w 3) 0.9)
+                    (> (vref w 4) 0.9)
+                    (= (vector-length w) 8))
+               "PASS" "FAIL"))
+  (display ": Hamming window endpoints ~0.08, middle ~1.0, length 8")
+  (newline))
+
+;; ============================================================
+;; Test 8: Hann window properties
+;; ============================================================
+(display "TEST: Hann window properties") (newline)
+(let ((w (hann-window 8)))
+  (display (if (and (approx= (vref w 0) 0.0 0.01)
+                    (approx= (vref w 7) 0.0 0.01)
+                    (> (vref w 3) 0.9)
+                    (> (vref w 4) 0.9)
+                    (= (vector-length w) 8))
+               "PASS" "FAIL"))
+  (display ": Hann window endpoints 0.0, middle ~1.0, length 8")
+  (newline))
+
+;; ============================================================
+;; Test 9: Blackman window properties
+;; ============================================================
+(display "TEST: Blackman window properties") (newline)
+(let ((w (blackman-window 8)))
+  (display (if (and (approx= (vref w 0) 0.0 0.01)
+                    (> (vref w 4) 0.8)
+                    (= (vector-length w) 8))
+               "PASS" "FAIL"))
+  (display ": Blackman window endpoint ~0.0, middle >0.8, length 8")
+  (newline))
+
+;; ============================================================
+;; Test 10: Hamming window symmetry w[k] ~ w[N-1-k]
+;; ============================================================
+(display "TEST: Hamming window symmetry") (newline)
+(let ((w (hamming-window 8)))
+  (display (if (and (approx= (vref w 0) (vref w 7) 0.01)
+                    (approx= (vref w 1) (vref w 6) 0.01)
+                    (approx= (vref w 2) (vref w 5) 0.01)
+                    (approx= (vref w 3) (vref w 4) 0.01))
+               "PASS" "FAIL"))
+  (display ": Hamming window w[k] = w[N-1-k]")
+  (newline))
+
+;; ============================================================
+;; Test 11: Hann window symmetry
+;; ============================================================
+(display "TEST: Hann window symmetry") (newline)
+(let ((w (hann-window 8)))
+  (display (if (and (approx= (vref w 0) (vref w 7) 0.01)
+                    (approx= (vref w 1) (vref w 6) 0.01)
+                    (approx= (vref w 2) (vref w 5) 0.01)
+                    (approx= (vref w 3) (vref w 4) 0.01))
+               "PASS" "FAIL"))
+  (display ": Hann window w[k] = w[N-1-k]")
+  (newline))
+
+;; ============================================================
+;; Test 12: FFT-IFFT roundtrip imaginary parts near zero
+;; ============================================================
+(display "TEST: IFFT of real signal has near-zero imaginary parts") (newline)
+(let* ((signal (make-vector 4 0.0)))
+  (vector-set! signal 0 5.0)
+  (vector-set! signal 1 3.0)
+  (vector-set! signal 2 7.0)
+  (vector-set! signal 3 1.0)
+  (let* ((spectrum (fft signal))
+         (recovered (ifft spectrum))
+         (ok (and (< (abs (imag-part (vref recovered 0))) 0.01)
+                  (< (abs (imag-part (vref recovered 1))) 0.01)
+                  (< (abs (imag-part (vref recovered 2))) 0.01)
+                  (< (abs (imag-part (vref recovered 3))) 0.01))))
+    (display (if ok "PASS" "FAIL"))
+    (display ": roundtrip of real signal should have negligible imaginary parts")
+    (newline)))
+
+(display "=== FFT COMPREHENSIVE TESTS COMPLETE ===") (newline)

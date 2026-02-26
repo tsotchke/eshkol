@@ -155,8 +155,8 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Matrix inverse | ✅ | 2D | Via lib/math.esk (Gauss-Jordan) |
 | Linear solve | ✅ | 2D | Via lib/math.esk |
 | Eigenvalues | ✅ | 2D | Via lib/math.esk (power iteration) |
-| SVD | 📋 | 2D | Planned |
-| QR decomposition | 📋 | 2D | Planned |
+| SVD | ✅ | 2D | Native (tensor_codegen.cpp) |
+| QR decomposition | ✅ | 2D | Native (tensor_codegen.cpp) |
 | **Reductions** |
 | `tensor-sum` | ✅ | N-D | Sum all elements |
 | `tensor-mean` | ✅ | N-D | Average |
@@ -222,7 +222,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | **Ownership** |
 | Linear types | ✅ | Compile-time | `owned`, `move` markers |
 | Borrow checking | ✅ | Compile-time | `borrow` construct |
-| Escape analysis | 🚧 | Compile-time | Partial implementation |
+| Escape analysis | ✅ | Compile-time | Region-based with conservative heap fallback |
 | Reference counting | 📋 | Runtime | Planned (`shared`, `weak-ref`) |
 | **Garbage Collection** |
 | Mark-sweep GC | ❌ | - | By design (arena-based instead) |
@@ -238,7 +238,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | S-expression parser | ✅ | Recursive descent | Fast |
 | Macro system | ✅ | Hygenic macros | `define-syntax` |
 | HoTT type checker | ✅ | Bidirectional | Gradual typing |
-| LLVM IR generation | ✅ | LLVM 18+ | 27,000 lines |
+| LLVM IR generation | ✅ | LLVM 18+ | 33,000+ lines |
 | Native code emission | ✅ | x86-64, ARM64 | Object files |
 | Executable linking | ✅ | System linker | Standalone binaries |
 | **Optimizations** |
@@ -247,14 +247,14 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Inlining | ✅ | LLVM | Automatic |
 | Tail call optimization | ✅ | Custom | Self-recursion |
 | Type-directed optimization | ✅ | HoTT | When types known |
-| SIMD vectorization | 🚧 | LLVM | Partial (LLVM auto-vec) |
+| SIMD vectorization | ✅ | LLVM | Loop metadata + micro-kernels |
 | **REPL** |
 | Interactive evaluation | ✅ | JIT | LLVM ORC |
 | Cross-eval persistence | ✅ | JIT | Symbols/functions persist |
 | Incremental compilation | ✅ | JIT | Per-expression |
-| Hot code reload | 📋 | JIT | Planned |
+| Hot code reload | ✅ | JIT | LLVM ORC remove() |
 | **Debugging** |
-| Source location tracking | 🚧 | - | Partial |
+| Source location tracking | ✅ | DWARF | Via `-g` flag |
 | Stack traces | 📋 | - | Planned |
 | Breakpoint support | 📋 | - | Planned |
 | REPL introspection | ✅ | - | `type-of`, `display` |
@@ -287,6 +287,11 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | `core.data.csv` | ✅ | CSV parsing | 5+ tests |
 | `core.control.trampoline` | ✅ | TCO helpers | 5+ tests |
 | Math library | ✅ | det, inv, solve, integrate, newton | 10+ tests |
+| `math.statistics` | ✅ | mean, variance, normal, poisson, binomial | 10+ tests |
+| `math.ode` | ✅ | rk4, euler, midpoint ODE solvers | 5+ tests |
+| `signal.filters` | ✅ | Window functions, FIR/IIR, Butterworth, convolution | 12+ tests |
+| `ml.optimization` | ✅ | Gradient descent, Adam, L-BFGS, conjugate gradient | 10+ tests |
+| `ml.activations` | ✅ | relu, sigmoid, tanh, gelu, leaky-relu, silu | 5+ tests |
 
 ---
 
@@ -297,7 +302,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | **File I/O** |
 | Text file reading | ✅ | `open-input-file`, `read-line` | Buffered |
 | Text file writing | ✅ | `open-output-file`, `write-line` | Buffered |
-| Binary I/O | 🚧 | `fread`, `fwrite` | Partial |
+| Binary I/O | ✅ | R7RS bytevectors | Full R7RS binary I/O |
 | Port operations | ✅ | `close-port`, `eof-object?` | Complete |
 | **Console I/O** |
 | `display` | ✅ | - | Homoiconic (shows lambdas) |
@@ -345,10 +350,11 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Variadic C functions | ✅ | Stable | printf, etc. |
 | Callback registration | 📋 | - | Planned |
 | **Concurrency** |
-| Threads | 📋 | - | Planned |
-| Futures/Promises | 📋 | - | Planned |
-| Channels | 📋 | - | Planned |
-| Actors | 📋 | - | Planned |
+| `parallel-map` | ✅ | Stable | Work-stealing thread pool |
+| `parallel-fold` | ✅ | Stable | Parallel reduction |
+| `parallel-filter` | ✅ | Stable | Parallel predicate filter |
+| `future` / `force` | ✅ | Stable | Asynchronous computation |
+| Thread pool scheduler | ✅ | Stable | Hardware-aware sizing |
 | **Module System** |
 | `import` / `require` | ✅ | Stable | DFS dependency resolution |
 | `provide` / `export` | ✅ | Stable | Symbol export |
@@ -402,7 +408,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Windows | 📋 | x86-64 | Planned (WSL works) |
 | FreeBSD | 📋 | x86-64 | Planned |
 | **Architectures** |
-| x86-64 | ✅ | SSE2+ | AVX: 🚧 |
+| x86-64 | ✅ | SSE2+ | AVX/AVX2/AVX-512 supported |
 | ARM64 | ✅ | Neon | Full support |
 | RISC-V | 📋 | - | Planned |
 | WebAssembly | 📋 | - | Planned |
@@ -453,7 +459,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Backpropagation | ✅ | Production | Via `gradient` |
 | Activation functions | ✅ | Production | sigmoid, relu, tanh, softmax |
 | Loss functions | ✅ | Production | MSE, cross-entropy (user-defined) |
-| Optimizers | ✅ | User Code | SGD, Adam (in Eshkol) |
+| Optimizers | ✅ | Production | SGD, Adam, L-BFGS, CG (ml.optimization) |
 | Weight initialization | ✅ | User Code | Xavier, He (in Eshkol) |
 | **Supported Architectures** |
 | Feedforward | ✅ | Production | Fully connected |
@@ -485,7 +491,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Root finding | ✅ | Newton-Raphson | lib/math.esk |
 | Integration | ✅ | Simpson's rule | lib/math.esk |
 | Interpolation | 📋 | - | Planned |
-| ODE solvers | 📋 | - | Planned (Runge-Kutta) |
+| ODE solvers | ✅ | RK4, Euler, Midpoint | math.ode |
 | PDE solvers | 🚧 | Finite differences | Via user code |
 | **Linear Algebra** |
 | Matrix operations | ✅ | Full suite | matmul, transpose, trace |
@@ -496,10 +502,13 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | **Statistics** |
 | Descriptive stats | ✅ | mean, variance, std | lib/math.esk |
 | Covariance | ✅ | Vector covariance | lib/math.esk |
-| Distributions | 📋 | - | Planned |
+| Distributions | ✅ | Normal, Poisson, Binomial, etc. | math.statistics |
 | Hypothesis testing | 📋 | - | Planned |
 | **Optimization** |
-| Gradient descent | ✅ | Via `gradient` | Any objective |
+| Gradient descent | ✅ | Via `gradient` | ml.optimization |
+| Adam optimizer | ✅ | Adaptive moments | ml.optimization |
+| L-BFGS | ✅ | Two-loop recursion | ml.optimization |
+| Conjugate gradient | ✅ | Fletcher-Reeves | ml.optimization |
 | Newton's method | ✅ | Via `hessian` | Second-order |
 | Constrained optimization | 📋 | - | Planned |
 | **Physics Simulation** |
@@ -508,6 +517,52 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Heat equation | ✅ | Via Laplacian | Verified |
 | Wave propagation | 🚧 | - | Via user code |
 | Fluid dynamics | 📋 | - | Planned |
+
+---
+
+## Signal Processing (v1.1)
+
+| Feature | Status | Module | Notes |
+|---------|--------|--------|-------|
+| **Window Functions** |
+| Hamming window | ✅ | `signal.filters` | w[n] = 0.54 - 0.46*cos(2*pi*n/(N-1)) |
+| Hann window | ✅ | `signal.filters` | w[n] = 0.5*(1 - cos(2*pi*n/(N-1))) |
+| Blackman window | ✅ | `signal.filters` | 3-term Blackman |
+| Kaiser window | ✅ | `signal.filters` | Parametric beta, inline Bessel I0 |
+| **Convolution** |
+| Direct convolution | ✅ | `signal.filters` | O(N*M) time-domain |
+| FFT convolution | ✅ | `signal.filters` | O(N log N) via fft/ifft |
+| **Filters** |
+| FIR filter | ✅ | `signal.filters` | Arbitrary coefficient application |
+| IIR filter | ✅ | `signal.filters` | Direct Form I |
+| Butterworth lowpass | ✅ | `signal.filters` | Bilinear transform |
+| Butterworth highpass | ✅ | `signal.filters` | Frequency inversion |
+| Butterworth bandpass | ✅ | `signal.filters` | Two-stage cascade |
+| **Analysis** |
+| Frequency response | ✅ | `signal.filters` | Magnitude + phase at N points |
+| FFT | ✅ | Builtin | Cooley-Tukey radix-2 |
+| IFFT | ✅ | Builtin | Inverse FFT |
+
+---
+
+## Consciousness Engine (v1.1)
+
+| Feature | Status | Module | Notes |
+|---------|--------|--------|-------|
+| **Logic Programming** |
+| Unification | ✅ | Builtin | `unify`, `walk` |
+| Substitutions | ✅ | Builtin | `make-substitution` |
+| Knowledge base | ✅ | Builtin | `make-kb`, `kb-assert!`, `kb-query` |
+| Logic variables | ✅ | Builtin | `?x` syntax |
+| **Active Inference** |
+| Factor graphs | ✅ | Builtin | `make-factor-graph`, `fg-add-factor!` |
+| Belief propagation | ✅ | Builtin | `fg-infer!` |
+| CPT mutation | ✅ | Builtin | `fg-update-cpt!` |
+| Free energy | ✅ | Builtin | `free-energy`, `expected-free-energy` |
+| **Global Workspace** |
+| Workspace creation | ✅ | Builtin | `make-workspace` |
+| Module registration | ✅ | Builtin | `ws-register!` |
+| Softmax competition | ✅ | Builtin | `ws-step!` |
 
 ---
 

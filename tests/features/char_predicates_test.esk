@@ -1,0 +1,134 @@
+;; Character Predicates and Operations Test Suite
+;; Tests: char-alphabetic?, char-numeric?, char-whitespace?,
+;;        char-upper-case?, char-lower-case?, char-upcase, char-downcase,
+;;        char=?, char<?, char->integer, integer->char
+
+(require stdlib)
+
+;; Test counter
+(define pass-count 0)
+(define fail-count 0)
+
+(define (test name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! pass-count (+ pass-count 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! fail-count (+ fail-count 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: char-alphabetic?
+;; ============================================================================
+
+(display "=== Testing char-alphabetic? ===\n")
+
+(test "char-alphabetic? lowercase a" #t (char-alphabetic? #\a))
+(test "char-alphabetic? uppercase Z" #t (char-alphabetic? #\Z))
+(test "char-alphabetic? digit 1" #f (char-alphabetic? #\1))
+(test "char-alphabetic? space" #f (char-alphabetic? #\space))
+
+;; ============================================================================
+;; Test: char-numeric?
+;; ============================================================================
+
+(display "\n=== Testing char-numeric? ===\n")
+
+(test "char-numeric? digit 5" #t (char-numeric? #\5))
+(test "char-numeric? digit 0" #t (char-numeric? #\0))
+(test "char-numeric? letter a" #f (char-numeric? #\a))
+(test "char-numeric? space" #f (char-numeric? #\space))
+
+;; ============================================================================
+;; Test: char-whitespace?
+;; ============================================================================
+
+(display "\n=== Testing char-whitespace? ===\n")
+
+(test "char-whitespace? space" #t (char-whitespace? #\space))
+(test "char-whitespace? newline" #t (char-whitespace? #\newline))
+(test "char-whitespace? tab" #t (char-whitespace? #\tab))
+(test "char-whitespace? letter a" #f (char-whitespace? #\a))
+(test "char-whitespace? digit 0" #f (char-whitespace? #\0))
+
+;; ============================================================================
+;; Test: char-upper-case? and char-lower-case?
+;; ============================================================================
+
+(display "\n=== Testing char-upper-case? and char-lower-case? ===\n")
+
+(test "char-upper-case? A" #t (char-upper-case? #\A))
+(test "char-upper-case? Z" #t (char-upper-case? #\Z))
+(test "char-upper-case? a" #f (char-upper-case? #\a))
+(test "char-upper-case? 1" #f (char-upper-case? #\1))
+
+(test "char-lower-case? a" #t (char-lower-case? #\a))
+(test "char-lower-case? z" #t (char-lower-case? #\z))
+(test "char-lower-case? A" #f (char-lower-case? #\A))
+(test "char-lower-case? 1" #f (char-lower-case? #\1))
+
+;; ============================================================================
+;; Test: char-upcase and char-downcase
+;; ============================================================================
+
+(display "\n=== Testing char-upcase and char-downcase ===\n")
+
+(test "char-upcase a -> A" #\A (char-upcase #\a))
+(test "char-upcase z -> Z" #\Z (char-upcase #\z))
+(test "char-upcase A -> A (already upper)" #\A (char-upcase #\A))
+(test "char-upcase 1 -> 1 (non-alpha)" #\1 (char-upcase #\1))
+
+(test "char-downcase A -> a" #\a (char-downcase #\A))
+(test "char-downcase Z -> z" #\z (char-downcase #\Z))
+(test "char-downcase a -> a (already lower)" #\a (char-downcase #\a))
+(test "char-downcase 1 -> 1 (non-alpha)" #\1 (char-downcase #\1))
+
+;; ============================================================================
+;; Test: char=? and char<?
+;; ============================================================================
+
+(display "\n=== Testing char=? and char<? ===\n")
+
+(test "char=? a a" #t (char=? #\a #\a))
+(test "char=? a b" #f (char=? #\a #\b))
+(test "char=? A A" #t (char=? #\A #\A))
+(test "char=? a A" #f (char=? #\a #\A))
+
+(test "char<? a b" #t (char<? #\a #\b))
+(test "char<? b a" #f (char<? #\b #\a))
+(test "char<? a a" #f (char<? #\a #\a))
+(test "char<? A Z" #t (char<? #\A #\Z))
+
+;; ============================================================================
+;; Test: char->integer and integer->char
+;; ============================================================================
+
+(display "\n=== Testing char->integer and integer->char ===\n")
+
+(test "char->integer a" 97 (char->integer #\a))
+(test "char->integer A" 65 (char->integer #\A))
+(test "char->integer 0" 48 (char->integer #\0))
+(test "char->integer space" 32 (char->integer #\space))
+
+(test "integer->char 65 -> A" #\A (integer->char 65))
+(test "integer->char 97 -> a" #\a (integer->char 97))
+(test "integer->char 48 -> 0" #\0 (integer->char 48))
+(test "integer->char 32 -> space" #\space (integer->char 32))
+
+;; Roundtrip
+(test "roundtrip char->integer->char a" #\a (integer->char (char->integer #\a)))
+(test "roundtrip char->integer->char Z" #\Z (integer->char (char->integer #\Z)))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(newline)
+(display "========================================\n")
+(display "Character Predicates Test Results\n")
+(display "========================================\n")
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)

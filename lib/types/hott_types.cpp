@@ -293,6 +293,12 @@ const TypeNode* TypeEnvironment::getTypeNode(TypeId id) const {
 }
 
 std::string TypeEnvironment::getTypeName(TypeId id) const {
+    // Check if this is a tracked pair type
+    auto pair_elems = getPairElementTypes(id);
+    if (pair_elems) {
+        return "Pair<" + getTypeName(pair_elems->first) + ", " +
+               getTypeName(pair_elems->second) + ">";
+    }
     const TypeNode* node = getTypeNode(id);
     return node ? node->name : "unknown";
 }
@@ -313,6 +319,12 @@ bool TypeEnvironment::isSubtype(TypeId sub, TypeId super) const {
 bool TypeEnvironment::isSubtypeUncached(TypeId sub, TypeId super) const {
     // Reflexivity
     if (sub == super) return true;
+
+    // Tracked pair types are subtypes of Pair (and Pair's supertypes)
+    if (isTrackedPairType(sub)) {
+        if (super == BuiltinTypes::Pair) return true;
+        return isSubtype(BuiltinTypes::Pair, super);
+    }
 
     // Walk supertype chain
     const TypeNode* node = getTypeNode(sub);
@@ -349,6 +361,13 @@ std::vector<TypeId> TypeEnvironment::getSupertypeChain(TypeId type) const {
     std::vector<TypeId> chain;
     chain.push_back(type);
 
+    // Tracked pair types (Pair<A,B>) are subtypes of Pair — delegate to Pair's chain
+    if (isTrackedPairType(type)) {
+        auto pair_chain = getSupertypeChain(BuiltinTypes::Pair);
+        chain.insert(chain.end(), pair_chain.begin(), pair_chain.end());
+        return chain;
+    }
+
     const TypeNode* node = getTypeNode(type);
     while (node && node->supertype.has_value()) {
         chain.push_back(node->supertype.value());
@@ -372,6 +391,24 @@ TypeId TypeEnvironment::promoteForArithmetic(TypeId a, TypeId b) const {
     // If one operand is Number, use the other operand's type if numeric
     if (a == Number && (isSubtype(b, Integer) || isSubtype(b, Real))) return b;
     if (b == Number && (isSubtype(a, Integer) || isSubtype(a, Real))) return a;
+
+    // Complex + anything numeric -> Complex
+    if (a == Complex || a == Complex64 || a == Complex128 ||
+        b == Complex || b == Complex64 || b == Complex128) {
+        return Complex;
+    }
+
+    // BigInt + Int64 -> BigInt (exact promotion)
+    if ((a == BigInt && isSubtype(b, Integer)) ||
+        (b == BigInt && isSubtype(a, Integer))) {
+        return BigInt;
+    }
+
+    // BigInt + Float64/Real -> Float64 (R7RS: exact+inexact -> inexact)
+    if ((a == BigInt && isSubtype(b, Real)) ||
+        (b == BigInt && isSubtype(a, Real))) {
+        return Float64;
+    }
 
     // Integer + Real -> Real (Float64)
     if ((isSubtype(a, Integer) && isSubtype(b, Real)) ||
@@ -679,6 +716,37 @@ std::string TypeEnvironment::getFunctionTypeName(TypeId id) const {
     result += getTypeName(pi->return_type);
 
     return result;
+}
+
+// ============================================================================
+// PAIR TYPE TRACKING
+// ============================================================================
+
+TypeId TypeEnvironment::makePairType(TypeId car_type, TypeId cdr_type) const {
+    // Check if we already have this exact pair type cached
+    for (const auto& entry : pair_element_cache_) {
+        if (entry.second.first == car_type && entry.second.second == cdr_type) {
+            return TypeId{entry.first, Universe::U1, 0};
+        }
+    }
+
+    // Allocate a new pair type ID
+    uint16_t type_id = next_pair_type_id_++;
+    pair_element_cache_[type_id] = {car_type, cdr_type};
+
+    return TypeId{type_id, Universe::U1, 0};
+}
+
+std::optional<std::pair<TypeId, TypeId>> TypeEnvironment::getPairElementTypes(TypeId id) const {
+    auto it = pair_element_cache_.find(id.id);
+    if (it != pair_element_cache_.end()) {
+        return it->second;
+    }
+    return std::nullopt;
+}
+
+bool TypeEnvironment::isTrackedPairType(TypeId id) const {
+    return pair_element_cache_.find(id.id) != pair_element_cache_.end();
 }
 
 } // namespace eshkol::hott

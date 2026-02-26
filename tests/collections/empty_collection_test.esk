@@ -1,0 +1,111 @@
+(require stdlib)
+
+(display "TEST: Empty collection edge cases") (newline)
+
+; 1. Empty list: null?
+(display (if (null? '()) "PASS" "FAIL")) (display ": null? on empty list") (newline)
+
+; 2. Empty list: length
+(display (if (= (length '()) 0) "PASS" "FAIL")) (display ": length of empty list is 0") (newline)
+
+; 3. Empty list: list?
+(display (if (list? '()) "PASS" "FAIL")) (display ": list? on empty list") (newline)
+
+; 4. Empty list equality
+(display (if (equal? '() '()) "PASS" "FAIL")) (display ": equal? on two empty lists") (newline)
+
+; 5. pair? on empty list
+(display (if (not (pair? '())) "PASS" "FAIL")) (display ": pair? is false on empty list") (newline)
+
+; 6. car on single-element list
+(display (if (= (car '(1)) 1) "PASS" "FAIL")) (display ": car of single-element list") (newline)
+
+; 7. cdr on single-element list is null
+(display (if (null? (cdr '(1))) "PASS" "FAIL")) (display ": cdr of single-element list is null") (newline)
+
+; 8. reverse of empty list
+(display (if (equal? (reverse '()) '()) "PASS" "FAIL")) (display ": reverse of empty list is empty") (newline)
+
+; 9. append of two empty lists
+(display (if (equal? (append '() '()) '()) "PASS" "FAIL")) (display ": append of two empty lists is empty") (newline)
+
+; 10. map on empty list
+(display (if (equal? (map (lambda (x) x) '()) '()) "PASS" "FAIL")) (display ": map on empty list is empty") (newline)
+
+; 11. filter on empty list
+(display (if (equal? (filter (lambda (x) #t) '()) '()) "PASS" "FAIL")) (display ": filter on empty list is empty") (newline)
+
+; 12. for-each on empty list should not error
+(for-each (lambda (x) (display x)) '())
+(display "PASS") (display ": for-each on empty list does not error") (newline)
+
+; 13. Empty vector: vector-length
+(display (if (= (vector-length (vector)) 0) "PASS" "FAIL")) (display ": vector-length of empty vector is 0") (newline)
+
+; 14. make-vector with size 0
+(display (if (= (vector-length (make-vector 0 0)) 0) "PASS" "FAIL")) (display ": make-vector 0 has length 0") (newline)
+
+; 15. vector->list on empty vector
+(display (if (null? (vector->list (vector))) "PASS" "FAIL")) (display ": vector->list of empty vector is null") (newline)
+
+; 16. list->vector on empty list
+(display (if (= (vector-length (list->vector '())) 0) "PASS" "FAIL")) (display ": list->vector of empty list has length 0") (newline)
+
+; 17. Single-element list length
+(display (if (= (length '(42)) 1) "PASS" "FAIL")) (display ": length of single-element list is 1") (newline)
+
+; 18. Single-element vector length
+(display (if (= (vector-length #(42)) 1) "PASS" "FAIL")) (display ": vector-length of single-element vector is 1") (newline)
+
+; 19. vector-ref on single-element vector
+(display (if (= (vector-ref #(42) 0) 42) "PASS" "FAIL")) (display ": vector-ref on single-element vector") (newline)
+
+; 20. Nested empty list: car of list containing empty list
+(display (if (equal? (car '(())) '()) "PASS" "FAIL")) (display ": car of nested empty list is empty list") (newline)
+
+; 21. append empty list before non-empty
+(display (if (equal? (append '() '(1 2)) '(1 2)) "PASS" "FAIL")) (display ": append '() before '(1 2) gives '(1 2)") (newline)
+
+; 22. append empty list after non-empty
+(display (if (equal? (append '(1 2) '()) '(1 2)) "PASS" "FAIL")) (display ": append '(1 2) before '() gives '(1 2)") (newline)
+
+; 23. null? on non-empty list
+(display (if (not (null? '(1))) "PASS" "FAIL")) (display ": null? is false on non-empty list") (newline)
+
+; 24. pair? on non-empty list
+(display (if (pair? '(1 2)) "PASS" "FAIL")) (display ": pair? is true on non-empty list") (newline)
+
+; 25. list? on proper list
+(display (if (list? '(1 2 3)) "PASS" "FAIL")) (display ": list? is true on proper list") (newline)
+
+; 26. Empty list is not a pair
+(display (if (not (pair? (list))) "PASS" "FAIL")) (display ": (list) produces non-pair empty list") (newline)
+
+; 27. length of multi-element list
+(display (if (= (length '(1 2 3)) 3) "PASS" "FAIL")) (display ": length of 3-element list is 3") (newline)
+
+; 28. append multiple empty lists
+(display (if (equal? (append '() '() '()) '()) "PASS" "FAIL")) (display ": append of three empty lists is empty") (newline)
+
+; 29. map identity on single-element list
+(display (if (equal? (map (lambda (x) x) '(99)) '(99)) "PASS" "FAIL")) (display ": map identity on single-element list") (newline)
+
+; 30. filter keeping all on single-element list
+(display (if (equal? (filter (lambda (x) #t) '(5)) '(5)) "PASS" "FAIL")) (display ": filter keep-all on single-element list") (newline)
+
+; 31. filter removing all on single-element list
+(display (if (equal? (filter (lambda (x) #f) '(5)) '()) "PASS" "FAIL")) (display ": filter remove-all on single-element list is empty") (newline)
+
+; 32. vector->list on single-element vector
+(display (if (equal? (vector->list #(7)) '(7)) "PASS" "FAIL")) (display ": vector->list of single-element vector") (newline)
+
+; 33. list->vector on single-element list
+(let ((v (list->vector '(99))))
+  (display (if (and (= (vector-length v) 1) (= (vector-ref v 0) 99)) "PASS" "FAIL")))
+(display ": list->vector of single-element list") (newline)
+
+; 34. reverse of single-element list
+(display (if (equal? (reverse '(42)) '(42)) "PASS" "FAIL")) (display ": reverse of single-element list is itself") (newline)
+
+; 35. Nested empty: list containing empty list has length 1
+(display (if (= (length '(())) 1) "PASS" "FAIL")) (display ": list containing empty list has length 1") (newline)

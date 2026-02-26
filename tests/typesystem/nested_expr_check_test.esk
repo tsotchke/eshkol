@@ -1,0 +1,10 @@
+;; Type System Test: Type errors detected inside nested expressions
+;; EXPECT-MODE: strict-types
+;; EXPECT-STDERR: Type error:
+
+;; Type checker must synthesize args of display/begin to find nested errors
+(define (add-nums a b) (+ a b))
+
+;; Error is inside (display ...) — must be caught
+(display (add-nums #t 42))
+(newline)

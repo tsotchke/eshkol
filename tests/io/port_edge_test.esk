@@ -1,0 +1,134 @@
+(require stdlib)
+
+(display "TEST: Port and I/O edge cases") (newline)
+
+; Test 1: open-input-string creates an input port
+(let ((p (open-input-string "hello")))
+  (display (if (input-port? p) "PASS" "FAIL"))
+  (display ": open-input-string creates an input port")
+  (newline))
+
+; Test 2: input-port? returns #t for string input port
+(display (if (input-port? (open-input-string "test")) "PASS" "FAIL"))
+(display ": input-port? returns #t for string input port")
+(newline)
+
+; Test 3: read-char from string port returns first char
+(display (if (char=? (read-char (open-input-string "abc")) #\a) "PASS" "FAIL"))
+(display ": read-char from string port returns first char")
+(newline)
+
+; Test 4: peek-char does not consume the character
+(let ((p (open-input-string "xyz")))
+  (let ((peeked (peek-char p))
+        (read1 (read-char p))
+        (read2 (read-char p)))
+    (display (if (and (char=? peeked #\x) (char=? read1 #\x) (char=? read2 #\y)) "PASS" "FAIL"))
+    (display ": peek-char does not consume the character")
+    (newline)))
+
+; Test 5: read multiple chars sequentially from string port
+(let ((p (open-input-string "abc")))
+  (let ((c1 (read-char p))
+        (c2 (read-char p))
+        (c3 (read-char p)))
+    (display (if (and (char=? c1 #\a) (char=? c2 #\b) (char=? c3 #\c)) "PASS" "FAIL"))
+    (display ": read multiple chars sequentially from string port")
+    (newline)))
+
+; Test 6: EOF detection on empty string port
+(display (if (eof-object? (read-char (open-input-string ""))) "PASS" "FAIL"))
+(display ": eof-object? detects end of empty string port")
+(newline)
+
+; Test 7: EOF after exhausting input
+(let ((p (open-input-string "a")))
+  (read-char p)
+  (display (if (eof-object? (read-char p)) "PASS" "FAIL"))
+  (display ": eof-object? after exhausting input port")
+  (newline))
+
+; Test 8: open-output-string creates an output port
+(let ((p (open-output-string)))
+  (display (if (output-port? p) "PASS" "FAIL"))
+  (display ": open-output-string creates an output port")
+  (newline))
+
+; Test 9: output-port? returns #t for string output port
+(display (if (output-port? (open-output-string)) "PASS" "FAIL"))
+(display ": output-port? returns #t for string output port")
+(newline)
+
+; Test 10: write-char to output port then get-output-string
+(let ((p (open-output-string)))
+  (write-char #\h p)
+  (write-char #\i p)
+  (display (if (string=? (get-output-string p) "hi") "PASS" "FAIL"))
+  (display ": write-char accumulates chars in output port")
+  (newline))
+
+; Test 11: display to string port
+(let ((p (open-output-string)))
+  (display "hello" p)
+  (display (if (string=? (get-output-string p) "hello") "PASS" "FAIL"))
+  (display ": display writes string to output port")
+  (newline))
+
+; Test 12: port predicates return #f for non-port integer
+(display (if (not (input-port? 42)) "PASS" "FAIL"))
+(display ": input-port? returns #f for integer")
+(newline)
+
+; Test 13: output-port? returns #f for string
+(display (if (not (output-port? "hello")) "PASS" "FAIL"))
+(display ": output-port? returns #f for string")
+(newline)
+
+; Test 14: input-port? returns #f for boolean
+(display (if (not (input-port? #t)) "PASS" "FAIL"))
+(display ": input-port? returns #f for boolean")
+(newline)
+
+; Test 15: string port with special characters (space, newline)
+(let ((p (open-input-string " \n")))
+  (let ((c1 (read-char p))
+        (c2 (read-char p)))
+    (display (if (and (char=? c1 #\space) (char=? c2 #\newline)) "PASS" "FAIL"))
+    (display ": string port handles space and newline chars")
+    (newline)))
+
+; Test 16: peek-char on empty port returns eof
+(display (if (eof-object? (peek-char (open-input-string ""))) "PASS" "FAIL"))
+(display ": peek-char on empty port returns eof-object")
+(newline)
+
+; Test 17: get-output-string on fresh port returns empty string
+(let ((p (open-output-string)))
+  (display (if (string=? (get-output-string p) "") "PASS" "FAIL"))
+  (display ": get-output-string on fresh port returns empty string")
+  (newline))
+
+; Test 18: multiple writes accumulate correctly
+(let ((p (open-output-string)))
+  (display "foo" p)
+  (display "bar" p)
+  (display "baz" p)
+  (display (if (string=? (get-output-string p) "foobarbaz") "PASS" "FAIL"))
+  (display ": multiple display calls accumulate in output port")
+  (newline))
+
+; Test 19: write-char with numeric digit character
+(let ((p (open-output-string)))
+  (write-char #\4 p)
+  (write-char #\2 p)
+  (display (if (string=? (get-output-string p) "42") "PASS" "FAIL"))
+  (display ": write-char works with digit characters")
+  (newline))
+
+; Test 20: string port from multi-char string, read all then eof
+(let ((p (open-input-string "ab")))
+  (read-char p)
+  (read-char p)
+  (display (if (eof-object? (read-char p)) "PASS" "FAIL"))
+  (display ": eof after reading all chars from string port")
+  (newline))

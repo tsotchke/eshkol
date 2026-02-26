@@ -1,0 +1,247 @@
+(require stdlib)
+
+(display "TEST: Guard and exception edge cases") (newline)
+
+; Test 1: Basic guard catches raise
+(display (if (equal? (guard (exn (#t "caught")) (raise "error")) "caught") "PASS" "FAIL"))
+(display ": Basic guard catches raise") (newline)
+
+; Test 2: Guard condition checks string? and returns the exception value
+(display (if (equal? (guard (exn ((string? exn) exn)) (raise "hello")) "hello") "PASS" "FAIL"))
+(display ": Guard condition string? returns exception value") (newline)
+
+; Test 3: Guard returns body value when no exception
+(display (if (equal? (guard (exn (#t "error")) 42) 42) "PASS" "FAIL"))
+(display ": Guard returns body value when no exception raised") (newline)
+
+; Test 4: Nested guard - outer catches what inner re-raises
+(display (if (equal?
+  (guard (outer (#t "outer-caught"))
+    (guard (inner ((number? inner) "number"))
+      (raise "not-a-number")))
+  "outer-caught") "PASS" "FAIL"))
+(display ": Nested guard outer catches inner re-raise") (newline)
+
+; Test 5: Guard with multiple clauses - first matching wins
+(display (if (equal?
+  (guard (exn
+    ((number? exn) "number")
+    ((string? exn) "string")
+    (#t "other"))
+  (raise "hello"))
+  "string") "PASS" "FAIL"))
+(display ": Guard multiple clauses first matching wins") (newline)
+
+; Test 6: raise with integer
+(display (if (equal? (guard (exn ((number? exn) exn)) (raise 42)) 42) "PASS" "FAIL"))
+(display ": raise with integer value") (newline)
+
+; Test 7: raise with list - car extracts first element
+(display (if (equal?
+  (guard (exn ((pair? exn) (car exn)))
+    (raise '(error-type "msg")))
+  'error-type) "PASS" "FAIL"))
+(display ": raise with list extracts car") (newline)
+
+; Test 8: raise with boolean
+(display (if (equal? (guard (exn ((boolean? exn) exn)) (raise #t)) #t) "PASS" "FAIL"))
+(display ": raise with boolean value") (newline)
+
+; Test 9: Guard in function body
+(define (safe-divide a b)
+  (guard (exn (#t -1))
+    (if (= b 0)
+        (raise "division by zero")
+        (/ a b))))
+
+(display (if (equal? (safe-divide 10 2) 5) "PASS" "FAIL"))
+(display ": Guard in function body - normal case") (newline)
+
+(display (if (equal? (safe-divide 10 0) -1) "PASS" "FAIL"))
+(display ": Guard in function body - exception case") (newline)
+
+; Test 10: Guard with computation in body
+(display (if (equal? (guard (exn (#t -1)) (+ 1 2)) 3) "PASS" "FAIL"))
+(display ": Guard with computation in body no exception") (newline)
+
+; Test 11: Guard with side effects before raise - guard still catches
+(define side-effect-ran #f)
+(define result-11
+  (guard (exn (#t "caught-after-side-effect"))
+    (set! side-effect-ran #t)
+    (raise "oops")))
+(display (if (and (equal? result-11 "caught-after-side-effect") side-effect-ran) "PASS" "FAIL"))
+(display ": Guard catches after side effect executed") (newline)
+
+; Test 12: Guard with let bindings in handler clauses
+(display (if (equal?
+  (guard (exn
+    ((string? exn)
+     (let ((msg (string-append "Error: " exn)))
+       msg)))
+  (raise "bad input"))
+  "Error: bad input") "PASS" "FAIL"))
+(display ": Guard with let bindings in handler clause") (newline)
+
+; Test 13: Nested guard - inner catches, outer does not fire
+(define outer-fired #f)
+(define result-13
+  (guard (outer (#t (set! outer-fired #t) "outer"))
+    (guard (inner (#t "inner-caught"))
+      (raise "test"))))
+(display (if (and (equal? result-13 "inner-caught") (not outer-fired)) "PASS" "FAIL"))
+(display ": Nested guard inner catches outer does not fire") (newline)
+
+; Test 14: Guard with #t clause always matches
+(display (if (equal?
+  (guard (exn (#t (string-append "always: " (if (string? exn) exn "?"))))
+    (raise "hello"))
+  "always: hello") "PASS" "FAIL"))
+(display ": Guard #t clause always matches") (newline)
+
+; Test 15: with-exception-handler basic usage
+(define handler-called #f)
+(define weh-result
+  (call-with-current-continuation
+    (lambda (k)
+      (with-exception-handler
+        (lambda (exn)
+          (set! handler-called #t)
+          (k (string-append "handled: " (if (string? exn) exn "?"))))
+        (lambda ()
+          (raise "test-error"))))))
+(display (if (and handler-called (equal? weh-result "handled: test-error")) "PASS" "FAIL"))
+(display ": with-exception-handler basic usage") (newline)
+
+; Test 16: Guard clause checks exception type and extracts info
+(define (make-error type msg) (list 'error type msg))
+(define (error-type e) (cadr e))
+(define (error-msg e) (caddr e))
+
+(display (if (equal?
+  (guard (exn
+    ((and (pair? exn) (eq? (car exn) 'error))
+     (string-append (symbol->string (error-type exn)) ": " (error-msg exn))))
+  (raise (make-error 'type-error "expected number")))
+  "type-error: expected number") "PASS" "FAIL"))
+(display ": Guard extracts structured exception info") (newline)
+
+; Test 17: Guard with no matching clause re-raises to outer handler
+(define result-17
+  (guard (outer (#t "outer-caught"))
+    (guard (inner ((number? inner) "number"))
+      (raise "string-raises"))))
+(display (if (equal? result-17 "outer-caught") "PASS" "FAIL"))
+(display ": Guard re-raises when no clause matches") (newline)
+
+; Test 18: Guard body with multiple expressions - returns last
+(display (if (equal?
+  (guard (exn (#t -1))
+    (define x 10)
+    (define y 20)
+    (+ x y))
+  30) "PASS" "FAIL"))
+(display ": Guard body with multiple expressions returns last") (newline)
+
+; Test 19: raise inside let body
+(display (if (equal?
+  (guard (exn (#t (string-append "got: " (if (string? exn) exn "?"))))
+    (let ((x 5))
+      (if (> x 3)
+          (raise "too-big")
+          x)))
+  "got: too-big") "PASS" "FAIL"))
+(display ": raise inside let body caught by outer guard") (newline)
+
+; Test 20: raise inside cond
+(display (if (equal?
+  (guard (exn (#t "cond-raise-caught"))
+    (cond
+      ((= 1 2) "no")
+      ((= 1 1) (raise "cond-raise"))
+      (else "also-no")))
+  "cond-raise-caught") "PASS" "FAIL"))
+(display ": raise inside cond caught by guard") (newline)
+
+; Test 21: Guard with symbol exception
+(display (if (equal?
+  (guard (exn ((symbol? exn) (symbol->string exn)))
+    (raise 'my-error))
+  "my-error") "PASS" "FAIL"))
+(display ": Guard catches symbol exception") (newline)
+
+; Test 22: Chained guards, innermost fires first
+(define order '())
+(define result-22
+  (guard (e3 (#t (set! order (cons 3 order)) "level3"))
+    (guard (e2 (#t (set! order (cons 2 order)) "level2"))
+      (guard (e1 (#t (set! order (cons 1 order)) "level1"))
+        (raise "deep")))))
+(display (if (and (equal? result-22 "level1") (equal? order '(1))) "PASS" "FAIL"))
+(display ": Chained guards innermost fires first") (newline)
+
+; Test 23: Guard result can be used in further computation
+(define g23
+  (+ (guard (exn (#t 0)) (raise "err")) 100))
+(display (if (equal? g23 100) "PASS" "FAIL"))
+(display ": Guard result used in further computation") (newline)
+
+; Test 24: Guard with false condition falls through to next clause
+(display (if (equal?
+  (guard (exn
+    ((number? exn) "number")
+    (#f "never")
+    (#t "fallback"))
+  (raise "hello"))
+  "fallback") "PASS" "FAIL"))
+(display ": Guard false clause skipped fallback matches") (newline)
+
+; Test 25: Guard with lambda exception
+(define caught-lambda #f)
+(define result-25
+  (guard (exn ((procedure? exn) (set! caught-lambda #t) "lambda-caught"))
+    (raise (lambda (x) x))))
+(display (if (and caught-lambda (equal? result-25 "lambda-caught")) "PASS" "FAIL"))
+(display ": Guard catches lambda exception") (newline)
+
+; Test 26: Guard handles raise inside named let loop
+(display (if (equal?
+  (guard (exn (#t (string-append "stopped-at: " (number->string exn))))
+    (let loop ((i 0))
+      (if (= i 5)
+          (raise i)
+          (loop (+ i 1)))))
+  "stopped-at: 5") "PASS" "FAIL"))
+(display ": Guard catches raise inside named let loop") (newline)
+
+; Test 27: Guard with deep nesting, no exception returns innermost value
+(display (if (equal?
+  (guard (a (#t "a"))
+    (guard (b (#t "b"))
+      (guard (c (#t "c"))
+        42)))
+  42) "PASS" "FAIL"))
+(display ": Deep nested guard no exception returns body value") (newline)
+
+; Test 28: Guard handler clause receives exact raised value (vector)
+(display (if (equal?
+  (guard (exn (#t (vector-ref exn 0)))
+    (raise (vector 99 100 101)))
+  99) "PASS" "FAIL"))
+(display ": Guard receives vector exception and extracts element") (newline)
+
+; Test 29: Guard with raise in and expression
+(display (if (equal?
+  (guard (exn (#t "and-raise-caught"))
+    (and #t (raise "and-err") #f))
+  "and-raise-caught") "PASS" "FAIL"))
+(display ": Guard catches raise inside and expression") (newline)
+
+; Test 30: Guard with raise in or expression
+(display (if (equal?
+  (guard (exn (#t "or-raise-caught"))
+    (or #f (raise "or-err") #t))
+  "or-raise-caught") "PASS" "FAIL"))
+(display ": Guard catches raise inside or expression") (newline)
+
+(display "DONE") (newline)

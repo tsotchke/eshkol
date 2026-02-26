@@ -13,6 +13,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <string>
 #include <vector>
 #include <fstream>
@@ -35,9 +36,9 @@ namespace {
 // Global State
 // ============================================================================
 
+std::once_flag g_config_once;
 std::mutex g_config_mutex;
 eshkol_config_t g_config;
-bool g_config_initialized = false;
 
 // ============================================================================
 // Helper Functions
@@ -81,6 +82,8 @@ size_t parse_size(const char* str) {
     double value = strtod(str, &end);
     if (end == str) return 0;
 
+    if (!std::isfinite(value) || value < 0) return 0;
+
     if (end && *end) {
         switch (*end) {
             case 'K': case 'k': value *= 1024; break;
@@ -88,6 +91,8 @@ size_t parse_size(const char* str) {
             case 'G': case 'g': value *= 1024 * 1024 * 1024; break;
         }
     }
+
+    if (!std::isfinite(value)) return 0;
 
     return static_cast<size_t>(value);
 }
@@ -308,6 +313,10 @@ eshkol_config_t eshkol_config_defaults(void) {
     config.enable_warnings = true;
     config.color_output = true;
 
+    // Type system defaults
+    config.strict_types = false;
+    config.unsafe_mode = false;
+
     return config;
 }
 
@@ -460,12 +469,9 @@ void eshkol_config_apply_args(eshkol_config_t* config, int argc, char** argv) {
 }
 
 const eshkol_config_t* eshkol_config_get(void) {
-    std::lock_guard<std::mutex> lock(g_config_mutex);
-
-    if (!g_config_initialized) {
+    std::call_once(g_config_once, []() {
         eshkol_config_load(&g_config);
-        g_config_initialized = true;
-    }
+    });
 
     return &g_config;
 }
@@ -473,9 +479,13 @@ const eshkol_config_t* eshkol_config_get(void) {
 void eshkol_config_set(const eshkol_config_t* config) {
     if (!config) return;
 
+    // Ensure default init has run before overwriting
+    std::call_once(g_config_once, []() {
+        eshkol_config_load(&g_config);
+    });
+
     std::lock_guard<std::mutex> lock(g_config_mutex);
     g_config = *config;
-    g_config_initialized = true;
 }
 
 // Individual getters

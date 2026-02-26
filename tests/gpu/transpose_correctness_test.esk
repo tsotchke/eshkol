@@ -1,0 +1,68 @@
+;; GPU Transpose Correctness Tests
+
+;; --- Small 2x3 transpose ---
+(define A (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+;; A = [[1,2,3],[4,5,6]]
+;; A^T = [[1,4],[2,5],[3,6]]
+(define AT (transpose A))
+(if (and (= (tensor-get AT 0 0) 1.0)
+         (= (tensor-get AT 0 1) 4.0)
+         (= (tensor-get AT 1 0) 2.0)
+         (= (tensor-get AT 1 1) 5.0)
+         (= (tensor-get AT 2 0) 3.0)
+         (= (tensor-get AT 2 1) 6.0))
+    (display "PASS: transpose 2x3 values correct")
+    (display "FAIL: transpose 2x3 values incorrect"))
+(newline)
+
+;; --- Double transpose: (A^T)^T = A ---
+(define ATT (transpose AT))
+(if (and (= (tensor-get ATT 0 0) 1.0)
+         (= (tensor-get ATT 0 1) 2.0)
+         (= (tensor-get ATT 0 2) 3.0)
+         (= (tensor-get ATT 1 0) 4.0)
+         (= (tensor-get ATT 1 1) 5.0)
+         (= (tensor-get ATT 1 2) 6.0))
+    (display "PASS: double transpose = original")
+    (display "FAIL: double transpose != original"))
+(newline)
+
+;; --- Square matrix transpose ---
+(define S (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
+;; S = [[1,2],[3,4]]
+;; S^T = [[1,3],[2,4]]
+(define ST (transpose S))
+(if (and (= (tensor-get ST 0 0) 1.0)
+         (= (tensor-get ST 0 1) 3.0)
+         (= (tensor-get ST 1 0) 2.0)
+         (= (tensor-get ST 1 1) 4.0))
+    (display "PASS: transpose 2x2 square correct")
+    (display "FAIL: transpose 2x2 square incorrect"))
+(newline)
+
+;; --- Medium size transpose (50x100) ---
+(define rows 50)
+(define cols 100)
+(define M (make-tensor (vector rows cols) 0.0))
+;; Fill diagonal-ish element: [0,0] = 1.0 (via make-tensor + add)
+;; Since make-tensor fills with zeros, use arange and reshape
+(define seq (arange 5000))
+(define M2 (reshape seq rows cols))
+;; M2[0][0] = 0, M2[0][1] = 1, M2[1][0] = 100
+(define M2T (transpose M2))
+;; M2T[0][0] = 0, M2T[1][0] = 1, M2T[0][1] = 100
+(if (and (= (tensor-get M2T 0 0) 0.0)
+         (= (tensor-get M2T 1 0) 1.0)
+         (= (tensor-get M2T 0 1) 100.0))
+    (display "PASS: transpose 50x100 values correct")
+    (display "FAIL: transpose 50x100 values incorrect"))
+(newline)
+
+;; --- Transpose preserves element count ---
+;; Sum before and after should be the same
+(define sum-before (tensor-sum M2))
+(define sum-after (tensor-sum M2T))
+(if (< (abs (- sum-before sum-after)) 1e-6)
+    (display "PASS: transpose preserves element sum")
+    (display "FAIL: transpose changes element sum"))
+(newline)

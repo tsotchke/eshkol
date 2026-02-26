@@ -401,6 +401,16 @@ llvm::Value* TaggedValueCodegen::unpackPtr(llvm::Value* tagged_val) {
     return ctx_.builder().CreateIntToPtr(data_as_int64, ctx_.ptrType());
 }
 
+llvm::Value* TaggedValueCodegen::unpackBool(llvm::Value* tagged_val) {
+    llvm::Value* temp_ptr = createEntryAlloca("temp_tagged");
+    ctx_.builder().CreateStore(tagged_val, temp_ptr);
+
+    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
+        ctx_.taggedValueType(), temp_ptr, 4);
+    llvm::Value* data_as_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), data_ptr);
+    return ctx_.builder().CreateTrunc(data_as_int64, ctx_.builder().getInt1Ty(), "bool_val");
+}
+
 // === Utility Functions ===
 
 llvm::Value* TaggedValueCodegen::safeExtractInt64(llvm::Value* val) {

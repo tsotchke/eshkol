@@ -1,0 +1,193 @@
+;; Signal Processing Filters Test Suite
+;; Tests windowing, convolution, FIR/IIR filters, Butterworth design
+
+(require signal.filters)
+
+(display "=== SIGNAL PROCESSING FILTERS TESTS ===") (newline)
+
+;; Helper: check approximate equality
+(define (approx= a b tol)
+  (< (abs (- a b)) tol))
+
+;; ============================================================
+;; Test 1: Hamming Window
+;; ============================================================
+(display "Test 1: Hamming window... ")
+(let ((w (hamming-window 8)))
+  ;; Hamming window endpoints should be 0.08 (not zero)
+  (if (and (approx= (vref w 0) 0.08 0.01)
+           (approx= (vref w 7) 0.08 0.01)
+           ;; Middle values should be close to 1.0
+           (> (vref w 3) 0.9)
+           (> (vref w 4) 0.9)
+           ;; Length should be correct
+           (= (vector-length w) 8))
+      (display "PASS")
+      (begin (display "FAIL: ") (display w)))
+  (newline))
+
+;; ============================================================
+;; Test 2: Hann Window
+;; ============================================================
+(display "Test 2: Hann window... ")
+(let ((w (hann-window 8)))
+  ;; Hann window endpoints should be 0.0
+  (if (and (approx= (vref w 0) 0.0 0.01)
+           (approx= (vref w 7) 0.0 0.01)
+           ;; Middle should be 1.0
+           (> (vref w 3) 0.9)
+           (= (vector-length w) 8))
+      (display "PASS")
+      (begin (display "FAIL: ") (display w)))
+  (newline))
+
+;; ============================================================
+;; Test 3: Blackman Window
+;; ============================================================
+(display "Test 3: Blackman window... ")
+(let ((w (blackman-window 8)))
+  ;; Blackman window endpoints should be ~0.0
+  (if (and (approx= (vref w 0) 0.0 0.01)
+           ;; Middle should be near 1.0
+           (> (vref w 4) 0.8)
+           (= (vector-length w) 8))
+      (display "PASS")
+      (begin (display "FAIL: ") (display w)))
+  (newline))
+
+;; ============================================================
+;; Test 4: Kaiser Window
+;; ============================================================
+(display "Test 4: Kaiser window... ")
+(let ((w (kaiser-window 8 5.0)))
+  ;; Kaiser window should have positive values
+  (if (and (> (vref w 0) 0.0)
+           (> (vref w 4) 0.5)
+           (= (vector-length w) 8))
+      (display "PASS")
+      (begin (display "FAIL: ") (display w)))
+  (newline))
+
+;; ============================================================
+;; Test 5: Apply Window
+;; ============================================================
+(display "Test 5: Apply window... ")
+(let* ((signal (make-vector 4 1.0))
+       (window (make-vector 4 0.5))
+       (result (apply-window signal window)))
+  (if (and (approx= (vref result 0) 0.5 0.001)
+           (approx= (vref result 1) 0.5 0.001)
+           (approx= (vref result 2) 0.5 0.001)
+           (approx= (vref result 3) 0.5 0.001))
+      (display "PASS")
+      (begin (display "FAIL: ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 6: Direct Convolution (identity)
+;; ============================================================
+(display "Test 6: Convolution with identity kernel... ")
+(let* ((signal (vector 1.0 2.0 3.0 4.0 5.0))
+       (kernel (vector 1.0))  ;; identity kernel
+       (result (convolve signal kernel)))
+  (if (and (approx= (vref result 0) 1.0 0.001)
+           (approx= (vref result 1) 2.0 0.001)
+           (approx= (vref result 2) 3.0 0.001)
+           (approx= (vref result 3) 4.0 0.001)
+           (approx= (vref result 4) 5.0 0.001))
+      (display "PASS")
+      (begin (display "FAIL: ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 7: Convolution (simple averaging)
+;; ============================================================
+(display "Test 7: Convolution averaging... ")
+(let* ((signal (vector 0.0 0.0 1.0 0.0 0.0))
+       (kernel (vector 0.5 0.5))
+       (result (convolve signal kernel)))
+  ;; Convolving impulse with [0.5, 0.5] should give shifted pulse
+  (if (and (approx= (vref result 0) 0.0 0.001)
+           (approx= (vref result 1) 0.0 0.001)
+           (approx= (vref result 2) 0.5 0.001)
+           (approx= (vref result 3) 0.5 0.001))
+      (display "PASS")
+      (begin (display "FAIL: ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 8: FIR filter (moving average)
+;; ============================================================
+(display "Test 8: FIR moving average filter... ")
+(let* ((signal (vector 1.0 2.0 3.0 4.0 5.0))
+       ;; 3-point moving average coefficients
+       (coeffs (vector 0.333333 0.333333 0.333333))
+       (result (fir-filter signal coeffs)))
+  ;; First output should be approximately signal[0] * coeffs[0] = 0.333
+  (if (and (approx= (vref result 0) 0.333333 0.01)
+           ;; Second: 1*0.333 + 2*0.333 = 0.999
+           (approx= (vref result 1) 0.999999 0.01)
+           ;; Third: 1*0.333 + 2*0.333 + 3*0.333 = 2.0
+           (approx= (vref result 2) 2.0 0.01))
+      (display "PASS")
+      (begin (display "FAIL: ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 9: IIR filter (simple first-order)
+;; ============================================================
+(display "Test 9: IIR first-order filter... ")
+(let* ((signal (vector 1.0 0.0 0.0 0.0 0.0))
+       ;; y[n] = 1.0*x[n] + 0.0*x[n-1] - (-0.5)*y[n-1]
+       ;; = x[n] + 0.5*y[n-1]  (exponential decay)
+       (b-coeffs (vector 1.0))
+       (a-coeffs (vector 1.0 -0.5))
+       (result (iir-filter b-coeffs a-coeffs signal)))
+  ;; y[0] = 1.0, y[1] = 0 + 0.5*1 = 0.5, y[2] = 0 + 0.5*0.5 = 0.25
+  (if (and (approx= (vref result 0) 1.0 0.001)
+           (approx= (vref result 1) 0.5 0.001)
+           (approx= (vref result 2) 0.25 0.001)
+           (approx= (vref result 3) 0.125 0.001))
+      (display "PASS")
+      (begin (display "FAIL: ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 10: Butterworth lowpass design
+;; ============================================================
+(display "Test 11: Butterworth lowpass design... ")
+(let* ((coeffs (butterworth-lowpass 2 0.2))
+       (b (car coeffs))
+       (a (cdr coeffs)))
+  ;; 2nd order Butterworth at fc=0.2 should produce valid coefficients
+  ;; b should have 3 coefficients, a should have 3 coefficients
+  (if (and (= (vector-length b) 3)
+           (= (vector-length a) 3)
+           ;; a[0] should be 1.0 (normalized)
+           (approx= (vref a 0) 1.0 0.001)
+           ;; All coefficients should be finite
+           (not (nan? (vref b 0)))
+           (not (nan? (vref b 1)))
+           (not (nan? (vref b 2))))
+      (display "PASS")
+      (begin (display "FAIL: b=") (display b) (display " a=") (display a)))
+  (newline))
+
+;; ============================================================
+;; Test 11: Frequency response magnitude
+;; ============================================================
+(display "Test 12: Frequency response... ")
+(let* ((b (vector 1.0))
+       (a (vector 1.0))
+       ;; Unity transfer function H(z) = 1
+       (resp (frequency-response b a 16))
+       (mag (car resp)))
+  ;; All magnitudes should be 1.0 for unity transfer function
+  (if (and (= (vector-length mag) 16)
+           (approx= (vref mag 0) 1.0 0.001)
+           (approx= (vref mag 8) 1.0 0.001))
+      (display "PASS")
+      (begin (display "FAIL: ") (display mag)))
+  (newline))
+
+(display "=== SIGNAL PROCESSING FILTERS TESTS COMPLETE ===") (newline)

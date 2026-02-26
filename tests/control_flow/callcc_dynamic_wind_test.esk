@@ -1,0 +1,103 @@
+;; call/cc + dynamic-wind Interaction Test
+;; Tests proper cleanup ordering and continuation semantics
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Normal return through dynamic-wind
+;; ============================================================================
+
+(display "=== Testing normal return through dynamic-wind ===\n")
+
+(define log1 "")
+(define result1
+  (dynamic-wind
+    (lambda () (set! log1 (string-append log1 "B")))
+    (lambda () 42)
+    (lambda () (set! log1 (string-append log1 "A")))))
+
+(test-case "dynamic-wind normal return value" 42 result1)
+(test-case "dynamic-wind normal before+after" "BA" log1)
+
+;; ============================================================================
+;; Test: Escape through dynamic-wind via call/cc
+;; ============================================================================
+
+(display "\n=== Testing escape through dynamic-wind ===\n")
+
+(define log2 "")
+(define result2
+  (call-with-current-continuation
+    (lambda (k)
+      (dynamic-wind
+        (lambda () (set! log2 (string-append log2 "B")))
+        (lambda () (k 99))
+        (lambda () (set! log2 (string-append log2 "A")))))))
+
+(test-case "escape value captured" 99 result2)
+(test-case "escape runs before+after" "BA" log2)
+
+;; ============================================================================
+;; Test: Nested dynamic-wind with escape
+;; ============================================================================
+
+(display "\n=== Testing nested dynamic-wind escape ===\n")
+
+(define log3 "")
+(define result3
+  (call-with-current-continuation
+    (lambda (k)
+      (dynamic-wind
+        (lambda () (set! log3 (string-append log3 "B1-")))
+        (lambda ()
+          (dynamic-wind
+            (lambda () (set! log3 (string-append log3 "B2-")))
+            (lambda () (k "escaped"))
+            (lambda () (set! log3 (string-append log3 "A2-")))))
+        (lambda () (set! log3 (string-append log3 "A1")))))))
+
+(test-case "nested escape value propagated" "escaped" result3)
+(test-case "nested cleanup order" "B1-B2-A2-A1" log3)
+
+;; ============================================================================
+;; Test: dynamic-wind without escape (before/thunk/after all run)
+;; ============================================================================
+
+(display "\n=== Testing dynamic-wind full execution ===\n")
+
+(define log4 "")
+(define result4
+  (call-with-current-continuation
+    (lambda (k)
+      (dynamic-wind
+        (lambda () (set! log4 (string-append log4 "before-")))
+        (lambda ()
+          ;; don't call k — normal exit
+          (+ 10 20))
+        (lambda () (set! log4 (string-append log4 "after")))))))
+
+(test-case "no-escape value" 30 result4)
+(test-case "no-escape before+after" "before-after" log4)
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== call/cc + dynamic-wind Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)

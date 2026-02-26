@@ -78,6 +78,10 @@ typedef struct eshkol_config {
     bool strict_mode;                // Strict R7RS compliance
     bool enable_warnings;            // Enable warnings
     bool color_output;               // Colorized output
+
+    // Type system flags
+    bool strict_types;               // Strict type checking (errors instead of warnings)
+    bool unsafe_mode;                // Skip all type checks
 } eshkol_config_t;
 
 // ============================================================================
@@ -223,6 +227,9 @@ public:
     bool debugMode() const { return config_.debug_mode; }
     bool dumpAst() const { return config_.dump_ast; }
     bool dumpIr() const { return config_.dump_ir; }
+
+    bool strictTypes() const { return config_.strict_types; }
+    bool unsafeMode() const { return config_.unsafe_mode; }
 
     std::vector<std::string> libPaths() const;
 

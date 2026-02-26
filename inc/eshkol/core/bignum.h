@@ -85,6 +85,9 @@ int eshkol_bignum_compare_int64(const eshkol_bignum_t* a, int64_t b);
 
 bool eshkol_bignum_is_zero(const eshkol_bignum_t* a);
 bool eshkol_bignum_is_negative(const eshkol_bignum_t* a);
+bool eshkol_bignum_is_positive(const eshkol_bignum_t* a);
+bool eshkol_bignum_is_even(const eshkol_bignum_t* a);
+bool eshkol_bignum_is_odd(const eshkol_bignum_t* a);
 
 /* Check if bignum fits in int64. If so, store the value and return true. */
 bool eshkol_bignum_fits_int64(const eshkol_bignum_t* a, int64_t* out);
@@ -115,6 +118,41 @@ void eshkol_bignum_compare_tagged(
     int op, eshkol_tagged_value_t* result);
 
 bool eshkol_is_bignum_tagged(const eshkol_tagged_value_t* val);
+
+/* ===== Bitwise Operations ===== */
+/* R7RS two's complement semantics for negative bignums */
+
+eshkol_bignum_t* eshkol_bignum_bitwise_and(arena_t* arena, const eshkol_bignum_t* a, const eshkol_bignum_t* b);
+eshkol_bignum_t* eshkol_bignum_bitwise_or(arena_t* arena, const eshkol_bignum_t* a, const eshkol_bignum_t* b);
+eshkol_bignum_t* eshkol_bignum_bitwise_xor(arena_t* arena, const eshkol_bignum_t* a, const eshkol_bignum_t* b);
+eshkol_bignum_t* eshkol_bignum_bitwise_not(arena_t* arena, const eshkol_bignum_t* a);
+eshkol_bignum_t* eshkol_bignum_shift(arena_t* arena, const eshkol_bignum_t* a, int64_t count);
+
+/* Tagged value dispatch for bitwise ops.
+ * op: 0=and, 1=or, 2=xor, 3=not, 4=arithmetic-shift */
+void eshkol_bignum_bitwise_tagged(arena_t* arena,
+    const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
+    int op, eshkol_tagged_value_t* result);
+
+/* ===== Exponentiation ===== */
+
+/* Exact bignum exponentiation via repeated squaring: O(log n) multiplications */
+eshkol_bignum_t* eshkol_bignum_pow(arena_t* arena, const eshkol_bignum_t* base, uint64_t exp);
+
+/* Tagged value dispatch for expt.
+ * If both operands are exact integers and exponent >= 0, returns exact bignum.
+ * Otherwise falls back to double pow(). */
+void eshkol_bignum_pow_tagged(arena_t* arena,
+    const eshkol_tagged_value_t* base, const eshkol_tagged_value_t* exponent,
+    eshkol_tagged_value_t* result);
+
+/* ===== String Conversion ===== */
+
+/* Parse a string to a tagged number value.
+ * Handles integers (int64 or bignum for overflow) and doubles.
+ * Result is written to *result as a tagged value. */
+void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
+    eshkol_tagged_value_t* result);
 
 /* ===== Display ===== */
 

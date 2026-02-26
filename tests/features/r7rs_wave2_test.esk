@@ -1,0 +1,80 @@
+; Wave 2 R7RS procedures test
+
+; char-foldcase
+(display (char-foldcase #\A))
+(display " ")
+(display (char-foldcase #\z))
+(newline)
+; Expected: a z
+
+; digit-value
+(display (digit-value #\5))
+(display " ")
+(display (digit-value #\a))
+(newline)
+; Expected: 5 #f
+
+; string-foldcase
+(display (string-foldcase "Hello World"))
+(newline)
+; Expected: hello world
+
+; string-for-each
+(string-for-each (lambda (c) (display c)) "abc")
+(newline)
+; Expected: abc
+
+; string-map
+(display (string-map (lambda (c) (char-upcase c)) "hello"))
+(newline)
+; Expected: HELLO
+
+; vector-for-each (works with both #(...) tensors and (vector ...) vectors)
+(vector-for-each (lambda (x) (display x) (display " ")) #(1 2 3))
+(newline)
+; Expected: 1 2 3
+
+; vector-map
+(define vm-result (vector-map (lambda (x) (+ x 10)) #(1 2 3)))
+(display (vector-ref vm-result 0))
+(display " ")
+(display (vector-ref vm-result 1))
+(display " ")
+(display (vector-ref vm-result 2))
+(newline)
+; Expected: 11 12 13
+
+; write-simple (alias for write)
+(write-simple 42)
+(newline)
+; Expected: 42
+
+; square (Wave 1 but good to verify)
+(display (square 5))
+(display " ")
+(display (square 2.5))
+(newline)
+; Expected: 25 6.25
+
+; exact->inexact
+(display (exact->inexact 42))
+(newline)
+; Expected: 42.0
+
+; floor-quotient, floor-remainder
+(display (floor-quotient 7 2))
+(display " ")
+(display (floor-remainder 7 2))
+(display " ")
+(display (floor-quotient -7 2))
+(display " ")
+(display (floor-remainder -7 2))
+(newline)
+; Expected: 3 1 -4 1
+
+; exact-integer?
+(display (exact-integer? 42))
+(display " ")
+(display (exact-integer? 3.14))
+(newline)
+; Expected: #t #f

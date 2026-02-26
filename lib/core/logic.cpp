@@ -10,15 +10,21 @@
 
 #include <eshkol/core/logic.h>
 #include <eshkol/eshkol.h>
+#include <eshkol/logger.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <atomic>
+#include <mutex>
 
 /* ===== Logic Variable Registry ===== */
 
-/* Global variable name registry. Thread-safe via atomic counter. */
+/* Global variable name registry. Thread-safe via mutex (protects g_var_names array)
+ * and atomic counter (g_var_count). The mutex serializes find+register in
+ * eshkol_make_logic_var and reads in eshkol_logic_var_name. */
 static const char* g_var_names[LOGIC_VAR_MAX];
-static uint64_t g_var_count = 0;
+static std::atomic<uint64_t> g_var_count{0};
+static std::mutex g_var_mutex;
 
 /* Map from name to var_id for deduplication */
 static uint64_t find_var_by_name(const char* name) {
@@ -30,32 +36,59 @@ static uint64_t find_var_by_name(const char* name) {
     return UINT64_MAX; /* not found */
 }
 
+/* Static string pool for logic variable names — avoids malloc leak. */
+static char g_var_name_pool[LOGIC_VAR_MAX * 64]; /* 64 chars per name max */
+static std::atomic<size_t> g_var_name_pool_offset{0};
+
+static const char* intern_var_name(const char* name) {
+    size_t len = strlen(name);
+    if (len >= 63) len = 63; /* truncate to fit pool slot */
+    size_t needed = len + 1;
+    size_t offset = g_var_name_pool_offset.load(std::memory_order_relaxed);
+    do {
+        if (offset + needed > sizeof(g_var_name_pool)) {
+            eshkol_error("logic variable name pool exhausted");
+            return "<pool-exhausted>"; /* safe static string, not dangling caller ptr */
+        }
+    } while (!g_var_name_pool_offset.compare_exchange_weak(
+                 offset, offset + needed,
+                 std::memory_order_acq_rel, std::memory_order_relaxed));
+    memcpy(g_var_name_pool + offset, name, len);
+    g_var_name_pool[offset + len] = '\0';
+    return g_var_name_pool + offset;
+}
+
 uint64_t eshkol_make_logic_var(const char* name) {
     if (!name) return UINT64_MAX;
+
+    /* Lock to protect g_var_names[] array access (find + register must be atomic) */
+    std::lock_guard<std::mutex> lock(g_var_mutex);
 
     /* Check if already registered */
     uint64_t existing = find_var_by_name(name);
     if (existing != UINT64_MAX) return existing;
 
     /* Register new variable */
-    if (g_var_count >= LOGIC_VAR_MAX) {
-        fprintf(stderr, "error: logic variable limit exceeded (%d)\n", LOGIC_VAR_MAX);
+    uint64_t count = g_var_count.load();
+    if (count >= LOGIC_VAR_MAX) {
+        eshkol_error("logic variable limit exceeded (%d)", LOGIC_VAR_MAX);
         return UINT64_MAX;
     }
 
-    uint64_t id = g_var_count++;
-    /* Duplicate the name string (static storage) */
-    size_t len = strlen(name);
-    char* name_copy = (char*)malloc(len + 1);
-    if (name_copy) {
-        memcpy(name_copy, name, len + 1);
+    uint64_t id = g_var_count.fetch_add(1);
+    if (id >= LOGIC_VAR_MAX) {
+        /* Another thread beat us past the limit */
+        eshkol_error("logic variable limit exceeded (%d)", LOGIC_VAR_MAX);
+        return UINT64_MAX;
     }
-    g_var_names[id] = name_copy;
+
+    g_var_names[id] = intern_var_name(name);
     return id;
 }
 
 const char* eshkol_logic_var_name(uint64_t var_id) {
     if (var_id >= g_var_count) return NULL;
+    std::lock_guard<std::mutex> lock(g_var_mutex);
     return g_var_names[var_id];
 }
 
@@ -189,13 +222,20 @@ eshkol_tagged_value_t eshkol_walk(const eshkol_tagged_value_t* term,
     return current;
 }
 
-eshkol_tagged_value_t eshkol_walk_deep(arena_t* arena,
-    const eshkol_tagged_value_t* term, const eshkol_substitution_t* subst) {
+static const int WALK_DEEP_MAX_DEPTH = 10000;
+
+static eshkol_tagged_value_t walk_deep_impl(arena_t* arena,
+    const eshkol_tagged_value_t* term, const eshkol_substitution_t* subst, int depth) {
     if (!term || !arena) {
         eshkol_tagged_value_t null_val;
         memset(&null_val, 0, sizeof(null_val));
         null_val.type = ESHKOL_VALUE_NULL;
         return null_val;
+    }
+
+    if (depth > WALK_DEEP_MAX_DEPTH) {
+        eshkol_warn("walk_deep: depth limit exceeded (%d), returning as-is", depth);
+        return *term;
     }
 
     eshkol_tagged_value_t walked = eshkol_walk(term, subst);
@@ -214,7 +254,7 @@ eshkol_tagged_value_t eshkol_walk_deep(arena_t* arena,
             eshkol_tagged_value_t* new_args = FACT_ARGS(new_fact);
 
             for (uint32_t i = 0; i < fact->arity; i++) {
-                new_args[i] = eshkol_walk_deep(arena, &args[i], subst);
+                new_args[i] = walk_deep_impl(arena, &args[i], subst, depth + 1);
             }
 
             eshkol_tagged_value_t result;
@@ -228,10 +268,19 @@ eshkol_tagged_value_t eshkol_walk_deep(arena_t* arena,
     return walked;
 }
 
+eshkol_tagged_value_t eshkol_walk_deep(arena_t* arena,
+    const eshkol_tagged_value_t* term, const eshkol_substitution_t* subst) {
+    return walk_deep_impl(arena, term, subst, 0);
+}
+
 /* ===== Occurs Check ===== */
 
-static bool occurs(uint64_t var_id, const eshkol_tagged_value_t* term,
-                   const eshkol_substitution_t* subst) {
+static const int OCCURS_CHECK_MAX_DEPTH = 1000;
+
+static bool occurs_impl(uint64_t var_id, const eshkol_tagged_value_t* term,
+                        const eshkol_substitution_t* subst, int depth) {
+    if (depth > OCCURS_CHECK_MAX_DEPTH) return false; /* safety limit */
+
     eshkol_tagged_value_t walked = eshkol_walk(term, subst);
 
     if (walked.type == ESHKOL_VALUE_LOGIC_VAR) {
@@ -245,12 +294,17 @@ static bool occurs(uint64_t var_id, const eshkol_tagged_value_t* term,
             eshkol_fact_t* fact = (eshkol_fact_t*)walked.data.ptr_val;
             eshkol_tagged_value_t* args = FACT_ARGS(fact);
             for (uint32_t i = 0; i < fact->arity; i++) {
-                if (occurs(var_id, &args[i], subst)) return true;
+                if (occurs_impl(var_id, &args[i], subst, depth + 1)) return true;
             }
         }
     }
 
     return false;
+}
+
+static bool occurs(uint64_t var_id, const eshkol_tagged_value_t* term,
+                   const eshkol_substitution_t* subst) {
+    return occurs_impl(var_id, term, subst, 0);
 }
 
 /* ===== Tagged Value Comparison ===== */

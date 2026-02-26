@@ -1,0 +1,109 @@
+(require stdlib)
+
+(display "TEST: Complex number edge cases") (newline)
+
+; 1. Zero complex equals 0.0
+(display (if (zero? (make-rectangular 0.0 0.0)) "PASS" "FAIL")) (display ": zero complex (make-rectangular 0.0 0.0) is zero") (newline)
+
+; 2. Pure real: imaginary part is 0.0
+(display (if (= (imag-part (make-rectangular 5.0 0.0)) 0.0) "PASS" "FAIL")) (display ": pure real imag-part is 0.0") (newline)
+
+; 3. Pure imaginary: real part is 0.0
+(display (if (= (real-part (make-rectangular 0.0 5.0)) 0.0) "PASS" "FAIL")) (display ": pure imaginary real-part is 0.0") (newline)
+
+; 4. complex? predicate on complex number
+(display (if (complex? (make-rectangular 3.0 4.0)) "PASS" "FAIL")) (display ": complex? predicate returns true for complex") (newline)
+
+; 5. complex? predicate on real number
+(display (if (complex? 5.0) "PASS" "FAIL")) (display ": complex? predicate returns true for real (reals are complex)") (newline)
+
+; 6. Conjugate: real-part unchanged
+(let ((z (make-rectangular 3.0 4.0)))
+  (display (if (= (real-part z) 3.0) "PASS" "FAIL")) (display ": conjugate real-part unchanged") (newline))
+
+; 7. Conjugate: imag-part negated via make-rectangular
+(let ((z (make-rectangular 3.0 4.0))
+      (zconj (make-rectangular 3.0 -4.0)))
+  (display (if (= (imag-part zconj) (- (imag-part z))) "PASS" "FAIL")) (display ": conjugate imag-part negated") (newline))
+
+; 8. Magnitude: |3+4i| = 5.0
+(display (if (< (abs (- (magnitude (make-rectangular 3.0 4.0)) 5.0)) 1e-10) "PASS" "FAIL")) (display ": magnitude of 3+4i is 5.0") (newline)
+
+; 9. Magnitude of zero complex is 0.0
+(display (if (= (magnitude (make-rectangular 0.0 0.0)) 0.0) "PASS" "FAIL")) (display ": magnitude of 0+0i is 0.0") (newline)
+
+; 10. Angle: angle of 1+1i is close to pi/4
+(display (if (< (abs (- (angle (make-rectangular 1.0 1.0)) (/ (* 4.0 (atan 1.0)) 1.0))) 1e-10) "PASS" "FAIL")) (display ": angle of 1+1i is pi/4") (newline)
+
+; 11. Angle: angle of 1+0i is 0.0
+(display (if (< (abs (angle (make-rectangular 1.0 0.0))) 1e-10) "PASS" "FAIL")) (display ": angle of 1+0i is 0.0") (newline)
+
+; 12. make-polar roundtrip: real-part
+(let* ((r 5.0)
+       (theta (/ (* 4.0 (atan 1.0)) 1.0))
+       (z (make-polar r theta)))
+  (display (if (< (abs (- (real-part z) (* r (cos theta)))) 1e-10) "PASS" "FAIL")) (display ": make-polar real-part roundtrip") (newline))
+
+; 13. make-polar roundtrip: imag-part
+(let* ((r 5.0)
+       (theta (/ (* 4.0 (atan 1.0)) 1.0))
+       (z (make-polar r theta)))
+  (display (if (< (abs (- (imag-part z) (* r (sin theta)))) 1e-10) "PASS" "FAIL")) (display ": make-polar imag-part roundtrip") (newline))
+
+; 14. Complex addition
+(let* ((z1 (make-rectangular 1.0 2.0))
+       (z2 (make-rectangular 3.0 4.0))
+       (sum (+ z1 z2)))
+  (display (if (and (= (real-part sum) 4.0) (= (imag-part sum) 6.0)) "PASS" "FAIL")) (display ": complex addition (1+2i)+(3+4i) = 4+6i") (newline))
+
+; 15. Complex subtraction
+(let* ((z1 (make-rectangular 5.0 7.0))
+       (z2 (make-rectangular 2.0 3.0))
+       (diff (- z1 z2)))
+  (display (if (and (= (real-part diff) 3.0) (= (imag-part diff) 4.0)) "PASS" "FAIL")) (display ": complex subtraction (5+7i)-(2+3i) = 3+4i") (newline))
+
+; 16. Complex multiplication
+(let* ((z1 (make-rectangular 1.0 2.0))
+       (z2 (make-rectangular 3.0 4.0))
+       (prod (* z1 z2)))
+  ; (1+2i)(3+4i) = 3+4i+6i+8i^2 = 3+10i-8 = -5+10i
+  (display (if (and (< (abs (- (real-part prod) -5.0)) 1e-10)
+                    (< (abs (- (imag-part prod) 10.0)) 1e-10)) "PASS" "FAIL")) (display ": complex multiplication (1+2i)*(3+4i) = -5+10i") (newline))
+
+; 17. Complex division
+(let* ((z1 (make-rectangular 1.0 2.0))
+       (z2 (make-rectangular 3.0 4.0))
+       (quot (/ z1 z2)))
+  ; (1+2i)/(3+4i) = (1+2i)(3-4i)/25 = (3-4i+6i+8)/25 = (11+2i)/25
+  (display (if (and (< (abs (- (real-part quot) (/ 11.0 25.0))) 1e-10)
+                    (< (abs (- (imag-part quot) (/ 2.0 25.0))) 1e-10)) "PASS" "FAIL")) (display ": complex division (1+2i)/(3+4i) = 11/25+2i/25") (newline))
+
+; 18. i^2 = -1
+(let* ((i (make-rectangular 0.0 1.0))
+       (i2 (* i i)))
+  (display (if (and (< (abs (- (real-part i2) -1.0)) 1e-10)
+                    (< (abs (imag-part i2)) 1e-10)) "PASS" "FAIL")) (display ": i^2 = -1") (newline))
+
+; 19. Complex with +inf.0 real part
+(let ((z (make-rectangular +inf.0 0.0)))
+  (display (if (infinite? (real-part z)) "PASS" "FAIL")) (display ": complex with +inf.0 real part") (newline))
+
+; 20. Complex with +nan.0 real part
+(let ((z (make-rectangular +nan.0 0.0)))
+  (display (if (nan? (real-part z)) "PASS" "FAIL")) (display ": complex with +nan.0 real part") (newline))
+
+; 21. real-part of exact integer is itself
+(display (if (= (real-part 42) 42) "PASS" "FAIL")) (display ": real-part of integer 42 is 42") (newline)
+
+; 22. imag-part of real number is 0
+(display (if (= (imag-part 3.14) 0) "PASS" "FAIL")) (display ": imag-part of real 3.14 is 0") (newline)
+
+; 23. Magnitude of pure imaginary
+(display (if (< (abs (- (magnitude (make-rectangular 0.0 7.0)) 7.0)) 1e-10) "PASS" "FAIL")) (display ": magnitude of 0+7i is 7.0") (newline)
+
+; 24. Magnitude of pure real
+(display (if (< (abs (- (magnitude (make-rectangular -5.0 0.0)) 5.0)) 1e-10) "PASS" "FAIL")) (display ": magnitude of -5+0i is 5.0") (newline)
+
+; 25. Complex exponentiation: (expt (make-rectangular 0.0 1.0) 4) should be close to 1
+(let ((result (expt (make-rectangular 0.0 1.0) 4)))
+  (display (if (< (abs (- (real-part result) 1.0)) 1e-10) "PASS" "FAIL")) (display ": i^4 real part is 1.0") (newline))

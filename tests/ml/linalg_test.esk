@@ -1,0 +1,134 @@
+(require stdlib)
+
+;; Linear Algebra Tests
+;; Tests for tensor-det, tensor-inverse, tensor-solve, tensor-qr, tensor-cholesky
+
+;; Helper matrices
+(define identity2 (reshape #(1.0 0.0 0.0 1.0) #(2 2)))
+(define mat-a (reshape #(2.0 3.0 1.0 4.0) #(2 2)))
+(define mat-singular (reshape #(2.0 4.0 1.0 2.0) #(2 2)))
+(define mat-sym-pd (reshape #(4.0 2.0 2.0 3.0) #(2 2)))
+
+;; ============================================================
+;; tensor-det tests
+;; ============================================================
+
+(display "TEST: determinant of identity matrix") (newline)
+(let ((det-i (tensor-det identity2)))
+  (display (if (< (abs (- det-i 1.0)) 1e-6) "PASS" "FAIL"))
+  (display ": determinant of identity matrix = 1.0") (newline))
+
+(display "TEST: determinant of 2x2 matrix") (newline)
+(let ((det-a (tensor-det mat-a)))
+  (display (if (< (abs (- det-a 5.0)) 1e-6) "PASS" "FAIL"))
+  (display ": determinant of [[2,3],[1,4]] = 5.0") (newline))
+
+(display "TEST: determinant of singular matrix") (newline)
+(let ((det-s (tensor-det mat-singular)))
+  (display (if (< (abs det-s) 1e-6) "PASS" "FAIL"))
+  (display ": determinant of singular matrix = 0.0") (newline))
+
+;; ============================================================
+;; tensor-inverse tests
+;; ============================================================
+
+(display "TEST: inverse of identity is identity") (newline)
+(let ((inv-i (tensor-inverse identity2)))
+  (let ((diff00 (abs (- (tensor-ref inv-i 0) 1.0)))
+        (diff01 (abs (- (tensor-ref inv-i 1) 0.0)))
+        (diff10 (abs (- (tensor-ref inv-i 2) 0.0)))
+        (diff11 (abs (- (tensor-ref inv-i 3) 1.0))))
+    (display (if (and (< diff00 1e-6) (< diff01 1e-6)
+                      (< diff10 1e-6) (< diff11 1e-6))
+                 "PASS" "FAIL"))
+    (display ": inverse of identity is identity") (newline)))
+
+(display "TEST: A * A^-1 = I") (newline)
+(let ((inv-a (tensor-inverse mat-a)))
+  (let ((product (matmul mat-a inv-a)))
+    (let ((diff00 (abs (- (tensor-ref product 0) 1.0)))
+          (diff01 (abs (tensor-ref product 1)))
+          (diff10 (abs (tensor-ref product 2)))
+          (diff11 (abs (- (tensor-ref product 3) 1.0))))
+      (display (if (and (< diff00 1e-6) (< diff01 1e-6)
+                        (< diff10 1e-6) (< diff11 1e-6))
+                   "PASS" "FAIL"))
+      (display ": A * A^-1 = I for [[2,3],[1,4]]") (newline))))
+
+;; ============================================================
+;; tensor-solve tests
+;; ============================================================
+
+(display "TEST: solve Ax = b") (newline)
+(let ((b (reshape #(5.0 6.0) #(2 1))))
+  (let ((x (tensor-solve mat-a b)))
+    (let ((check (matmul mat-a x)))
+      (let ((diff0 (abs (- (tensor-ref check 0) 5.0)))
+            (diff1 (abs (- (tensor-ref check 1) 6.0))))
+        (display (if (and (< diff0 1e-6) (< diff1 1e-6))
+                     "PASS" "FAIL"))
+        (display ": solve Ax=b then A*x = b") (newline)))))
+
+(display "TEST: solve identity system") (newline)
+(let ((b (reshape #(3.0 7.0) #(2 1))))
+  (let ((x (tensor-solve identity2 b)))
+    (let ((diff0 (abs (- (tensor-ref x 0) 3.0)))
+          (diff1 (abs (- (tensor-ref x 1) 7.0))))
+      (display (if (and (< diff0 1e-6) (< diff1 1e-6))
+                   "PASS" "FAIL"))
+      (display ": solve Ix=b gives x=b") (newline))))
+
+;; ============================================================
+;; tensor-qr tests
+;; ============================================================
+
+(display "TEST: QR decomposition Q*R = A") (newline)
+(let ((qr (tensor-qr mat-a)))
+  (let ((Q (car qr))
+        (R (cadr qr)))
+    (let ((product (matmul Q R)))
+      (let ((diff0 (abs (- (tensor-ref product 0) 2.0)))
+            (diff1 (abs (- (tensor-ref product 1) 3.0)))
+            (diff2 (abs (- (tensor-ref product 2) 1.0)))
+            (diff3 (abs (- (tensor-ref product 3) 4.0))))
+        (display (if (and (< diff0 1e-6) (< diff1 1e-6)
+                          (< diff2 1e-6) (< diff3 1e-6))
+                     "PASS" "FAIL"))
+        (display ": QR decomposition Q*R = A") (newline)))))
+
+(display "TEST: QR decomposition Q is orthogonal") (newline)
+(let ((qr (tensor-qr mat-a)))
+  (let ((Q (car qr)))
+    (let ((Qt (transpose Q)))
+      (let ((QtQ (matmul Qt Q)))
+        (let ((diff00 (abs (- (tensor-ref QtQ 0) 1.0)))
+              (diff01 (abs (tensor-ref QtQ 1)))
+              (diff10 (abs (tensor-ref QtQ 2)))
+              (diff11 (abs (- (tensor-ref QtQ 3) 1.0))))
+          (display (if (and (< diff00 1e-6) (< diff01 1e-6)
+                            (< diff10 1e-6) (< diff11 1e-6))
+                       "PASS" "FAIL"))
+          (display ": Q^T * Q = I (Q is orthogonal)") (newline))))))
+
+;; ============================================================
+;; tensor-cholesky tests
+;; ============================================================
+
+(display "TEST: Cholesky decomposition L*L^T = A") (newline)
+(let ((L (tensor-cholesky mat-sym-pd)))
+  (let ((Lt (transpose L)))
+    (let ((product (matmul L Lt)))
+      (let ((diff0 (abs (- (tensor-ref product 0) 4.0)))
+            (diff1 (abs (- (tensor-ref product 1) 2.0)))
+            (diff2 (abs (- (tensor-ref product 2) 2.0)))
+            (diff3 (abs (- (tensor-ref product 3) 3.0))))
+        (display (if (and (< diff0 1e-6) (< diff1 1e-6)
+                          (< diff2 1e-6) (< diff3 1e-6))
+                     "PASS" "FAIL"))
+        (display ": Cholesky L*L^T = A for positive-definite matrix") (newline)))))
+
+(display "TEST: Cholesky L is lower triangular") (newline)
+(let ((L (tensor-cholesky mat-sym-pd)))
+  (let ((upper-right (tensor-ref L 1)))
+    (display (if (< (abs upper-right) 1e-6) "PASS" "FAIL"))
+    (display ": Cholesky factor L is lower triangular") (newline)))

@@ -1,0 +1,36 @@
+;; Test parallel-fold functionality
+;; Tests parallel reduction with associative operations
+
+(display "=== Parallel Fold Tests ===") (newline)
+
+;; Test 1: Sum with parallel-fold
+(define sum-result (parallel-fold + 0 (list 1 2 3 4 5 6 7 8 9 10)))
+(display "parallel-fold sum 1..10: ")
+(display sum-result)
+(newline)
+
+;; Test 2: Product with parallel-fold
+(define prod-result (parallel-fold * 1 (list 1 2 3 4 5)))
+(display "parallel-fold product 1..5: ")
+(display prod-result)
+(newline)
+
+;; Test 3: parallel-fold with larger list
+(define big-sum (parallel-fold + 0 (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)))
+(display "parallel-fold sum 1..16: ")
+(display big-sum)
+(newline)
+
+;; Test 4: parallel-fold with single element
+(define single-fold (parallel-fold + 100 (list 42)))
+(display "parallel-fold single: ")
+(display single-fold)
+(newline)
+
+;; Test 5: parallel-fold with empty list
+(define empty-fold (parallel-fold + 0 '()))
+(display "parallel-fold empty: ")
+(display empty-fold)
+(newline)
+
+(display "=== Parallel Fold Tests Complete ===") (newline)

@@ -699,7 +699,7 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
                             free(val_ast);
                         } else {
                             // Fallback: create a null value
-                            bindings[i * 2 + 1].type = ESHKOL_NULL;
+                            eshkol_ast_make_null(&bindings[i * 2 + 1]);
                         }
                         i++;
                     }
@@ -832,29 +832,23 @@ eshkol_tagged_value_t eshkol_compile_with_env(
             // Handle strings first since they use multiple type representations
             if (is_string(val)) {
                 const char* str = static_cast<const char*>(get_ptr(val));
-                val_ast.type = ESHKOL_STRING;
-                val_ast.str_val.ptr = strdup(str ? str : "");
-                val_ast.str_val.size = str ? strlen(str) : 0;
+                eshkol_ast_make_string(&val_ast, strdup(str ? str : ""), str ? strlen(str) : 0);
             } else {
                 switch (val.type) {
                     case ESHKOL_VALUE_INT64:
-                        val_ast.type = ESHKOL_INT64;
-                        val_ast.int64_val = val.data.int_val;
+                        eshkol_ast_make_int64(&val_ast, val.data.int_val);
                         break;
                     case ESHKOL_VALUE_DOUBLE:
-                        val_ast.type = ESHKOL_DOUBLE;
-                        val_ast.double_val = val.data.double_val;
+                        eshkol_ast_make_double(&val_ast, val.data.double_val);
                         break;
                     case ESHKOL_VALUE_BOOL:
-                        val_ast.type = ESHKOL_BOOL;
-                        val_ast.int64_val = val.data.int_val;
+                        eshkol_ast_make_bool(&val_ast, val.data.int_val != 0);
                         break;
                     case ESHKOL_VALUE_CHAR:
-                        val_ast.type = ESHKOL_CHAR;
-                        val_ast.int64_val = val.data.int_val;
+                        eshkol_ast_make_char(&val_ast, val.data.int_val);
                         break;
                     case ESHKOL_VALUE_NULL:
-                        val_ast.type = ESHKOL_NULL;
+                        eshkol_ast_make_null(&val_ast);
                         break;
                     default:
                         // For complex types (closures, cons cells, etc.),
@@ -988,6 +982,30 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
                             break;
                         case HEAP_SUBTYPE_PORT:
                             type_name = "port";
+                            break;
+                        case HEAP_SUBTYPE_BIGNUM:
+                            type_name = "integer";
+                            break;
+                        case HEAP_SUBTYPE_BYTEVECTOR:
+                            type_name = "bytevector";
+                            break;
+                        case HEAP_SUBTYPE_RATIONAL:
+                            type_name = "rational";
+                            break;
+                        case HEAP_SUBTYPE_SUBSTITUTION:
+                            type_name = "substitution";
+                            break;
+                        case HEAP_SUBTYPE_FACT:
+                            type_name = "fact";
+                            break;
+                        case HEAP_SUBTYPE_KNOWLEDGE_BASE:
+                            type_name = "knowledge-base";
+                            break;
+                        case HEAP_SUBTYPE_FACTOR_GRAPH:
+                            type_name = "factor-graph";
+                            break;
+                        case HEAP_SUBTYPE_WORKSPACE:
+                            type_name = "workspace";
                             break;
                         default:
                             type_name = "heap-object";

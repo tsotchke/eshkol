@@ -1,0 +1,120 @@
+;; Empty String Operations Edge Case Tests
+;; Tests edge cases involving empty strings across all string builtins
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+(display "=== EMPTY STRING OPERATIONS TESTS ===\n\n")
+
+;; ============================================================================
+;; Test: string-length on empty string
+;; ============================================================================
+
+(display "--- string-length ---\n")
+
+(test-case "string-length empty" 0 (string-length ""))
+(test-case "string-length single space" 1 (string-length " "))
+
+;; ============================================================================
+;; Test: substring with empty string and empty ranges
+;; ============================================================================
+
+(display "\n--- substring ---\n")
+
+(test-case "substring empty 0 0" "" (substring "" 0 0))
+(test-case "substring hello 0 0 (empty range at start)" "" (substring "hello" 0 0))
+(test-case "substring hello 3 3 (empty range at middle)" "" (substring "hello" 3 3))
+(test-case "substring hello 5 5 (empty range at end)" "" (substring "hello" 5 5))
+
+;; ============================================================================
+;; Test: string-append with empty strings
+;; ============================================================================
+
+(display "\n--- string-append ---\n")
+
+(test-case "string-append empty empty" "" (string-append "" ""))
+(test-case "string-append triple empty" "" (string-append "" "" ""))
+(test-case "string-append hello empty" "hello" (string-append "hello" ""))
+(test-case "string-append empty world" "world" (string-append "" "world"))
+(test-case "string-append empty hello empty" "hello" (string-append "" "hello" ""))
+(test-case "string-append hello empty world" "helloworld" (string-append "hello" "" "world"))
+
+;; ============================================================================
+;; Test: string->list / list->string with empty
+;; ============================================================================
+
+(display "\n--- string->list / list->string ---\n")
+
+(test-case "string->list empty" '() (string->list ""))
+(test-case "list->string empty" "" (list->string '()))
+(test-case "string->list->string roundtrip empty" "" (list->string (string->list "")))
+(test-case "string->list->string roundtrip abc" "abc" (list->string (string->list "abc")))
+
+;; ============================================================================
+;; Test: string-copy on empty string
+;; ============================================================================
+
+(display "\n--- string-copy ---\n")
+
+(test-case "string-copy empty" "" (string-copy ""))
+(test-case "string-copy empty length" 0 (string-length (string-copy "")))
+
+;; ============================================================================
+;; Test: string equality with empty strings
+;; ============================================================================
+
+(display "\n--- string comparisons ---\n")
+
+(test-case "string=? empty empty" #t (string=? "" ""))
+(test-case "string=? empty nonempty" #f (string=? "" "a"))
+(test-case "string=? nonempty empty" #f (string=? "a" ""))
+(test-case "string<? empty a" #t (string<? "" "a"))
+(test-case "string<? a empty" #f (string<? "a" ""))
+(test-case "string<=? empty empty" #t (string<=? "" ""))
+(test-case "string<=? empty a" #t (string<=? "" "a"))
+(test-case "string>? a empty" #t (string>? "a" ""))
+(test-case "string>? empty a" #f (string>? "" "a"))
+(test-case "string>=? empty empty" #t (string>=? "" ""))
+
+;; ============================================================================
+;; Test: string? predicate on empty
+;; ============================================================================
+
+(display "\n--- string? ---\n")
+
+(test-case "string? empty" #t (string? ""))
+(test-case "string? nonempty" #t (string? "hello"))
+
+;; ============================================================================
+;; Test: make-string edge cases
+;; ============================================================================
+
+(display "\n--- make-string ---\n")
+
+(test-case "make-string 0" "" (make-string 0 #\x))
+(test-case "make-string 0 length" 0 (string-length (make-string 0 #\x)))
+(test-case "make-string 1" "a" (make-string 1 #\a))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Results ===\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
+
+(if (= tests-failed 0)
+    (display "All tests passed!\n")
+    (display "Some tests failed!\n"))

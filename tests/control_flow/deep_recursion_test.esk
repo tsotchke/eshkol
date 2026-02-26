@@ -1,0 +1,184 @@
+(require stdlib)
+
+(display "TEST: Deep recursion and TCO") (newline)
+
+; Test 1: Tail-recursive sum to 100000
+(define (sum n acc)
+  (if (= n 0)
+      acc
+      (sum (- n 1) (+ acc n))))
+
+(display (if (= (sum 100000 0) 5000050000) "PASS" "FAIL"))
+(display ": Tail-recursive sum to 100000 = 5000050000")
+(newline)
+
+; Test 2: Tail-recursive countdown returns 0
+(define (countdown n)
+  (if (= n 0)
+      0
+      (countdown (- n 1))))
+
+(display (if (= (countdown 100000) 0) "PASS" "FAIL"))
+(display ": Tail-recursive countdown from 100000 returns 0")
+(newline)
+
+; Test 3: Mutual recursion even?/odd? up to reasonable depth
+(define (my-even? n)
+  (if (= n 0)
+      #t
+      (my-odd? (- n 1))))
+
+(define (my-odd? n)
+  (if (= n 0)
+      #f
+      (my-even? (- n 1))))
+
+(display (if (and (my-even? 10000) (not (my-even? 10001))) "PASS" "FAIL"))
+(display ": Mutual recursion even?/odd? up to depth 10000")
+(newline)
+
+; Test 4: letrec with tail recursion
+(define letrec-result
+  (letrec ((count-down (lambda (n acc)
+                         (if (= n 0)
+                             acc
+                             (count-down (- n 1) (+ acc 1))))))
+    (count-down 50000 0)))
+
+(display (if (= letrec-result 50000) "PASS" "FAIL"))
+(display ": letrec with tail recursion to 50000")
+(newline)
+
+; Test 5: Named let with tail recursion
+(define named-let-result
+  (let loop ((i 0))
+    (if (= i 10000)
+        i
+        (loop (+ i 1)))))
+
+(display (if (= named-let-result 10000) "PASS" "FAIL"))
+(display ": Named let tail recursion to 10000")
+(newline)
+
+; Test 6: Fibonacci iterative (tail-recursive)
+(define (fib-iter n a b)
+  (if (= n 0)
+      a
+      (fib-iter (- n 1) b (+ a b))))
+
+(define (fib n)
+  (fib-iter n 0 1))
+
+(display (if (= (fib 30) 832040) "PASS" "FAIL"))
+(display ": Tail-recursive Fibonacci fib(30) = 832040")
+(newline)
+
+; Test 7: Accumulator pattern building a list then reversing
+(define (build-list n acc)
+  (if (= n 0)
+      (reverse acc)
+      (build-list (- n 1) (cons n acc))))
+
+(define built (build-list 1000 '()))
+(display (if (and (= (length built) 1000)
+                  (= (car built) 1000)
+                  (= (car (reverse built)) 1))
+             "PASS" "FAIL"))
+(display ": Accumulator pattern: build list of 1000 elements")
+(newline)
+
+; Test 8: Non-tail recursion at moderate depth (100) should work without TCO
+(define (non-tail-sum n)
+  (if (= n 0)
+      0
+      (+ n (non-tail-sum (- n 1)))))
+
+(display (if (= (non-tail-sum 100) 5050) "PASS" "FAIL"))
+(display ": Non-tail recursion at depth 100: sum = 5050")
+(newline)
+
+; Test 9: do loop to large count
+(define do-result
+  (do ((i 0 (+ i 1)))
+      ((= i 100000) i)))
+
+(display (if (= do-result 100000) "PASS" "FAIL"))
+(display ": do loop to 100000")
+(newline)
+
+; Test 10: Nested tail-recursive functions f->g->h
+(define (h n acc)
+  (if (= n 0)
+      acc
+      (h (- n 1) (+ acc 1))))
+
+(define (g n)
+  (h n 0))
+
+(define (f n)
+  (g n))
+
+(display (if (= (f 50000) 50000) "PASS" "FAIL"))
+(display ": Nested tail-recursive f->g->h with n=50000")
+(newline)
+
+; Test 11: Tail-recursive max in list
+(define (list-max lst current-max)
+  (if (null? lst)
+      current-max
+      (list-max (cdr lst)
+                 (if (> (car lst) current-max)
+                     (car lst)
+                     current-max))))
+
+(define big-list (build-list 10000 '()))
+(display (if (= (list-max big-list 0) 10000) "PASS" "FAIL"))
+(display ": Tail-recursive max over list of 10000 elements")
+(newline)
+
+; Test 12: Ackermann at small values (non-tail, tests deep call stack)
+(define (ackermann m n)
+  (cond ((= m 0) (+ n 1))
+        ((= n 0) (ackermann (- m 1) 1))
+        (else (ackermann (- m 1) (ackermann m (- n 1))))))
+
+(display (if (= (ackermann 3 4) 125) "PASS" "FAIL"))
+(display ": Ackermann(3,4) = 125 (non-tail deep recursion)")
+(newline)
+
+; Test 13: Tail-recursive string length counter
+(define (count-to n)
+  (let loop ((i n) (acc 0))
+    (if (= i 0)
+        acc
+        (loop (- i 1) (+ acc 1)))))
+
+(display (if (= (count-to 75000) 75000) "PASS" "FAIL"))
+(display ": Named let tail recursion counting to 75000")
+(newline)
+
+; Test 14: Mutual tail recursion with accumulator
+(define (ping n acc)
+  (if (= n 0)
+      acc
+      (pong (- n 1) (+ acc 1))))
+
+(define (pong n acc)
+  (if (= n 0)
+      acc
+      (ping (- n 1) (+ acc 1))))
+
+(display (if (= (ping 20000 0) 20000) "PASS" "FAIL"))
+(display ": Mutual tail recursion ping/pong to depth 20000")
+(newline)
+
+; Test 15: Tail-recursive fold-like accumulation
+(define (fold-sum lst acc)
+  (if (null? lst)
+      acc
+      (fold-sum (cdr lst) (+ acc (car lst)))))
+
+(define thousand-list (build-list 1000 '()))
+(display (if (= (fold-sum thousand-list 0) 500500) "PASS" "FAIL"))
+(display ": Tail-recursive fold sum over list of 1..1000 = 500500")
+(newline)

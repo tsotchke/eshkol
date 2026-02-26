@@ -1,0 +1,150 @@
+;;; Optimization module with ORIGINAL 3-level nested Adam
+;;; This is the pre-flattened version that was crashing
+
+(require core.list.query)
+(require core.list.search)
+
+(provide gradient-descent adam l-bfgs conjugate-gradient
+         line-search tensor-dot tensor-norm)
+
+;; tensor-dot: Dot product of two vectors
+(define (tensor-dot a b)
+  (let* ((n (vector-length a))
+         (result 0.0))
+    (letrec ((loop (lambda (i acc)
+              (if (< i n)
+                  (loop (+ i 1) (+ acc (* (vref a i) (vref b i))))
+                  acc))))
+      (loop 0 0.0))))
+
+;; tensor-norm: L2 norm of a vector
+(define (tensor-norm v)
+  (sqrt (tensor-dot v v)))
+
+;; vec-add: Element-wise vector addition
+(define (vec-add a b)
+  (let* ((n (vector-length a))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (+ (vref a i) (vref b i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; vec-sub: Element-wise vector subtraction
+(define (vec-sub a b)
+  (let* ((n (vector-length a))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (- (vref a i) (vref b i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; vec-scale: Scalar-vector multiplication
+(define (vec-scale s v)
+  (let* ((n (vector-length v))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (* s (vref v i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; vec-neg: Negate a vector
+(define (vec-neg v)
+  (vec-scale -1.0 v))
+
+;; vec-zeros: Create zero vector of given length
+(define (vec-zeros n)
+  (make-vector n 0.0))
+
+;; line-search
+(define (line-search f x d grad . opts)
+  (let ((alpha0 (if (null? opts) 1.0 (car opts)))
+        (c1 (if (or (null? opts) (null? (cdr opts))) 1e-4 (cadr opts)))
+        (rho (if (or (null? opts) (null? (cdr opts)) (null? (cddr opts))) 0.5 (caddr opts)))
+        (max-iter 30))
+    (let ((fx (f x))
+          (slope (* c1 (tensor-dot grad d))))
+      (letrec ((search (lambda (alpha iter)
+                (if (>= iter max-iter)
+                    alpha
+                    (let ((f-new (f (vec-add x (vec-scale alpha d)))))
+                      (if (<= f-new (+ fx (* alpha slope)))
+                          alpha
+                          (search (* rho alpha) (+ iter 1))))))))
+        (search alpha0 0)))))
+
+;; gradient-descent
+(define (gradient-descent f x0 . opts)
+  (let ((lr (if (null? opts) 0.01 (car opts)))
+        (max-iter (if (or (null? opts) (null? (cdr opts))) 1000 (cadr opts)))
+        (tol (if (or (null? opts) (null? (cdr opts)) (null? (cddr opts))) 1e-8 (caddr opts))))
+    (letrec ((step (lambda (x iter)
+              (if (>= iter max-iter)
+                  x
+                  (let* ((g (gradient f x))
+                         (gnorm (tensor-norm g)))
+                    (if (< gnorm tol)
+                        x
+                        (step (vec-sub x (vec-scale lr g)) (+ iter 1))))))))
+      (step x0 0))))
+
+;; ORIGINAL 3-LEVEL ADAM (pre-flattened version)
+(define (adam f x0 . opts)
+  (let ((lr (if (null? opts) 0.001 (car opts)))
+        (beta1 (if (or (null? opts) (null? (cdr opts))) 0.9 (cadr opts)))
+        (beta2 (if (or (null? opts) (null? (cdr opts)) (null? (cddr opts))) 0.999 (caddr opts)))
+        (epsilon 1e-8)
+        (max-iter 1000)
+        (tol 1e-8)
+        (n (vector-length x0)))
+    (letrec ((step (lambda (x m v t)
+              (if (> t max-iter)
+                  x
+                  (let* ((g (gradient f x))
+                         (gnorm (tensor-norm g)))
+                    (if (< gnorm tol)
+                        x
+                        (let* ((m-new (vec-add (vec-scale beta1 m)
+                                               (vec-scale (- 1.0 beta1) g)))
+                               ;; 3rd level: inline vec-sq
+                               (g-sq (let* ((n-inner (vector-length g))
+                                            (r (make-vector n-inner 0.0)))
+                                       (letrec ((loop (lambda (i)
+                                                 (if (< i n-inner)
+                                                     (begin
+                                                       (vector-set! r i (* (vref g i) (vref g i)))
+                                                       (loop (+ i 1)))
+                                                     r))))
+                                         (loop 0))))
+                               (v-new (vec-add (vec-scale beta2 v)
+                                               (vec-scale (- 1.0 beta2) g-sq)))
+                               (m-hat (vec-scale (/ 1.0 (- 1.0 (expt beta1 t))) m-new))
+                               (v-hat (vec-scale (/ 1.0 (- 1.0 (expt beta2 t))) v-new))
+                               ;; 3rd level: inline adam-apply-update
+                               (x-new (let* ((n-inner2 (vector-length x))
+                                             (result (make-vector n-inner2 0.0)))
+                                        (letrec ((loop2 (lambda (i)
+                                                  (if (< i n-inner2)
+                                                      (begin
+                                                        (vector-set! result i
+                                                          (- (vref x i)
+                                                             (* lr (/ (vref m-hat i)
+                                                                      (+ (sqrt (vref v-hat i)) epsilon)))))
+                                                        (loop2 (+ i 1)))
+                                                      result))))
+                                          (loop2 0)))))
+                          (step x-new m-new v-new (+ t 1)))))))))
+      (step x0 (vec-zeros n) (vec-zeros n) 1))))
+
+;; Stubs for l-bfgs and conjugate-gradient (to keep provide happy)
+(define (l-bfgs f x0 . opts) x0)
+(define (conjugate-gradient f x0 . opts) x0)

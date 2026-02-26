@@ -11,11 +11,13 @@
  */
 
 #include "eshkol/core/bignum.h"
+#include "eshkol/core/rational.h"
 #include "eshkol/eshkol.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <cerrno>
 
 /* Arena functions declared in arena_memory.cpp (extern "C") */
 extern "C" {
@@ -483,7 +485,12 @@ eshkol_bignum_t* eshkol_bignum_mul(arena_t* arena,
 eshkol_bignum_t* eshkol_bignum_div(arena_t* arena,
                                     const eshkol_bignum_t* a,
                                     const eshkol_bignum_t* b) {
-    if (!a || !b || eshkol_bignum_is_zero(b)) return nullptr;
+    if (!a || !b) return nullptr;
+    if (eshkol_bignum_is_zero(b)) {
+        eshkol_exception_t* exc = eshkol_make_exception(ESHKOL_EXCEPTION_DIVIDE_BY_ZERO, "bignum division by zero");
+        eshkol_raise(exc);
+        return nullptr;  // unreachable
+    }
 
     eshkol_bignum_t* q = nullptr;
     bignum_divmod_abs(arena, a, b, &q, nullptr);
@@ -496,7 +503,12 @@ eshkol_bignum_t* eshkol_bignum_div(arena_t* arena,
 eshkol_bignum_t* eshkol_bignum_mod(arena_t* arena,
                                     const eshkol_bignum_t* a,
                                     const eshkol_bignum_t* b) {
-    if (!a || !b || eshkol_bignum_is_zero(b)) return nullptr;
+    if (!a || !b) return nullptr;
+    if (eshkol_bignum_is_zero(b)) {
+        eshkol_exception_t* exc = eshkol_make_exception(ESHKOL_EXCEPTION_DIVIDE_BY_ZERO, "bignum modulo by zero");
+        eshkol_raise(exc);
+        return nullptr;  // unreachable
+    }
 
     eshkol_bignum_t* r = nullptr;
     bignum_divmod_abs(arena, a, b, nullptr, &r);
@@ -595,6 +607,20 @@ bool eshkol_bignum_is_zero(const eshkol_bignum_t* a) {
 
 bool eshkol_bignum_is_negative(const eshkol_bignum_t* a) {
     return a && a->sign && !eshkol_bignum_is_zero(a);
+}
+
+bool eshkol_bignum_is_positive(const eshkol_bignum_t* a) {
+    return a && !a->sign && !eshkol_bignum_is_zero(a);
+}
+
+bool eshkol_bignum_is_even(const eshkol_bignum_t* a) {
+    if (!a) return true;
+    return (BIGNUM_LIMBS(a)[0] & 1) == 0;
+}
+
+bool eshkol_bignum_is_odd(const eshkol_bignum_t* a) {
+    if (!a) return false;
+    return (BIGNUM_LIMBS(a)[0] & 1) == 1;
 }
 
 bool eshkol_bignum_fits_int64(const eshkol_bignum_t* a, int64_t* out) {
@@ -717,6 +743,28 @@ void eshkol_bignum_binary_tagged(arena_t* arena,
         return;
     }
 
+    /* R7RS: exact + inexact → inexact. If either operand is double, compute as double. */
+    if (left->type == ESHKOL_VALUE_DOUBLE || right->type == ESHKOL_VALUE_DOUBLE) {
+        double ld = (left->type == ESHKOL_VALUE_DOUBLE) ? left->data.double_val
+                   : (left->type == ESHKOL_VALUE_HEAP_PTR && left->data.ptr_val != 0)
+                     ? eshkol_bignum_to_double((eshkol_bignum_t*)(void*)left->data.ptr_val)
+                   : (double)left->data.int_val;
+        double rd = (right->type == ESHKOL_VALUE_DOUBLE) ? right->data.double_val
+                   : (right->type == ESHKOL_VALUE_HEAP_PTR && right->data.ptr_val != 0)
+                     ? eshkol_bignum_to_double((eshkol_bignum_t*)(void*)right->data.ptr_val)
+                   : (double)right->data.int_val;
+        double r;
+        switch (op) {
+            case 0: r = ld + rd; break;
+            case 1: r = ld - rd; break;
+            case 2: r = ld * rd; break;
+            case 3: r = (rd != 0.0) ? ld / rd : 0.0; break;
+            default: r = 0.0; break;
+        }
+        *result = eshkol_make_double(r);
+        return;
+    }
+
     eshkol_bignum_t* a = tagged_to_bignum(arena, left);
     eshkol_bignum_t* b = tagged_to_bignum(arena, right);
     if (!a || !b) { *result = eshkol_make_int64(0, true); return; }
@@ -809,6 +857,176 @@ void eshkol_bignum_compare_tagged(
     result->type = ESHKOL_VALUE_BOOL;
 }
 
+/* ===== Exponentiation ===== */
+
+eshkol_bignum_t* eshkol_bignum_pow(arena_t* arena, const eshkol_bignum_t* base, uint64_t exp) {
+    if (!arena || !base) return nullptr;
+
+    /* base^0 = 1 */
+    if (exp == 0) return eshkol_bignum_from_int64(arena, 1);
+
+    /* base^1 = base */
+    if (exp == 1) {
+        /* Copy the bignum */
+        eshkol_bignum_t* copy = eshkol_bignum_from_int64(arena, 0);
+        if (!copy) return nullptr;
+        /* Just multiply base * 1 */
+        return eshkol_bignum_mul(arena, base, eshkol_bignum_from_int64(arena, 1));
+    }
+
+    /* Repeated squaring: O(log n) multiplications */
+    eshkol_bignum_t* result = eshkol_bignum_from_int64(arena, 1);
+    eshkol_bignum_t* b = eshkol_bignum_mul(arena, base, eshkol_bignum_from_int64(arena, 1)); /* copy */
+    if (!result || !b) return nullptr;
+
+    uint64_t e = exp;
+    while (e > 0) {
+        if (e & 1) {
+            result = eshkol_bignum_mul(arena, result, b);
+            if (!result) return nullptr;
+        }
+        e >>= 1;
+        if (e > 0) {
+            b = eshkol_bignum_mul(arena, b, b);
+            if (!b) return nullptr;
+        }
+    }
+    return result;
+}
+
+void eshkol_bignum_pow_tagged(arena_t* arena,
+    const eshkol_tagged_value_t* base, const eshkol_tagged_value_t* exponent,
+    eshkol_tagged_value_t* result) {
+
+    if (!arena || !base || !exponent || !result) {
+        if (result) *result = eshkol_make_int64(0, true);
+        return;
+    }
+
+    /* Check if both operands are exact integers (INT64 or HEAP_PTR bignum) */
+    bool base_is_int = (base->type == ESHKOL_VALUE_INT64);
+    bool base_is_bignum = (base->type == ESHKOL_VALUE_HEAP_PTR && base->data.ptr_val != 0);
+    bool exp_is_int = (exponent->type == ESHKOL_VALUE_INT64);
+
+    /* Only use exact path if base is exact integer and exponent is non-negative int */
+    if ((base_is_int || base_is_bignum) && exp_is_int && exponent->data.int_val >= 0) {
+        uint64_t exp_val = (uint64_t)exponent->data.int_val;
+
+        /* Convert base to bignum */
+        eshkol_bignum_t* bn_base;
+        if (base_is_bignum) {
+            bn_base = (eshkol_bignum_t*)(void*)base->data.ptr_val;
+        } else {
+            bn_base = eshkol_bignum_from_int64(arena, base->data.int_val);
+        }
+        if (!bn_base) { *result = eshkol_make_int64(0, true); return; }
+
+        eshkol_bignum_t* r = eshkol_bignum_pow(arena, bn_base, exp_val);
+        if (!r) { *result = eshkol_make_int64(0, true); return; }
+
+        /* Demote to int64 if it fits */
+        int64_t fits;
+        if (eshkol_bignum_fits_int64(r, &fits)) {
+            *result = eshkol_make_int64(fits, true);
+        } else {
+            *result = eshkol_make_ptr((uint64_t)(void*)r, ESHKOL_VALUE_HEAP_PTR);
+            result->flags = ESHKOL_VALUE_EXACT_FLAG;
+        }
+        return;
+    }
+
+    /* Fallback: convert both to double and use pow() */
+    double bd = (base->type == ESHKOL_VALUE_DOUBLE) ? base->data.double_val
+               : (base->type == ESHKOL_VALUE_HEAP_PTR && base->data.ptr_val != 0)
+                 ? eshkol_bignum_to_double((eshkol_bignum_t*)(void*)base->data.ptr_val)
+               : (double)base->data.int_val;
+    double ed = (exponent->type == ESHKOL_VALUE_DOUBLE) ? exponent->data.double_val
+               : (double)exponent->data.int_val;
+    *result = eshkol_make_double(pow(bd, ed));
+}
+
+/* ===== String Conversion ===== */
+
+void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
+    eshkol_tagged_value_t* result) {
+    if (!str || !result) {
+        if (result) *result = eshkol_make_int64(0, true);
+        return;
+    }
+
+    /* Skip leading whitespace */
+    while (*str == ' ' || *str == '\t') str++;
+    if (*str == '\0') {
+        *result = eshkol_make_int64(0, true);
+        return;
+    }
+
+    /* Scan for syntax markers: '/' (rational), '.', 'e'/'E' (float) */
+    bool is_float = false;
+    bool is_rational = false;
+    const char* slash_pos = nullptr;
+    const char* p = str;
+    if (*p == '-' || *p == '+') p++;
+    while (*p) {
+        if (*p == '/' && !is_float) { is_rational = true; slash_pos = p; break; }
+        if (*p == '.' || *p == 'e' || *p == 'E') { is_float = true; break; }
+        p++;
+    }
+
+    /* Rational syntax: "num/denom" */
+    if (is_rational && slash_pos) {
+        char* endptr = nullptr;
+        errno = 0;
+        long long num = strtoll(str, &endptr, 10);
+        if (endptr == slash_pos && errno != ERANGE) {
+            errno = 0;
+            long long denom = strtoll(slash_pos + 1, &endptr, 10);
+            if (*endptr == '\0' && errno != ERANGE && denom != 0) {
+                void* rat = eshkol_rational_create((void*)arena, (int64_t)num, (int64_t)denom);
+                if (rat) {
+                    *result = eshkol_make_ptr((uint64_t)(void*)rat, ESHKOL_VALUE_HEAP_PTR);
+                    result->flags = ESHKOL_VALUE_EXACT_FLAG;
+                    return;
+                }
+            }
+        }
+        /* Fall through to double parse if rational parse fails */
+    }
+
+    if (is_float) {
+        /* Parse as double */
+        char* endptr = nullptr;
+        double val = strtod(str, &endptr);
+        *result = eshkol_make_double(val);
+        return;
+    }
+
+    /* Try parsing as int64 first */
+    char* endptr = nullptr;
+    errno = 0;
+    long long val = strtoll(str, &endptr, 10);
+
+    if (errno != ERANGE && endptr != str && (*endptr == '\0' || *endptr == ' ')) {
+        /* Fits in int64 */
+        *result = eshkol_make_int64((int64_t)val, true);
+        return;
+    }
+
+    /* Overflow or invalid — try bignum */
+    if (errno == ERANGE) {
+        eshkol_bignum_t* bn = eshkol_bignum_from_string(arena, str, strlen(str));
+        if (bn) {
+            *result = eshkol_make_ptr((uint64_t)(void*)bn, ESHKOL_VALUE_HEAP_PTR);
+            result->flags = ESHKOL_VALUE_EXACT_FLAG;
+            return;
+        }
+    }
+
+    /* Fallback: parse as double */
+    double dval = strtod(str, nullptr);
+    *result = eshkol_make_double(dval);
+}
+
 /* ===== Display ===== */
 
 void eshkol_bignum_display(const eshkol_bignum_t* a, void* file) {
@@ -868,6 +1086,251 @@ void eshkol_bignum_display(const eshkol_bignum_t* a, void* file) {
         }
     } else {
         fprintf(f, "<bignum:%u-limbs>", a->num_limbs);
+    }
+}
+
+/* ===== Bitwise Operations ===== */
+
+/* Helper: convert sign-magnitude bignum to two's complement limbs.
+ * For non-negative: limbs unchanged.
+ * For negative: negate = flip all bits + 1 (to get two's complement). */
+static void to_twos_complement(const eshkol_bignum_t* a, uint64_t* out, uint32_t n) {
+    uint64_t* limbs = BIGNUM_LIMBS((eshkol_bignum_t*)a);
+    for (uint32_t i = 0; i < n; i++) {
+        out[i] = (i < a->num_limbs) ? limbs[i] : 0;
+    }
+    if (a->sign) {
+        /* Negate: flip all bits, add 1 */
+        uint64_t carry = 1;
+        for (uint32_t i = 0; i < n; i++) {
+            out[i] = ~out[i];
+            __uint128_t sum = ((__uint128_t)out[i]) + carry;
+            out[i] = (uint64_t)sum;
+            carry = (uint64_t)(sum >> 64);
+        }
+    }
+}
+
+/* Helper: convert two's complement limbs back to sign-magnitude bignum */
+static eshkol_bignum_t* from_twos_complement(arena_t* arena, const uint64_t* tc, uint32_t n) {
+    bool negative = (tc[n - 1] >> 63) != 0;
+    uint64_t work[128];
+    for (uint32_t i = 0; i < n; i++) work[i] = tc[i];
+
+    if (negative) {
+        /* Negate back: flip + 1 */
+        uint64_t carry = 1;
+        for (uint32_t i = 0; i < n; i++) {
+            work[i] = ~work[i];
+            __uint128_t sum = ((__uint128_t)work[i]) + carry;
+            work[i] = (uint64_t)sum;
+            carry = (uint64_t)(sum >> 64);
+        }
+    }
+
+    /* Trim leading zeros */
+    uint32_t actual = n;
+    while (actual > 1 && work[actual - 1] == 0) actual--;
+
+    eshkol_bignum_t* result = bignum_alloc(arena, actual);
+    if (!result) return nullptr;
+    result->sign = negative ? 1 : 0;
+    memcpy(BIGNUM_LIMBS(result), work, actual * sizeof(uint64_t));
+    return result;
+}
+
+eshkol_bignum_t* eshkol_bignum_bitwise_and(arena_t* arena, const eshkol_bignum_t* a, const eshkol_bignum_t* b) {
+    if (!arena || !a || !b) return nullptr;
+    /* Use enough limbs + 1 sign extension limb */
+    uint32_t n = (a->num_limbs > b->num_limbs ? a->num_limbs : b->num_limbs) + 1;
+    if (n > 127) n = 127;
+    uint64_t tc_a[128], tc_b[128], tc_r[128];
+    to_twos_complement(a, tc_a, n);
+    to_twos_complement(b, tc_b, n);
+    /* Sign extend */
+    uint64_t ext_a = a->sign ? UINT64_MAX : 0;
+    uint64_t ext_b = b->sign ? UINT64_MAX : 0;
+    for (uint32_t i = a->num_limbs; i < n; i++) tc_a[i] = ext_a;
+    for (uint32_t i = b->num_limbs; i < n; i++) tc_b[i] = ext_b;
+    for (uint32_t i = 0; i < n; i++) tc_r[i] = tc_a[i] & tc_b[i];
+    return from_twos_complement(arena, tc_r, n);
+}
+
+eshkol_bignum_t* eshkol_bignum_bitwise_or(arena_t* arena, const eshkol_bignum_t* a, const eshkol_bignum_t* b) {
+    if (!arena || !a || !b) return nullptr;
+    uint32_t n = (a->num_limbs > b->num_limbs ? a->num_limbs : b->num_limbs) + 1;
+    if (n > 127) n = 127;
+    uint64_t tc_a[128], tc_b[128], tc_r[128];
+    to_twos_complement(a, tc_a, n);
+    to_twos_complement(b, tc_b, n);
+    uint64_t ext_a = a->sign ? UINT64_MAX : 0;
+    uint64_t ext_b = b->sign ? UINT64_MAX : 0;
+    for (uint32_t i = a->num_limbs; i < n; i++) tc_a[i] = ext_a;
+    for (uint32_t i = b->num_limbs; i < n; i++) tc_b[i] = ext_b;
+    for (uint32_t i = 0; i < n; i++) tc_r[i] = tc_a[i] | tc_b[i];
+    return from_twos_complement(arena, tc_r, n);
+}
+
+eshkol_bignum_t* eshkol_bignum_bitwise_xor(arena_t* arena, const eshkol_bignum_t* a, const eshkol_bignum_t* b) {
+    if (!arena || !a || !b) return nullptr;
+    uint32_t n = (a->num_limbs > b->num_limbs ? a->num_limbs : b->num_limbs) + 1;
+    if (n > 127) n = 127;
+    uint64_t tc_a[128], tc_b[128], tc_r[128];
+    to_twos_complement(a, tc_a, n);
+    to_twos_complement(b, tc_b, n);
+    uint64_t ext_a = a->sign ? UINT64_MAX : 0;
+    uint64_t ext_b = b->sign ? UINT64_MAX : 0;
+    for (uint32_t i = a->num_limbs; i < n; i++) tc_a[i] = ext_a;
+    for (uint32_t i = b->num_limbs; i < n; i++) tc_b[i] = ext_b;
+    for (uint32_t i = 0; i < n; i++) tc_r[i] = tc_a[i] ^ tc_b[i];
+    return from_twos_complement(arena, tc_r, n);
+}
+
+eshkol_bignum_t* eshkol_bignum_bitwise_not(arena_t* arena, const eshkol_bignum_t* a) {
+    if (!arena || !a) return nullptr;
+    /* NOT(x) = -(x+1) in two's complement = negate then subtract 1 */
+    /* Equivalent: flip sign, subtract 1 if was positive, add 1 if was negative */
+    eshkol_bignum_t* one = eshkol_bignum_from_int64(arena, 1);
+    if (a->sign) {
+        /* NOT of negative: result = |a| - 1 */
+        eshkol_bignum_t* abs_a = eshkol_bignum_neg(arena, a);
+        return eshkol_bignum_sub(arena, abs_a, one);
+    } else {
+        /* NOT of non-negative: result = -(a + 1) */
+        eshkol_bignum_t* a_plus_1 = eshkol_bignum_add(arena, a, one);
+        return eshkol_bignum_neg(arena, a_plus_1);
+    }
+}
+
+eshkol_bignum_t* eshkol_bignum_shift(arena_t* arena, const eshkol_bignum_t* a, int64_t count) {
+    if (!arena || !a) return nullptr;
+    if (eshkol_bignum_is_zero(a) || count == 0) {
+        return eshkol_bignum_from_int64(arena, 0);
+    }
+
+    if (count > 0) {
+        /* Left shift by count bits */
+        uint32_t word_shift = (uint32_t)(count / 64);
+        uint32_t bit_shift = (uint32_t)(count % 64);
+        uint32_t new_limbs = a->num_limbs + word_shift + 1;
+
+        eshkol_bignum_t* result = bignum_alloc(arena, new_limbs);
+        if (!result) return nullptr;
+        result->sign = a->sign;
+        uint64_t* rl = BIGNUM_LIMBS(result);
+        uint64_t* al = BIGNUM_LIMBS((eshkol_bignum_t*)a);
+        for (uint32_t i = 0; i < a->num_limbs; i++) {
+            rl[i + word_shift] |= (bit_shift == 0) ? al[i] : (al[i] << bit_shift);
+            if (bit_shift > 0 && i + word_shift + 1 < new_limbs) {
+                rl[i + word_shift + 1] |= al[i] >> (64 - bit_shift);
+            }
+        }
+        /* Trim */
+        while (result->num_limbs > 1 && rl[result->num_limbs - 1] == 0) result->num_limbs--;
+        return result;
+    } else {
+        /* Right shift (arithmetic): shift towards zero */
+        int64_t rcount = -count;
+        uint32_t word_shift = (uint32_t)(rcount / 64);
+        uint32_t bit_shift = (uint32_t)(rcount % 64);
+
+        if (word_shift >= a->num_limbs) {
+            /* Shifted all bits away */
+            return a->sign ? eshkol_bignum_from_int64(arena, -1) : eshkol_bignum_from_int64(arena, 0);
+        }
+
+        uint32_t new_limbs = a->num_limbs - word_shift;
+        eshkol_bignum_t* result = bignum_alloc(arena, new_limbs);
+        if (!result) return nullptr;
+        result->sign = a->sign;
+        uint64_t* rl = BIGNUM_LIMBS(result);
+        uint64_t* al = BIGNUM_LIMBS((eshkol_bignum_t*)a);
+        for (uint32_t i = 0; i < new_limbs; i++) {
+            uint32_t src = i + word_shift;
+            rl[i] = (bit_shift == 0) ? al[src] : (al[src] >> bit_shift);
+            if (bit_shift > 0 && src + 1 < a->num_limbs) {
+                rl[i] |= al[src + 1] << (64 - bit_shift);
+            }
+        }
+        /* Trim */
+        while (result->num_limbs > 1 && rl[result->num_limbs - 1] == 0) result->num_limbs--;
+        /* For negative numbers, arithmetic right shift rounds toward -infinity */
+        if (a->sign && eshkol_bignum_is_zero(result)) {
+            return eshkol_bignum_from_int64(arena, -1);
+        }
+        return result;
+    }
+}
+
+void eshkol_bignum_bitwise_tagged(arena_t* arena,
+    const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
+    int op, eshkol_tagged_value_t* result) {
+    if (!result) return;
+
+    /* Extract or promote operands to bignum */
+    auto to_bignum = [&](const eshkol_tagged_value_t* val) -> const eshkol_bignum_t* {
+        if (!val) return nullptr;
+        if (val->type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
+            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
+            if (hdr->subtype == HEAP_SUBTYPE_BIGNUM) {
+                return (const eshkol_bignum_t*)val->data.ptr_val;
+            }
+        }
+        if (val->type == ESHKOL_VALUE_INT64) {
+            return eshkol_bignum_from_int64(arena, val->data.int_val);
+        }
+        return nullptr;
+    };
+
+    const eshkol_bignum_t* a = to_bignum(left);
+    eshkol_bignum_t* res = nullptr;
+
+    switch (op) {
+        case 0: { /* and */
+            const eshkol_bignum_t* b = to_bignum(right);
+            if (a && b) res = eshkol_bignum_bitwise_and(arena, a, b);
+            break;
+        }
+        case 1: { /* or */
+            const eshkol_bignum_t* b = to_bignum(right);
+            if (a && b) res = eshkol_bignum_bitwise_or(arena, a, b);
+            break;
+        }
+        case 2: { /* xor */
+            const eshkol_bignum_t* b = to_bignum(right);
+            if (a && b) res = eshkol_bignum_bitwise_xor(arena, a, b);
+            break;
+        }
+        case 3: { /* not */
+            if (a) res = eshkol_bignum_bitwise_not(arena, a);
+            break;
+        }
+        case 4: { /* arithmetic-shift */
+            int64_t shift_count = 0;
+            if (right && right->type == ESHKOL_VALUE_INT64) {
+                shift_count = right->data.int_val;
+            }
+            if (a) res = eshkol_bignum_shift(arena, a, shift_count);
+            break;
+        }
+    }
+
+    if (res) {
+        /* Check if result fits in int64 for demotion */
+        int64_t int_val;
+        if (eshkol_bignum_fits_int64(res, &int_val)) {
+            result->type = ESHKOL_VALUE_INT64;
+            result->flags = 0;
+            result->data.int_val = int_val;
+        } else {
+            result->type = ESHKOL_VALUE_HEAP_PTR;
+            result->flags = 0;
+            result->data.ptr_val = (uintptr_t)res;
+        }
+    } else {
+        result->type = ESHKOL_VALUE_INT64;
+        result->flags = 0;
+        result->data.int_val = 0;
     }
 }
 

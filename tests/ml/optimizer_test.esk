@@ -1,0 +1,184 @@
+;;; Optimizer Step Functions Test Suite
+;;; Tests for sgd-step, adam-step, rmsprop-step, adamw-step, adagrad-step
+;;; These are in-place tensor optimizers (Track 10.1)
+
+(require stdlib)
+
+;; Helper: approximate equality for scalars
+(define (approx= a b tol)
+  (< (abs (- a b)) tol))
+
+(display "=== OPTIMIZER STEP FUNCTIONS TESTS ===") (newline)
+
+;; ============================================================
+;; Test 1: SGD basic update direction
+;; params = params - lr * grads
+;; ============================================================
+(display "TEST: sgd-step basic update") (newline)
+(let* ((params #(10.0 20.0 30.0))
+       (grads  #(1.0 2.0 3.0))
+       (lr 0.1)
+       (result (sgd-step params grads lr)))
+  ;; Expected: 10 - 0.1*1 = 9.9, 20 - 0.1*2 = 19.8, 30 - 0.1*3 = 29.7
+  (display (if (and (approx= (tensor-ref result 0) 9.9 0.001)
+                    (approx= (tensor-ref result 1) 19.8 0.001)
+                    (approx= (tensor-ref result 2) 29.7 0.001))
+               "PASS" "FAIL"))
+  (display ": sgd-step produces params - lr*grads") (newline))
+
+;; ============================================================
+;; Test 2: SGD with zero gradients leaves params unchanged
+;; ============================================================
+(display "TEST: sgd-step zero gradients") (newline)
+(let* ((params #(5.0 10.0 15.0))
+       (grads  #(0.0 0.0 0.0))
+       (result (sgd-step params grads 0.01)))
+  (display (if (and (approx= (tensor-ref result 0) 5.0 1e-10)
+                    (approx= (tensor-ref result 1) 10.0 1e-10)
+                    (approx= (tensor-ref result 2) 15.0 1e-10))
+               "PASS" "FAIL"))
+  (display ": zero grads leave params unchanged") (newline))
+
+;; ============================================================
+;; Test 3: Adam step moves params in descent direction
+;; adam-step mutates params, m, v in-place; returns params tensor
+;; ============================================================
+(display "TEST: adam-step descent direction") (newline)
+(let* ((params #(5.0 5.0 5.0))
+       (grads  #(2.0 2.0 2.0))
+       (m      #(0.0 0.0 0.0))
+       (v      #(0.0 0.0 0.0))
+       (t      1)
+       (result (adam-step params grads 0.1 m v t)))
+  ;; With positive grads, params should decrease
+  (display (if (and (< (tensor-ref result 0) 5.0)
+                    (< (tensor-ref result 1) 5.0)
+                    (< (tensor-ref result 2) 5.0))
+               "PASS" "FAIL"))
+  (display ": adam-step decreases params with positive grads") (newline))
+
+;; ============================================================
+;; Test 4: Adam step updates moment estimates in-place
+;; After one step, m should be (1-beta1)*grad, v should be (1-beta2)*grad^2
+;; ============================================================
+(display "TEST: adam-step moment update") (newline)
+(let* ((params #(1.0 1.0 1.0))
+       (grads  #(4.0 4.0 4.0))
+       (m      #(0.0 0.0 0.0))
+       (v      #(0.0 0.0 0.0))
+       (t      1)
+       (result (adam-step params grads 0.001 m v t 0.9 0.999 1e-8)))
+  ;; m should be (1-0.9)*4.0 = 0.4
+  ;; v should be (1-0.999)*16.0 = 0.016
+  (display (if (and (approx= (tensor-ref m 0) 0.4 0.01)
+                    (approx= (tensor-ref v 0) 0.016 0.001))
+               "PASS" "FAIL"))
+  (display ": adam-step updates m and v moments correctly") (newline))
+
+;; ============================================================
+;; Test 5: RMSProp step moves params toward minimum
+;; rmsprop-step mutates params and v in-place; returns params
+;; ============================================================
+(display "TEST: rmsprop-step descent direction") (newline)
+(let* ((params #(10.0 10.0 10.0))
+       (grads  #(3.0 3.0 3.0))
+       (v      #(0.0 0.0 0.0))
+       (result (rmsprop-step params grads 0.01 v)))
+  ;; Params should decrease with positive gradients
+  (display (if (and (< (tensor-ref result 0) 10.0)
+                    (< (tensor-ref result 1) 10.0)
+                    (< (tensor-ref result 2) 10.0))
+               "PASS" "FAIL"))
+  (display ": rmsprop-step decreases params with positive grads") (newline))
+
+;; ============================================================
+;; Test 6: RMSProp accumulates squared gradients in v
+;; v_new = alpha * v_old + (1-alpha) * grad^2
+;; ============================================================
+(display "TEST: rmsprop-step v accumulation") (newline)
+(let* ((params #(1.0 1.0 1.0))
+       (grads  #(2.0 2.0 2.0))
+       (v      #(0.0 0.0 0.0))
+       (alpha  0.99)
+       (result (rmsprop-step params grads 0.01 v alpha 1e-8)))
+  ;; v should be 0.99*0 + 0.01*4 = 0.04
+  (display (if (approx= (tensor-ref v 0) 0.04 0.001)
+               "PASS" "FAIL"))
+  (display ": rmsprop-step accumulates squared grads in v") (newline))
+
+;; ============================================================
+;; Test 7: AdamW applies weight decay separately from gradient
+;; param = param*(1 - lr*wd) - lr * adam_update
+;; ============================================================
+(display "TEST: adamw-step weight decay effect") (newline)
+(let* ((params-adamw  #(10.0 10.0 10.0))
+       (grads-adamw   #(0.0 0.0 0.0))
+       (m-adamw       #(0.0 0.0 0.0))
+       (v-adamw       #(0.0 0.0 0.0))
+       (t             1)
+       (wd            0.1)
+       (lr            0.01)
+       ;; With zero grads, only weight decay acts: param*(1 - lr*wd) = 10*(1-0.001) = 9.99
+       (result (adamw-step params-adamw grads-adamw lr m-adamw v-adamw t 0.9 0.999 1e-8 wd)))
+  (display (if (and (< (tensor-ref result 0) 10.0)
+                    (approx= (tensor-ref result 0) 9.99 0.01))
+               "PASS" "FAIL"))
+  (display ": adamw-step applies weight decay even with zero grads") (newline))
+
+;; ============================================================
+;; Test 8: Adagrad step accumulates gradients and adapts
+;; accum_new = accum + grad^2, then param -= lr * grad / (sqrt(accum_new) + eps)
+;; ============================================================
+(display "TEST: adagrad-step basic update") (newline)
+(let* ((params #(5.0 5.0 5.0))
+       (grads  #(2.0 2.0 2.0))
+       (accum  #(0.0 0.0 0.0))
+       (result (adagrad-step params grads 0.1 accum)))
+  ;; accum = 0 + 4 = 4, update = 0.1 * 2 / (sqrt(4) + 1e-10) = 0.1
+  ;; new_param = 5.0 - 0.1 = 4.9
+  (display (if (and (approx= (tensor-ref result 0) 4.9 0.01)
+                    (approx= (tensor-ref accum 0) 4.0 0.001))
+               "PASS" "FAIL"))
+  (display ": adagrad-step updates params and accumulator") (newline))
+
+;; ============================================================
+;; Test 9: Adagrad learning rate naturally decreases
+;; Second step with same grads should produce smaller update
+;; ============================================================
+(display "TEST: adagrad-step adaptive learning rate") (newline)
+(let* ((params1 #(5.0 5.0 5.0))
+       (grads1  #(2.0 2.0 2.0))
+       (accum1  #(0.0 0.0 0.0))
+       ;; Step 1
+       (r1 (adagrad-step params1 grads1 0.1 accum1))
+       (delta1 (- 5.0 (tensor-ref r1 0)))
+       ;; Step 2: same grads, accumulated history means smaller effective lr
+       (params2 #(5.0 5.0 5.0))
+       (grads2  #(2.0 2.0 2.0))
+       (accum2  #(4.0 4.0 4.0))
+       (r2 (adagrad-step params2 grads2 0.1 accum2))
+       (delta2 (- 5.0 (tensor-ref r2 0))))
+  ;; delta2 should be smaller than delta1 due to accumulated history
+  (display (if (< delta2 delta1)
+               "PASS" "FAIL"))
+  (display ": adagrad effective learning rate decreases over time") (newline))
+
+;; ============================================================
+;; Test 10: SGD with large learning rate produces larger steps
+;; ============================================================
+(display "TEST: sgd-step learning rate scaling") (newline)
+(let* ((params-small #(10.0 10.0 10.0))
+       (params-large #(10.0 10.0 10.0))
+       (grads        #(1.0 1.0 1.0))
+       (r-small (sgd-step params-small grads 0.01))
+       (r-large (sgd-step params-large grads 0.5))
+       (delta-small (- 10.0 (tensor-ref r-small 0)))
+       (delta-large (- 10.0 (tensor-ref r-large 0))))
+  ;; delta-small = 0.01, delta-large = 0.5
+  (display (if (and (approx= delta-small 0.01 0.001)
+                    (approx= delta-large 0.5 0.001)
+                    (> delta-large delta-small))
+               "PASS" "FAIL"))
+  (display ": larger learning rate produces larger parameter updates") (newline))
+
+(display "=== OPTIMIZER STEP FUNCTIONS TESTS COMPLETE ===") (newline)

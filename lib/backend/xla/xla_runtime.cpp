@@ -17,11 +17,25 @@
 #include <future>
 #include <unordered_map>
 #include <chrono>
+#include <mutex>
 
 // Use the existing BLAS matmul for now
 extern "C" {
     void eshkol_matmul_f64(const double* A, const double* B, double* C,
                            uint64_t M, uint64_t K, uint64_t N);
+}
+
+// GPU acceleration
+#include "eshkol/backend/gpu/gpu_memory.h"
+
+// Lazy GPU initialization for XLA runtime functions
+// Uses std::call_once for thread-safe one-time initialization
+static std::once_flag g_xla_gpu_init_flag;
+
+static void ensure_gpu_initialized() {
+    std::call_once(g_xla_gpu_init_flag, []() {
+        eshkol_gpu_init();
+    });
 }
 
 // Arena allocation functions
@@ -84,12 +98,30 @@ extern "C" void* eshkol_xla_matmul(
     result->dimensions[0] = M;
     result->dimensions[1] = N;
 
-    // Perform matrix multiplication using BLAS/SIMD backend
+    // Perform matrix multiplication using GPU/BLAS/SIMD cascade
     // elements is int64_t* but stores doubles as bit patterns — safe to cast
     // since sizeof(double) == sizeof(int64_t) == 8
-    eshkol_matmul_f64(a_data, b_data,
-                      reinterpret_cast<double*>(result->elements),
-                      M, K, N);
+    double* out = reinterpret_cast<double*>(result->elements);
+
+    // Ensure GPU subsystem is initialized before checking dispatch
+    ensure_gpu_initialized();
+
+    // Try GPU dispatch for large matrices
+    if (eshkol_gpu_should_use(M * N)) {
+        EshkolGPUBuffer buf_a, buf_b, buf_c;
+        if (eshkol_gpu_wrap_host((void*)a_data, M * K * sizeof(double), &buf_a) == 0 &&
+            eshkol_gpu_wrap_host((void*)b_data, K * N * sizeof(double), &buf_b) == 0 &&
+            eshkol_gpu_wrap_host((void*)out, M * N * sizeof(double), &buf_c) == 0) {
+            if (eshkol_gpu_matmul_f64(&buf_a, &buf_b, &buf_c, M, K, N) == 0) {
+                eshkol_gpu_free(&buf_a);
+                eshkol_gpu_free(&buf_b);
+                eshkol_gpu_free(&buf_c);
+                return result;
+            }
+        }
+    }
+    // CPU fallback (BLAS/SIMD)
+    eshkol_matmul_f64(a_data, b_data, out, M, K, N);
 
     return result;
 }
@@ -119,7 +151,41 @@ extern "C" void* eshkol_xla_elementwise(
     }
 
     double* out = reinterpret_cast<double*>(result->elements);
+    uint64_t n = static_cast<uint64_t>(total_elements);
 
+    // Ensure GPU subsystem is initialized before checking dispatch
+    ensure_gpu_initialized();
+
+    // Try GPU dispatch for large tensors
+    // XLA ElementwiseOp: ADD=0,SUB=1,MUL=2,DIV=3,EXP=4,LOG=5,SIN=6,COS=7,TANH=8,RELU=9,SIGMOID=10
+    // GPU EshkolElementwiseOp: ADD=0,SUB=1,MUL=2,DIV=3,NEG=4,ABS=5,EXP=6,LOG=7,SIN=8,COS=9,TANH=10,RELU=11,SIGMOID=12
+    // GPU enum has NEG(4) and ABS(5) inserted, so XLA unary ops 4-10 map to GPU 6-12
+    static const int xla_to_gpu_elemwise[] = {0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12};
+    static const int xla_elemwise_count = sizeof(xla_to_gpu_elemwise) / sizeof(xla_to_gpu_elemwise[0]);
+
+    if (eshkol_gpu_should_use(n) && op_code >= 0 && op_code < xla_elemwise_count) {
+        int gpu_op = xla_to_gpu_elemwise[op_code];
+        EshkolGPUBuffer buf_a, buf_b, buf_c;
+        bool gpu_ok = eshkol_gpu_wrap_host((void*)a_data, n * sizeof(double), &buf_a) == 0;
+        if (gpu_ok && b_data && op_code <= 3) {
+            gpu_ok = eshkol_gpu_wrap_host((void*)b_data, n * sizeof(double), &buf_b) == 0;
+        }
+        if (gpu_ok) {
+            gpu_ok = eshkol_gpu_wrap_host((void*)out, n * sizeof(double), &buf_c) == 0;
+        }
+        if (gpu_ok) {
+            EshkolGPUBuffer* bp = (b_data && op_code <= 3) ? &buf_b : nullptr;
+            if (eshkol_gpu_elementwise_f64(&buf_a, bp, &buf_c, n,
+                    static_cast<EshkolElementwiseOp>(gpu_op)) == 0) {
+                eshkol_gpu_free(&buf_a);
+                if (b_data && op_code <= 3) eshkol_gpu_free(&buf_b);
+                eshkol_gpu_free(&buf_c);
+                return result;
+            }
+        }
+    }
+
+    // CPU fallback
     switch (op_code) {
         case 0: // ADD
             for (int64_t i = 0; i < total_elements; i++) out[i] = a_data[i] + b_data[i];
@@ -175,12 +241,36 @@ extern "C" void* eshkol_xla_reduce(
 
     if (total_elements <= 0 || !data) return nullptr;
 
+    // Ensure GPU subsystem is initialized before checking dispatch
+    ensure_gpu_initialized();
+
     if (axis == -1) {
         // Reduce all — result is a scalar tensor (rank 1, 1 element)
         eshkol_tensor_t* result = arena_allocate_tensor_full(arena, 1, 1);
         if (!result) return nullptr;
         result->dimensions[0] = 1;
 
+        double* out = reinterpret_cast<double*>(result->elements);
+        uint64_t n = static_cast<uint64_t>(total_elements);
+
+        // Try GPU dispatch for large reductions
+        // XLA op codes: SUM=0,MEAN=1,MAX=2,MIN=3,PROD=4
+        // GPU op codes: SUM=0,PROD=1,MIN=2,MAX=3,MEAN=4
+        if (eshkol_gpu_should_use(n) && op_code >= 0 && op_code <= 4) {
+            static const int xla_to_gpu_reduce[] = {0, 4, 3, 2, 1};
+            EshkolGPUBuffer buf_in, buf_out;
+            if (eshkol_gpu_wrap_host((void*)data, n * sizeof(double), &buf_in) == 0 &&
+                eshkol_gpu_wrap_host((void*)out, sizeof(double), &buf_out) == 0) {
+                if (eshkol_gpu_reduce_f64(&buf_in, &buf_out, n,
+                        static_cast<EshkolReduceOp>(xla_to_gpu_reduce[op_code])) == 0) {
+                    eshkol_gpu_free(&buf_in);
+                    eshkol_gpu_free(&buf_out);
+                    return result;
+                }
+            }
+        }
+
+        // CPU fallback
         double acc;
         switch (op_code) {
             case 0: // SUM
@@ -208,7 +298,6 @@ extern "C" void* eshkol_xla_reduce(
                 return nullptr;
         }
 
-        double* out = reinterpret_cast<double*>(result->elements);
         out[0] = acc;
         return result;
     }
@@ -217,12 +306,13 @@ extern "C" void* eshkol_xla_reduce(
     if (axis < 0 || axis >= rank) return nullptr;
 
     // Compute output shape (remove the reduced axis)
+    if (rank > 16) return nullptr; // max 16D tensors supported
     uint64_t out_rank = static_cast<uint64_t>(rank - 1);
     if (out_rank == 0) out_rank = 1; // scalar result
 
     // Compute strides and output dimensions
     uint64_t out_total = 1;
-    uint64_t out_dims[16]; // max 16D tensors
+    uint64_t out_dims[16];
     uint64_t j = 0;
     for (int64_t i = 0; i < rank; i++) {
         if (i != axis) {
@@ -238,7 +328,27 @@ extern "C" void* eshkol_xla_reduce(
 
     double* out = reinterpret_cast<double*>(result->elements);
 
-    // Compute stride for the reduced axis
+    // Try GPU dispatch for axis-reduce (large tensors)
+    if (eshkol_gpu_should_use(static_cast<size_t>(total_elements)) && op_code >= 0 && op_code <= 4) {
+        // XLA op codes: SUM=0, MEAN=1, MAX=2, MIN=3, PROD=4
+        // GPU op codes: SUM=0, PROD=1, MIN=2, MAX=3, MEAN=4
+        static const int xla_to_gpu_reduce[] = {0, 4, 3, 2, 1};
+        EshkolGPUBuffer buf_in, buf_out;
+        if (eshkol_gpu_wrap_host((void*)data, static_cast<size_t>(total_elements) * sizeof(double), &buf_in) == 0 &&
+            eshkol_gpu_wrap_host((void*)out, out_total * sizeof(double), &buf_out) == 0) {
+            if (eshkol_gpu_reduce_axis_f64(&buf_in, &buf_out, static_cast<uint64_t>(rank),
+                    shape, static_cast<uint64_t>(axis),
+                    static_cast<EshkolReduceOp>(xla_to_gpu_reduce[op_code])) == 0) {
+                eshkol_gpu_free(&buf_in);
+                eshkol_gpu_free(&buf_out);
+                return result;
+            }
+            eshkol_gpu_free(&buf_in);
+            eshkol_gpu_free(&buf_out);
+        }
+    }
+
+    // CPU fallback: compute stride for the reduced axis
     uint64_t axis_len = shape[axis];
     uint64_t inner_stride = 1;
     for (int64_t i = axis + 1; i < rank; i++) inner_stride *= shape[i];
@@ -274,6 +384,422 @@ extern "C" void* eshkol_xla_reduce(
     return result;
 }
 
+// ===== XLA Scale In-Place Runtime =====
+// Multiplies every element of a tensor data buffer by a scalar.
+// Used by MEAN gradient to divide broadcasted gradient by n.
+extern "C" void* eshkol_xla_scale_inplace(
+    double* data,
+    int64_t total_elements,
+    double scale) {
+    for (int64_t i = 0; i < total_elements; i++) {
+        data[i] *= scale;
+    }
+    return data;
+}
+
+// ===== XLA Softmax Runtime =====
+// Numerically stable softmax along a specified axis.
+// axis == -1 means softmax over all elements (global softmax).
+extern "C" void* eshkol_xla_softmax(
+    void* arena,
+    const double* data,
+    int64_t total_elements,
+    const uint64_t* shape,
+    int64_t rank,
+    int64_t axis) {
+
+    if (total_elements <= 0 || !data) return nullptr;
+
+    // Handle negative axis
+    if (axis < -1) axis = axis + rank;
+
+    // Allocate result tensor with same shape
+    uint64_t out_rank = static_cast<uint64_t>(rank);
+    eshkol_tensor_t* result = arena_allocate_tensor_full(arena, out_rank, static_cast<uint64_t>(total_elements));
+    if (!result) return nullptr;
+    for (int64_t i = 0; i < rank; i++) result->dimensions[i] = shape[i];
+
+    double* out = reinterpret_cast<double*>(result->elements);
+
+    // GPU dispatch for contiguous softmax (global or last-axis)
+    uint64_t num_slices = 0, slice_len = 0;
+    bool gpu_eligible = false;
+    if (axis == -1) {
+        num_slices = 1;
+        slice_len = static_cast<uint64_t>(total_elements);
+        gpu_eligible = true;
+    } else if (axis >= 0 && axis < rank) {
+        // Check if axis is contiguous (inner_stride == 1, i.e. last axis)
+        uint64_t inner_stride = 1;
+        for (int64_t i = axis + 1; i < rank; i++) inner_stride *= shape[i];
+        if (inner_stride == 1) {
+            slice_len = shape[axis];
+            num_slices = static_cast<uint64_t>(total_elements) / slice_len;
+            gpu_eligible = true;
+        }
+    }
+
+    if (gpu_eligible && eshkol_gpu_should_use(static_cast<size_t>(total_elements))) {
+        EshkolGPUBuffer in_buf = {const_cast<double*>(data), nullptr,
+                                   static_cast<size_t>(total_elements) * sizeof(double),
+                                   ESHKOL_MEM_HOST, ESHKOL_GPU_NONE, 0, nullptr};
+        EshkolGPUBuffer out_buf = {out, nullptr,
+                                    static_cast<size_t>(total_elements) * sizeof(double),
+                                    ESHKOL_MEM_HOST, ESHKOL_GPU_NONE, 0, nullptr};
+        if (eshkol_gpu_softmax_f64(&in_buf, &out_buf, num_slices, slice_len) == 0)
+            return result;
+    }
+
+    if (axis == -1) {
+        // Global softmax: max, exp, sum, normalize over all elements
+        double max_val = data[0];
+        for (int64_t i = 1; i < total_elements; i++)
+            if (data[i] > max_val) max_val = data[i];
+
+        double sum_exp = 0.0;
+        for (int64_t i = 0; i < total_elements; i++) {
+            out[i] = std::exp(data[i] - max_val);
+            sum_exp += out[i];
+        }
+        if (sum_exp == 0.0) sum_exp = 1e-10;
+        for (int64_t i = 0; i < total_elements; i++)
+            out[i] /= sum_exp;
+        return result;
+    }
+
+    // Axis-specific softmax
+    if (axis < 0 || axis >= rank) return nullptr;
+
+    uint64_t axis_len = shape[axis];
+    uint64_t inner_stride = 1;
+    for (int64_t i = axis + 1; i < rank; i++) inner_stride *= shape[i];
+
+    uint64_t outer_count = static_cast<uint64_t>(total_elements) / (axis_len * inner_stride);
+
+    // For each "slice" perpendicular to the axis:
+    // 1) find max, 2) compute exp(x - max), 3) sum, 4) normalize
+    for (uint64_t outer = 0; outer < outer_count; outer++) {
+        for (uint64_t inner = 0; inner < inner_stride; inner++) {
+            // Step 1: max
+            double max_val = -INFINITY;
+            for (uint64_t k = 0; k < axis_len; k++) {
+                uint64_t idx = outer * axis_len * inner_stride + k * inner_stride + inner;
+                if (data[idx] > max_val) max_val = data[idx];
+            }
+            // Step 2-3: exp and sum
+            double sum_exp = 0.0;
+            for (uint64_t k = 0; k < axis_len; k++) {
+                uint64_t idx = outer * axis_len * inner_stride + k * inner_stride + inner;
+                double e = std::exp(data[idx] - max_val);
+                out[idx] = e;
+                sum_exp += e;
+            }
+            // Step 4: normalize
+            if (sum_exp == 0.0) sum_exp = 1e-10;
+            for (uint64_t k = 0; k < axis_len; k++) {
+                uint64_t idx = outer * axis_len * inner_stride + k * inner_stride + inner;
+                out[idx] /= sum_exp;
+            }
+        }
+    }
+    return result;
+}
+
+// ===== XLA Normalize Runtime =====
+// Axis-aware normalization: y = gamma * (x - mean) / sqrt(var + eps) + beta
+// Computes mean and variance along the specified axis.
+// gamma and beta are scalar (applied uniformly).
+extern "C" void* eshkol_xla_normalize(
+    void* arena,
+    const double* data,
+    int64_t total_elements,
+    const uint64_t* shape,
+    int64_t rank,
+    int64_t axis,
+    double gamma,
+    double beta,
+    double epsilon) {
+
+    if (total_elements <= 0 || !data) return nullptr;
+
+    // Handle negative axis
+    if (axis < 0) axis = axis + rank;
+    if (axis < 0 || axis >= rank) return nullptr;
+
+    // Allocate result tensor with same shape
+    eshkol_tensor_t* result = arena_allocate_tensor_full(arena,
+        static_cast<uint64_t>(rank), static_cast<uint64_t>(total_elements));
+    if (!result) return nullptr;
+    for (int64_t i = 0; i < rank; i++) result->dimensions[i] = shape[i];
+
+    double* out = reinterpret_cast<double*>(result->elements);
+
+    uint64_t axis_len = shape[axis];
+    uint64_t inner_stride = 1;
+    for (int64_t i = axis + 1; i < rank; i++) inner_stride *= shape[i];
+
+    // GPU dispatch for contiguous normalize (last-axis, inner_stride == 1)
+    if (inner_stride == 1 && eshkol_gpu_should_use(static_cast<size_t>(total_elements))) {
+        uint64_t num_slices = static_cast<uint64_t>(total_elements) / axis_len;
+        EshkolGPUBuffer in_buf = {const_cast<double*>(data), nullptr,
+                                   static_cast<size_t>(total_elements) * sizeof(double),
+                                   ESHKOL_MEM_HOST, ESHKOL_GPU_NONE, 0, nullptr};
+        EshkolGPUBuffer out_buf = {out, nullptr,
+                                    static_cast<size_t>(total_elements) * sizeof(double),
+                                    ESHKOL_MEM_HOST, ESHKOL_GPU_NONE, 0, nullptr};
+        if (eshkol_gpu_normalize_f64(&in_buf, &out_buf, num_slices, axis_len,
+                                      gamma, beta, epsilon) == 0)
+            return result;
+    }
+
+    uint64_t outer_count = static_cast<uint64_t>(total_elements) / (axis_len * inner_stride);
+
+    // For each slice perpendicular to the axis:
+    // 1) compute mean, 2) compute variance, 3) normalize
+    for (uint64_t outer = 0; outer < outer_count; outer++) {
+        for (uint64_t inner = 0; inner < inner_stride; inner++) {
+            // Mean
+            double sum = 0.0;
+            for (uint64_t k = 0; k < axis_len; k++) {
+                uint64_t idx = outer * axis_len * inner_stride + k * inner_stride + inner;
+                sum += data[idx];
+            }
+            double mean = sum / static_cast<double>(axis_len);
+
+            // Variance
+            double var_sum = 0.0;
+            for (uint64_t k = 0; k < axis_len; k++) {
+                uint64_t idx = outer * axis_len * inner_stride + k * inner_stride + inner;
+                double diff = data[idx] - mean;
+                var_sum += diff * diff;
+            }
+            double var = var_sum / static_cast<double>(axis_len);
+
+            // Normalize: y = gamma * (x - mean) / sqrt(var + eps) + beta
+            double inv_std = 1.0 / std::sqrt(var + epsilon);
+            for (uint64_t k = 0; k < axis_len; k++) {
+                uint64_t idx = outer * axis_len * inner_stride + k * inner_stride + inner;
+                out[idx] = gamma * (data[idx] - mean) * inv_std + beta;
+            }
+        }
+    }
+    return result;
+}
+
+// ===== XLA Argreduce Runtime =====
+// Returns tensor of indices (as doubles) for argmax/argmin along an axis.
+// axis == -1 means argreduce over all elements (returns scalar index as double).
+extern "C" void* eshkol_xla_argreduce(
+    void* arena,
+    const double* data,
+    int64_t total_elements,
+    const uint64_t* shape,
+    int64_t rank,
+    int64_t axis,
+    int64_t is_max) {  // 1=argmax, 0=argmin
+
+    if (total_elements <= 0 || !data) return nullptr;
+
+    if (axis == -1) {
+        // Argreduce all — return scalar tensor with flattened index as double
+        eshkol_tensor_t* result = arena_allocate_tensor_full(arena, 1, 1);
+        if (!result) return nullptr;
+        result->dimensions[0] = 1;
+
+        int64_t best_idx = 0;
+        double best_val = data[0];
+        for (int64_t i = 1; i < total_elements; i++) {
+            bool better = is_max ? (data[i] > best_val) : (data[i] < best_val);
+            if (better) { best_val = data[i]; best_idx = i; }
+        }
+        double idx_as_double = static_cast<double>(best_idx);
+        reinterpret_cast<double*>(result->elements)[0] = idx_as_double;
+        return result;
+    }
+
+    // Argreduce along specific axis
+    if (axis < 0 || axis >= rank) return nullptr;
+    if (rank > 16) return nullptr; // max 16D tensors supported
+
+    uint64_t out_rank = static_cast<uint64_t>(rank - 1);
+    if (out_rank == 0) out_rank = 1;
+
+    uint64_t out_total = 1;
+    uint64_t out_dims[16];
+    uint64_t j = 0;
+    for (int64_t i = 0; i < rank; i++) {
+        if (i != axis) {
+            out_dims[j++] = shape[i];
+            out_total *= shape[i];
+        }
+    }
+    if (j == 0) { out_dims[0] = 1; out_total = 1; }
+
+    eshkol_tensor_t* result = arena_allocate_tensor_full(arena, out_rank, out_total);
+    if (!result) return nullptr;
+    for (uint64_t i = 0; i < out_rank; i++) result->dimensions[i] = out_dims[i];
+
+    double* out = reinterpret_cast<double*>(result->elements);
+    uint64_t axis_len = shape[axis];
+    uint64_t inner_stride = 1;
+    for (int64_t i = axis + 1; i < rank; i++) inner_stride *= shape[i];
+
+    for (uint64_t outer = 0; outer < out_total / (inner_stride > 0 ? inner_stride : 1); outer++) {
+        for (uint64_t inner = 0; inner < inner_stride; inner++) {
+            uint64_t out_idx = outer * inner_stride + inner;
+            double best_val = data[outer * axis_len * inner_stride + inner];
+            int64_t best_k = 0;
+            for (uint64_t k = 1; k < axis_len; k++) {
+                uint64_t src_idx = outer * axis_len * inner_stride + k * inner_stride + inner;
+                bool better = is_max ? (data[src_idx] > best_val) : (data[src_idx] < best_val);
+                if (better) { best_val = data[src_idx]; best_k = static_cast<int64_t>(k); }
+            }
+            out[out_idx] = static_cast<double>(best_k);
+        }
+    }
+    return result;
+}
+
+// ===== XLA Reduce Gradient Runtime =====
+// Computes the gradient of a reduce operation w.r.t. the input.
+// Supports MAX, MIN, PROD gradients (SUM/MEAN handled in codegen).
+// Parameters:
+//   arena       - arena allocator
+//   grad_data   - upstream gradient elements (reduced shape)
+//   input_data  - original input elements (full shape)
+//   input_shape - shape of the original input
+//   input_rank  - rank of the original input
+//   total_input - total elements in input
+//   axis        - axis that was reduced (-1 for reduce-all)
+//   op_code     - 2=MAX, 3=MIN, 4=PROD
+// Returns: tensor* with same shape as input, containing gradient
+extern "C" void* eshkol_xla_reduce_gradient(
+    void* arena,
+    const double* grad_data,
+    const double* input_data,
+    const uint64_t* input_shape,
+    int64_t input_rank,
+    int64_t total_input,
+    int64_t axis,
+    int64_t op_code) {
+
+    if (!grad_data || !input_data || total_input <= 0) return nullptr;
+
+    eshkol_tensor_t* result = arena_allocate_tensor_full(
+        arena, static_cast<uint64_t>(input_rank), static_cast<uint64_t>(total_input));
+    if (!result) return nullptr;
+    for (int64_t i = 0; i < input_rank; i++) {
+        result->dimensions[i] = input_shape[i];
+    }
+    double* out = reinterpret_cast<double*>(result->elements);
+
+    if (axis == -1) {
+        // Reduce-all gradient
+        if (op_code == 2 || op_code == 3) {
+            // MAX/MIN: gradient is upstream_grad / count where input == extremum
+            double extremum = input_data[0];
+            for (int64_t i = 1; i < total_input; i++) {
+                if (op_code == 2) extremum = std::fmax(extremum, input_data[i]);
+                else extremum = std::fmin(extremum, input_data[i]);
+            }
+            int64_t count = 0;
+            for (int64_t i = 0; i < total_input; i++) {
+                if (input_data[i] == extremum) count++;
+            }
+            double grad_val = (count > 0) ? grad_data[0] / static_cast<double>(count) : 0.0;
+            for (int64_t i = 0; i < total_input; i++) {
+                out[i] = (input_data[i] == extremum) ? grad_val : 0.0;
+            }
+        } else if (op_code == 4) {
+            // PROD: gradient[i] = prod(x_j for j!=i) * upstream_grad
+            // = total_product / x[i] * upstream_grad
+            // Handle zeros: count zeros, if >1 all grads are 0
+            int64_t zero_count = 0;
+            int64_t zero_idx = -1;
+            double total_product = 1.0;
+            for (int64_t i = 0; i < total_input; i++) {
+                if (input_data[i] == 0.0) {
+                    zero_count++;
+                    zero_idx = i;
+                } else {
+                    total_product *= input_data[i];
+                }
+            }
+            if (zero_count > 1) {
+                // More than one zero: all gradients are 0
+                for (int64_t i = 0; i < total_input; i++) out[i] = 0.0;
+            } else if (zero_count == 1) {
+                // Exactly one zero: only the zero element gets a gradient
+                for (int64_t i = 0; i < total_input; i++) out[i] = 0.0;
+                out[zero_idx] = total_product * grad_data[0];
+            } else {
+                // No zeros: grad[i] = total_product / x[i] * upstream
+                double upstream = grad_data[0];
+                for (int64_t i = 0; i < total_input; i++) {
+                    out[i] = (total_product / input_data[i]) * upstream;
+                }
+            }
+        }
+    } else {
+        // Axis-specific gradient (same logic but per-slice along axis)
+        if (axis < 0 || axis >= input_rank) return nullptr;
+
+        uint64_t axis_len = input_shape[axis];
+        uint64_t inner_stride = 1;
+        for (int64_t i = axis + 1; i < input_rank; i++) inner_stride *= input_shape[i];
+        uint64_t outer_stride = axis_len * inner_stride;
+        uint64_t out_total = static_cast<uint64_t>(total_input) / axis_len;
+
+        for (uint64_t outer = 0; outer < out_total / (inner_stride > 0 ? inner_stride : 1); outer++) {
+            for (uint64_t inner = 0; inner < inner_stride; inner++) {
+                uint64_t grad_idx = outer * inner_stride + inner;
+
+                if (op_code == 2 || op_code == 3) {
+                    // Find extremum along this slice
+                    double extremum = input_data[outer * outer_stride + inner];
+                    for (uint64_t k = 1; k < axis_len; k++) {
+                        double val = input_data[outer * outer_stride + k * inner_stride + inner];
+                        if (op_code == 2) extremum = std::fmax(extremum, val);
+                        else extremum = std::fmin(extremum, val);
+                    }
+                    int64_t count = 0;
+                    for (uint64_t k = 0; k < axis_len; k++) {
+                        if (input_data[outer * outer_stride + k * inner_stride + inner] == extremum) count++;
+                    }
+                    double gv = (count > 0) ? grad_data[grad_idx] / static_cast<double>(count) : 0.0;
+                    for (uint64_t k = 0; k < axis_len; k++) {
+                        uint64_t src_idx = outer * outer_stride + k * inner_stride + inner;
+                        out[src_idx] = (input_data[src_idx] == extremum) ? gv : 0.0;
+                    }
+                } else if (op_code == 4) {
+                    // PROD gradient along axis
+                    int64_t zc = 0;
+                    int64_t zi = -1;
+                    double tp = 1.0;
+                    for (uint64_t k = 0; k < axis_len; k++) {
+                        double val = input_data[outer * outer_stride + k * inner_stride + inner];
+                        if (val == 0.0) { zc++; zi = static_cast<int64_t>(k); }
+                        else tp *= val;
+                    }
+                    double upstream = grad_data[grad_idx];
+                    for (uint64_t k = 0; k < axis_len; k++) {
+                        uint64_t src_idx = outer * outer_stride + k * inner_stride + inner;
+                        if (zc > 1) {
+                            out[src_idx] = 0.0;
+                        } else if (zc == 1) {
+                            out[src_idx] = (static_cast<int64_t>(k) == zi) ? tp * upstream : 0.0;
+                        } else {
+                            out[src_idx] = (tp / input_data[src_idx]) * upstream;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
 // ===== XLA Transpose Runtime =====
 // Transposes a 2D tensor (matrix transpose).
 // For higher-rank tensors, perm specifies the permutation of axes.
@@ -301,6 +827,25 @@ extern "C" void* eshkol_xla_transpose(
 
     double* out = reinterpret_cast<double*>(result->elements);
 
+    // Ensure GPU subsystem is initialized before checking dispatch
+    ensure_gpu_initialized();
+
+    // Try GPU dispatch for 2D transpose of large matrices
+    if (rank == 2 && eshkol_gpu_should_use(total)) {
+        uint64_t rows = shape[0];
+        uint64_t cols = shape[1];
+        EshkolGPUBuffer buf_in, buf_out;
+        if (eshkol_gpu_wrap_host((void*)data, total * sizeof(double), &buf_in) == 0 &&
+            eshkol_gpu_wrap_host((void*)out, total * sizeof(double), &buf_out) == 0) {
+            if (eshkol_gpu_transpose_f64(&buf_in, &buf_out, rows, cols) == 0) {
+                eshkol_gpu_free(&buf_in);
+                eshkol_gpu_free(&buf_out);
+                return result;
+            }
+        }
+    }
+
+    // CPU fallback — general N-dimensional transpose
     // Compute source strides
     uint64_t src_strides[16];
     src_strides[rank - 1] = 1;
@@ -473,8 +1018,30 @@ XLARuntime::~XLARuntime() = default;
 
 bool XLARuntime::initialize(Target target) {
     impl_->target_ = target;
-    // CPU always available. GPU targets require external initialization.
-    impl_->initialized_ = (target == Target::CPU);
+
+    if (target == Target::CPU) {
+        impl_->initialized_ = true;
+    } else {
+        // Initialize GPU backend if not already done
+        int gpu_devices = eshkol_gpu_init();
+        if (gpu_devices > 0) {
+            // Verify the requested GPU backend is available
+            EshkolGPUBackend backend = eshkol_gpu_get_backend();
+            bool match = false;
+            switch (target) {
+                case Target::Metal:  match = (backend == ESHKOL_GPU_METAL);  break;
+                case Target::CUDA:   match = (backend == ESHKOL_GPU_CUDA);   break;
+                case Target::Vulkan: match = (backend == ESHKOL_GPU_VULKAN); break;
+                default: break;
+            }
+            impl_->initialized_ = match;
+        } else {
+            // No GPU devices — fall back, but still mark as initialized
+            // since XLA runtime functions have CPU fallbacks
+            impl_->initialized_ = true;
+        }
+    }
+
     return impl_->initialized_;
 }
 
@@ -487,6 +1054,9 @@ Target XLARuntime::getTarget() const {
 }
 
 // ===== Execution =====
+// Infrastructure for StableHLO JIT — execute/executeAsync provide the execution
+// interface for compiled XLA programs. Currently unused; actual XLA ops dispatch
+// through 11 C runtime functions called directly from codegen.
 
 ExecutionResult XLARuntime::execute(void* executable,
                                      const std::vector<BufferDescriptor>& inputs,
@@ -657,6 +1227,20 @@ std::string XLARuntime::getDescription() const {
 
 XLARuntime& getDefaultRuntime() {
     static XLARuntime runtime;
+    static std::once_flag init_flag;
+    std::call_once(init_flag, [&]() {
+        // Detect best available GPU target
+        eshkol_gpu_init();
+        EshkolGPUBackend backend = eshkol_gpu_get_backend();
+        Target target;
+        switch (backend) {
+            case ESHKOL_GPU_METAL:  target = Target::Metal;  break;
+            case ESHKOL_GPU_CUDA:   target = Target::CUDA;   break;
+            case ESHKOL_GPU_VULKAN: target = Target::Vulkan;  break;
+            default:                target = Target::CPU;      break;
+        }
+        runtime.initialize(target);
+    });
     return runtime;
 }
 

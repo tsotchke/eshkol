@@ -1,0 +1,63 @@
+;; GPU Softmax and Normalization Tests
+
+;; --- Softmax correctness (global) ---
+;; softmax([0,0,0,0]) = [0.25, 0.25, 0.25, 0.25]
+(define uniform #(0.0 0.0 0.0 0.0))
+(define sm-uniform (softmax uniform))
+(if (< (abs (- (tensor-get sm-uniform 0) 0.25)) 1e-10)
+    (display "PASS: softmax uniform = 0.25")
+    (begin (display "FAIL: softmax uniform = ") (display (tensor-get sm-uniform 0))))
+(newline)
+
+;; softmax should sum to 1.0
+(define sm-sum (tensor-sum sm-uniform))
+(if (< (abs (- sm-sum 1.0)) 1e-10)
+    (display "PASS: softmax sum = 1.0")
+    (begin (display "FAIL: softmax sum = ") (display sm-sum)))
+(newline)
+
+;; --- Softmax with varying values ---
+(define vals (reshape #(1.0 2.0 3.0 4.0) 2 2))
+(define sm-vals (softmax vals))
+;; All elements should be positive
+(if (and (> (tensor-get sm-vals 0 0) 0.0)
+         (> (tensor-get sm-vals 0 1) 0.0)
+         (> (tensor-get sm-vals 1 0) 0.0)
+         (> (tensor-get sm-vals 1 1) 0.0))
+    (display "PASS: softmax all positive")
+    (display "FAIL: softmax has non-positive values"))
+(newline)
+
+;; Larger value -> larger softmax
+(if (< (tensor-get sm-vals 0 0) (tensor-get sm-vals 1 1))
+    (display "PASS: softmax preserves ordering")
+    (display "FAIL: softmax does not preserve ordering"))
+(newline)
+
+;; --- Axis-aware softmax: each row sums to ~1.0 ---
+(define M (reshape #(1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+(define sm-rows (softmax M 1))
+;; Row 0: softmax([1,2,3]) -> should sum to 1
+(define r0 (+ (tensor-get sm-rows 0 0)
+              (+ (tensor-get sm-rows 0 1) (tensor-get sm-rows 0 2))))
+(if (< (abs (- r0 1.0)) 1e-6)
+    (display "PASS: softmax axis=1 row0 sums to 1.0")
+    (begin (display "FAIL: softmax axis=1 row0 sum = ") (display r0)))
+(newline)
+
+;; Row 1: softmax([4,5,6]) -> should sum to 1
+(define r1 (+ (tensor-get sm-rows 1 0)
+              (+ (tensor-get sm-rows 1 1) (tensor-get sm-rows 1 2))))
+(if (< (abs (- r1 1.0)) 1e-6)
+    (display "PASS: softmax axis=1 row1 sums to 1.0")
+    (begin (display "FAIL: softmax axis=1 row1 sum = ") (display r1)))
+(newline)
+
+;; --- Softmax numerical stability (large values) ---
+(define big #(1000.0 1001.0 1002.0))
+(define sm-big (softmax big))
+(define sm-big-sum (tensor-sum sm-big))
+(if (< (abs (- sm-big-sum 1.0)) 1e-6)
+    (display "PASS: softmax large values sum = 1.0")
+    (begin (display "FAIL: softmax large values sum = ") (display sm-big-sum)))
+(newline)

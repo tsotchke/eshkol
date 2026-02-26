@@ -108,6 +108,12 @@ llvm::Value* ControlFlowCodegen::codegenAnd(const eshkol_operations_t* op) {
 
         llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
 
+        // NORETURN SAFETY: If block is already terminated (e.g., by raise in sub-expression),
+        // we cannot emit any more instructions. Break out of the loop.
+        if (current_block->getTerminator()) {
+            break;
+        }
+
         if (i == num_args - 1) {
             // Last argument - always return its value
             phi_inputs.push_back({arg, current_block});
@@ -129,6 +135,12 @@ llvm::Value* ControlFlowCodegen::codegenAnd(const eshkol_operations_t* op) {
             // Continue evaluation with next arg
             ctx_.builder().SetInsertPoint(next_block);
         }
+    }
+
+    // NORETURN SAFETY: If no inputs reach merge (all paths terminated), remove merge block
+    if (phi_inputs.empty()) {
+        merge_block->eraseFromParent();
+        return llvm::UndefValue::get(ctx_.taggedValueType());
     }
 
     // Merge block with PHI
@@ -170,6 +182,12 @@ llvm::Value* ControlFlowCodegen::codegenOr(const eshkol_operations_t* op) {
 
         llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
 
+        // NORETURN SAFETY: If block is already terminated (e.g., by raise in sub-expression),
+        // we cannot emit any more instructions. Break out of the loop.
+        if (current_block->getTerminator()) {
+            break;
+        }
+
         if (i == num_args - 1) {
             // Last arg - just branch to merge with this value
             phi_inputs.push_back({arg, current_block});
@@ -190,6 +208,12 @@ llvm::Value* ControlFlowCodegen::codegenOr(const eshkol_operations_t* op) {
             // Continue evaluation in next_block
             ctx_.builder().SetInsertPoint(next_block);
         }
+    }
+
+    // NORETURN SAFETY: If no inputs reach merge (all paths terminated), remove merge block
+    if (phi_inputs.empty()) {
+        merge_block->eraseFromParent();
+        return llvm::UndefValue::get(ctx_.taggedValueType());
     }
 
     ctx_.builder().SetInsertPoint(merge_block);

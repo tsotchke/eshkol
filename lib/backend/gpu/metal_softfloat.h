@@ -4,8 +4,9 @@
  * Implements full f64 arithmetic using uint2 (two 32-bit integers)
  * Based on Berkeley SoftFloat library algorithms
  *
- * This header MUST be kept in sync with the embedded Metal shader in
- * gpu_memory.mm. The gpu_memory.mm version is the canonical reference.
+ * SINGLE SOURCE OF TRUTH for Metal SoftFloat f64 emulation.
+ * At build time, CMake auto-generates metal_sf64_embedded.inc from this file,
+ * which gpu_memory.mm includes as an NSString for runtime Metal compilation.
  *
  * Copyright (C) tsotchke
  * SPDX-License-Identifier: MIT
@@ -57,7 +58,7 @@ inline int sf64_exp_raw(sf64 x) {
     return int((x.x >> 20) & 0x7FFu);
 }
 
-inline int sf64_exp(sf64 x) {
+inline int sf64_exponent(sf64 x) {
     return sf64_exp_raw(x) - SF64_EXP_BIAS;
 }
 
@@ -874,6 +875,537 @@ inline sf64 sf64_from_int(int val) {
     sig.x &= SF64_MANT_HI_MASK;  // Remove implicit bit
 
     return sf64_pack(sign, exp_raw, sig.x, sig.y);
+}
+
+// ============================================================================
+// Transcendental Functions — SoftFloat f64 implementations
+// ============================================================================
+// Metal has NO native f64 math. These use sf64 FMA chains for precision.
+
+// Helper constants for transcendentals
+constant sf64 SF64_LN2_HI = sf64(0x3FE62E42u, 0xFEFA39EFu);  // ln(2) high part
+constant sf64 SF64_LN2_LO = sf64(0x3C7ABC9Eu, 0x3B39803Fu);  // ln(2) low part
+constant sf64 SF64_LN2     = sf64(0x3FE62E42u, 0xFEFA39EFu);  // ln(2) ≈ 0.6931471805599453
+constant sf64 SF64_LOG2E   = sf64(0x3FF71547u, 0x652B82FEu);  // log2(e) ≈ 1.4426950408889634
+constant sf64 SF64_INV_LN2 = sf64(0x3FF71547u, 0x652B82FEu);  // 1/ln(2)
+// SF64_TWO already defined in constants section above
+constant sf64 SF64_HALF    = sf64(0x3FE00000u, 0x00000000u);   // 0.5
+constant sf64 SF64_PI      = sf64(0x400921FBu, 0x54442D18u);   // π
+constant sf64 SF64_PI_2    = sf64(0x3FF921FBu, 0x54442D18u);   // π/2
+constant sf64 SF64_PI_4    = sf64(0x3FE921FBu, 0x54442D18u);   // π/4
+constant sf64 SF64_TWO_PI  = sf64(0x401921FBu, 0x54442D18u);   // 2π
+constant sf64 SF64_INV_PI  = sf64(0x3FD45F30u, 0x6DC9C883u);   // 1/π
+constant sf64 SF64_FOUR_PI = sf64(0x3FF45F30u, 0x6DC9C883u);   // 4/π
+
+// sf64_sqrt: Newton-Raphson iteration
+// Uses reciprocal sqrt estimate then multiply
+inline sf64 sf64_sqrt(sf64 x) {
+    if (sf64_is_zero(x)) return SF64_ZERO;
+    if (sf64_is_nan(x) || (x.x >> 31)) return SF64_QNAN; // negative → NaN
+    if (sf64_is_inf(x)) return SF64_INF;
+
+    // Extract exponent for initial estimate
+    int exp_raw = sf64_exp_raw(x);
+    // Halve the exponent for sqrt estimate
+    int new_exp = ((exp_raw - SF64_EXP_BIAS) / 2) + SF64_EXP_BIAS;
+    sf64 y = sf64((uint(new_exp) << 20) | (x.x & 0x000FFFFFu), x.y);
+
+    // 5 Newton-Raphson iterations: y = (y + x/y) * 0.5
+    for (int i = 0; i < 5; i++) {
+        sf64 xdivy = sf64_div(x, y);
+        y = sf64_mul(sf64_add(y, xdivy), SF64_HALF);
+    }
+    return y;
+}
+
+// sf64_exp: e^x using range reduction and minimax polynomial
+// Range reduction: x = n*ln2 + r, |r| < ln2/2
+// Polynomial: e^r ≈ 1 + r + r²/2! + ... + r^13/13!
+inline sf64 sf64_exp(sf64 x) {
+    if (sf64_is_nan(x)) return SF64_QNAN;
+    if (sf64_is_zero(x)) return SF64_ONE;
+
+    // Check for overflow/underflow
+    // e^709.78 ≈ DBL_MAX, e^(-745.13) ≈ 0
+    sf64 max_val = sf64(0x40862E42u, 0xFEFA39EFu);  // ~709.78
+    sf64 min_val = sf64(0xC0874910u, 0xD52D3052u);  // ~-745.13
+    if (sf64_gt(x, max_val)) return SF64_INF;
+    if (sf64_lt(x, min_val)) return SF64_ZERO;
+
+    // n = round(x / ln2)
+    sf64 x_over_ln2 = sf64_mul(x, SF64_INV_LN2);
+    // Round to nearest integer
+    int n_int;
+    {
+        // Extract integer part
+        int exp_val = sf64_exp_raw(x_over_ln2) - SF64_EXP_BIAS;
+        if (exp_val < 0) {
+            n_int = 0;
+        } else if (exp_val < 52) {
+            // Extract integer part using 32-bit arithmetic (Metal has no 64-bit ints)
+            uint mant_hi = (x_over_ln2.x & 0x000FFFFFu) | 0x00100000u;
+            uint mant_lo = x_over_ln2.y;
+            int shift = 52 - exp_val;
+            uint val;
+            if (shift >= 32) {
+                val = mant_hi >> (shift - 32);
+            } else if (shift > 0) {
+                val = (mant_hi << (32 - shift)) | (mant_lo >> shift);
+            } else {
+                val = (mant_hi << 32) | mant_lo; // won't happen for exp range
+            }
+            // Round: check the bit just below the integer part
+            if (shift > 0 && shift <= 52) {
+                uint round_bit;
+                if (shift >= 33) {
+                    round_bit = (mant_hi >> (shift - 33)) & 1u;
+                } else if (shift >= 1) {
+                    round_bit = (shift > 32) ? ((mant_hi >> (shift - 33)) & 1u)
+                                              : ((mant_lo >> (shift - 1)) & 1u);
+                } else {
+                    round_bit = 0;
+                }
+                val += round_bit;
+            }
+            n_int = (x_over_ln2.x >> 31) ? -int(val) : int(val);
+        } else {
+            n_int = (x_over_ln2.x >> 31) ? -1024 : 1024;
+        }
+    }
+
+    // r = x - n * ln2 (Cody-Waite reduction)
+    sf64 n_sf = sf64_from_int(n_int);
+    sf64 r = sf64_sub(x, sf64_mul(n_sf, SF64_LN2_HI));
+    r = sf64_sub(r, sf64_mul(n_sf, SF64_LN2_LO));
+
+    // Polynomial approximation: e^r ≈ 1 + r(1 + r/2(1 + r/3(1 + r/4(...))))
+    // Horner form with 13 terms for full double precision
+    sf64 r2 = sf64_mul(r, r);
+    // Coefficients: 1/n! for n=2..13
+    sf64 c2  = SF64_HALF;                                    // 1/2
+    sf64 c3  = sf64(0x3FC55555u, 0x55555555u);               // 1/6
+    sf64 c4  = sf64(0x3FA55555u, 0x55555555u);               // 1/24
+    sf64 c5  = sf64(0x3F811111u, 0x11111111u);               // 1/120
+    sf64 c6  = sf64(0x3F56C16Cu, 0x16C16C17u);               // 1/720
+    sf64 c7  = sf64(0x3F2A01A0u, 0x1A01A01Au);               // 1/5040
+    sf64 c8  = sf64(0x3EFA01A0u, 0x1A01A01Au);               // 1/40320
+    sf64 c9  = sf64(0x3EC71DE3u, 0xA556C734u);               // 1/362880
+    sf64 c10 = sf64(0x3E927E4Fu, 0xB7789F5Cu);               // 1/3628800
+    sf64 c11 = sf64(0x3E5AE64Du, 0x67F544E4u);               // 1/39916800
+    sf64 c12 = sf64(0x3E21EED8u, 0xEFF8D898u);               // 1/479001600
+    sf64 c13 = sf64(0x3DE6124Eu, 0x13B6CA51u);               // 1/6227020800
+
+    // Horner evaluation: p = c13
+    sf64 p = c13;
+    p = sf64_fma(p, r, c12);
+    p = sf64_fma(p, r, c11);
+    p = sf64_fma(p, r, c10);
+    p = sf64_fma(p, r, c9);
+    p = sf64_fma(p, r, c8);
+    p = sf64_fma(p, r, c7);
+    p = sf64_fma(p, r, c6);
+    p = sf64_fma(p, r, c5);
+    p = sf64_fma(p, r, c4);
+    p = sf64_fma(p, r, c3);
+    p = sf64_fma(p, r, c2);
+    // e^r = 1 + r + r^2*c2 + ... = 1 + r*(1 + r*p) where p starts at c2
+    sf64 exp_r = sf64_add(SF64_ONE, sf64_mul(r, sf64_add(SF64_ONE, sf64_mul(r, p))));
+
+    // Scale by 2^n: adjust exponent
+    if (n_int == 0) return exp_r;
+    int exp_result = sf64_exp_raw(exp_r) + n_int;
+    if (exp_result >= 2047) return SF64_INF;
+    if (exp_result <= 0) return SF64_ZERO;
+    return sf64(((uint(exp_result) << 20) | (exp_r.x & 0x800FFFFFu)), exp_r.y);
+}
+
+// sf64_log: natural logarithm
+// Range reduction: x = 2^n * m, 1 ≤ m < 2
+// log(x) = n*ln2 + log(m)
+// log(m) via minimax polynomial on f = m - 1
+inline sf64 sf64_log(sf64 x) {
+    if (sf64_is_nan(x) || (x.x >> 31)) return SF64_QNAN; // NaN or negative
+    if (sf64_is_zero(x)) return sf64(0xFFF00000u, 0x00000000u); // -Inf
+    if (sf64_is_inf(x)) return SF64_INF;
+
+    // Extract exponent and mantissa
+    int exp_raw = sf64_exp_raw(x);
+    int n = exp_raw - SF64_EXP_BIAS;
+
+    // f = mantissa in [1, 2): set exponent to bias (1.xxx)
+    sf64 f = sf64((0x3FF00000u | (x.x & 0x000FFFFFu)), x.y);
+
+    // Reduce to [sqrt(2)/2, sqrt(2)] for better convergence
+    // If f > sqrt(2), use f/2 and n+1
+    sf64 sqrt2 = sf64(0x3FF6A09Eu, 0x667F3BCDu); // sqrt(2)
+    if (sf64_gt(f, sqrt2)) {
+        f = sf64_mul(f, SF64_HALF);
+        n++;
+    }
+
+    // s = (f - 1) / (f + 1)
+    sf64 f_m1 = sf64_sub(f, SF64_ONE);
+    sf64 f_p1 = sf64_add(f, SF64_ONE);
+    sf64 s = sf64_div(f_m1, f_p1);
+    sf64 s2 = sf64_mul(s, s);
+
+    // log(f) = 2*s + 2*s^3/3 + 2*s^5/5 + ... (odd powers only)
+    // Coefficients: 2/(2k+1) for k=1,2,...
+    sf64 c1 = sf64(0x3FE55555u, 0x55555555u);  // 2/3 = 0.6666...
+    sf64 c2 = sf64(0x3FD99999u, 0x9999999Au);  // 2/5 = 0.4
+    sf64 c3 = sf64(0x3FD24924u, 0x92492492u);  // 2/7 ≈ 0.2857
+    sf64 c4 = sf64(0x3FCC71C7u, 0x1C71C71Cu);  // 2/9 ≈ 0.2222
+    sf64 c5 = sf64(0x3FC745D1u, 0x745D1746u);  // 2/11 ≈ 0.1818
+    sf64 c6 = sf64(0x3FC3B13Bu, 0x13B13B14u);  // 2/13 ≈ 0.1538
+
+    sf64 p = c6;
+    p = sf64_fma(p, s2, c5);
+    p = sf64_fma(p, s2, c4);
+    p = sf64_fma(p, s2, c3);
+    p = sf64_fma(p, s2, c2);
+    p = sf64_fma(p, s2, c1);
+    // log(f) = 2*s*(1 + s²*p)
+    sf64 log_f = sf64_mul(SF64_TWO, sf64_mul(s, sf64_add(SF64_ONE, sf64_mul(s2, p))));
+
+    // log(x) = n * ln(2) + log(f)
+    sf64 n_sf = sf64_from_int(n);
+    return sf64_add(sf64_mul(n_sf, SF64_LN2), log_f);
+}
+
+// sf64_sin / sf64_cos: Cody-Waite range reduction to [-π/4, π/4]
+// Then minimax polynomial
+
+// Helper: reduce x to [-π/4, π/4], return quadrant (0-3)
+inline sf64 sf64_trig_reduce(sf64 x, thread int& quadrant) {
+    // |x| / (π/4) to find quadrant
+    sf64 abs_x = sf64_abs(x);
+    sf64 four_over_pi = SF64_FOUR_PI;
+    sf64 j_sf = sf64_mul(abs_x, four_over_pi);
+
+    // Extract integer part
+    int j;
+    {
+        int exp_val = sf64_exp_raw(j_sf) - SF64_EXP_BIAS;
+        if (exp_val < 0) {
+            j = 0;
+        } else if (exp_val < 30) {
+            // Extract integer part using 32-bit arithmetic (Metal has no 64-bit ints)
+            uint mant_hi = (j_sf.x & 0x000FFFFFu) | 0x00100000u;
+            uint mant_lo = j_sf.y;
+            int shift = 52 - exp_val;
+            uint val;
+            if (shift >= 32) {
+                val = mant_hi >> (shift - 32);
+            } else if (shift > 0) {
+                val = (mant_hi << (32 - shift)) | (mant_lo >> shift);
+            } else {
+                val = mant_hi;  // exp_val >= 52 won't reach here (cap is 30)
+            }
+            j = int(val);
+        } else {
+            j = 0; // Very large: use modular reduction (simplified)
+        }
+    }
+    // Make j odd for rounding
+    j = (j + 1) & ~1;
+    quadrant = j & 7;
+
+    sf64 j_val = sf64_from_int(j);
+    // r = |x| - j * π/4
+    sf64 r = sf64_sub(abs_x, sf64_mul(j_val, SF64_PI_4));
+
+    // Handle sign of original x
+    if (x.x >> 31) {
+        quadrant = (8 - quadrant) & 7;
+        r = sf64_negate(r);
+    }
+    return r;
+}
+
+// Sine polynomial on [-π/4, π/4]: sin(r) ≈ r - r³/6 + r⁵/120 - ...
+inline sf64 sf64_sin_poly(sf64 r) {
+    sf64 r2 = sf64_mul(r, r);
+    // Coefficients: alternating 1/(2k+1)!
+    sf64 s3 = sf64(0xBFC55555u, 0x55555549u);  // -1/6
+    sf64 s5 = sf64(0x3F811111u, 0x1110F8A6u);  //  1/120
+    sf64 s7 = sf64(0xBF2A01A0u, 0x19C161D5u);  // -1/5040
+    sf64 s9 = sf64(0x3EC71DE3u, 0x57B1FE7Du);  //  1/362880
+    sf64 s11= sf64(0xBE5AE5E6u, 0x8A2B9CEBu);  // -1/39916800
+
+    sf64 p = s11;
+    p = sf64_fma(p, r2, s9);
+    p = sf64_fma(p, r2, s7);
+    p = sf64_fma(p, r2, s5);
+    p = sf64_fma(p, r2, s3);
+    return sf64_add(r, sf64_mul(r, sf64_mul(r2, p)));
+}
+
+// Cosine polynomial on [-π/4, π/4]: cos(r) ≈ 1 - r²/2 + r⁴/24 - ...
+inline sf64 sf64_cos_poly(sf64 r) {
+    sf64 r2 = sf64_mul(r, r);
+    sf64 c2 = sf64(0xBFE00000u, 0x00000000u);  // -1/2
+    sf64 c4 = sf64(0x3FA55555u, 0x55555555u);  //  1/24
+    sf64 c6 = sf64(0xBF56C16Cu, 0x16C16C17u);  // -1/720
+    sf64 c8 = sf64(0x3EFA01A0u, 0x1A01A01Au);  //  1/40320
+    sf64 c10= sf64(0xBE927E4Fu, 0xB7789F5Cu);  // -1/3628800
+
+    sf64 p = c10;
+    p = sf64_fma(p, r2, c8);
+    p = sf64_fma(p, r2, c6);
+    p = sf64_fma(p, r2, c4);
+    p = sf64_fma(p, r2, c2);
+    return sf64_add(SF64_ONE, sf64_mul(r2, p));
+}
+
+inline sf64 sf64_sin(sf64 x) {
+    if (sf64_is_nan(x) || sf64_is_inf(x)) return SF64_QNAN;
+    if (sf64_is_zero(x)) return x; // preserve sign of zero
+
+    int quadrant;
+    sf64 r = sf64_trig_reduce(x, quadrant);
+
+    sf64 result;
+    switch (quadrant & 3) {
+        case 0: result = sf64_sin_poly(r); break;
+        case 1: result = sf64_cos_poly(r); break;
+        case 2: result = sf64_negate(sf64_sin_poly(r)); break;
+        case 3: result = sf64_negate(sf64_cos_poly(r)); break;
+        default: result = sf64_sin_poly(r); break;
+    }
+    return result;
+}
+
+inline sf64 sf64_cos(sf64 x) {
+    if (sf64_is_nan(x) || sf64_is_inf(x)) return SF64_QNAN;
+    if (sf64_is_zero(x)) return SF64_ONE;
+
+    int quadrant;
+    sf64 r = sf64_trig_reduce(x, quadrant);
+
+    sf64 result;
+    switch (quadrant & 3) {
+        case 0: result = sf64_cos_poly(r); break;
+        case 1: result = sf64_negate(sf64_sin_poly(r)); break;
+        case 2: result = sf64_negate(sf64_cos_poly(r)); break;
+        case 3: result = sf64_sin_poly(r); break;
+        default: result = sf64_cos_poly(r); break;
+    }
+    return result;
+}
+
+// sf64_tanh: (e^2x - 1) / (e^2x + 1)
+// For |x| >= 20: return ±1 (saturated)
+inline sf64 sf64_tanh(sf64 x) {
+    if (sf64_is_nan(x)) return SF64_QNAN;
+    if (sf64_is_zero(x)) return x;
+
+    sf64 abs_x = sf64_abs(x);
+    sf64 twenty = sf64(0x40340000u, 0x00000000u); // 20.0
+    if (sf64_ge(abs_x, twenty)) {
+        return (x.x >> 31) ? sf64(0xBFF00000u, 0x00000000u) : SF64_ONE;
+    }
+
+    sf64 e2x = sf64_exp(sf64_mul(SF64_TWO, abs_x));
+    sf64 num = sf64_sub(e2x, SF64_ONE);
+    sf64 den = sf64_add(e2x, SF64_ONE);
+    sf64 result = sf64_div(num, den);
+    return (x.x >> 31) ? sf64_negate(result) : result;
+}
+
+// ============================================================================
+// GPU Kernels — Elementwise, Reduce, Transpose
+// ============================================================================
+
+kernel void elementwise_sf64(
+    device const sf64* A [[buffer(0)]],
+    device const sf64* B [[buffer(1)]],
+    device sf64* C [[buffer(2)]],
+    constant uint& N [[buffer(3)]],
+    constant uint& op [[buffer(4)]],
+    uint tid [[thread_position_in_grid]])
+{
+    if (tid >= N) return;
+
+    sf64 a = A[tid];
+    sf64 b = (op <= 3) ? B[tid] : SF64_ZERO; // Binary ops read B
+
+    sf64 result;
+    switch (op) {
+        case 0:  result = sf64_add(a, b); break;           // ADD
+        case 1:  result = sf64_sub(a, b); break;           // SUB
+        case 2:  result = sf64_mul(a, b); break;           // MUL
+        case 3:  result = sf64_div(a, b); break;           // DIV
+        case 4:  result = sf64_negate(a); break;           // NEG
+        case 5:  result = sf64_abs(a); break;              // ABS
+        case 6:  result = sf64_exp(a); break;              // EXP
+        case 7:  result = sf64_log(a); break;              // LOG
+        case 8:  result = sf64_sin(a); break;              // SIN
+        case 9:  result = sf64_cos(a); break;              // COS
+        case 10: result = sf64_tanh(a); break;             // TANH
+        case 11: result = sf64_gt(a, SF64_ZERO) ? a : SF64_ZERO; break;  // RELU
+        case 12: {                                                         // SIGMOID
+            sf64 neg_a = sf64_negate(a);
+            sf64 exp_neg = sf64_exp(neg_a);
+            result = sf64_div(SF64_ONE, sf64_add(SF64_ONE, exp_neg));
+            break;
+        }
+        case 13: result = sf64_sqrt(a); break;             // SQRT
+        case 14: result = sf64_div(SF64_ONE, a); break;    // RECIPROCAL
+        default: result = SF64_ZERO; break;
+    }
+    C[tid] = result;
+}
+
+// Reduction kernel — two-pass design
+// Pass 1: each threadgroup reduces 256 elements to 1 partial result
+// The host then launches a second pass if needed
+kernel void reduce_sf64(
+    device const sf64* in [[buffer(0)]],
+    device sf64* out [[buffer(1)]],
+    constant uint& N [[buffer(2)]],
+    constant uint& op [[buffer(3)]],
+    uint tid [[thread_position_in_grid]],
+    uint lid [[thread_position_in_threadgroup]],
+    uint gid [[threadgroup_position_in_grid]])
+{
+    threadgroup sf64 shared[256];
+
+    // Load element or identity
+    sf64 identity;
+    switch (op) {
+        case 0: identity = SF64_ZERO; break;  // SUM
+        case 1: identity = SF64_ONE; break;   // PROD
+        case 2: identity = SF64_INF; break;   // MIN
+        case 3: identity = sf64(0xFFF00000u, 0x00000000u); break;  // MAX (-Inf)
+        case 4: identity = SF64_ZERO; break;  // MEAN (sum then divide)
+        default: identity = SF64_ZERO; break;
+    }
+
+    shared[lid] = (tid < N) ? in[tid] : identity;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Tree reduction in shared memory
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (lid < s) {
+            sf64 a = shared[lid];
+            sf64 b = shared[lid + s];
+            switch (op) {
+                case 0: case 4: shared[lid] = sf64_add(a, b); break;
+                case 1: shared[lid] = sf64_mul(a, b); break;
+                case 2: shared[lid] = sf64_lt(a, b) ? a : b; break;
+                case 3: shared[lid] = sf64_gt(a, b) ? a : b; break;
+                default: break;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // First thread writes partial result
+    if (lid == 0) {
+        out[gid] = shared[0];
+    }
+}
+
+// Transpose kernel: out[j*rows + i] = in[i*cols + j]
+kernel void transpose_sf64(
+    device const sf64* in [[buffer(0)]],
+    device sf64* out [[buffer(1)]],
+    constant uint& rows [[buffer(2)]],
+    constant uint& cols [[buffer(3)]],
+    uint2 tid [[thread_position_in_grid]])
+{
+    uint i = tid.y; // row
+    uint j = tid.x; // col
+    if (i >= rows || j >= cols) return;
+    out[j * rows + i] = in[i * cols + j];
+}
+
+// ============================================================================
+// Softmax Kernel — Numerically Stable, Fused (max, exp, sum, normalize)
+// ============================================================================
+// Each thread processes one contiguous slice of slice_len elements.
+// softmax(x_k) = exp(x_k - max(x)) / sum(exp(x - max(x)))
+// Handles axis-last layout (inner_stride=1). General axis handled on CPU.
+
+kernel void softmax_sf64(
+    device const sf64* in [[buffer(0)]],
+    device sf64* out [[buffer(1)]],
+    constant uint& slice_len [[buffer(2)]],
+    constant uint& num_slices [[buffer(3)]],
+    uint tid [[thread_position_in_grid]])
+{
+    if (tid >= num_slices) return;
+
+    uint base = tid * slice_len;
+
+    // Pass 1: find max for numerical stability
+    sf64 max_val = in[base];
+    for (uint k = 1; k < slice_len; k++) {
+        sf64 v = in[base + k];
+        if (sf64_gt(v, max_val)) max_val = v;
+    }
+
+    // Pass 2: exp(x - max) and accumulate sum
+    sf64 sum_exp = SF64_ZERO;
+    for (uint k = 0; k < slice_len; k++) {
+        sf64 e = sf64_exp(sf64_sub(in[base + k], max_val));
+        out[base + k] = e;
+        sum_exp = sf64_add(sum_exp, e);
+    }
+
+    // Guard against division by zero
+    if (sf64_is_zero(sum_exp)) sum_exp = SF64_ONE;
+
+    // Pass 3: normalize
+    for (uint k = 0; k < slice_len; k++) {
+        out[base + k] = sf64_div(out[base + k], sum_exp);
+    }
+}
+
+// ============================================================================
+// Normalize Kernel — Layer Normalization (mean, variance, scale+shift)
+// ============================================================================
+// y = gamma * (x - mean) / sqrt(var + epsilon) + beta
+// Each thread processes one contiguous slice of slice_len elements.
+
+kernel void normalize_sf64(
+    device const sf64* in [[buffer(0)]],
+    device sf64* out [[buffer(1)]],
+    constant uint& slice_len [[buffer(2)]],
+    constant uint& num_slices [[buffer(3)]],
+    constant sf64& gamma_sf [[buffer(4)]],
+    constant sf64& beta_sf [[buffer(5)]],
+    constant sf64& epsilon_sf [[buffer(6)]],
+    uint tid [[thread_position_in_grid]])
+{
+    if (tid >= num_slices) return;
+
+    uint base = tid * slice_len;
+    sf64 n_sf = sf64_from_int(int(slice_len));
+
+    // Pass 1: compute mean
+    sf64 sum = SF64_ZERO;
+    for (uint k = 0; k < slice_len; k++) {
+        sum = sf64_add(sum, in[base + k]);
+    }
+    sf64 mean = sf64_div(sum, n_sf);
+
+    // Pass 2: compute variance
+    sf64 var_sum = SF64_ZERO;
+    for (uint k = 0; k < slice_len; k++) {
+        sf64 diff = sf64_sub(in[base + k], mean);
+        var_sum = sf64_add(var_sum, sf64_mul(diff, diff));
+    }
+    sf64 variance = sf64_div(var_sum, n_sf);
+
+    // inv_std = 1 / sqrt(var + epsilon)
+    sf64 inv_std = sf64_div(SF64_ONE, sf64_sqrt(sf64_add(variance, epsilon_sf)));
+
+    // Pass 3: normalize with scale and shift
+    for (uint k = 0; k < slice_len; k++) {
+        sf64 x_norm = sf64_mul(sf64_sub(in[base + k], mean), inv_std);
+        out[base + k] = sf64_add(sf64_mul(gamma_sf, x_norm), beta_sf);
+    }
 }
 
 // ============================================================================
