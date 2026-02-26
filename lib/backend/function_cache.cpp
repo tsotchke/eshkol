@@ -16,6 +16,7 @@ FunctionCache::FunctionCache(llvm::Module& mod, TypeSystem& ts)
     : module(mod), types(ts),
       strlen_func(nullptr), strcmp_func(nullptr), strncmp_func(nullptr),
       strcpy_func(nullptr), strcat_func(nullptr), strstr_func(nullptr),
+      strcasecmp_func(nullptr),
       malloc_func(nullptr), memcpy_func(nullptr), memset_func(nullptr),
       snprintf_func(nullptr), strtod_func(nullptr) {}
 
@@ -26,6 +27,7 @@ void FunctionCache::reset() {
     strcpy_func = nullptr;
     strcat_func = nullptr;
     strstr_func = nullptr;
+    strcasecmp_func = nullptr;
     malloc_func = nullptr;
     memcpy_func = nullptr;
     memset_func = nullptr;
@@ -104,6 +106,16 @@ llvm::Function* FunctionCache::getStrstr() {
         getOrCreateFunction("strstr", ft, strstr_func);
     }
     return strstr_func;
+}
+
+// int strcasecmp(const char*, const char*)
+llvm::Function* FunctionCache::getStrcasecmp() {
+    if (!strcasecmp_func) {
+        auto ft = llvm::FunctionType::get(types.getInt32Type(),
+            {types.getPtrType(), types.getPtrType()}, false);
+        getOrCreateFunction("strcasecmp", ft, strcasecmp_func);
+    }
+    return strcasecmp_func;
 }
 
 // void* malloc(size_t)

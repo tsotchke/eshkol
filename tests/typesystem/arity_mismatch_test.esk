@@ -1,0 +1,10 @@
+;; Type System Test: Arity mismatch detection
+;; EXPECT-MODE: strict-types
+;; EXPECT-STDERR: expects 2 arguments, got 4
+
+;; f takes exactly 2 parameters
+(define (f x y) (+ x y))
+
+;; Calling with 4 args should trigger arity error
+(display (f 1 2 3 4))
+(newline)

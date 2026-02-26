@@ -24,6 +24,7 @@
 #include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/backend/complex_codegen.h>
 #include <llvm/IR/Value.h>
+#include <functional>
 
 namespace eshkol {
 
@@ -198,6 +199,51 @@ public:
      */
     llvm::Value* extractAsDouble(llvm::Value* tagged);
 
+    // === Central AD Dispatch Handlers ===
+
+    /**
+     * Central binary AD dispatch handler.
+     * Checks if either operand is an AD node (CALLABLE + AD_NODE subtype).
+     * If so, converts both to AD nodes, records binary op on tape, returns result.
+     * Otherwise, calls regular_fn lambda for normal dispatch.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @param ad_op_type AD operation type code (e.g., AD_NODE_ADD=2, AD_NODE_MUL=4)
+     * @param regular_fn Lambda that emits all non-AD code paths, returns tagged_value
+     * @return Result as tagged_value (either AD-wrapped or regular)
+     */
+    llvm::Value* withADBinaryDispatch(
+        llvm::Value* left, llvm::Value* right,
+        int ad_op_type,
+        std::function<llvm::Value*()> regular_fn);
+
+    /**
+     * Central unary AD dispatch handler.
+     * Checks if operand is an AD node (CALLABLE + AD_NODE subtype).
+     * If so, records unary op on tape, returns result.
+     * Otherwise, calls regular_fn lambda for normal dispatch.
+     * @param operand Operand (tagged_value)
+     * @param ad_op_type AD operation type code (e.g., AD_NODE_NEG=11, AD_NODE_ABS=42)
+     * @param regular_fn Lambda that emits all non-AD code paths, returns tagged_value
+     * @return Result as tagged_value (either AD-wrapped or regular)
+     */
+    llvm::Value* withADUnaryDispatch(
+        llvm::Value* operand,
+        int ad_op_type,
+        std::function<llvm::Value*()> regular_fn);
+
+    // === Bignum dispatch helpers (public for use by llvm_codegen eqv?/equal?) ===
+
+    llvm::Value* emitBignumBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
+    llvm::Value* emitBignumCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
+    llvm::Value* emitIsBignumCheck(llvm::Value* left, llvm::Value* right);
+
+    // === Rational dispatch helpers ===
+
+    llvm::Value* emitIsRationalCheck(llvm::Value* left, llvm::Value* right);
+    llvm::Value* emitRationalBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
+    llvm::Value* emitRationalCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
@@ -258,32 +304,6 @@ private:
     llvm::Value* convertToComplex(llvm::Value* operand, llvm::Value* is_complex,
                                    llvm::Value* base_type);
 
-    /**
-     * Emit a call to eshkol_bignum_binary_tagged runtime dispatch.
-     * Handles alloca/store/call/load for pointer-based passing.
-     * @param left Left operand (tagged_value)
-     * @param right Right operand (tagged_value)
-     * @param op_code Operation: 0=add,1=sub,2=mul,3=div,4=mod,5=quot,6=rem,7=neg
-     * @return Result as tagged_value
-     */
-    llvm::Value* emitBignumBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
-
-    /**
-     * Emit a call to eshkol_bignum_compare_tagged runtime dispatch.
-     * @param left Left operand (tagged_value)
-     * @param right Right operand (tagged_value)
-     * @param op_code Comparison: 0=lt,1=gt,2=eq,3=le,4=ge
-     * @return Result as tagged_value (boolean)
-     */
-    llvm::Value* emitBignumCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
-
-    /**
-     * Check if either tagged value is a bignum via runtime call.
-     * @param left Left operand (tagged_value)
-     * @param right Right operand (tagged_value)
-     * @return i1 true if either is bignum
-     */
-    llvm::Value* emitIsBignumCheck(llvm::Value* left, llvm::Value* right);
 };
 
 } // namespace eshkol

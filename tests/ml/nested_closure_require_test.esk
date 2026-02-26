@@ -1,0 +1,18 @@
+;;; Test: 3-level nested closure loaded via require
+;;; This should reproduce the module-context segfault
+
+(require ml.nested_test_module)
+
+(define (sphere x)
+  (+ (* (vref x 0) (vref x 0))
+     (* (vref x 1) (vref x 1))))
+
+(display "Testing 3-level nested closure via module...") (newline)
+(let ((result (three-level-test sphere (vector 5.0 3.0) 0.1 500)))
+  (display "Result: ")
+  (display (vref result 0)) (display " ") (display (vref result 1)) (newline)
+  (if (and (< (abs (vref result 0)) 0.1)
+           (< (abs (vref result 1)) 0.1))
+      (display "PASS")
+      (display "FAIL"))
+  (newline))

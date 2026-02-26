@@ -1,0 +1,109 @@
+;; Bytevector Operations Test Suite
+;; Tests: make-bytevector, bytevector, bytevector-length, bytevector-u8-ref,
+;;        bytevector-u8-set!, bytevector-copy, bytevector-append,
+;;        bytevector?, utf8->string, string->utf8
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Construction
+;; ============================================================================
+
+(display "=== Testing bytevector construction ===\n")
+
+(test-case "make-bytevector length" 5 (bytevector-length (make-bytevector 5)))
+(test-case "make-bytevector with fill" 0 (bytevector-u8-ref (make-bytevector 3 0) 0))
+(test-case "bytevector literal length" 3 (bytevector-length (bytevector 1 2 3)))
+(test-case "bytevector literal content" 2 (bytevector-u8-ref (bytevector 1 2 3) 1))
+
+;; ============================================================================
+;; Test: Predicate
+;; ============================================================================
+
+(display "\n=== Testing bytevector? ===\n")
+
+(test-case "bytevector? on bytevector" #t (bytevector? (bytevector 1 2 3)))
+(test-case "bytevector? on number" #f (bytevector? 42))
+(test-case "bytevector? on string" #f (bytevector? "hello"))
+
+;; ============================================================================
+;; Test: Element access
+;; ============================================================================
+
+(display "\n=== Testing element access ===\n")
+
+(define bv1 (bytevector 10 20 30 40 50))
+(test-case "bytevector-u8-ref first" 10 (bytevector-u8-ref bv1 0))
+(test-case "bytevector-u8-ref middle" 30 (bytevector-u8-ref bv1 2))
+(test-case "bytevector-u8-ref last" 50 (bytevector-u8-ref bv1 4))
+(test-case "bytevector-length" 5 (bytevector-length bv1))
+
+;; ============================================================================
+;; Test: Mutation
+;; ============================================================================
+
+(display "\n=== Testing mutation ===\n")
+
+(define bv2 (make-bytevector 3 0))
+(bytevector-u8-set! bv2 0 11)
+(bytevector-u8-set! bv2 1 22)
+(bytevector-u8-set! bv2 2 33)
+(test-case "bytevector-u8-set! idx 0" 11 (bytevector-u8-ref bv2 0))
+(test-case "bytevector-u8-set! idx 1" 22 (bytevector-u8-ref bv2 1))
+(test-case "bytevector-u8-set! idx 2" 33 (bytevector-u8-ref bv2 2))
+
+;; ============================================================================
+;; Test: Copy
+;; ============================================================================
+
+(display "\n=== Testing copy ===\n")
+
+(define bv3 (bytevector-copy (bytevector 100 200)))
+(test-case "bytevector-copy length" 2 (bytevector-length bv3))
+(test-case "bytevector-copy content 0" 100 (bytevector-u8-ref bv3 0))
+(test-case "bytevector-copy content 1" 200 (bytevector-u8-ref bv3 1))
+
+;; ============================================================================
+;; Test: Append
+;; ============================================================================
+
+(display "\n=== Testing append ===\n")
+
+(define bv4 (bytevector-append (bytevector 1 2) (bytevector 3 4)))
+(test-case "bytevector-append length" 4 (bytevector-length bv4))
+(test-case "bytevector-append content 0" 1 (bytevector-u8-ref bv4 0))
+(test-case "bytevector-append content 2" 3 (bytevector-u8-ref bv4 2))
+(test-case "bytevector-append content 3" 4 (bytevector-u8-ref bv4 3))
+
+;; ============================================================================
+;; Test: UTF-8 conversion
+;; ============================================================================
+
+(display "\n=== Testing UTF-8 conversion ===\n")
+
+(test-case "utf8->string" "abc" (utf8->string (bytevector 97 98 99)))
+(test-case "string->utf8 length" 5 (bytevector-length (string->utf8 "hello")))
+(test-case "utf8 round-trip" "hello" (utf8->string (string->utf8 "hello")))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Bytevector Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)

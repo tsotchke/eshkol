@@ -1,0 +1,36 @@
+;; R7RS Exception Handling Tests
+;; Tests with-exception-handler, raise, guard
+
+(display "=== Exception Handling Tests ===") (newline)
+
+;; Test 1: with-exception-handler + raise (handler receives raised value)
+(display "Test 1 - basic raise/handler: ")
+(display (with-exception-handler
+  (lambda (err) 42)
+  (lambda () (raise "error!"))))
+(newline)
+
+;; Test 2: guard expression (R7RS: exn bound to raised value)
+(display "Test 2 - guard: ")
+(display (guard (exn (#t (+ 100 exn)))
+  (raise 5)))
+(newline)
+
+;; Test 3: Normal return (no exception)
+(display "Test 3 - no exception: ")
+(display (with-exception-handler
+  (lambda (err) 0)
+  (lambda () (+ 10 20))))
+(newline)
+
+;; Test 4: Nested exception handlers
+(display "Test 4 - nested: ")
+(display (with-exception-handler
+  (lambda (err) (+ err 1000))
+  (lambda ()
+    (with-exception-handler
+      (lambda (err) (raise (+ err 100)))
+      (lambda () (raise 5))))))
+(newline)
+
+(display "=== Exception Tests Complete ===") (newline)

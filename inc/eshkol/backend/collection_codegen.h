@@ -123,6 +123,41 @@ public:
      */
     llvm::Value* vectorSet(const eshkol_operations_t* op);
 
+    /**
+     * Copy elements between vectors: (vector-copy! to at from [start [end]])
+     * @param op The operation AST node
+     * @return Unspecified value
+     */
+    llvm::Value* vectorCopy(const eshkol_operations_t* op);
+
+    /**
+     * Concatenate vectors: (vector-append vec1 vec2 ...)
+     * @param op The operation AST node
+     * @return New vector as tagged value
+     */
+    llvm::Value* vectorAppend(const eshkol_operations_t* op);
+
+    /**
+     * Fill vector with value: (vector-fill! vec fill)
+     * @param op The operation AST node
+     * @return Unspecified value
+     */
+    llvm::Value* vectorFill(const eshkol_operations_t* op);
+
+    /**
+     * Convert vector to list: (vector->list vec [start [end]])
+     * @param op The operation AST node
+     * @return List as tagged value
+     */
+    llvm::Value* vectorToList(const eshkol_operations_t* op);
+
+    /**
+     * Convert list to vector: (list->vector lst)
+     * @param op The operation AST node
+     * @return Vector as tagged value
+     */
+    llvm::Value* listToVector(const eshkol_operations_t* op);
+
     // === Helper: Arena-based Cons Cell ===
 
     /**

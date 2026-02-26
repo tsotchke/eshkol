@@ -1,0 +1,63 @@
+;; Regression test: letrec* define hoisting must not reorder side effects
+;; Bug: transformInternalDefinesToLetrec previously hoisted ALL defines
+;; past non-define expressions, causing side effects (like vector-set!)
+;; to execute AFTER later defines (like reshape) instead of in order.
+;;
+;; R7RS semantics: only CONSECUTIVE defines at the start of a body
+;; are transformed to letrec*. Once a non-define expression appears,
+;; everything after it goes into the letrec* body in order.
+
+;; Test 1: Side effects between defines must execute in order
+(define (test-interleaved-side-effects)
+  (define v (make-vector 2 0.0))
+  (vector-set! v 0 42.0)           ;; side effect between defines
+  (define x (vector-ref v 0))      ;; should see 42.0, not 0.0
+  x)
+
+(display "Test 1 (interleaved side effects): ")
+(define result1 (test-interleaved-side-effects))
+(display result1) (newline)
+;; Must print 42.0 — if it prints 0.0, the bug has regressed
+
+;; Test 2: Multiple side effects between defines
+(define (test-multiple-side-effects)
+  (define v (make-vector 4 0.0))
+  (vector-set! v 0 1.0)
+  (vector-set! v 1 2.0)
+  (vector-set! v 2 3.0)
+  (vector-set! v 3 4.0)
+  (define sum (+ (vector-ref v 0) (vector-ref v 1)
+                 (vector-ref v 2) (vector-ref v 3)))
+  sum)
+
+(display "Test 2 (multiple side effects): ")
+(define result2 (test-multiple-side-effects))
+(display result2) (newline)
+;; Must print 10.0
+
+;; Test 3: Consecutive defines at start should still work as letrec*
+(define (test-consecutive-defines)
+  (define a 10)
+  (define b 20)
+  (define c 30)
+  (+ a b c))
+
+(display "Test 3 (consecutive defines): ")
+(display (test-consecutive-defines)) (newline)
+;; Must print 60
+
+;; Test 4: The original reshape bug scenario
+(define (test-reshape-after-set)
+  (define v (make-vector 4 0.0))
+  (vector-set! v 0 1.0)
+  (vector-set! v 3 4.0)
+  (define T (reshape v 2 2))
+  (define T-data (tensor-data T))
+  (+ (vector-ref T-data 0) (vector-ref T-data 3)))
+
+(display "Test 4 (reshape after vector-set!): ")
+(display (test-reshape-after-set)) (newline)
+;; Must print 5.0 (1.0 + 4.0)
+
+(display "All letrec* regression tests passed!")
+(newline)

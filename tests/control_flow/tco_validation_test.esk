@@ -1,0 +1,41 @@
+;; TCO (Tail Call Optimization) Validation Test
+;; If TCO is working, these deeply recursive functions complete without stack overflow.
+;; Without TCO, they would crash with a stack overflow.
+
+(display "=== TCO Validation Tests ===") (newline)
+
+;; Test 1: Simple tail-recursive countdown (1,000,000 iterations)
+(define (countdown n)
+  (if (<= n 0) 0 (countdown (- n 1))))
+
+(display "countdown 1000000: ")
+(display (countdown 1000000))
+(newline)
+
+;; Test 2: Tail-recursive sum (1,000,000 iterations)
+(define (sum-helper n acc)
+  (if (<= n 0) acc (sum-helper (- n 1) (+ acc n))))
+
+(display "sum 1..100000: ")
+(display (sum-helper 100000 0))
+(newline)
+
+;; Test 3: Mutual tail recursion (even?/odd? style)
+(define (my-even? n)
+  (if (= n 0) #t (my-odd? (- n 1))))
+(define (my-odd? n)
+  (if (= n 0) #f (my-even? (- n 1))))
+
+(display "even? 100000: ")
+(display (my-even? 100000))
+(newline)
+
+;; Test 4: Tail-recursive fibonacci (iterative style)
+(define (fib-iter n a b)
+  (if (= n 0) a (fib-iter (- n 1) b (+ a b))))
+
+(display "fib 50: ")
+(display (fib-iter 50 0 1))
+(newline)
+
+(display "=== TCO Validation Complete ===") (newline)

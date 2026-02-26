@@ -1,0 +1,56 @@
+; Infinity and NaN edge case tests
+; Tests special floating-point values: NaN, +inf.0, -inf.0, +0.0, -0.0
+
+(display "TEST: NaN and Infinity edge cases") (newline)
+
+; NaN identity
+(display (if (nan? +nan.0) "PASS" "FAIL")) (display ": nan? detects NaN") (newline)
+(display (if (not (nan? 1.0)) "PASS" "FAIL")) (display ": nan? rejects normal number") (newline)
+(display (if (not (nan? 0)) "PASS" "FAIL")) (display ": nan? rejects integer") (newline)
+
+; NaN is not equal to itself (IEEE 754)
+(display (if (not (= +nan.0 +nan.0)) "PASS" "FAIL")) (display ": NaN != NaN") (newline)
+
+; NaN propagation through arithmetic
+(display (if (nan? (+ +nan.0 1.0)) "PASS" "FAIL")) (display ": NaN + 1.0 = NaN") (newline)
+(display (if (nan? (* +nan.0 2.0)) "PASS" "FAIL")) (display ": NaN * 2.0 = NaN") (newline)
+(display (if (nan? (- +nan.0 +nan.0)) "PASS" "FAIL")) (display ": NaN - NaN = NaN") (newline)
+
+; Infinity detection
+(display (if (infinite? +inf.0) "PASS" "FAIL")) (display ": infinite? detects +inf") (newline)
+(display (if (infinite? -inf.0) "PASS" "FAIL")) (display ": infinite? detects -inf") (newline)
+(display (if (not (infinite? 1.0)) "PASS" "FAIL")) (display ": infinite? rejects normal") (newline)
+(display (if (not (infinite? 0)) "PASS" "FAIL")) (display ": infinite? rejects integer") (newline)
+
+; Finite detection
+(display (if (finite? 1.0) "PASS" "FAIL")) (display ": finite? accepts normal") (newline)
+(display (if (finite? 0) "PASS" "FAIL")) (display ": finite? accepts integer") (newline)
+(display (if (not (finite? +inf.0)) "PASS" "FAIL")) (display ": finite? rejects +inf") (newline)
+(display (if (not (finite? +nan.0)) "PASS" "FAIL")) (display ": finite? rejects NaN") (newline)
+
+; Infinity arithmetic
+(display (if (infinite? (+ +inf.0 1.0)) "PASS" "FAIL")) (display ": inf + 1 = inf") (newline)
+(display (if (infinite? (* +inf.0 2.0)) "PASS" "FAIL")) (display ": inf * 2 = inf") (newline)
+(display (if (nan? (- +inf.0 +inf.0)) "PASS" "FAIL")) (display ": inf - inf = NaN") (newline)
+(display (if (nan? (* 0.0 +inf.0)) "PASS" "FAIL")) (display ": 0 * inf = NaN") (newline)
+
+; Infinity comparison
+(display (if (> +inf.0 1e308) "PASS" "FAIL")) (display ": +inf > large number") (newline)
+(display (if (< -inf.0 -1e308) "PASS" "FAIL")) (display ": -inf < large negative") (newline)
+
+; Division producing infinity
+(display (if (infinite? (/ 1.0 0.0)) "PASS" "FAIL")) (display ": 1/0 = inf") (newline)
+(display (if (> (/ 1.0 0.0) 0.0) "PASS" "FAIL")) (display ": 1/0 = +inf") (newline)
+(display (if (< (/ -1.0 0.0) 0.0) "PASS" "FAIL")) (display ": -1/0 = -inf") (newline)
+
+; NaN comparisons all false
+(display (if (not (< +nan.0 0.0)) "PASS" "FAIL")) (display ": NaN not < 0") (newline)
+(display (if (not (> +nan.0 0.0)) "PASS" "FAIL")) (display ": NaN not > 0") (newline)
+(display (if (not (<= +nan.0 0.0)) "PASS" "FAIL")) (display ": NaN not <= 0") (newline)
+(display (if (not (>= +nan.0 0.0)) "PASS" "FAIL")) (display ": NaN not >= 0") (newline)
+
+; Math functions at special values
+(display (if (nan? (sqrt -1.0)) "PASS" "FAIL")) (display ": sqrt(-1) = NaN") (newline)
+(display (if (nan? (log -1.0)) "PASS" "FAIL")) (display ": log(-1) = NaN") (newline)
+(display (if (infinite? (log 0.0)) "PASS" "FAIL")) (display ": log(0) = -inf") (newline)
+(display (if (< (log 0.0) 0.0) "PASS" "FAIL")) (display ": log(0) = -inf (negative)") (newline)

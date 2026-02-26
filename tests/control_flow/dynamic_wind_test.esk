@@ -1,0 +1,39 @@
+; dynamic-wind tests
+
+; Basic dynamic-wind: before, thunk, after
+(dynamic-wind
+  (lambda () (display "before "))
+  (lambda () (display "during "))
+  (lambda () (display "after")))
+(newline)
+; Expected: before during after
+
+; dynamic-wind returns thunk's value
+(display (dynamic-wind
+  (lambda () #f)
+  (lambda () 42)
+  (lambda () #f)))
+(newline)
+; Expected: 42
+
+; Nested dynamic-wind
+(dynamic-wind
+  (lambda () (display "["))
+  (lambda ()
+    (dynamic-wind
+      (lambda () (display "("))
+      (lambda () (display "inner"))
+      (lambda () (display ")"))))
+  (lambda () (display "]")))
+(newline)
+; Expected: [(inner)]
+
+; dynamic-wind with call/cc — escape triggers after thunk
+(display
+  (call/cc (lambda (k)
+    (dynamic-wind
+      (lambda () (display "B"))
+      (lambda () (k 42))
+      (lambda () (display "A"))))))
+(newline)
+; Expected: BA42

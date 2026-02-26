@@ -1,0 +1,4 @@
+; REPL Test: REPL Commands
+:version
+:help
+:env

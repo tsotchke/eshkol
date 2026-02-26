@@ -37,8 +37,8 @@ extern "C" {
 // Default: 30 second timeout
 #define ESHKOL_DEFAULT_TIMEOUT_MS          30000
 
-// Default: 10,000 stack frames
-#define ESHKOL_DEFAULT_MAX_STACK_DEPTH     10000
+// Default: 100,000 stack frames (512MB OS stack supports ~80K+ frames)
+#define ESHKOL_DEFAULT_MAX_STACK_DEPTH     100000
 
 // Default: 1 billion tensor elements
 #define ESHKOL_DEFAULT_MAX_TENSOR_ELEMENTS (1ULL * 1000 * 1000 * 1000)

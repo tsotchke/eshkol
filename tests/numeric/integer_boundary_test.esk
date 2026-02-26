@@ -1,0 +1,88 @@
+(require stdlib)
+
+(display "TEST: Integer boundary edge cases") (newline)
+
+; --- Max/Min INT64 values ---
+(display (if (= 9223372036854775807 9223372036854775807) "PASS" "FAIL")) (display ": max int64 equals itself") (newline)
+(display (if (= -9223372036854775808 -9223372036854775808) "PASS" "FAIL")) (display ": min int64 equals itself") (newline)
+(display (if (> 9223372036854775807 0) "PASS" "FAIL")) (display ": max int64 is positive") (newline)
+(display (if (< -9223372036854775808 0) "PASS" "FAIL")) (display ": min int64 is negative") (newline)
+
+; --- Overflow to bignum ---
+(display (if (= (+ 9223372036854775807 1) 9223372036854775808) "PASS" "FAIL")) (display ": max int64 + 1 promotes to bignum") (newline)
+(display (if (integer? (+ 9223372036854775807 1)) "PASS" "FAIL")) (display ": bignum result is still integer?") (newline)
+(display (if (exact? (+ 9223372036854775807 1)) "PASS" "FAIL")) (display ": bignum result is exact?") (newline)
+(display (if (> (+ 9223372036854775807 1) 9223372036854775807) "PASS" "FAIL")) (display ": bignum overflow > original max int64") (newline)
+
+; --- Underflow to bignum ---
+(display (if (= (- -9223372036854775808 1) -9223372036854775809) "PASS" "FAIL")) (display ": min int64 - 1 promotes to bignum") (newline)
+(display (if (< (- -9223372036854775808 1) -9223372036854775808) "PASS" "FAIL")) (display ": bignum underflow < original min int64") (newline)
+
+; --- Integer identity ---
+(display (if (= 0 0) "PASS" "FAIL")) (display ": (= 0 0)") (newline)
+(display (if (= 1 1) "PASS" "FAIL")) (display ": (= 1 1)") (newline)
+(display (if (= -1 -1) "PASS" "FAIL")) (display ": (= -1 -1)") (newline)
+(display (if (not (= 1 -1)) "PASS" "FAIL")) (display ": (not (= 1 -1))") (newline)
+
+; --- Zero edge cases ---
+(display (if (zero? 0) "PASS" "FAIL")) (display ": (zero? 0)") (newline)
+(display (if (not (zero? 1)) "PASS" "FAIL")) (display ": (not (zero? 1))") (newline)
+(display (if (not (zero? -1)) "PASS" "FAIL")) (display ": (not (zero? -1))") (newline)
+(display (if (positive? 1) "PASS" "FAIL")) (display ": (positive? 1)") (newline)
+(display (if (negative? -1) "PASS" "FAIL")) (display ": (negative? -1)") (newline)
+(display (if (not (positive? 0)) "PASS" "FAIL")) (display ": (not (positive? 0))") (newline)
+(display (if (not (negative? 0)) "PASS" "FAIL")) (display ": (not (negative? 0))") (newline)
+
+; --- Large integer arithmetic ---
+(display (if (= (* 9223372036854775807 2) 18446744073709551614) "PASS" "FAIL")) (display ": max int64 * 2 = bignum") (newline)
+(display (if (= (* 1000000000 1000000000) 1000000000000000000) "PASS" "FAIL")) (display ": 10^9 * 10^9 = 10^18") (newline)
+
+; --- integer? predicate ---
+(display (if (integer? 0) "PASS" "FAIL")) (display ": (integer? 0)") (newline)
+(display (if (integer? 9223372036854775807) "PASS" "FAIL")) (display ": (integer? max-int64)") (newline)
+(display (if (not (integer? 1.5)) "PASS" "FAIL")) (display ": (not (integer? 1.5))") (newline)
+(display (if (integer? 1.0) "PASS" "FAIL")) (display ": (integer? 1.0) - whole float is integer") (newline)
+
+; --- exact? predicate ---
+(display (if (exact? 0) "PASS" "FAIL")) (display ": (exact? 0)") (newline)
+(display (if (exact? 9223372036854775807) "PASS" "FAIL")) (display ": (exact? max-int64)") (newline)
+(display (if (not (exact? 1.0)) "PASS" "FAIL")) (display ": (not (exact? 1.0))") (newline)
+
+; --- modulo/remainder with negative numbers ---
+(display (if (= (modulo 10 3) 1) "PASS" "FAIL")) (display ": (modulo 10 3) = 1") (newline)
+(display (if (= (modulo -10 3) 2) "PASS" "FAIL")) (display ": (modulo -10 3) = 2 (sign follows divisor)") (newline)
+(display (if (= (modulo 10 -3) -2) "PASS" "FAIL")) (display ": (modulo 10 -3) = -2 (sign follows divisor)") (newline)
+(display (if (= (remainder 10 3) 1) "PASS" "FAIL")) (display ": (remainder 10 3) = 1") (newline)
+(display (if (= (remainder -10 3) -1) "PASS" "FAIL")) (display ": (remainder -10 3) = -1 (sign follows dividend)") (newline)
+(display (if (= (remainder 10 -3) 1) "PASS" "FAIL")) (display ": (remainder 10 -3) = 1 (sign follows dividend)") (newline)
+
+; --- quotient edge cases ---
+(display (if (= (quotient 10 3) 3) "PASS" "FAIL")) (display ": (quotient 10 3) = 3") (newline)
+(display (if (= (quotient -10 3) -3) "PASS" "FAIL")) (display ": (quotient -10 3) = -3") (newline)
+(display (if (= (quotient 10 -3) -3) "PASS" "FAIL")) (display ": (quotient 10 -3) = -3") (newline)
+(display (if (= (quotient 0 7) 0) "PASS" "FAIL")) (display ": (quotient 0 7) = 0") (newline)
+
+; --- gcd/lcm with boundary values ---
+(display (if (= (gcd 12 8) 4) "PASS" "FAIL")) (display ": (gcd 12 8) = 4") (newline)
+(display (if (= (gcd 0 5) 5) "PASS" "FAIL")) (display ": (gcd 0 5) = 5") (newline)
+(display (if (= (gcd 5 0) 5) "PASS" "FAIL")) (display ": (gcd 5 0) = 5") (newline)
+(display (if (= (gcd 0 0) 0) "PASS" "FAIL")) (display ": (gcd 0 0) = 0") (newline)
+(display (if (= (gcd -12 8) 4) "PASS" "FAIL")) (display ": (gcd -12 8) = 4 (gcd always non-negative)") (newline)
+(display (if (= (lcm 4 6) 12) "PASS" "FAIL")) (display ": (lcm 4 6) = 12") (newline)
+(display (if (= (lcm 0 5) 0) "PASS" "FAIL")) (display ": (lcm 0 5) = 0") (newline)
+
+; --- number->string for large numbers ---
+(display (if (string=? (number->string 9223372036854775807) "9223372036854775807") "PASS" "FAIL")) (display ": number->string of max int64") (newline)
+(display (if (string=? (number->string -9223372036854775808) "-9223372036854775808") "PASS" "FAIL")) (display ": number->string of min int64") (newline)
+(display (if (string=? (number->string (+ 9223372036854775807 1)) "9223372036854775808") "PASS" "FAIL")) (display ": number->string of bignum (max+1)") (newline)
+(display (if (string=? (number->string 0) "0") "PASS" "FAIL")) (display ": number->string of 0") (newline)
+
+; --- expt with large exponents ---
+(display (if (= (expt 2 62) 4611686018427387904) "PASS" "FAIL")) (display ": (expt 2 62) = 4611686018427387904") (newline)
+(display (if (= (expt 2 63) 9223372036854775808) "PASS" "FAIL")) (display ": (expt 2 63) = 9223372036854775808 (bignum)") (newline)
+(display (if (= (expt 2 64) 18446744073709551616) "PASS" "FAIL")) (display ": (expt 2 64) = 18446744073709551616 (bignum)") (newline)
+(display (if (= (expt 10 18) 1000000000000000000) "PASS" "FAIL")) (display ": (expt 10 18) = 10^18") (newline)
+(display (if (= (expt 10 19) 10000000000000000000) "PASS" "FAIL")) (display ": (expt 10 19) = 10^19 (bignum)") (newline)
+(display (if (= (expt 1 9223372036854775807) 1) "PASS" "FAIL")) (display ": (expt 1 max-int64) = 1") (newline)
+(display (if (= (expt -1 9223372036854775806) 1) "PASS" "FAIL")) (display ": (expt -1 even-max) = 1") (newline)
+(display (if (= (expt -1 9223372036854775807) -1) "PASS" "FAIL")) (display ": (expt -1 odd-max) = -1") (newline)

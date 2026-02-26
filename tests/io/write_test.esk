@@ -1,0 +1,63 @@
+; R7RS write tests - machine-readable output
+
+; write vs display: strings
+(write "hello")
+(newline)
+; Expected: "hello"
+
+(display "hello")
+(newline)
+; Expected: hello
+
+; write vs display: characters
+(write #\a)
+(newline)
+; Expected: #\a
+
+(display #\a)
+(newline)
+; Expected: a
+
+; write vs display: special chars
+(write #\space)
+(newline)
+; Expected: #\space
+
+(display #\space)
+(newline)
+; Expected: (a space)
+
+; write: numbers
+(write 42)
+(newline)
+; Expected: 42
+
+(write 3.14)
+(newline)
+; Expected: 3.14
+
+; write: booleans
+(write #t)
+(newline)
+; Expected: #t
+
+(write #f)
+(newline)
+; Expected: #f
+
+; write: lists
+(write (list 1 2 3))
+(newline)
+; Expected: (1 2 3)
+
+; write: nested with strings
+(write (list "hello" "world"))
+(newline)
+; Expected: ("hello" "world")
+
+; write to string port
+(let ((p (open-output-string)))
+  (write "test" p)
+  (display (get-output-string p))
+  (newline))
+; Expected: "test"

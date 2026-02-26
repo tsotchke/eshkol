@@ -1,0 +1,129 @@
+;;; Dataloader Test Suite
+;;; Tests make-dataloader, dataloader-next, dataloader-reset!,
+;;; dataloader-has-next, dataloader-length, train-test-split
+
+(require stdlib)
+
+(display "=== DATALOADER TESTS ===") (newline)
+
+;; Shared test data
+(define data #(1.0 2.0 3.0 4.0 5.0 6.0))
+
+;; ============================================================
+;; Test 1: Create dataloader and check batch count
+;; 6 elements / batch-size 2 = 3 batches
+;; ============================================================
+(display "TEST: dataloader-length with even division") (newline)
+(let ((dl (make-dataloader data 2)))
+  (display (if (= (dataloader-length dl) 3) "PASS" "FAIL"))
+  (display ": dataloader-length returns correct batch count") (newline))
+
+;; ============================================================
+;; Test 2: Fresh dataloader has next batch available
+;; ============================================================
+(display "TEST: dataloader-has-next on fresh dataloader") (newline)
+(let ((dl (make-dataloader data 2)))
+  (display (if (dataloader-has-next dl) "PASS" "FAIL"))
+  (display ": fresh dataloader has next batch") (newline))
+
+;; ============================================================
+;; Test 3: dataloader-next returns a batch tensor
+;; First batch should contain the first batch-size elements
+;; ============================================================
+(display "TEST: dataloader-next returns first batch") (newline)
+(let* ((dl (make-dataloader data 2))
+       (batch (dataloader-next dl)))
+  (display (if (and (= (tensor-ref batch 0) 1.0)
+                    (= (tensor-ref batch 1) 2.0))
+               "PASS" "FAIL"))
+  (display ": first batch contains elements 1.0 and 2.0") (newline))
+
+;; ============================================================
+;; Test 4: Sequential calls to dataloader-next advance
+;; through the data in order
+;; ============================================================
+(display "TEST: dataloader-next advances through batches") (newline)
+(let* ((dl (make-dataloader data 2))
+       (b1 (dataloader-next dl))
+       (b2 (dataloader-next dl))
+       (b3 (dataloader-next dl)))
+  (display (if (and (= (tensor-ref b1 0) 1.0)
+                    (= (tensor-ref b2 0) 3.0)
+                    (= (tensor-ref b3 0) 5.0))
+               "PASS" "FAIL"))
+  (display ": batches advance through data sequentially") (newline))
+
+;; ============================================================
+;; Test 5: After consuming all batches, has-next is false
+;; ============================================================
+(display "TEST: dataloader-has-next after exhaustion") (newline)
+(let* ((dl (make-dataloader data 2))
+       (b1 (dataloader-next dl))
+       (b2 (dataloader-next dl))
+       (b3 (dataloader-next dl)))
+  (display (if (not (dataloader-has-next dl)) "PASS" "FAIL"))
+  (display ": exhausted dataloader has no next batch") (newline))
+
+;; ============================================================
+;; Test 6: Reset restores dataloader to beginning
+;; ============================================================
+(display "TEST: dataloader-reset! restores iteration") (newline)
+(let* ((dl (make-dataloader data 2))
+       (b1 (dataloader-next dl))
+       (b2 (dataloader-next dl))
+       (b3 (dataloader-next dl)))
+  (dataloader-reset! dl)
+  (display (if (dataloader-has-next dl) "PASS" "FAIL"))
+  (display ": reset dataloader has next batch again") (newline))
+
+;; ============================================================
+;; Test 7: After reset, next returns first batch again
+;; ============================================================
+(display "TEST: dataloader-next after reset returns first batch") (newline)
+(let* ((dl (make-dataloader data 2))
+       (b1 (dataloader-next dl))
+       (b2 (dataloader-next dl))
+       (b3 (dataloader-next dl)))
+  (dataloader-reset! dl)
+  (let ((batch (dataloader-next dl)))
+    (display (if (and (= (tensor-ref batch 0) 1.0)
+                      (= (tensor-ref batch 1) 2.0))
+                 "PASS" "FAIL"))
+    (display ": after reset, first batch is returned again") (newline)))
+
+;; ============================================================
+;; Test 8: Batch size 3 yields 2 batches from 6 elements
+;; ============================================================
+(display "TEST: dataloader-length with batch-size 3") (newline)
+(let ((dl (make-dataloader data 3)))
+  (display (if (= (dataloader-length dl) 2) "PASS" "FAIL"))
+  (display ": 6 elements with batch-size 3 yields 2 batches") (newline))
+
+;; ============================================================
+;; Test 9: train-test-split preserves total element count
+;; A 0.5 ratio should split roughly evenly
+;; ============================================================
+(display "TEST: train-test-split preserves data size") (newline)
+(let* ((result (train-test-split data 0.5))
+       (train (car result))
+       (test  (cadr result))
+       (train-len (tensor-length train))
+       (test-len  (tensor-length test)))
+  (display (if (= (+ train-len test-len) (tensor-length data))
+               "PASS" "FAIL"))
+  (display ": train + test lengths equal original data length") (newline))
+
+;; ============================================================
+;; Test 10: train-test-split ratio produces expected sizes
+;; With ratio 0.5 on 6 elements: train=3, test=3
+;; ============================================================
+(display "TEST: train-test-split ratio sizes") (newline)
+(let* ((result (train-test-split data 0.5))
+       (train (car result))
+       (test  (cadr result)))
+  (display (if (and (= (tensor-length train) 3)
+                    (= (tensor-length test) 3))
+               "PASS" "FAIL"))
+  (display ": 0.5 ratio splits 6 elements into 3 and 3") (newline))
+
+(display "=== DATALOADER TESTS COMPLETE ===") (newline)

@@ -102,10 +102,39 @@ llvm::Function* StringIOCodegen::getPrintf() {
     return printf_func_;
 }
 
+// Forward declarations for static helpers defined later in this file
+static llvm::Value* getStdout(CodegenContext& ctx);
+static llvm::Value* getStdin(CodegenContext& ctx);
+static llvm::Function* getOrDeclareFputc(CodegenContext& ctx);
+static llvm::Function* getOrDeclareFgetc(CodegenContext& ctx);
+static llvm::Function* getOrDeclareUngetc(CodegenContext& ctx);
+static llvm::Function* getOrDeclareDisplayToPort(CodegenContext& ctx);
+
 llvm::Value* StringIOCodegen::newline(const eshkol_operations_t* op) {
-    // Simple newline - just print \n
-    llvm::Value* newline_str = createString("\n");
-    ctx_.builder().CreateCall(getPrintf(), {newline_str});
+    // (newline) or (newline port) — R7RS: optional port argument
+    llvm::Value* file_ptr;
+    if (op->call_op.num_vars >= 1 && codegen_typed_ast_callback_ && typed_to_tagged_callback_) {
+        // Get port argument
+        void* port_tv = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+        if (port_tv) {
+            llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
+            if (port_tagged) {
+                llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(port_tagged, {4});
+                file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
+            } else {
+                file_ptr = getStdout(ctx_);
+            }
+        } else {
+            file_ptr = getStdout(ctx_);
+        }
+    } else {
+        file_ptr = getStdout(ctx_);
+    }
+
+    llvm::Function* fputc_func = getOrDeclareFputc(ctx_);
+    ctx_.builder().CreateCall(fputc_func, {
+        llvm::ConstantInt::get(ctx_.int32Type(), '\n'), file_ptr
+    });
     return tagged_.packNull();
 }
 
@@ -136,17 +165,17 @@ llvm::Value* StringIOCodegen::stringLength(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
-    // Get or declare strlen
-    llvm::Function* strlen_func = ctx_.module().getFunction("strlen");
-    if (!strlen_func) {
+    // Get or declare eshkol_utf8_strlen (counts codepoints, not bytes)
+    llvm::Function* utf8_strlen_func = ctx_.module().getFunction("eshkol_utf8_strlen");
+    if (!utf8_strlen_func) {
         llvm::FunctionType* strlen_type = llvm::FunctionType::get(
             ctx_.int64Type(), {ctx_.ptrType()}, false);
-        strlen_func = llvm::Function::Create(
-            strlen_type, llvm::Function::ExternalLinkage, "strlen", &ctx_.module());
+        utf8_strlen_func = llvm::Function::Create(
+            strlen_type, llvm::Function::ExternalLinkage, "eshkol_utf8_strlen", &ctx_.module());
     }
 
-    // Call strlen and pack result
-    llvm::Value* len = ctx_.builder().CreateCall(strlen_func, {str_ptr});
+    // Call utf8_strlen and pack result
+    llvm::Value* len = ctx_.builder().CreateCall(utf8_strlen_func, {str_ptr});
     return tagged_.packInt64(len, true);
 }
 
@@ -183,15 +212,15 @@ llvm::Value* StringIOCodegen::stringRef(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
-    // Bounds check: compute strlen and validate index
-    llvm::Function* strlen_func = ctx_.module().getFunction("strlen");
-    if (!strlen_func) {
+    // Bounds check: compute UTF-8 codepoint count and validate index
+    llvm::Function* utf8_strlen_func = ctx_.module().getFunction("eshkol_utf8_strlen");
+    if (!utf8_strlen_func) {
         llvm::FunctionType* strlen_type = llvm::FunctionType::get(
             ctx_.int64Type(), {ctx_.ptrType()}, false);
-        strlen_func = llvm::Function::Create(
-            strlen_type, llvm::Function::ExternalLinkage, "strlen", &ctx_.module());
+        utf8_strlen_func = llvm::Function::Create(
+            strlen_type, llvm::Function::ExternalLinkage, "eshkol_utf8_strlen", &ctx_.module());
     }
-    llvm::Value* str_len = ctx_.builder().CreateCall(strlen_func, {str_ptr});
+    llvm::Value* str_len = ctx_.builder().CreateCall(utf8_strlen_func, {str_ptr});
 
     llvm::Value* idx_negative = ctx_.builder().CreateICmpSLT(idx,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
@@ -229,15 +258,21 @@ llvm::Value* StringIOCodegen::stringRef(const eshkol_operations_t* op) {
         ctx_.builder().CreateUnreachable();
     }
 
-    // Bounds OK: access character
+    // Bounds OK: access codepoint via UTF-8 helper
     ctx_.builder().SetInsertPoint(bounds_ok);
 
-    // Get character at index
-    llvm::Value* char_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, idx);
-    llvm::Value* char_val = ctx_.builder().CreateLoad(ctx_.int8Type(), char_ptr);
+    // Get codepoint at index using UTF-8 aware function
+    llvm::Function* utf8_ref_func = ctx_.module().getFunction("eshkol_utf8_ref");
+    if (!utf8_ref_func) {
+        llvm::FunctionType* ref_type = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType(), ctx_.int64Type()}, false);
+        utf8_ref_func = llvm::Function::Create(
+            ref_type, llvm::Function::ExternalLinkage, "eshkol_utf8_ref", &ctx_.module());
+    }
+    llvm::Value* codepoint = ctx_.builder().CreateCall(utf8_ref_func, {str_ptr, idx});
 
-    // HoTT TYPE SYSTEM: string-ref returns CHAR type, not INT64
-    return tagged_.packChar(char_val);
+    // HoTT TYPE SYSTEM: string-ref returns CHAR type (full Unicode codepoint)
+    return tagged_.packChar(codepoint);
 }
 
 llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {
@@ -325,25 +360,68 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
-    // Calculate length
-    llvm::Value* len = ctx_.builder().CreateSub(end, start);
-    llvm::Value* alloc_len = ctx_.builder().CreateAdd(len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    // Get string length for upper bound check
+    llvm::Function* strlen_func = ctx_.module().getFunction("strlen");
+    if (!strlen_func) {
+        llvm::FunctionType* strlen_type = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType()}, false);
+        strlen_func = llvm::Function::Create(
+            strlen_type, llvm::Function::ExternalLinkage, "strlen", &ctx_.module());
+    }
+    llvm::Value* str_len = ctx_.builder().CreateCall(strlen_func, {str_ptr}, "str_len");
 
-    // Allocate new string with header
+    // Bounds validation: start >= 0, end >= start, end <= string_length
+    llvm::Value* start_negative = ctx_.builder().CreateICmpSLT(start,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* end_less_than_start = ctx_.builder().CreateICmpSLT(end, start);
+    llvm::Value* end_exceeds_length = ctx_.builder().CreateICmpSGT(end, str_len);
+    llvm::Value* invalid_bounds = ctx_.builder().CreateOr(start_negative,
+        ctx_.builder().CreateOr(end_less_than_start, end_exceeds_length));
+
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* substr_ok = llvm::BasicBlock::Create(ctx_.context(), "substr_ok", current_func);
+    llvm::BasicBlock* substr_fail = llvm::BasicBlock::Create(ctx_.context(), "substr_fail", current_func);
+    ctx_.builder().CreateCondBr(invalid_bounds, substr_fail, substr_ok);
+
+    // Bounds check failure: raise error
+    ctx_.builder().SetInsertPoint(substr_fail);
+    {
+        llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+        if (!raise_func) {
+            llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+            raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                "eshkol_raise", &ctx_.module());
+            raise_func->setDoesNotReturn();
+        }
+        llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+            make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", &ctx_.module());
+        }
+        llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
+            "substring: end index less than start index");
+        llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
+        ctx_.builder().CreateCall(raise_func, {exception});
+        ctx_.builder().CreateUnreachable();
+    }
+
+    // Bounds OK: proceed with UTF-8 aware substring
+    ctx_.builder().SetInsertPoint(substr_ok);
+
+    // Use UTF-8 runtime helper for codepoint-based substring
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
-    llvm::Value* new_str = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, alloc_len});
-
-    // Get memcpy function
-    llvm::Function* memcpy_func = ctx_.funcs().getMemcpy();
-
-    // Copy substring
-    llvm::Value* src_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, start);
-    ctx_.builder().CreateCall(memcpy_func, {new_str, src_ptr, len});
-
-    // Null terminate
-    llvm::Value* null_pos = ctx_.builder().CreateGEP(ctx_.int8Type(), new_str, len);
-    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), null_pos);
+    llvm::Function* utf8_substr_func = ctx_.module().getFunction("eshkol_utf8_substring");
+    if (!utf8_substr_func) {
+        llvm::FunctionType* substr_type = llvm::FunctionType::get(
+            ctx_.ptrType(), {ctx_.ptrType(), ctx_.int64Type(), ctx_.int64Type(), ctx_.ptrType()}, false);
+        utf8_substr_func = llvm::Function::Create(
+            substr_type, llvm::Function::ExternalLinkage, "eshkol_utf8_substring", &ctx_.module());
+    }
+    llvm::Value* new_str = ctx_.builder().CreateCall(utf8_substr_func, {str_ptr, start, end, arena_ptr});
 
     return tagged_.packHeapPtr(new_str);
 }
@@ -395,6 +473,51 @@ llvm::Value* StringIOCodegen::stringCompare(const eshkol_operations_t* op, const
     return tagged_.packBool(result);
 }
 
+llvm::Value* StringIOCodegen::stringCiCompare(const eshkol_operations_t* op, const std::string& cmp_type) {
+    if (!codegen_ast_callback_) {
+        eshkol_warn("StringIOCodegen::stringCiCompare - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars != 2) {
+        eshkol_warn("Case-insensitive string comparison requires exactly 2 arguments");
+        return nullptr;
+    }
+
+    // Get string arguments
+    llvm::Value* str1_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    llvm::Value* str2_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+    if (!str1_arg || !str2_arg) return nullptr;
+
+    // Extract string pointers from tagged values
+    llvm::Value* ptr1_int = tagged_.unpackInt64(str1_arg);
+    llvm::Value* str1_ptr = ctx_.builder().CreateIntToPtr(ptr1_int, ctx_.ptrType());
+    llvm::Value* ptr2_int = tagged_.unpackInt64(str2_arg);
+    llvm::Value* str2_ptr = ctx_.builder().CreateIntToPtr(ptr2_int, ctx_.ptrType());
+
+    // Call strcasecmp for case-insensitive comparison
+    llvm::Function* strcasecmp_func = ctx_.funcs().getStrcasecmp();
+    llvm::Value* cmp_result = ctx_.builder().CreateCall(strcasecmp_func, {str1_ptr, str2_ptr});
+    llvm::Value* zero = llvm::ConstantInt::get(ctx_.int32Type(), 0);
+    llvm::Value* result;
+
+    if (cmp_type == "eq") {
+        result = ctx_.builder().CreateICmpEQ(cmp_result, zero);
+    } else if (cmp_type == "lt") {
+        result = ctx_.builder().CreateICmpSLT(cmp_result, zero);
+    } else if (cmp_type == "gt") {
+        result = ctx_.builder().CreateICmpSGT(cmp_result, zero);
+    } else if (cmp_type == "le") {
+        result = ctx_.builder().CreateICmpSLE(cmp_result, zero);
+    } else if (cmp_type == "ge") {
+        result = ctx_.builder().CreateICmpSGE(cmp_result, zero);
+    } else {
+        result = llvm::ConstantInt::getFalse(ctx_.context());
+    }
+
+    return tagged_.packBool(result);
+}
+
 llvm::Value* StringIOCodegen::stringToNumber(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringToNumber - callbacks not set");
@@ -414,14 +537,17 @@ llvm::Value* StringIOCodegen::stringToNumber(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
-    // Get strtod function (handles both integers and floats)
-    llvm::Function* strtod_func = ctx_.funcs().getStrtod();
+    // Call eshkol_string_to_number_tagged(arena, str, result_ptr) which handles
+    // int64, bignum (for overflow), and double parsing
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* result_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
 
-    // Call strtod with null end pointer
-    llvm::Value* null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
-    llvm::Value* result = ctx_.builder().CreateCall(strtod_func, {str_ptr, null_ptr});
+    llvm::FunctionType* s2n_type = llvm::FunctionType::get(ctx_.voidType(),
+        {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false);
+    llvm::FunctionCallee s2n_fn = ctx_.module().getOrInsertFunction("eshkol_string_to_number_tagged", s2n_type);
+    ctx_.builder().CreateCall(s2n_fn, {arena_ptr, str_ptr, result_alloca});
 
-    return tagged_.packDouble(result);
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca);
 }
 
 // Forward declaration of TypedValue layout for callback access
@@ -477,15 +603,53 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
         llvm::Value* base_type = tagged_.getBaseType(runtime_type);
         llvm::Value* is_runtime_double = ctx_.builder().CreateICmpEQ(base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+        llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
         // Extract raw i64 data
         llvm::Value* data_i64 = tagged_.unpackInt64(raw_val);
 
-        // Create blocks for double vs integer formatting
+        // Create blocks for bignum vs double vs integer formatting
+        llvm::BasicBlock* bignum_block = llvm::BasicBlock::Create(ctx_.context(), "n2s_bignum", current_func);
+        llvm::BasicBlock* dispatch_block = llvm::BasicBlock::Create(ctx_.context(), "n2s_dispatch", current_func);
         llvm::BasicBlock* double_block = llvm::BasicBlock::Create(ctx_.context(), "n2s_double", current_func);
         llvm::BasicBlock* int_block = llvm::BasicBlock::Create(ctx_.context(), "n2s_int", current_func);
         llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "n2s_merge", current_func);
 
+        ctx_.builder().CreateCondBr(is_heap_ptr, bignum_block, dispatch_block);
+
+        // Heap path: check subtype for rational vs bignum
+        ctx_.builder().SetInsertPoint(bignum_block);
+        llvm::Value* heap_ptr = ctx_.builder().CreateIntToPtr(data_i64, ctx_.ptrType());
+        llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), heap_ptr,
+            {llvm::ConstantInt::get(ctx_.int64Type(), -8)});
+        llvm::Value* subtype_val = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr);
+        llvm::Value* is_rational = ctx_.builder().CreateICmpEQ(subtype_val,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_RATIONAL));
+        llvm::BasicBlock* rational_block = llvm::BasicBlock::Create(ctx_.context(), "n2s_rational", current_func);
+        llvm::BasicBlock* actual_bignum = llvm::BasicBlock::Create(ctx_.context(), "n2s_actual_bignum", current_func);
+        ctx_.builder().CreateCondBr(is_rational, rational_block, actual_bignum);
+
+        // Rational path
+        ctx_.builder().SetInsertPoint(rational_block);
+        llvm::FunctionType* rat_to_str_type = llvm::FunctionType::get(ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.ptrType()}, false);
+        llvm::FunctionCallee rat_to_str_fn = ctx_.module().getOrInsertFunction("eshkol_rational_to_string", rat_to_str_type);
+        llvm::Value* rat_buf = ctx_.builder().CreateCall(rat_to_str_fn, {arena_ptr, heap_ptr});
+        ctx_.builder().CreateBr(merge_block);
+        llvm::BasicBlock* rational_exit = ctx_.builder().GetInsertBlock();
+
+        // Bignum path
+        ctx_.builder().SetInsertPoint(actual_bignum);
+        llvm::FunctionType* bn_to_str_type = llvm::FunctionType::get(ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.ptrType()}, false);
+        llvm::FunctionCallee bn_to_str_fn = ctx_.module().getOrInsertFunction("eshkol_bignum_to_string", bn_to_str_type);
+        llvm::Value* bn_buf = ctx_.builder().CreateCall(bn_to_str_fn, {arena_ptr, heap_ptr});
+        ctx_.builder().CreateBr(merge_block);
+        llvm::BasicBlock* bignum_exit = ctx_.builder().GetInsertBlock();
+
+        // Double vs integer dispatch
+        ctx_.builder().SetInsertPoint(dispatch_block);
         ctx_.builder().CreateCondBr(is_runtime_double, double_block, int_block);
 
         // Format as double
@@ -494,14 +658,23 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
         llvm::Value* fmt_double = createString("%g");
         ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt_double, double_val});
         ctx_.builder().CreateBr(merge_block);
+        llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
 
         // Format as integer
         ctx_.builder().SetInsertPoint(int_block);
         llvm::Value* fmt_int = createString("%lld");
         ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt_int, data_i64});
         ctx_.builder().CreateBr(merge_block);
+        llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
 
+        // Merge: rational/bignum use own buffer, double/int use pre-allocated buf
         ctx_.builder().SetInsertPoint(merge_block);
+        llvm::PHINode* result_buf = ctx_.builder().CreatePHI(ctx_.ptrType(), 4, "n2s_result_buf");
+        result_buf->addIncoming(rat_buf, rational_exit);
+        result_buf->addIncoming(bn_buf, bignum_exit);
+        result_buf->addIncoming(buf, double_exit);
+        result_buf->addIncoming(buf, int_exit);
+        buf = result_buf;
     } else {
         // Non-tagged value: use static type info
         if (tv->type == ESHKOL_VALUE_DOUBLE || !tv->is_exact) {
@@ -623,6 +796,46 @@ llvm::Value* StringIOCodegen::stringSet(const eshkol_operations_t* op) {
     // Store character at index
     llvm::Value* char_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, idx);
     ctx_.builder().CreateStore(char_val, char_ptr);
+
+    // Return the string (unspecified in Scheme)
+    return str_arg;
+}
+
+llvm::Value* StringIOCodegen::stringFill(const eshkol_operations_t* op) {
+    if (!codegen_ast_callback_) {
+        eshkol_warn("StringIOCodegen::stringFill - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars != 2) {
+        eshkol_warn("string-fill! requires exactly 2 arguments");
+        return nullptr;
+    }
+
+    // Get string argument
+    llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!str_arg) return nullptr;
+
+    // Get character argument
+    llvm::Value* char_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+    if (!char_arg) return nullptr;
+
+    // Extract string pointer from tagged value
+    llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
+    llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
+
+    // Get string length via strlen
+    llvm::Function* strlen_func = ctx_.funcs().getStrlen();
+    llvm::Value* len = ctx_.builder().CreateCall(strlen_func, {str_ptr});
+
+    // Get character value
+    llvm::Value* char_val = tagged_.unpackInt64(char_arg);
+    llvm::Value* fill_char = ctx_.builder().CreateTrunc(char_val, ctx_.int8Type());
+
+    // Fill with memset
+    llvm::Function* memset_func = ctx_.funcs().getMemset();
+    llvm::Value* fill_i32 = ctx_.builder().CreateZExt(fill_char, ctx_.int32Type());
+    ctx_.builder().CreateCall(memset_func, {str_ptr, fill_i32, len});
 
     // Return the string (unspecified in Scheme)
     return str_arg;
@@ -1290,9 +1503,22 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 1) {
-        eshkol_warn("display requires exactly 1 argument");
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_warn("display requires 1 or 2 arguments");
         return nullptr;
+    }
+
+    // If 2 args, extract the port FILE* for display-to-port
+    llvm::Value* port_file_ptr = nullptr;
+    if (op->call_op.num_vars == 2) {
+        void* port_tv = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (port_tv) {
+            llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
+            if (port_tagged) {
+                llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(port_tagged, {4});
+                port_file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
+            }
+        }
     }
 
     // Check for S-expression lookup (for displaying lambdas/procedures)
@@ -1346,7 +1572,12 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
 
                 llvm::Value* sexpr_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "display_sexpr");
                 ctx_.builder().CreateStore(sexpr_tagged, sexpr_ptr);
-                ctx_.builder().CreateCall(display_value_func_, {sexpr_ptr});
+                if (port_file_ptr) {
+                    auto* dtp = getOrDeclareDisplayToPort(ctx_);
+                    ctx_.builder().CreateCall(dtp, {sexpr_ptr, port_file_ptr});
+                } else {
+                    ctx_.builder().CreateCall(display_value_func_, {sexpr_ptr});
+                }
             }
             ctx_.builder().CreateBr(display_done);
 
@@ -1359,7 +1590,12 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
                     if (fallback_tagged) {
                         llvm::Value* fallback_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "display_fallback");
                         ctx_.builder().CreateStore(fallback_tagged, fallback_ptr);
-                        ctx_.builder().CreateCall(display_value_func_, {fallback_ptr});
+                        if (port_file_ptr) {
+                            auto* dtp = getOrDeclareDisplayToPort(ctx_);
+                            ctx_.builder().CreateCall(dtp, {fallback_ptr, port_file_ptr});
+                        } else {
+                            ctx_.builder().CreateCall(display_value_func_, {fallback_ptr});
+                        }
                     }
                 }
             }
@@ -1380,7 +1616,12 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
     // Store on stack and call unified C display function
     llvm::Value* display_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "display_arg");
     ctx_.builder().CreateStore(tagged, display_ptr);
-    ctx_.builder().CreateCall(display_value_func_, {display_ptr});
+    if (port_file_ptr) {
+        auto* dtp = getOrDeclareDisplayToPort(ctx_);
+        ctx_.builder().CreateCall(dtp, {display_ptr, port_file_ptr});
+    } else {
+        ctx_.builder().CreateCall(display_value_func_, {display_ptr});
+    }
 
     return llvm::ConstantInt::get(ctx_.int32Type(), 0);
 }
@@ -1388,6 +1629,13 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
 // === File I/O Operations ===
 
 // Helper to get or declare fopen
+static llvm::Function* getOrDeclareDisplayToPort(CodegenContext& ctx) {
+    if (auto* existing = ctx.module().getFunction("eshkol_display_value_to_port")) return existing;
+    auto* ft = llvm::FunctionType::get(ctx.builder().getVoidTy(),
+        {ctx.ptrType(), ctx.ptrType()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "eshkol_display_value_to_port", ctx.module());
+}
+
 static llvm::Function* getOrDeclareFopen(CodegenContext& ctx) {
     if (auto* existing = ctx.module().getFunction("fopen")) return existing;
     auto* ft = llvm::FunctionType::get(ctx.ptrType(),
@@ -1431,6 +1679,69 @@ static llvm::Function* getOrDeclareFflush(CodegenContext& ctx) {
     if (auto* existing = ctx.module().getFunction("fflush")) return existing;
     auto* ft = llvm::FunctionType::get(ctx.int32Type(), {ctx.ptrType()}, false);
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "fflush", ctx.module());
+}
+
+// Helper to get or declare fgetc
+static llvm::Function* getOrDeclareFgetc(CodegenContext& ctx) {
+    if (auto* existing = ctx.module().getFunction("fgetc")) return existing;
+    auto* ft = llvm::FunctionType::get(ctx.int32Type(), {ctx.ptrType()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "fgetc", ctx.module());
+}
+
+// Helper to get or declare ungetc
+static llvm::Function* getOrDeclareUngetc(CodegenContext& ctx) {
+    if (auto* existing = ctx.module().getFunction("ungetc")) return existing;
+    auto* ft = llvm::FunctionType::get(ctx.int32Type(),
+        {ctx.int32Type(), ctx.ptrType()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "ungetc", ctx.module());
+}
+
+// Helper to get or declare fread: size_t fread(void* ptr, size_t size, size_t count, FILE* stream)
+static llvm::Function* getOrDeclareFread(CodegenContext& ctx) {
+    if (auto* existing = ctx.module().getFunction("fread")) return existing;
+    auto* ft = llvm::FunctionType::get(ctx.int64Type(),
+        {ctx.ptrType(), ctx.int64Type(), ctx.int64Type(), ctx.ptrType()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "fread", ctx.module());
+}
+
+// Helper to get or declare fwrite: size_t fwrite(const void* ptr, size_t size, size_t count, FILE* stream)
+static llvm::Function* getOrDeclareFwrite(CodegenContext& ctx) {
+    if (auto* existing = ctx.module().getFunction("fwrite")) return existing;
+    auto* ft = llvm::FunctionType::get(ctx.int64Type(),
+        {ctx.ptrType(), ctx.int64Type(), ctx.int64Type(), ctx.ptrType()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "fwrite", ctx.module());
+}
+
+// Helper to get stdin global variable
+static llvm::Value* getStdin(CodegenContext& ctx) {
+#ifdef __APPLE__
+    const char* stdin_name = "__stdinp";
+#else
+    const char* stdin_name = "stdin";
+#endif
+    llvm::GlobalVariable* stdin_var = ctx.module().getGlobalVariable(stdin_name);
+    if (!stdin_var) {
+        stdin_var = new llvm::GlobalVariable(
+            ctx.module(), ctx.ptrType(), false,
+            llvm::GlobalVariable::ExternalLinkage, nullptr, stdin_name);
+    }
+    return ctx.builder().CreateLoad(ctx.ptrType(), stdin_var);
+}
+
+// Helper to get stderr global variable
+static llvm::Value* getStderr(CodegenContext& ctx) {
+#ifdef __APPLE__
+    const char* stderr_name = "__stderrp";
+#else
+    const char* stderr_name = "stderr";
+#endif
+    llvm::GlobalVariable* stderr_var = ctx.module().getGlobalVariable(stderr_name);
+    if (!stderr_var) {
+        stderr_var = new llvm::GlobalVariable(
+            ctx.module(), ctx.ptrType(), false,
+            llvm::GlobalVariable::ExternalLinkage, nullptr, stderr_name);
+    }
+    return ctx.builder().CreateLoad(ctx.ptrType(), stderr_var);
 }
 
 // Helper to get stdout global variable
@@ -1548,8 +1859,8 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 1) {
-        eshkol_warn("read-line requires exactly 1 argument");
+    if (op->call_op.num_vars > 1) {
+        eshkol_warn("read-line requires 0 or 1 arguments");
         return nullptr;
     }
 
@@ -1557,15 +1868,18 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
     llvm::Function* strlen_func = ctx_.funcs().getStrlen();
     if (!fgets_func || !strlen_func) return nullptr;
 
-    // Get port argument
-    void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
-    if (!tv_ptr) return nullptr;
-
-    llvm::Value* tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
-    if (!tagged) return nullptr;
-
-    llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(tagged, {4});
-    llvm::Value* file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
+    // Get port argument or default to stdin
+    llvm::Value* file_ptr;
+    if (op->call_op.num_vars == 1) {
+        void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+        if (!tv_ptr) return nullptr;
+        llvm::Value* tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
+        if (!tagged) return nullptr;
+        llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(tagged, {4});
+        file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
+    } else {
+        file_ptr = getStdin(ctx_);
+    }
 
     // Allocate a buffer with header for reading (1024 bytes)
     llvm::Value* buffer_size = llvm::ConstantInt::get(ctx_.int64Type(), 1024);
@@ -1642,6 +1956,110 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
     llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "read_result");
     phi->addIncoming(eof_result, eof_block);
     phi->addIncoming(str_result, no_strip_block);
+
+    return phi;
+}
+
+llvm::Value* StringIOCodegen::readString(const eshkol_operations_t* op) {
+    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("StringIOCodegen::readString - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    // (read-string k) or (read-string k port)
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_warn("read-string requires 1 or 2 arguments");
+        return nullptr;
+    }
+
+    // Get k (number of characters to read)
+    void* k_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!k_tv_ptr) return nullptr;
+    llvm::Value* k_tagged = typed_to_tagged_callback_(k_tv_ptr, callback_context_);
+    if (!k_tagged) return nullptr;
+    llvm::Value* k_val = ctx_.builder().CreateExtractValue(k_tagged, {4}); // int64 count
+
+    // Get port (optional, defaults to stdin)
+    llvm::Value* file_ptr;
+    if (op->call_op.num_vars == 2) {
+        void* port_tv = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!port_tv) return nullptr;
+        llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
+        if (!port_tagged) return nullptr;
+        llvm::Value* port_int = ctx_.builder().CreateExtractValue(port_tagged, {4});
+        file_ptr = ctx_.builder().CreateIntToPtr(port_int, ctx_.ptrType());
+    } else {
+        file_ptr = getStdin(ctx_);
+    }
+
+    // Declare fread: size_t fread(void* ptr, size_t size, size_t count, FILE* stream)
+    llvm::Function* fread_func = ctx_.module().getFunction("fread");
+    if (!fread_func) {
+        auto* ft = llvm::FunctionType::get(ctx_.int64Type(),
+            {ctx_.ptrType(), ctx_.int64Type(), ctx_.int64Type(), ctx_.ptrType()}, false);
+        fread_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "fread", ctx_.module());
+    }
+
+    // Allocate buffer: k+1 bytes (for null terminator)
+    llvm::Value* buf_size = ctx_.builder().CreateAdd(k_val,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* buffer = ctx_.builder().CreateCall(
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
+
+    // Call fread(buffer, 1, k, file_ptr)
+    llvm::Value* bytes_read = ctx_.builder().CreateCall(fread_func, {
+        buffer,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1),
+        k_val,
+        file_ptr
+    }, "bytes_read");
+
+    // Null-terminate the buffer at bytes_read position
+    llvm::Value* term_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), buffer, bytes_read);
+    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_ptr);
+
+    // Check if 0 bytes read (EOF)
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* eof_block = llvm::BasicBlock::Create(ctx_.context(), "rs_eof", current_func);
+    llvm::BasicBlock* success_block = llvm::BasicBlock::Create(ctx_.context(), "rs_success", current_func);
+    llvm::BasicBlock* done_block = llvm::BasicBlock::Create(ctx_.context(), "rs_done", current_func);
+
+    llvm::Value* is_eof = ctx_.builder().CreateICmpEQ(bytes_read,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    ctx_.builder().CreateCondBr(is_eof, eof_block, success_block);
+
+    // EOF: return eof-object
+    ctx_.builder().SetInsertPoint(eof_block);
+    llvm::Value* eof_result = llvm::UndefValue::get(ctx_.taggedValueType());
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0xFF), {0});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), {4});
+    ctx_.builder().CreateBr(done_block);
+
+    // Success: return string
+    ctx_.builder().SetInsertPoint(success_block);
+    llvm::Value* buffer_int = ctx_.builder().CreatePtrToInt(buffer, ctx_.int64Type());
+    llvm::Value* str_result = llvm::UndefValue::get(ctx_.taggedValueType());
+    str_result = ctx_.builder().CreateInsertValue(str_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR), {0});
+    str_result = ctx_.builder().CreateInsertValue(str_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    str_result = ctx_.builder().CreateInsertValue(str_result,
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    str_result = ctx_.builder().CreateInsertValue(str_result, buffer_int, {4});
+    ctx_.builder().CreateBr(done_block);
+
+    // PHI merge
+    ctx_.builder().SetInsertPoint(done_block);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "rs_result");
+    phi->addIncoming(eof_result, eof_block);
+    phi->addIncoming(str_result, success_block);
 
     return phi;
 }
@@ -1977,6 +2395,579 @@ llvm::Value* StringIOCodegen::charCompare(const eshkol_operations_t* op, const s
     }
 
     return tagged_.packBool(result);
+}
+
+// Helper to build read-char / peek-char common logic
+// Returns tagged char or EOF object
+static llvm::Value* buildReadCharCommon(CodegenContext& ctx, TaggedValueCodegen& tagged,
+                                         llvm::Value* file_ptr, bool peek) {
+    llvm::Function* fgetc_func = getOrDeclareFgetc(ctx);
+
+    // Call fgetc(file_ptr)
+    llvm::Value* ch = ctx.builder().CreateCall(fgetc_func, {file_ptr});
+
+    // If peek, push it back with ungetc
+    if (peek) {
+        llvm::Function* ungetc_func = getOrDeclareUngetc(ctx);
+        // Only ungetc if not EOF (-1)
+        llvm::Function* current_func = ctx.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* not_eof_bb = llvm::BasicBlock::Create(ctx.context(), "peek_not_eof", current_func);
+        llvm::BasicBlock* after_bb = llvm::BasicBlock::Create(ctx.context(), "peek_after", current_func);
+
+        llvm::Value* is_eof = ctx.builder().CreateICmpEQ(ch,
+            llvm::ConstantInt::get(ctx.int32Type(), -1));
+        ctx.builder().CreateCondBr(is_eof, after_bb, not_eof_bb);
+
+        ctx.builder().SetInsertPoint(not_eof_bb);
+        ctx.builder().CreateCall(ungetc_func, {ch, file_ptr});
+        ctx.builder().CreateBr(after_bb);
+
+        ctx.builder().SetInsertPoint(after_bb);
+    }
+
+    // Check for EOF
+    llvm::Function* current_func = ctx.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* eof_bb = llvm::BasicBlock::Create(ctx.context(), "rc_eof", current_func);
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(ctx.context(), "rc_ok", current_func);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx.context(), "rc_merge", current_func);
+
+    llvm::Value* is_eof = ctx.builder().CreateICmpEQ(ch,
+        llvm::ConstantInt::get(ctx.int32Type(), -1));
+    ctx.builder().CreateCondBr(is_eof, eof_bb, ok_bb);
+
+    // EOF: return eof-object (type 0xFF)
+    ctx.builder().SetInsertPoint(eof_bb);
+    llvm::Value* eof_result = llvm::UndefValue::get(ctx.taggedValueType());
+    eof_result = ctx.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx.int8Type(), 0xFF), {0});
+    eof_result = ctx.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx.int8Type(), 0), {1});
+    eof_result = ctx.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx.int16Type(), 0), {2});
+    eof_result = ctx.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx.int64Type(), 0), {4});
+    ctx.builder().CreateBr(merge_bb);
+
+    // OK: return char tagged value
+    ctx.builder().SetInsertPoint(ok_bb);
+    llvm::Value* ch_i64 = ctx.builder().CreateZExt(ch, ctx.int64Type());
+    llvm::Value* char_result = tagged.packChar(ch_i64);
+    ctx.builder().CreateBr(merge_bb);
+
+    ctx.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* phi = ctx.builder().CreatePHI(ctx.taggedValueType(), 2, "rc_result");
+    phi->addIncoming(eof_result, eof_bb);
+    phi->addIncoming(char_result, ok_bb);
+    return phi;
+}
+
+llvm::Value* StringIOCodegen::readChar(const eshkol_operations_t* op) {
+    // (read-char) or (read-char port)
+    if (op->call_op.num_vars > 1) {
+        eshkol_warn("read-char requires 0 or 1 arguments");
+        return nullptr;
+    }
+
+    llvm::Value* file_ptr;
+    if (op->call_op.num_vars == 1) {
+        if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+            eshkol_warn("StringIOCodegen::readChar - callbacks not set");
+            return tagged_.packNull();
+        }
+        void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+        if (!tv_ptr) return nullptr;
+        llvm::Value* tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
+        if (!tagged) return nullptr;
+        // Validate that the argument is a port: type byte has 0x10 (input) or 0x40 (output) flag
+        llvm::Value* type_tag = tagged_.getType(tagged);
+        llvm::Value* port_flags = ctx_.builder().CreateAnd(type_tag,
+            llvm::ConstantInt::get(ctx_.int8Type(), 0x50));  // 0x10 | 0x40
+        llvm::Value* is_port = ctx_.builder().CreateICmpNE(port_flags,
+            llvm::ConstantInt::get(ctx_.int8Type(), 0));
+        file_ptr = ctx_.builder().CreateSelect(is_port,
+            ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(tagged), ctx_.ptrType()),
+            getStdin(ctx_)); // Fall back to stdin if not a port
+    } else {
+        file_ptr = getStdin(ctx_);
+    }
+
+    return buildReadCharCommon(ctx_, tagged_, file_ptr, false);
+}
+
+llvm::Value* StringIOCodegen::peekChar(const eshkol_operations_t* op) {
+    // (peek-char) or (peek-char port)
+    if (op->call_op.num_vars > 1) {
+        eshkol_warn("peek-char requires 0 or 1 arguments");
+        return nullptr;
+    }
+
+    llvm::Value* file_ptr;
+    if (op->call_op.num_vars == 1) {
+        if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+            eshkol_warn("StringIOCodegen::peekChar - callbacks not set");
+            return tagged_.packNull();
+        }
+        void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+        if (!tv_ptr) return nullptr;
+        llvm::Value* tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
+        if (!tagged) return nullptr;
+        // Validate that the argument is a port: type byte has 0x10 (input) or 0x40 (output) flag
+        llvm::Value* type_tag = tagged_.getType(tagged);
+        llvm::Value* port_flags = ctx_.builder().CreateAnd(type_tag,
+            llvm::ConstantInt::get(ctx_.int8Type(), 0x50));  // 0x10 | 0x40
+        llvm::Value* is_port = ctx_.builder().CreateICmpNE(port_flags,
+            llvm::ConstantInt::get(ctx_.int8Type(), 0));
+        file_ptr = ctx_.builder().CreateSelect(is_port,
+            ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(tagged), ctx_.ptrType()),
+            getStdin(ctx_)); // Fall back to stdin if not a port
+    } else {
+        file_ptr = getStdin(ctx_);
+    }
+
+    return buildReadCharCommon(ctx_, tagged_, file_ptr, true);
+}
+
+llvm::Value* StringIOCodegen::charReady(const eshkol_operations_t* op) {
+    // (char-ready?) or (char-ready? port)
+    // For simplicity, always return #t (character I/O is always ready on file ports)
+    // A proper implementation would use select()/poll() for non-blocking check
+    (void)op;
+    return tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Binary I/O Operations (R7RS §6.13.3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+llvm::Value* StringIOCodegen::openBinaryInputFile(const eshkol_operations_t* op) {
+    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("StringIOCodegen::openBinaryInputFile - callbacks not set");
+        return tagged_.packNull();
+    }
+    if (op->call_op.num_vars != 1) {
+        eshkol_warn("open-binary-input-file requires exactly 1 argument");
+        return nullptr;
+    }
+
+    llvm::Function* fopen_func = getOrDeclareFopen(ctx_);
+    if (!fopen_func) return nullptr;
+
+    void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!tv_ptr) return nullptr;
+    llvm::Value* tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
+    if (!tagged) return nullptr;
+
+    llvm::Value* filename_ptr = ctx_.builder().CreateIntToPtr(
+        ctx_.builder().CreateExtractValue(tagged, {4}), ctx_.ptrType());
+
+    // Open in binary read mode
+    llvm::Value* mode = createString("rb");
+    llvm::Value* file_ptr = ctx_.builder().CreateCall(fopen_func, {filename_ptr, mode});
+
+    llvm::Value* file_ptr_int = ctx_.builder().CreatePtrToInt(file_ptr, ctx_.int64Type());
+
+    // Pack as binary input port: HEAP_PTR | INPUT_FLAG | BINARY_FLAG
+    llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
+    result = ctx_.builder().CreateInsertValue(result,
+        llvm::ConstantInt::get(ctx_.int8Type(),
+            ESHKOL_VALUE_HEAP_PTR | ESHKOL_PORT_INPUT_FLAG | ESHKOL_PORT_BINARY_FLAG), {0});
+    result = ctx_.builder().CreateInsertValue(result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    result = ctx_.builder().CreateInsertValue(result,
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    result = ctx_.builder().CreateInsertValue(result, file_ptr_int, {4});
+
+    return result;
+}
+
+llvm::Value* StringIOCodegen::openBinaryOutputFile(const eshkol_operations_t* op) {
+    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("StringIOCodegen::openBinaryOutputFile - callbacks not set");
+        return tagged_.packNull();
+    }
+    if (op->call_op.num_vars != 1) {
+        eshkol_warn("open-binary-output-file requires exactly 1 argument");
+        return nullptr;
+    }
+
+    llvm::Function* fopen_func = getOrDeclareFopen(ctx_);
+    if (!fopen_func) return nullptr;
+
+    void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!tv_ptr) return nullptr;
+    llvm::Value* tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
+    if (!tagged) return nullptr;
+
+    llvm::Value* filename_ptr = ctx_.builder().CreateIntToPtr(
+        ctx_.builder().CreateExtractValue(tagged, {4}), ctx_.ptrType());
+
+    // Open in binary write mode
+    llvm::Value* mode = createString("wb");
+    llvm::Value* file_ptr = ctx_.builder().CreateCall(fopen_func, {filename_ptr, mode});
+
+    llvm::Value* file_ptr_int = ctx_.builder().CreatePtrToInt(file_ptr, ctx_.int64Type());
+
+    // Pack as binary output port: HEAP_PTR | OUTPUT_FLAG | BINARY_FLAG
+    llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
+    result = ctx_.builder().CreateInsertValue(result,
+        llvm::ConstantInt::get(ctx_.int8Type(),
+            ESHKOL_VALUE_HEAP_PTR | ESHKOL_PORT_OUTPUT_FLAG | ESHKOL_PORT_BINARY_FLAG), {0});
+    result = ctx_.builder().CreateInsertValue(result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    result = ctx_.builder().CreateInsertValue(result,
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    result = ctx_.builder().CreateInsertValue(result, file_ptr_int, {4});
+
+    return result;
+}
+
+llvm::Value* StringIOCodegen::readU8(const eshkol_operations_t* op) {
+    // (read-u8) or (read-u8 port)
+    if (op->call_op.num_vars > 1) {
+        eshkol_warn("read-u8 requires 0 or 1 arguments");
+        return nullptr;
+    }
+
+    llvm::Function* fgetc_func = getOrDeclareFgetc(ctx_);
+    if (!fgetc_func) return nullptr;
+
+    llvm::Value* file_ptr;
+    if (op->call_op.num_vars == 1) {
+        if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+            eshkol_warn("StringIOCodegen::readU8 - callbacks not set");
+            return tagged_.packNull();
+        }
+        void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+        if (!tv_ptr) return nullptr;
+        llvm::Value* tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
+        if (!tagged) return nullptr;
+        file_ptr = ctx_.builder().CreateIntToPtr(
+            ctx_.builder().CreateExtractValue(tagged, {4}), ctx_.ptrType());
+    } else {
+        file_ptr = getStdin(ctx_);
+    }
+
+    // fgetc returns int (EOF=-1 or 0-255)
+    llvm::Value* ch = ctx_.builder().CreateCall(fgetc_func, {file_ptr}, "read_byte");
+
+    // Check for EOF
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* eof_block = llvm::BasicBlock::Create(ctx_.context(), "u8_eof", current_func);
+    llvm::BasicBlock* ok_block = llvm::BasicBlock::Create(ctx_.context(), "u8_ok", current_func);
+    llvm::BasicBlock* done_block = llvm::BasicBlock::Create(ctx_.context(), "u8_done", current_func);
+
+    llvm::Value* is_eof = ctx_.builder().CreateICmpEQ(ch,
+        llvm::ConstantInt::get(ctx_.int32Type(), -1u));
+    ctx_.builder().CreateCondBr(is_eof, eof_block, ok_block);
+
+    // EOF: return eof-object (type 0xFF)
+    ctx_.builder().SetInsertPoint(eof_block);
+    llvm::Value* eof_result = llvm::UndefValue::get(ctx_.taggedValueType());
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0xFF), {0});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), {4});
+    ctx_.builder().CreateBr(done_block);
+    llvm::BasicBlock* eof_exit = ctx_.builder().GetInsertBlock();
+
+    // OK: return byte as tagged INT64
+    ctx_.builder().SetInsertPoint(ok_block);
+    llvm::Value* byte_i64 = ctx_.builder().CreateZExt(ch, ctx_.int64Type());
+    llvm::Value* byte_result = tagged_.packInt64(byte_i64);
+    ctx_.builder().CreateBr(done_block);
+    llvm::BasicBlock* ok_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge
+    ctx_.builder().SetInsertPoint(done_block);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "u8_result");
+    phi->addIncoming(eof_result, eof_exit);
+    phi->addIncoming(byte_result, ok_exit);
+
+    return phi;
+}
+
+llvm::Value* StringIOCodegen::peekU8(const eshkol_operations_t* op) {
+    // (peek-u8) or (peek-u8 port) — R7RS: read byte without consuming
+    if (op->call_op.num_vars > 1) {
+        eshkol_warn("peek-u8 requires 0 or 1 arguments");
+        return nullptr;
+    }
+
+    llvm::Function* fgetc_func = getOrDeclareFgetc(ctx_);
+    llvm::Function* ungetc_func = getOrDeclareUngetc(ctx_);
+    if (!fgetc_func || !ungetc_func) return nullptr;
+
+    llvm::Value* file_ptr;
+    if (op->call_op.num_vars == 1) {
+        if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+            eshkol_warn("StringIOCodegen::peekU8 - callbacks not set");
+            return tagged_.packNull();
+        }
+        void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+        if (!tv_ptr) return nullptr;
+        llvm::Value* tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
+        if (!tagged) return nullptr;
+        file_ptr = ctx_.builder().CreateIntToPtr(
+            ctx_.builder().CreateExtractValue(tagged, {4}), ctx_.ptrType());
+    } else {
+        file_ptr = getStdin(ctx_);
+    }
+
+    // fgetc returns int (EOF=-1 or 0-255)
+    llvm::Value* ch = ctx_.builder().CreateCall(fgetc_func, {file_ptr}, "peek_byte");
+
+    // Check for EOF
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* eof_block = llvm::BasicBlock::Create(ctx_.context(), "peek_u8_eof", current_func);
+    llvm::BasicBlock* ok_block = llvm::BasicBlock::Create(ctx_.context(), "peek_u8_ok", current_func);
+    llvm::BasicBlock* done_block = llvm::BasicBlock::Create(ctx_.context(), "peek_u8_done", current_func);
+
+    llvm::Value* is_eof = ctx_.builder().CreateICmpEQ(ch,
+        llvm::ConstantInt::get(ctx_.int32Type(), -1u));
+    ctx_.builder().CreateCondBr(is_eof, eof_block, ok_block);
+
+    // EOF: return eof-object (type 0xFF)
+    ctx_.builder().SetInsertPoint(eof_block);
+    llvm::Value* eof_result = llvm::UndefValue::get(ctx_.taggedValueType());
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0xFF), {0});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), {4});
+    ctx_.builder().CreateBr(done_block);
+    llvm::BasicBlock* eof_exit = ctx_.builder().GetInsertBlock();
+
+    // OK: push byte back with ungetc, then return as tagged INT64
+    ctx_.builder().SetInsertPoint(ok_block);
+    ctx_.builder().CreateCall(ungetc_func, {ch, file_ptr});
+    llvm::Value* byte_i64 = ctx_.builder().CreateZExt(ch, ctx_.int64Type());
+    llvm::Value* byte_result = tagged_.packInt64(byte_i64);
+    ctx_.builder().CreateBr(done_block);
+    llvm::BasicBlock* ok_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge
+    ctx_.builder().SetInsertPoint(done_block);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "peek_u8_result");
+    phi->addIncoming(eof_result, eof_exit);
+    phi->addIncoming(byte_result, ok_exit);
+
+    return phi;
+}
+
+llvm::Value* StringIOCodegen::writeU8(const eshkol_operations_t* op) {
+    // (write-u8 byte) or (write-u8 byte port)
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_warn("write-u8 requires 1 or 2 arguments");
+        return nullptr;
+    }
+    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("StringIOCodegen::writeU8 - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    llvm::Function* fputc_func = getOrDeclareFputc(ctx_);
+    if (!fputc_func) return nullptr;
+
+    // Get byte value
+    void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!tv_ptr) return nullptr;
+    llvm::Value* byte_tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
+    if (!byte_tagged) return nullptr;
+    llvm::Value* byte_i64 = tagged_.unpackInt64(byte_tagged);
+    llvm::Value* byte_i32 = ctx_.builder().CreateTrunc(byte_i64, ctx_.int32Type());
+
+    // Get port (or stdout)
+    llvm::Value* file_ptr;
+    if (op->call_op.num_vars == 2) {
+        void* port_ptr = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!port_ptr) return nullptr;
+        llvm::Value* port_tagged = typed_to_tagged_callback_(port_ptr, callback_context_);
+        if (!port_tagged) return nullptr;
+        file_ptr = ctx_.builder().CreateIntToPtr(
+            ctx_.builder().CreateExtractValue(port_tagged, {4}), ctx_.ptrType());
+    } else {
+        file_ptr = getStdout(ctx_);
+    }
+
+    ctx_.builder().CreateCall(fputc_func, {byte_i32, file_ptr});
+
+    return tagged_.packNull();
+}
+
+llvm::Value* StringIOCodegen::readBytevector(const eshkol_operations_t* op) {
+    // (read-bytevector k) or (read-bytevector k port)
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_warn("read-bytevector requires 1 or 2 arguments");
+        return nullptr;
+    }
+    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("StringIOCodegen::readBytevector - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    llvm::Function* fread_func = getOrDeclareFread(ctx_);
+    if (!fread_func) return nullptr;
+
+    // Get count k
+    void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!tv_ptr) return nullptr;
+    llvm::Value* k_tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
+    if (!k_tagged) return nullptr;
+    llvm::Value* k = tagged_.unpackInt64(k_tagged);
+
+    // Get port (or stdin)
+    llvm::Value* file_ptr;
+    if (op->call_op.num_vars == 2) {
+        void* port_ptr = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!port_ptr) return nullptr;
+        llvm::Value* port_tagged = typed_to_tagged_callback_(port_ptr, callback_context_);
+        if (!port_tagged) return nullptr;
+        file_ptr = ctx_.builder().CreateIntToPtr(
+            ctx_.builder().CreateExtractValue(port_tagged, {4}), ctx_.ptrType());
+    } else {
+        file_ptr = getStdin(ctx_);
+    }
+
+    // Allocate bytevector: 8 (length) + k (data)
+    llvm::Value* data_size = ctx_.builder().CreateAdd(k, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* bv_ptr = ctx_.builder().CreateCall(
+        ctx_.memory().getArenaAllocateWithHeader(),
+        {arena_ptr, data_size,
+         llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BYTEVECTOR),
+         llvm::ConstantInt::get(ctx_.int8Type(), 0)});
+
+    // Data starts at offset 8 (after length field)
+    llvm::Value* data_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), bv_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+
+    // fread(data_ptr, 1, k, file_ptr) → returns actual bytes read
+    llvm::Value* bytes_read = ctx_.builder().CreateCall(fread_func,
+        {data_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 1), k, file_ptr}, "bytes_read");
+
+    // Check if zero bytes read (EOF before any data)
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* eof_block = llvm::BasicBlock::Create(ctx_.context(), "bv_eof", current_func);
+    llvm::BasicBlock* ok_block = llvm::BasicBlock::Create(ctx_.context(), "bv_ok", current_func);
+    llvm::BasicBlock* done_block = llvm::BasicBlock::Create(ctx_.context(), "bv_done", current_func);
+
+    llvm::Value* is_eof = ctx_.builder().CreateICmpEQ(bytes_read,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    ctx_.builder().CreateCondBr(is_eof, eof_block, ok_block);
+
+    // EOF: return eof-object
+    ctx_.builder().SetInsertPoint(eof_block);
+    llvm::Value* eof_result = llvm::UndefValue::get(ctx_.taggedValueType());
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0xFF), {0});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    eof_result = ctx_.builder().CreateInsertValue(eof_result,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), {4});
+    ctx_.builder().CreateBr(done_block);
+    llvm::BasicBlock* eof_exit = ctx_.builder().GetInsertBlock();
+
+    // OK: store actual length and return bytevector
+    ctx_.builder().SetInsertPoint(ok_block);
+    ctx_.builder().CreateStore(bytes_read, bv_ptr);
+    llvm::Value* bv_int = ctx_.builder().CreatePtrToInt(bv_ptr, ctx_.int64Type());
+    llvm::Value* bv_result = llvm::UndefValue::get(ctx_.taggedValueType());
+    bv_result = ctx_.builder().CreateInsertValue(bv_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR), {0});
+    bv_result = ctx_.builder().CreateInsertValue(bv_result,
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    bv_result = ctx_.builder().CreateInsertValue(bv_result,
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    bv_result = ctx_.builder().CreateInsertValue(bv_result, bv_int, {4});
+    ctx_.builder().CreateBr(done_block);
+    llvm::BasicBlock* ok_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge
+    ctx_.builder().SetInsertPoint(done_block);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "bv_read_result");
+    phi->addIncoming(eof_result, eof_exit);
+    phi->addIncoming(bv_result, ok_exit);
+
+    return phi;
+}
+
+llvm::Value* StringIOCodegen::writeBytevector(const eshkol_operations_t* op) {
+    // (write-bytevector bv) or (write-bytevector bv port) or (write-bytevector bv port start end)
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 4) {
+        eshkol_warn("write-bytevector requires 1 to 4 arguments");
+        return nullptr;
+    }
+    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("StringIOCodegen::writeBytevector - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    llvm::Function* fwrite_func = getOrDeclareFwrite(ctx_);
+    if (!fwrite_func) return nullptr;
+
+    // Get bytevector
+    void* bv_tv = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!bv_tv) return nullptr;
+    llvm::Value* bv_tagged = typed_to_tagged_callback_(bv_tv, callback_context_);
+    if (!bv_tagged) return nullptr;
+    llvm::Value* bv_ptr = ctx_.builder().CreateIntToPtr(
+        ctx_.builder().CreateExtractValue(bv_tagged, {4}), ctx_.ptrType());
+
+    // Read bytevector length
+    llvm::Value* bv_len = ctx_.builder().CreateLoad(ctx_.int64Type(), bv_ptr, "bv_len");
+    llvm::Value* data_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), bv_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+
+    // Get port (or stdout)
+    llvm::Value* file_ptr;
+    if (op->call_op.num_vars >= 2) {
+        void* port_tv = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!port_tv) return nullptr;
+        llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
+        if (!port_tagged) return nullptr;
+        file_ptr = ctx_.builder().CreateIntToPtr(
+            ctx_.builder().CreateExtractValue(port_tagged, {4}), ctx_.ptrType());
+    } else {
+        file_ptr = getStdout(ctx_);
+    }
+
+    // Handle optional start/end
+    llvm::Value* start = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    llvm::Value* end = bv_len;
+
+    if (op->call_op.num_vars >= 3) {
+        void* start_tv = codegen_typed_ast_callback_(&op->call_op.variables[2], callback_context_);
+        if (!start_tv) return nullptr;
+        llvm::Value* start_tagged = typed_to_tagged_callback_(start_tv, callback_context_);
+        if (!start_tagged) return nullptr;
+        start = tagged_.unpackInt64(start_tagged);
+    }
+    if (op->call_op.num_vars >= 4) {
+        void* end_tv = codegen_typed_ast_callback_(&op->call_op.variables[3], callback_context_);
+        if (!end_tv) return nullptr;
+        llvm::Value* end_tagged = typed_to_tagged_callback_(end_tv, callback_context_);
+        if (!end_tagged) return nullptr;
+        end = tagged_.unpackInt64(end_tagged);
+    }
+
+    // Compute write pointer and count
+    llvm::Value* write_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), data_ptr, start);
+    llvm::Value* count = ctx_.builder().CreateSub(end, start);
+
+    // fwrite(write_ptr, 1, count, file_ptr)
+    ctx_.builder().CreateCall(fwrite_func,
+        {write_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 1), count, file_ptr});
+
+    return tagged_.packNull();
 }
 
 } // namespace eshkol

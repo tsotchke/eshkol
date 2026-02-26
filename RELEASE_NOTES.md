@@ -1,3 +1,87 @@
+# Eshkol v1.1.0-accelerate - Performance Acceleration Release
+
+**Release Date**: February 17, 2026
+
+Eshkol v1.1-accelerate builds on the v1.0-foundation with comprehensive performance acceleration. Every v1.1 roadmap item is now complete: XLA backend (5/5), SIMD vectorization (4/4), concurrency (5/5), extended math (5/5), bignum/rational (6/6), consciousness engine (4/4), and R7RS extensions (6/6) -- totaling 35/35 items.
+
+## What's New in v1.1-accelerate
+
+### XLA Backend (Dual-Mode Architecture)
+
+Tensor operations now dispatch through a multi-tier acceleration hierarchy:
+- **StableHLO/MLIR path**: When MLIR is available, emits StableHLO ops for HW-optimized execution
+- **LLVM-direct path**: Default mode with hand-tuned LLVM IR generation
+- **Threshold dispatch**: XLA (>=100K elements) -> cBLAS (>=64) -> SIMD (>=64) -> scalar
+- 6 core operations fully wired: matmul, elementwise, reduce, transpose, broadcast, slice
+
+### SIMD Vectorization
+
+Tensor loops are now explicitly vectorized with LLVM loop metadata and 64-byte aligned allocation:
+- CPU feature detection for SSE2, SSE4.1, AVX, AVX2, AVX-512, and NEON
+- SIMD micro-kernels for all tensor arithmetic and activation functions
+- Loop vectorization metadata attached to all tensor operation back-edges
+- Platform-specific tuning via cache-blocked matrix multiplication
+
+### Signal Processing Library
+
+New `signal.filters` module with 13 DSP functions:
+- **Window functions**: Hamming, Hann, Blackman, Kaiser (with inline Bessel I0)
+- **Convolution**: Direct O(N*M) and FFT-based O(N log N)
+- **Filters**: FIR filter application, IIR Direct Form I
+- **Butterworth design**: Lowpass, highpass, bandpass via bilinear transform
+- **Analysis**: Frequency response (magnitude + phase)
+
+### Optimization Algorithms
+
+New `ml.optimization` module with 4 gradient-based optimizers:
+- **Gradient descent** with configurable learning rate and convergence tolerance
+- **Adam** (Adaptive Moment Estimation) with bias correction
+- **L-BFGS** with two-loop recursion and backtracking Armijo line search
+- **Conjugate gradient** (Fletcher-Reeves) with automatic restarts
+
+All optimizers use the builtin `gradient` function (forward-mode AD with dual numbers).
+
+### Parallelism & Concurrency
+
+- `parallel-map`, `parallel-fold`, `parallel-filter`, `parallel-for-each`
+- `future`/`force` for asynchronous computation
+- Work-stealing thread pool with hardware-aware sizing
+- Thread-safe arena memory management
+
+### Arbitrary-Precision Arithmetic
+
+- Bignum integers with full R7RS compliance (35 codegen gaps fixed)
+- Rational numbers (exact fractions)
+- Automatic overflow promotion (int64 -> bignum) and demotion
+- All arithmetic, comparison, and I/O operations for both types
+
+### Consciousness Engine
+
+Novel AI primitives integrated at the compiler level:
+- Logic programming (unification, substitutions, knowledge bases)
+- Active inference (factor graphs, belief propagation, free energy minimization)
+- Global workspace theory (modules, softmax competition, content broadcasting)
+- 22 builtin operations spanning logic, inference, and workspace
+
+### R7RS Compliance
+
+- `call/cc` and `dynamic-wind`
+- `guard`/`raise` exception handling
+- Bytevectors, `let-syntax`/`syntax-rules`, symbol operations
+- Tail call optimization validation
+
+### GPU Backends
+
+- Metal backend for Apple Silicon (SF64 software float64 emulation)
+- CUDA backend with cuBLAS integration
+- 5 GPU operations: elementwise, matmul, reduce, softmax, transpose
+
+## Test Results
+
+29 test suites passing with 200+ test files covering all subsystems.
+
+---
+
 # Eshkol v1.0.0-foundation - Production Release
 
 **Release Date**: December 12, 2025
@@ -159,13 +243,9 @@ This isn't a research prototype - it's a complete compiler with comprehensive te
 
 ## Known Limitations
 
-v1.0-foundation focuses on core capabilities. These features are planned for upcoming releases:
+v1.1-accelerate builds on v1.0-foundation. Remaining planned features:
 
-- **GPU acceleration** - Planned v1.2 (Q2 2026) with CUDA/Metal/Vulkan backends
-- **Multi-threading** - Planned v1.1 (Q1 2026) with parallelism primitives
 - **Distributed computing** - Planned v1.2 (Q2 2026)
-- **XLA integration** - In active development for v1.1
-- **SIMD vectorization** - In active development for v1.1
 
 See [ROADMAP.md](ROADMAP.md) and [docs/vision/FUTURE_ROADMAP.md](docs/vision/FUTURE_ROADMAP.md) for detailed development plans.
 

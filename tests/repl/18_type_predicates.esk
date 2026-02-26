@@ -1,0 +1,10 @@
+; REPL Test: Type Predicates
+(number? 42)
+(number? "hello")
+(string? "hello")
+(boolean? #t)
+(define (f x) x)
+(procedure? f)
+(null? '())
+(null? '(1))
+(pair? (cons 1 2))

@@ -1,0 +1,49 @@
+;; Rational Arithmetic Comprehensive Test
+;; Tests rational creation, arithmetic, and display
+
+;; Simple display-based verification
+(display "=== Rational Arithmetic Edge Cases ===\n")
+
+;; Basic rational creation
+(display "1/3 = ") (display (/ 1 3)) (newline)
+(display "2/4 reduced = ") (display (/ 2 4)) (newline)
+
+;; Zero numerator
+(display "0/5 = ") (display (/ 0 5)) (newline)
+
+;; Negative rationals
+(display "-1/3 = ") (display (/ -1 3)) (newline)
+(display "1/-3 = ") (display (/ 1 -3)) (newline)
+
+;; Double negative = positive
+(display "-3/-4 = ") (display (/ -3 -4)) (newline)
+
+;; Rational arithmetic
+(display "\n=== Rational Arithmetic ===\n")
+(display "1/2 + 1/3 = ") (display (+ (/ 1 2) (/ 1 3))) (newline)
+(display "1/2 - 1/3 = ") (display (- (/ 1 2) (/ 1 3))) (newline)
+(display "2/3 * 3/4 = ") (display (* (/ 2 3) (/ 3 4))) (newline)
+(display "1/2 / 1/3 = ") (display (/ (/ 1 2) (/ 1 3))) (newline)
+
+;; Integer-rational interaction
+(display "\n=== Integer-Rational Interaction ===\n")
+(display "1 + 1/2 = ") (display (+ 1 (/ 1 2))) (newline)
+(display "2 * 1/3 = ") (display (* 2 (/ 1 3))) (newline)
+(display "5 - 1/2 = ") (display (- 5 (/ 1 2))) (newline)
+
+;; Verify some expected values
+(display "\n=== Verification ===\n")
+(display "1/2 + 1/2 = ") (display (+ (/ 1 2) (/ 1 2))) (newline)
+(display "1/3 * 3 = ") (display (* (/ 1 3) 3)) (newline)
+
+;; Rational comparisons
+(display "\n=== Rational Comparisons ===\n")
+(display "(> 3/4 2/3) = ") (display (> (/ 3 4) (/ 2 3))) (newline)
+(display "(< 1/4 1/3) = ") (display (< (/ 1 4) (/ 1 3))) (newline)
+(display "(= 1/3 2/6) = ") (display (= (/ 1 3) (/ 2 6))) (newline)
+(display "(>= 1/2 1/2) = ") (display (>= (/ 1 2) (/ 1 2))) (newline)
+(display "(<= 1/3 1/2) = ") (display (<= (/ 1 3) (/ 1 2))) (newline)
+(display "(> 1 1/2) = ") (display (> 1 (/ 1 2))) (newline)
+(display "(= 2/2 1) = ") (display (= (/ 2 2) 1)) (newline)
+
+(display "\nRational comprehensive test completed.\n")

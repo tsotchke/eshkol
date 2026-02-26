@@ -1,0 +1,53 @@
+;; XLA Elementwise Operation Tests
+;; Tests binary elementwise operations through XLA dispatch
+
+;; Basic tensors
+(define A (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
+(define B (reshape (vector 5.0 6.0 7.0 8.0) 2 2))
+
+;; ADD
+(define sum-ab (tensor-add A B))
+(if (and (= (tensor-get sum-ab 0 0) 6.0)
+         (= (tensor-get sum-ab 1 1) 12.0))
+    (display "PASS: tensor-add correct")
+    (display "FAIL: tensor-add incorrect"))
+(newline)
+
+;; SUB
+(define diff-ab (tensor-sub A B))
+(if (and (= (tensor-get diff-ab 0 0) -4.0)
+         (= (tensor-get diff-ab 1 1) -4.0))
+    (display "PASS: tensor-sub correct")
+    (display "FAIL: tensor-sub incorrect"))
+(newline)
+
+;; MUL
+(define prod-ab (tensor-mul A B))
+(if (and (= (tensor-get prod-ab 0 0) 5.0)
+         (= (tensor-get prod-ab 1 1) 32.0))
+    (display "PASS: tensor-mul correct")
+    (display "FAIL: tensor-mul incorrect"))
+(newline)
+
+;; DIV
+(define quot-ab (tensor-div A B))
+(if (< (abs (- (tensor-get quot-ab 0 0) 0.2)) 1e-10)
+    (display "PASS: tensor-div correct")
+    (display "FAIL: tensor-div incorrect"))
+(newline)
+
+;; Commutativity check: A + B = B + A
+(define sum-ba (tensor-add B A))
+(if (and (= (tensor-get sum-ba 0 0) 6.0)
+         (= (tensor-get sum-ba 1 1) 12.0))
+    (display "PASS: tensor-add commutative")
+    (display "FAIL: tensor-add not commutative"))
+(newline)
+
+;; Chaining: (A + B) * A
+(define chain (tensor-mul sum-ab A))
+(if (and (= (tensor-get chain 0 0) 6.0)   ;; 6*1
+         (= (tensor-get chain 1 1) 48.0))  ;; 12*4
+    (display "PASS: chained ops correct")
+    (display "FAIL: chained ops incorrect"))
+(newline)

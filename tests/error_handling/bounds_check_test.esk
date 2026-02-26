@@ -1,0 +1,109 @@
+(require stdlib)
+
+(display "TEST: Bounds checking edge cases") (newline)
+
+; Test 1: vector-ref in bounds - first element
+(display (if (= (vector-ref #(10 20 30) 0) 10) "PASS" "FAIL"))
+(display ": vector-ref in bounds (first element)") (newline)
+
+; Test 2: vector-ref in bounds - last element
+(display (if (= (vector-ref #(10 20 30) 2) 30) "PASS" "FAIL"))
+(display ": vector-ref in bounds (last element)") (newline)
+
+; Test 3: vector-ref out of bounds (positive index)
+(display (if (guard (exn (#t #t)) (vector-ref #(1 2 3) 5) #f) "PASS" "FAIL"))
+(display ": vector-ref OOB (positive) raises error") (newline)
+
+; Test 4: vector-ref negative index
+(display (if (guard (exn (#t #t)) (vector-ref #(1 2 3) -1) #f) "PASS" "FAIL"))
+(display ": vector-ref OOB (negative index) raises error") (newline)
+
+; Test 5: vector-set! in bounds
+(display (if (let ((v (vector 10 20 30)))
+               (vector-set! v 1 99)
+               (= (vector-ref v 1) 99))
+             "PASS" "FAIL"))
+(display ": vector-set! in bounds works") (newline)
+
+; Test 6: vector-set! out of bounds
+(display (if (guard (exn (#t #t)) (vector-set! (vector 1 2 3) 5 99) #f) "PASS" "FAIL"))
+(display ": vector-set! OOB raises error") (newline)
+
+; Test 7: string-ref in bounds - first char
+(display (if (char=? (string-ref "hello" 0) #\h) "PASS" "FAIL"))
+(display ": string-ref in bounds (first char)") (newline)
+
+; Test 8: string-ref in bounds - last char
+(display (if (char=? (string-ref "hello" 4) #\o) "PASS" "FAIL"))
+(display ": string-ref in bounds (last char)") (newline)
+
+; Test 9: string-ref out of bounds
+(display (if (guard (exn (#t #t)) (string-ref "hello" 10) #f) "PASS" "FAIL"))
+(display ": string-ref OOB raises error") (newline)
+
+; Test 10: substring valid range
+(display (if (equal? (substring "hello" 1 3) "el") "PASS" "FAIL"))
+(display ": substring valid range") (newline)
+
+; Test 11: substring end > length should raise
+(display (if (guard (exn (#t #t)) (substring "hello" 0 10) #f) "PASS" "FAIL"))
+(display ": substring end > length raises error") (newline)
+
+; Test 12: substring start > end should raise
+(display (if (guard (exn (#t #t)) (substring "hello" 3 1) #f) "PASS" "FAIL"))
+(display ": substring start > end raises error") (newline)
+
+; Test 13: list-ref in bounds - first element
+(display (if (= (list-ref '(1 2 3) 0) 1) "PASS" "FAIL"))
+(display ": list-ref in bounds (first element)") (newline)
+
+; Test 14: list-ref in bounds - last element
+(display (if (= (list-ref '(1 2 3) 2) 3) "PASS" "FAIL"))
+(display ": list-ref in bounds (last element)") (newline)
+
+; Test 15: vector-ref on empty vector
+(display (if (guard (exn (#t #t)) (vector-ref #() 0) #f) "PASS" "FAIL"))
+(display ": vector-ref on empty vector raises error") (newline)
+
+; Test 16: string-ref on empty string
+(display (if (guard (exn (#t #t)) (string-ref "" 0) #f) "PASS" "FAIL"))
+(display ": string-ref on empty string raises error") (newline)
+
+; Test 17: vector-ref middle element
+(display (if (= (vector-ref #(5 10 15 20 25) 2) 15) "PASS" "FAIL"))
+(display ": vector-ref middle element correct") (newline)
+
+; Test 18: substring full string
+(display (if (equal? (substring "hello" 0 5) "hello") "PASS" "FAIL"))
+(display ": substring full string") (newline)
+
+; Test 19: substring empty result (start == end)
+(display (if (equal? (substring "hello" 2 2) "") "PASS" "FAIL"))
+(display ": substring empty result (start == end)") (newline)
+
+; Test 20: substring start at 0
+(display (if (equal? (substring "hello" 0 3) "hel") "PASS" "FAIL"))
+(display ": substring start at 0") (newline)
+
+; Test 21: list-ref at index 0 on single-element list
+(display (if (= (list-ref '(42) 0) 42) "PASS" "FAIL"))
+(display ": list-ref on single-element list") (newline)
+
+; Test 22: vector with one element - in bounds
+(display (if (= (vector-ref #(99) 0) 99) "PASS" "FAIL"))
+(display ": vector-ref single-element vector in bounds") (newline)
+
+; Test 23: vector with one element - out of bounds
+(display (if (guard (exn (#t #t)) (vector-ref #(99) 1) #f) "PASS" "FAIL"))
+(display ": vector-ref single-element vector OOB raises error") (newline)
+
+; Test 24: vector-set! on index 0
+(display (if (let ((v (vector 100 200 300)))
+               (vector-set! v 0 999)
+               (= (vector-ref v 0) 999))
+             "PASS" "FAIL"))
+(display ": vector-set! on first element") (newline)
+
+; Test 25: string-ref middle of string
+(display (if (char=? (string-ref "abcdef" 3) #\d) "PASS" "FAIL"))
+(display ": string-ref middle of string correct") (newline)

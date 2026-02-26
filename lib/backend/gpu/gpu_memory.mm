@@ -15,6 +15,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
+#include <atomic>
+#include <mutex>
 
 // ============================================================================
 // Platform Detection
@@ -43,7 +46,8 @@ size_t g_gpu_threshold = 100000;
 
 // Active backend
 static EshkolGPUBackend g_active_backend = ESHKOL_GPU_NONE;
-static bool g_gpu_initialized = false;
+static std::atomic<bool> g_gpu_initialized{false};
+static std::mutex g_gpu_init_mutex;
 
 // ============================================================================
 // Metal Backend State
@@ -54,8 +58,55 @@ static bool g_gpu_initialized = false;
 static id<MTLDevice> g_metal_device = nil;
 static id<MTLCommandQueue> g_metal_queue = nil;
 static id<MTLComputePipelineState> g_matmul_sf64_pipeline = nil;
+static id<MTLComputePipelineState> g_elementwise_sf64_pipeline = nil;
+static id<MTLComputePipelineState> g_reduce_sf64_pipeline = nil;
+static id<MTLComputePipelineState> g_transpose_sf64_pipeline = nil;
+static id<MTLComputePipelineState> g_reduce_axis_sf64_pipeline = nil;
+static id<MTLComputePipelineState> g_softmax_sf64_pipeline = nil;
+static id<MTLComputePipelineState> g_normalize_sf64_pipeline = nil;
 static id<MTLLibrary> g_metal_library = nil;
 static bool g_metal_unified_memory = false;
+
+// ============================================================================
+// Metal Buffer Pool — reuses MTLBuffer objects to reduce allocation overhead
+// ============================================================================
+// Size-binned pool: rounds requested size up to next power-of-2, reuses buffers
+// of that bucket size. Significant win for batched operations (ML training loops).
+
+#include <unordered_map>
+#include <vector>
+
+static std::unordered_map<size_t, std::vector<id<MTLBuffer>>> g_buffer_pool;
+
+static size_t pool_bucket(size_t bytes) {
+    if (bytes == 0) return 1;
+    size_t v = bytes - 1;
+    v |= v >> 1; v |= v >> 2; v |= v >> 4;
+    v |= v >> 8; v |= v >> 16; v |= v >> 32;
+    return v + 1;
+}
+
+static id<MTLBuffer> pool_alloc(size_t bytes) {
+    size_t bucket = pool_bucket(bytes);
+    auto it = g_buffer_pool.find(bucket);
+    if (it != g_buffer_pool.end() && !it->second.empty()) {
+        id<MTLBuffer> buf = it->second.back();
+        it->second.pop_back();
+        return buf;
+    }
+    return [g_metal_device newBufferWithLength:bucket
+                                       options:MTLResourceStorageModeShared];
+}
+
+static void pool_release(id<MTLBuffer> buf) {
+    if (!buf) return;
+    size_t bucket = pool_bucket(buf.length);
+    g_buffer_pool[bucket].push_back(buf);
+}
+
+static void pool_drain() {
+    g_buffer_pool.clear();
+}
 
 // ============================================================================
 // SoftFloat IEEE 754 f64 Emulation for Metal
@@ -66,546 +117,12 @@ static bool g_metal_unified_memory = false;
 // - Proper rounding (round-to-nearest-even)
 // - Special value handling (zero, infinity, NaN)
 // Based on Berkeley SoftFloat library algorithms.
+//
+// SINGLE SOURCE OF TRUTH: lib/backend/gpu/metal_softfloat.h
+// The shader source below is auto-generated from metal_softfloat.h at build time
+// via CMake custom command. Do NOT edit inline — modify metal_softfloat.h instead.
+#include "metal_sf64_embedded.inc"
 
-static NSString* g_matmul_sf64_source = @R"(
-#include <metal_stdlib>
-using namespace metal;
-
-// ===== IEEE 754 Double-Precision as uint2 =====
-typedef uint2 sf64;  // .x = high 32 bits, .y = low 32 bits
-
-// Constants
-constant sf64 SF64_ZERO = sf64(0x00000000u, 0x00000000u);
-constant sf64 SF64_NEG_ZERO = sf64(0x80000000u, 0x00000000u);
-constant sf64 SF64_INF = sf64(0x7FF00000u, 0x00000000u);
-constant sf64 SF64_NEG_INF = sf64(0xFFF00000u, 0x00000000u);
-constant sf64 SF64_QNAN = sf64(0x7FF80000u, 0x00000000u);
-
-// ===== Bit Extraction =====
-inline bool sf64_sign(sf64 x) { return (x.x >> 31) != 0; }
-inline int sf64_exp_raw(sf64 x) { return int((x.x >> 20) & 0x7FFu); }
-inline sf64 sf64_sig(sf64 x) { return sf64(x.x & 0x000FFFFFu, x.y); }
-
-// ===== Classification =====
-inline bool sf64_is_zero(sf64 x) { return ((x.x & 0x7FFFFFFFu) == 0) && (x.y == 0); }
-inline bool sf64_is_inf(sf64 x) { return ((x.x & 0x7FFFFFFFu) == 0x7FF00000u) && (x.y == 0); }
-inline bool sf64_is_nan(sf64 x) {
-    return ((x.x & 0x7FF00000u) == 0x7FF00000u) &&
-           (((x.x & 0x000FFFFFu) != 0) || (x.y != 0));
-}
-
-// ===== Packing =====
-inline sf64 sf64_pack(bool sign, int exp_raw, uint mant_hi, uint mant_lo) {
-    uint hi = (sign ? 0x80000000u : 0u) | ((uint(exp_raw) & 0x7FFu) << 20) | (mant_hi & 0x000FFFFFu);
-    return sf64(hi, mant_lo);
-}
-inline sf64 sf64_negate(sf64 x) { return sf64(x.x ^ 0x80000000u, x.y); }
-
-// ===== 64-bit Arithmetic =====
-inline sf64 shl64(sf64 x, int n) {
-    if (n <= 0) return x;
-    if (n >= 64) return SF64_ZERO;
-    if (n >= 32) return sf64(x.y << (n - 32), 0u);
-    return sf64((x.x << n) | (x.y >> (32 - n)), x.y << n);
-}
-
-inline sf64 shr64(sf64 x, int n) {
-    if (n <= 0) return x;
-    if (n >= 64) return SF64_ZERO;
-    if (n >= 32) return sf64(0u, x.x >> (n - 32));
-    return sf64(x.x >> n, (x.y >> n) | (x.x << (32 - n)));
-}
-
-inline sf64 shr64_jam(sf64 x, int n) {
-    if (n <= 0) return x;
-    if (n >= 64) return sf64(0u, ((x.x | x.y) != 0) ? 1u : 0u);
-    if (n >= 32) {
-        uint lost = x.y | ((n > 32) ? (x.x << (64 - n)) : 0u);
-        return sf64(0u, (x.x >> (n - 32)) | ((lost != 0) ? 1u : 0u));
-    }
-    uint lost = x.y << (32 - n);
-    return sf64(x.x >> n, ((x.y >> n) | (x.x << (32 - n))) | ((lost != 0) ? 1u : 0u));
-}
-
-inline sf64 add64(sf64 a, sf64 b) {
-    uint lo = a.y + b.y;
-    uint carry = (lo < a.y) ? 1u : 0u;
-    return sf64(a.x + b.x + carry, lo);
-}
-
-inline sf64 sub64(sf64 a, sf64 b) {
-    uint lo = a.y - b.y;
-    uint borrow = (a.y < b.y) ? 1u : 0u;
-    return sf64(a.x - b.x - borrow, lo);
-}
-
-inline int cmp64(sf64 a, sf64 b) {
-    if (a.x != b.x) return (a.x < b.x) ? -1 : 1;
-    if (a.y != b.y) return (a.y < b.y) ? -1 : 1;
-    return 0;
-}
-
-inline int clz64(sf64 x) {
-    if (x.x != 0) return clz(x.x);
-    if (x.y != 0) return 32 + clz(x.y);
-    return 64;
-}
-
-// ===== 128-bit Arithmetic (for FMA) =====
-struct sf128 { sf64 hi; sf64 lo; };
-
-inline sf128 shr128(sf128 x, int n) {
-    if (n <= 0) return x;
-    if (n >= 128) return sf128{SF64_ZERO, SF64_ZERO};
-    if (n >= 64) {
-        return sf128{SF64_ZERO, shr64(x.hi, n - 64)};
-    }
-    // n < 64
-    sf64 new_lo;
-    new_lo.x = (x.lo.x >> n) | (x.hi.y << (32 - n));
-    new_lo.y = (x.lo.y >> n) | (x.lo.x << (32 - n));
-    if (n >= 32) {
-        new_lo.x = (x.hi.y >> (n - 32)) | (x.hi.x << (64 - n));
-        new_lo.y = (x.lo.x >> (n - 32)) | (x.hi.y << (64 - n));
-    }
-    return sf128{shr64(x.hi, n), new_lo};
-}
-
-inline sf128 shr128_jam(sf128 x, int n) {
-    if (n <= 0) return x;
-    if (n >= 128) {
-        uint sticky = ((x.hi.x | x.hi.y | x.lo.x | x.lo.y) != 0) ? 1u : 0u;
-        return sf128{SF64_ZERO, sf64(0u, sticky)};
-    }
-    // Collect sticky bits from what will be shifted out
-    uint sticky = 0;
-    if (n >= 64) {
-        sticky = ((x.lo.x | x.lo.y) != 0) ? 1u : 0u;
-        sf64 new_lo = shr64_jam(x.hi, n - 64);
-        new_lo.y |= sticky;
-        return sf128{SF64_ZERO, new_lo};
-    }
-    // n < 64: sticky from low bits of lo
-    sticky = (x.lo.y << (32 - (n % 32))) != 0 ? 1u : 0u;
-    sf128 result = shr128(x, n);
-    result.lo.y |= sticky;
-    return result;
-}
-
-inline sf128 shl128(sf128 x, int n) {
-    if (n <= 0) return x;
-    if (n >= 128) return sf128{SF64_ZERO, SF64_ZERO};
-    if (n >= 64) {
-        return sf128{shl64(x.lo, n - 64), SF64_ZERO};
-    }
-    // n < 64
-    sf64 new_hi;
-    new_hi.x = (x.hi.x << n) | (x.hi.y >> (32 - n));
-    new_hi.y = (x.hi.y << n) | (x.lo.x >> (32 - n));
-    if (n >= 32) {
-        new_hi.x = (x.hi.y << (n - 32)) | (x.lo.x >> (64 - n));
-        new_hi.y = (x.lo.x << (n - 32)) | (x.lo.y >> (64 - n));
-    }
-    return sf128{new_hi, shl64(x.lo, n)};
-}
-
-inline sf128 add128(sf128 a, sf128 b) {
-    sf64 lo = add64(a.lo, b.lo);
-    uint carry = (cmp64(lo, a.lo) < 0 || cmp64(lo, b.lo) < 0) ? 1u : 0u;
-    sf64 hi = add64(a.hi, b.hi);
-    hi = add64(hi, sf64(0u, carry));
-    return sf128{hi, lo};
-}
-
-inline sf128 sub128(sf128 a, sf128 b) {
-    uint borrow = (cmp64(a.lo, b.lo) < 0) ? 1u : 0u;
-    sf64 lo = sub64(a.lo, b.lo);
-    sf64 hi = sub64(a.hi, b.hi);
-    hi = sub64(hi, sf64(0u, borrow));
-    return sf128{hi, lo};
-}
-
-inline int cmp128(sf128 a, sf128 b) {
-    int cmp_hi = cmp64(a.hi, b.hi);
-    if (cmp_hi != 0) return cmp_hi;
-    return cmp64(a.lo, b.lo);
-}
-
-inline int clz128(sf128 x) {
-    int clz_hi = clz64(x.hi);
-    if (clz_hi < 64) return clz_hi;
-    return 64 + clz64(x.lo);
-}
-
-inline bool is_zero128(sf128 x) {
-    return (x.hi.x | x.hi.y | x.lo.x | x.lo.y) == 0;
-}
-
-// ===== 64x64 -> 128 bit multiply =====
-struct uint128_t { uint w3, w2, w1, w0; };
-
-inline uint128_t mul64x64(sf64 a, sf64 b) {
-    uint a3 = a.x >> 16, a2 = a.x & 0xFFFFu;
-    uint a1 = a.y >> 16, a0 = a.y & 0xFFFFu;
-    uint b3 = b.x >> 16, b2 = b.x & 0xFFFFu;
-    uint b1 = b.y >> 16, b0 = b.y & 0xFFFFu;
-
-    uint p00 = a0*b0, p01 = a0*b1, p02 = a0*b2, p03 = a0*b3;
-    uint p10 = a1*b0, p11 = a1*b1, p12 = a1*b2, p13 = a1*b3;
-    uint p20 = a2*b0, p21 = a2*b1, p22 = a2*b2, p23 = a2*b3;
-    uint p30 = a3*b0, p31 = a3*b1, p32 = a3*b2, p33 = a3*b3;
-
-    uint c0 = p00 & 0xFFFFu;
-    uint carry = p00 >> 16;
-    uint c1 = p01 + p10 + carry; carry = c1 >> 16; c1 &= 0xFFFFu;
-    uint c2 = p02 + p11 + p20 + carry; carry = c2 >> 16; c2 &= 0xFFFFu;
-    uint c3 = p03 + p12 + p21 + p30 + carry; carry = c3 >> 16; c3 &= 0xFFFFu;
-    uint c4 = p13 + p22 + p31 + carry; carry = c4 >> 16; c4 &= 0xFFFFu;
-    uint c5 = p23 + p32 + carry; carry = c5 >> 16; c5 &= 0xFFFFu;
-    uint c6 = p33 + carry; uint c7 = c6 >> 16; c6 &= 0xFFFFu;
-
-    uint128_t r;
-    r.w0 = (c1 << 16) | c0;
-    r.w1 = (c3 << 16) | c2;
-    r.w2 = (c5 << 16) | c4;
-    r.w3 = (c7 << 16) | c6;
-    return r;
-}
-
-// ===== Rounding =====
-// round_bits: 10 bits of rounding info, half-way point at 0x200
-inline sf64 sf64_round_pack(bool sign, int exp_raw, sf64 sig, uint round_bits) {
-    // Round to nearest, ties to even
-    bool round_up = (round_bits > 0x200u) || ((round_bits == 0x200u) && ((sig.y & 1u) != 0));
-    if (round_up) {
-        sig = add64(sig, sf64(0u, 1u));
-        // Check if rounding caused overflow (implicit bit moved from bit 52 to bit 53)
-        if ((sig.x & 0x00200000u) != 0) { sig = shr64(sig, 1); exp_raw++; }
-    }
-    if (exp_raw >= 2047) return sign ? SF64_NEG_INF : SF64_INF;
-    if (exp_raw <= 0) {
-        int shift = 1 - exp_raw;
-        if (shift >= 64) return sign ? SF64_NEG_ZERO : SF64_ZERO;
-        sig = shr64_jam(sig, shift);
-        exp_raw = 0;
-    }
-    return sf64_pack(sign, exp_raw, sig.x, sig.y);
-}
-
-// ===== Addition =====
-sf64 sf64_add(sf64 a, sf64 b) {
-    bool signA = sf64_sign(a), signB = sf64_sign(b);
-    int expA = sf64_exp_raw(a), expB = sf64_exp_raw(b);
-    sf64 sigA = sf64_sig(a), sigB = sf64_sig(b);
-
-    if (sf64_is_nan(a)) return SF64_QNAN;
-    if (sf64_is_nan(b)) return SF64_QNAN;
-    if (sf64_is_inf(a)) {
-        if (sf64_is_inf(b) && (signA != signB)) return SF64_QNAN;
-        return a;
-    }
-    if (sf64_is_inf(b)) return b;
-    if (sf64_is_zero(a)) {
-        if (sf64_is_zero(b)) return (signA && signB) ? SF64_NEG_ZERO : SF64_ZERO;
-        return b;
-    }
-    if (sf64_is_zero(b)) return a;
-
-    // Add implicit bit for normalized numbers
-    if (expA != 0) sigA.x |= 0x00100000u; else expA = 1;
-    if (expB != 0) sigB.x |= 0x00100000u; else expB = 1;
-
-    // Shift to have leading 1 at bit 63 (for 11 guard bits)
-    sigA = shl64(sigA, 11);
-    sigB = shl64(sigB, 11);
-
-    // Align exponents
-    int expDiff = expA - expB;
-    int expZ;
-    if (expDiff > 0) { sigB = shr64_jam(sigB, expDiff); expZ = expA; }
-    else if (expDiff < 0) { sigA = shr64_jam(sigA, -expDiff); expZ = expB; }
-    else expZ = expA;
-
-    sf64 sigZ;
-    bool signZ;
-    if (signA == signB) {
-        // Same sign: add magnitudes
-        signZ = signA;
-        sigZ = add64(sigA, sigB);
-        // Check for overflow: sum wrapped if result < either operand
-        if (cmp64(sigZ, sigA) < 0 || cmp64(sigZ, sigB) < 0) {
-            // Overflow: true sum >= 2^64, leading 1 at virtual bit 64
-            // Shift right by 2 to normalize to bit 62, increment exp
-            sigZ = shr64_jam(sigZ, 2);
-            sigZ.x |= 0x40000000u;  // Set leading 1 at bit 62
-            expZ++;
-        } else {
-            // No overflow: leading 1 at bit 63
-            // Shift right by 1 to normalize to bit 62
-            sigZ = shr64_jam(sigZ, 1);
-        }
-    } else {
-        // Different signs: subtract magnitudes
-        int cmp = cmp64(sigA, sigB);
-        if (cmp == 0) return SF64_ZERO;
-        if (cmp > 0) { signZ = signA; sigZ = sub64(sigA, sigB); }
-        else { signZ = signB; sigZ = sub64(sigB, sigA); }
-        // Normalize: shift left until leading 1 is at bit 62 (not 63)
-        int shift = clz64(sigZ) - 1;  // -1 to target bit 62 instead of 63
-        if (shift > 0) { sigZ = shl64(sigZ, shift); expZ -= shift; }
-        else if (shift < 0) { sigZ = shr64_jam(sigZ, -shift); expZ -= shift; }
-    }
-    // Now leading 1 is at bit 62 (bit 30 of sigZ.x)
-
-    // Extract 10 round bits and shift by 10 to get mantissa at bit 52
-    uint round_bits = sigZ.y & 0x3FFu;
-    sigZ = shr64(sigZ, 10);
-    return sf64_round_pack(signZ, expZ, sigZ, round_bits);
-}
-
-// ===== Multiplication =====
-sf64 sf64_mul(sf64 a, sf64 b) {
-    bool signA = sf64_sign(a), signB = sf64_sign(b);
-    bool signZ = signA != signB;
-    int expA = sf64_exp_raw(a), expB = sf64_exp_raw(b);
-    sf64 sigA = sf64_sig(a), sigB = sf64_sig(b);
-
-    if (sf64_is_nan(a) || sf64_is_nan(b)) return SF64_QNAN;
-    if (sf64_is_inf(a)) {
-        if (sf64_is_zero(b)) return SF64_QNAN;
-        return signZ ? SF64_NEG_INF : SF64_INF;
-    }
-    if (sf64_is_inf(b)) {
-        if (sf64_is_zero(a)) return SF64_QNAN;
-        return signZ ? SF64_NEG_INF : SF64_INF;
-    }
-    if (sf64_is_zero(a) || sf64_is_zero(b)) return signZ ? SF64_NEG_ZERO : SF64_ZERO;
-
-    // Add implicit bit for normalized numbers
-    if (expA != 0) sigA.x |= 0x00100000u;
-    else { int s = clz64(sigA) - 11; sigA = shl64(sigA, s); expA = 1 - s; }
-    if (expB != 0) sigB.x |= 0x00100000u;
-    else { int s = clz64(sigB) - 11; sigB = shl64(sigB, s); expB = 1 - s; }
-
-    // Compute result exponent (may need adjustment after normalization)
-    int expZ = expA + expB - 1023;
-
-    // Shift both significands to have leading 1 at bit 63
-    // After multiply, product has leading 1 at bit 126 (no overflow) or 127 (overflow)
-    sigA = shl64(sigA, 11);
-    sigB = shl64(sigB, 11);
-
-    uint128_t prod = mul64x64(sigA, sigB);
-    sf64 sigZ = sf64(prod.w3, prod.w2);
-    uint sticky = ((prod.w1 | prod.w0) != 0) ? 1u : 0u;
-
-    // Normalize: product leading 1 is at bit 126 or 127 (bits 62 or 63 of high 64)
-    if ((sigZ.x & 0x80000000u) != 0) {
-        // Overflow: product in [2,4), leading 1 at bit 63
-        // Shift right by 1 to normalize to bit 62, increment exponent
-        sticky |= (sigZ.y & 1u);
-        sigZ = shr64(sigZ, 1);
-        expZ++;
-    }
-    // Now leading 1 is at bit 62 (bit 30 of sigZ.x) in both cases
-
-    // Extract round bits (bits 9-0) and shift by 10 to get mantissa at bit 52
-    uint round_bits = (sigZ.y & 0x3FFu) | sticky;
-    sigZ = shr64(sigZ, 10);
-    return sf64_round_pack(signZ, expZ, sigZ, round_bits);
-}
-
-// ===== True Fused Multiply-Add =====
-// Computes a*b+c with only ONE rounding at the end (IEEE 754 compliant)
-sf64 sf64_fma(sf64 a, sf64 b, sf64 c) {
-    // Handle special cases
-    if (sf64_is_nan(a) || sf64_is_nan(b) || sf64_is_nan(c)) return SF64_QNAN;
-
-    bool signA = sf64_sign(a), signB = sf64_sign(b), signC = sf64_sign(c);
-    bool signP = signA != signB;
-
-    // Handle infinities
-    if (sf64_is_inf(a)) {
-        if (sf64_is_zero(b)) return SF64_QNAN;
-        if (sf64_is_inf(c) && (signP != signC)) return SF64_QNAN;
-        return signP ? SF64_NEG_INF : SF64_INF;
-    }
-    if (sf64_is_inf(b)) {
-        if (sf64_is_zero(a)) return SF64_QNAN;
-        if (sf64_is_inf(c) && (signP != signC)) return SF64_QNAN;
-        return signP ? SF64_NEG_INF : SF64_INF;
-    }
-    if (sf64_is_inf(c)) return c;
-
-    // Handle zeros
-    if (sf64_is_zero(a) || sf64_is_zero(b)) return c;
-    if (sf64_is_zero(c)) return sf64_mul(a, b);
-
-    // Extract components
-    int expA = sf64_exp_raw(a), expB = sf64_exp_raw(b), expC = sf64_exp_raw(c);
-    sf64 sigA = sf64_sig(a), sigB = sf64_sig(b), sigC = sf64_sig(c);
-
-    // Add implicit bits, handle denormals
-    if (expA != 0) sigA.x |= 0x00100000u;
-    else { int s = clz64(sigA) - 11; sigA = shl64(sigA, s); expA = 1 - s; }
-    if (expB != 0) sigB.x |= 0x00100000u;
-    else { int s = clz64(sigB) - 11; sigB = shl64(sigB, s); expB = 1 - s; }
-    if (expC != 0) sigC.x |= 0x00100000u;
-    else { int s = clz64(sigC) - 11; sigC = shl64(sigC, s); expC = 1 - s; }
-
-    // Product exponent
-    int expP = expA + expB - 1023;
-
-    // Shift significands to bit 63 for full-precision multiply
-    sigA = shl64(sigA, 11);
-    sigB = shl64(sigB, 11);
-
-    // Full 128-bit product
-    uint128_t prod = mul64x64(sigA, sigB);
-    sf128 P = sf128{sf64(prod.w3, prod.w2), sf64(prod.w1, prod.w0)};
-
-    // Normalize product to leading 1 at bit 126 (bit 62 of hi)
-    if ((P.hi.x & 0x80000000u) != 0) {
-        P = shr128_jam(P, 1);
-        expP++;
-    }
-
-    // Prepare addend C: shift sigC (leading 1 at bit 52) to bit 126
-    sf128 C = sf128{shl64(sigC, 10), SF64_ZERO};
-
-    // Align to common exponent
-    int expDiff = expP - expC;
-    int expZ = expP;
-
-    if (expDiff > 0) {
-        C = shr128_jam(C, expDiff);
-    } else if (expDiff < 0) {
-        P = shr128_jam(P, -expDiff);
-        expZ = expC;
-    }
-
-    // Add or subtract based on signs
-    sf128 R;
-    bool signZ;
-
-    if (signP == signC) {
-        signZ = signP;
-        R = add128(P, C);
-        // Check for overflow
-        if ((R.hi.x & 0x80000000u) != 0) {
-            R = shr128_jam(R, 1);
-            expZ++;
-        }
-    } else {
-        int cmp = cmp128(P, C);
-        if (cmp == 0) return SF64_ZERO;
-
-        if (cmp > 0) {
-            signZ = signP;
-            R = sub128(P, C);
-        } else {
-            signZ = signC;
-            R = sub128(C, P);
-        }
-
-        // Normalize: shift left until leading 1 at bit 62 of hi
-        int shift = clz128(R) - 1;
-        if (shift > 0) {
-            R = shl128(R, shift);
-            expZ -= shift;
-        } else if (shift < 0) {
-            R = shr128_jam(R, -shift);
-            expZ -= shift;
-        }
-    }
-
-    // Extract result: leading 1 at bit 62, round bits in 9-0
-    uint sticky = (R.lo.x | R.lo.y) != 0 ? 1u : 0u;
-    uint round_bits = (R.hi.y & 0x3FFu) | sticky;
-    sf64 sigZ = shr64(R.hi, 10);
-
-    return sf64_round_pack(signZ, expZ, sigZ, round_bits);
-}
-
-// ===== Matrix Multiplication Kernel — Threadgroup Shared Memory Optimized =====
-// 64 threads (8×8) per threadgroup, each computing a 4×4 sub-tile.
-// Threadgroup computes 32×32 output block. K processed in chunks of 8.
-// Cooperative loading into shared memory reduces bandwidth ~8x.
-constant uint TG = 8;       // Threadgroup dimension
-constant uint TT = 4;       // Thread tile dimension
-constant uint BLK = 32;     // Block dimension (TG * TT)
-constant uint TILE_K = 8;   // K-dimension blocking factor
-
-kernel void matmul_sf64(
-    device const sf64* A [[buffer(0)]],
-    device const sf64* B [[buffer(1)]],
-    device sf64* C [[buffer(2)]],
-    constant uint& M [[buffer(3)]],
-    constant uint& K [[buffer(4)]],
-    constant uint& N [[buffer(5)]],
-    uint2 group_id [[threadgroup_position_in_grid]],
-    uint2 lid [[thread_position_in_threadgroup]])
-{
-    uint baseRow = group_id.y * BLK;
-    uint baseCol = group_id.x * BLK;
-    uint threadRow = lid.y * TT;
-    uint threadCol = lid.x * TT;
-
-    sf64 acc[TT][TT];
-    for (uint i = 0; i < TT; i++)
-        for (uint j = 0; j < TT; j++)
-            acc[i][j] = SF64_ZERO;
-
-    threadgroup sf64 sA[BLK * TILE_K];   // 32×8 = 256 sf64 = 2KB
-    threadgroup sf64 sB[TILE_K * BLK];    // 8×32 = 256 sf64 = 2KB
-    uint tid = lid.y * TG + lid.x;
-
-    for (uint kBlock = 0; kBlock < K; kBlock += TILE_K) {
-        // Cooperative load A[32×8] — 4 elements per thread
-        for (uint i = 0; i < 4; i++) {
-            uint idx = tid * 4 + i;
-            uint row = idx >> 3;
-            uint col = idx & 7u;
-            uint gRow = baseRow + row;
-            uint gCol = kBlock + col;
-            sA[row * TILE_K + col] =
-                (gRow < M && gCol < K) ? A[gRow * K + gCol] : SF64_ZERO;
-        }
-        // Cooperative load B[8×32] — 4 elements per thread
-        for (uint i = 0; i < 4; i++) {
-            uint idx = tid * 4 + i;
-            uint row = idx >> 5;
-            uint col = idx & 31u;
-            uint gRow = kBlock + row;
-            uint gCol = baseCol + col;
-            sB[row * BLK + col] =
-                (gRow < K && gCol < N) ? B[gRow * N + gCol] : SF64_ZERO;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        // 8 K-values × 16 FMAs = 128 FMA calls per K-chunk
-        for (uint kk = 0; kk < TILE_K; kk++) {
-            sf64 a_val[TT], b_val[TT];
-            for (uint i = 0; i < TT; i++)
-                a_val[i] = sA[(threadRow + i) * TILE_K + kk];
-            for (uint j = 0; j < TT; j++)
-                b_val[j] = sB[kk * BLK + threadCol + j];
-            for (uint i = 0; i < TT; i++)
-                for (uint j = 0; j < TT; j++)
-                    acc[i][j] = sf64_fma(a_val[i], b_val[j], acc[i][j]);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
-    for (uint i = 0; i < TT; i++)
-        for (uint j = 0; j < TT; j++) {
-            uint row = baseRow + threadRow + i;
-            uint col = baseCol + threadCol + j;
-            if (row < M && col < N)
-                C[row * N + col] = acc[i][j];
-        }
-}
-)";
 
 static int metal_init(void) {
     @autoreleasepool {
@@ -636,13 +153,18 @@ static int metal_init(void) {
         if (!g_metal_library) {
             eshkol_error("Metal: failed to compile sf64 shader: %s",
                     [[error localizedDescription] UTF8String]);
-            return 0;  // GPU detected but shader failed, fall back to CPU
+            g_metal_queue = nil;
+            g_metal_device = nil;
+            return -1;  // Shader compilation failed — GPU unusable
         }
 
         id<MTLFunction> func = [g_metal_library newFunctionWithName:@"matmul_sf64"];
         if (!func) {
             eshkol_error("Metal: failed to find matmul_sf64 kernel in compiled library");
-            return 0;
+            g_metal_library = nil;
+            g_metal_queue = nil;
+            g_metal_device = nil;
+            return -1;
         }
 
         g_matmul_sf64_pipeline = [g_metal_device newComputePipelineStateWithFunction:func
@@ -650,7 +172,36 @@ static int metal_init(void) {
         if (!g_matmul_sf64_pipeline) {
             eshkol_error("Metal: failed to create sf64 compute pipeline: %s",
                     [[error localizedDescription] UTF8String]);
-            return 0;
+            g_metal_library = nil;
+            g_metal_queue = nil;
+            g_metal_device = nil;
+            return -1;
+        }
+
+        // Create pipeline states for elementwise, reduce, transpose kernels
+        id<MTLFunction> elem_func = [g_metal_library newFunctionWithName:@"elementwise_sf64"];
+        if (elem_func) {
+            g_elementwise_sf64_pipeline = [g_metal_device newComputePipelineStateWithFunction:elem_func error:&error];
+        }
+        id<MTLFunction> reduce_func = [g_metal_library newFunctionWithName:@"reduce_sf64"];
+        if (reduce_func) {
+            g_reduce_sf64_pipeline = [g_metal_device newComputePipelineStateWithFunction:reduce_func error:&error];
+        }
+        id<MTLFunction> transpose_func = [g_metal_library newFunctionWithName:@"transpose_sf64"];
+        if (transpose_func) {
+            g_transpose_sf64_pipeline = [g_metal_device newComputePipelineStateWithFunction:transpose_func error:&error];
+        }
+        id<MTLFunction> reduce_axis_func = [g_metal_library newFunctionWithName:@"reduce_sf64_axis"];
+        if (reduce_axis_func) {
+            g_reduce_axis_sf64_pipeline = [g_metal_device newComputePipelineStateWithFunction:reduce_axis_func error:&error];
+        }
+        id<MTLFunction> softmax_func = [g_metal_library newFunctionWithName:@"softmax_sf64"];
+        if (softmax_func) {
+            g_softmax_sf64_pipeline = [g_metal_device newComputePipelineStateWithFunction:softmax_func error:&error];
+        }
+        id<MTLFunction> normalize_func = [g_metal_library newFunctionWithName:@"normalize_sf64"];
+        if (normalize_func) {
+            g_normalize_sf64_pipeline = [g_metal_device newComputePipelineStateWithFunction:normalize_func error:&error];
         }
 
         return 0;
@@ -659,7 +210,14 @@ static int metal_init(void) {
 
 static void metal_shutdown(void) {
     @autoreleasepool {
+        pool_drain();
         g_matmul_sf64_pipeline = nil;
+        g_elementwise_sf64_pipeline = nil;
+        g_reduce_sf64_pipeline = nil;
+        g_reduce_axis_sf64_pipeline = nil;
+        g_transpose_sf64_pipeline = nil;
+        g_softmax_sf64_pipeline = nil;
+        g_normalize_sf64_pipeline = nil;
         g_metal_library = nil;
         g_metal_queue = nil;
         g_metal_device = nil;
@@ -773,14 +331,13 @@ static int metal_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuf
 
         // Allocate GPU buffers for sf64 format (8 bytes per element, same as f64)
         // Using uint2 representation: each f64 becomes (high32, low32)
-        id<MTLBuffer> buf_a = [g_metal_device newBufferWithLength:elementsA * 8
-                                                          options:MTLResourceStorageModeShared];
-        id<MTLBuffer> buf_b = [g_metal_device newBufferWithLength:elementsB * 8
-                                                          options:MTLResourceStorageModeShared];
-        id<MTLBuffer> buf_c = [g_metal_device newBufferWithLength:elementsC * 8
-                                                          options:MTLResourceStorageModeShared];
+        id<MTLBuffer> buf_a = pool_alloc(elementsA * 8);
+        id<MTLBuffer> buf_b = pool_alloc(elementsB * 8);
+        id<MTLBuffer> buf_c = pool_alloc(elementsC * 8);
 
         if (!buf_a || !buf_b || !buf_c) {
+            if (buf_a) pool_release(buf_a);
+            if (buf_b) pool_release(buf_b);
             return -1;
         }
 
@@ -823,6 +380,9 @@ static int metal_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuf
         convert_sf64_to_f64(static_cast<const uint32_t*>([buf_c contents]),
                             static_cast<double*>(C->host_ptr), elementsC);
 
+        pool_release(buf_a);
+        pool_release(buf_b);
+        pool_release(buf_c);
         return 0;
     }
 }
@@ -890,6 +450,305 @@ static int metal_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* o
     }
 }
 
+static int metal_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
+                                  EshkolGPUBuffer* out, uint64_t n,
+                                  int op) {
+    @autoreleasepool {
+        if (!g_elementwise_sf64_pipeline) return -1;
+
+        id<MTLBuffer> buf_a = pool_alloc(n * 8);
+        id<MTLBuffer> buf_b = pool_alloc(n * 8);
+        id<MTLBuffer> buf_c = pool_alloc(n * 8);
+        if (!buf_a || !buf_b || !buf_c) {
+            if (buf_a) pool_release(buf_a);
+            if (buf_b) pool_release(buf_b);
+            return -1;
+        }
+
+        convert_f64_to_sf64(static_cast<const double*>(a->host_ptr),
+                            static_cast<uint32_t*>([buf_a contents]), n);
+        if (b && b->host_ptr && op <= 3) {
+            convert_f64_to_sf64(static_cast<const double*>(b->host_ptr),
+                                static_cast<uint32_t*>([buf_b contents]), n);
+        }
+
+        id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+        [encoder setComputePipelineState:g_elementwise_sf64_pipeline];
+        [encoder setBuffer:buf_a offset:0 atIndex:0];
+        [encoder setBuffer:buf_b offset:0 atIndex:1];
+        [encoder setBuffer:buf_c offset:0 atIndex:2];
+        uint32_t n32 = static_cast<uint32_t>(n);
+        uint32_t op32 = static_cast<uint32_t>(op);
+        [encoder setBytes:&n32 length:sizeof(uint32_t) atIndex:3];
+        [encoder setBytes:&op32 length:sizeof(uint32_t) atIndex:4];
+
+        NSUInteger groups = (n + 255) / 256;
+        [encoder dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+
+        convert_sf64_to_f64(static_cast<const uint32_t*>([buf_c contents]),
+                            static_cast<double*>(out->host_ptr), n);
+        pool_release(buf_a);
+        pool_release(buf_b);
+        pool_release(buf_c);
+        return 0;
+    }
+}
+
+static int metal_reduce_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                             uint64_t n, int op) {
+    @autoreleasepool {
+        if (!g_reduce_sf64_pipeline) return -1;
+
+        // Two-pass reduction: first pass reduces to partial results per threadgroup
+        uint64_t groups = (n + 255) / 256;
+
+        id<MTLBuffer> buf_in = pool_alloc(n * 8);
+        id<MTLBuffer> buf_partial = pool_alloc(groups * 8);
+        if (!buf_in || !buf_partial) return -1;
+
+        convert_f64_to_sf64(static_cast<const double*>(in->host_ptr),
+                            static_cast<uint32_t*>([buf_in contents]), n);
+
+        // Pass 1
+        uint32_t n32 = static_cast<uint32_t>(n);
+        uint32_t op32 = static_cast<uint32_t>(op);
+        id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+        [encoder setComputePipelineState:g_reduce_sf64_pipeline];
+        [encoder setBuffer:buf_in offset:0 atIndex:0];
+        [encoder setBuffer:buf_partial offset:0 atIndex:1];
+        [encoder setBytes:&n32 length:sizeof(uint32_t) atIndex:2];
+        [encoder setBytes:&op32 length:sizeof(uint32_t) atIndex:3];
+        [encoder dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+
+        // Pass 2: reduce partial results on CPU (small number of groups)
+        double* partials = new double[groups];
+        convert_sf64_to_f64(static_cast<const uint32_t*>([buf_partial contents]),
+                            partials, groups);
+
+        double result;
+        switch (op) {
+            case 0: case 4: result = 0.0; break;
+            case 1: result = 1.0; break;
+            case 2: result = INFINITY; break;
+            case 3: result = -INFINITY; break;
+            default: result = 0.0; break;
+        }
+        for (uint64_t i = 0; i < groups; i++) {
+            switch (op) {
+                case 0: case 4: result += partials[i]; break;
+                case 1: result *= partials[i]; break;
+                case 2: result = (partials[i] < result) ? partials[i] : result; break;
+                case 3: result = (partials[i] > result) ? partials[i] : result; break;
+                default: break;
+            }
+        }
+        if (op == 4) result /= (double)n; // Mean = sum / n
+        delete[] partials;
+
+        static_cast<double*>(out->host_ptr)[0] = result;
+        pool_release(buf_in);
+        pool_release(buf_partial);
+        return 0;
+    }
+}
+
+static int metal_reduce_axis_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                                  uint64_t rank, const uint64_t* shape,
+                                  uint64_t axis, int op) {
+    @autoreleasepool {
+        if (!g_reduce_axis_sf64_pipeline) return -1;
+
+        // Compute total input elements and output elements
+        uint64_t total_in = 1;
+        for (uint64_t i = 0; i < rank; i++) total_in *= shape[i];
+        uint64_t out_total = total_in / shape[axis];
+        if (out_total == 0) return -1;
+
+        // Allocate Metal buffers from pool
+        id<MTLBuffer> buf_in = pool_alloc(total_in * 8);
+        id<MTLBuffer> buf_out = pool_alloc(out_total * 8);
+        // Dims buffer (uint32 for Metal)
+        id<MTLBuffer> buf_dims = pool_alloc(rank * sizeof(uint32_t));
+        if (!buf_in || !buf_out || !buf_dims) return -1;
+
+        // Convert input f64 → sf64
+        convert_f64_to_sf64(static_cast<const double*>(in->host_ptr),
+                            static_cast<uint32_t*>([buf_in contents]), total_in);
+
+        // Copy dims as uint32
+        uint32_t* dims32 = static_cast<uint32_t*>([buf_dims contents]);
+        for (uint64_t i = 0; i < rank; i++) dims32[i] = static_cast<uint32_t>(shape[i]);
+
+        uint32_t rank32 = static_cast<uint32_t>(rank);
+        uint32_t axis32 = static_cast<uint32_t>(axis);
+        uint32_t op32 = static_cast<uint32_t>(op);
+        uint32_t out_size32 = static_cast<uint32_t>(out_total);
+
+        id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+        [encoder setComputePipelineState:g_reduce_axis_sf64_pipeline];
+        [encoder setBuffer:buf_in offset:0 atIndex:0];
+        [encoder setBuffer:buf_out offset:0 atIndex:1];
+        [encoder setBytes:&rank32 length:sizeof(uint32_t) atIndex:2];
+        [encoder setBuffer:buf_dims offset:0 atIndex:3];
+        [encoder setBytes:&axis32 length:sizeof(uint32_t) atIndex:4];
+        [encoder setBytes:&op32 length:sizeof(uint32_t) atIndex:5];
+        [encoder setBytes:&out_size32 length:sizeof(uint32_t) atIndex:6];
+
+        NSUInteger groups = (out_total + 255) / 256;
+        [encoder dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+
+        // Convert output sf64 → f64
+        convert_sf64_to_f64(static_cast<const uint32_t*>([buf_out contents]),
+                            static_cast<double*>(out->host_ptr), out_total);
+        pool_release(buf_in);
+        pool_release(buf_out);
+        pool_release(buf_dims);
+        return 0;
+    }
+}
+
+static int metal_transpose_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                                uint64_t rows, uint64_t cols) {
+    @autoreleasepool {
+        if (!g_transpose_sf64_pipeline) return -1;
+        uint64_t n = rows * cols;
+
+        id<MTLBuffer> buf_in = pool_alloc(n * 8);
+        id<MTLBuffer> buf_out = pool_alloc(n * 8);
+        if (!buf_in || !buf_out) return -1;
+
+        convert_f64_to_sf64(static_cast<const double*>(in->host_ptr),
+                            static_cast<uint32_t*>([buf_in contents]), n);
+
+        uint32_t rows32 = static_cast<uint32_t>(rows);
+        uint32_t cols32 = static_cast<uint32_t>(cols);
+        id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+        [encoder setComputePipelineState:g_transpose_sf64_pipeline];
+        [encoder setBuffer:buf_in offset:0 atIndex:0];
+        [encoder setBuffer:buf_out offset:0 atIndex:1];
+        [encoder setBytes:&rows32 length:sizeof(uint32_t) atIndex:2];
+        [encoder setBytes:&cols32 length:sizeof(uint32_t) atIndex:3];
+
+        NSUInteger groups_x = (cols + 15) / 16;
+        NSUInteger groups_y = (rows + 15) / 16;
+        [encoder dispatchThreadgroups:MTLSizeMake(groups_x, groups_y, 1)
+                threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+        [encoder endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+
+        convert_sf64_to_f64(static_cast<const uint32_t*>([buf_out contents]),
+                            static_cast<double*>(out->host_ptr), n);
+        pool_release(buf_in);
+        pool_release(buf_out);
+        return 0;
+    }
+}
+
+static int metal_softmax_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                              uint64_t num_slices, uint64_t slice_len) {
+    @autoreleasepool {
+        if (!g_softmax_sf64_pipeline) return -1;
+        uint64_t total = num_slices * slice_len;
+
+        id<MTLBuffer> buf_in = pool_alloc(total * 8);
+        id<MTLBuffer> buf_out = pool_alloc(total * 8);
+        if (!buf_in || !buf_out) return -1;
+
+        convert_f64_to_sf64(static_cast<const double*>(in->host_ptr),
+                            static_cast<uint32_t*>([buf_in contents]), total);
+
+        uint32_t slice_len32 = static_cast<uint32_t>(slice_len);
+        uint32_t num_slices32 = static_cast<uint32_t>(num_slices);
+
+        id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+        [encoder setComputePipelineState:g_softmax_sf64_pipeline];
+        [encoder setBuffer:buf_in offset:0 atIndex:0];
+        [encoder setBuffer:buf_out offset:0 atIndex:1];
+        [encoder setBytes:&slice_len32 length:sizeof(uint32_t) atIndex:2];
+        [encoder setBytes:&num_slices32 length:sizeof(uint32_t) atIndex:3];
+
+        NSUInteger groups = (num_slices + 255) / 256;
+        [encoder dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+
+        convert_sf64_to_f64(static_cast<const uint32_t*>([buf_out contents]),
+                            static_cast<double*>(out->host_ptr), total);
+        pool_release(buf_in);
+        pool_release(buf_out);
+        return 0;
+    }
+}
+
+static int metal_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                                uint64_t num_slices, uint64_t slice_len,
+                                double gamma, double beta, double epsilon) {
+    @autoreleasepool {
+        if (!g_normalize_sf64_pipeline) return -1;
+        uint64_t total = num_slices * slice_len;
+
+        id<MTLBuffer> buf_in = pool_alloc(total * 8);
+        id<MTLBuffer> buf_out = pool_alloc(total * 8);
+        if (!buf_in || !buf_out) return -1;
+
+        convert_f64_to_sf64(static_cast<const double*>(in->host_ptr),
+                            static_cast<uint32_t*>([buf_in contents]), total);
+
+        uint32_t slice_len32 = static_cast<uint32_t>(slice_len);
+        uint32_t num_slices32 = static_cast<uint32_t>(num_slices);
+
+        // Convert gamma, beta, epsilon to sf64 (uint2 = 8 bytes)
+        uint32_t gamma_sf[2], beta_sf[2], epsilon_sf[2];
+        convert_f64_to_sf64(&gamma, gamma_sf, 1);
+        convert_f64_to_sf64(&beta, beta_sf, 1);
+        convert_f64_to_sf64(&epsilon, epsilon_sf, 1);
+
+        id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+        [encoder setComputePipelineState:g_normalize_sf64_pipeline];
+        [encoder setBuffer:buf_in offset:0 atIndex:0];
+        [encoder setBuffer:buf_out offset:0 atIndex:1];
+        [encoder setBytes:&slice_len32 length:sizeof(uint32_t) atIndex:2];
+        [encoder setBytes:&num_slices32 length:sizeof(uint32_t) atIndex:3];
+        [encoder setBytes:gamma_sf length:8 atIndex:4];
+        [encoder setBytes:beta_sf length:8 atIndex:5];
+        [encoder setBytes:epsilon_sf length:8 atIndex:6];
+
+        NSUInteger groups = (num_slices + 255) / 256;
+        [encoder dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+
+        convert_sf64_to_f64(static_cast<const uint32_t*>([buf_out contents]),
+                            static_cast<double*>(out->host_ptr), total);
+        pool_release(buf_in);
+        pool_release(buf_out);
+        return 0;
+    }
+}
+
 #endif // ESHKOL_GPU_METAL_AVAILABLE
 
 // ============================================================================
@@ -897,6 +756,25 @@ static int metal_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* o
 // ============================================================================
 
 #if ESHKOL_GPU_CUDA_AVAILABLE
+
+// Forward declarations for CUDA kernel launchers (in gpu_cuda_kernels.cu)
+extern "C" int cuda_launch_elementwise_f64(const double* a, const double* b, double* out,
+                                            int64_t n, int op, void* stream);
+extern "C" int cuda_launch_reduce_f64(const double* in, double* out, int64_t n, int op,
+                                       void* stream);
+extern "C" int cuda_launch_reduce_axis_f64(const double* in, double* out,
+                                            uint64_t rank, const uint64_t* dims,
+                                            uint64_t axis, int op, uint64_t out_size,
+                                            void* stream);
+extern "C" int cuda_launch_transpose_f64(const double* in, double* out,
+                                          uint64_t rows, uint64_t cols, void* stream);
+extern "C" int cuda_launch_softmax_f64(const double* in, double* out,
+                                        uint64_t num_slices, uint64_t slice_len,
+                                        void* stream);
+extern "C" int cuda_launch_normalize_f64(const double* in, double* out,
+                                          uint64_t num_slices, uint64_t slice_len,
+                                          double gamma, double beta, double epsilon,
+                                          void* stream);
 
 static cudaStream_t g_cuda_stream = nullptr;
 static cublasHandle_t g_cublas_handle = nullptr;
@@ -1085,16 +963,27 @@ static int cuda_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* ou
 extern "C" {
 
 int eshkol_gpu_init(void) {
-    if (g_gpu_initialized) {
+    if (g_gpu_initialized.load(std::memory_order_acquire)) {
         return (g_active_backend != ESHKOL_GPU_NONE) ? 1 : 0;
     }
 
-    g_gpu_initialized = true;
+    std::lock_guard<std::mutex> lock(g_gpu_init_mutex);
+    // Double-check after acquiring the lock
+    if (g_gpu_initialized.load(std::memory_order_relaxed)) {
+        return (g_active_backend != ESHKOL_GPU_NONE) ? 1 : 0;
+    }
+
+    // Allow override of GPU dispatch threshold via environment variable
+    if (const char* env = std::getenv("ESHKOL_GPU_THRESHOLD")) {
+        size_t val = static_cast<size_t>(std::atol(env));
+        if (val > 0) g_gpu_threshold = val;
+    }
 
     // Try Metal first (macOS)
 #if ESHKOL_GPU_METAL_AVAILABLE
     if (metal_init() == 0) {
         g_active_backend = ESHKOL_GPU_METAL;
+        g_gpu_initialized.store(true, std::memory_order_release);
         return 1;
     }
 #endif
@@ -1103,16 +992,20 @@ int eshkol_gpu_init(void) {
 #if ESHKOL_GPU_CUDA_AVAILABLE
     if (cuda_init() == 0) {
         g_active_backend = ESHKOL_GPU_CUDA;
+        g_gpu_initialized.store(true, std::memory_order_release);
         return 1;
     }
 #endif
 
     // No GPU available
     g_active_backend = ESHKOL_GPU_NONE;
+    g_gpu_initialized.store(true, std::memory_order_release);
     return 0;
 }
 
 void eshkol_gpu_shutdown(void) {
+    std::lock_guard<std::mutex> lock(g_gpu_init_mutex);
+
 #if ESHKOL_GPU_METAL_AVAILABLE
     if (g_active_backend == ESHKOL_GPU_METAL) {
         metal_shutdown();
@@ -1126,7 +1019,7 @@ void eshkol_gpu_shutdown(void) {
 #endif
 
     g_active_backend = ESHKOL_GPU_NONE;
-    g_gpu_initialized = false;
+    g_gpu_initialized.store(false, std::memory_order_release);
 }
 
 EshkolGPUBackend eshkol_gpu_get_backend(void) {
@@ -1373,6 +1266,300 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
     // CPU fallback (BLAS/SIMD/scalar)
     extern void eshkol_matmul_f64(const double*, const double*, double*, uint64_t, uint64_t, uint64_t);
     eshkol_matmul_f64(A, B, C, M, K, N);
+}
+
+int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
+                                EshkolGPUBuffer* out, uint64_t n,
+                                EshkolElementwiseOp op) {
+    if (!a || !out || n == 0) return -1;
+
+#if ESHKOL_GPU_METAL_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_METAL) {
+        return metal_elementwise_f64(a, b, out, n, (int)op);
+    }
+#endif
+
+#if ESHKOL_GPU_CUDA_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_CUDA && a->device_ptr && out->device_ptr) {
+        const double* dp_b = (b && b->device_ptr) ? static_cast<const double*>(b->device_ptr) : nullptr;
+        int result = cuda_launch_elementwise_f64(
+            static_cast<const double*>(a->device_ptr), dp_b,
+            static_cast<double*>(out->device_ptr), static_cast<int64_t>(n),
+            static_cast<int>(op), static_cast<void*>(g_cuda_stream));
+        if (result == 0) return 0;
+    }
+#endif
+
+    // CPU fallback: scalar loop
+    const double* ap = static_cast<const double*>(a->host_ptr);
+    const double* bp = (b && b->host_ptr) ? static_cast<const double*>(b->host_ptr) : nullptr;
+    double* cp = static_cast<double*>(out->host_ptr);
+    if (!ap || !cp) return -1;
+    for (uint64_t i = 0; i < n; i++) {
+        switch (op) {
+            case ESHKOL_ELEMWISE_ADD: cp[i] = ap[i] + (bp ? bp[i] : 0); break;
+            case ESHKOL_ELEMWISE_SUB: cp[i] = ap[i] - (bp ? bp[i] : 0); break;
+            case ESHKOL_ELEMWISE_MUL: cp[i] = ap[i] * (bp ? bp[i] : 1); break;
+            case ESHKOL_ELEMWISE_DIV: cp[i] = ap[i] / (bp ? bp[i] : 1); break;
+            case ESHKOL_ELEMWISE_NEG: cp[i] = -ap[i]; break;
+            case ESHKOL_ELEMWISE_ABS: cp[i] = ap[i] < 0 ? -ap[i] : ap[i]; break;
+            case ESHKOL_ELEMWISE_EXP: cp[i] = exp(ap[i]); break;
+            case ESHKOL_ELEMWISE_LOG: cp[i] = log(ap[i]); break;
+            case ESHKOL_ELEMWISE_SIN: cp[i] = sin(ap[i]); break;
+            case ESHKOL_ELEMWISE_COS: cp[i] = cos(ap[i]); break;
+            case ESHKOL_ELEMWISE_TANH: cp[i] = tanh(ap[i]); break;
+            case ESHKOL_ELEMWISE_RELU: cp[i] = ap[i] > 0 ? ap[i] : 0; break;
+            case ESHKOL_ELEMWISE_SIGMOID: cp[i] = 1.0 / (1.0 + exp(-ap[i])); break;
+            case ESHKOL_ELEMWISE_SQRT: cp[i] = sqrt(ap[i]); break;
+            case ESHKOL_ELEMWISE_RECIPROCAL: cp[i] = 1.0 / ap[i]; break;
+        }
+    }
+    return 0;
+}
+
+int eshkol_gpu_reduce_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                           uint64_t n, EshkolReduceOp op) {
+    if (!in || !out || n == 0) return -1;
+
+#if ESHKOL_GPU_METAL_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_METAL) {
+        return metal_reduce_f64(in, out, n, (int)op);
+    }
+#endif
+
+#if ESHKOL_GPU_CUDA_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_CUDA && in->device_ptr && out->device_ptr) {
+        int result = cuda_launch_reduce_f64(
+            static_cast<const double*>(in->device_ptr),
+            static_cast<double*>(out->device_ptr),
+            static_cast<int64_t>(n), static_cast<int>(op),
+            static_cast<void*>(g_cuda_stream));
+        if (result == 0) {
+            if (op == ESHKOL_REDUCE_MEAN) {
+                cudaStreamSynchronize(g_cuda_stream);
+                double sum_val;
+                cudaMemcpy(&sum_val, out->device_ptr, sizeof(double), cudaMemcpyDeviceToHost);
+                sum_val /= (double)n;
+                cudaMemcpy(out->device_ptr, &sum_val, sizeof(double), cudaMemcpyHostToDevice);
+            }
+            return 0;
+        }
+    }
+#endif
+
+    // CPU fallback
+    const double* inp = static_cast<const double*>(in->host_ptr);
+    double* outp = static_cast<double*>(out->host_ptr);
+    if (!inp || !outp) return -1;
+    double result;
+    switch (op) {
+        case ESHKOL_REDUCE_SUM: case ESHKOL_REDUCE_MEAN: result = 0.0; break;
+        case ESHKOL_REDUCE_PROD: result = 1.0; break;
+        case ESHKOL_REDUCE_MIN: result = INFINITY; break;
+        case ESHKOL_REDUCE_MAX: result = -INFINITY; break;
+    }
+    for (uint64_t i = 0; i < n; i++) {
+        switch (op) {
+            case ESHKOL_REDUCE_SUM: case ESHKOL_REDUCE_MEAN: result += inp[i]; break;
+            case ESHKOL_REDUCE_PROD: result *= inp[i]; break;
+            case ESHKOL_REDUCE_MIN: result = (inp[i] < result) ? inp[i] : result; break;
+            case ESHKOL_REDUCE_MAX: result = (inp[i] > result) ? inp[i] : result; break;
+        }
+    }
+    if (op == ESHKOL_REDUCE_MEAN) result /= (double)n;
+    outp[0] = result;
+    return 0;
+}
+
+int eshkol_gpu_reduce_axis_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                                uint64_t rank, const uint64_t* shape,
+                                uint64_t axis, EshkolReduceOp op) {
+    if (!in || !out || !shape || rank == 0 || axis >= rank) return -1;
+
+#if ESHKOL_GPU_METAL_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_METAL) {
+        return metal_reduce_axis_f64(in, out, rank, shape, axis, (int)op);
+    }
+#endif
+
+#if ESHKOL_GPU_CUDA_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_CUDA) {
+        uint64_t total_in = 1;
+        for (uint64_t i = 0; i < rank; i++) total_in *= shape[i];
+        uint64_t out_total = total_in / shape[axis];
+        int result = cuda_launch_reduce_axis_f64(
+            static_cast<const double*>(in->device_ptr),
+            static_cast<double*>(out->device_ptr),
+            rank, shape, axis, static_cast<int>(op), out_total,
+            static_cast<void*>(g_cuda_stream));
+        if (result == 0) {
+            if (op == ESHKOL_REDUCE_MEAN) {
+                // MEAN needs post-divide
+                double* outp = static_cast<double*>(out->host_ptr);
+                cudaStreamSynchronize(g_cuda_stream);
+                for (uint64_t i = 0; i < out_total; i++) outp[i] /= (double)shape[axis];
+            }
+            return 0;
+        }
+    }
+#endif
+
+    // CPU fallback: N-D axis reduction with stride computation
+    const double* inp = static_cast<const double*>(in->host_ptr);
+    double* outp = static_cast<double*>(out->host_ptr);
+    if (!inp || !outp) return -1;
+
+    uint64_t axis_len = shape[axis];
+    uint64_t inner_stride = 1;
+    for (uint64_t i = axis + 1; i < rank; i++) inner_stride *= shape[i];
+    uint64_t outer_stride = axis_len * inner_stride;
+
+    uint64_t total_in = 1;
+    for (uint64_t i = 0; i < rank; i++) total_in *= shape[i];
+    uint64_t out_total = total_in / axis_len;
+
+    for (uint64_t out_idx = 0; out_idx < out_total; out_idx++) {
+        uint64_t outer = out_idx / inner_stride;
+        uint64_t inner = out_idx % inner_stride;
+
+        double acc;
+        switch (op) {
+            case ESHKOL_REDUCE_SUM: case ESHKOL_REDUCE_MEAN: acc = 0.0; break;
+            case ESHKOL_REDUCE_PROD: acc = 1.0; break;
+            case ESHKOL_REDUCE_MIN: acc = INFINITY; break;
+            case ESHKOL_REDUCE_MAX: acc = -INFINITY; break;
+        }
+        for (uint64_t k = 0; k < axis_len; k++) {
+            uint64_t src_idx = outer * outer_stride + k * inner_stride + inner;
+            double val = inp[src_idx];
+            switch (op) {
+                case ESHKOL_REDUCE_SUM: case ESHKOL_REDUCE_MEAN: acc += val; break;
+                case ESHKOL_REDUCE_PROD: acc *= val; break;
+                case ESHKOL_REDUCE_MIN: acc = (val < acc) ? val : acc; break;
+                case ESHKOL_REDUCE_MAX: acc = (val > acc) ? val : acc; break;
+            }
+        }
+        if (op == ESHKOL_REDUCE_MEAN) acc /= (double)axis_len;
+        outp[out_idx] = acc;
+    }
+    return 0;
+}
+
+int eshkol_gpu_transpose_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                              uint64_t rows, uint64_t cols) {
+    if (!in || !out || rows == 0 || cols == 0) return -1;
+
+#if ESHKOL_GPU_METAL_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_METAL) {
+        return metal_transpose_f64(in, out, rows, cols);
+    }
+#endif
+
+#if ESHKOL_GPU_CUDA_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_CUDA && in->device_ptr && out->device_ptr) {
+        int result = cuda_launch_transpose_f64(
+            static_cast<const double*>(in->device_ptr),
+            static_cast<double*>(out->device_ptr),
+            rows, cols, static_cast<void*>(g_cuda_stream));
+        if (result == 0) return 0;
+    }
+#endif
+
+    // CPU fallback
+    const double* inp = static_cast<const double*>(in->host_ptr);
+    double* outp = static_cast<double*>(out->host_ptr);
+    if (!inp || !outp) return -1;
+    for (uint64_t i = 0; i < rows; i++) {
+        for (uint64_t j = 0; j < cols; j++) {
+            outp[j * rows + i] = inp[i * cols + j];
+        }
+    }
+    return 0;
+}
+
+int eshkol_gpu_softmax_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                            uint64_t num_slices, uint64_t slice_len) {
+    if (!in || !out || num_slices == 0 || slice_len == 0) return -1;
+
+#if ESHKOL_GPU_METAL_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_METAL) {
+        return metal_softmax_f64(in, out, num_slices, slice_len);
+    }
+#endif
+
+#if ESHKOL_GPU_CUDA_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_CUDA && in->device_ptr && out->device_ptr) {
+        int result = cuda_launch_softmax_f64(
+            static_cast<const double*>(in->device_ptr),
+            static_cast<double*>(out->device_ptr),
+            num_slices, slice_len, static_cast<void*>(g_cuda_stream));
+        if (result == 0) return 0;
+    }
+#endif
+
+    // CPU fallback: numerically stable softmax
+    const double* inp = static_cast<const double*>(in->host_ptr);
+    double* outp = static_cast<double*>(out->host_ptr);
+    if (!inp || !outp) return -1;
+    for (uint64_t s = 0; s < num_slices; s++) {
+        uint64_t base = s * slice_len;
+        double max_val = inp[base];
+        for (uint64_t k = 1; k < slice_len; k++)
+            if (inp[base + k] > max_val) max_val = inp[base + k];
+        double sum_exp = 0.0;
+        for (uint64_t k = 0; k < slice_len; k++) {
+            outp[base + k] = std::exp(inp[base + k] - max_val);
+            sum_exp += outp[base + k];
+        }
+        if (sum_exp == 0.0) sum_exp = 1.0;
+        for (uint64_t k = 0; k < slice_len; k++)
+            outp[base + k] /= sum_exp;
+    }
+    return 0;
+}
+
+int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                              uint64_t num_slices, uint64_t slice_len,
+                              double gamma, double beta, double epsilon) {
+    if (!in || !out || num_slices == 0 || slice_len == 0) return -1;
+
+#if ESHKOL_GPU_METAL_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_METAL) {
+        return metal_normalize_f64(in, out, num_slices, slice_len,
+                                   gamma, beta, epsilon);
+    }
+#endif
+
+#if ESHKOL_GPU_CUDA_AVAILABLE
+    if (g_active_backend == ESHKOL_GPU_CUDA && in->device_ptr && out->device_ptr) {
+        int result = cuda_launch_normalize_f64(
+            static_cast<const double*>(in->device_ptr),
+            static_cast<double*>(out->device_ptr),
+            num_slices, slice_len, gamma, beta, epsilon,
+            static_cast<void*>(g_cuda_stream));
+        if (result == 0) return 0;
+    }
+#endif
+
+    // CPU fallback: layer normalization
+    const double* inp = static_cast<const double*>(in->host_ptr);
+    double* outp = static_cast<double*>(out->host_ptr);
+    if (!inp || !outp) return -1;
+    for (uint64_t s = 0; s < num_slices; s++) {
+        uint64_t base = s * slice_len;
+        double sum = 0.0;
+        for (uint64_t k = 0; k < slice_len; k++) sum += inp[base + k];
+        double mean = sum / static_cast<double>(slice_len);
+        double var_sum = 0.0;
+        for (uint64_t k = 0; k < slice_len; k++) {
+            double diff = inp[base + k] - mean;
+            var_sum += diff * diff;
+        }
+        double inv_std = 1.0 / std::sqrt(var_sum / static_cast<double>(slice_len) + epsilon);
+        for (uint64_t k = 0; k < slice_len; k++)
+            outp[base + k] = gamma * (inp[base + k] - mean) * inv_std + beta;
+    }
+    return 0;
 }
 
 } // extern "C"

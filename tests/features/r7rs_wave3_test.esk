@@ -1,0 +1,64 @@
+; Wave 3 R7RS procedures test
+
+; === cond-expand ===
+(cond-expand
+  (r7rs (display "r7rs"))
+  (else (display "no-r7rs")))
+(display " ")
+(cond-expand
+  (eshkol (display "eshkol"))
+  (else (display "unknown")))
+(display " ")
+(cond-expand
+  ((and r7rs eshkol) (display "both"))
+  (else (display "not-both")))
+(display " ")
+(cond-expand
+  ((not chicken) (display "ok"))
+  (else (display "fail")))
+(newline)
+; Expected: r7rs eshkol both ok
+
+; === define-record-type ===
+(define-record-type <point>
+  (make-point x y)
+  point?
+  (x point-x)
+  (y point-y set-point-y!))
+
+(define p (make-point 3 4))
+(display (point-x p))
+(display " ")
+(display (point-y p))
+(display " ")
+(display (point? p))
+(newline)
+; Expected: 3 4 #t
+
+(set-point-y! p 99)
+(display (point-y p))
+(newline)
+; Expected: 99
+
+; === case-lambda ===
+(define add-or-inc
+  (case-lambda
+    ((x) (+ x 1))
+    ((x y) (+ x y))))
+
+(display (add-or-inc 5))
+(display " ")
+(display (add-or-inc 3 7))
+(newline)
+; Expected: 6 10
+
+; === make-parameter / parameterize ===
+(define current-radix (make-parameter 10))
+(display (current-radix))
+(display " ")
+(parameterize ((current-radix 16))
+  (display (current-radix)))
+(display " ")
+(display (current-radix))
+(newline)
+; Expected: 10 16 10

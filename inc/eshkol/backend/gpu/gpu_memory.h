@@ -236,6 +236,123 @@ size_t eshkol_gpu_get_threshold(void);
  */
 int eshkol_gpu_should_use(size_t num_elements);
 
+// ===== Elementwise Operations =====
+
+typedef enum {
+    ESHKOL_ELEMWISE_ADD = 0,
+    ESHKOL_ELEMWISE_SUB = 1,
+    ESHKOL_ELEMWISE_MUL = 2,
+    ESHKOL_ELEMWISE_DIV = 3,
+    ESHKOL_ELEMWISE_NEG = 4,
+    ESHKOL_ELEMWISE_ABS = 5,
+    ESHKOL_ELEMWISE_EXP = 6,
+    ESHKOL_ELEMWISE_LOG = 7,
+    ESHKOL_ELEMWISE_SIN = 8,
+    ESHKOL_ELEMWISE_COS = 9,
+    ESHKOL_ELEMWISE_TANH = 10,
+    ESHKOL_ELEMWISE_RELU = 11,
+    ESHKOL_ELEMWISE_SIGMOID = 12,
+    ESHKOL_ELEMWISE_SQRT = 13,
+    ESHKOL_ELEMWISE_RECIPROCAL = 14
+} EshkolElementwiseOp;
+
+typedef enum {
+    ESHKOL_REDUCE_SUM = 0,
+    ESHKOL_REDUCE_PROD = 1,
+    ESHKOL_REDUCE_MIN = 2,
+    ESHKOL_REDUCE_MAX = 3,
+    ESHKOL_REDUCE_MEAN = 4
+} EshkolReduceOp;
+
+/**
+ * GPU elementwise operation on f64 arrays.
+ * Binary ops (ADD-DIV): out[i] = a[i] op b[i]
+ * Unary ops (NEG-RECIPROCAL): out[i] = op(a[i]), b ignored (can be NULL)
+ *
+ * @param a Input buffer A
+ * @param b Input buffer B (NULL for unary ops)
+ * @param out Output buffer
+ * @param n Number of elements
+ * @param op Operation to perform
+ * @return 0 on success, error code otherwise
+ */
+int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
+                                EshkolGPUBuffer* out, uint64_t n,
+                                EshkolElementwiseOp op);
+
+/**
+ * GPU reduction on f64 array.
+ *
+ * @param in Input buffer
+ * @param out Output buffer (single element)
+ * @param n Number of input elements
+ * @param op Reduction operation
+ * @return 0 on success, error code otherwise
+ */
+int eshkol_gpu_reduce_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                           uint64_t n, EshkolReduceOp op);
+
+/**
+ * GPU axis-specific reduction on f64 N-D tensor.
+ * Reduces along a single axis, producing output with that axis removed.
+ * Output has total_elements / shape[axis] elements.
+ *
+ * @param in Input buffer (flattened N-D tensor)
+ * @param out Output buffer (flattened (N-1)-D tensor)
+ * @param rank Number of dimensions
+ * @param shape Dimension sizes array [rank]
+ * @param axis Which axis to reduce along
+ * @param op Reduction operation
+ * @return 0 on success, error code otherwise
+ */
+int eshkol_gpu_reduce_axis_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                                uint64_t rank, const uint64_t* shape,
+                                uint64_t axis, EshkolReduceOp op);
+
+/**
+ * GPU matrix transpose: out = transpose(in)
+ *
+ * @param in Input buffer (rows x cols)
+ * @param out Output buffer (cols x rows)
+ * @param rows Number of rows
+ * @param cols Number of columns
+ * @return 0 on success, error code otherwise
+ */
+int eshkol_gpu_transpose_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                              uint64_t rows, uint64_t cols);
+
+// ===== Softmax / Normalize =====
+
+/**
+ * GPU numerically-stable softmax over contiguous slices.
+ * Each slice of slice_len elements is independently softmaxed.
+ *
+ * @param in Input buffer (num_slices * slice_len elements)
+ * @param out Output buffer (same size)
+ * @param num_slices Number of independent slices
+ * @param slice_len Length of each slice
+ * @return 0 on success, error code otherwise
+ */
+int eshkol_gpu_softmax_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                            uint64_t num_slices, uint64_t slice_len);
+
+/**
+ * GPU layer normalization over contiguous slices.
+ * y = gamma * (x - mean) / sqrt(var + epsilon) + beta
+ *
+ * @param in Input buffer (num_slices * slice_len elements)
+ * @param out Output buffer (same size)
+ * @param num_slices Number of independent slices
+ * @param slice_len Length of each slice
+ * @param gamma Scale factor
+ * @param beta Shift factor
+ * @param epsilon Numerical stability constant
+ * @return 0 on success, error code otherwise
+ */
+int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
+                              uint64_t num_slices, uint64_t slice_len,
+                              double gamma, double beta, double epsilon);
+
 // ===== Runtime Integration =====
 
 /**

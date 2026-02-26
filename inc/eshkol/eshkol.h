@@ -55,7 +55,8 @@ typedef enum {
     ESHKOL_TENSOR,
     ESHKOL_CHAR,
     ESHKOL_BOOL,
-    ESHKOL_BIGNUM_LITERAL   // Integer literal too large for int64 (stored as string)
+    ESHKOL_BIGNUM_LITERAL,  // Integer literal too large for int64 (stored as string)
+    ESHKOL_SYMBOL           // Symbol literal (stored as string)
 } eshkol_type_t;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -115,6 +116,12 @@ typedef enum {
 // Type flags for Scheme exactness tracking
 #define ESHKOL_VALUE_EXACT_FLAG   0x10
 #define ESHKOL_VALUE_INEXACT_FLAG 0x20
+
+// Port type flags (OR'd into type byte with ESHKOL_VALUE_HEAP_PTR)
+#define ESHKOL_PORT_INPUT_FLAG    0x10   // Input port
+#define ESHKOL_PORT_OUTPUT_FLAG   0x40   // Output port
+#define ESHKOL_PORT_BINARY_FLAG   0x04   // Binary port (vs textual)
+#define ESHKOL_PORT_ANY_FLAG      0x50   // Mask: input (0x10) | output (0x40)
 
 // Combined type constants for common cases
 #define ESHKOL_VALUE_EXACT_INT64     (ESHKOL_VALUE_INT64 | ESHKOL_VALUE_EXACT_FLAG)
@@ -347,7 +354,9 @@ typedef enum {
     HEAP_SUBTYPE_KNOWLEDGE_BASE  = 15,  // Collection of facts with query support
     HEAP_SUBTYPE_FACTOR_GRAPH    = 16,  // Factor graph for probabilistic inference
     HEAP_SUBTYPE_WORKSPACE       = 17,  // Global workspace for cognitive competition
-    // Reserved: 18-255 for future heap types
+    HEAP_SUBTYPE_PROMISE         = 18,  // Lazy promise (delay/force with memoization)
+    HEAP_SUBTYPE_RATIONAL        = 19,  // Exact rational number (numerator/denominator)
+    // Reserved: 20-255 for future heap types
 } heap_subtype_t;
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -969,6 +978,34 @@ static inline eshkol_tagged_value_t eshkol_make_exception_value(eshkol_exception
 
 // ===== END EXCEPTION HANDLING STRUCTURES =====
 
+// ===== FIRST-CLASS CONTINUATIONS =====
+
+// Continuation state: captures the setjmp point and holds the value being passed
+typedef struct eshkol_continuation_state {
+    void* jmp_buf_ptr;                  // Points to jmp_buf on the call/cc caller's stack
+    eshkol_tagged_value_t value;        // Value passed when continuation is invoked
+    void* wind_mark;                    // Dynamic-wind stack marker at capture time
+} eshkol_continuation_state_t;
+
+// Dynamic-wind handler entry for the handler stack
+typedef struct eshkol_dynamic_wind_entry {
+    eshkol_tagged_value_t before;       // Before thunk (callable)
+    eshkol_tagged_value_t after;        // After thunk (callable)
+    struct eshkol_dynamic_wind_entry* prev;  // Previous entry in stack
+} eshkol_dynamic_wind_entry_t;
+
+// Global dynamic-wind stack
+extern eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack;
+
+// Continuation runtime functions
+eshkol_continuation_state_t* eshkol_make_continuation_state(void* arena, void* jmp_buf_ptr);
+void* eshkol_make_continuation_closure(void* arena, void* state_ptr);
+void eshkol_push_dynamic_wind(void* arena, const eshkol_tagged_value_t* before, const eshkol_tagged_value_t* after);
+void eshkol_pop_dynamic_wind(void);
+void eshkol_unwind_dynamic_wind(void* saved_wind_mark);
+
+// ===== END FIRST-CLASS CONTINUATIONS =====
+
 // ===== LAMBDA REGISTRY FOR HOMOICONICITY =====
 // Runtime table mapping function pointers to their S-expression representations
 // This enables full homoiconicity: (display (list double)) shows the lambda source
@@ -1026,6 +1063,8 @@ static inline eshkol_display_opts_t eshkol_display_default_opts(void) {
 void eshkol_display_value(const eshkol_tagged_value_t* value);
 void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_display_opts_t* opts);
 void eshkol_write_value(const eshkol_tagged_value_t* value);  // Scheme 'write' semantics
+void eshkol_write_value_to_port(const eshkol_tagged_value_t* value, void* port);
+void eshkol_display_value_to_port(const eshkol_tagged_value_t* value, void* port);
 
 // Display a list (cons cell chain)
 void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts);
@@ -1342,6 +1381,11 @@ typedef enum {
     ESHKOL_CALL_WITH_VALUES_OP, // (call-with-values producer consumer)
     // Macro system operators
     ESHKOL_DEFINE_SYNTAX_OP,    // (define-syntax name (syntax-rules ...))
+    ESHKOL_LET_SYNTAX_OP,      // (let-syntax ((name (syntax-rules ...)) ...) body ...)
+    ESHKOL_LETREC_SYNTAX_OP,   // (letrec-syntax ((name (syntax-rules ...)) ...) body ...)
+    // First-class continuations
+    ESHKOL_CALL_CC_OP,         // (call/cc proc) or (call-with-current-continuation proc)
+    ESHKOL_DYNAMIC_WIND_OP,    // (dynamic-wind before thunk after)
     // Neuro-symbolic consciousness engine operations
     ESHKOL_LOGIC_VAR_OP,              // ?x - create/reference logic variable
     ESHKOL_UNIFY_OP,                  // (unify t1 t2 subst) -> subst|#f
@@ -1366,6 +1410,14 @@ typedef enum {
     ESHKOL_FACT_PRED_OP,              // (fact? x) -> bool
     ESHKOL_FACTOR_GRAPH_PRED_OP,      // (factor-graph? x) -> bool
     ESHKOL_WORKSPACE_PRED_OP,         // (workspace? x) -> bool
+    // ===== R7RS WAVE 3 SPECIAL FORMS =====
+    ESHKOL_CASE_LAMBDA_OP,           // (case-lambda ((formals) body ...) ...) - transformed at parse time
+    ESHKOL_DEFINE_RECORD_TYPE_OP,    // (define-record-type name ctor pred field ...) - transformed at parse time
+    ESHKOL_PARAMETERIZE_OP,          // (parameterize ((param val) ...) body ...) - transformed at parse time
+    ESHKOL_MAKE_PARAMETER_OP,        // (make-parameter init) - transformed at parse time
+    ESHKOL_COND_EXPAND_OP,           // (cond-expand (feature body ...) ...) - transformed at parse time
+    ESHKOL_INCLUDE_OP,               // (include "file" ...) - transformed at parse time
+    ESHKOL_SYNTAX_ERROR_OP,          // (syntax-error "msg" datum ...) - handled at parse time
 } eshkol_op_t;
 
 struct eshkol_ast;
@@ -1582,12 +1634,42 @@ typedef struct eshkol_operation {
         struct {
             eshkol_macro_def_t *macro;           // Macro definition
         } define_syntax_op;
+        struct {
+            eshkol_macro_def_t **macros;         // Array of macro definitions
+            uint64_t num_macros;                 // Number of macro bindings
+            struct eshkol_ast *body;             // Body expression
+        } let_syntax_op;
         // ===== END MACRO OPERATIONS =====
+        // ===== CONTINUATION OPERATIONS =====
+        struct {
+            struct eshkol_ast *proc;             // Procedure to call with continuation
+        } call_cc_op;
+        struct {
+            struct eshkol_ast *before;           // Before thunk
+            struct eshkol_ast *thunk;            // Body thunk
+            struct eshkol_ast *after;            // After thunk
+        } dynamic_wind_op;
+        // ===== END CONTINUATION OPERATIONS =====
         // ===== NEURO-SYMBOLIC CONSCIOUSNESS ENGINE OPERATIONS =====
         struct {
             uint64_t var_id;                     // Logic variable ID (global registry)
             const char *name;                    // Logic variable name (e.g., "?x")
         } logic_var_op;
+        // ===== R7RS WAVE 3 OPERATIONS =====
+        struct {
+            // Each clause: (formals body ...)
+            // formals stored as lambda_op sub-ASTs
+            struct eshkol_ast *clauses;          // Array of lambda ASTs (one per clause)
+            uint64_t num_clauses;                // Number of arity clauses
+        } case_lambda_op;
+        struct {
+            // (parameterize ((param1 val1) (param2 val2) ...) body ...)
+            struct eshkol_ast *params;           // Array of parameter expressions
+            struct eshkol_ast *values;           // Array of value expressions
+            uint64_t num_bindings;               // Number of parameter bindings
+            struct eshkol_ast *body;             // Body expression
+        } parameterize_op;
+        // ===== END R7RS WAVE 3 OPERATIONS =====
     };
 } eshkol_operations_t;
 
@@ -1646,6 +1728,54 @@ typedef struct eshkol_ast {
     uint32_t line;      // 1-based line number (0 = unknown)
     uint32_t column;    // 1-based column number (0 = unknown)
 } eshkol_ast_t;
+
+// ===== Unified AST Literal Builders =====
+// These set both the AST type fields AND inferred_hott_type for consistent type tracking.
+// Packed HoTT TypeId format: bits 0-15 = id, bits 16-23 = universe, bits 24-31 = flags
+
+static inline void eshkol_ast_make_int64(eshkol_ast_t* node, int64_t val) {
+    node->type = ESHKOL_INT64;
+    node->int64_val = val;
+    node->inferred_hott_type = 13; // BuiltinTypes::Int64
+}
+
+static inline void eshkol_ast_make_double(eshkol_ast_t* node, double val) {
+    node->type = ESHKOL_DOUBLE;
+    node->double_val = val;
+    node->inferred_hott_type = 16; // BuiltinTypes::Float64
+}
+
+static inline void eshkol_ast_make_bool(eshkol_ast_t* node, bool val) {
+    node->type = ESHKOL_BOOL;
+    node->int64_val = val ? 1 : 0;
+    node->inferred_hott_type = 25; // BuiltinTypes::Boolean
+}
+
+static inline void eshkol_ast_make_char(eshkol_ast_t* node, int64_t val) {
+    node->type = ESHKOL_CHAR;
+    node->int64_val = val;
+    node->inferred_hott_type = 22; // BuiltinTypes::Char
+}
+
+static inline void eshkol_ast_make_null(eshkol_ast_t* node) {
+    node->type = ESHKOL_NULL;
+    node->int64_val = 0;
+    node->inferred_hott_type = 26; // BuiltinTypes::Null
+}
+
+static inline void eshkol_ast_make_string(eshkol_ast_t* node, const char* ptr, uint64_t size) {
+    node->type = ESHKOL_STRING;
+    node->str_val.ptr = (char*)ptr;
+    node->str_val.size = size;
+    node->inferred_hott_type = 21; // BuiltinTypes::String
+}
+
+static inline void eshkol_ast_make_symbol(eshkol_ast_t* node, const char* ptr, uint64_t size) {
+    node->type = ESHKOL_SYMBOL;
+    node->str_val.ptr = (char*)ptr;
+    node->str_val.size = size;
+    node->inferred_hott_type = 27; // BuiltinTypes::Symbol
+}
 
 void eshkol_ast_clean(eshkol_ast_t *ast);
 void eshkol_ast_pretty_print(const eshkol_ast_t *ast, int indent);

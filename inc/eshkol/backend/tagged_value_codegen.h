@@ -28,6 +28,14 @@
 
 namespace eshkol {
 
+// Struct field indices for eshkol_tagged_value_t: {type, flags, reserved, padding, data}
+// These must match the LLVM struct type created in CodegenContext::taggedValueType().
+constexpr unsigned TAGGED_TYPE_IDX     = 0; // i8  - value type tag
+constexpr unsigned TAGGED_FLAGS_IDX    = 1; // i8  - exactness flags
+constexpr unsigned TAGGED_RESERVED_IDX = 2; // i16 - reserved
+constexpr unsigned TAGGED_PADDING_IDX  = 3; // i32 - alignment padding
+constexpr unsigned TAGGED_DATA_IDX     = 4; // i64 - actual data (int/double/ptr)
+
 /**
  * TaggedValueCodegen handles packing/unpacking of tagged values.
  *
@@ -193,6 +201,13 @@ public:
      * @return The pointer (converted from i64)
      */
     llvm::Value* unpackPtr(llvm::Value* tagged_val);
+
+    /**
+     * Unpack a boolean (i1) from a tagged value.
+     * @param tagged_val The tagged_value struct (type ESHKOL_VALUE_BOOL)
+     * @return The i1 boolean value
+     */
+    llvm::Value* unpackBool(llvm::Value* tagged_val);
 
     // === Utility Functions ===
 

@@ -1,0 +1,104 @@
+;; Advanced Guard/Exception Test
+;; Tests: guard with else clause, value extraction, error procedure, normal path
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: guard with else clause catches all exceptions
+;; ============================================================================
+
+(display "=== Testing guard with else clause ===\n")
+
+;; raise with string — guard else catches
+(test-case "guard else catches string raise"
+  "caught"
+  (guard (exn (else "caught"))
+    (raise "test error")))
+
+;; raise with number — guard else catches
+(test-case "guard else catches number raise"
+  "caught"
+  (guard (exn (else "caught"))
+    (raise 42)))
+
+;; raise with boolean — guard else catches
+(test-case "guard else catches boolean raise"
+  "caught"
+  (guard (exn (else "caught"))
+    (raise #t)))
+
+;; ============================================================================
+;; Test: guard with number? predicate on raised numbers
+;; ============================================================================
+
+(display "\n=== Testing guard predicate dispatch ===\n")
+
+(test-case "guard number clause matches raised number"
+  "caught number"
+  (guard (exn
+          ((number? exn) "caught number")
+          (else "caught other"))
+    (raise 42)))
+
+;; ============================================================================
+;; Test: guard extracts exception value
+;; ============================================================================
+
+(display "\n=== Testing guard value extraction ===\n")
+
+(test-case "guard extracts numeric value"
+  42
+  (guard (exn
+          ((number? exn) exn)
+          (else -1))
+    (raise 42)))
+
+;; ============================================================================
+;; Test: Normal (non-exception) path
+;; ============================================================================
+
+(display "\n=== Testing guard normal path ===\n")
+
+(test-case "guard no exception returns body value"
+  42
+  (guard (exn (else -1))
+    (+ 40 2)))
+
+(test-case "guard no exception complex body"
+  15
+  (guard (exn (else -1))
+    (+ 1 2 3 4 5)))
+
+;; ============================================================================
+;; Test: error procedure
+;; ============================================================================
+
+(display "\n=== Testing error procedure ===\n")
+
+(test-case "error caught by guard else"
+  "caught"
+  (guard (exn (else "caught"))
+    (error "test error")))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Guard Advanced Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)

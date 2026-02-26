@@ -1,0 +1,47 @@
+; Type predicates and comparison test suite
+; Tests boolean?, boolean=?, complex?, exact?, inexact?, finite?, infinite?, nan?, eqv?
+
+(display "TEST: type predicates and comparisons") (newline)
+
+; boolean? tests
+(display (if (boolean? #t) "PASS" "FAIL")) (display ": boolean? returns #t for #t") (newline)
+(display (if (boolean? #f) "PASS" "FAIL")) (display ": boolean? returns #t for #f") (newline)
+(display (if (not (boolean? 42)) "PASS" "FAIL")) (display ": boolean? returns #f for integer") (newline)
+(display (if (not (boolean? "hello")) "PASS" "FAIL")) (display ": boolean? returns #f for string") (newline)
+
+; boolean=? tests
+(display (if (boolean=? #t #t) "PASS" "FAIL")) (display ": boolean=? #t #t is #t") (newline)
+(display (if (boolean=? #f #f) "PASS" "FAIL")) (display ": boolean=? #f #f is #t") (newline)
+(display (if (not (boolean=? #t #f)) "PASS" "FAIL")) (display ": boolean=? #t #f is #f") (newline)
+
+; complex? tests
+(display (if (complex? (make-rectangular 1.0 2.0)) "PASS" "FAIL")) (display ": complex? returns #t for complex number") (newline)
+(display (if (complex? 42) "PASS" "FAIL")) (display ": complex? returns #t for integer (R7RS numeric tower)") (newline)
+(display (if (complex? 3.14) "PASS" "FAIL")) (display ": complex? returns #t for float (R7RS numeric tower)") (newline)
+
+; exact? and inexact? tests
+(display (if (exact? 42) "PASS" "FAIL")) (display ": exact? returns #t for integer") (newline)
+(display (if (not (exact? 3.14)) "PASS" "FAIL")) (display ": exact? returns #f for float") (newline)
+(display (if (inexact? 3.14) "PASS" "FAIL")) (display ": inexact? returns #t for float") (newline)
+(display (if (not (inexact? 42)) "PASS" "FAIL")) (display ": inexact? returns #f for integer") (newline)
+
+; finite? tests
+(display (if (finite? 42) "PASS" "FAIL")) (display ": finite? returns #t for integer") (newline)
+(display (if (finite? 3.14) "PASS" "FAIL")) (display ": finite? returns #t for finite float") (newline)
+(display (if (not (finite? +inf.0)) "PASS" "FAIL")) (display ": finite? returns #f for +inf.0") (newline)
+
+; infinite? tests
+(display (if (infinite? +inf.0) "PASS" "FAIL")) (display ": infinite? returns #t for +inf.0") (newline)
+(display (if (infinite? -inf.0) "PASS" "FAIL")) (display ": infinite? returns #t for -inf.0") (newline)
+(display (if (not (infinite? 42)) "PASS" "FAIL")) (display ": infinite? returns #f for integer") (newline)
+
+; nan? tests
+(display (if (nan? +nan.0) "PASS" "FAIL")) (display ": nan? returns #t for +nan.0") (newline)
+(display (if (not (nan? 42)) "PASS" "FAIL")) (display ": nan? returns #f for integer") (newline)
+(display (if (not (nan? 3.14)) "PASS" "FAIL")) (display ": nan? returns #f for finite float") (newline)
+
+; eqv? tests
+(display (if (eqv? #t #t) "PASS" "FAIL")) (display ": eqv? #t #t is #t") (newline)
+(display (if (eqv? 42 42) "PASS" "FAIL")) (display ": eqv? 42 42 is #t") (newline)
+(display (if (not (eqv? 42 43)) "PASS" "FAIL")) (display ": eqv? 42 43 is #f") (newline)
+(display (if (not (eqv? #t #f)) "PASS" "FAIL")) (display ": eqv? #t #f is #f") (newline)

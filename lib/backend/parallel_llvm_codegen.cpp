@@ -24,6 +24,7 @@
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/IRBuilder.h>
 #include <vector>
+#include <atomic>
 
 namespace eshkol {
 
@@ -32,7 +33,7 @@ static const int MAX_CAPTURES = 32;
 
 // Track if workers have been generated globally (for JIT mode)
 // Once generated in the first module, subsequent modules only need declarations
-static bool g_workers_generated = false;
+static std::atomic<bool> g_workers_generated{false};
 
 // Helper to check if we should generate full worker definitions or just declarations.
 // With pure LLVM approach, we always generate full dispatcher bodies.
@@ -2101,7 +2102,7 @@ void ParallelCodegen::generateWorkerRegistration() {
 
 llvm::Value* ParallelCodegen::future(const eshkol_operations_t* op) {
     if (!op || op->call_op.num_vars < 1) {
-        eshkol_error("future requires 1 argument: thunk (zero-argument procedure)");
+        eshkol_error("future requires 1 argument: expression or thunk");
         return nullptr;
     }
 
@@ -2110,18 +2111,18 @@ llvm::Value* ParallelCodegen::future(const eshkol_operations_t* op) {
         return nullptr;
     }
 
-    // Get the thunk argument (should be a zero-argument procedure/closure)
-    llvm::Value* thunk_raw = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
-    if (!thunk_raw) {
-        eshkol_error("future: failed to generate thunk argument");
+    // Evaluate the argument
+    llvm::Value* arg_raw = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!arg_raw) {
+        eshkol_error("future: failed to generate argument");
         return nullptr;
     }
-    llvm::Value* thunk_val = ensureTaggedValue(thunk_raw);
+    llvm::Value* arg_val = ensureTaggedValue(arg_raw);
 
-    // Extract the components from tagged value to pass as simple types
-    llvm::Value* thunk_ptr = ctx_.builder().CreateExtractValue(thunk_val, {4}, "thunk_ptr");
-    llvm::Value* thunk_type = ctx_.builder().CreateExtractValue(thunk_val, {0}, "thunk_type");
-    llvm::Value* thunk_flags = ctx_.builder().CreateExtractValue(thunk_val, {1}, "thunk_flags");
+    // Extract the components from tagged value
+    llvm::Value* arg_ptr = ctx_.builder().CreateExtractValue(arg_val, {4}, "arg_ptr");
+    llvm::Value* arg_type = ctx_.builder().CreateExtractValue(arg_val, {0}, "arg_type");
+    llvm::Value* arg_flags = ctx_.builder().CreateExtractValue(arg_val, {1}, "arg_flags");
 
     // Get or declare eshkol_lazy_future_create_ptr(ptr, type, flags) -> lazy_future*
     llvm::Function* create_func = ctx_.module().getFunction("eshkol_lazy_future_create_ptr");
@@ -2134,11 +2135,44 @@ llvm::Value* ParallelCodegen::future(const eshkol_operations_t* op) {
             "eshkol_lazy_future_create_ptr", &ctx_.module());
     }
 
-    // Create lazy future storing the thunk components
-    llvm::Value* future_ptr = ctx_.builder().CreateCall(create_func,
-        {thunk_ptr, thunk_type, thunk_flags}, "future_ptr");
+    // Get or declare eshkol_lazy_future_set_result_ptr for eager resolution
+    llvm::Function* set_result_func = ctx_.module().getFunction("eshkol_lazy_future_set_result_ptr");
+    if (!set_result_func) {
+        llvm::FunctionType* set_type = llvm::FunctionType::get(
+            ctx_.builder().getVoidTy(),
+            {ctx_.ptrType(), ctx_.int64Type(), ctx_.int8Type(), ctx_.int8Type()},
+            false);
+        set_result_func = llvm::Function::Create(set_type, llvm::Function::ExternalLinkage,
+            "eshkol_lazy_future_set_result_ptr", &ctx_.module());
+    }
 
-    // Wrap future pointer in tagged value (HEAP_PTR with HEAP_SUBTYPE_FUTURE)
+    // Create the lazy future struct
+    llvm::Value* future_ptr = ctx_.builder().CreateCall(create_func,
+        {arg_ptr, arg_type, arg_flags}, "future_ptr");
+
+    // Check if the argument is a callable (closure/thunk) that can be lazily forced,
+    // or a plain value that should be immediately resolved.
+    // If it's not a callable, force will crash trying to call it as a closure.
+    llvm::Value* is_callable = ctx_.builder().CreateICmpEQ(arg_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE), "is_callable");
+    llvm::Value* is_closure_ptr = ctx_.builder().CreateICmpEQ(arg_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR), "is_closure_ptr");
+    llvm::Value* is_thunk = ctx_.builder().CreateOr(is_callable, is_closure_ptr, "is_thunk");
+
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* eager_bb = llvm::BasicBlock::Create(ctx_.context(), "future_eager", current_func);
+    llvm::BasicBlock* done_bb = llvm::BasicBlock::Create(ctx_.context(), "future_done", current_func);
+
+    // If not a thunk, immediately resolve the future with the computed value
+    ctx_.builder().CreateCondBr(is_thunk, done_bb, eager_bb);
+
+    // Eager path: argument is a plain value, mark future as already resolved
+    ctx_.builder().SetInsertPoint(eager_bb);
+    ctx_.builder().CreateCall(set_result_func, {future_ptr, arg_ptr, arg_type, arg_flags});
+    ctx_.builder().CreateBr(done_bb);
+
+    // Done: wrap future pointer in tagged value (HEAP_PTR with HEAP_SUBTYPE_FUTURE)
+    ctx_.builder().SetInsertPoint(done_bb);
     llvm::Value* future_i64 = ctx_.builder().CreatePtrToInt(future_ptr, ctx_.int64Type(), "future_i64");
     llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
     result = ctx_.builder().CreateInsertValue(result,
@@ -2147,7 +2181,7 @@ llvm::Value* ParallelCodegen::future(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int8Type(), 10), {1});  // HEAP_SUBTYPE_FUTURE = 10
     result = ctx_.builder().CreateInsertValue(result, future_i64, {4});
 
-    eshkol_debug("Generated lazy future");
+    eshkol_debug("Generated future (lazy for closures, eager for plain values)");
     return result;
 }
 

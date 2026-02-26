@@ -194,7 +194,7 @@ inline const std::vector<std::string>& get_builtin_symbols() {
 
         // Tensor operations
         "tensor", "tensor-ref", "tensor-set!",
-        "tensor-shape", "tensor-rank", "tensor-size",
+        "tensor-shape", "tensor-length", "tensor-rank", "tensor-size",
         "tensor-add", "tensor-sub", "tensor-mul", "tensor-div",
         "tensor-dot", "tensor-transpose", "tensor-reshape",
         "tensor-map", "tensor-reduce", "tensor-slice",

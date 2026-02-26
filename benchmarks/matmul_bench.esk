@@ -243,6 +243,17 @@
   (benchmark-matmul-size 6000 1)
   (newline)
 
+  ;; Ultra massive GPU: 7000-15000 (GPU, 49M-225M elements)
+  (display "--- ULTRA MASSIVE GPU (7000-15000, 49M-225M elements) ---")
+  (newline)
+  (benchmark-matmul-size 7000 1)
+  (benchmark-matmul-size 8000 1)
+  (benchmark-matmul-size 9000 1)
+  (benchmark-matmul-size 10000 1)
+  (benchmark-matmul-size 12000 1)
+  (benchmark-matmul-size 15000 1)
+  (newline)
+
   (display "=============================================================")
   (newline)
   (display "  BENCHMARK COMPLETE")

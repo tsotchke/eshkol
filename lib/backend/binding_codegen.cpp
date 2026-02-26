@@ -116,12 +116,13 @@ Value* BindingCodegen::storeBinding(
         GlobalVariable* gv = ctx_.module().getNamedGlobal(name);
         if (!gv) {
             // Create zero-initialized tagged_value global
+            bool is_repl = isReplMode(repl_mode_);
             Constant* zero_init = ConstantAggregateZero::get(ctx_.taggedValueType());
             gv = new GlobalVariable(
                 ctx_.module(),
                 ctx_.taggedValueType(),
                 false,  // not constant
-                GlobalValue::ExternalLinkage,
+                is_repl ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
                 zero_init,
                 name
             );
@@ -239,7 +240,7 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
                     ctx_.module(),
                     ctx_.taggedValueType(),
                     false,
-                    GlobalValue::ExternalLinkage,
+                    (is_lib_init || is_repl) ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
                     zero_init,
                     var_name
                 );
@@ -335,7 +336,7 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
                 ctx_.module(),
                 ctx_.taggedValueType(),
                 false,
-                GlobalValue::ExternalLinkage,
+                (is_lib_init || is_repl) ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
                 zero_init,
                 var_name
             );
@@ -350,12 +351,21 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
         eshkol_debug("BindingCodegen::define: global %s", var_name);
     } else {
         // Local define (inside a function, not __global_init)
+        // Place alloca in the entry block (standard LLVM practice) to avoid
+        // dynamic allocas that can confuse backend alias analysis
+        llvm::IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
+        Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
+        if (parent_func && !parent_func->empty()) {
+            BasicBlock& entry = parent_func->getEntryBlock();
+            ctx_.builder().SetInsertPoint(&entry, entry.begin());
+        }
         AllocaInst* alloca = ctx_.builder().CreateAlloca(
             ctx_.taggedValueType(),
             nullptr,
             var_name
         );
         alloca->setAlignment(Align(16));
+        ctx_.builder().restoreIP(saved_ip);
 
         ctx_.builder().CreateStore(tagged_val, alloca);
 
@@ -415,6 +425,12 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
         if (!typed_ptr) {
             eshkol_error("let: failed to evaluate binding for '%s'", var_name.c_str());
             continue;
+        }
+
+        // NORETURN SAFETY: If the value expression terminated the block (e.g., raise),
+        // we cannot emit any more instructions. Stop processing bindings.
+        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+            break;
         }
 
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
@@ -543,6 +559,11 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
 
     eshkol_debug("BindingCodegen::letrec: %llu bindings", (unsigned long long)op->let_op.num_bindings);
 
+    // Save TCO context — nested letrecs must not destroy outer TCO
+    // Example: step (tail-recursive) → body contains inner letrec for loop →
+    // without save/restore, loop's letrec overwrites step's TCO context → stack overflow
+    TailCallContext saved_tco = tco_context_;
+
     // Save current symbol table
     std::unordered_map<std::string, Value*> saved_symbols = *symbol_table_;
 
@@ -658,6 +679,12 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
             continue;
         }
 
+        // NORETURN SAFETY: If the lambda expression terminated the block (e.g., raise),
+        // we cannot emit any more instructions. Stop processing bindings.
+        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+            break;
+        }
+
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
         lambda_values.push_back(tagged_val);
         lambda_indices.push_back(i);
@@ -702,6 +729,12 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         if (!typed_ptr) {
             eshkol_error("letrec: failed to evaluate binding for '%s'", var_names[i].c_str());
             continue;
+        }
+
+        // NORETURN SAFETY: If the value expression terminated the block (e.g., raise),
+        // we cannot emit any more instructions. Stop processing bindings.
+        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+            break;
         }
 
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
@@ -773,6 +806,9 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     }
 
     eshkol_debug("letrec: completed, restored scope");
+
+    // Restore outer TCO context (may have been corrupted by inner letrec)
+    tco_context_ = saved_tco;
 
     return body_result ? body_result : ConstantInt::get(ctx_.int64Type(), 0);
 }
@@ -904,6 +940,9 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
 
     eshkol_debug("BindingCodegen::letrec*: %llu bindings", (unsigned long long)op->let_op.num_bindings);
 
+    // Save TCO context — nested letrecs must not destroy outer TCO
+    TailCallContext saved_tco = tco_context_;
+
     // Save current symbol table
     std::unordered_map<std::string, Value*> saved_symbols = *symbol_table_;
 
@@ -964,8 +1003,9 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
                          val_ast->operation.op == ESHKOL_LAMBDA_OP;
 
         // Check for TCO on lambda bindings
+        bool use_tco = false;
         if (is_lambda && is_tail_recursive_callback_) {
-            bool use_tco = is_tail_recursive_callback_(&val_ast->operation, var_name.c_str(), callback_context_);
+            use_tco = is_tail_recursive_callback_(&val_ast->operation, var_name.c_str(), callback_context_);
             if (use_tco) {
                 eshkol_debug("TCO: Enabling tail call optimization for letrec* lambda %s", var_name.c_str());
                 tco_context_.func_name = var_name;
@@ -978,8 +1018,8 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         // Evaluate value (can see ALL bindings, and VALUES of previous bindings)
         void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
 
-        // Clear TCO context after lambda generation
-        if (is_lambda) {
+        // Clear TCO context after lambda generation (only if we set it)
+        if (use_tco) {
             tco_context_.enabled = false;
             tco_context_.func_name = "";
         }
@@ -1050,6 +1090,9 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
     }
 
     eshkol_debug("letrec*: completed, restored scope");
+
+    // Restore outer TCO context (may have been corrupted by inner letrec)
+    tco_context_ = saved_tco;
 
     return body_result ? body_result : ConstantInt::get(ctx_.int64Type(), 0);
 }

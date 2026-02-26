@@ -143,16 +143,75 @@ public:
      */
     llvm::Value* emitTranspose(llvm::Value* input);
 
+    /**
+     * Emit XLA broadcast from src_shape to tgt_shape.
+     * @param input Input tensor
+     * @param tgt_shape Target shape values (LLVM i64 constants)
+     * @param tgt_rank Target rank
+     * @return Broadcasted tensor
+     */
+    llvm::Value* emitBroadcast(llvm::Value* input,
+                                const std::vector<llvm::Value*>& tgt_shape,
+                                int64_t tgt_rank);
+
+    /**
+     * Emit XLA tensor slice.
+     * @param input Input tensor
+     * @param starts Start indices per dimension
+     * @param limits End indices per dimension
+     * @param strides Step sizes per dimension (nullptr for all-1s)
+     * @return Sliced tensor
+     */
+    llvm::Value* emitSlice(llvm::Value* input,
+                            const std::vector<llvm::Value*>& starts,
+                            const std::vector<llvm::Value*>& limits,
+                            const std::vector<llvm::Value*>& strides);
+
     // ===== Autodiff Integration =====
 
     /**
-     * Emit gradient computation using XLA's autodiff.
-     * @param output_node Output value to differentiate
-     * @param wrt_vars Variables to compute gradients for
-     * @return Gradient tensor value
+     * Emit matmul gradient: dC/dA = grad @ B^T, dC/dB = A^T @ grad.
+     * @param output_node Upstream gradient tensor
+     * @param wrt_vars [A, B] forward operands
+     * @return Pointer to 2-element array [grad_A, grad_B]
      */
     llvm::Value* emitGradient(llvm::Value* output_node,
                                const std::vector<llvm::Value*>& wrt_vars);
+
+    /**
+     * Emit elementwise gradient via chain rule.
+     * @param grad Upstream gradient
+     * @param a Forward left operand
+     * @param b Forward right operand (nullptr for unary)
+     * @param result Forward output
+     * @param op The elementwise operation
+     * @return Pointer to 2-element array [grad_a, grad_b]
+     */
+    llvm::Value* emitElementwiseGradient(llvm::Value* grad,
+                                          llvm::Value* a,
+                                          llvm::Value* b,
+                                          llvm::Value* result,
+                                          ElementwiseOp op);
+
+    /**
+     * Emit reduce gradient (broadcast upstream grad back to input shape).
+     * @param grad Upstream gradient
+     * @param input Original input tensor (for shape)
+     * @param axis Reduction axis (-1 for all)
+     * @param op Reduce operation
+     * @return Gradient tensor with input shape
+     */
+    llvm::Value* emitReduceGradient(llvm::Value* grad,
+                                     llvm::Value* input,
+                                     int64_t axis,
+                                     ReduceOp op);
+
+    /**
+     * Emit transpose gradient (transpose with inverse permutation).
+     * @param grad Upstream gradient
+     * @return Transposed gradient
+     */
+    llvm::Value* emitTransposeGradient(llvm::Value* grad);
 
     // ===== Compilation =====
 

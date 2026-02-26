@@ -198,32 +198,6 @@ endif()
 if(ESHKOL_XLA_ENABLED)
     message(STATUS "XLA backend: ENABLED")
 
-    # XLA source files list (for verification)
-    set(XLA_SOURCES
-        lib/backend/xla/xla_codegen.cpp
-        lib/backend/xla/stablehlo_emitter.cpp
-        lib/backend/xla/xla_compiler.cpp
-        lib/backend/xla/xla_runtime.cpp
-        lib/backend/xla/xla_types.cpp
-        lib/backend/xla/xla_memory.cpp
-    )
-
-    # Verify all XLA source files exist
-    set(XLA_FILES_EXIST TRUE)
-    foreach(xla_src ${XLA_SOURCES})
-        if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${xla_src}")
-            set(XLA_FILES_EXIST FALSE)
-            message(STATUS "XLA stub file missing: ${xla_src}")
-        endif()
-    endforeach()
-
-    if(XLA_FILES_EXIST)
-        # Note: XLA sources are included via GLOB_RECURSE when enabled
-        message(STATUS "XLA sources found and will be included in build")
-    else()
-        message(WARNING "XLA enabled but source files not found. Create stub files first.")
-    endif()
-
     # Define XLA enabled for code
     add_compile_definitions(ESHKOL_XLA_ENABLED)
 
@@ -273,13 +247,18 @@ if(ESHKOL_XLA_ENABLED)
         set(MLIR_LIBRARIES ${MLIR_STATIC_LIBS})
         message(STATUS "Found ${CMAKE_MATCH_COUNT} MLIR libraries")
 
-        # StableHLO libraries
+        # StableHLO libraries (dialect + lowering passes)
         set(STABLEHLO_LIBS
             StablehloOps
             StablehloBase
             StablehloBroadcastUtils
+            StablehloBroadcastLowering
             StablehloAssemblyFormat
             StablehloTypeInference
+            StablehloLinalgTransforms
+            StablehloPasses
+            StablehloTypeConversion
+            ChloOps
         )
 
         set(STABLEHLO_LIBRARIES "")
@@ -329,14 +308,33 @@ if(ESHKOL_XLA_ENABLED)
             message(STATUS "MLIR: AVAILABLE at ${MLIR_INCLUDE_DIR}")
 
             # Find MLIR libraries in LLVM lib directory
+            # Full set includes core + StableHLO→LLVM lowering pipeline passes
             set(MLIR_LIB_DIR "${LLVM_ROOT_DIR}/lib")
             set(MLIR_LIBS
+                # Core MLIR infrastructure
                 MLIRIR
                 MLIRSupport
                 MLIRParser
+                MLIRTransforms
+                # Dialects used by StableHLO pipeline
                 MLIRFuncDialect
                 MLIRArithDialect
-                MLIRTransforms
+                MLIRLinalgDialect
+                MLIRSCFDialect
+                MLIRMemRefDialect
+                MLIRLLVMDialect
+                MLIRControlFlowDialect
+                # Lowering passes: StableHLO → Linalg → SCF → CF → LLVM
+                MLIRLinalgTransforms
+                MLIRSCFToControlFlow
+                MLIRFuncToLLVM
+                MLIRArithToLLVM
+                MLIRMemRefToLLVM
+                MLIRReconcileUnrealizedCasts
+                # LLVM IR translation (MLIR LLVM dialect → actual LLVM IR)
+                MLIRLLVMToLLVMIRTranslation
+                MLIRTargetLLVMIRExport
+                MLIRBuiltinToLLVMIRTranslation
             )
             set(MLIR_LIBRARIES "")
             foreach(lib ${MLIR_LIBS})
@@ -444,6 +442,22 @@ if(ESHKOL_GPU_ENABLED)
             add_compile_definitions(ESHKOL_GPU_METAL_ENABLED)
             message(STATUS "GPU: Apple Metal (unified memory)")
 
+            # Generate embedded Metal shader source from canonical header
+            # metal_softfloat.h is the single source of truth for sf64 emulation
+            set(METAL_SF64_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/metal_softfloat.h")
+            set(METAL_SF64_EMBEDDED "${CMAKE_BINARY_DIR}/metal_sf64_embedded.inc")
+            add_custom_command(
+                OUTPUT ${METAL_SF64_EMBEDDED}
+                COMMAND ${CMAKE_COMMAND}
+                    -DINPUT_FILE=${METAL_SF64_HEADER}
+                    -DOUTPUT_FILE=${METAL_SF64_EMBEDDED}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_metal_shader.cmake
+                DEPENDS ${METAL_SF64_HEADER}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_metal_shader.cmake
+                COMMENT "Embedding Metal SoftFloat shader from metal_softfloat.h"
+            )
+            add_custom_target(metal_sf64_shader DEPENDS ${METAL_SF64_EMBEDDED})
+
             # Add GPU source file (Objective-C++)
             set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory.mm")
 
@@ -459,10 +473,13 @@ if(ESHKOL_GPU_ENABLED)
             set(GPU_FOUND TRUE)
             set(GPU_LIBRARIES CUDA::cudart CUDA::cublas)
             add_compile_definitions(ESHKOL_GPU_CUDA_ENABLED)
+            enable_language(CUDA)
             message(STATUS "GPU: NVIDIA CUDA")
 
-            # CUDA backend — NOT the .mm file (Objective-C++ is macOS only)
-            set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_cuda.cpp")
+            # CUDA backend — .cpp host code + .cu kernels
+            set(GPU_SOURCES
+                "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_cuda.cpp"
+                "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_cuda_kernels.cu")
         else()
             message(STATUS "GPU: CUDA not found (install NVIDIA CUDA Toolkit for GPU support)")
         endif()
@@ -532,8 +549,15 @@ target_include_directories(
 )
 
 # Always add LLVM support to static library
-# Enable strict warnings for code quality
-target_compile_options(eshkol-static PRIVATE ${LLVM_CXXFLAGS} -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare)
+# Enable strict warnings and security hardening
+target_compile_options(eshkol-static PRIVATE
+  ${LLVM_CXXFLAGS}
+  -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
+  -Wformat -Wformat-security
+  -fstack-protector-strong
+)
+# Buffer overflow detection at compile time (requires optimization)
+target_compile_definitions(eshkol-static PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
 target_compile_definitions(eshkol-static PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
 
 # Add LLVM include directories for enhanced cross-platform support
@@ -576,6 +600,11 @@ if(GPU_FOUND AND GPU_LIBRARIES)
     target_link_libraries(eshkol-static PUBLIC ${GPU_LIBRARIES})
     message(STATUS "Linking GPU libraries: ${GPU_LIBRARIES}")
 endif()
+# Metal shader embedding: gpu_memory.mm includes the generated .inc file
+if(TARGET metal_sf64_shader)
+    add_dependencies(eshkol-static metal_sf64_shader)
+    target_include_directories(eshkol-static PRIVATE ${CMAKE_BINARY_DIR})
+endif()
 
 # For each executable inside the executable files create the executable with LLVM backend.
 set(EXES)
@@ -591,7 +620,7 @@ foreach (exe ${EXE_SRC})
 
   # Compile main executable source as object file
   add_executable(${exename} ${exe})
-  target_compile_options(${exename} PRIVATE ${LLVM_CXXFLAGS})
+  target_compile_options(${exename} PRIVATE ${LLVM_CXXFLAGS} -fPIE)
   target_compile_definitions(${exename} PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
   target_include_directories(${exename} PRIVATE inc/)
   
@@ -688,8 +717,20 @@ if(BUILD_REPL AND REPL_SRC)
 
     target_link_libraries(eshkol-repl PRIVATE eshkol-repl-lib)
 
+    # Force-load ALL symbols from eshkol-static into the REPL binary.
+    # Without this, the macOS linker dead-strips archive members that aren't
+    # directly referenced (e.g. XLA runtime) but ARE needed by JIT-compiled
+    # code at runtime. Combined with -export_dynamic below, this makes
+    # DynamicLibrarySearchGenerator auto-resolve ALL runtime symbols.
+    if(APPLE)
+      target_link_options(eshkol-repl PRIVATE
+        "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>")
+    else()
+      target_link_options(eshkol-repl PRIVATE
+        "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "-Wl,--no-whole-archive")
+    endif()
+
     # Export all symbols for JIT symbol resolution
-    # This makes arena_*, printf, etc. available to JIT-compiled code
     if(APPLE)
       target_link_options(eshkol-repl PRIVATE "-Wl,-export_dynamic")
     else()
@@ -705,11 +746,22 @@ if(BUILD_REPL AND REPL_SRC)
   # ===== Link eshkol-run with REPL library for -e/--eval JIT support =====
   # This must come after eshkol-repl-lib is defined
   target_link_libraries(eshkol-run PRIVATE eshkol-repl-lib)
-  # Export symbols for JIT when using -e flag
+  # Force-load eshkol-static for JIT symbol resolution (same as REPL)
   if(APPLE)
+    target_link_options(eshkol-run PRIVATE
+      "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>")
     target_link_options(eshkol-run PRIVATE "-Wl,-export_dynamic")
+    # 512MB stack for deep recursion (main thread stack set at link time on macOS)
+    target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
+    target_link_options(eshkol-run PRIVATE "-Wl,-bind_at_load")
   else()
+    target_link_options(eshkol-run PRIVATE
+      "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "-Wl,--no-whole-archive")
     target_link_options(eshkol-run PRIVATE "-Wl,--export-dynamic")
+    # 512MB stack for deep recursion
+    target_link_options(eshkol-run PRIVATE "-Wl,-z,stacksize=536870912")
+    # Linker hardening: full RELRO + immediate binding
+    target_link_options(eshkol-run PRIVATE "-Wl,-z,relro" "-Wl,-z,now")
   endif()
   message(STATUS "eshkol-run linked with REPL JIT for -e/--eval support")
 endif()

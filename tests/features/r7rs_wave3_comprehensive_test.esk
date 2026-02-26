@@ -1,0 +1,122 @@
+;; R7RS Wave 3 Comprehensive Test
+;; Tests: define-record-type, case-lambda, make-parameter, parameterize
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: define-record-type
+;; ============================================================================
+
+(display "=== Testing define-record-type ===\n")
+
+;; Record with multiple mutable and immutable fields
+(define-record-type <point>
+  (make-point x y)
+  point?
+  (x point-x set-point-x!)
+  (y point-y set-point-y!))
+
+(define p1 (make-point 3 4))
+(test-case "record accessor x" 3 (point-x p1))
+(test-case "record accessor y" 4 (point-y p1))
+(test-case "record predicate true" #t (point? p1))
+(test-case "record predicate false on number" #f (point? 42))
+(test-case "record predicate false on string" #f (point? "hello"))
+
+;; Mutation
+(set-point-x! p1 10)
+(set-point-y! p1 20)
+(test-case "record mutator x" 10 (point-x p1))
+(test-case "record mutator y" 20 (point-y p1))
+
+;; Multiple instances
+(define p2 (make-point 100 200))
+(test-case "separate instances" 100 (point-x p2))
+(test-case "original unchanged" 10 (point-x p1))
+
+;; ============================================================================
+;; Test: case-lambda
+;; ============================================================================
+
+(display "\n=== Testing case-lambda ===\n")
+
+(define multi
+  (case-lambda
+    (() 0)
+    ((x) x)
+    ((x y) (+ x y))
+    ((x y z) (+ x y z))))
+
+(test-case "case-lambda 0 args" 0 (multi))
+(test-case "case-lambda 1 arg" 5 (multi 5))
+(test-case "case-lambda 2 args" 7 (multi 3 4))
+(test-case "case-lambda 3 args" 12 (multi 3 4 5))
+
+;; case-lambda with different return types
+(define describe
+  (case-lambda
+    (() "nothing")
+    ((x) "one thing")
+    ((x y) "two things")))
+
+(test-case "case-lambda returns string 0" "nothing" (describe))
+(test-case "case-lambda returns string 1" "one thing" (describe 1))
+(test-case "case-lambda returns string 2" "two things" (describe 1 2))
+
+;; ============================================================================
+;; Test: make-parameter / parameterize
+;; ============================================================================
+
+(display "\n=== Testing make-parameter / parameterize ===\n")
+
+(define current-value (make-parameter 42))
+
+(test-case "parameter default" 42 (current-value))
+
+(parameterize ((current-value 100))
+  (test-case "parameterize overrides" 100 (current-value)))
+
+(test-case "parameter restored after parameterize" 42 (current-value))
+
+;; Nested parameterize
+(parameterize ((current-value 10))
+  (test-case "outer parameterize" 10 (current-value))
+  (parameterize ((current-value 20))
+    (test-case "inner parameterize" 20 (current-value)))
+  (test-case "restored to outer" 10 (current-value)))
+
+(test-case "fully restored" 42 (current-value))
+
+;; Multiple parameters
+(define param-a (make-parameter "a"))
+(define param-b (make-parameter "b"))
+
+(parameterize ((param-a "x") (param-b "y"))
+  (test-case "multi-param a" "x" (param-a))
+  (test-case "multi-param b" "y" (param-b)))
+
+(test-case "multi-param a restored" "a" (param-a))
+(test-case "multi-param b restored" "b" (param-b))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== R7RS Wave 3 Comprehensive Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)

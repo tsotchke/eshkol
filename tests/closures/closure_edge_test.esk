@@ -1,0 +1,331 @@
+; ================================================================
+; Closure Edge Case Test Suite
+; Tests closure capture, mutation, nesting, higher-order patterns
+; ================================================================
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (test name expected actual)
+  (if (equal? expected actual)
+      (begin (set! pass-count (+ pass-count 1))
+             (display (string-append "PASS: " name "\n")))
+      (begin (set! fail-count (+ fail-count 1))
+             (display (string-append "FAIL: " name "\n"))
+             (display "  Expected: ") (display expected) (newline)
+             (display "  Actual:   ") (display actual) (newline))))
+
+; ================================================================
+; Section 1: Basic closure capture
+; ================================================================
+
+; Test 1: Capture a let-bound variable
+(test "basic closure capture"
+      10
+      (let ((x 10))
+        (let ((f (lambda () x)))
+          (f))))
+
+; Test 2: Capture multiple variables
+(test "capture multiple variables"
+      30
+      (let ((a 10) (b 20))
+        (let ((f (lambda () (+ a b))))
+          (f))))
+
+; Test 3: Capture survives after binding scope exits
+(define (make-capturer val)
+  (lambda () val))
+(define captured-fn (make-capturer 42))
+(test "capture survives scope exit" 42 (captured-fn))
+
+; Test 4: Capture parameter, not just let-binding
+(define (param-capturer x)
+  (lambda () (* x x)))
+(test "capture function parameter" 25 ((param-capturer 5)))
+
+; Test 5: Capture boolean
+(test "capture boolean"
+      #t
+      (let ((flag #t))
+        (let ((f (lambda () flag)))
+          (f))))
+
+; ================================================================
+; Section 2: Closure over mutable state
+; ================================================================
+
+; Test 6: Single mutation via closure
+(test "single closure mutation"
+      1
+      (let ((x 0))
+        (let ((inc (lambda () (set! x (+ x 1)) x)))
+          (inc))))
+
+; Test 7: Multiple mutations via closure
+(test "multiple closure mutations"
+      3
+      (let ((x 0))
+        (let ((inc (lambda () (set! x (+ x 1)) x)))
+          (inc)
+          (inc)
+          (inc))))
+
+; Test 8: Multiple closures sharing mutable state
+(test "shared mutable state"
+      2
+      (let ((x 0))
+        (let ((inc (lambda () (set! x (+ x 1)) x))
+              (get (lambda () x)))
+          (inc)
+          (inc)
+          (get))))
+
+; Test 9: Closure counter pattern (increment and decrement)
+(test "counter inc/dec pattern"
+      1
+      (let ((count 0))
+        (let ((inc (lambda () (set! count (+ count 1)) count))
+              (dec (lambda () (set! count (- count 1)) count)))
+          (inc)
+          (inc)
+          (inc)
+          (dec)
+          (dec))))
+
+; Test 10: Reset via closure
+(test "closure reset pattern"
+      0
+      (let ((x 0))
+        (let ((inc (lambda () (set! x (+ x 1)) x))
+              (reset (lambda () (set! x 0) x)))
+          (inc)
+          (inc)
+          (inc)
+          (reset))))
+
+; ================================================================
+; Section 3: Nested lambdas and multi-level capture
+; ================================================================
+
+; Test 11: Simple nested lambda
+(test "nested lambda"
+      30
+      ((lambda (x) ((lambda (y) (+ x y)) 20)) 10))
+
+; Test 12: Three levels of nesting
+(test "three-level nesting"
+      60
+      (let ((a 10))
+        (let ((f (lambda ()
+                   (let ((b 20))
+                     (let ((g (lambda ()
+                                (let ((c 30))
+                                  (+ a (+ b c))))))
+                       (g))))))
+          (f))))
+
+; Test 13: Innermost captures outermost, skipping middle
+(test "skip-level capture"
+      10
+      (let ((outer 10))
+        (let ((mid 20))
+          (let ((f (lambda () outer)))
+            (f)))))
+
+; Test 14: Each level captures its own + parent
+(test "cascading captures"
+      111
+      (let ((x 1))
+        (let ((f (lambda ()
+                   (let ((y 10))
+                     (let ((g (lambda ()
+                                (let ((z 100))
+                                  (+ x (+ y z))))))
+                       (g))))))
+          (f))))
+
+; Test 15: Nested lambda returned from function
+(define (make-nested a)
+  (lambda (b)
+    (lambda (c) (+ a (+ b c)))))
+(test "nested lambda from function" 60 (((make-nested 10) 20) 30))
+
+; ================================================================
+; Section 4: Higher-order functions
+; ================================================================
+
+; Test 16: make-adder pattern
+(define (make-adder n)
+  (lambda (x) (+ n x)))
+(test "make-adder" 8 ((make-adder 5) 3))
+
+; Test 17: make-multiplier pattern
+(define (make-multiplier n)
+  (lambda (x) (* n x)))
+(test "make-multiplier" 21 ((make-multiplier 7) 3))
+
+; Test 18: Compose two functions
+(define (compose f g)
+  (lambda (x) (f (g x))))
+(define add1 (lambda (x) (+ x 1)))
+(define double (lambda (x) (* x 2)))
+(test "compose add1 . double" 7 ((compose add1 double) 3))
+(test "compose double . add1" 8 ((compose double add1) 3))
+
+; Test 20: Apply a closure to a value
+(define (apply-fn f x) (f x))
+(test "apply closure" 25 (apply-fn (lambda (x) (* x x)) 5))
+
+; Test 21: Return closure that captures another closure
+(define (make-transformer base-fn offset)
+  (lambda (x) (+ (base-fn x) offset)))
+(define transform (make-transformer (lambda (x) (* x x)) 10))
+(test "closure captures closure" 19 (transform 3))
+
+; ================================================================
+; Section 5: Closures with map/filter (stdlib)
+; ================================================================
+
+; Test 22: Basic map with lambda
+(test "map with lambda"
+      '(2 4 6)
+      (map (lambda (x) (* x 2)) '(1 2 3)))
+
+; Test 23: Map with closure capturing variable
+(test "map with capturing closure"
+      '(11 12 13)
+      (let ((offset 10))
+        (map (lambda (x) (+ x offset)) '(1 2 3))))
+
+; Test 24: Filter with lambda
+(test "filter with lambda"
+      '(2 4)
+      (filter (lambda (x) (= (modulo x 2) 0)) '(1 2 3 4 5)))
+
+; Test 25: Filter with capturing closure
+(test "filter with capturing closure"
+      '(4 5)
+      (let ((threshold 3))
+        (filter (lambda (x) (> x threshold)) '(1 2 3 4 5))))
+
+; Test 26: Nested map
+(test "nested map"
+      '(12 14 16)
+      (map (lambda (x) (* x 2))
+           (map (lambda (x) (+ x 5)) '(1 2 3))))
+
+; ================================================================
+; Section 6: Closures in recursive patterns
+; ================================================================
+
+; Test 27: Factorial via letrec
+(test "letrec factorial"
+      3628800
+      (letrec ((fact (lambda (n)
+                       (if (<= n 1) 1 (* n (fact (- n 1)))))))
+        (fact 10)))
+
+; Test 28: Mutual recursion via letrec
+(test "letrec mutual recursion even?"
+      #t
+      (letrec ((my-even? (lambda (n)
+                           (if (= n 0) #t (my-odd? (- n 1)))))
+               (my-odd? (lambda (n)
+                          (if (= n 0) #f (my-even? (- n 1))))))
+        (my-even? 10)))
+
+(test "letrec mutual recursion odd?"
+      #t
+      (letrec ((my-even? (lambda (n)
+                           (if (= n 0) #t (my-odd? (- n 1)))))
+               (my-odd? (lambda (n)
+                          (if (= n 0) #f (my-even? (- n 1))))))
+        (my-odd? 7)))
+
+; Test 30: Fibonacci via letrec
+(test "letrec fibonacci"
+      55
+      (letrec ((fib (lambda (n)
+                      (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))))
+        (fib 10)))
+
+; Test 31: Closure captures loop variable (named let loop)
+(test "named let loop accumulator"
+      15
+      (let loop ((i 0) (acc 0))
+        (if (> i 5)
+            acc
+            (loop (+ i 1) (+ acc i)))))
+
+; ================================================================
+; Section 7: Closure identity and independence
+; ================================================================
+
+; Test 32: Two closures from same factory are independent
+(define counter1 (let ((x 0)) (lambda () (set! x (+ x 1)) x)))
+(define counter2 (let ((x 0)) (lambda () (set! x (+ x 1)) x)))
+(counter1)
+(counter1)
+(counter1)
+(counter2)
+(test "independent closures" 3 (counter1))
+(test "independent closures (other)" 2 (counter2))
+
+; Test 34: Closure in conditional
+(test "closure in if-true branch"
+      10
+      (let ((x 10))
+        (if #t
+            ((lambda () x))
+            0)))
+
+(test "closure in if-false branch"
+      20
+      (let ((x 20))
+        (if #f
+            0
+            ((lambda () x)))))
+
+; ================================================================
+; Section 8: Edge cases
+; ================================================================
+
+; Test 36: Zero-capture lambda (no free vars)
+(test "zero-capture lambda" 42 ((lambda () 42)))
+
+; Test 37: Deeply nested let with single capture
+(test "deep let single capture"
+      1
+      (let ((x 1))
+        (let ((a 2))
+          (let ((b 3))
+            (let ((c 4))
+              (let ((f (lambda () x)))
+                (f)))))))
+
+; Test 38: Closure over string
+(test "closure over string"
+      "hello"
+      (let ((s "hello"))
+        (let ((f (lambda () s)))
+          (f))))
+
+; Test 39: Closure over negative number
+(test "closure over negative" -5
+      (let ((n -5))
+        (let ((f (lambda () n)))
+          (f))))
+
+; Test 40: Closure over floating point
+(test "closure over float" 3.14
+      (let ((pi 3.14))
+        (let ((f (lambda () pi)))
+          (f))))
+
+; Summary
+(display "\n=== Results ===\n")
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)

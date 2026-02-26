@@ -1,0 +1,116 @@
+;;; GPU-Scale Correctness Test
+;;; Verifies SoftFloat matmul produces mathematically correct results
+;;; at GPU dispatch scale (16M+ elements)
+
+(require stdlib)
+
+(display "=== GPU-Scale Correctness Test ===") (newline)
+
+;; =====================================================
+;; Test 1: All-ones matmul (4096x4096)
+;; ones(N,N) × ones(N,N) = N * ones(N,N)
+;; Every element of result must equal exactly N
+;; =====================================================
+(define N 4096)
+(define elems (* N N))
+(display "Test 1: ") (display N) (display "x") (display N)
+(display " all-ones matmul (") (display elems) (display " elements)...") (newline)
+
+(define A (reshape (ones elems) N N))
+(define C (matmul A A))
+
+(define (check-elem label row col expected)
+  (define val (tensor-get C row col))
+  (display "  C[") (display row) (display ",") (display col) (display "] = ")
+  (display val)
+  (if (= val expected)
+      (begin (display " PASS") (newline) #t)
+      (begin (display " FAIL (expected ") (display expected) (display ")") (newline) #f)))
+
+(define t1-pass
+  (and (check-elem "top-left" 0 0 4096.0)
+       (check-elem "top-right" 0 4095 4096.0)
+       (check-elem "bottom-left" 4095 0 4096.0)
+       (check-elem "bottom-right" 4095 4095 4096.0)
+       (check-elem "center" 2048 2048 4096.0)
+       (check-elem "quarter" 1024 1024 4096.0)
+       (check-elem "three-quarter" 3072 3072 4096.0)))
+
+(if t1-pass
+    (begin (display "PASS: Test 1 — all-ones matmul correct") (newline))
+    (begin (display "FAIL: Test 1 — all-ones matmul has errors") (newline)))
+(newline)
+
+;; =====================================================
+;; Test 2: Row-index × ones (4096x4096)
+;; A[i,j] = i+1 for all j, B = ones
+;; C[i,j] = sum_k A[i,k]*B[k,j] = N * (i+1)
+;; =====================================================
+(display "Test 2: row-index × ones (4096x4096)...") (newline)
+
+;; Create A where every element in row i equals (i+1)
+(define A2-data (make-vector elems 0.0))
+(do ((i 0 (+ i 1)))
+    ((>= i N))
+  (do ((j 0 (+ j 1)))
+      ((>= j N))
+    (vector-set! A2-data (+ (* i N) j) (+ 1.0 i))))
+
+(define A2 (reshape A2-data N N))
+(define B2 (reshape (ones elems) N N))
+(define C2 (matmul A2 B2))
+
+(define (check-row-result row)
+  (define expected (* 4096.0 (+ 1.0 row)))
+  (define val (tensor-get C2 row 0))
+  (display "  C[") (display row) (display ",0] = ") (display val)
+  (display " (expected ") (display expected) (display ")")
+  (if (= val expected)
+      (begin (display " PASS") (newline) #t)
+      (begin (display " FAIL") (newline) #f)))
+
+(define t2-pass
+  (and (check-row-result 0)      ;; 4096
+       (check-row-result 1)      ;; 8192
+       (check-row-result 100)    ;; 413696
+       (check-row-result 2048)   ;; 8392704
+       (check-row-result 4095))) ;; 16777216
+
+(if t2-pass
+    (begin (display "PASS: Test 2 — row-index matmul correct") (newline))
+    (begin (display "FAIL: Test 2 — row-index matmul has errors") (newline)))
+(newline)
+
+;; =====================================================
+;; Test 3: Double-transpose identity (4096x4096)
+;; transpose(transpose(A)) == A
+;; =====================================================
+(display "Test 3: double-transpose identity (4096x4096)...") (newline)
+
+(define A3 (reshape (arange elems) N N))
+(define A3tt (transpose (transpose A3)))
+
+(define (check-transpose-elem row col)
+  (define orig (tensor-get A3 row col))
+  (define roundtrip (tensor-get A3tt row col))
+  (= orig roundtrip))
+
+(define t3-pass
+  (and (check-transpose-elem 0 0)
+       (check-transpose-elem 0 4095)
+       (check-transpose-elem 4095 0)
+       (check-transpose-elem 4095 4095)
+       (check-transpose-elem 2048 2048)
+       (check-transpose-elem 1000 3000)))
+
+(if t3-pass
+    (begin (display "  PASS: transpose(transpose(A)) == A") (newline))
+    (begin (display "  FAIL: transpose roundtrip mismatch") (newline)))
+(newline)
+
+;; =====================================================
+;; Summary
+;; =====================================================
+(if (and t1-pass t2-pass t3-pass)
+    (begin (display "PASS: All GPU-scale correctness tests passed") (newline))
+    (begin (display "FAIL: Some GPU-scale correctness tests failed") (newline)))

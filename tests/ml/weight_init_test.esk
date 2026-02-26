@@ -1,0 +1,96 @@
+(require stdlib)
+
+(display "TEST: Weight Initialization Functions") (newline)
+(newline)
+
+;; Test 1: xavier-uniform! produces non-zero values
+(define w1 (make-tensor #(6) 0.0))
+(xavier-uniform! w1 3 3)
+(display (if (not (= (vref w1 0) 0.0)) "PASS" "FAIL"))
+(display ": xavier-uniform! produces non-zero values") (newline)
+
+;; Test 2: xavier-uniform! values within expected bound sqrt(6/(3+3)) = 1.0
+(define w2 (make-tensor #(6) 0.0))
+(xavier-uniform! w2 3 3)
+(define xu-bound (sqrt (/ 6.0 (+ 3.0 3.0))))
+(define w2-ok (and (< (abs (vref w2 0)) (+ xu-bound 0.01))
+                   (< (abs (vref w2 1)) (+ xu-bound 0.01))
+                   (< (abs (vref w2 2)) (+ xu-bound 0.01))
+                   (< (abs (vref w2 3)) (+ xu-bound 0.01))
+                   (< (abs (vref w2 4)) (+ xu-bound 0.01))
+                   (< (abs (vref w2 5)) (+ xu-bound 0.01))))
+(display (if w2-ok "PASS" "FAIL"))
+(display ": xavier-uniform! values within bound sqrt(6/(fan_in+fan_out))") (newline)
+
+;; Test 3: xavier-normal! produces non-zero values
+(define w3 (make-tensor #(6) 0.0))
+(xavier-normal! w3 3 3)
+(display (if (not (= (vref w3 0) 0.0)) "PASS" "FAIL"))
+(display ": xavier-normal! produces non-zero values") (newline)
+
+;; Test 4: xavier-normal! values within reasonable bounds
+(define w4 (make-tensor #(6) 0.0))
+(xavier-normal! w4 3 3)
+(define w4-ok (and (< (abs (vref w4 0)) 5.0)
+                   (< (abs (vref w4 1)) 5.0)
+                   (< (abs (vref w4 2)) 5.0)
+                   (< (abs (vref w4 3)) 5.0)
+                   (< (abs (vref w4 4)) 5.0)
+                   (< (abs (vref w4 5)) 5.0)))
+(display (if w4-ok "PASS" "FAIL"))
+(display ": xavier-normal! values within reasonable bounds") (newline)
+
+;; Test 5: kaiming-uniform! produces non-zero values
+(define w5 (make-tensor #(6) 0.0))
+(kaiming-uniform! w5 3)
+(display (if (not (= (vref w5 0) 0.0)) "PASS" "FAIL"))
+(display ": kaiming-uniform! produces non-zero values") (newline)
+
+;; Test 6: kaiming-uniform! values within expected bound sqrt(6/fan_in) ~= 1.414
+(define w6 (make-tensor #(6) 0.0))
+(kaiming-uniform! w6 3)
+(define ku-bound (sqrt (/ 6.0 3.0)))
+(define w6-ok (and (< (abs (vref w6 0)) (+ ku-bound 0.01))
+                   (< (abs (vref w6 1)) (+ ku-bound 0.01))
+                   (< (abs (vref w6 2)) (+ ku-bound 0.01))
+                   (< (abs (vref w6 3)) (+ ku-bound 0.01))
+                   (< (abs (vref w6 4)) (+ ku-bound 0.01))
+                   (< (abs (vref w6 5)) (+ ku-bound 0.01))))
+(display (if w6-ok "PASS" "FAIL"))
+(display ": kaiming-uniform! values within bound sqrt(6/fan_in)") (newline)
+
+;; Test 7: kaiming-normal! produces non-zero values
+(define w7 (make-tensor #(6) 0.0))
+(kaiming-normal! w7 3)
+(display (if (not (= (vref w7 0) 0.0)) "PASS" "FAIL"))
+(display ": kaiming-normal! produces non-zero values") (newline)
+
+;; Test 8: kaiming-normal! values within reasonable bounds
+(define w8 (make-tensor #(6) 0.0))
+(kaiming-normal! w8 3)
+(define w8-ok (and (< (abs (vref w8 0)) 5.0)
+                   (< (abs (vref w8 1)) 5.0)
+                   (< (abs (vref w8 2)) 5.0)
+                   (< (abs (vref w8 3)) 5.0)
+                   (< (abs (vref w8 4)) 5.0)
+                   (< (abs (vref w8 5)) 5.0)))
+(display (if w8-ok "PASS" "FAIL"))
+(display ": kaiming-normal! values within reasonable bounds") (newline)
+
+;; Test 9: lecun-normal! produces non-zero values
+(define w9 (make-tensor #(6) 0.0))
+(lecun-normal! w9 3)
+(display (if (not (= (vref w9 0) 0.0)) "PASS" "FAIL"))
+(display ": lecun-normal! produces non-zero values") (newline)
+
+;; Test 10: lecun-normal! values within reasonable bounds
+(define w10 (make-tensor #(6) 0.0))
+(lecun-normal! w10 3)
+(define w10-ok (and (< (abs (vref w10 0)) 5.0)
+                    (< (abs (vref w10 1)) 5.0)
+                    (< (abs (vref w10 2)) 5.0)
+                    (< (abs (vref w10 3)) 5.0)
+                    (< (abs (vref w10 4)) 5.0)
+                    (< (abs (vref w10 5)) 5.0)))
+(display (if w10-ok "PASS" "FAIL"))
+(display ": lecun-normal! values within reasonable bounds") (newline)

@@ -1,0 +1,78 @@
+;; Symbol Operations Test Suite
+;; Tests: symbol?, symbol->string, string->symbol, symbol=?
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: symbol? predicate
+;; ============================================================================
+
+(display "=== Testing symbol? ===\n")
+
+(test-case "symbol? on quoted symbol" #t (symbol? 'hello))
+(test-case "symbol? on quoted abc" #t (symbol? 'abc))
+(test-case "symbol? on string" #f (symbol? "hello"))
+(test-case "symbol? on number" #f (symbol? 42))
+(test-case "symbol? on boolean" #f (symbol? #t))
+(test-case "symbol? on null" #f (symbol? '()))
+
+;; ============================================================================
+;; Test: symbol->string conversion
+;; ============================================================================
+
+(display "\n=== Testing symbol->string ===\n")
+
+(test-case "symbol->string hello" "hello" (symbol->string 'hello))
+(test-case "symbol->string abc" "abc" (symbol->string 'abc))
+(test-case "symbol->string single char" "x" (symbol->string 'x))
+
+;; ============================================================================
+;; Test: string->symbol conversion
+;; ============================================================================
+
+(display "\n=== Testing string->symbol ===\n")
+
+(test-case "string->symbol creates symbol" #t (symbol? (string->symbol "test")))
+(test-case "string->symbol creates symbol 2" #t (symbol? (string->symbol "foo")))
+
+;; ============================================================================
+;; Test: symbol=? equality
+;; ============================================================================
+
+(display "\n=== Testing symbol=? ===\n")
+
+(test-case "symbol=? same symbols" #t (symbol=? 'abc 'abc))
+(test-case "symbol=? different symbols" #f (symbol=? 'abc 'xyz))
+(test-case "symbol=? same single-char" #t (symbol=? 'x 'x))
+
+;; ============================================================================
+;; Test: Round-trip conversions
+;; ============================================================================
+
+(display "\n=== Testing round-trips ===\n")
+
+(test-case "string->symbol->string" "world" (symbol->string (string->symbol "world")))
+(test-case "string->symbol->string 2" "test" (symbol->string (string->symbol "test")))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Symbol Ops Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)

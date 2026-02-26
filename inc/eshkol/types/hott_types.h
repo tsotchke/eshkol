@@ -407,6 +407,12 @@ private:
     // Next function type ID (allocated dynamically)
     mutable uint16_t next_function_type_id_ = 500;  // Function types in range 500-999
 
+    // Pair element type cache: maps Pair<A,B> TypeId → (car_type, cdr_type)
+    mutable std::map<uint16_t, std::pair<TypeId, TypeId>> pair_element_cache_;
+
+    // Next pair type ID (allocated dynamically)
+    mutable uint16_t next_pair_type_id_ = 300;  // Pair types in range 300-499
+
 public:
     /**
      * Construct a TypeEnvironment with all builtin types registered.
@@ -624,6 +630,26 @@ public:
      * For example: "(Int64, Float64) -> Boolean"
      */
     std::string getFunctionTypeName(TypeId id) const;
+
+    // ========== Pair Type Tracking ==========
+
+    /**
+     * Create a pair type Pair<car_type, cdr_type>.
+     * Returns a unique TypeId that tracks element types.
+     * Used by cons to propagate types through car/cdr.
+     */
+    TypeId makePairType(TypeId car_type, TypeId cdr_type) const;
+
+    /**
+     * Get the element types for a Pair<A,B> TypeId.
+     * Returns nullopt if the TypeId is not a tracked pair type.
+     */
+    std::optional<std::pair<TypeId, TypeId>> getPairElementTypes(TypeId id) const;
+
+    /**
+     * Check if a TypeId represents a tracked pair type (with known element types).
+     */
+    bool isTrackedPairType(TypeId id) const;
 
 private:
     /**

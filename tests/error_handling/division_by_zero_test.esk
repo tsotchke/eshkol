@@ -1,0 +1,49 @@
+(require stdlib)
+
+(display "TEST: Division by zero edge cases") (newline)
+
+; Test 1: Float division by zero produces infinity (IEEE 754)
+(display (if (infinite? (/ 1.0 0.0)) "PASS" "FAIL")) (display ": float 1.0/0.0 is infinite") (newline)
+
+; Test 2: 1.0/0.0 is positive infinity
+(display (if (> (/ 1.0 0.0) 0.0) "PASS" "FAIL")) (display ": 1.0/0.0 is positive infinity") (newline)
+
+; Test 3: -1.0/0.0 is negative infinity
+(display (if (< (/ -1.0 0.0) 0.0) "PASS" "FAIL")) (display ": -1.0/0.0 is negative infinity") (newline)
+
+; Test 4: 0.0/0.0 produces NaN
+(display (if (nan? (/ 0.0 0.0)) "PASS" "FAIL")) (display ": 0.0/0.0 is NaN") (newline)
+
+; Test 5: Integer division by zero raises an error
+(display (if (guard (exn (#t #t)) (/ 1 0) #f) "PASS" "FAIL")) (display ": integer 1/0 raises error") (newline)
+
+; Test 6: modulo by zero raises an error
+(display (if (guard (exn (#t #t)) (modulo 5 0) #f) "PASS" "FAIL")) (display ": modulo by zero raises error") (newline)
+
+; Test 7: remainder by zero raises an error
+(display (if (guard (exn (#t #t)) (remainder 5 0) #f) "PASS" "FAIL")) (display ": remainder by zero raises error") (newline)
+
+; Test 8: quotient by zero raises an error
+(display (if (guard (exn (#t #t)) (quotient 5 0) #f) "PASS" "FAIL")) (display ": quotient by zero raises error") (newline)
+
+; Test 9: Valid integer division
+(display (if (= (/ 10 2) 5) "PASS" "FAIL")) (display ": integer 10/2 = 5") (newline)
+
+; Test 10: Valid float division
+(display (if (= (/ 10.0 2.0) 5.0) "PASS" "FAIL")) (display ": float 10.0/2.0 = 5.0") (newline)
+
+; Test 11: Division resulting in rational (if rationals supported)
+(display (if (= (/ 1 3) 1/3) "PASS" "FAIL")) (display ": 1/3 = 1/3 (rational)") (newline)
+
+; Test 12: Zero divided by non-zero integer
+(display (if (= (/ 0 5) 0) "PASS" "FAIL")) (display ": 0/5 = 0") (newline)
+
+; Test 13: Float zero divided by non-zero float
+(display (if (= (/ 0.0 5.0) 0.0) "PASS" "FAIL")) (display ": 0.0/5.0 = 0.0") (newline)
+
+; Test 14: Negative integer division by zero raises an error
+(display (if (guard (exn (#t #t)) (/ -7 0) #f) "PASS" "FAIL")) (display ": integer -7/0 raises error") (newline)
+
+; Test 15: NaN is not equal to itself (IEEE 754 property)
+(let ((n (/ 0.0 0.0)))
+  (display (if (not (= n n)) "PASS" "FAIL")) (display ": NaN != NaN (IEEE 754)") (newline))

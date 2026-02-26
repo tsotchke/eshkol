@@ -61,30 +61,53 @@ This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation rele
 **Focus:** Performance acceleration through XLA, SIMD, and parallelism
 
 ### XLA Backend Integration
-- [ ] XLA fusion for tensor operation chains
-- [ ] Automatic kernel generation
-- [ ] CPU/GPU code generation from single source
-- [ ] JIT compilation for dynamic shapes
+- [x] XLA type system and codegen infrastructure
+- [x] XLA fusion for tensor operation chains
+- [x] Automatic kernel generation
+- [x] CPU/GPU code generation from single source
+- [x] JIT compilation for dynamic shapes
 
 ### SIMD Vectorization
-- [ ] SSE/AVX/NEON instruction generation
-- [ ] Loop vectorization for tensor operations
-- [ ] Memory alignment optimization
-- [ ] Platform-specific tuning
+- [x] SSE/AVX/NEON instruction generation
+- [x] Loop vectorization for tensor operations
+- [x] Memory alignment optimization
+- [x] Platform-specific tuning
 
 ### Concurrency Primitives
-- [ ] `parallel-map` for data parallelism
-- [ ] `parallel-fold` for parallel reduction
-- [ ] `future` for asynchronous computation
-- [ ] Work-stealing scheduler
-- [ ] Thread-safe memory management
+- [x] `parallel-map` for data parallelism
+- [x] `parallel-fold` for parallel reduction
+- [x] `future` for asynchronous computation
+- [x] Work-stealing thread pool scheduler
+- [x] Thread-safe memory management
 
 ### Extended Math Library
-- [ ] Complex numbers with autodiff
-- [ ] FFT/IFFT operations
-- [ ] Signal processing filters
-- [ ] Statistical distributions
-- [ ] Optimization algorithms (L-BFGS, conjugate gradient)
+- [x] Complex numbers with autodiff
+- [x] FFT/IFFT operations
+- [x] Signal processing filters
+- [x] Statistical distributions
+- [x] Optimization algorithms (L-BFGS, conjugate gradient)
+
+### Arbitrary-Precision Arithmetic (Added)
+- [x] Bignum (arbitrary-precision integers) — full R7RS compliance
+- [x] Rational numbers (exact fractions)
+- [x] Overflow detection and automatic promotion (int64 → bignum)
+- [x] Bignum demotion (normalize back to int64 when possible)
+- [x] Bitwise operations on bignums (two's complement semantics)
+- [x] All arithmetic, comparison, predicate, equality ops for bignums
+
+### Consciousness Engine (Added)
+- [x] Logic programming primitives (unification, substitutions, knowledge base)
+- [x] Active inference engine (factor graphs, belief propagation, free energy)
+- [x] Global workspace theory implementation (modules, softmax competition)
+- [x] 22 builtin operations for logic, inference, and workspace
+
+### R7RS Compliance Extensions (Added)
+- [x] call/cc and dynamic-wind
+- [x] guard/raise exception handling
+- [x] Bytevectors
+- [x] let-syntax / syntax-rules hygienic macros
+- [x] Tail call optimization validation
+- [x] Symbol operations
 
 ---
 
@@ -224,10 +247,12 @@ This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation rele
 - ✅ Build System - Complete
 
 ### In Active Development (v1.1)
-- 🚧 XLA Backend - Active
-- 🚧 SIMD Vectorization - Active
-- 🚧 Parallelism - Active
-- 🚧 Extended Math - Active
+- ✅ XLA Backend - Complete
+- ✅ SIMD Vectorization - Complete
+- ✅ Parallelism - Complete
+- ✅ Extended Math (Complex, Rational, Bignum, FFT, Signal, Optimization) - Complete
+- ✅ Consciousness Engine - Complete
+- ✅ R7RS Compliance Extensions - Complete
 
 ### Planned (v1.2+)
 - 📋 GPU Acceleration
@@ -307,6 +332,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 
 ---
 
-*Last Updated: December 2025*
+*Last Updated: February 2026*
 
 *Eshkol v1.0-foundation represents a completed production compiler. The roadmap now focuses on performance acceleration (XLA, SIMD, GPU) and advanced AI capabilities (neuro-symbolic, quantum computing) that will establish Eshkol as the definitive platform for gradient-based computing.*

@@ -1,0 +1,81 @@
+;; GPU Elementwise Correctness Tests
+;; Tests all elementwise operations at small and medium sizes.
+
+;; --- Small 2x2 tests ---
+(define A (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
+(define B (reshape (vector 5.0 6.0 7.0 8.0) 2 2))
+
+;; ADD
+(define s (tensor-add A B))
+(if (and (= (tensor-get s 0 0) 6.0)
+         (= (tensor-get s 0 1) 8.0)
+         (= (tensor-get s 1 0) 10.0)
+         (= (tensor-get s 1 1) 12.0))
+    (display "PASS: elementwise add 2x2")
+    (display "FAIL: elementwise add 2x2"))
+(newline)
+
+;; SUB
+(define d (tensor-sub A B))
+(if (and (= (tensor-get d 0 0) -4.0)
+         (= (tensor-get d 1 1) -4.0))
+    (display "PASS: elementwise sub 2x2")
+    (display "FAIL: elementwise sub 2x2"))
+(newline)
+
+;; MUL
+(define m (tensor-mul A B))
+(if (and (= (tensor-get m 0 0) 5.0)
+         (= (tensor-get m 1 1) 32.0))
+    (display "PASS: elementwise mul 2x2")
+    (display "FAIL: elementwise mul 2x2"))
+(newline)
+
+;; DIV
+(define q (tensor-div A B))
+(if (< (abs (- (tensor-get q 0 0) 0.2)) 1e-10)
+    (display "PASS: elementwise div 2x2")
+    (display "FAIL: elementwise div 2x2"))
+(newline)
+
+;; --- 3x3 tests ---
+(define C (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0) 3 3))
+(define D (reshape (vector 9.0 8.0 7.0 6.0 5.0 4.0 3.0 2.0 1.0) 3 3))
+
+;; ADD: should be 10 everywhere
+(define cd-add (tensor-add C D))
+(if (and (= (tensor-get cd-add 0 0) 10.0)
+         (= (tensor-get cd-add 1 1) 10.0)
+         (= (tensor-get cd-add 2 2) 10.0))
+    (display "PASS: elementwise add 3x3 all 10s")
+    (display "FAIL: elementwise add 3x3"))
+(newline)
+
+;; Chaining: (C + D) * C where all of C+D=10
+;; So result = 10 * C = [[10,20,30],[40,50,60],[70,80,90]]
+(define chain (tensor-mul cd-add C))
+(if (and (= (tensor-get chain 0 0) 10.0)
+         (= (tensor-get chain 1 1) 50.0)
+         (= (tensor-get chain 2 2) 90.0))
+    (display "PASS: chained ops (add+mul) 3x3")
+    (display "FAIL: chained ops 3x3"))
+(newline)
+
+;; --- Commutativity ---
+(define sum-ba (tensor-add B A))
+(define sum-ab (tensor-add A B))
+(if (and (= (tensor-get sum-ab 0 0) (tensor-get sum-ba 0 0))
+         (= (tensor-get sum-ab 1 1) (tensor-get sum-ba 1 1)))
+    (display "PASS: tensor-add commutative")
+    (display "FAIL: tensor-add not commutative"))
+(newline)
+
+;; --- Associativity: (A+B)+C = A+(B+C) ---
+(define AB (reshape (vector 6.0 8.0 10.0 12.0) 2 2))
+(define lhs (tensor-add (tensor-add A B) AB))
+(define rhs (tensor-add A (tensor-add B AB)))
+(if (and (= (tensor-get lhs 0 0) (tensor-get rhs 0 0))
+         (= (tensor-get lhs 1 1) (tensor-get rhs 1 1)))
+    (display "PASS: tensor-add associative")
+    (display "FAIL: tensor-add not associative"))
+(newline)

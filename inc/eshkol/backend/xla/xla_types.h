@@ -17,9 +17,12 @@
 #include <vector>
 
 namespace eshkol {
-
-// Forward declaration of HoTT types
+namespace hott {
 struct ParameterizedType;
+} // namespace hott
+
+// Type alias for backward compatibility
+using ParameterizedType = hott::ParameterizedType;
 
 namespace xla {
 
@@ -111,16 +114,25 @@ public:
     // ===== XLA to MLIR =====
 
     /**
+     * Set the MLIR context for type conversion.
+     * Must be called before toMLIRType/toMLIRElementType when MLIR is available.
+     * @param ctx MLIR context pointer (mlir::MLIRContext* cast to void*)
+     */
+    void setMLIRContext(void* ctx);
+
+    /**
      * Create MLIR RankedTensorType from XLA TensorType.
+     * Requires setMLIRContext() to have been called first.
      * @param xla_type XLA tensor type
-     * @return MLIR type pointer (nullptr if not initialized)
+     * @return MLIR type pointer (nullptr if MLIR not initialized)
      */
     void* toMLIRType(const TensorType& xla_type);
 
     /**
      * Create MLIR element type.
+     * Requires setMLIRContext() to have been called first.
      * @param elem Element type
-     * @return MLIR type pointer
+     * @return MLIR type pointer (nullptr if MLIR not initialized)
      */
     void* toMLIRElementType(ElementType elem);
 

@@ -60,20 +60,85 @@
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/DIBuilder.h>
+#include <llvm/IR/DebugInfoMetadata.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Analysis/LoopAnalysisManager.h>
+#include <llvm/Analysis/CGSCCPassManager.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LLVM VERSION COMPATIBILITY
 // LLVM 18+ changed several APIs. This section provides compatibility for both.
 // ═══════════════════════════════════════════════════════════════════════════
 #if LLVM_VERSION_MAJOR >= 18
-#define ESHKOL_CODEGEN_OPT_LEVEL CodeGenOptLevel::Default
 #define ESHKOL_CODEGEN_FILETYPE CodeGenFileType::ObjectFile
 #define ESHKOL_GET_INTRINSIC(mod, id, types) Intrinsic::getOrInsertDeclaration(mod, id, types)
 #else
-#define ESHKOL_CODEGEN_OPT_LEVEL CodeGenOpt::Default
 #define ESHKOL_CODEGEN_FILETYPE CGFT_ObjectFile
 #define ESHKOL_GET_INTRINSIC(mod, id, types) Intrinsic::getDeclaration(mod, id, types)
 #endif
+
+// Optimization level (0-3), configurable via -O flag. Default: 0 (no optimization).
+static int g_optimization_level = 0;
+
+// Map user-facing optimization level to LLVM CodeGenOptLevel
+#if LLVM_VERSION_MAJOR >= 18
+static llvm::CodeGenOptLevel getCodeGenOptLevel() {
+    switch (g_optimization_level) {
+        case 0:  return llvm::CodeGenOptLevel::None;
+        case 1:  return llvm::CodeGenOptLevel::Less;
+        case 2:  return llvm::CodeGenOptLevel::Default;
+        case 3:  return llvm::CodeGenOptLevel::Aggressive;
+        default: return llvm::CodeGenOptLevel::None;
+    }
+}
+#else
+static llvm::CodeGenOpt::Level getCodeGenOptLevel() {
+    switch (g_optimization_level) {
+        case 0:  return llvm::CodeGenOpt::None;
+        case 1:  return llvm::CodeGenOpt::Less;
+        case 2:  return llvm::CodeGenOpt::Default;
+        case 3:  return llvm::CodeGenOpt::Aggressive;
+        default: return llvm::CodeGenOpt::None;
+    }
+}
+#endif
+
+// Map user-facing optimization level to LLVM PassBuilder OptimizationLevel
+static llvm::OptimizationLevel getPassBuilderOptLevel() {
+    switch (g_optimization_level) {
+        case 0:  return llvm::OptimizationLevel::O0;
+        case 1:  return llvm::OptimizationLevel::O1;
+        case 2:  return llvm::OptimizationLevel::O2;
+        case 3:  return llvm::OptimizationLevel::O3;
+        default: return llvm::OptimizationLevel::O0;
+    }
+}
+
+// Run LLVM optimization passes on a module before codegen
+static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM) {
+    auto opt_level = getPassBuilderOptLevel();
+    if (opt_level == llvm::OptimizationLevel::O0) return;  // Skip for -O0
+
+    llvm::PassBuilder PB(TM);
+
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(opt_level);
+    MPM.run(module, MAM);
+
+    eshkol_info("Applied LLVM optimization passes at -O%d", g_optimization_level);
+}
 
 #include <memory>
 #include <map>
@@ -108,6 +173,12 @@ static std::unordered_map<LLVMModuleRef, std::unique_ptr<EshkolLLVMModule>> g_ll
 // STDLIB LINKAGE: Flag to track whether the program uses stdlib
 // When set, the generated code will call __eshkol_lib_init__ for homoiconic display
 static bool g_uses_stdlib = false;
+
+// DEBUG INFO: Flag to enable DWARF debug info generation
+// When set, the compiler emits DIBuilder metadata for source-level debugging (lldb, gdb)
+static bool g_emit_debug_info = false;
+static std::string g_debug_source_filename;
+static std::string g_debug_source_directory;
 
 // REPL MODE: Global symbol persistence across CodeGenerator instances
 // When REPL mode is enabled, symbols persist across evaluations
@@ -411,7 +482,6 @@ private:
     std::unique_ptr<eshkol::ParallelCodegen> parallel_;
 
     // Local type pointers (initialized from TypeSystem for backward compatibility)
-    // TODO: Gradually migrate code to use types-> accessors directly
     StructType* tagged_value_type;
     StructType* dual_number_type;
     StructType* ad_node_type;
@@ -520,6 +590,14 @@ private:
     // Module prefix for unique lambda naming (prevents symbol collision when linking)
     std::string module_prefix;
 
+    // DWARF DEBUG INFO: DIBuilder and metadata for source-level debugging
+    std::unique_ptr<DIBuilder> di_builder_;
+    DICompileUnit* di_cu_ = nullptr;
+    DIFile* di_file_ = nullptr;
+    std::vector<DIScope*> di_scope_stack_;
+    bool emit_debug_info_ = false;
+    std::string source_filename_;
+
 public:
     EshkolLLVMCodeGen(const char* module_name, bool is_library_mode = false) {
         library_mode = is_library_mode;
@@ -537,7 +615,6 @@ public:
         types = std::make_unique<eshkol::TypeSystem>(*context);
 
         // Set local type pointers from TypeSystem for backward compatibility
-        // TODO: Gradually migrate code to use types-> accessors directly
         int64_type = types->getInt64Type();
         int32_type = types->getInt32Type();
         int16_type = types->getInt16Type();
@@ -576,6 +653,25 @@ public:
 
         // CRITICAL: Set DataLayout early so getTypeAllocSize returns correct values
         // This must be done before any allocations that depend on struct sizes
+        // Use actual host CPU (not "generic") to match stdlib.o and LLJIT's TargetMachine.
+        // Mismatch causes struct scalarization differences → broken 3+ arg calls.
+        if (!g_target_info_cached) {
+            g_cached_target_triple = sys::getDefaultTargetTriple();
+            g_cached_cpu_name = sys::getHostCPUName().str();
+            SubtargetFeatures features;
+#if LLVM_VERSION_MAJOR >= 18
+            auto host_features = sys::getHostCPUFeatures();
+#else
+            StringMap<bool> host_features;
+            sys::getHostCPUFeatures(host_features);
+#endif
+            for (auto& f : host_features) {
+                features.AddFeature(f.first(), f.second);
+            }
+            g_cached_features = features.getString();
+            g_target_info_cached = true;
+        }
+
         std::string error;
 #if LLVM_VERSION_MAJOR >= 18
         const Target* target = TargetRegistry::lookupTarget(target_triple, error);
@@ -586,15 +682,16 @@ public:
             TargetOptions options;
             std::unique_ptr<TargetMachine> target_machine(
 #if LLVM_VERSION_MAJOR >= 18
-                target->createTargetMachine(target_triple, "generic", "",
+                target->createTargetMachine(target_triple, g_cached_cpu_name, g_cached_features,
                                            options, Reloc::PIC_));
 #else
-                target->createTargetMachine(target_triple_str, "generic", "",
+                target->createTargetMachine(target_triple_str, g_cached_cpu_name, g_cached_features,
                                            options, Reloc::PIC_));
 #endif
             if (target_machine) {
                 module->setDataLayout(target_machine->createDataLayout());
-                eshkol_debug("Set data layout for target: %s", target_triple_str.c_str());
+                eshkol_debug("Set data layout for target: %s (cpu: %s)",
+                            target_triple_str.c_str(), g_cached_cpu_name.c_str());
             }
         }
 
@@ -656,16 +753,82 @@ public:
         function_return_types["take"] = BuiltinTypes::List;
         function_return_types["drop"] = BuiltinTypes::List;
         function_return_types["range"] = BuiltinTypes::List;
+        function_return_types["list-copy"] = BuiltinTypes::List;
+        function_return_types["list-set!"] = BuiltinTypes::List;
+
+        // eval returns any type
+        function_return_types["eval"] = BuiltinTypes::Value;
 
         // Vector functions
         function_return_types["vector"] = BuiltinTypes::Vector;
         function_return_types["make-vector"] = BuiltinTypes::Vector;
         function_return_types["vector-length"] = BuiltinTypes::Int64;
         function_return_types["vector-ref"] = BuiltinTypes::Value;
+        function_return_types["vector-append"] = BuiltinTypes::Vector;
+        function_return_types["vector->list"] = BuiltinTypes::List;
+        function_return_types["list->vector"] = BuiltinTypes::Vector;
 
         // Type conversions
         function_return_types["exact->inexact"] = BuiltinTypes::Float64;
         function_return_types["inexact->exact"] = BuiltinTypes::Int64;
+        function_return_types["inexact"] = BuiltinTypes::Float64;
+        function_return_types["exact"] = BuiltinTypes::Int64;
+        function_return_types["exact-integer?"] = BuiltinTypes::Boolean;
+        function_return_types["square"] = BuiltinTypes::Number;
+
+        // R7RS division
+        function_return_types["floor-quotient"] = BuiltinTypes::Int64;
+        function_return_types["floor-remainder"] = BuiltinTypes::Int64;
+        function_return_types["floor/"] = BuiltinTypes::Value;
+        function_return_types["truncate-quotient"] = BuiltinTypes::Int64;
+        function_return_types["truncate-remainder"] = BuiltinTypes::Int64;
+        function_return_types["truncate/"] = BuiltinTypes::Value;
+
+        // R7RS port predicates
+        function_return_types["textual-port?"] = BuiltinTypes::Boolean;
+        function_return_types["binary-port?"] = BuiltinTypes::Boolean;
+
+        // R7RS binary I/O
+        function_return_types["open-binary-input-file"] = BuiltinTypes::Value;
+        function_return_types["open-binary-output-file"] = BuiltinTypes::Value;
+        function_return_types["read-u8"] = BuiltinTypes::Value;   // int or eof-object
+        function_return_types["peek-u8"] = BuiltinTypes::Value;  // int or eof-object
+        function_return_types["write-u8"] = BuiltinTypes::Null;
+        function_return_types["read-bytevector"] = BuiltinTypes::Value;  // bytevector or eof-object
+        function_return_types["write-bytevector"] = BuiltinTypes::Null;
+        function_return_types["read-bytevector!"] = BuiltinTypes::Value;
+        function_return_types["u8-ready?"] = BuiltinTypes::Boolean;
+
+        // R7RS system
+        function_return_types["eof-object"] = BuiltinTypes::Value;
+        function_return_types["emergency-exit"] = BuiltinTypes::Null;
+        function_return_types["current-second"] = BuiltinTypes::Float64;
+        function_return_types["current-jiffy"] = BuiltinTypes::Int64;
+        function_return_types["jiffies-per-second"] = BuiltinTypes::Int64;
+        function_return_types["features"] = BuiltinTypes::List;
+
+        // R7RS aliases
+        function_return_types["get-environment-variable"] = BuiltinTypes::String;
+        function_return_types["delete-file"] = BuiltinTypes::Boolean;
+        function_return_types["close-input-port"] = BuiltinTypes::Null;
+        function_return_types["close-output-port"] = BuiltinTypes::Null;
+        function_return_types["string-copy!"] = BuiltinTypes::Null;
+
+        // R7RS Wave 2 functions
+        function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
+        function_return_types["string-foldcase"] = BuiltinTypes::String;
+        function_return_types["digit-value"] = BuiltinTypes::Value;  // int or #f
+        function_return_types["write-shared"] = BuiltinTypes::Null;
+        function_return_types["write-simple"] = BuiltinTypes::Null;
+        function_return_types["string-for-each"] = BuiltinTypes::Null;
+        function_return_types["string-map"] = BuiltinTypes::String;
+        function_return_types["vector-for-each"] = BuiltinTypes::Null;
+        function_return_types["vector-map"] = BuiltinTypes::Vector;
+        function_return_types["call-with-port"] = BuiltinTypes::Value;
+        function_return_types["call-with-input-file"] = BuiltinTypes::Value;
+        function_return_types["call-with-output-file"] = BuiltinTypes::Value;
+        function_return_types["with-input-from-file"] = BuiltinTypes::Value;
+        function_return_types["with-output-to-file"] = BuiltinTypes::Value;
 
         // IO returns Null
         function_return_types["display"] = BuiltinTypes::Null;
@@ -685,6 +848,25 @@ public:
         function_return_types["future"] = BuiltinTypes::Value;      // Returns future handle
         function_return_types["force"] = BuiltinTypes::Value;       // Returns result of computation
         function_return_types["future-ready?"] = BuiltinTypes::Boolean; // Returns boolean
+        function_return_types["make-promise"] = BuiltinTypes::Value;
+        function_return_types["promise?"] = BuiltinTypes::Boolean;
+        function_return_types["%make-lazy-promise"] = BuiltinTypes::Value;
+        function_return_types["%make-lazy-promise-force"] = BuiltinTypes::Value;
+        function_return_types["rational?"] = BuiltinTypes::Boolean;
+        function_return_types["numerator"] = BuiltinTypes::Int64;
+        function_return_types["denominator"] = BuiltinTypes::Int64;
+        function_return_types["make-rational"] = BuiltinTypes::Value;
+        function_return_types["rationalize"] = BuiltinTypes::Value;
+        function_return_types["read-string"] = BuiltinTypes::String;
+        function_return_types["make-bytevector"] = BuiltinTypes::Value;
+        function_return_types["bytevector"] = BuiltinTypes::Value;
+        function_return_types["bytevector-length"] = BuiltinTypes::Int64;
+        function_return_types["bytevector-u8-ref"] = BuiltinTypes::Int64;
+        function_return_types["bytevector-copy"] = BuiltinTypes::Value;
+        function_return_types["bytevector-append"] = BuiltinTypes::Value;
+        function_return_types["bytevector?"] = BuiltinTypes::Boolean;
+        function_return_types["utf8->string"] = BuiltinTypes::String;
+        function_return_types["string->utf8"] = BuiltinTypes::Value;
 
         // Complex number operations
         function_return_types["make-rectangular"] = BuiltinTypes::Complex128;  // Create complex from real,imag
@@ -707,6 +889,33 @@ public:
         // FFT/IFFT operations (Signal Processing)
         function_return_types["fft"] = BuiltinTypes::Value;    // Returns vector of complex numbers
         function_return_types["ifft"] = BuiltinTypes::Value;   // Returns vector of complex numbers
+
+        // Signal Processing Filters (stdlib: signal.filters)
+        function_return_types["fft"] = BuiltinTypes::Vector;
+        function_return_types["ifft"] = BuiltinTypes::Vector;
+        function_return_types["hamming-window"] = BuiltinTypes::Vector;
+        function_return_types["hann-window"] = BuiltinTypes::Vector;
+        function_return_types["blackman-window"] = BuiltinTypes::Vector;
+        function_return_types["kaiser-window"] = BuiltinTypes::Vector;
+        function_return_types["apply-window"] = BuiltinTypes::Vector;
+        function_return_types["convolve"] = BuiltinTypes::Vector;
+        function_return_types["fast-convolve"] = BuiltinTypes::Vector;
+        function_return_types["fir-filter"] = BuiltinTypes::Vector;
+        function_return_types["iir-filter"] = BuiltinTypes::Vector;
+        function_return_types["butterworth-lowpass"] = BuiltinTypes::Pair;   // (b . a) coefficient pair
+        function_return_types["butterworth-highpass"] = BuiltinTypes::Pair;
+        function_return_types["butterworth-bandpass"] = BuiltinTypes::Pair;
+        function_return_types["frequency-response"] = BuiltinTypes::Pair;    // (magnitudes . phases)
+
+        // Optimization Algorithms (stdlib: ml.optimization)
+        function_return_types["gradient-descent"] = BuiltinTypes::Vector;
+        function_return_types["adam"] = BuiltinTypes::Vector;
+        function_return_types["l-bfgs"] = BuiltinTypes::Vector;
+        function_return_types["conjugate-gradient"] = BuiltinTypes::Vector;
+        function_return_types["line-search"] = BuiltinTypes::Float64;       // Returns step size alpha
+        function_return_types["tensor-dot"] = BuiltinTypes::Float64;        // Returns scalar
+        function_return_types["tensor-norm"] = BuiltinTypes::Float64;       // Returns scalar
+        function_return_types["tensor-svd"] = BuiltinTypes::List;          // Returns (U S V) list
     }
     
     std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts) {
@@ -740,6 +949,37 @@ public:
             if (macro_expander.macroCount() > 0) {
                 eshkol_debug("Macro expansion complete: %zu macros defined, %zu ASTs after expansion",
                             macro_expander.macroCount(), num_asts_to_use);
+            }
+
+            // ===== DWARF DEBUG INFO INITIALIZATION =====
+            // If -g flag was passed, set up DIBuilder for source-level debugging
+            emit_debug_info_ = g_emit_debug_info;
+            if (emit_debug_info_) {
+                source_filename_ = g_debug_source_filename;
+                std::string directory = g_debug_source_directory;
+                if (directory.empty()) directory = ".";
+                if (source_filename_.empty()) source_filename_ = module->getName().str() + ".esk";
+
+                di_builder_ = std::make_unique<DIBuilder>(*module);
+                di_file_ = di_builder_->createFile(source_filename_, directory);
+                di_cu_ = di_builder_->createCompileUnit(
+                    dwarf::DW_LANG_C99,  // Closest standard language tag
+                    di_file_,
+                    "eshkol",            // Producer
+                    false,               // isOptimized
+                    "",                  // Flags
+                    0                    // Runtime version
+                );
+
+                // Set module flags required for DWARF debug info
+                module->addModuleFlag(Module::Warning, "Debug Info Version",
+                                      DEBUG_METADATA_VERSION);
+                // On macOS, set Dwarf version to 4 for lldb compatibility
+                module->addModuleFlag(Module::Warning, "Dwarf Version", 4);
+
+                di_scope_stack_.push_back(di_cu_);
+                eshkol_debug("DWARF debug info enabled for %s/%s",
+                            directory.c_str(), source_filename_.c_str());
             }
 
             // Create global arena variable (shared across all functions and scopes)
@@ -1008,9 +1248,11 @@ public:
             // This populates type information that will be used during codegen
             {
                 eshkol::hott::TypeEnvironment& type_env = ctx_->hottTypes();
-                eshkol::hott::TypeChecker type_checker(type_env);
+                const eshkol_config_t* cfg = eshkol_config_get();
+                eshkol::hott::TypeChecker type_checker(type_env,
+                    cfg->strict_types, cfg->unsafe_mode);
 
-                // Type check all top-level definitions
+                // Type check all top-level forms (definitions AND expressions)
                 // Note: const_cast is safe here because we're intentionally annotating
                 // the AST with inferred types during type checking phase
                 for (size_t i = 0; i < num_asts_to_use; i++) {
@@ -1023,22 +1265,36 @@ public:
                         else if (asts_to_use[i].operation.op == ESHKOL_DEFINE_OP) {
                             auto result = type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                             if (!result.success) {
-                                // Type error - report but continue for gradual typing
-                                eshkol_warn("HoTT type check warning in '%s': %s",
-                                           asts_to_use[i].operation.define_op.name,
-                                           result.error_message.c_str());
+                                // Type error - report via unified enforcement point
+                                std::string msg = std::string("in '") +
+                                    asts_to_use[i].operation.define_op.name + "': " +
+                                    result.error_message;
+                                type_checker.reportTypeIssue(msg, &asts_to_use[i]);
                             } else {
                                 eshkol_debug("HoTT: type checked '%s' successfully",
                                             asts_to_use[i].operation.define_op.name);
                             }
                         }
+                        // Type check all other top-level expressions (function calls, etc.)
+                        // This catches type mismatches at call sites, dimension errors, etc.
+                        else {
+                            type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
+                        }
+                    } else {
+                        // Non-op top-level forms (literals, variables, etc.)
+                        type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                     }
                 }
 
-                // Report any accumulated type errors (but don't fail compilation - gradual typing)
+                // Report accumulated type error summary
                 if (type_checker.hasErrors()) {
-                    eshkol_warn("HoTT: %zu type warnings detected (gradual typing continues)",
-                               type_checker.errors().size());
+                    if (cfg->strict_types) {
+                        eshkol_error("HoTT: %zu type errors detected (strict mode)",
+                                    type_checker.errors().size());
+                    } else if (!cfg->unsafe_mode) {
+                        eshkol_warn("HoTT: %zu type warnings detected (gradual typing continues)",
+                                   type_checker.errors().size());
+                    }
                 }
             }
             eshkol_debug("HoTT type checking phase complete");
@@ -1200,7 +1456,7 @@ public:
                                 if (!sexpr_global) {
                                     sexpr_global = new GlobalVariable(
                                         *module, int64_type, false,
-                                        GlobalValue::ExternalLinkage,
+                                        GlobalValue::LinkOnceODRLinkage,
                                         ConstantInt::get(int64_type, 0),
                                         sexpr_key
                                     );
@@ -1240,7 +1496,7 @@ public:
                                             if (!var_sexpr_global) {
                                                 var_sexpr_global = new GlobalVariable(
                                                     *module, int64_type, false,
-                                                    GlobalValue::ExternalLinkage,
+                                                    GlobalValue::LinkOnceODRLinkage,
                                                     ConstantInt::get(int64_type, 0),
                                                     var_sexpr_key
                                                 );
@@ -1291,6 +1547,34 @@ public:
                 Function* user_main = function_table["main"];
                 user_main->setName("scheme_main");  // Rename user's main
 
+                // DWARF DEBUG INFO: Update the user's main DISubprogram after rename
+                // The user's main was attached a DISubprogram named "main" during
+                // createFunctionDeclaration. Now that it's renamed to scheme_main,
+                // we need to replace it with a correctly-named one so the C main
+                // wrapper can have its own "main" DISubprogram without conflict.
+                if (emit_debug_info_ && di_builder_ && di_file_ && user_main->getSubprogram()) {
+                    DISubprogram* old_sp = user_main->getSubprogram();
+                    DISubprogram* new_sp = di_builder_->createFunction(
+                        di_file_, "scheme_main", "scheme_main", di_file_,
+                        old_sp->getLine(),
+                        old_sp->getType(),
+                        old_sp->getScopeLine(),
+                        old_sp->getFlags(),
+                        old_sp->getSPFlags());
+                    user_main->setSubprogram(new_sp);
+                    // Update debug locations in the function body to use the new subprogram
+                    for (auto& BB : *user_main) {
+                        for (auto& I : BB) {
+                            if (const auto& DL = I.getDebugLoc()) {
+                                if (DL->getScope() == old_sp) {
+                                    I.setDebugLoc(DILocation::get(
+                                        *context, DL.getLine(), DL.getCol(), new_sp));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Create C-style main function with argc, argv
                 std::vector<Type*> main_args = {int32_type, PointerType::getUnqual(*context)};
                 FunctionType* c_main_type = FunctionType::get(int32_type, main_args, false);
@@ -1303,8 +1587,42 @@ public:
                 Value* argv_val = arg_it;
                 argv_val->setName("argv");
 
+                // DWARF DEBUG INFO: Attach DISubprogram to C main wrapper (user-main path)
+                if (emit_debug_info_ && di_builder_ && di_file_) {
+                    SmallVector<Metadata*, 4> main_di_params;
+                    main_di_params.push_back(di_builder_->createBasicType("int", 32, dwarf::DW_ATE_signed));
+                    main_di_params.push_back(di_builder_->createBasicType("int", 32, dwarf::DW_ATE_signed));
+                    main_di_params.push_back(nullptr);
+                    DISubroutineType* main_di_type = di_builder_->createSubroutineType(
+                        di_builder_->getOrCreateTypeArray(main_di_params));
+                    DISubprogram* main_sp = di_builder_->createFunction(
+                        di_file_, "main", "main", di_file_,
+                        1, main_di_type, 1,
+                        DINode::FlagPrototyped,
+                        DISubprogram::SPFlagDefinition);
+                    c_main->setSubprogram(main_sp);
+                }
+
                 main_entry = BasicBlock::Create(*context, "entry", c_main);
                 builder->SetInsertPoint(main_entry);
+
+                // DWARF DEBUG INFO: Set default debug location for C main wrapper
+                if (emit_debug_info_ && c_main->getSubprogram()) {
+                    builder->SetCurrentDebugLocation(
+                        DILocation::get(*context, 1, 0, c_main->getSubprogram()));
+                }
+
+                // Initialize stack size for deep recursion support
+                {
+                    FunctionType* init_stack_type = FunctionType::get(void_type, false);
+                    Function* init_stack_func = module->getFunction("eshkol_init_stack_size");
+                    if (!init_stack_func) {
+                        init_stack_func = Function::Create(
+                            init_stack_type, Function::ExternalLinkage,
+                            "eshkol_init_stack_size", module.get());
+                    }
+                    builder->CreateCall(init_stack_func);
+                }
 
                 // Store argc and argv to globals for (command-line)
                 GlobalVariable* g_argc = module->getGlobalVariable("__eshkol_argc");
@@ -1377,7 +1695,7 @@ public:
                         if (!sexpr_global) {
                             sexpr_global = new GlobalVariable(
                                 *module, int64_type, false,
-                                GlobalValue::ExternalLinkage,
+                                GlobalValue::LinkOnceODRLinkage,
                                 ConstantInt::get(int64_type, 0),
                                 sexpr_key
                             );
@@ -1444,6 +1762,12 @@ public:
                 function_table["main"] = c_main;
             }
             } // end else (not library_mode)
+
+            // Finalize DWARF debug info before verification
+            if (emit_debug_info_ && di_builder_) {
+                di_builder_->finalize();
+                eshkol_debug("Finalized DWARF debug info");
+            }
 
             // Verify the module
             std::string error_str;
@@ -2530,7 +2854,7 @@ private:
 
         Function* function = Function::Create(
             func_type,
-            Function::ExternalLinkage,
+            (library_mode || g_repl_mode_enabled) ? Function::LinkOnceODRLinkage : Function::ExternalLinkage,
             func_name,
             module.get()
         );
@@ -2563,6 +2887,36 @@ private:
 
         // FUNCTION-AS-VALUE FIX: Record arity for closure wrapping when function is used as value
         function_arity_table[func_name] = num_params;
+
+        // DWARF DEBUG INFO: Attach DISubprogram to function for source-level debugging
+        if (emit_debug_info_ && di_builder_ && di_file_) {
+            // Create subroutine type (all args as unspecified type for now)
+            SmallVector<Metadata*, 8> di_param_types;
+            di_param_types.push_back(nullptr); // Return type (unspecified)
+            for (uint64_t i = 0; i < num_params; ++i) {
+                di_param_types.push_back(nullptr); // Parameter types (unspecified)
+            }
+            if (is_variadic) {
+                di_param_types.push_back(nullptr); // Rest parameter
+            }
+            DISubroutineType* di_func_type = di_builder_->createSubroutineType(
+                di_builder_->getOrCreateTypeArray(di_param_types));
+
+            unsigned line_no = ast->line > 0 ? ast->line : 1;
+            DISubprogram* di_sp = di_builder_->createFunction(
+                di_file_,              // Scope (file)
+                func_name,             // Name
+                function->getName(),   // Linkage name
+                di_file_,              // File
+                line_no,               // Line number
+                di_func_type,          // Type
+                line_no,               // Scope line
+                DINode::FlagPrototyped,
+                DISubprogram::SPFlagDefinition);
+
+            function->setSubprogram(di_sp);
+            eshkol_debug("Attached DISubprogram to %s at line %u", func_name, line_no);
+        }
 
         registerContextFunction(func_name, function);
         eshkol_debug("Created polymorphic function declaration: %s with %llu tagged_value parameters%s",
@@ -2621,7 +2975,7 @@ private:
                             // Create var_sexpr global (initial value will be set later)
                             new GlobalVariable(
                                 *module, int64_type, false,
-                                GlobalValue::ExternalLinkage,
+                                (library_mode || g_repl_mode_enabled) ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
                                 ConstantInt::get(int64_type, 0),
                                 var_sexpr_key
                             );
@@ -2772,7 +3126,7 @@ private:
                 if (!sexpr_global) {
                     sexpr_global = new GlobalVariable(
                         *module, int64_type, false,
-                        GlobalValue::ExternalLinkage,
+                        GlobalValue::LinkOnceODRLinkage,
                         ConstantInt::get(int64_type, 0),
                         sexpr_key
                     );
@@ -2849,8 +3203,42 @@ private:
             Value* argv_val = arg_it;
             argv_val->setName("argv");
 
+            // DWARF DEBUG INFO: Attach DISubprogram to main function
+            if (emit_debug_info_ && di_builder_ && di_file_) {
+                SmallVector<Metadata*, 4> main_di_params;
+                main_di_params.push_back(di_builder_->createBasicType("int", 32, dwarf::DW_ATE_signed));
+                main_di_params.push_back(di_builder_->createBasicType("int", 32, dwarf::DW_ATE_signed));
+                main_di_params.push_back(nullptr); // char** as unspecified
+                DISubroutineType* main_di_type = di_builder_->createSubroutineType(
+                    di_builder_->getOrCreateTypeArray(main_di_params));
+                DISubprogram* main_sp = di_builder_->createFunction(
+                    di_file_, "main", "main", di_file_,
+                    1, main_di_type, 1,
+                    DINode::FlagPrototyped,
+                    DISubprogram::SPFlagDefinition);
+                c_main->setSubprogram(main_sp);
+            }
+
             main_entry = BasicBlock::Create(*context, "entry", c_main);
             builder->SetInsertPoint(main_entry);
+
+            // DWARF DEBUG INFO: Set default debug location for C main wrapper
+            if (emit_debug_info_ && c_main->getSubprogram()) {
+                builder->SetCurrentDebugLocation(
+                    DILocation::get(*context, 1, 0, c_main->getSubprogram()));
+            }
+
+            // Initialize stack size for deep recursion support
+            {
+                FunctionType* init_stack_type = FunctionType::get(void_type, false);
+                Function* init_stack_func = module->getFunction("eshkol_init_stack_size");
+                if (!init_stack_func) {
+                    init_stack_func = Function::Create(
+                        init_stack_type, Function::ExternalLinkage,
+                        "eshkol_init_stack_size", module.get());
+                }
+                builder->CreateCall(init_stack_func);
+            }
 
             // Store argc and argv to globals for (command-line)
             GlobalVariable* g_argc = module->getGlobalVariable("__eshkol_argc");
@@ -2917,7 +3305,7 @@ private:
                     if (!sexpr_global) {
                         sexpr_global = new GlobalVariable(
                             *module, int64_type, false,
-                            GlobalValue::ExternalLinkage,  // CRITICAL: External linkage for runtime lookup
+                            GlobalValue::LinkOnceODRLinkage,
                             ConstantInt::get(int64_type, 0),
                             sexpr_key
                         );
@@ -2976,12 +3364,12 @@ private:
                             if (!var_sexpr_global) {
                                 var_sexpr_global = new GlobalVariable(
                                     *module, int64_type, false,
-                                    GlobalValue::ExternalLinkage,
+                                    GlobalValue::LinkOnceODRLinkage,
                                     ConstantInt::get(int64_type, 0),
                                     var_sexpr_key
                                 );
                             }
-                            
+
                             // CRITICAL: Initialize alias with lambda S-expression value AT RUNTIME
                             Value* lambda_sexpr_val = builder->CreateLoad(int64_type,
                                                                           lambda_sexpr_it->second);
@@ -3070,6 +3458,22 @@ private:
             Value* argv_val = arg_it;
             argv_val->setName("argv");
 
+            // DWARF DEBUG INFO: Attach DISubprogram to top-level main function
+            if (emit_debug_info_ && di_builder_ && di_file_) {
+                SmallVector<Metadata*, 4> main_di_params;
+                main_di_params.push_back(di_builder_->createBasicType("int", 32, dwarf::DW_ATE_signed));
+                main_di_params.push_back(di_builder_->createBasicType("int", 32, dwarf::DW_ATE_signed));
+                main_di_params.push_back(nullptr);
+                DISubroutineType* main_di_type = di_builder_->createSubroutineType(
+                    di_builder_->getOrCreateTypeArray(main_di_params));
+                DISubprogram* main_sp = di_builder_->createFunction(
+                    di_file_, "main", "main", di_file_,
+                    1, main_di_type, 1,
+                    DINode::FlagPrototyped,
+                    DISubprogram::SPFlagDefinition);
+                main_func->setSubprogram(main_sp);
+            }
+
             main_entry = BasicBlock::Create(*context, "entry", main_func);
             // Don't set terminator yet - we'll add expressions and then terminate
 
@@ -3077,6 +3481,24 @@ private:
 
             // REPL MODE FIX: Use shared arena instead of creating new one
             builder->SetInsertPoint(main_entry);
+
+            // DWARF DEBUG INFO: Set default debug location for top-level main
+            if (emit_debug_info_ && main_func->getSubprogram()) {
+                builder->SetCurrentDebugLocation(
+                    DILocation::get(*context, 1, 0, main_func->getSubprogram()));
+            }
+
+            // Initialize stack size for deep recursion support (before any user code)
+            {
+                FunctionType* init_stack_type = FunctionType::get(void_type, false);
+                Function* init_stack_func = module->getFunction("eshkol_init_stack_size");
+                if (!init_stack_func) {
+                    init_stack_func = Function::Create(
+                        init_stack_type, Function::ExternalLinkage,
+                        "eshkol_init_stack_size", module.get());
+                }
+                builder->CreateCall(init_stack_func);
+            }
 
             // Store argc and argv to globals for (command-line)
             GlobalVariable* g_argc = module->getGlobalVariable("__eshkol_argc");
@@ -3154,7 +3576,7 @@ private:
                     if (!sexpr_global) {
                         sexpr_global = new GlobalVariable(
                             *module, int64_type, false,
-                            GlobalValue::ExternalLinkage,
+                            GlobalValue::LinkOnceODRLinkage,
                             ConstantInt::get(int64_type, 0),
                             sexpr_key
                         );
@@ -4325,6 +4747,76 @@ private:
 
         Value* closure_ptr_i64 = unpackInt64FromTaggedValue(func_result);
         Value* closure_ptr = builder->CreateIntToPtr(closure_ptr_i64, PointerType::getUnqual(*context));
+
+        // CONTINUATION SHORT-CIRCUIT: Check if this is a continuation closure
+        // before doing any normal dispatch. Reading header subtype at closure_ptr - 8.
+        {
+            Value* header_ptr = builder->CreateGEP(int8_type, closure_ptr,
+                ConstantInt::get(int64_type, -8));
+            Value* subtype_byte = builder->CreateLoad(int8_type, header_ptr);
+            Value* is_continuation = builder->CreateICmpEQ(subtype_byte,
+                ConstantInt::get(int8_type, CALLABLE_SUBTYPE_CONTINUATION));
+
+            BasicBlock* continuation_invoke_bb = BasicBlock::Create(*context, "invoke_continuation", current_func);
+            BasicBlock* normal_closure_dispatch = BasicBlock::Create(*context, "normal_closure_dispatch", current_func);
+            builder->CreateCondBr(is_continuation, continuation_invoke_bb, normal_closure_dispatch);
+
+            // Continuation invoke path:
+            // 1. Load env ptr from closure (offset 8)
+            // 2. Load state ptr from captures[0] (env + 8, after num_captures)
+            // 3. Store the value at state + 8 (after jmp_buf_ptr)
+            // 4. Load jmp_buf_ptr from state + 0
+            // 5. longjmp back to the call/cc site
+            builder->SetInsertPoint(continuation_invoke_bb);
+
+            Value* cont_env_ptr_addr = builder->CreateGEP(int8_type, closure_ptr,
+                ConstantInt::get(int64_type, 8));
+            Value* cont_env_ptr = builder->CreateLoad(PointerType::getUnqual(*context), cont_env_ptr_addr);
+
+            // captures[0] is at env + 8 (after size_t num_captures)
+            Value* cap0_ptr = builder->CreateGEP(int8_type, cont_env_ptr,
+                ConstantInt::get(int64_type, 8));
+            Value* state_tagged = builder->CreateLoad(tagged_value_type, cap0_ptr);
+            Value* state_int = unpackInt64FromTaggedValue(state_tagged);
+            Value* state_ptr = builder->CreateIntToPtr(state_int, PointerType::getUnqual(*context));
+
+            // Store value at state->value (offset 8, after void* jmp_buf_ptr)
+            Value* value_slot = builder->CreateGEP(int8_type, state_ptr,
+                ConstantInt::get(int64_type, 8));
+            Value* invoke_value = call_args.empty() ? packNullToTaggedValue() : call_args[0];
+            builder->CreateStore(invoke_value, value_slot);
+
+            // Unwind dynamic-wind stack before longjmp
+            // Load wind_mark from state (offset 24 = 8 + 16: after jmp_buf_ptr + value)
+            Value* wind_mark_ptr = builder->CreateGEP(int8_type, state_ptr,
+                ConstantInt::get(int64_type, 24));
+            Value* wind_mark = builder->CreateLoad(PointerType::getUnqual(*context), wind_mark_ptr);
+
+            Function* unwind_func = module->getFunction("eshkol_unwind_dynamic_wind");
+            if (!unwind_func) {
+                FunctionType* unwind_type = FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy()}, false);
+                unwind_func = Function::Create(unwind_type, Function::ExternalLinkage,
+                    "eshkol_unwind_dynamic_wind", module.get());
+            }
+            builder->CreateCall(unwind_func, {wind_mark});
+
+            // Load jmp_buf_ptr and longjmp
+            Value* jmp_buf_ptr = builder->CreateLoad(PointerType::getUnqual(*context), state_ptr);
+
+            Function* longjmp_func = module->getFunction("longjmp");
+            if (!longjmp_func) {
+                FunctionType* longjmp_type = FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy(), builder->getInt32Ty()}, false);
+                longjmp_func = Function::Create(longjmp_type, Function::ExternalLinkage, "longjmp", module.get());
+                longjmp_func->addFnAttr(Attribute::NoReturn);
+            }
+            builder->CreateCall(longjmp_func, {jmp_buf_ptr, ConstantInt::get(builder->getInt32Ty(), 1)});
+            builder->CreateUnreachable();
+
+            // Normal closure dispatch continues here
+            builder->SetInsertPoint(normal_closure_dispatch);
+        }
 
         // Load func_ptr from closure (offset 0)
         Value* func_ptr_from_closure = builder->CreateLoad(int64_type, closure_ptr);
@@ -5736,8 +6228,30 @@ private:
     }
     
     
+    // Track current source location for error reporting
+    uint32_t current_source_line = 0;
+    uint32_t current_source_column = 0;
+
     Value* codegenAST(const eshkol_ast_t* ast) {
         if (!ast) return nullptr;
+
+        // Update source location for error context
+        if (ast->line > 0) {
+            current_source_line = ast->line;
+            current_source_column = ast->column;
+        }
+
+        // DWARF DEBUG INFO: Set source location on builder for subsequent instructions
+        if (emit_debug_info_ && ast->line > 0 && builder->GetInsertBlock()) {
+            Function* cur_fn = builder->GetInsertBlock()->getParent();
+            if (cur_fn) {
+                DISubprogram* sp = cur_fn->getSubprogram();
+                if (sp) {
+                    builder->SetCurrentDebugLocation(
+                        DILocation::get(*context, ast->line, ast->column, sp));
+                }
+            }
+        }
 
         switch (ast->type) {
             case ESHKOL_INVALID:
@@ -5794,6 +6308,11 @@ private:
 
             case ESHKOL_NULL:
                 return packNullToTaggedValue(); // null as properly tagged value
+
+            case ESHKOL_SYMBOL:
+                return packPtrToTaggedValue(
+                    ctx_->internStringWithHeader(ast->str_val.ptr, HEAP_SUBTYPE_SYMBOL),
+                    ESHKOL_VALUE_HEAP_PTR);
 
             case ESHKOL_BIGNUM_LITERAL: {
                 // Integer literal too large for int64 — construct bignum at runtime
@@ -6437,6 +6956,9 @@ private:
                 // REFACTOR: Delegate to BindingCodegen (letrec* has sequential recursive semantics)
                 return binding_->letrecStar(op);
 
+            case ESHKOL_IF_OP:
+                return flow_->codegenIf(op);
+
             case ESHKOL_AND_OP:
                 return codegenAnd(op);
 
@@ -6463,6 +6985,22 @@ private:
 
             case ESHKOL_RAISE_OP:
                 return codegenRaise(op);
+
+            case ESHKOL_CALL_CC_OP:
+                return codegenCallCC(op);
+
+            case ESHKOL_DYNAMIC_WIND_OP:
+                return codegenDynamicWind(op);
+
+            case ESHKOL_CASE_LAMBDA_OP:
+                // Transformed at parse time into variadic lambda — should never reach codegen
+                eshkol_error("case-lambda should have been transformed at parse time");
+                return nullptr;
+
+            case ESHKOL_PARAMETERIZE_OP:
+                // Transformed at parse time into let/call — should never reach codegen
+                eshkol_error("parameterize should have been transformed at parse time");
+                return nullptr;
 
             case ESHKOL_QUOTE_OP:
                 // Quote returns the AST as literal data
@@ -6776,11 +7314,21 @@ private:
         symbol_table[std::string(func_name) + "_func"] = function;
         global_symbol_table[std::string(func_name) + "_func"] = function;
 
+        // Mutual TCO: collect non-self tail call sites for musttail optimization
+        mutual_tail_call_sites_.clear();
+        if (op->define_op.value && !use_tco) {
+            // Only do mutual TCO when self-TCO is NOT active (self-TCO uses loop transformation)
+            collectMutualTailCallSites(op->define_op.value, op->define_op.value, func_name);
+        }
+
         // Generate function body
         Value* body_result = nullptr;
         if (op->define_op.value) {
             body_result = codegenAST(op->define_op.value);
         }
+
+        // Clear mutual TCO sites after body generation
+        mutual_tail_call_sites_.clear();
 
         // Clear TCO context after body generation
         if (use_tco) {
@@ -7047,7 +7595,7 @@ private:
                 // Create GlobalVariable for persistent storage
                 std::string capture_key = std::string(func_name) + "_capture_" + var_name;
                 GlobalValue::LinkageTypes linkage = g_repl_mode_enabled ?
-                    GlobalValue::ExternalLinkage : GlobalValue::InternalLinkage;
+                    GlobalValue::LinkOnceODRLinkage : GlobalValue::InternalLinkage;
                 storage = new GlobalVariable(
                     *module,
                     tagged_value_type,
@@ -7434,7 +7982,7 @@ private:
                     // Create alias global that points to the same S-expression
                     GlobalVariable* var_sexpr_global = new GlobalVariable(
                         *module, int64_type, false,
-                        GlobalValue::ExternalLinkage,
+                        GlobalValue::LinkOnceODRLinkage,
                         ConstantInt::get(int64_type, 0),  // Initialize to 0, will be set at runtime
                         var_sexpr_key
                     );
@@ -7567,7 +8115,7 @@ private:
                         if (!var_sexpr_global) {
                             var_sexpr_global = new GlobalVariable(
                                 *module, int64_type, false,
-                                GlobalValue::ExternalLinkage,
+                                GlobalValue::LinkOnceODRLinkage,
                                 ConstantInt::get(int64_type, 0),
                                 var_sexpr_key
                             );
@@ -7857,7 +8405,7 @@ private:
                                 if (lambda_sexpr_global) {
                                     GlobalVariable* var_sexpr_global = new GlobalVariable(
                                         *module, int64_type, false,
-                                        GlobalValue::ExternalLinkage,
+                                        GlobalValue::LinkOnceODRLinkage,
                                         ConstantInt::get(int64_type, 0),
                                         var_sexpr_key
                                     );
@@ -8500,7 +9048,13 @@ private:
         if (func_name == "tan") return codegenMathFunction(op, "tan");
         if (func_name == "asin") return codegenMathFunction(op, "asin");
         if (func_name == "acos") return codegenMathFunction(op, "acos");
-        if (func_name == "atan") return codegenMathFunction(op, "atan");
+        if (func_name == "atan") {
+            // R7RS: (atan y) is unary, (atan y x) calls atan2
+            if (op->call_op.num_vars == 2) {
+                return codegenBinaryMathFunction(op, "atan2");
+            }
+            return codegenMathFunction(op, "atan");
+        }
         if (func_name == "atan2") return codegenBinaryMathFunction(op, "atan2");
 
         // Hyperbolic functions
@@ -8534,6 +9088,96 @@ private:
             return codegenModulo(op);
         if (func_name == "remainder") return codegenRemainder(op);
         if (func_name == "quotient") return codegenQuotient(op);
+        // R7RS truncate-quotient/truncate-remainder: same as quotient/remainder
+        if (func_name == "truncate-quotient") return codegenQuotient(op);
+        if (func_name == "truncate-remainder") return codegenRemainder(op);
+        // R7RS truncate/: returns (values quotient remainder)
+        if (func_name == "truncate/") {
+            Value* q = codegenQuotient(op);
+            Value* r = codegenRemainder(op);
+            if (!q || !r) return nullptr;
+            // Pack as multi-value return
+            Value* arena_ptr = getArenaPtr();
+            llvm::FunctionCallee alloc_mv = module->getOrInsertFunction("arena_allocate_multi_value",
+                FunctionType::get(PointerType::getUnqual(*context),
+                    {PointerType::getUnqual(*context), int64_type}, false));
+            Value* mv = builder->CreateCall(alloc_mv, {arena_ptr, ConstantInt::get(int64_type, 2)});
+            // Store values
+            builder->CreateStore(q, mv);
+            Value* second = builder->CreateGEP(tagged_value_type, mv, ConstantInt::get(int64_type, 1));
+            builder->CreateStore(r, second);
+            // Return as MULTI_VALUE heap ptr
+            return packPtrToTaggedValue(mv, ESHKOL_VALUE_HEAP_PTR);
+        }
+        // R7RS floor-quotient: floor(a/b), handling negative divisors correctly
+        if (func_name == "floor-quotient") {
+            TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
+            if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
+            Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
+            Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
+            // floor division: q = a/b, adjust if signs differ and remainder != 0
+            Value* q = builder->CreateSDiv(a, b);
+            Value* r = builder->CreateSRem(a, b);
+            Value* r_nonzero = builder->CreateICmpNE(r, ConstantInt::get(int64_type, 0));
+            Value* a_neg = builder->CreateICmpSLT(a, ConstantInt::get(int64_type, 0));
+            Value* b_neg = builder->CreateICmpSLT(b, ConstantInt::get(int64_type, 0));
+            Value* signs_differ = builder->CreateXor(a_neg, b_neg);
+            Value* need_adjust = builder->CreateAnd(r_nonzero, signs_differ);
+            Value* adjusted = builder->CreateSub(q, ConstantInt::get(int64_type, 1));
+            Value* result = builder->CreateSelect(need_adjust, adjusted, q);
+            return packInt64ToTaggedValue(result);
+        }
+        // R7RS floor-remainder: a - b * floor-quotient(a, b)
+        if (func_name == "floor-remainder") {
+            TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
+            if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
+            Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
+            Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
+            // floor remainder: r = a%b, adjust if signs differ and r != 0
+            Value* r = builder->CreateSRem(a, b);
+            Value* r_nonzero = builder->CreateICmpNE(r, ConstantInt::get(int64_type, 0));
+            Value* a_neg = builder->CreateICmpSLT(a, ConstantInt::get(int64_type, 0));
+            Value* b_neg = builder->CreateICmpSLT(b, ConstantInt::get(int64_type, 0));
+            Value* signs_differ = builder->CreateXor(a_neg, b_neg);
+            Value* need_adjust = builder->CreateAnd(r_nonzero, signs_differ);
+            Value* adjusted = builder->CreateAdd(r, b);
+            Value* result = builder->CreateSelect(need_adjust, adjusted, r);
+            return packInt64ToTaggedValue(result);
+        }
+        // R7RS floor/: returns (values floor-quotient floor-remainder)
+        if (func_name == "floor/") {
+            // Compute both quotient and remainder
+            TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
+            if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
+            Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
+            Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
+            Value* q = builder->CreateSDiv(a, b);
+            Value* r = builder->CreateSRem(a, b);
+            Value* r_nonzero = builder->CreateICmpNE(r, ConstantInt::get(int64_type, 0));
+            Value* a_neg = builder->CreateICmpSLT(a, ConstantInt::get(int64_type, 0));
+            Value* b_neg = builder->CreateICmpSLT(b, ConstantInt::get(int64_type, 0));
+            Value* signs_differ = builder->CreateXor(a_neg, b_neg);
+            Value* need_adjust = builder->CreateAnd(r_nonzero, signs_differ);
+            Value* adj_q = builder->CreateSub(q, ConstantInt::get(int64_type, 1));
+            Value* adj_r = builder->CreateAdd(r, b);
+            Value* final_q = builder->CreateSelect(need_adjust, adj_q, q);
+            Value* final_r = builder->CreateSelect(need_adjust, adj_r, r);
+            Value* tq = packInt64ToTaggedValue(final_q);
+            Value* tr = packInt64ToTaggedValue(final_r);
+            // Pack as multi-value
+            Value* arena_ptr = getArenaPtr();
+            llvm::FunctionCallee alloc_mv = module->getOrInsertFunction("arena_allocate_multi_value",
+                FunctionType::get(PointerType::getUnqual(*context),
+                    {PointerType::getUnqual(*context), int64_type}, false));
+            Value* mv = builder->CreateCall(alloc_mv, {arena_ptr, ConstantInt::get(int64_type, 2)});
+            builder->CreateStore(tq, mv);
+            Value* second = builder->CreateGEP(tagged_value_type, mv, ConstantInt::get(int64_type, 1));
+            builder->CreateStore(tr, second);
+            return packPtrToTaggedValue(mv, ESHKOL_VALUE_HEAP_PTR);
+        }
         if (func_name == "gcd") return codegenGCD(op);
         if (func_name == "lcm") return codegenLCM(op);
 
@@ -8567,8 +9211,7 @@ private:
 
         // Type predicates
         if (func_name == "number?") {
-            // Number is either int64 or double
-            // Use codegenTypedAST for proper handling of raw values
+            // Number is int64, double, bignum, or AD node (wraps double)
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
@@ -8576,10 +9219,158 @@ private:
             Value* base_type = getBaseType(type);
             Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
             Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-            return packBoolToTaggedValue(builder->CreateOr(is_int, is_double));
+            Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
+            Value* is_ad = isCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
+            return packBoolToTaggedValue(builder->CreateOr(builder->CreateOr(builder->CreateOr(is_int, is_double), is_bignum), is_ad));
         }
-        if (func_name == "integer?") return codegenTypePredicate(op, ESHKOL_VALUE_INT64);
-        if (func_name == "real?") return codegenTypePredicate(op, ESHKOL_VALUE_DOUBLE);
+        if (func_name == "integer?") {
+            // Integer is int64 or bignum
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* type = getTaggedValueType(arg);
+            Value* base_type = getBaseType(type);
+            Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+            Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
+            return packBoolToTaggedValue(builder->CreateOr(is_int, is_bignum));
+        }
+        if (func_name == "real?") {
+            // Real is int64, double, bignum, or AD node (wraps double)
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* type = getTaggedValueType(arg);
+            Value* base_type = getBaseType(type);
+            Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+            Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+            Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
+            Value* is_ad = isCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
+            return packBoolToTaggedValue(builder->CreateOr(builder->CreateOr(builder->CreateOr(is_int, is_double), is_bignum), is_ad));
+        }
+        if (func_name == "exact?") {
+            // Exact numbers are int64 or bignum (not double)
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* type = getTaggedValueType(arg);
+            Value* base_type = getBaseType(type);
+            Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+            Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
+            return packBoolToTaggedValue(builder->CreateOr(is_int, is_bignum));
+        }
+        if (func_name == "inexact?") {
+            // Inexact numbers are doubles or AD nodes (wraps doubles)
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* type = getTaggedValueType(arg);
+            Value* base_type = getBaseType(type);
+            Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+            Value* is_ad = isCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
+            return packBoolToTaggedValue(builder->CreateOr(is_double, is_ad));
+        }
+        // R7RS exact->inexact / inexact (convert exact to inexact)
+        if (func_name == "exact->inexact" || func_name == "inexact") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* type = getTaggedValueType(arg);
+            Value* base_type = getBaseType(type);
+            // If already double, return as-is
+            Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+            BasicBlock* cur_block = builder->GetInsertBlock();
+            Function* cur_func = cur_block->getParent();
+            BasicBlock* convert_bb = BasicBlock::Create(*context, "e2i_convert", cur_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "merge_inexact", cur_func);
+            builder->CreateCondBr(is_double, merge_bb, convert_bb);
+            // Convert any exact type (int64, bignum, rational) to double
+            builder->SetInsertPoint(convert_bb);
+            Value* dbl_val = arith_->extractAsDouble(arg);
+            Value* converted = packDoubleToTaggedValue(dbl_val);
+            BasicBlock* convert_end = builder->GetInsertBlock();
+            builder->CreateBr(merge_bb);
+            // Merge
+            builder->SetInsertPoint(merge_bb);
+            PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+            phi->addIncoming(arg, cur_block);
+            phi->addIncoming(converted, convert_end);
+            return phi;
+        }
+        // R7RS inexact->exact / exact (convert inexact to exact)
+        if (func_name == "inexact->exact" || func_name == "exact") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* type = getTaggedValueType(arg);
+            Value* base_type = getBaseType(type);
+            Value* data = builder->CreateExtractValue(arg, {4});
+            // If already exact (int64, bignum, or rational), return as-is
+            Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+            Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+            Value* already_exact = builder->CreateOr(is_int, is_heap);
+            BasicBlock* cur_block = builder->GetInsertBlock();
+            Function* cur_func = cur_block->getParent();
+            BasicBlock* convert_bb = BasicBlock::Create(*context, "inexact_to_exact", cur_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "merge_exact", cur_func);
+            builder->CreateCondBr(already_exact, merge_bb, convert_bb);
+            // Convert double to int64 (truncation)
+            builder->SetInsertPoint(convert_bb);
+            Value* dbl_val = builder->CreateBitCast(data, double_type);
+            Value* int_val = builder->CreateFPToSI(dbl_val, int64_type);
+            Value* converted = packInt64ToTaggedValue(int_val);
+            BasicBlock* convert_end = builder->GetInsertBlock();
+            builder->CreateBr(merge_bb);
+            // Merge
+            builder->SetInsertPoint(merge_bb);
+            PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+            phi->addIncoming(arg, cur_block);
+            phi->addIncoming(converted, convert_end);
+            return phi;
+        }
+        // R7RS exact-integer?: true if exact and integer (int64 or bignum)
+        if (func_name == "exact-integer?") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* type = getTaggedValueType(arg);
+            Value* base_type = getBaseType(type);
+            Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+            Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
+            return packBoolToTaggedValue(builder->CreateOr(is_int, is_bignum));
+        }
+        // R7RS square: (* x x) — with AD dispatch (op 43)
+        if (func_name == "square") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            return arith_->withADUnaryDispatch(arg, 43 /*AD_NODE_SQUARE*/, [&]() -> llvm::Value* {
+                Value* type = getTaggedValueType(arg);
+                Value* base_type = getBaseType(type);
+                Value* data = builder->CreateExtractValue(arg, {4});
+                Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+                Function* cur_func = builder->GetInsertBlock()->getParent();
+                BasicBlock* double_bb = BasicBlock::Create(*context, "sq_double", cur_func);
+                BasicBlock* int_bb = BasicBlock::Create(*context, "sq_int", cur_func);
+                BasicBlock* merge_bb = BasicBlock::Create(*context, "sq_merge", cur_func);
+                builder->CreateCondBr(is_double, double_bb, int_bb);
+                builder->SetInsertPoint(double_bb);
+                Value* dbl = builder->CreateBitCast(data, double_type);
+                Value* sq_dbl = builder->CreateFMul(dbl, dbl);
+                Value* r_dbl = packDoubleToTaggedValue(sq_dbl);
+                BasicBlock* double_end = builder->GetInsertBlock();
+                builder->CreateBr(merge_bb);
+                builder->SetInsertPoint(int_bb);
+                Value* sq_int = builder->CreateMul(data, data);
+                Value* r_int = packInt64ToTaggedValue(sq_int);
+                BasicBlock* int_end = builder->GetInsertBlock();
+                builder->CreateBr(merge_bb);
+                builder->SetInsertPoint(merge_bb);
+                PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+                phi->addIncoming(r_dbl, double_end);
+                phi->addIncoming(r_int, int_end);
+                return phi;
+            });
+        }
         if (func_name == "list?") return codegenListPredicate(op);
         if (func_name == "string?") return codegenHeapSubtypePredicate(op, HEAP_SUBTYPE_STRING);
         if (func_name == "boolean?") return codegenBooleanPredicate(op);
@@ -8604,20 +9395,191 @@ private:
         if (func_name == "string>?") return strio_->stringCompare(op, "gt");
         if (func_name == "string<=?") return strio_->stringCompare(op, "le");
         if (func_name == "string>=?") return strio_->stringCompare(op, "ge");
+        if (func_name == "string-ci=?") return strio_->stringCiCompare(op, "eq");
+        if (func_name == "string-ci<?") return strio_->stringCiCompare(op, "lt");
+        if (func_name == "string-ci>?") return strio_->stringCiCompare(op, "gt");
+        if (func_name == "string-ci<=?") return strio_->stringCiCompare(op, "le");
+        if (func_name == "string-ci>=?") return strio_->stringCiCompare(op, "ge");
         if (func_name == "number->string") return strio_->numberToString(op);
         if (func_name == "string->number") return strio_->stringToNumber(op);
         if (func_name == "symbol->string") return codegenSymbolToString(op);
         if (func_name == "string->symbol") return codegenStringToSymbol(op);
         if (func_name == "make-string") return strio_->makeString(op);
+        // R7RS: (string char ...) — construct string from character arguments
+        if (func_name == "string" && op->call_op.num_vars > 0) {
+            uint64_t n = op->call_op.num_vars;
+            // Allocate buffer: n chars + null terminator, with header
+            Value* data_size = ConstantInt::get(int64_type, n + 1);
+            Value* arena = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* str_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
+                {arena, data_size,
+                 ConstantInt::get(int8_type, HEAP_SUBTYPE_STRING),
+                 ConstantInt::get(int8_type, 0)});
+            // Fill each char
+            for (uint64_t i = 0; i < n; i++) {
+                TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
+                if (!tv.llvm_value) return nullptr;
+                Value* arg = typedValueToTaggedValue(tv);
+                Value* ch_i64 = unpackInt64FromTaggedValue(arg);
+                Value* ch_i8 = builder->CreateTrunc(ch_i64, int8_type);
+                Value* dest = builder->CreateGEP(int8_type, str_ptr,
+                    ConstantInt::get(int64_type, i));
+                builder->CreateStore(ch_i8, dest);
+            }
+            // Null-terminate
+            Value* end = builder->CreateGEP(int8_type, str_ptr,
+                ConstantInt::get(int64_type, n));
+            builder->CreateStore(ConstantInt::get(int8_type, 0), end);
+            // Pack as HEAP_PTR
+            return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_HEAP_PTR);
+        }
         if (func_name == "string-set!") return strio_->stringSet(op);
+        if (func_name == "string-fill!") return strio_->stringFill(op);
         if (func_name == "string->list") return strio_->stringToList(op);
         if (func_name == "list->string") return strio_->listToString(op);
+        // R7RS string-copy: copy a string (optionally with start/end)
+        if (func_name == "string-copy") {
+            // Delegate to substring with full range if no start/end given
+            return strio_->substring(op);
+        }
+        // R7RS string-copy!: copy characters between strings
+        if (func_name == "string-copy!") {
+            // (string-copy! to at from) or (string-copy! to at from start end)
+            // For now, implement as runtime call
+            TypedValue to_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue at_tv = codegenTypedAST(&op->call_op.variables[1]);
+            TypedValue from_tv = codegenTypedAST(&op->call_op.variables[2]);
+            if (!to_tv.llvm_value || !at_tv.llvm_value || !from_tv.llvm_value) return nullptr;
+            Value* to_val = typedValueToTaggedValue(to_tv);
+            Value* at_val = typedValueToTaggedValue(at_tv);
+            Value* from_val = typedValueToTaggedValue(from_tv);
+            // Extract string pointers
+            Value* to_ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(to_val, {4}), PointerType::getUnqual(*context));
+            Value* from_ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(from_val, {4}), PointerType::getUnqual(*context));
+            Value* at_idx = safeExtractInt64(at_val);
+            // Get from length via strlen
+            llvm::FunctionCallee strlen_fn = module->getOrInsertFunction("strlen",
+                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
+            Value* from_len = builder->CreateCall(strlen_fn, {from_ptr});
+            // Compute copy length (use full from string if no start/end given)
+            Value* copy_len = from_len;
+            if (op->call_op.num_vars >= 4) {
+                TypedValue start_tv = codegenTypedAST(&op->call_op.variables[3]);
+                if (start_tv.llvm_value) {
+                    Value* start = safeExtractInt64(typedValueToTaggedValue(start_tv));
+                    from_ptr = builder->CreateGEP(int8_type, from_ptr, start);
+                    copy_len = builder->CreateSub(from_len, start);
+                    if (op->call_op.num_vars >= 5) {
+                        TypedValue end_tv = codegenTypedAST(&op->call_op.variables[4]);
+                        if (end_tv.llvm_value) {
+                            Value* end = safeExtractInt64(typedValueToTaggedValue(end_tv));
+                            copy_len = builder->CreateSub(end, start);
+                        }
+                    }
+                }
+            }
+            // memcpy(to + at, from, copy_len)
+            Value* dest = builder->CreateGEP(int8_type, to_ptr, at_idx);
+            llvm::FunctionCallee memcpy_fn = module->getOrInsertFunction("memcpy",
+                FunctionType::get(PointerType::getUnqual(*context),
+                    {PointerType::getUnqual(*context), PointerType::getUnqual(*context), int64_type}, false));
+            builder->CreateCall(memcpy_fn, {dest, from_ptr, copy_len});
+            return packNullToTaggedValue();
+        }
         // Extended string functions (dispatched to StringIOCodegen)
         if (func_name == "string-split") return strio_->stringSplit(op);
         if (func_name == "string-contains?") return strio_->stringContains(op);
         if (func_name == "string-index") return strio_->stringIndex(op);
         if (func_name == "string-upcase") return strio_->stringUpcase(op);
         if (func_name == "string-downcase") return strio_->stringDowncase(op);
+        // R7RS string-foldcase: same as string-downcase for ASCII
+        if (func_name == "string-foldcase") return strio_->stringDowncase(op);
+
+        // R7RS string-for-each: (string-for-each proc string)
+        // Uses alloca pattern (not PHI) because codegenClosureCall creates 15+ basic blocks
+        if (func_name == "string-for-each") {
+            Value* func_val = codegenAST(&op->call_op.variables[0]);
+            if (!func_val) return nullptr;
+            func_val = ensureTaggedValue(func_val);
+            Value* str_arg = codegenAST(&op->call_op.variables[1]);
+            if (!str_arg) return nullptr;
+            Value* ptr_int = unpackInt64FromTaggedValue(str_arg);
+            Value* str_ptr = builder->CreateIntToPtr(ptr_int, PointerType::getUnqual(*context));
+            llvm::FunctionCallee strlen_fn = module->getOrInsertFunction("strlen",
+                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
+            Value* str_len = builder->CreateCall(strlen_fn, {str_ptr});
+            // Alloca for loop index — immune to codegenClosureCall's block changes
+            Value* idx_ptr = builder->CreateAlloca(int64_type, nullptr, "sfe_idx");
+            builder->CreateStore(ConstantInt::get(int64_type, 0), idx_ptr);
+            Function* cur_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* loop_cond = BasicBlock::Create(*context, "sfe_cond", cur_func);
+            BasicBlock* loop_body = BasicBlock::Create(*context, "sfe_body", cur_func);
+            BasicBlock* loop_exit = BasicBlock::Create(*context, "sfe_exit", cur_func);
+            builder->CreateBr(loop_cond);
+            builder->SetInsertPoint(loop_cond);
+            Value* idx = builder->CreateLoad(int64_type, idx_ptr);
+            Value* done = builder->CreateICmpUGE(idx, str_len);
+            builder->CreateCondBr(done, loop_exit, loop_body);
+            builder->SetInsertPoint(loop_body);
+            Value* cur_idx = builder->CreateLoad(int64_type, idx_ptr);
+            Value* ch = builder->CreateLoad(int8_type, builder->CreateGEP(int8_type, str_ptr, cur_idx));
+            Value* ch_tagged = packCharToTaggedValue(builder->CreateZExt(ch, int64_type));
+            codegenClosureCall(func_val, {ch_tagged}, "string-for-each");
+            // After closure call, builder is at merge_bb — alloca store works from any block
+            Value* next_idx = builder->CreateAdd(cur_idx, ConstantInt::get(int64_type, 1));
+            builder->CreateStore(next_idx, idx_ptr);
+            builder->CreateBr(loop_cond);
+            builder->SetInsertPoint(loop_exit);
+            return packNullToTaggedValue();
+        }
+        // R7RS string-map: (string-map proc string) → string
+        // Uses alloca pattern (not PHI) because codegenClosureCall creates 15+ basic blocks
+        if (func_name == "string-map") {
+            Value* func_val = codegenAST(&op->call_op.variables[0]);
+            if (!func_val) return nullptr;
+            func_val = ensureTaggedValue(func_val);
+            Value* str_arg = codegenAST(&op->call_op.variables[1]);
+            if (!str_arg) return nullptr;
+            Value* ptr_int = unpackInt64FromTaggedValue(str_arg);
+            Value* str_ptr = builder->CreateIntToPtr(ptr_int, PointerType::getUnqual(*context));
+            llvm::FunctionCallee strlen_fn = module->getOrInsertFunction("strlen",
+                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
+            Value* str_len = builder->CreateCall(strlen_fn, {str_ptr});
+            Value* arena_ptr = getArenaPtr();
+            llvm::FunctionCallee alloc_fn = module->getOrInsertFunction("arena_allocate_string_with_header",
+                FunctionType::get(PointerType::getUnqual(*context),
+                    {PointerType::getUnqual(*context), int64_type}, false));
+            Value* new_str = builder->CreateCall(alloc_fn, {arena_ptr, str_len});
+            // Alloca for loop index — immune to codegenClosureCall's block changes
+            Value* idx_ptr = builder->CreateAlloca(int64_type, nullptr, "sm_idx");
+            builder->CreateStore(ConstantInt::get(int64_type, 0), idx_ptr);
+            Function* cur_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* loop_cond = BasicBlock::Create(*context, "sm_cond", cur_func);
+            BasicBlock* loop_body = BasicBlock::Create(*context, "sm_body", cur_func);
+            BasicBlock* loop_exit = BasicBlock::Create(*context, "sm_exit", cur_func);
+            builder->CreateBr(loop_cond);
+            builder->SetInsertPoint(loop_cond);
+            Value* idx = builder->CreateLoad(int64_type, idx_ptr);
+            Value* done = builder->CreateICmpUGE(idx, str_len);
+            builder->CreateCondBr(done, loop_exit, loop_body);
+            builder->SetInsertPoint(loop_body);
+            Value* cur_idx = builder->CreateLoad(int64_type, idx_ptr);
+            Value* ch = builder->CreateLoad(int8_type, builder->CreateGEP(int8_type, str_ptr, cur_idx));
+            Value* ch_tagged = packCharToTaggedValue(builder->CreateZExt(ch, int64_type));
+            Value* result_tagged = codegenClosureCall(func_val, {ch_tagged}, "string-map");
+            Value* result_char = builder->CreateTrunc(unpackInt64FromTaggedValue(result_tagged), int8_type);
+            builder->CreateStore(result_char, builder->CreateGEP(int8_type, new_str, cur_idx));
+            Value* next_idx = builder->CreateAdd(cur_idx, ConstantInt::get(int64_type, 1));
+            builder->CreateStore(next_idx, idx_ptr);
+            builder->CreateBr(loop_cond);
+            builder->SetInsertPoint(loop_exit);
+            // Null-terminate
+            builder->CreateStore(ConstantInt::get(int8_type, 0),
+                builder->CreateGEP(int8_type, new_str, str_len));
+            return packPtrToTaggedValue(new_str, ESHKOL_VALUE_HEAP_PTR);
+        }
 
         // Character functions
         if (func_name == "char?") return codegenTypePredicate(op, ESHKOL_VALUE_CHAR);
@@ -8628,6 +9590,150 @@ private:
         if (func_name == "char>?") return strio_->charCompare(op, "gt");
         if (func_name == "char<=?") return strio_->charCompare(op, "le");
         if (func_name == "char>=?") return strio_->charCompare(op, "ge");
+        // Character case conversion (R7RS)
+        if (func_name == "char-upcase" || func_name == "char-downcase") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* char_val = unpackInt64FromTaggedValue(arg);
+            Value* ch = builder->CreateTrunc(char_val, int8_type);
+            Value* result;
+            if (func_name == "char-upcase") {
+                // If ch >= 'a' && ch <= 'z' then ch - 32 else ch
+                Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
+                Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
+                Value* is_lower = builder->CreateAnd(ge_a, le_z);
+                Value* upped = builder->CreateSub(ch, ConstantInt::get(int8_type, 32));
+                result = builder->CreateSelect(is_lower, upped, ch);
+            } else {
+                // If ch >= 'A' && ch <= 'Z' then ch + 32 else ch
+                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
+                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
+                Value* is_upper = builder->CreateAnd(ge_A, le_Z);
+                Value* downed = builder->CreateAdd(ch, ConstantInt::get(int8_type, 32));
+                result = builder->CreateSelect(is_upper, downed, ch);
+            }
+            Value* result_i64 = builder->CreateZExt(result, int64_type);
+            return packCharToTaggedValue(result_i64);
+        }
+        // R7RS char-foldcase: same as char-downcase for ASCII
+        if (func_name == "char-foldcase") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* char_val = unpackInt64FromTaggedValue(arg);
+            Value* ch = builder->CreateTrunc(char_val, int8_type);
+            Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
+            Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
+            Value* is_upper = builder->CreateAnd(ge_A, le_Z);
+            Value* downed = builder->CreateAdd(ch, ConstantInt::get(int8_type, 32));
+            Value* result = builder->CreateSelect(is_upper, downed, ch);
+            return packCharToTaggedValue(builder->CreateZExt(result, int64_type));
+        }
+        // Case-insensitive character comparison (R7RS)
+        if (func_name == "char-ci=?" || func_name == "char-ci<?" ||
+            func_name == "char-ci>?" || func_name == "char-ci<=?" ||
+            func_name == "char-ci>=?") {
+            TypedValue tv1 = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue tv2 = codegenTypedAST(&op->call_op.variables[1]);
+            if (!tv1.llvm_value || !tv2.llvm_value) return nullptr;
+            Value* arg1 = typedValueToTaggedValue(tv1);
+            Value* arg2 = typedValueToTaggedValue(tv2);
+            Value* c1 = unpackInt64FromTaggedValue(arg1);
+            Value* c2 = unpackInt64FromTaggedValue(arg2);
+            Value* ch1 = builder->CreateTrunc(c1, int8_type);
+            Value* ch2 = builder->CreateTrunc(c2, int8_type);
+            // tolower both chars
+            auto toLower = [&](Value* ch) -> Value* {
+                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
+                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
+                Value* is_upper = builder->CreateAnd(ge_A, le_Z);
+                Value* lowered = builder->CreateAdd(ch, ConstantInt::get(int8_type, 32));
+                return builder->CreateSelect(is_upper, lowered, ch);
+            };
+            Value* lo1 = toLower(ch1);
+            Value* lo2 = toLower(ch2);
+            Value* result;
+            if (func_name == "char-ci=?") result = builder->CreateICmpEQ(lo1, lo2);
+            else if (func_name == "char-ci<?") result = builder->CreateICmpULT(lo1, lo2);
+            else if (func_name == "char-ci>?") result = builder->CreateICmpUGT(lo1, lo2);
+            else if (func_name == "char-ci<=?") result = builder->CreateICmpULE(lo1, lo2);
+            else result = builder->CreateICmpUGE(lo1, lo2);
+            return packBoolToTaggedValue(result);
+        }
+        // Character classification predicates (R7RS)
+        if (func_name == "char-alphabetic?" || func_name == "char-numeric?" ||
+            func_name == "char-whitespace?" || func_name == "char-upper-case?" ||
+            func_name == "char-lower-case?") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* char_val = unpackInt64FromTaggedValue(arg);
+            // Truncate to i8 for character classification
+            Value* ch = builder->CreateTrunc(char_val, int8_type);
+            Value* result = nullptr;
+            if (func_name == "char-alphabetic?") {
+                // (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
+                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
+                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
+                Value* upper = builder->CreateAnd(ge_A, le_Z);
+                Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
+                Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
+                Value* lower = builder->CreateAnd(ge_a, le_z);
+                result = builder->CreateOr(upper, lower);
+            } else if (func_name == "char-numeric?") {
+                Value* ge_0 = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, '0'));
+                Value* le_9 = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, '9'));
+                result = builder->CreateAnd(ge_0, le_9);
+            } else if (func_name == "char-whitespace?") {
+                // space, tab, newline, carriage return, form feed
+                Value* is_space = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, ' '));
+                Value* is_tab = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\t'));
+                Value* is_nl = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\n'));
+                Value* is_cr = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\r'));
+                Value* is_ff = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\f'));
+                result = builder->CreateOr(builder->CreateOr(builder->CreateOr(is_space, is_tab),
+                    builder->CreateOr(is_nl, is_cr)), is_ff);
+            } else if (func_name == "char-upper-case?") {
+                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
+                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
+                result = builder->CreateAnd(ge_A, le_Z);
+            } else { // char-lower-case?
+                Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
+                Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
+                result = builder->CreateAnd(ge_a, le_z);
+            }
+            return packBoolToTaggedValue(result);
+        }
+        // R7RS digit-value: char → int (0-9) or #f
+        if (func_name == "digit-value") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* char_val = unpackInt64FromTaggedValue(arg);
+            Value* ch = builder->CreateTrunc(char_val, int8_type);
+            Value* ge_0 = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, '0'));
+            Value* le_9 = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, '9'));
+            Value* is_digit = builder->CreateAnd(ge_0, le_9);
+            Value* digit = builder->CreateSub(ch, ConstantInt::get(int8_type, '0'));
+            Value* digit_i64 = builder->CreateZExt(digit, int64_type);
+            Value* int_result = packInt64ToTaggedValue(digit_i64);
+            Value* false_result = packBoolToTaggedValue(ConstantInt::get(int1_type, 0));
+            Function* cur_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* digit_bb = BasicBlock::Create(*context, "is_digit", cur_func);
+            BasicBlock* not_digit_bb = BasicBlock::Create(*context, "not_digit", cur_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "digit_merge", cur_func);
+            builder->CreateCondBr(is_digit, digit_bb, not_digit_bb);
+            builder->SetInsertPoint(digit_bb);
+            builder->CreateBr(merge_bb);
+            builder->SetInsertPoint(not_digit_bb);
+            builder->CreateBr(merge_bb);
+            builder->SetInsertPoint(merge_bb);
+            PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+            phi->addIncoming(int_result, digit_bb);
+            phi->addIncoming(false_result, not_digit_bb);
+            return phi;
+        }
 
         // Numeric predicates
         if (func_name == "positive?") return codegenNumericPredicate(op, "positive?");
@@ -8643,27 +9749,401 @@ private:
         if (func_name == "eq?") return codegenEq(op);
         if (func_name == "eqv?") return codegenEqv(op);
         if (func_name == "equal?") return codegenEqual(op);
+        // R7RS: boolean=? — compare two booleans
+        if (func_name == "boolean=?") {
+            TypedValue tv1 = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue tv2 = codegenTypedAST(&op->call_op.variables[1]);
+            if (!tv1.llvm_value || !tv2.llvm_value) return nullptr;
+            Value* a = typedValueToTaggedValue(tv1);
+            Value* b = typedValueToTaggedValue(tv2);
+            Value* d1 = unpackInt64FromTaggedValue(a);
+            Value* d2 = unpackInt64FromTaggedValue(b);
+            return packBoolToTaggedValue(builder->CreateICmpEQ(d1, d2));
+        }
+        // R7RS: symbol=? — compare two symbols (interned, so pointer equality)
+        if (func_name == "symbol=?") {
+            TypedValue tv1 = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue tv2 = codegenTypedAST(&op->call_op.variables[1]);
+            if (!tv1.llvm_value || !tv2.llvm_value) return nullptr;
+            Value* a = typedValueToTaggedValue(tv1);
+            Value* b = typedValueToTaggedValue(tv2);
+            Value* d1 = unpackInt64FromTaggedValue(a);
+            Value* d2 = unpackInt64FromTaggedValue(b);
+            return packBoolToTaggedValue(builder->CreateICmpEQ(d1, d2));
+        }
 
         // Handle display/newline/error operations (delegated to StringIOCodegen)
         if (func_name == "display") return strio_->display(op);
         if (func_name == "newline") return strio_->newline(op);
+
+        // R7RS write / write-shared / write-simple
+        if (func_name == "write" || func_name == "write-shared" || func_name == "write-simple") {
+            Value* arg = codegenAST(&op->call_op.variables[0]);
+            Value* tagged = ensureTaggedValue(arg);
+            // Store tagged value on stack for runtime call
+            Value* arg_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "write_arg");
+            builder->CreateStore(tagged, arg_ptr);
+            if (op->call_op.num_vars >= 2) {
+                // write to port: (write obj port)
+                Value* port_arg = codegenAST(&op->call_op.variables[1]);
+                Value* port_tagged = ensureTaggedValue(port_arg);
+                Value* fp_int = builder->CreateExtractValue(port_tagged, {4});
+                Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+                llvm::FunctionCallee write_func = module->getOrInsertFunction(
+                    "eshkol_write_value_to_port",
+                    FunctionType::get(Type::getVoidTy(*context),
+                        {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false));
+                builder->CreateCall(write_func, {arg_ptr, fp});
+            } else {
+                // write to stdout: (write obj)
+                llvm::FunctionCallee write_func = module->getOrInsertFunction(
+                    "eshkol_write_value",
+                    FunctionType::get(Type::getVoidTy(*context),
+                        {PointerType::getUnqual(*context)}, false));
+                builder->CreateCall(write_func, {arg_ptr});
+            }
+            return tagged_->packNull();
+        }
+
+        // R7RS read: parse S-expression from port (or stdin)
+        if (func_name == "read") {
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* fp;
+            if (op->call_op.num_vars >= 1) {
+                Value* port_arg = codegenAST(&op->call_op.variables[0]);
+                Value* port_tagged = ensureTaggedValue(port_arg);
+                Value* fp_int = builder->CreateExtractValue(port_tagged, {4});
+                fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+            } else {
+                fp = ConstantPointerNull::get(PointerType::getUnqual(*context));
+            }
+            Value* result_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "read_result");
+            llvm::FunctionCallee read_func = module->getOrInsertFunction("eshkol_read_sexpr",
+                FunctionType::get(Type::getVoidTy(*context),
+                    {PointerType::getUnqual(*context), PointerType::getUnqual(*context),
+                     PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(read_func, {arena_ptr, fp, result_ptr});
+            return builder->CreateLoad(tagged_value_type, result_ptr, "read_val");
+        }
+
         if (func_name == "error") return codegenError(op);
+        if (func_name == "with-exception-handler") return codegenWithExceptionHandler(op);
 
         // Handle file I/O operations
         if (func_name == "open-input-file") return strio_->openInputFile(op);
         if (func_name == "read-line") return strio_->readLine(op);
+        if (func_name == "read-string") return strio_->readString(op);
         if (func_name == "close-port") return strio_->closePort(op);
+        if (func_name == "close-input-port") return strio_->closePort(op);   // R7RS alias
+        if (func_name == "close-output-port") return strio_->closePort(op);  // R7RS alias
         if (func_name == "eof-object?") return strio_->eofObject(op);
+        // R7RS eof-object: returns the EOF sentinel value
+        if (func_name == "eof-object") {
+            // Return a tagged value with type ESHKOL_VALUE_NULL and a special marker
+            // EOF is represented as null type with data = 0xEOF magic
+            return packInt64ToTaggedValue(ConstantInt::get(int64_type, -1));
+        }
+        // R7RS textual-port?: all our ports are textual
+        if (func_name == "textual-port?") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* type = getTaggedValueType(arg);
+            Value* base_type = getBaseType(type);
+            // A port is HEAP_PTR with the port flag (0x10)
+            Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+            // All our ports are textual for now
+            return packBoolToTaggedValue(is_heap);
+        }
+        // R7RS binary-port?: check port flag bits (0x50) AND binary flag (0x04)
+        if (func_name == "binary-port?") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* type_tag = getTaggedValueType(arg);
+            // Must be a port (has 0x10 or 0x40 set)
+            Value* port_flags = builder->CreateAnd(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_PORT_ANY_FLAG));
+            Value* is_port = builder->CreateICmpNE(port_flags,
+                ConstantInt::get(int8_type, 0));
+            // Must have binary flag (0x04)
+            Value* binary_flag = builder->CreateAnd(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_PORT_BINARY_FLAG));
+            Value* has_binary = builder->CreateICmpNE(binary_flag,
+                ConstantInt::get(int8_type, 0));
+            Value* is_binary_port = builder->CreateAnd(is_port, has_binary);
+            return packBoolToTaggedValue(is_binary_port);
+        }
+        // Binary I/O operations
+        if (func_name == "open-binary-input-file") return strio_->openBinaryInputFile(op);
+        if (func_name == "open-binary-output-file") return strio_->openBinaryOutputFile(op);
+        if (func_name == "read-u8") return strio_->readU8(op);
+        if (func_name == "peek-u8") return strio_->peekU8(op);
+        if (func_name == "write-u8") return strio_->writeU8(op);
+        if (func_name == "read-bytevector") return strio_->readBytevector(op);
+        if (func_name == "write-bytevector") return strio_->writeBytevector(op);
+        if (func_name == "u8-ready?") {
+            // Like char-ready?, always return #t for file ports
+            return packBoolToTaggedValue(ConstantInt::get(int1_type, 1));
+        }
         if (func_name == "open-output-file") return strio_->openOutputFile(op);
         if (func_name == "write-string") return strio_->writeString(op);
         if (func_name == "write-line") return strio_->writeLine(op);
         if (func_name == "write-char") return strio_->writeChar(op);
         if (func_name == "flush-output-port") return strio_->flushOutputPort(op);
+        if (func_name == "read-char") return strio_->readChar(op);
+        if (func_name == "peek-char") return strio_->peekChar(op);
+        if (func_name == "char-ready?") return strio_->charReady(op);
+
+        // String port operations
+        if (func_name == "open-input-string") {
+            Value* arg = codegenAST(&op->call_op.variables[0]);
+            Value* tagged = ensureTaggedValue(arg);
+            // Extract string pointer from tagged value
+            Value* str_ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(tagged, {4}), PointerType::getUnqual(*context));
+            // Get string length via strlen
+            llvm::FunctionCallee strlen_func = module->getOrInsertFunction("strlen",
+                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
+            Value* str_len = builder->CreateCall(strlen_func, {str_ptr});
+            // Call runtime: eshkol_open_input_string(arena, str, len) -> FILE*
+            llvm::FunctionCallee open_func = module->getOrInsertFunction("eshkol_open_input_string",
+                FunctionType::get(PointerType::getUnqual(*context),
+                    {PointerType::getUnqual(*context), PointerType::getUnqual(*context), int64_type}, false));
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* fp = builder->CreateCall(open_func, {arena_ptr, str_ptr, str_len});
+            // Pack as input port tagged value
+            Value* fp_int = builder->CreatePtrToInt(fp, int64_type);
+            Value* result = llvm::UndefValue::get(tagged_value_type);
+            result = builder->CreateInsertValue(result,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x10), {0});
+            result = builder->CreateInsertValue(result, ConstantInt::get(int8_type, 0), {1});
+            result = builder->CreateInsertValue(result, ConstantInt::get(int16_type, 0), {2});
+            result = builder->CreateInsertValue(result, fp_int, {4});
+            return result;
+        }
+        if (func_name == "open-output-string") {
+            // Call runtime: eshkol_open_output_string() -> FILE*
+            llvm::FunctionCallee open_func = module->getOrInsertFunction("eshkol_open_output_string",
+                FunctionType::get(PointerType::getUnqual(*context), {}, false));
+            Value* fp = builder->CreateCall(open_func, {});
+            // Pack as output port tagged value
+            Value* fp_int = builder->CreatePtrToInt(fp, int64_type);
+            Value* result = llvm::UndefValue::get(tagged_value_type);
+            result = builder->CreateInsertValue(result,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x40), {0});
+            result = builder->CreateInsertValue(result, ConstantInt::get(int8_type, 0), {1});
+            result = builder->CreateInsertValue(result, ConstantInt::get(int16_type, 0), {2});
+            result = builder->CreateInsertValue(result, fp_int, {4});
+            return result;
+        }
+        if (func_name == "get-output-string") {
+            Value* arg = codegenAST(&op->call_op.variables[0]);
+            Value* tagged = ensureTaggedValue(arg);
+            // Extract FILE* from port
+            Value* fp_int = builder->CreateExtractValue(tagged, {4});
+            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+            // Call runtime: eshkol_get_output_string(arena, fp) -> string ptr
+            llvm::FunctionCallee get_func = module->getOrInsertFunction("eshkol_get_output_string",
+                FunctionType::get(PointerType::getUnqual(*context),
+                    {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false));
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* str_ptr = builder->CreateCall(get_func, {arena_ptr, fp});
+            // Pack as string HEAP_PTR tagged value
+            Value* str_int = builder->CreatePtrToInt(str_ptr, int64_type);
+            Value* result = llvm::UndefValue::get(tagged_value_type);
+            result = builder->CreateInsertValue(result,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR), {0});
+            result = builder->CreateInsertValue(result, ConstantInt::get(int8_type, 0), {1});
+            result = builder->CreateInsertValue(result, ConstantInt::get(int16_type, 0), {2});
+            result = builder->CreateInsertValue(result, str_int, {4});
+            return result;
+        }
+        if (func_name == "string-port?" || func_name == "input-port-open?" ||
+            func_name == "output-port-open?") {
+            Value* arg = codegenAST(&op->call_op.variables[0]);
+            Value* tagged = ensureTaggedValue(arg);
+            Value* type_tag = builder->CreateExtractValue(tagged, {0});
+            Value* is_port;
+            if (func_name == "input-port-open?") {
+                is_port = builder->CreateICmpEQ(type_tag,
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x10));
+            } else if (func_name == "output-port-open?") {
+                is_port = builder->CreateICmpEQ(type_tag,
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x40));
+            } else {
+                is_port = ConstantInt::get(Type::getInt1Ty(*context), 0);
+            }
+            return tagged_->packBool(is_port);
+        }
+
+        // R7RS default port procedures
+        if (func_name == "current-input-port" || func_name == "current-output-port" ||
+            func_name == "current-error-port") {
+            // Get the appropriate stdio FILE* global
+            const char* var_name;
+            uint8_t port_type_tag;
+            if (func_name == "current-input-port") {
+#ifdef __APPLE__
+                var_name = "__stdinp";
+#else
+                var_name = "stdin";
+#endif
+                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x10; // input port
+            } else if (func_name == "current-output-port") {
+#ifdef __APPLE__
+                var_name = "__stdoutp";
+#else
+                var_name = "stdout";
+#endif
+                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x40; // output port
+            } else {
+#ifdef __APPLE__
+                var_name = "__stderrp";
+#else
+                var_name = "stderr";
+#endif
+                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x40; // output port
+            }
+            auto* stdio_var = module->getGlobalVariable(var_name);
+            if (!stdio_var) {
+                stdio_var = new GlobalVariable(*module, PointerType::getUnqual(*context), false,
+                    GlobalVariable::ExternalLinkage, nullptr, var_name);
+            }
+            Value* file_ptr = builder->CreateLoad(PointerType::getUnqual(*context), stdio_var);
+            Value* file_int = builder->CreatePtrToInt(file_ptr, int64_type);
+
+            Value* result = UndefValue::get(tagged_value_type);
+            result = builder->CreateInsertValue(result,
+                ConstantInt::get(int8_type, port_type_tag), {0});
+            result = builder->CreateInsertValue(result,
+                ConstantInt::get(int8_type, 0), {1});
+            result = builder->CreateInsertValue(result,
+                ConstantInt::get(int16_type, 0), {2});
+            result = builder->CreateInsertValue(result, file_int, {4});
+            return result;
+        }
+
+        // R7RS port predicates
+        if (func_name == "input-port?" || func_name == "output-port?" || func_name == "port?") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* type_tag = builder->CreateExtractValue(arg, {0});
+            Value* result;
+            if (func_name == "input-port?") {
+                result = builder->CreateICmpEQ(type_tag,
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x10));
+            } else if (func_name == "output-port?") {
+                result = builder->CreateICmpEQ(type_tag,
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x40));
+            } else {
+                // port? — true for both input and output ports
+                Value* is_input = builder->CreateICmpEQ(type_tag,
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x10));
+                Value* is_output = builder->CreateICmpEQ(type_tag,
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x40));
+                result = builder->CreateOr(is_input, is_output);
+            }
+            return packBoolToTaggedValue(result);
+        }
+
+        // =========================================================================
+        // R7RS FILE PORT WRAPPERS
+        // =========================================================================
+        // call-with-port: (call-with-port port proc) → call proc with port, close after
+        if (func_name == "call-with-port") {
+            Value* port_val = codegenAST(&op->call_op.variables[0]);
+            if (!port_val) return nullptr;
+            port_val = ensureTaggedValue(port_val);
+            Value* proc_val = codegenAST(&op->call_op.variables[1]);
+            if (!proc_val) return nullptr;
+            proc_val = ensureTaggedValue(proc_val);
+            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-port");
+            // Close port: call fclose on the FILE*
+            Value* fp_int = builder->CreateExtractValue(port_val, {4});
+            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
+                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(fclose_fn, {fp});
+            return ensureTaggedValue(result);
+        }
+        // call-with-input-file: (call-with-input-file filename proc)
+        if (func_name == "call-with-input-file") {
+            Value* filename = codegenAST(&op->call_op.variables[0]);
+            if (!filename) return nullptr;
+            Value* filename_tagged = ensureTaggedValue(filename);
+            // Open file
+            Value* port_val = strio_->openInputFile(op);
+            if (!port_val) return nullptr;
+            // Call proc with port
+            Value* proc_val = codegenAST(&op->call_op.variables[1]);
+            if (!proc_val) return nullptr;
+            proc_val = ensureTaggedValue(proc_val);
+            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-input-file");
+            // Close
+            Value* fp_int = builder->CreateExtractValue(port_val, {4});
+            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
+                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(fclose_fn, {fp});
+            return ensureTaggedValue(result);
+        }
+        // call-with-output-file: (call-with-output-file filename proc)
+        if (func_name == "call-with-output-file") {
+            Value* filename = codegenAST(&op->call_op.variables[0]);
+            if (!filename) return nullptr;
+            Value* filename_tagged = ensureTaggedValue(filename);
+            Value* port_val = strio_->openOutputFile(op);
+            if (!port_val) return nullptr;
+            Value* proc_val = codegenAST(&op->call_op.variables[1]);
+            if (!proc_val) return nullptr;
+            proc_val = ensureTaggedValue(proc_val);
+            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-output-file");
+            Value* fp_int = builder->CreateExtractValue(port_val, {4});
+            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
+                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(fclose_fn, {fp});
+            return ensureTaggedValue(result);
+        }
+        // with-input-from-file: (with-input-from-file filename thunk)
+        // Opens file, calls thunk (no args), closes file, returns thunk result
+        if (func_name == "with-input-from-file") {
+            Value* port_val = strio_->openInputFile(op);
+            if (!port_val) return nullptr;
+            Value* thunk_val = codegenAST(&op->call_op.variables[1]);
+            if (!thunk_val) return nullptr;
+            thunk_val = ensureTaggedValue(thunk_val);
+            Value* result = codegenClosureCall(thunk_val, {}, "with-input-from-file");
+            Value* fp_int = builder->CreateExtractValue(port_val, {4});
+            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
+                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(fclose_fn, {fp});
+            return ensureTaggedValue(result);
+        }
+        // with-output-to-file: (with-output-to-file filename thunk)
+        if (func_name == "with-output-to-file") {
+            Value* port_val = strio_->openOutputFile(op);
+            if (!port_val) return nullptr;
+            Value* thunk_val = codegenAST(&op->call_op.variables[1]);
+            if (!thunk_val) return nullptr;
+            thunk_val = ensureTaggedValue(thunk_val);
+            Value* result = codegenClosureCall(thunk_val, {}, "with-output-to-file");
+            Value* fp_int = builder->CreateExtractValue(port_val, {4});
+            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
+                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(fclose_fn, {fp});
+            return ensureTaggedValue(result);
+        }
 
         // =========================================================================
         // SYSTEM & ENVIRONMENT OPERATIONS (delegated to SystemCodegen)
         // =========================================================================
         if (func_name == "getenv") return system_->getenv(op);
+        if (func_name == "get-environment-variable") return system_->getenv(op);  // R7RS alias
         if (func_name == "setenv") return system_->setenv(op);
         if (func_name == "unsetenv") return system_->unsetenv(op);
         if (func_name == "system") return system_->systemCall(op);
@@ -8673,6 +10153,40 @@ private:
         if (func_name == "current-time-ns") return system_->currentTimeNs(op);
         if (func_name == "exit") return system_->exitProgram(op);
         if (func_name == "command-line") return system_->commandLine(op);
+        // R7RS current-second: returns inexact TAI seconds
+        if (func_name == "current-second") {
+            Value* result = system_->currentSeconds(op);
+            if (!result) return nullptr;
+            // Convert integer seconds to inexact (double)
+            Value* int_val = safeExtractInt64(result);
+            Value* dbl_val = builder->CreateSIToFP(int_val, double_type);
+            return packDoubleToTaggedValue(dbl_val);
+        }
+        // R7RS current-jiffy: high-resolution monotonic clock as exact integer
+        if (func_name == "current-jiffy") return system_->currentTimeNs(op);
+        // R7RS jiffies-per-second: 1000000000 (nanosecond resolution)
+        if (func_name == "jiffies-per-second") {
+            return packInt64ToTaggedValue(ConstantInt::get(int64_type, 1000000000LL));
+        }
+        // R7RS emergency-exit: immediate termination without cleanup
+        if (func_name == "emergency-exit") {
+            Value* exit_code = ConstantInt::get(int32_type, 0);
+            if (op->call_op.num_vars > 0) {
+                TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+                if (tv.llvm_value) {
+                    Value* tagged = typedValueToTaggedValue(tv);
+                    exit_code = builder->CreateTrunc(safeExtractInt64(tagged), int32_type);
+                }
+            }
+            llvm::FunctionCallee exit_func = module->getOrInsertFunction("_exit",
+                FunctionType::get(void_type, {int32_type}, false));
+            builder->CreateCall(exit_func, {exit_code});
+            builder->CreateUnreachable();
+            // Create a continuation block for LLVM IR well-formedness
+            BasicBlock* cont = BasicBlock::Create(*context, "post_exit", builder->GetInsertBlock()->getParent());
+            builder->SetInsertPoint(cont);
+            return packNullToTaggedValue();
+        }
 
         // =========================================================================
         // FILE SYSTEM OPERATIONS (delegated to SystemCodegen)
@@ -8681,6 +10195,7 @@ private:
         if (func_name == "file-readable?") return system_->fileReadable(op);
         if (func_name == "file-writable?") return system_->fileWritable(op);
         if (func_name == "file-delete") return system_->fileDelete(op);
+        if (func_name == "delete-file") return system_->fileDelete(op);  // R7RS alias
         if (func_name == "file-rename") return system_->fileRename(op);
         if (func_name == "file-size") return system_->fileSize(op);
         if (func_name == "directory-exists?") return system_->directoryExists(op);
@@ -8700,6 +10215,34 @@ private:
         if (func_name == "scheme-report-environment") return codegenSchemeReportEnvironment(op);
         if (func_name == "interaction-environment") return codegenInteractionEnvironment(op);
         if (func_name == "current-environment") return codegenInteractionEnvironment(op);
+        // R7RS features: returns a list of feature identifiers
+        if (func_name == "features") {
+            static const std::vector<std::string> feature_ids = {
+                "r7rs", "eshkol", "rationals", "exact-complex",
+                "ieee-float", "full-unicode", "posix",
+#ifdef __APPLE__
+                "macosx", "darwin",
+#elif defined(__linux__)
+                "linux",
+#endif
+#if defined(__x86_64__) || defined(_M_X64)
+                "x86-64",
+#elif defined(__aarch64__) || defined(_M_ARM64)
+                "arm64",
+#endif
+                "big-endian",  // tagged values are big-endian-like
+                "eshkol-1.1",
+            };
+            Value* result = packNullToTaggedValue();
+            for (auto it = feature_ids.rbegin(); it != feature_ids.rend(); ++it) {
+                Value* sym = packPtrToTaggedValue(
+                    ctx_->internStringWithHeader(it->c_str(), HEAP_SUBTYPE_SYMBOL),
+                    ESHKOL_VALUE_HEAP_PTR);
+                Value* cons_i64 = codegenTaggedArenaConsCellFromTaggedValue(sym, result);
+                result = packPtrToTaggedValue(cons_i64, ESHKOL_VALUE_HEAP_PTR);
+            }
+            return result;
+        }
 
         // =========================================================================
         // HASH TABLE OPERATIONS (delegated to HashCodegen)
@@ -8767,6 +10310,7 @@ private:
         // any is now in stdlib.esk (core/list/higher_order.esk)
         // every is now in stdlib.esk (core/list/higher_order.esk)
         if (func_name == "apply") return codegenApply(op);
+        if (func_name == "eval") return codegenEval(op);
 
         // Handle member/association functions
         // member is now in stdlib.esk (core/list/search.esk)
@@ -8812,10 +10356,206 @@ private:
         if (func_name == "thread-pool-size") return parallel_->threadPoolInfo(op);  // Alias
         if (func_name == "thread-pool-stats") return parallel_->threadPoolStats(op);
 
+        // R7RS promises: delay/force with memoization
+        // %make-lazy-promise is produced by parser desugaring of (delay expr)
+        if (func_name == "%make-lazy-promise" || func_name == "%make-lazy-promise-force") {
+            // Argument is a thunk (lambda () expr)
+            TypedValue thunk_tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!thunk_tv.llvm_value) return nullptr;
+            Value* thunk = typedValueToTaggedValue(thunk_tv);
+
+            // Allocate promise: [forced(i64) | thunk(tagged) | cached(tagged)] = 40 bytes
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* promise_ptr = builder->CreateCall(
+                mem->getArenaAllocateWithHeader(),
+                {arena_ptr, ConstantInt::get(int64_type, 40),
+                 ConstantInt::get(int8_type, HEAP_SUBTYPE_PROMISE),
+                 ConstantInt::get(int8_type, 0)});
+
+            // Store forced = 0
+            builder->CreateStore(ConstantInt::get(int64_type, 0), promise_ptr);
+
+            // Store thunk at offset 8
+            Value* thunk_slot = builder->CreateGEP(int8_type, promise_ptr,
+                ConstantInt::get(int64_type, 8));
+            Value* thunk_slot_typed = builder->CreatePointerCast(thunk_slot, PointerType::getUnqual(tagged_value_type));
+            builder->CreateStore(thunk, thunk_slot_typed);
+
+            // Store cached = null at offset 24
+            Value* cached_slot = builder->CreateGEP(int8_type, promise_ptr,
+                ConstantInt::get(int64_type, 24));
+            Value* cached_slot_typed = builder->CreatePointerCast(cached_slot, PointerType::getUnqual(tagged_value_type));
+            builder->CreateStore(packNullToTaggedValue(), cached_slot_typed);
+
+            return packPtrToTaggedValue(promise_ptr, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        if (func_name == "make-promise") {
+            // (make-promise val) — create already-forced promise
+            TypedValue val_tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!val_tv.llvm_value) return nullptr;
+            Value* val = typedValueToTaggedValue(val_tv);
+
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* promise_ptr = builder->CreateCall(
+                mem->getArenaAllocateWithHeader(),
+                {arena_ptr, ConstantInt::get(int64_type, 40),
+                 ConstantInt::get(int8_type, HEAP_SUBTYPE_PROMISE),
+                 ConstantInt::get(int8_type, 0)});
+
+            // forced = 1
+            builder->CreateStore(ConstantInt::get(int64_type, 1), promise_ptr);
+
+            // thunk = null (not needed)
+            Value* thunk_slot = builder->CreateGEP(int8_type, promise_ptr,
+                ConstantInt::get(int64_type, 8));
+            Value* thunk_slot_typed = builder->CreatePointerCast(thunk_slot, PointerType::getUnqual(tagged_value_type));
+            builder->CreateStore(packNullToTaggedValue(), thunk_slot_typed);
+
+            // cached = val
+            Value* cached_slot = builder->CreateGEP(int8_type, promise_ptr,
+                ConstantInt::get(int64_type, 24));
+            Value* cached_slot_typed = builder->CreatePointerCast(cached_slot, PointerType::getUnqual(tagged_value_type));
+            builder->CreateStore(val, cached_slot_typed);
+
+            return packPtrToTaggedValue(promise_ptr, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        if (func_name == "promise?") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+
+            // Check: type == HEAP_PTR && header subtype == HEAP_SUBTYPE_PROMISE
+            Value* type_tag = builder->CreateExtractValue(arg, {0});
+            Value* is_heap = builder->CreateICmpEQ(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* check_sub_bb = BasicBlock::Create(*context, "promise_check_sub", current_func);
+            BasicBlock* false_bb = BasicBlock::Create(*context, "promise_false", current_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "promise_merge", current_func);
+
+            builder->CreateCondBr(is_heap, check_sub_bb, false_bb);
+
+            builder->SetInsertPoint(check_sub_bb);
+            Value* ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
+            Value* header = builder->CreateLoad(int8_type,
+                builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));
+            Value* is_promise = builder->CreateICmpEQ(header,
+                ConstantInt::get(int8_type, HEAP_SUBTYPE_PROMISE));
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(false_bb);
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(merge_bb);
+            PHINode* phi = builder->CreatePHI(Type::getInt1Ty(*context), 2, "is_promise");
+            phi->addIncoming(is_promise, check_sub_bb);
+            phi->addIncoming(ConstantInt::getFalse(*context), false_bb);
+            return packBoolToTaggedValue(phi);
+        }
+
         // Handle future primitives - DELEGATED to ParallelCodegen
         if (func_name == "future") return parallel_->future(op);
-        if (func_name == "force") return parallel_->force(op);
         if (func_name == "future-ready?") return parallel_->futureReady(op);
+
+        // force: handles R7RS promises and falls through to parallel futures
+        if (func_name == "force") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+
+            // Check if it's a HEAP_PTR with HEAP_SUBTYPE_PROMISE header
+            Value* type_tag = builder->CreateExtractValue(arg, {0});
+            Value* is_heap = builder->CreateICmpEQ(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* check_sub_bb = BasicBlock::Create(*context, "force_check_sub", current_func);
+            BasicBlock* promise_bb = BasicBlock::Create(*context, "force_promise", current_func);
+            BasicBlock* not_promise_bb = BasicBlock::Create(*context, "force_not_promise", current_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "force_merge", current_func);
+
+            builder->CreateCondBr(is_heap, check_sub_bb, not_promise_bb);
+
+            // Check subtype header
+            builder->SetInsertPoint(check_sub_bb);
+            Value* ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
+            Value* header = builder->CreateLoad(int8_type,
+                builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));
+            Value* is_promise = builder->CreateICmpEQ(header,
+                ConstantInt::get(int8_type, HEAP_SUBTYPE_PROMISE));
+            builder->CreateCondBr(is_promise, promise_bb, not_promise_bb);
+
+            // Promise path: check forced flag, call thunk if needed, cache result
+            builder->SetInsertPoint(promise_bb);
+            Value* forced_flag = builder->CreateLoad(int64_type, ptr, "forced");
+            Value* already_forced = builder->CreateICmpNE(forced_flag,
+                ConstantInt::get(int64_type, 0));
+
+            BasicBlock* cached_bb = BasicBlock::Create(*context, "promise_cached", current_func);
+            BasicBlock* eval_bb = BasicBlock::Create(*context, "promise_eval", current_func);
+            BasicBlock* promise_done_bb = BasicBlock::Create(*context, "promise_done", current_func);
+
+            builder->CreateCondBr(already_forced, cached_bb, eval_bb);
+
+            // Already forced: return cached value
+            builder->SetInsertPoint(cached_bb);
+            Value* cached_slot = builder->CreateGEP(int8_type, ptr,
+                ConstantInt::get(int64_type, 24));
+            Value* cached_typed = builder->CreatePointerCast(cached_slot,
+                PointerType::getUnqual(tagged_value_type));
+            Value* cached_val = builder->CreateLoad(tagged_value_type, cached_typed, "cached");
+            builder->CreateBr(promise_done_bb);
+
+            // Not forced: call thunk, cache, set forced
+            builder->SetInsertPoint(eval_bb);
+            Value* thunk_slot = builder->CreateGEP(int8_type, ptr,
+                ConstantInt::get(int64_type, 8));
+            Value* thunk_typed = builder->CreatePointerCast(thunk_slot,
+                PointerType::getUnqual(tagged_value_type));
+            Value* thunk = builder->CreateLoad(tagged_value_type, thunk_typed, "thunk");
+
+            // Call the thunk (it's a closure with 0 args)
+            Value* thunk_ptr_int = builder->CreateExtractValue(thunk, {4});
+            Value* thunk_ptr = builder->CreateIntToPtr(thunk_ptr_int, PointerType::getUnqual(*context));
+            // Load function pointer from closure struct (first field)
+            Value* func_ptr_val = builder->CreateLoad(PointerType::getUnqual(*context), thunk_ptr, "thunk_fn");
+            // Call: func_ptr(closure)
+            FunctionType* thunk_fn_type = FunctionType::get(tagged_value_type,
+                {PointerType::getUnqual(*context)}, false);
+            Value* result = builder->CreateCall(thunk_fn_type, func_ptr_val, {thunk_ptr}, "thunk_result");
+
+            // Cache the result
+            Value* eval_cached_slot = builder->CreateGEP(int8_type, ptr,
+                ConstantInt::get(int64_type, 24));
+            Value* eval_cached_typed = builder->CreatePointerCast(eval_cached_slot,
+                PointerType::getUnqual(tagged_value_type));
+            builder->CreateStore(result, eval_cached_typed);
+
+            // Set forced flag
+            builder->CreateStore(ConstantInt::get(int64_type, 1), ptr);
+            builder->CreateBr(promise_done_bb);
+
+            builder->SetInsertPoint(promise_done_bb);
+            PHINode* promise_result = builder->CreatePHI(tagged_value_type, 2, "promise_val");
+            promise_result->addIncoming(cached_val, cached_bb);
+            promise_result->addIncoming(result, eval_bb);
+            builder->CreateBr(merge_bb);
+
+            // Not a promise: return value as-is (R7RS: force on non-promise returns it)
+            builder->SetInsertPoint(not_promise_bb);
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(merge_bb);
+            PHINode* final_result = builder->CreatePHI(tagged_value_type, 2, "force_result");
+            final_result->addIncoming(promise_result, promise_done_bb);
+            final_result->addIncoming(arg, not_promise_bb);
+            return final_result;
+        }
 
         // Handle complex number operations
         if (func_name == "make-rectangular") return codegenMakeRectangular(op);
@@ -8850,9 +10590,582 @@ private:
         if (func_name == "last") return codegenLast(op);
         if (func_name == "last-pair") return codegenLastPair(op);
         
+        // =========================================================================
+        // R7RS RATIONAL NUMBERS (exact quotient type)
+        // Layout: [header(-8) | numerator(i64,+0) | denominator(i64,+8)]
+        // =========================================================================
+        if (func_name == "rational?" || func_name == "exact-rational?") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+
+            // Rational? is true for: INT64 (integers are rational) OR HEAP_PTR+RATIONAL
+            Value* type_tag = builder->CreateExtractValue(arg, {0});
+            Value* is_int = builder->CreateICmpEQ(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* check_heap_bb = BasicBlock::Create(*context, "rat_check_heap", current_func);
+            BasicBlock* true_bb = BasicBlock::Create(*context, "rat_true", current_func);
+            BasicBlock* false_bb = BasicBlock::Create(*context, "rat_false", current_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "rat_merge", current_func);
+
+            builder->CreateCondBr(is_int, true_bb, check_heap_bb);
+
+            builder->SetInsertPoint(check_heap_bb);
+            Value* is_heap = builder->CreateICmpEQ(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+            BasicBlock* check_sub_bb = BasicBlock::Create(*context, "rat_check_sub", current_func);
+            builder->CreateCondBr(is_heap, check_sub_bb, false_bb);
+
+            builder->SetInsertPoint(check_sub_bb);
+            Value* ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
+            Value* header = builder->CreateLoad(int8_type,
+                builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));
+            Value* is_rational = builder->CreateICmpEQ(header,
+                ConstantInt::get(int8_type, HEAP_SUBTYPE_RATIONAL));
+            builder->CreateCondBr(is_rational, true_bb, false_bb);
+
+            builder->SetInsertPoint(true_bb);
+            builder->CreateBr(merge_bb);
+            builder->SetInsertPoint(false_bb);
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(merge_bb);
+            PHINode* phi = builder->CreatePHI(Type::getInt1Ty(*context), 2);
+            phi->addIncoming(ConstantInt::getTrue(*context), true_bb);
+            phi->addIncoming(ConstantInt::getFalse(*context), false_bb);
+            return packBoolToTaggedValue(phi);
+        }
+
+        if (func_name == "numerator") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+
+            // If INT64, numerator is the value itself
+            // If HEAP_PTR+RATIONAL, extract numerator field
+            Value* type_tag = builder->CreateExtractValue(arg, {0});
+            Value* is_int = builder->CreateICmpEQ(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* int_bb = BasicBlock::Create(*context, "num_int", current_func);
+            BasicBlock* rat_bb = BasicBlock::Create(*context, "num_rat", current_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "num_merge", current_func);
+
+            builder->CreateCondBr(is_int, int_bb, rat_bb);
+
+            builder->SetInsertPoint(int_bb);
+            Value* int_val = builder->CreateExtractValue(arg, {4});
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(rat_bb);
+            Value* ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
+            Value* num = builder->CreateLoad(int64_type, ptr, "numerator");
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(merge_bb);
+            PHINode* phi = builder->CreatePHI(int64_type, 2);
+            phi->addIncoming(int_val, int_bb);
+            phi->addIncoming(num, rat_bb);
+            return packInt64ToTaggedValue(phi);
+        }
+
+        if (func_name == "denominator") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+
+            // If INT64, denominator is 1
+            // If HEAP_PTR+RATIONAL, extract denominator field
+            Value* type_tag = builder->CreateExtractValue(arg, {0});
+            Value* is_int = builder->CreateICmpEQ(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* int_bb = BasicBlock::Create(*context, "den_int", current_func);
+            BasicBlock* rat_bb = BasicBlock::Create(*context, "den_rat", current_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "den_merge", current_func);
+
+            builder->CreateCondBr(is_int, int_bb, rat_bb);
+
+            builder->SetInsertPoint(int_bb);
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(rat_bb);
+            Value* ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
+            Value* denom_ptr = builder->CreateGEP(int8_type, ptr,
+                ConstantInt::get(int64_type, 8));
+            Value* denom = builder->CreateLoad(int64_type, denom_ptr, "denominator");
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(merge_bb);
+            PHINode* phi = builder->CreatePHI(int64_type, 2);
+            phi->addIncoming(ConstantInt::get(int64_type, 1), int_bb);
+            phi->addIncoming(denom, rat_bb);
+            return packInt64ToTaggedValue(phi);
+        }
+
+        // (make-rational num denom) — explicit rational constructor
+        if (func_name == "make-rational" || func_name == "/rational") {
+            TypedValue num_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue den_tv = codegenTypedAST(&op->call_op.variables[1]);
+            if (!num_tv.llvm_value || !den_tv.llvm_value) return nullptr;
+            Value* num = unpackInt64FromTaggedValue(typedValueToTaggedValue(num_tv));
+            Value* den = unpackInt64FromTaggedValue(typedValueToTaggedValue(den_tv));
+
+            // Call runtime: eshkol_rational_create(arena, num, denom)
+            Function* create_fn = module->getFunction("eshkol_rational_create");
+            if (!create_fn) {
+                FunctionType* ft = FunctionType::get(PointerType::getUnqual(*context),
+                    {PointerType::getUnqual(*context), int64_type, int64_type}, false);
+                create_fn = Function::Create(ft, Function::ExternalLinkage,
+                    "eshkol_rational_create", module.get());
+            }
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* rat_ptr = builder->CreateCall(create_fn, {arena_ptr, num, den});
+            return packPtrToTaggedValue(rat_ptr, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        // (rationalize x epsilon) — R7RS: simplest rational within epsilon of x
+        if (func_name == "rationalize") {
+            if (op->call_op.num_vars != 2) {
+                eshkol_error("rationalize requires exactly 2 arguments");
+                return nullptr;
+            }
+            TypedValue x_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue eps_tv = codegenTypedAST(&op->call_op.variables[1]);
+            if (!x_tv.llvm_value || !eps_tv.llvm_value) return nullptr;
+            Value* x_tagged = typedValueToTaggedValue(x_tv);
+            Value* eps_tagged = typedValueToTaggedValue(eps_tv);
+
+            // Allocate stack space for args and result
+            auto* tvTy = tagged_value_type;
+            Value* x_alloca = builder->CreateAlloca(tvTy, nullptr, "rat_x");
+            Value* eps_alloca = builder->CreateAlloca(tvTy, nullptr, "rat_eps");
+            Value* result_alloca = builder->CreateAlloca(tvTy, nullptr, "rat_result");
+            builder->CreateStore(x_tagged, x_alloca);
+            builder->CreateStore(eps_tagged, eps_alloca);
+
+            // Declare runtime function
+            Function* rat_fn = module->getFunction("eshkol_rationalize_tagged");
+            if (!rat_fn) {
+                auto* ptrTy = PointerType::getUnqual(*context);
+                FunctionType* ft = FunctionType::get(Type::getVoidTy(*context),
+                    {ptrTy, ptrTy, ptrTy, ptrTy}, false);
+                rat_fn = Function::Create(ft, Function::ExternalLinkage,
+                    "eshkol_rationalize_tagged", module.get());
+            }
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            builder->CreateCall(rat_fn, {arena_ptr, x_alloca, eps_alloca, result_alloca});
+            return builder->CreateLoad(tvTy, result_alloca, "rationalize_result");
+        }
+
+        // =========================================================================
+        // R7RS BYTEVECTORS
+        // =========================================================================
+        // R7RS Parameter Objects
+        // =========================================================================
+        if (func_name == "make-parameter") {
+            // (make-parameter default-value)
+            if (op->call_op.num_vars < 1) return nullptr;
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* default_val = typedValueToTaggedValue(tv);
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            // Call eshkol_make_parameter(arena, default_val) — pass tagged value by pointer
+            FunctionType* mkp_type = FunctionType::get(PointerType::getUnqual(*context),
+                {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false);
+            FunctionCallee mkp_fn = module->getOrInsertFunction("eshkol_make_parameter_ptr", mkp_type);
+            // Store default_val to stack slot
+            Value* val_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "param_default");
+            builder->CreateStore(default_val, val_alloca);
+            Value* param_ptr = builder->CreateCall(mkp_fn, {arena_ptr, val_alloca});
+            return packPtrToTaggedValue(param_ptr, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        // =========================================================================
+        // R7RS Bytevector Operations
+        // Layout: [header(-8) | length(i64,+0) | data(uint8[],+8)]
+        // =========================================================================
+        if (func_name == "make-bytevector") {
+            // (make-bytevector k) or (make-bytevector k byte)
+            TypedValue len_tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!len_tv.llvm_value) return nullptr;
+            Value* len_tagged = typedValueToTaggedValue(len_tv);
+            Value* length = unpackInt64FromTaggedValue(len_tagged);
+
+            Value* fill_byte = ConstantInt::get(int8_type, 0);
+            if (op->call_op.num_vars >= 2) {
+                TypedValue fill_tv = codegenTypedAST(&op->call_op.variables[1]);
+                if (!fill_tv.llvm_value) return nullptr;
+                Value* fill_tagged = typedValueToTaggedValue(fill_tv);
+                Value* fill_i64 = unpackInt64FromTaggedValue(fill_tagged);
+                fill_byte = builder->CreateTrunc(fill_i64, int8_type);
+            }
+
+            // Allocate: 8 (length) + k (data)
+            Value* data_size = builder->CreateAdd(length, ConstantInt::get(int64_type, 8));
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* bv_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
+                {arena_ptr, data_size,
+                 ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
+                 ConstantInt::get(int8_type, 0)});
+
+            // Store length
+            builder->CreateStore(length, bv_ptr);
+
+            // Memset data to fill_byte
+            Value* data_ptr = builder->CreateGEP(int8_type, bv_ptr,
+                ConstantInt::get(int64_type, 8));
+            builder->CreateMemSet(data_ptr, fill_byte, length, llvm::MaybeAlign(1));
+
+            return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        if (func_name == "bytevector") {
+            // (bytevector byte ...)
+            uint64_t n = op->call_op.num_vars;
+            Value* data_size = ConstantInt::get(int64_type, n + 8);
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* bv_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
+                {arena_ptr, data_size,
+                 ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
+                 ConstantInt::get(int8_type, 0)});
+
+            builder->CreateStore(ConstantInt::get(int64_type, n), bv_ptr);
+            Value* data_ptr = builder->CreateGEP(int8_type, bv_ptr,
+                ConstantInt::get(int64_type, 8));
+
+            for (uint64_t i = 0; i < n; i++) {
+                TypedValue elem_tv = codegenTypedAST(&op->call_op.variables[i]);
+                if (!elem_tv.llvm_value) return nullptr;
+                Value* elem_tagged = typedValueToTaggedValue(elem_tv);
+                Value* byte_val = builder->CreateTrunc(
+                    unpackInt64FromTaggedValue(elem_tagged), int8_type);
+                Value* dest = builder->CreateGEP(int8_type, data_ptr,
+                    ConstantInt::get(int64_type, i));
+                builder->CreateStore(byte_val, dest);
+            }
+
+            return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        if (func_name == "bytevector-length") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
+            Value* len = builder->CreateLoad(int64_type, ptr, "bv_len");
+            return packInt64ToTaggedValue(len);
+        }
+
+        if (func_name == "bytevector-u8-ref") {
+            TypedValue bv_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue idx_tv = codegenTypedAST(&op->call_op.variables[1]);
+            if (!bv_tv.llvm_value || !idx_tv.llvm_value) return nullptr;
+            Value* bv = typedValueToTaggedValue(bv_tv);
+            Value* idx = typedValueToTaggedValue(idx_tv);
+            Value* ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(bv, {4}), PointerType::getUnqual(*context));
+            Value* data_ptr = builder->CreateGEP(int8_type, ptr,
+                ConstantInt::get(int64_type, 8));
+            Value* idx_i64 = unpackInt64FromTaggedValue(idx);
+            Value* byte_ptr = builder->CreateGEP(int8_type, data_ptr, idx_i64);
+            Value* byte_val = builder->CreateLoad(int8_type, byte_ptr, "bv_byte");
+            Value* byte_i64 = builder->CreateZExt(byte_val, int64_type);
+            return packInt64ToTaggedValue(byte_i64);
+        }
+
+        if (func_name == "bytevector-u8-set!") {
+            TypedValue bv_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue idx_tv = codegenTypedAST(&op->call_op.variables[1]);
+            TypedValue val_tv = codegenTypedAST(&op->call_op.variables[2]);
+            if (!bv_tv.llvm_value || !idx_tv.llvm_value || !val_tv.llvm_value) return nullptr;
+            Value* bv = typedValueToTaggedValue(bv_tv);
+            Value* idx = typedValueToTaggedValue(idx_tv);
+            Value* val = typedValueToTaggedValue(val_tv);
+            Value* ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(bv, {4}), PointerType::getUnqual(*context));
+            Value* data_ptr = builder->CreateGEP(int8_type, ptr,
+                ConstantInt::get(int64_type, 8));
+            Value* idx_i64 = unpackInt64FromTaggedValue(idx);
+            Value* byte_ptr = builder->CreateGEP(int8_type, data_ptr, idx_i64);
+            Value* byte_val = builder->CreateTrunc(
+                unpackInt64FromTaggedValue(val), int8_type);
+            builder->CreateStore(byte_val, byte_ptr);
+            return packNullToTaggedValue();
+        }
+
+        if (func_name == "bytevector?") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = typedValueToTaggedValue(tv);
+            Value* type_tag = builder->CreateExtractValue(arg, {0});
+            Value* is_heap = builder->CreateICmpEQ(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* check_bb = BasicBlock::Create(*context, "bv_check", current_func);
+            BasicBlock* false_bb = BasicBlock::Create(*context, "bv_false", current_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "bv_merge", current_func);
+            builder->CreateCondBr(is_heap, check_bb, false_bb);
+
+            builder->SetInsertPoint(check_bb);
+            Value* ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
+            Value* header = builder->CreateLoad(int8_type,
+                builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));
+            Value* is_bv = builder->CreateICmpEQ(header,
+                ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR));
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(false_bb);
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(merge_bb);
+            PHINode* phi = builder->CreatePHI(Type::getInt1Ty(*context), 2);
+            phi->addIncoming(is_bv, check_bb);
+            phi->addIncoming(ConstantInt::getFalse(*context), false_bb);
+            return packBoolToTaggedValue(phi);
+        }
+
+        if (func_name == "bytevector-copy") {
+            // (bytevector-copy bv [start [end]]) — returns new bytevector
+            TypedValue bv_tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!bv_tv.llvm_value) return nullptr;
+            Value* src = typedValueToTaggedValue(bv_tv);
+            Value* src_ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(src, {4}), PointerType::getUnqual(*context));
+            Value* src_len = builder->CreateLoad(int64_type, src_ptr, "bv_src_len");
+
+            Value* start = ConstantInt::get(int64_type, 0);
+            Value* end = src_len;
+            if (op->call_op.num_vars >= 2) {
+                TypedValue s_tv = codegenTypedAST(&op->call_op.variables[1]);
+                if (!s_tv.llvm_value) return nullptr;
+                start = unpackInt64FromTaggedValue(typedValueToTaggedValue(s_tv));
+            }
+            if (op->call_op.num_vars >= 3) {
+                TypedValue e_tv = codegenTypedAST(&op->call_op.variables[2]);
+                if (!e_tv.llvm_value) return nullptr;
+                end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
+            }
+            Value* new_len = builder->CreateSub(end, start);
+
+            // Allocate new bytevector
+            Value* data_size = builder->CreateAdd(new_len, ConstantInt::get(int64_type, 8));
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* new_bv = builder->CreateCall(mem->getArenaAllocateWithHeader(),
+                {arena_ptr, data_size,
+                 ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
+                 ConstantInt::get(int8_type, 0)});
+            builder->CreateStore(new_len, new_bv);
+
+            Value* new_data = builder->CreateGEP(int8_type, new_bv,
+                ConstantInt::get(int64_type, 8));
+            Value* src_data = builder->CreateGEP(int8_type, src_ptr,
+                builder->CreateAdd(ConstantInt::get(int64_type, 8), start));
+            builder->CreateMemCpy(new_data, llvm::MaybeAlign(1),
+                src_data, llvm::MaybeAlign(1), new_len);
+
+            return packPtrToTaggedValue(new_bv, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        if (func_name == "bytevector-copy!") {
+            // (bytevector-copy! to at from [start [end]])
+            TypedValue to_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue at_tv = codegenTypedAST(&op->call_op.variables[1]);
+            TypedValue from_tv = codegenTypedAST(&op->call_op.variables[2]);
+            if (!to_tv.llvm_value || !at_tv.llvm_value || !from_tv.llvm_value) return nullptr;
+
+            Value* to_ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(typedValueToTaggedValue(to_tv), {4}),
+                PointerType::getUnqual(*context));
+            Value* at_idx = unpackInt64FromTaggedValue(typedValueToTaggedValue(at_tv));
+            Value* from_ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(typedValueToTaggedValue(from_tv), {4}),
+                PointerType::getUnqual(*context));
+            Value* from_len = builder->CreateLoad(int64_type, from_ptr, "bv_from_len");
+
+            Value* start = ConstantInt::get(int64_type, 0);
+            Value* end = from_len;
+            if (op->call_op.num_vars >= 4) {
+                TypedValue s_tv = codegenTypedAST(&op->call_op.variables[3]);
+                if (!s_tv.llvm_value) return nullptr;
+                start = unpackInt64FromTaggedValue(typedValueToTaggedValue(s_tv));
+            }
+            if (op->call_op.num_vars >= 5) {
+                TypedValue e_tv = codegenTypedAST(&op->call_op.variables[4]);
+                if (!e_tv.llvm_value) return nullptr;
+                end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
+            }
+            Value* count = builder->CreateSub(end, start);
+
+            Value* dest = builder->CreateGEP(int8_type, to_ptr,
+                builder->CreateAdd(ConstantInt::get(int64_type, 8), at_idx));
+            Value* src_start = builder->CreateGEP(int8_type, from_ptr,
+                builder->CreateAdd(ConstantInt::get(int64_type, 8), start));
+            builder->CreateMemMove(dest, llvm::MaybeAlign(1),
+                src_start, llvm::MaybeAlign(1), count);
+
+            return packNullToTaggedValue();
+        }
+
+        if (func_name == "bytevector-append") {
+            // (bytevector-append bv ...)
+            uint64_t n = op->call_op.num_vars;
+            if (n == 0) {
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* bv = builder->CreateCall(mem->getArenaAllocateWithHeader(),
+                    {arena_ptr, ConstantInt::get(int64_type, 8),
+                     ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
+                     ConstantInt::get(int8_type, 0)});
+                builder->CreateStore(ConstantInt::get(int64_type, 0), bv);
+                return packPtrToTaggedValue(bv, ESHKOL_VALUE_HEAP_PTR);
+            }
+
+            std::vector<Value*> ptrs, lens;
+            for (uint64_t i = 0; i < n; i++) {
+                TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
+                if (!tv.llvm_value) return nullptr;
+                Value* tagged = typedValueToTaggedValue(tv);
+                Value* ptr = builder->CreateIntToPtr(
+                    builder->CreateExtractValue(tagged, {4}), PointerType::getUnqual(*context));
+                Value* len = builder->CreateLoad(int64_type, ptr);
+                ptrs.push_back(ptr);
+                lens.push_back(len);
+            }
+
+            Value* total = lens[0];
+            for (uint64_t i = 1; i < n; i++) {
+                total = builder->CreateAdd(total, lens[i]);
+            }
+
+            Value* data_size = builder->CreateAdd(total, ConstantInt::get(int64_type, 8));
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* new_bv = builder->CreateCall(mem->getArenaAllocateWithHeader(),
+                {arena_ptr, data_size,
+                 ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
+                 ConstantInt::get(int8_type, 0)});
+            builder->CreateStore(total, new_bv);
+
+            Value* new_data = builder->CreateGEP(int8_type, new_bv,
+                ConstantInt::get(int64_type, 8));
+            Value* offset = ConstantInt::get(int64_type, 0);
+            for (uint64_t i = 0; i < n; i++) {
+                Value* src_data = builder->CreateGEP(int8_type, ptrs[i],
+                    ConstantInt::get(int64_type, 8));
+                Value* dest = builder->CreateGEP(int8_type, new_data, offset);
+                builder->CreateMemCpy(dest, llvm::MaybeAlign(1),
+                    src_data, llvm::MaybeAlign(1), lens[i]);
+                offset = builder->CreateAdd(offset, lens[i]);
+            }
+
+            return packPtrToTaggedValue(new_bv, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        if (func_name == "utf8->string") {
+            // (utf8->string bv [start [end]]) — bytevector to string
+            TypedValue bv_tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!bv_tv.llvm_value) return nullptr;
+            Value* bv = typedValueToTaggedValue(bv_tv);
+            Value* bv_ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(bv, {4}), PointerType::getUnqual(*context));
+            Value* bv_len = builder->CreateLoad(int64_type, bv_ptr);
+
+            Value* start = ConstantInt::get(int64_type, 0);
+            Value* end = bv_len;
+            if (op->call_op.num_vars >= 2) {
+                TypedValue s_tv = codegenTypedAST(&op->call_op.variables[1]);
+                if (!s_tv.llvm_value) return nullptr;
+                start = unpackInt64FromTaggedValue(typedValueToTaggedValue(s_tv));
+            }
+            if (op->call_op.num_vars >= 3) {
+                TypedValue e_tv = codegenTypedAST(&op->call_op.variables[2]);
+                if (!e_tv.llvm_value) return nullptr;
+                end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
+            }
+            Value* str_len = builder->CreateSub(end, start);
+
+            // Allocate string with header: str_len + 1 (null terminator)
+            Value* str_alloc_size = builder->CreateAdd(str_len, ConstantInt::get(int64_type, 1));
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* str_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
+                {arena_ptr, str_alloc_size,
+                 ConstantInt::get(int8_type, HEAP_SUBTYPE_STRING),
+                 ConstantInt::get(int8_type, 0)});
+
+            // Copy bytes
+            Value* bv_data = builder->CreateGEP(int8_type, bv_ptr,
+                builder->CreateAdd(ConstantInt::get(int64_type, 8), start));
+            builder->CreateMemCpy(str_ptr, llvm::MaybeAlign(1),
+                bv_data, llvm::MaybeAlign(1), str_len);
+
+            // Null-terminate
+            Value* null_pos = builder->CreateGEP(int8_type, str_ptr, str_len);
+            builder->CreateStore(ConstantInt::get(int8_type, 0), null_pos);
+
+            return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        if (func_name == "string->utf8") {
+            // (string->utf8 s [start [end]]) — string to bytevector
+            TypedValue str_tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!str_tv.llvm_value) return nullptr;
+            Value* str = typedValueToTaggedValue(str_tv);
+            Value* str_ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(str, {4}), PointerType::getUnqual(*context));
+
+            // Get string length via strlen
+            Function* strlen_fn = module->getFunction("strlen");
+            if (!strlen_fn) {
+                FunctionType* ft = FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false);
+                strlen_fn = Function::Create(ft, Function::ExternalLinkage, "strlen", module.get());
+            }
+            Value* full_len = builder->CreateCall(strlen_fn, {str_ptr});
+
+            Value* start = ConstantInt::get(int64_type, 0);
+            Value* end = full_len;
+            if (op->call_op.num_vars >= 2) {
+                TypedValue s_tv = codegenTypedAST(&op->call_op.variables[1]);
+                if (!s_tv.llvm_value) return nullptr;
+                start = unpackInt64FromTaggedValue(typedValueToTaggedValue(s_tv));
+            }
+            if (op->call_op.num_vars >= 3) {
+                TypedValue e_tv = codegenTypedAST(&op->call_op.variables[2]);
+                if (!e_tv.llvm_value) return nullptr;
+                end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
+            }
+            Value* bv_len = builder->CreateSub(end, start);
+
+            // Allocate bytevector: 8 (length) + bv_len (data)
+            Value* data_size = builder->CreateAdd(bv_len, ConstantInt::get(int64_type, 8));
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* bv_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
+                {arena_ptr, data_size,
+                 ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
+                 ConstantInt::get(int8_type, 0)});
+            builder->CreateStore(bv_len, bv_ptr);
+
+            // Copy string bytes into bytevector data
+            Value* bv_data = builder->CreateGEP(int8_type, bv_ptr,
+                ConstantInt::get(int64_type, 8));
+            Value* str_start = builder->CreateGEP(int8_type, str_ptr, start);
+            builder->CreateMemCpy(bv_data, llvm::MaybeAlign(1),
+                str_start, llvm::MaybeAlign(1), bv_len);
+
+            return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
+        }
+
         // Handle tensor operations (numerical arrays) - MIGRATED to TensorCodegen
         if (func_name == "tensor-get") return tensor_->tensorGet(op);
-        if (func_name == "vref") return codegenTensorVectorRef(op);  // Tensor 1D access (AD-aware, stays here)
+        if (func_name == "vref" || func_name == "tensor-ref") return codegenTensorVectorRef(op);  // Tensor 1D access (AD-aware, stays here)
         if (func_name == "tensor-set") return tensor_->tensorSet(op);
 
         // Scheme vectors (heterogeneous - can hold any type) - MIGRATED to CollectionCodegen
@@ -8863,14 +11176,210 @@ private:
         if (func_name == "vector-ref") return coll_->vectorRef(op);
         if (func_name == "vector-set!") return coll_->vectorSet(op);
         if (func_name == "vector-length") return coll_->vectorLength(op);
+        if (func_name == "vector-copy!") return coll_->vectorCopy(op);
+        if (func_name == "vector-append") return coll_->vectorAppend(op);
+        if (func_name == "vector-fill!") return coll_->vectorFill(op);
+        if (func_name == "vector->list") return coll_->vectorToList(op);
+        if (func_name == "list->vector") return coll_->listToVector(op);
+        // R7RS vector-for-each: (vector-for-each proc vector)
+        // Handles both Scheme vectors (16-byte tagged elements) and tensors (8-byte doubles)
+        // Uses alloca pattern (not PHI) because codegenClosureCall creates 15+ basic blocks
+        if (func_name == "vector-for-each") {
+            Value* func_val = codegenAST(&op->call_op.variables[0]);
+            if (!func_val) return nullptr;
+            func_val = ensureTaggedValue(func_val);
+            Value* vec_arg = codegenAST(&op->call_op.variables[1]);
+            if (!vec_arg) return nullptr;
+            vec_arg = ensureTaggedValue(vec_arg);
+            Value* vec_ptr_int = unpackInt64FromTaggedValue(vec_arg);
+            Value* vec_ptr = builder->CreateIntToPtr(vec_ptr_int, PointerType::getUnqual(*context));
+            Function* cur_func = builder->GetInsertBlock()->getParent();
+            // Check header subtype at ptr-8 to distinguish tensor vs vector
+            Value* header_ptr = builder->CreateGEP(int8_type, vec_ptr, ConstantInt::get(int64_type, -8));
+            Value* subtype = builder->CreateLoad(int8_type, header_ptr);
+            Value* is_tensor = builder->CreateICmpEQ(subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_TENSOR));
+            BasicBlock* tensor_path = BasicBlock::Create(*context, "vfe_tensor", cur_func);
+            BasicBlock* vector_path = BasicBlock::Create(*context, "vfe_vector", cur_func);
+            BasicBlock* done_bb = BasicBlock::Create(*context, "vfe_done", cur_func);
+            builder->CreateCondBr(is_tensor, tensor_path, vector_path);
+            // === TENSOR PATH: elements are int64 bitpatterns of doubles ===
+            builder->SetInsertPoint(tensor_path);
+            {
+                // Tensor struct: {dims_ptr(0), num_dims(1), elements_ptr(2), total_elements(3)}
+                Value* elems_field = builder->CreateStructGEP(tensor_type, vec_ptr, 2);
+                Value* elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elems_field);
+                Value* total_field = builder->CreateStructGEP(tensor_type, vec_ptr, 3);
+                Value* total_elems = builder->CreateLoad(int64_type, total_field);
+                Value* t_idx_ptr = builder->CreateAlloca(int64_type, nullptr, "vfe_t_idx");
+                builder->CreateStore(ConstantInt::get(int64_type, 0), t_idx_ptr);
+                BasicBlock* t_cond = BasicBlock::Create(*context, "vfe_t_cond", cur_func);
+                BasicBlock* t_body = BasicBlock::Create(*context, "vfe_t_body", cur_func);
+                BasicBlock* t_exit = BasicBlock::Create(*context, "vfe_t_exit", cur_func);
+                builder->CreateBr(t_cond);
+                builder->SetInsertPoint(t_cond);
+                Value* t_i = builder->CreateLoad(int64_type, t_idx_ptr);
+                builder->CreateCondBr(builder->CreateICmpUGE(t_i, total_elems), t_exit, t_body);
+                builder->SetInsertPoint(t_body);
+                Value* t_ci = builder->CreateLoad(int64_type, t_idx_ptr);
+                Value* e_ptr = builder->CreateGEP(int64_type, elems_ptr, t_ci);
+                Value* e_int = builder->CreateLoad(int64_type, e_ptr);
+                Value* e_dbl = builder->CreateBitCast(e_int, double_type);
+                Value* e_tagged = packDoubleToTaggedValue(e_dbl);
+                codegenClosureCall(func_val, {e_tagged}, "vector-for-each-tensor");
+                Value* t_next = builder->CreateAdd(t_ci, ConstantInt::get(int64_type, 1));
+                builder->CreateStore(t_next, t_idx_ptr);
+                builder->CreateBr(t_cond);
+                builder->SetInsertPoint(t_exit);
+                builder->CreateBr(done_bb);
+            }
+            // === VECTOR PATH: elements are tagged_value_type (16 bytes) ===
+            builder->SetInsertPoint(vector_path);
+            {
+                Value* vec_len = builder->CreateLoad(int64_type, vec_ptr, "vfe_len");
+                Value* elem_base = builder->CreateGEP(int8_type, vec_ptr, ConstantInt::get(int64_type, 8));
+                Value* v_idx_ptr = builder->CreateAlloca(int64_type, nullptr, "vfe_v_idx");
+                builder->CreateStore(ConstantInt::get(int64_type, 0), v_idx_ptr);
+                BasicBlock* v_cond = BasicBlock::Create(*context, "vfe_v_cond", cur_func);
+                BasicBlock* v_body = BasicBlock::Create(*context, "vfe_v_body", cur_func);
+                BasicBlock* v_exit = BasicBlock::Create(*context, "vfe_v_exit", cur_func);
+                builder->CreateBr(v_cond);
+                builder->SetInsertPoint(v_cond);
+                Value* v_i = builder->CreateLoad(int64_type, v_idx_ptr);
+                builder->CreateCondBr(builder->CreateICmpUGE(v_i, vec_len), v_exit, v_body);
+                builder->SetInsertPoint(v_body);
+                Value* v_ci = builder->CreateLoad(int64_type, v_idx_ptr);
+                Value* elem_ptr = builder->CreateGEP(tagged_value_type, elem_base, v_ci);
+                Value* elem = builder->CreateLoad(tagged_value_type, elem_ptr, "vfe_elem");
+                codegenClosureCall(func_val, {elem}, "vector-for-each-vector");
+                Value* v_next = builder->CreateAdd(v_ci, ConstantInt::get(int64_type, 1));
+                builder->CreateStore(v_next, v_idx_ptr);
+                builder->CreateBr(v_cond);
+                builder->SetInsertPoint(v_exit);
+                builder->CreateBr(done_bb);
+            }
+            builder->SetInsertPoint(done_bb);
+            return packNullToTaggedValue();
+        }
+        // R7RS vector-map: (vector-map proc vector) → vector
+        // Handles both Scheme vectors (16-byte tagged elements) and tensors (8-byte doubles)
+        // Always returns a Scheme vector (tagged elements)
+        // Uses alloca pattern (not PHI) because codegenClosureCall creates 15+ basic blocks
+        if (func_name == "vector-map") {
+            Value* func_val = codegenAST(&op->call_op.variables[0]);
+            if (!func_val) return nullptr;
+            func_val = ensureTaggedValue(func_val);
+            Value* vec_arg = codegenAST(&op->call_op.variables[1]);
+            if (!vec_arg) return nullptr;
+            vec_arg = ensureTaggedValue(vec_arg);
+            Value* vec_ptr_int = unpackInt64FromTaggedValue(vec_arg);
+            Value* vec_ptr = builder->CreateIntToPtr(vec_ptr_int, PointerType::getUnqual(*context));
+            Function* cur_func = builder->GetInsertBlock()->getParent();
+            // Check header subtype at ptr-8
+            Value* header_ptr = builder->CreateGEP(int8_type, vec_ptr, ConstantInt::get(int64_type, -8));
+            Value* subtype = builder->CreateLoad(int8_type, header_ptr);
+            Value* is_tensor = builder->CreateICmpEQ(subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_TENSOR));
+            // Get length: tensor uses total_elements field, vector uses first int64
+            BasicBlock* tensor_len_bb = BasicBlock::Create(*context, "vm_tensor_len", cur_func);
+            BasicBlock* vector_len_bb = BasicBlock::Create(*context, "vm_vector_len", cur_func);
+            BasicBlock* len_merge_bb = BasicBlock::Create(*context, "vm_len_merge", cur_func);
+            builder->CreateCondBr(is_tensor, tensor_len_bb, vector_len_bb);
+            builder->SetInsertPoint(tensor_len_bb);
+            Value* t_total_field = builder->CreateStructGEP(tensor_type, vec_ptr, 3);
+            Value* t_len = builder->CreateLoad(int64_type, t_total_field);
+            builder->CreateBr(len_merge_bb);
+            builder->SetInsertPoint(vector_len_bb);
+            Value* v_len = builder->CreateLoad(int64_type, vec_ptr);
+            builder->CreateBr(len_merge_bb);
+            builder->SetInsertPoint(len_merge_bb);
+            PHINode* vec_len = builder->CreatePHI(int64_type, 2, "vm_len");
+            vec_len->addIncoming(t_len, tensor_len_bb);
+            vec_len->addIncoming(v_len, vector_len_bb);
+            // Allocate result vector (always Scheme vector)
+            Value* elem_size = builder->CreateMul(vec_len, ConstantInt::get(int64_type, 16));
+            Value* alloc_size = builder->CreateAdd(elem_size, ConstantInt::get(int64_type, 8));
+            Value* arena_ptr = getArenaPtr();
+            llvm::FunctionCallee alloc_fn = module->getOrInsertFunction("arena_allocate_with_header",
+                FunctionType::get(PointerType::getUnqual(*context),
+                    {PointerType::getUnqual(*context), int64_type, int64_type, int64_type}, false));
+            Value* new_vec = builder->CreateCall(alloc_fn, {arena_ptr, alloc_size,
+                ConstantInt::get(int64_type, HEAP_SUBTYPE_VECTOR),
+                ConstantInt::get(int64_type, 0)});
+            builder->CreateStore(vec_len, new_vec);
+            Value* new_elem_base = builder->CreateGEP(int8_type, new_vec, ConstantInt::get(int64_type, 8));
+            // Branch to tensor or vector iteration
+            BasicBlock* tensor_loop_bb = BasicBlock::Create(*context, "vm_tensor_loop", cur_func);
+            BasicBlock* vector_loop_bb = BasicBlock::Create(*context, "vm_vector_loop", cur_func);
+            BasicBlock* done_bb = BasicBlock::Create(*context, "vm_done", cur_func);
+            builder->CreateCondBr(is_tensor, tensor_loop_bb, vector_loop_bb);
+            // === TENSOR PATH ===
+            builder->SetInsertPoint(tensor_loop_bb);
+            {
+                Value* elems_field = builder->CreateStructGEP(tensor_type, vec_ptr, 2);
+                Value* elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elems_field);
+                Value* t_idx_ptr = builder->CreateAlloca(int64_type, nullptr, "vm_t_idx");
+                builder->CreateStore(ConstantInt::get(int64_type, 0), t_idx_ptr);
+                BasicBlock* t_cond = BasicBlock::Create(*context, "vm_t_cond", cur_func);
+                BasicBlock* t_body = BasicBlock::Create(*context, "vm_t_body", cur_func);
+                BasicBlock* t_exit = BasicBlock::Create(*context, "vm_t_exit", cur_func);
+                builder->CreateBr(t_cond);
+                builder->SetInsertPoint(t_cond);
+                Value* t_i = builder->CreateLoad(int64_type, t_idx_ptr);
+                builder->CreateCondBr(builder->CreateICmpUGE(t_i, vec_len), t_exit, t_body);
+                builder->SetInsertPoint(t_body);
+                Value* t_ci = builder->CreateLoad(int64_type, t_idx_ptr);
+                Value* e_ptr = builder->CreateGEP(int64_type, elems_ptr, t_ci);
+                Value* e_int = builder->CreateLoad(int64_type, e_ptr);
+                Value* e_dbl = builder->CreateBitCast(e_int, double_type);
+                Value* e_tagged = packDoubleToTaggedValue(e_dbl);
+                Value* t_result = codegenClosureCall(func_val, {e_tagged}, "vector-map-tensor");
+                Value* t_result_tagged = ensureTaggedValue(t_result);
+                Value* t_new_elem_ptr = builder->CreateGEP(tagged_value_type, new_elem_base, t_ci);
+                builder->CreateStore(t_result_tagged, t_new_elem_ptr);
+                Value* t_next = builder->CreateAdd(t_ci, ConstantInt::get(int64_type, 1));
+                builder->CreateStore(t_next, t_idx_ptr);
+                builder->CreateBr(t_cond);
+                builder->SetInsertPoint(t_exit);
+                builder->CreateBr(done_bb);
+            }
+            // === VECTOR PATH ===
+            builder->SetInsertPoint(vector_loop_bb);
+            {
+                Value* v_elem_base = builder->CreateGEP(int8_type, vec_ptr, ConstantInt::get(int64_type, 8));
+                Value* v_idx_ptr = builder->CreateAlloca(int64_type, nullptr, "vm_v_idx");
+                builder->CreateStore(ConstantInt::get(int64_type, 0), v_idx_ptr);
+                BasicBlock* v_cond = BasicBlock::Create(*context, "vm_v_cond", cur_func);
+                BasicBlock* v_body = BasicBlock::Create(*context, "vm_v_body", cur_func);
+                BasicBlock* v_exit = BasicBlock::Create(*context, "vm_v_exit", cur_func);
+                builder->CreateBr(v_cond);
+                builder->SetInsertPoint(v_cond);
+                Value* v_i = builder->CreateLoad(int64_type, v_idx_ptr);
+                builder->CreateCondBr(builder->CreateICmpUGE(v_i, vec_len), v_exit, v_body);
+                builder->SetInsertPoint(v_body);
+                Value* v_ci = builder->CreateLoad(int64_type, v_idx_ptr);
+                Value* elem_ptr = builder->CreateGEP(tagged_value_type, v_elem_base, v_ci);
+                Value* elem = builder->CreateLoad(tagged_value_type, elem_ptr, "vm_elem");
+                Value* v_result = codegenClosureCall(func_val, {elem}, "vector-map-vector");
+                Value* v_result_tagged = ensureTaggedValue(v_result);
+                Value* v_new_elem_ptr = builder->CreateGEP(tagged_value_type, new_elem_base, v_ci);
+                builder->CreateStore(v_result_tagged, v_new_elem_ptr);
+                Value* v_next = builder->CreateAdd(v_ci, ConstantInt::get(int64_type, 1));
+                builder->CreateStore(v_next, v_idx_ptr);
+                builder->CreateBr(v_cond);
+                builder->SetInsertPoint(v_exit);
+                builder->CreateBr(done_bb);
+            }
+            builder->SetInsertPoint(done_bb);
+            return packPtrToTaggedValue(new_vec, ESHKOL_VALUE_HEAP_PTR);
+        }
         // MIGRATED: Tensor arithmetic - now delegated to TensorCodegen
         if (func_name == "tensor-add") return tensor_->tensorArithmetic(op, "add");
         if (func_name == "tensor-sub") return tensor_->tensorArithmetic(op, "sub");
         if (func_name == "tensor-mul") return tensor_->tensorArithmetic(op, "mul");
         if (func_name == "tensor-div") return tensor_->tensorArithmetic(op, "div");
         if (func_name == "tensor-dot") return tensor_->tensorDot(op);
-        // MIGRATED: tensor-shape - now delegated to TensorCodegen
+        // MIGRATED: tensor-shape, tensor-length - now delegated to TensorCodegen
         if (func_name == "tensor-shape") return tensor_->tensorShape(op);
+        if (func_name == "tensor-length") return tensor_->tensorLength(op);
         // MIGRATED: tensor-apply and tensor-reduce - now delegated to TensorCodegen
         if (func_name == "tensor-apply") return tensor_->tensorApply(op);
         if (func_name == "tensor-reduce") {
@@ -8893,6 +11402,7 @@ private:
 
         // MIGRATED: ML tensor manipulation functions - reshape now delegated to TensorCodegen
         if (func_name == "reshape") return tensor_->reshape(op);
+        if (func_name == "tensor-reshape") return tensor_->reshape(op);  // alias
         // MIGRATED: transpose - now delegated to TensorCodegen
         if (func_name == "transpose") return tensor_->transpose(op);
         if (func_name == "flatten") return tensor_->flatten(op);
@@ -8907,6 +11417,7 @@ private:
 
         // ML linear algebra
         if (func_name == "matmul") return codegenMatmul(op);
+        if (func_name == "tensor-matmul") return codegenMatmul(op);  // alias
         if (func_name == "trace") return codegenTrace(op);
         // det is now implemented in lib/math.esk library
         // if (func_name == "det") return codegenDeterminant(op);
@@ -9014,6 +11525,7 @@ private:
         if (func_name == "tensor-solve") return tensor_->tensorSolve(op);
         if (func_name == "tensor-cholesky") return tensor_->tensorCholesky(op);
         if (func_name == "tensor-qr") return tensor_->tensorQR(op);
+        if (func_name == "tensor-svd") return tensor_->tensorSVD(op);
 
         // Einsum (Phase 4.6)
         if (func_name == "einsum") return tensor_->tensorEinsum(op);
@@ -9021,7 +11533,7 @@ private:
         // Data loading infrastructure (Track 10.3)
         if (func_name == "make-dataloader") return tensor_->makeDataloader(op);
         if (func_name == "dataloader-next") return tensor_->dataloaderNext(op);
-        if (func_name == "dataloader-reset") return tensor_->dataloaderReset(op);
+        if (func_name == "dataloader-reset" || func_name == "dataloader-reset!") return tensor_->dataloaderReset(op);
         if (func_name == "dataloader-length") return tensor_->dataloaderLength(op);
         if (func_name == "dataloader-has-next") return tensor_->dataloaderHasNext(op);
         if (func_name == "train-test-split") return tensor_->trainTestSplit(op);
@@ -9654,14 +12166,23 @@ private:
                 } else {
                     // Not in symbol_table at all - truly unknown function
                     // Generate runtime error instead of silently returning null
-                    eshkol_error("Unknown function: %s", func_name.c_str());
+                    if (current_source_line > 0) {
+                        eshkol_error("Unknown function: %s (line %u:%u)", func_name.c_str(),
+                                    current_source_line, current_source_column);
+                    } else {
+                        eshkol_error("Unknown function: %s", func_name.c_str());
+                    }
 
                     // Generate code to print error and exit at runtime
                     Function* printf_func = function_table["printf"];
                     Function* exit_func = function_table["exit"];
                     if (printf_func && exit_func) {
                         // Create error message string
-                        std::string error_msg = "Error: Unknown function '" + func_name + "'\n";
+                        std::string error_msg = "Error: Unknown function '" + func_name + "'";
+                        if (current_source_line > 0) {
+                            error_msg += " at line " + std::to_string(current_source_line);
+                        }
+                        error_msg += "\n";
                         Value* error_str = builder->CreateGlobalString(error_msg, "unknown_func_error");
                         builder->CreateCall(printf_func, {error_str});
                         builder->CreateCall(exit_func, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
@@ -10144,6 +12665,34 @@ private:
         }
         // Note: Capture arguments (last num_captures args) are NOT dereferenced - they're storage pointers
 
+        // MUTUAL TCO: If this call is in tail position AND has a compatible signature
+        // with the current function, use musttail to enable tail call optimization.
+        // This handles mutual recursion (e.g., even?/odd?) without stack growth.
+        if (!mutual_tail_call_sites_.empty() && mutual_tail_call_sites_.count(op)) {
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            FunctionType* caller_type = current_func->getFunctionType();
+            FunctionType* callee_type = callee->getFunctionType();
+
+            // musttail requires identical signatures (same return type, same param count/types)
+            bool signatures_match = (caller_type->getReturnType() == callee_type->getReturnType()) &&
+                                    (caller_type->getNumParams() == callee_type->getNumParams());
+            if (signatures_match) {
+                for (unsigned i = 0; i < caller_type->getNumParams() && signatures_match; ++i) {
+                    if (caller_type->getParamType(i) != callee_type->getParamType(i))
+                        signatures_match = false;
+                }
+            }
+
+            if (signatures_match) {
+                eshkol_debug("Mutual TCO: emitting musttail call to %s", func_name.c_str());
+                CallInst* call = builder->CreateCall(callee, args);
+                call->setTailCallKind(CallInst::TCK_MustTail);
+                builder->CreateRet(call);
+                // Block is now terminated — return undef (if codegen handles terminated blocks)
+                return UndefValue::get(tagged_value_type);
+            }
+        }
+
         return builder->CreateCall(callee, args);
     }
     
@@ -10340,6 +12889,31 @@ private:
             return typedValueToTaggedValue(tv);
         }
 
+        // R7RS §6.2.6: (* z) => z (multiplicative identity)
+        if (op->call_op.num_vars == 1 && operation == "mul") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            return typedValueToTaggedValue(tv);
+        }
+
+        // R7RS §6.2.6: (/ z) => 1/z (multiplicative inverse)
+        // Use exact integer 1 to preserve exactness through polymorphicDiv
+        if (op->call_op.num_vars == 1 && operation == "div") {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* tagged = typedValueToTaggedValue(tv);
+            Value* one = packInt64ToTaggedValue(ConstantInt::get(int64_type, 1), true);
+            return polymorphicDiv(one, tagged);
+        }
+
+        // R7RS §6.2.6: (+) => 0, (*) => 1 (identity elements)
+        if (op->call_op.num_vars == 0) {
+            if (operation == "add") return packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
+            if (operation == "mul") return packInt64ToTaggedValue(ConstantInt::get(int64_type, 1), true);
+            eshkol_warn("(-) and (/) require at least one argument");
+            return nullptr;
+        }
+
         if (op->call_op.num_vars < 2) {
             eshkol_warn("Arithmetic operation requires at least 2 arguments");
             return nullptr;
@@ -10413,30 +12987,79 @@ private:
     }
 
     Value* codegenComparison(const eshkol_operations_t* op, const std::string& operation) {
-        if (op->call_op.num_vars != 2) {
-            eshkol_warn("Comparison operation requires exactly 2 arguments");
+        if (op->call_op.num_vars < 2) {
+            eshkol_warn("Comparison operation requires at least 2 arguments");
             return nullptr;
         }
 
-        // Generate operands with type information
-        TypedValue left_tv = codegenTypedAST(&op->call_op.variables[0]);
-        TypedValue right_tv = codegenTypedAST(&op->call_op.variables[1]);
+        // 2-arg path: HoTT optimization + polymorphic fallback (existing fast path)
+        if (op->call_op.num_vars == 2) {
+            TypedValue left_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue right_tv = codegenTypedAST(&op->call_op.variables[1]);
 
-        if (!left_tv.llvm_value || !right_tv.llvm_value) return nullptr;
+            if (!left_tv.llvm_value || !right_tv.llvm_value) return nullptr;
 
-        // HoTT TYPE-DIRECTED OPTIMIZATION: If both operands have known types,
-        // use direct LLVM compare instructions instead of runtime dispatch
-        Value* hott_result = hottOptimizedComparison(left_tv, right_tv, operation);
-        if (hott_result) {
-            return hott_result;  // Optimized path succeeded
+            // HoTT TYPE-DIRECTED OPTIMIZATION: If both operands have known types,
+            // use direct LLVM compare instructions instead of runtime dispatch
+            Value* hott_result = hottOptimizedComparison(left_tv, right_tv, operation);
+            if (hott_result) {
+                return hott_result;
+            }
+
+            Value* left_tagged = typedValueToTaggedValue(left_tv);
+            Value* right_tagged = typedValueToTaggedValue(right_tv);
+            return polymorphicCompare(left_tagged, right_tagged, operation);
         }
 
-        // Fallback: Convert to tagged_value for runtime polymorphism
-        Value* left_tagged = typedValueToTaggedValue(left_tv);
-        Value* right_tagged = typedValueToTaggedValue(right_tv);
+        // R7RS §6.2.6: N-arg chained comparison
+        // (op x₁ x₂ ... xₙ) ≡ (and (op x₁ x₂) (op x₂ x₃) ... (op xₙ₋₁ xₙ))
+        // Each operand evaluated exactly once; short-circuit on first false.
 
-        // Call polymorphic comparison that handles runtime type detection
-        return polymorphicCompare(left_tagged, right_tagged, operation);
+        // Phase 1: Pre-evaluate all operands into tagged values
+        std::vector<Value*> operands;
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
+            if (!tv.llvm_value) return nullptr;
+            operands.push_back(typedValueToTaggedValue(tv));
+        }
+
+        Function* cur_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* true_bb = BasicBlock::Create(*context, "chain_true", cur_func);
+        BasicBlock* false_bb = BasicBlock::Create(*context, "chain_false", cur_func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "chain_merge", cur_func);
+
+        // Phase 2: Compile-time unrolled comparison chain with short-circuit
+        for (uint64_t i = 0; i < operands.size() - 1; i++) {
+            Value* cmp = polymorphicCompare(operands[i], operands[i + 1], operation);
+            Value* cmp_data = safeExtractInt64(cmp);
+            Value* is_false = builder->CreateICmpEQ(cmp_data,
+                ConstantInt::get(int64_type, 0));
+
+            BasicBlock* next_cmp = (i < operands.size() - 2)
+                ? BasicBlock::Create(*context, "chain_next", cur_func)
+                : true_bb;
+            builder->CreateCondBr(is_false, false_bb, next_cmp);
+            builder->SetInsertPoint(next_cmp);
+        }
+
+        // true_bb: all comparisons passed
+        builder->SetInsertPoint(true_bb);
+        Value* true_val = packBoolToTaggedValue(ConstantInt::get(int1_type, 1));
+        builder->CreateBr(merge_bb);
+        BasicBlock* true_exit = builder->GetInsertBlock();
+
+        // false_bb: at least one comparison failed (short-circuited)
+        builder->SetInsertPoint(false_bb);
+        Value* false_val = packBoolToTaggedValue(ConstantInt::get(int1_type, 0));
+        builder->CreateBr(merge_bb);
+        BasicBlock* false_exit = builder->GetInsertBlock();
+
+        // merge with PHI
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, "chain_cmp");
+        result->addIncoming(true_val, true_exit);
+        result->addIncoming(false_val, false_exit);
+        return result;
     }
 
     // HoTT type-directed comparison optimization
@@ -10705,21 +13328,82 @@ private:
         
         // Regular path: unpack argument and call regular function
         builder->SetInsertPoint(regular_path);
-        
-        // Check if argument is double or int64
-        Value* arg_is_double = builder->CreateICmpEQ(arg_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        
-        // Convert to double for math functions
-        Value* arg_double = builder->CreateSelect(arg_is_double,
-            unpackDoubleFromTaggedValue(arg_tagged),
-            builder->CreateSIToFP(unpackInt64FromTaggedValue(arg_tagged), double_type));
-        
-        // Call the math function
-        Value* result_double = builder->CreateCall(function_table[func_name], {arg_double});
-        Value* tagged_regular_result = packDoubleToTaggedValue(result_double);
+
+        // For floor/ceil/trunc/round: integers and bignums are identity
+        bool is_rounding_func = (func_name == "floor" || func_name == "ceil" ||
+                                 func_name == "trunc" || func_name == "round");
+        Value* tagged_regular_result;
+        if (is_rounding_func) {
+            Value* arg_is_int = builder->CreateICmpEQ(arg_base_type,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+            Value* arg_is_bignum = isHeapSubtype(arg_tagged, HEAP_SUBTYPE_BIGNUM);
+            Value* is_exact_int = builder->CreateOr(arg_is_int, arg_is_bignum);
+
+            Function* rfunc = builder->GetInsertBlock()->getParent();
+            BasicBlock* exact_path = BasicBlock::Create(*context, (func_name + "_exact_identity").c_str(), rfunc);
+            BasicBlock* check_rational_path = BasicBlock::Create(*context, (func_name + "_check_rational").c_str(), rfunc);
+            BasicBlock* rational_path = BasicBlock::Create(*context, (func_name + "_rational").c_str(), rfunc);
+            BasicBlock* float_path = BasicBlock::Create(*context, (func_name + "_float_compute").c_str(), rfunc);
+            BasicBlock* regular_merge = BasicBlock::Create(*context, (func_name + "_regular_merge").c_str(), rfunc);
+
+            builder->CreateCondBr(is_exact_int, exact_path, check_rational_path);
+
+            builder->SetInsertPoint(exact_path);
+            // Return unchanged for exact integers
+            builder->CreateBr(regular_merge);
+
+            // Check for rational
+            builder->SetInsertPoint(check_rational_path);
+            Value* arg_is_rational = isHeapSubtype(arg_tagged, HEAP_SUBTYPE_RATIONAL);
+            builder->CreateCondBr(arg_is_rational, rational_path, float_path);
+
+            // Rational path: call eshkol_rational_floor/ceil/truncate/round
+            builder->SetInsertPoint(rational_path);
+            {
+                // Map func_name to runtime function name
+                std::string rt_name = "eshkol_rational_" +
+                    (func_name == "trunc" ? std::string("truncate") : func_name);
+                Function* rat_func = module->getFunction(rt_name);
+                if (!rat_func) {
+                    FunctionType* rat_ft = FunctionType::get(int64_type, {builder->getPtrTy()}, false);
+                    rat_func = Function::Create(rat_ft, Function::ExternalLinkage, rt_name, module.get());
+                }
+                // Extract rational pointer from tagged value
+                Value* rat_ptr_int = unpackInt64FromTaggedValue(arg_tagged);
+                Value* rat_ptr = builder->CreateIntToPtr(rat_ptr_int, builder->getPtrTy());
+                Value* rat_result_int = builder->CreateCall(rat_func, {rat_ptr});
+                // Pack as exact integer
+                tagged_regular_result = packInt64ToTaggedValue(rat_result_int, true);
+            }
+            builder->CreateBr(regular_merge);
+            BasicBlock* rational_exit = builder->GetInsertBlock();
+
+            builder->SetInsertPoint(float_path);
+            Value* arg_double = extractDoubleFromTagged(arg_tagged);
+            Value* result_double = builder->CreateCall(function_table[func_name], {arg_double});
+            Value* float_result = packDoubleToTaggedValue(result_double);
+            builder->CreateBr(regular_merge);
+            BasicBlock* float_exit = builder->GetInsertBlock();
+
+            builder->SetInsertPoint(regular_merge);
+            PHINode* reg_phi = builder->CreatePHI(tagged_value_type, 3);
+            reg_phi->addIncoming(arg_tagged, exact_path);
+            reg_phi->addIncoming(tagged_regular_result, rational_exit);
+            reg_phi->addIncoming(float_result, float_exit);
+            tagged_regular_result = reg_phi;
+        } else {
+            // Non-rounding functions: always compute on double
+            Value* arg_is_double = builder->CreateICmpEQ(arg_base_type,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+            Value* arg_double = builder->CreateSelect(arg_is_double,
+                unpackDoubleFromTaggedValue(arg_tagged),
+                builder->CreateSIToFP(unpackInt64FromTaggedValue(arg_tagged), double_type));
+            Value* result_double = builder->CreateCall(function_table[func_name], {arg_double});
+            tagged_regular_result = packDoubleToTaggedValue(result_double);
+        }
         builder->CreateBr(merge);
-        
+        BasicBlock* regular_exit = builder->GetInsertBlock();  // captures actual exit (regular_merge for rounding, or current for non-rounding)
+
         // Merge paths
         builder->SetInsertPoint(merge);
         unsigned phi_count = (ad_node_exit ? 3 : 2);
@@ -10728,13 +13412,13 @@ private:
             result_phi->addIncoming(tagged_ad_result, ad_node_exit);  // AD node path (reverse-mode AD)
         }
         result_phi->addIncoming(tagged_dual_result, dual_path);   // Dual number path (forward-mode AD)
-        result_phi->addIncoming(tagged_regular_result, regular_path);  // Regular computation
+        result_phi->addIncoming(tagged_regular_result, regular_exit);  // Regular computation
 
         return result_phi;
     }
 
-    // Polymorphic abs - preserves integer type for integers, uses fabs for doubles
-    // HoTT TYPE SYSTEM: abs(Int64) -> Int64, abs(Float64) -> Float64
+    // Polymorphic abs - handles AD/dual, then delegates to ArithmeticCodegen::abs
+    // for numeric types (int64, double, bignum)
     Value* codegenAbs(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_warn("abs requires exactly 1 argument");
@@ -10752,21 +13436,17 @@ private:
         Value* arg_type = getTaggedValueType(arg_tagged);
         Value* arg_base_type = getBaseType(arg_type);
 
-        // Check type conditions
+        // Check for AD types
         Value* arg_is_dual = builder->CreateICmpEQ(arg_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
         Value* arg_is_ad_node = builder->CreateICmpEQ(arg_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* arg_is_int = builder->CreateICmpEQ(arg_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* ad_node_path = BasicBlock::Create(*context, "abs_ad_node", current_func);
         BasicBlock* check_dual = BasicBlock::Create(*context, "abs_check_dual", current_func);
         BasicBlock* dual_path = BasicBlock::Create(*context, "abs_dual", current_func);
-        BasicBlock* check_int = BasicBlock::Create(*context, "abs_check_int", current_func);
-        BasicBlock* int_path = BasicBlock::Create(*context, "abs_int", current_func);
-        BasicBlock* double_path = BasicBlock::Create(*context, "abs_double", current_func);
+        BasicBlock* numeric_path = BasicBlock::Create(*context, "abs_numeric", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "abs_merge", current_func);
 
         // First check for AD node
@@ -10784,7 +13464,7 @@ private:
 
         // Check for dual number
         builder->SetInsertPoint(check_dual);
-        builder->CreateCondBr(arg_is_dual, dual_path, check_int);
+        builder->CreateCondBr(arg_is_dual, dual_path, numeric_path);
 
         // DUAL PATH
         builder->SetInsertPoint(dual_path);
@@ -10794,35 +13474,18 @@ private:
         builder->CreateBr(merge);
         BasicBlock* dual_exit = builder->GetInsertBlock();
 
-        // Check for integer
-        builder->SetInsertPoint(check_int);
-        builder->CreateCondBr(arg_is_int, int_path, double_path);
-
-        // INT PATH - compute integer absolute value: x < 0 ? -x : x
-        builder->SetInsertPoint(int_path);
-        Value* int_val = unpackInt64FromTaggedValue(arg_tagged);
-        Value* is_negative = builder->CreateICmpSLT(int_val, ConstantInt::get(int64_type, 0));
-        Value* neg_val = builder->CreateNeg(int_val);
-        Value* abs_int = builder->CreateSelect(is_negative, neg_val, int_val);
-        Value* tagged_int_result = packInt64ToTaggedValue(abs_int, true);  // exact
+        // NUMERIC PATH: delegate to ArithmeticCodegen::abs (handles int, double, bignum)
+        builder->SetInsertPoint(numeric_path);
+        Value* numeric_result = arith_->abs(arg_tagged);
         builder->CreateBr(merge);
-        BasicBlock* int_exit = builder->GetInsertBlock();
-
-        // DOUBLE PATH - use fabs
-        builder->SetInsertPoint(double_path);
-        Value* double_val = unpackDoubleFromTaggedValue(arg_tagged);
-        Value* abs_double = builder->CreateCall(function_table["fabs"], {double_val});
-        Value* tagged_double_result = packDoubleToTaggedValue(abs_double);
-        builder->CreateBr(merge);
-        BasicBlock* double_exit = builder->GetInsertBlock();
+        BasicBlock* numeric_exit = builder->GetInsertBlock();
 
         // Merge paths
         builder->SetInsertPoint(merge);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 4, "abs_result");
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "abs_result");
         result_phi->addIncoming(ad_result, ad_node_exit);
         result_phi->addIncoming(tagged_dual_result, dual_exit);
-        result_phi->addIncoming(tagged_int_result, int_exit);
-        result_phi->addIncoming(tagged_double_result, double_exit);
+        result_phi->addIncoming(numeric_result, numeric_exit);
 
         return result_phi;
     }
@@ -10833,15 +13496,15 @@ private:
             return nullptr;
         }
 
+        // Single-arg round: dispatch through codegenMathFunction for rational support
+        if (op->call_op.num_vars == 1) {
+            return codegenMathFunction(op, "round");
+        }
+
+        // 2-arg round with precision: always uses double arithmetic
         Value* arg = codegenAST(&op->call_op.variables[0]);
         if (!arg) return nullptr;
-
         Value* val = extractDoubleFromTagged(arg);
-
-        if (op->call_op.num_vars == 1) {
-            Value* result = builder->CreateCall(function_table["round"], {val});
-            return packDoubleToTaggedValue(result);
-        }
 
         Value* precision_arg = codegenAST(&op->call_op.variables[1]);
         if (!precision_arg) return nullptr;
@@ -10983,59 +13646,37 @@ private:
     }
 
     // GCD (Greatest Common Divisor) using Euclidean algorithm
-    Value* codegenGCD(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars != 2) {
-            eshkol_warn("gcd requires exactly 2 arguments");
-            return nullptr;
+    // Helper: convert a typed value to absolute int64 for GCD/LCM
+    Value* toAbsInt64(Value* val) {
+        if (val->getType()->isDoubleTy()) {
+            val = builder->CreateFPToSI(val, int64_type);
+        } else if (val->getType() == tagged_value_type) {
+            Value* extracted = extractDoubleFromTagged(val);
+            val = builder->CreateFPToSI(extracted, int64_type);
         }
-
-        // Use codegenTypedAST for proper type handling
-        TypedValue tv1 = codegenTypedAST(&op->call_op.variables[0]);
-        TypedValue tv2 = codegenTypedAST(&op->call_op.variables[1]);
-        if (!tv1.llvm_value || !tv2.llvm_value) return nullptr;
-
-        // Convert to int64 for GCD computation
-        Value* a = tv1.llvm_value;
-        Value* b = tv2.llvm_value;
-
-        if (a->getType()->isDoubleTy()) {
-            a = builder->CreateFPToSI(a, int64_type);
-        } else if (a->getType() == tagged_value_type) {
-            Value* extracted = extractDoubleFromTagged(a);
-            a = builder->CreateFPToSI(extracted, int64_type);
-        }
-
-        if (b->getType()->isDoubleTy()) {
-            b = builder->CreateFPToSI(b, int64_type);
-        } else if (b->getType() == tagged_value_type) {
-            Value* extracted = extractDoubleFromTagged(b);
-            b = builder->CreateFPToSI(extracted, int64_type);
-        }
-
-        // Take absolute values (gcd is always positive)
         Value* zero = ConstantInt::get(int64_type, 0);
-        Value* a_neg = builder->CreateICmpSLT(a, zero);
-        a = builder->CreateSelect(a_neg, builder->CreateNeg(a), a);
-        Value* b_neg = builder->CreateICmpSLT(b, zero);
-        b = builder->CreateSelect(b_neg, builder->CreateNeg(b), b);
+        Value* is_neg = builder->CreateICmpSLT(val, zero);
+        return builder->CreateSelect(is_neg, builder->CreateNeg(val), val);
+    }
 
-        // Euclidean algorithm using loop
+    // Helper: emit inline Euclidean GCD loop for two int64 values
+    // Returns gcd(a, b) as raw int64. Creates fresh basic blocks.
+    Value* emitGCDPair(Value* a, Value* b) {
+        Value* zero = ConstantInt::get(int64_type, 0);
         Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* entry_bb = builder->GetInsertBlock();  // Save entry block
+        BasicBlock* entry_bb = builder->GetInsertBlock();
         BasicBlock* loop_bb = BasicBlock::Create(*context, "gcd_loop", current_func);
         BasicBlock* exit_bb = BasicBlock::Create(*context, "gcd_exit", current_func);
 
         builder->CreateBr(loop_bb);
         builder->SetInsertPoint(loop_bb);
 
-        PHINode* a_phi = builder->CreatePHI(int64_type, 2, "a");
-        PHINode* b_phi = builder->CreatePHI(int64_type, 2, "b");
+        PHINode* a_phi = builder->CreatePHI(int64_type, 2, "gcd_a");
+        PHINode* b_phi = builder->CreatePHI(int64_type, 2, "gcd_b");
         a_phi->addIncoming(a, entry_bb);
         b_phi->addIncoming(b, entry_bb);
 
         Value* b_is_zero = builder->CreateICmpEQ(b_phi, zero);
-
-        // If b is zero, we're done (result is a)
         BasicBlock* continue_bb = BasicBlock::Create(*context, "gcd_continue", current_func);
         builder->CreateCondBr(b_is_zero, exit_bb, continue_bb);
 
@@ -11047,101 +13688,100 @@ private:
         builder->CreateBr(loop_bb);
 
         builder->SetInsertPoint(exit_bb);
-        return a_phi;  // Return raw int64
+        return a_phi;
     }
 
-    // LCM (Least Common Multiple) = |a * b| / gcd(a, b)
-    Value* codegenLCM(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars != 2) {
-            eshkol_warn("lcm requires exactly 2 arguments");
-            return nullptr;
+    // R7RS §6.2.6: Variadic GCD via fold of Euclidean algorithm
+    // (gcd) → 0, (gcd n) → |n|, (gcd a b ...) → gcd(gcd(a,b), ...)
+    Value* codegenGCD(const eshkol_operations_t* op) {
+        // (gcd) → 0
+        if (op->call_op.num_vars == 0) {
+            return ConstantInt::get(int64_type, 0);
         }
 
-        // Use codegenTypedAST for proper type handling
-        TypedValue tv1 = codegenTypedAST(&op->call_op.variables[0]);
-        TypedValue tv2 = codegenTypedAST(&op->call_op.variables[1]);
-        if (!tv1.llvm_value || !tv2.llvm_value) return nullptr;
+        // Convert first arg to |arg[0]|
+        TypedValue tv0 = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv0.llvm_value) return nullptr;
+        Value* result = toAbsInt64(tv0.llvm_value);
 
-        // Convert to int64
-        Value* a = tv1.llvm_value;
-        Value* b = tv2.llvm_value;
-
-        if (a->getType()->isDoubleTy()) {
-            a = builder->CreateFPToSI(a, int64_type);
-        } else if (a->getType() == tagged_value_type) {
-            Value* extracted = extractDoubleFromTagged(a);
-            a = builder->CreateFPToSI(extracted, int64_type);
+        // (gcd n) → |n|
+        if (op->call_op.num_vars == 1) {
+            return result;
         }
 
-        if (b->getType()->isDoubleTy()) {
-            b = builder->CreateFPToSI(b, int64_type);
-        } else if (b->getType() == tagged_value_type) {
-            Value* extracted = extractDoubleFromTagged(b);
-            b = builder->CreateFPToSI(extracted, int64_type);
+        // Fold: result = gcd(result, |arg[i]|) for each subsequent arg
+        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = toAbsInt64(tv.llvm_value);
+            result = emitGCDPair(result, arg);
         }
 
-        // lcm(a, b) = |a| * (|b| / gcd(a, b))
-        // First compute gcd inline using Euclidean algorithm
+        return result;  // Raw int64 (caller wraps in tagged)
+    }
+
+    // Helper: emit inline LCM for two absolute int64 values
+    // lcm(a, b) = a * (b / gcd(a, b)), with zero short-circuit
+    // Returns raw int64. Creates fresh basic blocks.
+    Value* emitLCMPair(Value* abs_a, Value* abs_b) {
         Value* zero = ConstantInt::get(int64_type, 0);
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* entry_bb = builder->GetInsertBlock();
 
-        // Take absolute values
-        Value* a_neg = builder->CreateICmpSLT(a, zero);
-        Value* abs_a = builder->CreateSelect(a_neg, builder->CreateNeg(a), a);
-        Value* b_neg = builder->CreateICmpSLT(b, zero);
-        Value* abs_b = builder->CreateSelect(b_neg, builder->CreateNeg(b), b);
-
-        // Special case: if either is 0, lcm is 0
+        // Short-circuit: if either is 0, lcm is 0
         Value* a_is_zero = builder->CreateICmpEQ(abs_a, zero);
         Value* b_is_zero = builder->CreateICmpEQ(abs_b, zero);
         Value* either_zero = builder->CreateOr(a_is_zero, b_is_zero);
 
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* entry_bb = builder->GetInsertBlock();  // Save the entry block
         BasicBlock* compute_bb = BasicBlock::Create(*context, "lcm_compute", current_func);
         BasicBlock* done_bb = BasicBlock::Create(*context, "lcm_done", current_func);
 
         builder->CreateCondBr(either_zero, done_bb, compute_bb);
 
         builder->SetInsertPoint(compute_bb);
+        Value* gcd_result = emitGCDPair(abs_a, abs_b);
 
-        // Compute gcd using loop
-        BasicBlock* gcd_loop = BasicBlock::Create(*context, "lcm_gcd_loop", current_func);
-        BasicBlock* gcd_exit = BasicBlock::Create(*context, "lcm_gcd_exit", current_func);
-
-        builder->CreateBr(gcd_loop);
-        builder->SetInsertPoint(gcd_loop);
-
-        PHINode* gcd_a = builder->CreatePHI(int64_type, 2, "gcd_a");
-        PHINode* gcd_b = builder->CreatePHI(int64_type, 2, "gcd_b");
-        gcd_a->addIncoming(abs_a, compute_bb);
-        gcd_b->addIncoming(abs_b, compute_bb);
-
-        Value* gcd_b_zero = builder->CreateICmpEQ(gcd_b, zero);
-
-        BasicBlock* gcd_continue = BasicBlock::Create(*context, "lcm_gcd_continue", current_func);
-        builder->CreateCondBr(gcd_b_zero, gcd_exit, gcd_continue);
-
-        builder->SetInsertPoint(gcd_continue);
-        Value* new_gcd_a = gcd_b;
-        Value* new_gcd_b = builder->CreateSRem(gcd_a, gcd_b);
-        gcd_a->addIncoming(new_gcd_a, gcd_continue);
-        gcd_b->addIncoming(new_gcd_b, gcd_continue);
-        builder->CreateBr(gcd_loop);
-
-        builder->SetInsertPoint(gcd_exit);
-        Value* gcd_result = gcd_a;
-
-        // lcm = |a| * (|b| / gcd)
+        // lcm = |a| * (|b| / gcd) — divide first to avoid overflow
         Value* b_div_gcd = builder->CreateSDiv(abs_b, gcd_result);
         Value* lcm_result = builder->CreateMul(abs_a, b_div_gcd);
+        BasicBlock* lcm_exit = builder->GetInsertBlock();  // Capture after emitGCDPair blocks
         builder->CreateBr(done_bb);
 
         builder->SetInsertPoint(done_bb);
         PHINode* result = builder->CreatePHI(int64_type, 2, "lcm_result");
-        result->addIncoming(zero, entry_bb);  // Use saved entry block
-        result->addIncoming(lcm_result, gcd_exit);
+        result->addIncoming(zero, entry_bb);
+        result->addIncoming(lcm_result, lcm_exit);
 
-        return result;  // Return raw int64
+        return result;
+    }
+
+    // R7RS §6.2.6: Variadic LCM via fold
+    // (lcm) → 1, (lcm n) → |n|, (lcm a b ...) → lcm(lcm(a,b), ...)
+    Value* codegenLCM(const eshkol_operations_t* op) {
+        // (lcm) → 1
+        if (op->call_op.num_vars == 0) {
+            return ConstantInt::get(int64_type, 1);
+        }
+
+        // Convert first arg to |arg[0]|
+        TypedValue tv0 = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv0.llvm_value) return nullptr;
+        Value* result = toAbsInt64(tv0.llvm_value);
+
+        // (lcm n) → |n|
+        if (op->call_op.num_vars == 1) {
+            return result;
+        }
+
+        // Fold: result = lcm(result, |arg[i]|) for each subsequent arg
+        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
+            if (!tv.llvm_value) return nullptr;
+            Value* arg = toAbsInt64(tv.llvm_value);
+            result = emitLCMPair(result, arg);
+        }
+
+        return result;  // Raw int64 (caller wraps in tagged)
     }
 
     // MIGRATED: Delegates to ArithmeticCodegen
@@ -11341,16 +13981,26 @@ private:
         // Pop handler first
         builder->CreateCall(pop_handler_func, {});
 
-        // Get current exception
-        Value* exception_ptr = builder->CreateCall(get_exception_func, {}, "exception_ptr");
+        // R7RS: Get the original raised value (not the exception struct)
+        Function* get_raised_func = module->getFunction("eshkol_get_raised_value");
+        if (!get_raised_func) {
+            FunctionType* get_raised_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+            get_raised_func = Function::Create(get_raised_type, Function::ExternalLinkage, "eshkol_get_raised_value", module.get());
+        }
+        Function* guard_func = builder->GetInsertBlock()->getParent();
+        IRBuilder<> guard_entry_builder(&guard_func->getEntryBlock(), guard_func->getEntryBlock().begin());
+        AllocaInst* raised_alloca = guard_entry_builder.CreateAlloca(tagged_value_type, nullptr, "guard_raised_val");
+        builder->CreateCall(get_raised_func, {raised_alloca});
+        Value* raised_tagged = builder->CreateLoad(tagged_value_type, raised_alloca, "raised_tagged");
 
-        // Bind exception to variable in scope
+        // Bind raised value to variable in scope (R7RS-compliant: original value, not exception struct)
         const char* var_name = op->guard_op.var_name;
         if (var_name) {
-            // Pack exception pointer as HEAP_PTR (consolidated format - subtype in header)
-            Value* exc_tagged = packPtrToTaggedValue(exception_ptr, ESHKOL_VALUE_HEAP_PTR);
-            symbol_table[var_name] = exc_tagged;
+            symbol_table[var_name] = raised_tagged;
         }
+
+        // Also get exception pointer for fallthrough/re-raise cases
+        Value* exception_ptr = builder->CreateCall(get_exception_func, {}, "exception_ptr");
 
         // Evaluate guard clauses (similar to cond)
         BasicBlock* handler_exit_block = nullptr;
@@ -11380,8 +14030,17 @@ private:
                         TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
                         // Convert to tagged value for consistent PHI node type
                         result = typedValueToTaggedValue(typed);
+                        // NORETURN SAFETY: If a body expression raised, stop
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            break;
+                        }
                     }
                     if (!result) result = packNullToTaggedValue();
+
+                    // NORETURN SAFETY: If block terminated (body expression raised), skip cleanup/branch
+                    if (builder->GetInsertBlock()->getTerminator()) {
+                        break;
+                    }
 
                     // Clear exception after handling
                     builder->CreateCall(clear_exception_func, {});
@@ -11409,30 +14068,41 @@ private:
                         TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
                         // Convert to tagged value for consistent PHI node type
                         result = typedValueToTaggedValue(typed);
+                        // NORETURN SAFETY: If a body expression raised, stop
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            break;
+                        }
                     }
                     if (!result) result = packNullToTaggedValue();
 
-                    // Clear exception after handling
-                    builder->CreateCall(clear_exception_func, {});
+                    // NORETURN SAFETY: If block terminated (body expression raised), skip cleanup/branch
+                    if (!builder->GetInsertBlock()->getTerminator()) {
+                        // Clear exception after handling
+                        builder->CreateCall(clear_exception_func, {});
 
-                    handler_exit_block = builder->GetInsertBlock();
-                    phi_inputs.push_back({result, handler_exit_block});
-                    builder->CreateBr(done_block);
+                        handler_exit_block = builder->GetInsertBlock();
+                        phi_inputs.push_back({result, handler_exit_block});
+                        builder->CreateBr(done_block);
+                    }
 
                     // Continue to next clause
                     builder->SetInsertPoint(next_block);
                 }
             }
 
-            // If we fall through (no clause matched), re-raise
-            // For now, just return the exception as-is
+            // If we fall through (no clause matched), re-raise per R7RS
             if (builder->GetInsertBlock()->getTerminator() == nullptr) {
-                // Re-get exception pointer since we may be in a different block
+                // Get or declare eshkol_raise for re-raising
+                Function* raise_func = module->getFunction("eshkol_raise");
+                if (!raise_func) {
+                    FunctionType* raise_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+                    raise_func = Function::Create(raise_type, Function::ExternalLinkage, "eshkol_raise", module.get());
+                    raise_func->setDoesNotReturn();
+                }
+                // Re-get exception pointer and re-raise it
                 Value* fallthrough_exc = builder->CreateCall(get_exception_func, {}, "fallthrough_exception");
-                // Pack as HEAP_PTR (consolidated format - subtype in header)
-                Value* exc_tagged = packPtrToTaggedValue(fallthrough_exc, ESHKOL_VALUE_HEAP_PTR);
-                phi_inputs.push_back({exc_tagged, builder->GetInsertBlock()});
-                builder->CreateBr(done_block);
+                builder->CreateCall(raise_func, {fallthrough_exc});
+                builder->CreateUnreachable();
             }
 
             // Done block - merge results
@@ -11500,25 +14170,44 @@ private:
             make_exc_func = Function::Create(make_type, Function::ExternalLinkage, "eshkol_make_exception_with_header", module.get());
         }
 
-        // Evaluate exception expression and create exception object
+        // Get or declare eshkol_set_raised_value (R7RS: store original value for handlers)
+        Function* set_raised_func = module->getFunction("eshkol_set_raised_value");
+        if (!set_raised_func) {
+            FunctionType* set_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+            set_raised_func = Function::Create(set_type, Function::ExternalLinkage, "eshkol_set_raised_value", module.get());
+        }
+
+        // R7RS: Store the original raised value for with-exception-handler/guard
+        // Alloca must be in entry block; evaluate expression in current block
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+        AllocaInst* raised_alloca = entry_builder.CreateAlloca(tagged_value_type, nullptr, "raise_val_store");
+
         Value* error_msg = nullptr;
         if (op->raise_op.exception) {
-            // Check if it's a string literal at compile time - optimize common case
             if (op->raise_op.exception->type == ESHKOL_STRING) {
-                error_msg = codegenString(op->raise_op.exception->str_val.ptr);
+                // String literal: use internStringWithHeader so string? predicate works
+                // (header at ptr-8 contains HEAP_SUBTYPE_STRING for guard handlers)
+                error_msg = ctx_->internStringWithHeader(op->raise_op.exception->str_val.ptr, HEAP_SUBTYPE_STRING);
+                Value* tagged = packPtrToTaggedValue(error_msg, ESHKOL_VALUE_HEAP_PTR);
+                builder->CreateStore(tagged, raised_alloca);
+                builder->CreateCall(set_raised_func, {raised_alloca});
             } else {
-                // For other expressions, extract string at runtime
-                Value* expr_val = codegenAST(op->raise_op.exception);
-                if (expr_val) {
-                    // extractStringFromTagged returns string ptr or null
-                    // We need to handle the null case with a fallback
-                    Value* extracted = extractStringFromTagged(expr_val);
-                    // Check if extracted is null and use fallback
-                    Value* is_null = builder->CreateICmpEQ(extracted,
-                        ConstantPointerNull::get(builder->getPtrTy()));
-                    Value* fallback = codegenString("user exception");
-                    error_msg = builder->CreateSelect(is_null, fallback, extracted, "error_msg");
+                // Non-string: evaluate expression as typed, convert to tagged value
+                // codegenAST returns raw types (i64, double) - must use codegenTypedAST
+                // to get proper tagged value for R7RS handler dispatch
+                TypedValue raised_typed = codegenTypedAST(op->raise_op.exception);
+                // NORETURN SAFETY: If the exception expression itself contained a raise,
+                // the block is already terminated. Don't emit more instructions.
+                if (builder->GetInsertBlock()->getTerminator()) {
+                    return UndefValue::get(tagged_value_type);
                 }
+                Value* raised_tagged = typedValueToTaggedValue(raised_typed);
+                if (raised_tagged) {
+                    builder->CreateStore(raised_tagged, raised_alloca);
+                    builder->CreateCall(set_raised_func, {raised_alloca});
+                }
+                error_msg = codegenString("user exception");
             }
         }
         if (!error_msg) {
@@ -11539,6 +14228,316 @@ private:
         // IMPORTANT: Don't call packNullToTaggedValue() here as it creates instructions
         // after the unreachable terminator, which is invalid LLVM IR
         return UndefValue::get(tagged_value_type);
+    }
+
+    // ===== CALL/CC — First-class continuations =====
+    // Syntax: (call/cc proc) or (call-with-current-continuation proc)
+    // Uses setjmp/longjmp: setjmp captures the return point, longjmp invokes the continuation
+    Value* codegenCallCC(const eshkol_operations_t* op) {
+        Function* current_func = builder->GetInsertBlock()->getParent();
+
+        // Declare setjmp if needed
+        Function* setjmp_func = module->getFunction("setjmp");
+        if (!setjmp_func) {
+            FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
+            setjmp_func = Function::Create(setjmp_type, Function::ExternalLinkage, "setjmp", module.get());
+        }
+
+        // Declare continuation runtime functions
+        Function* make_state_func = module->getFunction("eshkol_make_continuation_state");
+        if (!make_state_func) {
+            FunctionType* make_state_type = FunctionType::get(builder->getPtrTy(),
+                {builder->getPtrTy(), builder->getPtrTy()}, false);
+            make_state_func = Function::Create(make_state_type, Function::ExternalLinkage,
+                "eshkol_make_continuation_state", module.get());
+        }
+
+        Function* make_cont_func = module->getFunction("eshkol_make_continuation_closure");
+        if (!make_cont_func) {
+            FunctionType* make_cont_type = FunctionType::get(builder->getPtrTy(),
+                {builder->getPtrTy(), builder->getPtrTy()}, false);
+            make_cont_func = Function::Create(make_cont_type, Function::ExternalLinkage,
+                "eshkol_make_continuation_closure", module.get());
+        }
+
+        // Create basic blocks
+        BasicBlock* setup_bb = BasicBlock::Create(*context, "callcc_setup", current_func);
+        BasicBlock* normal_bb = BasicBlock::Create(*context, "callcc_normal", current_func);
+        BasicBlock* invoked_bb = BasicBlock::Create(*context, "callcc_invoked", current_func);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "callcc_done", current_func);
+
+        builder->CreateBr(setup_bb);
+        builder->SetInsertPoint(setup_bb);
+
+        // Allocate jmp_buf on stack (200 bytes, platform-safe)
+        Type* jmp_buf_type = ArrayType::get(builder->getInt8Ty(), 200);
+        Value* jmp_buf_alloc = builder->CreateAlloca(jmp_buf_type, nullptr, "callcc_jmpbuf");
+
+        // Get arena pointer
+        Value* arena_ptr = getArenaPtr();
+
+        // Create continuation state on arena
+        Value* state_ptr = builder->CreateCall(make_state_func, {arena_ptr, jmp_buf_alloc}, "cont_state");
+
+        // Create continuation closure
+        Value* cont_closure_ptr = builder->CreateCall(make_cont_func, {arena_ptr, state_ptr}, "cont_closure");
+
+        // Package continuation as tagged value (CALLABLE type)
+        Value* cont_tagged = packPtrToTaggedValue(cont_closure_ptr, ESHKOL_VALUE_CALLABLE);
+
+        // Call setjmp — returns 0 first time, non-zero when continuation is invoked
+        Value* setjmp_result = builder->CreateCall(setjmp_func, {jmp_buf_alloc}, "callcc_setjmp");
+        Value* was_invoked = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
+
+        builder->CreateCondBr(was_invoked, invoked_bb, normal_bb);
+
+        // Normal path: call proc with the continuation
+        builder->SetInsertPoint(normal_bb);
+
+        // Evaluate the procedure argument
+        Value* proc_val = codegenAST(op->call_cc_op.proc);
+
+        // Call proc(continuation) via codegenClosureCall
+        std::vector<Value*> proc_args = {cont_tagged};
+        Value* normal_result = codegenClosureCall(proc_val, proc_args, "call/cc");
+
+        BasicBlock* normal_exit_bb = builder->GetInsertBlock();
+        // Check if the block is already terminated (e.g., by another call/cc or raise inside proc)
+        if (!normal_exit_bb->getTerminator()) {
+            builder->CreateBr(done_bb);
+        }
+
+        // Invoked path: continuation was called, retrieve the stored value
+        builder->SetInsertPoint(invoked_bb);
+
+        // Load the value from state->value (offset 8 after jmp_buf_ptr)
+        Value* value_ptr = builder->CreateGEP(int8_type, state_ptr,
+            ConstantInt::get(int64_type, 8));
+        Value* invoked_result = builder->CreateLoad(tagged_value_type, value_ptr, "cont_value");
+
+        BasicBlock* invoked_exit_bb = builder->GetInsertBlock();
+        builder->CreateBr(done_bb);
+
+        // Merge
+        builder->SetInsertPoint(done_bb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "callcc_result");
+        // Only add normal path if it branches to done
+        if (normal_exit_bb->getTerminator() &&
+            normal_exit_bb->getTerminator()->getNumSuccessors() > 0) {
+            bool branches_to_done = false;
+            for (unsigned i = 0; i < normal_exit_bb->getTerminator()->getNumSuccessors(); i++) {
+                if (normal_exit_bb->getTerminator()->getSuccessor(i) == done_bb) {
+                    branches_to_done = true;
+                    break;
+                }
+            }
+            if (branches_to_done) {
+                phi->addIncoming(normal_result, normal_exit_bb);
+            }
+        }
+        phi->addIncoming(invoked_result, invoked_exit_bb);
+
+        return phi;
+    }
+
+    // ===== DYNAMIC-WIND =====
+    // Syntax: (dynamic-wind before thunk after)
+    // Calls before(), then thunk(), then after(), returns thunk's result
+    // before/after are also called during continuation jumps across dynamic-wind boundaries
+    Value* codegenDynamicWind(const eshkol_operations_t* op) {
+        // Evaluate the three thunks
+        Value* before_val = codegenAST(op->dynamic_wind_op.before);
+        // NORETURN SAFETY: If the expression computing the before thunk raised,
+        // the block is terminated. Don't emit more instructions.
+        if (builder->GetInsertBlock()->getTerminator()) {
+            return UndefValue::get(tagged_value_type);
+        }
+        Value* thunk_val = codegenAST(op->dynamic_wind_op.thunk);
+        if (builder->GetInsertBlock()->getTerminator()) {
+            return UndefValue::get(tagged_value_type);
+        }
+        Value* after_val = codegenAST(op->dynamic_wind_op.after);
+        if (builder->GetInsertBlock()->getTerminator()) {
+            return UndefValue::get(tagged_value_type);
+        }
+
+        // Push dynamic-wind entry onto the stack (stores before/after for unwinding)
+        Function* push_wind_func = module->getFunction("eshkol_push_dynamic_wind");
+        if (!push_wind_func) {
+            FunctionType* push_type = FunctionType::get(builder->getVoidTy(),
+                {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy()}, false);
+            push_wind_func = Function::Create(push_type, Function::ExternalLinkage,
+                "eshkol_push_dynamic_wind", module.get());
+        }
+        Function* pop_wind_func = module->getFunction("eshkol_pop_dynamic_wind");
+        if (!pop_wind_func) {
+            FunctionType* pop_type = FunctionType::get(builder->getVoidTy(), {}, false);
+            pop_wind_func = Function::Create(pop_type, Function::ExternalLinkage,
+                "eshkol_pop_dynamic_wind", module.get());
+        }
+
+        // Alloca for before/after tagged values so we can pass ptrs to push
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+        AllocaInst* before_alloca = entry_builder.CreateAlloca(tagged_value_type, nullptr, "dw_before");
+        AllocaInst* after_alloca = entry_builder.CreateAlloca(tagged_value_type, nullptr, "dw_after");
+
+        builder->CreateStore(before_val, before_alloca);
+        builder->CreateStore(after_val, after_alloca);
+
+        // Call before() — 0 args
+        std::vector<Value*> no_args;
+        codegenClosureCall(before_val, no_args, "dynamic-wind-before");
+
+        // Push wind entry AFTER before() succeeds (R7RS: before is called on entry)
+        Value* arena_ptr = getArenaPtr();
+        builder->CreateCall(push_wind_func, {arena_ptr, before_alloca, after_alloca});
+
+        // Call thunk() — 0 args, capture result
+        Value* result = codegenClosureCall(thunk_val, no_args, "dynamic-wind-thunk");
+
+        // Pop wind entry
+        builder->CreateCall(pop_wind_func, {});
+
+        // Call after() — 0 args
+        codegenClosureCall(after_val, no_args, "dynamic-wind-after");
+
+        return result;
+    }
+
+    // ===== WITH-EXCEPTION-HANDLER (R7RS) =====
+    // Syntax: (with-exception-handler handler thunk)
+    //   handler: a 1-arg procedure called with the raised value on exception
+    //   thunk: a 0-arg procedure whose body is protected
+    // Uses setjmp/longjmp, same pattern as codegenGuard
+    Value* codegenWithExceptionHandler(const eshkol_operations_t* op) {
+        // with-exception-handler is parsed as a regular CALL_OP with 2 args
+        if (op->call_op.num_vars < 2) {
+            eshkol_debug("with-exception-handler requires 2 arguments (handler thunk)");
+            return packNullToTaggedValue();
+        }
+
+        // Evaluate handler and thunk expressions (these produce closure tagged values)
+        Value* handler_val = codegenAST(&op->call_op.variables[0]);
+        // NORETURN SAFETY: If the handler expression itself raised
+        if (builder->GetInsertBlock()->getTerminator()) {
+            return UndefValue::get(tagged_value_type);
+        }
+        Value* thunk_val = codegenAST(&op->call_op.variables[1]);
+        // NORETURN SAFETY: If the thunk expression itself raised
+        if (builder->GetInsertBlock()->getTerminator()) {
+            return UndefValue::get(tagged_value_type);
+        }
+
+        if (!handler_val || !thunk_val) {
+            return packNullToTaggedValue();
+        }
+
+        // Get runtime functions (reuse existing declarations from guard)
+        Function* push_handler_func = module->getFunction("eshkol_push_exception_handler");
+        Function* pop_handler_func = module->getFunction("eshkol_pop_exception_handler");
+        Function* setjmp_func = module->getFunction("setjmp");
+        Function* get_raised_func = module->getFunction("eshkol_get_raised_value");
+
+        if (!push_handler_func) {
+            FunctionType* push_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+            push_handler_func = Function::Create(push_type, Function::ExternalLinkage, "eshkol_push_exception_handler", module.get());
+        }
+        if (!pop_handler_func) {
+            FunctionType* pop_type = FunctionType::get(builder->getVoidTy(), {}, false);
+            pop_handler_func = Function::Create(pop_type, Function::ExternalLinkage, "eshkol_pop_exception_handler", module.get());
+        }
+        if (!setjmp_func) {
+            FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
+            setjmp_func = Function::Create(setjmp_type, Function::ExternalLinkage, "setjmp", module.get());
+        }
+        if (!get_raised_func) {
+            FunctionType* get_raised_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+            get_raised_func = Function::Create(get_raised_type, Function::ExternalLinkage, "eshkol_get_raised_value", module.get());
+        }
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+
+        // Create basic blocks
+        BasicBlock* setup_block = BasicBlock::Create(*context, "weh_setup", current_func);
+        BasicBlock* try_block = BasicBlock::Create(*context, "weh_try", current_func);
+        BasicBlock* handler_block = BasicBlock::Create(*context, "weh_handler", current_func);
+        BasicBlock* done_block = BasicBlock::Create(*context, "weh_done", current_func);
+
+        // Branch from current block to setup
+        builder->CreateBr(setup_block);
+
+        // Setup block: allocate jmp_buf, push handler, call setjmp
+        builder->SetInsertPoint(setup_block);
+
+        // Allocate jmp_buf on stack (200 bytes, same as guard)
+        Type* jmp_buf_type = ArrayType::get(builder->getInt8Ty(), 200);
+        Value* jmp_buf_alloc = builder->CreateAlloca(jmp_buf_type, nullptr, "weh_jmp_buf");
+
+        // Push exception handler
+        builder->CreateCall(push_handler_func, {jmp_buf_alloc});
+
+        // Call setjmp - returns 0 on first call, non-zero when longjmp fires
+        Value* setjmp_result = builder->CreateCall(setjmp_func, {jmp_buf_alloc}, "weh_setjmp");
+        Value* is_exception = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
+
+        builder->CreateCondBr(is_exception, handler_block, try_block);
+
+        // Try block: call the thunk (0 args)
+        builder->SetInsertPoint(try_block);
+        std::vector<Value*> no_args;
+        Value* thunk_result = codegenClosureCall(thunk_val, no_args, "with-exception-handler-thunk");
+
+        // Pop handler after normal completion
+        // Note: codegenClosureCall may have changed the insert block
+        BasicBlock* try_end_block = builder->GetInsertBlock();
+        bool try_terminated = try_end_block->getTerminator() != nullptr;
+
+        BasicBlock* try_exit_block = nullptr;
+        if (!try_terminated) {
+            builder->CreateCall(pop_handler_func, {});
+            try_exit_block = builder->GetInsertBlock();
+            builder->CreateBr(done_block);
+        }
+
+        // Handler block: pop handler, get raised value, call handler closure
+        builder->SetInsertPoint(handler_block);
+        builder->CreateCall(pop_handler_func, {});
+
+        // Get the original raised value (R7RS-compliant)
+        IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+        AllocaInst* raised_alloca = entry_builder.CreateAlloca(tagged_value_type, nullptr, "weh_raised_val");
+        builder->CreateCall(get_raised_func, {raised_alloca});
+        Value* raised_val = builder->CreateLoad(tagged_value_type, raised_alloca, "weh_raised");
+
+        // Call handler with the raised value
+        std::vector<Value*> handler_args = {raised_val};
+        Value* handler_result = codegenClosureCall(handler_val, handler_args, "with-exception-handler-handler");
+
+        BasicBlock* handler_end_block = builder->GetInsertBlock();
+        bool handler_terminated = handler_end_block->getTerminator() != nullptr;
+
+        BasicBlock* handler_exit_block = nullptr;
+        if (!handler_terminated) {
+            handler_exit_block = builder->GetInsertBlock();
+            builder->CreateBr(done_block);
+        }
+
+        // Done block: merge results with PHI
+        builder->SetInsertPoint(done_block);
+
+        if (try_exit_block && handler_exit_block) {
+            PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "weh_result");
+            phi->addIncoming(thunk_result, try_exit_block);
+            phi->addIncoming(handler_result, handler_exit_block);
+            return phi;
+        } else if (try_exit_block) {
+            return thunk_result;
+        } else if (handler_exit_block) {
+            return handler_result;
+        }
+
+        return packNullToTaggedValue();
     }
 
     // ===== MULTIPLE RETURN VALUES OPERATIONS =====
@@ -12169,6 +15168,10 @@ private:
             eshkol_error("Failed to codegen match expression");
             return packNullToTaggedValue();
         }
+        // NORETURN SAFETY: If the match expression itself raised
+        if (builder->GetInsertBlock()->getTerminator()) {
+            return UndefValue::get(tagged_value_type);
+        }
         Value* match_value = typedValueToTaggedValue(expr_tv);
 
         Function* current_func = builder->GetInsertBlock()->getParent();
@@ -12212,6 +15215,12 @@ private:
 
                 builder->SetInsertPoint(check_guard);
                 TypedValue guard_tv = codegenTypedAST(clause->guard);
+                // NORETURN SAFETY: If the guard expression raised
+                if (builder->GetInsertBlock()->getTerminator()) {
+                    symbol_table = saved_env;
+                    builder->SetInsertPoint(next_clause);
+                    continue;
+                }
                 if (!guard_tv.llvm_value) {
                     builder->CreateBr(next_clause);
                 } else {
@@ -12449,12 +15458,26 @@ private:
                     eshkol_warn("do: failed to evaluate init expression");
                     continue;
                 }
+                // NORETURN SAFETY: If the init expression raised
+                if (builder->GetInsertBlock()->getTerminator()) {
+                    break;
+                }
                 Value* init_val = typedValueToTaggedValue(init_tv);
                 builder->CreateStore(init_val, alloca);
 
                 // Add to symbol table
                 symbol_table[var_name] = alloca;
             }
+        }
+
+        // NORETURN SAFETY: If an init expression raised, don't enter the loop
+        if (builder->GetInsertBlock()->getTerminator()) {
+            // Clean up unused blocks
+            loop_header->eraseFromParent();
+            loop_body->eraseFromParent();
+            loop_step->eraseFromParent();
+            loop_exit->eraseFromParent();
+            return UndefValue::get(tagged_value_type);
         }
 
         // Branch to loop header
@@ -12479,10 +15502,16 @@ private:
         // Execute body expressions
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
             TypedValue body_tv = codegenTypedAST(&op->call_op.variables[i]);
-            // Just evaluate, don't need the result
+            // NORETURN SAFETY: If a body expression raised, stop
+            if (builder->GetInsertBlock()->getTerminator()) {
+                break;
+            }
         }
 
-        builder->CreateBr(loop_step);
+        // NORETURN SAFETY: Only branch if block is not terminated
+        if (!builder->GetInsertBlock()->getTerminator()) {
+            builder->CreateBr(loop_step);
+        }
 
         // Loop step - evaluate step expressions and update variables
         builder->SetInsertPoint(loop_step);
@@ -12496,18 +15525,25 @@ private:
                 new_values.push_back(nullptr);
                 continue;
             }
+            // NORETURN SAFETY: If a step expression raised, stop evaluating steps
+            if (builder->GetInsertBlock()->getTerminator()) {
+                break;
+            }
             Value* step_val = typedValueToTaggedValue(step_tv);
             new_values.push_back(step_val);
         }
 
-        // Now update all variables simultaneously
-        for (size_t i = 0; i < var_names.size(); i++) {
-            if (new_values[i]) {
-                builder->CreateStore(new_values[i], var_allocas[i]);
+        // NORETURN SAFETY: Only update variables and loop back if block is not terminated
+        if (!builder->GetInsertBlock()->getTerminator()) {
+            // Now update all variables simultaneously
+            for (size_t i = 0; i < var_names.size(); i++) {
+                if (i < new_values.size() && new_values[i]) {
+                    builder->CreateStore(new_values[i], var_allocas[i]);
+                }
             }
-        }
 
-        builder->CreateBr(loop_header);
+            builder->CreateBr(loop_header);
+        }
 
         // Loop exit - evaluate result expressions
         builder->SetInsertPoint(loop_exit);
@@ -12552,27 +15588,66 @@ private:
     // ============================================================
 
     // bitwise-and: (bitwise-and a b) -> integer AND
+    // Helper: emit bignum bitwise dispatch for binary ops
+    Value* emitBitwiseBignumDispatch(Value* a, Value* b, int op_code, const char* int_op_name) {
+        Value* is_bn_a = isHeapSubtype(a, HEAP_SUBTYPE_BIGNUM);
+        Value* is_bn_b = isHeapSubtype(b, HEAP_SUBTYPE_BIGNUM);
+        Value* either_bn = builder->CreateOr(is_bn_a, is_bn_b);
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* bn_bb = BasicBlock::Create(*context, std::string(int_op_name) + "_bignum", func);
+        BasicBlock* int_bb = BasicBlock::Create(*context, std::string(int_op_name) + "_int", func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, std::string(int_op_name) + "_merge", func);
+
+        builder->CreateCondBr(either_bn, bn_bb, int_bb);
+
+        // Bignum path: call runtime
+        builder->SetInsertPoint(bn_bb);
+        Value* arena_ptr = builder->CreateLoad(ptr_type, global_arena);
+        Value* a_alloca = builder->CreateAlloca(tagged_value_type);
+        Value* b_alloca = builder->CreateAlloca(tagged_value_type);
+        Value* r_alloca = builder->CreateAlloca(tagged_value_type);
+        builder->CreateStore(a, a_alloca);
+        builder->CreateStore(b, b_alloca);
+        FunctionType* fn_type = FunctionType::get(void_type,
+            {ptr_type, ptr_type, ptr_type, int32_type, ptr_type}, false);
+        FunctionCallee bn_fn = module->getOrInsertFunction("eshkol_bignum_bitwise_tagged", fn_type);
+        builder->CreateCall(bn_fn, {arena_ptr, a_alloca, b_alloca,
+            ConstantInt::get(int32_type, op_code), r_alloca});
+        Value* bn_result = builder->CreateLoad(tagged_value_type, r_alloca);
+        builder->CreateBr(merge_bb);
+        BasicBlock* bn_exit = builder->GetInsertBlock();
+
+        // Int64 path
+        builder->SetInsertPoint(int_bb);
+        Value* a_int = tagged_->unpackInt64(a);
+        Value* b_int = tagged_->unpackInt64(b);
+        Value* int_result_raw;
+        if (op_code == 0) int_result_raw = builder->CreateAnd(a_int, b_int);
+        else if (op_code == 1) int_result_raw = builder->CreateOr(a_int, b_int);
+        else int_result_raw = builder->CreateXor(a_int, b_int);
+        Value* int_result = tagged_->packInt64(int_result_raw);
+        builder->CreateBr(merge_bb);
+        BasicBlock* int_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+        phi->addIncoming(bn_result, bn_exit);
+        phi->addIncoming(int_result, int_exit);
+        return phi;
+    }
+
     Value* codegenBitwiseAnd(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_error("bitwise-and requires exactly 2 arguments");
             return nullptr;
         }
-
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
         TypedValue tv_b = codegenTypedAST(&op->call_op.variables[1]);
         if (!tv_a.llvm_value || !tv_b.llvm_value) return nullptr;
-
         Value* a = typedValueToTaggedValue(tv_a);
         Value* b = typedValueToTaggedValue(tv_b);
-
-        // Extract integer values
-        Value* a_int = tagged_->unpackInt64(a);
-        Value* b_int = tagged_->unpackInt64(b);
-
-        // Perform bitwise AND
-        Value* result = builder->CreateAnd(a_int, b_int, "bitwise_and");
-
-        return tagged_->packInt64(result);
+        return emitBitwiseBignumDispatch(a, b, 0, "bitand");
     }
 
     // bitwise-or: (bitwise-or a b) -> integer OR
@@ -12581,20 +15656,12 @@ private:
             eshkol_error("bitwise-or requires exactly 2 arguments");
             return nullptr;
         }
-
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
         TypedValue tv_b = codegenTypedAST(&op->call_op.variables[1]);
         if (!tv_a.llvm_value || !tv_b.llvm_value) return nullptr;
-
         Value* a = typedValueToTaggedValue(tv_a);
         Value* b = typedValueToTaggedValue(tv_b);
-
-        Value* a_int = tagged_->unpackInt64(a);
-        Value* b_int = tagged_->unpackInt64(b);
-
-        Value* result = builder->CreateOr(a_int, b_int, "bitwise_or");
-
-        return tagged_->packInt64(result);
+        return emitBitwiseBignumDispatch(a, b, 1, "bitor");
     }
 
     // bitwise-xor: (bitwise-xor a b) -> integer XOR
@@ -12603,20 +15670,12 @@ private:
             eshkol_error("bitwise-xor requires exactly 2 arguments");
             return nullptr;
         }
-
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
         TypedValue tv_b = codegenTypedAST(&op->call_op.variables[1]);
         if (!tv_a.llvm_value || !tv_b.llvm_value) return nullptr;
-
         Value* a = typedValueToTaggedValue(tv_a);
         Value* b = typedValueToTaggedValue(tv_b);
-
-        Value* a_int = tagged_->unpackInt64(a);
-        Value* b_int = tagged_->unpackInt64(b);
-
-        Value* result = builder->CreateXor(a_int, b_int, "bitwise_xor");
-
-        return tagged_->packInt64(result);
+        return emitBitwiseBignumDispatch(a, b, 2, "bitxor");
     }
 
     // bitwise-not: (bitwise-not a) -> integer NOT (one's complement)
@@ -12625,17 +15684,47 @@ private:
             eshkol_error("bitwise-not requires exactly 1 argument");
             return nullptr;
         }
-
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
         if (!tv_a.llvm_value) return nullptr;
-
         Value* a = typedValueToTaggedValue(tv_a);
+
+        // Check if bignum
+        Value* is_bn = isHeapSubtype(a, HEAP_SUBTYPE_BIGNUM);
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* bn_bb = BasicBlock::Create(*context, "bitnot_bignum", func);
+        BasicBlock* int_bb = BasicBlock::Create(*context, "bitnot_int", func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "bitnot_merge", func);
+        builder->CreateCondBr(is_bn, bn_bb, int_bb);
+
+        // Bignum path: call runtime with op=3 (not), right operand unused
+        builder->SetInsertPoint(bn_bb);
+        Value* arena_ptr = builder->CreateLoad(ptr_type, global_arena);
+        Value* a_alloca = builder->CreateAlloca(tagged_value_type);
+        Value* dummy_alloca = builder->CreateAlloca(tagged_value_type);
+        Value* r_alloca = builder->CreateAlloca(tagged_value_type);
+        builder->CreateStore(a, a_alloca);
+        builder->CreateStore(Constant::getNullValue(tagged_value_type), dummy_alloca);
+        FunctionType* fn_type = FunctionType::get(void_type,
+            {ptr_type, ptr_type, ptr_type, int32_type, ptr_type}, false);
+        FunctionCallee bn_fn = module->getOrInsertFunction("eshkol_bignum_bitwise_tagged", fn_type);
+        builder->CreateCall(bn_fn, {arena_ptr, a_alloca, dummy_alloca,
+            ConstantInt::get(int32_type, 3), r_alloca});
+        Value* bn_result = builder->CreateLoad(tagged_value_type, r_alloca);
+        builder->CreateBr(merge_bb);
+        BasicBlock* bn_exit = builder->GetInsertBlock();
+
+        // Int64 path
+        builder->SetInsertPoint(int_bb);
         Value* a_int = tagged_->unpackInt64(a);
+        Value* int_result = tagged_->packInt64(builder->CreateNot(a_int, "bitwise_not"));
+        builder->CreateBr(merge_bb);
+        BasicBlock* int_exit = builder->GetInsertBlock();
 
-        // NOT is XOR with all 1s (-1 in two's complement)
-        Value* result = builder->CreateNot(a_int, "bitwise_not");
-
-        return tagged_->packInt64(result);
+        builder->SetInsertPoint(merge_bb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+        phi->addIncoming(bn_result, bn_exit);
+        phi->addIncoming(int_result, int_exit);
+        return phi;
     }
 
     // arithmetic-shift: (arithmetic-shift n count) -> shift n by count bits
@@ -12645,40 +15734,61 @@ private:
             eshkol_error("arithmetic-shift requires exactly 2 arguments");
             return nullptr;
         }
-
         TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
         TypedValue tv_count = codegenTypedAST(&op->call_op.variables[1]);
         if (!tv_n.llvm_value || !tv_count.llvm_value) return nullptr;
-
         Value* n = typedValueToTaggedValue(tv_n);
         Value* count = typedValueToTaggedValue(tv_count);
 
+        // If n is bignum, dispatch to runtime (op=4)
+        Value* is_bn = isHeapSubtype(n, HEAP_SUBTYPE_BIGNUM);
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* bn_bb = BasicBlock::Create(*context, "ashift_bignum", func);
+        BasicBlock* int_bb = BasicBlock::Create(*context, "ashift_int", func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "ashift_merge", func);
+        builder->CreateCondBr(is_bn, bn_bb, int_bb);
+
+        // Bignum path: call runtime
+        builder->SetInsertPoint(bn_bb);
+        Value* arena_ptr = builder->CreateLoad(ptr_type, global_arena);
+        Value* n_alloca = builder->CreateAlloca(tagged_value_type);
+        Value* c_alloca = builder->CreateAlloca(tagged_value_type);
+        Value* r_alloca = builder->CreateAlloca(tagged_value_type);
+        builder->CreateStore(n, n_alloca);
+        builder->CreateStore(count, c_alloca);
+        FunctionType* fn_type = FunctionType::get(void_type,
+            {ptr_type, ptr_type, ptr_type, int32_type, ptr_type}, false);
+        FunctionCallee bn_fn = module->getOrInsertFunction("eshkol_bignum_bitwise_tagged", fn_type);
+        builder->CreateCall(bn_fn, {arena_ptr, n_alloca, c_alloca,
+            ConstantInt::get(int32_type, 4), r_alloca});
+        Value* bn_result = builder->CreateLoad(tagged_value_type, r_alloca);
+        builder->CreateBr(merge_bb);
+        BasicBlock* bn_exit = builder->GetInsertBlock();
+
+        // Int64 path: existing shift logic
+        builder->SetInsertPoint(int_bb);
         Value* n_int = tagged_->unpackInt64(n);
         Value* count_int = tagged_->unpackInt64(count);
-
-        // Check if count is negative (right shift) or positive (left shift)
         Value* zero = ConstantInt::get(int64_type, 0);
         Value* is_left_shift = builder->CreateICmpSGE(count_int, zero, "is_left");
-
-        // For left shift: shl n, count
-        // For right shift: ashr n, -count
         Value* neg_count = builder->CreateNeg(count_int, "neg_count");
-
-        // Clamp shift amount to valid range (0-63 for 64-bit)
         Value* max_shift = ConstantInt::get(int64_type, 63);
         Value* left_amt = builder->CreateSelect(
-            builder->CreateICmpUGT(count_int, max_shift),
-            max_shift, count_int);
+            builder->CreateICmpUGT(count_int, max_shift), max_shift, count_int);
         Value* right_amt = builder->CreateSelect(
-            builder->CreateICmpUGT(neg_count, max_shift),
-            max_shift, neg_count);
-
+            builder->CreateICmpUGT(neg_count, max_shift), max_shift, neg_count);
         Value* left_result = builder->CreateShl(n_int, left_amt, "shl");
         Value* right_result = builder->CreateAShr(n_int, right_amt, "ashr");
+        Value* int_result = tagged_->packInt64(
+            builder->CreateSelect(is_left_shift, left_result, right_result, "shift_result"));
+        builder->CreateBr(merge_bb);
+        BasicBlock* int_exit = builder->GetInsertBlock();
 
-        Value* result = builder->CreateSelect(is_left_shift, left_result, right_result, "shift_result");
-
-        return tagged_->packInt64(result);
+        builder->SetInsertPoint(merge_bb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+        phi->addIncoming(bn_result, bn_exit);
+        phi->addIncoming(int_result, int_exit);
+        return phi;
     }
 
     // Type predicates - MIGRATED to consolidated type system
@@ -13154,52 +16264,126 @@ private:
             return nullptr;
         }
 
-        // CRITICAL FIX: Use toDouble helper which handles raw int64/double/tagged_value
-        Value* arg = codegenAST(&op->call_op.variables[0]);
-        if (!arg) return nullptr;
-
-        Value* val = toDouble(arg);
-        Value* zero = ConstantFP::get(double_type, 0.0);
-        Value* result;
-
-        if (pred == "positive?") {
-            result = builder->CreateFCmpOGT(val, zero);
-        } else if (pred == "negative?") {
-            result = builder->CreateFCmpOLT(val, zero);
-        } else if (pred == "zero?") {
-            result = builder->CreateFCmpOEQ(val, zero);
-        } else if (pred == "even?") {
-            Value* int_val = builder->CreateFPToSI(val, int64_type);
-            Value* mod2 = builder->CreateSRem(int_val, ConstantInt::get(int64_type, 2));
-            result = builder->CreateICmpEQ(mod2, ConstantInt::get(int64_type, 0));
-        } else if (pred == "odd?") {
-            Value* int_val = builder->CreateFPToSI(val, int64_type);
-            Value* mod2 = builder->CreateSRem(int_val, ConstantInt::get(int64_type, 2));
-            result = builder->CreateICmpNE(mod2, ConstantInt::get(int64_type, 0));
-        } else if (pred == "nan?") {
-            // NaN check: x != x is true only for NaN (unordered comparison)
-            result = builder->CreateFCmpUNO(val, val, "is_nan");
-        } else if (pred == "infinite?") {
-            // Infinite check: |x| == infinity
-            Function* fabs_fn = ESHKOL_GET_INTRINSIC(
-                module.get(), Intrinsic::fabs, {double_type});
-            Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
-            Value* pos_inf = ConstantFP::getInfinity(double_type, false);
-            result = builder->CreateFCmpOEQ(abs_val, pos_inf, "is_infinite");
-        } else if (pred == "finite?") {
-            // Finite check: not NaN and not infinite
-            // not NaN: val == val (ordered comparison)
-            // not infinite: |val| < infinity
-            Function* fabs_fn = ESHKOL_GET_INTRINSIC(
-                module.get(), Intrinsic::fabs, {double_type});
-            Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
-            Value* pos_inf = ConstantFP::getInfinity(double_type, false);
-            Value* not_inf = builder->CreateFCmpOLT(abs_val, pos_inf, "not_inf");
-            Value* not_nan = builder->CreateFCmpORD(val, val, "not_nan");
-            result = builder->CreateAnd(not_inf, not_nan, "is_finite");
-        } else {
-            result = ConstantInt::getFalse(*context);
+        // For float-only predicates (nan?, infinite?, finite?), use double path directly
+        if (pred == "nan?" || pred == "infinite?" || pred == "finite?") {
+            Value* arg = codegenAST(&op->call_op.variables[0]);
+            if (!arg) return nullptr;
+            Value* val = toDouble(arg);
+            Value* result;
+            if (pred == "nan?") {
+                result = builder->CreateFCmpUNO(val, val, "is_nan");
+            } else if (pred == "infinite?") {
+                Function* fabs_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::fabs, {double_type});
+                Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
+                Value* pos_inf = ConstantFP::getInfinity(double_type, false);
+                result = builder->CreateFCmpOEQ(abs_val, pos_inf, "is_infinite");
+            } else {
+                Function* fabs_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::fabs, {double_type});
+                Value* abs_val = builder->CreateCall(fabs_fn, {val}, "abs_val");
+                Value* pos_inf = ConstantFP::getInfinity(double_type, false);
+                Value* not_inf = builder->CreateFCmpOLT(abs_val, pos_inf, "not_inf");
+                Value* not_nan = builder->CreateFCmpORD(val, val, "not_nan");
+                result = builder->CreateAnd(not_inf, not_nan, "is_finite");
+            }
+            return packBoolToTaggedValue(result);
         }
+
+        // For zero?/positive?/negative?/even?/odd?: use type dispatch for precision
+        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv.llvm_value) return nullptr;
+        Value* tagged = typedValueToTaggedValue(tv);
+        Value* type = getTaggedValueType(tagged);
+        Value* base_type = getBaseType(type);
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* int_bb = BasicBlock::Create(*context, "numpred_int", func);
+        BasicBlock* bignum_check_bb = BasicBlock::Create(*context, "numpred_bignum_check", func);
+        BasicBlock* bignum_bb = BasicBlock::Create(*context, "numpred_bignum", func);
+        BasicBlock* double_bb = BasicBlock::Create(*context, "numpred_double", func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "numpred_merge", func);
+
+        Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        builder->CreateCondBr(is_int, int_bb, bignum_check_bb);
+
+        // INT64 path — direct integer ops, no precision loss
+        builder->SetInsertPoint(int_bb);
+        Value* int_val = unpackInt64FromTaggedValue(tagged);
+        Value* int_result;
+        if (pred == "zero?") {
+            int_result = builder->CreateICmpEQ(int_val, ConstantInt::get(int64_type, 0));
+        } else if (pred == "positive?") {
+            int_result = builder->CreateICmpSGT(int_val, ConstantInt::get(int64_type, 0));
+        } else if (pred == "negative?") {
+            int_result = builder->CreateICmpSLT(int_val, ConstantInt::get(int64_type, 0));
+        } else if (pred == "even?") {
+            Value* low_bit = builder->CreateAnd(int_val, ConstantInt::get(int64_type, 1));
+            int_result = builder->CreateICmpEQ(low_bit, ConstantInt::get(int64_type, 0));
+        } else { // odd?
+            Value* low_bit = builder->CreateAnd(int_val, ConstantInt::get(int64_type, 1));
+            int_result = builder->CreateICmpNE(low_bit, ConstantInt::get(int64_type, 0));
+        }
+        builder->CreateBr(merge_bb);
+        BasicBlock* int_exit = builder->GetInsertBlock();
+
+        // Check for bignum (HEAP_PTR + BIGNUM subtype)
+        builder->SetInsertPoint(bignum_check_bb);
+        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        builder->CreateCondBr(is_heap, bignum_bb, double_bb);
+
+        // Bignum path — call runtime predicates
+        builder->SetInsertPoint(bignum_bb);
+        Value* ptr_val = unpackInt64FromTaggedValue(tagged);
+        Value* bignum_ptr = builder->CreateIntToPtr(ptr_val, PointerType::get(*context, 0));
+
+        // Check subtype is actually BIGNUM before calling runtime
+        Value* subtype = getObjectSubtype(ptr_val);
+        Value* is_bignum = builder->CreateICmpEQ(subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_BIGNUM));
+
+        // Determine which runtime function to call
+        std::string runtime_name;
+        if (pred == "zero?") runtime_name = "eshkol_bignum_is_zero";
+        else if (pred == "positive?") runtime_name = "eshkol_bignum_is_positive";
+        else if (pred == "negative?") runtime_name = "eshkol_bignum_is_negative";
+        else if (pred == "even?") runtime_name = "eshkol_bignum_is_even";
+        else runtime_name = "eshkol_bignum_is_odd";
+
+        FunctionType* pred_fn_type = FunctionType::get(int1_type, {PointerType::get(*context, 0)}, false);
+        FunctionCallee pred_fn = module->getOrInsertFunction(runtime_name, pred_fn_type);
+        Value* bignum_result_raw = builder->CreateCall(pred_fn, {bignum_ptr});
+        // If not actually bignum subtype, fall through to false
+        Value* bignum_result = builder->CreateAnd(is_bignum, bignum_result_raw);
+        builder->CreateBr(merge_bb);
+        BasicBlock* bignum_exit = builder->GetInsertBlock();
+
+        // Double path — existing float behavior
+        builder->SetInsertPoint(double_bb);
+        Value* dbl_val = extractDoubleFromTagged(tagged);
+        Value* zero = ConstantFP::get(double_type, 0.0);
+        Value* dbl_result;
+        if (pred == "zero?") {
+            dbl_result = builder->CreateFCmpOEQ(dbl_val, zero);
+        } else if (pred == "positive?") {
+            dbl_result = builder->CreateFCmpOGT(dbl_val, zero);
+        } else if (pred == "negative?") {
+            dbl_result = builder->CreateFCmpOLT(dbl_val, zero);
+        } else if (pred == "even?") {
+            Value* as_int = builder->CreateFPToSI(dbl_val, int64_type);
+            Value* mod2 = builder->CreateSRem(as_int, ConstantInt::get(int64_type, 2));
+            dbl_result = builder->CreateICmpEQ(mod2, ConstantInt::get(int64_type, 0));
+        } else { // odd?
+            Value* as_int = builder->CreateFPToSI(dbl_val, int64_type);
+            Value* mod2 = builder->CreateSRem(as_int, ConstantInt::get(int64_type, 2));
+            dbl_result = builder->CreateICmpNE(mod2, ConstantInt::get(int64_type, 0));
+        }
+        builder->CreateBr(merge_bb);
+        BasicBlock* dbl_exit = builder->GetInsertBlock();
+
+        // Merge
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(int1_type, 3);
+        result->addIncoming(int_result, int_exit);
+        result->addIncoming(bignum_result, bignum_exit);
+        result->addIncoming(dbl_result, dbl_exit);
 
         return packBoolToTaggedValue(result);
     }
@@ -13266,8 +16450,7 @@ private:
         return packBoolToTaggedValue(result);
     }
 
-    // eqv? - Same as eq? in our implementation since we don't have characters
-    // In Scheme, eqv? differs from eq? mainly for characters and some number cases
+    // eqv? - Value equality for numbers (including bignums), identity for everything else
     Value* codegenEqv(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_warn("eqv? requires exactly 2 arguments");
@@ -13287,61 +16470,73 @@ private:
         Value* base_type1 = getBaseType(type1);
         Value* base_type2 = getBaseType(type2);
 
-        // For eqv?, we check if types are "numeric compatible"
-        // Both must be numbers for numeric comparison, otherwise types must match exactly
-        Value* is_int1 = builder->CreateICmpEQ(base_type1,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
-        Value* is_int2 = builder->CreateICmpEQ(base_type2,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
-        Value* is_double1 = builder->CreateICmpEQ(base_type1,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* is_double2 = builder->CreateICmpEQ(base_type2,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+        // Check numeric types including bignums
+        Value* is_int1 = builder->CreateICmpEQ(base_type1, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        Value* is_int2 = builder->CreateICmpEQ(base_type2, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        Value* is_double1 = builder->CreateICmpEQ(base_type1, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+        Value* is_double2 = builder->CreateICmpEQ(base_type2, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+        Value* is_bignum1 = isHeapSubtype(arg1, HEAP_SUBTYPE_BIGNUM);
+        Value* is_bignum2 = isHeapSubtype(arg2, HEAP_SUBTYPE_BIGNUM);
 
-        // Both are numbers?
+        // If either operand is bignum, use bignum compare (handles bignum-bignum and bignum-int64)
+        Value* either_bignum = builder->CreateOr(is_bignum1, is_bignum2);
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* bignum_bb = BasicBlock::Create(*context, "eqv_bignum", func);
+        BasicBlock* normal_bb = BasicBlock::Create(*context, "eqv_normal", func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "eqv_merge", func);
+
+        builder->CreateCondBr(either_bignum, bignum_bb, normal_bb);
+
+        // Bignum path: call eshkol_bignum_compare_tagged(left, right, 2=eq, &result)
+        builder->SetInsertPoint(bignum_bb);
+        Value* bn_result = arith_->emitBignumCompareCall(arg1, arg2, 2);
+        // Extract boolean from result tagged value
+        Value* bn_bool_val = unpackInt64FromTaggedValue(bn_result);
+        Value* bn_eq = builder->CreateICmpNE(bn_bool_val, ConstantInt::get(int64_type, 0));
+        builder->CreateBr(merge_bb);
+        BasicBlock* bignum_exit = builder->GetInsertBlock();
+
+        // Normal path: existing int/double/pointer comparison
+        builder->SetInsertPoint(normal_bb);
         Value* is_num1 = builder->CreateOr(is_int1, is_double1);
         Value* is_num2 = builder->CreateOr(is_int2, is_double2);
         Value* both_numbers = builder->CreateAnd(is_num1, is_num2);
-
-        // For numbers with same type, compare values
         Value* types_match = builder->CreateICmpEQ(base_type1, base_type2);
 
-        // For integers, compare int values
+        // Integer comparison
         Value* data1 = unpackInt64FromTaggedValue(arg1);
         Value* data2 = unpackInt64FromTaggedValue(arg2);
         Value* int_equal = builder->CreateICmpEQ(data1, data2);
 
-        // For doubles, use numeric equality
+        // Double comparison
         Value* double1 = unpackDoubleFromTaggedValue(arg1);
         Value* double2 = unpackDoubleFromTaggedValue(arg2);
         Value* double_equal = builder->CreateFCmpOEQ(double1, double2);
 
-        // Same-type number comparison
         Value* both_double = builder->CreateAnd(is_double1, is_double2);
         Value* same_type_num_equal = builder->CreateSelect(both_double, double_equal, int_equal);
-
-        // eqv? for numbers: same type and equal value
         Value* num_result = builder->CreateAnd(types_match, same_type_num_equal);
 
-        // For non-numbers, fall back to eq? semantics (type + pointer/value equality)
-        // SYMBOL FIX: Use pointer comparison for pointer types
-        Value* is_string_ptr = builder->CreateICmpEQ(base_type1,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* is_cons_ptr = builder->CreateICmpEQ(base_type1,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* is_closure_ptr = builder->CreateICmpEQ(base_type1,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* is_ptr_type = builder->CreateOr(is_string_ptr, builder->CreateOr(is_cons_ptr, is_closure_ptr));
-
+        // Non-number: pointer/value equality
+        Value* is_heap = builder->CreateICmpEQ(base_type1, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_callable = builder->CreateICmpEQ(base_type1, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* is_ptr_type = builder->CreateOr(is_heap, is_callable);
         Value* ptr1 = unpackPtrFromTaggedValue(arg1);
         Value* ptr2 = unpackPtrFromTaggedValue(arg2);
         Value* ptr_equal = builder->CreateICmpEQ(ptr1, ptr2);
-
         Value* non_num_data_equal = builder->CreateSelect(is_ptr_type, ptr_equal, int_equal);
         Value* non_num_result = builder->CreateAnd(types_match, non_num_data_equal);
 
-        // Select based on whether we're comparing numbers
-        Value* result = builder->CreateSelect(both_numbers, num_result, non_num_result);
+        Value* normal_result = builder->CreateSelect(both_numbers, num_result, non_num_result);
+        builder->CreateBr(merge_bb);
+        BasicBlock* normal_exit = builder->GetInsertBlock();
+
+        // Merge
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(int1_type, 2);
+        result->addIncoming(bn_eq, bignum_exit);
+        result->addIncoming(normal_result, normal_exit);
 
         return packBoolToTaggedValue(result);
     }
@@ -13605,6 +16800,46 @@ private:
     // R7RS ENVIRONMENT PRIMITIVES IMPLEMENTATION
     // =========================================================================
 
+    // (eval expr) or (eval expr env) → Evaluates S-expression via JIT
+    Value* codegenEval(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars < 1) {
+            eshkol_error("eval requires at least 1 argument");
+            return packNullToTaggedValue();
+        }
+
+        Value* sexp = codegenAST(&op->call_op.variables[0]);
+        if (!sexp) return packNullToTaggedValue();
+        sexp = ensureTaggedValue(sexp);
+
+        Value* arena_ptr = getArenaPtr();
+
+        if (op->call_op.num_vars >= 2) {
+            // (eval expr env) — use eshkol_eval_env
+            Value* env = codegenAST(&op->call_op.variables[1]);
+            if (!env) return packNullToTaggedValue();
+            env = ensureTaggedValue(env);
+
+            Function* eval_env_func = module->getFunction("eshkol_eval_env");
+            if (!eval_env_func) {
+                FunctionType* ft = FunctionType::get(tagged_value_type,
+                    {tagged_value_type, tagged_value_type, builder->getPtrTy()}, false);
+                eval_env_func = Function::Create(ft, Function::ExternalLinkage,
+                    "eshkol_eval_env", module.get());
+            }
+            return builder->CreateCall(eval_env_func, {sexp, env, arena_ptr});
+        } else {
+            // (eval expr) — use eshkol_eval
+            Function* eval_func = module->getFunction("eshkol_eval");
+            if (!eval_func) {
+                FunctionType* ft = FunctionType::get(tagged_value_type,
+                    {tagged_value_type, builder->getPtrTy()}, false);
+                eval_func = Function::Create(ft, Function::ExternalLinkage,
+                    "eshkol_eval", module.get());
+            }
+            return builder->CreateCall(eval_func, {sexp, arena_ptr});
+        }
+    }
+
     // (null-environment 7) → Returns empty environment (only syntax keywords)
     Value* codegenNullEnvironment(const eshkol_operations_t* op) {
         (void)op;  // Version argument ignored — only R7RS (7) is supported
@@ -13626,38 +16861,80 @@ private:
             "floor", "ceiling", "truncate", "round",
             "exact?", "inexact?", "zero?", "positive?", "negative?",
             "number?", "integer?", "real?", "complex?",
-            "exact->inexact", "inexact->exact",
+            "exact->inexact", "inexact->exact", "exact", "inexact",
+            "exact-integer?", "square",
+            "floor-quotient", "floor-remainder", "floor/",
+            "truncate-quotient", "truncate-remainder", "truncate/",
             "number->string", "string->number",
             "sin", "cos", "tan", "exp", "log", "sqrt", "expt",
+            "nan?", "infinite?", "finite?",
             // Boolean
-            "not", "boolean?",
+            "not", "boolean?", "boolean=?",
             // Pairs and lists
             "cons", "car", "cdr", "pair?", "null?", "list?",
-            "list", "length", "append", "reverse", "map", "for-each", "filter",
+            "list", "length", "append", "reverse", "map", "for-each", "filter", "list-copy",
+            "list-set!",
             "assoc", "assv", "assq", "member", "memv", "memq",
             "caar", "cadr", "cdar", "cddr",
             // Symbols
-            "symbol?", "symbol->string", "string->symbol",
+            "symbol?", "symbol->string", "string->symbol", "symbol=?",
             // Characters
             "char?", "char->integer", "integer->char",
+            "char-upcase", "char-downcase",
+            "char=?", "char<?", "char>?", "char<=?", "char>=?",
+            "char-ci=?", "char-ci<?", "char-ci>?", "char-ci<=?", "char-ci>=?",
             "char-alphabetic?", "char-numeric?", "char-whitespace?",
-            "char-upper-case?", "char-lower-case?",
+            "char-upper-case?", "char-lower-case?", "char-foldcase", "digit-value",
             // Strings
             "string?", "string-length", "string-ref",
-            "string-append", "substring", "string-copy",
+            "string-append", "substring", "string-copy", "string-copy!",
             "string->list", "list->string",
-            "string=?", "string<?",
+            "string=?", "string<?", "string>?", "string<=?", "string>=?",
+            "string-ci=?", "string-ci<?", "string-ci>?", "string-ci<=?", "string-ci>=?",
+            "string-foldcase", "string-for-each", "string-map",
             // Vectors
             "vector?", "make-vector", "vector", "vector-length",
-            "vector-ref", "vector-set!",
+            "vector-ref", "vector-set!", "vector-copy!", "vector-append",
+            "vector-fill!", "vector->list", "list->vector",
+            "vector-for-each", "vector-map",
             // Control
             "procedure?", "apply", "map", "for-each",
             "call-with-current-continuation", "values", "call-with-values",
             // I/O
             "display", "newline", "write", "read",
-            "open-input-file", "read-line", "close-port", "eof-object?",
+            "open-input-file", "open-output-file", "read-line", "read-string", "close-port",
+            "close-input-port", "close-output-port",
+            "eof-object?", "eof-object",
+            "read-char", "peek-char", "char-ready?", "write-char", "write-string",
+            "current-input-port", "current-output-port", "current-error-port",
+            "input-port?", "output-port?", "port?", "textual-port?", "binary-port?",
+            "open-input-string", "open-output-string", "get-output-string",
+            "string-port?", "input-port-open?", "output-port-open?",
+            "open-binary-input-file", "open-binary-output-file",
+            "read-u8", "peek-u8", "write-u8", "read-bytevector", "write-bytevector",
+            "read-bytevector!", "u8-ready?",
             // Exceptions
             "error", "with-exception-handler", "raise", "guard",
+            // Continuations
+            "call/cc", "call-with-current-continuation", "dynamic-wind",
+            "call-with-port", "call-with-input-file", "call-with-output-file",
+            "with-input-from-file", "with-output-to-file",
+            "write-shared", "write-simple",
+            // Promises
+            "delay", "force", "promise?", "make-promise",
+            // Rationals
+            "rational?", "numerator", "denominator", "make-rational", "rationalize",
+            // Bytevectors
+            "make-bytevector", "bytevector", "bytevector-length",
+            "bytevector-u8-ref", "bytevector-u8-set!",
+            "bytevector-copy", "bytevector-copy!", "bytevector-append",
+            "bytevector?", "utf8->string", "string->utf8",
+            // System
+            "exit", "emergency-exit", "command-line",
+            "getenv", "get-environment-variable",
+            "file-exists?", "delete-file",
+            "current-second", "current-jiffy", "jiffies-per-second",
+            "features",
             // Eval
             "eval",
         };
@@ -13746,16 +17023,12 @@ private:
 
     // ===== TAIL CALL OPTIMIZATION SUPPORT =====
     // These functions detect and handle tail-recursive patterns to prevent stack overflow
+    // NOTE: The active TailCallContext is in BindingCodegen (binding_codegen.h:283).
+    // TCO setup is in letrec()/letrecStar()/codegenFunctionDefinition.
+    // TCO interception is in codegenCall (line ~8640) via binding_->isTCOActive().
 
-    // State for tail call optimization during lambda codegen
-    struct TailCallContext {
-        std::string func_name = "";           // Name of function being compiled
-        BasicBlock* loop_header = nullptr;    // Loop header for tail call transformation
-        std::vector<AllocaInst*> param_allocas;  // Allocas for mutable parameters
-        std::vector<std::string> param_names;    // Parameter names for lookup
-        bool enabled = false;                 // Whether TCO is enabled for current lambda
-    };
-    TailCallContext tco_context = {};
+    // Mutual TCO: set of operation nodes that are non-self tail calls in the current function
+    std::unordered_set<const eshkol_operations_t*> mutual_tail_call_sites_;
 
     // Check if an AST node is in tail position within its parent
     // Note: IF_OP uses call_op structure with variables[0]=cond, [1]=then, [2]=else
@@ -13984,6 +17257,92 @@ private:
 
                 case ESHKOL_LAMBDA_OP:
                     // Don't recurse into nested lambdas - they have their own scope
+                    break;
+
+                default:
+                    break;
+            }
+        }
+    }
+
+    // Collect ALL non-self tail call sites in a function body for mutual TCO.
+    // Walks the AST to find function calls in tail position that are NOT self-recursive
+    // (self-recursive calls are handled by the loop-based TCO above).
+    void collectMutualTailCallSites(const eshkol_ast_t* ast, const eshkol_ast_t* body,
+                                     const std::string& self_name) {
+        if (!ast) return;
+
+        if (ast->type == ESHKOL_OP) {
+            const eshkol_operations_t* op = &ast->operation;
+
+            switch (op->op) {
+                case ESHKOL_CALL_OP: {
+                    std::string call_name = (op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
+                                            op->call_op.func->variable.id) ?
+                                            op->call_op.func->variable.id : "";
+
+                    if (call_name == "if") {
+                        // IF: condition is NOT tail, both branches inherit tail position
+                        // Don't recurse into condition for tail-call collection
+                        if (op->call_op.num_vars >= 2)
+                            collectMutualTailCallSites(&op->call_op.variables[1], body, self_name);
+                        if (op->call_op.num_vars >= 3)
+                            collectMutualTailCallSites(&op->call_op.variables[2], body, self_name);
+                        break;
+                    }
+
+                    if (call_name == "begin") {
+                        // BEGIN: only last expression is in tail position
+                        if (op->call_op.num_vars > 0)
+                            collectMutualTailCallSites(
+                                &op->call_op.variables[op->call_op.num_vars - 1], body, self_name);
+                        break;
+                    }
+
+                    // Regular function call: check if it's in tail position and not self-recursive
+                    if (!call_name.empty() && call_name != self_name &&
+                        call_name != "if" && call_name != "begin" && call_name != "and" &&
+                        call_name != "or" && call_name != "not" && call_name != "when" &&
+                        call_name != "unless" && call_name != "cond" && call_name != "case" &&
+                        call_name != "let" && call_name != "let*" && call_name != "letrec" &&
+                        call_name != "letrec*" && call_name != "define" && call_name != "set!" &&
+                        call_name != "display" && call_name != "newline" && call_name != "write") {
+                        if (isInTailPosition(ast, body)) {
+                            mutual_tail_call_sites_.insert(&ast->operation);
+                            eshkol_debug("Mutual TCO: found tail call to %s in %s",
+                                        call_name.c_str(), self_name.c_str());
+                        }
+                    }
+                    // Don't recurse into arguments — they are NOT in tail position
+                    break;
+                }
+
+                case ESHKOL_IF_OP:
+                    // Both branches inherit tail position
+                    if (op->call_op.num_vars >= 2)
+                        collectMutualTailCallSites(&op->call_op.variables[1], body, self_name);
+                    if (op->call_op.num_vars >= 3)
+                        collectMutualTailCallSites(&op->call_op.variables[2], body, self_name);
+                    break;
+
+                case ESHKOL_SEQUENCE_OP:
+                    // Only last expression is in tail position
+                    if (op->sequence_op.num_expressions > 0)
+                        collectMutualTailCallSites(
+                            &op->sequence_op.expressions[op->sequence_op.num_expressions - 1],
+                            body, self_name);
+                    break;
+
+                case ESHKOL_LET_OP:
+                case ESHKOL_LET_STAR_OP:
+                case ESHKOL_LETREC_OP:
+                case ESHKOL_LETREC_STAR_OP:
+                    // Body inherits tail position
+                    collectMutualTailCallSites(op->let_op.body, body, self_name);
+                    break;
+
+                case ESHKOL_LAMBDA_OP:
+                    // Don't recurse into nested lambdas
                     break;
 
                 default:
@@ -14387,7 +17746,181 @@ private:
                     case ESHKOL_WHEN_OP:
                     case ESHKOL_UNLESS_OP:
                     case ESHKOL_DO_OP:
+                    case ESHKOL_CASE_OP:
+                    case ESHKOL_QUOTE_OP:
+                    case ESHKOL_QUASIQUOTE_OP:
+                    case ESHKOL_UNQUOTE_OP:
+                    case ESHKOL_UNQUOTE_SPLICING_OP:
                         // These use call_op: search all variables
+                        if (op->call_op.func) {
+                            findFreeVariablesImpl(op->call_op.func, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                            findFreeVariablesImpl(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_DYNAMIC_WIND_OP:
+                        // Recurse into all three thunks
+                        if (op->dynamic_wind_op.before) {
+                            findFreeVariablesImpl(op->dynamic_wind_op.before, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        if (op->dynamic_wind_op.thunk) {
+                            findFreeVariablesImpl(op->dynamic_wind_op.thunk, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        if (op->dynamic_wind_op.after) {
+                            findFreeVariablesImpl(op->dynamic_wind_op.after, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_CALL_CC_OP:
+                        // Recurse into the procedure
+                        if (op->call_cc_op.proc) {
+                            findFreeVariablesImpl(op->call_cc_op.proc, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_GUARD_OP: {
+                        // Recurse into body expressions and clause expressions
+                        for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                            findFreeVariablesImpl(&op->guard_op.body[i], current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                            findFreeVariablesImpl(&op->guard_op.clauses[i], current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    }
+                    case ESHKOL_RAISE_OP:
+                        if (op->raise_op.exception) {
+                            findFreeVariablesImpl(op->raise_op.exception, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_VALUES_OP:
+                        for (uint64_t i = 0; i < op->values_op.num_values; i++) {
+                            findFreeVariablesImpl(&op->values_op.expressions[i], current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_CALL_WITH_VALUES_OP:
+                        if (op->call_with_values_op.producer) {
+                            findFreeVariablesImpl(op->call_with_values_op.producer, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        if (op->call_with_values_op.consumer) {
+                            findFreeVariablesImpl(op->call_with_values_op.consumer, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_MATCH_OP: {
+                        if (op->match_op.expr) {
+                            findFreeVariablesImpl(op->match_op.expr, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
+                            if (op->match_op.clauses[i].guard) {
+                                findFreeVariablesImpl(op->match_op.clauses[i].guard, current_scope, parameters, num_params, free_vars, bound_vars);
+                            }
+                            if (op->match_op.clauses[i].body) {
+                                findFreeVariablesImpl(op->match_op.clauses[i].body, current_scope, parameters, num_params, free_vars, bound_vars);
+                            }
+                        }
+                        break;
+                    }
+                    case ESHKOL_WITH_REGION_OP:
+                        for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
+                            findFreeVariablesImpl(&op->with_region_op.body[i], current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_BORROW_OP:
+                        if (op->borrow_op.value) {
+                            findFreeVariablesImpl(op->borrow_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
+                            findFreeVariablesImpl(&op->borrow_op.body[i], current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_OWNED_OP:
+                        if (op->owned_op.value) {
+                            findFreeVariablesImpl(op->owned_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_MOVE_OP:
+                        if (op->move_op.value) {
+                            findFreeVariablesImpl(op->move_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_SHARED_OP:
+                        if (op->shared_op.value) {
+                            findFreeVariablesImpl(op->shared_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_WEAK_REF_OP:
+                        if (op->weak_ref_op.value) {
+                            findFreeVariablesImpl(op->weak_ref_op.value, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_DIFF_OP:
+                        if (op->diff_op.expression) {
+                            findFreeVariablesImpl(op->diff_op.expression, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_JACOBIAN_OP:
+                        if (op->jacobian_op.function) {
+                            findFreeVariablesImpl(op->jacobian_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        if (op->jacobian_op.point) {
+                            findFreeVariablesImpl(op->jacobian_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_HESSIAN_OP:
+                        if (op->hessian_op.function) {
+                            findFreeVariablesImpl(op->hessian_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        if (op->hessian_op.point) {
+                            findFreeVariablesImpl(op->hessian_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_DIVERGENCE_OP:
+                        if (op->divergence_op.function) {
+                            findFreeVariablesImpl(op->divergence_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        if (op->divergence_op.point) {
+                            findFreeVariablesImpl(op->divergence_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_CURL_OP:
+                        if (op->curl_op.function) {
+                            findFreeVariablesImpl(op->curl_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        if (op->curl_op.point) {
+                            findFreeVariablesImpl(op->curl_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_LAPLACIAN_OP:
+                        if (op->laplacian_op.function) {
+                            findFreeVariablesImpl(op->laplacian_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        if (op->laplacian_op.point) {
+                            findFreeVariablesImpl(op->laplacian_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    // Logic/consciousness operations use call_op structure
+                    case ESHKOL_UNIFY_OP:
+                    case ESHKOL_MAKE_SUBST_OP:
+                    case ESHKOL_WALK_OP:
+                    case ESHKOL_MAKE_FACT_OP:
+                    case ESHKOL_MAKE_KB_OP:
+                    case ESHKOL_KB_ASSERT_OP:
+                    case ESHKOL_KB_QUERY_OP:
+                    case ESHKOL_LOGIC_VAR_PRED_OP:
+                    case ESHKOL_SUBSTITUTION_PRED_OP:
+                    case ESHKOL_KB_PRED_OP:
+                    case ESHKOL_FACT_PRED_OP:
+                    case ESHKOL_FACTOR_GRAPH_PRED_OP:
+                    case ESHKOL_WORKSPACE_PRED_OP:
+                    case ESHKOL_MAKE_FACTOR_GRAPH_OP:
+                    case ESHKOL_FG_ADD_FACTOR_OP:
+                    case ESHKOL_FG_INFER_OP:
+                    case ESHKOL_FG_UPDATE_CPT_OP:
+                    case ESHKOL_FREE_ENERGY_OP:
+                    case ESHKOL_EXPECTED_FREE_ENERGY_OP:
+                    case ESHKOL_MAKE_WORKSPACE_OP:
+                    case ESHKOL_WS_REGISTER_OP:
+                    case ESHKOL_WS_STEP_OP:
+                    case ESHKOL_EXTERN_OP:
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             findFreeVariablesImpl(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -14667,7 +18200,34 @@ private:
                 ++arg_it;
             }
         }
-        
+
+        // DWARF DEBUG INFO: Attach DISubprogram to lambda for source-level debugging
+        if (emit_debug_info_ && di_builder_ && di_file_) {
+            SmallVector<Metadata*, 8> di_param_types;
+            di_param_types.push_back(nullptr); // Return type
+            for (uint64_t i = 0; i < op->lambda_op.num_params; ++i) {
+                di_param_types.push_back(nullptr);
+            }
+            DISubroutineType* di_func_type = di_builder_->createSubroutineType(
+                di_builder_->getOrCreateTypeArray(di_param_types));
+
+            unsigned line_no = op->lambda_op.body ? op->lambda_op.body->line : 0;
+            if (line_no == 0) line_no = 1;
+            DISubprogram* di_sp = di_builder_->createFunction(
+                di_file_,
+                lambda_name,
+                lambda_func->getName(),
+                di_file_,
+                line_no,
+                di_func_type,
+                line_no,
+                DINode::FlagPrototyped,
+                DISubprogram::SPFlagDefinition | DISubprogram::SPFlagLocalToUnit);
+
+            lambda_func->setSubprogram(di_sp);
+            eshkol_debug("Attached DISubprogram to lambda %s at line %u", lambda_name.c_str(), line_no);
+        }
+
         // Create basic block for lambda body
         BasicBlock* entry = BasicBlock::Create(*context, "entry", lambda_func);
         IRBuilderBase::InsertPoint old_point = builder->saveIP();
@@ -14778,12 +18338,12 @@ private:
         }
 
         // TCO SETUP: Determine whether to use TCO for this lambda
-        // Key insight: When letrec sets up TCO for a lambda:
-        //   - tco_context.enabled = true
-        //   - tco_context.loop_header = nullptr (not yet created)
+        // Key insight: When letrec sets up TCO for a lambda (in binding_codegen.cpp):
+        //   - binding_->getTCOContext().enabled = true
+        //   - binding_->getTCOContext().loop_header = nullptr (not yet created)
         // When we're INSIDE a function that has TCO active (generating nested lambdas):
-        //   - tco_context.enabled = true
-        //   - tco_context.loop_header != nullptr (already created for outer function)
+        //   - binding_->getTCOContext().enabled = true
+        //   - binding_->getTCOContext().loop_header != nullptr (already created for outer function)
         //
         // So: Use TCO if enabled AND loop_header is null (this is the primary lambda)
         //     Save/clear/restore if loop_header is already set (nested lambda inside TCO function)
@@ -14883,20 +18443,24 @@ private:
             binding_->getTCOContext().loop_header = nullptr;
         } else {
             // Non-TCO: normal return handling
-            // Decrement recursion depth before return
-            builder->CreateCall(getDecrDepthFunc(), {});
-            if (body_result) {
-                if (body_result->getType() == tagged_value_type) {
-                    builder->CreateRet(body_result);
+            // Check if body already terminated (e.g., raise/error emits unreachable)
+            BasicBlock* current_bb = builder->GetInsertBlock();
+            if (!current_bb->getTerminator()) {
+                // Decrement recursion depth before return
+                builder->CreateCall(getDecrDepthFunc(), {});
+                if (body_result) {
+                    if (body_result->getType() == tagged_value_type) {
+                        builder->CreateRet(body_result);
+                    } else {
+                        TypedValue typed = detectValueType(body_result);
+                        Value* tagged = typedValueToTaggedValue(typed);
+                        builder->CreateRet(tagged);
+                    }
                 } else {
-                    TypedValue typed = detectValueType(body_result);
-                    Value* tagged = typedValueToTaggedValue(typed);
-                    builder->CreateRet(tagged);
+                    Value* null_tagged = packInt64ToTaggedValue(
+                        ConstantInt::get(int64_type, 0), true);
+                    builder->CreateRet(null_tagged);
                 }
-            } else {
-                Value* null_tagged = packInt64ToTaggedValue(
-                    ConstantInt::get(int64_type, 0), true);
-                builder->CreateRet(null_tagged);
             }
         }
         
@@ -14957,7 +18521,7 @@ private:
         if (!sexpr_global) {
             sexpr_global = new GlobalVariable(
                 *module, int64_type, false,
-                GlobalValue::ExternalLinkage,
+                GlobalValue::LinkOnceODRLinkage,
                 ConstantInt::get(int64_type, 0),
                 sexpr_key
             );
@@ -15510,7 +19074,7 @@ private:
                     if (!var_sexpr_global) {
                         var_sexpr_global = new GlobalVariable(
                             *module, int64_type, false,
-                            GlobalVariable::ExternalLinkage,
+                            GlobalVariable::LinkOnceODRLinkage,
                             ConstantInt::get(int64_type, 0),
                             scoped_sexpr_key
                         );
@@ -16074,490 +19638,12 @@ private:
         return result;
     }
 
-    // letrec - Recursive bindings (all bindings visible to all values)
-    // Used for mutually recursive function definitions
-    Value* codegenLetrec(const eshkol_operations_t* op) {
-        if (!op || !op->let_op.body) {
-            eshkol_error("Invalid letrec expression - missing body");
-            return nullptr;
-        }
 
-        eshkol_debug("Processing letrec expression with %llu bindings",
-                    (unsigned long long)op->let_op.num_bindings);
-
-        // Save current symbol table state
-        std::unordered_map<std::string, Value*> prev_symbols = symbol_table;
-
-        // Collect binding info
-        std::vector<std::string> var_names;
-        std::vector<const eshkol_ast_t*> val_asts;
-        std::vector<bool> is_lambda;
-        std::vector<std::string> lambda_names;
-        std::vector<std::vector<std::string>> lambda_free_vars;  // Free vars for each lambda
-
-        // Build set of all letrec-bound names (for determining what's external)
-        std::set<std::string> letrec_bound_names;
-        for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-            const eshkol_ast_t* binding = &op->let_op.bindings[i];
-            if (binding->type == ESHKOL_CONS && binding->cons_cell.car &&
-                binding->cons_cell.car->type == ESHKOL_VAR &&
-                binding->cons_cell.car->variable.id) {
-                letrec_bound_names.insert(binding->cons_cell.car->variable.id);
-            }
-        }
-
-        // PHASE 1: Analyze all bindings and collect info
-        static int letrec_lambda_counter = 0;
-        for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-            const eshkol_ast_t* binding = &op->let_op.bindings[i];
-
-            // Binding is a cons cell: (variable . value)
-            if (binding->type != ESHKOL_CONS || !binding->cons_cell.car || !binding->cons_cell.cdr) {
-                eshkol_error("Invalid letrec binding structure at index %llu", (unsigned long long)i);
-                continue;
-            }
-
-            // Extract variable name from car
-            const eshkol_ast_t* var_ast = binding->cons_cell.car;
-            if (var_ast->type != ESHKOL_VAR || !var_ast->variable.id) {
-                eshkol_error("Letrec binding must have variable name");
-                continue;
-            }
-
-            std::string var_name = var_ast->variable.id;
-            const eshkol_ast_t* val_ast = binding->cons_cell.cdr;
-
-            var_names.push_back(var_name);
-            val_asts.push_back(val_ast);
-
-            // Check if this binding is a lambda
-            bool binding_is_lambda = (val_ast->type == ESHKOL_OP &&
-                                      val_ast->operation.op == ESHKOL_LAMBDA_OP);
-            is_lambda.push_back(binding_is_lambda);
-
-            if (binding_is_lambda) {
-                // Use module prefix to prevent symbol collisions when linking with stdlib.o
-                std::string lambda_name = module_prefix + "_letrec_lambda_" + std::to_string(letrec_lambda_counter++);
-                lambda_names.push_back(lambda_name);
-
-                const eshkol_operations_t* lambda_op = &val_ast->operation;
-
-                // Find free variables in this lambda (variables from outer scope)
-                std::vector<std::string> all_free_vars;
-                findFreeVariables(lambda_op->lambda_op.body, symbol_table,
-                                  lambda_op->lambda_op.parameters, lambda_op->lambda_op.num_params,
-                                  all_free_vars);
-
-                // Filter: only keep vars that are NOT letrec-bound (those need capture)
-                // Letrec-bound vars will be accessed via globals/func refs
-                std::vector<std::string> external_free_vars;
-                for (const auto& fv : all_free_vars) {
-                    if (letrec_bound_names.find(fv) == letrec_bound_names.end()) {
-                        external_free_vars.push_back(fv);
-                    }
-                }
-                lambda_free_vars.push_back(external_free_vars);
-
-                eshkol_debug("Letrec lambda %s has %zu external free vars",
-                           var_name.c_str(), external_free_vars.size());
-            } else {
-                lambda_names.push_back("");
-                lambda_free_vars.push_back({});
-            }
-        }
-
-        // PHASE 2: Create GlobalVariables for ALL letrec bindings (accessible from any function)
-        // And create forward declarations for lambda bindings
-        std::vector<GlobalVariable*> var_globals;
-        for (uint64_t i = 0; i < var_names.size(); i++) {
-            std::string var_name = var_names[i];
-
-            // Create global variable for this binding
-            // Use module prefix to prevent symbol collisions when linking with stdlib.o
-            std::string global_name = module_prefix + "_letrec_" + var_name + "_" + std::to_string(letrec_lambda_counter + i);
-            GlobalVariable* var_global = new GlobalVariable(
-                *module,
-                tagged_value_type,
-                false,  // not constant
-                GlobalValue::InternalLinkage,
-                UndefValue::get(tagged_value_type),
-                global_name
-            );
-            var_globals.push_back(var_global);
-            symbol_table[var_name] = var_global;
-            eshkol_debug("Letrec: created global %s for %s", global_name.c_str(), var_name.c_str());
-
-            if (is_lambda[i]) {
-                // Create forward declaration for lambda
-                // Note: captures are loaded from globals, NOT passed as parameters
-                const eshkol_operations_t* lambda_op = &val_asts[i]->operation;
-
-                // Function type: only regular params (captures loaded from globals)
-                std::vector<Type*> param_types;
-                for (uint64_t j = 0; j < lambda_op->lambda_op.num_params; j++) {
-                    param_types.push_back(tagged_value_type);
-                }
-
-                FunctionType* func_type = FunctionType::get(
-                    tagged_value_type,
-                    param_types,
-                    false
-                );
-
-                Function* forward_decl = Function::Create(
-                    func_type,
-                    Function::ExternalLinkage,
-                    lambda_names[i],
-                    module.get()
-                );
-
-                // Register the forward declaration so recursive calls can find it
-                symbol_table[var_name + "_func"] = forward_decl;
-                global_symbol_table[var_name + "_func"] = forward_decl;
-                function_table[lambda_names[i]] = forward_decl;
-
-                eshkol_debug("Letrec phase 2: created forward declaration for %s -> %s",
-                           var_name.c_str(), lambda_names[i].c_str());
-            }
-        }
-
-        // PHASE 3: Store captured values in globals for each lambda
-        // This must happen BEFORE generating lambda bodies, so captures are available
-        std::unordered_map<std::string, std::unordered_map<std::string, GlobalVariable*>> lambda_capture_globals;
-        for (uint64_t i = 0; i < var_names.size(); i++) {
-            if (!is_lambda[i]) continue;
-
-            const std::vector<std::string>& free_vars = lambda_free_vars[i];
-            std::unordered_map<std::string, GlobalVariable*> capture_globals;
-
-            for (const std::string& fv : free_vars) {
-                // Load captured value from outer scope
-                Value* captured_val = nullptr;
-                auto it = symbol_table.find(fv);
-                if (it != symbol_table.end() && it->second) {
-                    Value* storage = it->second;
-                    if (isa<AllocaInst>(storage)) {
-                        captured_val = builder->CreateLoad(
-                            dyn_cast<AllocaInst>(storage)->getAllocatedType(), storage);
-                    } else if (isa<GlobalVariable>(storage)) {
-                        captured_val = builder->CreateLoad(
-                            dyn_cast<GlobalVariable>(storage)->getValueType(), storage);
-                    } else {
-                        captured_val = storage;
-                    }
-                }
-
-                if (!captured_val) {
-                    eshkol_warn("Could not resolve capture %s for letrec lambda %s",
-                              fv.c_str(), var_names[i].c_str());
-                    continue;
-                }
-
-                // NESTED CAPTURE FIX: If the captured variable is already stored in a GlobalVariable
-                // (from an outer function's capture), reuse that GlobalVariable instead of creating a new one.
-                GlobalVariable* capture_global = nullptr;
-                Value* storage = it->second;
-                if (storage && isa<GlobalVariable>(storage)) {
-                    // The variable is already a GlobalVariable - reuse it directly
-                    capture_global = dyn_cast<GlobalVariable>(storage);
-                    eshkol_debug("Letrec phase 3: reusing existing GlobalVariable for capture '%s' -> '%s'",
-                               fv.c_str(), capture_global->getName().str().c_str());
-                } else {
-                    // Ensure tagged value
-                    if (captured_val->getType() != tagged_value_type) {
-                        if (captured_val->getType()->isDoubleTy()) {
-                            captured_val = packDoubleToTaggedValue(captured_val);
-                        } else if (captured_val->getType()->isIntegerTy(64)) {
-                            captured_val = packInt64ToTaggedValue(captured_val, ESHKOL_VALUE_INT64);
-                        } else if (isa<Function>(captured_val)) {
-                            Value* func_addr = builder->CreatePtrToInt(captured_val, int64_type);
-                            captured_val = packInt64ToTaggedValue(func_addr, ESHKOL_VALUE_CALLABLE);
-                        }
-                    }
-
-                    // Create global to store capture
-                    std::string capture_key = lambda_names[i] + "_capture_" + fv;
-                    capture_global = new GlobalVariable(
-                        *module,
-                        tagged_value_type,
-                        false,
-                        GlobalValue::InternalLinkage,
-                        UndefValue::get(tagged_value_type),
-                        capture_key
-                    );
-                    builder->CreateStore(captured_val, capture_global);
-                    symbol_table[capture_key] = capture_global;
-
-                    // MUTABLE CAPTURE FIX: Also update the original variable's storage to use
-                    // this GlobalVariable. This ensures set! inside the lambda and access from
-                    // the enclosing scope use the same storage.
-                    symbol_table[fv] = capture_global;
-
-                    eshkol_debug("Letrec phase 3: stored capture '%s' for lambda '%s' (updated outer scope)", fv.c_str(), var_names[i].c_str());
-                }
-                capture_globals[fv] = capture_global;
-            }
-            lambda_capture_globals[var_names[i]] = capture_globals;
-        }
-
-        // PHASE 4: Generate lambda bodies and evaluate non-lambda expressions
-        for (uint64_t i = 0; i < var_names.size(); i++) {
-            const eshkol_ast_t* val_ast = val_asts[i];
-            std::string var_name = var_names[i];
-
-            Value* val = nullptr;
-
-            if (is_lambda[i]) {
-                // Get the forward declaration we created
-                Value* forward_decl = symbol_table[var_name + "_func"];
-                Function* forward_func = dyn_cast<Function>(forward_decl);
-
-                if (forward_func) {
-                    const eshkol_operations_t* lambda_op = &val_ast->operation;
-
-                    // Create entry block for the function
-                    BasicBlock* entry = BasicBlock::Create(*context, "entry", forward_func);
-                    IRBuilderBase::InsertPoint old_point = builder->saveIP();
-                    builder->SetInsertPoint(entry);
-
-                    // Save current function context
-                    Function* prev_function = current_function;
-                    current_function = forward_func;
-                    std::unordered_map<std::string, Value*> lambda_scope = symbol_table;
-
-                    // TCO SETUP: Check if this lambda is self-tail-recursive
-                    bool use_tco = isSelfTailRecursive(lambda_op, var_name);
-                    TailCallContext prev_tco_context = tco_context;
-                    BasicBlock* loop_body_bb = nullptr;
-                    BasicBlock* return_bb = nullptr;
-
-                    if (use_tco) {
-                        eshkol_debug("TCO: Enabling tail call optimization for letrec lambda %s", var_name.c_str());
-
-                        // Set up TCO context
-                        tco_context.func_name = var_name;
-                        tco_context.enabled = true;
-                        tco_context.param_allocas.clear();
-                        tco_context.param_names.clear();
-
-                        // Create allocas for all parameters in entry block
-                        auto arg_it_tco = forward_func->arg_begin();
-                        if (lambda_op->lambda_op.parameters) {
-                            for (uint64_t j = 0; j < lambda_op->lambda_op.num_params && arg_it_tco != forward_func->arg_end(); ++j, ++arg_it_tco) {
-                                if (lambda_op->lambda_op.parameters[j].type == ESHKOL_VAR &&
-                                    lambda_op->lambda_op.parameters[j].variable.id) {
-                                    std::string param_name = lambda_op->lambda_op.parameters[j].variable.id;
-                                    arg_it_tco->setName(param_name + "_arg");
-
-                                    // Create alloca for this parameter
-                                    AllocaInst* param_alloca = builder->CreateAlloca(
-                                        tagged_value_type, nullptr, param_name + "_tco");
-
-                                    // Store initial argument value
-                                    builder->CreateStore(&(*arg_it_tco), param_alloca);
-
-                                    tco_context.param_allocas.push_back(param_alloca);
-                                    tco_context.param_names.push_back(param_name);
-                                    symbol_table[param_name] = param_alloca;
-                                }
-                            }
-                        }
-
-                        // Create loop header block
-                        loop_body_bb = BasicBlock::Create(*context, "tco_loop", forward_func);
-                        return_bb = BasicBlock::Create(*context, "tco_return", forward_func);
-                        tco_context.loop_header = loop_body_bb;
-
-                        // Branch from entry to loop body
-                        builder->CreateBr(loop_body_bb);
-
-                        // Generate body in loop block
-                        builder->SetInsertPoint(loop_body_bb);
-                    } else {
-                        // Non-TCO path: add parameters directly to symbol table
-                        auto arg_it = forward_func->arg_begin();
-                        if (lambda_op->lambda_op.parameters) {
-                            for (uint64_t j = 0; j < lambda_op->lambda_op.num_params && arg_it != forward_func->arg_end(); ++j, ++arg_it) {
-                                if (lambda_op->lambda_op.parameters[j].type == ESHKOL_VAR &&
-                                    lambda_op->lambda_op.parameters[j].variable.id) {
-                                    std::string param_name = lambda_op->lambda_op.parameters[j].variable.id;
-                                    arg_it->setName(param_name);
-                                    symbol_table[param_name] = &(*arg_it);
-                                }
-                            }
-                        }
-                    }
-
-                    // CLOSURE MUTATION FIX: Store GlobalVariable directly so set! can modify captures
-                    auto capture_it = lambda_capture_globals.find(var_name);
-                    if (capture_it != lambda_capture_globals.end()) {
-                        for (const auto& cap : capture_it->second) {
-                            // Store the GlobalVariable directly (not loaded value) so set! can modify it
-                            symbol_table[cap.first] = cap.second;
-                            eshkol_debug("Letrec lambda %s: using global capture %s for mutability",
-                                       var_name.c_str(), cap.first.c_str());
-                        }
-                    }
-
-                    // Generate lambda body
-                    Value* body_result = codegenAST(lambda_op->lambda_op.body);
-
-                    // Handle return based on TCO mode
-                    if (use_tco) {
-                        // TCO mode: current block might be terminated by a tail call jump
-                        BasicBlock* current_bb = builder->GetInsertBlock();
-                        if (!current_bb->getTerminator()) {
-                            // Body didn't end with tail call, needs a return
-                            // Pack result and branch to return block
-                            if (body_result) {
-                                if (body_result->getType() != tagged_value_type) {
-                                    if (body_result->getType()->isDoubleTy()) {
-                                        body_result = packDoubleToTaggedValue(body_result);
-                                    } else if (body_result->getType()->isIntegerTy(64)) {
-                                        body_result = packInt64ToTaggedValue(body_result, ESHKOL_VALUE_INT64);
-                                    } else if (body_result->getType()->isIntegerTy(32)) {
-                                        body_result = packInt64ToTaggedValue(
-                                            builder->CreateSExt(body_result, int64_type),
-                                            ESHKOL_VALUE_INT64);
-                                    } else if (body_result->getType()->isIntegerTy(1)) {
-                                        body_result = packInt64ToTaggedValue(
-                                            builder->CreateZExt(body_result, int64_type),
-                                            ESHKOL_VALUE_INT64);
-                                    }
-                                }
-                                builder->CreateRet(body_result);
-                            } else {
-                                builder->CreateRet(packNullToTaggedValue());
-                            }
-                        }
-
-                        // Delete unused return block if it has no predecessors
-                        if (return_bb && return_bb->hasNPredecessors(0)) {
-                            return_bb->eraseFromParent();
-                        }
-
-                        // Restore TCO context
-                        tco_context = prev_tco_context;
-                    } else {
-                        // Non-TCO path: normal return handling
-                        if (body_result) {
-                            if (body_result->getType() != tagged_value_type) {
-                                if (body_result->getType()->isDoubleTy()) {
-                                    body_result = packDoubleToTaggedValue(body_result);
-                                } else if (body_result->getType()->isIntegerTy(64)) {
-                                    body_result = packInt64ToTaggedValue(body_result, ESHKOL_VALUE_INT64);
-                                } else if (body_result->getType()->isIntegerTy(32)) {
-                                    // Handle i32 returns (e.g., from printf/newline)
-                                    body_result = packInt64ToTaggedValue(
-                                        builder->CreateSExt(body_result, int64_type),
-                                        ESHKOL_VALUE_INT64);
-                                } else if (body_result->getType()->isIntegerTy(1)) {
-                                    body_result = packInt64ToTaggedValue(
-                                        builder->CreateZExt(body_result, int64_type),
-                                        ESHKOL_VALUE_INT64);
-                                }
-                            }
-                            builder->CreateRet(body_result);
-                        } else {
-                            builder->CreateRet(packNullToTaggedValue());
-                        }
-                    }
-
-                    // Restore context
-                    symbol_table = lambda_scope;
-                    current_function = prev_function;
-                    builder->restoreIP(old_point);
-
-                    // CLOSURE MUTATION FIX: Update outer scope to use GlobalVariables for captured variables
-                    auto capture_it2 = lambda_capture_globals.find(var_name);
-                    if (capture_it2 != lambda_capture_globals.end()) {
-                        for (const auto& cap : capture_it2->second) {
-                            symbol_table[cap.first] = cap.second;
-                            eshkol_debug("Letrec: updated outer scope %s to use global storage", cap.first.c_str());
-                        }
-                    }
-
-                    val = forward_func;
-                    eshkol_debug("Letrec phase 4: generated body for %s", var_name.c_str());
-                }
-            } else {
-                // Non-lambda binding - evaluate normally
-                val = codegenAST(val_ast);
-            }
-
-            if (!val) {
-                eshkol_warn("Failed to evaluate letrec binding value for %s", var_name.c_str());
-                continue;
-            }
-
-            // Handle function bindings specially
-            if (val && isa<Function>(val)) {
-                Function* func = dyn_cast<Function>(val);
-
-                // Store direct function reference
-                symbol_table[var_name + "_func"] = func;
-                global_symbol_table[var_name + "_func"] = func;
-
-                // Convert function pointer to tagged value for storage
-                val = packInt64ToTaggedValue(
-                    builder->CreatePtrToInt(func, int64_type),
-                    ESHKOL_VALUE_HEAP_PTR
-                );
-            }
-            // Ensure value is tagged_value_type for storage
-            else if (val->getType() != tagged_value_type) {
-                if (val->getType()->isDoubleTy()) {
-                    val = packDoubleToTaggedValue(val);
-                } else if (val->getType()->isIntegerTy(64)) {
-                    val = packInt64ToTaggedValue(val, ESHKOL_VALUE_INT64);
-                } else if (val->getType()->isIntegerTy(1)) {
-                    val = packInt64ToTaggedValue(
-                        builder->CreateZExt(val, int64_type),
-                        ESHKOL_VALUE_INT64
-                    );
-                }
-            }
-
-            // Store value in global variable
-            if (i < var_globals.size() && var_globals[i]) {
-                builder->CreateStore(val, var_globals[i]);
-                eshkol_debug("Letrec phase 4: stored value for %s", var_name.c_str());
-            }
-        }
-
-        // PHASE 5: Evaluate body in the new scope with bindings
-        Value* body_result = codegenAST(op->let_op.body);
-
-        // Preserve _func entries before restoring symbol table
-        std::unordered_map<std::string, Value*> func_refs_to_preserve;
-        for (auto& entry : symbol_table) {
-            if (entry.first.length() > 5 &&
-                entry.first.substr(entry.first.length() - 5) == "_func") {
-                func_refs_to_preserve[entry.first] = entry.second;
-                global_symbol_table[entry.first] = entry.second;
-                eshkol_debug("Letrec: preserving function reference: %s", entry.first.c_str());
-            }
-            // MUTABLE CAPTURE FIX: Also preserve GlobalVariable captures
-            // These are variables that were moved to GlobalVariables when captured by lambdas
-            if (isa<GlobalVariable>(entry.second)) {
-                func_refs_to_preserve[entry.first] = entry.second;
-                eshkol_debug("Letrec: preserving GlobalVariable capture: %s", entry.first.c_str());
-            }
-        }
-
-        // Restore previous symbol table state
-        symbol_table = prev_symbols;
-
-        // Re-add preserved function references and GlobalVariable captures
-        for (auto& entry : func_refs_to_preserve) {
-            symbol_table[entry.first] = entry.second;
-        }
-
-        eshkol_debug("Letrec expression completed, scope restored (preserved %zu refs)",
-                    func_refs_to_preserve.size());
-
-        return body_result ? body_result : ConstantInt::get(int64_type, 0);
-    }
+    // NOTE: codegenLetrec was removed (was ~480 lines of dead code).
+    // Letrec is fully handled by binding_codegen.cpp:letrec() (dispatched at
+    // codegenOperation). The dead code used a separate TailCallContext in
+    // LLVMCodegen that did not integrate with the active TCO interception in
+    // codegenCall (which checks binding_->isTCOActive()).
 
     Value* codegenTensor(const eshkol_ast_t* ast) {
         if (!ast || ast->type != ESHKOL_TENSOR) return nullptr;
@@ -16641,9 +19727,10 @@ private:
         // Gradient with scalar functions passes single AD node, not tensor!
         Function* current_func = builder->GetInsertBlock()->getParent();
 
-        // Consolidated pointer system: Check for CALLABLE or HEAP_PTR
+        // Consolidated pointer system: Check for CALLABLE, HEAP_PTR, or scalar
         // - CALLABLE (9): AD nodes, closures, lambdas
         // - HEAP_PTR (8): vectors, tensors (distinguished by header subtype)
+        // - DOUBLE/INT64: scalar value (gradient returns scalar for scalar input)
         Value* input_type = getTaggedValueType(vector_val);
         Value* input_base_type = getBaseType(input_type);
 
@@ -16651,13 +19738,24 @@ private:
             ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* is_heap_ptr = builder->CreateICmpEQ(input_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_double = builder->CreateICmpEQ(input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+        Value* is_int64 = builder->CreateICmpEQ(input_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        Value* is_scalar = builder->CreateOr(is_double, is_int64);
 
+        BasicBlock* scalar_input = BasicBlock::Create(*context, "vref_scalar_input", current_func);
         BasicBlock* ad_node_input = BasicBlock::Create(*context, "vref_ad_node_input", current_func);
         BasicBlock* heap_ptr_dispatch = BasicBlock::Create(*context, "vref_heap_ptr_dispatch", current_func);
         BasicBlock* scheme_vector_input = BasicBlock::Create(*context, "vref_scheme_vector_input", current_func);
         BasicBlock* tensor_input = BasicBlock::Create(*context, "vref_tensor_input", current_func);
         BasicBlock* vref_final = BasicBlock::Create(*context, "vref_final", current_func);
 
+        BasicBlock* check_callable = BasicBlock::Create(*context, "vref_check_callable", current_func);
+        // Scalar inputs: (tensor-ref 6.0 0) → return 6.0 directly
+        builder->CreateCondBr(is_scalar, scalar_input, check_callable);
+
+        builder->SetInsertPoint(check_callable);
         BasicBlock* check_heap_ptr = BasicBlock::Create(*context, "vref_check_heap_ptr", current_func);
         builder->CreateCondBr(is_callable, ad_node_input, check_heap_ptr);
 
@@ -16678,6 +19776,13 @@ private:
             ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
         builder->CreateCondBr(is_vector_subtype, scheme_vector_input, tensor_input);
         
+        // SCALAR INPUT: (tensor-ref scalar 0) → return scalar directly
+        // This handles gradient returning a scalar for scalar-input functions
+        builder->SetInsertPoint(scalar_input);
+        Value* scalar_result = ensureTaggedValue(vector_val);
+        builder->CreateBr(vref_final);
+        BasicBlock* scalar_exit = builder->GetInsertBlock();
+
         // AD NODE INPUT: Extract value directly from AD node structure (NOT tensor!)
         builder->SetInsertPoint(ad_node_input);
         
@@ -16837,7 +19942,8 @@ private:
         
         // Final merge: Return tensor element, Scheme vector element, or AD node
         builder->SetInsertPoint(vref_final);
-        PHINode* final_result = builder->CreatePHI(tagged_value_type, 3, "vref_final_result");
+        PHINode* final_result = builder->CreatePHI(tagged_value_type, 4, "vref_final_result");
+        final_result->addIncoming(scalar_result, scalar_exit);
         final_result->addIncoming(ad_result, ad_node_exit);
         final_result->addIncoming(scheme_result, scheme_vector_exit);
         final_result->addIncoming(result_phi, vref_merge);
@@ -16910,39 +20016,177 @@ private:
         Value* tensor_b = codegenAST(&op->call_op.variables[1]);
         if (!tensor_a || !tensor_b) return nullptr;
 
-        // Extract tensor pointers
-        Value* ptr_a;
-        if (tensor_a->getType() == tagged_value_type) {
-            Value* ptr_int = unpackInt64FromTaggedValue(tensor_a);
-            ptr_a = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
-        } else {
-            ptr_a = builder->CreateIntToPtr(tensor_a, builder->getPtrTy());
-        }
+        // AD-aware input extraction: each input may be a plain tensor (HEAP_PTR)
+        // or an AD node wrapping a tensor (CALLABLE with CALLABLE_SUBTYPE_AD_NODE).
+        // We extract both the tensor struct pointer (for computation) and the
+        // AD node pointer (for gradient tracking, nullptr if not AD).
+        auto extractTensorAndADNode = [&](Value* input, Value*& out_tensor_ptr, Value*& out_ad_node) {
+            if (input->getType() != tagged_value_type) {
+                // Raw pointer, not tagged — just convert
+                out_tensor_ptr = builder->CreateIntToPtr(input, builder->getPtrTy());
+                out_ad_node = ConstantPointerNull::get(PointerType::getUnqual(*context));
+                return;
+            }
 
-        Value* ptr_b;
-        if (tensor_b->getType() == tagged_value_type) {
-            Value* ptr_int = unpackInt64FromTaggedValue(tensor_b);
-            ptr_b = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
-        } else {
-            ptr_b = builder->CreateIntToPtr(tensor_b, builder->getPtrTy());
-        }
+            Function* cur_fn = builder->GetInsertBlock()->getParent();
+            auto null_ptr = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
-        // Get A dimensions [M x K]
+            // Extract type tag and check if CALLABLE
+            Value* type_tag = tagged_->getType(input);
+            Value* base_type = tagged_->getBaseType(type_tag);
+            Value* is_callable = builder->CreateICmpEQ(base_type,
+                ConstantInt::get(builder->getInt8Ty(), ESHKOL_VALUE_CALLABLE));
+
+            BasicBlock* callable_bb = BasicBlock::Create(*context, "mm_callable", cur_fn);
+            BasicBlock* plain_bb = BasicBlock::Create(*context, "mm_plain", cur_fn);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "mm_input_merge", cur_fn);
+
+            builder->CreateCondBr(is_callable, callable_bb, plain_bb);
+
+            // CALLABLE path: check AD node subtype
+            builder->SetInsertPoint(callable_bb);
+            Value* raw_ptr_int = unpackInt64FromTaggedValue(input);
+            Value* raw_ptr = builder->CreateIntToPtr(raw_ptr_int, builder->getPtrTy());
+            Value* is_ad = tagged_->checkCallableSubtype(input, CALLABLE_SUBTYPE_AD_NODE);
+
+            BasicBlock* ad_bb = BasicBlock::Create(*context, "mm_ad_input", cur_fn);
+            BasicBlock* not_ad_bb = BasicBlock::Create(*context, "mm_not_ad", cur_fn);
+            builder->CreateCondBr(is_ad, ad_bb, not_ad_bb);
+
+            // AD node path: extract tensor struct ptr from field 6 (tensor_value)
+            builder->SetInsertPoint(ad_bb);
+            StructType* ad_type = ctx_->adNodeType();
+            Value* tv_field = builder->CreateStructGEP(ad_type, raw_ptr, 6);
+            Value* tensor_from_ad = builder->CreateLoad(builder->getPtrTy(), tv_field);
+            BasicBlock* ad_exit = builder->GetInsertBlock();
+            builder->CreateBr(merge_bb);
+
+            // Not-AD callable path: treat raw pointer as tensor struct
+            builder->SetInsertPoint(not_ad_bb);
+            BasicBlock* not_ad_exit = builder->GetInsertBlock();
+            builder->CreateBr(merge_bb);
+
+            // Plain tensor path (not callable)
+            builder->SetInsertPoint(plain_bb);
+            Value* plain_ptr_int = unpackInt64FromTaggedValue(input);
+            Value* plain_ptr = builder->CreateIntToPtr(plain_ptr_int, builder->getPtrTy());
+            BasicBlock* plain_exit = builder->GetInsertBlock();
+            builder->CreateBr(merge_bb);
+
+            // Merge: tensor_struct_ptr and ad_node_ptr
+            builder->SetInsertPoint(merge_bb);
+
+            PHINode* tensor_phi = builder->CreatePHI(builder->getPtrTy(), 3, "tensor_ptr");
+            tensor_phi->addIncoming(tensor_from_ad, ad_exit);  // AD: tensor from field 6
+            tensor_phi->addIncoming(raw_ptr, not_ad_exit);     // Non-AD callable: raw ptr
+            tensor_phi->addIncoming(plain_ptr, plain_exit);    // Plain tensor
+
+            PHINode* ad_phi = builder->CreatePHI(builder->getPtrTy(), 3, "ad_node_ptr");
+            ad_phi->addIncoming(raw_ptr, ad_exit);             // AD: the AD node itself
+            ad_phi->addIncoming(null_ptr, not_ad_exit);        // Not AD: nullptr
+            ad_phi->addIncoming(null_ptr, plain_exit);         // Plain: nullptr
+
+            out_tensor_ptr = tensor_phi;
+            out_ad_node = ad_phi;
+        };
+
+        Value* ptr_a = nullptr;
+        Value* ptr_b = nullptr;
+        Value* ad_node_a = nullptr;
+        Value* ad_node_b = nullptr;
+        extractTensorAndADNode(tensor_a, ptr_a, ad_node_a);
+        extractTensorAndADNode(tensor_b, ptr_b, ad_node_b);
+
+        // === SAFE DIMENSION EXTRACTION (PEP 465 semantics) ===
+        // 1D vectors are promoted for matmul, then contracted from result:
+        //   1D×1D → dot product (scalar) — handled by tensor-dot, but guard here too
+        //   2D×1D → [M] (promoted to [K,1], result [M,1] contracted to [M])
+        //   1D×2D → [N] (promoted to [1,K], result [1,N] contracted to [N])
+        //   2D×2D → [M,N] (standard)
+        Function* current_func = builder->GetInsertBlock()->getParent();
+
+        // Get A properties
         Value* a_dims_field_ptr = builder->CreateStructGEP(tensor_type, ptr_a, 0);
-        Value* a_dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), a_dims_field_ptr);
-        Value* typed_a_dims_ptr = builder->CreatePointerCast(a_dims_ptr, builder->getPtrTy());
-        Value* M = builder->CreateLoad(int64_type, typed_a_dims_ptr);
-        Value* a_dim1_ptr = builder->CreateGEP(int64_type, typed_a_dims_ptr,
-                                              ConstantInt::get(int64_type, 1));
-        Value* K = builder->CreateLoad(int64_type, a_dim1_ptr);
+        Value* a_dims_ptr = builder->CreateLoad(builder->getPtrTy(), a_dims_field_ptr);
+        Value* a_ndim_field = builder->CreateStructGEP(tensor_type, ptr_a, 1);
+        Value* a_ndim = builder->CreateLoad(int64_type, a_ndim_field);
+        Value* a_total_field = builder->CreateStructGEP(tensor_type, ptr_a, 3);
+        Value* a_total = builder->CreateLoad(int64_type, a_total_field);
 
-        // Get B dimensions [K x N]
+        // Get B properties
         Value* b_dims_field_ptr = builder->CreateStructGEP(tensor_type, ptr_b, 0);
-        Value* b_dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), b_dims_field_ptr);
-        Value* typed_b_dims_ptr = builder->CreatePointerCast(b_dims_ptr, builder->getPtrTy());
-        Value* b_dim1_ptr = builder->CreateGEP(int64_type, typed_b_dims_ptr,
-                                              ConstantInt::get(int64_type, 1));
-        Value* N = builder->CreateLoad(int64_type, b_dim1_ptr);
+        Value* b_dims_ptr = builder->CreateLoad(builder->getPtrTy(), b_dims_field_ptr);
+        Value* b_ndim_field = builder->CreateStructGEP(tensor_type, ptr_b, 1);
+        Value* b_ndim = builder->CreateLoad(int64_type, b_ndim_field);
+
+        // --- Extract A dimensions (safe: only read dims[1] inside 2D branch) ---
+        Value* a_is_1d = builder->CreateICmpEQ(a_ndim, ConstantInt::get(int64_type, 1));
+        BasicBlock* a_1d_bb = BasicBlock::Create(*context, "mm_a_1d", current_func);
+        BasicBlock* a_2d_bb = BasicBlock::Create(*context, "mm_a_2d", current_func);
+        BasicBlock* a_merge_bb = BasicBlock::Create(*context, "mm_a_merge", current_func);
+        builder->CreateCondBr(a_is_1d, a_1d_bb, a_2d_bb);
+
+        builder->SetInsertPoint(a_1d_bb);
+        Value* a_M_1d = ConstantInt::get(int64_type, 1);
+        Value* a_K_1d = a_total;
+        builder->CreateBr(a_merge_bb);
+
+        builder->SetInsertPoint(a_2d_bb);
+        Value* a_M_2d = builder->CreateLoad(int64_type, a_dims_ptr);
+        Value* a_K_ptr = builder->CreateGEP(int64_type, a_dims_ptr, ConstantInt::get(int64_type, 1));
+        Value* a_K_2d = builder->CreateLoad(int64_type, a_K_ptr);
+        builder->CreateBr(a_merge_bb);
+
+        builder->SetInsertPoint(a_merge_bb);
+        PHINode* M = builder->CreatePHI(int64_type, 2, "M");
+        M->addIncoming(a_M_1d, a_1d_bb);
+        M->addIncoming(a_M_2d, a_2d_bb);
+        PHINode* K = builder->CreatePHI(int64_type, 2, "K");
+        K->addIncoming(a_K_1d, a_1d_bb);
+        K->addIncoming(a_K_2d, a_2d_bb);
+
+        // --- Extract B dimensions (safe: only read dims[1] inside 2D branch) ---
+        Value* b_dim0 = builder->CreateLoad(int64_type, b_dims_ptr);
+        Value* b_is_1d = builder->CreateICmpEQ(b_ndim, ConstantInt::get(int64_type, 1));
+        BasicBlock* b_1d_bb = BasicBlock::Create(*context, "mm_b_1d", current_func);
+        BasicBlock* b_2d_bb = BasicBlock::Create(*context, "mm_b_2d", current_func);
+        BasicBlock* b_merge_bb = BasicBlock::Create(*context, "mm_b_merge", current_func);
+        builder->CreateCondBr(b_is_1d, b_1d_bb, b_2d_bb);
+
+        builder->SetInsertPoint(b_1d_bb);
+        Value* b_N_1d = ConstantInt::get(int64_type, 1);
+        builder->CreateBr(b_merge_bb);
+
+        builder->SetInsertPoint(b_2d_bb);
+        Value* b_N_ptr = builder->CreateGEP(int64_type, b_dims_ptr, ConstantInt::get(int64_type, 1));
+        Value* b_N_2d = builder->CreateLoad(int64_type, b_N_ptr);
+        builder->CreateBr(b_merge_bb);
+
+        builder->SetInsertPoint(b_merge_bb);
+        PHINode* N = builder->CreatePHI(int64_type, 2, "N");
+        N->addIncoming(b_N_1d, b_1d_bb);
+        N->addIncoming(b_N_2d, b_2d_bb);
+
+        // --- K-dimension compatibility validation ---
+        Value* k_match = builder->CreateICmpEQ(K, b_dim0);
+        BasicBlock* shape_ok_bb = BasicBlock::Create(*context, "mm_shape_ok", current_func);
+        BasicBlock* shape_err_bb = BasicBlock::Create(*context, "mm_shape_err", current_func);
+        builder->CreateCondBr(k_match, shape_ok_bb, shape_err_bb);
+
+        builder->SetInsertPoint(shape_err_bb);
+        {
+            Function* printf_fn = module->getFunction("printf");
+            Function* exit_fn = module->getFunction("exit");
+            if (printf_fn && exit_fn) {
+                Value* fmt = builder->CreateGlobalString(
+                    "Error: matmul inner dimensions mismatch (%lld vs %lld)\n");
+                builder->CreateCall(printf_fn, {fmt, K, b_dim0});
+                builder->CreateCall(exit_fn, {ConstantInt::get(builder->getInt32Ty(), 1)});
+            }
+            builder->CreateUnreachable();
+        }
+
+        builder->SetInsertPoint(shape_ok_bb);
 
         // Get element pointers from tensors A and B
         Value* a_elems_field = builder->CreateStructGEP(tensor_type, ptr_a, 2);
@@ -16950,18 +20194,44 @@ private:
         Value* b_elems_field = builder->CreateStructGEP(tensor_type, ptr_b, 2);
         Value* b_elems = builder->CreateLoad(builder->getPtrTy(), b_elems_field);
 
-        // Create result tensor [M x N] using TensorCodegen helper
-        std::vector<Value*> result_dims = {M, N};
-        Value* result_ptr = tensor_->createTensorWithDims(result_dims, nullptr, true);
-        if (!result_ptr) return packNullToTaggedValue();
+        // === PEP 465 RESULT SHAPE CONTRACTION ===
+        Value* both_2d = builder->CreateAnd(
+            builder->CreateICmpEQ(a_ndim, ConstantInt::get(int64_type, 2)),
+            builder->CreateICmpEQ(b_ndim, ConstantInt::get(int64_type, 2)));
+
+        BasicBlock* res_2d_bb = BasicBlock::Create(*context, "mm_res_2d", current_func);
+        BasicBlock* res_1d_bb = BasicBlock::Create(*context, "mm_res_1d", current_func);
+        BasicBlock* res_merge_bb = BasicBlock::Create(*context, "mm_res_merge", current_func);
+        builder->CreateCondBr(both_2d, res_2d_bb, res_1d_bb);
+
+        // 2D result: [M, N]
+        builder->SetInsertPoint(res_2d_bb);
+        std::vector<Value*> result_dims_2d = {M, N};
+        Value* result_ptr_2d = tensor_->createTensorWithDims(result_dims_2d, nullptr, true);
+        if (!result_ptr_2d) return packNullToTaggedValue();
+        builder->CreateBr(res_merge_bb);
+        BasicBlock* res_2d_exit = builder->GetInsertBlock();
+
+        // 1D result: A was 1D → [N]; B was 1D → [M]
+        builder->SetInsertPoint(res_1d_bb);
+        Value* contracted_dim = builder->CreateSelect(a_is_1d, N, M);
+        std::vector<Value*> result_dims_1d = {contracted_dim};
+        Value* result_ptr_1d = tensor_->createTensorWithDims(result_dims_1d, nullptr, true);
+        if (!result_ptr_1d) return packNullToTaggedValue();
+        builder->CreateBr(res_merge_bb);
+        BasicBlock* res_1d_exit = builder->GetInsertBlock();
+
+        // Merge result tensor pointer
+        builder->SetInsertPoint(res_merge_bb);
+        PHINode* result_ptr = builder->CreatePHI(builder->getPtrTy(), 2, "result_ptr");
+        result_ptr->addIncoming(result_ptr_2d, res_2d_exit);
+        result_ptr->addIncoming(result_ptr_1d, res_1d_exit);
 
         // Get result element pointer
         Value* c_elems_field = builder->CreateStructGEP(tensor_type, result_ptr, 2);
         Value* c_elems = builder->CreateLoad(builder->getPtrTy(), c_elems_field);
 
         // Declare and call eshkol_matmul_f64 runtime function
-        // void eshkol_matmul_f64(double* A, double* B, double* C, uint64_t M, uint64_t K, uint64_t N)
-        // This function handles BLAS vs scalar dispatch internally based on matrix size
         Function* matmul_func = module->getFunction("eshkol_matmul_f64");
         if (!matmul_func) {
             std::vector<Type*> params = {
@@ -16979,6 +20249,81 @@ private:
 
         // Call the runtime matmul function
         builder->CreateCall(matmul_func, {a_elems, b_elems, c_elems, M, K, N});
+
+        // Record on AD tape if autodiff mode is active
+        GlobalVariable* ad_mode = ctx_->adModeActive();
+        if (ad_mode) {
+            Value* ad_enabled = builder->CreateLoad(builder->getInt1Ty(), ad_mode);
+
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* ad_record = BasicBlock::Create(*context, "matmul_ad_record", current_func);
+            BasicBlock* ad_skip = BasicBlock::Create(*context, "matmul_ad_skip", current_func);
+            BasicBlock* ad_merge = BasicBlock::Create(*context, "matmul_ad_merge", current_func);
+
+            builder->CreateCondBr(ad_enabled, ad_record, ad_skip);
+
+            // AD recording path
+            builder->SetInsertPoint(ad_record);
+
+            Value* arena_ptr = getArenaPtr();
+
+            // Arena-allocate saved_tensors array: {a_elems, b_elems}
+            Function* alloc_func = mem->getArenaAllocate();
+            Value* saved_arr = builder->CreateCall(alloc_func,
+                {arena_ptr, ConstantInt::get(int64_type, 2 * 8)}); // 2 pointers
+            builder->CreateStore(a_elems,
+                builder->CreateGEP(builder->getPtrTy(), saved_arr,
+                    ConstantInt::get(int64_type, 0)));
+            builder->CreateStore(b_elems,
+                builder->CreateGEP(builder->getPtrTy(), saved_arr,
+                    ConstantInt::get(int64_type, 1)));
+
+            // Arena-allocate shape array: {M, N}
+            Value* shape_arr = builder->CreateCall(alloc_func,
+                {arena_ptr, ConstantInt::get(int64_type, 2 * 8)}); // 2 int64s
+            builder->CreateStore(M,
+                builder->CreateGEP(int64_type, shape_arr,
+                    ConstantInt::get(int64_type, 0)));
+            builder->CreateStore(N,
+                builder->CreateGEP(int64_type, shape_arr,
+                    ConstantInt::get(int64_type, 1)));
+
+            // Get result elements pointer for tensor_value field
+            Value* result_elems = builder->CreateLoad(builder->getPtrTy(),
+                builder->CreateStructGEP(tensor_type, result_ptr, 2));
+
+            // Record tensor AD node with input tracking
+            Value* ad_node = autodiff_->recordADNodeTensor(
+                24,  // AD_NODE_MATMUL
+                ad_node_a, ad_node_b,  // input AD nodes (nullptr if plain tensor)
+                nullptr, nullptr,      // input3/4 unused
+                result_elems,          // tensor_value
+                saved_arr, ConstantInt::get(int64_type, 2),  // saved_tensors + count
+                shape_arr, ConstantInt::get(int64_type, 2)   // shape + ndim
+            );
+
+            // Set params: M, K, N in params[0..2]
+            if (ad_node) {
+                StructType* ad_type = ctx_->adNodeType();
+                ArrayType* params_type = ArrayType::get(int64_type, 6);
+                Value* params_ptr = builder->CreateStructGEP(ad_type, ad_node, 12);
+                builder->CreateStore(M,
+                    builder->CreateConstGEP2_32(params_type, params_ptr, 0, 0));
+                builder->CreateStore(K,
+                    builder->CreateConstGEP2_32(params_type, params_ptr, 0, 1));
+                builder->CreateStore(N,
+                    builder->CreateConstGEP2_32(params_type, params_ptr, 0, 2));
+            }
+
+            builder->CreateBr(ad_merge);
+
+            // Non-AD path
+            builder->SetInsertPoint(ad_skip);
+            builder->CreateBr(ad_merge);
+
+            // Merge
+            builder->SetInsertPoint(ad_merge);
+        }
 
         // Return tagged result tensor
         return packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_HEAP_PTR);
@@ -17811,7 +21156,14 @@ private:
     
     // Differentiate operations (symbolic, AST-based)
     eshkol_ast_t* differentiateOperationSymbolic(const eshkol_operations_t* op, const char* var) {
-        if (!op || op->op != ESHKOL_CALL_OP) {
+        if (!op) return eshkol_make_int_ast(0);
+
+        // Handle lambda: differentiate the body expression
+        if (op->op == ESHKOL_LAMBDA_OP && op->lambda_op.body) {
+            return buildSymbolicDerivative(op->lambda_op.body, var);
+        }
+
+        if (op->op != ESHKOL_CALL_OP) {
             return eshkol_make_int_ast(0);
         }
         
@@ -18207,6 +21559,11 @@ private:
             case ESHKOL_NULL:
                 // Empty list / null - return properly tagged NULL value
                 return packNullToTaggedValue();
+
+            case ESHKOL_SYMBOL:
+                return packPtrToTaggedValue(
+                    ctx_->internStringWithHeader(ast->str_val.ptr, HEAP_SUBTYPE_SYMBOL),
+                    ESHKOL_VALUE_HEAP_PTR);
 
             case ESHKOL_UINT64:
                 // Type 0 often represents empty/null in quoted data
@@ -22299,7 +25656,30 @@ private:
         result_phi->addIncoming(final_result, dim_valid_exit);  // Use merged result from double backward handling
         result_phi->addIncoming(scheme_vector_tagged, scheme_vector_exit);  // Forward-mode AD for Scheme vectors
 
-        return result_phi;
+        // SCALAR INPUT FIX: If input was a scalar, extract element 0 from result tensor
+        // and return as a scalar double (not a 1-element tensor)
+        BasicBlock* scalar_extract_bb = BasicBlock::Create(*context, "grad_scalar_extract", current_func);
+        BasicBlock* grad_final_bb = BasicBlock::Create(*context, "grad_final", current_func);
+        builder->CreateCondBr(is_scalar, scalar_extract_bb, grad_final_bb);
+
+        builder->SetInsertPoint(scalar_extract_bb);
+        // Result is a 1-element tensor — extract the double from element 0
+        Value* result_ptr = unpackPtrFromTaggedValue(result_phi);
+        // tensor struct: field 2 = elements pointer
+        Value* elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context),
+            builder->CreateStructGEP(tensor_type, result_ptr, 2));
+        Value* elem_as_int64 = builder->CreateLoad(int64_type, elems_ptr);
+        Value* elem_double = builder->CreateBitCast(elem_as_int64, double_type);
+        Value* scalar_result = packDoubleToTaggedValue(elem_double);
+        BasicBlock* scalar_extract_exit = builder->GetInsertBlock();
+        builder->CreateBr(grad_final_bb);
+
+        builder->SetInsertPoint(grad_final_bb);
+        PHINode* final_phi = builder->CreatePHI(tagged_value_type, 2, "grad_final_result");
+        final_phi->addIncoming(scalar_result, scalar_extract_exit);
+        final_phi->addIncoming(result_phi, grad_done);
+
+        return final_phi;
     }
     
     // ===== PHASE 3: JACOBIAN OPERATOR IMPLEMENTATION =====
@@ -24476,12 +27856,23 @@ private:
             result = codegenAST(&op->with_region_op.body[i]);
         }
 
+        // Escape the result value before popping the region
+        // This copies heap-allocated return values to the parent region/global arena
+        if (result) {
+            FunctionType* escape_type = FunctionType::get(
+                tagged_value_type,  // returns escaped tagged value
+                {tagged_value_type},  // input tagged value
+                false);
+            FunctionCallee escape_fn = module->getOrInsertFunction(
+                "region_escape_tagged_value", escape_type);
+
+            Value* escaped = builder->CreateCall(escape_fn, {result}, "escaped_result");
+            result = escaped;
+        }
+
         // Call region_pop (this destroys the region and frees all its memory)
         builder->CreateCall(region_pop_fn, {});
 
-        // Return the result of the last expression
-        // Note: If the result was allocated in the region, it's now invalid!
-        // Escape analysis will handle promoting escaping values later
         if (!result) {
             result = packNullToTaggedValue();
         }
@@ -25154,8 +28545,21 @@ private:
         Value* total_elements = builder->CreateLoad(int64_type, total_elements_field_ptr);
         
         // M1 CONSOLIDATION: Use arena allocation for temporary string buffers (OALR compliant)
-        // Allocate buffer for result string (assuming max 1024 chars)
-        Value* buffer_size = ConstantInt::get(int64_type, 1024);
+        // Dynamic buffer: each element needs ~24 chars ("%g") + 2 (", ") = 26 bytes
+        // Plus brackets and null terminator. Cap at 65536 to prevent excessive allocation.
+        Value* per_elem = ConstantInt::get(int64_type, 26);
+        Value* raw_size = builder->CreateMul(total_elements, per_elem);
+        Value* raw_size_plus = builder->CreateAdd(raw_size, ConstantInt::get(int64_type, 16));
+        // Clamp: max(256, min(65536, raw_size_plus))
+        Value* clamped_max = builder->CreateSelect(
+            builder->CreateICmpUGT(raw_size_plus, ConstantInt::get(int64_type, 65536)),
+            ConstantInt::get(int64_type, 65536), raw_size_plus);
+        Value* buffer_size = builder->CreateSelect(
+            builder->CreateICmpULT(clamped_max, ConstantInt::get(int64_type, 256)),
+            ConstantInt::get(int64_type, 256), clamped_max);
+        // Compute max elements that fit safely: (buffer_size - 16) / 26
+        Value* safe_max = builder->CreateUDiv(
+            builder->CreateSub(buffer_size, ConstantInt::get(int64_type, 16)), per_elem);
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
         Value* string_buffer = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, buffer_size});
         Value* typed_string_buffer = builder->CreatePointerCast(string_buffer, builder->getPtrTy());
@@ -25178,14 +28582,14 @@ private:
             strcat_func = Function::Create(strcat_type, Function::ExternalLinkage, "strcat", module.get());
             function_table["strcat"] = strcat_func;
         }
-        Function* sprintf_func = function_table["sprintf"];
-        if (!sprintf_func) {
-            // Create sprintf declaration if it doesn't exist
+        Function* snprintf_func = function_table["snprintf"];
+        if (!snprintf_func) {
+            // Create snprintf declaration if it doesn't exist
             Type* char_ptr_type = PointerType::getUnqual(*context);
             Type* int_type = int32_type;
-            FunctionType* sprintf_type = FunctionType::get(int_type, {char_ptr_type, char_ptr_type}, true);
-            sprintf_func = Function::Create(sprintf_type, Function::ExternalLinkage, "sprintf", module.get());
-            function_table["sprintf"] = sprintf_func;
+            FunctionType* snprintf_type = FunctionType::get(int_type, {char_ptr_type, int64_type, char_ptr_type}, true);
+            snprintf_func = Function::Create(snprintf_type, Function::ExternalLinkage, "snprintf", module.get());
+            function_table["snprintf"] = snprintf_func;
         }
         
         // Copy opening bracket to buffer
@@ -25204,10 +28608,12 @@ private:
         // Jump to loop condition
         builder->CreateBr(loop_condition);
         
-        // Loop condition: check if counter < total_elements
+        // Loop condition: check if counter < total_elements AND counter < safe_max
         builder->SetInsertPoint(loop_condition);
         Value* current_index = builder->CreateLoad(int64_type, loop_counter);
-        Value* loop_cmp = builder->CreateICmpULT(current_index, total_elements);
+        Value* below_total = builder->CreateICmpULT(current_index, total_elements);
+        Value* below_safe = builder->CreateICmpULT(current_index, safe_max);
+        Value* loop_cmp = builder->CreateAnd(below_total, below_safe);
         builder->CreateCondBr(loop_cmp, loop_body, loop_exit);
         
         // Loop body: append current element to string
@@ -25247,9 +28653,9 @@ private:
         // Tensor elements are stored as i64 bits of doubles - bitcast to double for formatting
         Value* elem_double = builder->CreateBitCast(current_elem, Type::getDoubleTy(*context));
 
-        // Format number as string using sprintf with %g format for doubles
+        // Format number as string using snprintf with %g format for doubles
         Value* format_str = codegenString("%g");
-        builder->CreateCall(sprintf_func, {typed_num_buffer, format_str, elem_double});
+        builder->CreateCall(snprintf_func, {typed_num_buffer, num_buffer_size, format_str, elem_double});
         
         // Concatenate number to result string
         builder->CreateCall(strcat_func, {typed_string_buffer, typed_num_buffer});
@@ -25261,8 +28667,21 @@ private:
         // Jump back to condition check
         builder->CreateBr(loop_condition);
         
-        // Loop exit: add closing bracket
+        // Loop exit: add truncation marker if needed, then closing bracket
         builder->SetInsertPoint(loop_exit);
+        Value* exit_index = builder->CreateLoad(int64_type, loop_counter);
+        Value* was_truncated = builder->CreateICmpULT(exit_index, total_elements);
+        Function* exit_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* trunc_bb = BasicBlock::Create(*context, "trunc_marker", exit_func);
+        BasicBlock* close_bb = BasicBlock::Create(*context, "close_bracket", exit_func);
+        builder->CreateCondBr(was_truncated, trunc_bb, close_bb);
+
+        builder->SetInsertPoint(trunc_bb);
+        Value* trunc_str = codegenString(", ...");
+        builder->CreateCall(strcat_func, {typed_string_buffer, trunc_str});
+        builder->CreateBr(close_bb);
+
+        builder->SetInsertPoint(close_bb);
         Value* close_bracket_str = codegenString("]");
         builder->CreateCall(strcat_func, {typed_string_buffer, close_bracket_str});
         
@@ -26619,14 +30038,29 @@ private:
             return nullptr;
         }
 
-        Value* x_tagged = codegenAST(&op->call_op.variables[0]);
-        if (!x_tagged) return nullptr;
+        TypedValue x_typed = codegenTypedAST(&op->call_op.variables[0]);
+        if (!x_typed.llvm_value) return nullptr;
 
+        // R7RS: complex? returns #t for any number (integer, real, complex)
+        // since the numeric tower is integer ⊂ rational ⊂ real ⊂ complex
+        Value* x_tagged = typedValueToTaggedValue(x_typed);
         Value* type_tag = builder->CreateExtractValue(x_tagged, {0}, "type");
-        Value* is_complex = builder->CreateICmpEQ(type_tag,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX), "is_complex");
 
-        return packBoolToTaggedValue(is_complex);
+        // Check for any numeric type: INT64, DOUBLE, COMPLEX, or HEAP_PTR (bignum/rational)
+        Value* is_int = builder->CreateICmpEQ(type_tag,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        Value* is_double = builder->CreateICmpEQ(type_tag,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+        Value* is_complex = builder->CreateICmpEQ(type_tag,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+        Value* is_heap = builder->CreateICmpEQ(type_tag,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+
+        Value* is_numeric = builder->CreateOr(is_int, is_double);
+        is_numeric = builder->CreateOr(is_numeric, is_complex);
+        is_numeric = builder->CreateOr(is_numeric, is_heap);
+
+        return packBoolToTaggedValue(is_numeric);
     }
 
     // (conjugate z) - Complex conjugate: conj(a+bi) = a-bi
@@ -27641,6 +31075,14 @@ private:
         BasicBlock* not_empty = BasicBlock::Create(*context, "reduce_not_empty", current_func);
         BasicBlock* reduce_done = BasicBlock::Create(*context, "reduce_done", current_func);
 
+        // Compute empty-list result BEFORE the branch (must dominate PHI)
+        Value* empty_result;
+        if (has_explicit_init) {
+            empty_result = ensureTaggedValue(init_val);
+        } else {
+            empty_result = packNullToTaggedValue();
+        }
+
         Value* is_empty = builder->CreateICmpEQ(list, ConstantInt::get(int64_type, 0));
         builder->CreateCondBr(is_empty, reduce_done, not_empty);
 
@@ -27653,11 +31095,7 @@ private:
 
         if (has_explicit_init) {
             // Use provided init value as accumulator, iterate over entire list
-            if (init_val->getType() == tagged_value_type) {
-                acc_tagged = init_val;
-            } else {
-                acc_tagged = packInt64ToTaggedValue(safeExtractInt64(init_val), true);
-            }
+            acc_tagged = ensureTaggedValue(init_val);
             rest = list;
         } else {
             // Get first element as initial accumulator
@@ -27702,16 +31140,13 @@ private:
 
         builder->SetInsertPoint(fold_exit);
         Value* final_acc = builder->CreateLoad(tagged_value_type, acc_ptr);
-        Value* final_result = safeExtractInt64(final_acc);
         builder->CreateBr(reduce_done);
         BasicBlock* fold_exit_end = builder->GetInsertBlock();
 
         builder->SetInsertPoint(reduce_done);
-        PHINode* result = builder->CreatePHI(int64_type, 2, "reduce_result");
-        // For empty list with explicit init, return init; otherwise return 0
-        Value* empty_result = has_explicit_init ? safeExtractInt64(init_val) : ConstantInt::get(int64_type, 0);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, "reduce_result");
         result->addIncoming(empty_result, entry_block);
-        result->addIncoming(final_result, fold_exit_end);
+        result->addIncoming(final_acc, fold_exit_end);
 
         return result;
     }
@@ -27746,9 +31181,12 @@ private:
 
         Value* val = codegenAST(&op->call_op.variables[0]);
         if (!val) return nullptr;
+        // Ensure tagged for PHI node compatibility (codegenAST may return raw i64/double)
+        val = ensureTaggedValue(val);
 
         // Create basic blocks for the loop
         Function* func = builder->GetInsertBlock()->getParent();
+        // Capture entry_block AFTER ensureTaggedValue (it may create basic blocks)
         BasicBlock* entry_block = builder->GetInsertBlock();
         BasicBlock* loop_header = BasicBlock::Create(*context, "list_check_header", func);
         BasicBlock* is_cons_block = BasicBlock::Create(*context, "list_check_is_cons", func);
@@ -29335,11 +32773,33 @@ private:
         Value* arg1 = &*arg_it++;
         Value* arg2 = &*arg_it;
 
-        // Extract values as doubles for comparison (handles both int and float)
+        // Check if either operand is a bignum — if so, use bignum compare for precision
+        Value* is_bn1 = isHeapSubtype(arg1, HEAP_SUBTYPE_BIGNUM);
+        Value* is_bn2 = isHeapSubtype(arg2, HEAP_SUBTYPE_BIGNUM);
+        Value* either_bignum = builder->CreateOr(is_bn1, is_bn2);
+
+        BasicBlock* bignum_cmp = BasicBlock::Create(*context, "cmp_bignum", builtin_func);
+        BasicBlock* double_cmp = BasicBlock::Create(*context, "cmp_double", builtin_func);
+        BasicBlock* cmp_done = BasicBlock::Create(*context, "cmp_done", builtin_func);
+
+        builder->CreateCondBr(either_bignum, bignum_cmp, double_cmp);
+
+        // Bignum path: use runtime compare
+        builder->SetInsertPoint(bignum_cmp);
+        int bn_op = 0;
+        if (operation == "<") bn_op = 0;
+        else if (operation == ">") bn_op = 1;
+        else if (operation == "=") bn_op = 2;
+        else if (operation == "<=") bn_op = 3;
+        else if (operation == ">=") bn_op = 4;
+        Value* bn_result = arith_->emitBignumCompareCall(arg1, arg2, bn_op);
+        builder->CreateBr(cmp_done);
+        BasicBlock* bignum_exit = builder->GetInsertBlock();
+
+        // Double path: existing float comparison
+        builder->SetInsertPoint(double_cmp);
         Value* val1 = extractDoubleFromTagged(arg1);
         Value* val2 = extractDoubleFromTagged(arg2);
-
-        // Perform comparison
         Value* cmp_result;
         if (operation == "<") {
             cmp_result = builder->CreateFCmpOLT(val1, val2, "cmp_lt");
@@ -29355,10 +32815,16 @@ private:
             eshkol_error("Unknown comparison operation: %s", operation.c_str());
             cmp_result = ConstantInt::get(int1_type, 0);
         }
-
-        // Convert boolean to tagged value (int64 0 or 1)
         Value* int_result = builder->CreateZExt(cmp_result, int64_type);
-        Value* result = packInt64ToTaggedValue(int_result, true);
+        Value* dbl_tagged_result = packInt64ToTaggedValue(int_result, true);
+        builder->CreateBr(cmp_done);
+        BasicBlock* dbl_exit = builder->GetInsertBlock();
+
+        // Merge
+        builder->SetInsertPoint(cmp_done);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2);
+        result->addIncoming(bn_result, bignum_exit);
+        result->addIncoming(dbl_tagged_result, dbl_exit);
 
         builder->CreateRet(result);
 
@@ -29564,20 +33030,138 @@ private:
 
         Value* result;
         if (c_math_func) {
-            // POLYMORPHIC INPUT: Handle both int64 and double inputs
-            // Get the type tag from the argument
+            // UNIVERSAL AD AWARENESS: 3-way dispatch — AD node → dual number → regular
+            // This ensures (gradient exp 0.0) works correctly with bare builtins
             Value* arg_type = getTaggedValueType(arg);
             Value* arg_base_type = getBaseType(arg_type);
+
+            // Map function name to AD operation type for reverse-mode AD
+            uint32_t ad_op_type = 0;  // 0 = not differentiable
+            if (func_name_in == "sin") ad_op_type = 6;
+            else if (func_name_in == "cos") ad_op_type = 7;
+            else if (func_name_in == "exp") ad_op_type = 8;
+            else if (func_name_in == "log") ad_op_type = 9;
+            else if (func_name_in == "abs" || func_name_in == "fabs") ad_op_type = 42;
+            else if (func_name_in == "sqrt") ad_op_type = 41;
+            else if (func_name_in == "tanh") ad_op_type = 15;
+            else if (func_name_in == "tan") ad_op_type = 54;
+            else if (func_name_in == "asin") ad_op_type = 55;
+            else if (func_name_in == "acos") ad_op_type = 56;
+            else if (func_name_in == "atan") ad_op_type = 57;
+            else if (func_name_in == "sinh") ad_op_type = 58;
+            else if (func_name_in == "cosh") ad_op_type = 59;
+            else if (func_name_in == "asinh") ad_op_type = 60;
+            else if (func_name_in == "acosh") ad_op_type = 61;
+            else if (func_name_in == "atanh") ad_op_type = 62;
+            else if (func_name_in == "log10") ad_op_type = 63;
+            else if (func_name_in == "log2") ad_op_type = 64;
+            else if (func_name_in == "exp2") ad_op_type = 65;
+            else if (func_name_in == "cbrt") ad_op_type = 66;
+            // floor/ceil/ceiling/trunc/truncate/round → 0 (not differentiable)
+
+            // Check if argument is an AD node (CALLABLE type with AD_NODE subtype)
+            Value* arg_is_callable = builder->CreateICmpEQ(arg_base_type,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+
+            Function* parent_func = builtin_func;
+            BasicBlock* ad_check_bb = BasicBlock::Create(*context, "ad_check", parent_func);
+            BasicBlock* ad_node_bb = BasicBlock::Create(*context, "ad_node", parent_func);
+            BasicBlock* check_dual_bb = BasicBlock::Create(*context, "check_dual", parent_func);
+            BasicBlock* dual_bb = BasicBlock::Create(*context, "dual_path", parent_func);
+            BasicBlock* regular_bb = BasicBlock::Create(*context, "regular", parent_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "merge", parent_func);
+
+            builder->CreateCondBr(arg_is_callable, ad_check_bb, check_dual_bb);
+
+            // AD CHECK: Verify subtype is CALLABLE_SUBTYPE_AD_NODE
+            builder->SetInsertPoint(ad_check_bb);
+            Value* is_ad = tagged_->checkCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
+            builder->CreateCondBr(is_ad, ad_node_bb, check_dual_bb);
+
+            // AD NODE PATH: Record unary operation on the AD tape
+            builder->SetInsertPoint(ad_node_bb);
+            Value* ad_result_tagged;
+            BasicBlock* ad_exit_bb;
+            if (ad_op_type != 0) {
+                // Differentiable function: record on tape
+                Value* ad_ptr_int = unpackInt64FromTaggedValue(arg);
+                Value* ad_ptr = builder->CreateIntToPtr(ad_ptr_int, PointerType::getUnqual(*context));
+                Value* ad_result_node = recordADNodeUnary(ad_op_type, ad_ptr);
+                Value* ad_result_int = builder->CreatePtrToInt(ad_result_node, int64_type);
+                ad_result_tagged = packPtrToTaggedValue(ad_result_int, ESHKOL_VALUE_CALLABLE);
+                builder->CreateBr(merge_bb);
+                ad_exit_bb = builder->GetInsertBlock();
+            } else {
+                // Non-differentiable (floor/ceil/round/trunc): extract primal, compute normally
+                Value* ad_ptr_int = unpackInt64FromTaggedValue(arg);
+                Value* ad_ptr = builder->CreateIntToPtr(ad_ptr_int, PointerType::getUnqual(*context));
+                Value* primal_ptr = builder->CreateStructGEP(ad_node_type, ad_ptr, 1);
+                Value* primal_val = builder->CreateLoad(double_type, primal_ptr);
+                Value* primal_result = builder->CreateCall(c_math_func, {primal_val});
+                ad_result_tagged = packDoubleToTaggedValue(primal_result);
+                builder->CreateBr(merge_bb);
+                ad_exit_bb = builder->GetInsertBlock();
+            }
+
+            // DUAL NUMBER CHECK (forward-mode AD)
+            builder->SetInsertPoint(check_dual_bb);
+            Value* arg_is_dual = builder->CreateICmpEQ(arg_base_type,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+            builder->CreateCondBr(arg_is_dual, dual_bb, regular_bb);
+
+            // DUAL NUMBER PATH
+            builder->SetInsertPoint(dual_bb);
+            Value* arg_dual = unpackDualFromTaggedValue(arg);
+            Value* dual_result = nullptr;
+            if (func_name_in == "sin") dual_result = dualSin(arg_dual);
+            else if (func_name_in == "cos") dual_result = dualCos(arg_dual);
+            else if (func_name_in == "exp") dual_result = dualExp(arg_dual);
+            else if (func_name_in == "log") dual_result = dualLog(arg_dual);
+            else if (func_name_in == "tan") dual_result = dualTan(arg_dual);
+            else if (func_name_in == "tanh") dual_result = dualTanh(arg_dual);
+            else if (func_name_in == "sinh") dual_result = dualSinh(arg_dual);
+            else if (func_name_in == "cosh") dual_result = dualCosh(arg_dual);
+            else if (func_name_in == "abs" || func_name_in == "fabs") dual_result = dualAbs(arg_dual);
+            else if (func_name_in == "sqrt") dual_result = dualSqrt(arg_dual);
+            else if (func_name_in == "asin") dual_result = dualAsin(arg_dual);
+            else if (func_name_in == "acos") dual_result = dualAcos(arg_dual);
+            else if (func_name_in == "atan") dual_result = dualAtan(arg_dual);
+            else if (func_name_in == "asinh") dual_result = dualAsinh(arg_dual);
+            else if (func_name_in == "acosh") dual_result = dualAcosh(arg_dual);
+            else if (func_name_in == "atanh") dual_result = dualAtanh(arg_dual);
+            else if (func_name_in == "log10") dual_result = dualLog10(arg_dual);
+            else if (func_name_in == "log2") dual_result = dualLog2(arg_dual);
+            else if (func_name_in == "exp2") dual_result = dualExp2(arg_dual);
+            else if (func_name_in == "cbrt") dual_result = dualCbrt(arg_dual);
+            else {
+                // Non-differentiable: derivative = 0
+                auto [a, a_prime] = unpackDualNumber(arg_dual);
+                Value* value = builder->CreateCall(c_math_func, {a});
+                dual_result = packDualNumber(value, ConstantFP::get(double_type, 0.0));
+            }
+            Value* tagged_dual_result = packDualToTaggedValue(dual_result);
+            builder->CreateBr(merge_bb);
+            BasicBlock* dual_exit_bb = builder->GetInsertBlock();
+
+            // REGULAR PATH: existing double/int64 dispatch
+            builder->SetInsertPoint(regular_bb);
             Value* arg_is_double = builder->CreateICmpEQ(arg_base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-
-            // Convert to double: if double, BitCast; if int64, SIToFP
             Value* double_val = builder->CreateSelect(arg_is_double,
                 unpackDoubleFromTaggedValue(arg),
                 builder->CreateSIToFP(unpackInt64FromTaggedValue(arg), double_type));
-
             Value* math_result = builder->CreateCall(c_math_func, {double_val});
-            result = packDoubleToTaggedValue(math_result);
+            Value* regular_result = packDoubleToTaggedValue(math_result);
+            builder->CreateBr(merge_bb);
+            BasicBlock* regular_exit_bb = builder->GetInsertBlock();
+
+            // MERGE all paths
+            builder->SetInsertPoint(merge_bb);
+            PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "builtin_math_result");
+            result_phi->addIncoming(ad_result_tagged, ad_exit_bb);
+            result_phi->addIncoming(tagged_dual_result, dual_exit_bb);
+            result_phi->addIncoming(regular_result, regular_exit_bb);
+            result = result_phi;
         } else {
             eshkol_error("Unknown unary math function: %s", func_name_in.c_str());
             result = tagged_->packNull();
@@ -30666,6 +34250,47 @@ void eshkol_set_uses_stdlib(int uses_stdlib) {
     eshkol_debug("Set uses_stdlib flag to %s", g_uses_stdlib ? "true" : "false");
 }
 
+void eshkol_enable_debug_info(const char* source_filename) {
+    g_emit_debug_info = true;
+    if (source_filename) {
+        std::string path(source_filename);
+        // Split into directory and filename
+        size_t last_slash = path.find_last_of("/\\");
+        if (last_slash != std::string::npos) {
+            g_debug_source_directory = path.substr(0, last_slash);
+            g_debug_source_filename = path.substr(last_slash + 1);
+        } else {
+            // No directory separator - use current directory
+            char cwd[4096];
+            if (getcwd(cwd, sizeof(cwd))) {
+                g_debug_source_directory = cwd;
+            } else {
+                g_debug_source_directory = ".";
+            }
+            g_debug_source_filename = path;
+        }
+    }
+    eshkol_info("Debug info enabled for source: %s/%s",
+                g_debug_source_directory.c_str(), g_debug_source_filename.c_str());
+}
+
+void eshkol_disable_debug_info(void) {
+    g_emit_debug_info = false;
+    g_debug_source_filename.clear();
+    g_debug_source_directory.clear();
+}
+
+void eshkol_set_optimization_level(int level) {
+    if (level < 0) level = 0;
+    if (level > 3) level = 3;
+    g_optimization_level = level;
+    eshkol_info("Optimization level set to -O%d", level);
+}
+
+int eshkol_get_optimization_level(void) {
+    return g_optimization_level;
+}
+
 LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts, const char* module_name) {
     try {
         EshkolLLVMCodeGen codegen(module_name, false);  // not library mode
@@ -30877,18 +34502,19 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             return -1;
         }
 
-        // Create target machine with cached CPU info and size optimization
+        // Create target machine with configured optimization level
         TargetOptions target_options;
+        auto codegen_opt = getCodeGenOptLevel();
 #if LLVM_VERSION_MAJOR >= 18
         std::unique_ptr<TargetMachine> target_machine(
             target->createTargetMachine(cached_triple, g_cached_cpu_name, g_cached_features,
                                        target_options, Reloc::PIC_, std::nullopt,
-                                       ESHKOL_CODEGEN_OPT_LEVEL));
+                                       codegen_opt));
 #else
         std::unique_ptr<TargetMachine> target_machine(
             target->createTargetMachine(g_cached_target_triple, g_cached_cpu_name, g_cached_features,
                                        target_options, Reloc::PIC_, std::nullopt,
-                                       ESHKOL_CODEGEN_OPT_LEVEL));
+                                       codegen_opt));
 #endif
 
         if (!target_machine) {
@@ -30898,6 +34524,9 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
 
         // Set data layout
         module->setDataLayout(target_machine->createDataLayout());
+
+        // Run LLVM optimization passes before codegen (respects -O level)
+        optimizeModule(*module, target_machine.get());
 
         // Open output file
         std::error_code ec;
@@ -30939,7 +34568,32 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
     }
 }
 
-int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* filename, 
+int eshkol_compile_llvm_ir_to_bitcode(LLVMModuleRef module_ref, const char* filename) {
+    if (!module_ref || !filename) return -1;
+
+    auto it = g_llvm_modules.find(module_ref);
+    if (it == g_llvm_modules.end()) {
+        eshkol_error("Module not found in registry for bitcode emission");
+        return -1;
+    }
+
+    Module* module = it->second->module.get();
+    if (!module) return -1;
+
+    std::error_code ec;
+    raw_fd_ostream dest(filename, ec, sys::fs::OF_None);
+    if (ec) {
+        eshkol_error("Failed to open bitcode file %s: %s", filename, ec.message().c_str());
+        return -1;
+    }
+
+    WriteBitcodeToFile(*module, dest);
+    dest.flush();
+    eshkol_info("Successfully generated bitcode file: %s", filename);
+    return 0;
+}
+
+int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* filename,
                                         const char* const* lib_paths, size_t num_lib_paths,
                                         const char* const* linked_libs, size_t num_linked_libs) {
     if (!module_ref || !filename) return -1;
@@ -30959,7 +34613,12 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         }
         
         // Use system linker to create executable
-        std::string link_cmd = "c++ -fPIE " + temp_obj + " -lm";
+        std::string link_cmd = "c++ -fPIE";
+        // If debug info was emitted, pass -g to linker to preserve DWARF sections
+        if (g_emit_debug_info) {
+            link_cmd += " -g";
+        }
+        link_cmd += " " + temp_obj + " -lm";
         
         // Add library search paths FIRST (before -l flags)
         if (lib_paths && num_lib_paths > 0) {
@@ -31016,6 +34675,15 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         link_cmd += " -lobjc";  // Objective-C runtime
 #endif
 
+        // Set generous stack size for deep recursion support
+        // macOS: main thread stack size is set at link time via Mach-O header
+        // Linux: -z stacksize sets the PT_GNU_STACK segment
+#ifdef __APPLE__
+        link_cmd += " -Wl,-stack_size,0x20000000";  // 512MB stack
+#elif defined(__linux__)
+        link_cmd += " -Wl,-z,stacksize=536870912";  // 512MB stack
+#endif
+
         link_cmd += " -o " + std::string(filename);
         
         eshkol_info("Linking executable: %s", link_cmd.c_str());
@@ -31063,6 +34731,28 @@ void eshkol_release_module_for_jit(LLVMModuleRef module_ref) {
     }
 }
 
+} // end extern "C"
+
+// C++ API: Extract module's LLVMContext for JIT use.
+// Releases module ownership (caller takes it) AND extracts context ownership.
+// The g_llvm_modules entry is erased to prevent leaks.
+// Must be called instead of eshkol_release_module_for_jit when the caller needs
+// the module's original context (e.g., to create a proper ThreadSafeModule).
+std::unique_ptr<LLVMContext> eshkol_extract_module_context_for_jit(LLVMModuleRef module_ref) {
+    if (!module_ref) return nullptr;
+
+    auto it = g_llvm_modules.find(module_ref);
+    if (it != g_llvm_modules.end()) {
+        it->second->module.release();  // Module ownership transfers to caller
+        auto ctx = std::move(it->second->context);  // Take context ownership
+        g_llvm_modules.erase(it);  // Clean up entry
+        return ctx;
+    }
+    return nullptr;
+}
+
+extern "C" {
+
 // WebAssembly target initialization flag
 static bool g_wasm_target_initialized = false;
 
@@ -31070,9 +34760,7 @@ static bool g_wasm_target_initialized = false;
 // When building with StableHLO's LLVM (ESHKOL_XLA_FULL_MLIR), we need to check
 // what targets were configured. The lite build uses system LLVM17 which includes all targets.
 #ifdef ESHKOL_XLA_FULL_MLIR
-// StableHLO/MLIR LLVM build - check if WebAssembly is in Targets.def
-// For now, assume not available unless CI configures it
-// TODO: CI should build StableHLO LLVM with -DLLVM_TARGETS_TO_BUILD="AArch64;X86;WebAssembly"
+// StableHLO/MLIR LLVM build - WebAssembly target only available if CI is configured with it
 #define ESHKOL_HAS_WASM_TARGET 0
 #else
 // System LLVM17 includes all standard targets including WebAssembly
@@ -31144,16 +34832,17 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
         std::string cpu = "generic";
         std::string features = "";
 
+        auto codegen_opt = getCodeGenOptLevel();
 #if LLVM_VERSION_MAJOR >= 18
         std::unique_ptr<TargetMachine> target_machine(
             target->createTargetMachine(wasm_triple, cpu, features,
                                        target_options, Reloc::PIC_, std::nullopt,
-                                       ESHKOL_CODEGEN_OPT_LEVEL));
+                                       codegen_opt));
 #else
         std::unique_ptr<TargetMachine> target_machine(
             target->createTargetMachine(target_triple, cpu, features,
                                        target_options, Reloc::PIC_, std::nullopt,
-                                       ESHKOL_CODEGEN_OPT_LEVEL));
+                                       codegen_opt));
 #endif
 
         if (!target_machine) {
@@ -31163,6 +34852,9 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
 
         // Set data layout for WASM
         module->setDataLayout(target_machine->createDataLayout());
+
+        // Run LLVM optimization passes before WASM codegen
+        optimizeModule(*module, target_machine.get());
 
         // Emit to memory buffer
         SmallVector<char, 0> buffer;

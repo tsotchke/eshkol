@@ -34,30 +34,47 @@ echo "========================================="
 echo ""
 
 # Determine which build directory to use
-XLA_BUILD_DIR="build-xla"
-LITE_BUILD_DIR="build"
-BUILD_DIR=""
+# Override with: BUILD_DIR=build ./scripts/run_xla_tests.sh
 XLA_ENABLED="no"
 
-if [ -d "$XLA_BUILD_DIR" ] && [ -f "$XLA_BUILD_DIR/eshkol-run" ]; then
-    BUILD_DIR="$XLA_BUILD_DIR"
-    echo -e "${GREEN}Using XLA build directory: $BUILD_DIR${NC}"
-    if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
-        if grep -q "ESHKOL_USE_XLA:BOOL=ON" "$BUILD_DIR/CMakeCache.txt"; then
-            XLA_ENABLED="yes"
-            echo -e "${GREEN}XLA support: ENABLED${NC}"
-        fi
+if [ -n "$BUILD_DIR" ]; then
+    # User-specified build directory
+    if [ ! -d "$BUILD_DIR" ] || [ ! -f "$BUILD_DIR/eshkol-run" ]; then
+        echo -e "${RED}Error: Specified BUILD_DIR=$BUILD_DIR not found or missing eshkol-run.${NC}"
+        exit 1
     fi
-elif [ -d "$LITE_BUILD_DIR" ] && [ -f "$LITE_BUILD_DIR/eshkol-run" ]; then
-    BUILD_DIR="$LITE_BUILD_DIR"
-    echo -e "${YELLOW}Using lite build directory: $BUILD_DIR${NC}"
-    echo -e "${CYAN}Note: XLA tests will use BLAS/SIMD fallback.${NC}"
+    if [ -f "$BUILD_DIR/CMakeCache.txt" ] && \
+       grep -qE "ESHKOL_(USE_)?XLA(_ENABLED)?:BOOL=ON" "$BUILD_DIR/CMakeCache.txt"; then
+        XLA_ENABLED="yes"
+    fi
+    echo -e "${GREEN}Using build directory: $BUILD_DIR${NC}"
 else
-    echo -e "${RED}Error: No build directory found.${NC}"
-    echo "Please build with one of:"
-    echo "  cmake -DESHKOL_USE_XLA=ON -B build-xla && cmake --build build-xla"
-    echo "  cmake -B build && cmake --build build"
-    exit 1
+    # Auto-detect: prefer build-xla, fall back to build
+    for candidate in build-xla build; do
+        if [ -d "$candidate" ] && [ -f "$candidate/eshkol-run" ]; then
+            BUILD_DIR="$candidate"
+            if [ -f "$candidate/CMakeCache.txt" ] && \
+               grep -qE "ESHKOL_(USE_)?XLA(_ENABLED)?:BOOL=ON" "$candidate/CMakeCache.txt"; then
+                XLA_ENABLED="yes"
+            fi
+            break
+        fi
+    done
+    if [ -z "$BUILD_DIR" ]; then
+        echo -e "${RED}Error: No build directory found.${NC}"
+        echo "Please build with one of:"
+        echo "  cmake -DESHKOL_USE_XLA=ON -B build-xla && cmake --build build-xla"
+        echo "  cmake -B build && cmake --build build"
+        echo "Or specify: BUILD_DIR=<path> $0"
+        exit 1
+    fi
+    echo -e "${GREEN}Using build directory: $BUILD_DIR (auto-detected)${NC}"
+fi
+
+if [ "$XLA_ENABLED" = "yes" ]; then
+    echo -e "${GREEN}XLA support: ENABLED${NC}"
+else
+    echo -e "${CYAN}Note: XLA tests will use BLAS/SIMD fallback.${NC}"
 fi
 
 echo ""
@@ -122,13 +139,13 @@ else
             # Compilation succeeded, try to run
             if ./a.out > /tmp/xla_test_output.txt 2>&1; then
                 # Check for FAIL markers in output (from test assertions)
-                if grep -qi "FAIL" /tmp/xla_test_output.txt; then
+                if grep -q "^FAIL:" /tmp/xla_test_output.txt; then
                     echo -e "${RED}❌ ASSERTION FAIL${NC}"
                     FAILED_TESTS+=("$test_name")
                     ((FAIL++)) || true
                     # Show failed assertions
                     grep -i "fail" /tmp/xla_test_output.txt | head -3 | sed 's/^/    /'
-                elif grep -q "error:" /tmp/xla_test_output.txt; then
+                elif grep -v "PASS" /tmp/xla_test_output.txt | grep -qi "error:"; then
                     echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                     RUNTIME_ERRORS+=("$test_name")
                     ((FAIL++)) || true
@@ -162,9 +179,9 @@ echo -e "${BLUE}===== Performance Sanity Check =====${NC}"
 cat > /tmp/xla_perf_test.esk << 'ESKEOF'
 ;; Quick performance sanity check
 (define N 150)
-(define A (tensor-reshape (arange (* N N)) (vector N N)))
-(define B (tensor-reshape (ones (* N N)) (vector N N)))
-(define C (tensor-matmul A B))
+(define A (reshape (arange (* N N)) N N))
+(define B (reshape (ones (* N N)) N N))
+(define C (matmul A B))
 (display "150x150 matmul: ")
 (display (tensor-shape C))
 (newline)
@@ -174,7 +191,20 @@ printf "Testing %-45s " "performance_sanity"
 
 if ./$BUILD_DIR/eshkol-run /tmp/xla_perf_test.esk -L./$BUILD_DIR > /tmp/xla_compile.log 2>&1; then
     start_time=$(python3 -c "import time; print(int(time.time() * 1000))" 2>/dev/null || date +%s%3N)
-    if timeout 60 ./a.out > /tmp/xla_perf_output.txt 2>&1; then
+    TIMEOUT_CMD="timeout"
+    if ! command -v timeout &>/dev/null; then
+        if command -v gtimeout &>/dev/null; then
+            TIMEOUT_CMD="gtimeout"
+        else
+            TIMEOUT_CMD=""
+        fi
+    fi
+    if [ -n "$TIMEOUT_CMD" ]; then
+        PERF_RUN="$TIMEOUT_CMD 60 ./a.out"
+    else
+        PERF_RUN="./a.out"
+    fi
+    if $PERF_RUN > /tmp/xla_perf_output.txt 2>&1; then
         end_time=$(python3 -c "import time; print(int(time.time() * 1000))" 2>/dev/null || date +%s%3N)
         elapsed=$((end_time - start_time))
         echo -e "${GREEN}✅ PASS${NC} (${elapsed}ms)"

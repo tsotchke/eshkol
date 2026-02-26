@@ -316,6 +316,8 @@ public:
     llvm::Value* tensorCholesky(const eshkol_operations_t* op);
     /** QR decomposition via Householder reflections: A = Q @ R */
     llvm::Value* tensorQR(const eshkol_operations_t* op);
+    /** SVD via one-sided Jacobi rotation: A = U @ diag(S) @ V^T */
+    llvm::Value* tensorSVD(const eshkol_operations_t* op);
 
     // === Phase 4.6: Einsum ===
 
@@ -465,6 +467,12 @@ public:
      * @return Vector of dimensions
      */
     llvm::Value* tensorShape(const eshkol_operations_t* op);
+
+    /**
+     * @brief Get total number of elements in a tensor
+     * @return Int64 total element count
+     */
+    llvm::Value* tensorLength(const eshkol_operations_t* op);
 
     /**
      * Transpose tensor: (transpose tensor)
@@ -1054,6 +1062,16 @@ private:
     // === Internal Helpers ===
 
     /**
+     * Emit axis-reduce via eshkol_xla_reduce runtime.
+     * Used by tensor-sum, tensor-mean, tensor-min, tensor-max with optional axis argument.
+     * @param tensor_val Tagged tensor value
+     * @param axis_val Tagged axis value
+     * @param op_code XLA reduce op: SUM=0, MEAN=1, MAX=2, MIN=3, PROD=4
+     * @return Tagged tensor result (reduced along axis)
+     */
+    llvm::Value* emitAxisReduce(llvm::Value* tensor_val, llvm::Value* axis_val, int64_t op_code);
+
+    /**
      * Call codegenAST via callback.
      */
     llvm::Value* codegenAST(const eshkol_ast_t* ast) {
@@ -1097,6 +1115,14 @@ private:
      * @return Result tensor (tagged)
      */
     llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
+
+    /**
+     * Attach LLVM loop vectorization/unroll metadata to a loop back-edge branch.
+     * Hints the LLVM optimizer to vectorize and/or unroll the loop.
+     */
+    void attachLoopMetadata(llvm::BranchInst* backEdge,
+                            bool vectorize, unsigned vecWidth,
+                            bool unroll, unsigned unrollCount);
 
     /**
      * Get the optimal SIMD vector width based on detected CPU features.

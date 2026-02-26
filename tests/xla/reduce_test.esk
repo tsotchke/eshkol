@@ -1,0 +1,44 @@
+;; XLA Reduce Operation Tests
+;; Tests tensor-reduce-all with reduction functions
+
+(define A (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+
+;; reduce-sum (all elements): fold with +, init=0.0
+(define s (tensor-reduce-all A + 0.0))
+;; 1+2+3+4+5+6 = 21
+(if (< (abs (- s 21.0)) 1e-10)
+    (display "PASS: reduce-sum = 21")
+    (begin (display "FAIL: reduce-sum = ") (display s)))
+(newline)
+
+;; reduce-max (fold with max, init=-inf)
+(define mx (tensor-reduce-all A max -1e308))
+(if (< (abs (- mx 6.0)) 1e-10)
+    (display "PASS: reduce-max = 6")
+    (begin (display "FAIL: reduce-max = ") (display mx)))
+(newline)
+
+;; reduce on 1D tensor
+(define v (vector 10.0 20.0 30.0))
+(define vs (tensor-reduce-all v + 0.0))
+(if (< (abs (- vs 60.0)) 1e-10)
+    (display "PASS: 1D reduce-sum = 60")
+    (begin (display "FAIL: 1D reduce-sum = ") (display vs)))
+(newline)
+
+;; reduce-sum on reshaped tensor
+(define B (reshape (vector 100.0 200.0 300.0 400.0) 2 2))
+(define bs (tensor-reduce-all B + 0.0))
+;; 100+200+300+400 = 1000
+(if (< (abs (- bs 1000.0)) 1e-10)
+    (display "PASS: 2x2 reduce-sum = 1000")
+    (begin (display "FAIL: 2x2 reduce-sum = ") (display bs)))
+(newline)
+
+;; reduce-max on sequential data
+(define seq (arange 100))
+(define seq-max (tensor-reduce-all seq max -1e308))
+(if (< (abs (- seq-max 99.0)) 1e-10)
+    (display "PASS: arange(100) max = 99")
+    (begin (display "FAIL: arange(100) max = ") (display seq-max)))
+(newline)
