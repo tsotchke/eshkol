@@ -138,11 +138,20 @@ jobs:
       - name: Run Test Suite
         run: ctest --test-dir build --output-on-failure
 
+      - name: Stage Windows Artifacts
+        run: |
+          rm -rf dist/windows
+          mkdir -p dist/windows
+          cp build/eshkol-run.exe build/eshkol-repl.exe build/stdlib.o dist/windows/
+
+          for dep in $(for exe in build/eshkol-run.exe build/eshkol-repl.exe; do
+            ldd "$exe" | awk '/=> \/mingw64\/bin\// { print $3 }'
+          done | sort -u); do
+            cp "$dep" dist/windows/
+          done
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: eshkol-windows-x64
-          path: |
-            build/eshkol-run.exe
-            build/eshkol-repl.exe
-            build/stdlib.o
+          path: dist/windows/
