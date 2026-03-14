@@ -91,7 +91,9 @@
 #include <setjmp.h>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <stack>
+#include <thread>
 
 using namespace llvm;
 
@@ -27196,6 +27198,12 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
 
             const int llc_result = eshkol::platform::run_command(llc_args);
             std::remove(ir_path.string().c_str());
+            if (llc_result == 0) {
+                // llc can return before the object file is immediately visible on Windows CI.
+                for (int attempt = 0; attempt < 20 && !object_file_is_valid(); ++attempt) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                }
+            }
             if (llc_result != 0 || !object_file_is_valid()) {
                 eshkol_error("llc object emission failed for %s", filename);
                 return -1;
