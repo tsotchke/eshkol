@@ -22,6 +22,8 @@ std::string find_first_existing(const std::vector<std::filesystem::path>& candid
 std::string home_directory();
 bool stdin_isatty();
 bool stdout_isatty();
+bool initialize_interactive_console();
+bool stdout_supports_utf8();
 std::filesystem::path make_temp_path(std::string_view stem, std::string_view extension = ".tmp");
 std::string cxx_compiler();
 std::string llc_executable();

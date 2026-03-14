@@ -163,6 +163,41 @@ bool stdout_isatty() {
 #endif
 }
 
+bool initialize_interactive_console() {
+#ifdef _WIN32
+    if (!stdout_isatty()) {
+        return false;
+    }
+
+    SetConsoleOutputCP(CP_UTF8);
+    if (stdin_isatty()) {
+        SetConsoleCP(CP_UTF8);
+    }
+
+    HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (stdout_handle != nullptr && stdout_handle != INVALID_HANDLE_VALUE) {
+        DWORD mode = 0;
+        if (GetConsoleMode(stdout_handle, &mode)) {
+#ifdef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            SetConsoleMode(stdout_handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+#endif
+        }
+    }
+
+    return stdout_supports_utf8();
+#else
+    return false;
+#endif
+}
+
+bool stdout_supports_utf8() {
+#ifdef _WIN32
+    return stdout_isatty() && GetConsoleOutputCP() == CP_UTF8;
+#else
+    return true;
+#endif
+}
+
 std::filesystem::path make_temp_path(std::string_view stem, std::string_view extension) {
     std::error_code ec;
     auto temp_dir = std::filesystem::temp_directory_path(ec);
