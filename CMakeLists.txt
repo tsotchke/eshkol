@@ -277,7 +277,7 @@ if(BUILD_REPL AND REPL_SRC)
     # This makes arena_*, printf, etc. available to JIT-compiled code
     if(MINGW)
       target_link_options(eshkol-repl PRIVATE "-Wl,--export-all-symbols")
-    elseif(UNIX)
+    elseif(UNIX AND NOT APPLE)
       target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
     endif()
 
