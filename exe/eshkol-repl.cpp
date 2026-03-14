@@ -380,7 +380,7 @@ void print_help() {
     using namespace color;
 
     std::cout << "\n" << bold() << bright_cyan() << "Eshkol REPL Commands" << reset() << "\n";
-    std::cout << dim() << "───────────────────────────────────────────────────────────" << reset() << "\n\n";
+    std::cout << dim() << repl_rule() << reset() << "\n\n";
 
     for (const auto& cmd : get_repl_commands()) {
         std::cout << "  " << bright_blue() << std::left << std::setw(12) << cmd.name << reset();
@@ -405,7 +405,7 @@ void print_environment() {
     using namespace color;
 
     std::cout << "\n" << bold() << bright_cyan() << "Defined Symbols" << reset() << "\n";
-    std::cout << dim() << "───────────────────────────────────────────────────────────" << reset() << "\n";
+    std::cout << dim() << repl_rule() << reset() << "\n";
 
     if (g_defined_symbols.empty()) {
         std::cout << dim() << "  (no user-defined symbols)" << reset() << "\n";
@@ -743,16 +743,16 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
                     auto total_time = std::chrono::duration_cast<std::chrono::microseconds>(exec_end - total_start);
 
                     // Display timing breakdown
-                    std::cout << color::dim() << "─── Timing ───" << color::reset() << "\n";
+                    std::cout << color::dim() << repl_timing_header() << color::reset() << "\n";
                     std::cout << color::dim() << "  Parse:   " << color::reset()
                               << color::bright_cyan() << std::setw(8) << parse_time.count() << color::reset()
-                              << color::dim() << " μs" << color::reset() << "\n";
+                              << color::dim() << repl_microseconds_unit() << color::reset() << "\n";
                     std::cout << color::dim() << "  JIT+Run: " << color::reset()
                               << color::bright_cyan() << std::setw(8) << exec_time.count() << color::reset()
-                              << color::dim() << " μs" << color::reset() << "\n";
+                              << color::dim() << repl_microseconds_unit() << color::reset() << "\n";
                     std::cout << color::dim() << "  Total:   " << color::reset()
                               << color::bright_yellow() << std::setw(8) << total_time.count() << color::reset()
-                              << color::dim() << " μs" << color::reset() << "\n";
+                              << color::dim() << repl_microseconds_unit() << color::reset() << "\n";
                     std::cout << color::dim() << "Note: JIT compilation dominates for simple expressions" << color::reset() << "\n";
 
                     if (should_display && ast_to_execute != &ast) {
@@ -835,6 +835,7 @@ int main(int argc, char** argv) {
 
     // Initialize readline with completion and history (only if interactive)
     if (g_interactive) {
+        eshkol::platform::initialize_interactive_console();
         init_readline();
         // Print welcome banner only in interactive mode
         print_welcome_banner();
