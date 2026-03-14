@@ -10,6 +10,7 @@
 #include <eshkol/runtime_exports.h>
 
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -21,10 +22,18 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+#include <direct.h>
 #include <io.h>
 #include <process.h>
 #else
+#include <dirent.h>
+#include <sys/stat.h>
 #include <unistd.h>
+#endif
+
+#ifdef _WIN32
+#include <dirent.h>
+#include <sys/stat.h>
 #endif
 
 #ifdef __APPLE__
@@ -289,6 +298,53 @@ std::filesystem::path resolve_executable_output(const std::filesystem::path& bas
 
 } // namespace eshkol::platform
 
+namespace {
+
+std::filesystem::path runtime_temp_directory() {
+    std::error_code ec;
+    auto temp_dir = std::filesystem::temp_directory_path(ec);
+    if (ec || temp_dir.empty()) {
+        temp_dir = eshkol::platform::current_directory();
+    }
+    return temp_dir;
+}
+
+std::filesystem::path normalize_runtime_path(std::string_view raw_path) {
+    if (raw_path.empty()) {
+        return {};
+    }
+
+#ifdef _WIN32
+    if (raw_path.size() >= 3 &&
+        raw_path[0] == '/' &&
+        std::isalpha(static_cast<unsigned char>(raw_path[1])) != 0 &&
+        raw_path[2] == '/') {
+        const char drive = static_cast<char>(std::toupper(static_cast<unsigned char>(raw_path[1])));
+        auto normalized = std::filesystem::path(std::string(1, drive) + ":/");
+        if (raw_path.size() > 3) {
+            normalized /= std::filesystem::path(std::string(raw_path.substr(3)));
+        }
+        return normalized;
+    }
+
+    if (raw_path == "/tmp") {
+        return runtime_temp_directory();
+    }
+
+    if (raw_path.rfind("/tmp/", 0) == 0) {
+        auto normalized = runtime_temp_directory();
+        if (raw_path.size() > 5) {
+            normalized /= std::filesystem::path(std::string(raw_path.substr(5)));
+        }
+        return normalized;
+    }
+#endif
+
+    return std::filesystem::path(std::string(raw_path));
+}
+
+} // namespace
+
 extern "C" FILE* eshkol_stdout_stream() {
     return stdout;
 }
@@ -349,4 +405,112 @@ extern "C" int eshkol_unsetenv(const char* name) {
 extern "C" int eshkol_usleep(std::uint32_t usec) {
     std::this_thread::sleep_for(std::chrono::microseconds(usec));
     return 0;
+}
+
+extern "C" FILE* eshkol_fopen(const char* path, const char* mode) {
+    if (path == nullptr || mode == nullptr) {
+        errno = EINVAL;
+        return nullptr;
+    }
+
+    const auto normalized = normalize_runtime_path(path);
+    return std::fopen(normalized.string().c_str(), mode);
+}
+
+extern "C" int eshkol_access(const char* path, int mode) {
+    if (path == nullptr) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    const auto normalized = normalize_runtime_path(path);
+#ifdef _WIN32
+    return ::_access(normalized.string().c_str(), mode);
+#else
+    return ::access(normalized.string().c_str(), mode);
+#endif
+}
+
+extern "C" int eshkol_remove(const char* path) {
+    if (path == nullptr) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    const auto normalized = normalize_runtime_path(path);
+    return std::remove(normalized.string().c_str());
+}
+
+extern "C" int eshkol_rename(const char* old_path, const char* new_path) {
+    if (old_path == nullptr || new_path == nullptr) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    const auto normalized_old = normalize_runtime_path(old_path);
+    const auto normalized_new = normalize_runtime_path(new_path);
+    return std::rename(normalized_old.string().c_str(), normalized_new.string().c_str());
+}
+
+extern "C" int eshkol_mkdir(const char* path, int mode) {
+    if (path == nullptr) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    const auto normalized = normalize_runtime_path(path);
+#ifdef _WIN32
+    (void)mode;
+    return ::_mkdir(normalized.string().c_str());
+#else
+    return ::mkdir(normalized.string().c_str(), static_cast<mode_t>(mode));
+#endif
+}
+
+extern "C" int eshkol_rmdir(const char* path) {
+    if (path == nullptr) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    const auto normalized = normalize_runtime_path(path);
+#ifdef _WIN32
+    return ::_rmdir(normalized.string().c_str());
+#else
+    return ::rmdir(normalized.string().c_str());
+#endif
+}
+
+extern "C" int eshkol_chdir(const char* path) {
+    if (path == nullptr) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    const auto normalized = normalize_runtime_path(path);
+#ifdef _WIN32
+    return ::_chdir(normalized.string().c_str());
+#else
+    return ::chdir(normalized.string().c_str());
+#endif
+}
+
+extern "C" int eshkol_stat(const char* path, void* buf) {
+    if (path == nullptr || buf == nullptr) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    const auto normalized = normalize_runtime_path(path);
+    return ::stat(normalized.string().c_str(), static_cast<struct stat*>(buf));
+}
+
+extern "C" void* eshkol_opendir(const char* path) {
+    if (path == nullptr) {
+        errno = EINVAL;
+        return nullptr;
+    }
+
+    const auto normalized = normalize_runtime_path(path);
+    return ::opendir(normalized.string().c_str());
 }
