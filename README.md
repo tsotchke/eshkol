@@ -56,6 +56,17 @@ cmake --build build --target eshkol-repl
 export PATH=$PATH:$(pwd)/build
 ```
 
+Windows (native) is supported through the MSYS2 `MINGW64` environment:
+
+```bash
+pacman -S --needed mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-llvm mingw-w64-x86_64-readline
+git clone https://github.com/tsotchke/eshkol.git
+cd eshkol
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+./build/eshkol-run.exe --version
+```
+
 ### Hello, World!
 
 ```scheme
@@ -459,6 +470,10 @@ cmake --build build --target eshkol-repl
 export PATH=$PATH:$(pwd)/build
 ```
 
+For native Windows builds, use the MSYS2 `MINGW64` shell and install:
+`mingw-w64-x86_64-cmake`, `mingw-w64-x86_64-ninja`,
+`mingw-w64-x86_64-llvm`, and `mingw-w64-x86_64-readline`.
+
 ### Verification
 
 ```bash
@@ -698,7 +713,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
 - **Testing**: 300+ comprehensive tests with automated verification
-- **Platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (WSL)
+- **Platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows x86_64 (native via MSYS2 MinGW64)
 
 ---
 

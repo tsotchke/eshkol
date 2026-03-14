@@ -399,7 +399,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | **Operating Systems** |
 | Linux | ✅ | x86-64, ARM64 | Primary platform |
 | macOS | ✅ | x86-64, ARM64 | Full support |
-| Windows | 📋 | x86-64 | Planned (WSL works) |
+| Windows | ✅ | x86-64 | Tier 1 native support via MSYS2 MinGW64 |
 | FreeBSD | 📋 | x86-64 | Planned |
 | **Architectures** |
 | x86-64 | ✅ | SSE2+ | AVX: 🚧 |
@@ -644,7 +644,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 2. **Limited IDE support** - Syntax highlighting exists, LSP planned
 3. **Small ecosystem** - Growing standard library, but not as extensive as Python/Julia
 4. **Learning curve** - Functional programming + AD concepts require study
-5. **Platform support** - Linux/macOS only (Windows via WSL)
+5. **Windows packaging** - Native builds are supported; installer/package distribution is still manual
 
 ---
 
