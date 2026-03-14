@@ -29,6 +29,8 @@
 #include <eshkol/types/type_checker.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/logger.h>
+#include <eshkol/platform_runtime.h>
+#include <eshkol/runtime_exports.h>
 #include "../core/arena_memory.h"
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -86,10 +88,12 @@
 #include <fstream>
 #include <cstdlib>
 #include <cstring>
+#include <setjmp.h>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <stack>
-#include <unistd.h>
+#include <thread>
 
 using namespace llvm;
 
@@ -689,35 +693,27 @@ public:
                             macro_expander.macroCount(), num_asts_to_use);
             }
 
-            // Create global arena variable (shared across all functions and scopes)
-            // Use ExternalLinkage so the arena can be shared between main program and linked libraries
-            // In REPL mode: external declaration (no initializer) - shared via JIT
-            // In library mode: external declaration (no initializer) - provided by main
-            // In normal mode: external definition (with initializer) - defines the symbol
-            bool arena_use_external_only = library_mode || g_repl_mode_enabled;
+            // Create global arena variable (shared across all functions and scopes).
+            // The runtime library owns the actual definition; generated modules should
+            // reference it externally so they compose cleanly across platforms.
             global_arena = new GlobalVariable(
                 *module,
                 PointerType::getUnqual(*context),
                 false, // not constant
-                GlobalValue::ExternalLinkage, // Always external for cross-module visibility
-                arena_use_external_only ? nullptr : ConstantPointerNull::get(PointerType::getUnqual(*context)),
+                GlobalValue::ExternalLinkage,
+                nullptr,
                 "__global_arena"
             );
-            eshkol_debug("Created global arena variable: __global_arena (mode=%s)",
-                        arena_use_external_only ? "external-declaration" : "external-definition");
+            eshkol_debug("Created global arena variable: __global_arena (external declaration)");
 
             // Create global variables for command-line arguments
             // These are set by main() and read by (command-line)
-            // In REPL mode, use external linkage without initializers to share across JIT modules
-            // In library mode, use external linkage without initializers (defined elsewhere)
-            // In standalone mode, define with initializers
-            bool use_external_only = library_mode || g_repl_mode_enabled;
             new GlobalVariable(
                 *module,
                 int32_type,
                 false, // not constant
                 GlobalValue::ExternalLinkage,
-                use_external_only ? nullptr : ConstantInt::get(int32_type, 0),
+                nullptr,
                 "__eshkol_argc"
             );
             new GlobalVariable(
@@ -725,7 +721,7 @@ public:
                 PointerType::getUnqual(*context),
                 false, // not constant
                 GlobalValue::ExternalLinkage,
-                use_external_only ? nullptr : ConstantPointerNull::get(PointerType::getUnqual(*context)),
+                nullptr,
                 "__eshkol_argv"
             );
             eshkol_debug("Created global command-line argument variables");
@@ -1512,7 +1508,7 @@ private:
         FunctionType* fopen_type = FunctionType::get(
             PointerType::get(*context, 0), fopen_args, false);
         Function* fopen_func = Function::Create(
-            fopen_type, Function::ExternalLinkage, "fopen", module.get());
+            fopen_type, Function::ExternalLinkage, eshkol::runtime::fopen_symbol, module.get());
         function_table["fopen"] = fopen_func;
 
         // fclose: int fclose(FILE* stream)
@@ -1577,20 +1573,20 @@ private:
         // RANDOM NUMBER FUNCTIONS (from stdlib.h)
         // ============================================================================
 
-        // drand48: double drand48(void) - returns random double in [0.0, 1.0)
+        // drand48: double runtime_drand48(void) - returns random double in [0.0, 1.0)
         FunctionType* drand48_type = FunctionType::get(
             double_type, {}, false);
         Function* drand48_func = Function::Create(
-            drand48_type, Function::ExternalLinkage, "drand48", module.get());
+            drand48_type, Function::ExternalLinkage, eshkol::runtime::drand48_symbol, module.get());
         function_table["drand48"] = drand48_func;
 
-        // srand48: void srand48(long seed) - seeds the random number generator
+        // srand48: void runtime_srand48(long seed) - seeds the random number generator
         std::vector<Type*> srand48_args;
         srand48_args.push_back(int64_type);  // seed
         FunctionType* srand48_type = FunctionType::get(
             void_type, srand48_args, false);
         Function* srand48_func = Function::Create(
-            srand48_type, Function::ExternalLinkage, "srand48", module.get());
+            srand48_type, Function::ExternalLinkage, eshkol::runtime::srand48_symbol, module.get());
         function_table["srand48"] = srand48_func;
 
         // ============================================================================
@@ -1629,16 +1625,17 @@ private:
         // SYSTEM & ENVIRONMENT FUNCTIONS (from stdlib.h, unistd.h)
         // ============================================================================
 
-        // getenv: char* getenv(const char* name) - get environment variable
+        // Environment helpers use repo-owned runtime wrappers to avoid
+        // platform-specific libc symbol differences.
         std::vector<Type*> getenv_args;
         getenv_args.push_back(PointerType::get(*context, 0));  // name
         FunctionType* getenv_type = FunctionType::get(
             PointerType::get(*context, 0), getenv_args, false);
         Function* getenv_func = Function::Create(
-            getenv_type, Function::ExternalLinkage, "getenv", module.get());
+            getenv_type, Function::ExternalLinkage, eshkol::runtime::getenv_symbol, module.get());
         function_table["getenv"] = getenv_func;
 
-        // setenv: int setenv(const char* name, const char* value, int overwrite)
+        // setenv: int runtime_setenv(const char* name, const char* value, int overwrite)
         std::vector<Type*> setenv_args;
         setenv_args.push_back(PointerType::get(*context, 0));  // name
         setenv_args.push_back(PointerType::get(*context, 0));  // value
@@ -1646,16 +1643,16 @@ private:
         FunctionType* setenv_type = FunctionType::get(
             int32_type, setenv_args, false);
         Function* setenv_func = Function::Create(
-            setenv_type, Function::ExternalLinkage, "setenv", module.get());
+            setenv_type, Function::ExternalLinkage, eshkol::runtime::setenv_symbol, module.get());
         function_table["setenv"] = setenv_func;
 
-        // unsetenv: int unsetenv(const char* name)
+        // unsetenv: int runtime_unsetenv(const char* name)
         std::vector<Type*> unsetenv_args;
         unsetenv_args.push_back(PointerType::get(*context, 0));  // name
         FunctionType* unsetenv_type = FunctionType::get(
             int32_type, unsetenv_args, false);
         Function* unsetenv_func = Function::Create(
-            unsetenv_type, Function::ExternalLinkage, "unsetenv", module.get());
+            unsetenv_type, Function::ExternalLinkage, eshkol::runtime::unsetenv_symbol, module.get());
         function_table["unsetenv"] = unsetenv_func;
 
         // system: int system(const char* command)
@@ -1667,13 +1664,13 @@ private:
             system_type, Function::ExternalLinkage, "system", module.get());
         function_table["system"] = system_func;
 
-        // usleep: int usleep(useconds_t usec) - sleep for microseconds
+        // usleep: int runtime_usleep(useconds_t usec) - sleep for microseconds
         std::vector<Type*> usleep_args;
         usleep_args.push_back(int32_type);  // usec (microseconds)
         FunctionType* usleep_type = FunctionType::get(
             int32_type, usleep_args, false);
         Function* usleep_func = Function::Create(
-            usleep_type, Function::ExternalLinkage, "usleep", module.get());
+            usleep_type, Function::ExternalLinkage, eshkol::runtime::usleep_symbol, module.get());
         function_table["usleep"] = usleep_func;
 
         // access: int access(const char* path, int mode) - check file access
@@ -1683,7 +1680,7 @@ private:
         FunctionType* access_type = FunctionType::get(
             int32_type, access_args, false);
         Function* access_func = Function::Create(
-            access_type, Function::ExternalLinkage, "access", module.get());
+            access_type, Function::ExternalLinkage, eshkol::runtime::access_symbol, module.get());
         function_table["access"] = access_func;
 
         // remove: int remove(const char* path) - delete file
@@ -1692,7 +1689,7 @@ private:
         FunctionType* remove_type = FunctionType::get(
             int32_type, remove_args, false);
         Function* remove_func = Function::Create(
-            remove_type, Function::ExternalLinkage, "remove", module.get());
+            remove_type, Function::ExternalLinkage, eshkol::runtime::remove_symbol, module.get());
         function_table["remove"] = remove_func;
 
         // rename: int rename(const char* old, const char* new)
@@ -1702,7 +1699,7 @@ private:
         FunctionType* rename_type = FunctionType::get(
             int32_type, rename_args, false);
         Function* rename_func = Function::Create(
-            rename_type, Function::ExternalLinkage, "rename", module.get());
+            rename_type, Function::ExternalLinkage, eshkol::runtime::rename_symbol, module.get());
         function_table["rename"] = rename_func;
 
         // mkdir: int mkdir(const char* path, mode_t mode)
@@ -1712,7 +1709,7 @@ private:
         FunctionType* mkdir_type = FunctionType::get(
             int32_type, mkdir_args, false);
         Function* mkdir_func = Function::Create(
-            mkdir_type, Function::ExternalLinkage, "mkdir", module.get());
+            mkdir_type, Function::ExternalLinkage, eshkol::runtime::mkdir_symbol, module.get());
         function_table["mkdir"] = mkdir_func;
 
         // rmdir: int rmdir(const char* path)
@@ -1721,7 +1718,7 @@ private:
         FunctionType* rmdir_type = FunctionType::get(
             int32_type, rmdir_args, false);
         Function* rmdir_func = Function::Create(
-            rmdir_type, Function::ExternalLinkage, "rmdir", module.get());
+            rmdir_type, Function::ExternalLinkage, eshkol::runtime::rmdir_symbol, module.get());
         function_table["rmdir"] = rmdir_func;
 
         // getcwd: char* getcwd(char* buf, size_t size)
@@ -1740,7 +1737,7 @@ private:
         FunctionType* chdir_type = FunctionType::get(
             int32_type, chdir_args, false);
         Function* chdir_func = Function::Create(
-            chdir_type, Function::ExternalLinkage, "chdir", module.get());
+            chdir_type, Function::ExternalLinkage, eshkol::runtime::chdir_symbol, module.get());
         function_table["chdir"] = chdir_func;
 
         // stat: int stat(const char* path, struct stat* buf)
@@ -1750,7 +1747,7 @@ private:
         FunctionType* stat_type = FunctionType::get(
             int32_type, stat_args, false);
         Function* stat_func = Function::Create(
-            stat_type, Function::ExternalLinkage, "stat", module.get());
+            stat_type, Function::ExternalLinkage, eshkol::runtime::stat_symbol, module.get());
         function_table["stat"] = stat_func;
 
         // opendir: DIR* opendir(const char* name)
@@ -1759,7 +1756,7 @@ private:
         FunctionType* opendir_type = FunctionType::get(
             PointerType::get(*context, 0), opendir_args, false);
         Function* opendir_func = Function::Create(
-            opendir_type, Function::ExternalLinkage, "opendir", module.get());
+            opendir_type, Function::ExternalLinkage, eshkol::runtime::opendir_symbol, module.get());
         function_table["opendir"] = opendir_func;
 
         // readdir: struct dirent* readdir(DIR* dirp)
@@ -10426,7 +10423,11 @@ private:
         Function* pop_handler_func = module->getFunction("eshkol_pop_exception_handler");
         Function* get_exception_func = module->getFunction("eshkol_get_current_exception");
         Function* clear_exception_func = module->getFunction("eshkol_clear_current_exception");
+#ifdef _WIN32
+        Function* setjmp_func = module->getFunction("_setjmp");
+#else
         Function* setjmp_func = module->getFunction("setjmp");
+#endif
 
         // Declare functions if not already declared
         if (!push_handler_func) {
@@ -10446,10 +10447,17 @@ private:
             clear_exception_func = Function::Create(clear_type, Function::ExternalLinkage, "eshkol_clear_current_exception", module.get());
         }
         if (!setjmp_func) {
-            // setjmp takes a jmp_buf pointer and returns int
+#ifdef _WIN32
+            FunctionType* setjmp_type =
+                FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy(), builder->getPtrTy()}, false);
+            setjmp_func = Function::Create(setjmp_type, Function::ExternalLinkage, "_setjmp", module.get());
+#else
+            // POSIX setjmp takes a jmp_buf pointer and returns int.
             FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
             setjmp_func = Function::Create(setjmp_type, Function::ExternalLinkage, "setjmp", module.get());
+#endif
         }
+        setjmp_func->addFnAttr(Attribute::ReturnsTwice);
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* entry_block = builder->GetInsertBlock();
@@ -10467,15 +10475,25 @@ private:
         // Setup block: allocate jmp_buf, push handler, call setjmp
         builder->SetInsertPoint(setup_block);
 
-        // Allocate jmp_buf on stack (platform-specific size, use 200 bytes to be safe)
-        Type* jmp_buf_type = ArrayType::get(builder->getInt8Ty(), 200);
-        Value* jmp_buf_alloc = builder->CreateAlloca(jmp_buf_type, nullptr, "jmp_buf");
+        // Match the host ABI exactly so longjmp in the runtime can safely
+        // resume into the guard frame on every platform.
+        Type* jmp_buf_type = ArrayType::get(builder->getInt8Ty(), sizeof(jmp_buf));
+        auto* jmp_buf_alloc = builder->CreateAlloca(jmp_buf_type, nullptr, "jmp_buf");
+        jmp_buf_alloc->setAlignment(llvm::Align(alignof(jmp_buf)));
 
         // Push exception handler
         builder->CreateCall(push_handler_func, {jmp_buf_alloc});
 
         // Call setjmp - returns 0 on first call, non-zero when longjmp is called
+#ifdef _WIN32
+        Value* setjmp_result = builder->CreateCall(
+            setjmp_func,
+            {jmp_buf_alloc, ConstantPointerNull::get(builder->getPtrTy())},
+            "setjmp_result"
+        );
+#else
         Value* setjmp_result = builder->CreateCall(setjmp_func, {jmp_buf_alloc}, "setjmp_result");
+#endif
         Value* is_exception = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(is_exception, handler_block, try_block);
@@ -27133,6 +27151,17 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
     LLVMContext* context = it->second->context.get();
 
     try {
+        const auto object_path = std::filesystem::absolute(std::filesystem::path(filename));
+        auto object_file_is_valid = [&]() {
+            std::ifstream check_file(object_path, std::ios::ate | std::ios::binary);
+            if (!check_file.good()) {
+                return false;
+            }
+
+            const auto size = check_file.tellg();
+            return size > 0;
+        };
+
         // Verify module before attempting object generation (debug builds only for speed)
         #ifndef NDEBUG
         std::string verify_error;
@@ -27142,6 +27171,48 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             return -1;
         }
         #endif
+
+#ifdef _WIN32
+        const auto llc = eshkol::platform::llc_executable();
+        if (!llc.empty()) {
+            const auto ir_path = std::filesystem::path(object_path.string() + ".ll");
+            std::error_code ir_ec;
+            raw_fd_ostream ir_dest(ir_path.string(), ir_ec, sys::fs::OF_None);
+            if (ir_ec) {
+                eshkol_error("Failed to open IR file %s for llc: %s", ir_path.string().c_str(), ir_ec.message().c_str());
+                return -1;
+            }
+
+            module->print(ir_dest, nullptr);
+            ir_dest.flush();
+            ir_dest.close();
+
+            std::remove(object_path.string().c_str());
+            const std::vector<std::string> llc_args = {
+                llc,
+                "-filetype=obj",
+                "-o",
+                object_path.string(),
+                ir_path.string()
+            };
+
+            const int llc_result = eshkol::platform::run_command(llc_args);
+            std::remove(ir_path.string().c_str());
+            if (llc_result == 0) {
+                // llc can return before the object file is immediately visible on Windows CI.
+                for (int attempt = 0; attempt < 20 && !object_file_is_valid(); ++attempt) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                }
+            }
+            if (llc_result != 0 || !object_file_is_valid()) {
+                eshkol_error("llc object emission failed for %s", filename);
+                return -1;
+            }
+
+            eshkol_info("Successfully generated object file: %s", filename);
+            return 0;
+        }
+#endif
 
         // Initialize target (use cached values for speed)
         if (!g_target_info_cached) {
@@ -27216,16 +27287,11 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         bool result = pass_manager.run(*module);
         dest.flush();
 
-        // Check if output file is empty (indicates silent failure)
         dest.close();
-        std::ifstream check_file(filename, std::ios::ate | std::ios::binary);
-        if (check_file.good()) {
-            auto size = check_file.tellg();
-            check_file.close();
-            if (size == 0) {
-                eshkol_error("Object file generation produced empty file - module may be invalid");
-                return -1;
-            }
+
+        if (!object_file_is_valid()) {
+            eshkol_error("Object file generation produced empty file - module may be invalid");
+            return -1;
         }
 
         eshkol_info("Successfully generated object file: %s", filename);
@@ -27241,65 +27307,91 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
                                         const char* const* lib_paths, size_t num_lib_paths,
                                         const char* const* linked_libs, size_t num_linked_libs) {
     if (!module_ref || !filename) return -1;
+
+    const auto output_path = eshkol::platform::with_executable_suffix(filename);
     
     // First compile to temporary object file
-    std::string temp_obj = std::string(filename) + ".tmp.o";
+    std::string temp_obj = output_path.generic_string() + ".tmp.o";
     if (eshkol_compile_llvm_ir_to_object(module_ref, temp_obj.c_str()) != 0) {
         return -1;
     }
     
     try {
-        // Get absolute path to build directory where libeshkol-static.a is located
-        char cwd[4096];
-        if (getcwd(cwd, sizeof(cwd)) != nullptr) {
-            std::string build_dir = std::string(cwd) + "/build";
-            eshkol_debug("Adding library search path: %s", build_dir.c_str());
+        auto cwd = eshkol::platform::current_directory();
+        if (!cwd.empty()) {
+            auto build_dir = cwd / "build";
+            eshkol_debug("Adding library search path: %s", build_dir.string().c_str());
         }
         
         // Use system linker to create executable
-        std::string link_cmd = "c++ -fPIE " + temp_obj + " -lm";
+        std::vector<std::string> link_args = {eshkol::platform::cxx_compiler()};
+#ifndef _WIN32
+        link_args.emplace_back("-fPIE");
+#endif
+        link_args.emplace_back(std::filesystem::path(temp_obj).generic_string());
         
         // Add library search paths FIRST (before -l flags)
         if (lib_paths && num_lib_paths > 0) {
             for (size_t i = 0; i < num_lib_paths; i++) {
                 if (lib_paths[i]) {
-                    link_cmd += " -L" + std::string(lib_paths[i]);
+                    link_args.emplace_back("-L" + std::filesystem::path(lib_paths[i]).generic_string());
                 }
             }
         }
         
         // CRITICAL FIX: Use direct path to library file instead of -L flag
         // This avoids directory search path issues
-        char build_path[4096];
-        if (getcwd(build_path, sizeof(build_path)) != nullptr) {
-            std::string cwd_str = std::string(build_path);
-            std::string lib_path;
-            // Check if we're already in the build directory
-            if (cwd_str.length() >= 5 && cwd_str.substr(cwd_str.length() - 5) == "build") {
-                lib_path = cwd_str + "/libeshkol-static.a";
+        std::filesystem::path lib_path;
+        const auto runtime_library_name = eshkol::platform::static_library_name("eshkol-static");
+        auto exe_dir = eshkol::platform::executable_directory();
+        auto build_path = eshkol::platform::current_directory();
+
+        if (!exe_dir.empty() && std::filesystem::exists(exe_dir / runtime_library_name)) {
+            lib_path = exe_dir / runtime_library_name;
+        } else if (!build_path.empty()) {
+            if (build_path.filename().string().rfind("build", 0) == 0) {
+                lib_path = build_path / runtime_library_name;
             } else {
-                lib_path = cwd_str + "/build/libeshkol-static.a";
+                lib_path = build_path / "build" / runtime_library_name;
             }
-            link_cmd += " " + lib_path;
-            eshkol_debug("Linking with library: %s", lib_path.c_str());
+        }
+
+        if (!lib_path.empty()) {
+            link_args.emplace_back(lib_path.generic_string());
+            eshkol_debug("Linking with library: %s", lib_path.string().c_str());
         } else {
-            // Fallback to search path method
-            link_cmd += " -L./build -leshkol-static";
+            link_args.emplace_back(
+                (std::filesystem::path("build") / eshkol::platform::static_library_name("eshkol-static")).generic_string()
+            );
         }
         
         // Add linked libraries
         if (linked_libs && num_linked_libs > 0) {
             for (size_t i = 0; i < num_linked_libs; i++) {
                 if (linked_libs[i]) {
-                    link_cmd += " -l" + std::string(linked_libs[i]);
+                    link_args.emplace_back("-l" + std::string(linked_libs[i]));
                 }
             }
         }
         
-        link_cmd += " -o " + std::string(filename);
-        
+        link_args.emplace_back("-o");
+        link_args.emplace_back(output_path.generic_string());
+#ifdef _WIN32
+        link_args.emplace_back("-Wl,--stack,16777216");
+#else
+        link_args.emplace_back("-lm");
+#endif
+
+        std::string link_cmd;
+        for (const auto& arg : link_args) {
+            if (!link_cmd.empty()) {
+                link_cmd.push_back(' ');
+            }
+            link_cmd += eshkol::platform::shell_quote(arg);
+        }
+
         eshkol_info("Linking executable: %s", link_cmd.c_str());
-        int result = system(link_cmd.c_str());
+        int result = eshkol::platform::run_command(link_args);
         
         // Clean up temporary object file
         std::remove(temp_obj.c_str());
@@ -27309,7 +27401,7 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             return -1;
         }
         
-        eshkol_info("Successfully generated executable: %s", filename);
+        eshkol_info("Successfully generated executable: %s", output_path.generic_string().c_str());
         return 0;
         
     } catch (const std::exception& e) {

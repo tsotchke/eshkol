@@ -7,6 +7,7 @@
 //
 
 #include <eshkol/eshkol.h>
+#include <eshkol/platform_runtime.h>
 #include "../lib/repl/repl_jit.h"
 #include "../lib/repl/repl_utils.h"
 
@@ -18,7 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
-#include <unistd.h>
+#include <filesystem>
 #include <chrono>
 #include <iomanip>
 #include <setjmp.h>
@@ -29,7 +30,17 @@ using namespace eshkol::repl;
 static jmp_buf g_repl_exception_jmp_buf;
 
 // Jump buffer for signal-based crash recovery (segfaults, etc.)
-static sigjmp_buf g_crash_jmp_buf;
+#ifdef _WIN32
+using crash_jmp_buf_t = jmp_buf;
+#define ESHKOL_SIGSETJMP(env) setjmp(env)
+#define ESHKOL_SIGLONGJMP(env, value) longjmp(env, value)
+#else
+using crash_jmp_buf_t = sigjmp_buf;
+#define ESHKOL_SIGSETJMP(env) sigsetjmp(env, 1)
+#define ESHKOL_SIGLONGJMP(env, value) siglongjmp(env, value)
+#endif
+
+static crash_jmp_buf_t g_crash_jmp_buf;
 static volatile sig_atomic_t g_in_jit = 0;
 static volatile sig_atomic_t g_crash_signal = 0;
 
@@ -50,7 +61,7 @@ void sigint_handler(int sig) {
 void crash_handler(int sig) {
     if (g_in_jit) {
         g_crash_signal = sig;
-        siglongjmp(g_crash_jmp_buf, 1);
+        ESHKOL_SIGLONGJMP(g_crash_jmp_buf, 1);
     } else {
         // Not in JIT - reraise with default handler
         signal(sig, SIG_DFL);
@@ -63,7 +74,9 @@ const char* crash_signal_message(int sig) {
     switch (sig) {
         case SIGSEGV: return "Segmentation fault - likely a type error (e.g., arithmetic on non-numeric value)";
         case SIGFPE:  return "Floating point exception - likely division by zero";
+#ifdef SIGBUS
         case SIGBUS:  return "Bus error - memory access issue";
+#endif
         default:      return "Unknown runtime error";
     }
 }
@@ -281,27 +294,28 @@ int get_paren_depth(const std::string& input) {
 
 // Helper: Parse a string to AST by writing to temp file
 eshkol_ast_t parse_string(const std::string& input) {
-    std::string temp_file = "/tmp/eshkol_repl_input_XXXXXX";
-    char temp_name[256];
-    strcpy(temp_name, temp_file.c_str());
-
-    int fd = mkstemp(temp_name);
-    if (fd == -1) {
+    auto temp_path = eshkol::platform::make_temp_path("eshkol_repl_input", ".esk");
+    if (temp_path.empty()) {
         eshkol_ast_t invalid_ast;
         invalid_ast.type = ESHKOL_INVALID;
         return invalid_ast;
     }
 
-    std::ofstream temp_out(temp_name);
+    std::ofstream temp_out(temp_path);
+    if (!temp_out.is_open()) {
+        eshkol_ast_t invalid_ast;
+        invalid_ast.type = ESHKOL_INVALID;
+        return invalid_ast;
+    }
     temp_out << input << "\n";
     temp_out.close();
-    close(fd);
 
-    std::ifstream temp_in(temp_name);
+    std::ifstream temp_in(temp_path);
     eshkol_ast_t ast = eshkol_parse_next_ast(temp_in);
     temp_in.close();
 
-    unlink(temp_name);
+    std::error_code ec;
+    std::filesystem::remove(temp_path, ec);
 
     return ast;
 }
@@ -366,7 +380,7 @@ void print_help() {
     using namespace color;
 
     std::cout << "\n" << bold() << bright_cyan() << "Eshkol REPL Commands" << reset() << "\n";
-    std::cout << dim() << "───────────────────────────────────────────────────────────" << reset() << "\n\n";
+    std::cout << dim() << repl_rule() << reset() << "\n\n";
 
     for (const auto& cmd : get_repl_commands()) {
         std::cout << "  " << bright_blue() << std::left << std::setw(12) << cmd.name << reset();
@@ -391,7 +405,7 @@ void print_environment() {
     using namespace color;
 
     std::cout << "\n" << bold() << bright_cyan() << "Defined Symbols" << reset() << "\n";
-    std::cout << dim() << "───────────────────────────────────────────────────────────" << reset() << "\n";
+    std::cout << dim() << repl_rule() << reset() << "\n";
 
     if (g_defined_symbols.empty()) {
         std::cout << dim() << "  (no user-defined symbols)" << reset() << "\n";
@@ -550,7 +564,7 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
     if (cmd == ":quit" || cmd == ":q" || cmd == "(exit)" || cmd == "exit") {
         std::cout << color::dim() << "Goodbye!" << color::reset() << "\n";
         save_readline_history();
-        _exit(0);
+        std::_Exit(0);
     }
 
     if (cmd == ":clear") {
@@ -729,16 +743,16 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
                     auto total_time = std::chrono::duration_cast<std::chrono::microseconds>(exec_end - total_start);
 
                     // Display timing breakdown
-                    std::cout << color::dim() << "─── Timing ───" << color::reset() << "\n";
+                    std::cout << color::dim() << repl_timing_header() << color::reset() << "\n";
                     std::cout << color::dim() << "  Parse:   " << color::reset()
                               << color::bright_cyan() << std::setw(8) << parse_time.count() << color::reset()
-                              << color::dim() << " μs" << color::reset() << "\n";
+                              << color::dim() << repl_microseconds_unit() << color::reset() << "\n";
                     std::cout << color::dim() << "  JIT+Run: " << color::reset()
                               << color::bright_cyan() << std::setw(8) << exec_time.count() << color::reset()
-                              << color::dim() << " μs" << color::reset() << "\n";
+                              << color::dim() << repl_microseconds_unit() << color::reset() << "\n";
                     std::cout << color::dim() << "  Total:   " << color::reset()
                               << color::bright_yellow() << std::setw(8) << total_time.count() << color::reset()
-                              << color::dim() << " μs" << color::reset() << "\n";
+                              << color::dim() << repl_microseconds_unit() << color::reset() << "\n";
                     std::cout << color::dim() << "Note: JIT compilation dominates for simple expressions" << color::reset() << "\n";
 
                     if (should_display && ast_to_execute != &ast) {
@@ -809,16 +823,19 @@ int main(int argc, char** argv) {
     }
 
     // Check if running interactively
-    g_interactive = isatty(STDIN_FILENO);
+    g_interactive = eshkol::platform::stdin_isatty();
 
     // Install signal handlers
     signal(SIGINT, sigint_handler);
     signal(SIGSEGV, crash_handler);
     signal(SIGFPE, crash_handler);
+#ifdef SIGBUS
     signal(SIGBUS, crash_handler);
+#endif
 
     // Initialize readline with completion and history (only if interactive)
     if (g_interactive) {
+        eshkol::platform::initialize_interactive_console();
         init_readline();
         // Print welcome banner only in interactive mode
         print_welcome_banner();
@@ -874,7 +891,7 @@ int main(int argc, char** argv) {
                 }
                 std::cout << "\n" << color::dim() << "Goodbye!" << color::reset() << "\n";
                 save_readline_history();
-                _exit(0);
+                std::_Exit(0);
             }
 
             // Empty continuation line - remove last line or cancel
@@ -922,7 +939,7 @@ int main(int argc, char** argv) {
                 free(input);
                 std::cout << color::dim() << "Goodbye!" << color::reset() << "\n";
                 save_readline_history();
-                _exit(0);
+                std::_Exit(0);
             }
 
             // Check for :cancel on any line
@@ -1028,7 +1045,7 @@ int main(int argc, char** argv) {
 
             // Outer layer: catch crashes (SIGSEGV, SIGFPE, etc.)
             g_in_jit = 1;
-            if (sigsetjmp(g_crash_jmp_buf, 1) == 0) {
+            if (ESHKOL_SIGSETJMP(g_crash_jmp_buf) == 0) {
                 // Inner layer: catch Eshkol exceptions
                 eshkol_push_exception_handler(&g_repl_exception_jmp_buf);
 
@@ -1078,5 +1095,5 @@ int main(int argc, char** argv) {
     }
 
     save_readline_history();
-    _exit(0);
+    std::_Exit(0);
 }

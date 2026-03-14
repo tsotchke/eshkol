@@ -6,6 +6,7 @@
  */
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
+#include <eshkol/platform_runtime.h>
 
 #include <eshkol/llvm_backend.h>
 
@@ -13,14 +14,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <getopt.h>
-#include <unistd.h>
 #include <filesystem>
-#ifdef __APPLE__
-#include <mach-o/dyld.h>  // For _NSGetExecutablePath on macOS
-#endif
-#ifdef __linux__
-#include <linux/limits.h>  // For PATH_MAX on Linux
-#endif
 
 #include <string>
 #include <vector>
@@ -1259,148 +1253,83 @@ static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& 
 // Find the stdlib.esk file
 static std::string find_stdlib()
 {
-    // Check common locations
-    std::vector<std::string> stdlib_paths = {
-        // Relative to current directory (development)
-        "lib/stdlib.esk",
-        "../lib/stdlib.esk",
-        // Installation paths
-        "/usr/local/share/eshkol/stdlib.esk",
-        "/usr/share/eshkol/stdlib.esk",
+    auto cwd = eshkol::platform::current_directory();
+    auto exe_dir = eshkol::platform::executable_directory();
+
+    std::vector<std::filesystem::path> candidates = {
+        cwd / "lib/stdlib.esk",
+        cwd.parent_path() / "lib/stdlib.esk",
+        cwd / "share/eshkol/stdlib.esk",
+        cwd / "share/eshkol/lib/stdlib.esk",
+        exe_dir / "stdlib.esk",
+        exe_dir / "../lib/stdlib.esk",
+        exe_dir / "../share/eshkol/stdlib.esk",
+        exe_dir / "../share/eshkol/lib/stdlib.esk",
     };
 
-    // Also check relative to the executable
-    char exe_path[4096];
-    bool got_exe_path = false;
-
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/share/eshkol/stdlib.esk");
+    candidates.emplace_back("/usr/local/share/eshkol/lib/stdlib.esk");
+    candidates.emplace_back("/usr/share/eshkol/stdlib.esk");
+    candidates.emplace_back("/usr/share/eshkol/lib/stdlib.esk");
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/stdlib.esk").string());
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.esk").string());
-    }
-
-    for (const auto& path : stdlib_paths) {
-        if (std::filesystem::exists(path)) {
-            return std::filesystem::canonical(path).string();
-        }
-    }
-
-    return "";  // Not found
+    return eshkol::platform::find_first_existing(candidates);
 }
 
 // Find the pre-compiled stdlib.o file
 static std::string find_stdlib_object()
 {
-    std::vector<std::string> stdlib_paths = {
-        // Relative to current directory (development)
-        "stdlib.o",
-        "build/stdlib.o",
-        "../build/stdlib.o",
-        // Installation paths
-        "/usr/local/lib/eshkol/stdlib.o",
-        "/usr/local/lib/stdlib.o",
-        "/usr/lib/eshkol/stdlib.o",
-        // Homebrew paths
-        "/opt/homebrew/lib/eshkol/stdlib.o",
-        "/opt/homebrew/lib/stdlib.o",
+    auto cwd = eshkol::platform::current_directory();
+    auto exe_dir = eshkol::platform::executable_directory();
+
+    std::vector<std::filesystem::path> candidates = {
+        cwd / "stdlib.o",
+        cwd / "build/stdlib.o",
+        cwd.parent_path() / "build/stdlib.o",
+        exe_dir / "stdlib.o",
+        exe_dir / "../lib/stdlib.o",
+        exe_dir / "../lib/eshkol/stdlib.o",
     };
 
-    // Also check relative to the executable
-    char exe_path[4096];
-    bool got_exe_path = false;
-
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/lib/eshkol/stdlib.o");
+    candidates.emplace_back("/usr/local/lib/stdlib.o");
+    candidates.emplace_back("/usr/lib/eshkol/stdlib.o");
+    candidates.emplace_back("/usr/lib/stdlib.o");
+    candidates.emplace_back("/opt/homebrew/lib/eshkol/stdlib.o");
+    candidates.emplace_back("/opt/homebrew/lib/stdlib.o");
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.o").string());
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/stdlib.o").string());
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.o").string());
-    }
-
-    for (const auto& path : stdlib_paths) {
-        if (std::filesystem::exists(path)) {
-            return std::filesystem::canonical(path).string();
-        }
-    }
-
-    return "";  // Not found
+    return eshkol::platform::find_first_existing(candidates);
 }
 
 // Find the runtime library (libeshkol-static.a)
 static std::string find_runtime_library()
 {
-    std::vector<std::string> lib_paths = {
-        // Relative to current directory (development)
-        "libeshkol-static.a",
-        "build/libeshkol-static.a",
-        "../build/libeshkol-static.a",
-        // Installation paths (Linux)
-        "/usr/local/lib/libeshkol-static.a",
-        "/usr/local/lib/eshkol/libeshkol-static.a",
-        "/usr/lib/libeshkol-static.a",
-        "/usr/lib/eshkol/libeshkol-static.a",
-        // Homebrew paths (macOS)
-        "/opt/homebrew/lib/libeshkol-static.a",
-        "/opt/homebrew/lib/eshkol/libeshkol-static.a",
+    auto cwd = eshkol::platform::current_directory();
+    auto exe_dir = eshkol::platform::executable_directory();
+    const auto library_name = eshkol::platform::static_library_name("eshkol-static");
+
+    std::vector<std::filesystem::path> candidates = {
+        cwd / library_name,
+        cwd / "build" / library_name,
+        cwd.parent_path() / "build" / library_name,
+        exe_dir / library_name,
+        exe_dir / "../lib" / library_name,
+        exe_dir / "../lib/eshkol" / library_name,
     };
 
-    // Also check relative to the executable
-    char exe_path[4096];
-    bool got_exe_path = false;
-
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/lib" / std::filesystem::path(library_name));
+    candidates.emplace_back("/usr/local/lib/eshkol" / std::filesystem::path(library_name));
+    candidates.emplace_back("/usr/lib" / std::filesystem::path(library_name));
+    candidates.emplace_back("/usr/lib/eshkol" / std::filesystem::path(library_name));
+    candidates.emplace_back("/opt/homebrew/lib" / std::filesystem::path(library_name));
+    candidates.emplace_back("/opt/homebrew/lib/eshkol" / std::filesystem::path(library_name));
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        // Check relative to executable
-        lib_paths.insert(lib_paths.begin(), (exe_dir / "libeshkol-static.a").string());
-        lib_paths.insert(lib_paths.begin(), (exe_dir / "../lib/libeshkol-static.a").string());
-        lib_paths.insert(lib_paths.begin(), (exe_dir / "../lib/eshkol/libeshkol-static.a").string());
-    }
-
-    for (const auto& path : lib_paths) {
-        if (std::filesystem::exists(path)) {
-            return std::filesystem::canonical(path).string();
-        }
-    }
-
-    return "";  // Not found
+    return eshkol::platform::find_first_existing(candidates);
 }
 
 // Check if any AST contains a require for stdlib or core.* modules
@@ -1422,46 +1351,24 @@ static bool requires_stdlib(const std::vector<eshkol_ast_t>& asts)
 // Find the library base directory (lib/)
 static std::string find_lib_dir()
 {
-    // Check common locations for the lib directory
-    std::vector<std::string> lib_dirs = {
-        // Relative to current directory (development)
-        "lib",
-        "../lib",
-        // Installation paths
-        "/usr/local/share/eshkol/lib",
-        "/usr/share/eshkol/lib",
+    auto cwd = eshkol::platform::current_directory();
+    auto exe_dir = eshkol::platform::executable_directory();
+
+    std::vector<std::filesystem::path> candidates = {
+        cwd / "lib",
+        cwd.parent_path() / "lib",
+        cwd / "share/eshkol/lib",
+        exe_dir / "lib",
+        exe_dir / "../lib",
+        exe_dir / "../share/eshkol/lib",
     };
 
-    // Also check relative to the executable
-    char exe_path[4096];
-    bool got_exe_path = false;
-
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/share/eshkol/lib");
+    candidates.emplace_back("/usr/share/eshkol/lib");
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        lib_dirs.insert(lib_dirs.begin(), (exe_dir / "../lib").string());
-        lib_dirs.insert(lib_dirs.begin(), (exe_dir / "lib").string());
-    }
-
-    for (const auto& dir : lib_dirs) {
-        if (std::filesystem::exists(dir) && std::filesystem::is_directory(dir)) {
-            return std::filesystem::canonical(dir).string();
-        }
-    }
-
-    return "";  // Not found
+    return eshkol::platform::find_first_existing(candidates);
 }
 
 // Convert symbolic module name to file path
@@ -2233,7 +2140,9 @@ int main(int argc, char **argv)
             // Default behavior: compile to executable
             // If we have object files to link (like stdlib.o), compile to temp .o first
             // then link everything together
-            std::string exe_name = output ? std::string(output) : "a.out";
+            std::string exe_name = eshkol::platform::with_executable_suffix(
+                output ? std::filesystem::path(output) : std::filesystem::path("a.out")
+            ).generic_string();
 
             if (!compiled_files.empty()) {
                 // Compile main program to temp .o, then link with stdlib.o etc.
@@ -2278,39 +2187,57 @@ int main(int argc, char **argv)
 
     // Process compiled object files if we have them and an output target
     if (!compiled_files.empty() && output) {
-        std::string link_cmd = "c++ -fPIE";
+        const auto output_path = eshkol::platform::with_executable_suffix(output);
+        std::vector<std::string> link_args = {eshkol::platform::cxx_compiler()};
+#ifndef _WIN32
+        link_args.emplace_back("-fPIE");
+#endif
 
         // Add all object files
         for (const auto &compiled_file : compiled_files) {
-            link_cmd += " " + std::string(compiled_file);
+            link_args.emplace_back(std::filesystem::path(compiled_file).generic_string());
         }
 
         // Add library search paths
         for (const auto &lib_path : lib_paths) {
-            link_cmd += " -L" + std::string(lib_path);
+            link_args.emplace_back("-L" + std::filesystem::path(lib_path).generic_string());
         }
 
         // Add libeshkol-static.a (needed for arena functions)
         std::string runtime_lib = find_runtime_library();
         if (!runtime_lib.empty()) {
-            link_cmd += " " + runtime_lib;
+            link_args.emplace_back(std::filesystem::path(runtime_lib).generic_string());
         } else {
-            eshkol_error("Could not find libeshkol-static.a");
-            eshkol_error("Searched: ./build/, /usr/local/lib/, /opt/homebrew/lib/, and relative to executable");
+            eshkol_error("Could not find %s", eshkol::platform::static_library_name("eshkol-static").c_str());
+            eshkol_error("Searched development-tree, install-tree, and executable-relative library locations");
             eshkol_error("Please install Eshkol properly or build from source");
             return 1;
         }
 
         // Add linked libraries
         for (const auto &linked_lib : linked_libs) {
-            link_cmd += " -l" + std::string(linked_lib);
+            link_args.emplace_back("-l" + std::string(linked_lib));
         }
 
         // Add output
-        link_cmd += " -o " + std::string(output) + " -lm";
-        
+        link_args.emplace_back("-o");
+        link_args.emplace_back(output_path.generic_string());
+#ifdef _WIN32
+        link_args.emplace_back("-Wl,--stack,16777216");
+#else
+        link_args.emplace_back("-lm");
+#endif
+
+        std::string link_cmd;
+        for (const auto& arg : link_args) {
+            if (!link_cmd.empty()) {
+                link_cmd.push_back(' ');
+            }
+            link_cmd += eshkol::platform::shell_quote(arg);
+        }
+
         eshkol_info("Linking object files: %s", link_cmd.c_str());
-        int result = system(link_cmd.c_str());
+        int result = eshkol::platform::run_command(link_args);
 
         // Clean up temp object files
         for (const auto &compiled_file : compiled_files) {
@@ -2325,7 +2252,8 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        eshkol_info("Successfully created executable: %s", output);
+        auto resolved_output = eshkol::platform::resolve_executable_output(output_path);
+        eshkol_info("Successfully created executable: %s", resolved_output.string().c_str());
     } else if (!compiled_files.empty()) {
         eshkol_warn("Object files provided but no output specified. Use -o to specify output executable.");
         return 1;
