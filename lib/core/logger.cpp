@@ -10,9 +10,10 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <execinfo.h>
 #include <cxxabi.h>
-#include <unistd.h>
+#endif
 #include <time.h>
 
 #include <mutex>
@@ -88,9 +89,18 @@ void eshkol_printf(eshkol_logger_t level, const char *msg, ...)
 void eshkol_stacktrace(eshkol_logger_t level)
 {
     std::lock_guard<std::mutex> log_lock(log_mut);
-    const uint64_t max_frames = 63;
     const char *prefix = log_name[level];
     const char *color = log_color[level];
+
+    if (level > max) return;
+
+#ifdef _WIN32
+    printf("%s%10s:%s  stack trace unavailable on Windows builds\n", color, prefix, RESET_COLOR);
+
+    if (level == ESHKOL_FATAL) exit(1);
+    return;
+#else
+    const uint64_t max_frames = 63;
     time_t t = time(nullptr);
     char time_buf[128] = {};
 
@@ -99,8 +109,6 @@ void eshkol_stacktrace(eshkol_logger_t level)
     char **symbollist;
     size_t func_name_size = 256;
     char *funcname = nullptr;
-
-    if (level > max) return;
 
     strftime(time_buf, 128, "%x (%X)", localtime(&t));
     addrlen = backtrace(addrlist, sizeof(addrlist) / sizeof(void*));
@@ -159,4 +167,5 @@ void eshkol_stacktrace(eshkol_logger_t level)
     free(symbollist);
 
     if (level == ESHKOL_FATAL) exit(1);
+#endif
 }

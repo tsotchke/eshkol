@@ -7,6 +7,7 @@
 //
 
 #include <eshkol/eshkol.h>
+#include <eshkol/platform_runtime.h>
 #include "../lib/repl/repl_jit.h"
 #include "../lib/repl/repl_utils.h"
 
@@ -18,7 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
-#include <unistd.h>
+#include <filesystem>
 #include <chrono>
 #include <iomanip>
 #include <setjmp.h>
@@ -29,7 +30,17 @@ using namespace eshkol::repl;
 static jmp_buf g_repl_exception_jmp_buf;
 
 // Jump buffer for signal-based crash recovery (segfaults, etc.)
-static sigjmp_buf g_crash_jmp_buf;
+#ifdef _WIN32
+using crash_jmp_buf_t = jmp_buf;
+#define ESHKOL_SIGSETJMP(env) setjmp(env)
+#define ESHKOL_SIGLONGJMP(env, value) longjmp(env, value)
+#else
+using crash_jmp_buf_t = sigjmp_buf;
+#define ESHKOL_SIGSETJMP(env) sigsetjmp(env, 1)
+#define ESHKOL_SIGLONGJMP(env, value) siglongjmp(env, value)
+#endif
+
+static crash_jmp_buf_t g_crash_jmp_buf;
 static volatile sig_atomic_t g_in_jit = 0;
 static volatile sig_atomic_t g_crash_signal = 0;
 
@@ -50,7 +61,7 @@ void sigint_handler(int sig) {
 void crash_handler(int sig) {
     if (g_in_jit) {
         g_crash_signal = sig;
-        siglongjmp(g_crash_jmp_buf, 1);
+        ESHKOL_SIGLONGJMP(g_crash_jmp_buf, 1);
     } else {
         // Not in JIT - reraise with default handler
         signal(sig, SIG_DFL);
@@ -63,7 +74,9 @@ const char* crash_signal_message(int sig) {
     switch (sig) {
         case SIGSEGV: return "Segmentation fault - likely a type error (e.g., arithmetic on non-numeric value)";
         case SIGFPE:  return "Floating point exception - likely division by zero";
+#ifdef SIGBUS
         case SIGBUS:  return "Bus error - memory access issue";
+#endif
         default:      return "Unknown runtime error";
     }
 }
@@ -281,27 +294,28 @@ int get_paren_depth(const std::string& input) {
 
 // Helper: Parse a string to AST by writing to temp file
 eshkol_ast_t parse_string(const std::string& input) {
-    std::string temp_file = "/tmp/eshkol_repl_input_XXXXXX";
-    char temp_name[256];
-    strcpy(temp_name, temp_file.c_str());
-
-    int fd = mkstemp(temp_name);
-    if (fd == -1) {
+    auto temp_path = eshkol::platform::make_temp_path("eshkol_repl_input", ".esk");
+    if (temp_path.empty()) {
         eshkol_ast_t invalid_ast;
         invalid_ast.type = ESHKOL_INVALID;
         return invalid_ast;
     }
 
-    std::ofstream temp_out(temp_name);
+    std::ofstream temp_out(temp_path);
+    if (!temp_out.is_open()) {
+        eshkol_ast_t invalid_ast;
+        invalid_ast.type = ESHKOL_INVALID;
+        return invalid_ast;
+    }
     temp_out << input << "\n";
     temp_out.close();
-    close(fd);
 
-    std::ifstream temp_in(temp_name);
+    std::ifstream temp_in(temp_path);
     eshkol_ast_t ast = eshkol_parse_next_ast(temp_in);
     temp_in.close();
 
-    unlink(temp_name);
+    std::error_code ec;
+    std::filesystem::remove(temp_path, ec);
 
     return ast;
 }
@@ -809,13 +823,15 @@ int main(int argc, char** argv) {
     }
 
     // Check if running interactively
-    g_interactive = isatty(STDIN_FILENO);
+    g_interactive = eshkol::platform::stdin_isatty();
 
     // Install signal handlers
     signal(SIGINT, sigint_handler);
     signal(SIGSEGV, crash_handler);
     signal(SIGFPE, crash_handler);
+#ifdef SIGBUS
     signal(SIGBUS, crash_handler);
+#endif
 
     // Initialize readline with completion and history (only if interactive)
     if (g_interactive) {
@@ -1028,7 +1044,7 @@ int main(int argc, char** argv) {
 
             // Outer layer: catch crashes (SIGSEGV, SIGFPE, etc.)
             g_in_jit = 1;
-            if (sigsetjmp(g_crash_jmp_buf, 1) == 0) {
+            if (ESHKOL_SIGSETJMP(g_crash_jmp_buf) == 0) {
                 // Inner layer: catch Eshkol exceptions
                 eshkol_push_exception_handler(&g_repl_exception_jmp_buf);
 

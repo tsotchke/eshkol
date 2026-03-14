@@ -7,6 +7,8 @@
 #include "repl_jit.h"
 #include <eshkol/eshkol.h>
 #include <eshkol/llvm_backend.h>
+#include <eshkol/platform_runtime.h>
+#include <eshkol/runtime_exports.h>
 #include "../core/arena_memory.h"  // For runtime function declarations
 
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
@@ -35,11 +37,6 @@
 #include <set>
 #include <vector>
 #include <cctype>
-#include <unistd.h>
-
-#ifdef __APPLE__
-#include <mach-o/dyld.h>  // For _NSGetExecutablePath on macOS
-#endif
 
 using namespace llvm;
 
@@ -48,6 +45,10 @@ static std::set<std::string> loaded_modules;
 using namespace llvm::orc;
 
 namespace eshkol {
+
+#ifdef _WIN32
+extern "C" void ___chkstk_ms(void);
+#endif
 
 // Forward declarations for static helper functions
 static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& content);
@@ -280,6 +281,15 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(weak_ref_release);
     ADD_SYMBOL(weak_ref_is_alive);
 
+    // Platform-stable runtime helpers used by generated programs.
+    ADD_SYMBOL(eshkol_stdout_stream);
+    ADD_SYMBOL(eshkol_drand48);
+    ADD_SYMBOL(eshkol_srand48);
+    ADD_SYMBOL(eshkol_getenv);
+    ADD_SYMBOL(eshkol_setenv);
+    ADD_SYMBOL(eshkol_unsetenv);
+    ADD_SYMBOL(eshkol_usleep);
+
     // Standard library functions (printf, malloc, etc.)
     // Need to explicitly cast math functions to resolve overloading
     typedef double (*MathFunc1)(double);
@@ -332,6 +342,11 @@ void ReplJITContext::registerRuntimeSymbols() {
 
     // Global arena (default allocation target)
     ADD_DATA_SYMBOL(__global_arena);
+
+#ifdef _WIN32
+    // MinGW-generated JIT code may reference the compiler runtime stack probe helper.
+    ADD_SYMBOL(___chkstk_ms);
+#endif
 
     #undef ADD_SYMBOL
     #undef ADD_DATA_SYMBOL
@@ -555,43 +570,24 @@ void ReplJITContext::registerLambdaVar(const std::string& var_name) {
 
 // Find the pre-compiled stdlib.o file
 static std::string findStdlibObject() {
-    std::vector<std::string> stdlib_paths = {
-        "stdlib.o",
-        "build/stdlib.o",
-        "../build/stdlib.o",
-        "/usr/local/lib/eshkol/stdlib.o",
-        "/usr/lib/eshkol/stdlib.o",
+    auto cwd = platform::current_directory();
+    auto exe_dir = platform::executable_directory();
+
+    std::vector<std::filesystem::path> candidates = {
+        cwd / "stdlib.o",
+        cwd / "build/stdlib.o",
+        cwd.parent_path() / "build/stdlib.o",
+        exe_dir / "stdlib.o",
+        exe_dir / "../lib/stdlib.o",
+        exe_dir / "../lib/eshkol/stdlib.o",
     };
 
-    // Check relative to executable
-    char exe_path[4096];
-    bool got_exe_path = false;
-
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/lib/eshkol/stdlib.o");
+    candidates.emplace_back("/usr/lib/eshkol/stdlib.o");
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.o").string());
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.o").string());
-    }
-
-    for (const auto& path : stdlib_paths) {
-        if (std::filesystem::exists(path)) {
-            return std::filesystem::canonical(path).string();
-        }
-    }
-    return "";
+    return platform::find_first_existing(candidates);
 }
 
 bool ReplJITContext::loadStdlib() {
@@ -926,42 +922,24 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
 
 // Find the lib directory (matches eshkol-run.cpp logic)
 static std::string findLibDir() {
-    std::vector<std::string> lib_dirs = {
-        "lib",
-        "../lib",
-        "/usr/local/share/eshkol/lib",
-        "/usr/share/eshkol/lib",
+    auto cwd = platform::current_directory();
+    auto exe_dir = platform::executable_directory();
+
+    std::vector<std::filesystem::path> candidates = {
+        cwd / "lib",
+        cwd.parent_path() / "lib",
+        cwd / "share/eshkol/lib",
+        exe_dir / "lib",
+        exe_dir / "../lib",
+        exe_dir / "../share/eshkol/lib",
     };
 
-    // Check relative to executable
-    char exe_path[4096];
-    bool got_exe_path = false;
-
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/share/eshkol/lib");
+    candidates.emplace_back("/usr/share/eshkol/lib");
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        lib_dirs.insert(lib_dirs.begin(), (exe_dir / "../lib").string());
-        lib_dirs.insert(lib_dirs.begin(), (exe_dir / "lib").string());
-    }
-
-    for (const auto& dir : lib_dirs) {
-        if (std::filesystem::exists(dir) && std::filesystem::is_directory(dir)) {
-            return std::filesystem::canonical(dir).string();
-        }
-    }
-    return "";
+    return platform::find_first_existing(candidates);
 }
 
 // Global lib directory cache

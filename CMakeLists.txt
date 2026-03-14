@@ -23,12 +23,35 @@ option(ESHKOL_BUILD_EXAMPLES "Build examples" OFF)
 option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
 option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer" OFF)
 option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
+option(ESHKOL_ENABLE_CTEST_SUITES "Register grouped CTest suites" ON)
 
 # LLVM backend is always enabled
 set(ESHKOL_BUILD_BACKEND ON)
 
 # LLVM Configuration - Always required
-find_program(LLVM_CONFIG_EXECUTABLE NAMES llvm-config REQUIRED)
+find_program(
+  LLVM_CONFIG_EXECUTABLE
+  NAMES llvm-config llvm-config-21 llvm-config-20 llvm-config-18 llvm-config-17
+  HINTS ENV LLVM_ROOT
+  PATH_SUFFIXES bin
+  REQUIRED
+)
+get_filename_component(LLVM_CONFIG_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
+find_program(
+  LLC_EXECUTABLE
+  NAMES llc llc-21 llc-20 llc-18 llc-17
+  HINTS "${LLVM_CONFIG_DIR}"
+  REQUIRED
+)
+
+# Generated build config for toolchain/runtime helpers
+set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_config.h.in"
+  "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/build_config.h"
+  @ONLY
+)
 
 # Get LLVM configuration
 execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --cxxflags OUTPUT_VARIABLE LLVM_CXXFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -59,7 +82,6 @@ endif()
 # Additional fallback for common LLVM installation patterns
 if(NOT LLVM_INCLUDE_DIRS)
     # Try to derive include path from llvm-config executable location
-    get_filename_component(LLVM_CONFIG_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
     get_filename_component(LLVM_ROOT "${LLVM_CONFIG_DIR}" DIRECTORY)
     set(POTENTIAL_INCLUDE_DIRS
         "${LLVM_ROOT}/include"
@@ -81,12 +103,37 @@ separate_arguments(LLVM_LDFLAGS_LIST UNIX_COMMAND "${LLVM_LDFLAGS}")
 separate_arguments(LLVM_LIBS_LIST UNIX_COMMAND "${LLVM_LIBS}")
 separate_arguments(LLVM_SYSTEM_LIBS_LIST UNIX_COMMAND "${LLVM_SYSTEM_LIBS}")
 
+# Keep the project's language mode and exception model authoritative.
+# llvm-config commonly injects its own -std= and -fno-exceptions flags, which
+# can silently override the repo's C++20 setting and break exception-using code.
+list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^-std=")
+list(REMOVE_ITEM LLVM_CXXFLAGS_LIST "-fno-exceptions")
+
 # Debug output for troubleshooting (can be removed in production)
 message(STATUS "LLVM Config: ${LLVM_CONFIG_EXECUTABLE}")
 message(STATUS "LLVM Include Dirs: ${LLVM_INCLUDE_DIRS}")
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     message(STATUS "LLVM CXXFLAGS: ${LLVM_CXXFLAGS}")
 endif()
+
+function(eshkol_apply_llvm_target_settings target_name)
+  target_compile_options(${target_name} PRIVATE ${LLVM_CXXFLAGS_LIST})
+  target_compile_definitions(${target_name} PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+  target_include_directories(
+    ${target_name}
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/inc
+      ${ESHKOL_GENERATED_INCLUDE_DIR}
+  )
+
+  if(LLVM_INCLUDE_DIRS)
+    target_include_directories(${target_name} PRIVATE ${LLVM_INCLUDE_DIRS})
+  endif()
+
+  if(LLVM_LIBRARY_DIRS)
+    target_link_directories(${target_name} PRIVATE ${LLVM_LIBRARY_DIRS})
+  endif()
+endfunction()
 
 # Make uninstall.
 add_custom_target("uninstall" COMMENT "Uninstall installed files")
@@ -127,16 +174,10 @@ target_include_directories(
   eshkol-static
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc/>
+    $<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>
 )
 
-# Always add LLVM support to static library
-target_compile_options(eshkol-static PRIVATE ${LLVM_CXXFLAGS})
-target_compile_definitions(eshkol-static PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
-
-# Add LLVM include directories for enhanced cross-platform support
-if(LLVM_INCLUDE_DIRS)
-    target_include_directories(eshkol-static PRIVATE ${LLVM_INCLUDE_DIRS})
-endif()
+eshkol_apply_llvm_target_settings(eshkol-static)
 
 # Extract library directories from LDFLAGS for proper linking
 string(REGEX MATCHALL "-L[^ ]+" LLVM_LIBRARY_DIR_FLAGS "${LLVM_LDFLAGS}")
@@ -165,22 +206,12 @@ foreach (exe ${EXE_SRC})
 
   # Compile main executable source as object file
   add_executable(${exename} ${exe})
-  target_compile_options(${exename} PRIVATE ${LLVM_CXXFLAGS})
-  target_compile_definitions(${exename} PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
-  target_include_directories(${exename} PRIVATE inc/)
-  
-  # Add LLVM include directories for enhanced cross-platform support
-  if(LLVM_INCLUDE_DIRS)
-      target_include_directories(${exename} PRIVATE ${LLVM_INCLUDE_DIRS})
-  endif()
-  
-  # Add library directories for executables
-  if(LLVM_LIBRARY_DIRS)
-      target_link_directories(${exename} PRIVATE ${LLVM_LIBRARY_DIRS})
-  endif()
-  
-  target_link_libraries(${exename} PUBLIC eshkol-static ${LLVM_LIBS} ${LLVM_SYSTEM_LIBS})
+  eshkol_apply_llvm_target_settings(${exename})
+  target_link_libraries(${exename} PUBLIC eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
 endforeach ()
+
+install(TARGETS ${EXES} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS eshkol-static ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 
 # ===== Pre-compiled Standard Library =====
 # Compile stdlib.esk to stdlib.o for faster compilation of user programs
@@ -215,40 +246,20 @@ if(BUILD_REPL AND REPL_SRC)
   target_include_directories(eshkol-repl-lib
     PUBLIC
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc/>
+      $<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>
     PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl
   )
 
-  # REPL needs LLVM ORC JIT components
-  target_compile_options(eshkol-repl-lib PRIVATE ${LLVM_CXXFLAGS})
-  target_compile_definitions(eshkol-repl-lib PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
-
-  if(LLVM_INCLUDE_DIRS)
-    target_include_directories(eshkol-repl-lib PRIVATE ${LLVM_INCLUDE_DIRS})
-  endif()
-
-  if(LLVM_LIBRARY_DIRS)
-    target_link_directories(eshkol-repl-lib PRIVATE ${LLVM_LIBRARY_DIRS})
-  endif()
+  eshkol_apply_llvm_target_settings(eshkol-repl-lib)
 
   # Link against main compiler library and LLVM
-  target_link_libraries(eshkol-repl-lib PUBLIC eshkol-static ${LLVM_LIBS} ${LLVM_SYSTEM_LIBS})
+  target_link_libraries(eshkol-repl-lib PUBLIC eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
 
   # REPL executable (only if we have the source)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/exe/eshkol-repl.cpp")
     add_executable(eshkol-repl exe/eshkol-repl.cpp)
-
-    target_compile_options(eshkol-repl PRIVATE ${LLVM_CXXFLAGS})
-    target_compile_definitions(eshkol-repl PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
-    target_include_directories(eshkol-repl PRIVATE inc/)
-
-    if(LLVM_INCLUDE_DIRS)
-      target_include_directories(eshkol-repl PRIVATE ${LLVM_INCLUDE_DIRS})
-    endif()
-
-    if(LLVM_LIBRARY_DIRS)
-      target_link_directories(eshkol-repl PRIVATE ${LLVM_LIBRARY_DIRS})
-    endif()
+    eshkol_apply_llvm_target_settings(eshkol-repl)
 
     # Find readline library (optional but recommended)
     find_library(READLINE_LIBRARY readline)
@@ -266,7 +277,9 @@ if(BUILD_REPL AND REPL_SRC)
     # This makes arena_*, printf, etc. available to JIT-compiled code
     if(APPLE)
       target_link_options(eshkol-repl PRIVATE "-Wl,-export_dynamic")
-    else()
+    elseif(MINGW)
+      target_link_options(eshkol-repl PRIVATE "-Wl,--export-all-symbols")
+    elseif(UNIX)
       target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
     endif()
 
@@ -280,3 +293,10 @@ endif()
 # where to find our CMake modules
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Packing)
+
+install(FILES ${STDLIB_SOURCE} DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/lib/ DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/lib FILES_MATCHING PATTERN "*.esk")
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_ENABLE_CTEST_SUITES)
+  include(cmake/Tests.cmake)
+endif()

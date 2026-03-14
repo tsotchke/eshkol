@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master, develop, 'feat/**']
+    branches: [master, devel, 'feat/**']
   pull_request:
-    branches: [master]
+    branches: [master, devel]
 
 jobs:
   build-linux:
@@ -32,41 +32,15 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -B build -G Ninja \
+          cmake -S . -B build -G Ninja \
+            -DESHKOL_BUILD_TESTS=ON \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
 
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Run Type Tests
-        run: ./scripts/run_types_tests.sh
-
-      - name: Run C++ Type Tests
-        run: ./scripts/run_cpp_type_tests.sh
-
-      - name: Run List Tests
-        run: ./scripts/run_list_tests.sh
-
-      - name: Run Autodiff Tests
-        run: ./scripts/run_autodiff_tests.sh
-
-      - name: Run Memory Tests
-        run: ./scripts/run_memory_tests.sh
-
-      - name: Run Module Tests
-        run: ./scripts/run_modules_tests.sh
-
-      - name: Run Stdlib Tests
-        run: ./scripts/run_stdlib_tests.sh
-
-      - name: Run Features Tests
-        run: ./scripts/run_features_tests.sh
-
-      - name: Run ML Tests
-        run: ./scripts/run_ml_tests.sh
-
-      - name: Run Neural Tests
-        run: ./scripts/run_neural_tests.sh
+      - name: Run Test Suite
+        run: ctest --test-dir build --output-on-failure
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -90,38 +64,11 @@ jobs:
 
       - name: Build
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -G Ninja -DESHKOL_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel
 
-      - name: Run Type Tests
-        run: ./scripts/run_types_tests.sh
-
-      - name: Run C++ Type Tests
-        run: ./scripts/run_cpp_type_tests.sh
-
-      - name: Run List Tests
-        run: ./scripts/run_list_tests.sh
-
-      - name: Run Autodiff Tests
-        run: ./scripts/run_autodiff_tests.sh
-
-      - name: Run Memory Tests
-        run: ./scripts/run_memory_tests.sh
-
-      - name: Run Module Tests
-        run: ./scripts/run_modules_tests.sh
-
-      - name: Run Stdlib Tests
-        run: ./scripts/run_stdlib_tests.sh
-
-      - name: Run Features Tests
-        run: ./scripts/run_features_tests.sh
-
-      - name: Run ML Tests
-        run: ./scripts/run_ml_tests.sh
-
-      - name: Run Neural Tests
-        run: ./scripts/run_neural_tests.sh
+      - name: Run Test Suite
+        run: ctest --test-dir build --output-on-failure
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -144,38 +91,11 @@ jobs:
 
       - name: Build
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -G Ninja -DESHKOL_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel
 
-      - name: Run Type Tests
-        run: ./scripts/run_types_tests.sh
-
-      - name: Run C++ Type Tests
-        run: ./scripts/run_cpp_type_tests.sh
-
-      - name: Run List Tests
-        run: ./scripts/run_list_tests.sh
-
-      - name: Run Autodiff Tests
-        run: ./scripts/run_autodiff_tests.sh
-
-      - name: Run Memory Tests
-        run: ./scripts/run_memory_tests.sh
-
-      - name: Run Module Tests
-        run: ./scripts/run_modules_tests.sh
-
-      - name: Run Stdlib Tests
-        run: ./scripts/run_stdlib_tests.sh
-
-      - name: Run Features Tests
-        run: ./scripts/run_features_tests.sh
-
-      - name: Run ML Tests
-        run: ./scripts/run_ml_tests.sh
-
-      - name: Run Neural Tests
-        run: ./scripts/run_neural_tests.sh
+      - name: Run Test Suite
+        run: ctest --test-dir build --output-on-failure
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -184,4 +104,44 @@ jobs:
           path: |
             build/eshkol-run
             build/eshkol-repl
+            build/stdlib.o
+
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-llvm
+            mingw-w64-x86_64-readline
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DESHKOL_BUILD_TESTS=ON \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run Test Suite
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: eshkol-windows-x64
+          path: |
+            build/eshkol-run.exe
+            build/eshkol-repl.exe
             build/stdlib.o
