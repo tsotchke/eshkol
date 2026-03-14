@@ -112,10 +112,14 @@ This document catalogs known limitations in v1.0-architecture and planned future
 
 ### Platform Support
 
-**Windows support is Tier 2** (best-effort, not fully tested)
-- **Tier 1**: Linux x86-64, macOS x86-64/ARM64
-- **Tier 2**: Windows x86-64 (community-tested)
-- **Future**: Windows to become Tier 1 in v1.1
+**Tier 1 platforms**
+- **Linux**: x86-64
+- **macOS**: x86-64, ARM64
+- **Windows**: x86-64 via MSYS2 MinGW64
+
+**Still missing on Windows**
+- Native installer/package distribution
+- MSVC toolchain support
 
 **No mobile/embedded targets** (currently)
 - **Status**: Planned for v1.4

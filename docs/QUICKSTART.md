@@ -24,6 +24,17 @@ make -j$(nproc)
 sudo make install
 ```
 
+### Windows (MSYS2 MinGW64)
+
+```bash
+pacman -S --needed mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-llvm mingw-w64-x86_64-readline
+git clone https://github.com/tsotchke/eshkol.git
+cd eshkol
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+./build/eshkol-run.exe hello.esk
+```
+
 ### Quick Test
 
 ```bash
@@ -36,7 +47,7 @@ eshkol-run hello.esk
 ```
 
 **Requirements**: LLVM 18+, C++20 compiler, CMake 3.20+  
-**Platforms**: Linux, macOS (x86-64, ARM64)
+**Platforms**: Linux, macOS (x86-64, ARM64), Windows x86-64 via MSYS2 MinGW64
 
 ---
 

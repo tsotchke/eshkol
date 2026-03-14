@@ -15,6 +15,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/logger.h>
+#include <eshkol/runtime_exports.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Function.h>
@@ -1340,10 +1341,10 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
 
 // Helper to get or declare fopen
 static llvm::Function* getOrDeclareFopen(CodegenContext& ctx) {
-    if (auto* existing = ctx.module().getFunction("fopen")) return existing;
+    if (auto* existing = ctx.module().getFunction(runtime::fopen_symbol)) return existing;
     auto* ft = llvm::FunctionType::get(ctx.ptrType(),
         {ctx.ptrType(), ctx.ptrType()}, false);
-    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "fopen", ctx.module());
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, runtime::fopen_symbol, ctx.module());
 }
 
 // Helper to get or declare fgets
@@ -1384,21 +1385,15 @@ static llvm::Function* getOrDeclareFflush(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "fflush", ctx.module());
 }
 
-// Helper to get stdout global variable
-// On macOS/Darwin, stdout is __stdoutp; on Linux it's stdout
+// Helper to get the runtime stdout accessor.
+static llvm::Function* getOrDeclareStdoutStream(CodegenContext& ctx) {
+    if (auto* existing = ctx.module().getFunction(runtime::stdout_stream_symbol)) return existing;
+    auto* ft = llvm::FunctionType::get(ctx.ptrType(), {}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, runtime::stdout_stream_symbol, ctx.module());
+}
+
 static llvm::Value* getStdout(CodegenContext& ctx) {
-#ifdef __APPLE__
-    const char* stdout_name = "__stdoutp";
-#else
-    const char* stdout_name = "stdout";
-#endif
-    llvm::GlobalVariable* stdout_var = ctx.module().getGlobalVariable(stdout_name);
-    if (!stdout_var) {
-        stdout_var = new llvm::GlobalVariable(
-            ctx.module(), ctx.ptrType(), false,
-            llvm::GlobalVariable::ExternalLinkage, nullptr, stdout_name);
-    }
-    return ctx.builder().CreateLoad(ctx.ptrType(), stdout_var);
+    return ctx.builder().CreateCall(getOrDeclareStdoutStream(ctx), {});
 }
 
 llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op) {
