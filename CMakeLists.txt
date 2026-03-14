@@ -275,9 +275,7 @@ if(BUILD_REPL AND REPL_SRC)
 
     # Export all symbols for JIT symbol resolution
     # This makes arena_*, printf, etc. available to JIT-compiled code
-    if(APPLE)
-      target_link_options(eshkol-repl PRIVATE "-Wl,-export_dynamic")
-    elseif(MINGW)
+    if(MINGW)
       target_link_options(eshkol-repl PRIVATE "-Wl,--export-all-symbols")
     elseif(UNIX)
       target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
