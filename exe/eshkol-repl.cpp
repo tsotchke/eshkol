@@ -564,7 +564,7 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
     if (cmd == ":quit" || cmd == ":q" || cmd == "(exit)" || cmd == "exit") {
         std::cout << color::dim() << "Goodbye!" << color::reset() << "\n";
         save_readline_history();
-        _exit(0);
+        std::_Exit(0);
     }
 
     if (cmd == ":clear") {
@@ -890,7 +890,7 @@ int main(int argc, char** argv) {
                 }
                 std::cout << "\n" << color::dim() << "Goodbye!" << color::reset() << "\n";
                 save_readline_history();
-                _exit(0);
+                std::_Exit(0);
             }
 
             // Empty continuation line - remove last line or cancel
@@ -938,7 +938,7 @@ int main(int argc, char** argv) {
                 free(input);
                 std::cout << color::dim() << "Goodbye!" << color::reset() << "\n";
                 save_readline_history();
-                _exit(0);
+                std::_Exit(0);
             }
 
             // Check for :cancel on any line
@@ -1094,5 +1094,5 @@ int main(int argc, char** argv) {
     }
 
     save_readline_history();
-    _exit(0);
+    std::_Exit(0);
 }
