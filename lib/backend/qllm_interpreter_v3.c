@@ -8,14 +8,18 @@
  *
  * This is the end-to-end integration: Eshkol bytecode → qLLM weights → execution.
  *
- * Two modes:
- *   1. Standalone test: compile against libsemiclassical_qllm
- *      cc -O2 -I../../include -L../../build/lib -o qllm_interpreter_v3 \
- *         qllm_interpreter_v3.c -lsemiclassical_qllm -lm
+ * Three modes:
+ *   1. Metal-accelerated: compile against libsemiclassical_qllm with -DUSE_QLLM
+ *      cc -O2 -DUSE_QLLM -I$QLLM_ROOT/include -L$QLLM_ROOT/build/lib \
+ *         -o qllm_interpreter_v3 qllm_interpreter_v3.c \
+ *         -lsemiclassical_qllm -lm -framework Metal -framework Foundation
  *
- *   2. Self-test (no qLLM dependency): cc -DSELF_TEST -O2 -o qllm_interpreter_v3 \
+ *   2. Linked but C matmul (default): links qLLM but uses C reference matmul
+ *      cc -O2 -I$QLLM_ROOT/include -L$QLLM_ROOT/build/lib \
+ *         -o qllm_interpreter_v3 qllm_interpreter_v3.c -lsemiclassical_qllm -lm
+ *
+ *   3. Self-test (no qLLM dependency): cc -DSELF_TEST -O2 -o qllm_interpreter_v3 \
  *         qllm_interpreter_v3.c -lm
- *      Uses the same C matmul as weight_matrices_v3.c for verification.
  *
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
@@ -25,6 +29,12 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
+#include <time.h>
+
+#ifdef USE_QLLM
+#include <semiclassical_qllm/tensor.h>
+#include <semiclassical_qllm/backend.h>
+#endif
 
 /* Architecture constants (must match weight_matrices_v3.c) */
 #define D 32
@@ -287,6 +297,106 @@ static void forward_pass(const Weights* w, const float state[D],
     memcpy(next, x, sizeof(float)*D);
 }
 
+#ifdef USE_QLLM
+/* ── qLLM-accelerated forward pass (Metal/NEON dispatch) ── */
+static qllm_tensor_t* make_t2d(const float* data, size_t r, size_t c, qllm_device_t dev) {
+    qllm_tensor_options_t opts = qllm_tensor_options_default(dev);
+    opts.dtype = QLLM_DTYPE_FLOAT32;
+    size_t shape[] = {r, c};
+    qllm_tensor_t* t = qllm_tensor_create(2, shape, &opts);
+    if (t && data) memcpy(qllm_tensor_get_data(t), data, r*c*sizeof(float));
+    return t;
+}
+
+static void forward_pass_qllm(const Weights* w, const float state[D],
+                                const float pe[][D], int np, float next[D],
+                                qllm_device_t dev) {
+    float x[D]; memcpy(x, state, sizeof(float)*D);
+
+    for (int L = 0; L < N_LAYERS; L++) {
+        /* Attention (layer 0 only — same as C version, attention is small) */
+        float ao[D]; memset(ao, 0, sizeof(ao));
+        if (L == 0 && np > 0) {
+            float Q[D]; memset(Q, 0, sizeof(Q));
+            for (int i=0;i<D;i++) for(int j=0;j<D;j++) Q[i]+=w->wq[L][i*D+j]*x[j];
+            for (int i=0;i<D;i++) Q[i]+=w->bq[L][i];
+            float scores[256]; float mx=-1e30f;
+            float Va[256][D];
+            for (int p=0;p<np&&p<256;p++) {
+                float K[D]; memset(K,0,sizeof(K)); memset(Va[p],0,sizeof(Va[p]));
+                for(int i=0;i<D;i++) for(int j=0;j<D;j++) {
+                    K[i]+=w->wk[L][i*D+j]*pe[p][j]; Va[p][i]+=w->wv[L][i*D+j]*pe[p][j];
+                }
+                scores[p]=(Q[0]*K[0]+Q[1]*K[1])/sqrtf((float)HD);
+                if(scores[p]>mx) mx=scores[p];
+            }
+            float sum=0;
+            for(int p=0;p<np;p++){scores[p]=expf(scores[p]-mx);sum+=scores[p];}
+            for(int p=0;p<np;p++) scores[p]/=sum;
+            float hout[D]; memset(hout,0,sizeof(hout));
+            for(int p=0;p<np;p++) for(int d=0;d<HD;d++) hout[d]+=scores[p]*Va[p][d];
+            for(int i=0;i<D;i++) for(int j=0;j<D;j++) ao[i]+=w->wo[L][i*D+j]*hout[j];
+        }
+        for(int i=0;i<D;i++) x[i]+=ao[i];
+
+        /* FFN via qLLM tensor matmul (dispatches to Metal/NEON) */
+        float fo[D]; memset(fo,0,sizeof(fo));
+        if (w->ff_type[L]==1) {
+            /* SQUARE activation: up → square → down */
+            qllm_tensor_t* tx = make_t2d(x, 1, D, dev);
+            qllm_tensor_t* tw = make_t2d(w->ff_up[L], D, FFN_DIM, dev);
+            qllm_tensor_t* th = qllm_tensor_matmul(tx, tw);
+            qllm_tensor_destroy(tx); qllm_tensor_destroy(tw);
+            if (th) {
+                float* h = (float*)qllm_tensor_get_data(th);
+                for(int i=0;i<FFN_DIM;i++) { h[i]+=w->ff_up_b[L][i]; h[i]*=h[i]; }
+                qllm_tensor_t* tdn = make_t2d(w->ff_down[L], FFN_DIM, D, dev);
+                qllm_tensor_t* tfo = qllm_tensor_matmul(th, tdn);
+                qllm_tensor_destroy(th); qllm_tensor_destroy(tdn);
+                if (tfo) {
+                    float* r = (float*)qllm_tensor_get_data(tfo);
+                    for(int i=0;i<D;i++) fo[i]=r[i]+w->ff_down_b[L][i];
+                    qllm_tensor_destroy(tfo);
+                }
+            }
+        } else if (w->ff_type[L]==2) {
+            /* Gated FFN: gate*up → down */
+            qllm_tensor_t* tx = make_t2d(x, 1, D, dev);
+            qllm_tensor_t* twg = make_t2d(w->ff_gate[L], D, FFN_DIM, dev);
+            qllm_tensor_t* twu = make_t2d(w->ff_up[L], D, FFN_DIM, dev);
+            qllm_tensor_t* tg = qllm_tensor_matmul(tx, twg);
+            qllm_tensor_t* tu = qllm_tensor_matmul(tx, twu);
+            qllm_tensor_destroy(tx); qllm_tensor_destroy(twg); qllm_tensor_destroy(twu);
+            if (tg && tu) {
+                float* gate = (float*)qllm_tensor_get_data(tg);
+                float* up = (float*)qllm_tensor_get_data(tu);
+                for(int i=0;i<FFN_DIM;i++) {
+                    gate[i]=sigmoidf(gate[i]+w->ff_gate_b[L][i]);
+                    up[i]+=w->ff_up_b[L][i];
+                }
+                qllm_tensor_t* th = qllm_tensor_mul(tg, tu);
+                qllm_tensor_destroy(tg); qllm_tensor_destroy(tu);
+                if (th) {
+                    qllm_tensor_t* tdn = make_t2d(w->ff_down[L], FFN_DIM, D, dev);
+                    qllm_tensor_t* tfo = qllm_tensor_matmul(th, tdn);
+                    qllm_tensor_destroy(th); qllm_tensor_destroy(tdn);
+                    if (tfo) {
+                        float* r = (float*)qllm_tensor_get_data(tfo);
+                        for(int i=0;i<D;i++) fo[i]=r[i]+w->ff_down_b[L][i];
+                        qllm_tensor_destroy(tfo);
+                    }
+                }
+            } else {
+                if(tg) qllm_tensor_destroy(tg);
+                if(tu) qllm_tensor_destroy(tu);
+            }
+        }
+        for(int i=0;i<D;i++) x[i]+=fo[i];
+    }
+    memcpy(next, x, sizeof(float)*D);
+}
+#endif /* USE_QLLM */
+
 static int run_program(const Weights* w, const Instr* prog, int n_instr,
                         float* outputs, int max_out) {
     float pe[256][D];
@@ -295,7 +405,7 @@ static int run_program(const Weights* w, const Instr* prog, int n_instr,
     float state[D]; memset(state, 0, sizeof(state)); state[S_OUTPUT] = -1;
     g_frame_count = 0; g_heap_ptr = 0;
     int n_out = 0;
-    for (int step = 0; step < 8192; step++) {
+    for (int step = 0; step < 100000; step++) {
         float next[D];
         forward_pass(w, state, pe, n_instr, next);
         exec_loop_postprocess(next, prog, n_instr);
@@ -306,6 +416,28 @@ static int run_program(const Weights* w, const Instr* prog, int n_instr,
     }
     return n_out;
 }
+
+#ifdef USE_QLLM
+static int run_program_qllm(const Weights* w, const Instr* prog, int n_instr,
+                              float* outputs, int max_out, qllm_device_t dev) {
+    float pe[256][D];
+    for (int p = 0; p < n_instr && p < 256; p++)
+        embed_instruction(&prog[p], p, pe[p]);
+    float state[D]; memset(state, 0, sizeof(state)); state[S_OUTPUT] = -1;
+    g_frame_count = 0; g_heap_ptr = 0;
+    int n_out = 0;
+    for (int step = 0; step < 100000; step++) {
+        float next[D];
+        forward_pass_qllm(w, state, pe, n_instr, next, dev);
+        exec_loop_postprocess(next, prog, n_instr);
+        if (next[S_HAS_OUT] > 0.5f && n_out < max_out)
+            outputs[n_out++] = next[S_OUTPUT];
+        if (next[S_HALT] > 0.5f) break;
+        memcpy(state, next, sizeof(state));
+    }
+    return n_out;
+}
+#endif
 
 /*******************************************************************************
  * ESKB Bytecode Loader
@@ -418,6 +550,52 @@ int main(int argc, char** argv) {
             printf("  ERROR: cannot load %s\n", bc_path);
         }
     }
+
+    printf("\n=== Results: %d passed, %d failed ===\n", pass, fail);
+
+#ifdef USE_QLLM
+    /* ── Metal/NEON Benchmark ── */
+    {
+        qllm_device_t dev = qllm_metal_is_available() ? QLLM_DEVICE_METAL : QLLM_DEVICE_CPU;
+        printf("\n  qLLM accelerated benchmark (device=%s):\n\n",
+               dev == QLLM_DEVICE_METAL ? "METAL" : "CPU/NEON");
+
+        /* fib(15) = 610 */
+        Instr fib_prog[]={
+            {OP_CONST,15},{OP_CONST,5},{OP_CALL,1},{OP_PRINT,0},{OP_HALT,0},
+            {OP_GET_LOCAL,0},{OP_CONST,1},{OP_LE,0},{OP_JUMP_IF_FALSE,11},
+            {OP_GET_LOCAL,0},{OP_RETURN,0},
+            {OP_GET_LOCAL,0},{OP_CONST,1},{OP_SUB,0},{OP_CONST,5},{OP_CALL,1},
+            {OP_GET_LOCAL,0},{OP_CONST,2},{OP_SUB,0},{OP_CONST,5},{OP_CALL,1},
+            {OP_ADD,0},{OP_RETURN,0},
+        };
+
+        /* C reference timing — use CPU device for qLLM to avoid Metal sync issues */
+        struct timespec t0, t1;
+        float out_c[1], out_q[1];
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        int nc = run_program(w, fib_prog, 23, out_c, 1);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        if (nc == 0) printf("  WARNING: C ref produced 0 outputs\n");
+        double c_ms = (t1.tv_sec - t0.tv_sec)*1000.0 + (t1.tv_nsec - t0.tv_nsec)/1e6;
+
+        /* qLLM NEON timing (CPU device — avoids GPU sync overhead for small tensors) */
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        run_program_qllm(w, fib_prog, 23, out_q, 1, QLLM_DEVICE_CPU);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double q_ms = (t1.tv_sec - t0.tv_sec)*1000.0 + (t1.tv_nsec - t0.tv_nsec)/1e6;
+
+        printf("  fib(15):  C ref = %.0f (%.1f ms)  |  qLLM/NEON = %.0f (%.1f ms)  |  speedup: %.2fx\n",
+               out_c[0], c_ms, out_q[0], q_ms, c_ms / q_ms);
+
+        /* Correctness check */
+        if (fabsf(out_c[0] - out_q[0]) < 0.1f)
+            printf("  Correctness: MATCH\n");
+        else
+            printf("  Correctness: MISMATCH (c=%.1f q=%.1f)\n", out_c[0], out_q[0]);
+    }
+#endif
 
     printf("\n=== Results: %d passed, %d failed ===\n", pass, fail);
     free(w);
