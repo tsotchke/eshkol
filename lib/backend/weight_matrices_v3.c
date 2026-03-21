@@ -1688,6 +1688,80 @@ int main() {
         export_weights_binary(g_weights, "/tmp/interpreter_weights_v3.bin");
     }
 
+    /* ── Integration test: load bytecode from eshkol_compiler ── */
+    if (g_weights) {
+        const char* bc_path = getenv("ESHKOL_BC");
+        if (bc_path) {
+            FILE* bf = fopen(bc_path, "rb");
+            if (bf) {
+                uint32_t magic, n_instr, n_const;
+                fread(&magic, 4, 1, bf);
+                fread(&n_instr, 4, 1, bf);
+                fread(&n_const, 4, 1, bf);
+                if (magic == 0x45534B42 && n_instr < 8192) {
+                    /* Read instructions */
+                    Instr* prog = (Instr*)calloc(n_instr, sizeof(Instr));
+                    for (uint32_t i = 0; i < n_instr; i++) {
+                        uint8_t op; int32_t operand;
+                        fread(&op, 1, 1, bf);
+                        fread(&operand, 4, 1, bf);
+                        prog[i].op = (OpCode)op;
+                        prog[i].operand = operand;
+                    }
+                    /* Read constants */
+                    float* constants = (float*)calloc(n_const, sizeof(float));
+                    for (uint32_t i = 0; i < n_const; i++) {
+                        uint8_t type; double val;
+                        fread(&type, 1, 1, bf);
+                        fread(&val, 8, 1, bf);
+                        constants[i] = (float)val;
+                    }
+                    fclose(bf);
+
+                    /* Resolve CONST operands: replace constant pool index with actual value.
+                     * The eshkol_compiler uses CONST <pool_index>, but our weight matrix
+                     * uses CONST <immediate_value>. Inline the constants. */
+                    for (uint32_t i = 0; i < n_instr; i++) {
+                        if (prog[i].op == OP_CONST && prog[i].operand < (int)n_const) {
+                            prog[i].operand = (int)constants[prog[i].operand];
+                        }
+                    }
+
+                    printf("\n  --- Integration: %s (%d instructions, %d constants) ---\n",
+                           bc_path, n_instr, n_const);
+
+                    /* Run through all 3 paths */
+                    float r[64], s[64], m[64];
+                    g_frame_count = 0; g_heap_ptr = 0;
+                    int rn = run_reference(prog, n_instr, r, 64);
+                    g_frame_count = 0; g_heap_ptr = 0;
+                    int sn = run_simulated(prog, n_instr, s, 64);
+                    g_frame_count = 0; g_heap_ptr = 0;
+                    int mn = run_with_weights(g_weights, prog, n_instr, m, 64);
+
+                    printf("  Outputs (ref): "); for(int i=0;i<rn;i++) printf("%.4g ", r[i]); printf("\n");
+                    printf("  Outputs (sim): "); for(int i=0;i<sn;i++) printf("%.4g ", s[i]); printf("\n");
+                    printf("  Outputs (mat): "); for(int i=0;i<mn;i++) printf("%.4g ", m[i]); printf("\n");
+
+                    int match = 1;
+                    int n_max = rn < sn ? rn : sn; n_max = n_max < mn ? n_max : mn;
+                    for (int i = 0; i < n_max; i++) {
+                        if (fabsf(r[i]-s[i]) > 0.01f || fabsf(r[i]-m[i]) > 0.01f) match = 0;
+                    }
+                    printf("  3-way match: %s\n", match ? "YES" : "NO");
+
+                    free(prog);
+                    free(constants);
+                } else {
+                    fclose(bf);
+                    printf("  ERROR: invalid bytecode file (magic=0x%08x)\n", magic);
+                }
+            } else {
+                printf("  ERROR: cannot open bytecode file %s\n", bc_path);
+            }
+        }
+    }
+
     if (g_weights) free(g_weights);
     return n_fail > 0 ? 1 : 0;
 }
