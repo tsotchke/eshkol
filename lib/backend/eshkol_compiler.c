@@ -4147,6 +4147,40 @@ static void compile_and_run(const char* source) {
         printf("\n");
     }
 
+    /* Dump bytecode for weight matrix integration (if requested) */
+    if (getenv("ESHKOL_DUMP_BC")) {
+        const char* path = getenv("ESHKOL_DUMP_BC");
+        FILE* bf = fopen(path, "wb");
+        if (bf) {
+            uint32_t magic = 0x45534B42; /* "ESKB" */
+            uint32_t n_instr = main_chunk.code_len;
+            uint32_t n_const = main_chunk.n_constants;
+            fwrite(&magic, 4, 1, bf);
+            fwrite(&n_instr, 4, 1, bf);
+            fwrite(&n_const, 4, 1, bf);
+            /* Write instructions as (op:u8, operand:i32) pairs */
+            for (int i = 0; i < (int)n_instr; i++) {
+                uint8_t op = main_chunk.code[i].op;
+                int32_t operand = main_chunk.code[i].operand;
+                fwrite(&op, 1, 1, bf);
+                fwrite(&operand, 4, 1, bf);
+            }
+            /* Write constants as (type:u8, value:f64) pairs */
+            for (int i = 0; i < (int)n_const; i++) {
+                uint8_t type = main_chunk.constants[i].type;
+                double val = 0;
+                if (type == VAL_INT) val = (double)main_chunk.constants[i].as.i;
+                else if (type == VAL_FLOAT) val = main_chunk.constants[i].as.f;
+                else if (type == VAL_BOOL) val = (double)main_chunk.constants[i].as.b;
+                fwrite(&type, 1, 1, bf);
+                fwrite(&val, 8, 1, bf);
+            }
+            fclose(bf);
+            printf("  [dumped bytecode: %d instructions, %d constants → %s]\n",
+                   (int)n_instr, (int)n_const, path);
+        }
+    }
+
     /* Execute using full VM */
     execute_chunk(&main_chunk);
 }
