@@ -23849,52 +23849,47 @@ private:
                     }
                 }
 
-                // NESTED FUNCTION FIX: Check if the Argument belongs to the current function
-                // If it's from a different function, we need to find it in our captures
-                // Also handle pointer-type captures (used for mutable closures)
-                if (var_value && isa<Argument>(var_value)) {
+                // ═══════════════════════════════════════════════════════════════
+                // UNIFIED RUNTIME GRADIENT PATH
+                // Consolidates 3 duplicate paths (Argument, Pointer, GlobalVariable)
+                // into a single resolution + shared forward-mode computation.
+                // ═══════════════════════════════════════════════════════════════
+
+                // Step 1: Resolve closure value from var_value
+                Value* closure_val = nullptr;
+
+                if (var_value && isa<Argument>(var_value) && !var_value->getType()->isPointerTy()) {
+                    // Direct Argument — may need capture resolution for nested functions
                     Argument* arg = cast<Argument>(var_value);
                     Function* arg_parent = arg->getParent();
                     Function* current_func = builder->GetInsertBlock()->getParent();
 
-                    // POINTER CAPTURE FIX: If this is a pointer-type capture argument,
-                    // load the tagged value from it before proceeding
-                    if (arg_parent == current_func && arg->getType()->isPointerTy()) {
-                        var_value = builder->CreateLoad(tagged_value_type, arg);
-                    }
-
                     if (arg_parent != current_func) {
-                        // The Argument is from a different function - find it in current function's captures
+                        // From different function — find in current function's captures
                         bool found_in_captures = false;
                         for (auto& curr_arg : current_func->args()) {
                             std::string arg_name = curr_arg.getName().str();
                             if (arg_name == "captured_" + func_name) {
-                                // Found the capture parameter in current function
                                 if (curr_arg.getType()->isPointerTy()) {
-                                    var_value = builder->CreateLoad(tagged_value_type, &curr_arg);
+                                    closure_val = builder->CreateLoad(tagged_value_type, &curr_arg);
                                 } else {
-                                    var_value = &curr_arg;
+                                    closure_val = &curr_arg;
                                 }
                                 found_in_captures = true;
-                                eshkol_debug("gradient: using current function's capture for %s", func_name.c_str());
                                 break;
                             }
                         }
                         if (!found_in_captures) {
-                            // Check GlobalVariable captures
                             std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
                             auto cap_it = global_symbol_table.find(capture_key);
                             if (cap_it != global_symbol_table.end() && isa<GlobalVariable>(cap_it->second)) {
-                                var_value = builder->CreateLoad(tagged_value_type, cap_it->second);
+                                closure_val = builder->CreateLoad(tagged_value_type, cap_it->second);
                                 found_in_captures = true;
-                                eshkol_debug("gradient: using GlobalVariable capture for %s", func_name.c_str());
                             } else {
-                                // Try just the variable name as global key
                                 auto var_cap_it = global_symbol_table.find(func_name);
                                 if (var_cap_it != global_symbol_table.end() && isa<GlobalVariable>(var_cap_it->second)) {
-                                    var_value = builder->CreateLoad(tagged_value_type, var_cap_it->second);
+                                    closure_val = builder->CreateLoad(tagged_value_type, var_cap_it->second);
                                     found_in_captures = true;
-                                    eshkol_debug("gradient: using GlobalVariable %s directly", func_name.c_str());
                                 }
                             }
                         }
@@ -23902,11 +23897,21 @@ private:
                             eshkol_error("gradient: could not find capture for '%s'", func_name.c_str());
                             return nullptr;
                         }
+                    } else {
+                        closure_val = var_value;
                     }
+                } else if (var_value && isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
+                    // Pointer-type captured Argument — load the tagged value
+                    closure_val = builder->CreateLoad(tagged_value_type, var_value);
+                } else if (var_value && isa<GlobalVariable>(var_value)) {
+                    // GlobalVariable — load via the global's value type
+                    GlobalVariable* gv = cast<GlobalVariable>(var_value);
+                    closure_val = builder->CreateLoad(gv->getValueType(), var_value);
+                }
 
-                    // Use forward-mode AD by calling function n times with directional derivatives
-                    // For each dimension i, we create a Scheme vector with dual numbers where
-                    // tangent=1 at position i and tangent=0 elsewhere
+                // Step 2: Shared forward-mode gradient computation
+                if (closure_val) {
+                    Function* current_func = builder->GetInsertBlock()->getParent();
 
                     // Get the input point
                     Value* point_val = codegenAST(op->gradient_op.point);
@@ -23918,7 +23923,11 @@ private:
                     // Ensure point is tagged
                     if (point_val->getType() != tagged_value_type) {
                         if (point_val->getType()->isIntegerTy(64)) {
-                            point_val = packInt64ToTaggedValue(point_val, true);
+                            if (op->gradient_op.point->type == ESHKOL_TENSOR) {
+                                point_val = packPtrToTaggedValue(point_val, ESHKOL_VALUE_HEAP_PTR);
+                            } else {
+                                point_val = packInt64ToTaggedValue(point_val, true);
+                            }
                         } else if (point_val->getType()->isDoubleTy()) {
                             point_val = packDoubleToTaggedValue(point_val);
                         }
@@ -24147,7 +24156,7 @@ private:
 
                     // Call function via closure dispatch
                     std::vector<Value*> call_args = {dual_vec_tagged};
-                    Value* call_result = codegenClosureCall(var_value, call_args);
+                    Value* call_result = codegenClosureCall(closure_val, call_args);
 
                     // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
                     // If function returns a constant (not using its argument), it won't be dual
@@ -24192,541 +24201,8 @@ private:
                     builder->SetInsertPoint(dim_end);
                     Value* result_int = builder->CreatePtrToInt(typed_result, int64_type);
                     return packPtrToTaggedValue(result_int, ESHKOL_VALUE_HEAP_PTR);
-                }
+                } // end if (closure_val)
 
-                // NESTED FUNCTION CAPTURE FIX: Handle pointer-type Arguments (captured functions)
-                // In nested functions like (define (step point) (gradient f point)),
-                // 'f' is captured and passed as a pointer to the closure environment
-                if (var_value && isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
-                    eshkol_debug("gradient: using forward-mode AD for captured function '%s'", func_name.c_str());
-
-                    // Load the function from the capture pointer
-                    Value* loaded_func = builder->CreateLoad(tagged_value_type, var_value);
-
-                    // Get the input point
-                    Value* point_val = codegenAST(op->gradient_op.point);
-                    if (!point_val) {
-                        eshkol_error("Failed to evaluate gradient point");
-                        return nullptr;
-                    }
-
-                    // Ensure point is tagged
-                    if (point_val->getType() != tagged_value_type) {
-                        if (point_val->getType()->isIntegerTy(64)) {
-                            point_val = packInt64ToTaggedValue(point_val, true);
-                        } else if (point_val->getType()->isDoubleTy()) {
-                            point_val = packDoubleToTaggedValue(point_val);
-                        }
-                    }
-
-                    Function* current_func = builder->GetInsertBlock()->getParent();
-
-                    // Get arena_allocate for Scheme vector allocation
-                    Function* arena_allocate_func = function_table["arena_allocate"];
-                    if (!arena_allocate_func) {
-                        eshkol_error("arena_allocate not found for gradient");
-                        return nullptr;
-                    }
-                    Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-
-                    // Get tagged_value size
-                    uint64_t tagged_size = module->getDataLayout().getTypeAllocSize(tagged_value_type);
-
-                    // Check input type - handle Scheme vector (VECTOR_PTR), tensor (TENSOR_PTR), or scalar
-                    Value* input_type = getTaggedValueType(point_val);
-                    Value* input_base = getBaseType(input_type);
-                    Value* is_scheme_vec = builder->CreateICmpEQ(input_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-                    Value* is_tensor = builder->CreateICmpEQ(input_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-
-                    BasicBlock* cap_scheme_vec_path = BasicBlock::Create(*context, "grad_cap_svec", current_func);
-                    BasicBlock* cap_tensor_path = BasicBlock::Create(*context, "grad_cap_tensor", current_func);
-                    BasicBlock* cap_scalar_path = BasicBlock::Create(*context, "grad_cap_scalar", current_func);
-                    BasicBlock* cap_check_tensor = BasicBlock::Create(*context, "grad_cap_check_tensor", current_func);
-                    BasicBlock* cap_grad_compute = BasicBlock::Create(*context, "grad_cap_compute", current_func);
-
-                    builder->CreateCondBr(is_scheme_vec, cap_scheme_vec_path, cap_check_tensor);
-
-                    builder->SetInsertPoint(cap_check_tensor);
-                    builder->CreateCondBr(is_tensor, cap_tensor_path, cap_scalar_path);
-
-                    // Scheme vector path - use input directly
-                    builder->SetInsertPoint(cap_scheme_vec_path);
-                    Value* cap_svec_ptr = unpackPtrFromTaggedValue(point_val);
-                    Value* cap_svec_len = builder->CreateLoad(int64_type, cap_svec_ptr);
-                    Value* cap_svec_elems = builder->CreateGEP(int8_type, cap_svec_ptr, ConstantInt::get(int64_type, 8));
-                    Value* cap_svec_elems_typed = builder->CreatePointerCast(cap_svec_elems, ptr_type);
-                    builder->CreateBr(cap_grad_compute);
-                    BasicBlock* cap_svec_exit = builder->GetInsertBlock();
-
-                    // Tensor path - convert tensor elements to Scheme vector of tagged doubles
-                    builder->SetInsertPoint(cap_tensor_path);
-                    Value* cap_tensor_ptr_int = safeExtractInt64(point_val);
-                    Value* cap_tensor_ptr = builder->CreateIntToPtr(cap_tensor_ptr_int, builder->getPtrTy());
-                    Value* cap_dims_field = builder->CreateStructGEP(tensor_type, cap_tensor_ptr, 0);
-                    Value* cap_dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), cap_dims_field);
-                    Value* cap_typed_dims = builder->CreatePointerCast(cap_dims_ptr, builder->getPtrTy());
-                    Value* cap_tensor_n = builder->CreateLoad(int64_type, cap_typed_dims);
-                    Value* cap_tensor_elems_field = builder->CreateStructGEP(tensor_type, cap_tensor_ptr, 2);
-                    Value* cap_tensor_elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), cap_tensor_elems_field);
-                    Value* cap_tensor_elems_typed = builder->CreatePointerCast(cap_tensor_elems_ptr, builder->getPtrTy());
-
-                    // Allocate Scheme vector for tensor elements
-                    Value* cap_tconv_size = builder->CreateAdd(
-                        builder->CreateMul(cap_tensor_n, ConstantInt::get(int64_type, tagged_size)),
-                        ConstantInt::get(int64_type, 8));
-                    Value* cap_tconv_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, cap_tconv_size});
-                    builder->CreateStore(cap_tensor_n, cap_tconv_vec);
-                    Value* cap_tconv_elems = builder->CreateGEP(int8_type, cap_tconv_vec, ConstantInt::get(int64_type, 8));
-                    Value* cap_tconv_elems_typed = builder->CreatePointerCast(cap_tconv_elems, ptr_type);
-
-                    // Copy tensor elements as tagged doubles
-                    Value* cap_tconv_i = builder->CreateAlloca(int64_type, nullptr, "cap_tconv_i");
-                    builder->CreateStore(ConstantInt::get(int64_type, 0), cap_tconv_i);
-                    BasicBlock* cap_tconv_cond = BasicBlock::Create(*context, "cap_tconv_cond", current_func);
-                    BasicBlock* cap_tconv_body = BasicBlock::Create(*context, "cap_tconv_body", current_func);
-                    BasicBlock* cap_tconv_end = BasicBlock::Create(*context, "cap_tconv_end", current_func);
-                    builder->CreateBr(cap_tconv_cond);
-
-                    builder->SetInsertPoint(cap_tconv_cond);
-                    Value* cap_tc_idx = builder->CreateLoad(int64_type, cap_tconv_i);
-                    builder->CreateCondBr(builder->CreateICmpULT(cap_tc_idx, cap_tensor_n), cap_tconv_body, cap_tconv_end);
-
-                    builder->SetInsertPoint(cap_tconv_body);
-                    Value* cap_tc_src = builder->CreateGEP(int64_type, cap_tensor_elems_typed, cap_tc_idx);
-                    Value* cap_tc_bits = builder->CreateLoad(int64_type, cap_tc_src);
-                    Value* cap_tc_dbl = builder->CreateBitCast(cap_tc_bits, double_type);
-                    Value* cap_tc_tagged = packDoubleToTaggedValue(cap_tc_dbl);
-                    Value* cap_tc_dst = builder->CreateGEP(tagged_value_type, cap_tconv_elems_typed, cap_tc_idx);
-                    builder->CreateStore(cap_tc_tagged, cap_tc_dst);
-                    builder->CreateStore(builder->CreateAdd(cap_tc_idx, ConstantInt::get(int64_type, 1)), cap_tconv_i);
-                    builder->CreateBr(cap_tconv_cond);
-
-                    builder->SetInsertPoint(cap_tconv_end);
-                    builder->CreateBr(cap_grad_compute);
-                    BasicBlock* cap_tensor_exit = builder->GetInsertBlock();
-
-                    // Scalar path - create 1-element Scheme vector
-                    builder->SetInsertPoint(cap_scalar_path);
-                    Value* cap_scalar_val = unpackDoubleFromTaggedValue(point_val);
-                    Value* cap_scalar_vec_size = ConstantInt::get(int64_type, 8 + tagged_size);
-                    Value* cap_scalar_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, cap_scalar_vec_size});
-                    builder->CreateStore(ConstantInt::get(int64_type, 1), cap_scalar_vec);
-                    Value* cap_scalar_elem = builder->CreateGEP(int8_type, cap_scalar_vec, ConstantInt::get(int64_type, 8));
-                    Value* cap_scalar_elem_typed = builder->CreatePointerCast(cap_scalar_elem, ptr_type);
-                    Value* cap_scalar_tagged = packDoubleToTaggedValue(cap_scalar_val);
-                    builder->CreateStore(cap_scalar_tagged, cap_scalar_elem_typed);
-                    builder->CreateBr(cap_grad_compute);
-                    BasicBlock* cap_scalar_exit = builder->GetInsertBlock();
-
-                    // Merge input paths
-                    builder->SetInsertPoint(cap_grad_compute);
-                    PHINode* cap_n = builder->CreatePHI(int64_type, 3, "cap_grad_n");
-                    cap_n->addIncoming(cap_svec_len, cap_svec_exit);
-                    cap_n->addIncoming(cap_tensor_n, cap_tensor_exit);
-                    cap_n->addIncoming(ConstantInt::get(int64_type, 1), cap_scalar_exit);
-
-                    PHINode* cap_input_elems = builder->CreatePHI(ptr_type, 3, "cap_grad_elems");
-                    cap_input_elems->addIncoming(cap_svec_elems_typed, cap_svec_exit);
-                    cap_input_elems->addIncoming(cap_tconv_elems_typed, cap_tensor_exit);
-                    cap_input_elems->addIncoming(cap_scalar_elem_typed, cap_scalar_exit);
-
-                    // Allocate result tensor via arena (OALR compliant - no malloc)
-                    Value* cap_typed_result = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
-
-                    Value* cap_result_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, ConstantInt::get(int64_type, 8)});
-                    Value* cap_typed_result_dims = builder->CreatePointerCast(cap_result_dims_ptr, builder->getPtrTy());
-                    builder->CreateStore(cap_n, cap_typed_result_dims);
-                    builder->CreateStore(cap_typed_result_dims, builder->CreateStructGEP(tensor_type, cap_typed_result, 0));
-                    builder->CreateStore(ConstantInt::get(int64_type, 1), builder->CreateStructGEP(tensor_type, cap_typed_result, 1));
-                    builder->CreateStore(cap_n, builder->CreateStructGEP(tensor_type, cap_typed_result, 3));
-
-                    Value* cap_result_elems_size = builder->CreateMul(cap_n, ConstantInt::get(int64_type, sizeof(double)));
-                    Value* cap_result_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, cap_result_elems_size});
-                    Value* cap_typed_result_elems = builder->CreatePointerCast(cap_result_elems_ptr, builder->getPtrTy());
-                    builder->CreateStore(cap_typed_result_elems, builder->CreateStructGEP(tensor_type, cap_typed_result, 2));
-
-                    // M1 CONSOLIDATION: Allocate Scheme vector for dual numbers with header
-                    // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
-                    Value* cap_dual_vec = builder->CreateCall(mem->getArenaAllocateVectorWithHeader(),
-                        {arena_ptr, cap_n});
-                    builder->CreateStore(cap_n, cap_dual_vec);
-                    Value* cap_dual_elems = builder->CreateGEP(int8_type, cap_dual_vec, ConstantInt::get(int64_type, 8));
-                    Value* cap_dual_elems_typed = builder->CreatePointerCast(cap_dual_elems, ptr_type);
-
-                    // Outer loop: for each dimension i, compute partial derivative
-                    Value* cap_dim_counter = builder->CreateAlloca(int64_type, nullptr, "cap_grad_dim_i");
-                    builder->CreateStore(ConstantInt::get(int64_type, 0), cap_dim_counter);
-
-                    BasicBlock* cap_dim_cond = BasicBlock::Create(*context, "cap_grad_dim_cond", current_func);
-                    BasicBlock* cap_dim_body = BasicBlock::Create(*context, "cap_grad_dim_body", current_func);
-                    BasicBlock* cap_dim_end = BasicBlock::Create(*context, "cap_grad_dim_end", current_func);
-
-                    builder->CreateBr(cap_dim_cond);
-
-                    builder->SetInsertPoint(cap_dim_cond);
-                    Value* cap_dim_i = builder->CreateLoad(int64_type, cap_dim_counter);
-                    builder->CreateCondBr(builder->CreateICmpULT(cap_dim_i, cap_n), cap_dim_body, cap_dim_end);
-
-                    builder->SetInsertPoint(cap_dim_body);
-
-                    // Inner loop: create dual vector with tangent=1 at dim_i
-                    Value* cap_inner_counter = builder->CreateAlloca(int64_type, nullptr, "cap_grad_inner_j");
-                    builder->CreateStore(ConstantInt::get(int64_type, 0), cap_inner_counter);
-
-                    BasicBlock* cap_inner_cond = BasicBlock::Create(*context, "cap_grad_inner_cond", current_func);
-                    BasicBlock* cap_inner_body = BasicBlock::Create(*context, "cap_grad_inner_body", current_func);
-                    BasicBlock* cap_inner_end = BasicBlock::Create(*context, "cap_grad_inner_end", current_func);
-
-                    builder->CreateBr(cap_inner_cond);
-
-                    builder->SetInsertPoint(cap_inner_cond);
-                    Value* cap_inner_j = builder->CreateLoad(int64_type, cap_inner_counter);
-                    builder->CreateCondBr(builder->CreateICmpULT(cap_inner_j, cap_n), cap_inner_body, cap_inner_end);
-
-                    builder->SetInsertPoint(cap_inner_body);
-                    // Load primal value at position j from input elements
-                    Value* cap_in_elem_ptr = builder->CreateGEP(tagged_value_type, cap_input_elems, cap_inner_j);
-                    Value* cap_in_elem = builder->CreateLoad(tagged_value_type, cap_in_elem_ptr);
-                    Value* cap_primal_val = unpackDoubleFromTaggedValue(cap_in_elem);
-
-                    // Set tangent: 1.0 if j == i, else 0.0
-                    Value* cap_is_active = builder->CreateICmpEQ(cap_inner_j, cap_dim_i);
-                    Value* cap_tangent = builder->CreateSelect(cap_is_active,
-                        ConstantFP::get(double_type, 1.0),
-                        ConstantFP::get(double_type, 0.0));
-
-                    // Create dual number and store in dual vector
-                    Value* cap_dual_num = packDualNumber(cap_primal_val, cap_tangent);
-                    Value* cap_dual_tagged = packDualToTaggedValue(cap_dual_num);
-                    Value* cap_dual_elem_ptr = builder->CreateGEP(tagged_value_type, cap_dual_elems_typed, cap_inner_j);
-                    builder->CreateStore(cap_dual_tagged, cap_dual_elem_ptr);
-
-                    builder->CreateStore(builder->CreateAdd(cap_inner_j, ConstantInt::get(int64_type, 1)), cap_inner_counter);
-                    builder->CreateBr(cap_inner_cond);
-
-                    builder->SetInsertPoint(cap_inner_end);
-
-                    // M1 CONSOLIDATION: Pack dual vector as HEAP_PTR (header contains HEAP_SUBTYPE_VECTOR)
-                    Value* cap_dual_vec_tagged = packPtrToTaggedValue(
-                        builder->CreatePtrToInt(cap_dual_vec, int64_type),
-                        ESHKOL_VALUE_HEAP_PTR);
-
-                    // Call function via closure dispatch (using loaded_func, not var_value)
-                    std::vector<Value*> cap_call_args = {cap_dual_vec_tagged};
-                    Value* cap_call_result = codegenClosureCall(loaded_func, cap_call_args);
-
-                    // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
-                    Value* cap_result_type = getTaggedValueType(cap_call_result);
-                    Value* cap_result_base = getBaseType(cap_result_type);
-                    Value* cap_is_dual = builder->CreateICmpEQ(cap_result_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-
-                    BasicBlock* cap_dual_bb = BasicBlock::Create(*context, "grad_cap_dual", current_func);
-                    BasicBlock* cap_const_bb = BasicBlock::Create(*context, "grad_cap_const", current_func);
-                    BasicBlock* cap_merge_bb = BasicBlock::Create(*context, "grad_cap_merge", current_func);
-
-                    builder->CreateCondBr(cap_is_dual, cap_dual_bb, cap_const_bb);
-
-                    // Dual path: extract tangent normally
-                    builder->SetInsertPoint(cap_dual_bb);
-                    Value* cap_result_dual = unpackDualFromTaggedValue(cap_call_result);
-                    auto [cap_result_primal, cap_dual_deriv] = unpackDualNumber(cap_result_dual);
-                    builder->CreateBr(cap_merge_bb);
-                    BasicBlock* cap_dual_exit = builder->GetInsertBlock();
-
-                    // Constant path: derivative is 0.0
-                    builder->SetInsertPoint(cap_const_bb);
-                    Value* cap_zero_deriv = ConstantFP::get(double_type, 0.0);
-                    builder->CreateBr(cap_merge_bb);
-                    BasicBlock* cap_const_exit = builder->GetInsertBlock();
-
-                    // Merge paths
-                    builder->SetInsertPoint(cap_merge_bb);
-                    PHINode* cap_deriv = builder->CreatePHI(double_type, 2, "grad_cap_deriv");
-                    cap_deriv->addIncoming(cap_dual_deriv, cap_dual_exit);
-                    cap_deriv->addIncoming(cap_zero_deriv, cap_const_exit);
-
-                    // Store derivative in result tensor
-                    Value* cap_result_elem_ptr = builder->CreateGEP(int64_type, cap_typed_result_elems, cap_dim_i);
-                    Value* cap_deriv_bits = builder->CreateBitCast(cap_deriv, int64_type);
-                    builder->CreateStore(cap_deriv_bits, cap_result_elem_ptr);
-
-                    builder->CreateStore(builder->CreateAdd(cap_dim_i, ConstantInt::get(int64_type, 1)), cap_dim_counter);
-                    builder->CreateBr(cap_dim_cond);
-
-                    builder->SetInsertPoint(cap_dim_end);
-                    Value* cap_result_int = builder->CreatePtrToInt(cap_typed_result, int64_type);
-                    return packPtrToTaggedValue(cap_result_int, ESHKOL_VALUE_HEAP_PTR);
-                }
-
-                // GLOBALVARIABLE FIX: Handle captured functions stored in GlobalVariables
-                // This happens when a nested function captures 'f' from an outer function
-                if (var_value && isa<GlobalVariable>(var_value)) {
-                    eshkol_debug("gradient: using forward-mode AD for GlobalVariable function '%s'", func_name.c_str());
-
-                    // Load the function from the GlobalVariable
-                    GlobalVariable* gv = cast<GlobalVariable>(var_value);
-                    Value* loaded_func = builder->CreateLoad(gv->getValueType(), var_value);
-
-                    // Get the input point
-                    Value* point_val = codegenAST(op->gradient_op.point);
-                    if (!point_val) {
-                        eshkol_error("Failed to evaluate gradient point");
-                        return nullptr;
-                    }
-
-                    // Ensure point is tagged
-                    if (point_val->getType() != tagged_value_type) {
-                        if (point_val->getType()->isIntegerTy(64)) {
-                            point_val = packInt64ToTaggedValue(point_val, true);
-                        } else if (point_val->getType()->isDoubleTy()) {
-                            point_val = packDoubleToTaggedValue(point_val);
-                        }
-                    }
-
-                    Function* current_func = builder->GetInsertBlock()->getParent();
-
-                    // Get arena_allocate for Scheme vector allocation
-                    Function* arena_allocate_func = function_table["arena_allocate"];
-                    if (!arena_allocate_func) {
-                        eshkol_error("arena_allocate not found for gradient");
-                        return nullptr;
-                    }
-                    Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-
-                    // Get tagged_value size
-                    uint64_t tagged_size = module->getDataLayout().getTypeAllocSize(tagged_value_type);
-
-                    // Check input type - handle Scheme vector (VECTOR_PTR), tensor (TENSOR_PTR), or scalar
-                    Value* input_type = getTaggedValueType(point_val);
-                    Value* input_base = getBaseType(input_type);
-                    Value* is_scheme_vec = builder->CreateICmpEQ(input_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-                    Value* is_tensor = builder->CreateICmpEQ(input_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-
-                    BasicBlock* gv_scheme_vec_path = BasicBlock::Create(*context, "grad_gv_svec", current_func);
-                    BasicBlock* gv_tensor_path = BasicBlock::Create(*context, "grad_gv_tensor", current_func);
-                    BasicBlock* gv_scalar_path = BasicBlock::Create(*context, "grad_gv_scalar", current_func);
-                    BasicBlock* gv_check_tensor = BasicBlock::Create(*context, "grad_gv_check_tensor", current_func);
-                    BasicBlock* gv_grad_compute = BasicBlock::Create(*context, "grad_gv_compute", current_func);
-
-                    builder->CreateCondBr(is_scheme_vec, gv_scheme_vec_path, gv_check_tensor);
-
-                    builder->SetInsertPoint(gv_check_tensor);
-                    builder->CreateCondBr(is_tensor, gv_tensor_path, gv_scalar_path);
-
-                    // Scheme vector path - use input directly
-                    builder->SetInsertPoint(gv_scheme_vec_path);
-                    Value* gv_svec_ptr = unpackPtrFromTaggedValue(point_val);
-                    Value* gv_svec_len = builder->CreateLoad(int64_type, gv_svec_ptr);
-                    Value* gv_svec_elems = builder->CreateGEP(int8_type, gv_svec_ptr, ConstantInt::get(int64_type, 8));
-                    Value* gv_svec_elems_typed = builder->CreatePointerCast(gv_svec_elems, ptr_type);
-                    builder->CreateBr(gv_grad_compute);
-                    BasicBlock* gv_svec_exit = builder->GetInsertBlock();
-
-                    // Tensor path - convert tensor elements to Scheme vector of tagged doubles
-                    builder->SetInsertPoint(gv_tensor_path);
-                    Value* gv_tensor_ptr_int = safeExtractInt64(point_val);
-                    Value* gv_tensor_ptr = builder->CreateIntToPtr(gv_tensor_ptr_int, builder->getPtrTy());
-                    Value* gv_dims_field = builder->CreateStructGEP(tensor_type, gv_tensor_ptr, 0);
-                    Value* gv_dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), gv_dims_field);
-                    Value* gv_typed_dims = builder->CreatePointerCast(gv_dims_ptr, builder->getPtrTy());
-                    Value* gv_tensor_n = builder->CreateLoad(int64_type, gv_typed_dims);
-                    Value* gv_tensor_elems_field = builder->CreateStructGEP(tensor_type, gv_tensor_ptr, 2);
-                    Value* gv_tensor_elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), gv_tensor_elems_field);
-                    Value* gv_tensor_elems_typed = builder->CreatePointerCast(gv_tensor_elems_ptr, builder->getPtrTy());
-
-                    // Allocate Scheme vector for tensor elements
-                    Value* gv_tconv_size = builder->CreateAdd(
-                        builder->CreateMul(gv_tensor_n, ConstantInt::get(int64_type, tagged_size)),
-                        ConstantInt::get(int64_type, 8));
-                    Value* gv_tconv_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, gv_tconv_size});
-                    builder->CreateStore(gv_tensor_n, gv_tconv_vec);
-                    Value* gv_tconv_elems = builder->CreateGEP(int8_type, gv_tconv_vec, ConstantInt::get(int64_type, 8));
-                    Value* gv_tconv_elems_typed = builder->CreatePointerCast(gv_tconv_elems, ptr_type);
-
-                    // Copy tensor elements as tagged doubles
-                    Value* gv_tconv_i = builder->CreateAlloca(int64_type, nullptr, "gv_tconv_i");
-                    builder->CreateStore(ConstantInt::get(int64_type, 0), gv_tconv_i);
-                    BasicBlock* gv_tconv_cond = BasicBlock::Create(*context, "gv_tconv_cond", current_func);
-                    BasicBlock* gv_tconv_body = BasicBlock::Create(*context, "gv_tconv_body", current_func);
-                    BasicBlock* gv_tconv_end = BasicBlock::Create(*context, "gv_tconv_end", current_func);
-                    builder->CreateBr(gv_tconv_cond);
-
-                    builder->SetInsertPoint(gv_tconv_cond);
-                    Value* gv_tc_idx = builder->CreateLoad(int64_type, gv_tconv_i);
-                    builder->CreateCondBr(builder->CreateICmpULT(gv_tc_idx, gv_tensor_n), gv_tconv_body, gv_tconv_end);
-
-                    builder->SetInsertPoint(gv_tconv_body);
-                    Value* gv_tc_src = builder->CreateGEP(int64_type, gv_tensor_elems_typed, gv_tc_idx);
-                    Value* gv_tc_bits = builder->CreateLoad(int64_type, gv_tc_src);
-                    Value* gv_tc_dbl = builder->CreateBitCast(gv_tc_bits, double_type);
-                    Value* gv_tc_tagged = packDoubleToTaggedValue(gv_tc_dbl);
-                    Value* gv_tc_dst = builder->CreateGEP(tagged_value_type, gv_tconv_elems_typed, gv_tc_idx);
-                    builder->CreateStore(gv_tc_tagged, gv_tc_dst);
-                    builder->CreateStore(builder->CreateAdd(gv_tc_idx, ConstantInt::get(int64_type, 1)), gv_tconv_i);
-                    builder->CreateBr(gv_tconv_cond);
-
-                    builder->SetInsertPoint(gv_tconv_end);
-                    builder->CreateBr(gv_grad_compute);
-                    BasicBlock* gv_tensor_exit = builder->GetInsertBlock();
-
-                    // Scalar path - create 1-element Scheme vector
-                    builder->SetInsertPoint(gv_scalar_path);
-                    Value* gv_scalar_val = unpackDoubleFromTaggedValue(point_val);
-                    Value* gv_scalar_vec_size = ConstantInt::get(int64_type, 8 + tagged_size);
-                    Value* gv_scalar_vec = builder->CreateCall(arena_allocate_func, {arena_ptr, gv_scalar_vec_size});
-                    builder->CreateStore(ConstantInt::get(int64_type, 1), gv_scalar_vec);
-                    Value* gv_scalar_elem = builder->CreateGEP(int8_type, gv_scalar_vec, ConstantInt::get(int64_type, 8));
-                    Value* gv_scalar_elem_typed = builder->CreatePointerCast(gv_scalar_elem, ptr_type);
-                    Value* gv_scalar_tagged = packDoubleToTaggedValue(gv_scalar_val);
-                    builder->CreateStore(gv_scalar_tagged, gv_scalar_elem_typed);
-                    builder->CreateBr(gv_grad_compute);
-                    BasicBlock* gv_scalar_exit = builder->GetInsertBlock();
-
-                    // Merge input paths
-                    builder->SetInsertPoint(gv_grad_compute);
-                    PHINode* gv_n = builder->CreatePHI(int64_type, 3, "gv_grad_n");
-                    gv_n->addIncoming(gv_svec_len, gv_svec_exit);
-                    gv_n->addIncoming(gv_tensor_n, gv_tensor_exit);
-                    gv_n->addIncoming(ConstantInt::get(int64_type, 1), gv_scalar_exit);
-
-                    PHINode* gv_input_elems = builder->CreatePHI(ptr_type, 3, "gv_grad_elems");
-                    gv_input_elems->addIncoming(gv_svec_elems_typed, gv_svec_exit);
-                    gv_input_elems->addIncoming(gv_tconv_elems_typed, gv_tensor_exit);
-                    gv_input_elems->addIncoming(gv_scalar_elem_typed, gv_scalar_exit);
-
-                    // Allocate result tensor via arena (OALR compliant - no malloc)
-                    Value* gv_typed_result = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
-
-                    Value* gv_result_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, ConstantInt::get(int64_type, 8)});
-                    Value* gv_typed_result_dims = builder->CreatePointerCast(gv_result_dims_ptr, builder->getPtrTy());
-                    builder->CreateStore(gv_n, gv_typed_result_dims);
-                    builder->CreateStore(gv_typed_result_dims, builder->CreateStructGEP(tensor_type, gv_typed_result, 0));
-                    builder->CreateStore(ConstantInt::get(int64_type, 1), builder->CreateStructGEP(tensor_type, gv_typed_result, 1));
-                    builder->CreateStore(gv_n, builder->CreateStructGEP(tensor_type, gv_typed_result, 3));
-
-                    Value* gv_result_elems_size = builder->CreateMul(gv_n, ConstantInt::get(int64_type, sizeof(double)));
-                    Value* gv_result_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, gv_result_elems_size});
-                    Value* gv_typed_result_elems = builder->CreatePointerCast(gv_result_elems_ptr, builder->getPtrTy());
-                    builder->CreateStore(gv_typed_result_elems, builder->CreateStructGEP(tensor_type, gv_typed_result, 2));
-
-                    // M1 CONSOLIDATION: Allocate Scheme vector for dual numbers with header
-                    // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
-                    Value* gv_dual_vec = builder->CreateCall(mem->getArenaAllocateVectorWithHeader(),
-                        {arena_ptr, gv_n});
-                    builder->CreateStore(gv_n, gv_dual_vec);
-                    Value* gv_dual_elems = builder->CreateGEP(int8_type, gv_dual_vec, ConstantInt::get(int64_type, 8));
-                    Value* gv_dual_elems_typed = builder->CreatePointerCast(gv_dual_elems, ptr_type);
-
-                    // Outer loop: for each dimension i, compute partial derivative
-                    Value* gv_dim_counter = builder->CreateAlloca(int64_type, nullptr, "gv_grad_dim_i");
-                    builder->CreateStore(ConstantInt::get(int64_type, 0), gv_dim_counter);
-
-                    BasicBlock* gv_dim_cond = BasicBlock::Create(*context, "gv_grad_dim_cond", current_func);
-                    BasicBlock* gv_dim_body = BasicBlock::Create(*context, "gv_grad_dim_body", current_func);
-                    BasicBlock* gv_dim_end = BasicBlock::Create(*context, "gv_grad_dim_end", current_func);
-
-                    builder->CreateBr(gv_dim_cond);
-
-                    builder->SetInsertPoint(gv_dim_cond);
-                    Value* gv_dim_i = builder->CreateLoad(int64_type, gv_dim_counter);
-                    builder->CreateCondBr(builder->CreateICmpULT(gv_dim_i, gv_n), gv_dim_body, gv_dim_end);
-
-                    builder->SetInsertPoint(gv_dim_body);
-
-                    // Inner loop: create dual vector with tangent=1 at dim_i
-                    Value* gv_inner_counter = builder->CreateAlloca(int64_type, nullptr, "gv_grad_inner_j");
-                    builder->CreateStore(ConstantInt::get(int64_type, 0), gv_inner_counter);
-
-                    BasicBlock* gv_inner_cond = BasicBlock::Create(*context, "gv_grad_inner_cond", current_func);
-                    BasicBlock* gv_inner_body = BasicBlock::Create(*context, "gv_grad_inner_body", current_func);
-                    BasicBlock* gv_inner_end = BasicBlock::Create(*context, "gv_grad_inner_end", current_func);
-
-                    builder->CreateBr(gv_inner_cond);
-
-                    builder->SetInsertPoint(gv_inner_cond);
-                    Value* gv_inner_j = builder->CreateLoad(int64_type, gv_inner_counter);
-                    builder->CreateCondBr(builder->CreateICmpULT(gv_inner_j, gv_n), gv_inner_body, gv_inner_end);
-
-                    builder->SetInsertPoint(gv_inner_body);
-                    // Load primal value at position j from input elements
-                    Value* gv_in_elem_ptr = builder->CreateGEP(tagged_value_type, gv_input_elems, gv_inner_j);
-                    Value* gv_in_elem = builder->CreateLoad(tagged_value_type, gv_in_elem_ptr);
-                    Value* gv_primal_val = unpackDoubleFromTaggedValue(gv_in_elem);
-
-                    // Set tangent: 1.0 if j == i, else 0.0
-                    Value* gv_is_active = builder->CreateICmpEQ(gv_inner_j, gv_dim_i);
-                    Value* gv_tangent = builder->CreateSelect(gv_is_active,
-                        ConstantFP::get(double_type, 1.0),
-                        ConstantFP::get(double_type, 0.0));
-
-                    // Create dual number and store in dual vector
-                    Value* gv_dual_num = packDualNumber(gv_primal_val, gv_tangent);
-                    Value* gv_dual_tagged = packDualToTaggedValue(gv_dual_num);
-                    Value* gv_dual_elem_ptr = builder->CreateGEP(tagged_value_type, gv_dual_elems_typed, gv_inner_j);
-                    builder->CreateStore(gv_dual_tagged, gv_dual_elem_ptr);
-
-                    builder->CreateStore(builder->CreateAdd(gv_inner_j, ConstantInt::get(int64_type, 1)), gv_inner_counter);
-                    builder->CreateBr(gv_inner_cond);
-
-                    builder->SetInsertPoint(gv_inner_end);
-
-                    // M1 CONSOLIDATION: Pack dual vector as HEAP_PTR (header contains HEAP_SUBTYPE_VECTOR)
-                    Value* gv_dual_vec_tagged = packPtrToTaggedValue(
-                        builder->CreatePtrToInt(gv_dual_vec, int64_type),
-                        ESHKOL_VALUE_HEAP_PTR);
-
-                    // Call function via closure dispatch (using loaded_func)
-                    std::vector<Value*> gv_call_args = {gv_dual_vec_tagged};
-                    Value* gv_call_result = codegenClosureCall(loaded_func, gv_call_args);
-
-                    // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
-                    Value* gv_result_type = getTaggedValueType(gv_call_result);
-                    Value* gv_result_base = getBaseType(gv_result_type);
-                    Value* gv_is_dual = builder->CreateICmpEQ(gv_result_base,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-
-                    BasicBlock* gv_dual_bb = BasicBlock::Create(*context, "grad_gv_dual", current_func);
-                    BasicBlock* gv_const_bb = BasicBlock::Create(*context, "grad_gv_const", current_func);
-                    BasicBlock* gv_merge_bb = BasicBlock::Create(*context, "grad_gv_merge", current_func);
-
-                    builder->CreateCondBr(gv_is_dual, gv_dual_bb, gv_const_bb);
-
-                    // Dual path: extract tangent normally
-                    builder->SetInsertPoint(gv_dual_bb);
-                    Value* gv_result_dual = unpackDualFromTaggedValue(gv_call_result);
-                    auto [gv_result_primal, gv_dual_deriv] = unpackDualNumber(gv_result_dual);
-                    builder->CreateBr(gv_merge_bb);
-                    BasicBlock* gv_dual_exit = builder->GetInsertBlock();
-
-                    // Constant path: derivative is 0.0
-                    builder->SetInsertPoint(gv_const_bb);
-                    Value* gv_zero_deriv = ConstantFP::get(double_type, 0.0);
-                    builder->CreateBr(gv_merge_bb);
-                    BasicBlock* gv_const_exit = builder->GetInsertBlock();
-
-                    // Merge paths
-                    builder->SetInsertPoint(gv_merge_bb);
-                    PHINode* gv_deriv = builder->CreatePHI(double_type, 2, "grad_gv_deriv");
-                    gv_deriv->addIncoming(gv_dual_deriv, gv_dual_exit);
-                    gv_deriv->addIncoming(gv_zero_deriv, gv_const_exit);
-
-                    // Store derivative in result tensor
-                    Value* gv_result_elem_ptr = builder->CreateGEP(int64_type, gv_typed_result_elems, gv_dim_i);
-                    Value* gv_deriv_bits = builder->CreateBitCast(gv_deriv, int64_type);
-                    builder->CreateStore(gv_deriv_bits, gv_result_elem_ptr);
-
-                    builder->CreateStore(builder->CreateAdd(gv_dim_i, ConstantInt::get(int64_type, 1)), gv_dim_counter);
-                    builder->CreateBr(gv_dim_cond);
-
-                    builder->SetInsertPoint(gv_dim_end);
-                    Value* gv_result_int = builder->CreatePtrToInt(gv_typed_result, int64_type);
-                    return packPtrToTaggedValue(gv_result_int, ESHKOL_VALUE_HEAP_PTR);
-                }
             }
             eshkol_error("Failed to resolve function for gradient computation");
             return nullptr;
