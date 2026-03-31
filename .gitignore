@@ -17,6 +17,8 @@ examples/agent.esk
 examples/consciousness_grr_inference.esk
 examples/consciousness_inference.esk
 examples/consciousness_model_analysis.esk
+examples/selene_*.esk
+examples/qllm_*.esk
 
 # Environment and secrets
 .env

@@ -9518,6 +9518,7 @@ private:
         if (func_name == "string->number") return strio_->stringToNumber(op);
         if (func_name == "symbol->string") return codegenSymbolToString(op);
         if (func_name == "string->symbol") return codegenStringToSymbol(op);
+        if (func_name == "ptr->string") return codegenPtrToString(op);
         if (func_name == "make-string") return strio_->makeString(op);
         // R7RS: (string char ...) — construct string from character arguments
         if (func_name == "string" && op->call_op.num_vars > 0) {
@@ -12814,7 +12815,44 @@ private:
             }
         }
 
-        return builder->CreateCall(callee, args);
+        Value* result = builder->CreateCall(callee, args);
+
+        /* ── FFI return value packing ──
+         * When an extern C function returns a raw type (i32, i64, f32, f64, ptr),
+         * pack it into tagged_value so Eshkol builtins (=, >, <, display) work.
+         * Without this, (= (extern-fn ...) 0) fails because = expects tagged_value.
+         *
+         * Only applies to extern functions — internal Eshkol functions already
+         * return tagged_value. We detect externs by checking if the return type
+         * differs from tagged_value_type. */
+        Type* ret_type = result->getType();
+        if (ret_type != tagged_value_type && !ret_type->isVoidTy()) {
+            if (ret_type->isIntegerTy(32)) {
+                /* i32 → SIToFP to double → pack as tagged double.
+                 * Eshkol uses doubles as its native number type, so i32 error
+                 * codes and flags become comparable with = > < immediately. */
+                Value* dbl = builder->CreateSIToFP(result, double_type);
+                return packDoubleToTaggedValue(dbl);
+            } else if (ret_type->isIntegerTy(64)) {
+                /* i64 stays as tagged int — used for opaque handles passed
+                 * between extern calls, not typically compared with = > <. */
+                return packInt64ToTaggedValue(result, true);
+            } else if (ret_type->isFloatTy()) {
+                /* f32 → FPExt to f64 → pack as tagged double */
+                Value* ext = builder->CreateFPExt(result, double_type);
+                return packDoubleToTaggedValue(ext);
+            } else if (ret_type->isDoubleTy()) {
+                return packDoubleToTaggedValue(result);
+            } else if (ret_type->isPointerTy()) {
+                /* ptr → PtrToInt → pack as tagged heap ptr */
+                Value* as_int = builder->CreatePtrToInt(result, int64_type);
+                return packPtrToTaggedValue(
+                    builder->CreateIntToPtr(as_int, builder->getPtrTy()),
+                    ESHKOL_VALUE_HEAP_PTR);
+            }
+        }
+
+        return result;
     }
     
     // HoTT-optimized binary arithmetic: when both types are known, skip runtime dispatch
@@ -16083,6 +16121,66 @@ private:
         builder->CreateMemCpy(new_sym, MaybeAlign(1), ptr, MaybeAlign(1), copy_len);
 
         return tagged_->packHeapPtr(new_sym);
+    }
+
+    // ptr->string: Convert a raw C char* pointer (from FFI extern) to an Eshkol string.
+    // The FFI extern returns a ptr (i64 holding a char* address). This function:
+    //   1. Calls strlen() on the raw pointer to get length
+    //   2. Allocates a proper Eshkol string with object header
+    //   3. Copies the C string data
+    //   4. Returns a tagged HEAP_PTR value
+    // This enables: (display (ptr->string (system-capture "echo hello")))
+    Value* codegenPtrToString(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("ptr->string requires exactly 1 argument");
+            return nullptr;
+        }
+
+        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv.llvm_value) return nullptr;
+        Value* arg = typedValueToTaggedValue(tv);
+
+        // Extract raw pointer from tagged value
+        Value* ptr_int = unpackInt64FromTaggedValue(arg);
+        Value* raw_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+
+        // NULL check: if pointer is null, return empty string
+        Function* current_fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* null_bb = BasicBlock::Create(*context, "ptr_null", current_fn);
+        BasicBlock* valid_bb = BasicBlock::Create(*context, "ptr_valid", current_fn);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "ptr_merge", current_fn);
+
+        Value* is_null = builder->CreateICmpEQ(ptr_int, ConstantInt::get(int64_type, 0));
+        builder->CreateCondBr(is_null, null_bb, valid_bb);
+
+        // NULL path: allocate empty string
+        builder->SetInsertPoint(null_bb);
+        Value* arena_null = builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* empty_str = builder->CreateCall(mem->getArenaAllocateStringWithHeader(),
+            {arena_null, ConstantInt::get(int64_type, 0)});
+        builder->CreateBr(merge_bb);
+
+        // Valid path: copy C string
+        builder->SetInsertPoint(valid_bb);
+        FunctionType* strlen_ty = FunctionType::get(int64_type, {builder->getPtrTy()}, false);
+        FunctionCallee strlen_fn = module->getOrInsertFunction("strlen", strlen_ty);
+        Value* length = builder->CreateCall(strlen_fn, {raw_ptr});
+
+        Value* arena_ptr = builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* new_str = builder->CreateCall(mem->getArenaAllocateStringWithHeader(),
+            {arena_ptr, length});
+
+        Value* copy_len = builder->CreateAdd(length, ConstantInt::get(int64_type, 1));
+        builder->CreateMemCpy(new_str, MaybeAlign(1), raw_ptr, MaybeAlign(1), copy_len);
+        builder->CreateBr(merge_bb);
+
+        // Merge
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(builder->getPtrTy(), 2);
+        result->addIncoming(empty_str, null_bb);
+        result->addIncoming(new_str, valid_bb);
+
+        return tagged_->packHeapPtr(result);
     }
 
     // ============================================================================
@@ -24649,9 +24747,16 @@ private:
         }
         
         // CRITICAL FIX: Ensure input is tagged_value (codegenAST can return raw types for literals)
+        // Tensor/vector codegen returns raw ptr-as-int64, NOT tagged values.
+        // We must detect the AST type to pack correctly (HEAP_PTR vs INT64).
         Value* vector_val;
         if (vector_val_raw->getType() == tagged_value_type) {
             vector_val = vector_val_raw; // Already tagged
+        } else if (vector_val_raw->getType()->isIntegerTy(64) &&
+                   op->gradient_op.point->type == ESHKOL_TENSOR) {
+            // Tensor literal: codegenTensor returns ptr-as-int64; wrap as HEAP_PTR
+            // so the input dispatch correctly detects the tensor subtype
+            vector_val = packPtrToTaggedValue(vector_val_raw, ESHKOL_VALUE_HEAP_PTR);
         } else if (vector_val_raw->getType()->isIntegerTy(64)) {
             vector_val = packInt64ToTaggedValue(vector_val_raw, true); // Pack int64
         } else if (vector_val_raw->getType()->isDoubleTy()) {
@@ -24661,6 +24766,10 @@ private:
             vector_val = typedValueToTaggedValue(tv); // Pack other types
         }
         
+        // Alloca for effective svec input (updated by tensor→svec conversion)
+        Value* svec_input_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "svec_input");
+        builder->CreateStore(vector_val, svec_input_ptr);
+
         // SCALAR→VECTOR AUTO-PROMOTION: Detect input type BEFORE tensor structure access
         // This prevents segfault when users pass scalars like 3.0 instead of vectors like #(3.0)
 
@@ -24774,7 +24883,76 @@ private:
         Value* grad_header_ptr = builder->CreateGEP(int8_type, grad_heap_ptr, ConstantInt::get(int64_type, -8));
         Value* grad_subtype = builder->CreateLoad(int8_type, grad_header_ptr);
         Value* is_vec_subtype_grad = builder->CreateICmpEQ(grad_subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
-        builder->CreateCondBr(is_vec_subtype_grad, scheme_vector_input, vector_input);
+        Value* is_tensor_subtype_grad = builder->CreateICmpEQ(grad_subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_TENSOR));
+        BasicBlock* grad_check_tensor = BasicBlock::Create(*context, "grad_check_tensor", current_func);
+        builder->CreateCondBr(is_vec_subtype_grad, scheme_vector_input, grad_check_tensor);
+
+        // Check for TENSOR subtype — convert to Scheme vector ONLY for multi-param functions.
+        // For single-param functions, tensor input works correctly with reverse-mode AD.
+        // For multi-param functions, forward-mode with dual numbers is needed because
+        // reverse-mode passes AD nodes as CALLABLE tagged values which crash in function dispatch.
+        builder->SetInsertPoint(grad_check_tensor);
+        uint64_t grad_func_arity = 0;
+        {
+            auto arity_it = function_arity_table.find(func_ptr->getName().str());
+            if (arity_it != function_arity_table.end()) {
+                grad_func_arity = arity_it->second;
+            }
+        }
+        if (grad_func_arity > 1) {
+            BasicBlock* grad_tensor_to_svec = BasicBlock::Create(*context, "grad_tensor_to_svec", current_func);
+            builder->CreateCondBr(is_tensor_subtype_grad, grad_tensor_to_svec, vector_input);
+
+            // TENSOR→SVEC CONVERSION: Convert 8-byte tensor doubles to 16-byte tagged Scheme vector
+            // so the forward-mode dual number path handles multi-parameter gradients correctly.
+            builder->SetInsertPoint(grad_tensor_to_svec);
+            {
+                Value* t_ptr = grad_heap_ptr;
+                Value* t_dims_field = builder->CreateStructGEP(tensor_type, t_ptr, 0);
+                Value* t_dims_ptr = builder->CreateLoad(builder->getPtrTy(), t_dims_field);
+                Value* t_n = builder->CreateLoad(int64_type, t_dims_ptr);
+                Value* t_elems_field = builder->CreateStructGEP(tensor_type, t_ptr, 2);
+                Value* t_elems_ptr = builder->CreateLoad(builder->getPtrTy(), t_elems_field);
+
+                Value* t_arena = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* t_svec = builder->CreateCall(mem->getArenaAllocateVectorWithHeader(), {t_arena, t_n});
+                builder->CreateStore(t_n, t_svec);
+                Value* t_svec_elems_base = builder->CreateGEP(int8_type, t_svec, ConstantInt::get(int64_type, 8));
+                Value* t_svec_elems = builder->CreatePointerCast(t_svec_elems_base, ptr_type);
+
+                Value* t_conv_idx = builder->CreateAlloca(int64_type, nullptr, "tensor_conv_idx");
+                builder->CreateStore(ConstantInt::get(int64_type, 0), t_conv_idx);
+
+                BasicBlock* t_conv_cond = BasicBlock::Create(*context, "tensor_conv_cond", current_func);
+                BasicBlock* t_conv_body = BasicBlock::Create(*context, "tensor_conv_body", current_func);
+                BasicBlock* t_conv_exit = BasicBlock::Create(*context, "tensor_conv_exit", current_func);
+
+                builder->CreateBr(t_conv_cond);
+
+                builder->SetInsertPoint(t_conv_cond);
+                Value* t_idx = builder->CreateLoad(int64_type, t_conv_idx);
+                builder->CreateCondBr(builder->CreateICmpULT(t_idx, t_n), t_conv_body, t_conv_exit);
+
+                builder->SetInsertPoint(t_conv_body);
+                Value* t_elem_ptr = builder->CreateGEP(int64_type, t_elems_ptr, t_idx);
+                Value* t_elem_i64 = builder->CreateLoad(int64_type, t_elem_ptr);
+                Value* t_elem_double = builder->CreateBitCast(t_elem_i64, double_type);
+                Value* t_elem_tagged = packDoubleToTaggedValue(t_elem_double);
+                Value* t_svec_elem_ptr = builder->CreateGEP(tagged_value_type, t_svec_elems, t_idx);
+                builder->CreateStore(t_elem_tagged, t_svec_elem_ptr);
+                builder->CreateStore(builder->CreateAdd(t_idx, ConstantInt::get(int64_type, 1)), t_conv_idx);
+                builder->CreateBr(t_conv_cond);
+
+                builder->SetInsertPoint(t_conv_exit);
+                Value* t_svec_int = builder->CreatePtrToInt(t_svec, int64_type);
+                Value* t_converted_tagged = packPtrToTaggedValue(t_svec_int, ESHKOL_VALUE_HEAP_PTR);
+                builder->CreateStore(t_converted_tagged, svec_input_ptr);
+            }
+            builder->CreateBr(scheme_vector_input);
+        } else {
+            // Single-param: tensor goes through reverse-mode (works for arity <= 1)
+            builder->CreateBr(vector_input);
+        }
 
         // Legacy VECTOR_PTR fallback
         builder->SetInsertPoint(check_legacy_vector);
@@ -24830,11 +25008,14 @@ private:
         
         // SCHEME VECTOR INPUT: Use forward-mode AD with dual numbers (preserves Scheme vector format)
         // This allows functions that use vector-ref to work correctly with gradient
+        // Handles both native Scheme vectors AND tensors converted via tensor→svec path above
         builder->SetInsertPoint(scheme_vector_input);
         eshkol_debug("Gradient: using forward-mode AD for Scheme vector input");
 
+        // Load effective input (may have been updated by tensor→svec conversion)
+        Value* effective_svec_val = builder->CreateLoad(tagged_value_type, svec_input_ptr);
         // Get Scheme vector pointer and length
-        Value* svec_ptr_int = unpackInt64FromTaggedValue(vector_val);
+        Value* svec_ptr_int = unpackInt64FromTaggedValue(effective_svec_val);
         Value* svec_ptr = builder->CreateIntToPtr(svec_ptr_int, builder->getPtrTy());
         Value* svec_n = builder->CreateLoad(int64_type, svec_ptr);
         Value* svec_elems_base = builder->CreateGEP(int8_type, svec_ptr, ConstantInt::get(int64_type, 8));
@@ -24928,6 +25109,8 @@ private:
         std::vector<Value*> svec_call_args;
 
         // MULTI-PARAMETER GRADIENT: Check function arity and unpack if needed
+        // arity > 1: extract individual dual number elements as separate args
+        // arity <= 1: pass whole dual vector (for vector-input functions like (lambda (v) ...))
         {
             uint64_t svec_func_arity = 0;
             auto svec_arity_it = function_arity_table.find(func_ptr->getName().str());
@@ -25927,7 +26110,13 @@ private:
         Function* current_func = builder->GetInsertBlock()->getParent();
 
         // Convert TypedValue to tagged_value
+        // Tensor literal fix: codegenTensor returns ptr-as-int64 which gets packed as INT64;
+        // re-pack as HEAP_PTR so type dispatch correctly detects tensor subtype
         Value* vector_val = typedValueToTaggedValue(vector_tv);
+        if (op->jacobian_op.point->type == ESHKOL_TENSOR) {
+            Value* data_val = safeExtractInt64(vector_val);
+            vector_val = packPtrToTaggedValue(data_val, ESHKOL_VALUE_HEAP_PTR);
+        }
 
         Value* input_type = getTaggedValueType(vector_val);
         Value* input_base_type = getBaseType(input_type);
@@ -26587,7 +26776,12 @@ private:
         Function* current_func = builder->GetInsertBlock()->getParent();
 
         // Convert TypedValue to tagged_value
+        // Tensor literal fix: re-pack ptr-as-int64 as HEAP_PTR for correct subtype dispatch
         Value* vector_val = typedValueToTaggedValue(vector_tv);
+        if (op->hessian_op.point->type == ESHKOL_TENSOR) {
+            Value* data_val = safeExtractInt64(vector_val);
+            vector_val = packPtrToTaggedValue(data_val, ESHKOL_VALUE_HEAP_PTR);
+        }
 
         Value* input_type = getTaggedValueType(vector_val);
         Value* input_base_type = getBaseType(input_type);
@@ -27438,10 +27632,26 @@ private:
         eshkol_info("Computing curl of 3D vector field");
         
         // First, validate that input is 3D
-        Value* vector_val = codegenAST(op->curl_op.point);
-        if (!vector_val) {
+        Value* vector_val_raw = codegenAST(op->curl_op.point);
+        if (!vector_val_raw) {
             eshkol_error("Failed to evaluate curl point");
             return nullptr;
+        }
+
+        // Tensor literal fix: codegenTensor returns ptr-as-int64; wrap as HEAP_PTR
+        Value* vector_val;
+        if (vector_val_raw->getType() == tagged_value_type) {
+            vector_val = vector_val_raw;
+        } else if (vector_val_raw->getType()->isIntegerTy(64) &&
+                   op->curl_op.point->type == ESHKOL_TENSOR) {
+            vector_val = packPtrToTaggedValue(vector_val_raw, ESHKOL_VALUE_HEAP_PTR);
+        } else if (vector_val_raw->getType()->isIntegerTy(64)) {
+            vector_val = packInt64ToTaggedValue(vector_val_raw, true);
+        } else if (vector_val_raw->getType()->isDoubleTy()) {
+            vector_val = packDoubleToTaggedValue(vector_val_raw);
+        } else {
+            TypedValue tv = detectValueType(vector_val_raw);
+            vector_val = typedValueToTaggedValue(tv);
         }
 
         // Get arena for OALR-compliant tensor allocation
@@ -27817,10 +28027,26 @@ private:
         Value* gradient_ptr_int = safeExtractInt64(gradient_tagged);
         
         // Step 2: Get direction vector
-        Value* direction_val = codegenAST(op->directional_deriv_op.direction);
-        if (!direction_val) {
+        Value* direction_val_raw = codegenAST(op->directional_deriv_op.direction);
+        if (!direction_val_raw) {
             eshkol_error("Failed to evaluate direction vector");
             return nullptr;
+        }
+
+        // Tensor literal fix: codegenTensor returns ptr-as-int64; wrap as HEAP_PTR
+        Value* direction_val;
+        if (direction_val_raw->getType() == tagged_value_type) {
+            direction_val = direction_val_raw;
+        } else if (direction_val_raw->getType()->isIntegerTy(64) &&
+                   op->directional_deriv_op.direction->type == ESHKOL_TENSOR) {
+            direction_val = packPtrToTaggedValue(direction_val_raw, ESHKOL_VALUE_HEAP_PTR);
+        } else if (direction_val_raw->getType()->isIntegerTy(64)) {
+            direction_val = packInt64ToTaggedValue(direction_val_raw, true);
+        } else if (direction_val_raw->getType()->isDoubleTy()) {
+            direction_val = packDoubleToTaggedValue(direction_val_raw);
+        } else {
+            TypedValue tv = detectValueType(direction_val_raw);
+            direction_val = typedValueToTaggedValue(tv);
         }
 
         // Get arena for OALR-compliant tensor allocation
