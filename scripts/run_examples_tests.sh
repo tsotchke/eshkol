@@ -79,6 +79,11 @@ CURRENT=0
 for test_file in examples/*.esk; do
     ((CURRENT++))
     test_name=$(basename "$test_file")
+
+    # Skip proprietary/unreleased examples
+    case "$test_name" in
+        selene_*|qllm_*|agent.esk|consciousness_*) printf "SKIP (proprietary)\n"; continue ;;
+    esac
     printf "[%3d/%3d] %-50s " "$CURRENT" "$TOTAL" "$test_name"
 
     # Clean up stale temp files before each test
