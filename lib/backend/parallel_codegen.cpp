@@ -195,7 +195,7 @@ static eshkol_tagged_value_t vector_to_list(
 
     // Build list from end to beginning
     for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
-        auto* cell = arena_allocate_tagged_cons_cell(arena);
+        auto* cell = arena_allocate_cons_with_header(arena);
         if (!cell) {
             eshkol_error("Failed to allocate cons cell in vector_to_list");
             return result;
@@ -242,16 +242,17 @@ extern "C" {
  *   (parallel-map fn list)
  *   (parallel-map (lambda (x) (* x x)) '(1 2 3 4 5))
  */
-eshkol_tagged_value_t eshkol_parallel_map(
+void eshkol_parallel_map(
     eshkol_tagged_value_t fn,
     eshkol_tagged_value_t list,
-    arena_t* arena)
+    arena_t* arena,
+    eshkol_tagged_value_t* out_result)
 {
     eshkol_debug("parallel-map: fn.type=%d, list.type=%d", fn.type, list.type);
 
     // Handle empty list
     if (list.type == ESHKOL_VALUE_NULL) {
-        return list;
+        *out_result = list; return;
     }
 
     // Validate closure
@@ -259,14 +260,14 @@ eshkol_tagged_value_t eshkol_parallel_map(
         eshkol_error("parallel-map: expected callable, got type %d", fn.type);
         eshkol_tagged_value_t null_val = {};
         null_val.type = ESHKOL_VALUE_NULL;
-        return null_val;
+        *out_result = null_val; return;
     }
 
     // Convert list to vector for parallel processing
     auto items = list_to_vector(list);
     eshkol_debug("parallel-map: items.size()=%zu", items.size());
     if (items.empty()) {
-        return list;
+        *out_result = list; return;
     }
 
     size_t n = items.size();
@@ -285,7 +286,7 @@ eshkol_tagged_value_t eshkol_parallel_map(
         eshkol_error("parallel-map: workers not registered (stdlib not loaded?)");
         eshkol_tagged_value_t null_val = {};
         null_val.type = ESHKOL_VALUE_NULL;
-        return null_val;
+        *out_result = null_val; return;
     }
 
     // For small lists, use LLVM worker directly (still benefits from LLVM→LLVM calls)
@@ -302,7 +303,7 @@ eshkol_tagged_value_t eshkol_parallel_map(
             // Call LLVM worker via function pointer
             g_parallel_map_worker(&task);
         }
-        return vector_to_list(results, arena);
+        *out_result = vector_to_list(results, arena); return;
     }
 
     // Get global thread pool
@@ -311,7 +312,7 @@ eshkol_tagged_value_t eshkol_parallel_map(
         eshkol_error("parallel-map: failed to get thread pool");
         eshkol_tagged_value_t null_val = {};
         null_val.type = ESHKOL_VALUE_NULL;
-        return null_val;
+        *out_result = null_val; return;
     }
 
     // Create task data (decomposed to i64 fields - no struct-by-value ABI!)
@@ -345,7 +346,7 @@ eshkol_tagged_value_t eshkol_parallel_map(
     }
 
     eshkol_debug("parallel-map: all tasks completed, building result list");
-    return vector_to_list(results, arena);
+    *out_result = vector_to_list(results, arena); return;
 }
 
 // ============================================================================
@@ -364,29 +365,30 @@ eshkol_tagged_value_t eshkol_parallel_map(
  * Note: Fold is inherently sequential for non-associative operations.
  * For parallelizable reductions, use parallel-map followed by fold.
  */
-eshkol_tagged_value_t eshkol_parallel_fold(
+void eshkol_parallel_fold(
     eshkol_tagged_value_t fn,
     eshkol_tagged_value_t init,
     eshkol_tagged_value_t list,
-    arena_t* arena)
+    arena_t* arena,
+    eshkol_tagged_value_t* out_result)
 {
     (void)arena;  // Unused - closure dispatcher handles memory
 
     // Handle empty list
     if (list.type == ESHKOL_VALUE_NULL) {
-        return init;
+        *out_result = init; return;
     }
 
     // Validate closure
     if (fn.type != ESHKOL_VALUE_CALLABLE) {
         eshkol_error("parallel-fold: expected callable, got type %d", fn.type);
-        return init;
+        *out_result = init; return;
     }
 
     // Check if dispatcher is registered
     if (!g_call_binary_closure) {
         eshkol_error("parallel-fold: binary closure dispatcher not registered (stdlib not loaded?)");
-        return init;
+        *out_result = init; return;
     }
 
     // Sequential fold using LLVM-generated dispatcher
@@ -406,7 +408,7 @@ eshkol_tagged_value_t eshkol_parallel_fold(
         current = cell->cdr;
     }
 
-    return acc;
+    *out_result = acc; return;
 }
 
 // ============================================================================
@@ -428,7 +430,8 @@ void eshkol_parallel_for_each(
     arena_t* arena)
 {
     // Use parallel-map and ignore results
-    eshkol_parallel_map(fn, list, arena);
+    eshkol_tagged_value_t discard;
+    eshkol_parallel_map(fn, list, arena, &discard);
 }
 
 // ============================================================================
@@ -447,15 +450,16 @@ void eshkol_parallel_for_each(
  * The worker calls the predicate and stores the result (a boolean).
  * We then filter based on whether the result is truthy.
  */
-eshkol_tagged_value_t eshkol_parallel_filter(
+void eshkol_parallel_filter(
     eshkol_tagged_value_t pred,
     eshkol_tagged_value_t list,
-    arena_t* arena)
+    arena_t* arena,
+    eshkol_tagged_value_t* out_result)
 {
     eshkol_debug("parallel-filter: pred.type=%d, list.type=%d", pred.type, list.type);
 
     if (list.type == ESHKOL_VALUE_NULL) {
-        return list;
+        *out_result = list; return;
     }
 
     // Validate closure
@@ -463,13 +467,13 @@ eshkol_tagged_value_t eshkol_parallel_filter(
         eshkol_error("parallel-filter: expected callable, got type %d", pred.type);
         eshkol_tagged_value_t null_val = {};
         null_val.type = ESHKOL_VALUE_NULL;
-        return null_val;
+        *out_result = null_val; return;
     }
 
     auto items = list_to_vector(list);
     eshkol_debug("parallel-filter: items.size()=%zu", items.size());
     if (items.empty()) {
-        return list;
+        *out_result = list; return;
     }
 
     size_t n = items.size();
@@ -479,7 +483,7 @@ eshkol_tagged_value_t eshkol_parallel_filter(
         eshkol_error("parallel-filter: workers not registered (stdlib not loaded?)");
         eshkol_tagged_value_t null_val = {};
         null_val.type = ESHKOL_VALUE_NULL;
-        return null_val;
+        *out_result = null_val; return;
     }
 
     // Allocate predicate results (workers write results via pointer)
@@ -511,7 +515,7 @@ eshkol_tagged_value_t eshkol_parallel_filter(
                 filtered.push_back(items[i]);
             }
         }
-        return vector_to_list(filtered, arena);
+        *out_result = vector_to_list(filtered, arena); return;
     }
 
     eshkol_thread_pool_t* pool = thread_pool_global();
@@ -519,7 +523,7 @@ eshkol_tagged_value_t eshkol_parallel_filter(
         eshkol_error("parallel-filter: failed to get thread pool");
         eshkol_tagged_value_t null_val = {};
         null_val.type = ESHKOL_VALUE_NULL;
-        return null_val;
+        *out_result = null_val; return;
     }
 
     // Create task data (same struct as map - predicate is a unary function)
@@ -559,7 +563,7 @@ eshkol_tagged_value_t eshkol_parallel_filter(
     }
 
     eshkol_debug("parallel-filter: filtered %zu items to %zu", n, filtered.size());
-    return vector_to_list(filtered, arena);
+    *out_result = vector_to_list(filtered, arena); return;
 }
 
 // ============================================================================
@@ -577,10 +581,11 @@ eshkol_tagged_value_t eshkol_parallel_filter(
  * Each thunk is a zero-argument closure. They are submitted to the thread pool
  * for parallel execution. Results are collected in order and returned as a list.
  */
-eshkol_tagged_value_t eshkol_parallel_execute(
+void eshkol_parallel_execute(
     eshkol_tagged_value_t* thunks_ptr,
     int64_t num_thunks,
-    arena_t* arena)
+    arena_t* arena,
+    eshkol_tagged_value_t* out_result)
 {
     eshkol_debug("parallel-execute: num_thunks=%lld", (long long)num_thunks);
 
@@ -591,18 +596,18 @@ eshkol_tagged_value_t eshkol_parallel_execute(
     null_val.data.raw_val = 0;
 
     if (num_thunks <= 0) {
-        return null_val;
+        *out_result = null_val; return;
     }
 
     if (!thunks_ptr) {
         eshkol_error("parallel-execute: null thunks array");
-        return null_val;
+        *out_result = null_val; return;
     }
 
     // Check if execute worker is registered
     if (!g_parallel_execute_worker) {
         eshkol_error("parallel-execute: execute worker not registered (stdlib not loaded?)");
-        return null_val;
+        *out_result = null_val; return;
     }
 
     size_t n = static_cast<size_t>(num_thunks);
@@ -617,7 +622,7 @@ eshkol_tagged_value_t eshkol_parallel_execute(
     for (size_t i = 0; i < n; ++i) {
         if (thunks_ptr[i].type != ESHKOL_VALUE_CALLABLE) {
             eshkol_error("parallel-execute: argument %zu is not callable (type=%d)", i, thunks_ptr[i].type);
-            return null_val;
+            *out_result = null_val; return;
         }
     }
 
@@ -630,7 +635,7 @@ eshkol_tagged_value_t eshkol_parallel_execute(
         task.closure_flags = static_cast<uint64_t>(thunks_ptr[0].flags);
         task.result_ptr = reinterpret_cast<uint64_t>(&results[0]);
         g_parallel_execute_worker(&task);
-        return vector_to_list(results, arena);
+        *out_result = vector_to_list(results, arena); return;
     }
 
     // Get global thread pool
@@ -646,7 +651,7 @@ eshkol_tagged_value_t eshkol_parallel_execute(
             task.result_ptr = reinterpret_cast<uint64_t>(&results[i]);
             g_parallel_execute_worker(&task);
         }
-        return vector_to_list(results, arena);
+        *out_result = vector_to_list(results, arena); return;
     }
 
     // Create task data and submit to thread pool
@@ -677,7 +682,7 @@ eshkol_tagged_value_t eshkol_parallel_execute(
     }
 
     eshkol_debug("parallel-execute: all %zu thunks completed, building result list", n);
-    return vector_to_list(results, arena);
+    *out_result = vector_to_list(results, arena);
 }
 
 // ============================================================================

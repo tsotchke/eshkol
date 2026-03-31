@@ -231,6 +231,46 @@ llvm::Value* SystemCodegen::currentSeconds(const eshkol_operations_t* op) {
     return tagged_.packInt64(result, true);
 }
 
+llvm::Value* SystemCodegen::currentTime(const eshkol_operations_t* op) {
+    (void)op;
+
+    llvm::Function* gettimeofday_func = function_table_["gettimeofday"];
+    if (!gettimeofday_func) {
+        // Fallback: integer seconds
+        llvm::Function* time_func = function_table_["time"];
+        if (time_func) {
+            llvm::Value* null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+            llvm::Value* secs = ctx_.builder().CreateCall(time_func, {null_ptr});
+            llvm::Value* secs_dbl = ctx_.builder().CreateSIToFP(secs, ctx_.doubleType());
+            return tagged_.packDouble(secs_dbl);
+        }
+        return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+    }
+
+    // struct timeval { int64 tv_sec; int32 tv_usec; int32 padding; }
+    llvm::StructType* timeval_type = llvm::StructType::get(
+        ctx_.context(), {ctx_.int64Type(), ctx_.int32Type(), ctx_.int32Type()});
+
+    llvm::Value* tv_alloca = ctx_.builder().CreateAlloca(timeval_type, nullptr, "timeval");
+    llvm::Value* null_tz = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    ctx_.builder().CreateCall(gettimeofday_func, {tv_alloca, null_tz});
+
+    llvm::Value* sec_ptr = ctx_.builder().CreateStructGEP(timeval_type, tv_alloca, 0);
+    llvm::Value* usec_ptr = ctx_.builder().CreateStructGEP(timeval_type, tv_alloca, 1);
+    llvm::Value* tv_sec = ctx_.builder().CreateLoad(ctx_.int64Type(), sec_ptr);
+    llvm::Value* tv_usec_32 = ctx_.builder().CreateLoad(ctx_.int32Type(), usec_ptr);
+    llvm::Value* tv_usec = ctx_.builder().CreateSExt(tv_usec_32, ctx_.int64Type());
+
+    // seconds = tv_sec + tv_usec / 1000000.0
+    llvm::Value* sec_dbl = ctx_.builder().CreateSIToFP(tv_sec, ctx_.doubleType());
+    llvm::Value* usec_dbl = ctx_.builder().CreateSIToFP(tv_usec, ctx_.doubleType());
+    llvm::Value* frac = ctx_.builder().CreateFDiv(usec_dbl,
+        llvm::ConstantFP::get(ctx_.doubleType(), 1000000.0));
+    llvm::Value* result = ctx_.builder().CreateFAdd(sec_dbl, frac);
+
+    return tagged_.packDouble(result);
+}
+
 llvm::Value* SystemCodegen::currentTimeMs(const eshkol_operations_t* op) {
     (void)op;  // No arguments needed
 

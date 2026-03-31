@@ -42,7 +42,7 @@ Eshkol is a **compiled Scheme dialect** that excels at:
 
 ### 1. Homoiconicity with LLVM Performance
 
-Eshkol preserves the homoiconicity of Scheme's code-as-data property while compiling to native code via LLVM. Every lambda stores its source S-expression in a 32-byte closure structure, enabling runtime introspection without sacrificing execution speed.
+Eshkol preserves the homoiconicity of Scheme's code-as-data property while compiling to native code via LLVM. Every lambda stores its source S-expression in a 40-byte closure structure, enabling runtime introspection without sacrificing execution speed.
 
 **Implementation:**
 ```c
@@ -121,7 +121,7 @@ Escape Analysis Result:
 ### 5. Production Compiler Infrastructure
 
 **LLVM Backend Architecture:**
-- Modular design with 15 specialized codegen components
+- Modular design with 21 specialized codegen modules
 - TypedValue carries LLVM value + runtime type + HoTT type
 - Global arena shared across all functions
 - REPL mode vs standalone executable modes
@@ -258,7 +258,7 @@ The name "Eshkol" (אֶשְׁכּוֹל) means "cluster" in Hebrew, reflecting t
 
 ### 1. Modular Backend Architecture
 
-15 specialized codegen modules instead of monolithic compiler:
+21 specialized codegen modules instead of monolithic compiler:
 - `TaggedValueCodegen` - Pack/unpack 16-byte values
 - `AutodiffCodegen` - Dual numbers and AD graphs
 - `FunctionCodegen` - Closures with environment

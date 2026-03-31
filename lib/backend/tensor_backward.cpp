@@ -20,6 +20,18 @@
 #include <cmath>
 #include <cstdlib>
 
+#ifdef ESHKOL_BLAS_ENABLED
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#else
+#include <cblas.h>
+#endif
+#endif
+
+/* Forward declaration: bridge backward dispatch from lib/bridge/tensor_backward.cpp */
+typedef void (*bridge_backward_fn_t)(ad_node_t*);
+extern "C" bridge_backward_fn_t get_tensor_backward_fn(int node_type);
+
 /* ===== Structural Operations ===== */
 
 extern "C" void eshkol_backward_transpose(
@@ -321,38 +333,20 @@ extern "C" void eshkol_backward_layernorm(
 
 /* ===== Matmul ===== */
 
+/* Dispatched backward matmul — uses BLAS/GPU/SIMD via blas_backend.cpp */
+extern "C" void eshkol_matmul_backward_f64(
+    const double*, const double*, const double*,
+    double*, double*, uint64_t, uint64_t, uint64_t);
+
 extern "C" void eshkol_backward_matmul(
     const double* grad_out,
     const double* saved_A, const double* saved_B,
     double* grad_A, double* grad_B,
     int64_t M, int64_t K, int64_t N)
 {
-    /* Forward: C = A @ B, where A is (M,K), B is (K,N), C is (M,N)
-     * Backward: dA = grad_C @ B^T, dB = A^T @ grad_C */
-
-    /* dA = grad_out @ B^T: (M,N) @ (N,K) -> (M,K) */
-    memset(grad_A, 0, (size_t)(M * K) * sizeof(double));
-    for (int64_t i = 0; i < M; i++) {
-        for (int64_t j = 0; j < K; j++) {
-            double sum = 0.0;
-            for (int64_t n = 0; n < N; n++) {
-                sum += grad_out[i * N + n] * saved_B[j * N + n];
-            }
-            grad_A[i * K + j] = sum;
-        }
-    }
-
-    /* dB = A^T @ grad_out: (K,M) @ (M,N) -> (K,N) */
-    memset(grad_B, 0, (size_t)(K * N) * sizeof(double));
-    for (int64_t j = 0; j < K; j++) {
-        for (int64_t n = 0; n < N; n++) {
-            double sum = 0.0;
-            for (int64_t i = 0; i < M; i++) {
-                sum += saved_A[i * K + j] * grad_out[i * N + n];
-            }
-            grad_B[j * N + n] = sum;
-        }
-    }
+    eshkol_matmul_backward_f64(grad_out, saved_A, saved_B,
+                                grad_A, grad_B,
+                                (uint64_t)M, (uint64_t)K, (uint64_t)N);
 }
 
 /* ===== Attention ===== */
@@ -389,67 +383,81 @@ extern "C" void eshkol_backward_attention(
         return;
     }
 
-    /* d_V = attn^T @ grad_out: (seq_k, seq_q) @ (seq_q, d_v) -> (seq_k, d_v) */
+    /* d_V = attn^T @ grad_out: use dispatched backward matmul pattern
+     * attn is (seq_q, seq_k), grad_out is (seq_q, d_v) → need attn^T @ grad_out = (seq_k, d_v)
+     * This is: eshkol_matmul_backward_f64 treats this as the A^T @ grad_out case */
+#ifdef ESHKOL_BLAS_ENABLED
     memset(grad_V, 0, (size_t)(seq_k * d_v) * sizeof(double));
-    for (int64_t k = 0; k < seq_k; k++) {
-        for (int64_t d = 0; d < d_v; d++) {
-            double sum = 0.0;
-            for (int64_t q = 0; q < seq_q; q++) {
-                sum += saved_attn_weights[q * seq_k + k] *
-                       grad_out[q * d_v + d];
-            }
-            grad_V[k * d_v + d] = sum;
-        }
-    }
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                (int)seq_k, (int)d_v, (int)seq_q,
+                1.0, saved_attn_weights, (int)seq_k,
+                grad_out, (int)d_v,
+                0.0, grad_V, (int)d_v);
+#else
+    memset(grad_V, 0, (size_t)(seq_k * d_v) * sizeof(double));
+    for (int64_t k = 0; k < seq_k; k++)
+        for (int64_t d = 0; d < d_v; d++)
+            for (int64_t q = 0; q < seq_q; q++)
+                grad_V[k * d_v + d] += saved_attn_weights[q * seq_k + k] * grad_out[q * d_v + d];
+#endif
 
     /* d_attn = grad_out @ V^T: (seq_q, d_v) @ (d_v, seq_k) -> (seq_q, seq_k) */
-    for (int64_t q = 0; q < seq_q; q++) {
+#ifdef ESHKOL_BLAS_ENABLED
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                (int)seq_q, (int)seq_k, (int)d_v,
+                1.0, grad_out, (int)d_v,
+                saved_V, (int)d_v,
+                0.0, d_attn, (int)seq_k);
+#else
+    for (int64_t q = 0; q < seq_q; q++)
         for (int64_t k = 0; k < seq_k; k++) {
             double sum = 0.0;
-            for (int64_t d = 0; d < d_v; d++) {
+            for (int64_t d = 0; d < d_v; d++)
                 sum += grad_out[q * d_v + d] * saved_V[k * d_v + d];
-            }
             d_attn[q * seq_k + k] = sum;
         }
-    }
+#endif
 
     /* Softmax backward: d_scores[i][j] = attn[i][j] * (d_attn[i][j] - dot(attn[i], d_attn[i])) */
     for (int64_t q = 0; q < seq_q; q++) {
         double dot = 0.0;
-        for (int64_t k = 0; k < seq_k; k++) {
-            dot += saved_attn_weights[q * seq_k + k] *
-                   d_attn[q * seq_k + k];
-        }
-        for (int64_t k = 0; k < seq_k; k++) {
-            d_scores[q * seq_k + k] =
-                saved_attn_weights[q * seq_k + k] *
-                (d_attn[q * seq_k + k] - dot) * scale;
-        }
+        for (int64_t k = 0; k < seq_k; k++)
+            dot += saved_attn_weights[q * seq_k + k] * d_attn[q * seq_k + k];
+        for (int64_t k = 0; k < seq_k; k++)
+            d_scores[q * seq_k + k] = saved_attn_weights[q * seq_k + k] * (d_attn[q * seq_k + k] - dot) * scale;
     }
 
     /* d_Q = d_scores @ K: (seq_q, seq_k) @ (seq_k, d_k) -> (seq_q, d_k) */
+#ifdef ESHKOL_BLAS_ENABLED
     memset(grad_Q, 0, (size_t)(seq_q * d_k) * sizeof(double));
-    for (int64_t q = 0; q < seq_q; q++) {
-        for (int64_t d = 0; d < d_k; d++) {
-            double sum = 0.0;
-            for (int64_t k = 0; k < seq_k; k++) {
-                sum += d_scores[q * seq_k + k] * saved_K[k * d_k + d];
-            }
-            grad_Q[q * d_k + d] = sum;
-        }
-    }
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                (int)seq_q, (int)d_k, (int)seq_k,
+                1.0, d_scores, (int)seq_k,
+                saved_K, (int)d_k,
+                0.0, grad_Q, (int)d_k);
+#else
+    memset(grad_Q, 0, (size_t)(seq_q * d_k) * sizeof(double));
+    for (int64_t q = 0; q < seq_q; q++)
+        for (int64_t d = 0; d < d_k; d++)
+            for (int64_t k = 0; k < seq_k; k++)
+                grad_Q[q * d_k + d] += d_scores[q * seq_k + k] * saved_K[k * d_k + d];
+#endif
 
     /* d_K = d_scores^T @ Q: (seq_k, seq_q) @ (seq_q, d_k) -> (seq_k, d_k) */
+#ifdef ESHKOL_BLAS_ENABLED
     memset(grad_K, 0, (size_t)(seq_k * d_k) * sizeof(double));
-    for (int64_t k = 0; k < seq_k; k++) {
-        for (int64_t d = 0; d < d_k; d++) {
-            double sum = 0.0;
-            for (int64_t q = 0; q < seq_q; q++) {
-                sum += d_scores[q * seq_k + k] * saved_Q[q * d_k + d];
-            }
-            grad_K[k * d_k + d] = sum;
-        }
-    }
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                (int)seq_k, (int)d_k, (int)seq_q,
+                1.0, d_scores, (int)seq_k,
+                saved_Q, (int)d_k,
+                0.0, grad_K, (int)d_k);
+#else
+    memset(grad_K, 0, (size_t)(seq_k * d_k) * sizeof(double));
+    for (int64_t k = 0; k < seq_k; k++)
+        for (int64_t d = 0; d < d_k; d++)
+            for (int64_t q = 0; q < seq_q; q++)
+                grad_K[k * d_k + d] += d_scores[q * seq_k + k] * saved_Q[q * d_k + d];
+#endif
 
     free(d_attn);
     free(d_scores);
@@ -491,6 +499,13 @@ extern "C" void eshkol_backward_multihead_attention(
 
     /* d_concat = grad_out @ W_O^T: (seq_q, d_model) @ (d_model, d_model) */
     memset(d_concat, 0, concat_size * sizeof(double));
+#ifdef ESHKOL_BLAS_ENABLED
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                (int)seq_q, (int)d_model, (int)d_model,
+                1.0, grad_out, (int)d_model,
+                saved_W_O, (int)d_model,
+                0.0, d_concat, (int)d_model);
+#else
     for (int64_t i = 0; i < seq_q; i++) {
         for (int64_t j = 0; j < d_model; j++) {
             double sum = 0.0;
@@ -501,6 +516,7 @@ extern "C" void eshkol_backward_multihead_attention(
             d_concat[i * d_model + j] = sum;
         }
     }
+#endif
 
     /* Zero output weight gradients */
     memset(grad_WQ, 0, (size_t)(d_model * d_model) * sizeof(double));
@@ -551,7 +567,26 @@ extern "C" void eshkol_backward_multihead_attention(
             continue;
         }
 
-        /* Project Q, K, V through head-specific weight slices */
+        /* Project Q, K, V through head-specific weight slices
+         * head_Q = saved_Q @ W_Q[:, h_offset:h_offset+head_dim]
+         * W_Q is (d_model, d_model) row-major; slice has lda=d_model */
+#ifdef ESHKOL_BLAS_ENABLED
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    (int)seq_q, (int)head_dim, (int)d_model,
+                    1.0, saved_Q, (int)d_model,
+                    saved_W_Q + h_offset, (int)d_model,
+                    0.0, head_Q, (int)head_dim);
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    (int)seq_k, (int)head_dim, (int)d_model,
+                    1.0, saved_K, (int)d_model,
+                    saved_W_K + h_offset, (int)d_model,
+                    0.0, head_K, (int)head_dim);
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    (int)seq_k, (int)head_dim, (int)d_model,
+                    1.0, saved_V, (int)d_model,
+                    saved_W_V + h_offset, (int)d_model,
+                    0.0, head_V, (int)head_dim);
+#else
         for (int64_t i = 0; i < seq_q; i++) {
             for (int64_t d = 0; d < head_dim; d++) {
                 double sum = 0.0;
@@ -582,6 +617,7 @@ extern "C" void eshkol_backward_multihead_attention(
                 head_V[i * head_dim + d] = sum;
             }
         }
+#endif
 
         /* Attention backward for this head */
         eshkol_backward_attention(
@@ -592,7 +628,26 @@ extern "C" void eshkol_backward_multihead_attention(
             seq_q, seq_k, head_dim, head_dim, scale);
 
         /* Accumulate weight gradients:
-         * grad_WQ_h += Q^T @ d_head_Q, etc. */
+         * grad_WQ_h += Q^T @ d_head_Q, etc.
+         * grad_WQ is (d_model, d_model); slice at col h_offset has lda=d_model
+         * beta=1.0 to accumulate across heads */
+#ifdef ESHKOL_BLAS_ENABLED
+        cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    (int)d_model, (int)head_dim, (int)seq_q,
+                    1.0, saved_Q, (int)d_model,
+                    d_head_Q, (int)head_dim,
+                    1.0, grad_WQ + h_offset, (int)d_model);
+        cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    (int)d_model, (int)head_dim, (int)seq_k,
+                    1.0, saved_K, (int)d_model,
+                    d_head_K, (int)head_dim,
+                    1.0, grad_WK + h_offset, (int)d_model);
+        cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    (int)d_model, (int)head_dim, (int)seq_k,
+                    1.0, saved_V, (int)d_model,
+                    d_head_V, (int)head_dim,
+                    1.0, grad_WV + h_offset, (int)d_model);
+#else
         for (int64_t j = 0; j < d_model; j++) {
             for (int64_t d = 0; d < head_dim; d++) {
                 double sum_q = 0.0, sum_k = 0.0, sum_v = 0.0;
@@ -611,8 +666,28 @@ extern "C" void eshkol_backward_multihead_attention(
                 grad_WV[j * d_model + h_offset + d] += sum_v;
             }
         }
+#endif
 
-        /* Backprop through projection: grad_Q += d_head_Q @ W_Q_h^T */
+        /* Backprop through projection: grad_Q += d_head_Q @ W_Q_h^T
+         * d_head_Q is (seq_q, head_dim), W_Q_h slice is (d_model, head_dim) with lda=d_model
+         * Result: (seq_q, d_model), beta=1.0 to accumulate across heads */
+#ifdef ESHKOL_BLAS_ENABLED
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    (int)seq_q, (int)d_model, (int)head_dim,
+                    1.0, d_head_Q, (int)head_dim,
+                    saved_W_Q + h_offset, (int)d_model,
+                    1.0, grad_Q, (int)d_model);
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    (int)seq_k, (int)d_model, (int)head_dim,
+                    1.0, d_head_K, (int)head_dim,
+                    saved_W_K + h_offset, (int)d_model,
+                    1.0, grad_K, (int)d_model);
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    (int)seq_k, (int)d_model, (int)head_dim,
+                    1.0, d_head_V, (int)head_dim,
+                    saved_W_V + h_offset, (int)d_model,
+                    1.0, grad_V, (int)d_model);
+#else
         for (int64_t i = 0; i < seq_q; i++) {
             for (int64_t j = 0; j < d_model; j++) {
                 double sum = 0.0;
@@ -636,6 +711,7 @@ extern "C" void eshkol_backward_multihead_attention(
                 grad_V[i * d_model + j] += sum_v;
             }
         }
+#endif
 
         free(d_head_out);
         free(head_Q);
@@ -1046,6 +1122,40 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         free(grad_weights);
         break;
     }
+
+    /* ===== qLLM Bridge Tensor Ops (67-79) =====
+     * These delegate to the self-contained backward functions in
+     * lib/bridge/tensor_backward.cpp. Each function reads the node's
+     * tensor_value, tensor_gradient, input1/input2 and propagates
+     * gradients internally — no manual buffer management needed.  */
+
+    case AD_NODE_TENSOR_MATMUL:
+    case AD_NODE_TENSOR_SOFTMAX:
+    case AD_NODE_TENSOR_LAYERNORM:
+    case AD_NODE_TENSOR_RMSNORM:
+    case AD_NODE_TENSOR_GELU:
+    case AD_NODE_TENSOR_SILU:
+    case AD_NODE_TENSOR_CROSS_ENTROPY: {
+        /* Use the bridge dispatch table to find the right backward fn */
+        bridge_backward_fn_t fn = get_tensor_backward_fn((int)node->type);
+        if (fn) fn(node);
+        break;
+    }
+
+    /* Tensor bridge ops without dedicated backward (gradient passthrough) */
+    case AD_NODE_TENSOR_ATTENTION:
+    case AD_NODE_TENSOR_TRANSPOSE:
+    case AD_NODE_TENSOR_SUM:
+    case AD_NODE_TENSOR_BROADCAST_ADD:
+    case AD_NODE_TENSOR_BROADCAST_MUL:
+    case AD_NODE_TENSOR_EMBEDDING:
+    case AD_NODE_FRECHET_MEAN:
+        /* These node types don't yet have bridge backward implementations.
+         * get_tensor_backward_fn returns NULL for them, so rather than
+         * calling into a no-op, we explicitly skip. When backward functions
+         * are added to lib/bridge/tensor_backward.cpp, move these cases
+         * into the dispatch group above. */
+        break;
 
     default:
         /* Unhandled tensor op — gradient silently dropped.

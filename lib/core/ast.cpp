@@ -8,6 +8,7 @@
 #include <eshkol/logger.h>
 #include <cstring>
 #include <cstdlib>
+#include <cmath>
 
 void eshkol_ast_clean(eshkol_ast_t *ast)
 {

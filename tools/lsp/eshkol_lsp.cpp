@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <sstream>
 #include <iostream>
 #include <algorithm>
@@ -154,7 +155,7 @@ private:
     double num_val_ = 0;
     std::string str_val_;
     std::vector<JsonValue> arr_val_;
-    std::unordered_map<std::string, JsonValue> obj_val_;
+    std::map<std::string, JsonValue> obj_val_;
 };
 
 // Minimal JSON parser
@@ -477,7 +478,7 @@ private:
             "parallel-execute", "future", "force",
             // System
             "system", "sleep", "exit", "command-line",
-            "current-seconds", "current-time-ms", "current-time-ns",
+            "current-seconds", "current-time", "current-time-ms", "current-time-ns",
             "error", "display", "newline",
             // Environment
             "eval", "apply",

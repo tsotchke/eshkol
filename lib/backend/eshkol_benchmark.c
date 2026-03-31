@@ -15,9 +15,9 @@
 #include <stdint.h>
 #include <time.h>
 
-/* ── Copy architecture from weight_matrices_v3.c ── */
+/* ── Copy architecture from weight_matrices.c ── */
 
-#define D 32
+#define D 36
 #define H 16
 #define HD 2
 #define N_LAYERS 5
@@ -94,11 +94,21 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
             int opcode = prog[pc].op;
             float tos = x[S_TOS], sos = x[S_SOS], r2 = x[S_R2], r3 = x[S_R3];
             if (opcode == OP_DIV) {
-                x[S_TOS] = (tos != 0) ? sos / tos : 0;
-                x[S_SOS] = r2; x[S_R2] = r3; x[S_R3] = 0; x[S_DEPTH] -= 1;
+                if (tos == 0) {
+                    x[S_HALT] = 1;
+                } else {
+                    x[S_TOS] = sos / tos;
+                    x[S_SOS] = r2; x[S_R2] = r3; x[S_R3] = 0; x[S_DEPTH] -= 1;
+                }
             } else if (opcode == OP_MOD) {
-                x[S_TOS] = (tos != 0) ? fmodf(sos, tos) : 0;
-                x[S_SOS] = r2; x[S_R2] = r3; x[S_R3] = 0; x[S_DEPTH] -= 1;
+                if (tos == 0) {
+                    x[S_HALT] = 1;
+                } else {
+                    float r = fmodf(sos, tos);
+                    if (r != 0 && ((r > 0) != (tos > 0))) r += tos;
+                    x[S_TOS] = r;
+                    x[S_SOS] = r2; x[S_R2] = r3; x[S_R3] = 0; x[S_DEPTH] -= 1;
+                }
             } else if (opcode == OP_CONS) {
                 if (g_heap_ptr + 2 <= HEAP_SIZE) {
                     int ptr = g_heap_ptr;
@@ -302,8 +312,8 @@ int main() {
     printf("║  d_model=32, 5 layers, 512 FFN neurons, 272K params       ║\n");
     printf("╚══════════════════════════════════════════════════════════════╝\n\n");
 
-    Weights* w = load_weights("/tmp/interpreter_weights_v3.bin");
-    if (!w) { printf("ERROR: run weight_matrices_v3 first\n"); return 1; }
+    Weights* w = load_weights("/tmp/interpreter_weights.bin");
+    if (!w) { printf("ERROR: run weight_matrices first to generate weights\n"); return 1; }
 
     float out[256];
     BenchResult br;

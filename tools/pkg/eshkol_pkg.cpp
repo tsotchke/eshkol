@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -46,7 +47,7 @@ struct TomlValue {
     double float_val = 0;
     bool bool_val = false;
     std::vector<TomlValue> arr_val;
-    std::unordered_map<std::string, TomlValue> table_val;
+    std::map<std::string, TomlValue> table_val;
 
     TomlValue() : type(String) {}
     explicit TomlValue(const std::string& s) : type(String), str_val(s) {}

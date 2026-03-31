@@ -71,11 +71,11 @@ for test_file in "$PARALLEL_TEST_DIR"/*.esk; do
         # Compilation succeeded, try to run
         if ./a.out > /tmp/parallel_test_output.txt 2>&1; then
             # Check for FAIL markers in output
-            if grep -qi "FAIL" /tmp/parallel_test_output.txt; then
+            if grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]" /tmp/parallel_test_output.txt; then
                 echo -e "${RED}ASSERTION FAIL${NC}"
                 FAILED_TESTS+=("$test_name")
                 ((FAIL++)) || true
-                grep -i "fail" /tmp/parallel_test_output.txt | head -5 | sed 's/^/    /'
+                grep -E "^FAIL:" /tmp/parallel_test_output.txt | head -5 | sed 's/^/    /'
             else
                 echo -e "${GREEN}PASS${NC}"
                 ((PASS++)) || true

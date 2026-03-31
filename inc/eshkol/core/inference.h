@@ -63,6 +63,7 @@ typedef struct eshkol_factor_graph {
     double** msg_fv;           /* Messages from factors to variables */
     double** msg_vf;           /* Messages from variables to factors */
     uint32_t total_messages;   /* Total number of factor-variable edges */
+    bool* observed;            /* observed[i] = true → clamped, skip during BP */
 } eshkol_factor_graph_t;
 
 #ifdef __cplusplus

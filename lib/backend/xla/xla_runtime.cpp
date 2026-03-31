@@ -107,7 +107,8 @@ extern "C" void* eshkol_xla_matmul(
     ensure_gpu_initialized();
 
     // Try GPU dispatch for large matrices
-    if (eshkol_gpu_should_use(M * N)) {
+    int gpu_should = eshkol_gpu_should_use(M * N);
+    if (gpu_should) {
         EshkolGPUBuffer buf_a, buf_b, buf_c;
         if (eshkol_gpu_wrap_host((void*)a_data, M * K * sizeof(double), &buf_a) == 0 &&
             eshkol_gpu_wrap_host((void*)b_data, K * N * sizeof(double), &buf_b) == 0 &&

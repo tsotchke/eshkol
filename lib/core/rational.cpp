@@ -8,6 +8,7 @@
 
 #include <eshkol/core/rational.h>
 #include <eshkol/eshkol.h>
+#include <cmath>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -163,6 +164,21 @@ extern "C" double eshkol_rational_to_double(void* r) {
 
 extern "C" int eshkol_rational_is_integer(void* r) {
     return ((eshkol_rational_t*)r)->denominator == 1;
+}
+
+/* Convert IEEE 754 double to exact rational (R7RS inexact->exact) */
+extern "C" void* eshkol_double_to_rational(void* arena, double d) {
+    if (d == 0.0) return eshkol_rational_create(arena, 0, 1);
+    // Scale by powers of 2 until integer (IEEE doubles have at most 53 binary digits)
+    double abs_d = d < 0 ? -d : d;
+    int64_t den = 1;
+    while (abs_d != __builtin_floor(abs_d) && den < (1LL << 52)) {
+        abs_d *= 2.0;
+        den *= 2;
+    }
+    int64_t num = (int64_t)abs_d;
+    if (d < 0) num = -num;
+    return eshkol_rational_create(arena, num, den);  // auto-reduces via GCD
 }
 
 /* Format rational as "num/denom" string into arena-allocated buffer with string header */

@@ -1,4 +1,4 @@
-# ESHKOL v1.0-FOUNDATION — PRESS INFORMATION SHEET
+# ESHKOL v1.1-ACCELERATE — PRESS INFORMATION SHEET
 
 **For use by journalists and publications preparing coverage**
 
@@ -9,13 +9,13 @@
 | | |
 |---|---|
 | **Product** | Eshkol |
-| **Version** | v1.0-foundation |
-| **Release Date** | December 2025 |
+| **Version** | v1.1-accelerate |
+| **Release Date** | March 27, 2026 |
 | **License** | MIT (open source) |
 | **Website** | https://eshkol.ai |
 | **Source Code** | https://github.com/tsotchke/eshkol |
 | **Company** | Tsotchke Corporation |
-| **Creator** | Tyrell Edward Umbach, CEO and sole engineer |
+| **Creator** | tsotchke |
 | **Company Website** | https://tsotchke.org |
 
 ---
@@ -76,9 +76,9 @@ These are language primitives, not library functions.
 
 ### Native Compilation
 
-- **Backend**: LLVM 10.0+
+- **Backend**: LLVM 17
 - **Targets**: x86-64, ARM64
-- **Platforms**: macOS (Intel and Apple Silicon), Linux
+- **Platforms**: macOS (Intel and Apple Silicon), Linux, Windows (MSYS2/MinGW64)
 - **Output**: Standalone native executables, object files for linking
 - **Startup time**: Sub-50ms (compared to seconds for interpreted alternatives)
 
@@ -118,6 +118,63 @@ No other compiled language maintains this property.
 
 ---
 
+### GPU Acceleration
+
+- Metal backend for Apple Silicon with SF64 software float64 emulation
+- CUDA backend with cuBLAS integration and native float64 compute
+- 5 GPU operations: elementwise, matmul, reduce, softmax, transpose
+- Threshold-based automatic dispatch: SIMD → cBLAS → GPU
+
+---
+
+### XLA Backend
+
+- Dual-mode architecture: StableHLO/MLIR path (when available) + LLVM-direct path (default)
+- 6 core tensor operations: matmul, elementwise, reduce, transpose, broadcast, slice
+- JIT compilation for dynamic shapes via LLVM ORC
+
+---
+
+### Parallel Primitives
+
+- `parallel-map`, `parallel-fold`, `parallel-filter`, `parallel-for-each`
+- `future`, `force`, `future-ready?` for asynchronous computation
+- Work-stealing thread pool scheduler with hardware-aware sizing
+
+---
+
+### Exact Arithmetic
+
+- Arbitrary-precision integers (bignums) with automatic int64 overflow promotion
+- Exact rational numbers with GCD simplification
+- Complete R7RS numeric tower: int64 → bignum → rational → double → complex
+
+---
+
+### Signal Processing
+
+- FFT/IFFT (Cooley-Tukey radix-2)
+- 13 filter functions: Hamming/Hann/Blackman/Kaiser windows, FIR/IIR, Butterworth design
+- Direct and FFT-based convolution
+
+---
+
+### Consciousness Engine
+
+- Logic programming: unification, substitutions, knowledge base
+- Active inference: factor graphs, belief propagation, free energy minimization
+- Global workspace: softmax competition, content broadcasting
+- 22 compiled primitives (native speed, not interpreted)
+
+---
+
+### First-Class Continuations
+
+- `call/cc` and `dynamic-wind` with proper R7RS §6.10 semantics
+- `guard`/`raise` exception handling
+
+---
+
 ## IMPLEMENTATION DETAILS
 
 | | |
@@ -125,21 +182,25 @@ No other compiled language maintains this property.
 | **Compiler written in** | C17 (runtime) + C++20 (compiler) |
 | **Parser** | Recursive descent, 5,487 lines |
 | **Type checker** | Bidirectional Hindley-Milner with HoTT extensions, 1,561 lines |
-| **Codegen** | 19 modular LLVM code generation components |
-| **Test suite** | 200+ tests, all passing |
+| **Codegen** | 21 modular LLVM code generation components |
+| **Test suite** | 434 tests across 35 suites, all passing |
+| **Codebase** | ~232K lines |
+| **Bytecode VM** | 63-opcode VM, ESKB binary format, weight matrix transformer |
 
 **Runtime representation:**
 
 - **Values**: 16-byte tagged structures for cache efficiency
 - **Cons cells**: 32 bytes with complete type information
-- **Closures**: 32 bytes with captured environments and preserved S-expressions
+- **Closures**: 40 bytes with captured environments and preserved S-expressions
 
 ---
 
 ## DEVELOPMENT TOOLS INCLUDED
 
-- **eshkol-run**: Production compiler with executable and object file output
-- **eshkol-repl**: Interactive REPL with LLVM JIT compilation
+- **eshkol-run**: Production compiler with executable, object file, and WebAssembly output
+- **eshkol-repl**: Interactive REPL with LLVM JIT compilation (16 commands, hot reload)
+- **eshkol-pkg**: Package manager with registry, dependency resolution, and versioning
+- **eshkol-lsp**: Language Server Protocol server for IDE integration
 
 **Standard library** (300+ functions implemented in pure Eshkol):
 
@@ -199,10 +260,10 @@ The language was developed to solve real problems encountered in building these 
 
 > "We built Eshkol because the future of computing requires a language that treats mathematical concepts—automatic differentiation, geometric operations, deterministic performance—as fundamental rather than afterthoughts. We're releasing it because researchers and engineers building the next generation of intelligent systems deserve tools designed for this era, not adapted from the last one."
 >
-> — **Tyrell Edward Umbach**, CEO of Tsotchke Corporation
+> — **tsotchke**, CEO of Tsotchke Corporation
 
 ---
-
+ 
 ## ABOUT TSOTCHKE CORPORATION
 
 Tsotchke Corporation develops infrastructure for quantum computing, geometric artificial intelligence, and scientific computing applications.
@@ -246,4 +307,4 @@ Tsotchke Corporation develops infrastructure for quantum computing, geometric ar
 
 ---
 
-*This document may be used freely for preparing news coverage of Eshkol v1.0-foundation.*
+*This document may be used freely for preparing news coverage of Eshkol v1.1-accelerate.*

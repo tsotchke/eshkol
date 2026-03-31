@@ -3,6 +3,16 @@
 ;;;
 ;;; Usage: (require "math/constants")
 
+(provide pi e phi euler-gamma
+         tau pi/2 pi/4 sqrt-pi sqrt-2pi
+         ln2 ln10 log2e log10e
+         sqrt2 sqrt3 sqrt5 inv-sqrt2
+         machine-epsilon double-min double-max epsilon
+         c h hbar elementary-charge k-boltzmann avogadro G
+         m-electron m-proton m-neutron alpha a0 eV
+         deg->rad rad->deg
+         degrees->radians radians->degrees approx= approx-zero?)
+
 ;;; ============================================================
 ;;; Fundamental Constants
 ;;; ============================================================

@@ -95,9 +95,10 @@ void ParallelCodegen::declareParallelMap() {
     args.push_back(ctx_.taggedValueType());  // fn
     args.push_back(ctx_.taggedValueType());  // list
     args.push_back(ctx_.ptrType());          // arena
+    args.push_back(ctx_.ptrType());          // out_result pointer
 
     llvm::FunctionType* func_type = llvm::FunctionType::get(
-        ctx_.taggedValueType(), args, false);
+        ctx_.voidType(), args, false);
 
     parallel_map_func_ = llvm::Function::Create(
         func_type, llvm::Function::ExternalLinkage,
@@ -112,9 +113,10 @@ void ParallelCodegen::declareParallelFold() {
     args.push_back(ctx_.taggedValueType());  // init
     args.push_back(ctx_.taggedValueType());  // list
     args.push_back(ctx_.ptrType());          // arena
+    args.push_back(ctx_.ptrType());          // out_result pointer
 
     llvm::FunctionType* func_type = llvm::FunctionType::get(
-        ctx_.taggedValueType(), args, false);
+        ctx_.voidType(), args, false);
 
     parallel_fold_func_ = llvm::Function::Create(
         func_type, llvm::Function::ExternalLinkage,
@@ -128,9 +130,10 @@ void ParallelCodegen::declareParallelFilter() {
     args.push_back(ctx_.taggedValueType());  // pred
     args.push_back(ctx_.taggedValueType());  // list
     args.push_back(ctx_.ptrType());          // arena
+    args.push_back(ctx_.ptrType());          // out_result pointer
 
     llvm::FunctionType* func_type = llvm::FunctionType::get(
-        ctx_.taggedValueType(), args, false);
+        ctx_.voidType(), args, false);
 
     parallel_filter_func_ = llvm::Function::Create(
         func_type, llvm::Function::ExternalLinkage,
@@ -161,9 +164,10 @@ void ParallelCodegen::declareParallelExecute() {
     args.push_back(ctx_.ptrType());          // thunks array pointer
     args.push_back(ctx_.int64Type());        // num_thunks
     args.push_back(ctx_.ptrType());          // arena
+    args.push_back(ctx_.ptrType());          // out_result pointer
 
     llvm::FunctionType* func_type = llvm::FunctionType::get(
-        ctx_.taggedValueType(), args, false);
+        ctx_.voidType(), args, false);
 
     parallel_execute_func_ = llvm::Function::Create(
         func_type, llvm::Function::ExternalLinkage,
@@ -1928,12 +1932,21 @@ llvm::Value* ParallelCodegen::parallelExecute(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = getArenaPtr();
     if (!arena_ptr) return nullptr;
 
-    // Call C runtime: eshkol_parallel_execute(thunks_ptr, num_thunks, arena)
-    llvm::Value* result = ctx_.builder().CreateCall(parallel_execute_func_, {
+    // Allocate output slot on the stack
+    llvm::Value* result_alloca = ctx_.builder().CreateAlloca(
+        ctx_.taggedValueType(), nullptr, "pexec_result_slot");
+
+    // Call C runtime: eshkol_parallel_execute(thunks_ptr, num_thunks, arena, out_result)
+    ctx_.builder().CreateCall(parallel_execute_func_, {
         array_alloca,
         llvm::ConstantInt::get(ctx_.int64Type(), num_thunks),
-        arena_ptr
-    }, "pexec_result");
+        arena_ptr,
+        result_alloca
+    });
+
+    // Load result from stack slot
+    llvm::Value* result = ctx_.builder().CreateLoad(
+        ctx_.taggedValueType(), result_alloca, "pexec_result");
 
     eshkol_debug("Generated parallel-execute call for %d thunks", num_thunks);
     return result;

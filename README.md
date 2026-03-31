@@ -4,7 +4,7 @@
 Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning research. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.0--foundation-green.svg)](RELEASE_NOTES.md)
+[![Version](https://img.shields.io/badge/version-v1.1.11--accelerate-green.svg)](RELEASE_NOTES.md)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
 
 ---
@@ -135,7 +135,7 @@ Eshkol is implemented as a **production compiler** written in C17/C++20, utilizi
 
 - **Recursive descent parser** with comprehensive macro expansion (syntax-rules)
 - **HoTT type checker** with bidirectional inference and dependent type support
-- **Modular LLVM backend** with 20+ specialized code generation components
+- **Modular LLVM backend** with 21 specialized code generation components
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state
 
@@ -202,10 +202,10 @@ Performs **compile-time AST transformation** for symbolic differentiation with a
 
 ### Core Scheme Compatibility
 
-Eshkol implements **R5RS-compatible Scheme** with modern extensions:
+Eshkol implements **R7RS-compatible Scheme** with modern extensions:
 
-- **39 special forms**: `define`, `lambda`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`match`, `quote`/`quasiquote`
-- **300+ built-in functions**: Complete numeric tower, list operations, string manipulation, I/O
+- **39 special forms**: `define`, `lambda`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`match`, `quote`/`quasiquote`, `guard`/`raise`, `call/cc`, `dynamic-wind`
+- **550+ built-in functions**: Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins
 - **Hygienic macros**: Full `syntax-rules` implementation with pattern matching
 - **Lexical closures**: First-class functions with captured environment support
 - **Tail call optimization**: Direct elimination and trampoline-based constant-stack recursion
@@ -436,8 +436,9 @@ Dependent types enable **compile-time verification** of array bounds, matrix dim
 ### Prerequisites
 
 - **CMake** 3.14+ (build system)
-- **LLVM** 10.0+ (backend and JIT)
-- **C17/C++20 compiler** (GCC 8+, Clang 6+)
+- **LLVM** 17 (backend and JIT)
+- **C17/C++20 compiler** (GCC 11+, Clang 14+)
+- **Ninja** (recommended build tool)
 - **Readline** (optional, for REPL enhancements)
 
 ### Build from Source
@@ -508,24 +509,44 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **Lexical scoping** with proper closures and captured environments
 - **Proper tail calls** with direct elimination and trampoline support  
 - **Hygienic macros** via syntax-rules with pattern matching
-- **Delimited continuations** (planned for v1.1)
+- **First-class continuations** (`call/cc`, `dynamic-wind`)
 - **R7RS compatibility** for core semantics and standard procedures
 
 ### Mathematical Computing Extensions
 
 - **N-dimensional tensors** with element-wise operations and broadcasting
-- **Linear algebra**: LU decomposition, Gauss-Jordan elimination, eigenvalue estimation
-- **Numerical methods**: Simpson's integration, Newton-Raphson root finding
+- **Linear algebra**: LU decomposition, QR, SVD, Cholesky, eigenvalue estimation
+- **Numerical methods**: Simpson's integration, Newton-Raphson root finding, ODE solvers (Euler, RK4)
 - **Vector field analysis**: divergence, curl, Laplacian operators
-- **Statistical functions**: variance, covariance, correlation analysis
+- **Statistical functions**: variance, covariance, correlation, distributions
+- **Signal processing**: FFT/IFFT, window functions (Hamming, Hann, Blackman, Kaiser), FIR/IIR filters, Butterworth design
+
+### Machine Learning (v1.1)
+
+- **75+ ML builtins**: activations, losses, optimizers, CNN layers, transformer ops, training utilities
+- **Weight initialization**: Xavier, Kaiming, LeCun (uniform and normal variants)
+- **Training utilities**: learning rate schedulers, gradient clipping, dataloader
+- **Optimization algorithms**: gradient descent, Adam, L-BFGS, conjugate gradient
+
+### v1.1-accelerate Features
+
+- **GPU acceleration**: Metal (Apple Silicon) with SF64 software float64, CUDA (NVIDIA)
+- **Parallel primitives**: `parallel-map`, `parallel-fold`, `parallel-filter`, `future`/`force`
+- **Exact arithmetic**: Arbitrary-precision integers (bignums), rational numbers, R7RS numeric tower
+- **Consciousness engine**: Logic programming, factor graphs with belief propagation, global workspace
+- **First-class continuations**: `call/cc`, `dynamic-wind`, `guard`/`raise`
+- **Dual backend**: Bytecode VM (63 opcodes, ESKB format) alongside LLVM native compiler
+- **Windows support**: Native MSYS2/MinGW64 build with UTF-8 REPL and DLL bundling
 
 ### Modern Language Features
 
 - **Pattern matching** with algebraic data type support
-- **Module system** with dependency resolution and namespace management
+- **Module system** with dependency resolution, package manager (`eshkol-pkg`)
 - **Exception handling** via `guard`/`raise` with typed exception hierarchies
 - **Multiple return values** with destructuring assignment
 - **Hash tables** with generic key/value types and O(1) average access
+- **Records** via `define-record-type` (R7RS)
+- **Bytevectors** for binary data (R7RS 6.9)
 
 ---
 
@@ -538,7 +559,7 @@ The **REPL** provides full compilation and execution via LLVM JIT:
 ```
 $ eshkol-repl
 
-Welcome to Eshkol REPL v1.0.0-foundation
+Welcome to Eshkol REPL v1.1.11-accelerate
 Type :help for commands, :quit to exit
 
 eshkol> (define (f x) (* x x x))
@@ -557,13 +578,18 @@ Loaded 15 expressions from my-program.esk
 
 ### Standard Library
 
-**Comprehensive mathematical libraries** implemented in pure Eshkol:
+**Comprehensive libraries** implemented in pure Eshkol:
 
 - `core.functional.*`: composition, currying, combinators
 - `core.list.*`: higher-order functions, transformations, queries
 - `core.data.*`: JSON, CSV, Base64 parsing and serialization
 - `core.strings.*`: 30+ string manipulation utilities
-- `math.esk`: Linear algebra, numerical methods, statistics
+- `math.*`: special functions (Bessel, Gamma, Beta), constants, ODE solvers
+- `signal.*`: FFT/IFFT, window functions, FIR/IIR filters, Butterworth design
+- `ml.*`: optimization algorithms (Adam, L-BFGS), activations, normalization
+- `random.*`: PRNG, distributions, quantum-inspired RNG
+- `web.*`: WASM/DOM API (80+ functions), HTTP
+- `tensor.*`: shape manipulation, stacking utilities
 
 ### Build System Integration
 
@@ -629,25 +655,25 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 
 ## Future Directions
 
-### Version 1.1 (Q1 2026): Complete Type Enforcement
-- Full HoTT type checking with compile-time errors
-- Dependent type refinement with theorem proving
-- Linear resource verification with effect tracking
+### Version 1.1 (Q1 2026): Performance Acceleration — COMPLETED
+- XLA backend, SIMD vectorization, GPU acceleration (Metal/CUDA)
+- Parallel primitives, arbitrary-precision arithmetic, consciousness engine
+- Full R7RS extensions (call/cc, dynamic-wind, bytevectors)
 
-### Version 1.2 (Q2 2026): Quantum Computing Integration  
-- Native quantum types with no-cloning enforcement
-- Quantum circuit compilation to hardware backends
-- Quantum-classical hybrid algorithm support
+### Version 1.2 (Q2 2026): Scale
+- Distributed computing and multi-GPU support
+- Model serialization and ONNX export
+- Advanced neural network primitives (convolution, attention)
 
-### Version 1.5 (Q3 2026): Neuro-Symbolic AI
-- Logic programming integration (miniKanren-style)
-- Knowledge base representation and reasoning
+### Version 1.5 (Q3 2026): Intelligence
+- Advanced neuro-symbolic integration
+- Constraint solving and neural-guided symbolic search
 - Differentiable programming with symbolic constraints
 
-### Version 2.0+ (Q4 2026): Multimedia Computing
-- Real-time audio/video processing with zero-copy semantics
-- GPU compute integration with memory safety
-- Hardware I/O with resource lifetime management
+### Version 2.0+ (Q4 2026+): Quantum & Beyond
+- Quantum circuit compilation and hybrid algorithms
+- Full dependent type enforcement and formal verification
+- Whole-program and polyhedral optimization
 
 ---
 
@@ -681,8 +707,8 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 @software{eshkol2025,
   title = {Eshkol: A Programming Language for Mathematical Computing},
   author = {tsotchke},
-  version = {1.0.0-foundation},
-  year = {2025},
+  version = {1.1.11-accelerate},
+  year = {2026},
   url = {https://github.com/tsotchke/eshkol},
   note = {Scheme-based language with native automatic differentiation}
 }
@@ -693,12 +719,12 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 ## Technical Specifications
 
 - **Language**: C17 runtime, C++20 compiler implementation
-- **Backend**: LLVM 10.0+ with native code generation and JIT support
+- **Backend**: LLVM 17 with native code generation and JIT support
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: 300+ comprehensive tests with automated verification
-- **Platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (WSL)
+- **Testing**: 434 tests across 35 suites with automated verification
+- **Platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (MSYS2/MinGW64)
 
 ---
 

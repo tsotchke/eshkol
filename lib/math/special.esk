@@ -3,6 +3,12 @@
 ;;;
 ;;; Usage: (require "math/special")
 
+(provide gamma lgamma factorial beta digamma
+         erf erfc erfinv normcdf normpdf
+         besselj0 besselj1 besseljn
+         gammainc-lower gammainc-upper
+         zeta expint-e1)
+
 ;;; ============================================================
 ;;; Constants for Approximations
 ;;; ============================================================

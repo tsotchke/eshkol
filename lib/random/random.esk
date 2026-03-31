@@ -6,6 +6,15 @@
 ;;;
 ;;; Usage: (require "random")
 
+(provide random-float random-int random-bool random-choice
+         qrandom qrandom-int qrandom-bool qrandom-choice
+         uniform quniform normal-pair normal exponential poisson
+         bernoulli geometric binomial
+         random-tensor random-normal-tensor random-vector
+         random-uniform-vector random-normal-vector
+         shuffle sample weighted-choice
+         set-random-seed! current-time-seed randomize!)
+
 ;;; Dependencies from core library
 (require core.list.convert)   ;; list->vector, vector->list
 (require core.list.search)    ;; list-ref

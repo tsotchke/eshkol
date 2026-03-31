@@ -189,7 +189,7 @@ struct ModuleNode {
 
 **File:** `lib/backend/llvm_codegen.cpp`
 
-The backend is organized into 15 specialized modules rather than monolithic generation:
+The backend is organized into 21 specialized modules rather than monolithic generation:
 
 ```cpp
 class EshkolLLVMCodeGen {
@@ -697,7 +697,7 @@ return result;
 
 ### 5.1 Closure Structure
 
-**Runtime Layout (24 bytes + environment):**
+**Runtime Layout (40 bytes):**
 ```c
 struct eshkol_closure {
     uint64_t func_ptr;              // Function pointer

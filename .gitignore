@@ -1,8 +1,22 @@
 # Build directories
 build/
+build-debug/
 build-x86/
 build-test/
 dist/
+
+# Reference PDFs (large binary files)
+*.pdf
+
+# Tool artifacts
+.codex_edit_access
+
+# Proprietary / unreleased
+lib/tsotchke/
+examples/agent.esk
+examples/consciousness_grr_inference.esk
+examples/consciousness_inference.esk
+examples/consciousness_model_analysis.esk
 
 # Environment and secrets
 .env
@@ -74,6 +88,8 @@ math_test_outputs/
 *.bak*
 *.backup
 a.out
+*.out
+*.bc
 
 # Test artifacts (root-level)
 *_test.txt

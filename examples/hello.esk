@@ -1,0 +1,3 @@
+;; Hello World — Basic Eshkol example
+(display "Hello, Eshkol!") (newline)
+(display "Version: v1.1-accelerate") (newline)

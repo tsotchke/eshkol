@@ -8,8 +8,9 @@
 class Eshkol < Formula
   desc "Functional programming language with HoTT types and autodiff"
   homepage "https://eshkol.ai"
-  url "https://github.com/tsotchke/eshkol/archive/v1.0.1.1.tar.gz"
-  sha256 "cbddc4867e15ba915bf362cfa84124b131f2ef645dd72f0b646116c249844b29"
+  url "https://github.com/tsotchke/eshkol/archive/v1.1.0.tar.gz"
+  # sha256 will be updated when the release tarball is published
+  sha256 ""
   license "MIT"
   head "https://github.com/tsotchke/eshkol.git", branch: "master"
 
@@ -67,6 +68,14 @@ class Eshkol < Formula
     # Install library source files
     (share/"eshkol").install "lib/stdlib.esk"
     (share/"eshkol/core").install Dir["lib/core/*"] if Dir.exist?("lib/core")
+    (share/"eshkol/math").install Dir["lib/math/*"] if Dir.exist?("lib/math")
+    (share/"eshkol").install "lib/math.esk" if File.exist?("lib/math.esk")
+    (share/"eshkol/signal").install Dir["lib/signal/*"] if Dir.exist?("lib/signal")
+    (share/"eshkol/ml").install Dir["lib/ml/*"] if Dir.exist?("lib/ml")
+    (share/"eshkol/random").install Dir["lib/random/*"] if Dir.exist?("lib/random")
+    (share/"eshkol/web").install Dir["lib/web/*"] if Dir.exist?("lib/web")
+    (share/"eshkol/tensor").install Dir["lib/tensor/*"] if Dir.exist?("lib/tensor")
+    (share/"eshkol/quantum").install Dir["lib/quantum/*"] if Dir.exist?("lib/quantum")
   end
 
   def caveats

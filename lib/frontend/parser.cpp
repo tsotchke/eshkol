@@ -535,6 +535,7 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "set!") return ESHKOL_SET_OP;
     if (op == "import") return ESHKOL_IMPORT_OP;
     if (op == "require") return ESHKOL_REQUIRE_OP;  // module system: (require module.name ...)
+    if (op == "load") return ESHKOL_REQUIRE_OP;     // R7RS load: alias for require with file path
     if (op == "provide") return ESHKOL_PROVIDE_OP;  // module system: (provide name1 name2 ...)
     // Memory management operators (OALR - Ownership-Aware Lexical Regions)
     if (op == "with-region") return ESHKOL_WITH_REGION_OP;
@@ -584,6 +585,7 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "make-factor-graph") return ESHKOL_MAKE_FACTOR_GRAPH_OP;
     if (op == "fg-add-factor!") return ESHKOL_FG_ADD_FACTOR_OP;
     if (op == "fg-infer!") return ESHKOL_FG_INFER_OP;
+    if (op == "fg-observe!") return ESHKOL_FG_OBSERVE_OP;
     if (op == "free-energy") return ESHKOL_FREE_ENERGY_OP;
     if (op == "expected-free-energy") return ESHKOL_EXPECTED_FREE_ENERGY_OP;
     // Global workspace operations
@@ -5628,8 +5630,52 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
                 
                 if (dimensions.empty()) {
-                    eshkol_error("tensor requires at least one dimension");
-                    ast.type = ESHKOL_INVALID;
+                    // No integer dimensions found — treat as 1D tensor from elements
+                    // (tensor 1.0 2.0 3.0) → 1D tensor [1.0, 2.0, 3.0]
+                    std::vector<eshkol_ast_t> tensor_elements;
+
+                    // First non-integer token is the first element
+                    if (token.type != TOKEN_RPAREN && token.type != TOKEN_EOF) {
+                        eshkol_ast_t element;
+                        if (token.type == TOKEN_LPAREN) {
+                            element = parse_list(tokenizer);
+                        } else {
+                            element = parse_atom(token);
+                        }
+                        tensor_elements.push_back(element);
+                    }
+
+                    // Parse remaining elements
+                    while (true) {
+                        token = tokenizer.nextToken();
+                        if (token.type == TOKEN_RPAREN) break;
+                        if (token.type == TOKEN_EOF) {
+                            eshkol_error("Unexpected end of input in tensor literal");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+                        eshkol_ast_t element;
+                        if (token.type == TOKEN_LPAREN) {
+                            element = parse_list(tokenizer);
+                        } else {
+                            element = parse_atom(token);
+                        }
+                        tensor_elements.push_back(element);
+                    }
+
+                    // Set up as 1D tensor
+                    ast.operation.tensor_op.num_dimensions = 1;
+                    ast.operation.tensor_op.dimensions = new uint64_t[1];
+                    ast.operation.tensor_op.dimensions[0] = tensor_elements.size();
+                    ast.operation.tensor_op.total_elements = tensor_elements.size();
+                    if (ast.operation.tensor_op.total_elements > 0) {
+                        ast.operation.tensor_op.elements = new eshkol_ast_t[ast.operation.tensor_op.total_elements];
+                        for (size_t i = 0; i < ast.operation.tensor_op.total_elements; i++) {
+                            ast.operation.tensor_op.elements[i] = tensor_elements[i];
+                        }
+                    } else {
+                        ast.operation.tensor_op.elements = nullptr;
+                    }
                     return ast;
                 }
                 
@@ -5894,21 +5940,65 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            // Check for closing paren
+            // Check for closing paren or additional point arguments
+            // Supports: (gradient f x), (gradient f x y), (gradient f x y z ...)
+            // Multiple args are packed into #(x y z ...) tensor for the codegen.
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing parenthesis after gradient arguments");
-                ast.type = ESHKOL_INVALID;
-                return ast;
+                // Multi-argument gradient: (gradient f x y ...) → (gradient f #(x y ...))
+                // Collect all remaining arguments
+                std::vector<eshkol_ast_t> point_args;
+                point_args.push_back(point);  // First point arg already parsed
+
+                // Parse the current token and any remaining args
+                eshkol_ast_t next_arg;
+                if (close_token.type == TOKEN_LPAREN) {
+                    next_arg = parse_list(tokenizer);
+                } else {
+                    next_arg = parse_atom(close_token);
+                }
+                point_args.push_back(next_arg);
+
+                while (true) {
+                    Token t = tokenizer.nextToken();
+                    if (t.type == TOKEN_RPAREN) break;
+                    if (t.type == TOKEN_EOF) {
+                        eshkol_error("Unterminated gradient expression");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    eshkol_ast_t arg;
+                    if (t.type == TOKEN_LPAREN) {
+                        arg = parse_list(tokenizer);
+                    } else {
+                        arg = parse_atom(t);
+                    }
+                    point_args.push_back(arg);
+                }
+
+                // Build tensor literal #(x y z ...) from the collected args.
+                // The gradient codegen detects tensor inputs and uses forward-mode AD
+                // with proper multi-parameter function call unpacking.
+                eshkol_ast_t tensor_point;
+                tensor_point.type = ESHKOL_TENSOR;
+                tensor_point.tensor_val.total_elements = point_args.size();
+                tensor_point.tensor_val.num_dimensions = 1;
+                tensor_point.tensor_val.dimensions = new uint64_t[1];
+                tensor_point.tensor_val.dimensions[0] = point_args.size();
+                tensor_point.tensor_val.elements = new eshkol_ast_t[point_args.size()];
+                for (size_t i = 0; i < point_args.size(); i++) {
+                    tensor_point.tensor_val.elements[i] = point_args[i];
+                }
+                point = tensor_point;
             }
 
-            // Set up gradient operation (2-argument form)
+            // Set up gradient operation (2-argument form, point may be packed tensor)
             ast.operation.gradient_op.function = new eshkol_ast_t;
             *ast.operation.gradient_op.function = function;
-            
+
             ast.operation.gradient_op.point = new eshkol_ast_t;
             *ast.operation.gradient_op.point = point;
-            
+
             return ast;
         }
         
@@ -6485,12 +6575,22 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
-                if (token.type != TOKEN_SYMBOL) {
+                if (token.type == TOKEN_STRING) {
+                    // (load "path/to/file.esk") — convert file path to module name
+                    std::string path = token.value;
+                    // Strip .esk suffix if present
+                    if (path.size() > 4 && path.substr(path.size() - 4) == ".esk")
+                        path = path.substr(0, path.size() - 4);
+                    // Convert / to . for module resolution
+                    for (char& c : path) { if (c == '/') c = '.'; }
+                    modules.push_back(path);
+                } else if (token.type != TOKEN_SYMBOL) {
                     eshkol_error("require expects symbolic module names (e.g., data.json)");
                     ast.type = ESHKOL_INVALID;
                     return ast;
+                } else {
+                    modules.push_back(token.value);
                 }
-                modules.push_back(token.value);
             }
 
             if (modules.empty()) {

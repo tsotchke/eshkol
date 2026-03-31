@@ -1,0 +1,19 @@
+;; Automatic Differentiation — Forward and reverse mode
+;; Demonstrates Eshkol's compiler-integrated AD
+
+;; Forward-mode: derivative of f(x) = x^3 at x=2
+(define f (lambda (x) (* x x x)))
+(define df (derivative f 2.0))
+(display "d/dx(x^3) at x=2: ") (display df) (newline)
+;; Expected: 12.0 (3*x^2 = 3*4 = 12)
+
+;; Reverse-mode: gradient of g(x) = x^3 + 2x at x=3
+(define g (lambda (x) (+ (* x (* x x)) (* 2.0 x))))
+(define grad-g (gradient g 3.0))
+(display "grad(x^3+2x) at x=3: ") (display grad-g) (newline)
+;; Expected: 29.0 (3x^2 + 2 = 27 + 2 = 29)
+
+;; Higher-order: create a derivative function
+(define df-func (derivative f))
+(display "d/dx(x^3) at x=5: ") (display (df-func 5.0)) (newline)
+;; Expected: 75.0 (3*25 = 75)

@@ -11,7 +11,7 @@
 #define ESHKOL_VERSION_MAJOR 1
 #define ESHKOL_VERSION_MINOR 1
 #define ESHKOL_VERSION_PATCH 0
-#define ESHKOL_VERSION_STRING "1.1.0-acceleration"
+#define ESHKOL_VERSION_STRING "1.1.0-accelerate"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -713,6 +713,22 @@ typedef enum {
     AD_NODE_EXP2,
     AD_NODE_CBRT,
 
+    // Tensor AD nodes for qLLM bridge (67-79)
+    AD_NODE_TENSOR_MATMUL = 67,       // dL/dA = dL/dC @ B^T, dL/dB = A^T @ dL/dC
+    AD_NODE_TENSOR_SOFTMAX,            // Jacobian-vector product
+    AD_NODE_TENSOR_LAYERNORM,          // Chain rule through mean/variance
+    AD_NODE_TENSOR_RMSNORM,            // Chain rule through RMS
+    AD_NODE_TENSOR_ATTENTION,          // 5-step chain rule through scaled dot-product
+    AD_NODE_TENSOR_GELU,               // GELU backward
+    AD_NODE_TENSOR_SILU,               // SiLU/Swish backward
+    AD_NODE_TENSOR_TRANSPOSE,          // Permutation backward
+    AD_NODE_TENSOR_SUM,                // Broadcast backward
+    AD_NODE_TENSOR_BROADCAST_ADD,      // Sum-reduce backward
+    AD_NODE_TENSOR_BROADCAST_MUL,      // Product-rule backward
+    AD_NODE_TENSOR_EMBEDDING,          // Sparse update backward
+    AD_NODE_TENSOR_CROSS_ENTROPY,      // Numerically stable backward
+    AD_NODE_FRECHET_MEAN,              // Riemannian center of mass backward
+
     // Sentinel for bounds checking
     AD_NODE_TYPE_COUNT
 } ad_node_type_t;
@@ -1404,6 +1420,7 @@ typedef enum {
     ESHKOL_WS_REGISTER_OP,            // (ws-register! ws name module) -> void
     ESHKOL_WS_STEP_OP,                // (ws-step! ws) -> broadcast-content
     ESHKOL_FG_UPDATE_CPT_OP,          // (fg-update-cpt! fg factor-idx new-cpt) -> fg
+    ESHKOL_FG_OBSERVE_OP,             // (fg-observe! fg var-id observed-state) -> bool
     ESHKOL_LOGIC_VAR_PRED_OP,         // (logic-var? x) -> bool
     ESHKOL_SUBSTITUTION_PRED_OP,      // (substitution? x) -> bool
     ESHKOL_KB_PRED_OP,                // (kb? x) -> bool

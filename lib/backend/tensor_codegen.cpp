@@ -18,6 +18,14 @@
 #include <eshkol/backend/cpu_features.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/Config/llvm-config.h>
+
+// LLVM VERSION COMPATIBILITY
+#if LLVM_VERSION_MAJOR >= 18
+#define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getOrInsertDeclaration(mod, id, types)
+#else
+#define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getDeclaration(mod, id, types)
+#endif
 
 #ifdef ESHKOL_XLA_ENABLED
 #include <eshkol/backend/xla/xla_codegen.h>
@@ -485,14 +493,16 @@ llvm::Value* TensorCodegen::vectorRef(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
-    // tensor-set: (tensor-set tensor value index1 index2 ...)
+    // tensor-set!: (tensor-set! tensor index1 index2 ... value)
+    // R7RS-style: value is the LAST argument (matches vector-set!)
     if (op->call_op.num_vars < 3) {
-        eshkol_error("tensor-set requires at least tensor, value, and one index");
+        eshkol_error("tensor-set! requires at least tensor, index, and value");
         return nullptr;
     }
 
     llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
-    llvm::Value* new_value = codegenAST(&op->call_op.variables[1]);
+    // Value is the LAST argument
+    llvm::Value* new_value = codegenAST(&op->call_op.variables[op->call_op.num_vars - 1]);
     if (!tensor_val || !new_value) return nullptr;
 
     // Extract the tensor pointer from the tagged value
@@ -518,6 +528,7 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
     llvm::Value* total_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 3);
     llvm::Value* total_elements = ctx_.builder().CreateLoad(ctx_.int64Type(), total_field_ptr);
 
+    // Indices are variables[1] through variables[num_vars-2] (last is value)
     const uint64_t num_set_indices = op->call_op.num_vars - 2;
 
     // Guard: num_indices must not exceed ndim
@@ -543,10 +554,10 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
         ctx_.builder().SetInsertPoint(idx_ok);
     }
 
-    // Calculate linear index
+    // Calculate linear index (indices are variables[1..num_vars-2])
     llvm::Value* stride = llvm::ConstantInt::get(ctx_.int64Type(), 1);
     for (int64_t i = static_cast<int64_t>(num_set_indices) - 1; i >= 0; i--) {
-        llvm::Value* index = codegenAST(&op->call_op.variables[i + 2]);
+        llvm::Value* index = codegenAST(&op->call_op.variables[i + 1]);
         if (index) {
             llvm::Value* idx_int = tagged_.safeExtractInt64(index);
             llvm::Value* contribution = ctx_.builder().CreateMul(idx_int, stride);
@@ -583,9 +594,11 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
         ctx_.builder().SetInsertPoint(bounds_ok);
     }
 
-    // Store new value at linear index
+    // Store new value at linear index — tensor stores doubles as int64 bitpatterns
     llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_elements_ptr, linear_index);
-    ctx_.builder().CreateStore(new_value, elem_ptr);
+    llvm::Value* val_double = extractAsDouble(new_value);
+    llvm::Value* val_bits = ctx_.builder().CreateBitCast(val_double, ctx_.int64Type());
+    ctx_.builder().CreateStore(val_bits, elem_ptr);
 
     return tensor_ptr_int; // Return the tensor
 }
@@ -3246,7 +3259,7 @@ llvm::Value* TensorCodegen::tensorSigmoid(const eshkol_operations_t* op) {
     const bool use_simd = (SIMD_WIDTH > 1 && vec_type != nullptr);
 
     // Scalar exp intrinsic (for tail loop)
-    llvm::Function* exp_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* exp_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::exp, {ctx_.doubleType()});
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -3279,9 +3292,9 @@ llvm::Value* TensorCodegen::tensorSigmoid(const eshkol_operations_t* op) {
         llvm::Value* x_vec = builder.CreateAlignedLoad(vec_type, src_vec_ptr, llvm::MaybeAlign(8), "sig_x_vec");
 
         // Vector intrinsics
-        llvm::Function* exp_vec_func = llvm::Intrinsic::getOrInsertDeclaration(
+        llvm::Function* exp_vec_func = ESHKOL_GET_INTRINSIC(
             &ctx_.module(), llvm::Intrinsic::exp, {vec_type});
-        llvm::Function* fabs_vec_func = llvm::Intrinsic::getOrInsertDeclaration(
+        llvm::Function* fabs_vec_func = ESHKOL_GET_INTRINSIC(
             &ctx_.module(), llvm::Intrinsic::fabs, {vec_type});
 
         // Numerically stable sigmoid: avoid computing exp(large positive)
@@ -3327,7 +3340,7 @@ llvm::Value* TensorCodegen::tensorSigmoid(const eshkol_operations_t* op) {
 
     // Numerically stable sigmoid: avoid computing exp(large positive)
     // exp_neg_abs = exp(-|x|) — argument always <= 0, no overflow
-    llvm::Function* fabs_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* fabs_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::fabs, {ctx_.doubleType()});
     llvm::Value* abs_x = builder.CreateCall(fabs_func, {x}, "sig_abs_x");
     llvm::Value* neg_abs_x = builder.CreateFNeg(abs_x, "sig_neg_abs");
@@ -3437,7 +3450,7 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
     llvm::Value* result_elems = builder.CreateCall(sm_arena_alloc, {arena_ptr, elems_size}, "sm_elems");
 
-    llvm::Function* exp_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* exp_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::exp, {ctx_.doubleType()});
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -3510,7 +3523,7 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
         llvm::Value* x_vec = builder.CreateAlignedLoad(sm_vec_type, src_vec_ptr, llvm::MaybeAlign(8), "sm_x_vec");
         llvm::Value* shifted_vec = builder.CreateFSub(x_vec, max_vec, "sm_shifted_vec");
 
-        llvm::Function* exp_vec_func = llvm::Intrinsic::getOrInsertDeclaration(
+        llvm::Function* exp_vec_func = ESHKOL_GET_INTRINSIC(
             &ctx_.module(), llvm::Intrinsic::exp, {sm_vec_type});
         llvm::Value* exp_vec = builder.CreateCall(exp_vec_func, {shifted_vec}, "sm_exp_vec");
 
@@ -3674,7 +3687,7 @@ llvm::Value* TensorCodegen::tensorGelu(const eshkol_operations_t* op) {
     const bool use_simd = (SIMD_WIDTH > 1 && vec_type != nullptr);
 
     // Scalar exp intrinsic (for tail loop)
-    llvm::Function* exp_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* exp_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::exp, {ctx_.doubleType()});
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -3733,7 +3746,7 @@ llvm::Value* TensorCodegen::tensorGelu(const eshkol_operations_t* op) {
         // arg = sqrt(2/π) * inner
         llvm::Value* arg_vec = builder.CreateFMul(sqrt2pi_vec, inner_vec, "gelu_arg_vec");
         // tanh(arg) via (exp(2*arg) - 1) / (exp(2*arg) + 1)
-        llvm::Function* exp_vec_func = llvm::Intrinsic::getOrInsertDeclaration(
+        llvm::Function* exp_vec_func = ESHKOL_GET_INTRINSIC(
             &ctx_.module(), llvm::Intrinsic::exp, {vec_type});
         llvm::Value* two_arg_vec = builder.CreateFMul(two_vec, arg_vec, "gelu_2arg_vec");
         llvm::Value* exp_2arg_vec = builder.CreateCall(exp_vec_func, {two_arg_vec}, "gelu_exp_vec");
@@ -7859,6 +7872,225 @@ llvm::Value* TensorCodegen::tensor(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(tensor_ptr);
 }
 
+llvm::Value* TensorCodegen::makeTensor(const eshkol_operations_t* op) {
+    // make-tensor: Two modes:
+    //   (make-tensor shape fill_value) - create tensor with given shape filled with fill_value
+    //   (make-tensor e1 e2 e3 ...)    - create 1D tensor from elements (falls back to tensor())
+    if (op->call_op.num_vars < 1) {
+        eshkol_error("make-tensor requires at least 1 argument");
+        return nullptr;
+    }
+
+    // If not exactly 2 args, fall back to element-literal mode
+    if (op->call_op.num_vars != 2) {
+        return tensor(op);
+    }
+
+    // 2 args: (make-tensor shape fill_value)
+    // First arg is shape (list of dimensions), second is fill value
+    auto& builder = ctx_.builder();
+
+    llvm::Value* shape_arg = codegenAST(&op->call_op.variables[0]);
+    if (!shape_arg) return nullptr;
+
+    llvm::Value* fill_arg = codegenAST(&op->call_op.variables[1]);
+    if (!fill_arg) return nullptr;
+
+    // Extract fill value as double → int64 bit pattern
+    llvm::Value* fill_double;
+    if (fill_arg->getType() == ctx_.taggedValueType()) {
+        fill_double = extractAsDouble(fill_arg);
+    } else if (fill_arg->getType() == ctx_.doubleType()) {
+        fill_double = fill_arg;
+    } else if (fill_arg->getType()->isIntegerTy()) {
+        fill_double = builder.CreateSIToFP(fill_arg, ctx_.doubleType());
+    } else {
+        fill_double = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    }
+    llvm::Value* fill_bits = builder.CreateBitCast(fill_double, ctx_.int64Type());
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+
+    // Check if first arg is a list/cons (shape) or a scalar (element)
+    // If it's a list → shape+fill mode; if scalar → element-literal mode
+    llvm::BasicBlock* list_path = llvm::BasicBlock::Create(ctx_.context(), "mt_list", current_func);
+    llvm::BasicBlock* scalar_path = llvm::BasicBlock::Create(ctx_.context(), "mt_scalar", current_func);
+
+    if (shape_arg->getType() == ctx_.taggedValueType()) {
+        llvm::Value* type_tag = tagged_.getType(shape_arg);
+        llvm::Value* base_type = tagged_.getBaseType(type_tag);
+        // Lists are HEAP_PTR (cons cells)
+        llvm::Value* is_heap = builder.CreateICmpEQ(base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        builder.CreateCondBr(is_heap, list_path, scalar_path);
+    } else {
+        // Raw value — not a list, use element-literal mode
+        builder.CreateBr(scalar_path);
+    }
+
+    // SCALAR PATH: treat as 2-element tensor (fallback to tensor())
+    builder.SetInsertPoint(scalar_path);
+    // Create 1D tensor with 2 elements [shape_arg, fill_arg]
+    std::vector<llvm::Value*> scalar_dims = {llvm::ConstantInt::get(ctx_.int64Type(), 2)};
+    llvm::Value* scalar_tensor = createTensorWithDims(scalar_dims, nullptr, false);
+    if (scalar_tensor) {
+        llvm::StructType* tensor_type = ctx_.tensorType();
+        llvm::Value* s_elems_field = builder.CreateStructGEP(tensor_type, scalar_tensor, 2);
+        llvm::Value* s_elems = builder.CreateLoad(ctx_.ptrType(), s_elems_field);
+        // Store shape_arg as element 0
+        llvm::Value* e0_double;
+        if (shape_arg->getType() == ctx_.taggedValueType()) {
+            e0_double = extractAsDouble(shape_arg);
+        } else if (shape_arg->getType() == ctx_.doubleType()) {
+            e0_double = shape_arg;
+        } else {
+            e0_double = builder.CreateSIToFP(shape_arg, ctx_.doubleType());
+        }
+        builder.CreateStore(builder.CreateBitCast(e0_double, ctx_.int64Type()),
+            builder.CreateGEP(ctx_.int64Type(), s_elems, llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+        // Store fill_arg as element 1
+        builder.CreateStore(fill_bits,
+            builder.CreateGEP(ctx_.int64Type(), s_elems, llvm::ConstantInt::get(ctx_.int64Type(), 1)));
+    }
+    llvm::BasicBlock* final_merge = llvm::BasicBlock::Create(ctx_.context(), "mt_final", current_func);
+    builder.CreateBr(final_merge);
+    llvm::BasicBlock* scalar_exit = builder.GetInsertBlock();
+
+    // LIST PATH: Extract dimensions from cons list (up to 4D)
+    builder.SetInsertPoint(list_path);
+    llvm::Value* list_ptr_int = tagged_.unpackInt64(shape_arg);
+    llvm::Value* cons_ptr = builder.CreateIntToPtr(list_ptr_int, ctx_.ptrType());
+    llvm::Value* is_car = llvm::ConstantInt::get(ctx_.int1Type(), 0);
+    llvm::Value* is_cdr_flag = llvm::ConstantInt::get(ctx_.int1Type(), 1);
+
+    // Extract first dimension
+    llvm::Value* dim1 = builder.CreateCall(
+        mem_.getTaggedConsGetInt64(), {cons_ptr, is_car});
+
+    // Get cdr
+    llvm::Value* cdr_int = builder.CreateCall(
+        mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr_flag});
+    llvm::Value* cdr_null = builder.CreateICmpEQ(cdr_int,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+
+    llvm::BasicBlock* mt_has_dim2 = llvm::BasicBlock::Create(ctx_.context(), "mt_has_dim2", current_func);
+    llvm::BasicBlock* mt_list_1d = llvm::BasicBlock::Create(ctx_.context(), "mt_list_1d", current_func);
+    builder.CreateCondBr(cdr_null, mt_list_1d, mt_has_dim2);
+
+    // 1D case
+    builder.SetInsertPoint(mt_list_1d);
+    builder.CreateBr(final_merge);  // placeholder, will fix
+    llvm::BasicBlock* mt_merge = llvm::BasicBlock::Create(ctx_.context(), "mt_dims_merge", current_func);
+    // Re-route: go to merge
+    mt_list_1d->getTerminator()->eraseFromParent();
+    builder.SetInsertPoint(mt_list_1d);
+    builder.CreateBr(mt_merge);
+    llvm::BasicBlock* list_1d_exit = builder.GetInsertBlock();
+
+    // 2D+ case
+    builder.SetInsertPoint(mt_has_dim2);
+    llvm::Value* cdr_cons = builder.CreateIntToPtr(cdr_int, ctx_.ptrType());
+    llvm::Value* dim2 = builder.CreateCall(
+        mem_.getTaggedConsGetInt64(), {cdr_cons, is_car});
+
+    llvm::Value* cddr_int = builder.CreateCall(
+        mem_.getTaggedConsGetPtr(), {cdr_cons, is_cdr_flag});
+    llvm::Value* cddr_null = builder.CreateICmpEQ(cddr_int,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+
+    llvm::BasicBlock* mt_has_dim3 = llvm::BasicBlock::Create(ctx_.context(), "mt_has_dim3", current_func);
+    llvm::BasicBlock* mt_list_2d = llvm::BasicBlock::Create(ctx_.context(), "mt_list_2d", current_func);
+    builder.CreateCondBr(cddr_null, mt_list_2d, mt_has_dim3);
+
+    // 2D case
+    builder.SetInsertPoint(mt_list_2d);
+    builder.CreateBr(mt_merge);
+    llvm::BasicBlock* list_2d_exit = builder.GetInsertBlock();
+
+    // 3D case
+    builder.SetInsertPoint(mt_has_dim3);
+    llvm::Value* cddr_cons = builder.CreateIntToPtr(cddr_int, ctx_.ptrType());
+    llvm::Value* dim3 = builder.CreateCall(
+        mem_.getTaggedConsGetInt64(), {cddr_cons, is_car});
+    builder.CreateBr(mt_merge);
+    llvm::BasicBlock* list_3d_exit = builder.GetInsertBlock();
+
+    // MERGE dimensions
+    builder.SetInsertPoint(mt_merge);
+
+    llvm::PHINode* ndims_phi = builder.CreatePHI(ctx_.int64Type(), 3, "mt_ndims");
+    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_1d_exit);
+    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 2), list_2d_exit);
+    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 3), list_3d_exit);
+
+    llvm::PHINode* d1_phi = builder.CreatePHI(ctx_.int64Type(), 3, "mt_d1");
+    d1_phi->addIncoming(dim1, list_1d_exit);
+    d1_phi->addIncoming(dim1, list_2d_exit);
+    d1_phi->addIncoming(dim1, list_3d_exit);
+
+    llvm::PHINode* d2_phi = builder.CreatePHI(ctx_.int64Type(), 3, "mt_d2");
+    d2_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_1d_exit);
+    d2_phi->addIncoming(dim2, list_2d_exit);
+    d2_phi->addIncoming(dim2, list_3d_exit);
+
+    llvm::PHINode* d3_phi = builder.CreatePHI(ctx_.int64Type(), 3, "mt_d3");
+    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_1d_exit);
+    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_2d_exit);
+    d3_phi->addIncoming(dim3, list_3d_exit);
+
+    // Create tensor based on ndims
+    llvm::Value* is_1d = builder.CreateICmpEQ(ndims_phi,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* is_2d = builder.CreateICmpEQ(ndims_phi,
+        llvm::ConstantInt::get(ctx_.int64Type(), 2));
+
+    llvm::BasicBlock* mt_create_1d = llvm::BasicBlock::Create(ctx_.context(), "mt_c1d", current_func);
+    llvm::BasicBlock* mt_check_2d = llvm::BasicBlock::Create(ctx_.context(), "mt_chk2d", current_func);
+    llvm::BasicBlock* mt_create_2d = llvm::BasicBlock::Create(ctx_.context(), "mt_c2d", current_func);
+    llvm::BasicBlock* mt_create_3d = llvm::BasicBlock::Create(ctx_.context(), "mt_c3d", current_func);
+    llvm::BasicBlock* mt_list_done = llvm::BasicBlock::Create(ctx_.context(), "mt_ldone", current_func);
+
+    builder.CreateCondBr(is_1d, mt_create_1d, mt_check_2d);
+
+    builder.SetInsertPoint(mt_create_1d);
+    std::vector<llvm::Value*> dims_1d = {d1_phi};
+    llvm::Value* t1d = createTensorWithDims(dims_1d, fill_bits, false);
+    builder.CreateBr(mt_list_done);
+    llvm::BasicBlock* c1d_exit = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(mt_check_2d);
+    builder.CreateCondBr(is_2d, mt_create_2d, mt_create_3d);
+
+    builder.SetInsertPoint(mt_create_2d);
+    std::vector<llvm::Value*> dims_2d = {d1_phi, d2_phi};
+    llvm::Value* t2d = createTensorWithDims(dims_2d, fill_bits, false);
+    builder.CreateBr(mt_list_done);
+    llvm::BasicBlock* c2d_exit = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(mt_create_3d);
+    std::vector<llvm::Value*> dims_3d = {d1_phi, d2_phi, d3_phi};
+    llvm::Value* t3d = createTensorWithDims(dims_3d, fill_bits, false);
+    builder.CreateBr(mt_list_done);
+    llvm::BasicBlock* c3d_exit = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(mt_list_done);
+    llvm::PHINode* list_tensor = builder.CreatePHI(ctx_.ptrType(), 3, "mt_tensor");
+    list_tensor->addIncoming(t1d, c1d_exit);
+    list_tensor->addIncoming(t2d, c2d_exit);
+    list_tensor->addIncoming(t3d, c3d_exit);
+
+    builder.CreateBr(final_merge);
+    llvm::BasicBlock* list_done_exit = builder.GetInsertBlock();
+
+    // FINAL MERGE: scalar path or list path
+    builder.SetInsertPoint(final_merge);
+    llvm::PHINode* result = builder.CreatePHI(ctx_.ptrType(), 2, "mt_result");
+    result->addIncoming(scalar_tensor, scalar_exit);
+    result->addIncoming(list_tensor, list_done_exit);
+
+    return tagged_.packHeapPtr(result);
+}
+
 llvm::Value* TensorCodegen::zeros(const eshkol_operations_t* op) {
     // zeros: (zeros dim1 dim2 ...) OR (zeros '(dim1 dim2 ...)) - Create tensor filled with zeros
     // Supports both NumPy-style list syntax and separate dimension arguments
@@ -8434,7 +8666,7 @@ llvm::Value* TensorCodegen::arange(const eshkol_operations_t* op) {
     llvm::Value* range_dbl = ctx_.builder().CreateFSub(end_dbl, start_dbl);
     llvm::Value* num_elements_dbl = ctx_.builder().CreateFDiv(range_dbl, step_dbl);
     // Use ceil to handle floating-point rounding errors (e.g., 11.9999... -> 12)
-    llvm::Function* ceil_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* ceil_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::ceil, {ctx_.doubleType()});
     llvm::Value* num_elements_ceil = ctx_.builder().CreateCall(ceil_func, {num_elements_dbl});
     llvm::Value* num_elements = ctx_.builder().CreateFPToSI(num_elements_ceil, ctx_.int64Type());
@@ -9834,7 +10066,7 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
 
     // Compute std = sqrt(var + eps)
     llvm::Value* var_plus_eps = builder.CreateFAdd(var_val, epsilon);
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* std_val = builder.CreateCall(sqrt_func, {var_plus_eps});
 
     llvm::BasicBlock* norm_cond = llvm::BasicBlock::Create(ctx_.context(), "bn_norm_cond", current_func);
@@ -10004,7 +10236,7 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
     llvm::Value* feature_fp = builder.CreateSIToFP(feature_size, ctx_.doubleType());
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
 
     // Allocas for loop variables
@@ -10997,7 +11229,7 @@ llvm::Value* TensorCodegen::tensorCorrcoef(const eshkol_operations_t* op) {
 
     // r = cov / sqrt(var_x * var_y)
     llvm::Value* denom = builder.CreateFMul(var_x_val, var_y_val);
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* sqrt_denom = builder.CreateCall(sqrt_func, {denom});
     llvm::Value* result = builder.CreateFDiv(cov_val, sqrt_denom);
@@ -11651,7 +11883,7 @@ llvm::Value* TensorCodegen::adamStep(const eshkol_operations_t* op) {
     llvm::Value* v_hat = builder.CreateFDiv(v_new, bias_corr2);
 
     // Update: theta = theta - lr * m_hat / (sqrt(v_hat) + eps)
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* sqrt_v_hat = builder.CreateCall(sqrt_func, {v_hat});
     llvm::Value* denom = builder.CreateFAdd(sqrt_v_hat, eps);
@@ -11804,7 +12036,7 @@ llvm::Value* TensorCodegen::clipGradNorm(const eshkol_operations_t* op) {
 
     builder.SetInsertPoint(norm_done);
     llvm::Value* final_sum = builder.CreateLoad(ctx_.doubleType(), sum_sq);
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* total_norm = builder.CreateCall(sqrt_func, {final_sum});
 
@@ -11957,7 +12189,7 @@ llvm::Value* TensorCodegen::rmspropStep(const eshkol_operations_t* op) {
     builder.CreateStore(builder.CreateBitCast(v_new, ctx_.int64Type()), v_elem_ptr);
 
     // param = param - lr * g / (sqrt(v) + eps)
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* sqrt_v = builder.CreateCall(sqrt_func, {v_new});
     llvm::Value* denom = builder.CreateFAdd(sqrt_v, eps);
@@ -12105,7 +12337,7 @@ llvm::Value* TensorCodegen::adamwStep(const eshkol_operations_t* op) {
     llvm::Value* m_hat = builder.CreateFDiv(m_new, bias_corr1);
     llvm::Value* v_hat = builder.CreateFDiv(v_new, bias_corr2);
 
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* sqrt_v_hat = builder.CreateCall(sqrt_func, {v_hat});
     llvm::Value* denom = builder.CreateFAdd(sqrt_v_hat, eps);
@@ -12194,7 +12426,7 @@ llvm::Value* TensorCodegen::adagradStep(const eshkol_operations_t* op) {
     builder.CreateStore(builder.CreateBitCast(acc_new, ctx_.int64Type()), acc_ptr);
 
     // param -= lr * grad / (sqrt(accum) + eps)
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* sqrt_acc = builder.CreateCall(sqrt_func, {acc_new});
     llvm::Value* denom = builder.CreateFAdd(sqrt_acc, eps);
@@ -12308,7 +12540,7 @@ llvm::Value* TensorCodegen::xavierUniform(const eshkol_operations_t* op) {
     llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_ptr);
 
     // limit = sqrt(6 / (fan_in + fan_out))
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* fan_sum = builder.CreateFAdd(fan_in, fan_out);
     llvm::Value* six = llvm::ConstantFP::get(ctx_.doubleType(), 6.0);
@@ -12379,7 +12611,7 @@ llvm::Value* TensorCodegen::xavierNormal(const eshkol_operations_t* op) {
     llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_ptr);
 
     // std = sqrt(2 / (fan_in + fan_out))
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* fan_sum = builder.CreateFAdd(fan_in, fan_out);
     llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
@@ -12471,7 +12703,7 @@ llvm::Value* TensorCodegen::kaimingUniform(const eshkol_operations_t* op) {
     llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_ptr);
 
     // limit = sqrt(6 / fan_in)
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* six = llvm::ConstantFP::get(ctx_.doubleType(), 6.0);
     llvm::Value* ratio = builder.CreateFDiv(six, fan_in);
@@ -12537,7 +12769,7 @@ llvm::Value* TensorCodegen::kaimingNormal(const eshkol_operations_t* op) {
     llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_ptr);
 
     // std = sqrt(2 / fan_in)
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
     llvm::Value* ratio = builder.CreateFDiv(two, fan_in);
@@ -12627,7 +12859,7 @@ llvm::Value* TensorCodegen::lecunNormal(const eshkol_operations_t* op) {
     llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), elems_ptr);
 
     // std = sqrt(1 / fan_in) = 1 / sqrt(fan_in)
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     llvm::Value* ratio = builder.CreateFDiv(one, fan_in);
@@ -14512,7 +14744,7 @@ llvm::Value* TensorCodegen::huberLoss(const eshkol_operations_t* op) {
     llvm::Value* target_elems_ptr = builder.CreateStructGEP(tensor_type, target_ptr, 2);
     llvm::Value* target_elems = builder.CreateLoad(ctx_.ptrType(), target_elems_ptr);
 
-    llvm::Function* fabs_intrinsic = llvm::Intrinsic::getOrInsertDeclaration(&ctx_.module(),
+    llvm::Function* fabs_intrinsic = ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::fabs, {ctx_.doubleType()});
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -14672,7 +14904,7 @@ llvm::Value* TensorCodegen::maeLoss(const eshkol_operations_t* op) {
 
     // |pred - target|
     llvm::Value* diff = builder.CreateFSub(pred_val, target_val);
-    llvm::Function* fabs_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* fabs_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::fabs, {ctx_.doubleType()});
     llvm::Value* abs_diff = builder.CreateCall(fabs_func, {diff});
 
@@ -14783,7 +15015,7 @@ llvm::Value* TensorCodegen::binaryCrossEntropyLoss(const eshkol_operations_t* op
     llvm::Value* pred_clipped = builder.CreateSelect(cmp_low, pred_upper, eps);
 
     // BCE term: target * log(pred) + (1-target) * log(1-pred)
-    llvm::Function* log_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* log_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::log, {ctx_.doubleType()});
 
     llvm::Value* log_pred = builder.CreateCall(log_func, {pred_clipped});
@@ -15089,7 +15321,7 @@ llvm::Value* TensorCodegen::smoothL1Loss(const eshkol_operations_t* op) {
     builder.SetInsertPoint(size_done);
     llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), num_elements);
 
-    llvm::Function* fabs_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* fabs_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::fabs, {ctx_.doubleType()});
 
     llvm::Value* loss_sum = builder.CreateAlloca(ctx_.doubleType());
@@ -15365,7 +15597,7 @@ llvm::Value* TensorCodegen::tripletLoss(const eshkol_operations_t* op) {
 
     builder.SetInsertPoint(dist_done);
     // sqrt distances
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* dp_sq_final = builder.CreateLoad(ctx_.doubleType(), dist_pos_sq);
     llvm::Value* dn_sq_final = builder.CreateLoad(ctx_.doubleType(), dist_neg_sq);
@@ -15454,7 +15686,7 @@ llvm::Value* TensorCodegen::contrastiveLoss(const eshkol_operations_t* op) {
     builder.CreateBr(dist_loop);
 
     builder.SetInsertPoint(dist_done);
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* d_sq_final = builder.CreateLoad(ctx_.doubleType(), dist_sq);
     llvm::Value* d = builder.CreateCall(sqrt_func, {d_sq_final});
@@ -15717,7 +15949,7 @@ llvm::Value* TensorCodegen::cosineEmbeddingLoss(const eshkol_operations_t* op) {
     builder.CreateBr(cos_loop);
 
     builder.SetInsertPoint(cos_done);
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
 
     llvm::Value* final_dot = builder.CreateLoad(ctx_.doubleType(), dot_prod);
@@ -16502,7 +16734,7 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
     llvm::Value* d_k_safe = builder.CreateSelect(
         builder.CreateFCmpOLE(d_k_double, llvm::ConstantFP::get(ctx_.doubleType(), 0.0)),
         llvm::ConstantFP::get(ctx_.doubleType(), 1.0), d_k_double, "dk_safe");
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
     llvm::Value* scale = builder.CreateCall(sqrt_func, {d_k_safe}, "sqrt_dk");
 
@@ -16523,7 +16755,7 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
     llvm::Value* output_elems = builder.CreateCall(arena_alloc,
         {arena_ptr, output_bytes}, "attn_output");
 
-    llvm::Function* exp_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* exp_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::exp, {ctx_.doubleType()});
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -17247,9 +17479,9 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
     // For efficiency, we compute attention for all heads in parallel
     // Each head h gets: Q[:, :, h*d_k:(h+1)*d_k], K[:, :, h*d_k:(h+1)*d_k], V[:, :, h*d_k:(h+1)*d_k]
 
-    llvm::Function* sqrt_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
-    llvm::Function* exp_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* exp_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::exp, {ctx_.doubleType()});
 
     llvm::Value* d_k_double = builder.CreateSIToFP(d_k, ctx_.doubleType());
@@ -17801,11 +18033,11 @@ llvm::Value* TensorCodegen::positionalEncoding(const eshkol_operations_t* op) {
     llvm::Value* elements_ptr = builder.CreateLoad(ctx_.ptrType(), elements_field_ptr);
 
     // Get math functions
-    llvm::Function* sin_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* sin_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::sin, {ctx_.doubleType()});
-    llvm::Function* cos_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* cos_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::cos, {ctx_.doubleType()});
-    llvm::Function* exp_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* exp_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::exp, {ctx_.doubleType()});
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -17953,11 +18185,11 @@ llvm::Value* TensorCodegen::rotaryEmbedding(const eshkol_operations_t* op) {
     builder.CreateMemCpy(output_dims, llvm::MaybeAlign(8), x_dims_ptr, llvm::MaybeAlign(8), dims_bytes);
 
     // Get math functions
-    llvm::Function* sin_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* sin_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::sin, {ctx_.doubleType()});
-    llvm::Function* cos_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* cos_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::cos, {ctx_.doubleType()});
-    llvm::Function* exp_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* exp_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::exp, {ctx_.doubleType()});
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -18444,10 +18676,10 @@ llvm::Value* TensorCodegen::feedForward(const eshkol_operations_t* op) {
     llvm::Value* sqrt_2_pi = llvm::ConstantFP::get(ctx_.doubleType(), 0.7978845608028654);
     llvm::Value* coeff = llvm::ConstantFP::get(ctx_.doubleType(), 0.044715);
 
-    llvm::Function* tanh_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* tanh_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::fabs, {ctx_.doubleType()});
     // Note: LLVM doesn't have intrinsic tanh, we'll compute it via exp
-    llvm::Function* exp_func = llvm::Intrinsic::getOrInsertDeclaration(
+    llvm::Function* exp_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::exp, {ctx_.doubleType()});
 
     // === First layer: hidden = GELU(x @ W1 + b1) ===

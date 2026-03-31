@@ -407,8 +407,11 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
             }
         }
 
-        /* Update beliefs: b(x_v) = prod_{f ∈ ne(v)} msg_{f→v}(x_v) */
+        /* Update beliefs: b(x_v) = prod_{f ∈ ne(v)} msg_{f→v}(x_v).
+         * Skip observed variables — their beliefs are clamped by fg-observe!.
+         * Must match the VM path (vm_inference.c:388) for AOT/VM consistency. */
         for (uint32_t v = 0; v < fg->num_vars; v++) {
+            if (fg->observed && fg->observed[v]) continue;  /* Clamped — skip */
             uint32_t dim = fg->var_dims[v];
             for (uint32_t s = 0; s < dim; s++) {
                 fg->beliefs[v][s] = 0.0; /* log-product = sum */
@@ -909,4 +912,59 @@ void eshkol_display_factor_graph(const eshkol_factor_graph_t* fg, void* file) {
     }
     fprintf(f, "#<factor-graph: %u factors, %u vars>",
             fg->num_factors, fg->num_vars);
+}
+
+/**
+ * @brief fg-observe! runtime for AOT compilation.
+ * Clamps a factor graph variable to an observed state.
+ * After calling, run fg-infer! to propagate the evidence.
+ * Ref: Standard factor graph evidence clamping (Kschischang et al. 2001).
+ */
+extern "C" void eshkol_fg_observe_tagged(arena_t* arena,
+    const eshkol_tagged_value_t* fg_tv,
+    const eshkol_tagged_value_t* var_tv,
+    const eshkol_tagged_value_t* state_tv,
+    eshkol_tagged_value_t* result) {
+    (void)arena;
+    if (!result) return;
+    memset(result, 0, sizeof(*result));
+    result->type = ESHKOL_VALUE_BOOL;
+    result->data.int_val = 0;  /* false by default */
+
+    if (!fg_tv || !var_tv || !state_tv) return;
+    if (fg_tv->type != ESHKOL_VALUE_HEAP_PTR || !fg_tv->data.ptr_val) return;
+
+    eshkol_factor_graph_t* fg = (eshkol_factor_graph_t*)fg_tv->data.ptr_val;
+
+    /* Extract var_id */
+    int var_id = 0;
+    if (var_tv->type == ESHKOL_VALUE_INT64) var_id = (int)var_tv->data.int_val;
+    else if (var_tv->type == ESHKOL_VALUE_DOUBLE) var_id = (int)var_tv->data.double_val;
+    else return;
+
+    /* Extract observed_state */
+    int obs_state = 0;
+    if (state_tv->type == ESHKOL_VALUE_INT64) obs_state = (int)state_tv->data.int_val;
+    else if (state_tv->type == ESHKOL_VALUE_DOUBLE) obs_state = (int)state_tv->data.double_val;
+    else return;
+
+    /* Bounds check */
+    if (var_id < 0 || (uint32_t)var_id >= fg->num_vars) return;
+    if (obs_state < 0 || obs_state >= (int)fg->var_dims[var_id]) return;
+
+    /* Clamp beliefs: observed state → log(1)=0, others → log(0)≈-1e30 */
+    int dim = fg->var_dims[var_id];
+    for (int s = 0; s < dim; s++) {
+        fg->beliefs[var_id][s] = (s == obs_state) ? 0.0 : -1e30;
+    }
+
+    /* Mark as observed (allocate observed array if needed) */
+    if (!fg->observed) {
+        fg->observed = (bool*)calloc(fg->num_vars, sizeof(bool));
+    }
+    if (fg->observed) {
+        fg->observed[var_id] = true;
+    }
+
+    result->data.int_val = 1;  /* true — observation applied */
 }

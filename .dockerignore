@@ -4,12 +4,25 @@ build-*/
 dist/
 cmake-build-*/
 
+# Dependencies (7GB+ StableHLO/LLVM checkout — Docker builds from apt)
+deps/
+
 # IDE files
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
+
+# Proprietary / unreleased
+lib/tsotchke/
+examples/agent.esk
+examples/consciousness_grr_inference.esk
+examples/consciousness_inference.esk
+examples/consciousness_model_analysis.esk
+
+# Tool artifacts
+.codex_edit_access
 
 # Git
 .git/

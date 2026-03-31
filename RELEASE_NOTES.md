@@ -1,8 +1,8 @@
-# Eshkol v1.1.0-accelerate - Performance Acceleration Release
+# Eshkol v1.1.11-accelerate - Performance Acceleration Release
 
-**Release Date**: February 17, 2026
+**Release Date**: March 27, 2026
 
-Eshkol v1.1-accelerate builds on the v1.0-foundation with comprehensive performance acceleration. Every v1.1 roadmap item is now complete: XLA backend (5/5), SIMD vectorization (4/4), concurrency (5/5), extended math (5/5), bignum/rational (6/6), consciousness engine (4/4), and R7RS extensions (6/6) -- totaling 35/35 items.
+Eshkol v1.1-accelerate builds on the v1.0-foundation with comprehensive performance acceleration. Every v1.1 roadmap item is now complete: XLA backend (5/5), SIMD vectorization (4/4), concurrency (5/5), extended math (5/5), bignum/rational (6/6), consciousness engine (4/4), R7RS extensions (6/6), dual backend (7/7), and Windows platform (5/5) -- totaling 47/47 items.
 
 ## What's New in v1.1-accelerate
 
@@ -63,12 +63,28 @@ Novel AI primitives integrated at the compiler level:
 - Global workspace theory (modules, softmax competition, content broadcasting)
 - 22 builtin operations spanning logic, inference, and workspace
 
+### Dual Backend Architecture
+
+Eshkol now ships with a complete bytecode VM alongside the LLVM native compiler:
+- **Bytecode VM**: 63 opcodes, 250+ native calls, ESKB binary format, invoked via `-B` flag
+- **Weight Matrix Transformer**: 55/55 tests passing, 3-way verified, 307K parameters
+- **qLLM Bridge**: Eshkol-to-qLLM tensor conversion for semiclassical inference
+
+### Windows Platform Support
+
+Native Windows builds are now supported:
+- **MSYS2/MinGW64 native build** (PR #9 by mattneel)
+- UTF-8-safe REPL with proper console code page handling
+- Runtime DLL bundling for standalone distribution
+- Path normalization for Windows-style backslash paths
+
 ### R7RS Compliance
 
 - `call/cc` and `dynamic-wind`
 - `guard`/`raise` exception handling
 - Bytevectors, `let-syntax`/`syntax-rules`, symbol operations
 - Tail call optimization validation
+- `(load "path")` R7RS file loading support
 
 ### GPU Backends
 
@@ -78,7 +94,7 @@ Novel AI primitives integrated at the compiler level:
 
 ## Test Results
 
-29 test suites passing with 200+ test files covering all subsystems.
+35 test suites passing with 434 test files covering all subsystems.
 
 ---
 
@@ -98,7 +114,7 @@ Eshkol is a production-grade Scheme dialect built on LLVM infrastructure, design
 
 Eshkol v1.0-foundation delivers a fully functional compiler with:
 
-- **Modular LLVM backend** with 15 specialized code generation modules
+- **Modular LLVM backend** with 21 specialized code generation modules
 - **HoTT-inspired gradual type system** with bidirectional type checking
 - **Comprehensive parser** supporting S-expressions, type annotations, pattern matching, and macros
 - **Ownership and escape analysis** for automatic allocation strategy optimization
@@ -154,7 +170,7 @@ Modular library organization with pure Eshkol implementations:
 
 ### Production-Ready Infrastructure
 
-- **Cross-platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64)
+- **Cross-platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (MSYS2/MinGW64)
 - **Docker containers**: Debian and Ubuntu images
 - **CMake build system**: Modern, maintainable build infrastructure
 - **Comprehensive documentation**: Language specification, user reference, API docs
@@ -263,7 +279,7 @@ See [ROADMAP.md](ROADMAP.md) and [docs/vision/FUTURE_ROADMAP.md](docs/vision/FUT
 1. **Review architecture**: [docs/ESHKOL_V1_ARCHITECTURE.md](docs/ESHKOL_V1_ARCHITECTURE.md)
 2. **Check the roadmap**: [ROADMAP.md](ROADMAP.md) for v1.1/v1.2 plans
 3. **See contribution guidelines**: [CONTRIBUTING.md](CONTRIBUTING.md)
-4. **Join development**: XLA backend and SIMD vectorization are priorities for v1.1
+4. **Join development**: See open issues on GitHub for contribution areas
 
 ### For Researchers
 

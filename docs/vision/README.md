@@ -1,5 +1,12 @@
 # Eshkol Vision Documentation
 
+> **Note**: These documents describe v1.0-foundation capabilities. v1.1-accelerate adds
+> GPU acceleration (Metal SF64 + CUDA), XLA backend (dual-mode StableHLO + LLVM-direct),
+> consciousness engine (22 compiled primitives), parallel primitives (work-stealing
+> thread pool), exact arithmetic (bignums + rationals), signal processing (FFT, filters),
+> and first-class continuations (call/cc, dynamic-wind). See [CHANGELOG.md](../../CHANGELOG.md)
+> and [V1.1 Scope](../V1.1_SCOPE.md).
+
 This directory contains vision documents for Eshkol v1.0-architecture, grounded in the actual production compiler implementation.
 
 ## What is Eshkol v1.0-architecture?
@@ -10,7 +17,7 @@ Eshkol is a **production-ready Scheme dialect** with a sophisticated LLVM-based 
 - **Compiler-integrated automatic differentiation** (forward/reverse modes with nested gradient support)
 - **Arena-based memory management** (OALR - Ownership-Aware Lexical Regions)
 - **HoTT-inspired gradual type system** with bidirectional type checking
-- **R7RS Scheme compatibility** with 300+ language features
+- **R7RS Scheme compatibility** with 550+ language features
 - **Interactive REPL** with LLVM ORC JIT compilation
 - **Quantum-inspired RNG** for high-quality stochastic computing
 
@@ -18,7 +25,7 @@ Eshkol is a **production-ready Scheme dialect** with a sophisticated LLVM-based 
 
 **Production Compiler:**
 - C/C++ implementation
-- LLVM 14+ backend with 15 specialized codegen modules
+- LLVM 17 backend with 21 specialized codegen modules
 - Parser with HoTT type expression support
 - Bidirectional type checker
 - Arena memory runtime
@@ -61,7 +68,7 @@ Clear v1.0-foundation baseline (what exists NOW) followed by realistic post-v1.0
 ## Key Technical Achievements (v1.0)
 
 ### Modular LLVM Backend
-15 specialized codegen modules totaling 27,000 lines:
+21 specialized codegen modules totaling 55,000+ lines (v1.1: ~232,000 total):
 - `TaggedValueCodegen` - 16-byte value pack/unpack (812 lines)
 - `AutodiffCodegen` - Dual numbers and AD graphs (1,766 lines)
 - `FunctionCodegen` - Closures with capture (131 lines)
@@ -124,7 +131,7 @@ struct eshkol_tagged_value {
 - CALLABLE (9) with subtypes: CLOSURE, LAMBDA_SEXPR, AD_NODE, PRIMITIVE, CONTINUATION
 
 ### Closure System
-**Structure (24 bytes + environment):**
+**Structure (40 bytes):**
 ```c
 struct eshkol_closure {
     uint64_t func_ptr;              // Lambda function pointer
@@ -142,24 +149,32 @@ struct eshkol_closure {
 - `num_captures` field packs: actual captures | (fixed_params << 16) | (is_variadic << 63)
 - Flexible array of captured `eshkol_tagged_value_t` elements
 
-## What v1.0-foundation Does NOT Include
+## What v1.1-accelerate Added (Since v1.0)
 
-To set realistic expectations, v1.0 does **not** include:
-- ❌ GPU acceleration (CUDA/Metal/Vulkan)
-- ❌ Multi-threading/parallel primitives
-- ❌ Distributed computing
-- ❌ Quantum computing primitives (qubits, gates) - only quantum-inspired RNG
+- ✅ **GPU acceleration** — Metal (Apple Silicon, SF64 software float64) + CUDA (NVIDIA)
+- ✅ **Parallel primitives** — work-stealing thread pool, `parallel-map`/`parallel-fold`/`parallel-filter`, `future`/`force`
+- ✅ **Exact arithmetic** — arbitrary-precision integers (bignums) and rational numbers, full R7RS numeric tower
+- ✅ **Consciousness engine** — 22 compiled primitives: logic programming, factor graphs, global workspace
+- ✅ **Signal processing** — FFT/IFFT, window functions, FIR/IIR filters, Butterworth design
+- ✅ **First-class continuations** — `call/cc`, `dynamic-wind`, `guard`/`raise`
+- ✅ **ML framework** — 75+ builtins: activations, losses, optimizers, CNN layers, transformer ops
+- ✅ **XLA backend** — dual-mode StableHLO + LLVM-direct for tensor acceleration
+- ✅ **Web platform** — WASM compilation, 73 DOM API functions
+- ✅ **Package manager** — `eshkol-pkg` with TOML manifest and registry support
+
+### Not Yet Implemented (Planned for Future Releases)
+
+- ❌ Distributed computing (v1.2-scale)
+- ❌ Quantum computing primitives — qubits, gates, VQE (v2.0-starlight)
 - ❌ Built-in plotting/visualization
-- ❌ Units of measurement syntax
-- ❌ Mathematical operator syntax (∑, ∏, ∫)
-- ❌ JIT compilation in standalone mode (REPL-only)
+- ❌ Full R7RS library system — `define-library`/`import` with renaming (v1.3-evolve)
 
-These are documented in [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md) as post-v1.0 development.
+See [Roadmap](../../ROADMAP.md) for planned development.
 
 ## Documentation Principles
 
 All vision documents in this directory:
-1. **Ground claims in actual implementation** - every feature referenced exists in the 67K-line codebase
+1. **Ground claims in actual implementation** - every feature referenced exists in the 80K-line codebase
 2. **Include technical architecture** - how it actually works, not vague descriptions
 3. **Provide working examples** - code that compiles and runs
 4. **Separate present from future** - clear distinction between v1.0 and roadmap
@@ -180,4 +195,4 @@ All vision documents in this directory:
 
 ---
 
-*This directory documents the actual v1.0-architecture release - a production compiler with sophisticated automatic differentiation, advanced memory management, and comprehensive language features implemented in rigorously tested code.*
+*This directory documents the Eshkol compiler vision. v1.1-accelerate is the current production release with GPU acceleration, consciousness engine, parallel primitives, exact arithmetic, dual backend architecture (LLVM + bytecode VM), and 75+ ML builtins. 434 tests across 35 suites.*

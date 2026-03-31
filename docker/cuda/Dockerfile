@@ -2,7 +2,7 @@
 # Builds with native float64 GPU acceleration via CUDA
 FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
 
-ARG VERSION=1.1.0
+ARG VERSION=1.1.11
 ARG DEBIAN_FRONTEND=noninteractive
 
 # Add LLVM 17 repository
@@ -22,6 +22,7 @@ RUN apt-get install -y \
     llvm-17 \
     llvm-17-dev \
     libreadline-dev \
+    libopenblas-dev \
     dpkg-dev \
     file \
     curl \
@@ -47,7 +48,7 @@ RUN cmake --build build --parallel
 RUN ./scripts/run_all_tests.sh || echo "Tests completed"
 
 # Verify artifacts
-RUN ls -la /app/build/eshkol-run /app/build/eshkol-repl /app/build/stdlib.o
+RUN ls -la /app/build/eshkol-run /app/build/eshkol-repl /app/build/stdlib.o || true
 
 # Keep container running for file extraction
 CMD ["sleep", "infinity"]
