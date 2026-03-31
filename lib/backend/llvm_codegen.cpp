@@ -23753,53 +23753,6 @@ private:
         }
     }
 
-    /**
-     * buildGradientCallArgs — Build argument list for a gradient function call.
-     *
-     * For single-parameter functions: passes one AD node/tensor as the argument.
-     * For multi-parameter functions: unpacks AD tensor elements into individual arguments.
-     * Then appends captures via resolveGradientCaptures.
-     */
-    void buildGradientCallArgs(llvm::Function* func_ptr,
-                                llvm::Value* ad_data,       // AD tensor ptr or single AD node
-                                bool is_tensor,              // true = ad_data is tensor, false = single node
-                                std::vector<llvm::Value*>& call_args,
-                                const std::string& context_label) {
-        std::string func_name_str = func_ptr->getName().str();
-        uint64_t func_arity = 0;
-        auto arity_it = function_arity_table.find(func_name_str);
-        if (arity_it != function_arity_table.end()) {
-            func_arity = arity_it->second;
-        }
-
-        if (func_arity > 1 && is_tensor) {
-            // Multi-parameter: unpack AD tensor elements as individual tagged args
-            eshkol_debug("Gradient (%s): unpacking for %llu-parameter function %s",
-                         context_label.c_str(), (unsigned long long)func_arity, func_name_str.c_str());
-
-            StructType* tensor_type = StructType::getTypeByName(*context, "eshkol_tensor");
-            if (!tensor_type) tensor_type = StructType::create(*context,
-                {builder->getPtrTy(), int64_type, builder->getPtrTy(), int64_type}, "eshkol_tensor");
-
-            Value* elements_ptr = builder->CreateLoad(builder->getPtrTy(),
-                builder->CreateStructGEP(tensor_type, ad_data, 2));
-
-            for (uint64_t p = 0; p < func_arity; p++) {
-                Value* elem_ptr = builder->CreateGEP(int64_type, elements_ptr,
-                    ConstantInt::get(int64_type, p));
-                Value* ad_node_int = builder->CreateLoad(int64_type, elem_ptr);
-                Value* ad_node_tagged = packPtrToTaggedValue(ad_node_int, ESHKOL_VALUE_CALLABLE);
-                call_args.push_back(ad_node_tagged);
-            }
-        } else {
-            // Single parameter or non-tensor: pass as-is
-            call_args.push_back(ad_data);
-        }
-
-        // Resolve captures
-        resolveGradientCaptures(func_ptr, call_args, context_label);
-    }
-
     Value* codegenGradient(const eshkol_operations_t* op) {
         if (!op->gradient_op.function) {
             eshkol_error("Invalid gradient operation - missing function");
