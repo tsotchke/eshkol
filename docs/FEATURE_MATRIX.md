@@ -1,8 +1,8 @@
-# Eshkol v1.0 Feature Matrix
+# Eshkol v1.1-accelerate Feature Matrix
 
 **Status Key**: ✅ Production | 🚧 In Progress | 📋 Planned | ❌ Not Planned
 
-This matrix documents all implemented and planned features for the Eshkol language ecosystem. All **Production** features are code-verified with extensive test coverage.
+This matrix documents all implemented and planned features for the Eshkol language ecosystem. All **Production** features are code-verified with extensive test coverage (35 test suites, 434 test files).
 
 ---
 
@@ -40,7 +40,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Closure homoiconicity | ✅ | Display shows source code | Verified |
 | **Tail Call Optimization** |
 | Self-recursive TCO | ✅ | Functions calling themselves | 15+ tests |
-| Mutual recursion TCO | 🚧 | Functions calling each other | Partial |
+| Mutual recursion TCO | ✅ | Functions calling each other | Trampoline-based |
 | Trampoline runtime | ✅ | Non-self tail calls | 5+ tests |
 
 ---
@@ -69,11 +69,18 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Function arrows (→) | ✅ | `(→ A B)` types | Type inference |
 | Dependent types | ✅ | Path types, universes | Proof erasure |
 | Gradual typing | ✅ | Optional annotations | Warning-only errors |
+| **Exact Arithmetic (v1.1)** |
+| Bignum (arbitrary-precision int) | ✅ | Automatic overflow promotion | int64 → bignum |
+| Rational numbers | ✅ | Exact fractions (num/den) | HEAP_PTR + header |
+| Complex numbers | ✅ | `make-rectangular`, `make-polar` | Type tag 7 |
+| `exact?`, `inexact?` | ✅ | Exactness predicates | Runtime tags |
+| `exact->inexact`, `inexact->exact` | ✅ | Exactness conversion | Type conversion |
 | **Type Predicates** |
 | `number?`, `integer?`, `real?` | ✅ | Numeric predicates | Runtime tags |
 | `string?`, `char?`, `boolean?` | ✅ | Primitive predicates | Runtime tags |
 | `null?`, `pair?`, `list?` | ✅ | List predicates | Runtime tags |
 | `vector?`, `procedure?` | ✅ | Compound predicates | Header subtype |
+| `complex?`, `rational?` | ✅ | Extended numeric predicates | Runtime tags |
 
 ---
 
@@ -143,7 +150,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | `flatten` | ✅ | N-D → 1D | Zero-copy |
 | `tensor-shape` | ✅ | N-D | Dimension query |
 | **Element-wise Ops** |
-| `tensor-add`, `tensor-sub` | ✅ | N-D | Broadcasting: 📋 |
+| `tensor-add`, `tensor-sub` | ✅ | N-D | Broadcasting: ✅ |
 | `tensor-mul`, `tensor-div` | ✅ | N-D | Element-wise |
 | `tensor-apply` | ✅ | N-D | Map function |
 | **Linear Algebra** |
@@ -238,7 +245,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | S-expression parser | ✅ | Recursive descent | Fast |
 | Macro system | ✅ | Hygenic macros | `define-syntax` |
 | HoTT type checker | ✅ | Bidirectional | Gradual typing |
-| LLVM IR generation | ✅ | LLVM 18+ | 33,000+ lines |
+| LLVM IR generation | ✅ | LLVM 17 | 34,928 lines |
 | Native code emission | ✅ | x86-64, ARM64 | Object files |
 | Executable linking | ✅ | System linker | Standalone binaries |
 | **Optimizations** |
@@ -344,19 +351,26 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | `values` | ✅ | Stable | Multi-value objects |
 | `call-with-values` | ✅ | Stable | Consumer pattern |
 | `let-values` | ✅ | Stable | Destructuring |
+| **Control Flow (v1.1)** |
+| `call/cc` | ✅ | Stable | First-class continuations |
+| `dynamic-wind` | ✅ | Stable | Cleanup handlers |
+| `guard` / `raise` | ✅ | Stable | Exception handling |
 | **FFI (Foreign Function Interface)** |
 | C function calls | ✅ | Stable | `extern` declarations |
 | C variable access | ✅ | Stable | `extern-var` |
 | Variadic C functions | ✅ | Stable | printf, etc. |
 | Callback registration | 📋 | - | Planned |
-| **Concurrency** |
+| **Concurrency (v1.1)** |
 | `parallel-map` | ✅ | Stable | Work-stealing thread pool |
 | `parallel-fold` | ✅ | Stable | Parallel reduction |
 | `parallel-filter` | ✅ | Stable | Parallel predicate filter |
+| `parallel-for-each` | ✅ | Stable | Parallel side effects |
+| `parallel-execute` | ✅ | Stable | Concurrent execution |
 | `future` / `force` | ✅ | Stable | Asynchronous computation |
 | Thread pool scheduler | ✅ | Stable | Hardware-aware sizing |
 | **Module System** |
 | `import` / `require` | ✅ | Stable | DFS dependency resolution |
+| `load` (R7RS file loading) | ✅ | Stable | Alias for require with file path conversion |
 | `provide` / `export` | ✅ | Stable | Symbol export |
 | Module prefixing | ✅ | Stable | Namespace isolation |
 | Circular dependency detection | ✅ | Stable | Compile-time error |
@@ -405,20 +419,21 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | **Operating Systems** |
 | Linux | ✅ | x86-64, ARM64 | Primary platform |
 | macOS | ✅ | x86-64, ARM64 | Full support |
-| Windows | 📋 | x86-64 | Planned (WSL works) |
+| Windows | ✅ | x86-64 | MSYS2/MinGW64 native (PR #9, mattneel) |
 | FreeBSD | 📋 | x86-64 | Planned |
 | **Architectures** |
 | x86-64 | ✅ | SSE2+ | AVX/AVX2/AVX-512 supported |
 | ARM64 | ✅ | Neon | Full support |
 | RISC-V | 📋 | - | Planned |
-| WebAssembly | 📋 | - | Planned |
+| WebAssembly | ✅ | wasm32 | Via `--wasm` flag (LLVM 17 backend) |
+| Web REPL | ✅ | Browser | `web/index.html` — interactive Eshkol in-browser |
 | **Build Systems** |
-| CMake | ✅ | 3.20+ | Primary |
+| CMake | ✅ | 3.14+ | Primary (Ninja recommended) |
 | Makefile | 📋 | - | Planned |
 | Nix | 📋 | - | Planned |
 | **Package Managers** |
-| Homebrew | 🚧 | macOS/Linux | Formula in progress |
-| APT (Debian/Ubuntu) | 🚧 | Linux | .deb packaging |
+| Homebrew | ✅ | macOS/Linux | Formula complete |
+| APT (Debian/Ubuntu) | ✅ | Linux | .deb pipeline complete |
 | RPM (Fedora/RHEL) | 📋 | Linux | Planned |
 
 ---
@@ -430,23 +445,25 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | **Compiler Tools** |
 | `eshkol-compile` | ✅ | Ahead-of-time compiler | Produces executables |
 | `eshkol-run` | ✅ | Script runner | Compile + execute |
-| `eshkol-repl` | ✅ | Interactive shell | JIT-based |
+| `eshkol-repl` | ✅ | Interactive shell | JIT-based with stdlib |
+| `eshkol-pkg` | ✅ | Package manager | Registry support |
+| `eshkol-lsp` | ✅ | Language server | IDE integration |
 | **Development Tools** |
-| Syntax highlighter | 📋 | Editor support | Planned for VS Code |
-| LSP server | 📋 | IDE integration | Planned |
+| Syntax highlighter | ✅ | Editor support | VS Code extension |
+| LSP server | ✅ | IDE integration | Diagnostics, completion |
 | Debugger | 📋 | Interactive debugging | Planned |
 | Profiler | 📋 | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | ✅ | Complete | 70+ special forms |
+| API Reference | ✅ | Complete | 700+ builtins |
 | Quickstart Guide | ✅ | Tutorial | 15-minute intro |
 | Architecture Guide | ✅ | Internals | System design |
 | Type System Guide | ✅ | HoTT types | Dependent types |
-| Examples | ✅ | Demo programs | Neural networks, physics |
+| Examples | ✅ | Demo programs | Neural networks, physics, ML |
 | **Testing** |
-| Unit tests | ✅ | Component tests | 300+ files |
+| Unit tests | ✅ | Component tests | 426 files |
 | Integration tests | ✅ | End-to-end | Full programs |
 | AD verification | ✅ | Numerical validation | Gradient checking |
-| Benchmark suite | 📋 | Performance tracking | Planned |
+| Benchmark suite | ✅ | Performance tracking | GPU + CPU benchmarks |
 
 ---
 
@@ -457,15 +474,16 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | **Neural Networks** |
 | Forward pass | ✅ | Production | Any architecture |
 | Backpropagation | ✅ | Production | Via `gradient` |
-| Activation functions | ✅ | Production | sigmoid, relu, tanh, softmax |
-| Loss functions | ✅ | Production | MSE, cross-entropy (user-defined) |
-| Optimizers | ✅ | Production | SGD, Adam, L-BFGS, CG (ml.optimization) |
-| Weight initialization | ✅ | User Code | Xavier, He (in Eshkol) |
+| Activation functions | ✅ | Production | 14 builtins: relu, sigmoid, softmax, gelu, silu, mish, etc. |
+| Loss functions | ✅ | Production | 14 builtins: MSE, cross-entropy, focal, triplet, etc. |
+| Optimizers | ✅ | Production | SGD, Adam, AdamW, RMSprop, Adagrad (builtins) + stdlib |
+| Weight initialization | ✅ | Production | xavier, kaiming, lecun (5 builtin initializers) |
+| LR schedulers | ✅ | Production | cosine-annealing, step-decay, warmup, exponential |
 | **Supported Architectures** |
 | Feedforward | ✅ | Production | Fully connected |
-| CNN | 🚧 | Prototype | Convolution ops needed |
+| CNN | ✅ | Production | conv1d/2d/3d, max-pool2d, avg-pool2d, batch/layer norm |
 | RNN | 🚧 | Prototype | Sequential processing |
-| Transformer | 📋 | Research | Attention mechanism |
+| Transformer | ✅ | Production | scaled-dot-attention, multi-head, RoPE, positional-encoding |
 | **Training Features** |
 | Batch training | ✅ | Production | Via user code |
 | Mini-batch SGD | ✅ | Production | Via user code |
@@ -566,6 +584,41 @@ This matrix documents all implemented and planned features for the Eshkol langua
 
 ---
 
+## GPU Acceleration (v1.1)
+
+| Feature | Status | Backend | Notes |
+|---------|--------|---------|-------|
+| **Metal (Apple Silicon)** |
+| Elementwise operations | ✅ | Metal | SF64 software float64 |
+| Matrix multiplication | ✅ | Metal | Ozaki-II adaptive N |
+| Reduce operations | ✅ | Metal | Sum, max, min |
+| Softmax | ✅ | Metal | Numerically stable |
+| Transpose | ✅ | Metal | 2D matrix transpose |
+| **CUDA (NVIDIA)** |
+| Elementwise operations | ✅ | CUDA | cuBLAS integration |
+| Matrix multiplication | ✅ | CUDA | cuBLAS GEMM |
+| Reduce operations | ✅ | CUDA | Custom kernels |
+| Softmax | ✅ | CUDA | Numerically stable |
+| Transpose | ✅ | CUDA | cuBLAS transpose |
+| **Dispatch** |
+| Automatic CPU/GPU selection | ✅ | Runtime | Cost model based |
+| Threshold-based dispatch | ✅ | Runtime | XLA → cBLAS → SIMD → scalar |
+
+---
+
+## XLA Backend (v1.1)
+
+| Feature | Status | Mode | Notes |
+|---------|--------|------|-------|
+| StableHLO/MLIR path | ✅ | When MLIR available | Hardware-optimized |
+| LLVM-direct path | ✅ | Default | Hand-tuned IR |
+| Matmul fusion | ✅ | Both | Fused multiply-add |
+| Elementwise fusion | ✅ | Both | Operation chains |
+| Reduce operations | ✅ | Both | Sum, max, min |
+| Transpose | ✅ | Both | Shape operations |
+
+---
+
 ## Interoperability
 
 | Interface | Status | Direction | Notes |
@@ -610,8 +663,8 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Tail call optimization | ✅ | ❌ | ✅ | ✅ | ✅ |
 | **Ease of Use** |
 | Interactive REPL | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Package manager | 📋 | ✅ pip | ✅ Pkg | ✅ cabal | Varies |
-| IDE support | 📋 | ✅ | ✅ | ✅ | ✅ |
+| Package manager | ✅ eshkol-pkg | ✅ pip | ✅ Pkg | ✅ cabal | Varies |
+| IDE support | ✅ LSP | ✅ | ✅ | ✅ | ✅ |
 | Learning curve | Medium | Low | Medium | High | Medium |
 
 ---
@@ -630,76 +683,150 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | **Memory Management** | 20+ | ✅ | Arena correctness |
 | **System Integration** | 15+ | ✅ | File I/O, system calls |
 | **REPL/JIT** | 10+ | ✅ | Cross-eval persistence |
-| **Total** | **300+** | **✅** | **High confidence** |
+| **Total** | **426** | **✅** | **High confidence** |
 
 ---
 
 ## Roadmap
 
-### v1.1 (Q1 2026)
+### v1.1-accelerate (Q1 2026) — COMPLETED
 
-- **Broadcasting**: Tensor operations with auto-expansion
-- **GPU Support**: CUDA/Metal tensor operations
-- **LSP Server**: IDE integration (VS Code, Emacs)
-- **Profiler**: Performance analysis tools
-- **Enhanced Optimizers**: Adam, RMSprop in stdlib
+- ✅ **GPU Support**: Metal (Apple Silicon) + CUDA (NVIDIA)
+- ✅ **XLA Backend**: StableHLO/MLIR + LLVM-direct
+- ✅ **Parallel Primitives**: parallel-map, parallel-fold, future/force
+- ✅ **Exact Arithmetic**: Bignums, rationals, full numeric tower
+- ✅ **Consciousness Engine**: Logic, inference, workspace (22 builtins)
+- ✅ **Signal Processing**: FFT, filters, window functions
+- ✅ **Optimizers**: Adam, L-BFGS, conjugate gradient in stdlib
+- ✅ **R7RS Extensions**: call/cc, dynamic-wind, bytevectors, let-syntax
 
-### v1.2 (Q2 2026)
+### v1.2-scale (Q2 2026)
 
-- **Convolution Ops**: Native conv2d, maxpool
-- **Attention Mechanism**: Transformer building blocks
-- **Model Serialization**: Save/load trained models
-- **Python Bindings**: Call Eshkol from Python
-- **WebAssembly**: Browser-based execution
+- **Data I/O**: Image/audio I/O, typed buffers, streams, DataFrame, plotting
+- **Vulkan Compute**: Cross-platform GPU backend, multi-GPU
+- **Model Deployment**: Serialization, ONNX export, quantization
+- **Python Bindings**: Call Eshkol from Python and vice versa
+- **Distributed Training**: AllReduce, MPI, gRPC
 
-### v2.0 (2026)
+### v1.3-evolve (Q3 2026)
 
-- **Concurrency**: Threads, futures, actors
-- **Distributed Computing**: Message passing, remote execution
-- **ONNX Integration**: Import/export models
-- **Advanced Types**: Linear types enforcement, session types
-- **Symbolic Execution**: Formal verification tools
+- **Language Extensions**: Full R7RS library system, string interpolation, keyword arguments
+- **Advanced Types**: Refinement types, effect types, higher-rank types, row polymorphism
+- **Compiler Optimization**: PGO, whole-program optimization, polyhedral loop optimization
+
+### v1.4-connection (Q4 2026)
+
+- **Platform Abstraction**: Cross-platform windows, event system, event loop
+- **Real-Time Audio**: Device management, synthesis, MIDI I/O
+- **Networking**: TCP/UDP sockets with linear resource management
+- **Embedded & Robotics**: GPIO, I2C/SPI/UART, PWM, ADC/DAC, mobile targets
+
+### v1.5-intelligence (Q1 2027)
+
+- **Neuro-Symbolic Bridge**: Soft unification, symbol embeddings, attention over KB
+- **Program Synthesis**: Type-directed holes, neural-guided search
+- **Advanced Neural**: LSTM/GRU cells, Graph Neural Networks
+
+### v2.0-starlight (2027+)
+
+- **Quantum Computing**: Qubit types with linear tracking, gates, VQE/QAOA
+- **Formal Verification**: Proof assistant integration, certified compilation
+- **Next-Gen Types**: Session types, algebraic effects, quantitative type theory
 
 ---
 
 ## Production Readiness
 
-### ✅ Production-Ready (v1.0)
+### ✅ Production-Ready (v1.1)
 
-- Core language (70+ special forms)
+- Core language (70+ special forms, 700+ builtins)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)
-- Standard library (25 modules, 180+ functions)
+- Standard library (25+ modules, 300+ functions)
 - LLVM-based native compilation
 - Arena-based memory management
-- REPL with JIT compilation
-- Module system
+- REPL with JIT compilation and stdlib
+- Module system with package manager
+- GPU acceleration (Metal + CUDA)
+- Parallel primitives (thread pool, futures)
+- Exact arithmetic (bignums, rationals)
+- Complex numbers with AD
+- Signal processing (FFT, filters)
+- Consciousness engine (22 builtins)
+- call/cc and dynamic-wind
+- Bytevectors
+- LSP server
 
 ### 🚧 Beta Quality
 
-- Exception handling (stable but limited types)
-- FFI (works but needs more testing)
+- FFI (works but callback registration planned)
 - Quantum RNG (external dependency)
-- Some stdlib modules (less battle-tested)
+- XLA StableHLO path (requires MLIR, LLVM-direct is default)
 
 ### 📋 Not Yet Production
 
-- GPU acceleration
 - Distributed computing
-- Advanced ML architectures (transformers, etc.)
-- Concurrency primitives
-- IDE tooling beyond basic syntax
+- Model serialization/ONNX export
+- Vulkan Compute
+
+---
+
+## Dual Backend Architecture (v1.1)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Bytecode VM** |
+| 63-opcode ISA | ✅ | Register+stack architecture, computed-goto dispatch |
+| 250+ native call IDs | ✅ | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter |
+| ESKB binary format | ✅ | Section-based layout, LEB128 encoding, CRC32 checksums |
+| `-B` flag (bytecode emission) | ✅ | `eshkol-run input.esk -B output.eskb` |
+| VM compiler integration | ✅ | eshkol_vm.c linked into compiler build |
+| Closures & upvalues | ✅ | Closure creation, open/close upvalues, mutable captures |
+| call/cc & dynamic-wind | ✅ | Continuation capture, wind stack |
+| guard/raise exceptions | ✅ | Handler stack with continuation restore |
+| Variadic functions | ✅ | OP_PACK_REST for rest parameters |
+| **Weight Matrix Transformer** |
+| Transformer interpreter | ✅ | d_model=36, 5 layers, FFN_DIM=512, 307K params |
+| 3-way verification | ✅ | Reference = simulated = matrix-based (55/55 tests) |
+| QLMW binary export | ✅ | For qLLM weight loading |
+| 25 core opcodes in weights | ✅ | Remaining 38 via native dispatch |
+| **qLLM Bridge** |
+| Eshkol↔qLLM tensors | ✅ | Type conversion (double↔float32) with AD integration |
+
+## Tensor Linear Algebra (v1.1)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `tensor-cholesky` | ✅ | Cholesky decomposition |
+| `tensor-lu` | ✅ | LU decomposition |
+| `tensor-qr` | ✅ | QR decomposition |
+| `tensor-svd` | ✅ | Singular value decomposition |
+| `tensor-solve` | ✅ | Linear system solver |
+| `tensor-det` | ✅ | Determinant |
+| `tensor-inverse` | ✅ | Matrix inverse |
+| `tensor-cov` | ✅ | Covariance matrix |
+| `tensor-corrcoef` | ✅ | Correlation coefficient matrix |
+
+## Data Loading (v1.1)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `make-dataloader` | ✅ | Create batched data iterator |
+| `dataloader-next` | ✅ | Get next batch |
+| `dataloader-reset` | ✅ | Reset to beginning |
+| `dataloader-length` | ✅ | Total number of batches |
+| `dataloader-has-next` | ✅ | Check if more batches available |
+| `train-test-split` | ✅ | Split dataset into train/test |
 
 ---
 
 ## Known Limitations
 
-1. **No built-in parallelism** - Single-threaded execution (parallel features planned for v2.0)
-2. **Limited IDE support** - Syntax highlighting exists, LSP planned
+1. **Single GPU dispatch** - One GPU at a time (multi-GPU planned v1.2)
 3. **Small ecosystem** - Growing standard library, but not as extensive as Python/Julia
 4. **Learning curve** - Functional programming + AD concepts require study
-5. **Platform support** - Linux/macOS only (Windows via WSL)
+5. **Platform support** - Linux, macOS, and Windows (MSYS2/MinGW64)
 
 ---
 
@@ -717,6 +844,20 @@ This matrix documents all implemented and planned features for the Eshkol langua
 
 ## Version History
 
+### v1.1 (March 2026) - Accelerate Release
+
+**Highlights**:
+- XLA backend with dual-mode tensor acceleration
+- GPU acceleration: Metal (Apple Silicon) + CUDA (NVIDIA)
+- Parallel primitives with work-stealing thread pool
+- Arbitrary-precision arithmetic (bignums + rationals)
+- Consciousness engine (logic, inference, workspace)
+- Signal processing library (FFT, filters, window functions)
+- R7RS extensions (call/cc, dynamic-wind, bytevectors)
+- 700+ builtins, 35 test suites, 434 test files
+
+**Codebase**: ~232,000 lines of production C/C++
+
 ### v1.0 (December 2025) - Foundation Release
 
 **Highlights**:
@@ -727,11 +868,8 @@ This matrix documents all implemented and planned features for the Eshkol langua
 - HoTT dependent type system
 - LLVM native compilation
 - Arena-based memory management
-- 300+ test files
 
-**Codebase**: 67,079 lines of production C++  
-**Development**: 18 months  
-**Test Coverage**: Comprehensive (all features verified)
+**Codebase**: 67,079 lines of production C++
 
 ---
 
@@ -762,7 +900,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2025-12-11  
-**Document Version**: 1.0.0
+**Last Updated**: 2026-03-27
+**Document Version**: 1.1.11
 
 For detailed API documentation, see [API_REFERENCE.md](API_REFERENCE.md)

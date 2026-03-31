@@ -62,7 +62,7 @@ We explicitly distinguish:
 (define square (lambda (x) (* x x)))
 (display square)  ; => (lambda (x) (* x x))
 
-; Eshkol: Stored in closure->sexpr_ptr (24-byte structure)
+; Eshkol: Stored in closure->sexpr_ptr (40-byte structure)
 ; Performance: Native code execution, no interpretation overhead
 ```
 
@@ -136,12 +136,12 @@ optimizer.step()
 - Eshkol: Direct LLVM IR, no boundaries
 - Startup: Python ~seconds, Eshkol ~milliseconds
 
-### What Python Ecosystem Provides (Not in Eshkol v1.0)
+### What Python Ecosystem Provides
 
 - ❌ Extensive ML libraries such as scikit-learn, etc
-- ❌ GPU acceleration (but this is coming soon with XLA support)
-- ❌ Distributed training frameworks (coming soon)
-- ❌ Visualization libraries (coming soon)
+- ✅ GPU acceleration (shipped in v1.1 via Metal, CUDA, and XLA backends)
+- ❌ Distributed training frameworks (planned for v1.2-scale)
+- ❌ Visualization libraries
 - ❌ Large community/ecosystem
 
 ## vs. Julia
@@ -309,7 +309,7 @@ struct eshkol_closure {
 
 ### 4. Modular LLVM Backend
 
-**Unique Aspect:** 15 specialized codegen modules instead of monolithic:
+**Unique Aspect:** 21 specialized codegen modules instead of monolithic:
 
 ```cpp
 TaggedValueCodegen    - Pack/unpack operations
@@ -340,16 +340,16 @@ BindingCodegen        - Variable definitions
 ### What v1.0 Does NOT Have vs Competitors
 
 **vs. Python Ecosystem:**
-- ❌ No GPU acceleration (NumPy/PyTorch have this and we will too soon)
-- ❌ No extensive ML library ecosystem
-- ❌ No distributed training frameworks (coming soon)
-- ❌ Small community/package ecosystem (coming soon)
+- ✅ GPU acceleration (Metal SF64 + CUDA, shipped in v1.1)
+- ✅ ML builtins (75+ operations: activations, losses, optimizers, CNN, transformer)
+- ❌ No distributed training frameworks (planned for v1.2-scale)
+- ❌ Small community/package ecosystem (eshkol-pkg shipped, registry growing)
 
 **vs. Julia:**
-- ❌ No built-in parallelism (Julia has pmap, @threads but we will have this soon)
-- ❌ No multiple dispatch (Eshkol has tagged polymorphism but we will have this soon)
+- ✅ Parallel primitives (parallel-map, parallel-fold, parallel-filter, future/force — shipped in v1.1)
+- ❌ No multiple dispatch (Eshkol has tagged polymorphism)
 - ❌ Smaller ecosystem
-- ❌ No differential equation solvers (Julia has DifferentialEquations.jl but this is coming in the next version)
+- ✅ ODE solvers (Euler, RK4, adaptive RK45 — shipped in v1.1 stdlib)
 
 **vs. C/C++:**
 - ❌ Overhead of tagged values (16 bytes per value vs 2 bytes for int)
@@ -390,8 +390,8 @@ BindingCodegen        - Variable definitions
 | **Homoiconicity** | Yes (with native perf) | No | No | Yes (but slow) | No |
 | **Type System** | Gradual (HoTT) | Dynamic+hints | Gradual | Dynamic | Static |
 | **Tensor Ops** | Built-in | NumPy | Built-in | None | Libraries |
-| **GPU** | ❌ Not yet | ✅ Yes | ✅ Yes | ❌ No | ✅ Yes |
-| **Parallelism** | ❌ Not yet | ✅ Yes | ✅ Yes | Limited | ✅ Yes |
+| **GPU** | ✅ Metal+CUDA | ✅ Yes | ✅ Yes | ❌ No | ✅ Yes |
+| **Parallelism** | ✅ Thread pool | ✅ Yes | ✅ Yes | Limited | ✅ Yes |
 | **Ecosystem** | Small | Huge | Large | Moderate | Huge |
 
 ## Code Comparison Examples
@@ -547,12 +547,15 @@ f = make_multiplier(5)
 - Scheme preference + performance requirements
 - Research into AD/memory management
 
-**Active Development (Imminent):**
-- XLA backend integration for accelerated tensor operations
-- SIMD vectorization for automatic parallelization
-- Concurrency primitives for multi-core utilization
-- GPU acceleration (CUDA, Metal, Vulkan)
-- Distributed computing framework
+**Shipped in v1.1-accelerate:**
+- ✅ XLA backend with dual-mode StableHLO + LLVM-direct
+- ✅ SIMD vectorization and AMX acceleration
+- ✅ Parallel primitives with work-stealing thread pool
+- ✅ GPU acceleration (Metal SF64 + CUDA)
+- ✅ Consciousness engine (logic programming, active inference, global workspace)
+- ✅ Signal processing (FFT, filters, window functions)
+- ✅ Exact arithmetic (bignums, rationals)
+- ✅ First-class continuations (call/cc, dynamic-wind)
 
 **Strategic Position:**
 - **Unprecedented combination**: No other language integrates compiler-level AD, homoiconic native code, and deterministic memory
@@ -582,7 +585,7 @@ f = make_multiplier(5)
    - No GC pauses
 
 4. **Modular LLVM Backend**
-   - 15 specialized codegen modules
+   - 21 specialized codegen modules
    - Clean architecture
    - Extensible design
 
@@ -600,13 +603,14 @@ Eshkol v1.0-architecture establishes unprecedented capabilities:
 - **Uniquely provides** homoiconicity at native performance - code-as-data without interpretation overhead
 - **Stands alone** with compiler-integrated AD operating on AST, runtime, and LLVM IR simultaneously
 
-With XLA, SIMD, parallelism, and GPU acceleration arriving imminently, Eshkol is positioned to **define the future** of:
+With XLA, SIMD, parallelism, GPU acceleration, consciousness engine, and exact arithmetic all shipped in v1.1, Eshkol now **defines the standard** for:
 - **Gradient-based AI** - where differentiation is a natural language operation, not a framework constraint
 - **Real-time scientific computing** - where deterministic memory enables millisecond-precision control
 - **Integrated symbolic-numeric systems** - where homoiconic code enables self-modification at native speed
+- **Neuro-symbolic intelligence** - where logic programming meets active inference in a compiled language
 
-**Eshkol v1.0-foundation** delivers what no competitor can: a production compiler combining automatic differentiation, deterministic memory, and homoiconicity. The next releases will add GPU acceleration, parallelism, and distributed computing - establishing Eshkol as **the definitive platform** for computational science and AI development where mathematical elegance meets uncompromising performance.
+**Eshkol v1.1-accelerate** delivers what no competitor can: a production compiler combining automatic differentiation, deterministic memory, homoiconicity, GPU acceleration, parallel computing, and a consciousness engine. Future releases will add distributed computing (v1.2-scale), multi-GPU support (v1.2-scale), and full R7RS library system (v1.3-evolve).
 
 ---
 
-*This analysis reflects actual v1.0-architecture capabilities. For future features (GPU, parallelism, expanded ecosystem), see [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md).*
+*This analysis reflects v1.1-accelerate capabilities. For future features, see [ROADMAP.md](../../ROADMAP.md).*

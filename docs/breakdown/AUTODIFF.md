@@ -495,6 +495,90 @@ Autodiff works seamlessly with tensor operations. The [`vref`](lib/backend/tenso
 
 ---
 
+## v1.1 AD Extensions
+
+### 1. Tensor Backward Pass
+
+Eshkol v1.1 introduces a full reverse-mode backward pass for tensor operations, implemented in `lib/backend/tensor_backward.cpp` with its header at `inc/eshkol/backend/tensor_backward.h`. The design follows the PyTorch autograd convention: each backward function receives the upstream gradient (`grad_out`) and tensors saved during the forward pass (`saved_*`), and writes computed input gradients into pre-allocated output buffers.
+
+**Supported operations with dedicated backward functions:**
+
+| Category | Operations | Backward Function |
+|---|---|---|
+| Structural | transpose, reshape, positional encoding | `eshkol_backward_transpose`, `eshkol_backward_reshape`, `eshkol_backward_positional_encoding` |
+| Reduction | sum, mean | `eshkol_backward_sum`, `eshkol_backward_mean` |
+| Pooling | max pool 2D, avg pool 2D | `eshkol_backward_maxpool2d`, `eshkol_backward_avgpool2d` |
+| Convolution | conv2d | `eshkol_backward_conv2d` |
+| Normalization | batch norm, layer norm | `eshkol_backward_batchnorm`, `eshkol_backward_layernorm` |
+| Linear algebra | matmul | `eshkol_backward_matmul` |
+| Attention | single-head, multi-head | `eshkol_backward_attention`, `eshkol_backward_multihead_attention` |
+| Embedding | embedding lookup | `eshkol_backward_embedding` |
+
+**Matmul backward** implements the standard matrix calculus rules: for a forward pass `C = A @ B` where A is (M,K), B is (K,N), and C is (M,N), the backward pass computes `dA = grad_C @ B^T` and `dB = A^T @ grad_C`. Both input matrices are saved during the forward pass in the `ad_node_t.saved_tensors` array.
+
+**Attention backward** is the most complex operation, computing five distinct gradient flows through the softmax-scaled dot-product attention: `d_V = attn^T @ grad_out`, `d_attn = grad_out @ V^T`, then softmax backward `d_scores[i][j] = attn[i][j] * (d_attn[i][j] - dot(attn[i], d_attn[i]))`, and finally `d_Q = d_scores @ K` and `d_K = d_scores^T @ Q`. Multi-head attention decomposes this per-head and additionally backpropagates through the projection weight matrices (W_Q, W_K, W_V, W_O).
+
+**Integration with the forward-mode dual number system:** Eshkol's AD architecture is a hybrid. Forward-mode uses dual numbers (struct `{double primal, double tangent}`) for scalar derivatives and is implemented entirely in LLVM IR generation (`autodiff_codegen.cpp`). Reverse-mode uses a tape-based computational graph with `ad_node_t` nodes. The key bridge is the `propagateGradient` function in `autodiff_codegen.cpp`, which implements a two-path dispatch:
+
+1. **Tensor gradient fast path**: If `ad_node_t.tensor_gradient` is non-null (set by `eshkol_seed_tensor_gradient` at the output node), the node was recorded as a tensor operation. The `eshkol_tensor_backward_dispatch` C runtime function reads the node's type, saved tensors, params, and shape/ndim, then dispatches to the appropriate `eshkol_backward_*` function.
+2. **Scalar gradient path**: For nodes without tensor gradients, inline LLVM IR implements the scalar chain rule (add, sub, mul, div, sin, cos, exp, log, pow, neg, and activation functions relu, sigmoid, tanh, gelu, leaky_relu, silu).
+
+The backward pass traverses the tape in reverse order (last node first), using `arena_tape_get_node` to retrieve nodes by index. Gradient accumulation into input nodes is handled by `eshkol_accumulate_tensor_grad`, which lazily allocates the `tensor_gradient` buffer on first access and performs element-wise `+=` accumulation, correctly handling the case where a tensor feeds into multiple downstream operations.
+
+**Activation function backward** (relu, sigmoid, tanh, gelu, leaky_relu, silu) is handled at the scalar level by `propagateGradient` in `autodiff_codegen.cpp` using inline LLVM IR, not by `tensor_backward.cpp`. Geometric/hyperbolic ops (AD_NODE types 33-40: hyperbolic distance, Poincare exp/log map, tangent projection, geodesic attention, Mobius add/matmul, gyrovector space) also use scalar backward in the codegen and are not dispatched through the tensor backward runtime. If a tensor node's type does not match any case in the dispatcher's switch statement, its gradient is silently dropped.
+
+### 2. Numeric Type Interactions with AD
+
+**Bignums and AD:** Gradients do not flow through bignum operations. Bignums are arbitrary-precision exact integers represented as heap-allocated structures (`ESHKOL_VALUE_HEAP_PTR` with bignum subtype). The AD system operates exclusively on `double` values and `{double, double}` dual number structs. When `codegenDerivative` encounters a point value, it explicitly converts to double: integer inputs go through `SIToFP`, tagged values through `unpackDoubleFromTaggedValue`. There is no bignum-to-dual conversion path. This is mathematically correct: bignums are exact integer arithmetic with no meaningful derivative (derivatives of integer-valued functions are zero almost everywhere).
+
+**Complex numbers and AD:** Eshkol does not implement Wirtinger derivatives. Complex numbers (type tag 7, heap-allocated `{real: f64, imag: f64}`) exist as a first-class numeric type, but the AD system does not create complex-valued dual numbers. The `convertToDual` function handles INT64, DOUBLE, and HEAP_PTR (bignum via `eshkol_bignum_to_double`), but there is no complex-to-dual conversion. If a complex value enters an AD context, it would fall through to the bignum path (also HEAP_PTR), which calls `eshkol_bignum_to_double` and would produce incorrect results for complex values. This is a known limitation; Wirtinger calculus support is not present in v1.1.
+
+**Rational numbers at the AD boundary:** Rationals share the HEAP_PTR type tag with bignums but have a different heap subtype. In `convertToDual`, the HEAP_PTR path calls `eshkol_bignum_to_double`, which would fail for rational values. In practice, rational arguments to differentiated functions should be converted to doubles before entering the AD context. The `codegenGradient` function uses `ensureTaggedValue` for the point input, which correctly handles raw doubles and integers but does not explicitly convert rationals. This is another area where the type boundary is not fully sealed.
+
+### 3. Parallel Tape Management
+
+The AD tape uses **per-thread isolation** via `thread_local` storage in `lib/core/arena_memory.cpp`:
+
+```c
+// thread_local: AD tape state is per-thread to prevent corruption under parallel autodiff
+#define MAX_TAPE_DEPTH 32
+thread_local ad_tape_t* __ad_tape_stack[MAX_TAPE_DEPTH] = {nullptr};
+thread_local uint64_t __ad_tape_depth = 0;
+```
+
+This means each thread in the parallel thread pool maintains its own independent tape stack, supporting up to 32 levels of nested gradient computation per thread. The outer AD node stack is also thread-local:
+
+```c
+thread_local void* __outer_ad_node_stack[MAX_TAPE_DEPTH] = {nullptr};
+thread_local uint64_t __outer_ad_node_depth = 0;
+```
+
+However, the global AD tape pointer (`__current_ad_tape`) and the global AD mode flag (`__ad_mode_active`) in `arena_memory.cpp` are **not** thread-local -- they are plain global variables:
+
+```c
+ad_tape_t* __current_ad_tape = nullptr;
+bool __ad_mode_active = false;
+```
+
+This creates a potential issue: if `parallel-map` maps a gradient function, each worker thread gets its own tape stack (correct), but `__current_ad_tape` and `__ad_mode_active` are shared across all threads (potentially racy). In the LLVM codegen layer, these are exposed as global variables (`__current_ad_tape` via `GlobalVariable`), and the tape stack is used for nested gradients within a single thread.
+
+**When `parallel-map` maps a gradient function:** The closure containing the gradient computation is dispatched to worker threads via the LLVM-generated `__eshkol_call_unary_closure` dispatcher. Each worker thread's `thread_local` tape stack is independent, so tape operations within the gradient function are thread-safe. However, the shared `__ad_mode_active` flag could see torn reads/writes if gradient functions run concurrently on the thread pool. In practice, this works because `__ad_mode_active` is set before dispatching and cleared after all workers complete, but it is not formally thread-safe.
+
+### 4. GPU Gradient Flow
+
+In v1.1, the backward pass uses the same three-tier dispatch as the forward pass. The cost model in `blas_backend.cpp` dispatches tensor operations through a hierarchy: SIMD (small tensors) -> cBLAS/Accelerate AMX (medium) -> Metal GPU (large). The backward pass in `tensor_backward.cpp` calls back into these same dispatch paths for matmul and element-wise operations.
+
+The specific flow for a backward pass:
+1. **Forward**: `tensor_matmul` detects matrix size and dispatches to the appropriate backend (SIMD, cBLAS, or Metal GPU). The result is always in CPU memory (GPU results are copied back).
+2. **Tape recording**: The forward pass records an `ad_node_t` with type `AD_NODE_MATMUL`, saving both input tensors in `saved_tensors` (CPU pointers).
+3. **Backward**: `eshkol_tensor_backward_dispatch` calls `eshkol_backward_matmul`, which computes gradient matmuls via `tensor_matmul` — re-entering the cost-model dispatch. Large gradient matmuls therefore use cBLAS or GPU acceleration, not scalar loops.
+
+The saved tensors (`saved_A`, `saved_B` for matmul) are CPU-resident pointers, so GPU backward dispatch involves the same copy-to-GPU / compute / copy-back flow as the forward pass.
+
+The `eshkol_accumulate_tensor_grad` function performs gradient accumulation as a simple `+=` loop with no atomic operations, so backward pass parallelism across independent tape nodes is not yet implemented.
+
+---
+
 ## See Also
 
 - [Vector Operations](VECTOR_OPERATIONS.md) - Tensor operations, `vref`, linear algebra

@@ -625,6 +625,13 @@ public:
     llvm::Value* tensor(const eshkol_operations_t* op);
 
     /**
+     * Create tensor with shape and fill value: (make-tensor shape fill)
+     * @param op The operation AST node
+     * @return Tensor with given shape filled with fill value
+     */
+    llvm::Value* makeTensor(const eshkol_operations_t* op);
+
+    /**
      * Create zero-filled tensor: (zeros dim1 dim2 ...)
      * @param op The operation AST node
      * @return Tensor filled with zeros

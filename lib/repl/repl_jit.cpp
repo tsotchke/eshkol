@@ -20,6 +20,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Config/llvm-config.h>
 #include <llvm/IR/CFG.h>  // For predecessors()
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/Error.h>
@@ -65,16 +66,19 @@ extern "C" {
 // ===== PARALLEL EXECUTION RUNTIME (parallel_codegen.cpp) =====
 // eshkol_tagged_value_t and arena_t are already declared via eshkol.h included above
 extern "C" {
-    eshkol_tagged_value_t eshkol_parallel_map(eshkol_tagged_value_t fn,
-                                               eshkol_tagged_value_t list,
-                                               arena_t* arena);
-    eshkol_tagged_value_t eshkol_parallel_fold(eshkol_tagged_value_t fn,
-                                                eshkol_tagged_value_t init,
-                                                eshkol_tagged_value_t list,
-                                                arena_t* arena);
-    eshkol_tagged_value_t eshkol_parallel_filter(eshkol_tagged_value_t pred,
-                                                  eshkol_tagged_value_t list,
-                                                  arena_t* arena);
+    void eshkol_parallel_map(eshkol_tagged_value_t fn,
+                              eshkol_tagged_value_t list,
+                              arena_t* arena,
+                              eshkol_tagged_value_t* out_result);
+    void eshkol_parallel_fold(eshkol_tagged_value_t fn,
+                               eshkol_tagged_value_t init,
+                               eshkol_tagged_value_t list,
+                               arena_t* arena,
+                               eshkol_tagged_value_t* out_result);
+    void eshkol_parallel_filter(eshkol_tagged_value_t pred,
+                                 eshkol_tagged_value_t list,
+                                 arena_t* arena,
+                                 eshkol_tagged_value_t* out_result);
     void eshkol_parallel_for_each(eshkol_tagged_value_t fn,
                                    eshkol_tagged_value_t list,
                                    arena_t* arena);
@@ -141,7 +145,11 @@ void ReplJITContext::initializeJIT() {
     // which causes LLVM to generate different struct argument stack layouts on ARM64.
     // stdlib.o is compiled at -O0, so the JIT must use the same level to ensure
     // matching ABI for {i8,i8,i16,i32,i64} tagged value arguments.
+#if LLVM_VERSION_MAJOR >= 18
     jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);
+#else
+    jtmb->setCodeGenOptLevel(CodeGenOpt::None);
+#endif
 
     // Create LLJIT instance with explicit host-matched TM
     auto jit_or_err = LLJITBuilder()
@@ -575,7 +583,11 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
     }
     if (getenv("ESHKOL_DEBUG_DL")) {
         std::cerr << "[REPL] Module DataLayout: " << module->getDataLayoutStr() << std::endl;
+#if LLVM_VERSION_MAJOR >= 18
         std::cerr << "[REPL] Module Triple: " << module->getTargetTriple().str() << std::endl;
+#else
+        std::cerr << "[REPL] Module Triple: " << module->getTargetTriple() << std::endl;
+#endif
         std::cerr << "[REPL] LLJIT DataLayout: " << jit_->getDataLayout().getStringRepresentation() << std::endl;
     }
 

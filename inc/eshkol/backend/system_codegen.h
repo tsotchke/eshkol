@@ -77,6 +77,12 @@ public:
     llvm::Value* currentSeconds(const eshkol_operations_t* op);
 
     /**
+     * Get current time in seconds with microsecond precision: (current-time)
+     * @return Time in seconds as double (e.g., 1709049600.123456)
+     */
+    llvm::Value* currentTime(const eshkol_operations_t* op);
+
+    /**
      * Get current time in milliseconds: (current-time-ms)
      * @return Time in milliseconds as double
      */

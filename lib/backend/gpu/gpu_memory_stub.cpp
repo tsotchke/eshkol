@@ -14,6 +14,10 @@
 #include <cstring>
 #include <cmath>
 
+/* Forward declaration: dispatched matmul from blas_backend.cpp */
+extern "C" void eshkol_matmul_f64(const double*, const double*, double*,
+                                   uint64_t, uint64_t, uint64_t);
+
 // ===== Device Management =====
 
 int eshkol_gpu_init(void) {
@@ -116,8 +120,6 @@ int eshkol_gpu_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B,
     if (!a || !b || !c) return -1;
 
     // GPU not available — dispatch to BLAS/SIMD via eshkol_matmul_f64
-    extern "C" void eshkol_matmul_f64(const double*, const double*, double*,
-                                       uint64_t, uint64_t, uint64_t);
     eshkol_matmul_f64(a, b, c, M, K, N);
     return 0;
 }
@@ -334,7 +336,5 @@ int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
                              uint64_t M, uint64_t K, uint64_t N) {
     // GPU not available — dispatch directly to BLAS/SIMD via eshkol_matmul_f64
-    extern "C" void eshkol_matmul_f64(const double*, const double*, double*,
-                                       uint64_t, uint64_t, uint64_t);
     eshkol_matmul_f64(A, B, C, M, K, N);
 }

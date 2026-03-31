@@ -33,7 +33,7 @@
 (display (if (= (magnitude (make-rectangular 0.0 0.0)) 0.0) "PASS" "FAIL")) (display ": magnitude of 0+0i is 0.0") (newline)
 
 ; 10. Angle: angle of 1+1i is close to pi/4
-(display (if (< (abs (- (angle (make-rectangular 1.0 1.0)) (/ (* 4.0 (atan 1.0)) 1.0))) 1e-10) "PASS" "FAIL")) (display ": angle of 1+1i is pi/4") (newline)
+(display (if (< (abs (- (angle (make-rectangular 1.0 1.0)) (atan 1.0))) 1e-10) "PASS" "FAIL")) (display ": angle of 1+1i is pi/4") (newline)
 
 ; 11. Angle: angle of 1+0i is 0.0
 (display (if (< (abs (angle (make-rectangular 1.0 0.0))) 1e-10) "PASS" "FAIL")) (display ": angle of 1+0i is 0.0") (newline)

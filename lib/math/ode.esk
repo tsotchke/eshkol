@@ -10,6 +10,13 @@
 ;;; - tf: final time
 ;;; - h: step size (for fixed-step methods)
 
+(provide euler euler-step euler-final
+         heun heun-step
+         rk4 rk4-step rk4-final
+         rk45 rk45-step rk45-final
+         midpoint midpoint-step
+         backward-euler backward-euler-step)
+
 ;;; ============================================================
 ;;; Utilities
 ;;; ============================================================

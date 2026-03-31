@@ -1644,19 +1644,40 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     ctx_.builder().CreateBr(merge_bb);
     dbl_bb = ctx_.builder().GetInsertBlock();
 
-    // Heap pointer path: check for bignum, convert to double
+    // Heap pointer path: check subtype for rational or bignum, convert to double
     ctx_.builder().SetInsertPoint(heap_bb);
-    llvm::BasicBlock* bignum_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_bignum", func);
-    ctx_.builder().CreateCondBr(is_heap_ptr, bignum_bb, int_bb);
+    llvm::BasicBlock* heap_dispatch_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_heap_dispatch", func);
+    ctx_.builder().CreateCondBr(is_heap_ptr, heap_dispatch_bb, int_bb);
 
+    // Read heap subtype header at ptr-8
+    ctx_.builder().SetInsertPoint(heap_dispatch_bb);
+    llvm::Value* heap_ptr = tagged_.unpackPtr(tagged_val);
+    llvm::Value* header_ptr = ctx_.builder().CreateGEP(
+        ctx_.int8Type(), heap_ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8));
+    llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "heap_subtype");
+    llvm::Value* is_rational = ctx_.builder().CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_RATIONAL));
+    llvm::BasicBlock* rational_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_rational", func);
+    llvm::BasicBlock* bignum_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_bignum", func);
+    ctx_.builder().CreateCondBr(is_rational, rational_bb, bignum_bb);
+
+    // Rational path: call eshkol_rational_to_double(ptr)
+    ctx_.builder().SetInsertPoint(rational_bb);
+    llvm::FunctionType* rat_to_dbl_type = llvm::FunctionType::get(
+        ctx_.doubleType(), {ctx_.ptrType()}, false);
+    llvm::FunctionCallee rat_to_dbl = ctx_.module().getOrInsertFunction(
+        "eshkol_rational_to_double", rat_to_dbl_type);
+    llvm::Value* rat_dbl = ctx_.builder().CreateCall(rat_to_dbl, {heap_ptr}, "rat_to_dbl");
+    ctx_.builder().CreateBr(merge_bb);
+    rational_bb = ctx_.builder().GetInsertBlock();
+
+    // Bignum path: call eshkol_bignum_to_double(ptr)
     ctx_.builder().SetInsertPoint(bignum_bb);
-    // Call eshkol_bignum_to_double(ptr)
-    llvm::Value* bn_ptr = tagged_.unpackPtr(tagged_val);
     llvm::FunctionType* bn_to_dbl_type = llvm::FunctionType::get(
         ctx_.doubleType(), {ctx_.ptrType()}, false);
     llvm::FunctionCallee bn_to_dbl = ctx_.module().getOrInsertFunction(
         "eshkol_bignum_to_double", bn_to_dbl_type);
-    llvm::Value* bn_dbl = ctx_.builder().CreateCall(bn_to_dbl, {bn_ptr}, "bn_to_dbl");
+    llvm::Value* bn_dbl = ctx_.builder().CreateCall(bn_to_dbl, {heap_ptr}, "bn_to_dbl");
     ctx_.builder().CreateBr(merge_bb);
     bignum_bb = ctx_.builder().GetInsertBlock();
 
@@ -1669,9 +1690,10 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_bb);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 4, "as_double");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 5, "as_double");
     phi->addIncoming(ad_val, ad_bb);
     phi->addIncoming(dbl_val, dbl_bb);
+    phi->addIncoming(rat_dbl, rational_bb);
     phi->addIncoming(bn_dbl, bignum_bb);
     phi->addIncoming(int_as_dbl, int_bb);
     return phi;

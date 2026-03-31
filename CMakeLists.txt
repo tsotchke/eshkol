@@ -5,7 +5,7 @@
 #
 cmake_minimum_required(VERSION 3.14)
 
-set(ESHKOL_VERSION "1.1.0")
+set(ESHKOL_VERSION "1.1.11")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
 
@@ -209,11 +209,19 @@ if(ESHKOL_XLA_ENABLED)
     if(STABLEHLO_ROOT AND EXISTS "${STABLEHLO_ROOT}")
         message(STATUS "Using StableHLO installation at: ${STABLEHLO_ROOT}")
 
-        # StableHLO build structure:
-        # ${STABLEHLO_ROOT}/llvm-build/     - LLVM/MLIR libraries and includes
-        # ${STABLEHLO_ROOT}/stablehlo/      - StableHLO source headers
-        # ${STABLEHLO_ROOT}/build/          - StableHLO built libraries
-        set(STABLEHLO_LLVM_BUILD "${STABLEHLO_ROOT}/llvm-build")
+        # StableHLO build structure (two modes):
+        # Mode 1: Bundled LLVM — ${STABLEHLO_ROOT}/llvm-build/ exists
+        # Mode 2: System LLVM — StableHLO built against system LLVM (no llvm-build/)
+        if(EXISTS "${STABLEHLO_ROOT}/llvm-build")
+            set(STABLEHLO_LLVM_BUILD "${STABLEHLO_ROOT}/llvm-build")
+            message(STATUS "StableHLO: using bundled LLVM at ${STABLEHLO_LLVM_BUILD}")
+        else()
+            # StableHLO built against system LLVM — derive root from llvm-config
+            get_filename_component(_sys_llvm_root "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
+            get_filename_component(_sys_llvm_root "${_sys_llvm_root}" DIRECTORY)
+            set(STABLEHLO_LLVM_BUILD "${_sys_llvm_root}")
+            message(STATUS "StableHLO: using system LLVM at ${STABLEHLO_LLVM_BUILD}")
+        endif()
         set(STABLEHLO_BUILD "${STABLEHLO_ROOT}/build")
 
         # Set CMake paths for find_package
@@ -528,6 +536,19 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/repl/.*")
 # (Metal .mm on macOS, stub .cpp on Linux/no-GPU)
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/gpu/.*")
 
+# Exclude ALL .c files from lib/backend/ — they are either standalone programs
+# (eshkol_compiler.c, weight_matrices.c, eshkol_asm.c, etc.) or unity-build
+# includes (vm_*.c, eskb_*.c are #included by eshkol_vm.c).
+# Only eshkol_vm.c is added back below (compiled in library mode).
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
+
+# Exclude standalone .cpp programs with main()
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
+
+# Add eshkol_vm.c (unity build: includes vm_*.c, eskb_*.c internally)
+list(APPEND LIB_SRC lib/backend/eshkol_vm.c)
+
 # Exclude XLA sources from main library when XLA is disabled
 if(NOT ESHKOL_XLA_ENABLED)
     list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/xla/.*")
@@ -537,7 +558,7 @@ endif()
 file(GLOB REPL_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/repl/*.cpp")
 
 add_compile_definitions(
-  ESHKOL_VER="${ESHKOL_VERSION}"
+  ESHKOL_VER="${ESHKOL_VERSION}-accelerate"
 )
 
 # Create static library for executables.
@@ -559,6 +580,7 @@ target_compile_options(eshkol-static PRIVATE
 # Buffer overflow detection at compile time (requires optimization)
 target_compile_definitions(eshkol-static PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
 target_compile_definitions(eshkol-static PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+target_compile_definitions(eshkol-static PRIVATE ESHKOL_VM_LIBRARY_MODE)
 
 # Add LLVM include directories for enhanced cross-platform support
 if(LLVM_INCLUDE_DIRS)
@@ -764,6 +786,9 @@ if(BUILD_REPL AND REPL_SRC)
     target_link_options(eshkol-run PRIVATE "-Wl,-z,relro" "-Wl,-z,now")
   endif()
   message(STATUS "eshkol-run linked with REPL JIT for -e/--eval support")
+
+  # Install compiler executable
+  install(TARGETS eshkol-run DESTINATION bin)
 endif()
 
 # ===== Package Manager =====

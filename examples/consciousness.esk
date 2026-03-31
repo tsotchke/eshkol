@@ -1,0 +1,23 @@
+;; Consciousness Engine — Logic, inference, and global workspace
+;; Demonstrates the 22-primitive neuro-symbolic system
+
+;; Knowledge base
+(define kb (make-kb))
+(kb-assert! kb (make-fact "likes" "alice" "math"))
+(kb-assert! kb (make-fact "likes" "bob" "music"))
+(kb-assert! kb (make-fact "likes" "alice" "physics"))
+
+;; Query
+(define results (kb-query kb (make-fact "likes" "alice" ?x)))
+(display "Alice likes: ") (display results) (newline)
+
+;; Factor graph for probabilistic inference
+(define fg (make-factor-graph 2 #(3 3)))
+(fg-infer! fg 10 0.01)
+(display "Free energy: ") (display (free-energy fg #())) (newline)
+
+;; Global workspace
+(define ws (make-workspace 4 3))
+(ws-register! ws "module-a" (lambda (content) (cons 0.8 #(1.0 0.0 0.0 0.0))))
+(ws-register! ws "module-b" (lambda (content) (cons 0.5 #(0.0 1.0 0.0 0.0))))
+(display "Workspace step: ") (display (ws-step! ws)) (newline)

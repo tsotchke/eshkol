@@ -6,13 +6,14 @@ This directory indexes Eshkol's architecture documentation.
 
 ### Comprehensive Technical Architecture
 
-**[Eshkol v1.0-Architecture](../ESHKOL_V1_ARCHITECTURE.md)** - Master architecture document covering the entire system based on 67,000-line code analysis. Includes:
+**[Eshkol v1.1-Architecture](../ESHKOL_V1_ARCHITECTURE.md)** - Master architecture document covering the entire system based on ~232,000 line code analysis. Includes:
 - Compilation pipeline (5 phases)
 - Runtime type system (tagged values, object headers)
 - Memory management (OALR, arena allocation)
 - Automatic differentiation (3 modes)
-- Closure system (32-byte structures)
-- LLVM backend architecture (19 modules)
+- Closure system (40-byte structures)
+- LLVM backend architecture (21 modules)
+- v1.1 extensions: XLA backend, GPU acceleration, consciousness engine, parallel primitives, exact arithmetic, signal processing
 
 ### Component Architecture
 

@@ -69,11 +69,11 @@ for test_file in "$TEST_DIR"/*.esk; do
     if ./$BUILD_DIR/eshkol-run "$test_file" -L./$BUILD_DIR > /tmp/macros_compile.log 2>&1; then
         # Compilation succeeded, try to run
         if ./a.out > /tmp/macros_test_output.txt 2>&1; then
-            if grep -qi "FAIL" /tmp/macros_test_output.txt; then
+            if grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]" /tmp/macros_test_output.txt; then
                 echo -e "${RED}ASSERTION FAIL${NC}"
                 FAILED_TESTS+=("$test_name")
                 ((FAIL++)) || true
-                grep -i "fail" /tmp/macros_test_output.txt | head -5 | sed 's/^/    /'
+                grep -E "^FAIL:" /tmp/macros_test_output.txt | head -5 | sed 's/^/    /'
             else
                 echo -e "${GREEN}PASS${NC}"
                 ((PASS++)) || true

@@ -53,8 +53,12 @@ static struct option long_options[] = {
     {"unsafe", no_argument, nullptr, 257},
     {"debug-info", no_argument, nullptr, 'g'},
     {"optimize", required_argument, nullptr, 'O'},
+    {"emit-eskb", required_argument, nullptr, 'B'},
     {0, 0, 0, 0}
 };
+
+/* Bytecode VM compiler — emit ESKB format */
+extern "C" int eshkol_emit_eskb(const char* source, const char* output_path);
 
 // Set to track imported files (prevent circular imports)
 static std::set<std::string> imported_files;
@@ -1172,7 +1176,7 @@ static void print_help(int x = 0)
         "\t--optimize:[-O] N = Set LLVM optimization level (0=none, 1=basic, 2=full, 3=aggressive).\n"
         "\t--strict-types = Type errors are fatal (default: gradual/warnings).\n"
         "\t--unsafe = Skip all type checks.\n\n"
-        "This is an early developer release (%s) of the Eshkol Compiler/Interpreter.\n",
+        "Eshkol Compiler v%s\n",
         ESHKOL_VER
     );
     exit(x);
@@ -2226,7 +2230,8 @@ int main(int argc, char **argv)
 
     if (argc == 1) print_help(1);
 
-    while ((ch = getopt_long(argc, argv, "hdaio:cswl:L:ne:rgO:", long_options, nullptr)) != -1) {
+    const char* eskb_output_path = nullptr;
+    while ((ch = getopt_long(argc, argv, "hdaio:cswl:L:ne:rgO:B:", long_options, nullptr)) != -1) {
         switch (ch) {
         case 'h':
             print_help(0);
@@ -2284,6 +2289,9 @@ int main(int argc, char **argv)
             break;
         case 257:
             unsafe_mode = 1;
+            break;
+        case 'B':
+            eskb_output_path = optarg;
             break;
         default:
             print_help(1);
@@ -2682,6 +2690,32 @@ int main(int argc, char **argv)
             eshkol_print_llvm_ir(llvm_module);
         }
         
+        /* Emit ESKB bytecode if requested */
+        if (eskb_output_path) {
+            /* Read source file for bytecode compilation */
+            FILE* eskb_src_f = source_files.empty() ? NULL : fopen(source_files[0], "r");
+            if (eskb_src_f) {
+                fseek(eskb_src_f, 0, SEEK_END);
+                long eskb_len = ftell(eskb_src_f);
+                fseek(eskb_src_f, 0, SEEK_SET);
+                char* eskb_source = (char*)malloc(eskb_len + 1);
+                if (eskb_source) {
+                    fread(eskb_source, 1, eskb_len, eskb_src_f);
+                    eskb_source[eskb_len] = 0;
+                    fclose(eskb_src_f);
+                    int eskb_result = eshkol_emit_eskb(eskb_source, eskb_output_path);
+                    if (eskb_result == 0) {
+                        printf("[ESKB] Emitted bytecode to %s\n", eskb_output_path);
+                    } else {
+                        fprintf(stderr, "WARNING: ESKB emission failed\n");
+                    }
+                    free(eskb_source);
+                } else {
+                    fclose(eskb_src_f);
+                }
+            }
+        }
+
         if (compile_only) {
             // Compile to object file
             std::string obj_filename;

@@ -101,7 +101,7 @@ for test_file in examples/*.esk; do
             else
                 echo -e "${GREEN}✅ PASS${NC}"
                 WORKING_EXAMPLES+=("$test_name")
-                ((PASS++))
+                ((PASS++)) || true
             fi
         else
             exit_code=$?
@@ -117,7 +117,7 @@ for test_file in examples/*.esk; do
     else
         echo -e "${RED}❌ COMPILE FAIL${NC}"
         COMPILE_FAILURES+=("$test_name")
-        ((COMPILE_FAIL++))
+        ((COMPILE_FAIL++)) || true
     fi
 done
 

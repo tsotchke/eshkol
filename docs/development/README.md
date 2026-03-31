@@ -6,9 +6,9 @@ This directory indexes development workflow documentation.
 
 ### Prerequisites
 
-- LLVM 14+ (required)
-- CMake 3.16+ (required)
-- C++17 compiler: GCC 9+, Clang 10+, or MSVC 2019+ (required)
+- LLVM 17 (required)
+- CMake 3.14+ (required)
+- C++20 compiler: GCC 10+, Clang 13+, or MSVC 2022+ (required)
 
 ### Build from Source
 
@@ -32,20 +32,16 @@ See [Getting Started](../breakdown/GETTING_STARTED.md) for detailed installation
 
 ## Running Tests
 
-Eshkol includes comprehensive test suites across 12 categories:
+Eshkol includes 35 test suites with 434 test files:
 
 ```bash
+# Run all tests
+./scripts/run_all_tests.sh
+
 # Run specific test suite
 ./scripts/run_autodiff_tests.sh
 ./scripts/run_list_tests.sh
-./scripts/run_neural_tests.sh
-./scripts/run_tensor_tests.sh
-
-# Run all tests
-for script in scripts/run_*_tests.sh; do
-    echo "Running $script..."
-    $script || echo "FAILED: $script"
-done
+./scripts/run_ml_tests.sh
 ```
 
 ### Test Categories
@@ -62,6 +58,16 @@ done
 - **json/** - JSON parsing
 - **system/** - System operations (display, hash tables)
 - **migration/** - Pointer consolidation tests
+- **consciousness/** - Logic programming, factor graphs, workspace
+- **signal/** - FFT, filters, window functions
+- **parallel/** - Parallel primitives, futures
+- **gpu/** - GPU dispatch, Metal/CUDA tests
+- **bignum/** - Arbitrary-precision integer tests
+- **rational/** - Exact rational arithmetic tests
+- **continuations/** - call/cc, dynamic-wind, guard/raise
+- **bytevector/** - R7RS bytevector operations
+- **io/** - File I/O, port operations
+- **benchmark/** - Performance benchmarks
 
 ## Contributing
 
@@ -71,16 +77,28 @@ done
 eshkol/
 ├── exe/              # Compiler and REPL executables
 ├── inc/eshkol/       # Public headers
-│   ├── backend/      # LLVM codegen headers (19 modules)
+│   ├── backend/      # LLVM codegen headers (21 modules)
 │   ├── frontend/     # Parser, macro expander headers
 │   └── types/        # Type system headers
 ├── lib/              # Implementation
 │   ├── backend/      # LLVM codegen (19 .cpp files)
-│   ├── core/         # Runtime (arena, AST, display)
+│   │   ├── gpu/      # GPU backends (Metal, CUDA)
+│   │   └── xla/      # XLA/StableHLO backend
+│   ├── core/         # Runtime (arena, AST, display, logic, inference, workspace)
 │   ├── frontend/     # Parser, macro expander
+│   ├── math/         # Math stdlib (special functions, ODE, constants)
+│   ├── signal/       # Signal processing (FFT, filters)
+│   ├── ml/           # Machine learning (optimization, activations)
+│   ├── random/       # Random number generators
+│   ├── web/          # Web/WASM platform (DOM API)
+│   ├── tensor/       # Tensor utilities
 │   ├── repl/         # JIT compiler
 │   └── types/        # Type checker, HoTT types
-├── tests/            # Test suite (12 categories)
+├── tests/            # Test suite (35 suites, 434 files)
+├── tools/            # Developer tools
+│   ├── lsp/          # Language Server Protocol
+│   ├── pkg/          # Package manager (eshkol-pkg)
+│   └── vscode-eshkol/ # VSCode extension
 └── scripts/          # Build and test scripts
 ```
 
@@ -105,7 +123,7 @@ When implementing new language features:
 
 ## Project Status
 
-**Current**: v1.0.0-foundation (production-ready)
+**Current**: v1.1.11-accelerate (production-ready)
 
 See [Roadmap](../breakdown/ROADMAP.md) for planned features.
 

@@ -156,6 +156,9 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM) {
 #include <cctype>
 #include <stack>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>  /* _NSGetExecutablePath */
+#endif
 
 using namespace llvm;
 
@@ -7159,6 +7162,8 @@ private:
                 return codegenEFE(op);
             case ESHKOL_FG_UPDATE_CPT_OP:
                 return codegenFGUpdateCPT(op);
+            case ESHKOL_FG_OBSERVE_OP:
+                return codegenFGObserve(op);
             case ESHKOL_MAKE_WORKSPACE_OP:
                 return codegenMakeWorkspace(op);
             case ESHKOL_WS_REGISTER_OP:
@@ -9196,8 +9201,77 @@ private:
             TypedValue tv_exp = codegenTypedAST(&op->call_op.variables[1]);
             if (!tv_base.llvm_value || !tv_exp.llvm_value) return nullptr;
             Value* base = typedValueToTaggedValue(tv_base);
-            Value* exp = typedValueToTaggedValue(tv_exp);
-            return arith_->pow(base, exp);
+            Value* exp_val = typedValueToTaggedValue(tv_exp);
+
+            // Check if base is complex — needs complex exponentiation
+            Value* base_type = builder->CreateExtractValue(base, {0}, "expt_base_type");
+            Value* base_is_complex = builder->CreateICmpEQ(base_type,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+
+            Function* cur_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* complex_expt_bb = BasicBlock::Create(*context, "expt_complex", cur_func);
+            BasicBlock* regular_expt_bb = BasicBlock::Create(*context, "expt_regular", cur_func);
+            BasicBlock* expt_merge_bb = BasicBlock::Create(*context, "expt_merge", cur_func);
+
+            builder->CreateCondBr(base_is_complex, complex_expt_bb, regular_expt_bb);
+
+            // Complex exponentiation: z^n via exp(n * ln(z))
+            builder->SetInsertPoint(complex_expt_bb);
+            Value* z = unpackComplexFromTagged(base);
+            Value* re = getComplexReal(z);
+            Value* im = getComplexImag(z);
+
+            // Compute ln(z) = ln(|z|) + i*atan2(imag, real)
+            Function* sqrt_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::sqrt, {double_type});
+            Function* log_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::log, {double_type});
+            Function* cos_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::cos, {double_type});
+            Function* sin_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::sin, {double_type});
+            Function* exp_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::exp, {double_type});
+
+            // |z| = sqrt(re^2 + im^2)
+            Value* re2 = builder->CreateFMul(re, re);
+            Value* im2 = builder->CreateFMul(im, im);
+            Value* mag = builder->CreateCall(sqrt_fn, {builder->CreateFAdd(re2, im2)});
+
+            // atan2(im, re)
+            FunctionType* atan2_ft = FunctionType::get(double_type, {double_type, double_type}, false);
+            FunctionCallee atan2_fn = module->getOrInsertFunction("atan2", atan2_ft);
+            Value* carg = builder->CreateCall(atan2_fn, {im, re}, "carg");
+
+            // ln(z) = ln(|z|) + i*arg
+            Value* ln_r = builder->CreateCall(log_fn, {mag}, "ln_mag");
+
+            // n (exponent as double)
+            Value* n = extractDoubleFromTagged(exp_val);
+
+            // n * ln(z) = n*ln_r + i*n*ln_i
+            Value* prod_r = builder->CreateFMul(n, ln_r);
+            Value* prod_i = builder->CreateFMul(n, carg);
+
+            // exp(prod_r + i*prod_i) = e^prod_r * (cos(prod_i) + i*sin(prod_i))
+            Value* e_pow = builder->CreateCall(exp_fn, {prod_r});
+            Value* cos_val = builder->CreateCall(cos_fn, {prod_i});
+            Value* sin_val = builder->CreateCall(sin_fn, {prod_i});
+            Value* result_re = builder->CreateFMul(e_pow, cos_val);
+            Value* result_im = builder->CreateFMul(e_pow, sin_val);
+
+            Value* result_complex = createComplexNumber(result_re, result_im);
+            Value* complex_tagged = packComplexToTagged(result_complex);
+            builder->CreateBr(expt_merge_bb);
+            BasicBlock* complex_expt_exit = builder->GetInsertBlock();
+
+            // Regular path: non-complex base
+            builder->SetInsertPoint(regular_expt_bb);
+            Value* regular_result = arith_->pow(base, exp_val);
+            builder->CreateBr(expt_merge_bb);
+            BasicBlock* regular_expt_exit = builder->GetInsertBlock();
+
+            // Merge
+            builder->SetInsertPoint(expt_merge_bb);
+            PHINode* expt_phi = builder->CreatePHI(tagged_value_type, 2);
+            expt_phi->addIncoming(complex_tagged, complex_expt_exit);
+            expt_phi->addIncoming(regular_result, regular_expt_exit);
+            return expt_phi;
         }
 
         // Logical operators (short-circuit)
@@ -9211,7 +9285,7 @@ private:
 
         // Type predicates
         if (func_name == "number?") {
-            // Number is int64, double, bignum, or AD node (wraps double)
+            // R7RS: number? is true for int64, double, bignum, rational, complex, or AD node
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
@@ -9219,12 +9293,19 @@ private:
             Value* base_type = getBaseType(type);
             Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
             Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+            Value* is_complex = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
             Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
+            Value* is_rational = isHeapSubtype(arg, HEAP_SUBTYPE_RATIONAL);
             Value* is_ad = isCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
-            return packBoolToTaggedValue(builder->CreateOr(builder->CreateOr(builder->CreateOr(is_int, is_double), is_bignum), is_ad));
+            Value* result = builder->CreateOr(is_int, is_double);
+            result = builder->CreateOr(result, is_complex);
+            result = builder->CreateOr(result, is_bignum);
+            result = builder->CreateOr(result, is_rational);
+            result = builder->CreateOr(result, is_ad);
+            return packBoolToTaggedValue(result);
         }
         if (func_name == "integer?") {
-            // Integer is int64 or bignum
+            // R7RS: integer? returns #t for int64, bignum, or whole-valued doubles
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
@@ -9232,10 +9313,17 @@ private:
             Value* base_type = getBaseType(type);
             Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
             Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
-            return packBoolToTaggedValue(builder->CreateOr(is_int, is_bignum));
+            // Check for whole-valued doubles: floor(x) == x
+            Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+            Value* dbl_val = unpackDoubleFromTaggedValue(arg);
+            Function* floor_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::floor, {double_type});
+            Value* floored = builder->CreateCall(floor_fn, {dbl_val});
+            Value* is_whole = builder->CreateFCmpOEQ(dbl_val, floored);
+            Value* is_whole_double = builder->CreateAnd(is_double, is_whole);
+            return packBoolToTaggedValue(builder->CreateOr(builder->CreateOr(is_int, is_bignum), is_whole_double));
         }
         if (func_name == "real?") {
-            // Real is int64, double, bignum, or AD node (wraps double)
+            // R7RS: real? is true for int64, double, bignum, rational, or AD node
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
@@ -9244,11 +9332,16 @@ private:
             Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
             Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
             Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
+            Value* is_rational = isHeapSubtype(arg, HEAP_SUBTYPE_RATIONAL);
             Value* is_ad = isCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
-            return packBoolToTaggedValue(builder->CreateOr(builder->CreateOr(builder->CreateOr(is_int, is_double), is_bignum), is_ad));
+            Value* result = builder->CreateOr(is_int, is_double);
+            result = builder->CreateOr(result, is_bignum);
+            result = builder->CreateOr(result, is_rational);
+            result = builder->CreateOr(result, is_ad);
+            return packBoolToTaggedValue(result);
         }
         if (func_name == "exact?") {
-            // Exact numbers are int64 or bignum (not double)
+            // R7RS: exact numbers are int64, bignum, or rational (not double)
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
@@ -9256,7 +9349,8 @@ private:
             Value* base_type = getBaseType(type);
             Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
             Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
-            return packBoolToTaggedValue(builder->CreateOr(is_int, is_bignum));
+            Value* is_rational = isHeapSubtype(arg, HEAP_SUBTYPE_RATIONAL);
+            return packBoolToTaggedValue(builder->CreateOr(builder->CreateOr(is_int, is_bignum), is_rational));
         }
         if (func_name == "inexact?") {
             // Inexact numbers are doubles or AD nodes (wraps doubles)
@@ -9313,18 +9407,38 @@ private:
             BasicBlock* convert_bb = BasicBlock::Create(*context, "inexact_to_exact", cur_func);
             BasicBlock* merge_bb = BasicBlock::Create(*context, "merge_exact", cur_func);
             builder->CreateCondBr(already_exact, merge_bb, convert_bb);
-            // Convert double to int64 (truncation)
+            // Convert double to exact: whole numbers → int64, fractional → rational
             builder->SetInsertPoint(convert_bb);
             Value* dbl_val = builder->CreateBitCast(data, double_type);
+            Function* floor_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::floor, {double_type});
+            Value* floored = builder->CreateCall(floor_fn, {dbl_val});
+            Value* is_whole = builder->CreateFCmpOEQ(dbl_val, floored);
+            BasicBlock* int_convert_bb = BasicBlock::Create(*context, "i2e_int", cur_func);
+            BasicBlock* rat_convert_bb = BasicBlock::Create(*context, "i2e_rat", cur_func);
+            builder->CreateCondBr(is_whole, int_convert_bb, rat_convert_bb);
+            // Whole number → int64
+            builder->SetInsertPoint(int_convert_bb);
             Value* int_val = builder->CreateFPToSI(dbl_val, int64_type);
-            Value* converted = packInt64ToTaggedValue(int_val);
-            BasicBlock* convert_end = builder->GetInsertBlock();
+            Value* int_converted = packInt64ToTaggedValue(int_val);
             builder->CreateBr(merge_bb);
+            BasicBlock* int_convert_end = builder->GetInsertBlock();
+            // Fractional → rational via runtime
+            builder->SetInsertPoint(rat_convert_bb);
+            FunctionType* d2r_ft = FunctionType::get(
+                PointerType::getUnqual(*context),
+                {PointerType::getUnqual(*context), double_type}, false);
+            FunctionCallee d2r_fn = module->getOrInsertFunction("eshkol_double_to_rational", d2r_ft);
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* rat_ptr = builder->CreateCall(d2r_fn, {arena_ptr, dbl_val}, "rat_from_dbl");
+            Value* rat_converted = packPtrToTaggedValue(rat_ptr, ESHKOL_VALUE_HEAP_PTR);
+            builder->CreateBr(merge_bb);
+            BasicBlock* rat_convert_end = builder->GetInsertBlock();
             // Merge
             builder->SetInsertPoint(merge_bb);
-            PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+            PHINode* phi = builder->CreatePHI(tagged_value_type, 3);
             phi->addIncoming(arg, cur_block);
-            phi->addIncoming(converted, convert_end);
+            phi->addIncoming(int_converted, int_convert_end);
+            phi->addIncoming(rat_converted, rat_convert_end);
             return phi;
         }
         // R7RS exact-integer?: true if exact and integer (int64 or bignum)
@@ -10149,6 +10263,7 @@ private:
         if (func_name == "system") return system_->systemCall(op);
         if (func_name == "sleep") return system_->sleep(op);
         if (func_name == "current-seconds") return system_->currentSeconds(op);
+        if (func_name == "current-time") return system_->currentTime(op);
         if (func_name == "current-time-ms") return system_->currentTimeMs(op);
         if (func_name == "current-time-ns") return system_->currentTimeNs(op);
         if (func_name == "exit") return system_->exitProgram(op);
@@ -11165,8 +11280,14 @@ private:
 
         // Handle tensor operations (numerical arrays) - MIGRATED to TensorCodegen
         if (func_name == "tensor-get") return tensor_->tensorGet(op);
-        if (func_name == "vref" || func_name == "tensor-ref") return codegenTensorVectorRef(op);  // Tensor 1D access (AD-aware, stays here)
-        if (func_name == "tensor-set") return tensor_->tensorSet(op);
+        if (func_name == "vref") return codegenTensorVectorRef(op);  // Tensor 1D access (AD-aware)
+        if (func_name == "tensor-ref") {
+            // tensor-ref: 2 args → 1D vref (AD-aware), 3+ args → multi-dim tensor-get
+            if (op->call_op.num_vars >= 3) return tensor_->tensorGet(op);
+            return codegenTensorVectorRef(op);
+        }
+        if (func_name == "tensor-set" || func_name == "tensor-set!") return tensor_->tensorSet(op);
+        if (func_name == "tensor") return tensor_->makeTensor(op);  // (tensor e1 e2 ...) or (tensor shape fill)
 
         // Scheme vectors (heterogeneous - can hold any type) - MIGRATED to CollectionCodegen
         // NOTE: vector? returns #t for both Scheme vectors AND tensor literals (#(...))
@@ -11393,7 +11514,7 @@ private:
         if (func_name == "tensor-reduce-all") return tensor_->tensorReduceAll(op);
 
         // MIGRATED: ML tensor creation functions - now delegated to TensorCodegen
-        if (func_name == "make-tensor") return tensor_->tensor(op);
+        if (func_name == "make-tensor") return tensor_->makeTensor(op);
         if (func_name == "zeros") return tensor_->zeros(op);
         if (func_name == "ones") return tensor_->ones(op);
         if (func_name == "eye") return tensor_->eye(op);
@@ -13250,10 +13371,15 @@ private:
             // At runtime: print diagnostic and abort
             FunctionType* fprintf_type = FunctionType::get(int32_type, {ptr_type, ptr_type}, true);
             FunctionCallee fprintf_fn = module->getOrInsertFunction("fprintf", fprintf_type);
-            GlobalVariable* stderr_var = module->getGlobalVariable("__stderrp");
+#ifdef __APPLE__
+            const char* stderr_sym = "__stderrp";
+#else
+            const char* stderr_sym = "stderr";
+#endif
+            GlobalVariable* stderr_var = module->getGlobalVariable(stderr_sym);
             if (!stderr_var) {
                 stderr_var = new GlobalVariable(*module, ptr_type, false,
-                    GlobalValue::ExternalLinkage, nullptr, "__stderrp");
+                    GlobalValue::ExternalLinkage, nullptr, stderr_sym);
             }
             Value* stderr_val = builder->CreateLoad(ptr_type, stderr_var);
             Value* fmt_str = builder->CreateGlobalString(
@@ -13380,7 +13506,14 @@ private:
 
             builder->SetInsertPoint(float_path);
             Value* arg_double = extractDoubleFromTagged(arg_tagged);
-            Value* result_double = builder->CreateCall(function_table[func_name], {arg_double});
+            Value* result_double;
+            if (func_name == "round") {
+                // R7RS: banker's rounding (round half to even) via llvm.roundeven
+                Function* roundeven_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::roundeven, {double_type});
+                result_double = builder->CreateCall(roundeven_fn, {arg_double});
+            } else {
+                result_double = builder->CreateCall(function_table[func_name], {arg_double});
+            }
             Value* float_result = packDoubleToTaggedValue(result_double);
             builder->CreateBr(regular_merge);
             BasicBlock* float_exit = builder->GetInsertBlock();
@@ -13511,7 +13644,9 @@ private:
         Value* precision = extractDoubleFromTagged(precision_arg);
 
         Value* scaled = builder->CreateFDiv(val, precision);
-        Value* rounded = builder->CreateCall(function_table["round"], {scaled});
+        // R7RS: banker's rounding (round half to even) via llvm.roundeven
+        Function* roundeven_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::roundeven, {double_type});
+        Value* rounded = builder->CreateCall(roundeven_fn, {scaled});
         Value* result = builder->CreateFMul(rounded, precision);
         return packDoubleToTaggedValue(result);
     }
@@ -16297,13 +16432,14 @@ private:
 
         Function* func = builder->GetInsertBlock()->getParent();
         BasicBlock* int_bb = BasicBlock::Create(*context, "numpred_int", func);
+        BasicBlock* complex_check_bb = BasicBlock::Create(*context, "numpred_complex_check", func);
         BasicBlock* bignum_check_bb = BasicBlock::Create(*context, "numpred_bignum_check", func);
         BasicBlock* bignum_bb = BasicBlock::Create(*context, "numpred_bignum", func);
         BasicBlock* double_bb = BasicBlock::Create(*context, "numpred_double", func);
         BasicBlock* merge_bb = BasicBlock::Create(*context, "numpred_merge", func);
 
         Value* is_int = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
-        builder->CreateCondBr(is_int, int_bb, bignum_check_bb);
+        builder->CreateCondBr(is_int, int_bb, complex_check_bb);
 
         // INT64 path — direct integer ops, no precision loss
         builder->SetInsertPoint(int_bb);
@@ -16324,6 +16460,30 @@ private:
         }
         builder->CreateBr(merge_bb);
         BasicBlock* int_exit = builder->GetInsertBlock();
+
+        // Check for complex numbers (zero? and positive? are meaningful for complex)
+        builder->SetInsertPoint(complex_check_bb);
+        Value* is_complex = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+        BasicBlock* complex_bb = BasicBlock::Create(*context, "numpred_complex", func);
+        builder->CreateCondBr(is_complex, complex_bb, bignum_check_bb);
+
+        // Complex path: for zero?, check both real and imag are 0.0
+        // For positive?/negative?/even?/odd?, complex numbers return false
+        builder->SetInsertPoint(complex_bb);
+        Value* complex_result;
+        if (pred == "zero?") {
+            Value* complex_struct = unpackComplexFromTagged(tagged);
+            Value* re = getComplexReal(complex_struct);
+            Value* im = getComplexImag(complex_struct);
+            Value* re_zero = builder->CreateFCmpOEQ(re, ConstantFP::get(double_type, 0.0));
+            Value* im_zero = builder->CreateFCmpOEQ(im, ConstantFP::get(double_type, 0.0));
+            complex_result = builder->CreateAnd(re_zero, im_zero);
+        } else {
+            // positive?/negative?/even?/odd? not meaningful for complex
+            complex_result = ConstantInt::get(int1_type, 0);
+        }
+        builder->CreateBr(merge_bb);
+        BasicBlock* complex_exit = builder->GetInsertBlock();
 
         // Check for bignum (HEAP_PTR + BIGNUM subtype)
         builder->SetInsertPoint(bignum_check_bb);
@@ -16380,8 +16540,9 @@ private:
 
         // Merge
         builder->SetInsertPoint(merge_bb);
-        PHINode* result = builder->CreatePHI(int1_type, 3);
+        PHINode* result = builder->CreatePHI(int1_type, 4);
         result->addIncoming(int_result, int_exit);
+        result->addIncoming(complex_result, complex_exit);
         result->addIncoming(bignum_result, bignum_exit);
         result->addIncoming(dbl_result, dbl_exit);
 
@@ -20231,8 +20392,8 @@ private:
         Value* c_elems_field = builder->CreateStructGEP(tensor_type, result_ptr, 2);
         Value* c_elems = builder->CreateLoad(builder->getPtrTy(), c_elems_field);
 
-        // Declare and call eshkol_matmul_f64 runtime function
-        Function* matmul_func = module->getFunction("eshkol_matmul_f64");
+        // Declare and call eshkol_matmul_dispatch runtime function (GPU-aware dispatch)
+        Function* matmul_func = module->getFunction("eshkol_matmul_dispatch");
         if (!matmul_func) {
             std::vector<Type*> params = {
                 builder->getPtrTy(),   // A
@@ -20244,10 +20405,10 @@ private:
             };
             FunctionType* func_type = FunctionType::get(builder->getVoidTy(), params, false);
             matmul_func = Function::Create(func_type, Function::ExternalLinkage,
-                                           "eshkol_matmul_f64", module.get());
+                                           "eshkol_matmul_dispatch", module.get());
         }
 
-        // Call the runtime matmul function
+        // Call the runtime matmul dispatch (routes to GPU or CPU BLAS)
         builder->CreateCall(matmul_func, {a_elems, b_elems, c_elems, M, K, N});
 
         // Record on AD tape if autodiff mode is active
@@ -23390,6 +23551,157 @@ private:
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
+    /**
+     * resolveGradientCaptures — Append captured variable arguments to a gradient function call.
+     *
+     * The gradient codegen calls the target function with AD nodes as arguments.
+     * If the function has more LLVM parameters than declared Eshkol parameters,
+     * the extras are captured variables that need to be resolved from symbol tables.
+     *
+     * This replaces 3 copies of duplicate capture resolution code across the
+     * svec, scalar, and vector gradient paths.
+     */
+    void resolveGradientCaptures(llvm::Function* func_ptr,
+                                  std::vector<llvm::Value*>& call_args,
+                                  const std::string& context_label) {
+        FunctionType* func_type = func_ptr->getFunctionType();
+        size_t total_llvm_params = func_type->getNumParams();
+        size_t args_provided = call_args.size();
+
+        if (total_llvm_params <= args_provided) return;  // No captures needed
+
+        size_t num_captures = total_llvm_params - args_provided;
+        std::string lambda_name = func_ptr->getName().str();
+
+        // REPL MODE: Get capture names from registry
+        std::vector<std::string> capture_names;
+        if (g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            auto captures_it = g_repl_lambda_captures.find(lambda_name);
+            if (captures_it != g_repl_lambda_captures.end()) {
+                capture_names = captures_it->second;
+            }
+        }
+
+        for (size_t ci = 0; ci < num_captures; ci++) {
+            std::string var_name;
+            if (ci < capture_names.size()) {
+                var_name = capture_names[ci];
+            } else {
+                // Fallback to LLVM parameter names
+                auto arg_it = func_ptr->arg_begin();
+                std::advance(arg_it, args_provided + ci);
+                if (arg_it != func_ptr->arg_end()) {
+                    var_name = arg_it->getName().str();
+                    if (var_name.find("captured_") == 0) var_name = var_name.substr(9);
+                }
+            }
+
+            std::string capture_key = lambda_name + "_capture_" + var_name;
+
+            // Search order: capture key in global → local, then raw name in global → local
+            Value* storage = nullptr;
+            auto it = global_symbol_table.find(capture_key);
+            if (it != global_symbol_table.end() && it->second) {
+                storage = it->second;
+            } else {
+                it = symbol_table.find(capture_key);
+                if (it != symbol_table.end() && it->second) {
+                    storage = it->second;
+                } else {
+                    it = global_symbol_table.find(var_name);
+                    if (it != global_symbol_table.end() && it->second) {
+                        storage = it->second;
+                    } else {
+                        it = symbol_table.find(var_name);
+                        if (it != symbol_table.end() && it->second) {
+                            storage = it->second;
+                        }
+                    }
+                }
+            }
+
+            // REPL MODE: Try creating external declaration for capture global
+            if (!storage && g_repl_mode_enabled) {
+                std::lock_guard<std::mutex> lock(g_repl_mutex);
+                auto sym_it = g_repl_symbol_addresses.find(capture_key);
+                if (sym_it != g_repl_symbol_addresses.end()) {
+                    GlobalVariable* capture_global = module->getGlobalVariable(capture_key);
+                    if (!capture_global) {
+                        capture_global = new GlobalVariable(
+                            *module, tagged_value_type, false,
+                            GlobalValue::ExternalLinkage, nullptr, capture_key);
+                    }
+                    Value* global_ptr_int = builder->CreatePtrToInt(capture_global, int64_type);
+                    Value* packed = packInt64ToTaggedValue(global_ptr_int, true);
+                    Value* temp = builder->CreateAlloca(tagged_value_type, nullptr, "grad_cap");
+                    builder->CreateStore(packed, temp);
+                    call_args.push_back(temp);
+                    continue;
+                }
+            }
+
+            if (storage) {
+                Value* ptr_int = builder->CreatePtrToInt(storage, int64_type);
+                Value* packed = packInt64ToTaggedValue(ptr_int, true);
+                Value* temp = builder->CreateAlloca(tagged_value_type, nullptr, "grad_cap");
+                builder->CreateStore(packed, temp);
+                call_args.push_back(temp);
+            } else {
+                call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
+                eshkol_warn("Gradient (%s): capture '%s' not found, using null pointer",
+                            context_label.c_str(), var_name.c_str());
+            }
+        }
+    }
+
+    /**
+     * buildGradientCallArgs — Build argument list for a gradient function call.
+     *
+     * For single-parameter functions: passes one AD node/tensor as the argument.
+     * For multi-parameter functions: unpacks AD tensor elements into individual arguments.
+     * Then appends captures via resolveGradientCaptures.
+     */
+    void buildGradientCallArgs(llvm::Function* func_ptr,
+                                llvm::Value* ad_data,       // AD tensor ptr or single AD node
+                                bool is_tensor,              // true = ad_data is tensor, false = single node
+                                std::vector<llvm::Value*>& call_args,
+                                const std::string& context_label) {
+        std::string func_name_str = func_ptr->getName().str();
+        uint64_t func_arity = 0;
+        auto arity_it = function_arity_table.find(func_name_str);
+        if (arity_it != function_arity_table.end()) {
+            func_arity = arity_it->second;
+        }
+
+        if (func_arity > 1 && is_tensor) {
+            // Multi-parameter: unpack AD tensor elements as individual tagged args
+            eshkol_debug("Gradient (%s): unpacking for %llu-parameter function %s",
+                         context_label.c_str(), (unsigned long long)func_arity, func_name_str.c_str());
+
+            StructType* tensor_type = StructType::getTypeByName(*context, "eshkol_tensor");
+            if (!tensor_type) tensor_type = StructType::create(*context,
+                {builder->getPtrTy(), int64_type, builder->getPtrTy(), int64_type}, "eshkol_tensor");
+
+            Value* elements_ptr = builder->CreateLoad(builder->getPtrTy(),
+                builder->CreateStructGEP(tensor_type, ad_data, 2));
+
+            for (uint64_t p = 0; p < func_arity; p++) {
+                Value* elem_ptr = builder->CreateGEP(int64_type, elements_ptr,
+                    ConstantInt::get(int64_type, p));
+                Value* ad_node_int = builder->CreateLoad(int64_type, elem_ptr);
+                Value* ad_node_tagged = packPtrToTaggedValue(ad_node_int, ESHKOL_VALUE_CALLABLE);
+                call_args.push_back(ad_node_tagged);
+            }
+        } else {
+            // Single parameter or non-tensor: pass as-is
+            call_args.push_back(ad_data);
+        }
+
+        // Resolve captures
+        resolveGradientCaptures(func_ptr, call_args, context_label);
+    }
+
     Value* codegenGradient(const eshkol_operations_t* op) {
         if (!op->gradient_op.function) {
             eshkol_error("Invalid gradient operation - missing function");
@@ -24612,94 +24924,32 @@ private:
         Value* svec_dual_tagged_vec = packPtrToTaggedValue(
             builder->CreatePtrToInt(svec_dual_vec, int64_type), ESHKOL_VALUE_HEAP_PTR);
 
-        // Call function with dual vector
-        std::vector<Value*> svec_call_args = {svec_dual_tagged_vec};
-        // Add captures if function has them
-        if (func_ptr->getFunctionType()->getNumParams() > 1) {
-            size_t svec_num_captures = func_ptr->getFunctionType()->getNumParams() - 1;
-            std::string svec_lambda_name = func_ptr->getName().str();
-            for (size_t ci = 0; ci < svec_num_captures; ci++) {
-                auto arg_it = func_ptr->arg_begin();
-                std::advance(arg_it, ci + 1);
-                std::string var_name = arg_it->getName().str();
-                if (var_name.find("captured_") == 0) var_name = var_name.substr(9);
-                std::string cap_key = svec_lambda_name + "_capture_" + var_name;
+        // Call function with dual vector — dispatches through helper
+        std::vector<Value*> svec_call_args;
 
-                // Try capture key in global and local symbol tables
-                auto cap_it = global_symbol_table.find(cap_key);
-                bool found = (cap_it != global_symbol_table.end() && cap_it->second);
-                if (!found) {
-                    cap_it = symbol_table.find(cap_key);
-                    found = (cap_it != symbol_table.end() && cap_it->second);
+        // MULTI-PARAMETER GRADIENT: Check function arity and unpack if needed
+        {
+            uint64_t svec_func_arity = 0;
+            auto svec_arity_it = function_arity_table.find(func_ptr->getName().str());
+            if (svec_arity_it != function_arity_table.end()) {
+                svec_func_arity = svec_arity_it->second;
+            }
+            if (svec_func_arity > 1) {
+                // Multi-param: unpack dual vector elements as individual tagged value args
+                for (uint64_t p = 0; p < svec_func_arity; p++) {
+                    Value* elem_ptr = builder->CreateGEP(tagged_value_type, svec_dual_elems_typed,
+                        ConstantInt::get(int64_type, p));
+                    Value* elem = builder->CreateLoad(tagged_value_type, elem_ptr);
+                    svec_call_args.push_back(elem);
                 }
-
-                if (found) {
-                    // MUTABLE CAPTURE FIX: Must pack pointer in closure format
-                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
-                    Value* svec_cap_storage = cap_it->second;
-                    Function* svec_current_func = builder->GetInsertBlock()->getParent();
-                    IRBuilder<> svec_entry_builder(&svec_current_func->getEntryBlock(),
-                                                   svec_current_func->getEntryBlock().begin());
-                    AllocaInst* svec_cap_temp = svec_entry_builder.CreateAlloca(
-                        tagged_value_type, nullptr, var_name + "_svec_cap_temp");
-                    Value* svec_cap_ptr_int = builder->CreatePtrToInt(svec_cap_storage, int64_type);
-                    Value* svec_cap_packed = packInt64ToTaggedValue(svec_cap_ptr_int, true);
-                    builder->CreateStore(svec_cap_packed, svec_cap_temp);
-                    svec_call_args.push_back(svec_cap_temp);
-                } else {
-                    // FALLBACK: Try raw variable name (for top-level global variables and let bindings)
-                    Value* storage = nullptr;
-                    auto raw_it = global_symbol_table.find(var_name);
-                    if (raw_it != global_symbol_table.end() && raw_it->second) {
-                        storage = raw_it->second;
-                    } else {
-                        // Also check local symbol table
-                        auto local_it = symbol_table.find(var_name);
-                        if (local_it != symbol_table.end() && local_it->second) {
-                            storage = local_it->second;
-                        }
-                    }
-
-                    if (storage) {
-                        // MUTABLE CAPTURE FIX: For let-bound allocas or arena pointers, pack the address
-                        // as int64 in a tagged_value, store in temp, pass pointer to temp
-                        // CLOSURE ESCAPE FIX: Also handle arena pointers (from escaped closure captures)
-                        bool needs_ptr_packing = isa<AllocaInst>(storage) ||
-                            (storage->getType()->isPointerTy() && !isa<GlobalVariable>(storage) && !isa<Argument>(storage));
-
-                        if (needs_ptr_packing) {
-                            Function* svec_current_func = builder->GetInsertBlock()->getParent();
-                            IRBuilder<> entry_builder(&svec_current_func->getEntryBlock(),
-                                                      svec_current_func->getEntryBlock().begin());
-                            AllocaInst* temp_alloca = entry_builder.CreateAlloca(
-                                tagged_value_type, nullptr, var_name + "_svec_capture_storage");
-
-                            // Pack the storage address as an int64 in a tagged_value
-                            Value* ptr_as_int = builder->CreatePtrToInt(storage, int64_type);
-                            Value* packed_ptr = packInt64ToTaggedValue(ptr_as_int, true);
-                            builder->CreateStore(packed_ptr, temp_alloca);
-
-                            svec_call_args.push_back(temp_alloca);
-                        } else {
-                            // GlobalVariable or Argument - also needs to be packed in closure format
-                            // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
-                            Function* svec_current_func2 = builder->GetInsertBlock()->getParent();
-                            IRBuilder<> entry_builder2(&svec_current_func2->getEntryBlock(),
-                                                       svec_current_func2->getEntryBlock().begin());
-                            AllocaInst* temp_alloca2 = entry_builder2.CreateAlloca(
-                                tagged_value_type, nullptr, var_name + "_svec_gv_storage");
-                            Value* ptr_as_int2 = builder->CreatePtrToInt(storage, int64_type);
-                            Value* packed_ptr2 = packInt64ToTaggedValue(ptr_as_int2, true);
-                            builder->CreateStore(packed_ptr2, temp_alloca2);
-                            svec_call_args.push_back(temp_alloca2);
-                        }
-                    } else {
-                        svec_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
-                        eshkol_warn("Gradient (svec): capture '%s' not found", var_name.c_str());
-                    }
-                }
+            } else {
+                svec_call_args.push_back(svec_dual_tagged_vec);
             }
         }
+
+        // Resolve captures via unified helper
+        resolveGradientCaptures(func_ptr, svec_call_args, "svec");
+
         Value* svec_call_result = builder->CreateCall(func_ptr, svec_call_args);
 
         // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
@@ -25089,108 +25339,31 @@ private:
         Value* single_ad_node = builder->CreateLoad(PointerType::getUnqual(*context), single_ad_node_slot);
         Value* scalar_ad_tagged = packPtrToTaggedValue(single_ad_node, ESHKOL_VALUE_CALLABLE);
 
-        std::vector<Value*> scalar_args = {scalar_ad_tagged};
+        std::vector<Value*> scalar_args;
 
-        // CRITICAL FIX: Add captured arguments for scalar path too!
-        FunctionType* scalar_func_type = func_ptr->getFunctionType();
-        if (scalar_func_type->getNumParams() > 1) {
-            size_t scalar_num_captures = scalar_func_type->getNumParams() - 1;
-            std::string scalar_lambda_name = func_ptr->getName().str();
-
-            // REPL MODE: Get capture names from registry instead of parameter names
-            std::vector<std::string> capture_names;
-            if (g_repl_mode_enabled) {
-                std::lock_guard<std::mutex> lock(g_repl_mutex);
-                auto captures_it = g_repl_lambda_captures.find(scalar_lambda_name);
-                if (captures_it != g_repl_lambda_captures.end()) {
-                    capture_names = captures_it->second;
-                }
+        // MULTI-PARAMETER: If function has more params than 1, unpack AD nodes
+        {
+            uint64_t scalar_func_arity = 0;
+            auto scalar_arity_it = function_arity_table.find(func_ptr->getName().str());
+            if (scalar_arity_it != function_arity_table.end()) {
+                scalar_func_arity = scalar_arity_it->second;
             }
-
-            for (size_t ci = 0; ci < scalar_num_captures; ci++) {
-                std::string scalar_var_name;
-                if (ci < capture_names.size()) {
-                    scalar_var_name = capture_names[ci];
-                } else {
-                    // Fallback to LLVM parameter names (for non-REPL mode)
-                    auto scalar_arg_it = func_ptr->arg_begin();
-                    std::advance(scalar_arg_it, ci + 1);  // Skip first parameter
-                    if (scalar_arg_it != func_ptr->arg_end()) {
-                        scalar_var_name = scalar_arg_it->getName().str();
-                        if (scalar_var_name.find("captured_") == 0) {
-                            scalar_var_name = scalar_var_name.substr(9);
-                        }
-                    }
+            if (scalar_func_arity > 1) {
+                // Multi-param function on scalar path: pass all AD nodes as individual args
+                for (uint64_t p = 0; p < scalar_func_arity; p++) {
+                    Value* node_slot = builder->CreateGEP(PointerType::getUnqual(*context),
+                        typed_var_nodes, ConstantInt::get(int64_type, p));
+                    Value* node = builder->CreateLoad(PointerType::getUnqual(*context), node_slot);
+                    Value* node_tagged = packPtrToTaggedValue(node, ESHKOL_VALUE_CALLABLE);
+                    scalar_args.push_back(node_tagged);
                 }
-
-                std::string scalar_capture_key = scalar_lambda_name + "_capture_" + scalar_var_name;
-
-                // First try capture-specific key in symbol tables
-                auto scalar_it = global_symbol_table.find(scalar_capture_key);
-                bool found_in_global = (scalar_it != global_symbol_table.end());
-                if (!found_in_global) {
-                    scalar_it = symbol_table.find(scalar_capture_key);
-                }
-
-                bool found = found_in_global ? (scalar_it != global_symbol_table.end()) : (scalar_it != symbol_table.end());
-
-                // FALLBACK: Try raw variable name (for top-level global variables)
-                if (!found) {
-                    scalar_it = global_symbol_table.find(scalar_var_name);
-                    found_in_global = (scalar_it != global_symbol_table.end());
-                    if (!found_in_global) {
-                        scalar_it = symbol_table.find(scalar_var_name);
-                    }
-                    found = found_in_global ? (scalar_it != global_symbol_table.end()) : (scalar_it != symbol_table.end());
-                    if (found) {
-                        eshkol_debug("Gradient (scalar): found capture '%s' via raw variable name", scalar_var_name.c_str());
-                    }
-                }
-
-                // REPL MODE: Try creating external declaration for capture global
-                if (!found && g_repl_mode_enabled) {
-                    std::lock_guard<std::mutex> lock(g_repl_mutex);
-                    auto sym_it = g_repl_symbol_addresses.find(scalar_capture_key);
-                    if (sym_it != g_repl_symbol_addresses.end()) {
-                        // Create external declaration for capture global
-                        GlobalVariable* capture_global = module->getGlobalVariable(scalar_capture_key);
-                        if (!capture_global) {
-                            capture_global = new GlobalVariable(
-                                *module,
-                                tagged_value_type,
-                                false,
-                                GlobalValue::ExternalLinkage,
-                                nullptr,
-                                scalar_capture_key
-                            );
-                        }
-                        // MUTABLE CAPTURE FIX: Pack pointer in closure format
-                        // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@global)}
-                        Value* scalar_global_ptr_int = builder->CreatePtrToInt(capture_global, int64_type);
-                        Value* scalar_packed_capture = packInt64ToTaggedValue(scalar_global_ptr_int, true);
-                        Value* scalar_capture_storage = builder->CreateAlloca(tagged_value_type, nullptr, "scalar_capture_storage");
-                        builder->CreateStore(scalar_packed_capture, scalar_capture_storage);
-                        scalar_args.push_back(scalar_capture_storage);
-                        continue;
-                    }
-                }
-
-                if (found && scalar_it->second) {
-                    Value* scalar_storage = scalar_it->second;
-                    // MUTABLE CAPTURE FIX: Pack pointer in closure format
-                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
-                    Value* scalar_storage_ptr_int = builder->CreatePtrToInt(scalar_storage, int64_type);
-                    Value* scalar_packed_storage = packInt64ToTaggedValue(scalar_storage_ptr_int, true);
-                    Value* scalar_temp_storage = builder->CreateAlloca(tagged_value_type, nullptr, "scalar_capture_storage");
-                    builder->CreateStore(scalar_packed_storage, scalar_temp_storage);
-                    scalar_args.push_back(scalar_temp_storage);
-                } else {
-                    // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
-                    scalar_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
-                    eshkol_warn("Gradient (scalar): capture '%s' not found, using null pointer", scalar_var_name.c_str());
-                }
+            } else {
+                scalar_args.push_back(scalar_ad_tagged);
             }
         }
+
+        // Resolve captures via unified helper
+        resolveGradientCaptures(func_ptr, scalar_args, "scalar");
 
         // NESTED GRADIENT FIX: Save outer_ad_node_storage before calling function
         // Nested gradients will overwrite it, so we save and restore to support n-dimensional derivatives
@@ -25216,17 +25389,48 @@ private:
         builder->CreateBr(after_func_call);
         BasicBlock* scalar_call_exit = builder->GetInsertBlock();
         
-        // VECTOR: Pass AD tensor as usual
+        // VECTOR: Pass AD nodes — either as single tensor or unpacked to individual params
         builder->SetInsertPoint(vector_call);
         Value* ad_tensor_int = builder->CreatePtrToInt(typed_ad_tensor_ptr, int64_type);
         // M1 CONSOLIDATION: Use HEAP_PTR type - tensor has header with HEAP_SUBTYPE_TENSOR
         Value* ad_tensor_tagged = packPtrToTaggedValue(ad_tensor_int, ESHKOL_VALUE_HEAP_PTR);
-        
-        std::vector<Value*> grad_call_args = {ad_tensor_tagged};
-        
+
+        std::vector<Value*> grad_call_args;
+
+        // MULTI-PARAMETER GRADIENT: Check if function has multiple parameters
+        // If func has N params and N matches the gradient dimension, unpack AD nodes
+        // as individual arguments instead of passing a single tensor.
         FunctionType* grad_func_type = func_ptr->getFunctionType();
-        if (grad_func_type->getNumParams() > 1) {
-            size_t num_captures = grad_func_type->getNumParams() - 1;
+        std::string func_name_str = func_ptr->getName().str();
+        uint64_t func_arity = 0;
+        auto arity_it = function_arity_table.find(func_name_str);
+        if (arity_it != function_arity_table.end()) {
+            func_arity = arity_it->second;
+        }
+
+        if (func_arity > 1) {
+            // Multi-parameter function: unpack AD tensor elements as individual tagged args
+            // Each element in the AD tensor is an AD node pointer (CALLABLE type)
+            eshkol_debug("Gradient: unpacking %llu AD nodes for %llu-parameter function %s",
+                         (unsigned long long)func_arity, (unsigned long long)func_arity, func_name_str.c_str());
+            for (uint64_t p = 0; p < func_arity; p++) {
+                // Load AD node pointer from tensor elements[p]
+                Value* elem_ptr = builder->CreateGEP(int64_type,
+                    builder->CreateLoad(builder->getPtrTy(),
+                        builder->CreateStructGEP(tensor_type, typed_ad_tensor_ptr, 2)),
+                    ConstantInt::get(int64_type, p));
+                Value* ad_node_int = builder->CreateLoad(int64_type, elem_ptr);
+                // Pack as CALLABLE tagged value (AD nodes are callable)
+                Value* ad_node_tagged = packPtrToTaggedValue(ad_node_int, ESHKOL_VALUE_CALLABLE);
+                grad_call_args.push_back(ad_node_tagged);
+            }
+        } else {
+            // Single-parameter function: pass tensor as-is
+            grad_call_args.push_back(ad_tensor_tagged);
+        }
+
+        if (grad_func_type->getNumParams() > grad_call_args.size()) {
+            size_t num_captures = grad_func_type->getNumParams() - grad_call_args.size();
             std::string lambda_name = func_ptr->getName().str();
 
             // REPL MODE: Get capture names from registry instead of parameter names
@@ -29833,8 +30037,9 @@ private:
             return nullptr;
         }
 
-        Value* z_tagged = codegenAST(&op->call_op.variables[0]);
-        if (!z_tagged) return nullptr;
+        TypedValue z_typed = codegenTypedAST(&op->call_op.variables[0]);
+        if (!z_typed.llvm_value) return nullptr;
+        Value* z_tagged = typedValueToTaggedValue(z_typed);
 
         // Check if it's a complex number or just a real
         Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
@@ -29857,7 +30062,7 @@ private:
         // Real path: return as-is (real part of real is itself)
         builder->SetInsertPoint(real_bb);
         Value* real_from_real = extractDoubleFromTagged(z_tagged);
-        BasicBlock* real_exit_bb = builder->GetInsertBlock();
+        BasicBlock* real_exit_bb = builder->GetInsertBlock();  // capture AFTER extractDoubleFromTagged creates blocks
         builder->CreateBr(merge_bb);
 
         // Merge
@@ -29876,8 +30081,9 @@ private:
             return nullptr;
         }
 
-        Value* z_tagged = codegenAST(&op->call_op.variables[0]);
-        if (!z_tagged) return nullptr;
+        TypedValue z_typed = codegenTypedAST(&op->call_op.variables[0]);
+        if (!z_typed.llvm_value) return nullptr;
+        Value* z_tagged = typedValueToTaggedValue(z_typed);
 
         // Check if it's a complex number or just a real
         Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
@@ -33596,6 +33802,23 @@ private:
         return loadResult(result_a, "fguc_result");
     }
 
+    Value* codegenFGObserve(const eshkol_operations_t* op) {
+        // (fg-observe! fg var-id observed-state) → bool
+        if (op->call_op.num_vars < 3) return packNullToTaggedValue();
+        Value* fg = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+        Value* var_id = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
+        Value* obs_state = ensureTaggedValue(codegenAST(&op->call_op.variables[2]));
+        Value* fg_a = allocaAndStore(fg, "fgo_fg");
+        Value* vi_a = allocaAndStore(var_id, "fgo_vi");
+        Value* os_a = allocaAndStore(obs_state, "fgo_os");
+        Value* result_a = allocaResult("fgo_res");
+        FunctionType* fn_type = FunctionType::get(void_type,
+            {ptr_type, ptr_type, ptr_type, ptr_type, ptr_type}, false);
+        Function* func = getOrDeclareRuntimeFunc("eshkol_fg_observe_tagged", fn_type);
+        builder->CreateCall(func, {loadArenaPtr(), fg_a, vi_a, os_a, result_a});
+        return loadResult(result_a, "fgo_result");
+    }
+
     // ─── Additional Type Predicates ─────────────────────────────────────
 
     Value* codegenFactPred(const eshkol_operations_t* op) {
@@ -34629,23 +34852,78 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             }
         }
         
-        // CRITICAL FIX: Use direct path to library file instead of -L flag
-        // This avoids directory search path issues
-        char build_path[4096];
-        if (getcwd(build_path, sizeof(build_path)) != nullptr) {
-            std::string cwd_str = std::string(build_path);
+        // Find libeshkol-static.a relative to the eshkol binary, NOT the CWD.
+        // Search order:
+        //   1. ESHKOL_LIB_DIR environment variable
+        //   2. Same directory as the eshkol-run binary (build/)
+        //   3. ../lib/ relative to binary (installed layout)
+        //   4. CWD/build/ as last resort
+        {
             std::string lib_path;
-            // Check if we're already in the build directory
-            if (cwd_str.length() >= 5 && cwd_str.substr(cwd_str.length() - 5) == "build") {
-                lib_path = cwd_str + "/libeshkol-static.a";
-            } else {
-                lib_path = cwd_str + "/build/libeshkol-static.a";
+            bool found = false;
+
+            // 1. Environment variable
+            const char* env_lib = getenv("ESHKOL_LIB_DIR");
+            if (env_lib) {
+                lib_path = std::string(env_lib) + "/libeshkol-static.a";
+                if (access(lib_path.c_str(), R_OK) == 0) found = true;
             }
-            link_cmd += " " + lib_path;
-            eshkol_debug("Linking with library: %s", lib_path.c_str());
-        } else {
-            // Fallback to search path method
-            link_cmd += " -L./build -leshkol-static";
+
+            // 2. Same directory as binary (get from /proc/self/exe or _NSGetExecutablePath)
+            if (!found) {
+#ifdef __APPLE__
+                char exe_path[4096];
+                uint32_t exe_size = sizeof(exe_path);
+                if (_NSGetExecutablePath(exe_path, &exe_size) == 0) {
+                    char* real = realpath(exe_path, nullptr);
+                    if (real) {
+                        std::string exe_dir = std::string(real);
+                        size_t last_slash = exe_dir.rfind('/');
+                        if (last_slash != std::string::npos) {
+                            exe_dir = exe_dir.substr(0, last_slash);
+                        }
+                        free(real);
+                        lib_path = exe_dir + "/libeshkol-static.a";
+                        if (access(lib_path.c_str(), R_OK) == 0) found = true;
+                    }
+                }
+#elif defined(__linux__)
+                char exe_path[4096];
+                ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+                if (len > 0) {
+                    exe_path[len] = '\0';
+                    std::string exe_dir = std::string(exe_path);
+                    size_t last_slash = exe_dir.rfind('/');
+                    if (last_slash != std::string::npos)
+                        exe_dir = exe_dir.substr(0, last_slash);
+                    lib_path = exe_dir + "/libeshkol-static.a";
+                    if (access(lib_path.c_str(), R_OK) == 0) found = true;
+                }
+#endif
+            }
+
+            // 3. CWD/build/ as fallback
+            if (!found) {
+                char build_path[4096];
+                if (getcwd(build_path, sizeof(build_path)) != nullptr) {
+                    std::string cwd_str = std::string(build_path);
+                    if (cwd_str.length() >= 5 && cwd_str.substr(cwd_str.length() - 5) == "build") {
+                        lib_path = cwd_str + "/libeshkol-static.a";
+                    } else {
+                        lib_path = cwd_str + "/build/libeshkol-static.a";
+                    }
+                    if (access(lib_path.c_str(), R_OK) == 0) found = true;
+                }
+            }
+
+            if (found) {
+                link_cmd += " " + lib_path;
+                eshkol_debug("Linking with library: %s", lib_path.c_str());
+            } else {
+                // Absolute last resort
+                link_cmd += " -L./build -leshkol-static";
+                eshkol_debug("WARNING: Could not find libeshkol-static.a, using -L./build");
+            }
         }
         
         // Add linked libraries

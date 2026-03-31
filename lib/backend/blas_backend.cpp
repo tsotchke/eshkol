@@ -42,15 +42,17 @@ namespace {
 
 // Adaptive cost model parameters (calibrated at runtime)
 struct CostModelParams {
-    // BLAS parameters
+    // BLAS parameters (calibrated: Apple Accelerate AMX peaks at ~1100 GFLOPS)
     double blas_overhead_ns = 5000;      // Fixed dispatch overhead (5us)
-    double blas_peak_gflops = 150;       // Peak throughput
+    double blas_peak_gflops = 1100;      // Peak throughput (measured on M-series)
     double blas_efficiency_scale = 10000; // Elements needed for full efficiency
 
-    // GPU softfloat parameters
-    double gpu_overhead_ns = 50000;      // Metal command buffer overhead (50us)
-    double gpu_peak_gflops = 120;        // Peak throughput (measured ~137 at 2048x2048)
-    double gpu_efficiency_scale = 500000; // Needs more parallelism to saturate
+    // GPU softfloat parameters (sf64 emulation via Metal compute shaders)
+    // Current sf64 throughput is ~100-200 GFLOPS — well below native cBLAS.
+    // GPU will only be selected when it genuinely outperforms cBLAS.
+    double gpu_overhead_ns = 200000;     // Metal command buffer + data transfer (200us)
+    double gpu_peak_gflops = 200;        // Measured sf64 throughput
+    double gpu_efficiency_scale = 100000000; // Needs 100M+ elements to saturate GPU
 
     // SIMD parameters
     double simd_overhead_ns = 100;       // Minimal overhead
@@ -63,6 +65,28 @@ struct CostModelParams {
 };
 
 static CostModelParams g_cost_model;
+
+// GPU matmul threshold: override via ESHKOL_GPU_MATMUL_THRESHOLD env var
+// Default 1B elements — GPU only for super-massive matrices
+static uint64_t g_gpu_matmul_threshold = 1000000000ULL;
+
+// GPU precision tier: "exact" (sf64), "high" (df64), "fast" (f32)
+// Override via ESHKOL_GPU_PRECISION env var
+static int g_gpu_precision_tier = 0;  // 0=exact, 1=high, 2=fast
+
+struct GPUEnvInitializer {
+    GPUEnvInitializer() {
+        if (const char* env = std::getenv("ESHKOL_GPU_MATMUL_THRESHOLD")) {
+            g_gpu_matmul_threshold = static_cast<uint64_t>(std::atoll(env));
+        }
+        if (const char* env = std::getenv("ESHKOL_GPU_PRECISION")) {
+            if (std::strcmp(env, "high") == 0) g_gpu_precision_tier = 1;
+            else if (std::strcmp(env, "fast") == 0) g_gpu_precision_tier = 2;
+            else g_gpu_precision_tier = 0;  // "exact" or default
+        }
+    }
+};
+static GPUEnvInitializer g_gpu_env_init;
 
 // Estimate time for each backend
 struct DispatchCost {
@@ -722,6 +746,7 @@ extern "C" {
 
 void eshkol_matmul_f64(const double* A, const double* B, double* C,
                         uint64_t M, uint64_t K, uint64_t N) {
+    eshkol_debug("matmul_f64: M=%llu K=%llu N=%llu", M, K, N);
     const uint64_t output_elements = M * N;
 
     // ===== Fast path dispatch (zero cost model overhead) =====
@@ -734,24 +759,25 @@ void eshkol_matmul_f64(const double* A, const double* B, double* C,
         return;
     }
 
-    // Small to large matrices (17 - 16M elements): cBLAS
-    // cBLAS achieves 600-900 GFLOPS up to 4000x4000
-    // GPU needs 16M+ elements to amortize shader compilation + transfer overhead
+    // Small to super-massive matrices (17 - 1B elements): cBLAS
+    // cBLAS (Apple Accelerate AMX) achieves 1100+ GFLOPS even at 225M elements.
+    // GPU (sf64 softfloat) only used when cBLAS is computationally infeasible
+    // — matrices ~31600×31600 and larger (1B+ output elements).
 #ifdef ESHKOL_BLAS_ENABLED
-    if (output_elements < 16000000) {
+    if (output_elements < g_gpu_matmul_threshold) {
         eshkol::blas::matmul(A, B, C, M, K, N);
         return;
     }
 #else
     // Fallback to SIMD if BLAS not available
-    if (output_elements < 16000000) {
+    if (output_elements < g_gpu_matmul_threshold) {
         matmul_simd(A, B, C, M, K, N);
         return;
     }
 #endif
 
-    // ===== Very large matrices (>= 16M elements): GPU vs BLAS =====
-    // Lazy-init GPU only when we have matrices large enough to benefit
+    // ===== Super massive matrices (>= 1B elements): GPU vs BLAS =====
+    // Lazy-init GPU only when cBLAS is computationally infeasible
     static bool gpu_initialized = false;
     static bool gpu_available = false;
 
@@ -819,6 +845,139 @@ void eshkol_matmul_f64(const double* A, const double* B, double* C,
     }
 }
 
+/**
+ * eshkol_matmul_backward_f64 — GPU/BLAS/SIMD-dispatched backward matmul.
+ *
+ * Forward: C = A @ B, where A is (M,K), B is (K,N), C is (M,N)
+ * Backward: grad_A = grad_out @ B^T, grad_B = A^T @ grad_out
+ *
+ * Uses the same dispatch hierarchy as eshkol_matmul_f64:
+ *   GPU → BLAS → SIMD → scalar
+ */
+/* Helper: explicit out-of-place transpose for GPU/SIMD paths that can't use CblasTrans */
+static void transpose_f64(const double* src, double* dst, uint64_t rows, uint64_t cols) {
+    for (uint64_t i = 0; i < rows; i++)
+        for (uint64_t j = 0; j < cols; j++)
+            dst[j * rows + i] = src[i * cols + j];
+}
+
+void eshkol_matmul_backward_f64(
+    const double* grad_out,
+    const double* saved_A, const double* saved_B,
+    double* grad_A, double* grad_B,
+    uint64_t M, uint64_t K, uint64_t N)
+{
+    eshkol_debug("matmul_backward_f64: M=%llu K=%llu N=%llu", M, K, N);
+
+    /* Backward matmul = 2 matmuls:
+     *   grad_A = grad_out @ B^T: (M,N) @ (N,K) -> (M,K)
+     *   grad_B = A^T @ grad_out: (K,M) @ (M,N) -> (K,N)
+     *
+     * Dispatch: GPU → BLAS → SIMD → scalar (mirrors forward eshkol_matmul_f64) */
+
+    const uint64_t output_a = M * K;
+    const uint64_t output_b = K * N;
+
+    // ===== Tiny matrices: scalar =====
+    if (output_a <= 16 && output_b <= 16) {
+        memset(grad_A, 0, (size_t)(M * K) * sizeof(double));
+        for (uint64_t i = 0; i < M; i++)
+            for (uint64_t j = 0; j < K; j++)
+                for (uint64_t n = 0; n < N; n++)
+                    grad_A[i * K + j] += grad_out[i * N + n] * saved_B[j * N + n];
+        memset(grad_B, 0, (size_t)(K * N) * sizeof(double));
+        for (uint64_t j = 0; j < K; j++)
+            for (uint64_t n = 0; n < N; n++)
+                for (uint64_t i = 0; i < M; i++)
+                    grad_B[j * N + n] += saved_A[i * K + j] * grad_out[i * N + n];
+        return;
+    }
+
+    // ===== GPU path for super-massive matrices =====
+#ifdef ESHKOL_GPU_ENABLED
+    {
+        uint64_t max_output = output_a > output_b ? output_a : output_b;
+        if (max_output >= g_gpu_matmul_threshold) {
+            static bool gpu_initialized = false;
+            static bool gpu_available = false;
+            if (!gpu_initialized) {
+                eshkol_gpu_init();
+                gpu_available = (eshkol_gpu_get_backend() != ESHKOL_GPU_NONE);
+                gpu_initialized = true;
+            }
+            if (gpu_available) {
+                /* GPU matmul doesn't support CblasTrans — need explicit transpose.
+                 * Transpose B → B^T, then: grad_A = grad_out @ B^T via eshkol_gpu_matmul_f64
+                 * Transpose A → A^T, then: grad_B = A^T @ grad_out via eshkol_gpu_matmul_f64 */
+                double* B_T = (double*)malloc((size_t)(K * N) * sizeof(double));
+                double* A_T = (double*)malloc((size_t)(M * K) * sizeof(double));
+                if (B_T && A_T) {
+                    transpose_f64(saved_B, B_T, K, N);  // B(K,N) → B^T(N,K)
+                    transpose_f64(saved_A, A_T, M, K);  // A(M,K) → A^T(K,M)
+
+                    /* grad_A = grad_out @ B^T: (M,N) @ (N,K) -> (M,K) */
+                    EshkolGPUBuffer buf_go, buf_bt, buf_ga;
+                    if (eshkol_gpu_wrap_host((void*)grad_out, M*N*sizeof(double), &buf_go) == 0 &&
+                        eshkol_gpu_wrap_host(B_T, N*K*sizeof(double), &buf_bt) == 0 &&
+                        eshkol_gpu_wrap_host(grad_A, M*K*sizeof(double), &buf_ga) == 0) {
+                        if (eshkol_gpu_matmul_f64(&buf_go, &buf_bt, &buf_ga, M, N, K) == 0) {
+                            eshkol_gpu_free(&buf_go); eshkol_gpu_free(&buf_bt); eshkol_gpu_free(&buf_ga);
+
+                            /* grad_B = A^T @ grad_out: (K,M) @ (M,N) -> (K,N) */
+                            EshkolGPUBuffer buf_at, buf_go2, buf_gb;
+                            if (eshkol_gpu_wrap_host(A_T, K*M*sizeof(double), &buf_at) == 0 &&
+                                eshkol_gpu_wrap_host((void*)grad_out, M*N*sizeof(double), &buf_go2) == 0 &&
+                                eshkol_gpu_wrap_host(grad_B, K*N*sizeof(double), &buf_gb) == 0) {
+                                if (eshkol_gpu_matmul_f64(&buf_at, &buf_go2, &buf_gb, K, M, N) == 0) {
+                                    eshkol_gpu_free(&buf_at); eshkol_gpu_free(&buf_go2); eshkol_gpu_free(&buf_gb);
+                                    free(B_T); free(A_T);
+                                    return;  // GPU success for both gradients
+                                }
+                                eshkol_gpu_free(&buf_at); eshkol_gpu_free(&buf_go2); eshkol_gpu_free(&buf_gb);
+                            }
+                        } else {
+                            eshkol_gpu_free(&buf_go); eshkol_gpu_free(&buf_bt); eshkol_gpu_free(&buf_ga);
+                        }
+                    }
+                }
+                free(B_T); free(A_T);
+                // GPU failed, fall through to BLAS
+            }
+        }
+    }
+#endif
+
+    // ===== BLAS path: uses CblasTrans flags, no explicit transpose =====
+#ifdef ESHKOL_BLAS_ENABLED
+    memset(grad_A, 0, (size_t)(M * K) * sizeof(double));
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                static_cast<int>(M), static_cast<int>(K), static_cast<int>(N),
+                1.0, grad_out, static_cast<int>(N),
+                saved_B, static_cast<int>(N),
+                0.0, grad_A, static_cast<int>(K));
+
+    memset(grad_B, 0, (size_t)(K * N) * sizeof(double));
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                static_cast<int>(K), static_cast<int>(N), static_cast<int>(M),
+                1.0, saved_A, static_cast<int>(K),
+                grad_out, static_cast<int>(N),
+                0.0, grad_B, static_cast<int>(N));
+    return;
+#endif
+
+    // ===== Scalar fallback =====
+    memset(grad_A, 0, (size_t)(M * K) * sizeof(double));
+    for (uint64_t i = 0; i < M; i++)
+        for (uint64_t j = 0; j < K; j++)
+            for (uint64_t n = 0; n < N; n++)
+                grad_A[i * K + j] += grad_out[i * N + n] * saved_B[j * N + n];
+    memset(grad_B, 0, (size_t)(K * N) * sizeof(double));
+    for (uint64_t j = 0; j < K; j++)
+        for (uint64_t n = 0; n < N; n++)
+            for (uint64_t i = 0; i < M; i++)
+                grad_B[j * N + n] += saved_A[i * K + j] * grad_out[i * N + n];
+}
+
 int eshkol_blas_available(void) {
 #ifdef ESHKOL_BLAS_ENABLED
     return 1;
@@ -860,5 +1019,228 @@ void eshkol_batched_matmul_f64(const double* A, const double* B, double* C,
 #endif
     }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * XLA Runtime Stubs — CPU fallbacks when XLA/StableHLO is not linked.
+ *
+ * The tensor codegen emits calls to these functions unconditionally.
+ * When XLA is enabled, xla_runtime.cpp provides the real implementations
+ * with GPU dispatch. When XLA is not enabled, these stubs provide
+ * scalar CPU implementations so programs still work.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+#ifndef ESHKOL_XLA_ENABLED
+
+#include <cstring>
+#include <cmath>
+#include <cstdlib>
+#include <cfloat>
+
+/* Tensor struct — must match xla_runtime.cpp definition */
+typedef struct {
+    uint64_t* dimensions;
+    uint64_t  num_dimensions;
+    int64_t*  elements;       /* doubles stored as int64 bit patterns */
+    uint64_t  total_elements;
+} xla_stub_tensor_t;
+
+extern "C" xla_stub_tensor_t* arena_allocate_tensor_full(
+    void* arena, uint64_t num_dims, uint64_t total_elements);
+
+/* Helper: write double to tensor elements (stored as int64 bit pattern) */
+static void tensor_set(xla_stub_tensor_t* t, int64_t idx, double val) {
+    union { double d; int64_t i; } u; u.d = val;
+    t->elements[idx] = u.i;
+}
+static double tensor_get(const int64_t* elements, int64_t idx) {
+    union { int64_t i; double d; } u; u.i = elements[idx];
+    return u.d;
+}
+
+void* eshkol_xla_reduce(
+    void* arena,
+    const double* data,
+    int64_t total_elements,
+    const uint64_t* shape,
+    int64_t rank,
+    int64_t axis,
+    int64_t op_code)
+{
+    if (total_elements <= 0 || !data) return nullptr;
+
+    /* Full reduction (axis == -1): return scalar as 1-element tensor */
+    if (axis == -1) {
+        double result;
+        /* Op codes from tensor_codegen.cpp: SUM=0, MEAN=1, MAX=2, MIN=3, PROD=4 */
+        switch (op_code) {
+            case 0: /* SUM */  result = 0; for (int64_t i = 0; i < total_elements; i++) result += data[i]; break;
+            case 1: /* MEAN */ result = 0; for (int64_t i = 0; i < total_elements; i++) result += data[i]; result /= total_elements; break;
+            case 2: /* MAX */  result = data[0]; for (int64_t i = 1; i < total_elements; i++) if (data[i] > result) result = data[i]; break;
+            case 3: /* MIN */  result = data[0]; for (int64_t i = 1; i < total_elements; i++) if (data[i] < result) result = data[i]; break;
+            case 4: /* PROD */ result = 1; for (int64_t i = 0; i < total_elements; i++) result *= data[i]; break;
+            default: result = 0; break;
+        }
+        xla_stub_tensor_t* t = arena_allocate_tensor_full(arena, 1, 1);
+        if (!t) return nullptr;
+        t->dimensions[0] = 1;
+        tensor_set(t, 0, result);
+        return t;
+    }
+
+    /* Axis-specific reduction */
+    if (axis < 0 || axis >= rank) return nullptr;
+    int64_t outer = 1, mid = (int64_t)shape[axis], inner = 1;
+    for (int64_t i = 0; i < axis; i++) outer *= (int64_t)shape[i];
+    for (int64_t i = axis + 1; i < rank; i++) inner *= (int64_t)shape[i];
+    int64_t out_total = outer * inner;
+
+    xla_stub_tensor_t* t = arena_allocate_tensor_full(arena, rank - 1, (uint64_t)out_total);
+    if (!t) return nullptr;
+    int d = 0;
+    for (int64_t i = 0; i < rank; i++) if (i != axis) t->dimensions[d++] = shape[i];
+
+    for (int64_t o = 0; o < outer; o++) {
+        for (int64_t i = 0; i < inner; i++) {
+            /* Op codes: SUM=0, MEAN=1, MAX=2, MIN=3, PROD=4 */
+            double acc;
+            switch (op_code) {
+                case 0: case 1: acc = 0; break;  /* SUM, MEAN: init 0 */
+                case 4: acc = 1; break;           /* PROD: init 1 */
+                case 2: case 3: acc = data[o * mid * inner + i]; break; /* MAX, MIN: init first */
+                default: acc = 0; break;
+            }
+            for (int64_t m = 0; m < mid; m++) {
+                double v = data[o * mid * inner + m * inner + i];
+                switch (op_code) {
+                    case 0: case 1: acc += v; break;  /* SUM, MEAN */
+                    case 4: acc *= v; break;           /* PROD */
+                    case 2: if (v > acc) acc = v; break; /* MAX */
+                    case 3: if (v < acc) acc = v; break; /* MIN */
+                    default: break;
+                }
+            }
+            if (op_code == 1) acc /= mid;  /* MEAN */
+            tensor_set(t, o * inner + i, acc);
+        }
+    }
+    return t;
+}
+
+void* eshkol_xla_softmax(
+    void* arena,
+    const double* data,
+    int64_t total_elements,
+    const uint64_t* shape,
+    int64_t rank,
+    int64_t axis)
+{
+    if (total_elements <= 0 || !data || rank <= 0) return nullptr;
+    if (axis < 0) axis = rank - 1;
+
+    xla_stub_tensor_t* t = arena_allocate_tensor_full(arena, (uint64_t)rank, (uint64_t)total_elements);
+    if (!t) return nullptr;
+    for (int64_t i = 0; i < rank; i++) t->dimensions[i] = shape[i];
+
+    int64_t outer = 1, mid = (int64_t)shape[axis], inner = 1;
+    for (int64_t i = 0; i < axis; i++) outer *= (int64_t)shape[i];
+    for (int64_t i = axis + 1; i < rank; i++) inner *= (int64_t)shape[i];
+
+    for (int64_t o = 0; o < outer; o++) {
+        for (int64_t i = 0; i < inner; i++) {
+            double mx = -DBL_MAX;
+            for (int64_t m = 0; m < mid; m++) {
+                double v = data[o * mid * inner + m * inner + i];
+                if (v > mx) mx = v;
+            }
+            double sum = 0;
+            for (int64_t m = 0; m < mid; m++) {
+                double v = exp(data[o * mid * inner + m * inner + i] - mx);
+                tensor_set(t, o * mid * inner + m * inner + i, v);
+                sum += v;
+            }
+            for (int64_t m = 0; m < mid; m++) {
+                double v = tensor_get(t->elements, o * mid * inner + m * inner + i);
+                tensor_set(t, o * mid * inner + m * inner + i, v / sum);
+            }
+        }
+    }
+    return t;
+}
+
+void* eshkol_xla_normalize(
+    void* arena,
+    const double* data,
+    int64_t total_elements,
+    const uint64_t* shape,
+    int64_t rank,
+    int64_t axis,
+    const double* gamma,
+    const double* beta,
+    double epsilon)
+{
+    if (total_elements <= 0 || !data || rank <= 0) return nullptr;
+    if (axis < 0) axis = rank - 1;
+    int64_t feature_size = (int64_t)shape[axis];
+    int64_t num_samples = total_elements / feature_size;
+
+    xla_stub_tensor_t* t = arena_allocate_tensor_full(arena, (uint64_t)rank, (uint64_t)total_elements);
+    if (!t) return nullptr;
+    for (int64_t i = 0; i < rank; i++) t->dimensions[i] = shape[i];
+
+    for (int64_t s = 0; s < num_samples; s++) {
+        const double* row = data + s * feature_size;
+        double mean = 0;
+        for (int64_t f = 0; f < feature_size; f++) mean += row[f];
+        mean /= feature_size;
+        double var = 0;
+        for (int64_t f = 0; f < feature_size; f++) { double d = row[f] - mean; var += d * d; }
+        var /= feature_size;
+        double inv_std = 1.0 / sqrt(var + epsilon);
+        for (int64_t f = 0; f < feature_size; f++) {
+            double norm = (row[f] - mean) * inv_std;
+            double val = gamma ? gamma[f] * norm + (beta ? beta[f] : 0) : norm;
+            tensor_set(t, s * feature_size + f, val);
+        }
+    }
+    return t;
+}
+
+void* eshkol_xla_argreduce(
+    void* arena,
+    const double* data,
+    int64_t total_elements,
+    const uint64_t* shape,
+    int64_t rank,
+    int64_t axis,
+    int64_t is_max)
+{
+    if (total_elements <= 0 || !data || rank <= 0) return nullptr;
+    if (axis < 0) axis = rank - 1;
+
+    int64_t outer = 1, mid = (int64_t)shape[axis], inner = 1;
+    for (int64_t i = 0; i < axis; i++) outer *= (int64_t)shape[i];
+    for (int64_t i = axis + 1; i < rank; i++) inner *= (int64_t)shape[i];
+    int64_t out_total = outer * inner;
+
+    xla_stub_tensor_t* t = arena_allocate_tensor_full(arena, (uint64_t)(rank - 1), (uint64_t)out_total);
+    if (!t) return nullptr;
+    int d = 0;
+    for (int64_t i = 0; i < rank; i++) if (i != axis) t->dimensions[d++] = shape[i];
+
+    for (int64_t o = 0; o < outer; o++) {
+        for (int64_t i = 0; i < inner; i++) {
+            double best = data[o * mid * inner + i];
+            int64_t best_idx = 0;
+            for (int64_t m = 1; m < mid; m++) {
+                double v = data[o * mid * inner + m * inner + i];
+                if (is_max ? (v > best) : (v < best)) { best = v; best_idx = m; }
+            }
+            tensor_set(t, o * inner + i, (double)best_idx);
+        }
+    }
+    return t;
+}
+
+#endif /* !ESHKOL_XLA_ENABLED */
 
 } // extern "C"

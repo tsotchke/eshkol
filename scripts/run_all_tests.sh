@@ -74,6 +74,7 @@ TEST_SCRIPTS=(
     "run_benchmark_tests.sh"
     "run_migration_tests.sh"
     "run_codegen_tests.sh"
+    "run_numeric_tests.sh"
 )
 
 echo ""
@@ -211,13 +212,19 @@ for script in "${TEST_SCRIPTS[@]}"; do
 done
 
 # Deduplicate ALL_FAILURES (Pattern 1 and Pattern 2 can overlap)
+# Use a newline-delimited seen list (bash 3.2 compatible — no associative arrays)
 declare -a UNIQUE_FAILURES
-declare -A SEEN_FAILURES
+_SEEN_LIST=""
 for f in "${ALL_FAILURES[@]}"; do
-    if [ -z "${SEEN_FAILURES[$f]+x}" ]; then
-        SEEN_FAILURES["$f"]=1
-        UNIQUE_FAILURES+=("$f")
-    fi
+    # Sanitize to a comparable key
+    key="${f//[^a-zA-Z0-9_]/_}"
+    case "$_SEEN_LIST" in
+        *"|$key|"*) ;;  # already seen
+        *)
+            _SEEN_LIST="${_SEEN_LIST}|${key}|"
+            UNIQUE_FAILURES+=("$f")
+            ;;
+    esac
 done
 
 echo ""

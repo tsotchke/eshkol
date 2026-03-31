@@ -128,6 +128,6 @@ int main(int argc, char** argv) {
         write_eskb("/tmp/eshkol_complex.bc", p, 8);
     }
 
-    printf("\nDone. Run with: ESHKOL_BC=/tmp/eshkol_<name>.bc /tmp/weight_matrices_v3\n");
+    printf("\nDone. Run with: ESHKOL_BC=/tmp/eshkol_<name>.bc /tmp/weight_matrices\n");
     return 0;
 }

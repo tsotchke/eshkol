@@ -3111,11 +3111,16 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
             ctx_.int32Type(), {ctx_.ptrType(), ctx_.ptrType()}, true);
         llvm::FunctionCallee fprintf_fn = ctx_.module().getOrInsertFunction("fprintf", fprintf_type);
 
-        // Get stderr via __stderrp (macOS) or stderr global
-        llvm::GlobalVariable* stderr_var = ctx_.module().getGlobalVariable("__stderrp");
+        // Get stderr via platform-appropriate global name
+#ifdef __APPLE__
+        const char* stderr_name = "__stderrp";
+#else
+        const char* stderr_name = "stderr";
+#endif
+        llvm::GlobalVariable* stderr_var = ctx_.module().getGlobalVariable(stderr_name);
         if (!stderr_var) {
             stderr_var = new llvm::GlobalVariable(ctx_.module(), ctx_.ptrType(), false,
-                llvm::GlobalValue::ExternalLinkage, nullptr, "__stderrp");
+                llvm::GlobalValue::ExternalLinkage, nullptr, stderr_name);
         }
         llvm::Value* stderr_val = ctx_.builder().CreateLoad(ctx_.ptrType(), stderr_var);
 

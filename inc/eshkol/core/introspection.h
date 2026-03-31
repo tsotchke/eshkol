@@ -22,6 +22,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#ifdef __cplusplus
+#include <vector>
+#endif
 
 // ============================================================================
 // Common Constants
