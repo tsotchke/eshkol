@@ -708,6 +708,11 @@ public:
         get_closure_alloc_func_ = func;
     }
 
+    // Private helpers for vector calculus
+    llvm::Value* createNullVectorTensor(llvm::Value* dimension);
+    llvm::Value* extractTensorElement(llvm::Value* tensor_ptr, std::vector<llvm::Value*> indices);
+    llvm::Value* extractJacobianElement(llvm::Value* jacobian_ptr, llvm::Value* row_idx, llvm::Value* col_idx, llvm::Value* n);
+
 private:
     // Calculus extraction state
     ClosureCallCallback closure_call_callback_ = nullptr;
