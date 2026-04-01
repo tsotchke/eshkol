@@ -23283,320 +23283,9 @@ private:
     // Matrix of second derivatives (Jacobian of gradient)
     
     Value* codegenHessian(const eshkol_operations_t* op) {
-        if (!op->hessian_op.function || !op->hessian_op.point) {
-            eshkol_error("Invalid hessian operation");
-            return nullptr;
-        }
-        
-        eshkol_info("Computing Hessian matrix (second derivatives)");
-        
-        // CRITICAL FIX: Must null-check before dyn_cast to avoid LLVM assertion
-        Value* func = resolveLambdaFunction(op->hessian_op.function);
-        if (!func) {
-            eshkol_error("Failed to resolve function for Hessian computation");
-            return nullptr;
-        }
-        
-        Function* func_ptr = dyn_cast<Function>(func);
-        if (!func_ptr) {
-            eshkol_error("Hessian requires function");
-            return nullptr;
-        }
-        
-        TypedValue vector_tv = codegenTypedAST(op->hessian_op.point);
-        if (!vector_tv.llvm_value) {
-            eshkol_error("Failed to evaluate Hessian point");
-            return nullptr;
-        }
+        return autodiff_->hessian(op);
+    }
 
-        // Get arena for OALR-compliant tensor allocation
-        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-
-        // CRITICAL FIX: Handle Scheme VECTOR_PTR - convert to tensor format
-        // Get current function for basic blocks
-        Function* current_func = builder->GetInsertBlock()->getParent();
-
-        // Convert TypedValue to tagged_value
-        // Tensor literal fix: re-pack ptr-as-int64 as HEAP_PTR for correct subtype dispatch
-        Value* vector_val = typedValueToTaggedValue(vector_tv);
-        if (op->hessian_op.point->type == ESHKOL_TENSOR) {
-            Value* data_val = safeExtractInt64(vector_val);
-            vector_val = packPtrToTaggedValue(data_val, ESHKOL_VALUE_HEAP_PTR);
-        }
-
-        Value* input_type = getTaggedValueType(vector_val);
-        Value* input_base_type = getBaseType(input_type);
-
-        // M1 CONSOLIDATION: Check for both HEAP_PTR (consolidated) and legacy VECTOR_PTR
-        Value* hess_is_heap_ptr = builder->CreateICmpEQ(input_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* hess_is_legacy_vector = builder->CreateICmpEQ(input_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-
-        BasicBlock* hess_heap_dispatch = BasicBlock::Create(*context, "hess_heap_dispatch", current_func);
-        BasicBlock* hess_check_legacy = BasicBlock::Create(*context, "hess_check_legacy", current_func);
-        BasicBlock* hess_scheme_vector_input = BasicBlock::Create(*context, "hess_scheme_vector", current_func);
-        BasicBlock* hess_tensor_input = BasicBlock::Create(*context, "hess_tensor_input", current_func);
-        BasicBlock* hess_merge_input = BasicBlock::Create(*context, "hess_merge_input", current_func);
-
-        // First check for HEAP_PTR (consolidated format)
-        builder->CreateCondBr(hess_is_heap_ptr, hess_heap_dispatch, hess_check_legacy);
-
-        // HEAP_PTR dispatch - read subtype from header
-        builder->SetInsertPoint(hess_heap_dispatch);
-        Value* hess_heap_ptr_val = unpackPtrFromTaggedValue(vector_val);
-        Value* hess_header_ptr = builder->CreateGEP(int8_type, hess_heap_ptr_val, ConstantInt::get(int64_type, -8));
-        Value* hess_subtype = builder->CreateLoad(int8_type, hess_header_ptr);
-        Value* hess_is_vec_subtype = builder->CreateICmpEQ(hess_subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
-        builder->CreateCondBr(hess_is_vec_subtype, hess_scheme_vector_input, hess_tensor_input);
-
-        // Legacy VECTOR_PTR fallback
-        builder->SetInsertPoint(hess_check_legacy);
-        builder->CreateCondBr(hess_is_legacy_vector, hess_scheme_vector_input, hess_tensor_input);
-
-        // SCHEME VECTOR: Convert to tensor format
-        builder->SetInsertPoint(hess_scheme_vector_input);
-
-        Value* hess_scheme_vec_ptr_int = unpackInt64FromTaggedValue(vector_val);
-        Value* hess_scheme_vec_ptr = builder->CreateIntToPtr(hess_scheme_vec_ptr_int, builder->getPtrTy());
-        Value* hess_scheme_len_ptr = builder->CreateBitCast(hess_scheme_vec_ptr, PointerType::getUnqual(*context));
-        Value* hess_scheme_len = builder->CreateLoad(int64_type, hess_scheme_len_ptr);
-
-        // Allocate tensor via arena (OALR compliant - no malloc)
-        Value* hess_typed_scheme_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
-
-        // Set dimensions
-        Value* hess_scheme_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* hess_scheme_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, hess_scheme_dims_size});
-        Value* hess_typed_scheme_dims = builder->CreatePointerCast(hess_scheme_dims_ptr, builder->getPtrTy());
-        builder->CreateStore(hess_scheme_len, hess_typed_scheme_dims);
-
-        builder->CreateStore(hess_typed_scheme_dims, builder->CreateStructGEP(tensor_type, hess_typed_scheme_tensor, 0));
-        builder->CreateStore(ConstantInt::get(int64_type, 1),
-            builder->CreateStructGEP(tensor_type, hess_typed_scheme_tensor, 1));
-        builder->CreateStore(hess_scheme_len, builder->CreateStructGEP(tensor_type, hess_typed_scheme_tensor, 3));
-
-        // Allocate and copy elements
-        Value* hess_scheme_elems_size = builder->CreateMul(hess_scheme_len,
-            ConstantInt::get(int64_type, sizeof(int64_t)));
-        Value* hess_scheme_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, hess_scheme_elems_size});
-        Value* hess_typed_scheme_elems = builder->CreatePointerCast(hess_scheme_elems_ptr, builder->getPtrTy());
-        builder->CreateStore(hess_typed_scheme_elems, builder->CreateStructGEP(tensor_type, hess_typed_scheme_tensor, 2));
-
-        // Copy elements loop
-        Value* hess_scheme_elem_base = builder->CreateGEP(int8_type, hess_scheme_vec_ptr,
-            ConstantInt::get(int64_type, 8));
-        Value* hess_scheme_elem_base_typed = builder->CreateBitCast(hess_scheme_elem_base, PointerType::getUnqual(*context));
-
-        BasicBlock* hess_svec_copy_cond = BasicBlock::Create(*context, "hess_svec_copy_cond", current_func);
-        BasicBlock* hess_svec_copy_body = BasicBlock::Create(*context, "hess_svec_copy_body", current_func);
-        BasicBlock* hess_svec_copy_done = BasicBlock::Create(*context, "hess_svec_copy_done", current_func);
-
-        Value* hess_svec_copy_i = builder->CreateAlloca(int64_type, nullptr, "hess_svec_copy_i");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), hess_svec_copy_i);
-        builder->CreateBr(hess_svec_copy_cond);
-
-        builder->SetInsertPoint(hess_svec_copy_cond);
-        Value* hess_svec_i = builder->CreateLoad(int64_type, hess_svec_copy_i);
-        Value* hess_svec_cond = builder->CreateICmpULT(hess_svec_i, hess_scheme_len);
-        builder->CreateCondBr(hess_svec_cond, hess_svec_copy_body, hess_svec_copy_done);
-
-        builder->SetInsertPoint(hess_svec_copy_body);
-        Value* hess_svec_src_ptr = builder->CreateGEP(tagged_value_type, hess_scheme_elem_base_typed, hess_svec_i);
-        Value* hess_svec_tagged_elem = builder->CreateLoad(tagged_value_type, hess_svec_src_ptr);
-        Value* hess_svec_double_val = unpackDoubleFromTaggedValue(hess_svec_tagged_elem);
-        Value* hess_svec_as_int64 = builder->CreateBitCast(hess_svec_double_val, int64_type);
-        Value* hess_svec_dst_ptr = builder->CreateGEP(int64_type, hess_typed_scheme_elems, hess_svec_i);
-        builder->CreateStore(hess_svec_as_int64, hess_svec_dst_ptr);
-        Value* hess_svec_next_i = builder->CreateAdd(hess_svec_i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(hess_svec_next_i, hess_svec_copy_i);
-        builder->CreateBr(hess_svec_copy_cond);
-
-        builder->SetInsertPoint(hess_svec_copy_done);
-        Value* hess_scheme_tensor_int = builder->CreatePtrToInt(hess_typed_scheme_tensor, int64_type);
-        Value* hess_scheme_vector_tagged = packPtrToTaggedValue(hess_scheme_tensor_int, ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(hess_merge_input);
-        BasicBlock* hess_scheme_exit = builder->GetInsertBlock();
-
-        // TENSOR INPUT: Use as-is
-        builder->SetInsertPoint(hess_tensor_input);
-        builder->CreateBr(hess_merge_input);
-        BasicBlock* hess_tensor_exit = builder->GetInsertBlock();
-
-        // MERGE
-        builder->SetInsertPoint(hess_merge_input);
-        PHINode* hess_actual_input = builder->CreatePHI(tagged_value_type, 2, "hess_input");
-        hess_actual_input->addIncoming(hess_scheme_vector_tagged, hess_scheme_exit);
-        hess_actual_input->addIncoming(vector_val, hess_tensor_exit);
-
-        // Extract tensor pointer from merged input
-        Value* vector_ptr_int = safeExtractInt64(hess_actual_input);
-
-        // Use class member tensor_type (shared by all tensor operations)
-
-        // Extract input dimension n
-        Value* input_ptr = builder->CreateIntToPtr(vector_ptr_int, builder->getPtrTy());
-        
-        Value* input_dims_field = builder->CreateStructGEP(tensor_type, input_ptr, 0);
-        Value* input_dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), input_dims_field);
-        Value* typed_input_dims = builder->CreatePointerCast(input_dims_ptr, builder->getPtrTy());
-        
-        Value* input_elements_field = builder->CreateStructGEP(tensor_type, input_ptr, 2);
-        Value* input_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), input_elements_field);
-        Value* typed_input_elements = builder->CreatePointerCast(input_elements_ptr, builder->getPtrTy());
-        
-        Value* n_ptr = builder->CreateGEP(int64_type, typed_input_dims,
-            ConstantInt::get(int64_type, 0));
-        Value* n = builder->CreateLoad(int64_type, n_ptr);
-
-        // Allocate n×n Hessian matrix via arena (OALR compliant - no malloc)
-        Value* typed_hess_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
-
-        // Set dimensions [n, n]
-        Value* hess_dims_size = builder->CreateMul(
-            ConstantInt::get(int64_type, 2),
-            ConstantInt::get(int64_type, sizeof(uint64_t)));
-        Value* hess_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, hess_dims_size});
-        Value* typed_hess_dims = builder->CreatePointerCast(hess_dims_ptr, builder->getPtrTy());
-
-        builder->CreateStore(n, typed_hess_dims);
-        Value* hess_dim1_slot = builder->CreateGEP(int64_type, typed_hess_dims,
-            ConstantInt::get(int64_type, 1));
-        builder->CreateStore(n, hess_dim1_slot);
-
-        Value* hess_dims_field = builder->CreateStructGEP(tensor_type, typed_hess_ptr, 0);
-        builder->CreateStore(typed_hess_dims, hess_dims_field);
-
-        Value* hess_num_dims_field = builder->CreateStructGEP(tensor_type, typed_hess_ptr, 1);
-        builder->CreateStore(ConstantInt::get(int64_type, 2), hess_num_dims_field);
-
-        Value* total_hess_elems = builder->CreateMul(n, n);
-        Value* hess_total_field = builder->CreateStructGEP(tensor_type, typed_hess_ptr, 3);
-        builder->CreateStore(total_hess_elems, hess_total_field);
-
-        // Allocate elements array
-        Value* hess_elems_size = builder->CreateMul(total_hess_elems,
-            ConstantInt::get(int64_type, sizeof(double)));
-        Value* hess_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, hess_elems_size});
-        Value* typed_hess_elems = builder->CreatePointerCast(hess_elems_ptr, builder->getPtrTy());
-
-        Value* hess_elems_field = builder->CreateStructGEP(tensor_type, typed_hess_ptr, 2);
-        builder->CreateStore(typed_hess_elems, hess_elems_field);
-
-        // Numerical differentiation epsilon
-        Value* epsilon = ConstantFP::get(double_type, 1e-8);
-
-        // Compute gradient at original point first
-        // Create gradient operation structure - but we can't easily do this
-        // Instead, inline the gradient computation
-
-        // Allocate array for base gradient via arena
-        Value* base_grad_size = builder->CreateMul(n,
-            ConstantInt::get(int64_type, sizeof(double)));
-        Value* base_grad_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, base_grad_size});
-        Value* typed_base_grad = builder->CreatePointerCast(base_grad_ptr, builder->getPtrTy());
-        
-        // Compute base gradient (similar to codegenGradient but store in array)
-        BasicBlock* base_grad_loop_cond = BasicBlock::Create(*context, "base_grad_cond", current_func);
-        BasicBlock* base_grad_loop_body = BasicBlock::Create(*context, "base_grad_body", current_func);
-        BasicBlock* base_grad_loop_exit = BasicBlock::Create(*context, "base_grad_exit", current_func);
-        
-        Value* base_grad_idx = builder->CreateAlloca(int64_type, nullptr, "base_grad_idx");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), base_grad_idx);
-        builder->CreateBr(base_grad_loop_cond);
-        
-        builder->SetInsertPoint(base_grad_loop_cond);
-        Value* bg_i = builder->CreateLoad(int64_type, base_grad_idx);
-        Value* bg_i_less_n = builder->CreateICmpULT(bg_i, n);
-        builder->CreateCondBr(bg_i_less_n, base_grad_loop_body, base_grad_loop_exit);
-        
-        builder->SetInsertPoint(base_grad_loop_body);
-
-        // Create tape and AD nodes (arena_ptr defined at function start)
-        Value* bg_tape = builder->CreateCall(getArenaAllocateTapeFunc(),
-            {arena_ptr, ConstantInt::get(int64_type, 1024)});
-        
-        // CRITICAL: Set global tape pointer (runtime Value*, not compile-time member)
-        builder->CreateStore(bg_tape, current_ad_tape);
-        
-        // Create variable nodes via arena (OALR compliant - no malloc)
-        Value* bg_nodes_size = builder->CreateMul(n,
-            ConstantInt::get(int64_type, sizeof(void*)));
-        Value* bg_nodes_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, bg_nodes_size});
-        Value* typed_bg_nodes = builder->CreatePointerCast(bg_nodes_ptr, builder->getPtrTy());
-        
-        // Initialize nodes loop
-        BasicBlock* bg_init_cond = BasicBlock::Create(*context, "bg_init_cond", current_func);
-        BasicBlock* bg_init_body = BasicBlock::Create(*context, "bg_init_body", current_func);
-        BasicBlock* bg_init_exit = BasicBlock::Create(*context, "bg_init_exit", current_func);
-        
-        Value* bg_init_idx = builder->CreateAlloca(int64_type, nullptr, "bg_init_idx");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), bg_init_idx);
-        builder->CreateBr(bg_init_cond);
-        
-        builder->SetInsertPoint(bg_init_cond);
-        Value* bg_j = builder->CreateLoad(int64_type, bg_init_idx);
-        Value* bg_j_less_n = builder->CreateICmpULT(bg_j, n);
-        builder->CreateCondBr(bg_j_less_n, bg_init_body, bg_init_exit);
-        
-        builder->SetInsertPoint(bg_init_body);
-        // CRITICAL FIX: Tensor elements stored as int64, load as int64 then convert
-        Value* bg_elem_ptr = builder->CreateGEP(int64_type,
-            typed_input_elements, bg_j);
-        Value* bg_elem_int64 = builder->CreateLoad(int64_type, bg_elem_ptr);
-        // FIX 1c: BitCast preserves IEEE754 bits, SIToFP corrupts them
-        Value* bg_elem = builder->CreateBitCast(bg_elem_int64, double_type);
-        Value* bg_node = createADVariable(bg_elem, 0);
-        
-        Value* bg_node_slot = builder->CreateGEP(PointerType::getUnqual(*context),
-            typed_bg_nodes, bg_j);
-        builder->CreateStore(bg_node, bg_node_slot);
-        
-        Value* bg_next_j = builder->CreateAdd(bg_j, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(bg_next_j, bg_init_idx);
-        builder->CreateBr(bg_init_cond);
-        
-        builder->SetInsertPoint(bg_init_exit);
-        
-        // Build and call function via arena (OALR compliant - no malloc)
-        Value* typed_bg_ad_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
-
-        Value* bg_ad_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* bg_ad_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, bg_ad_dims_size});
-        Value* typed_bg_ad_dims = builder->CreatePointerCast(bg_ad_dims_ptr, builder->getPtrTy());
-        builder->CreateStore(n, typed_bg_ad_dims);
-
-        builder->CreateStore(typed_bg_ad_dims,
-            builder->CreateStructGEP(tensor_type, typed_bg_ad_tensor, 0));
-        builder->CreateStore(ConstantInt::get(int64_type, 1),
-            builder->CreateStructGEP(tensor_type, typed_bg_ad_tensor, 1));
-        builder->CreateStore(n,
-            builder->CreateStructGEP(tensor_type, typed_bg_ad_tensor, 3));
-
-        Value* bg_ad_elems_size = builder->CreateMul(n,
-            ConstantInt::get(int64_type, sizeof(uint64_t)));
-        Value* bg_ad_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, bg_ad_elems_size});
-        Value* typed_bg_ad_elems = builder->CreatePointerCast(bg_ad_elems_ptr, builder->getPtrTy());
-        
-        builder->CreateStore(typed_bg_ad_elems,
-            builder->CreateStructGEP(tensor_type, typed_bg_ad_tensor, 2));
-        
-        // Copy nodes
-        BasicBlock* bg_copy_cond = BasicBlock::Create(*context, "bg_copy_cond", current_func);
-        BasicBlock* bg_copy_body = BasicBlock::Create(*context, "bg_copy_body", current_func);
-        BasicBlock* bg_copy_exit = BasicBlock::Create(*context, "bg_copy_exit", current_func);
-        
-        Value* bg_copy_idx = builder->CreateAlloca(int64_type, nullptr, "bg_copy_idx");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), bg_copy_idx);
-        builder->CreateBr(bg_copy_cond);
-        
-        builder->SetInsertPoint(bg_copy_cond);
-        Value* bg_k = builder->CreateLoad(int64_type, bg_copy_idx);
-        Value* bg_k_less_n = builder->CreateICmpULT(bg_k, n);
-        builder->CreateCondBr(bg_k_less_n, bg_copy_body, bg_copy_exit);
-        
-        builder->SetInsertPoint(bg_copy_body);
-        Value* bg_src_slot = builder->CreateGEP(PointerType::getUnqual(*context),
             typed_bg_nodes, bg_k);
         Value* bg_src_node = builder->CreateLoad(PointerType::getUnqual(*context), bg_src_slot);
         Value* bg_node_int = builder->CreatePtrToInt(bg_src_node, int64_type);
@@ -23971,6 +23660,110 @@ private:
     // Returns scalar: ∇²f = ∂²f/∂x₁² + ∂²f/∂x₂² + ... + ∂²f/∂xₙ²
     // This is the trace of the Hessian matrix
     Value* codegenLaplacian(const eshkol_operations_t* op) {
+        return autodiff_->laplacian(op);
+    }
+
+        Value* extract_next = builder->CreateAdd(extract_i, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(extract_next, pert_extract_idx);
+        builder->CreateBr(pert_extract_cond);
+        
+        builder->SetInsertPoint(pert_extract_exit);
+        
+        // Step 3: Compute H[i,j] for all rows i
+        BasicBlock* hess_row_cond = BasicBlock::Create(*context, "hess_row_cond", current_func);
+        BasicBlock* hess_row_body = BasicBlock::Create(*context, "hess_row_body", current_func);
+        BasicBlock* hess_row_exit = BasicBlock::Create(*context, "hess_row_exit", current_func);
+        
+        Value* hess_i_idx = builder->CreateAlloca(int64_type, nullptr, "hess_i_row");
+        builder->CreateStore(ConstantInt::get(int64_type, 0), hess_i_idx);
+        builder->CreateBr(hess_row_cond);
+        
+        builder->SetInsertPoint(hess_row_cond);
+        Value* hess_i = builder->CreateLoad(int64_type, hess_i_idx);
+        Value* hess_i_less_n = builder->CreateICmpULT(hess_i, n);
+        builder->CreateCondBr(hess_i_less_n, hess_row_body, hess_row_exit);
+        
+        builder->SetInsertPoint(hess_row_body);
+        
+        // Load base_grad[i]
+        Value* base_grad_i_ptr = builder->CreateGEP(double_type, typed_base_grad, hess_i);
+        Value* base_grad_i = builder->CreateLoad(double_type, base_grad_i_ptr);
+        
+        // Load pert_grad[i]
+        Value* hess_pert_grad_i_ptr = builder->CreateGEP(double_type, typed_pert_grad, hess_i);
+        Value* hess_pert_grad_i_val = builder->CreateLoad(double_type, hess_pert_grad_i_ptr);
+        
+        // Compute H[i,j] = (pert_grad[i] - base_grad[i]) / epsilon
+        Value* grad_diff = builder->CreateFSub(hess_pert_grad_i_val, base_grad_i);
+        Value* second_deriv = builder->CreateFDiv(grad_diff, epsilon);
+        
+        // Store H[i,j] in Hessian matrix (row-major: i*n + j)
+        Value* hess_linear_idx = builder->CreateMul(hess_i, n);
+        hess_linear_idx = builder->CreateAdd(hess_linear_idx, hess_j);
+        Value* hess_store_ptr = builder->CreateGEP(double_type, typed_hess_elems, hess_linear_idx);
+        builder->CreateStore(second_deriv, hess_store_ptr);
+        
+        Value* hess_i_next = builder->CreateAdd(hess_i, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(hess_i_next, hess_i_idx);
+        builder->CreateBr(hess_row_cond);
+        
+        builder->SetInsertPoint(hess_row_exit);
+        
+        // Reset tape for next column
+        builder->CreateCall(getArenaTapeResetFunc(), {pert_tape});
+        
+        // Next column
+        Value* hess_j_next = builder->CreateAdd(hess_j, ConstantInt::get(int64_type, 1));
+        builder->CreateStore(hess_j_next, hess_j_idx);
+        builder->CreateBr(hess_col_cond);
+        
+        builder->SetInsertPoint(hess_col_exit);
+        
+        eshkol_info("Hessian computation complete");
+        // Tag as TENSOR_PTR for proper display handling
+        Value* hess_result_int = builder->CreatePtrToInt(typed_hess_ptr, int64_type);
+        return packPtrToTaggedValue(hess_result_int, ESHKOL_VALUE_HEAP_PTR);
+    }
+    // ===== N-DIMENSIONAL NULL VECTOR HELPER =====
+    // Create n-dimensional null vector (all zeros) for error handling
+    // Handles ANY dimension at runtime - NEVER hardcode dimensions!
+    Value* createNullVectorTensor(Value* dimension) {
+        return autodiff_->createNullVectorTensor(dimension);
+    }
+
+    Value* extractTensorElement(Value* tensor_ptr, std::vector<Value*> indices) {
+        return autodiff_->extractTensorElement(tensor_ptr, indices);
+    }
+
+    Value* extractJacobianElement(Value* jacobian_ptr, Value* row_idx, Value* col_idx, Value* n) {
+        return autodiff_->extractJacobianElement(jacobian_ptr, row_idx, col_idx, n);
+    }
+
+    
+    // ===== END PHASE 3 OPERATORS =====
+    // ===== PHASE 4: VECTOR CALCULUS OPERATORS =====
+    // Differential geometry operators for physics simulations and field theory
+    
+    // Divergence: ∇·F for vector field F: ℝⁿ → ℝⁿ
+    // Returns scalar: ∇·F = ∂F₁/∂x₁ + ∂F₂/∂x₂ + ... + ∂Fₙ/∂xₙ
+    // This is the trace of the Jacobian matrix
+    Value* codegenDivergence(const eshkol_operations_t* op) {
+        return autodiff_->divergence(op);
+    }
+
+    
+    // Curl: ∇×F for vector field F: ℝ³ → ℝ³
+    // Returns vector: (∇×F) = [∂F₃/∂x₂ - ∂F₂/∂x₃, ∂F₁/∂x₃ - ∂F₃/∂x₁, ∂F₂/∂x₁ - ∂F₁/∂x₂]
+    // ONLY defined for 3D vector fields
+    Value* codegenCurl(const eshkol_operations_t* op) {
+        return autodiff_->curl(op);
+    }
+
+    
+    // Laplacian: ∇²f for scalar field f: ℝⁿ → ℝ
+    // Returns scalar: ∇²f = ∂²f/∂x₁² + ∂²f/∂x₂² + ... + ∂²f/∂xₙ²
+    // This is the trace of the Hessian matrix
+    Value* codegenLaplacian(const eshkol_operations_t* op) {
         if (!op->laplacian_op.function || !op->laplacian_op.point) {
             eshkol_error("Invalid laplacian operation - missing function or point");
             return nullptr;
@@ -24093,228 +23886,9 @@ private:
     // Directional Derivative: D_v f = ∇f · v
     // Computes the derivative of scalar field f in direction v
     Value* codegenDirectionalDerivative(const eshkol_operations_t* op) {
-        if (!op->directional_deriv_op.function || !op->directional_deriv_op.point ||
-            !op->directional_deriv_op.direction) {
-            eshkol_error("Invalid directional-derivative operation - missing function, point, or direction");
-            return nullptr;
-        }
-        
-        eshkol_info("Computing directional derivative");
-        
-        // Step 1: Compute gradient ∇f
-        eshkol_operations_t gradient_temp;
-        gradient_temp.op = ESHKOL_GRADIENT_OP;
-        gradient_temp.gradient_op.function = op->directional_deriv_op.function;
-        gradient_temp.gradient_op.point = op->directional_deriv_op.point;
-        
-        Value* gradient_tagged = codegenGradient(&gradient_temp);
-        if (!gradient_tagged) {
-            eshkol_error("Failed to compute gradient for directional derivative");
-            return nullptr;
-        }
-        
-        // CRITICAL FIX: Unpack tensor pointer from tagged_value
-        Value* gradient_ptr_int = safeExtractInt64(gradient_tagged);
-        
-        // Step 2: Get direction vector
-        Value* direction_val_raw = codegenAST(op->directional_deriv_op.direction);
-        if (!direction_val_raw) {
-            eshkol_error("Failed to evaluate direction vector");
-            return nullptr;
-        }
-
-        // Tensor literal fix: codegenTensor returns ptr-as-int64; wrap as HEAP_PTR
-        Value* direction_val;
-        if (direction_val_raw->getType() == tagged_value_type) {
-            direction_val = direction_val_raw;
-        } else if (direction_val_raw->getType()->isIntegerTy(64) &&
-                   op->directional_deriv_op.direction->type == ESHKOL_TENSOR) {
-            direction_val = packPtrToTaggedValue(direction_val_raw, ESHKOL_VALUE_HEAP_PTR);
-        } else if (direction_val_raw->getType()->isIntegerTy(64)) {
-            direction_val = packInt64ToTaggedValue(direction_val_raw, true);
-        } else if (direction_val_raw->getType()->isDoubleTy()) {
-            direction_val = packDoubleToTaggedValue(direction_val_raw);
-        } else {
-            TypedValue tv = detectValueType(direction_val_raw);
-            direction_val = typedValueToTaggedValue(tv);
-        }
-
-        // Get arena for OALR-compliant tensor allocation
-        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-
-        // M1 CONSOLIDATION: Handle HEAP_PTR (with subtype dispatch), legacy VECTOR_PTR, and tensor
-        Function* current_func = builder->GetInsertBlock()->getParent();
-
-        Value* dir_type = getTaggedValueType(direction_val);
-        Value* dir_base_type = getBaseType(dir_type);
-
-        Value* dd_is_heap_ptr = builder->CreateICmpEQ(dir_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* dd_is_legacy_vec = builder->CreateICmpEQ(dir_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-
-        BasicBlock* dd_heap_dispatch = BasicBlock::Create(*context, "dd_heap_dispatch", current_func);
-        BasicBlock* dd_check_legacy = BasicBlock::Create(*context, "dd_check_legacy", current_func);
-        BasicBlock* dd_scheme_vector = BasicBlock::Create(*context, "dd_scheme_vector", current_func);
-        BasicBlock* dd_tensor_input = BasicBlock::Create(*context, "dd_tensor_input", current_func);
-        BasicBlock* dd_merge_input = BasicBlock::Create(*context, "dd_merge_input", current_func);
-
-        builder->CreateCondBr(dd_is_heap_ptr, dd_heap_dispatch, dd_check_legacy);
-
-        // HEAP_PTR dispatch - read subtype from header
-        builder->SetInsertPoint(dd_heap_dispatch);
-        Value* dd_heap_ptr_val = unpackPtrFromTaggedValue(direction_val);
-        Value* dd_header_ptr = builder->CreateGEP(int8_type, dd_heap_ptr_val, ConstantInt::get(int64_type, -8));
-        Value* dd_subtype = builder->CreateLoad(int8_type, dd_header_ptr);
-        Value* dd_is_vec_subtype = builder->CreateICmpEQ(dd_subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
-        builder->CreateCondBr(dd_is_vec_subtype, dd_scheme_vector, dd_tensor_input);
-
-        // Legacy VECTOR_PTR fallback
-        builder->SetInsertPoint(dd_check_legacy);
-        builder->CreateCondBr(dd_is_legacy_vec, dd_scheme_vector, dd_tensor_input);
-
-        // SCHEME VECTOR: Convert to tensor format
-        builder->SetInsertPoint(dd_scheme_vector);
-
-        Value* dd_scheme_vec_ptr_int = unpackInt64FromTaggedValue(direction_val);
-        Value* dd_scheme_vec_ptr = builder->CreateIntToPtr(dd_scheme_vec_ptr_int, builder->getPtrTy());
-        Value* dd_scheme_len_ptr = builder->CreateBitCast(dd_scheme_vec_ptr, PointerType::getUnqual(*context));
-        Value* dd_scheme_len = builder->CreateLoad(int64_type, dd_scheme_len_ptr);
-
-        // Allocate tensor
-        // Allocate tensor via arena (OALR compliant - no malloc)
-        Value* dd_typed_scheme_tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
-
-        // Set dimensions
-        Value* dd_scheme_dims_size = ConstantInt::get(int64_type, sizeof(uint64_t));
-        Value* dd_scheme_dims_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, dd_scheme_dims_size});
-        Value* dd_typed_scheme_dims = builder->CreatePointerCast(dd_scheme_dims_ptr, builder->getPtrTy());
-        builder->CreateStore(dd_scheme_len, dd_typed_scheme_dims);
-
-        builder->CreateStore(dd_typed_scheme_dims, builder->CreateStructGEP(tensor_type, dd_typed_scheme_tensor, 0));
-        builder->CreateStore(ConstantInt::get(int64_type, 1),
-            builder->CreateStructGEP(tensor_type, dd_typed_scheme_tensor, 1));
-        builder->CreateStore(dd_scheme_len, builder->CreateStructGEP(tensor_type, dd_typed_scheme_tensor, 3));
-
-        // Allocate and copy elements
-        Value* dd_scheme_elems_size = builder->CreateMul(dd_scheme_len,
-            ConstantInt::get(int64_type, sizeof(double)));
-        Value* dd_scheme_elems_ptr = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, dd_scheme_elems_size});
-        Value* dd_typed_scheme_elems = builder->CreatePointerCast(dd_scheme_elems_ptr, builder->getPtrTy());
-        builder->CreateStore(dd_typed_scheme_elems, builder->CreateStructGEP(tensor_type, dd_typed_scheme_tensor, 2));
-
-        // Copy elements loop (extract doubles from tagged values)
-        Value* dd_scheme_elem_base = builder->CreateGEP(int8_type, dd_scheme_vec_ptr,
-            ConstantInt::get(int64_type, 8));
-        Value* dd_scheme_elem_base_typed = builder->CreateBitCast(dd_scheme_elem_base, PointerType::getUnqual(*context));
-
-        BasicBlock* dd_svec_copy_cond = BasicBlock::Create(*context, "dd_svec_copy_cond", current_func);
-        BasicBlock* dd_svec_copy_body = BasicBlock::Create(*context, "dd_svec_copy_body", current_func);
-        BasicBlock* dd_svec_copy_done = BasicBlock::Create(*context, "dd_svec_copy_done", current_func);
-
-        Value* dd_svec_copy_i = builder->CreateAlloca(int64_type, nullptr, "dd_svec_copy_i");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), dd_svec_copy_i);
-        builder->CreateBr(dd_svec_copy_cond);
-
-        builder->SetInsertPoint(dd_svec_copy_cond);
-        Value* dd_svec_i = builder->CreateLoad(int64_type, dd_svec_copy_i);
-        Value* dd_svec_cond = builder->CreateICmpULT(dd_svec_i, dd_scheme_len);
-        builder->CreateCondBr(dd_svec_cond, dd_svec_copy_body, dd_svec_copy_done);
-
-        builder->SetInsertPoint(dd_svec_copy_body);
-        Value* dd_svec_src_ptr = builder->CreateGEP(tagged_value_type, dd_scheme_elem_base_typed, dd_svec_i);
-        Value* dd_svec_tagged_elem = builder->CreateLoad(tagged_value_type, dd_svec_src_ptr);
-        Value* dd_svec_double_val = unpackDoubleFromTaggedValue(dd_svec_tagged_elem);
-        Value* dd_svec_dst_ptr = builder->CreateGEP(double_type, dd_typed_scheme_elems, dd_svec_i);
-        builder->CreateStore(dd_svec_double_val, dd_svec_dst_ptr);
-        Value* dd_svec_next_i = builder->CreateAdd(dd_svec_i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(dd_svec_next_i, dd_svec_copy_i);
-        builder->CreateBr(dd_svec_copy_cond);
-
-        builder->SetInsertPoint(dd_svec_copy_done);
-        Value* dd_scheme_tensor_int = builder->CreatePtrToInt(dd_typed_scheme_tensor, int64_type);
-        builder->CreateBr(dd_merge_input);
-        BasicBlock* dd_scheme_exit = builder->GetInsertBlock();
-
-        // TENSOR INPUT: Use as-is
-        builder->SetInsertPoint(dd_tensor_input);
-        Value* dd_tensor_ptr_int = safeExtractInt64(direction_val);
-        builder->CreateBr(dd_merge_input);
-        BasicBlock* dd_tensor_exit = builder->GetInsertBlock();
-
-        // MERGE
-        builder->SetInsertPoint(dd_merge_input);
-        PHINode* direction_ptr_int = builder->CreatePHI(int64_type, 2, "dd_dir_ptr");
-        direction_ptr_int->addIncoming(dd_scheme_tensor_int, dd_scheme_exit);
-        direction_ptr_int->addIncoming(dd_tensor_ptr_int, dd_tensor_exit);
-
-        // Step 3: Compute dot product: ∇f · v
-        // Use class member tensor_type (shared by all tensor operations)
-
-        Value* gradient_ptr = builder->CreateIntToPtr(gradient_ptr_int, builder->getPtrTy());
-        Value* direction_ptr = builder->CreateIntToPtr(direction_ptr_int, builder->getPtrTy());
-        
-        // Get gradient elements
-        Value* grad_elements_field = builder->CreateStructGEP(tensor_type, gradient_ptr, 2);
-        Value* grad_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), grad_elements_field);
-        Value* typed_grad_elements = builder->CreatePointerCast(grad_elements_ptr, builder->getPtrTy());
-        
-        // Get direction elements
-        Value* dir_elements_field = builder->CreateStructGEP(tensor_type, direction_ptr, 2);
-        Value* dir_elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dir_elements_field);
-        Value* typed_dir_elements = builder->CreatePointerCast(dir_elements_ptr, builder->getPtrTy());
-        
-        // Get dimension n
-        Value* grad_total_field = builder->CreateStructGEP(tensor_type, gradient_ptr, 3);
-        Value* n = builder->CreateLoad(int64_type, grad_total_field);
-        
-        // Compute dot product: sum(grad[i] * dir[i])
-        // current_func already defined above
-        BasicBlock* dot_loop_cond = BasicBlock::Create(*context, "dirderiv_dot_cond", current_func);
-        BasicBlock* dot_loop_body = BasicBlock::Create(*context, "dirderiv_dot_body", current_func);
-        BasicBlock* dot_loop_exit = BasicBlock::Create(*context, "dirderiv_dot_exit", current_func);
-        
-        Value* dot_idx = builder->CreateAlloca(int64_type, nullptr, "dot_idx");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), dot_idx);
-        
-        Value* dot_acc = builder->CreateAlloca(double_type, nullptr, "dot_acc");
-        builder->CreateStore(ConstantFP::get(double_type, 0.0), dot_acc);
-        
-        builder->CreateBr(dot_loop_cond);
-        
-        builder->SetInsertPoint(dot_loop_cond);
-        Value* i = builder->CreateLoad(int64_type, dot_idx);
-        Value* i_less_n = builder->CreateICmpULT(i, n);
-        builder->CreateCondBr(i_less_n, dot_loop_body, dot_loop_exit);
-        
-        builder->SetInsertPoint(dot_loop_body);
-        
-        // Load grad[i]
-        Value* grad_elem_ptr = builder->CreateGEP(double_type,
-            typed_grad_elements, i);
-        Value* grad_elem = builder->CreateLoad(double_type, grad_elem_ptr);
-        
-        // Load dir[i]
-        Value* dir_elem_ptr = builder->CreateGEP(double_type,
-            typed_dir_elements, i);
-        Value* dir_elem = builder->CreateLoad(double_type, dir_elem_ptr);
-        
-        // Multiply and accumulate
-        Value* prod = builder->CreateFMul(grad_elem, dir_elem);
-        Value* current_dot = builder->CreateLoad(double_type, dot_acc);
-        Value* new_dot = builder->CreateFAdd(current_dot, prod);
-        builder->CreateStore(new_dot, dot_acc);
-        
-        Value* next_i = builder->CreateAdd(i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_i, dot_idx);
-        builder->CreateBr(dot_loop_cond);
-        
-        builder->SetInsertPoint(dot_loop_exit);
-        Value* result = builder->CreateLoad(double_type, dot_acc);
-
-        eshkol_info("Directional derivative computation complete");
-        return packDoubleToTaggedValue(result);
+        return autodiff_->directionalDerivative(op);
     }
+
 
     // ===== END PHASE 4: VECTOR CALCULUS OPERATORS =====
 

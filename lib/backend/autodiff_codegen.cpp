@@ -4371,11 +4371,656 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
     return tagged_.packDouble(derivative_val);
 }
 
-llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
-    // Second-order derivatives - requires jacobian and gradient
-    eshkol_warn("AutodiffCodegen::hessian requires AST codegen - using fallback");
-    return tagged_.packNull();
+Value* hessian(const eshkol_operations_t* op) {
+    if (!op->hessian_op.function || !op->hessian_op.point) {
+        eshkol_error("Invalid hessian operation");
+        return nullptr;
+    }
+    
+    eshkol_info("Computing Hessian matrix (second derivatives)");
+    
+    // CRITICAL FIX: Must null-check before dyn_cast to avoid LLVM assertion
+    Value* func = resolve_lambda_callback_(op->hessian_op.function, 0, callback_context_);
+    if (!func) {
+        eshkol_error("Failed to resolve function for Hessian computation");
+        return nullptr;
+    }
+    
+    Function* func_ptr = dyn_cast<Function>(func);
+    if (!func_ptr) {
+        eshkol_error("Hessian requires function");
+        return nullptr;
+    }
+    
+    Value* typed_raw_ = codegen_ast_callback_(op->hessian_op.point, callback_context_);
+    if (!typed_raw_) {
+        eshkol_error("Failed to evaluate Hessian point");
+        return nullptr;
+    }
+
+    // Get arena for OALR-compliant tensor allocation
+    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+    // CRITICAL FIX: Handle Scheme VECTOR_PTR - convert to tensor format
+    // Get current function for basic blocks
+    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+    // Convert TypedValue to tagged_value
+    // Tensor literal fix: re-pack ptr-as-int64 as HEAP_PTR for correct subtype dispatch
+    Value* vector_val = typed_raw_;
+    if (op->hessian_op.point->type == ESHKOL_TENSOR) {
+        Value* data_val = tagged_.unpackInt64(vector_val);
+        vector_val = tagged_.packPtr(data_val, ESHKOL_VALUE_HEAP_PTR);
+    }
+
+    Value* input_type = tagged_.getType(vector_val);
+    Value* input_base_type = tagged_.getBaseType(input_type);
+
+    // M1 CONSOLIDATION: Check for both HEAP_PTR (consolidated) and legacy VECTOR_PTR
+    Value* hess_is_heap_ptr = ctx_.builder().CreateICmpEQ(input_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    Value* hess_is_legacy_vector = ctx_.builder().CreateICmpEQ(input_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+    BasicBlock* hess_heap_dispatch = BasicBlock::Create(ctx_.context(), "hess_heap_dispatch", current_func);
+    BasicBlock* hess_check_legacy = BasicBlock::Create(ctx_.context(), "hess_check_legacy", current_func);
+    BasicBlock* hess_scheme_vector_input = BasicBlock::Create(ctx_.context(), "hess_scheme_vector", current_func);
+    BasicBlock* hess_tensor_input = BasicBlock::Create(ctx_.context(), "hess_tensor_input", current_func);
+    BasicBlock* hess_merge_input = BasicBlock::Create(ctx_.context(), "hess_merge_input", current_func);
+
+    // First check for HEAP_PTR (consolidated format)
+    ctx_.builder().CreateCondBr(hess_is_heap_ptr, hess_heap_dispatch, hess_check_legacy);
+
+    // HEAP_PTR dispatch - read subtype from header
+    ctx_.builder().SetInsertPoint(hess_heap_dispatch);
+    Value* hess_heap_ptr_val = tagged_.unpackPtr(vector_val);
+    Value* hess_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), hess_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));
+    Value* hess_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), hess_header_ptr);
+    Value* hess_is_vec_subtype = ctx_.builder().CreateICmpEQ(hess_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    ctx_.builder().CreateCondBr(hess_is_vec_subtype, hess_scheme_vector_input, hess_tensor_input);
+
+    // Legacy VECTOR_PTR fallback
+    ctx_.builder().SetInsertPoint(hess_check_legacy);
+    ctx_.builder().CreateCondBr(hess_is_legacy_vector, hess_scheme_vector_input, hess_tensor_input);
+
+    // SCHEME VECTOR: Convert to tensor format
+    ctx_.builder().SetInsertPoint(hess_scheme_vector_input);
+
+    Value* hess_scheme_vec_ptr_int = tagged_.unpackInt64(vector_val);
+    Value* hess_scheme_vec_ptr = ctx_.builder().CreateIntToPtr(hess_scheme_vec_ptr_int, ctx_.builder().getPtrTy());
+    Value* hess_scheme_len_ptr = ctx_.builder().CreateBitCast(hess_scheme_vec_ptr, PointerType::getUnqual(ctx_.context()));
+    Value* hess_scheme_len = ctx_.builder().CreateLoad(ctx_.int64Type(), hess_scheme_len_ptr);
+
+    // Allocate tensor via arena (OALR compliant - no malloc)
+    Value* hess_typed_scheme_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set dimensions
+    Value* hess_scheme_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* hess_scheme_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, hess_scheme_dims_size});
+    Value* hess_typed_scheme_dims = ctx_.builder().CreatePointerCast(hess_scheme_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(hess_scheme_len, hess_typed_scheme_dims);
+
+    ctx_.builder().CreateStore(hess_typed_scheme_dims, ctx_.builder().CreateStructGEP(ctx_.tensorType(), hess_typed_scheme_tensor, 0));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), hess_typed_scheme_tensor, 1));
+    ctx_.builder().CreateStore(hess_scheme_len, ctx_.builder().CreateStructGEP(ctx_.tensorType(), hess_typed_scheme_tensor, 3));
+
+    // Allocate and copy elements
+    Value* hess_scheme_elems_size = ctx_.builder().CreateMul(hess_scheme_len,
+        ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    Value* hess_scheme_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, hess_scheme_elems_size});
+    Value* hess_typed_scheme_elems = ctx_.builder().CreatePointerCast(hess_scheme_elems_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(hess_typed_scheme_elems, ctx_.builder().CreateStructGEP(ctx_.tensorType(), hess_typed_scheme_tensor, 2));
+
+    // Copy elements loop
+    Value* hess_scheme_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), hess_scheme_vec_ptr,
+        ConstantInt::get(ctx_.int64Type(), 8));
+    Value* hess_scheme_elem_base_typed = ctx_.builder().CreateBitCast(hess_scheme_elem_base, PointerType::getUnqual(ctx_.context()));
+
+    BasicBlock* hess_svec_copy_cond = BasicBlock::Create(ctx_.context(), "hess_svec_copy_cond", current_func);
+    BasicBlock* hess_svec_copy_body = BasicBlock::Create(ctx_.context(), "hess_svec_copy_body", current_func);
+    BasicBlock* hess_svec_copy_done = BasicBlock::Create(ctx_.context(), "hess_svec_copy_done", current_func);
+
+    Value* hess_svec_copy_i = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "hess_svec_copy_i");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), hess_svec_copy_i);
+    ctx_.builder().CreateBr(hess_svec_copy_cond);
+
+    ctx_.builder().SetInsertPoint(hess_svec_copy_cond);
+    Value* hess_svec_i = ctx_.builder().CreateLoad(ctx_.int64Type(), hess_svec_copy_i);
+    Value* hess_svec_cond = ctx_.builder().CreateICmpULT(hess_svec_i, hess_scheme_len);
+    ctx_.builder().CreateCondBr(hess_svec_cond, hess_svec_copy_body, hess_svec_copy_done);
+
+    ctx_.builder().SetInsertPoint(hess_svec_copy_body);
+    Value* hess_svec_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), hess_scheme_elem_base_typed, hess_svec_i);
+    Value* hess_svec_tagged_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), hess_svec_src_ptr);
+    Value* hess_svec_double_val = tagged_.unpackDouble(hess_svec_tagged_elem);
+    Value* hess_svec_as_int64 = ctx_.builder().CreateBitCast(hess_svec_double_val, ctx_.int64Type());
+    Value* hess_svec_dst_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), hess_typed_scheme_elems, hess_svec_i);
+    ctx_.builder().CreateStore(hess_svec_as_int64, hess_svec_dst_ptr);
+    Value* hess_svec_next_i = ctx_.builder().CreateAdd(hess_svec_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(hess_svec_next_i, hess_svec_copy_i);
+    ctx_.builder().CreateBr(hess_svec_copy_cond);
+
+    ctx_.builder().SetInsertPoint(hess_svec_copy_done);
+    Value* hess_scheme_tensor_int = ctx_.builder().CreatePtrToInt(hess_typed_scheme_tensor, ctx_.int64Type());
+    Value* hess_scheme_vector_tagged = tagged_.packPtr(hess_scheme_tensor_int, ESHKOL_VALUE_HEAP_PTR);
+    ctx_.builder().CreateBr(hess_merge_input);
+    BasicBlock* hess_scheme_exit = ctx_.builder().GetInsertBlock();
+
+    // TENSOR INPUT: Use as-is
+    ctx_.builder().SetInsertPoint(hess_tensor_input);
+    ctx_.builder().CreateBr(hess_merge_input);
+    BasicBlock* hess_tensor_exit = ctx_.builder().GetInsertBlock();
+
+    // MERGE
+    ctx_.builder().SetInsertPoint(hess_merge_input);
+    PHINode* hess_actual_input = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "hess_input");
+    hess_actual_input->addIncoming(hess_scheme_vector_tagged, hess_scheme_exit);
+    hess_actual_input->addIncoming(vector_val, hess_tensor_exit);
+
+    // Extract tensor pointer from merged input
+    Value* vector_ptr_int = tagged_.unpackInt64(hess_actual_input);
+
+    // Use class member ctx_.tensorType() (shared by all tensor operations)
+
+    // Extract input dimension n
+    Value* input_ptr = ctx_.builder().CreateIntToPtr(vector_ptr_int, ctx_.builder().getPtrTy());
+    
+    Value* input_dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), input_ptr, 0);
+    Value* input_dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), input_dims_field);
+    Value* typed_input_dims = ctx_.builder().CreatePointerCast(input_dims_ptr, ctx_.builder().getPtrTy());
+    
+    Value* input_elements_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), input_ptr, 2);
+    Value* input_elements_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), input_elements_field);
+    Value* typed_input_elements = ctx_.builder().CreatePointerCast(input_elements_ptr, ctx_.builder().getPtrTy());
+    
+    Value* n_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_input_dims,
+        ConstantInt::get(ctx_.int64Type(), 0));
+    Value* n = ctx_.builder().CreateLoad(ctx_.int64Type(), n_ptr);
+
+    // Allocate n×n Hessian matrix via arena (OALR compliant - no malloc)
+    Value* typed_hess_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set dimensions [n, n]
+    Value* hess_dims_size = ctx_.builder().CreateMul(
+        ConstantInt::get(ctx_.int64Type(), 2),
+        ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t)));
+    Value* hess_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, hess_dims_size});
+    Value* typed_hess_dims = ctx_.builder().CreatePointerCast(hess_dims_ptr, ctx_.builder().getPtrTy());
+
+    ctx_.builder().CreateStore(n, typed_hess_dims);
+    Value* hess_dim1_slot = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_hess_dims,
+        ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(n, hess_dim1_slot);
+
+    Value* hess_dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_hess_ptr, 0);
+    ctx_.builder().CreateStore(typed_hess_dims, hess_dims_field);
+
+    Value* hess_num_dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_hess_ptr, 1);
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 2), hess_num_dims_field);
+
+    Value* total_hess_elems = ctx_.builder().CreateMul(n, n);
+    Value* hess_total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_hess_ptr, 3);
+    ctx_.builder().CreateStore(total_hess_elems, hess_total_field);
+
+    // Allocate elements array
+    Value* hess_elems_size = ctx_.builder().CreateMul(total_hess_elems,
+        ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    Value* hess_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, hess_elems_size});
+    Value* typed_hess_elems = ctx_.builder().CreatePointerCast(hess_elems_ptr, ctx_.builder().getPtrTy());
+
+    Value* hess_elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_hess_ptr, 2);
+    ctx_.builder().CreateStore(typed_hess_elems, hess_elems_field);
+
+    // Numerical differentiation epsilon
+    Value* epsilon = ConstantFP::get(ctx_.doubleType(), 1e-8);
+
+    // Compute gradient at original point first
+    // Create gradient operation structure - but we can't easily do this
+    // Instead, inline the gradient computation
+
+    // Allocate array for base gradient via arena
+    Value* base_grad_size = ctx_.builder().CreateMul(n,
+        ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    Value* base_grad_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, base_grad_size});
+    Value* typed_base_grad = ctx_.builder().CreatePointerCast(base_grad_ptr, ctx_.builder().getPtrTy());
+    
+    // Compute base gradient (similar to codegenGradient but store in array)
+    BasicBlock* base_grad_loop_cond = BasicBlock::Create(ctx_.context(), "base_grad_cond", current_func);
+    BasicBlock* base_grad_loop_body = BasicBlock::Create(ctx_.context(), "base_grad_body", current_func);
+    BasicBlock* base_grad_loop_exit = BasicBlock::Create(ctx_.context(), "base_grad_exit", current_func);
+    
+    Value* base_grad_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "base_grad_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), base_grad_idx);
+    ctx_.builder().CreateBr(base_grad_loop_cond);
+    
+    ctx_.builder().SetInsertPoint(base_grad_loop_cond);
+    Value* bg_i = ctx_.builder().CreateLoad(ctx_.int64Type(), base_grad_idx);
+    Value* bg_i_less_n = ctx_.builder().CreateICmpULT(bg_i, n);
+    ctx_.builder().CreateCondBr(bg_i_less_n, base_grad_loop_body, base_grad_loop_exit);
+    
+    ctx_.builder().SetInsertPoint(base_grad_loop_body);
+
+    // Create tape and AD nodes (arena_ptr defined at function start)
+    Value* bg_tape = ctx_.builder().CreateCall(mem_.getArenaAllocateTape(),
+        {arena_ptr, ConstantInt::get(ctx_.int64Type(), 1024)});
+    
+    // CRITICAL: Set global tape pointer (runtime Value*, not compile-time member)
+    ctx_.builder().CreateStore(bg_tape, ctx_.currentAdTape());
+    
+    // Create variable nodes via arena (OALR compliant - no malloc)
+    Value* bg_nodes_size = ctx_.builder().CreateMul(n,
+        ConstantInt::get(ctx_.int64Type(), sizeof(void*)));
+    Value* bg_nodes_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, bg_nodes_size});
+    Value* typed_bg_nodes = ctx_.builder().CreatePointerCast(bg_nodes_ptr, ctx_.builder().getPtrTy());
+    
+    // Initialize nodes loop
+    BasicBlock* bg_init_cond = BasicBlock::Create(ctx_.context(), "bg_init_cond", current_func);
+    BasicBlock* bg_init_body = BasicBlock::Create(ctx_.context(), "bg_init_body", current_func);
+    BasicBlock* bg_init_exit = BasicBlock::Create(ctx_.context(), "bg_init_exit", current_func);
+    
+    Value* bg_init_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "bg_init_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), bg_init_idx);
+    ctx_.builder().CreateBr(bg_init_cond);
+    
+    ctx_.builder().SetInsertPoint(bg_init_cond);
+    Value* bg_j = ctx_.builder().CreateLoad(ctx_.int64Type(), bg_init_idx);
+    Value* bg_j_less_n = ctx_.builder().CreateICmpULT(bg_j, n);
+    ctx_.builder().CreateCondBr(bg_j_less_n, bg_init_body, bg_init_exit);
+    
+    ctx_.builder().SetInsertPoint(bg_init_body);
+    // CRITICAL FIX: Tensor elements stored as int64, load as int64 then convert
+    Value* bg_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(),
+        typed_input_elements, bg_j);
+    Value* bg_elem_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), bg_elem_ptr);
+    // FIX 1c: BitCast preserves IEEE754 bits, SIToFP corrupts them
+    Value* bg_elem = ctx_.builder().CreateBitCast(bg_elem_int64, ctx_.doubleType());
+    Value* bg_node = createADVariable(bg_elem, 0);
+    
+    Value* bg_node_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+        typed_bg_nodes, bg_j);
+    ctx_.builder().CreateStore(bg_node, bg_node_slot);
+    
+    Value* bg_next_j = ctx_.builder().CreateAdd(bg_j, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(bg_next_j, bg_init_idx);
+    ctx_.builder().CreateBr(bg_init_cond);
+    
+    ctx_.builder().SetInsertPoint(bg_init_exit);
+    
+    // Build and call function via arena (OALR compliant - no malloc)
+    Value* typed_bg_ad_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    Value* bg_ad_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* bg_ad_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, bg_ad_dims_size});
+    Value* typed_bg_ad_dims = ctx_.builder().CreatePointerCast(bg_ad_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(n, typed_bg_ad_dims);
+
+    ctx_.builder().CreateStore(typed_bg_ad_dims,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_bg_ad_tensor, 0));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_bg_ad_tensor, 1));
+    ctx_.builder().CreateStore(n,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_bg_ad_tensor, 3));
+
+    Value* bg_ad_elems_size = ctx_.builder().CreateMul(n,
+        ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t)));
+    Value* bg_ad_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, bg_ad_elems_size});
+    Value* typed_bg_ad_elems = ctx_.builder().CreatePointerCast(bg_ad_elems_ptr, ctx_.builder().getPtrTy());
+    
+    ctx_.builder().CreateStore(typed_bg_ad_elems,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_bg_ad_tensor, 2));
+    
+    // Copy nodes
+    BasicBlock* bg_copy_cond = BasicBlock::Create(ctx_.context(), "bg_copy_cond", current_func);
+    BasicBlock* bg_copy_body = BasicBlock::Create(ctx_.context(), "bg_copy_body", current_func);
+    BasicBlock* bg_copy_exit = BasicBlock::Create(ctx_.context(), "bg_copy_exit", current_func);
+    
+    Value* bg_copy_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "bg_copy_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), bg_copy_idx);
+    ctx_.builder().CreateBr(bg_copy_cond);
+    
+    ctx_.builder().SetInsertPoint(bg_copy_cond);
+    Value* bg_k = ctx_.builder().CreateLoad(ctx_.int64Type(), bg_copy_idx);
+    Value* bg_k_less_n = ctx_.builder().CreateICmpULT(bg_k, n);
+    ctx_.builder().CreateCondBr(bg_k_less_n, bg_copy_body, bg_copy_exit);
+    
+    ctx_.builder().SetInsertPoint(bg_copy_body);
+    Value* bg_src_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+        typed_bg_nodes, bg_k);
+    Value* bg_src_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), bg_src_slot);
+    Value* bg_node_int = ctx_.builder().CreatePtrToInt(bg_src_node, ctx_.int64Type());
+    
+    Value* bg_dst_slot = ctx_.builder().CreateGEP(ctx_.int64Type(),
+        typed_bg_ad_elems, bg_k);
+    ctx_.builder().CreateStore(bg_node_int, bg_dst_slot);
+    
+    Value* bg_next_k = ctx_.builder().CreateAdd(bg_k, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(bg_next_k, bg_copy_idx);
+    ctx_.builder().CreateBr(bg_copy_cond);
+    
+    ctx_.builder().SetInsertPoint(bg_copy_exit);
+    
+    // Call function
+    Value* bg_ad_tensor_int = ctx_.builder().CreatePtrToInt(typed_bg_ad_tensor, ctx_.int64Type());
+    Value* bg_ad_tensor_tagged = tagged_.packPtr(bg_ad_tensor_int, ESHKOL_VALUE_HEAP_PTR);
+    
+    // PHASE 1 FIX: Set AD mode flag to true before calling lambda
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
+
+    // CLOSURE FIX: Load captures for function call
+    std::vector<Value*> bg_call_args = {bg_ad_tensor_tagged};
+    std::vector<Value*> bg_captures = loadCapturesForAutodiff(func_ptr, "Hessian backward call");
+    bg_call_args.insert(bg_call_args.end(), bg_captures.begin(), bg_captures.end());
+    Value* bg_output_tagged = ctx_.builder().CreateCall(func_ptr, bg_call_args);
+
+    // PHASE 1 FIX: Set AD mode flag back to false after lambda call
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
+
+    Value* bg_output_int = tagged_.unpackInt64(bg_output_tagged);
+    Value* bg_output_node = ctx_.builder().CreateIntToPtr(bg_output_int, PointerType::getUnqual(ctx_.context()));
+    
+    // Backward pass
+    codegenBackward(bg_output_node, bg_tape);
+    
+    // Extract gradient for component bg_i
+    Value* bg_active_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+        typed_bg_nodes, bg_i);
+    Value* bg_active_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), bg_active_slot);
+    Value* bg_partial = loadNodeGradient(bg_active_node);
+    
+    // Store in base gradient array
+    Value* bg_store_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(),
+        typed_base_grad, bg_i);
+    ctx_.builder().CreateStore(bg_partial, bg_store_ptr);
+    
+    ctx_.builder().CreateCall(mem_.getArenaTapeReset(), {bg_tape});
+    
+    // Clear global tape pointer
+    ctx_.builder().CreateStore(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())), ctx_.currentAdTape());
+    
+    Value* bg_next_i = ctx_.builder().CreateAdd(bg_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(bg_next_i, base_grad_idx);
+    ctx_.builder().CreateBr(base_grad_loop_cond);
+    
+    ctx_.builder().SetInsertPoint(base_grad_loop_exit);
+    
+    // NUMERICAL DIFFERENTIATION: Compute Hessian H[i,j] = ∂²f/∂xᵢ∂xⱼ
+    // Using finite difference: H[i,j] ≈ (∇ᵢf(v+ε·eⱼ) - ∇ᵢf(v)) / ε
+    // Outer loop: for each column j (variable to perturb)
+    
+    // CRITICAL: Load arena_ptr ONCE before loops to ensure dominance
+    Value* hess_arena_ptr = getArenaPtr();
+    
+    BasicBlock* hess_col_cond = BasicBlock::Create(ctx_.context(), "hess_col_cond", current_func);
+    BasicBlock* hess_col_body = BasicBlock::Create(ctx_.context(), "hess_col_body", current_func);
+    BasicBlock* hess_col_exit = BasicBlock::Create(ctx_.context(), "hess_col_exit", current_func);
+    
+    Value* hess_j_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "hess_j_col");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), hess_j_idx);
+    ctx_.builder().CreateBr(hess_col_cond);
+    
+    // Column loop condition: j < n
+    ctx_.builder().SetInsertPoint(hess_col_cond);
+    Value* hess_j = ctx_.builder().CreateLoad(ctx_.int64Type(), hess_j_idx);
+    Value* hess_j_less_n = ctx_.builder().CreateICmpULT(hess_j, n);
+    ctx_.builder().CreateCondBr(hess_j_less_n, hess_col_body, hess_col_exit);
+    
+    ctx_.builder().SetInsertPoint(hess_col_body);
+    
+    // Step 1: Create perturbed vector v_j = v + ε·e_j via arena (OALR compliant - no malloc)
+    Value* perturbed_vec_size = ctx_.builder().CreateMul(n,
+        ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    Value* perturbed_vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, perturbed_vec_size});
+    Value* typed_perturbed_vec = ctx_.builder().CreatePointerCast(perturbed_vec_ptr, ctx_.builder().getPtrTy());
+    
+    // Copy input vector and perturb j-th component
+    BasicBlock* copy_loop_cond = BasicBlock::Create(ctx_.context(), "hess_copy_cond", current_func);
+    BasicBlock* copy_loop_body = BasicBlock::Create(ctx_.context(), "hess_copy_body", current_func);
+    BasicBlock* copy_loop_exit = BasicBlock::Create(ctx_.context(), "hess_copy_exit", current_func);
+    
+    Value* copy_k_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "copy_k");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), copy_k_idx);
+    ctx_.builder().CreateBr(copy_loop_cond);
+    
+    ctx_.builder().SetInsertPoint(copy_loop_cond);
+    Value* copy_k = ctx_.builder().CreateLoad(ctx_.int64Type(), copy_k_idx);
+    Value* copy_k_less_n = ctx_.builder().CreateICmpULT(copy_k, n);
+    ctx_.builder().CreateCondBr(copy_k_less_n, copy_loop_body, copy_loop_exit);
+    
+    ctx_.builder().SetInsertPoint(copy_loop_body);
+    
+    // Load input[k]
+    Value* input_k_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_input_elements, copy_k);
+    Value* input_k_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), input_k_ptr);
+    Value* input_k_double = ctx_.builder().CreateBitCast(input_k_int64, ctx_.doubleType());
+    
+    // If k == j, add epsilon; otherwise copy as-is
+    Value* k_is_j = ctx_.builder().CreateICmpEQ(copy_k, hess_j);
+    Value* perturbed_val = ctx_.builder().CreateSelect(k_is_j,
+        ctx_.builder().CreateFAdd(input_k_double, epsilon),
+        input_k_double);
+    
+    // Store in perturbed vector
+    Value* pert_k_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_perturbed_vec, copy_k);
+    ctx_.builder().CreateStore(perturbed_val, pert_k_ptr);
+    
+    Value* copy_k_next = ctx_.builder().CreateAdd(copy_k, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(copy_k_next, copy_k_idx);
+    ctx_.builder().CreateBr(copy_loop_cond);
+    
+    ctx_.builder().SetInsertPoint(copy_loop_exit);
+    
+    // Step 2: Compute gradient at perturbed point
+    // Create tape for perturbed gradient computation
+    Value* pert_tape = ctx_.builder().CreateCall(mem_.getArenaAllocateTape(),
+        {hess_arena_ptr, ConstantInt::get(ctx_.int64Type(), 1024)});
+    
+    // Create AD variable nodes from perturbed vector via arena (OALR compliant - no malloc)
+    Value* pert_nodes_size = ctx_.builder().CreateMul(n,
+        ConstantInt::get(ctx_.int64Type(), sizeof(void*)));
+    Value* pert_nodes_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, pert_nodes_size});
+    Value* typed_pert_nodes = ctx_.builder().CreatePointerCast(pert_nodes_ptr, ctx_.builder().getPtrTy());
+    
+    // Initialize perturbed variable nodes
+    BasicBlock* pert_init_cond = BasicBlock::Create(ctx_.context(), "pert_init_cond", current_func);
+    BasicBlock* pert_init_body = BasicBlock::Create(ctx_.context(), "pert_init_body", current_func);
+    BasicBlock* pert_init_exit = BasicBlock::Create(ctx_.context(), "pert_init_exit", current_func);
+    
+    Value* pert_init_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "pert_init_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), pert_init_idx);
+    ctx_.builder().CreateBr(pert_init_cond);
+    
+    ctx_.builder().SetInsertPoint(pert_init_cond);
+    Value* pert_k = ctx_.builder().CreateLoad(ctx_.int64Type(), pert_init_idx);
+    Value* pert_k_less_n = ctx_.builder().CreateICmpULT(pert_k, n);
+    ctx_.builder().CreateCondBr(pert_k_less_n, pert_init_body, pert_init_exit);
+    
+    ctx_.builder().SetInsertPoint(pert_init_body);
+    
+    Value* pert_elem_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_perturbed_vec, pert_k);
+    Value* pert_elem_val = ctx_.builder().CreateLoad(ctx_.doubleType(), pert_elem_ptr);
+    Value* hess_pert_var_node = createADVariable(pert_elem_val, 0);
+    
+    Value* hess_pert_node_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()), typed_pert_nodes, pert_k);
+    ctx_.builder().CreateStore(hess_pert_var_node, hess_pert_node_slot);
+    
+    Value* pert_k_next = ctx_.builder().CreateAdd(pert_k, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(pert_k_next, pert_init_idx);
+    ctx_.builder().CreateBr(pert_init_cond);
+    
+    ctx_.builder().SetInsertPoint(pert_init_exit);
+    
+    // Build AD tensor from perturbed nodes via arena (OALR compliant - no malloc)
+    Value* typed_pert_ad_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set tensor dimensions
+    Value* pert_ad_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* pert_ad_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, pert_ad_dims_size});
+    Value* typed_pert_ad_dims = ctx_.builder().CreatePointerCast(pert_ad_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(n, typed_pert_ad_dims);
+
+    ctx_.builder().CreateStore(typed_pert_ad_dims,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_pert_ad_tensor, 0));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_pert_ad_tensor, 1));
+    ctx_.builder().CreateStore(n,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_pert_ad_tensor, 3));
+
+    // Allocate and fill AD tensor elements
+    Value* pert_ad_elems_size = ctx_.builder().CreateMul(n,
+        ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t)));
+    Value* pert_ad_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, pert_ad_elems_size});
+    Value* typed_pert_ad_elems = ctx_.builder().CreatePointerCast(pert_ad_elems_ptr, ctx_.builder().getPtrTy());
+    
+    ctx_.builder().CreateStore(typed_pert_ad_elems,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_pert_ad_tensor, 2));
+    
+    // Copy perturbed node pointers into AD tensor
+    BasicBlock* pert_copy_cond = BasicBlock::Create(ctx_.context(), "pert_copy_cond", current_func);
+    BasicBlock* pert_copy_body = BasicBlock::Create(ctx_.context(), "pert_copy_body", current_func);
+    BasicBlock* pert_copy_exit = BasicBlock::Create(ctx_.context(), "pert_copy_exit", current_func);
+    
+    Value* pert_copy_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "pert_copy_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), pert_copy_idx);
+    ctx_.builder().CreateBr(pert_copy_cond);
+    
+    ctx_.builder().SetInsertPoint(pert_copy_cond);
+    Value* pert_copy_k = ctx_.builder().CreateLoad(ctx_.int64Type(), pert_copy_idx);
+    Value* pert_copy_less_n = ctx_.builder().CreateICmpULT(pert_copy_k, n);
+    ctx_.builder().CreateCondBr(pert_copy_less_n, pert_copy_body, pert_copy_exit);
+    
+    ctx_.builder().SetInsertPoint(pert_copy_body);
+    
+    Value* pert_src_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()), typed_pert_nodes, pert_copy_k);
+    Value* pert_src_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), pert_src_slot);
+    Value* pert_node_int = ctx_.builder().CreatePtrToInt(pert_src_node, ctx_.int64Type());
+    
+    Value* pert_dst_slot = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_pert_ad_elems, pert_copy_k);
+    ctx_.builder().CreateStore(pert_node_int, pert_dst_slot);
+    
+    Value* pert_copy_next = ctx_.builder().CreateAdd(pert_copy_k, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(pert_copy_next, pert_copy_idx);
+    ctx_.builder().CreateBr(pert_copy_cond);
+    
+    ctx_.builder().SetInsertPoint(pert_copy_exit);
+    
+    // Call function with perturbed AD tensor
+    Value* pert_ad_tensor_int = ctx_.builder().CreatePtrToInt(typed_pert_ad_tensor, ctx_.int64Type());
+    Value* pert_ad_tensor_tagged = tagged_.packPtr(pert_ad_tensor_int, ESHKOL_VALUE_HEAP_PTR);
+    
+    // Set AD mode and tape
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
+    ctx_.builder().CreateStore(pert_tape, ctx_.currentAdTape());
+
+    // CLOSURE FIX: Load captures for function call
+    std::vector<Value*> pert_call_args = {pert_ad_tensor_tagged};
+    std::vector<Value*> pert_captures = loadCapturesForAutodiff(func_ptr, "Hessian perturbation call");
+    pert_call_args.insert(pert_call_args.end(), pert_captures.begin(), pert_captures.end());
+    Value* pert_output_tagged = ctx_.builder().CreateCall(func_ptr, pert_call_args);
+
+    // Reset AD mode and tape
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
+    ctx_.builder().CreateStore(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())), ctx_.currentAdTape());
+    
+    Value* pert_output_int = tagged_.unpackInt64(pert_output_tagged);
+    Value* pert_output_node = ctx_.builder().CreateIntToPtr(pert_output_int, PointerType::getUnqual(ctx_.context()));
+    
+    // Run backward pass
+    codegenBackward(pert_output_node, pert_tape);
+    
+    // Allocate array for perturbed gradient via arena (OALR compliant - no malloc)
+    Value* pert_grad_size = ctx_.builder().CreateMul(n,
+        ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    Value* pert_grad_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, pert_grad_size});
+    Value* typed_pert_grad = ctx_.builder().CreatePointerCast(pert_grad_ptr, ctx_.builder().getPtrTy());
+    
+    // Extract perturbed gradient into array
+    BasicBlock* pert_extract_cond = BasicBlock::Create(ctx_.context(), "pert_extract_cond", current_func);
+    BasicBlock* pert_extract_body = BasicBlock::Create(ctx_.context(), "pert_extract_body", current_func);
+    BasicBlock* pert_extract_exit = BasicBlock::Create(ctx_.context(), "pert_extract_exit", current_func);
+    
+    Value* pert_extract_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "pert_extract_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), pert_extract_idx);
+    ctx_.builder().CreateBr(pert_extract_cond);
+    
+    ctx_.builder().SetInsertPoint(pert_extract_cond);
+    Value* extract_i = ctx_.builder().CreateLoad(ctx_.int64Type(), pert_extract_idx);
+    Value* extract_less_n = ctx_.builder().CreateICmpULT(extract_i, n);
+    ctx_.builder().CreateCondBr(extract_less_n, pert_extract_body, pert_extract_exit);
+    
+    ctx_.builder().SetInsertPoint(pert_extract_body);
+    
+    // Get gradient from variable node i
+    Value* hess_pert_var_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()), typed_pert_nodes, extract_i);
+    Value* hess_pert_var_node_load = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), hess_pert_var_slot);
+    Value* hess_pert_grad_i = loadNodeGradient(hess_pert_var_node_load);
+    
+    // Store in perturbed gradient array
+    Value* hess_pert_grad_store_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_pert_grad, extract_i);
+    ctx_.builder().CreateStore(hess_pert_grad_i, hess_pert_grad_store_ptr);
+    
+    Value* extract_next = ctx_.builder().CreateAdd(extract_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(extract_next, pert_extract_idx);
+    ctx_.builder().CreateBr(pert_extract_cond);
+    
+    ctx_.builder().SetInsertPoint(pert_extract_exit);
+    
+    // Step 3: Compute H[i,j] for all rows i
+    BasicBlock* hess_row_cond = BasicBlock::Create(ctx_.context(), "hess_row_cond", current_func);
+    BasicBlock* hess_row_body = BasicBlock::Create(ctx_.context(), "hess_row_body", current_func);
+    BasicBlock* hess_row_exit = BasicBlock::Create(ctx_.context(), "hess_row_exit", current_func);
+    
+    Value* hess_i_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "hess_i_row");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), hess_i_idx);
+    ctx_.builder().CreateBr(hess_row_cond);
+    
+    ctx_.builder().SetInsertPoint(hess_row_cond);
+    Value* hess_i = ctx_.builder().CreateLoad(ctx_.int64Type(), hess_i_idx);
+    Value* hess_i_less_n = ctx_.builder().CreateICmpULT(hess_i, n);
+    ctx_.builder().CreateCondBr(hess_i_less_n, hess_row_body, hess_row_exit);
+    
+    ctx_.builder().SetInsertPoint(hess_row_body);
+    
+    // Load base_grad[i]
+    Value* base_grad_i_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_base_grad, hess_i);
+    Value* base_grad_i = ctx_.builder().CreateLoad(ctx_.doubleType(), base_grad_i_ptr);
+    
+    // Load pert_grad[i]
+    Value* hess_pert_grad_i_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_pert_grad, hess_i);
+    Value* hess_pert_grad_i_val = ctx_.builder().CreateLoad(ctx_.doubleType(), hess_pert_grad_i_ptr);
+    
+    // Compute H[i,j] = (pert_grad[i] - base_grad[i]) / epsilon
+    Value* grad_diff = ctx_.builder().CreateFSub(hess_pert_grad_i_val, base_grad_i);
+    Value* second_deriv = ctx_.builder().CreateFDiv(grad_diff, epsilon);
+    
+    // Store H[i,j] in Hessian matrix (row-major: i*n + j)
+    Value* hess_linear_idx = ctx_.builder().CreateMul(hess_i, n);
+    hess_linear_idx = ctx_.builder().CreateAdd(hess_linear_idx, hess_j);
+    Value* hess_store_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_hess_elems, hess_linear_idx);
+    ctx_.builder().CreateStore(second_deriv, hess_store_ptr);
+    
+    Value* hess_i_next = ctx_.builder().CreateAdd(hess_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(hess_i_next, hess_i_idx);
+    ctx_.builder().CreateBr(hess_row_cond);
+    
+    ctx_.builder().SetInsertPoint(hess_row_exit);
+    
+    // Reset tape for next column
+    ctx_.builder().CreateCall(mem_.getArenaTapeReset(), {pert_tape});
+    
+    // Next column
+    Value* hess_j_next = ctx_.builder().CreateAdd(hess_j, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(hess_j_next, hess_j_idx);
+    ctx_.builder().CreateBr(hess_col_cond);
+    
+    ctx_.builder().SetInsertPoint(hess_col_exit);
+    
+    eshkol_info("Hessian computation complete");
+    // Tag as TENSOR_PTR for proper display handling
+    Value* hess_result_int = ctx_.builder().CreatePtrToInt(typed_hess_ptr, ctx_.int64Type());
+    return tagged_.packPtr(hess_result_int, ESHKOL_VALUE_HEAP_PTR);
 }
+
 
 llvm::Value* AutodiffCodegen::createNullVectorTensor(llvm::Value* dimension) {
     using namespace llvm;
@@ -4860,16 +5505,352 @@ llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
 
 
 llvm::Value* AutodiffCodegen::laplacian(const eshkol_operations_t* op) {
-    // Trace of Hessian - requires hessian
-    eshkol_warn("AutodiffCodegen::laplacian requires AST codegen - using fallback");
-    return tagged_.packNull();
+    using namespace llvm;
+    if (!op->laplacian_op.function || !op->laplacian_op.point) {
+        eshkol_error("Invalid laplacian operation - missing function or point");
+        return nullptr;
+    }
+    
+    eshkol_info("Computing Laplacian of scalar field");
+    
+    // The Laplacian is the sum of diagonal elements of the Hessian
+    // For f: ℝⁿ → ℝ, Hessian is n×n, Laplacian is trace(H)
+    
+    // Compute Hessian matrix first
+    eshkol_operations_t hessian_temp;
+    hessian_temp.op = ESHKOL_HESSIAN_OP;
+    hessian_temp.hessian_op.function = op->laplacian_op.function;
+    hessian_temp.hessian_op.point = op->laplacian_op.point;
+    
+    Value* hessian_tagged = hessian(&hessian_temp);
+    if (!hessian_tagged) {
+        eshkol_error("Failed to compute Hessian for Laplacian");
+        return nullptr;
+    }
+    
+    // ENHANCED TYPE CHECK: Verify Hessian is a valid tensor (same fix as Jacobian operator)
+    Value* hessian_type = tagged_.getType(hessian_tagged);
+    Value* hessian_base_type = tagged_.getBaseType(hessian_type);
+
+    Value* hess_is_tensor_ptr = ctx_.builder().CreateICmpEQ(hessian_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    Value* hess_is_ad_tensor = ctx_.builder().CreateICmpEQ(hessian_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    Value* hess_is_valid = ctx_.builder().CreateOr(hess_is_tensor_ptr, hess_is_ad_tensor);
+    
+    Function* lap_current_func = ctx_.builder().GetInsertBlock()->getParent();
+    BasicBlock* hessian_valid = BasicBlock::Create(ctx_.context(), "lap_hess_valid", lap_current_func);
+    BasicBlock* hessian_invalid = BasicBlock::Create(ctx_.context(), "lap_hess_invalid", lap_current_func);
+    BasicBlock* lap_final = BasicBlock::Create(ctx_.context(), "lap_final", lap_current_func);
+    
+    ctx_.builder().CreateCondBr(hess_is_valid, hessian_valid, hessian_invalid);
+    
+    // Invalid hessian: return 0.0 instead of crashing (only for genuinely invalid types)
+    ctx_.builder().SetInsertPoint(hessian_invalid);
+    eshkol_debug("Laplacian: Hessian returned non-tensor type, returning 0.0");
+    Value* zero_lap_result = ConstantFP::get(ctx_.doubleType(), 0.0);
+    ctx_.builder().CreateBr(lap_final);
+    
+    // Valid hessian: continue with normal computation
+    ctx_.builder().SetInsertPoint(hessian_valid);
+    
+    // Extract tensor pointer from validated tagged value
+    Value* hessian_ptr_int = tagged_.unpackInt64(hessian_tagged);
+    Value* hessian_ptr = ctx_.builder().CreateIntToPtr(hessian_ptr_int, ctx_.builder().getPtrTy());
+    
+    // Extract dimension n from Hessian (it's n×n)
+    Value* dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), hessian_ptr, 0);
+    Value* dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), dims_field);
+    Value* typed_dims_ptr = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.builder().getPtrTy());
+    
+    Value* n_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims_ptr,
+        ConstantInt::get(ctx_.int64Type(), 0));
+    Value* n = ctx_.builder().CreateLoad(ctx_.int64Type(), n_ptr);
+    
+    // Get Hessian elements
+    Value* elements_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), hessian_ptr, 2);
+    Value* elements_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), elements_field);
+    Value* typed_elements_ptr = ctx_.builder().CreatePointerCast(elements_ptr, ctx_.builder().getPtrTy());
+    
+    // Sum diagonal elements: H[0,0] + H[1,1] + ... + H[n-1,n-1]
+    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    BasicBlock* sum_loop_cond = BasicBlock::Create(ctx_.context(), "lap_sum_cond", current_func);
+    BasicBlock* sum_loop_body = BasicBlock::Create(ctx_.context(), "lap_sum_body", current_func);
+    BasicBlock* sum_loop_exit = BasicBlock::Create(ctx_.context(), "lap_sum_exit", current_func);
+    
+    Value* sum_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "sum_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), sum_idx);
+    
+    Value* laplacian_acc = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "lap_acc");
+    ctx_.builder().CreateStore(ConstantFP::get(ctx_.doubleType(), 0.0), laplacian_acc);
+    
+    ctx_.builder().CreateBr(sum_loop_cond);
+    
+    ctx_.builder().SetInsertPoint(sum_loop_cond);
+    Value* i = ctx_.builder().CreateLoad(ctx_.int64Type(), sum_idx);
+    Value* i_less_n = ctx_.builder().CreateICmpULT(i, n);
+    ctx_.builder().CreateCondBr(i_less_n, sum_loop_body, sum_loop_exit);
+    
+    ctx_.builder().SetInsertPoint(sum_loop_body);
+    
+    // Calculate diagonal index: i*n + i
+    Value* linear_idx = ctx_.builder().CreateMul(i, n);
+    linear_idx = ctx_.builder().CreateAdd(linear_idx, i);
+    
+    // Load H[i,i]
+    Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(),
+        typed_elements_ptr, linear_idx);
+    Value* diagonal_elem = ctx_.builder().CreateLoad(ctx_.doubleType(), elem_ptr);
+    
+    // Add to accumulator
+    Value* current_lap = ctx_.builder().CreateLoad(ctx_.doubleType(), laplacian_acc);
+    Value* new_lap = ctx_.builder().CreateFAdd(current_lap, diagonal_elem);
+    ctx_.builder().CreateStore(new_lap, laplacian_acc);
+    
+    Value* next_i = ctx_.builder().CreateAdd(i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_i, sum_idx);
+    ctx_.builder().CreateBr(sum_loop_cond);
+    
+    ctx_.builder().SetInsertPoint(sum_loop_exit);
+    Value* laplacian_result = ctx_.builder().CreateLoad(ctx_.doubleType(), laplacian_acc);
+    ctx_.builder().CreateBr(lap_final);
+    
+    // Merge valid and invalid paths
+    ctx_.builder().SetInsertPoint(lap_final);
+    PHINode* lap_result_phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 2, "lap_result");
+    lap_result_phi->addIncoming(zero_lap_result, hessian_invalid);
+    lap_result_phi->addIncoming(laplacian_result, sum_loop_exit);
+
+    eshkol_info("Laplacian computation complete");
+    return tagged_.packDouble(lap_result_phi);
 }
 
+
 llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* op) {
-    // Gradient dot direction - requires gradient
-    eshkol_warn("AutodiffCodegen::directionalDerivative requires AST codegen - using fallback");
-    return tagged_.packNull();
+    using namespace llvm;
+    if (!op->directional_deriv_op.function || !op->directional_deriv_op.point ||
+        !op->directional_deriv_op.direction) {
+        eshkol_error("Invalid directional-derivative operation - missing function, point, or direction");
+        return nullptr;
+    }
+    
+    eshkol_info("Computing directional derivative");
+    
+    // Step 1: Compute gradient ∇f
+    eshkol_operations_t gradient_temp;
+    gradient_temp.op = ESHKOL_GRADIENT_OP;
+    gradient_temp.gradient_op.function = op->directional_deriv_op.function;
+    gradient_temp.gradient_op.point = op->directional_deriv_op.point;
+    
+    Value* gradient_tagged = gradient(&gradient_temp);
+    if (!gradient_tagged) {
+        eshkol_error("Failed to compute gradient for directional derivative");
+        return nullptr;
+    }
+    
+    // CRITICAL FIX: Unpack tensor pointer from tagged_value
+    Value* gradient_ptr_int = tagged_.unpackInt64(gradient_tagged);
+    
+    // Step 2: Get direction vector
+    Value* direction_val_raw = codegen_ast_callback_(op->directional_deriv_op.direction, callback_context_);
+    if (!direction_val_raw) {
+        eshkol_error("Failed to evaluate direction vector");
+        return nullptr;
+    }
+
+    // Tensor literal fix: codegenTensor returns ptr-as-int64; wrap as HEAP_PTR
+    Value* direction_val;
+    if (direction_val_raw->getType() == ctx_.taggedValueType()) {
+        direction_val = direction_val_raw;
+    } else if (direction_val_raw->getType()->isIntegerTy(64) &&
+               op->directional_deriv_op.direction->type == ESHKOL_TENSOR) {
+        direction_val = tagged_.packPtr(direction_val_raw, ESHKOL_VALUE_HEAP_PTR);
+    } else if (direction_val_raw->getType()->isIntegerTy(64)) {
+        direction_val = tagged_.packInt64(direction_val_raw, true);
+    } else if (direction_val_raw->getType()->isDoubleTy()) {
+        direction_val = tagged_.packDouble(direction_val_raw);
+    } else {
+        // direct packing
+        direction_val = typedValueToTaggedValue(tv);
+    }
+
+    // Get arena for OALR-compliant tensor allocation
+    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+    // M1 CONSOLIDATION: Handle HEAP_PTR (with subtype dispatch), legacy VECTOR_PTR, and tensor
+    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+    Value* dir_type = tagged_.getType(direction_val);
+    Value* dir_base_type = tagged_.getBaseType(dir_type);
+
+    Value* dd_is_heap_ptr = ctx_.builder().CreateICmpEQ(dir_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    Value* dd_is_legacy_vec = ctx_.builder().CreateICmpEQ(dir_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+    BasicBlock* dd_heap_dispatch = BasicBlock::Create(ctx_.context(), "dd_heap_dispatch", current_func);
+    BasicBlock* dd_check_legacy = BasicBlock::Create(ctx_.context(), "dd_check_legacy", current_func);
+    BasicBlock* dd_scheme_vector = BasicBlock::Create(ctx_.context(), "dd_scheme_vector", current_func);
+    BasicBlock* dd_tensor_input = BasicBlock::Create(ctx_.context(), "dd_tensor_input", current_func);
+    BasicBlock* dd_merge_input = BasicBlock::Create(ctx_.context(), "dd_merge_input", current_func);
+
+    ctx_.builder().CreateCondBr(dd_is_heap_ptr, dd_heap_dispatch, dd_check_legacy);
+
+    // HEAP_PTR dispatch - read subtype from header
+    ctx_.builder().SetInsertPoint(dd_heap_dispatch);
+    Value* dd_heap_ptr_val = tagged_.unpackPtr(direction_val);
+    Value* dd_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), dd_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));
+    Value* dd_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), dd_header_ptr);
+    Value* dd_is_vec_subtype = ctx_.builder().CreateICmpEQ(dd_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    ctx_.builder().CreateCondBr(dd_is_vec_subtype, dd_scheme_vector, dd_tensor_input);
+
+    // Legacy VECTOR_PTR fallback
+    ctx_.builder().SetInsertPoint(dd_check_legacy);
+    ctx_.builder().CreateCondBr(dd_is_legacy_vec, dd_scheme_vector, dd_tensor_input);
+
+    // SCHEME VECTOR: Convert to tensor format
+    ctx_.builder().SetInsertPoint(dd_scheme_vector);
+
+    Value* dd_scheme_vec_ptr_int = tagged_.unpackInt64(direction_val);
+    Value* dd_scheme_vec_ptr = ctx_.builder().CreateIntToPtr(dd_scheme_vec_ptr_int, ctx_.builder().getPtrTy());
+    Value* dd_scheme_len_ptr = ctx_.builder().CreateBitCast(dd_scheme_vec_ptr, PointerType::getUnqual(ctx_.context()));
+    Value* dd_scheme_len = ctx_.builder().CreateLoad(ctx_.int64Type(), dd_scheme_len_ptr);
+
+    // Allocate tensor
+    // Allocate tensor via arena (OALR compliant - no malloc)
+    Value* dd_typed_scheme_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set dimensions
+    Value* dd_scheme_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* dd_scheme_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, dd_scheme_dims_size});
+    Value* dd_typed_scheme_dims = ctx_.builder().CreatePointerCast(dd_scheme_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(dd_scheme_len, dd_typed_scheme_dims);
+
+    ctx_.builder().CreateStore(dd_typed_scheme_dims, ctx_.builder().CreateStructGEP(ctx_.tensorType(), dd_typed_scheme_tensor, 0));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), dd_typed_scheme_tensor, 1));
+    ctx_.builder().CreateStore(dd_scheme_len, ctx_.builder().CreateStructGEP(ctx_.tensorType(), dd_typed_scheme_tensor, 3));
+
+    // Allocate and copy elements
+    Value* dd_scheme_elems_size = ctx_.builder().CreateMul(dd_scheme_len,
+        ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    Value* dd_scheme_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, dd_scheme_elems_size});
+    Value* dd_typed_scheme_elems = ctx_.builder().CreatePointerCast(dd_scheme_elems_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(dd_typed_scheme_elems, ctx_.builder().CreateStructGEP(ctx_.tensorType(), dd_typed_scheme_tensor, 2));
+
+    // Copy elements loop (extract doubles from tagged values)
+    Value* dd_scheme_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), dd_scheme_vec_ptr,
+        ConstantInt::get(ctx_.int64Type(), 8));
+    Value* dd_scheme_elem_base_typed = ctx_.builder().CreateBitCast(dd_scheme_elem_base, PointerType::getUnqual(ctx_.context()));
+
+    BasicBlock* dd_svec_copy_cond = BasicBlock::Create(ctx_.context(), "dd_svec_copy_cond", current_func);
+    BasicBlock* dd_svec_copy_body = BasicBlock::Create(ctx_.context(), "dd_svec_copy_body", current_func);
+    BasicBlock* dd_svec_copy_done = BasicBlock::Create(ctx_.context(), "dd_svec_copy_done", current_func);
+
+    Value* dd_svec_copy_i = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "dd_svec_copy_i");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), dd_svec_copy_i);
+    ctx_.builder().CreateBr(dd_svec_copy_cond);
+
+    ctx_.builder().SetInsertPoint(dd_svec_copy_cond);
+    Value* dd_svec_i = ctx_.builder().CreateLoad(ctx_.int64Type(), dd_svec_copy_i);
+    Value* dd_svec_cond = ctx_.builder().CreateICmpULT(dd_svec_i, dd_scheme_len);
+    ctx_.builder().CreateCondBr(dd_svec_cond, dd_svec_copy_body, dd_svec_copy_done);
+
+    ctx_.builder().SetInsertPoint(dd_svec_copy_body);
+    Value* dd_svec_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), dd_scheme_elem_base_typed, dd_svec_i);
+    Value* dd_svec_tagged_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), dd_svec_src_ptr);
+    Value* dd_svec_double_val = tagged_.unpackDouble(dd_svec_tagged_elem);
+    Value* dd_svec_dst_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), dd_typed_scheme_elems, dd_svec_i);
+    ctx_.builder().CreateStore(dd_svec_double_val, dd_svec_dst_ptr);
+    Value* dd_svec_next_i = ctx_.builder().CreateAdd(dd_svec_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(dd_svec_next_i, dd_svec_copy_i);
+    ctx_.builder().CreateBr(dd_svec_copy_cond);
+
+    ctx_.builder().SetInsertPoint(dd_svec_copy_done);
+    Value* dd_scheme_tensor_int = ctx_.builder().CreatePtrToInt(dd_typed_scheme_tensor, ctx_.int64Type());
+    ctx_.builder().CreateBr(dd_merge_input);
+    BasicBlock* dd_scheme_exit = ctx_.builder().GetInsertBlock();
+
+    // TENSOR INPUT: Use as-is
+    ctx_.builder().SetInsertPoint(dd_tensor_input);
+    Value* dd_tensor_ptr_int = tagged_.unpackInt64(direction_val);
+    ctx_.builder().CreateBr(dd_merge_input);
+    BasicBlock* dd_tensor_exit = ctx_.builder().GetInsertBlock();
+
+    // MERGE
+    ctx_.builder().SetInsertPoint(dd_merge_input);
+    PHINode* direction_ptr_int = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "dd_dir_ptr");
+    direction_ptr_int->addIncoming(dd_scheme_tensor_int, dd_scheme_exit);
+    direction_ptr_int->addIncoming(dd_tensor_ptr_int, dd_tensor_exit);
+
+    // Step 3: Compute dot product: ∇f · v
+    // Use class member ctx_.tensorType() (shared by all tensor operations)
+
+    Value* gradient_ptr = ctx_.builder().CreateIntToPtr(gradient_ptr_int, ctx_.builder().getPtrTy());
+    Value* direction_ptr = ctx_.builder().CreateIntToPtr(direction_ptr_int, ctx_.builder().getPtrTy());
+    
+    // Get gradient elements
+    Value* grad_elements_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), gradient_ptr, 2);
+    Value* grad_elements_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), grad_elements_field);
+    Value* typed_grad_elements = ctx_.builder().CreatePointerCast(grad_elements_ptr, ctx_.builder().getPtrTy());
+    
+    // Get direction elements
+    Value* dir_elements_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), direction_ptr, 2);
+    Value* dir_elements_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), dir_elements_field);
+    Value* typed_dir_elements = ctx_.builder().CreatePointerCast(dir_elements_ptr, ctx_.builder().getPtrTy());
+    
+    // Get dimension n
+    Value* grad_total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), gradient_ptr, 3);
+    Value* n = ctx_.builder().CreateLoad(ctx_.int64Type(), grad_total_field);
+    
+    // Compute dot product: sum(grad[i] * dir[i])
+    // current_func already defined above
+    BasicBlock* dot_loop_cond = BasicBlock::Create(ctx_.context(), "dirderiv_dot_cond", current_func);
+    BasicBlock* dot_loop_body = BasicBlock::Create(ctx_.context(), "dirderiv_dot_body", current_func);
+    BasicBlock* dot_loop_exit = BasicBlock::Create(ctx_.context(), "dirderiv_dot_exit", current_func);
+    
+    Value* dot_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "dot_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), dot_idx);
+    
+    Value* dot_acc = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "dot_acc");
+    ctx_.builder().CreateStore(ConstantFP::get(ctx_.doubleType(), 0.0), dot_acc);
+    
+    ctx_.builder().CreateBr(dot_loop_cond);
+    
+    ctx_.builder().SetInsertPoint(dot_loop_cond);
+    Value* i = ctx_.builder().CreateLoad(ctx_.int64Type(), dot_idx);
+    Value* i_less_n = ctx_.builder().CreateICmpULT(i, n);
+    ctx_.builder().CreateCondBr(i_less_n, dot_loop_body, dot_loop_exit);
+    
+    ctx_.builder().SetInsertPoint(dot_loop_body);
+    
+    // Load grad[i]
+    Value* grad_elem_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(),
+        typed_grad_elements, i);
+    Value* grad_elem = ctx_.builder().CreateLoad(ctx_.doubleType(), grad_elem_ptr);
+    
+    // Load dir[i]
+    Value* dir_elem_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(),
+        typed_dir_elements, i);
+    Value* dir_elem = ctx_.builder().CreateLoad(ctx_.doubleType(), dir_elem_ptr);
+    
+    // Multiply and accumulate
+    Value* prod = ctx_.builder().CreateFMul(grad_elem, dir_elem);
+    Value* current_dot = ctx_.builder().CreateLoad(ctx_.doubleType(), dot_acc);
+    Value* new_dot = ctx_.builder().CreateFAdd(current_dot, prod);
+    ctx_.builder().CreateStore(new_dot, dot_acc);
+    
+    Value* next_i = ctx_.builder().CreateAdd(i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_i, dot_idx);
+    ctx_.builder().CreateBr(dot_loop_cond);
+    
+    ctx_.builder().SetInsertPoint(dot_loop_exit);
+    Value* result = ctx_.builder().CreateLoad(ctx_.doubleType(), dot_acc);
+
+    eshkol_info("Directional derivative computation complete");
+    return tagged_.packDouble(result);
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CAPTURE RESOLUTION — Extracted from llvm_codegen.cpp
