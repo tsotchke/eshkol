@@ -271,6 +271,12 @@ public:
         std::vector<llvm::Value*>& call_args,
         const std::string& context_label);
 
+    /** Higher-order gradient: (gradient f) → closure */
+    llvm::Value* gradientHigherOrder(const eshkol_operations_t* op);
+
+    /** Higher-order derivative: (derivative f) → closure */
+    llvm::Value* derivativeHigherOrder(const eshkol_operations_t* op);
+
     // === Tape Management ===
 
     /**
@@ -708,6 +714,11 @@ public:
         get_closure_alloc_func_ = func;
     }
 
+    /** Binding codegen pointer (for TCO context save/restore in higher-order gradient) */
+    void setBindingCodegen(void* binding) {
+        binding_opaque_ = binding;
+    }
+
     // Private helpers for vector calculus
     llvm::Value* createNullVectorTensor(llvm::Value* dimension);
     llvm::Value* extractTensorElement(llvm::Value* tensor_ptr, std::vector<llvm::Value*> indices);
@@ -716,6 +727,8 @@ public:
 private:
     // Calculus extraction state
     int gradient_ho_counter_ = 0;
+    int derivative_ho_counter_ = 0;
+    void* binding_opaque_ = nullptr;
     ClosureCallCallback closure_call_callback_ = nullptr;
     std::unordered_map<std::string, uint64_t>* function_arity_table_ = nullptr;
     std::unordered_map<std::string, std::vector<std::string>>* nested_function_captures_ = nullptr;
