@@ -2298,17 +2298,487 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     return tagged_.packNull();
 }
 
-llvm::Value* AutodiffCodegen::divergence(const eshkol_operations_t* op) {
-    // Trace of Jacobian - requires jacobian
-    eshkol_warn("AutodiffCodegen::divergence requires AST codegen - using fallback");
-    return tagged_.packNull();
+llvm::Value* AutodiffCodegen::createNullVectorTensor(llvm::Value* dimension) {
+    using namespace llvm;
+    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+    // Get arena for OALR-compliant allocation
+    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+    // Allocate tensor structure via arena (OALR compliant - no malloc)
+    Value* typed_tensor_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Allocate dimensions array (1D vector of given dimension)
+    Value* dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, dims_size});
+    Value* typed_dims_ptr = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(dimension, typed_dims_ptr);  // Runtime dimension!
+
+    // Store tensor metadata
+    ctx_.builder().CreateStore(typed_dims_ptr,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 0));  // dimensions
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 1));  // num_dimensions = 1
+    ctx_.builder().CreateStore(dimension,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 3));  // total_elements = dimension
+
+    // Allocate elements array (dimension * sizeof(double))
+    Value* elems_size = ctx_.builder().CreateMul(dimension,
+        ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    Value* elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, elems_size});
+    Value* typed_elems_ptr = ctx_.builder().CreatePointerCast(elems_ptr, ctx_.builder().getPtrTy());
+    
+    // Zero all elements using RUNTIME LOOP (n-dimensional!)
+    BasicBlock* zero_cond = BasicBlock::Create(ctx_.context(), "null_vec_zero_cond", current_func);
+    BasicBlock* zero_body = BasicBlock::Create(ctx_.context(), "null_vec_zero_body", current_func);
+    BasicBlock* zero_exit = BasicBlock::Create(ctx_.context(), "null_vec_zero_exit", current_func);
+    
+    Value* idx_ptr = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "zero_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), idx_ptr);
+    ctx_.builder().CreateBr(zero_cond);
+    
+    ctx_.builder().SetInsertPoint(zero_cond);
+    Value* idx = ctx_.builder().CreateLoad(ctx_.int64Type(), idx_ptr);
+    Value* idx_less = ctx_.builder().CreateICmpULT(idx, dimension);
+    ctx_.builder().CreateCondBr(idx_less, zero_body, zero_exit);
+    
+    ctx_.builder().SetInsertPoint(zero_body);
+    Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_elems_ptr, idx);
+    ctx_.builder().CreateStore(ConstantFP::get(ctx_.doubleType(), 0.0), elem_ptr);
+    Value* next_idx = ctx_.builder().CreateAdd(idx, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_idx, idx_ptr);
+    ctx_.builder().CreateBr(zero_cond);
+    
+    ctx_.builder().SetInsertPoint(zero_exit);
+    
+    ctx_.builder().CreateStore(typed_elems_ptr,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 2));  // elements
+    
+    // Return tensor pointer as i64
+    return ctx_.builder().CreatePtrToInt(typed_tensor_ptr, ctx_.int64Type());
 }
 
-llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
-    // Cross product of partials - requires jacobian
-    eshkol_warn("AutodiffCodegen::curl requires AST codegen - using fallback");
-    return tagged_.packNull();
+
+// Helper: Extract J[row,col] from Jacobian's nested list structure
+// Jacobian tensor elements are int64 list pointers (rows), not doubles!
+// Extract element from N-dimensional tensor at given indices
+// For 2D (Jacobian): indices = [row_idx, col_idx]
+// For ND: computes linear index using row-major ordering
+llvm::Value* AutodiffCodegen::extractTensorElement(llvm::Value* tensor_ptr, std::vector<llvm::Value*> indices) {
+    using namespace llvm;
+    // Get tensor dimensions
+    Value* dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 0);
+    Value* dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), dims_field);
+    Value* typed_dims = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.builder().getPtrTy());
+
+
+    // Get elements array
+    Value* elements_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 2);
+    Value* elements_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), elements_field);
+    Value* typed_elements = ctx_.builder().CreatePointerCast(elements_ptr, ctx_.builder().getPtrTy());
+
+    // Compute linear index using row-major ordering
+    // linear_idx = idx[0] * (dims[1] * dims[2] * ...) + idx[1] * (dims[2] * ...) + ... + idx[n-1]
+    Value* linear_idx = ConstantInt::get(ctx_.int64Type(), 0);
+
+    for (size_t i = 0; i < indices.size(); i++) {
+        // Compute stride for dimension i (product of all subsequent dimensions)
+        Value* stride = ConstantInt::get(ctx_.int64Type(), 1);
+        for (size_t j = i + 1; j < indices.size(); j++) {
+            Value* dim_j_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims,
+                ConstantInt::get(ctx_.int64Type(), j));
+            Value* dim_j = ctx_.builder().CreateLoad(ctx_.int64Type(), dim_j_ptr);
+            stride = ctx_.builder().CreateMul(stride, dim_j);
+        }
+        // Add idx[i] * stride to linear index
+        Value* contribution = ctx_.builder().CreateMul(indices[i], stride);
+        linear_idx = ctx_.builder().CreateAdd(linear_idx, contribution);
+    }
+
+    // Load element as int64 (bit pattern of double)
+    Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_elements, linear_idx);
+    Value* elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), elem_ptr);
+
+    // Convert int64 bit pattern back to double
+    Value* elem_double = ctx_.builder().CreateBitCast(elem_bits, ctx_.doubleType());
+
+    return elem_double;
 }
+
+// Convenience wrapper for 2D tensors (Jacobian, Hessian)
+llvm::Value* AutodiffCodegen::extractJacobianElement(llvm::Value* jacobian_ptr, llvm::Value* row_idx, llvm::Value* col_idx, llvm::Value* n) {
+    using namespace llvm;
+    // Use the general N-dimensional extractor with 2 indices
+    return extractTensorElement(jacobian_ptr, {row_idx, col_idx});
+}
+
+
+llvm::Value* AutodiffCodegen::divergence(const eshkol_operations_t* op) {
+    using namespace llvm;
+    if (!op->divergence_op.function || !op->divergence_op.point) {
+        eshkol_error("Invalid divergence operation - missing function or point");
+        return nullptr;
+    }
+    
+    eshkol_info("Computing divergence of vector field");
+    
+    // The divergence is the sum of diagonal elements of the Jacobian
+    // For F: ℝⁿ → ℝⁿ, Jacobian is n×n, divergence is trace(J)
+    
+    // Compute Jacobian matrix first
+    eshkol_operations_t jacobian_temp;
+    jacobian_temp.op = ESHKOL_JACOBIAN_OP;
+    jacobian_temp.jacobian_op.function = op->divergence_op.function;
+    jacobian_temp.jacobian_op.point = op->divergence_op.point;
+    
+    Value* jacobian_tagged = jacobian(&jacobian_temp);
+    if (!jacobian_tagged) {
+        eshkol_error("Failed to compute Jacobian for divergence");
+        return nullptr;
+    }
+    
+    // ENHANCED TYPE CHECK: Verify Jacobian is a valid tensor (same fix as Jacobian operator)
+    Value* jacobian_type = tagged_.getType(jacobian_tagged);
+    Value* jacobian_base_type = tagged_.getBaseType(jacobian_type);
+
+    Value* jac_is_tensor_ptr = ctx_.builder().CreateICmpEQ(jacobian_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    Value* jac_is_ad_tensor = ctx_.builder().CreateICmpEQ(jacobian_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    Value* jac_is_valid = ctx_.builder().CreateOr(jac_is_tensor_ptr, jac_is_ad_tensor);
+    
+    Function* div_current_func = ctx_.builder().GetInsertBlock()->getParent();
+    BasicBlock* jacobian_valid = BasicBlock::Create(ctx_.context(), "div_jac_valid", div_current_func);
+    BasicBlock* jacobian_invalid = BasicBlock::Create(ctx_.context(), "div_jac_invalid", div_current_func);
+    BasicBlock* div_final = BasicBlock::Create(ctx_.context(), "div_final", div_current_func);
+    
+    ctx_.builder().CreateCondBr(jac_is_valid, jacobian_valid, jacobian_invalid);
+    
+    // Invalid jacobian: return 0.0 instead of crashing (only for genuinely invalid types)
+    ctx_.builder().SetInsertPoint(jacobian_invalid);
+    eshkol_debug("Divergence: Jacobian returned non-tensor type, returning 0.0");
+    Value* zero_result = ConstantFP::get(ctx_.doubleType(), 0.0);
+    ctx_.builder().CreateBr(div_final);
+    
+    // Valid jacobian: continue with normal computation
+    ctx_.builder().SetInsertPoint(jacobian_valid);
+    
+    // Extract tensor pointer from validated tagged value
+    Value* jacobian_ptr_int = tagged_.unpackInt64(jacobian_tagged);
+    Value* jacobian_ptr = ctx_.builder().CreateIntToPtr(jacobian_ptr_int, ctx_.builder().getPtrTy());
+    
+    // Extract dimension n from Jacobian (it's n×n)
+    Value* dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), jacobian_ptr, 0);
+    Value* dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), dims_field);
+    Value* typed_dims_ptr = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.builder().getPtrTy());
+    
+    Value* n_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims_ptr,
+        ConstantInt::get(ctx_.int64Type(), 0));
+    Value* n = ctx_.builder().CreateLoad(ctx_.int64Type(), n_ptr);
+    
+    // Sum diagonal elements: J[0,0] + J[1,1] + ... + J[n-1,n-1]
+    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    BasicBlock* sum_loop_cond = BasicBlock::Create(ctx_.context(), "div_sum_cond", current_func);
+    BasicBlock* sum_loop_body = BasicBlock::Create(ctx_.context(), "div_sum_body", current_func);
+    BasicBlock* sum_loop_exit = BasicBlock::Create(ctx_.context(), "div_sum_exit", current_func);
+    
+    Value* sum_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "sum_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), sum_idx);
+    
+    Value* divergence_acc = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "div_acc");
+    ctx_.builder().CreateStore(ConstantFP::get(ctx_.doubleType(), 0.0), divergence_acc);
+    
+    ctx_.builder().CreateBr(sum_loop_cond);
+    
+    ctx_.builder().SetInsertPoint(sum_loop_cond);
+    Value* i = ctx_.builder().CreateLoad(ctx_.int64Type(), sum_idx);
+    Value* i_less_n = ctx_.builder().CreateICmpULT(i, n);
+    ctx_.builder().CreateCondBr(i_less_n, sum_loop_body, sum_loop_exit);
+    
+    ctx_.builder().SetInsertPoint(sum_loop_body);
+    
+    // Extract J[i,i] from nested list structure (not direct double access!)
+    Value* diagonal_elem = extractJacobianElement(jacobian_ptr, i, i, n);
+    
+    // Add to accumulator
+    Value* current_div = ctx_.builder().CreateLoad(ctx_.doubleType(), divergence_acc);
+    Value* new_div = ctx_.builder().CreateFAdd(current_div, diagonal_elem);
+    ctx_.builder().CreateStore(new_div, divergence_acc);
+    
+    Value* next_i = ctx_.builder().CreateAdd(i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_i, sum_idx);
+    ctx_.builder().CreateBr(sum_loop_cond);
+    
+    ctx_.builder().SetInsertPoint(sum_loop_exit);
+    Value* divergence_result = ctx_.builder().CreateLoad(ctx_.doubleType(), divergence_acc);
+    ctx_.builder().CreateBr(div_final);
+    
+    // Merge valid and invalid paths
+    ctx_.builder().SetInsertPoint(div_final);
+    PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 2, "div_result");
+    result_phi->addIncoming(zero_result, jacobian_invalid);
+    result_phi->addIncoming(divergence_result, sum_loop_exit);
+
+    eshkol_info("Divergence computation complete");
+    return tagged_.packDouble(result_phi);
+}
+
+
+llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
+    using namespace llvm;
+    if (!op->curl_op.function || !op->curl_op.point) {
+        eshkol_error("Invalid curl operation - missing function or point");
+        return nullptr;
+    }
+    
+    eshkol_info("Computing curl of 3D vector field");
+    
+    // First, validate that input is 3D
+    Value* vector_val_raw = codegen_ast_callback_(op->curl_op.point, callback_context_);
+    if (!vector_val_raw) {
+        eshkol_error("Failed to evaluate curl point");
+        return nullptr;
+    }
+
+    // Tensor literal fix: codegenTensor returns ptr-as-int64; wrap as HEAP_PTR
+    Value* vector_val;
+    if (vector_val_raw->getType() == ctx_.taggedValueType()) {
+        vector_val = vector_val_raw;
+    } else if (vector_val_raw->getType()->isIntegerTy(64) &&
+               op->curl_op.point->type == ESHKOL_TENSOR) {
+        vector_val = tagged_.packPtr(vector_val_raw, ESHKOL_VALUE_HEAP_PTR);
+    } else if (vector_val_raw->getType()->isIntegerTy(64)) {
+        vector_val = tagged_.packInt64(vector_val_raw, true);
+    } else if (vector_val_raw->getType()->isDoubleTy()) {
+        vector_val = tagged_.packDouble(vector_val_raw);
+    } else {
+        // Ensure tagged value (direct packing)
+        vector_val = typedValueToTaggedValue(tv);
+    }
+
+    // Get arena for OALR-compliant tensor allocation
+    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+    // M1 CONSOLIDATION: Handle HEAP_PTR (with subtype dispatch), legacy VECTOR_PTR, and tensor
+    Value* curl_input_type = tagged_.getType(vector_val);
+    Value* curl_input_base_type = tagged_.getBaseType(curl_input_type);
+    Value* curl_is_heap_ptr = ctx_.builder().CreateICmpEQ(curl_input_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    Value* curl_is_legacy_vec = ctx_.builder().CreateICmpEQ(curl_input_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    BasicBlock* curl_heap_dispatch = BasicBlock::Create(ctx_.context(), "curl_heap_dispatch", current_func);
+    BasicBlock* curl_check_legacy = BasicBlock::Create(ctx_.context(), "curl_check_legacy", current_func);
+    BasicBlock* curl_scheme_input = BasicBlock::Create(ctx_.context(), "curl_scheme_input", current_func);
+    BasicBlock* curl_tensor_input = BasicBlock::Create(ctx_.context(), "curl_tensor_input", current_func);
+    BasicBlock* curl_merge_n = BasicBlock::Create(ctx_.context(), "curl_merge_n", current_func);
+
+    ctx_.builder().CreateCondBr(curl_is_heap_ptr, curl_heap_dispatch, curl_check_legacy);
+
+    // HEAP_PTR dispatch - read subtype from header
+    ctx_.builder().SetInsertPoint(curl_heap_dispatch);
+    Value* curl_heap_ptr_val = tagged_.unpackPtr(vector_val);
+    Value* curl_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), curl_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));
+    Value* curl_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), curl_header_ptr);
+    Value* curl_is_vec_subtype = ctx_.builder().CreateICmpEQ(curl_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    ctx_.builder().CreateCondBr(curl_is_vec_subtype, curl_scheme_input, curl_tensor_input);
+
+    // Legacy VECTOR_PTR fallback
+    ctx_.builder().SetInsertPoint(curl_check_legacy);
+    ctx_.builder().CreateCondBr(curl_is_legacy_vec, curl_scheme_input, curl_tensor_input);
+
+    // SCHEME VECTOR: Extract dimension from vector length
+    ctx_.builder().SetInsertPoint(curl_scheme_input);
+    Value* curl_svec_ptr_int = tagged_.unpackInt64(vector_val);
+    Value* curl_svec_ptr = ctx_.builder().CreateIntToPtr(curl_svec_ptr_int, ctx_.builder().getPtrTy());
+    Value* curl_svec_len_ptr = ctx_.builder().CreateBitCast(curl_svec_ptr, PointerType::getUnqual(ctx_.context()));
+    Value* curl_svec_n = ctx_.builder().CreateLoad(ctx_.int64Type(), curl_svec_len_ptr);
+    ctx_.builder().CreateBr(curl_merge_n);
+    BasicBlock* curl_scheme_exit = ctx_.builder().GetInsertBlock();
+
+    // TENSOR: Extract dimension from tensor structure
+    ctx_.builder().SetInsertPoint(curl_tensor_input);
+    Value* curl_tensor_ptr_int = tagged_.unpackInt64(vector_val);
+    Value* curl_tensor_ptr = ctx_.builder().CreateIntToPtr(curl_tensor_ptr_int, ctx_.builder().getPtrTy());
+    Value* dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), curl_tensor_ptr, 0);
+    Value* dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), dims_field);
+    Value* typed_dims_ptr = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.builder().getPtrTy());
+    Value* n_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims_ptr,
+        ConstantInt::get(ctx_.int64Type(), 0));
+    Value* curl_tensor_n = ctx_.builder().CreateLoad(ctx_.int64Type(), n_ptr);
+    ctx_.builder().CreateBr(curl_merge_n);
+    BasicBlock* curl_tensor_exit = ctx_.builder().GetInsertBlock();
+
+    // MERGE: Get n from whichever path
+    ctx_.builder().SetInsertPoint(curl_merge_n);
+    PHINode* n = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "curl_n");
+    n->addIncoming(curl_svec_n, curl_scheme_exit);
+    n->addIncoming(curl_tensor_n, curl_tensor_exit);
+
+    // ENHANCED VALIDATION: Accept n>=2 for general differential 2-forms
+    // Classic curl is 3D, but generalized exterior derivative works in any dimension >= 2
+    Value* n_ge_2 = ctx_.builder().CreateICmpUGE(n, ConstantInt::get(ctx_.int64Type(), 2));
+
+    BasicBlock* dim_valid = BasicBlock::Create(ctx_.context(), "curl_dim_valid", current_func);
+    BasicBlock* dim_invalid = BasicBlock::Create(ctx_.context(), "curl_dim_invalid", current_func);
+    BasicBlock* curl_done = BasicBlock::Create(ctx_.context(), "curl_done", current_func);
+    
+    ctx_.builder().CreateCondBr(n_ge_2, dim_valid, dim_invalid);
+    
+    // Invalid dimension: return null vector for dim < 2
+    ctx_.builder().SetInsertPoint(dim_invalid);
+    eshkol_debug("Curl: dimension < 2, differential forms require at least 2D");
+    Value* null_result_int = createNullVectorTensor(n);  // Use actual dimension, not hardcoded 3
+    Value* null_result = tagged_.packPtr(null_result_int, ESHKOL_VALUE_HEAP_PTR);
+    BasicBlock* dim_invalid_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(curl_done);
+    
+    // Valid dimension: compute curl (differential 2-form)
+    // NOTE: For n!=3, this computes the generalized exterior derivative
+    ctx_.builder().SetInsertPoint(dim_valid);
+    
+    // Compute Jacobian matrix (3×3)
+    eshkol_operations_t jacobian_temp;
+    jacobian_temp.op = ESHKOL_JACOBIAN_OP;
+    jacobian_temp.jacobian_op.function = op->curl_op.function;
+    jacobian_temp.jacobian_op.point = op->curl_op.point;
+    
+    Value* jacobian_tagged = jacobian(&jacobian_temp);
+    if (!jacobian_tagged) {
+        eshkol_error("Failed to compute Jacobian for curl");
+        return nullptr;
+    }
+    
+    // ENHANCED TYPE CHECK: Verify Jacobian is a valid tensor (same fix as Jacobian operator)
+    Value* jacobian_type = tagged_.getType(jacobian_tagged);
+    Value* jacobian_base_type = tagged_.getBaseType(jacobian_type);
+
+    Value* jac_is_tensor_ptr = ctx_.builder().CreateICmpEQ(jacobian_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    Value* jac_is_ad_tensor = ctx_.builder().CreateICmpEQ(jacobian_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    Value* jac_is_valid = ctx_.builder().CreateOr(jac_is_tensor_ptr, jac_is_ad_tensor);
+    
+    BasicBlock* jac_valid = BasicBlock::Create(ctx_.context(), "curl_jac_valid", current_func);
+    BasicBlock* jac_invalid = BasicBlock::Create(ctx_.context(), "curl_jac_invalid", current_func);
+    
+    // If IS valid tensor type, proceed; if NOT, error path
+    ctx_.builder().CreateCondBr(jac_is_valid, jac_valid, jac_invalid);
+    
+    // Invalid jacobian: return null 3D vector (only for genuinely invalid types)
+    ctx_.builder().SetInsertPoint(jac_invalid);
+    eshkol_debug("Curl: Jacobian returned non-tensor type, returning null vector");
+    Value* null_curl_int = createNullVectorTensor(
+        ConstantInt::get(ctx_.int64Type(), 3)
+    );
+    // Tag as TENSOR_PTR for proper display
+    Value* null_curl = tagged_.packPtr(null_curl_int, ESHKOL_VALUE_HEAP_PTR);
+    BasicBlock* jac_invalid_exit = ctx_.builder().GetInsertBlock(); // Capture actual exit block!
+    ctx_.builder().CreateBr(curl_done);
+    
+    // Valid jacobian: continue with normal computation
+    ctx_.builder().SetInsertPoint(jac_valid);
+    
+    // Extract tensor pointer from validated tagged value
+    Value* jacobian_ptr_int = tagged_.unpackInt64(jacobian_tagged);
+    Value* jacobian_ptr = ctx_.builder().CreateIntToPtr(jacobian_ptr_int, ctx_.builder().getPtrTy());
+    Value* n_const = ConstantInt::get(ctx_.int64Type(), 3);
+    
+    // Extract specific partial derivatives from Jacobian's nested list structure
+    // J[i,j] = ∂Fᵢ/∂xⱼ (row i, column j)
+    // Jacobian elements are LIST POINTERS (rows), not doubles!
+    
+    // curl_x = ∂F₃/∂y - ∂F₂/∂z = J[2,1] - J[1,2]
+    Value* dF3_dx2 = extractJacobianElement(jacobian_ptr,
+        ConstantInt::get(ctx_.int64Type(), 2),  // row 2
+        ConstantInt::get(ctx_.int64Type(), 1),  // col 1
+        n_const);
+    Value* dF2_dx3 = extractJacobianElement(jacobian_ptr,
+        ConstantInt::get(ctx_.int64Type(), 1),  // row 1
+        ConstantInt::get(ctx_.int64Type(), 2),  // col 2
+        n_const);
+    Value* curl_x = ctx_.builder().CreateFSub(dF3_dx2, dF2_dx3);
+    
+    // curl_y = ∂F₁/∂z - ∂F₃/∂x = J[0,2] - J[2,0]
+    Value* dF1_dx3 = extractJacobianElement(jacobian_ptr,
+        ConstantInt::get(ctx_.int64Type(), 0),  // row 0
+        ConstantInt::get(ctx_.int64Type(), 2),  // col 2
+        n_const);
+    Value* dF3_dx1 = extractJacobianElement(jacobian_ptr,
+        ConstantInt::get(ctx_.int64Type(), 2),  // row 2
+        ConstantInt::get(ctx_.int64Type(), 0),  // col 0
+        n_const);
+    Value* curl_y = ctx_.builder().CreateFSub(dF1_dx3, dF3_dx1);
+    
+    // curl_z = ∂F₂/∂x - ∂F₁/∂y = J[1,0] - J[0,1]
+    Value* dF2_dx1 = extractJacobianElement(jacobian_ptr,
+        ConstantInt::get(ctx_.int64Type(), 1),  // row 1
+        ConstantInt::get(ctx_.int64Type(), 0),  // col 0
+        n_const);
+    Value* dF1_dx2 = extractJacobianElement(jacobian_ptr,
+        ConstantInt::get(ctx_.int64Type(), 0),  // row 0
+        ConstantInt::get(ctx_.int64Type(), 1),  // col 1
+        n_const);
+    Value* curl_z = ctx_.builder().CreateFSub(dF2_dx1, dF1_dx2);
+    
+    // Create result 3D vector
+    // Allocate result tensor via arena (OALR compliant - no malloc)
+    Value* typed_result_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set dimensions [3]
+    Value* result_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* result_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, result_dims_size});
+    Value* typed_result_dims = ctx_.builder().CreatePointerCast(result_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 3), typed_result_dims);
+
+    Value* result_dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result_ptr, 0);
+    ctx_.builder().CreateStore(typed_result_dims, result_dims_field);
+
+    Value* result_num_dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result_ptr, 1);
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), result_num_dims_field);
+
+    Value* result_total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result_ptr, 3);
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 3), result_total_field);
+
+    // Allocate and fill elements [curl_x, curl_y, curl_z]
+    Value* result_elems_size = ConstantInt::get(ctx_.int64Type(), 3 * sizeof(double));
+    Value* result_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, result_elems_size});
+    Value* typed_result_elems = ctx_.builder().CreatePointerCast(result_elems_ptr, ctx_.builder().getPtrTy());
+    
+    Value* result_elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result_ptr, 2);
+    ctx_.builder().CreateStore(typed_result_elems, result_elems_field);
+    
+    // Store curl components
+    Value* elem0_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_result_elems,
+        ConstantInt::get(ctx_.int64Type(), 0));
+    ctx_.builder().CreateStore(curl_x, elem0_ptr);
+    
+    Value* elem1_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_result_elems,
+        ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(curl_y, elem1_ptr);
+    
+    Value* elem2_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_result_elems,
+        ConstantInt::get(ctx_.int64Type(), 2));
+    ctx_.builder().CreateStore(curl_z, elem2_ptr);
+    
+    eshkol_info("Curl computation complete, returning 3D vector");
+    Value* curl_result_int = ctx_.builder().CreatePtrToInt(typed_result_ptr, ctx_.int64Type());
+    // Tag as TENSOR_PTR for proper display and type consistency
+    Value* curl_result = tagged_.packPtr(curl_result_int, ESHKOL_VALUE_HEAP_PTR);
+    ctx_.builder().CreateBr(curl_done);
+    BasicBlock* dim_valid_exit = ctx_.builder().GetInsertBlock(); // Capture actual predecessor!
+    
+    // Merge all paths with tagged_value results (type-consistent!)
+    ctx_.builder().SetInsertPoint(curl_done);
+    PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "curl_result");
+    result_phi->addIncoming(null_result, dim_invalid_exit);   // Already tagged
+    result_phi->addIncoming(null_curl, jac_invalid_exit);     // Already tagged
+    result_phi->addIncoming(curl_result, dim_valid_exit);
+    
+    return result_phi;
+}
+
 
 llvm::Value* AutodiffCodegen::laplacian(const eshkol_operations_t* op) {
     // Trace of Hessian - requires hessian
