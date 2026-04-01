@@ -715,6 +715,7 @@ public:
 
 private:
     // Calculus extraction state
+    int gradient_ho_counter_ = 0;
     ClosureCallCallback closure_call_callback_ = nullptr;
     std::unordered_map<std::string, uint64_t>* function_arity_table_ = nullptr;
     std::unordered_map<std::string, std::vector<std::string>>* nested_function_captures_ = nullptr;

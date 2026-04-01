@@ -1407,12 +1407,2091 @@ llvm::Value* AutodiffCodegen::loadNodeInput2(llvm::Value* node_ptr) {
     return ctx_.builder().CreateLoad(ctx_.ptrType(), input2_ptr);
 }
 
-llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
-    // Gradient computation is handled directly in llvm_codegen.cpp via the gradient operator.
-    // This method exists for API completeness but is not used in the current codegen pipeline.
-    eshkol_error("AutodiffCodegen::gradient called directly - use gradient operator in main codegen instead");
-    return tagged_.packNull();
+llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op) {
+    using namespace llvm;
+
+    eshkol_info("Creating higher-order gradient function (gradient f -> grad_f)");
+
+    // Resolve the function at compile-time if possible
+    Value* func = resolve_lambda_callback_(op->gradient_op.function, 0, callback_context_);
+    Value* closure_val = nullptr;
+
+    if (!func) {
+        // Runtime function parameter - get the closure value
+        const eshkol_ast_t* func_ast = op->gradient_op.function;
+        if (func_ast && func_ast->type == ESHKOL_VAR) {
+            std::string func_name = func_ast->variable.id;
+            Value* var_value = nullptr;
+
+            auto local_it = symbol_table_->find(func_name);
+            if (local_it != symbol_table_->end()) {
+                var_value = local_it->second;
+            } else {
+                auto global_it = global_symbol_table_->find(func_name);
+                if (global_it != global_symbol_table_->end()) {
+                    var_value = global_it->second;
+                }
+            }
+
+            if (var_value) {
+                if (isa<Argument>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
+                    closure_val = var_value;
+                } else if (isa<AllocaInst>(var_value)) {
+                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                } else if (isa<GlobalVariable>(var_value)) {
+                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                }
+            }
+        }
+
+        if (!closure_val) {
+            eshkol_error("Failed to resolve function for higher-order gradient");
+            return nullptr;
+        }
+    }
+
+    // Create gradient wrapper function
+    // This is VARIADIC: accepts args like (grad-f x y z ...) as a cons list
+    // Computes partial derivatives numerically using central difference
+    std::string grad_func_name = "gradient_ho_" + std::to_string(gradient_ho_counter_++);
+
+    // CRITICAL: Save and disable TCO context during gradient function generation
+    // The gradient function has its own internal loops that must not be confused with TCO
+    auto saved_tco_ctx = binding_->getTCOContext();
+    binding_->getTCOContext().enabled = false;
+    binding_->getTCOContext().func_name = "";
+    binding_->getTCOContext().loop_header = nullptr;
+
+    // Function takes a rest list (variadic args packaged as cons list) + captured function
+    std::vector<Type*> param_types = {ctx_.taggedValueType(), PointerType::getUnqual(ctx_.context())};
+    FunctionType* grad_func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
+    Function* grad_func = Function::Create(
+        grad_func_type,
+        Function::ExternalLinkage,
+        grad_func_name,
+        ctx_.module()
+    );
+
+    BasicBlock* saved_bb = ctx_.builder().GetInsertBlock();
+    BasicBlock::iterator saved_point = ctx_.builder().GetInsertPoint();
+
+    // Create the gradient computation body
+    BasicBlock* entry = BasicBlock::Create(ctx_.context(), "entry", grad_func);
+    ctx_.builder().SetInsertPoint(entry);
+
+    auto arg_it = grad_func->arg_begin();
+    Value* args_list = &(*arg_it);  // First arg: rest list of arguments
+    args_list->setName("args");
+    ++arg_it;
+    Value* captured_f_ptr = &(*arg_it);  // Captured function pointer
+    captured_f_ptr->setName("captured_f");
+
+    Value* f_closure = ctx_.builder().CreateLoad(ctx_.taggedValueType(), captured_f_ptr);
+
+    // Constants for numerical differentiation (central difference)
+    Value* h = ConstantFP::get(ctx_.doubleType(), 1e-8);
+    Value* two_h = ConstantFP::get(ctx_.doubleType(), 2e-8);
+
+    // Get cons accessor functions - avoid struct-by-value ABI issues on ARM64
+    Function* cons_get_double = (*function_table_)["arena_tagged_cons_get_double"];
+    Function* cons_get_type = (*function_table_)["arena_tagged_cons_get_type"];
+    Function* cons_get_ptr = (*function_table_)["arena_tagged_cons_get_ptr"];
+    if (!cons_get_double || !cons_get_type || !cons_get_ptr) {
+        eshkol_error("Cons accessor functions not found");
+        if (saved_bb) ctx_.builder().SetInsertPoint(saved_bb, saved_point);
+        return nullptr;
+    }
+
+    // First, convert the cons list to a vector and count dimensions
+    // Count list length using simple loop with direct tagged_value access
+    BasicBlock* count_loop = BasicBlock::Create(ctx_.context(), "count_loop", grad_func);
+    BasicBlock* count_done = BasicBlock::Create(ctx_.context(), "count_done", grad_func);
+    BasicBlock* count_body = BasicBlock::Create(ctx_.context(), "count_body", grad_func);
+
+    ctx_.builder().CreateBr(count_loop);
+    ctx_.builder().SetInsertPoint(count_loop);
+    PHINode* count_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "count");
+    count_phi->addIncoming(ConstantInt::get(ctx_.int64Type(), 0), entry);
+    PHINode* curr_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "curr");
+    curr_phi->addIncoming(args_list, entry);
+
+    // Check if current is null (end of list)
+    Value* curr_type = tagged_.getType(curr_phi);
+    Value* curr_base = tagged_.getBaseType(curr_type);
+    Value* is_null = ctx_.builder().CreateICmpEQ(curr_base, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
+    ctx_.builder().CreateCondBr(is_null, count_done, count_body);
+
+    // Count body - increment and get cdr using separate type/ptr accessors (ARM64 ABI fix)
+    ctx_.builder().SetInsertPoint(count_body);
+    Value* count_next = ctx_.builder().CreateAdd(count_phi, ConstantInt::get(ctx_.int64Type(), 1));
+    Value* curr_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(curr_phi), PointerType::getUnqual(ctx_.context()));
+    // Get cdr type and pointer separately, then pack into tagged_value
+    Value* cdr_type = ctx_.builder().CreateCall(cons_get_type, {curr_ptr, ConstantInt::get(ctx_.int1Type(), 1)});
+    Value* cdr_ptr = ctx_.builder().CreateCall(cons_get_ptr, {curr_ptr, ConstantInt::get(ctx_.int1Type(), 1)});
+    Value* cdr_val = tagged_.packPtrWithFlags(cdr_ptr, cdr_type, ConstantInt::get(ctx_.int8Type(), 0));
+    count_phi->addIncoming(count_next, count_body);
+    curr_phi->addIncoming(cdr_val, count_body);
+    ctx_.builder().CreateBr(count_loop);
+
+    // Count done - dim_val has the list length
+    ctx_.builder().SetInsertPoint(count_done);
+    Value* dim_val = count_phi;
+
+    // Allocate vector for the point via arena (length + elements) - OALR compliant
+    Value* point_arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* vec_total_size = ctx_.builder().CreateAdd(ConstantInt::get(ctx_.int64Type(), 1), dim_val);
+    Value* vec_bytes = ctx_.builder().CreateMul(vec_total_size, ConstantInt::get(ctx_.int64Type(),
+        ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType())));
+    Value* point_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {point_arena_ptr, vec_bytes});
+    ctx_.builder().CreateStore(dim_val, point_ptr);  // Store length
+
+    // Copy list elements to vector using simple loop
+    BasicBlock* copy_loop = BasicBlock::Create(ctx_.context(), "copy_loop", grad_func);
+    BasicBlock* copy_done = BasicBlock::Create(ctx_.context(), "copy_done", grad_func);
+    BasicBlock* copy_body = BasicBlock::Create(ctx_.context(), "copy_body", grad_func);
+
+    ctx_.builder().CreateBr(copy_loop);
+    ctx_.builder().SetInsertPoint(copy_loop);
+    PHINode* copy_idx = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "copy_idx");
+    copy_idx->addIncoming(ConstantInt::get(ctx_.int64Type(), 0), count_done);
+    PHINode* copy_curr = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "copy_curr");
+    copy_curr->addIncoming(args_list, count_done);
+
+    Value* copy_type = tagged_.getType(copy_curr);
+    Value* copy_base = tagged_.getBaseType(copy_type);
+    Value* copy_is_null = ctx_.builder().CreateICmpEQ(copy_base, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
+    ctx_.builder().CreateCondBr(copy_is_null, copy_done, copy_body);
+
+    // Copy body - store car and advance using separate type/ptr accessors (ARM64 ABI fix)
+    ctx_.builder().SetInsertPoint(copy_body);
+
+    Value* copy_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(copy_curr), PointerType::getUnqual(ctx_.context()));
+    // Get car type and value separately, then pack into tagged_value
+    ctx_.builder().CreateCall(cons_get_type, {copy_ptr, ConstantInt::get(ctx_.int1Type(), 0)});
+    Value* car_double = ctx_.builder().CreateCall(cons_get_double, {copy_ptr, ConstantInt::get(ctx_.int1Type(), 0)});
+    Value* car_val = tagged_.packDouble(car_double);
+
+    Value* vec_elem_offset = ctx_.builder().CreateAdd(ConstantInt::get(ctx_.int64Type(), 1), copy_idx);
+    Value* vec_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), point_ptr, vec_elem_offset);
+    ctx_.builder().CreateStore(car_val, vec_elem_ptr);
+    Value* copy_idx_next = ctx_.builder().CreateAdd(copy_idx, ConstantInt::get(ctx_.int64Type(), 1));
+    // Get cdr type and pointer separately, then pack into tagged_value
+    Value* cdr_type_raw = ctx_.builder().CreateCall(cons_get_type, {copy_ptr, ConstantInt::get(ctx_.int1Type(), 1)});
+    Value* cdr_ptr_raw = ctx_.builder().CreateCall(cons_get_ptr, {copy_ptr, ConstantInt::get(ctx_.int1Type(), 1)});
+    Value* copy_cdr = tagged_.packPtrWithFlags(cdr_ptr_raw, cdr_type_raw, ConstantInt::get(ctx_.int8Type(), 0));
+    copy_idx->addIncoming(copy_idx_next, copy_body);
+    copy_curr->addIncoming(copy_cdr, copy_body);
+    ctx_.builder().CreateBr(copy_loop);
+
+    // Copy done - now point_ptr is a proper vector
+    ctx_.builder().SetInsertPoint(copy_done);
+
+    // Allocate result tensor data via arena (OALR compliant - no malloc)
+    Value* result_arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* result_size = ctx_.builder().CreateMul(dim_val, ConstantInt::get(ctx_.int64Type(), 8));
+    Value* result_data = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {result_arena_ptr, result_size});
+
+    // SIMPLIFIED GRADIENT: Use switch-based dispatch like derivative does
+    // Instead of complex loops, generate static code paths for each arg count
+    const int MAX_GRADIENT_ARGS = 8;
+
+    BasicBlock* switch_default = BasicBlock::Create(ctx_.context(), "grad_default", grad_func);
+    BasicBlock* grad_done = BasicBlock::Create(ctx_.context(), "grad_done", grad_func);
+
+    SwitchInst* dim_switch = ctx_.builder().CreateSwitch(dim_val, switch_default, MAX_GRADIENT_ARGS);
+    std::vector<std::pair<BasicBlock*, Value*>> results;
+
+    // Generate a case for each dimension count (1 to MAX_GRADIENT_ARGS)
+    for (int dim_count = 1; dim_count <= MAX_GRADIENT_ARGS; dim_count++) {
+        BasicBlock* case_bb = BasicBlock::Create(ctx_.context(),
+            "grad_dim_" + std::to_string(dim_count), grad_func);
+        dim_switch->addCase(ConstantInt::get(ctx_.int64Type(), dim_count), case_bb);
+        ctx_.builder().SetInsertPoint(case_bb);
+
+        // Load all arguments from point_ptr into a local array
+        std::vector<Value*> base_args;
+        for (int i = 0; i < dim_count; i++) {
+            Value* elem_offset = ConstantInt::get(ctx_.int64Type(), 1 + i);
+            Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), point_ptr, elem_offset);
+            Value* loaded_arg = ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem_ptr);
+            base_args.push_back(loaded_arg);
+        }
+
+        // For each dimension, compute partial derivative using central difference
+        for (int i = 0; i < dim_count; i++) {
+            // Get the original value at dimension i
+            Value* orig_val = tagged_.unpackDouble(base_args[i]);
+            Value* plus_val = ctx_.builder().CreateFAdd(orig_val, h);
+            Value* minus_val = ctx_.builder().CreateFSub(orig_val, h);
+
+            // Build plus args (copy base_args with modified index i)
+            std::vector<Value*> plus_args = base_args;
+            plus_args[i] = tagged_.packDouble(plus_val);
+
+            // Build minus args
+            std::vector<Value*> minus_args = base_args;
+            minus_args[i] = tagged_.packDouble(minus_val);
+
+            // Call f(plus_args) and f(minus_args) using codegenClosureCall
+            Value* f_plus = closure_call_callback_(f_closure, plus_args);
+            Value* f_minus = closure_call_callback_(f_closure, minus_args);
+
+            // Compute partial derivative: (f_plus - f_minus) / (2h)
+            Value* f_plus_d = tagged_.unpackDouble(f_plus);
+            Value* f_minus_d = tagged_.unpackDouble(f_minus);
+            Value* diff = ctx_.builder().CreateFSub(f_plus_d, f_minus_d);
+            Value* partial = ctx_.builder().CreateFDiv(diff, two_h);
+
+            // Store in result array
+            Value* result_slot = ctx_.builder().CreateGEP(ctx_.doubleType(), result_data,
+                ConstantInt::get(ctx_.int64Type(), i));
+            ctx_.builder().CreateStore(partial, result_slot);
+        }
+
+        ctx_.builder().CreateBr(grad_done);
+        results.push_back({ctx_.builder().GetInsertBlock(), dim_val});
+    }
+
+    // Default case: unsupported dimension count, return null tensor
+    ctx_.builder().SetInsertPoint(switch_default);
+    ctx_.builder().CreateBr(grad_done);
+    results.push_back({switch_default, ConstantInt::get(ctx_.int64Type(), 0)});
+
+    // Grad done - create result tensor using proper tensor struct format
+    ctx_.builder().SetInsertPoint(grad_done);
+
+    // Tensor struct format:
+    // Field 0: dims (pointer to dimensions array)
+    // Field 1: num_dims (number of dimensions)
+    // Field 2: elements (pointer to double data)
+    // Field 3: total_elements
+
+    // Allocate tensor struct with header via arena (OALR compliant - no malloc)
+    Value* grad_arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* typed_tensor_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {grad_arena_ptr});
+
+    // Allocate dimensions array via arena (1 element for 1D tensor)
+    Value* dims_array = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
+        {grad_arena_ptr, ConstantInt::get(ctx_.int64Type(), 8)});  // 1 * sizeof(int64)
+    ctx_.builder().CreateStore(dim_val, dims_array);  // dims[0] = number of gradient components
+
+    // Fill tensor struct fields
+    Value* dims_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 0);
+    ctx_.builder().CreateStore(dims_array, dims_field_ptr);  // Field 0: dims pointer
+
+    Value* num_dims_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 1);
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), num_dims_field_ptr);  // Field 1: num_dims = 1
+
+    Value* elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 2);
+    ctx_.builder().CreateStore(result_data, elements_field_ptr);  // Field 2: elements pointer
+
+    Value* total_elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 3);
+    ctx_.builder().CreateStore(dim_val, total_elements_field_ptr);  // Field 3: total_elements = dim_val
+
+    Value* result_tensor = tagged_.packPtr(typed_tensor_ptr, ESHKOL_VALUE_HEAP_PTR);
+    ctx_.builder().CreateRet(result_tensor);
+
+    // Restore insertion point
+    if (saved_bb) {
+        ctx_.builder().SetInsertPoint(saved_bb, saved_point);
+    }
+
+    // Restore TCO context
+    binding_->getTCOContext() = saved_tco_ctx;
+
+    // Register the gradient function
+    (*function_table_)[grad_func_name] = grad_func;
+    (*nested_function_captures_)[grad_func_name] = {"f"};  // 1 capture
+
+    // Create closure capturing the original function
+    if (!closure_val && func) {
+        // STATIC FUNCTION FIX: Create a proper closure struct for static functions
+        // codegenClosureCall expects a closure struct, not a raw function pointer
+        // So we wrap the static function in a 0-capture closure
+        Value* static_arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* static_func_ptr_int = ctx_.builder().CreatePtrToInt(func, ctx_.int64Type());
+        // packed_info: 0 captures, 0 fixed params, NOT variadic
+        uint64_t static_packed_info = 0;  // No captures, not variadic
+        Value* static_packed = ConstantInt::get(ctx_.int64Type(), static_packed_info);
+        Value* static_sexpr = ConstantInt::get(ctx_.int64Type(), 0);
+        Value* static_return_type = ConstantInt::get(ctx_.int64Type(), 0);  // Default return type
+        Value* static_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
+        Value* static_closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
+            {static_arena, static_func_ptr_int, static_packed, static_sexpr, static_return_type, static_name});
+        closure_val = tagged_.packPtr(static_closure_ptr, ESHKOL_VALUE_CALLABLE);
+    }
+
+    Value* func_ptr_int = ctx_.builder().CreatePtrToInt(grad_func, ctx_.int64Type());
+    Value* arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    // packed_info format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic
+    // We have 1 capture, 0 fixed params, and IS variadic
+    uint64_t packed_info = 1 | (0ULL << 16) | (1ULL << 63);  // 1 capture, variadic
+    Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
+    Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
+    // Gradient returns a vector
+    Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_VECTOR | (1 << 8));
+    Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
+    // Use with_header allocator for consolidated CALLABLE type
+    Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
+                                             {arena, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
+
+    // Store captured function in closure environment
+    Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+    Value* env_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), env_ptr_ptr);
+    Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+    ctx_.builder().CreateStore(closure_val, captures_base);
+
+    // Return closure as CALLABLE tagged value
+    return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
 }
+
+
+llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
+    using namespace llvm;
+    if (!op->gradient_op.function) {
+        eshkol_error("Invalid gradient operation - missing function");
+        return nullptr;
+    }
+
+    // Higher-order form: (gradient f) returns a closure that computes gradients
+    if (!op->gradient_op.point) {
+        return gradientHigherOrder(op);
+    }
+
+    // Resolve function (lambda or function reference)
+    Value* func = resolve_lambda_callback_(op->gradient_op.function, 0, callback_context_);
+
+    // RUNTIME FUNCTION PARAMETER FIX: Handle functions passed as parameters
+    // For gradient with runtime function parameters, we need to use a different approach
+    // since gradient requires knowing the function structure at compile time.
+    // For now, we'll check if the function AST is a variable and look it up.
+    if (!func) {
+        const eshkol_ast_t* func_ast = op->gradient_op.function;
+        if (func_ast && func_ast->type == ESHKOL_VAR) {
+            std::string func_name = func_ast->variable.id;
+            eshkol_debug("gradient: checking runtime function parameter '%s'", func_name.c_str());
+
+            // Check if this is a function parameter or captured value
+            Value* var_value = nullptr;
+
+            // NESTED FUNCTION FIX: First check if there's a GlobalVariable for this capture
+            // This handles nested functions where captures are stored in GlobalVariables
+            Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+            std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
+            auto gv_it = global_symbol_table_->find(capture_key);
+            if (gv_it != global_symbol_table_->end() && isa<GlobalVariable>(gv_it->second)) {
+                var_value = gv_it->second;
+            }
+
+            // If not found as a capture, try regular symbol_table lookup
+            if (!var_value) {
+                auto local_it = symbol_table_->find(func_name);
+                if (local_it != symbol_table_->end()) {
+                    var_value = local_it->second;
+                } else {
+                    auto global_it = global_symbol_table_->find(func_name);
+                    if (global_it != global_symbol_table_->end()) {
+                        var_value = global_it->second;
+                    }
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // UNIFIED RUNTIME GRADIENT PATH
+            // Consolidates 3 duplicate paths (Argument, Pointer, GlobalVariable)
+            // into a single resolution + shared forward-mode computation.
+            // ═══════════════════════════════════════════════════════════════
+
+            // Step 1: Resolve closure value from var_value
+            Value* closure_val = nullptr;
+
+            if (var_value && isa<Argument>(var_value) && !var_value->getType()->isPointerTy()) {
+                // Direct Argument — may need capture resolution for nested functions
+                Argument* arg = cast<Argument>(var_value);
+                Function* arg_parent = arg->getParent();
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+                if (arg_parent != current_func) {
+                    // From different function — find in current function's captures
+                    bool found_in_captures = false;
+                    for (auto& curr_arg : current_func->args()) {
+                        std::string arg_name = curr_arg.getName().str();
+                        if (arg_name == "captured_" + func_name) {
+                            if (curr_arg.getType()->isPointerTy()) {
+                                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), &curr_arg);
+                            } else {
+                                closure_val = &curr_arg;
+                            }
+                            found_in_captures = true;
+                            break;
+                        }
+                    }
+                    if (!found_in_captures) {
+                        std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
+                        auto cap_it = global_symbol_table_->find(capture_key);
+                        if (cap_it != global_symbol_table_->end() && isa<GlobalVariable>(cap_it->second)) {
+                            closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), cap_it->second);
+                            found_in_captures = true;
+                        } else {
+                            auto var_cap_it = global_symbol_table_->find(func_name);
+                            if (var_cap_it != global_symbol_table_->end() && isa<GlobalVariable>(var_cap_it->second)) {
+                                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_cap_it->second);
+                                found_in_captures = true;
+                            }
+                        }
+                    }
+                    if (!found_in_captures) {
+                        eshkol_error("gradient: could not find capture for '%s'", func_name.c_str());
+                        return nullptr;
+                    }
+                } else {
+                    closure_val = var_value;
+                }
+            } else if (var_value && isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
+                // Pointer-type captured Argument — load the tagged value
+                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+            } else if (var_value && isa<GlobalVariable>(var_value)) {
+                // GlobalVariable — load via the global's value type
+                GlobalVariable* gv = cast<GlobalVariable>(var_value);
+                closure_val = ctx_.builder().CreateLoad(gv->getValueType(), var_value);
+            }
+
+            // Step 2: Shared forward-mode gradient computation
+            if (closure_val) {
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+                // Get the input point
+                Value* point_val = codegen_ast_callback_(op->gradient_op.point, callback_context_);
+                if (!point_val) {
+                    eshkol_error("Failed to evaluate gradient point");
+                    return nullptr;
+                }
+
+                // Ensure point is tagged
+                if (point_val->getType() != ctx_.taggedValueType()) {
+                    if (point_val->getType()->isIntegerTy(64)) {
+                        if (op->gradient_op.point->type == ESHKOL_TENSOR) {
+                            point_val = tagged_.packPtr(point_val, ESHKOL_VALUE_HEAP_PTR);
+                        } else {
+                            point_val = tagged_.packInt64(point_val, true);
+                        }
+                    } else if (point_val->getType()->isDoubleTy()) {
+                        point_val = tagged_.packDouble(point_val);
+                    }
+                }
+
+                // Note: current_func already defined above for capture lookup
+
+                // Get arena_allocate for Scheme vector allocation
+                Function* arena_allocate_func = (*function_table_)["arena_allocate"];
+                if (!arena_allocate_func) {
+                    eshkol_error("arena_allocate not found for gradient");
+                    return nullptr;
+                }
+                Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+                // Get tagged_value size
+                uint64_t tagged_size = ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType());
+
+                // Check input type - handle Scheme vector (HEAP_PTR with HEAP_SUBTYPE_VECTOR), tensor (TENSOR_PTR), or scalar
+                // M1 Migration: Use consolidated HEAP_PTR type with subtype dispatch
+                Value* input_type = tagged_.getType(point_val);
+                Value* input_base = tagged_.getBaseType(input_type);
+
+                // Check for HEAP_PTR (consolidated format)
+                Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(input_base,
+                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+                // Legacy VECTOR_PTR check (for backwards compatibility during migration)
+                Value* is_legacy_vec = ctx_.builder().CreateICmpEQ(input_base,
+                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+                Value* is_tensor = ctx_.builder().CreateICmpEQ(input_base,
+                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+                BasicBlock* heap_ptr_dispatch = BasicBlock::Create(ctx_.context(), "grad_rt_heap_dispatch", current_func);
+                BasicBlock* heap_check_tensor = BasicBlock::Create(ctx_.context(), "grad_rt_heap_check_tensor", current_func);
+                BasicBlock* scheme_vec_path = BasicBlock::Create(ctx_.context(), "grad_rt_svec", current_func);
+                BasicBlock* tensor_path = BasicBlock::Create(ctx_.context(), "grad_rt_tensor", current_func);
+                BasicBlock* scalar_path = BasicBlock::Create(ctx_.context(), "grad_rt_scalar", current_func);
+                BasicBlock* check_legacy_vec = BasicBlock::Create(ctx_.context(), "grad_rt_check_legacy", current_func);
+                BasicBlock* check_tensor = BasicBlock::Create(ctx_.context(), "grad_rt_check_tensor", current_func);
+                BasicBlock* grad_rt_compute = BasicBlock::Create(ctx_.context(), "grad_rt_compute", current_func);
+
+                // First check for HEAP_PTR (new consolidated format)
+                ctx_.builder().CreateCondBr(is_heap_ptr, heap_ptr_dispatch, check_legacy_vec);
+
+                // HEAP_PTR dispatch - read subtype from header and route accordingly
+                ctx_.builder().SetInsertPoint(heap_ptr_dispatch);
+                Value* heap_ptr_val = tagged_.unpackPtr(point_val);
+                Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));
+                Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr);
+                Value* is_vec_subtype = ctx_.builder().CreateICmpEQ(subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+                Value* is_tensor_subtype = ctx_.builder().CreateICmpEQ(subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+                ctx_.builder().CreateCondBr(is_vec_subtype, scheme_vec_path, heap_check_tensor);
+
+                ctx_.builder().SetInsertPoint(heap_check_tensor);
+                ctx_.builder().CreateCondBr(is_tensor_subtype, tensor_path, scalar_path);
+
+                // Legacy VECTOR_PTR fallback (for migration period)
+                ctx_.builder().SetInsertPoint(check_legacy_vec);
+                ctx_.builder().CreateCondBr(is_legacy_vec, scheme_vec_path, check_tensor);
+
+                ctx_.builder().SetInsertPoint(check_tensor);
+                ctx_.builder().CreateCondBr(is_tensor, tensor_path, scalar_path);
+
+                // Scheme vector path - use input directly
+                ctx_.builder().SetInsertPoint(scheme_vec_path);
+                Value* svec_ptr = tagged_.unpackPtr(point_val);
+                Value* svec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_ptr);
+                Value* svec_elems = ctx_.builder().CreateGEP(ctx_.int8Type(), svec_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+                Value* svec_elems_typed = ctx_.builder().CreatePointerCast(svec_elems, ctx_.ptrType());
+                ctx_.builder().CreateBr(grad_rt_compute);
+                BasicBlock* svec_exit = ctx_.builder().GetInsertBlock();
+
+                // Tensor path - convert tensor elements to Scheme vector of tagged doubles
+                ctx_.builder().SetInsertPoint(tensor_path);
+                Value* tensor_ptr_int = tagged_.unpackInt64(point_val);
+                Value* tensor_ptr = ctx_.builder().CreateIntToPtr(tensor_ptr_int, ctx_.builder().getPtrTy());
+                Value* dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 0);
+                Value* dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), dims_field);
+                Value* typed_dims = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.builder().getPtrTy());
+                Value* tensor_n = ctx_.builder().CreateLoad(ctx_.int64Type(), typed_dims);
+                Value* tensor_elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 2);
+                Value* tensor_elems_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), tensor_elems_field);
+                Value* tensor_elems_typed = ctx_.builder().CreatePointerCast(tensor_elems_ptr, ctx_.builder().getPtrTy());
+
+                // Allocate Scheme vector for tensor elements
+                Value* tconv_size = ctx_.builder().CreateAdd(
+                    ctx_.builder().CreateMul(tensor_n, ConstantInt::get(ctx_.int64Type(), tagged_size)),
+                    ConstantInt::get(ctx_.int64Type(), 8));
+                Value* tconv_vec = ctx_.builder().CreateCall(arena_allocate_func, {arena_ptr, tconv_size});
+                ctx_.builder().CreateStore(tensor_n, tconv_vec);
+                Value* tconv_elems = ctx_.builder().CreateGEP(ctx_.int8Type(), tconv_vec, ConstantInt::get(ctx_.int64Type(), 8));
+                Value* tconv_elems_typed = ctx_.builder().CreatePointerCast(tconv_elems, ctx_.ptrType());
+
+                // Copy tensor elements as tagged doubles
+                Value* tconv_i = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "tconv_i");
+                ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), tconv_i);
+                BasicBlock* tconv_cond = BasicBlock::Create(ctx_.context(), "tconv_cond", current_func);
+                BasicBlock* tconv_body = BasicBlock::Create(ctx_.context(), "tconv_body", current_func);
+                BasicBlock* tconv_end = BasicBlock::Create(ctx_.context(), "tconv_end", current_func);
+                ctx_.builder().CreateBr(tconv_cond);
+
+                ctx_.builder().SetInsertPoint(tconv_cond);
+                Value* tc_idx = ctx_.builder().CreateLoad(ctx_.int64Type(), tconv_i);
+                ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(tc_idx, tensor_n), tconv_body, tconv_end);
+
+                ctx_.builder().SetInsertPoint(tconv_body);
+                Value* tc_src = ctx_.builder().CreateGEP(ctx_.int64Type(), tensor_elems_typed, tc_idx);
+                Value* tc_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), tc_src);
+                Value* tc_dbl = ctx_.builder().CreateBitCast(tc_bits, ctx_.doubleType());
+                Value* tc_tagged = tagged_.packDouble(tc_dbl);
+                Value* tc_dst = ctx_.builder().CreateGEP(ctx_.taggedValueType(), tconv_elems_typed, tc_idx);
+                ctx_.builder().CreateStore(tc_tagged, tc_dst);
+                ctx_.builder().CreateStore(ctx_.builder().CreateAdd(tc_idx, ConstantInt::get(ctx_.int64Type(), 1)), tconv_i);
+                ctx_.builder().CreateBr(tconv_cond);
+
+                ctx_.builder().SetInsertPoint(tconv_end);
+                ctx_.builder().CreateBr(grad_rt_compute);
+                BasicBlock* tensor_exit = ctx_.builder().GetInsertBlock();
+
+                // Scalar path - create 1-element Scheme vector
+                ctx_.builder().SetInsertPoint(scalar_path);
+                Value* scalar_val = tagged_.unpackDouble(point_val);
+                Value* scalar_vec_size = ConstantInt::get(ctx_.int64Type(), 8 + tagged_size);
+                Value* scalar_vec = ctx_.builder().CreateCall(arena_allocate_func, {arena_ptr, scalar_vec_size});
+                ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), scalar_vec);
+                Value* scalar_elem = ctx_.builder().CreateGEP(ctx_.int8Type(), scalar_vec, ConstantInt::get(ctx_.int64Type(), 8));
+                Value* scalar_elem_typed = ctx_.builder().CreatePointerCast(scalar_elem, ctx_.ptrType());
+                Value* scalar_tagged = tagged_.packDouble(scalar_val);
+                ctx_.builder().CreateStore(scalar_tagged, scalar_elem_typed);
+                ctx_.builder().CreateBr(grad_rt_compute);
+                BasicBlock* scalar_exit = ctx_.builder().GetInsertBlock();
+
+                // Merge input paths
+                ctx_.builder().SetInsertPoint(grad_rt_compute);
+                PHINode* n = ctx_.builder().CreatePHI(ctx_.int64Type(), 3, "grad_n");
+                n->addIncoming(svec_len, svec_exit);
+                n->addIncoming(tensor_n, tensor_exit);
+                n->addIncoming(ConstantInt::get(ctx_.int64Type(), 1), scalar_exit);
+
+                PHINode* input_elems = ctx_.builder().CreatePHI(ctx_.ptrType(), 3, "grad_elems");
+                input_elems->addIncoming(svec_elems_typed, svec_exit);
+                input_elems->addIncoming(tconv_elems_typed, tensor_exit);
+                input_elems->addIncoming(scalar_elem_typed, scalar_exit);
+
+                // Allocate result tensor using arena with header
+                Value* typed_result = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+                Value* result_dims_size = ConstantInt::get(ctx_.int64Type(), 8);
+                Value* result_dims_ptr = ctx_.builder().CreateCall(arena_allocate_func, {arena_ptr, result_dims_size});
+                Value* typed_result_dims = ctx_.builder().CreatePointerCast(result_dims_ptr, ctx_.builder().getPtrTy());
+                ctx_.builder().CreateStore(n, typed_result_dims);
+                ctx_.builder().CreateStore(typed_result_dims, ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result, 0));
+                ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result, 1));
+                ctx_.builder().CreateStore(n, ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result, 3));
+
+                Value* result_elems_size = ctx_.builder().CreateMul(n, ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+                Value* result_elems_ptr = ctx_.builder().CreateCall(arena_allocate_func, {arena_ptr, result_elems_size});
+                Value* typed_result_elems = ctx_.builder().CreatePointerCast(result_elems_ptr, ctx_.builder().getPtrTy());
+                ctx_.builder().CreateStore(typed_result_elems, ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result, 2));
+
+                // M1 CONSOLIDATION: Allocate Scheme vector for dual numbers with header
+                // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
+                Value* dual_vec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
+                    {arena_ptr, n});
+                ctx_.builder().CreateStore(n, dual_vec);
+                Value* dual_elems = ctx_.builder().CreateGEP(ctx_.int8Type(), dual_vec, ConstantInt::get(ctx_.int64Type(), 8));
+                Value* dual_elems_typed = ctx_.builder().CreatePointerCast(dual_elems, ctx_.ptrType());
+
+                // Outer loop: for each dimension i, compute partial derivative
+                Value* dim_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "grad_dim_i");
+                ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), dim_counter);
+
+                BasicBlock* dim_cond = BasicBlock::Create(ctx_.context(), "grad_dim_cond", current_func);
+                BasicBlock* dim_body = BasicBlock::Create(ctx_.context(), "grad_dim_body", current_func);
+                BasicBlock* dim_end = BasicBlock::Create(ctx_.context(), "grad_dim_end", current_func);
+
+                ctx_.builder().CreateBr(dim_cond);
+
+                ctx_.builder().SetInsertPoint(dim_cond);
+                Value* dim_i = ctx_.builder().CreateLoad(ctx_.int64Type(), dim_counter);
+                ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(dim_i, n), dim_body, dim_end);
+
+                ctx_.builder().SetInsertPoint(dim_body);
+
+                // Inner loop: create dual vector with tangent=1 at dim_i
+                Value* inner_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "grad_inner_j");
+                ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), inner_counter);
+
+                BasicBlock* inner_cond = BasicBlock::Create(ctx_.context(), "grad_inner_cond", current_func);
+                BasicBlock* inner_body = BasicBlock::Create(ctx_.context(), "grad_inner_body", current_func);
+                BasicBlock* inner_end = BasicBlock::Create(ctx_.context(), "grad_inner_end", current_func);
+
+                ctx_.builder().CreateBr(inner_cond);
+
+                ctx_.builder().SetInsertPoint(inner_cond);
+                Value* inner_j = ctx_.builder().CreateLoad(ctx_.int64Type(), inner_counter);
+                ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(inner_j, n), inner_body, inner_end);
+
+                ctx_.builder().SetInsertPoint(inner_body);
+                // Load primal value at position j from input elements
+                Value* in_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), input_elems, inner_j);
+                Value* in_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), in_elem_ptr);
+                Value* primal_val = tagged_.unpackDouble(in_elem);
+
+                // Set tangent: 1.0 if j == i, else 0.0
+                Value* is_active = ctx_.builder().CreateICmpEQ(inner_j, dim_i);
+                Value* tangent = ctx_.builder().CreateSelect(is_active,
+                    ConstantFP::get(ctx_.doubleType(), 1.0),
+                    ConstantFP::get(ctx_.doubleType(), 0.0));
+
+                // Create dual number and store in dual vector
+                Value* dual_num = createDualNumber(primal_val, tangent);
+                Value* dual_tagged = packDualToTagged(dual_num);
+                Value* dual_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), dual_elems_typed, inner_j);
+                ctx_.builder().CreateStore(dual_tagged, dual_elem_ptr);
+
+                ctx_.builder().CreateStore(ctx_.builder().CreateAdd(inner_j, ConstantInt::get(ctx_.int64Type(), 1)), inner_counter);
+                ctx_.builder().CreateBr(inner_cond);
+
+                ctx_.builder().SetInsertPoint(inner_end);
+
+                // M1 CONSOLIDATION: Pack dual vector as HEAP_PTR (header contains HEAP_SUBTYPE_VECTOR)
+                Value* dual_vec_tagged = tagged_.packPtr(
+                    ctx_.builder().CreatePtrToInt(dual_vec, ctx_.int64Type()),
+                    ESHKOL_VALUE_HEAP_PTR);
+
+                // Call function via closure dispatch
+                std::vector<Value*> call_args = {dual_vec_tagged};
+                Value* call_result = closure_call_callback_(closure_val, call_args);
+
+                // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
+                // If function returns a constant (not using its argument), it won't be dual
+                Value* rt_result_type = tagged_.getType(call_result);
+                Value* rt_result_base = tagged_.getBaseType(rt_result_type);
+                Value* rt_is_dual = ctx_.builder().CreateICmpEQ(rt_result_base,
+                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+
+                BasicBlock* rt_dual_bb = BasicBlock::Create(ctx_.context(), "grad_rt_dual", current_func);
+                BasicBlock* rt_const_bb = BasicBlock::Create(ctx_.context(), "grad_rt_const", current_func);
+                BasicBlock* rt_merge_bb = BasicBlock::Create(ctx_.context(), "grad_rt_merge", current_func);
+
+                ctx_.builder().CreateCondBr(rt_is_dual, rt_dual_bb, rt_const_bb);
+
+                // Dual path: extract tangent normally
+                ctx_.builder().SetInsertPoint(rt_dual_bb);
+                Value* rt_result_dual = unpackDualFromTagged(call_result);
+                auto [rt_result_primal, rt_dual_deriv] = uncreateDualNumber(rt_result_dual);
+                ctx_.builder().CreateBr(rt_merge_bb);
+                BasicBlock* rt_dual_exit = ctx_.builder().GetInsertBlock();
+
+                // Constant path: derivative is 0.0
+                ctx_.builder().SetInsertPoint(rt_const_bb);
+                Value* rt_zero_deriv = ConstantFP::get(ctx_.doubleType(), 0.0);
+                ctx_.builder().CreateBr(rt_merge_bb);
+                BasicBlock* rt_const_exit = ctx_.builder().GetInsertBlock();
+
+                // Merge paths
+                ctx_.builder().SetInsertPoint(rt_merge_bb);
+                PHINode* deriv = ctx_.builder().CreatePHI(ctx_.doubleType(), 2, "grad_deriv");
+                deriv->addIncoming(rt_dual_deriv, rt_dual_exit);
+                deriv->addIncoming(rt_zero_deriv, rt_const_exit);
+
+                // Store derivative in result tensor
+                Value* result_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_result_elems, dim_i);
+                Value* deriv_bits = ctx_.builder().CreateBitCast(deriv, ctx_.int64Type());
+                ctx_.builder().CreateStore(deriv_bits, result_elem_ptr);
+
+                ctx_.builder().CreateStore(ctx_.builder().CreateAdd(dim_i, ConstantInt::get(ctx_.int64Type(), 1)), dim_counter);
+                ctx_.builder().CreateBr(dim_cond);
+
+                ctx_.builder().SetInsertPoint(dim_end);
+                Value* result_int = ctx_.builder().CreatePtrToInt(typed_result, ctx_.int64Type());
+                return tagged_.packPtr(result_int, ESHKOL_VALUE_HEAP_PTR);
+            } // end if (closure_val)
+
+        }
+        eshkol_error("Failed to resolve function for gradient computation");
+        return nullptr;
+    }
+
+    Function* func_ptr = dyn_cast<Function>(func);
+
+    if (!func_ptr) {
+        eshkol_error("Gradient operator requires actual function, got non-function value");
+        return nullptr;
+    }
+    
+    // Evaluate point to get input vector
+    Value* vector_val_raw = codegen_ast_callback_(op->gradient_op.point, callback_context_);
+    if (!vector_val_raw) {
+        eshkol_error("Failed to evaluate gradient evaluation point");
+        return nullptr;
+    }
+    
+    // CRITICAL FIX: Ensure input is tagged_value (codegenAST can return raw types for literals)
+    // Tensor/vector codegen returns raw ptr-as-int64, NOT tagged values.
+    // We must detect the AST type to pack correctly (HEAP_PTR vs INT64).
+    Value* vector_val;
+    if (vector_val_raw->getType() == ctx_.taggedValueType()) {
+        vector_val = vector_val_raw; // Already tagged
+    } else if (vector_val_raw->getType()->isIntegerTy(64) &&
+               op->gradient_op.point->type == ESHKOL_TENSOR) {
+        // Tensor literal: codegenTensor returns ptr-as-int64; wrap as HEAP_PTR
+        // so the input dispatch correctly detects the tensor subtype
+        vector_val = tagged_.packPtr(vector_val_raw, ESHKOL_VALUE_HEAP_PTR);
+    } else if (vector_val_raw->getType()->isIntegerTy(64)) {
+        vector_val = tagged_.packInt64(vector_val_raw, true); // Pack int64
+    } else if (vector_val_raw->getType()->isDoubleTy()) {
+        vector_val = tagged_.packDouble(vector_val_raw); // Pack double
+    } else {
+        TypedValue tv = detectValueType(vector_val_raw);
+        vector_val = typedValueToTaggedValue(tv); // Pack other types
+    }
+    
+    // Alloca for effective svec input (updated by tensor→svec conversion)
+    Value* svec_input_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "svec_input");
+    ctx_.builder().CreateStore(vector_val, svec_input_ptr);
+
+    // SCALAR→VECTOR AUTO-PROMOTION: Detect input type BEFORE tensor structure access
+    // This prevents segfault when users pass scalars like 3.0 instead of vectors like #(3.0)
+
+    // Get current function for basic blocks
+    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+    // Get arena for OALR-compliant tensor allocation (used throughout gradient computation)
+    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+    // Extract type from input (may be DOUBLE, INT64, TENSOR_PTR, or AD_NODE_PTR for nested gradients)
+    Value* input_type = tagged_.getType(vector_val);
+    Value* input_base_type = tagged_.getBaseType(input_type);
+
+    // DOUBLE BACKWARD: Check if input is an AD node (from outer gradient)
+    // This happens in nested gradients like (gradient (lambda (y) (gradient f y)) x)
+    Value* is_ad_node_input = ctx_.builder().CreateICmpEQ(input_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+
+    // Check if input is scalar (INT64 or DOUBLE)
+    Value* is_int64 = ctx_.builder().CreateICmpEQ(input_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    Value* is_double = ctx_.builder().CreateICmpEQ(input_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    Value* is_scalar = ctx_.builder().CreateOr(is_int64, is_double);
+
+    // M1 Migration: Check if input is Scheme vector (HEAP_PTR with HEAP_SUBTYPE_VECTOR) or legacy VECTOR_PTR
+    // First check for HEAP_PTR (consolidated format)
+    Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(input_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    // Legacy VECTOR_PTR check
+    Value* is_legacy_vector = ctx_.builder().CreateICmpEQ(input_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+    // Branch: AD node input (nested), scalar input (promotion), scheme vector (convert), or tensor input (normal)
+    BasicBlock* ad_node_input = BasicBlock::Create(ctx_.context(), "grad_ad_node_input", current_func);
+    BasicBlock* scalar_input = BasicBlock::Create(ctx_.context(), "grad_scalar_input", current_func);
+    BasicBlock* scheme_vector_input = BasicBlock::Create(ctx_.context(), "grad_scheme_vector_input", current_func);
+    BasicBlock* vector_input = BasicBlock::Create(ctx_.context(), "grad_vector_input", current_func);
+    BasicBlock* grad_merge_input = BasicBlock::Create(ctx_.context(), "grad_merge_input", current_func);
+    // Create grad_done early so scheme_vector_input path can branch to it
+    BasicBlock* grad_done = BasicBlock::Create(ctx_.context(), "grad_done", current_func);
+
+    // First check if AD node (nested gradient)
+    BasicBlock* check_scalar = BasicBlock::Create(ctx_.context(), "grad_check_scalar", current_func);
+    ctx_.builder().CreateCondBr(is_ad_node_input, ad_node_input, check_scalar);
+
+    // NESTED GRADIENT (AD_NODE_PTR input): Extract value and wrap in tensor for uniform handling
+    ctx_.builder().SetInsertPoint(ad_node_input);
+    eshkol_debug("Gradient: detected AD_NODE_PTR input (nested gradient)");
+
+    // Extract the AD node pointer
+    Value* outer_ad_node = tagged_.unpackPtr(vector_val);
+
+    // DOUBLE BACKWARD: Store outer AD node in global for later use
+    // This allows the backward pass to connect to outer computation graph
+    ctx_.builder().CreateStore(outer_ad_node, ctx_.outerAdNodeStorage());
+
+    // Extract the VALUE from the AD node (field 1)
+    Value* ad_value_ptr = ctx_.builder().CreateStructGEP(ctx_.adNodeType(), outer_ad_node, 1);
+    Value* ad_value = ctx_.builder().CreateLoad(ctx_.doubleType(), ad_value_ptr);
+
+    // Create a 1D tensor containing this value via arena (OALR compliant - no malloc)
+    Value* typed_ad_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set up 1D tensor structure
+    Value* nested_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* nested_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, nested_dims_size});
+    Value* typed_ad_dims = ctx_.builder().CreatePointerCast(nested_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), typed_ad_dims);
+
+    ctx_.builder().CreateStore(typed_ad_dims,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_ad_tensor, 0));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_ad_tensor, 1));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_ad_tensor, 3));
+
+    Value* nested_elems_size = ConstantInt::get(ctx_.int64Type(), sizeof(int64_t));
+    Value* nested_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, nested_elems_size});
+    Value* typed_nested_elems = ctx_.builder().CreatePointerCast(nested_elems_ptr, ctx_.builder().getPtrTy());
+    Value* nested_value_as_int64 = ctx_.builder().CreateBitCast(ad_value, ctx_.int64Type());
+    ctx_.builder().CreateStore(nested_value_as_int64, typed_nested_elems);
+    ctx_.builder().CreateStore(typed_nested_elems,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_ad_tensor, 2));
+
+    Value* nested_tensor_int = ctx_.builder().CreatePtrToInt(typed_ad_tensor, ctx_.int64Type());
+    Value* ad_promoted_tagged = tagged_.packPtr(nested_tensor_int, ESHKOL_VALUE_HEAP_PTR);
+    ctx_.builder().CreateBr(grad_merge_input);
+    BasicBlock* ad_node_exit = ctx_.builder().GetInsertBlock();
+
+    // Check for scalar
+    ctx_.builder().SetInsertPoint(check_scalar);
+
+    // DOUBLE BACKWARD: Clear outer AD node storage for non-nested case
+    ctx_.builder().CreateStore(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())),
+        ctx_.outerAdNodeStorage());
+
+    // Check: scalar → scalar_input, heap_ptr (check subtype) → maybe scheme_vector, else → vector_input (tensor)
+    BasicBlock* check_heap_ptr = BasicBlock::Create(ctx_.context(), "grad_check_heap_ptr", current_func);
+    ctx_.builder().CreateCondBr(is_scalar, scalar_input, check_heap_ptr);
+
+    // M1 Migration: Check for HEAP_PTR and dispatch based on subtype
+    ctx_.builder().SetInsertPoint(check_heap_ptr);
+    BasicBlock* heap_ptr_dispatch = BasicBlock::Create(ctx_.context(), "grad_heap_dispatch", current_func);
+    BasicBlock* check_legacy_vector = BasicBlock::Create(ctx_.context(), "grad_check_legacy_vec", current_func);
+    ctx_.builder().CreateCondBr(is_heap_ptr, heap_ptr_dispatch, check_legacy_vector);
+
+    // HEAP_PTR dispatch - read subtype from header
+    ctx_.builder().SetInsertPoint(heap_ptr_dispatch);
+    Value* grad_heap_ptr = tagged_.unpackPtr(vector_val);
+    Value* grad_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), grad_heap_ptr, ConstantInt::get(ctx_.int64Type(), -8));
+    Value* grad_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), grad_header_ptr);
+    Value* is_vec_subtype_grad = ctx_.builder().CreateICmpEQ(grad_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    Value* is_tensor_subtype_grad = ctx_.builder().CreateICmpEQ(grad_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+    BasicBlock* grad_check_tensor = BasicBlock::Create(ctx_.context(), "grad_check_tensor", current_func);
+    ctx_.builder().CreateCondBr(is_vec_subtype_grad, scheme_vector_input, grad_check_tensor);
+
+    // Check for TENSOR subtype — convert to Scheme vector ONLY for multi-param functions.
+    // For single-param functions, tensor input works correctly with reverse-mode AD.
+    // For multi-param functions, forward-mode with dual numbers is needed because
+    // reverse-mode passes AD nodes as CALLABLE tagged values which crash in function dispatch.
+    ctx_.builder().SetInsertPoint(grad_check_tensor);
+    uint64_t grad_func_arity = 0;
+    {
+        auto arity_it = function_arity_table_->find(func_ptr->getName().str());
+        if (arity_it != function_arity_table_->end()) {
+            grad_func_arity = arity_it->second;
+        }
+    }
+    if (grad_func_arity > 1) {
+        BasicBlock* grad_tensor_to_svec = BasicBlock::Create(ctx_.context(), "grad_tensor_to_svec", current_func);
+        ctx_.builder().CreateCondBr(is_tensor_subtype_grad, grad_tensor_to_svec, vector_input);
+
+        // TENSOR→SVEC CONVERSION: Convert 8-byte tensor doubles to 16-byte tagged Scheme vector
+        // so the forward-mode dual number path handles multi-parameter gradients correctly.
+        ctx_.builder().SetInsertPoint(grad_tensor_to_svec);
+        {
+            Value* t_ptr = grad_heap_ptr;
+            Value* t_dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), t_ptr, 0);
+            Value* t_dims_ptr = ctx_.builder().CreateLoad(ctx_.builder().getPtrTy(), t_dims_field);
+            Value* t_n = ctx_.builder().CreateLoad(ctx_.int64Type(), t_dims_ptr);
+            Value* t_elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), t_ptr, 2);
+            Value* t_elems_ptr = ctx_.builder().CreateLoad(ctx_.builder().getPtrTy(), t_elems_field);
+
+            Value* t_arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+            Value* t_svec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(), {t_arena, t_n});
+            ctx_.builder().CreateStore(t_n, t_svec);
+            Value* t_svec_elems_base = ctx_.builder().CreateGEP(ctx_.int8Type(), t_svec, ConstantInt::get(ctx_.int64Type(), 8));
+            Value* t_svec_elems = ctx_.builder().CreatePointerCast(t_svec_elems_base, ctx_.ptrType());
+
+            Value* t_conv_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "tensor_conv_idx");
+            ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), t_conv_idx);
+
+            BasicBlock* t_conv_cond = BasicBlock::Create(ctx_.context(), "tensor_conv_cond", current_func);
+            BasicBlock* t_conv_body = BasicBlock::Create(ctx_.context(), "tensor_conv_body", current_func);
+            BasicBlock* t_conv_exit = BasicBlock::Create(ctx_.context(), "tensor_conv_exit", current_func);
+
+            ctx_.builder().CreateBr(t_conv_cond);
+
+            ctx_.builder().SetInsertPoint(t_conv_cond);
+            Value* t_idx = ctx_.builder().CreateLoad(ctx_.int64Type(), t_conv_idx);
+            ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(t_idx, t_n), t_conv_body, t_conv_exit);
+
+            ctx_.builder().SetInsertPoint(t_conv_body);
+            Value* t_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), t_elems_ptr, t_idx);
+            Value* t_elem_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(), t_elem_ptr);
+            Value* t_elem_double = ctx_.builder().CreateBitCast(t_elem_i64, ctx_.doubleType());
+            Value* t_elem_tagged = tagged_.packDouble(t_elem_double);
+            Value* t_svec_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), t_svec_elems, t_idx);
+            ctx_.builder().CreateStore(t_elem_tagged, t_svec_elem_ptr);
+            ctx_.builder().CreateStore(ctx_.builder().CreateAdd(t_idx, ConstantInt::get(ctx_.int64Type(), 1)), t_conv_idx);
+            ctx_.builder().CreateBr(t_conv_cond);
+
+            ctx_.builder().SetInsertPoint(t_conv_exit);
+            Value* t_svec_int = ctx_.builder().CreatePtrToInt(t_svec, ctx_.int64Type());
+            Value* t_converted_tagged = tagged_.packPtr(t_svec_int, ESHKOL_VALUE_HEAP_PTR);
+            ctx_.builder().CreateStore(t_converted_tagged, svec_input_ptr);
+        }
+        ctx_.builder().CreateBr(scheme_vector_input);
+    } else {
+        // Single-param: tensor goes through reverse-mode (works for arity <= 1)
+        ctx_.builder().CreateBr(vector_input);
+    }
+
+    // Legacy VECTOR_PTR fallback
+    ctx_.builder().SetInsertPoint(check_legacy_vector);
+    ctx_.builder().CreateCondBr(is_legacy_vector, scheme_vector_input, vector_input);
+
+    // SCALAR INPUT: Auto-promote scalar to 1D tensor #(scalar_value)
+    ctx_.builder().SetInsertPoint(scalar_input);
+    eshkol_debug("Gradient: auto-promoting scalar input to 1D vector");
+    
+    // Extract scalar value (INT64 or DOUBLE)
+    Value* scalar_val_int = tagged_.unpackInt64(vector_val);
+    
+    // Convert to double if needed
+    Value* scalar_double = ctx_.builder().CreateSelect(is_double,
+        ctx_.builder().CreateBitCast(scalar_val_int, ctx_.doubleType()),
+        ctx_.builder().CreateSIToFP(scalar_val_int, ctx_.doubleType()));
+    
+    // Allocate 1D tensor structure for promoted scalar via arena (OALR compliant - no malloc)
+    Value* typed_promoted_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set dimensions: [1] (1D tensor with single element)
+    Value* promoted_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* promoted_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, promoted_dims_size});
+    Value* typed_promoted_dims = ctx_.builder().CreatePointerCast(promoted_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), typed_promoted_dims);
+
+    // Set tensor metadata
+    ctx_.builder().CreateStore(typed_promoted_dims,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_promoted_tensor, 0));  // dimensions = [1]
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_promoted_tensor, 1));  // num_dimensions = 1
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_promoted_tensor, 3));  // total_elements = 1
+
+    // Allocate and set elements: [scalar_value]
+    Value* promoted_elems_size = ConstantInt::get(ctx_.int64Type(), sizeof(int64_t));
+    Value* promoted_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, promoted_elems_size});
+    Value* typed_promoted_elems = ctx_.builder().CreatePointerCast(promoted_elems_ptr, ctx_.builder().getPtrTy());
+    
+    // Store scalar as bitcast int64 (preserves IEEE754 bits for doubles)
+    Value* scalar_as_int64 = ctx_.builder().CreateBitCast(scalar_double, ctx_.int64Type());
+    ctx_.builder().CreateStore(scalar_as_int64, typed_promoted_elems);
+    
+    ctx_.builder().CreateStore(typed_promoted_elems,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_promoted_tensor, 2));  // elements
+    
+    // Pack promoted tensor as tagged_value with TENSOR_PTR type
+    Value* promoted_tensor_int = ctx_.builder().CreatePtrToInt(typed_promoted_tensor, ctx_.int64Type());
+    Value* promoted_vector_tagged = tagged_.packPtr(promoted_tensor_int, ESHKOL_VALUE_HEAP_PTR);
+    
+    ctx_.builder().CreateBr(grad_merge_input);
+    BasicBlock* scalar_input_exit = ctx_.builder().GetInsertBlock();
+    
+    // SCHEME VECTOR INPUT: Use forward-mode AD with dual numbers (preserves Scheme vector format)
+    // This allows functions that use vector-ref to work correctly with gradient
+    // Handles both native Scheme vectors AND tensors converted via tensor→svec path above
+    ctx_.builder().SetInsertPoint(scheme_vector_input);
+    eshkol_debug("Gradient: using forward-mode AD for Scheme vector input");
+
+    // Load effective input (may have been updated by tensor→svec conversion)
+    Value* effective_svec_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_input_ptr);
+    // Get Scheme vector pointer and length
+    Value* svec_ptr_int = tagged_.unpackInt64(effective_svec_val);
+    Value* svec_ptr = ctx_.builder().CreateIntToPtr(svec_ptr_int, ctx_.builder().getPtrTy());
+    Value* svec_n = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_ptr);
+    Value* svec_elems_base = ctx_.builder().CreateGEP(ctx_.int8Type(), svec_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+    Value* svec_elems = ctx_.builder().CreatePointerCast(svec_elems_base, ctx_.ptrType());
+
+    // Allocate result tensor for gradient - use arena allocation with header for HEAP_PTR type
+    Value* arena_for_svec = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* svec_typed_result = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_for_svec});
+
+    // Set result tensor dimensions - use arena allocation
+    Value* svec_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* svec_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_for_svec, svec_dims_size});
+    Value* svec_typed_dims = ctx_.builder().CreatePointerCast(svec_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(svec_n, svec_typed_dims);
+    ctx_.builder().CreateStore(svec_typed_dims, ctx_.builder().CreateStructGEP(ctx_.tensorType(), svec_typed_result, 0));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), ctx_.builder().CreateStructGEP(ctx_.tensorType(), svec_typed_result, 1));
+    ctx_.builder().CreateStore(svec_n, ctx_.builder().CreateStructGEP(ctx_.tensorType(), svec_typed_result, 3));
+
+    // Allocate result elements - use arena allocation
+    Value* svec_result_elems_size = ctx_.builder().CreateMul(svec_n, ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    Value* svec_result_elems = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_for_svec, svec_result_elems_size});
+    Value* svec_typed_result_elems = ctx_.builder().CreatePointerCast(svec_result_elems, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(svec_typed_result_elems, ctx_.builder().CreateStructGEP(ctx_.tensorType(), svec_typed_result, 2));
+
+    // Get arena for dual vector allocation
+    Value* arena_svec = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+    // Outer loop: for each dimension i, compute ∂f/∂xᵢ using forward-mode AD
+    Value* svec_dim_i = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "svec_dim_i");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), svec_dim_i);
+
+    BasicBlock* svec_dim_cond = BasicBlock::Create(ctx_.context(), "svec_dim_cond", current_func);
+    BasicBlock* svec_dim_body = BasicBlock::Create(ctx_.context(), "svec_dim_body", current_func);
+    BasicBlock* svec_dim_end = BasicBlock::Create(ctx_.context(), "svec_dim_end", current_func);
+
+    ctx_.builder().CreateBr(svec_dim_cond);
+
+    ctx_.builder().SetInsertPoint(svec_dim_cond);
+    Value* svec_i = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_dim_i);
+    ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(svec_i, svec_n), svec_dim_body, svec_dim_end);
+
+    ctx_.builder().SetInsertPoint(svec_dim_body);
+
+    // M1 CONSOLIDATION: Allocate dual vector with header (Scheme vector of dual numbers)
+    // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
+    // Header contains HEAP_SUBTYPE_VECTOR, returns pointer to length field
+    Value* svec_dual_vec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
+        {arena_svec, svec_n});
+    ctx_.builder().CreateStore(svec_n, svec_dual_vec);
+    Value* svec_dual_elems = ctx_.builder().CreateGEP(ctx_.int8Type(), svec_dual_vec, ConstantInt::get(ctx_.int64Type(), 8));
+    Value* svec_dual_elems_typed = ctx_.builder().CreatePointerCast(svec_dual_elems, ctx_.ptrType());
+
+    // Inner loop: create dual vector with tangent=1 at position i, 0 elsewhere
+    Value* svec_inner_j = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "svec_inner_j");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), svec_inner_j);
+
+    BasicBlock* svec_inner_cond = BasicBlock::Create(ctx_.context(), "svec_inner_cond", current_func);
+    BasicBlock* svec_inner_body = BasicBlock::Create(ctx_.context(), "svec_inner_body", current_func);
+    BasicBlock* svec_inner_end = BasicBlock::Create(ctx_.context(), "svec_inner_end", current_func);
+
+    ctx_.builder().CreateBr(svec_inner_cond);
+
+    ctx_.builder().SetInsertPoint(svec_inner_cond);
+    Value* svec_j = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_inner_j);
+    ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(svec_j, svec_n), svec_inner_body, svec_inner_end);
+
+    ctx_.builder().SetInsertPoint(svec_inner_body);
+    // Load primal value from input
+    Value* svec_in_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_elems, svec_j);
+    Value* svec_in_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_in_ptr);
+    Value* svec_primal = tagged_.unpackDouble(svec_in_val);
+    // Tangent: 1.0 if j == i, else 0.0
+    Value* svec_is_active = ctx_.builder().CreateICmpEQ(svec_j, svec_i);
+    Value* svec_tangent = ctx_.builder().CreateSelect(svec_is_active,
+        ConstantFP::get(ctx_.doubleType(), 1.0), ConstantFP::get(ctx_.doubleType(), 0.0));
+    // Create dual number and store
+    Value* svec_dual = createDualNumber(svec_primal, svec_tangent);
+    Value* svec_dual_tagged = packDualToTagged(svec_dual);
+    Value* svec_dual_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_dual_elems_typed, svec_j);
+    ctx_.builder().CreateStore(svec_dual_tagged, svec_dual_ptr);
+    ctx_.builder().CreateStore(ctx_.builder().CreateAdd(svec_j, ConstantInt::get(ctx_.int64Type(), 1)), svec_inner_j);
+    ctx_.builder().CreateBr(svec_inner_cond);
+
+    ctx_.builder().SetInsertPoint(svec_inner_end);
+
+    // M1 CONSOLIDATION: Pack dual vector as HEAP_PTR (header contains HEAP_SUBTYPE_VECTOR)
+    Value* svec_dual_tagged_vec = tagged_.packPtr(
+        ctx_.builder().CreatePtrToInt(svec_dual_vec, ctx_.int64Type()), ESHKOL_VALUE_HEAP_PTR);
+
+    // Call function with dual vector — dispatches through helper
+    std::vector<Value*> svec_call_args;
+
+    // MULTI-PARAMETER GRADIENT: Check function arity and unpack if needed
+    // arity > 1: extract individual dual number elements as separate args
+    // arity <= 1: pass whole dual vector (for vector-input functions like (lambda (v) ...))
+    {
+        uint64_t svec_func_arity = 0;
+        auto svec_arity_it = function_arity_table_->find(func_ptr->getName().str());
+        if (svec_arity_it != function_arity_table_->end()) {
+            svec_func_arity = svec_arity_it->second;
+        }
+        if (svec_func_arity > 1) {
+            // Multi-param: unpack dual vector elements as individual tagged value args
+            for (uint64_t p = 0; p < svec_func_arity; p++) {
+                Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_dual_elems_typed,
+                    ConstantInt::get(ctx_.int64Type(), p));
+                Value* elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem_ptr);
+                svec_call_args.push_back(elem);
+            }
+        } else {
+            svec_call_args.push_back(svec_dual_tagged_vec);
+        }
+    }
+
+    // Resolve captures via unified helper
+    resolveGradientCaptures(func_ptr, svec_call_args, "svec");
+
+    Value* svec_call_result = ctx_.builder().CreateCall(func_ptr, svec_call_args);
+
+    // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
+    Value* svec_result_type = tagged_.getType(svec_call_result);
+    Value* svec_result_base = tagged_.getBaseType(svec_result_type);
+    Value* svec_is_dual = ctx_.builder().CreateICmpEQ(svec_result_base,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+
+    BasicBlock* svec_dual_bb = BasicBlock::Create(ctx_.context(), "grad_svec_dual", current_func);
+    BasicBlock* svec_const_bb = BasicBlock::Create(ctx_.context(), "grad_svec_const", current_func);
+    BasicBlock* svec_merge_bb = BasicBlock::Create(ctx_.context(), "grad_svec_merge", current_func);
+
+    ctx_.builder().CreateCondBr(svec_is_dual, svec_dual_bb, svec_const_bb);
+
+    // Dual path: extract tangent normally
+    ctx_.builder().SetInsertPoint(svec_dual_bb);
+    Value* svec_result_dual = unpackDualFromTagged(svec_call_result);
+    auto [svec_result_primal, svec_dual_deriv] = uncreateDualNumber(svec_result_dual);
+    ctx_.builder().CreateBr(svec_merge_bb);
+    BasicBlock* svec_dual_exit = ctx_.builder().GetInsertBlock();
+
+    // Constant path: derivative is 0.0
+    ctx_.builder().SetInsertPoint(svec_const_bb);
+    Value* svec_zero_deriv = ConstantFP::get(ctx_.doubleType(), 0.0);
+    ctx_.builder().CreateBr(svec_merge_bb);
+    BasicBlock* svec_const_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge paths
+    ctx_.builder().SetInsertPoint(svec_merge_bb);
+    PHINode* svec_deriv = ctx_.builder().CreatePHI(ctx_.doubleType(), 2, "grad_svec_deriv");
+    svec_deriv->addIncoming(svec_dual_deriv, svec_dual_exit);
+    svec_deriv->addIncoming(svec_zero_deriv, svec_const_exit);
+
+    // Store derivative in result tensor
+    Value* svec_result_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), svec_typed_result_elems, svec_i);
+    Value* svec_deriv_bits = ctx_.builder().CreateBitCast(svec_deriv, ctx_.int64Type());
+    ctx_.builder().CreateStore(svec_deriv_bits, svec_result_ptr);
+
+    ctx_.builder().CreateStore(ctx_.builder().CreateAdd(svec_i, ConstantInt::get(ctx_.int64Type(), 1)), svec_dim_i);
+    ctx_.builder().CreateBr(svec_dim_cond);
+
+    ctx_.builder().SetInsertPoint(svec_dim_end);
+    // Return result tensor
+    Value* svec_result_int = ctx_.builder().CreatePtrToInt(svec_typed_result, ctx_.int64Type());
+    Value* scheme_vector_tagged = tagged_.packPtr(svec_result_int, ESHKOL_VALUE_HEAP_PTR);
+    ctx_.builder().CreateBr(grad_done);  // Skip reverse-mode AD, go directly to done
+    BasicBlock* scheme_vector_exit = ctx_.builder().GetInsertBlock();
+
+    // VECTOR INPUT: Use original vector as-is (existing behavior - tensor format)
+    ctx_.builder().SetInsertPoint(vector_input);
+    ctx_.builder().CreateBr(grad_merge_input);
+    BasicBlock* vector_input_exit = ctx_.builder().GetInsertBlock();
+
+    // MERGE: PHI node selects AD node promoted, scalar promoted, or original tensor
+    // NOTE: Scheme vector path now uses forward-mode AD and branches directly to grad_done
+    ctx_.builder().SetInsertPoint(grad_merge_input);
+    PHINode* actual_input = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "gradient_input");
+    actual_input->addIncoming(ad_promoted_tagged, ad_node_exit);  // Nested gradient path
+    actual_input->addIncoming(promoted_vector_tagged, scalar_input_exit);
+    actual_input->addIncoming(vector_val, vector_input_exit);
+    
+    // Continue with gradient computation using merged input (guaranteed to be tensor!)
+    Value* vector_ptr_int = tagged_.unpackInt64(actual_input);
+    // Note: arena_ptr already defined at function start
+
+
+    // Convert int64 pointer to typed tensor pointer
+    Value* vector_ptr = ctx_.builder().CreateIntToPtr(vector_ptr_int, ctx_.builder().getPtrTy());
+
+    // Extract ALL tensor properties (MUST access all fields correctly)
+    Value* dims_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vector_ptr, 0);
+    Value* dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), dims_field_ptr);
+    Value* typed_dims_ptr = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.builder().getPtrTy());
+
+    Value* elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vector_ptr, 2);
+    Value* elements_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), elements_field_ptr);
+    Value* typed_elements_ptr = ctx_.builder().CreatePointerCast(elements_ptr, ctx_.builder().getPtrTy());
+
+    // Load dimension n from tensor (RUNTIME value, NOT hardcoded)
+    Value* dim0_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims_ptr,
+        ConstantInt::get(ctx_.int64Type(), 0));
+
+    Value* n = ctx_.builder().CreateLoad(ctx_.int64Type(), dim0_ptr);
+    
+    // VALIDATION: Check dimension > 0 (scalars already promoted to tensors, so type check not needed)
+    Value* n_is_positive = ctx_.builder().CreateICmpUGT(n, ConstantInt::get(ctx_.int64Type(), 0));
+    
+    BasicBlock* dim_valid = BasicBlock::Create(ctx_.context(), "grad_dim_valid", current_func);
+    BasicBlock* dim_invalid = BasicBlock::Create(ctx_.context(), "grad_dim_invalid", current_func);
+    // grad_done already created earlier for scheme_vector_input forward-mode path
+
+    // CRITICAL FIX: Create empty tensor BEFORE branching (for PHI node dominance)
+    // This ensures null_tagged_grad is available in all paths
+    // Allocate empty tensor via arena (OALR compliant - no malloc)
+    Value* typed_empty_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set dimensions array (size 1, value 0)
+    Value* empty_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* empty_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, empty_dims_size});
+    Value* typed_empty_dims = ctx_.builder().CreatePointerCast(empty_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), typed_empty_dims);
+
+    ctx_.builder().CreateStore(typed_empty_dims,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_empty_tensor, 0));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_empty_tensor, 1));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_empty_tensor, 3));
+
+    // Empty elements array
+    Value* empty_elems_size = ConstantInt::get(ctx_.int64Type(), sizeof(double));
+    Value* empty_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, empty_elems_size});
+    Value* typed_empty_elems = ctx_.builder().CreatePointerCast(empty_elems_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(typed_empty_elems,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_empty_tensor, 2));
+    
+    // Pack as tagged_value (TENSOR_PTR type) - available in all paths
+    Value* empty_tensor_int = ctx_.builder().CreatePtrToInt(typed_empty_tensor, ctx_.int64Type());
+    Value* null_tagged_grad = tagged_.packPtr(empty_tensor_int, ESHKOL_VALUE_HEAP_PTR);
+    
+    ctx_.builder().CreateCondBr(n_is_positive, dim_valid, dim_invalid);
+    
+    // Invalid input: return empty tensor
+    ctx_.builder().SetInsertPoint(dim_invalid);
+    eshkol_debug("Gradient: invalid input tensor (dimension must be > 0)");
+    ctx_.builder().CreateBr(grad_done);
+    
+    // Valid dimension: compute gradient
+    ctx_.builder().SetInsertPoint(dim_valid);
+    
+    // Allocate result gradient vector via arena (OALR compliant - no malloc)
+    Value* typed_result_tensor_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set result tensor dimension (1D vector of size n)
+    Value* result_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* result_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, result_dims_size});
+    Value* typed_result_dims_ptr = ctx_.builder().CreatePointerCast(result_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(n, typed_result_dims_ptr);
+
+    // Store dimension in result tensor
+    Value* result_dims_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result_tensor_ptr, 0);
+    ctx_.builder().CreateStore(typed_result_dims_ptr, result_dims_field_ptr);
+
+    // Store num_dimensions = 1
+    Value* result_num_dims_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result_tensor_ptr, 1);
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), result_num_dims_field_ptr);
+
+    // Store total_elements = n
+    Value* result_total_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result_tensor_ptr, 3);
+    ctx_.builder().CreateStore(n, result_total_field_ptr);
+
+    // Allocate result elements array (n doubles for partial derivatives)
+    Value* result_elements_size = ctx_.builder().CreateMul(n,
+        ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    Value* result_elements_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, result_elements_size});
+    Value* typed_result_elements_ptr = ctx_.builder().CreatePointerCast(result_elements_ptr, ctx_.builder().getPtrTy());
+    
+    // Store elements pointer in result tensor
+    Value* result_elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_result_tensor_ptr, 2);
+    ctx_.builder().CreateStore(typed_result_elements_ptr, result_elements_field_ptr);
+    
+    // ===== MAIN GRADIENT COMPUTATION LOOP =====
+    // For each component i from 0 to n-1, compute ∂f/∂xᵢ
+    
+    BasicBlock* grad_loop_cond = BasicBlock::Create(ctx_.context(), "grad_loop_cond", current_func);
+    BasicBlock* grad_loop_body = BasicBlock::Create(ctx_.context(), "grad_loop_body", current_func);
+    BasicBlock* grad_loop_exit = BasicBlock::Create(ctx_.context(), "grad_loop_exit", current_func);
+    
+    // Allocate loop counter
+    Value* component_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "component_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), component_idx);
+    
+    ctx_.builder().CreateBr(grad_loop_cond);
+    
+    // Loop condition: i < n
+    ctx_.builder().SetInsertPoint(grad_loop_cond);
+    Value* i = ctx_.builder().CreateLoad(ctx_.int64Type(), component_idx);
+    Value* i_less_n = ctx_.builder().CreateICmpULT(i, n);
+    ctx_.builder().CreateCondBr(i_less_n, grad_loop_body, grad_loop_exit);
+    
+    // Loop body: Compute ∂f/∂xᵢ using reverse-mode AD
+    ctx_.builder().SetInsertPoint(grad_loop_body);
+
+    // Step 1: Create tape for this partial derivative (arena_ptr defined at function start)
+    Value* tape_capacity = ConstantInt::get(ctx_.int64Type(), 1024);
+    Value* partial_tape = ctx_.builder().CreateCall(getArenaAllocateTapeFunc(),
+        {arena_ptr, tape_capacity});
+    
+    // Store tape as current (required by recordADNode* functions)
+    Value* saved_tape = current_tape_ptr;
+    current_tape_ptr = partial_tape;
+    
+    // Step 2: Create n AD variable nodes (one per vector component)
+    // Allocate array to hold variable node pointers via arena (OALR compliant - no malloc)
+    Value* var_nodes_array_size = ctx_.builder().CreateMul(n,
+        ConstantInt::get(ctx_.int64Type(), sizeof(void*)));
+    Value* var_nodes_array = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, var_nodes_array_size});
+    Value* typed_var_nodes = ctx_.builder().CreatePointerCast(var_nodes_array, ctx_.builder().getPtrTy());
+    
+    // Loop to create and initialize variable nodes
+    BasicBlock* init_vars_cond = BasicBlock::Create(ctx_.context(), "init_vars_cond", current_func);
+    BasicBlock* init_vars_body = BasicBlock::Create(ctx_.context(), "init_vars_body", current_func);
+    BasicBlock* init_vars_exit = BasicBlock::Create(ctx_.context(), "init_vars_exit", current_func);
+    
+    Value* init_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "init_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), init_idx);
+    ctx_.builder().CreateBr(init_vars_cond);
+    
+    ctx_.builder().SetInsertPoint(init_vars_cond);
+    Value* j = ctx_.builder().CreateLoad(ctx_.int64Type(), init_idx);
+    Value* j_less_n = ctx_.builder().CreateICmpULT(j, n);
+    ctx_.builder().CreateCondBr(j_less_n, init_vars_body, init_vars_exit);
+    
+    ctx_.builder().SetInsertPoint(init_vars_body);
+
+    // CRITICAL FIX: Tensor elements are stored as int64, load as int64 then convert to double
+    Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(),
+        typed_elements_ptr, j);
+    Value* elem_val_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), elem_ptr);
+
+    // NESTED GRADIENT FIX: Check if element might be an AD node pointer (from outer gradient)
+    // Don't check tape depth - the element itself tells us if it's an AD node
+    // When a gradient's input contains an AD node, we detect it and set up double backward
+    BasicBlock* check_ad_ptr = BasicBlock::Create(ctx_.context(), "check_ad_ptr", current_func);
+    BasicBlock* is_regular_double = BasicBlock::Create(ctx_.context(), "is_regular_double", current_func);
+    BasicBlock* merge_elem = BasicBlock::Create(ctx_.context(), "merge_elem", current_func);
+
+    // Check if the value could be a pointer (in valid heap address range)
+    // On 64-bit systems:
+    // - Heap pointers are typically 0x100000000 to 0x00007FFFFFFFFFFF (small as int64)
+    // - Normal doubles like 2.0 = 0x4000000000000000, 12.0 = 0x4028... (LARGE as int64)
+    // So a potential pointer is: non-zero AND less than typical double values
+    // Use threshold 0x0001000000000000 (~281 trillion) - catches all user space addresses
+    // but excludes normal positive doubles (which are >= 0x3FF0000000000000 for >= 1.0)
+    Value* not_zero = ctx_.builder().CreateICmpNE(elem_val_int64,
+        ConstantInt::get(ctx_.int64Type(), 0));
+    Value* in_ptr_range = ctx_.builder().CreateICmpULT(elem_val_int64,
+        ConstantInt::get(ctx_.int64Type(), 0x0001000000000000ULL));
+    Value* could_be_ptr = ctx_.builder().CreateAnd(not_zero, in_ptr_range);
+    ctx_.builder().CreateCondBr(could_be_ptr, check_ad_ptr, is_regular_double);
+
+    // CHECK AD POINTER: Try to validate it's actually an AD node
+    ctx_.builder().SetInsertPoint(check_ad_ptr);
+    Value* ad_ptr_candidate = ctx_.builder().CreateIntToPtr(elem_val_int64, PointerType::getUnqual(ctx_.context()));
+    // Check if pointer is non-null and has valid AD node type
+    Value* ptr_not_null = ctx_.builder().CreateICmpNE(elem_val_int64,
+        ConstantInt::get(ctx_.int64Type(), 0));
+
+    BasicBlock* check_ad_type = BasicBlock::Create(ctx_.context(), "check_ad_type", current_func);
+    BasicBlock* not_ad_node = BasicBlock::Create(ctx_.context(), "not_ad_node", current_func);
+    ctx_.builder().CreateCondBr(ptr_not_null, check_ad_type, not_ad_node);
+
+    // Check AD node type field
+    ctx_.builder().SetInsertPoint(check_ad_type);
+    Value* type_field_ptr = ctx_.builder().CreateStructGEP(ctx_.adNodeType(), ad_ptr_candidate, 0);
+    Value* type_field = ctx_.builder().CreateLoad(ctx_.int32Type(), type_field_ptr);
+    // Valid AD node types are 0-7 (CONSTANT, PTR, ADD, SUB, MUL, DIV, SIN, COS)
+    // Also check that it's exactly type 1 (AD_NODE_PTR) since that's what variables are
+    Value* is_ad_var = ctx_.builder().CreateICmpEQ(type_field, ConstantInt::get(ctx_.int32Type(), 1));
+
+    BasicBlock* use_existing_ad = BasicBlock::Create(ctx_.context(), "use_existing_ad", current_func);
+    ctx_.builder().CreateCondBr(is_ad_var, use_existing_ad, not_ad_node);
+
+    // USE EXISTING AD NODE: This element is an AD node from outer gradient
+    // CRITICAL FIX: Do NOT reuse the outer AD node directly!
+    // The inner backward would write to its gradient field, contaminating it.
+    // Instead, create a new AD variable with the same value and record the outer node.
+    ctx_.builder().SetInsertPoint(use_existing_ad);
+    Value* detected_outer_node = ad_ptr_candidate;
+    // Store outer AD node for double backward connection
+    ctx_.builder().CreateStore(detected_outer_node, ctx_.outerAdNodeStorage());
+    // Extract the VALUE from outer AD node and create NEW variable for inner gradient
+    Value* detected_outer_val_ptr = ctx_.builder().CreateStructGEP(ctx_.adNodeType(), detected_outer_node, 1);
+    Value* detected_outer_val = ctx_.builder().CreateLoad(ctx_.doubleType(), detected_outer_val_ptr);
+    Value* new_inner_var = createADVariable(detected_outer_val, 0);
+    ctx_.builder().CreateBr(merge_elem);
+    BasicBlock* use_ad_exit = ctx_.builder().GetInsertBlock();
+
+    // NOT AN AD NODE: Treat as double
+    ctx_.builder().SetInsertPoint(not_ad_node);
+    Value* elem_as_double2 = ctx_.builder().CreateBitCast(elem_val_int64, ctx_.doubleType());
+    Value* new_var_node2 = createADVariable(elem_as_double2, 0);
+    ctx_.builder().CreateBr(merge_elem);
+    BasicBlock* not_ad_exit = ctx_.builder().GetInsertBlock();
+
+    // REGULAR DOUBLE: Normal case - just treat as double
+    ctx_.builder().SetInsertPoint(is_regular_double);
+    Value* elem_val = ctx_.builder().CreateBitCast(elem_val_int64, ctx_.doubleType());
+    Value* new_var_node = createADVariable(elem_val, 0);
+    ctx_.builder().CreateBr(merge_elem);
+    BasicBlock* regular_double_exit = ctx_.builder().GetInsertBlock();
+
+    // MERGE: PHI to select the right AD node
+    ctx_.builder().SetInsertPoint(merge_elem);
+    PHINode* var_node = ctx_.builder().CreatePHI(PointerType::getUnqual(ctx_.context()), 3, "var_node_phi");
+    var_node->addIncoming(new_inner_var, use_ad_exit);
+    var_node->addIncoming(new_var_node2, not_ad_exit);
+    var_node->addIncoming(new_var_node, regular_double_exit);
+    
+    // Store node pointer in array
+    Value* node_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+        typed_var_nodes, j);
+    ctx_.builder().CreateStore(var_node, node_slot);
+    
+    // Increment init counter
+    Value* next_j = ctx_.builder().CreateAdd(j, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_j, init_idx);
+    ctx_.builder().CreateBr(init_vars_cond);
+    
+    ctx_.builder().SetInsertPoint(init_vars_exit);
+    
+    // Step 3: Get active variable node (the one we're computing gradient for)
+    Value* active_node_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+        typed_var_nodes, i);
+    Value* active_var_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()),
+        active_node_slot);
+    
+    // Step 4: Call function with variable nodes to build computational graph
+    // CRITICAL: Function must operate on AD nodes, not raw doubles
+    // This requires the function to use recordADNode* operations
+    
+    // Build tensor of AD node pointers to pass to function
+    // M1 CONSOLIDATION: Use arena allocation with header for HEAP_PTR type
+    Value* ad_arena_ptr = ctx_.builder().CreateLoad(
+        PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Function* alloc_tensor_full = mem_.getArenaAllocateTensorFull();
+    Value* typed_ad_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_full,
+        {ad_arena_ptr, ConstantInt::get(ctx_.int64Type(), 1), n}, "ad_tensor");
+
+    // Set AD tensor dimensions (same as input) - dims[0] = n
+    Value* ad_dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_ad_tensor_ptr, 0));
+    ctx_.builder().CreateStore(n, ctx_.builder().CreateGEP(ctx_.int64Type(), ad_dims_ptr,
+        ConstantInt::get(ctx_.int64Type(), 0)));
+
+    // Get elements array (already allocated by arena_allocate_tensor_full)
+    Value* typed_ad_elems_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_ad_tensor_ptr, 2));
+    
+    // Copy node pointers into AD tensor
+    BasicBlock* copy_nodes_cond = BasicBlock::Create(ctx_.context(), "copy_nodes_cond", current_func);
+    BasicBlock* copy_nodes_body = BasicBlock::Create(ctx_.context(), "copy_nodes_body", current_func);
+    BasicBlock* copy_nodes_exit = BasicBlock::Create(ctx_.context(), "copy_nodes_exit", current_func);
+    
+    Value* copy_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "copy_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), copy_idx);
+    ctx_.builder().CreateBr(copy_nodes_cond);
+    
+    ctx_.builder().SetInsertPoint(copy_nodes_cond);
+    Value* k = ctx_.builder().CreateLoad(ctx_.int64Type(), copy_idx);
+    Value* k_less_n = ctx_.builder().CreateICmpULT(k, n);
+    ctx_.builder().CreateCondBr(k_less_n, copy_nodes_body, copy_nodes_exit);
+    
+    ctx_.builder().SetInsertPoint(copy_nodes_body);
+    Value* src_node_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+        typed_var_nodes, k);
+    Value* src_node_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), src_node_slot);
+    Value* node_as_int64 = ctx_.builder().CreatePtrToInt(src_node_ptr, ctx_.int64Type());
+    
+    Value* dst_elem_slot = ctx_.builder().CreateGEP(ctx_.int64Type(),
+        typed_ad_elems_ptr, k);
+    ctx_.builder().CreateStore(node_as_int64, dst_elem_slot);
+    
+    Value* next_k = ctx_.builder().CreateAdd(k, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_k, copy_idx);
+    ctx_.builder().CreateBr(copy_nodes_cond);
+    
+    ctx_.builder().SetInsertPoint(copy_nodes_exit);
+    
+    // Step 5: Call function with AD node (scalar) or tensor (vector)
+    // SCALAR FUNCTION FIX: For n=1, extract the single AD node and pass it directly!
+    // This allows scalar functions like (lambda (x) (* x x)) to work
+
+
+    Value* n_is_one = ctx_.builder().CreateICmpEQ(n, ConstantInt::get(ctx_.int64Type(), 1));
+    
+    BasicBlock* scalar_call = BasicBlock::Create(ctx_.context(), "grad_scalar_call", current_func);
+    BasicBlock* vector_call = BasicBlock::Create(ctx_.context(), "grad_vector_call", current_func);
+    BasicBlock* after_func_call = BasicBlock::Create(ctx_.context(), "grad_after_func_call", current_func);
+    
+    ctx_.builder().CreateCondBr(n_is_one, scalar_call, vector_call);
+    
+    // SCALAR: Extract single AD node and pass directly
+    ctx_.builder().SetInsertPoint(scalar_call);
+    Value* single_ad_node_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+        typed_var_nodes, ConstantInt::get(ctx_.int64Type(), 0));
+    Value* single_ad_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), single_ad_node_slot);
+    Value* scalar_ad_tagged = tagged_.packPtr(single_ad_node, ESHKOL_VALUE_CALLABLE);
+
+    std::vector<Value*> scalar_args;
+
+    // MULTI-PARAMETER: If function has more params than 1, unpack AD nodes
+    {
+        uint64_t scalar_func_arity = 0;
+        auto scalar_arity_it = function_arity_table_->find(func_ptr->getName().str());
+        if (scalar_arity_it != function_arity_table_->end()) {
+            scalar_func_arity = scalar_arity_it->second;
+        }
+        if (scalar_func_arity > 1) {
+            // Multi-param function on scalar path: pass all AD nodes as individual args
+            for (uint64_t p = 0; p < scalar_func_arity; p++) {
+                Value* node_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+                    typed_var_nodes, ConstantInt::get(ctx_.int64Type(), p));
+                Value* node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), node_slot);
+                Value* node_tagged = tagged_.packPtr(node, ESHKOL_VALUE_CALLABLE);
+                scalar_args.push_back(node_tagged);
+            }
+        } else {
+            scalar_args.push_back(scalar_ad_tagged);
+        }
+    }
+
+    // Resolve captures via unified helper
+    resolveGradientCaptures(func_ptr, scalar_args, "scalar");
+
+    // NESTED GRADIENT FIX: Save ctx_.outerAdNodeStorage() before calling function
+    // Nested gradients will overwrite it, so we save and restore to support n-dimensional derivatives
+    Value* saved_outer_ad_node_scalar = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.outerAdNodeStorage());
+
+    // NESTED GRADIENT FIX: Push tape context (saves outer gradient's tape if any)
+    pushTapeContext(partial_tape);
+
+    // M1 Migration FIX: Set AD mode flag so vref recognizes AD node pointers in tensors
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
+
+    Value* scalar_output = ctx_.builder().CreateCall(func_ptr, scalar_args);
+
+    // M1 Migration FIX: Reset AD mode flag after function call
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
+
+    // NESTED GRADIENT FIX: Pop tape context (restores outer gradient's tape if any)
+    popTapeContext();
+
+    // NESTED GRADIENT FIX: Restore ctx_.outerAdNodeStorage() after function returns
+    ctx_.builder().CreateStore(saved_outer_ad_node_scalar, ctx_.outerAdNodeStorage());
+
+    ctx_.builder().CreateBr(after_func_call);
+    BasicBlock* scalar_call_exit = ctx_.builder().GetInsertBlock();
+    
+    // VECTOR: Pass AD nodes — either as single tensor or unpacked to individual params
+    ctx_.builder().SetInsertPoint(vector_call);
+    Value* ad_tensor_int = ctx_.builder().CreatePtrToInt(typed_ad_tensor_ptr, ctx_.int64Type());
+    // M1 CONSOLIDATION: Use HEAP_PTR type - tensor has header with HEAP_SUBTYPE_TENSOR
+    Value* ad_tensor_tagged = tagged_.packPtr(ad_tensor_int, ESHKOL_VALUE_HEAP_PTR);
+
+    std::vector<Value*> grad_call_args;
+
+    // MULTI-PARAMETER GRADIENT: Check if function has multiple parameters
+    // If func has N params and N matches the gradient dimension, unpack AD nodes
+    // as individual arguments instead of passing a single tensor.
+    FunctionType* grad_func_type = func_ptr->getFunctionType();
+    std::string func_name_str = func_ptr->getName().str();
+    uint64_t func_arity = 0;
+    auto arity_it = function_arity_table_->find(func_name_str);
+    if (arity_it != function_arity_table_->end()) {
+        func_arity = arity_it->second;
+    }
+
+    if (func_arity > 1) {
+        // Multi-parameter function: unpack AD tensor elements as individual tagged args
+        // Each element in the AD tensor is an AD node pointer (CALLABLE type)
+        eshkol_debug("Gradient: unpacking %llu AD nodes for %llu-parameter function %s",
+                     (unsigned long long)func_arity, (unsigned long long)func_arity, func_name_str.c_str());
+        for (uint64_t p = 0; p < func_arity; p++) {
+            // Load AD node pointer from tensor elements[p]
+            Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(),
+                ctx_.builder().CreateLoad(ctx_.builder().getPtrTy(),
+                    ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_ad_tensor_ptr, 2)),
+                ConstantInt::get(ctx_.int64Type(), p));
+            Value* ad_node_int = ctx_.builder().CreateLoad(ctx_.int64Type(), elem_ptr);
+            // Pack as CALLABLE tagged value (AD nodes are callable)
+            Value* ad_node_tagged = tagged_.packPtr(ad_node_int, ESHKOL_VALUE_CALLABLE);
+            grad_call_args.push_back(ad_node_tagged);
+        }
+    } else {
+        // Single-parameter function: pass tensor as-is
+        grad_call_args.push_back(ad_tensor_tagged);
+    }
+
+    if (grad_func_type->getNumParams() > grad_call_args.size()) {
+        size_t num_captures = grad_func_type->getNumParams() - grad_call_args.size();
+        std::string lambda_name = func_ptr->getName().str();
+
+        // REPL MODE: Get capture names from registry instead of parameter names
+        std::vector<std::string> capture_names;
+        if ((repl_mode_enabled_ && *repl_mode_enabled_)) {
+            std::lock_guard<std::mutex> lock(*repl_mutex_);
+            auto captures_it = *repl_lambda_captures_.find(lambda_name);
+            if (captures_it != *repl_lambda_captures_.end()) {
+                capture_names = captures_it->second;
+            }
+        }
+
+        for (size_t i = 0; i < num_captures; i++) {
+            std::string var_name;
+            if (i < capture_names.size()) {
+                var_name = capture_names[i];
+            } else {
+                // Fallback to LLVM parameter names (for non-REPL mode)
+                auto arg_it = func_ptr->arg_begin();
+                std::advance(arg_it, i + 1);  // Skip first parameter
+                if (arg_it != func_ptr->arg_end()) {
+                    var_name = arg_it->getName().str();
+                    if (var_name.find("captured_") == 0) {
+                        var_name = var_name.substr(9);
+                    }
+                }
+            }
+
+            std::string capture_key = lambda_name + "_capture_" + var_name;
+
+            // First try capture-specific key in symbol tables
+            auto it = global_symbol_table_->find(capture_key);
+            bool found_in_global = (it != global_symbol_table_->end());
+            if (!found_in_global) {
+                it = symbol_table_->find(capture_key);
+            }
+
+            bool found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
+
+            // FALLBACK: Try raw variable name (for top-level global variables)
+            if (!found) {
+                it = global_symbol_table_->find(var_name);
+                found_in_global = (it != global_symbol_table_->end());
+                if (!found_in_global) {
+                    it = symbol_table_->find(var_name);
+                }
+                found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
+                if (found) {
+                    eshkol_debug("Gradient: found capture '%s' via raw variable name", var_name.c_str());
+                }
+            }
+
+            // REPL MODE: Try creating external declaration for capture global
+            if (!found && (repl_mode_enabled_ && *repl_mode_enabled_)) {
+                std::lock_guard<std::mutex> lock(*repl_mutex_);
+                auto sym_it = *repl_symbol_addresses_.find(capture_key);
+                if (sym_it != *repl_symbol_addresses_.end()) {
+                    // Create external declaration for capture global
+                    GlobalVariable* capture_global = ctx_.module().getGlobalVariable(capture_key);
+                    if (!capture_global) {
+                        capture_global = new GlobalVariable(
+                            *module,
+                            ctx_.taggedValueType(),
+                            false,
+                            GlobalValue::ExternalLinkage,
+                            nullptr,
+                            capture_key
+                        );
+                    }
+                    // MUTABLE CAPTURE FIX: Create storage containing packed pointer
+                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@global)}
+                    // Then lambda loads from slot, unpacks data field to get @global
+                    Value* global_ptr_int = ctx_.builder().CreatePtrToInt(capture_global, ctx_.int64Type());
+                    Value* packed_capture = tagged_.packInt64(global_ptr_int, true);
+                    Value* capture_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_capture_storage");
+                    ctx_.builder().CreateStore(packed_capture, capture_storage);
+                    grad_call_args.push_back(capture_storage);
+                    continue;
+                }
+            }
+
+            if (found && it->second) {
+                Value* storage = it->second;
+                // MUTABLE CAPTURE FIX: Create storage containing packed pointer
+                // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
+                // Then lambda loads from slot, unpacks data field to get @storage
+                Value* storage_ptr_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
+                Value* packed_storage = tagged_.packInt64(storage_ptr_int, true);
+                Value* capture_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_capture_storage");
+                ctx_.builder().CreateStore(packed_storage, capture_storage);
+                grad_call_args.push_back(capture_storage);
+            } else {
+                // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
+                grad_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
+                eshkol_warn("Gradient: capture '%s' not found, using null pointer", var_name.c_str());
+            }
+        }
+    }
+    
+    // NESTED GRADIENT FIX: Save ctx_.outerAdNodeStorage() before calling function
+    // Nested gradients will overwrite it, so we save and restore to support n-dimensional derivatives
+    Value* saved_outer_ad_node_vector = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.outerAdNodeStorage());
+
+    // NESTED GRADIENT FIX: Push tape context (saves outer gradient's tape if any)
+    pushTapeContext(partial_tape);
+
+    // M1 Migration FIX: Set AD mode flag so vref recognizes AD node pointers in tensors
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
+
+    Value* vector_output = ctx_.builder().CreateCall(func_ptr, grad_call_args);
+
+    // M1 Migration FIX: Reset AD mode flag after function call
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
+
+    // NESTED GRADIENT FIX: Pop tape context (restores outer gradient's tape if any)
+    popTapeContext();
+
+    // NESTED GRADIENT FIX: Restore ctx_.outerAdNodeStorage() after function returns
+    ctx_.builder().CreateStore(saved_outer_ad_node_vector, ctx_.outerAdNodeStorage());
+
+    ctx_.builder().CreateBr(after_func_call);
+    BasicBlock* vector_call_exit = ctx_.builder().GetInsertBlock();
+    
+    // Merge scalar and vector outputs
+    ctx_.builder().SetInsertPoint(after_func_call);
+    PHINode* output_tagged = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "grad_func_output");
+    output_tagged->addIncoming(scalar_output, scalar_call_exit);
+    output_tagged->addIncoming(vector_output, vector_call_exit);
+    
+    // Unpack result back to int64
+    Value* output_node_int = tagged_.unpackInt64(output_tagged);
+    
+    // Convert output to AD node pointer
+    Value* output_node_ptr = ctx_.builder().CreateIntToPtr(output_node_int,
+        PointerType::getUnqual(ctx_.context()));
+    
+    // CRITICAL FIX: Use type-based detection instead of pointer value heuristic
+    // Check if output is actually an AD node by examining its type tag
+    Value* output_type = tagged_.getType(output_tagged);
+    Value* output_base_type = tagged_.getBaseType(output_type);
+    Value* output_is_ad_node = ctx_.builder().CreateICmpEQ(output_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    
+    BasicBlock* has_valid_output = BasicBlock::Create(ctx_.context(), "grad_valid_output", current_func);
+    BasicBlock* invalid_output = BasicBlock::Create(ctx_.context(), "grad_invalid_output", current_func);
+    BasicBlock* after_backward = BasicBlock::Create(ctx_.context(), "grad_after_backward", current_func);
+    
+    // Branch based on type check (robust detection)
+    ctx_.builder().CreateCondBr(output_is_ad_node, has_valid_output, invalid_output);
+    
+    // Step 6: Run backward pass through computational graph (only for valid AD nodes)
+    ctx_.builder().SetInsertPoint(has_valid_output);
+
+    // DOUBLE BACKWARD SETUP: Store the inner variable node and initialize degree counter
+    // This enables degree tracking during backward for proper double backward expressions
+    ctx_.builder().CreateStore(active_var_node, ctx_.innerVarNodePtr());
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), ctx_.gradientXDegree());
+
+    codegenBackward(output_node_ptr, partial_tape);
+    ctx_.builder().CreateBr(after_backward);
+    
+    // Skip backward pass if output is invalid (placeholder function returning scalar)
+    ctx_.builder().SetInsertPoint(invalid_output);
+    eshkol_debug("Gradient: Skipping backward pass - function returned non-AD value");
+    ctx_.builder().CreateBr(after_backward);
+    
+    ctx_.builder().SetInsertPoint(after_backward);
+    
+    // Step 7: Extract gradient from active variable node (or 0 if no backward pass)
+    Value* partial_grad_ptr = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "partial_grad");
+    ctx_.builder().CreateStore(ConstantFP::get(ctx_.doubleType(), 0.0), partial_grad_ptr);
+    
+    // Only extract gradient if we had valid AD output
+    BasicBlock* extract_grad = BasicBlock::Create(ctx_.context(), "grad_extract", current_func);
+    BasicBlock* use_zero = BasicBlock::Create(ctx_.context(), "grad_use_zero", current_func);
+    BasicBlock* grad_extracted = BasicBlock::Create(ctx_.context(), "grad_extracted", current_func);
+    
+    ctx_.builder().CreateCondBr(output_is_ad_node, extract_grad, use_zero);
+    
+    ctx_.builder().SetInsertPoint(extract_grad);
+    Value* extracted_grad = loadNodeGradient(active_var_node);
+    ctx_.builder().CreateStore(extracted_grad, partial_grad_ptr);
+    ctx_.builder().CreateBr(grad_extracted);
+    
+    ctx_.builder().SetInsertPoint(use_zero);
+    ctx_.builder().CreateBr(grad_extracted);
+    
+    ctx_.builder().SetInsertPoint(grad_extracted);
+    Value* partial_grad = ctx_.builder().CreateLoad(ctx_.doubleType(), partial_grad_ptr);
+    
+    // Step 8: Store partial derivative in result vector at index i
+    // CRITICAL FIX: Tensor elements stored as int64, must bitcast double to int64
+    Value* partial_grad_as_int64 = ctx_.builder().CreateBitCast(partial_grad, ctx_.int64Type());
+    Value* result_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(),
+        typed_result_elements_ptr, i);
+    ctx_.builder().CreateStore(partial_grad_as_int64, result_elem_ptr);
+    
+    // Step 9: Reset tape for next iteration (MUST call to zero gradients)
+    ctx_.builder().CreateCall(getArenaTapeResetFunc(), {partial_tape});
+    
+    // Restore previous tape
+    current_tape_ptr = saved_tape;
+    
+    // Increment component counter
+    Value* next_i = ctx_.builder().CreateAdd(i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_i, component_idx);
+    ctx_.builder().CreateBr(grad_loop_cond);
+    
+    // Loop exit: Return result gradient vector
+    ctx_.builder().SetInsertPoint(grad_loop_exit);
+
+    eshkol_info("Gradient computation complete, returning vector of size n");
+
+    // DOUBLE BACKWARD: Check if we have a stored outer AD node
+    // If so, create result as AD node on outer tape for proper gradient propagation
+    Value* stored_outer = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.outerAdNodeStorage());
+    Value* has_outer_node = ctx_.builder().CreateICmpNE(stored_outer,
+        ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
+
+    // Also check if this is scalar case (n == 1)
+    Value* is_scalar_grad = ctx_.builder().CreateICmpEQ(n, ConstantInt::get(ctx_.int64Type(), 1));
+    Value* should_return_ad_node = ctx_.builder().CreateAnd(has_outer_node, is_scalar_grad);
+
+    BasicBlock* return_ad_node = BasicBlock::Create(ctx_.context(), "grad_return_ad_node", current_func);
+    BasicBlock* return_tensor = BasicBlock::Create(ctx_.context(), "grad_return_tensor", current_func);
+    BasicBlock* grad_merge_result = BasicBlock::Create(ctx_.context(), "grad_merge_result", current_func);
+
+    ctx_.builder().CreateCondBr(should_return_ad_node, return_ad_node, return_tensor);
+
+    // DOUBLE BACKWARD PATH: Return AD node connected to outer graph
+    ctx_.builder().SetInsertPoint(return_ad_node);
+
+    // Get the scalar gradient value from result tensor
+    Value* scalar_grad_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(),
+        typed_result_elements_ptr, ConstantInt::get(ctx_.int64Type(), 0));
+    Value* scalar_grad_int = ctx_.builder().CreateLoad(ctx_.int64Type(), scalar_grad_ptr);
+    Value* scalar_grad_val = ctx_.builder().CreateBitCast(scalar_grad_int, ctx_.doubleType());
+
+    // Get current tape (which IS the outer tape after popTapeContext)
+    // After inner gradient's push/pop, ctx_.currentAdTape() is restored to outer tape
+    Value* outer_tape_for_result = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.currentAdTape());
+
+    // Create an AD expression on outer tape that connects gradient to input
+    // For f(x) = x^n, f'(x) = n*x^(n-1)
+    // The gradient depends on x, so we need to express this dependency
+    //
+    // Key insight: For many functions, f'(x) is approximately proportional to some power of x.
+    // We use the chain rule: if result = g(outer) where g is the gradient function,
+    // then d(result)/d(outer) is the Hessian.
+    //
+    // For scalar polynomial-like functions, we can approximate:
+    // result = (grad_value / outer_value) * outer
+    // This gives d(result)/d(outer) = grad_value / outer_value
+    //
+    // For f(x) = x^n: f'(x) = n*x^(n-1), so at x=a, f'(a) = n*a^(n-1)
+    // f''(x) = n*(n-1)*x^(n-2)
+    // f''(a)/f'(a) = (n-1)/a
+    // So f''(a) = f'(a) * (n-1) / a
+    //
+    // We don't know n, but we can compute: f'(a) * derivative_factor
+    // where derivative_factor is an approximation based on function structure.
+    //
+    // For now, use a simple linear connection: result = k * outer
+    // where k = grad_value / outer_value
+    // This gives d(result)/d(outer) = k = grad_value / outer_value
+
+    // Get the stored outer AD node
+    Value* outer_node_for_expr = stored_outer;
+
+    // Get outer node's value
+    Value* outer_val_ptr = ctx_.builder().CreateStructGEP(ctx_.adNodeType(), outer_node_for_expr, 1);
+    Value* outer_val = ctx_.builder().CreateLoad(ctx_.doubleType(), outer_val_ptr);
+
+    // DEGREE-BASED DOUBLE BACKWARD EXPRESSION
+    // The ctx_.gradientXDegree() counter tracks the polynomial degree of f'(x) in x.
+    // For f'(x) = k * x^m:
+    //   - m = 0 (constant): f'(x) = k, f''(x) = 0
+    //   - m = 1 (linear): f'(x) = k*x, f''(x) = k
+    //   - m = 2 (quadratic): f'(x) = k*x², f''(x) = 2*k*x
+    //
+    // We create an AD expression: result = k * x^m where k = grad/x^m
+    // This ensures d(result)/dx = k * m * x^(m-1) = correct f''(x)
+
+    // Load the detected degree
+    // Note: The counter tracks multiplications by x value during backward.
+    // For x²: count=2 (both inputs are x), actual degree = 1
+    // For x³: count=3, actual degree = 2
+    // So actual_degree = max(0, count - 1)
+    Value* raw_count = ctx_.builder().CreateLoad(ctx_.int64Type(), ctx_.gradientXDegree());
+    Value* detected_degree = ctx_.builder().CreateSelect(
+        ctx_.builder().CreateICmpEQ(raw_count, ConstantInt::get(ctx_.int64Type(), 0)),
+        ConstantInt::get(ctx_.int64Type(), 0),
+        ctx_.builder().CreateSub(raw_count, ConstantInt::get(ctx_.int64Type(), 1)));
+
+    // N-DIMENSIONAL DERIVATIVES: Support arbitrary polynomial degree
+    // For f'(x) = k * x^n:
+    //   - Compute outer_val^n to get scale factor k = grad / (outer_val^n)
+    //   - Build AD expression: k * x^n using repeated multiplication
+    //   - This ensures d(result)/dx = k * n * x^(n-1) = correct higher derivative
+
+    // Create blocks for degree handling
+    BasicBlock* degree_0_bb = BasicBlock::Create(ctx_.context(), "degree_0", current_func);
+    BasicBlock* degree_n_bb = BasicBlock::Create(ctx_.context(), "degree_n", current_func);
+    BasicBlock* degree_merge_bb = BasicBlock::Create(ctx_.context(), "degree_merge", current_func);
+
+    // Check if degree is 0 (constant - no x dependency)
+    Value* is_degree_0 = ctx_.builder().CreateICmpEQ(detected_degree, ConstantInt::get(ctx_.int64Type(), 0));
+    ctx_.builder().CreateCondBr(is_degree_0, degree_0_bb, degree_n_bb);
+
+    // DEGREE 0: Constant gradient, f''(x) = 0
+    // Result is just a constant AD node (no x dependency)
+    ctx_.builder().SetInsertPoint(degree_0_bb);
+    Value* const_result_node = createADConstantOnTape(outer_tape_for_result, scalar_grad_val);
+    ctx_.builder().CreateBr(degree_merge_bb);
+    BasicBlock* degree_0_exit = ctx_.builder().GetInsertBlock();
+
+    // DEGREE N: Polynomial gradient f'(x) = k*x^n
+    // Result = k * x^n where k = grad/x^n
+    // We compute x^n both as a double (for k) and as AD expression (for result)
+    ctx_.builder().SetInsertPoint(degree_n_bb);
+
+    // Compute outer_val^n using a loop
+    Value* pow_val_ptr = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "pow_val");
+    ctx_.builder().CreateStore(ConstantFP::get(ctx_.doubleType(), 1.0), pow_val_ptr);
+    Value* pow_idx_ptr = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "pow_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), pow_idx_ptr);
+
+    BasicBlock* pow_loop_cond = BasicBlock::Create(ctx_.context(), "pow_loop_cond", current_func);
+    BasicBlock* pow_loop_body = BasicBlock::Create(ctx_.context(), "pow_loop_body", current_func);
+    BasicBlock* pow_loop_exit = BasicBlock::Create(ctx_.context(), "pow_loop_exit", current_func);
+
+    ctx_.builder().CreateBr(pow_loop_cond);
+
+    ctx_.builder().SetInsertPoint(pow_loop_cond);
+    Value* pow_i = ctx_.builder().CreateLoad(ctx_.int64Type(), pow_idx_ptr);
+    Value* pow_continue = ctx_.builder().CreateICmpULT(pow_i, detected_degree);
+    ctx_.builder().CreateCondBr(pow_continue, pow_loop_body, pow_loop_exit);
+
+    ctx_.builder().SetInsertPoint(pow_loop_body);
+    Value* current_pow = ctx_.builder().CreateLoad(ctx_.doubleType(), pow_val_ptr);
+    Value* next_pow = ctx_.builder().CreateFMul(current_pow, outer_val);
+    ctx_.builder().CreateStore(next_pow, pow_val_ptr);
+    Value* next_pow_i = ctx_.builder().CreateAdd(pow_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_pow_i, pow_idx_ptr);
+    ctx_.builder().CreateBr(pow_loop_cond);
+
+    ctx_.builder().SetInsertPoint(pow_loop_exit);
+    Value* outer_val_pow_n = ctx_.builder().CreateLoad(ctx_.doubleType(), pow_val_ptr);
+
+    // Compute scale factor k = grad / x^n
+    Value* scale_factor_n = ctx_.builder().CreateFDiv(scalar_grad_val, outer_val_pow_n);
+    Value* scale_const_n = createADConstantOnTape(outer_tape_for_result, scale_factor_n);
+
+    // Build AD expression x^n using repeated multiplication
+    // Start with x, then multiply by x (n-1) more times
+    Value* ad_pow_ptr = ctx_.builder().CreateAlloca(PointerType::getUnqual(ctx_.context()), nullptr, "ad_pow");
+    ctx_.builder().CreateStore(outer_node_for_expr, ad_pow_ptr);
+    Value* ad_pow_idx_ptr = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "ad_pow_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), ad_pow_idx_ptr);
+
+    BasicBlock* ad_pow_loop_cond = BasicBlock::Create(ctx_.context(), "ad_pow_loop_cond", current_func);
+    BasicBlock* ad_pow_loop_body = BasicBlock::Create(ctx_.context(), "ad_pow_loop_body", current_func);
+    BasicBlock* ad_pow_loop_exit = BasicBlock::Create(ctx_.context(), "ad_pow_loop_exit", current_func);
+
+    ctx_.builder().CreateBr(ad_pow_loop_cond);
+
+    ctx_.builder().SetInsertPoint(ad_pow_loop_cond);
+    Value* ad_pow_i = ctx_.builder().CreateLoad(ctx_.int64Type(), ad_pow_idx_ptr);
+    Value* ad_pow_continue = ctx_.builder().CreateICmpULT(ad_pow_i, detected_degree);
+    ctx_.builder().CreateCondBr(ad_pow_continue, ad_pow_loop_body, ad_pow_loop_exit);
+
+    ctx_.builder().SetInsertPoint(ad_pow_loop_body);
+    Value* current_ad_pow = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ad_pow_ptr);
+    // Multiply current AD expression by x: current * x
+    Value* next_ad_pow = recordADNodeBinaryOnTape(outer_tape_for_result, 4, current_ad_pow, outer_node_for_expr);
+    ctx_.builder().CreateStore(next_ad_pow, ad_pow_ptr);
+    Value* next_ad_pow_i = ctx_.builder().CreateAdd(ad_pow_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_ad_pow_i, ad_pow_idx_ptr);
+    ctx_.builder().CreateBr(ad_pow_loop_cond);
+
+    ctx_.builder().SetInsertPoint(ad_pow_loop_exit);
+    Value* outer_pow_n_ad = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ad_pow_ptr);
+
+    // Final result: k * x^n
+    Value* poly_result = recordADNodeBinaryOnTape(outer_tape_for_result, 4, scale_const_n, outer_pow_n_ad);
+    ctx_.builder().CreateBr(degree_merge_bb);
+    BasicBlock* degree_n_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge results
+    ctx_.builder().SetInsertPoint(degree_merge_bb);
+    PHINode* result_ad_node = ctx_.builder().CreatePHI(PointerType::getUnqual(ctx_.context()), 2, "degree_result");
+    result_ad_node->addIncoming(const_result_node, degree_0_exit);
+    result_ad_node->addIncoming(poly_result, degree_n_exit);
+
+    // Pack AD node as result
+    Value* ad_result_int = ctx_.builder().CreatePtrToInt(result_ad_node, ctx_.int64Type());
+    Value* ad_result_tagged = tagged_.packPtr(ad_result_int, ESHKOL_VALUE_CALLABLE);
+
+    // Clear the outer AD node storage
+    ctx_.builder().CreateStore(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())),
+        ctx_.outerAdNodeStorage());
+
+    ctx_.builder().CreateBr(grad_merge_result);
+    BasicBlock* ad_result_exit = ctx_.builder().GetInsertBlock();
+
+    // NORMAL PATH: Return tensor as before
+    ctx_.builder().SetInsertPoint(return_tensor);
+    Value* grad_result_int = ctx_.builder().CreatePtrToInt(typed_result_tensor_ptr, ctx_.int64Type());
+    // Tag as TENSOR_PTR for proper display handling (packPtrToTaggedValue handles i64 directly)
+    Value* grad_result = tagged_.packPtr(grad_result_int, ESHKOL_VALUE_HEAP_PTR);
+    ctx_.builder().CreateBr(grad_merge_result);
+    BasicBlock* tensor_result_exit = ctx_.builder().GetInsertBlock();
+
+    // Merge paths
+    ctx_.builder().SetInsertPoint(grad_merge_result);
+    PHINode* final_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "grad_final_result");
+    final_result->addIncoming(ad_result_tagged, ad_result_exit);
+    final_result->addIncoming(grad_result, tensor_result_exit);
+
+    ctx_.builder().CreateBr(grad_done);
+    BasicBlock* dim_valid_exit = ctx_.builder().GetInsertBlock();
+    
+    // Merge valid, invalid, and scheme vector forward-mode paths
+    ctx_.builder().SetInsertPoint(grad_done);
+    PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "grad_result_final");
+    result_phi->addIncoming(null_tagged_grad, dim_invalid);
+    result_phi->addIncoming(final_result, dim_valid_exit);  // Use merged result from double backward handling
+    result_phi->addIncoming(scheme_vector_tagged, scheme_vector_exit);  // Forward-mode AD for Scheme vectors
+
+    // SCALAR INPUT FIX: If input was a scalar, extract element 0 from result tensor
+    // and return as a scalar double (not a 1-element tensor)
+    BasicBlock* scalar_extract_bb = BasicBlock::Create(ctx_.context(), "grad_scalar_extract", current_func);
+    BasicBlock* grad_final_bb = BasicBlock::Create(ctx_.context(), "grad_final", current_func);
+    ctx_.builder().CreateCondBr(is_scalar, scalar_extract_bb, grad_final_bb);
+
+    ctx_.builder().SetInsertPoint(scalar_extract_bb);
+    // Result is a 1-element tensor — extract the double from element 0
+    Value* result_ptr = tagged_.unpackPtr(result_phi);
+    // tensor struct: field 2 = elements pointer
+    Value* elems_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), result_ptr, 2));
+    Value* elem_as_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), elems_ptr);
+    Value* elem_double = ctx_.builder().CreateBitCast(elem_as_int64, ctx_.doubleType());
+    Value* scalar_result = tagged_.packDouble(elem_double);
+    BasicBlock* scalar_extract_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(grad_final_bb);
+
+    ctx_.builder().SetInsertPoint(grad_final_bb);
+    PHINode* final_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "grad_final_result");
+    final_phi->addIncoming(scalar_result, scalar_extract_exit);
+    final_phi->addIncoming(result_phi, grad_done);
+
+    return final_phi;
+}
+
 
 llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     using namespace llvm;
