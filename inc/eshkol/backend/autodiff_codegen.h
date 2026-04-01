@@ -654,6 +654,41 @@ public:
      */
     void setCurrentTapePtr(llvm::Value* tape) { current_tape_ptr_ = tape; }
     llvm::Value* getCurrentTapePtr() const { return current_tape_ptr_; }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CALCULUS EXTRACTION INFRASTRUCTURE
+    // Added for moving calculus codegen from llvm_codegen.cpp into this module.
+    // Follows the same pattern as setFunctionTable, setSymbolTables, etc.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /** Closure call callback — dispatches runtime closure calls */
+    using ClosureCallCallback = llvm::Value* (*)(llvm::Value*, const std::vector<llvm::Value*>&, const char*, void*);
+    void setClosureCallCallback(ClosureCallCallback callback) {
+        closure_call_callback_ = callback;
+    }
+
+    /** Function arity table — maps function name to parameter count */
+    void setFunctionArityTable(std::unordered_map<std::string, uint64_t>* table) {
+        function_arity_table_ = table;
+    }
+
+    /** Nested function captures map — maps function name to capture variable names */
+    void setNestedFunctionCaptures(std::unordered_map<std::string, std::vector<std::string>>* captures) {
+        nested_function_captures_ = captures;
+    }
+
+    /** Get arena-allocate-closure-with-header function declaration */
+    using GetClosureAllocFunc = llvm::Function* (*)(void*);
+    void setGetClosureAllocFunc(GetClosureAllocFunc func) {
+        get_closure_alloc_func_ = func;
+    }
+
+private:
+    // Calculus extraction state
+    ClosureCallCallback closure_call_callback_ = nullptr;
+    std::unordered_map<std::string, uint64_t>* function_arity_table_ = nullptr;
+    std::unordered_map<std::string, std::vector<std::string>>* nested_function_captures_ = nullptr;
+    GetClosureAllocFunc get_closure_alloc_func_ = nullptr;
 };
 
 } // namespace eshkol
