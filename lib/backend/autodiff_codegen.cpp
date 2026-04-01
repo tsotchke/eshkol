@@ -1408,8 +1408,9 @@ llvm::Value* AutodiffCodegen::loadNodeInput2(llvm::Value* node_ptr) {
     return ctx_.builder().CreateLoad(ctx_.ptrType(), input2_ptr);
 }
 
-Value* derivativeHigherOrder(const eshkol_operations_t* op) {
-    
+llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* op) {
+    using namespace llvm;
+
     eshkol_info("Creating higher-order derivative function (derivative f -> df)");
 
     // Get the function to differentiate
@@ -1503,14 +1504,14 @@ Value* derivativeHigherOrder(const eshkol_operations_t* op) {
                     Value* x_plus_h = ctx_.builder().CreateFAdd(x, h);
                     Value* x_plus_h_tagged = tagged_.packDouble(x_plus_h);
                     std::vector<Value*> call_args_plus = {x_plus_h_tagged};
-                    Value* f_plus = closure_call_callback_(f_closure, call_args_plus, "derivative-plus");
+                    Value* f_plus = closure_call_callback_(f_closure, call_args_plus, "derivative-plus", callback_context_);
                     Value* f_plus_val = tagged_.unpackDouble(f_plus);
 
                     // Compute f(x - h)
                     Value* x_minus_h = ctx_.builder().CreateFSub(x, h);
                     Value* x_minus_h_tagged = tagged_.packDouble(x_minus_h);
                     std::vector<Value*> call_args_minus = {x_minus_h_tagged};
-                    Value* f_minus = closure_call_callback_(f_closure, call_args_minus, "derivative-minus");
+                    Value* f_minus = closure_call_callback_(f_closure, call_args_minus, "derivative-minus", callback_context_);
                     Value* f_minus_val = tagged_.unpackDouble(f_minus);
 
                     // Compute derivative: (f(x+h) - f(x-h)) / (2h)
@@ -1620,7 +1621,7 @@ Value* derivativeHigherOrder(const eshkol_operations_t* op) {
 
     // Extract derivative from result (tangent part of dual number)
     Value* result_dual = unpackDualFromTagged(result);
-    Value* derivative_val = autodiff_->getDualTangent(result_dual);
+    Value* derivative_val = this->getDualTangent(result_dual);
 
     // Pack result as tagged double
     Value* result_tagged = tagged_.packDouble(derivative_val);
@@ -1837,7 +1838,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     Value* result = closure_call_callback_(var_value, call_args);
 
                     // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result);
+                    Value* result_dual = unpackDualFromTagged(result, "autodiff", callback_context_);
                     auto [value, derivative] = uncreateDualNumber(result_dual);
                     return tagged_.packDouble(derivative);
                 }
@@ -1849,7 +1850,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     Value* result = closure_call_callback_(loaded_val, call_args);
 
                     // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result);
+                    Value* result_dual = unpackDualFromTagged(result, "autodiff", callback_context_);
                     auto [value, derivative] = uncreateDualNumber(result_dual);
                     return tagged_.packDouble(derivative);
                 }
@@ -1863,7 +1864,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                         Value* result = closure_call_callback_(loaded_val, call_args);
 
                         // Unpack result and extract derivative
-                        Value* result_dual = unpackDualFromTagged(result);
+                        Value* result_dual = unpackDualFromTagged(result, "autodiff", callback_context_);
                         auto [value, derivative] = uncreateDualNumber(result_dual);
                         return tagged_.packDouble(derivative);
                     }
@@ -1875,7 +1876,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     Value* result = closure_call_callback_(var_value, call_args);
 
                     // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result);
+                    Value* result_dual = unpackDualFromTagged(result, "autodiff", callback_context_);
                     auto [value, derivative] = uncreateDualNumber(result_dual);
                     return tagged_.packDouble(derivative);
                 }
@@ -1888,7 +1889,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     Value* result = closure_call_callback_(loaded_val, call_args);
 
                     // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result);
+                    Value* result_dual = unpackDualFromTagged(result, "autodiff", callback_context_);
                     auto [value, derivative] = uncreateDualNumber(result_dual);
                     return tagged_.packDouble(derivative);
                 }
@@ -2255,13 +2256,13 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
             minus_args[i] = tagged_.packDouble(minus_val);
 
             // Call f(plus_args) and f(minus_args) using codegenClosureCall
-            Value* f_plus = closure_call_callback_(f_closure, plus_args);
+            Value* f_plus = closure_call_callback_(f_closure, plus_args, "autodiff", callback_context_);
             Value* f_minus = closure_call_callback_(f_closure, minus_args);
 
             // Compute partial derivative: (f_plus - f_minus) / (2h)
             Value* f_plus_d = tagged_.unpackDouble(f_plus);
             Value* f_minus_d = tagged_.unpackDouble(f_minus);
-            Value* diff = ctx_.builder().CreateFSub(f_plus_d, f_minus_d);
+            Value* diff = ctx_.builder(, "autodiff", callback_context_).CreateFSub(f_plus_d, f_minus_d);
             Value* partial = ctx_.builder().CreateFDiv(diff, two_h);
 
             // Store in result array
@@ -2725,7 +2726,7 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 
                 // Call function via closure dispatch
                 std::vector<Value*> call_args = {dual_vec_tagged};
-                Value* call_result = closure_call_callback_(closure_val, call_args);
+                Value* call_result = closure_call_callback_(closure_val, call_args, "autodiff", callback_context_);
 
                 // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
                 // If function returns a constant (not using its argument), it won't be dual
