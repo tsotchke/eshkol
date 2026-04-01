@@ -359,6 +359,8 @@ namespace ControlFlowCallbacks {
     // Wrappers for MapCodegen
     static llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
     static llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
+    static llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
+    static llvm::Function* getClosureAllocWrapper(void* context);
     static llvm::Function* getConsSetPtrWrapper(void* context);
     static llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
     static llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
@@ -399,6 +401,8 @@ class EshkolLLVMCodeGen {
     friend bool ControlFlowCallbacks::isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     friend llvm::Function* ControlFlowCallbacks::getBuiltinArithmeticWrapper(const std::string& op, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
+    friend llvm::Value* ControlFlowCallbacks::closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
+    friend llvm::Function* ControlFlowCallbacks::getClosureAllocWrapper(void* context);
 
 private:
     std::unique_ptr<LLVMContext> context;
@@ -2395,6 +2399,11 @@ private:
         autodiff_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
         // Set up lambda resolution callback
         autodiff_->setResolveLambdaCallback(ControlFlowCallbacks::resolveLambdaWrapper);
+        // Calculus extraction: wire closure call, arity table, captures, closure alloc
+        autodiff_->setClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
+        autodiff_->setFunctionArityTable(&function_arity_table);
+        autodiff_->setNestedFunctionCaptures(&nested_function_captures);
+        autodiff_->setGetClosureAllocFunc(ControlFlowCallbacks::getClosureAllocWrapper);
         eshkol_debug("Created AutodiffCodegen with function table and callbacks");
 
         // Initialize ComplexCodegen - complex number arithmetic
@@ -33907,6 +33916,16 @@ namespace ControlFlowCallbacks {
     llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return codegen->codegenClosureCall(closure, args);
+    }
+
+    llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->codegenClosureCall(closure, args, info);
+    }
+
+    llvm::Function* getClosureAllocWrapper(void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->getArenaAllocateClosureWithHeaderFunc();
     }
 
     llvm::Function* getConsSetPtrWrapper(void* context) {
