@@ -1650,6 +1650,216 @@ llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* o
     return tagged_.packNull();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// CAPTURE RESOLUTION — Extracted from llvm_codegen.cpp
+// ═══════════════════════════════════════════════════════════════════════════
+
+std::vector<llvm::Value*> AutodiffCodegen::loadCapturesForAutodiff(
+    llvm::Function* func_ptr, const std::string& context_name) {
+    using namespace llvm;
+
+    std::vector<Value*> capture_args;
+
+    FunctionType* func_type = func_ptr->getFunctionType();
+    if (func_type->getNumParams() <= 1) {
+        return capture_args; // No captures
+    }
+
+    size_t num_captures = func_type->getNumParams() - 1;
+    std::string lambda_name = func_ptr->getName().str();
+
+    // REPL MODE: Get capture names from registry instead of parameter names
+    std::vector<std::string> capture_names;
+    if (repl_mode_enabled_ && *repl_mode_enabled_) {
+        std::lock_guard<std::mutex> lock(*repl_mutex_);
+        auto captures_it = repl_lambda_captures_->find(lambda_name);
+        if (captures_it != repl_lambda_captures_->end()) {
+            capture_names = captures_it->second;
+        }
+    }
+
+    for (size_t i = 0; i < num_captures; i++) {
+        std::string var_name;
+        if (i < capture_names.size()) {
+            var_name = capture_names[i];
+        } else {
+            auto arg_it = func_ptr->arg_begin();
+            std::advance(arg_it, i + 1);
+            if (arg_it != func_ptr->arg_end()) {
+                var_name = arg_it->getName().str();
+                if (var_name.find("captured_") == 0) {
+                    var_name = var_name.substr(9);
+                }
+            }
+        }
+
+        std::string capture_key = lambda_name + "_capture_" + var_name;
+
+        // First try capture-specific key in symbol tables
+        auto it = global_symbol_table_->find(capture_key);
+        bool found_in_global = (it != global_symbol_table_->end());
+        if (!found_in_global) {
+            it = symbol_table_->find(capture_key);
+        }
+
+        bool found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
+
+        // FALLBACK: Try raw variable name (for top-level global variables)
+        if (!found) {
+            it = global_symbol_table_->find(var_name);
+            found_in_global = (it != global_symbol_table_->end());
+            if (!found_in_global) {
+                it = symbol_table_->find(var_name);
+            }
+            found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
+            if (found) {
+                eshkol_debug("%s: found capture '%s' via raw variable name", context_name.c_str(), var_name.c_str());
+            }
+        }
+
+        // REPL MODE: Try creating external declaration for capture global
+        if (!found && repl_mode_enabled_ && *repl_mode_enabled_) {
+            std::lock_guard<std::mutex> lock(*repl_mutex_);
+            auto sym_it = repl_symbol_addresses_->find(capture_key);
+            if (sym_it != repl_symbol_addresses_->end()) {
+                GlobalVariable* capture_global = ctx_.module().getGlobalVariable(capture_key);
+                if (!capture_global) {
+                    capture_global = new GlobalVariable(
+                        ctx_.module(),
+                        ctx_.taggedValueType(),
+                        false,
+                        GlobalValue::ExternalLinkage,
+                        nullptr,
+                        capture_key
+                    );
+                }
+                Value* helper_global_ptr_int = ctx_.builder().CreatePtrToInt(capture_global, ctx_.int64Type());
+                Value* helper_packed_capture = tagged_.packInt64(helper_global_ptr_int, true);
+                Value* helper_capture_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "autodiff_capture_storage");
+                ctx_.builder().CreateStore(helper_packed_capture, helper_capture_storage);
+                capture_args.push_back(helper_capture_storage);
+                continue;
+            }
+        }
+
+        if (found && it->second) {
+            Value* storage = it->second;
+            Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+            IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                      current_func->getEntryBlock().begin());
+            AllocaInst* temp_alloca = entry_builder.CreateAlloca(
+                ctx_.taggedValueType(), nullptr, var_name + "_autodiff_capture_storage");
+
+            Value* ptr_as_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
+            Value* packed_ptr = tagged_.packInt64(ptr_as_int, true);
+            ctx_.builder().CreateStore(packed_ptr, temp_alloca);
+
+            capture_args.push_back(temp_alloca);
+        } else {
+            capture_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
+            eshkol_warn("%s: capture '%s' not found, using null pointer", context_name.c_str(), var_name.c_str());
+        }
+    }
+
+    return capture_args;
+}
+
+void AutodiffCodegen::resolveGradientCaptures(
+    llvm::Function* func_ptr,
+    std::vector<llvm::Value*>& call_args,
+    const std::string& context_label) {
+    using namespace llvm;
+
+    FunctionType* func_type = func_ptr->getFunctionType();
+    size_t total_llvm_params = func_type->getNumParams();
+    size_t args_provided = call_args.size();
+
+    if (total_llvm_params <= args_provided) return;
+
+    size_t num_captures = total_llvm_params - args_provided;
+    std::string lambda_name = func_ptr->getName().str();
+
+    // REPL MODE: Get capture names from registry
+    std::vector<std::string> capture_names;
+    if (repl_mode_enabled_ && *repl_mode_enabled_) {
+        std::lock_guard<std::mutex> lock(*repl_mutex_);
+        auto captures_it = repl_lambda_captures_->find(lambda_name);
+        if (captures_it != repl_lambda_captures_->end()) {
+            capture_names = captures_it->second;
+        }
+    }
+
+    for (size_t ci = 0; ci < num_captures; ci++) {
+        std::string var_name;
+        if (ci < capture_names.size()) {
+            var_name = capture_names[ci];
+        } else {
+            auto arg_it = func_ptr->arg_begin();
+            std::advance(arg_it, args_provided + ci);
+            if (arg_it != func_ptr->arg_end()) {
+                var_name = arg_it->getName().str();
+                if (var_name.find("captured_") == 0) var_name = var_name.substr(9);
+            }
+        }
+
+        std::string capture_key = lambda_name + "_capture_" + var_name;
+
+        // Search order: capture key in global → local, then raw name in global → local
+        Value* storage = nullptr;
+        auto it = global_symbol_table_->find(capture_key);
+        if (it != global_symbol_table_->end() && it->second) {
+            storage = it->second;
+        } else {
+            it = symbol_table_->find(capture_key);
+            if (it != symbol_table_->end() && it->second) {
+                storage = it->second;
+            } else {
+                it = global_symbol_table_->find(var_name);
+                if (it != global_symbol_table_->end() && it->second) {
+                    storage = it->second;
+                } else {
+                    it = symbol_table_->find(var_name);
+                    if (it != symbol_table_->end() && it->second) {
+                        storage = it->second;
+                    }
+                }
+            }
+        }
+
+        // REPL MODE: Try creating external declaration for capture global
+        if (!storage && repl_mode_enabled_ && *repl_mode_enabled_) {
+            std::lock_guard<std::mutex> lock(*repl_mutex_);
+            auto sym_it = repl_symbol_addresses_->find(capture_key);
+            if (sym_it != repl_symbol_addresses_->end()) {
+                GlobalVariable* capture_global = ctx_.module().getGlobalVariable(capture_key);
+                if (!capture_global) {
+                    capture_global = new GlobalVariable(
+                        ctx_.module(), ctx_.taggedValueType(), false,
+                        GlobalValue::ExternalLinkage, nullptr, capture_key);
+                }
+                Value* global_ptr_int = ctx_.builder().CreatePtrToInt(capture_global, ctx_.int64Type());
+                Value* packed = tagged_.packInt64(global_ptr_int, true);
+                Value* temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap");
+                ctx_.builder().CreateStore(packed, temp);
+                call_args.push_back(temp);
+                continue;
+            }
+        }
+
+        if (storage) {
+            Value* ptr_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
+            Value* packed = tagged_.packInt64(ptr_int, true);
+            Value* temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap");
+            ctx_.builder().CreateStore(packed, temp);
+            call_args.push_back(temp);
+        } else {
+            call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
+            eshkol_warn("Gradient (%s): capture '%s' not found, using null pointer",
+                        context_label.c_str(), var_name.c_str());
+        }
+    }
+}
+
 llvm::Value* AutodiffCodegen::createTape() {
     llvm::Value* arena_ptr = getArenaPtr();
     if (!arena_ptr) return llvm::ConstantPointerNull::get(ctx_.ptrType());
