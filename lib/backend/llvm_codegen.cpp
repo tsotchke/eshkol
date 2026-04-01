@@ -12516,22 +12516,57 @@ private:
                         arg = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
                     }
                 }
-                // If we have a tagged_value but function expects a C type, unpack it
+                // If we have a tagged_value but function expects a C type, unpack it.
+                // CRITICAL: tagged_value may contain DOUBLE (from i32 FFI packing)
+                // or INT64 (from i64 handles). Must check type tag to convert correctly.
+                // Without this, raw IEEE 754 bits get truncated to i32 → garbage.
                 else if (actual_type == tagged_value_type && expected_type != tagged_value_type) {
-                    // Extract raw data from tagged value and convert to expected type
                     Value* original_tagged = arg;
-                    Value* data_i64 = unpackInt64FromTaggedValue(original_tagged);
                     if (expected_type->isPointerTy()) {
+                        Value* data_i64 = unpackInt64FromTaggedValue(original_tagged);
                         arg = builder->CreateIntToPtr(data_i64, expected_type);
-                    } else if (expected_type->isIntegerTy(64)) {
-                        arg = data_i64;
-                    } else if (expected_type->isIntegerTy()) {
-                        arg = builder->CreateTrunc(data_i64, expected_type);
                     } else if (expected_type->isDoubleTy()) {
                         arg = unpackDoubleFromTaggedValue(original_tagged);
                     } else if (expected_type->isFloatTy()) {
                         Value* as_double = unpackDoubleFromTaggedValue(original_tagged);
                         arg = builder->CreateFPTrunc(as_double, expected_type);
+                    } else if (expected_type->isIntegerTy()) {
+                        // Could be DOUBLE (from i32→double packing) or INT64 (handle).
+                        // Check type tag at runtime to choose correct conversion.
+                        Value* type_tag = getTaggedValueType(original_tagged);
+                        Value* base_type = getBaseType(type_tag);
+                        Value* is_double = builder->CreateICmpEQ(base_type,
+                            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+
+                        Function* cur_fn = builder->GetInsertBlock()->getParent();
+                        BasicBlock* dbl_bb = BasicBlock::Create(*context, "ffi_unpack_dbl", cur_fn);
+                        BasicBlock* int_bb = BasicBlock::Create(*context, "ffi_unpack_int", cur_fn);
+                        BasicBlock* merge_bb = BasicBlock::Create(*context, "ffi_unpack_merge", cur_fn);
+
+                        builder->CreateCondBr(is_double, dbl_bb, int_bb);
+
+                        // Double path: FPToSI (correct for i32 tokens from i32→double packing)
+                        builder->SetInsertPoint(dbl_bb);
+                        Value* as_dbl = unpackDoubleFromTaggedValue(original_tagged);
+                        Value* from_dbl = builder->CreateFPToSI(as_dbl, expected_type);
+                        builder->CreateBr(merge_bb);
+                        BasicBlock* dbl_exit = builder->GetInsertBlock();
+
+                        // Int path: truncate raw bits (correct for i64 handles)
+                        builder->SetInsertPoint(int_bb);
+                        Value* raw_i64 = unpackInt64FromTaggedValue(original_tagged);
+                        Value* from_int = (expected_type->isIntegerTy(64))
+                            ? raw_i64
+                            : builder->CreateTrunc(raw_i64, expected_type);
+                        builder->CreateBr(merge_bb);
+                        BasicBlock* int_exit = builder->GetInsertBlock();
+
+                        // Merge
+                        builder->SetInsertPoint(merge_bb);
+                        PHINode* phi = builder->CreatePHI(expected_type, 2);
+                        phi->addIncoming(from_dbl, dbl_exit);
+                        phi->addIncoming(from_int, int_exit);
+                        arg = phi;
                     }
                 }
                 // Perform type conversion if necessary
@@ -22582,118 +22617,7 @@ private:
     // Helper function to load captures for an autodiff function call
     // Returns a vector of captured values that should be appended to call arguments
     std::vector<Value*> loadCapturesForAutodiff(Function* func_ptr, const std::string& context_name) {
-        std::vector<Value*> capture_args;
-
-        FunctionType* func_type = func_ptr->getFunctionType();
-        if (func_type->getNumParams() <= 1) {
-            return capture_args; // No captures
-        }
-
-        size_t num_captures = func_type->getNumParams() - 1;
-        std::string lambda_name = func_ptr->getName().str();
-
-        // REPL MODE: Get capture names from registry instead of parameter names
-        std::vector<std::string> capture_names;
-        if (g_repl_mode_enabled) {
-            std::lock_guard<std::mutex> lock(g_repl_mutex);
-            auto captures_it = g_repl_lambda_captures.find(lambda_name);
-            if (captures_it != g_repl_lambda_captures.end()) {
-                capture_names = captures_it->second;
-            }
-        }
-
-        for (size_t i = 0; i < num_captures; i++) {
-            std::string var_name;
-            if (i < capture_names.size()) {
-                var_name = capture_names[i];
-            } else {
-                // Fallback to LLVM parameter names (for non-REPL mode)
-                auto arg_it = func_ptr->arg_begin();
-                std::advance(arg_it, i + 1);  // Skip first parameter
-                if (arg_it != func_ptr->arg_end()) {
-                    var_name = arg_it->getName().str();
-                    if (var_name.find("captured_") == 0) {
-                        var_name = var_name.substr(9);
-                    }
-                }
-            }
-
-            std::string capture_key = lambda_name + "_capture_" + var_name;
-
-            // First try capture-specific key in symbol tables
-            auto it = global_symbol_table.find(capture_key);
-            bool found_in_global = (it != global_symbol_table.end());
-            if (!found_in_global) {
-                it = symbol_table.find(capture_key);
-            }
-
-            bool found = found_in_global ? (it != global_symbol_table.end()) : (it != symbol_table.end());
-
-            // FALLBACK: Try raw variable name (for top-level global variables)
-            if (!found) {
-                it = global_symbol_table.find(var_name);
-                found_in_global = (it != global_symbol_table.end());
-                if (!found_in_global) {
-                    it = symbol_table.find(var_name);
-                }
-                found = found_in_global ? (it != global_symbol_table.end()) : (it != symbol_table.end());
-                if (found) {
-                    eshkol_debug("%s: found capture '%s' via raw variable name", context_name.c_str(), var_name.c_str());
-                }
-            }
-
-            // REPL MODE: Try creating external declaration for capture global
-            if (!found && g_repl_mode_enabled) {
-                std::lock_guard<std::mutex> lock(g_repl_mutex);
-                auto sym_it = g_repl_symbol_addresses.find(capture_key);
-                if (sym_it != g_repl_symbol_addresses.end()) {
-                    // Create external declaration for capture global
-                    GlobalVariable* capture_global = module->getGlobalVariable(capture_key);
-                    if (!capture_global) {
-                        capture_global = new GlobalVariable(
-                            *module,
-                            tagged_value_type,
-                            false,
-                            GlobalValue::ExternalLinkage,
-                            nullptr,
-                            capture_key
-                        );
-                    }
-                    // MUTABLE CAPTURE FIX: Pack pointer in closure format
-                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@global)}
-                    Value* helper_global_ptr_int = builder->CreatePtrToInt(capture_global, int64_type);
-                    Value* helper_packed_capture = packInt64ToTaggedValue(helper_global_ptr_int, true);
-                    Value* helper_capture_storage = builder->CreateAlloca(tagged_value_type, nullptr, "autodiff_capture_storage");
-                    builder->CreateStore(helper_packed_capture, helper_capture_storage);
-                    capture_args.push_back(helper_capture_storage);
-                    continue;
-                }
-            }
-
-            if (found && it->second) {
-                Value* storage = it->second;
-                // MUTABLE CAPTURE FIX: Pack pointer in closure format
-                // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
-                Function* current_func = builder->GetInsertBlock()->getParent();
-                IRBuilder<> entry_builder(&current_func->getEntryBlock(),
-                                          current_func->getEntryBlock().begin());
-                AllocaInst* temp_alloca = entry_builder.CreateAlloca(
-                    tagged_value_type, nullptr, var_name + "_autodiff_capture_storage");
-
-                // Pack the storage address as an int64 in a tagged_value
-                Value* ptr_as_int = builder->CreatePtrToInt(storage, int64_type);
-                Value* packed_ptr = packInt64ToTaggedValue(ptr_as_int, true);
-                builder->CreateStore(packed_ptr, temp_alloca);
-
-                capture_args.push_back(temp_alloca);
-            } else {
-                // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
-                capture_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
-                eshkol_warn("%s: capture '%s' not found, using null pointer", context_name.c_str(), var_name.c_str());
-            }
-        }
-
-        return capture_args;
+        return autodiff_->loadCapturesForAutodiff(func_ptr, context_name);
     }
 
     // Higher-order derivative: (derivative f) returns a closure that computes derivatives
@@ -23671,95 +23595,7 @@ private:
     void resolveGradientCaptures(llvm::Function* func_ptr,
                                   std::vector<llvm::Value*>& call_args,
                                   const std::string& context_label) {
-        FunctionType* func_type = func_ptr->getFunctionType();
-        size_t total_llvm_params = func_type->getNumParams();
-        size_t args_provided = call_args.size();
-
-        if (total_llvm_params <= args_provided) return;  // No captures needed
-
-        size_t num_captures = total_llvm_params - args_provided;
-        std::string lambda_name = func_ptr->getName().str();
-
-        // REPL MODE: Get capture names from registry
-        std::vector<std::string> capture_names;
-        if (g_repl_mode_enabled) {
-            std::lock_guard<std::mutex> lock(g_repl_mutex);
-            auto captures_it = g_repl_lambda_captures.find(lambda_name);
-            if (captures_it != g_repl_lambda_captures.end()) {
-                capture_names = captures_it->second;
-            }
-        }
-
-        for (size_t ci = 0; ci < num_captures; ci++) {
-            std::string var_name;
-            if (ci < capture_names.size()) {
-                var_name = capture_names[ci];
-            } else {
-                // Fallback to LLVM parameter names
-                auto arg_it = func_ptr->arg_begin();
-                std::advance(arg_it, args_provided + ci);
-                if (arg_it != func_ptr->arg_end()) {
-                    var_name = arg_it->getName().str();
-                    if (var_name.find("captured_") == 0) var_name = var_name.substr(9);
-                }
-            }
-
-            std::string capture_key = lambda_name + "_capture_" + var_name;
-
-            // Search order: capture key in global → local, then raw name in global → local
-            Value* storage = nullptr;
-            auto it = global_symbol_table.find(capture_key);
-            if (it != global_symbol_table.end() && it->second) {
-                storage = it->second;
-            } else {
-                it = symbol_table.find(capture_key);
-                if (it != symbol_table.end() && it->second) {
-                    storage = it->second;
-                } else {
-                    it = global_symbol_table.find(var_name);
-                    if (it != global_symbol_table.end() && it->second) {
-                        storage = it->second;
-                    } else {
-                        it = symbol_table.find(var_name);
-                        if (it != symbol_table.end() && it->second) {
-                            storage = it->second;
-                        }
-                    }
-                }
-            }
-
-            // REPL MODE: Try creating external declaration for capture global
-            if (!storage && g_repl_mode_enabled) {
-                std::lock_guard<std::mutex> lock(g_repl_mutex);
-                auto sym_it = g_repl_symbol_addresses.find(capture_key);
-                if (sym_it != g_repl_symbol_addresses.end()) {
-                    GlobalVariable* capture_global = module->getGlobalVariable(capture_key);
-                    if (!capture_global) {
-                        capture_global = new GlobalVariable(
-                            *module, tagged_value_type, false,
-                            GlobalValue::ExternalLinkage, nullptr, capture_key);
-                    }
-                    Value* global_ptr_int = builder->CreatePtrToInt(capture_global, int64_type);
-                    Value* packed = packInt64ToTaggedValue(global_ptr_int, true);
-                    Value* temp = builder->CreateAlloca(tagged_value_type, nullptr, "grad_cap");
-                    builder->CreateStore(packed, temp);
-                    call_args.push_back(temp);
-                    continue;
-                }
-            }
-
-            if (storage) {
-                Value* ptr_int = builder->CreatePtrToInt(storage, int64_type);
-                Value* packed = packInt64ToTaggedValue(ptr_int, true);
-                Value* temp = builder->CreateAlloca(tagged_value_type, nullptr, "grad_cap");
-                builder->CreateStore(packed, temp);
-                call_args.push_back(temp);
-            } else {
-                call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(*context)));
-                eshkol_warn("Gradient (%s): capture '%s' not found, using null pointer",
-                            context_label.c_str(), var_name.c_str());
-            }
-        }
+        autodiff_->resolveGradientCaptures(func_ptr, call_args, context_label);
     }
 
     Value* codegenGradient(const eshkol_operations_t* op) {

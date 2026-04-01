@@ -246,6 +246,31 @@ public:
      */
     llvm::Value* directionalDerivative(const eshkol_operations_t* op);
 
+    // === Capture Resolution (for calculus operators) ===
+
+    /**
+     * Load captured variable arguments for an autodiff function call.
+     * Resolves captures from symbol tables with REPL mode support.
+     * @param func_ptr The function to load captures for
+     * @param context_name Debug label for error messages
+     * @return Vector of capture Value* arguments
+     */
+    std::vector<llvm::Value*> loadCapturesForAutodiff(
+        llvm::Function* func_ptr,
+        const std::string& context_name);
+
+    /**
+     * Append captured variable arguments to a gradient function call.
+     * Resolves captures from symbol tables with REPL mode support.
+     * @param func_ptr The function to resolve captures for
+     * @param call_args Vector to append capture arguments to
+     * @param context_label Debug label for error messages
+     */
+    void resolveGradientCaptures(
+        llvm::Function* func_ptr,
+        std::vector<llvm::Value*>& call_args,
+        const std::string& context_label);
+
     // === Tape Management ===
 
     /**
