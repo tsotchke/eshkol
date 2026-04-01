@@ -277,6 +277,9 @@ public:
     /** Higher-order derivative: (derivative f) → closure */
     llvm::Value* derivativeHigherOrder(const eshkol_operations_t* op);
 
+    /** Monolith derivative fallback (runtime function parameter dispatch) */
+    llvm::Value* codegenDerivativeMonolith(const eshkol_operations_t* op);
+
     // === Tape Management ===
 
     /**

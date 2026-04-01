@@ -1408,6 +1408,627 @@ llvm::Value* AutodiffCodegen::loadNodeInput2(llvm::Value* node_ptr) {
     return ctx_.builder().CreateLoad(ctx_.ptrType(), input2_ptr);
 }
 
+Value* derivativeHigherOrder(const eshkol_operations_t* op) {
+    
+    eshkol_info("Creating higher-order derivative function (derivative f -> df)");
+
+    // Get the function to differentiate
+    Value* func = resolve_lambda_callback_(op->derivative_op.function, 0, callback_context_);
+
+    // RUNTIME FUNCTION PARAMETER FIX: If resolveLambdaFunction returns nullptr,
+    // check if this is a function parameter and create a runtime derivative wrapper
+    if (!func) {
+        const eshkol_ast_t* func_ast = op->derivative_op.function;
+        if (func_ast && func_ast->type == ESHKOL_VAR) {
+            std::string func_name = func_ast->variable.id;
+            eshkol_debug("derivative HO: trying runtime function parameter '%s'", func_name.c_str());
+
+            // Check if this is a function parameter or captured value
+            Value* var_value = nullptr;
+            auto local_it = symbol_table_->find(func_name);
+            if (local_it != symbol_table_->end()) {
+                var_value = local_it->second;
+            } else {
+                auto global_it = global_symbol_table_->find(func_name);
+                if (global_it != global_symbol_table_->end()) {
+                    var_value = global_it->second;
+                }
+            }
+
+            if (var_value) {
+                // Get the closure value for runtime dispatch
+                Value* closure_val = nullptr;
+                if (isa<Argument>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
+                    closure_val = var_value;
+                } else if (isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
+                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                } else if (isa<AllocaInst>(var_value)) {
+                    AllocaInst* alloca = cast<AllocaInst>(var_value);
+                    if (alloca->getAllocatedType() == ctx_.taggedValueType()) {
+                        closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                    }
+                } else if (isa<LoadInst>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
+                    closure_val = var_value;
+                } else if (isa<GlobalVariable>(var_value)) {
+                    GlobalVariable* global = cast<GlobalVariable>(var_value);
+                    closure_val = ctx_.builder().CreateLoad(global->getValueType(), var_value);
+                }
+
+                if (closure_val) {
+                    eshkol_debug("derivative HO: creating runtime derivative wrapper for '%s'", func_name.c_str());
+
+                    // Create a derivative wrapper that captures the function and calls it at runtime
+                    std::string deriv_func_name = "derivative_runtime_" + std::to_string(derivative_ho_counter_++);
+
+                    // Wrapper function takes: (x_tagged, captured_f_ptr)
+                    // captured_f_ptr is a pointer to the closure tagged_value
+                    std::vector<Type*> param_types = {ctx_.taggedValueType(), PointerType::getUnqual(ctx_.context())};
+                    FunctionType* deriv_func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
+                    Function* deriv_func = Function::Create(
+                        deriv_func_type,
+                        Function::ExternalLinkage,
+                        deriv_func_name,
+                        ctx_.module()
+                    );
+
+                    // Save current insertion point
+                    BasicBlock* saved_bb = ctx_.builder().GetInsertBlock();
+                    BasicBlock::iterator saved_point = ctx_.builder().GetInsertPoint();
+
+                    // Create function body
+                    BasicBlock* entry = BasicBlock::Create(ctx_.context(), "entry", deriv_func);
+                    ctx_.builder().SetInsertPoint(entry);
+
+                    auto arg_it = deriv_func->arg_begin();
+                    Value* x_tagged = &(*arg_it);
+                    x_tagged->setName("x");
+                    ++arg_it;
+                    Value* captured_f_ptr = &(*arg_it);
+                    captured_f_ptr->setName("captured_f");
+
+                    // Load the captured function closure
+                    Value* f_closure = ctx_.builder().CreateLoad(ctx_.taggedValueType(), captured_f_ptr);
+
+                    // HIGHER-ORDER DERIVATIVE FIX: Use numerical differentiation (central difference)
+                    // instead of forward-mode AD. This works for ANY function, including derivatives.
+                    // Forward-mode AD doesn't work here because the captured function (e.g., df4)
+                    // expects a plain double, not a dual number.
+                    //
+                    // Central difference formula: f'(x) ≈ (f(x+h) - f(x-h)) / (2h)
+                    Value* x = tagged_.unpackDouble(x_tagged);
+                    Value* h = ConstantFP::get(ctx_.doubleType(), 1e-8);  // Small step for numerical derivative
+                    Value* two_h = ConstantFP::get(ctx_.doubleType(), 2e-8);
+
+                    // Compute f(x + h)
+                    Value* x_plus_h = ctx_.builder().CreateFAdd(x, h);
+                    Value* x_plus_h_tagged = tagged_.packDouble(x_plus_h);
+                    std::vector<Value*> call_args_plus = {x_plus_h_tagged};
+                    Value* f_plus = closure_call_callback_(f_closure, call_args_plus, "derivative-plus");
+                    Value* f_plus_val = tagged_.unpackDouble(f_plus);
+
+                    // Compute f(x - h)
+                    Value* x_minus_h = ctx_.builder().CreateFSub(x, h);
+                    Value* x_minus_h_tagged = tagged_.packDouble(x_minus_h);
+                    std::vector<Value*> call_args_minus = {x_minus_h_tagged};
+                    Value* f_minus = closure_call_callback_(f_closure, call_args_minus, "derivative-minus");
+                    Value* f_minus_val = tagged_.unpackDouble(f_minus);
+
+                    // Compute derivative: (f(x+h) - f(x-h)) / (2h)
+                    Value* diff = ctx_.builder().CreateFSub(f_plus_val, f_minus_val);
+                    Value* derivative_val = ctx_.builder().CreateFDiv(diff, two_h);
+                    Value* result_tagged = tagged_.packDouble(derivative_val);
+                    ctx_.builder().CreateRet(result_tagged);
+
+                    // Restore insertion point
+                    if (saved_bb) {
+                        ctx_.builder().SetInsertPoint(saved_bb, saved_point);
+                    }
+
+                    // Register the derivative function
+                    (*function_table_)[deriv_func_name] = deriv_func;
+
+                    // Create closure capturing the function parameter
+                    Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
+                    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+                    uint64_t packed_info = 1;  // 1 capture (the function)
+                    Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
+                    Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
+                    // Derivative function returns a scalar
+                    Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
+                    Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
+
+                    // Use with_header allocator for consolidated CALLABLE type
+                    Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
+                                                             {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
+
+                    // Store captured function
+                    Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+                    Value* env_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), env_ptr_ptr);
+                    Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+                    ctx_.builder().CreateStore(closure_val, captures_base);
+
+                    // Return closure as CALLABLE tagged value
+                    return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
+                }
+            }
+        }
+        eshkol_error("Failed to resolve function for higher-order derivative");
+        return nullptr;
+    }
+
+    Function* func_ptr = dyn_cast<Function>(func);
+    if (!func_ptr) {
+        eshkol_error("higher-order derivative requires a function");
+        return nullptr;
+    }
+
+    std::string orig_func_name = func_ptr->getName().str();
+    std::string deriv_func_name = "derivative_" + orig_func_name + "_" + std::to_string(derivative_ho_counter_++);
+
+    // Create derivative wrapper function: takes x, returns derivative at x
+    std::vector<Type*> param_types = {ctx_.taggedValueType()};  // Takes one tagged_value (x)
+
+    // Add capture parameters for the original function if it has captures
+    FunctionType* orig_func_type = func_ptr->getFunctionType();
+    size_t orig_num_captures = 0;
+    if (orig_func_type->getNumParams() > 1) {
+        orig_num_captures = orig_func_type->getNumParams() - 1;
+        for (size_t i = 0; i < orig_num_captures; i++) {
+            param_types.push_back(PointerType::getUnqual(ctx_.context()));  // Capture pointers
+        }
+    }
+
+    FunctionType* deriv_func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
+    Function* deriv_func = Function::Create(
+        deriv_func_type,
+        Function::ExternalLinkage,
+        deriv_func_name,
+        ctx_.module()
+    );
+
+    // Save current insertion point
+    BasicBlock* saved_bb = ctx_.builder().GetInsertBlock();
+    BasicBlock::iterator saved_point = ctx_.builder().GetInsertPoint();
+
+    // Create function body
+    BasicBlock* entry = BasicBlock::Create(ctx_.context(), "entry", deriv_func);
+    ctx_.builder().SetInsertPoint(entry);
+
+    // Get x parameter
+    auto arg_it = deriv_func->arg_begin();
+    Value* x_tagged = &(*arg_it);
+    x_tagged->setName("x");
+
+    // Extract double from x
+    Value* x = tagged_.unpackDouble(x_tagged);
+
+    // Create dual number with seed = 1.0
+    Value* one = ConstantFP::get(ctx_.doubleType(), 1.0);
+    Value* x_dual = createDualNumber(x, one);
+    Value* x_dual_tagged = packDualToTagged(x_dual);
+
+    // Build call arguments: (x_dual_tagged, captures...)
+    std::vector<Value*> call_args = {x_dual_tagged};
+    ++arg_it;
+    for (size_t i = 0; i < orig_num_captures; i++, ++arg_it) {
+        call_args.push_back(&(*arg_it));
+    }
+
+    // Call the original function with dual number
+    Value* result = ctx_.builder().CreateCall(orig_func_type, func_ptr, call_args);
+
+    // Extract derivative from result (tangent part of dual number)
+    Value* result_dual = unpackDualFromTagged(result);
+    Value* derivative_val = autodiff_->getDualTangent(result_dual);
+
+    // Pack result as tagged double
+    Value* result_tagged = tagged_.packDouble(derivative_val);
+    ctx_.builder().CreateRet(result_tagged);
+
+    // Restore insertion point
+    if (saved_bb) {
+        ctx_.builder().SetInsertPoint(saved_bb, saved_point);
+    }
+
+    // Register the derivative function
+    (*function_table_)[deriv_func_name] = deriv_func;
+
+    // If original function has captures, we need to create a closure
+    if (orig_num_captures > 0) {
+        // Get capture values from the original function's closure
+        std::string orig_lambda_name = func_ptr->getName().str();
+        std::vector<Value*> capture_vals;
+
+        for (size_t i = 0; i < orig_num_captures; i++) {
+            // Get capture name from original function's parameter
+            auto orig_arg_it = func_ptr->arg_begin();
+            std::advance(orig_arg_it, i + 1);
+            std::string var_name = orig_arg_it->getName().str();
+            if (var_name.find("captured_") == 0) {
+                var_name = var_name.substr(9);
+            }
+
+            std::string capture_key = orig_lambda_name + "_capture_" + var_name;
+
+            // Find capture value
+            Value* cap_val = nullptr;
+            auto git = global_symbol_table_->find(capture_key);
+            if (git != global_symbol_table_->end() && isa<GlobalVariable>(git->second)) {
+                cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), git->second);
+            } else {
+                auto lit = symbol_table_->find(capture_key);
+                if (lit != symbol_table_->end()) {
+                    if (isa<AllocaInst>(lit->second)) {
+                        cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), lit->second);
+                    } else {
+                        cap_val = lit->second;
+                    }
+                }
+            }
+
+            if (!cap_val) {
+                // Try direct variable lookup
+                auto vit = symbol_table_->find(var_name);
+                if (vit != symbol_table_->end()) {
+                    if (isa<AllocaInst>(vit->second)) {
+                        cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), vit->second);
+                    } else {
+                        cap_val = vit->second;
+                    }
+                } else {
+                    auto gvit = global_symbol_table_->find(var_name);
+                    if (gvit != global_symbol_table_->end() && isa<GlobalVariable>(gvit->second)) {
+                        cap_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), gvit->second);
+                    }
+                }
+            }
+
+            if (cap_val) {
+                capture_vals.push_back(cap_val);
+            } else {
+                eshkol_warn("Could not find capture %s for derivative closure", var_name.c_str());
+                capture_vals.push_back(tagged_.packNull());
+            }
+        }
+
+        // Allocate closure with captures
+        Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
+        Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+        uint64_t packed_info = orig_num_captures & 0xFFFF;
+        Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
+        Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
+        // Derivative function returns a scalar
+        Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
+        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
+
+        // Use with_header allocator for consolidated CALLABLE type
+        Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
+                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
+
+        // Store captures
+        Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+        Value* env_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), env_ptr_ptr);
+        Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+
+        for (size_t i = 0; i < capture_vals.size(); i++) {
+            Value* cap_slot = ctx_.builder().CreateGEP(ctx_.taggedValueType(), captures_base,
+                ConstantInt::get(ctx_.int64Type(), i));
+            ctx_.builder().CreateStore(capture_vals[i], cap_slot);
+        }
+
+        // Return closure as CALLABLE tagged value
+        return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
+    } else {
+        // No captures - still need to allocate a closure structure
+        Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
+        Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+        uint64_t packed_info = 0;  // 0 captures
+        Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
+        Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
+        // Derivative function returns a scalar
+        Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
+        Value* closure_name_no_cap = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
+
+        // Use with_header allocator for consolidated CALLABLE type
+        Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
+                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name_no_cap});
+
+        // Return closure as CALLABLE tagged value
+        return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
+    }
+}
+
+
+llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_t* op) {
+    using namespace llvm;
+    if (!op->derivative_op.function) {
+        eshkol_error("Invalid derivative operation - missing function");
+        return nullptr;
+    }
+
+    // Higher-order form: (derivative f) returns a closure that computes derivatives
+    if (!op->derivative_op.point) {
+        return derivativeHigherOrder(op);
+    }
+
+    eshkol_info("Computing derivative using forward-mode AD (dual numbers)");
+
+    // Get evaluation point - must be a scalar double
+    Value* x = codegen_ast_callback_(op->derivative_op.point, callback_context_);
+    if (!x) {
+        eshkol_error("Failed to evaluate derivative point");
+        return nullptr;
+    }
+
+    // Convert x to double if it's an integer or tagged_value
+    if (x->getType()->isIntegerTy()) {
+        x = ctx_.builder().CreateSIToFP(x, ctx_.doubleType());
+    } else if (x->getType() == ctx_.taggedValueType()) {
+        // Handle computed values that return tagged_value_t
+        // Extract the double from the data field
+        x = tagged_.unpackDouble(x);
+    } else if (!x->getType()->isDoubleTy()) {
+        eshkol_error("derivative point must be numeric (int64 or double)");
+        return nullptr;
+    }
+
+    // Create dual number with seed derivative = 1.0
+    // This means: "we're computing the derivative with respect to this input"
+    Value* one = ConstantFP::get(ctx_.doubleType(), 1.0);
+    Value* x_dual = createDualNumber(x, one);
+
+    // Pack dual number into tagged_value for function call
+    Value* x_dual_tagged = packDualToTagged(x_dual);
+
+    // Get the function to differentiate
+    Value* func = resolve_lambda_callback_(op->derivative_op.function, 0, callback_context_);
+
+    // RUNTIME FUNCTION PARAMETER FIX: If resolveLambdaFunction returns nullptr,
+    // check if this is a function parameter (runtime closure) and use codegenClosureCall
+    if (!func) {
+        const eshkol_ast_t* func_ast = op->derivative_op.function;
+        if (func_ast && func_ast->type == ESHKOL_VAR) {
+            std::string func_name = func_ast->variable.id;
+            eshkol_debug("derivative: trying runtime function parameter '%s'", func_name.c_str());
+
+            // Check if this is a function parameter or captured value
+            Value* var_value = nullptr;
+            auto local_it = symbol_table_->find(func_name);
+            if (local_it != symbol_table_->end()) {
+                var_value = local_it->second;
+            } else {
+                auto global_it = global_symbol_table_->find(func_name);
+                if (global_it != global_symbol_table_->end()) {
+                    var_value = global_it->second;
+                }
+            }
+
+            // REPL MODE FIX: Check *repl_symbol_addresses_ for functions defined in REPL
+            if (!var_value && (repl_mode_enabled_ && *repl_mode_enabled_)) {
+                std::lock_guard<std::mutex> lock(*repl_mutex_);
+                auto repl_it = *repl_symbol_addresses_.find(func_name);
+                if (repl_it != *repl_symbol_addresses_.end()) {
+                    eshkol_debug("derivative: found '%s' in REPL symbol addresses", func_name.c_str());
+                    // Create external declaration for the global variable
+                    GlobalVariable* global_var = ctx_.module().getGlobalVariable(func_name);
+                    if (!global_var) {
+                        global_var = new GlobalVariable(
+                            *module,
+                            ctx_.taggedValueType(),
+                            false,
+                            GlobalValue::ExternalLinkage,
+                            nullptr,
+                            func_name
+                        );
+                    }
+                    var_value = global_var;
+                }
+            }
+
+            if (var_value) {
+                // Check if it's a function parameter (Argument) with tagged_value type
+                // Also check isStructTy() as a fallback for ctx_.taggedValueType() matching
+                if (isa<Argument>(var_value) && (var_value->getType() == ctx_.taggedValueType() || var_value->getType()->isStructTy())) {
+                    eshkol_debug("derivative: using runtime dispatch for function parameter '%s'", func_name.c_str());
+                    std::vector<Value*> call_args = {x_dual_tagged};
+                    Value* result = closure_call_callback_(var_value, call_args);
+
+                    // Unpack result and extract derivative
+                    Value* result_dual = unpackDualFromTagged(result);
+                    auto [value, derivative] = uncreateDualNumber(result_dual);
+                    return tagged_.packDouble(derivative);
+                }
+                // Check if it's a pointer to closure (mutable capture)
+                if (isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
+                    eshkol_debug("derivative: using runtime dispatch for captured function '%s'", func_name.c_str());
+                    Value* loaded_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                    std::vector<Value*> call_args = {x_dual_tagged};
+                    Value* result = closure_call_callback_(loaded_val, call_args);
+
+                    // Unpack result and extract derivative
+                    Value* result_dual = unpackDualFromTagged(result);
+                    auto [value, derivative] = uncreateDualNumber(result_dual);
+                    return tagged_.packDouble(derivative);
+                }
+                // Check if it's an AllocaInst (local variable holding a closure)
+                if (isa<AllocaInst>(var_value) && var_value->getType()->isPointerTy()) {
+                    AllocaInst* alloca = cast<AllocaInst>(var_value);
+                    if (alloca->getAllocatedType() == ctx_.taggedValueType()) {
+                        eshkol_debug("derivative: using runtime dispatch for local function '%s'", func_name.c_str());
+                        Value* loaded_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                        std::vector<Value*> call_args = {x_dual_tagged};
+                        Value* result = closure_call_callback_(loaded_val, call_args);
+
+                        // Unpack result and extract derivative
+                        Value* result_dual = unpackDualFromTagged(result);
+                        auto [value, derivative] = uncreateDualNumber(result_dual);
+                        return tagged_.packDouble(derivative);
+                    }
+                }
+                // Check if it's a LoadInst (already loaded closure value)
+                if (isa<LoadInst>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
+                    eshkol_debug("derivative: using runtime dispatch for loaded function '%s'", func_name.c_str());
+                    std::vector<Value*> call_args = {x_dual_tagged};
+                    Value* result = closure_call_callback_(var_value, call_args);
+
+                    // Unpack result and extract derivative
+                    Value* result_dual = unpackDualFromTagged(result);
+                    auto [value, derivative] = uncreateDualNumber(result_dual);
+                    return tagged_.packDouble(derivative);
+                }
+                // Check if it's a GlobalVariable (letrec captured function)
+                if (isa<GlobalVariable>(var_value)) {
+                    eshkol_debug("derivative: using runtime dispatch for global function '%s'", func_name.c_str());
+                    GlobalVariable* global = cast<GlobalVariable>(var_value);
+                    Value* loaded_val = ctx_.builder().CreateLoad(global->getValueType(), var_value);
+                    std::vector<Value*> call_args = {x_dual_tagged};
+                    Value* result = closure_call_callback_(loaded_val, call_args);
+
+                    // Unpack result and extract derivative
+                    Value* result_dual = unpackDualFromTagged(result);
+                    auto [value, derivative] = uncreateDualNumber(result_dual);
+                    return tagged_.packDouble(derivative);
+                }
+            }
+        }
+        eshkol_error("Failed to resolve function for derivative");
+        return nullptr;
+    }
+
+    Function* func_ptr = dyn_cast<Function>(func);
+    if (!func_ptr) {
+        eshkol_error("derivative operator requires a function");
+        return nullptr;
+    }
+
+    // Build arguments for derivative lambda call
+    std::vector<Value*> deriv_call_args = {x_dual_tagged};
+
+    // CLOSURE FIX: Load captures from STORAGE
+    FunctionType* deriv_func_type = func_ptr->getFunctionType();
+    if (deriv_func_type->getNumParams() > 1) {
+        size_t num_captures = deriv_func_type->getNumParams() - 1;
+        std::string lambda_name = func_ptr->getName().str();
+
+        // REPL MODE: Get capture names from registry instead of parameter names
+        // (LLVM external declarations may have empty parameter names)
+        std::vector<std::string> capture_names;
+        if ((repl_mode_enabled_ && *repl_mode_enabled_)) {
+            std::lock_guard<std::mutex> lock(*repl_mutex_);
+            auto captures_it = *repl_lambda_captures_.find(lambda_name);
+            if (captures_it != *repl_lambda_captures_.end()) {
+                capture_names = captures_it->second;
+            }
+        }
+
+        for (size_t i = 0; i < num_captures; i++) {
+            std::string var_name;
+            if (i < capture_names.size()) {
+                var_name = capture_names[i];
+            } else {
+                // Fallback to LLVM parameter names (for non-REPL mode)
+                auto arg_it = func_ptr->arg_begin();
+                std::advance(arg_it, i + 1);  // Skip first parameter
+                if (arg_it != func_ptr->arg_end()) {
+                    var_name = arg_it->getName().str();
+                    if (var_name.find("captured_") == 0) {
+                        var_name = var_name.substr(9);
+                    }
+                }
+            }
+
+            std::string capture_key = lambda_name + "_capture_" + var_name;
+
+            // First try local symbol tables with capture_key
+            auto it = global_symbol_table_->find(capture_key);
+            bool found_in_global = (it != global_symbol_table_->end());
+            if (!found_in_global) {
+                it = symbol_table_->find(capture_key);
+            }
+
+            bool found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
+
+            // INNER FUNCTION FIX: If capture_key not found, try plain variable name
+            // This handles lambdas inside functions where captures are function parameters
+            // (not stored as GlobalVariables with _capture_ keys)
+            // Also handles top-level global variables that are captured by lambdas
+            if (!found) {
+                it = global_symbol_table_->find(var_name);
+                found_in_global = (it != global_symbol_table_->end());
+                if (!found_in_global) {
+                    it = symbol_table_->find(var_name);
+                }
+                found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
+                if (found) {
+                    eshkol_debug("Derivative: found capture '%s' via plain variable name", var_name.c_str());
+                }
+            }
+
+            // REPL MODE: Try creating external declaration for capture global
+            if (!found && (repl_mode_enabled_ && *repl_mode_enabled_)) {
+                std::lock_guard<std::mutex> lock(*repl_mutex_);
+                auto sym_it = *repl_symbol_addresses_.find(capture_key);
+                if (sym_it != *repl_symbol_addresses_.end()) {
+                    // Create external declaration for capture global
+                    GlobalVariable* capture_global = ctx_.module().getGlobalVariable(capture_key);
+                    if (!capture_global) {
+                        capture_global = new GlobalVariable(
+                            *module,
+                            ctx_.taggedValueType(),
+                            false,
+                            GlobalValue::ExternalLinkage,
+                            nullptr,
+                            capture_key
+                        );
+                    }
+                    // MUTABLE CAPTURE FIX: Pack pointer in closure format
+                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@global)}
+                    Value* deriv_global_ptr_int = ctx_.builder().CreatePtrToInt(capture_global, ctx_.int64Type());
+                    Value* deriv_packed_capture = tagged_.packInt64(deriv_global_ptr_int, true);
+                    Value* deriv_capture_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_storage");
+                    ctx_.builder().CreateStore(deriv_packed_capture, deriv_capture_storage);
+                    deriv_call_args.push_back(deriv_capture_storage);
+                    continue;
+                }
+            }
+
+            if (found && it->second) {
+                Value* storage = it->second;
+                // MUTABLE CAPTURE FIX: Pack pointer in closure format
+                // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
+                Value* deriv_storage_ptr_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
+                Value* deriv_packed_storage = tagged_.packInt64(deriv_storage_ptr_int, true);
+                Value* deriv_temp_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_storage");
+                ctx_.builder().CreateStore(deriv_packed_storage, deriv_temp_storage);
+                deriv_call_args.push_back(deriv_temp_storage);
+            } else {
+                // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
+                deriv_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
+                eshkol_warn("Derivative: capture '%s' not found, using null pointer", var_name.c_str());
+            }
+        }
+    }
+    
+    // Call function with dual number input and captures
+    // The function will automatically use dual arithmetic, propagating derivatives
+    Value* result_tagged = ctx_.builder().CreateCall(func_ptr, deriv_call_args);
+    
+    // Unpack result from tagged_value
+    Value* result_dual = unpackDualFromTagged(result_tagged);
+    
+    // Extract derivative component from result
+    auto [value, derivative] = uncreateDualNumber(result_dual);
+
+    eshkol_debug("Derivative operator: extracted derivative component");
+
+    // Return derivative as tagged_value for consistent handling in arithmetic
+    return tagged_.packDouble(derivative);
+}
+
+
 llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op) {
     using namespace llvm;
 
@@ -4181,10 +4802,9 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
         return nullptr;
     }
 
-    // Higher-order form: (derivative f) - delegate back to main codegen
+    // Higher-order form: (derivative f) → create closure
     if (!op->derivative_op.point) {
-        // Return nullptr to signal that main codegen should handle this
-        return nullptr;
+        return derivativeHigherOrder(op);
     }
 
     if (!resolve_lambda_callback_ || !codegen_ast_callback_) {
