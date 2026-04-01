@@ -2495,6 +2495,9 @@ private:
         binding_->setTCOCallbacks(ControlFlowCallbacks::isSelfTailRecursiveWrapper);
         eshkol_debug("Created BindingCodegen with callbacks and TCO support");
 
+        // Wire binding codegen to autodiff (for TCO context save/restore in higher-order gradient)
+        autodiff_->setBindingCodegen(binding_.get());
+
         // Initialize CollectionCodegen - list and vector operations
         coll_ = std::make_unique<eshkol::CollectionCodegen>(*ctx_, *tagged_, *mem);
         // Set up callbacks for AST evaluation (reuse ControlFlowCallbacks wrappers)
@@ -23667,235 +23670,15 @@ private:
         builder->CreateStore(extract_next, pert_extract_idx);
         builder->CreateBr(pert_extract_cond);
         
-        builder->SetInsertPoint(pert_extract_exit);
-        
-        // Step 3: Compute H[i,j] for all rows i
-        BasicBlock* hess_row_cond = BasicBlock::Create(*context, "hess_row_cond", current_func);
-        BasicBlock* hess_row_body = BasicBlock::Create(*context, "hess_row_body", current_func);
-        BasicBlock* hess_row_exit = BasicBlock::Create(*context, "hess_row_exit", current_func);
-        
-        Value* hess_i_idx = builder->CreateAlloca(int64_type, nullptr, "hess_i_row");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), hess_i_idx);
-        builder->CreateBr(hess_row_cond);
-        
-        builder->SetInsertPoint(hess_row_cond);
-        Value* hess_i = builder->CreateLoad(int64_type, hess_i_idx);
-        Value* hess_i_less_n = builder->CreateICmpULT(hess_i, n);
-        builder->CreateCondBr(hess_i_less_n, hess_row_body, hess_row_exit);
-        
-        builder->SetInsertPoint(hess_row_body);
-        
-        // Load base_grad[i]
-        Value* base_grad_i_ptr = builder->CreateGEP(double_type, typed_base_grad, hess_i);
-        Value* base_grad_i = builder->CreateLoad(double_type, base_grad_i_ptr);
-        
-        // Load pert_grad[i]
-        Value* hess_pert_grad_i_ptr = builder->CreateGEP(double_type, typed_pert_grad, hess_i);
-        Value* hess_pert_grad_i_val = builder->CreateLoad(double_type, hess_pert_grad_i_ptr);
-        
-        // Compute H[i,j] = (pert_grad[i] - base_grad[i]) / epsilon
-        Value* grad_diff = builder->CreateFSub(hess_pert_grad_i_val, base_grad_i);
-        Value* second_deriv = builder->CreateFDiv(grad_diff, epsilon);
-        
-        // Store H[i,j] in Hessian matrix (row-major: i*n + j)
-        Value* hess_linear_idx = builder->CreateMul(hess_i, n);
-        hess_linear_idx = builder->CreateAdd(hess_linear_idx, hess_j);
-        Value* hess_store_ptr = builder->CreateGEP(double_type, typed_hess_elems, hess_linear_idx);
-        builder->CreateStore(second_deriv, hess_store_ptr);
-        
-        Value* hess_i_next = builder->CreateAdd(hess_i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(hess_i_next, hess_i_idx);
-        builder->CreateBr(hess_row_cond);
-        
-        builder->SetInsertPoint(hess_row_exit);
-        
-        // Reset tape for next column
-        builder->CreateCall(getArenaTapeResetFunc(), {pert_tape});
-        
-        // Next column
-        Value* hess_j_next = builder->CreateAdd(hess_j, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(hess_j_next, hess_j_idx);
-        builder->CreateBr(hess_col_cond);
-        
-        builder->SetInsertPoint(hess_col_exit);
-        
-        eshkol_info("Hessian computation complete");
-        // Tag as TENSOR_PTR for proper display handling
-        Value* hess_result_int = builder->CreatePtrToInt(typed_hess_ptr, int64_type);
-        return packPtrToTaggedValue(hess_result_int, ESHKOL_VALUE_HEAP_PTR);
-    }
-    // ===== N-DIMENSIONAL NULL VECTOR HELPER =====
-    // Create n-dimensional null vector (all zeros) for error handling
-    // Handles ANY dimension at runtime - NEVER hardcode dimensions!
-    Value* createNullVectorTensor(Value* dimension) {
-        return autodiff_->createNullVectorTensor(dimension);
-    }
 
-    Value* extractTensorElement(Value* tensor_ptr, std::vector<Value*> indices) {
-        return autodiff_->extractTensorElement(tensor_ptr, indices);
-    }
-
-    Value* extractJacobianElement(Value* jacobian_ptr, Value* row_idx, Value* col_idx, Value* n) {
-        return autodiff_->extractJacobianElement(jacobian_ptr, row_idx, col_idx, n);
-    }
-
-    
-    // ===== END PHASE 3 OPERATORS =====
-    // ===== PHASE 4: VECTOR CALCULUS OPERATORS =====
-    // Differential geometry operators for physics simulations and field theory
-    
-    // Divergence: ∇·F for vector field F: ℝⁿ → ℝⁿ
-    // Returns scalar: ∇·F = ∂F₁/∂x₁ + ∂F₂/∂x₂ + ... + ∂Fₙ/∂xₙ
-    // This is the trace of the Jacobian matrix
-    Value* codegenDivergence(const eshkol_operations_t* op) {
-        return autodiff_->divergence(op);
-    }
-
-    
-    // Curl: ∇×F for vector field F: ℝ³ → ℝ³
-    // Returns vector: (∇×F) = [∂F₃/∂x₂ - ∂F₂/∂x₃, ∂F₁/∂x₃ - ∂F₃/∂x₁, ∂F₂/∂x₁ - ∂F₁/∂x₂]
-    // ONLY defined for 3D vector fields
-    Value* codegenCurl(const eshkol_operations_t* op) {
-        return autodiff_->curl(op);
-    }
-
-    
-    // Laplacian: ∇²f for scalar field f: ℝⁿ → ℝ
-    // Returns scalar: ∇²f = ∂²f/∂x₁² + ∂²f/∂x₂² + ... + ∂²f/∂xₙ²
-    // This is the trace of the Hessian matrix
-    Value* codegenLaplacian(const eshkol_operations_t* op) {
-        if (!op->laplacian_op.function || !op->laplacian_op.point) {
-            eshkol_error("Invalid laplacian operation - missing function or point");
-            return nullptr;
-        }
-        
-        eshkol_info("Computing Laplacian of scalar field");
-        
-        // The Laplacian is the sum of diagonal elements of the Hessian
-        // For f: ℝⁿ → ℝ, Hessian is n×n, Laplacian is trace(H)
-        
-        // Compute Hessian matrix first
-        eshkol_operations_t hessian_temp;
-        hessian_temp.op = ESHKOL_HESSIAN_OP;
-        hessian_temp.hessian_op.function = op->laplacian_op.function;
-        hessian_temp.hessian_op.point = op->laplacian_op.point;
-        
-        Value* hessian_tagged = codegenHessian(&hessian_temp);
-        if (!hessian_tagged) {
-            eshkol_error("Failed to compute Hessian for Laplacian");
-            return nullptr;
-        }
-        
-        // ENHANCED TYPE CHECK: Verify Hessian is a valid tensor (same fix as Jacobian operator)
-        Value* hessian_type = getTaggedValueType(hessian_tagged);
-        Value* hessian_base_type = getBaseType(hessian_type);
-
-        Value* hess_is_tensor_ptr = builder->CreateICmpEQ(hessian_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* hess_is_ad_tensor = builder->CreateICmpEQ(hessian_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* hess_is_valid = builder->CreateOr(hess_is_tensor_ptr, hess_is_ad_tensor);
-        
-        Function* lap_current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* hessian_valid = BasicBlock::Create(*context, "lap_hess_valid", lap_current_func);
-        BasicBlock* hessian_invalid = BasicBlock::Create(*context, "lap_hess_invalid", lap_current_func);
-        BasicBlock* lap_final = BasicBlock::Create(*context, "lap_final", lap_current_func);
-        
-        builder->CreateCondBr(hess_is_valid, hessian_valid, hessian_invalid);
-        
-        // Invalid hessian: return 0.0 instead of crashing (only for genuinely invalid types)
-        builder->SetInsertPoint(hessian_invalid);
-        eshkol_debug("Laplacian: Hessian returned non-tensor type, returning 0.0");
-        Value* zero_lap_result = ConstantFP::get(double_type, 0.0);
-        builder->CreateBr(lap_final);
-        
-        // Valid hessian: continue with normal computation
-        builder->SetInsertPoint(hessian_valid);
-        
-        // Extract tensor pointer from validated tagged value
-        Value* hessian_ptr_int = safeExtractInt64(hessian_tagged);
-        Value* hessian_ptr = builder->CreateIntToPtr(hessian_ptr_int, builder->getPtrTy());
-        
-        // Extract dimension n from Hessian (it's n×n)
-        Value* dims_field = builder->CreateStructGEP(tensor_type, hessian_ptr, 0);
-        Value* dims_ptr = builder->CreateLoad(PointerType::getUnqual(*context), dims_field);
-        Value* typed_dims_ptr = builder->CreatePointerCast(dims_ptr, builder->getPtrTy());
-        
-        Value* n_ptr = builder->CreateGEP(int64_type, typed_dims_ptr,
-            ConstantInt::get(int64_type, 0));
-        Value* n = builder->CreateLoad(int64_type, n_ptr);
-        
-        // Get Hessian elements
-        Value* elements_field = builder->CreateStructGEP(tensor_type, hessian_ptr, 2);
-        Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field);
-        Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
-        
-        // Sum diagonal elements: H[0,0] + H[1,1] + ... + H[n-1,n-1]
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* sum_loop_cond = BasicBlock::Create(*context, "lap_sum_cond", current_func);
-        BasicBlock* sum_loop_body = BasicBlock::Create(*context, "lap_sum_body", current_func);
-        BasicBlock* sum_loop_exit = BasicBlock::Create(*context, "lap_sum_exit", current_func);
-        
-        Value* sum_idx = builder->CreateAlloca(int64_type, nullptr, "sum_idx");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), sum_idx);
-        
-        Value* laplacian_acc = builder->CreateAlloca(double_type, nullptr, "lap_acc");
-        builder->CreateStore(ConstantFP::get(double_type, 0.0), laplacian_acc);
-        
-        builder->CreateBr(sum_loop_cond);
-        
-        builder->SetInsertPoint(sum_loop_cond);
-        Value* i = builder->CreateLoad(int64_type, sum_idx);
-        Value* i_less_n = builder->CreateICmpULT(i, n);
-        builder->CreateCondBr(i_less_n, sum_loop_body, sum_loop_exit);
-        
-        builder->SetInsertPoint(sum_loop_body);
-        
-        // Calculate diagonal index: i*n + i
-        Value* linear_idx = builder->CreateMul(i, n);
-        linear_idx = builder->CreateAdd(linear_idx, i);
-        
-        // Load H[i,i]
-        Value* elem_ptr = builder->CreateGEP(double_type,
-            typed_elements_ptr, linear_idx);
-        Value* diagonal_elem = builder->CreateLoad(double_type, elem_ptr);
-        
-        // Add to accumulator
-        Value* current_lap = builder->CreateLoad(double_type, laplacian_acc);
-        Value* new_lap = builder->CreateFAdd(current_lap, diagonal_elem);
-        builder->CreateStore(new_lap, laplacian_acc);
-        
-        Value* next_i = builder->CreateAdd(i, ConstantInt::get(int64_type, 1));
-        builder->CreateStore(next_i, sum_idx);
-        builder->CreateBr(sum_loop_cond);
-        
-        builder->SetInsertPoint(sum_loop_exit);
-        Value* laplacian_result = builder->CreateLoad(double_type, laplacian_acc);
-        builder->CreateBr(lap_final);
-        
-        // Merge valid and invalid paths
-        builder->SetInsertPoint(lap_final);
-        PHINode* lap_result_phi = builder->CreatePHI(double_type, 2, "lap_result");
-        lap_result_phi->addIncoming(zero_lap_result, hessian_invalid);
-        lap_result_phi->addIncoming(laplacian_result, sum_loop_exit);
-
-        eshkol_info("Laplacian computation complete");
-        return packDoubleToTaggedValue(lap_result_phi);
-    }
-    
-    // Directional Derivative: D_v f = ∇f · v
-    // Computes the derivative of scalar field f in direction v
     Value* codegenDirectionalDerivative(const eshkol_operations_t* op) {
         return autodiff_->directionalDerivative(op);
     }
-
 
     // ===== END PHASE 4: VECTOR CALCULUS OPERATORS =====
 
     // ===== OALR (Ownership-Aware Lexical Regions) CODEGEN =====
 
-    // Codegen for (with-region body ...)
-    // Creates a region, evaluates body expressions, then destroys the region
     Value* codegenWithRegion(const eshkol_operations_t* op) {
         if (!op || !op->with_region_op.body || op->with_region_op.num_body_exprs == 0) {
             eshkol_error("Invalid with-region: missing body");

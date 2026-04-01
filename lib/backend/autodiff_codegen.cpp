@@ -11,6 +11,7 @@
  */
 
 #include <eshkol/backend/autodiff_codegen.h>
+#include <eshkol/backend/binding_codegen.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -1457,10 +1458,10 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
 
     // CRITICAL: Save and disable TCO context during gradient function generation
     // The gradient function has its own internal loops that must not be confused with TCO
-    auto saved_tco_ctx = binding_->getTCOContext();
-    binding_->getTCOContext().enabled = false;
-    binding_->getTCOContext().func_name = "";
-    binding_->getTCOContext().loop_header = nullptr;
+    auto saved_tco_ctx = static_cast<eshkol::BindingCodegen*>(binding_opaque_)->getTCOContext();
+    static_cast<eshkol::BindingCodegen*>(binding_opaque_)->getTCOContext().enabled = false;
+    static_cast<eshkol::BindingCodegen*>(binding_opaque_)->getTCOContext().func_name = "";
+    static_cast<eshkol::BindingCodegen*>(binding_opaque_)->getTCOContext().loop_header = nullptr;
 
     // Function takes a rest list (variadic args packaged as cons list) + captured function
     std::vector<Type*> param_types = {ctx_.taggedValueType(), PointerType::getUnqual(ctx_.context())};
@@ -1697,7 +1698,7 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     }
 
     // Restore TCO context
-    binding_->getTCOContext() = saved_tco_ctx;
+    static_cast<eshkol::BindingCodegen*>(binding_opaque_)->getTCOContext() = saved_tco_ctx;
 
     // Register the gradient function
     (*function_table_)[grad_func_name] = grad_func;
