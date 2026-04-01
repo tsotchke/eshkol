@@ -1415,11 +1415,683 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 }
 
 llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
-    // Jacobian computation is handled directly in llvm_codegen.cpp via the jacobian operator.
-    // This method exists for API completeness but is not used in the current codegen pipeline.
-    eshkol_error("AutodiffCodegen::jacobian called directly - use jacobian operator in main codegen instead");
-    return tagged_.packNull();
+    using namespace llvm;
+    if (!op->jacobian_op.function || !op->jacobian_op.point) {
+        eshkol_error("Invalid jacobian operation - missing function or point");
+        return nullptr;
+    }
+    
+    // Use class member ctx_.tensorType() (shared by ALL tensor operations)
+    // This prevents LLVM IR type conflicts from shadowing the class member
+    
+    eshkol_info("Computing Jacobian matrix using reverse-mode AD");
+    
+    // CRITICAL FIX: Must null-check before dyn_cast to avoid LLVM assertion
+    Value* func = resolve_lambda_callback_(op->jacobian_op.function, 0, callback_context_);
+    if (!func) {
+        eshkol_error("Failed to resolve function for Jacobian computation");
+        return nullptr;
+    }
+    
+    Function* func_ptr = dyn_cast<Function>(func);
+    if (!func_ptr) {
+        eshkol_error("Jacobian requires function, got non-function");
+        return nullptr;
+    }
+    
+    llvm::Value* vector_val_raw = codegen_ast_callback_(op->jacobian_op.point, callback_context_);
+    if (!vector_val_raw) {
+        eshkol_error("Failed to evaluate Jacobian point");
+        return nullptr;
+    }
+
+    // Get arena for OALR-compliant tensor allocation
+    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+    // CRITICAL FIX: Handle Scheme VECTOR_PTR - convert to tensor format
+    // Get current function for basic blocks
+    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+    // Convert TypedValue to tagged_value
+    // Tensor literal fix: codegenTensor returns ptr-as-int64 which gets packed as INT64;
+    // re-pack as HEAP_PTR so type dispatch correctly detects tensor subtype
+    Value* vector_val = vector_val_raw;
+    if (vector_val && vector_val->getType() != ctx_.taggedValueType()) {
+        if (vector_val->getType()->isIntegerTy(64)) {
+            if (op->jacobian_op.point->type == ESHKOL_TENSOR) {
+                vector_val = tagged_.packPtr(vector_val, ESHKOL_VALUE_HEAP_PTR);
+            } else {
+                vector_val = tagged_.packInt64(vector_val, true);
+            }
+        } else if (vector_val->getType()->isDoubleTy()) {
+            vector_val = tagged_.packDouble(vector_val);
+        }
+    }
+    if (op->jacobian_op.point->type == ESHKOL_TENSOR) {
+        Value* data_val = tagged_.unpackInt64(vector_val);
+        vector_val = tagged_.packPtr(data_val, ESHKOL_VALUE_HEAP_PTR);
+    }
+
+    Value* input_type = tagged_.getType(vector_val);
+    Value* input_base_type = tagged_.getBaseType(input_type);
+
+    // M1 CONSOLIDATION: Check for both HEAP_PTR (consolidated) and legacy VECTOR_PTR
+    Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(input_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    Value* is_legacy_vector = ctx_.builder().CreateICmpEQ(input_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+    BasicBlock* jac_heap_dispatch = BasicBlock::Create(ctx_.context(), "jac_heap_dispatch", current_func);
+    BasicBlock* jac_check_legacy = BasicBlock::Create(ctx_.context(), "jac_check_legacy", current_func);
+    BasicBlock* jac_scheme_vector_input = BasicBlock::Create(ctx_.context(), "jac_scheme_vector", current_func);
+    BasicBlock* jac_tensor_input = BasicBlock::Create(ctx_.context(), "jac_tensor_input", current_func);
+    BasicBlock* jac_merge_input = BasicBlock::Create(ctx_.context(), "jac_merge_input", current_func);
+
+    // First check for HEAP_PTR (consolidated format)
+    ctx_.builder().CreateCondBr(is_heap_ptr, jac_heap_dispatch, jac_check_legacy);
+
+    // HEAP_PTR dispatch - read subtype from header
+    ctx_.builder().SetInsertPoint(jac_heap_dispatch);
+    Value* jac_heap_ptr_val = tagged_.unpackPtr(vector_val);
+    Value* jac_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), jac_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));
+    Value* jac_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), jac_header_ptr);
+    Value* jac_is_vec_subtype = ctx_.builder().CreateICmpEQ(jac_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    ctx_.builder().CreateCondBr(jac_is_vec_subtype, jac_scheme_vector_input, jac_tensor_input);
+
+    // Legacy VECTOR_PTR fallback
+    ctx_.builder().SetInsertPoint(jac_check_legacy);
+    ctx_.builder().CreateCondBr(is_legacy_vector, jac_scheme_vector_input, jac_tensor_input);
+
+    // SCHEME VECTOR: Convert to tensor format
+    ctx_.builder().SetInsertPoint(jac_scheme_vector_input);
+
+    Value* jac_scheme_vec_ptr_int = tagged_.unpackInt64(vector_val);
+    Value* jac_scheme_vec_ptr = ctx_.builder().CreateIntToPtr(jac_scheme_vec_ptr_int, ctx_.builder().getPtrTy());
+    Value* jac_scheme_len_ptr = ctx_.builder().CreateBitCast(jac_scheme_vec_ptr, PointerType::getUnqual(ctx_.context()));
+    Value* jac_scheme_len = ctx_.builder().CreateLoad(ctx_.int64Type(), jac_scheme_len_ptr);
+
+    // Allocate tensor via arena (OALR compliant - no malloc)
+    Value* jac_typed_scheme_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set dimensions
+    Value* jac_scheme_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* jac_scheme_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_scheme_dims_size});
+    Value* jac_typed_scheme_dims = ctx_.builder().CreatePointerCast(jac_scheme_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(jac_scheme_len, jac_typed_scheme_dims);
+
+    ctx_.builder().CreateStore(jac_typed_scheme_dims, ctx_.builder().CreateStructGEP(ctx_.tensorType(), jac_typed_scheme_tensor, 0));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), jac_typed_scheme_tensor, 1));
+    ctx_.builder().CreateStore(jac_scheme_len, ctx_.builder().CreateStructGEP(ctx_.tensorType(), jac_typed_scheme_tensor, 3));
+
+    // Allocate and copy elements
+    Value* jac_scheme_elems_size = ctx_.builder().CreateMul(jac_scheme_len,
+        ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    Value* jac_scheme_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_scheme_elems_size});
+    Value* jac_typed_scheme_elems = ctx_.builder().CreatePointerCast(jac_scheme_elems_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(jac_typed_scheme_elems, ctx_.builder().CreateStructGEP(ctx_.tensorType(), jac_typed_scheme_tensor, 2));
+
+    // Copy elements loop
+    Value* jac_scheme_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), jac_scheme_vec_ptr,
+        ConstantInt::get(ctx_.int64Type(), 8));
+    Value* jac_scheme_elem_base_typed = ctx_.builder().CreateBitCast(jac_scheme_elem_base, PointerType::getUnqual(ctx_.context()));
+
+    BasicBlock* jac_svec_copy_cond = BasicBlock::Create(ctx_.context(), "jac_svec_copy_cond", current_func);
+    BasicBlock* jac_svec_copy_body = BasicBlock::Create(ctx_.context(), "jac_svec_copy_body", current_func);
+    BasicBlock* jac_svec_copy_done = BasicBlock::Create(ctx_.context(), "jac_svec_copy_done", current_func);
+
+    Value* jac_svec_copy_i = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "jac_svec_copy_i");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), jac_svec_copy_i);
+    ctx_.builder().CreateBr(jac_svec_copy_cond);
+
+    ctx_.builder().SetInsertPoint(jac_svec_copy_cond);
+    Value* jac_svec_i = ctx_.builder().CreateLoad(ctx_.int64Type(), jac_svec_copy_i);
+    Value* jac_svec_cond = ctx_.builder().CreateICmpULT(jac_svec_i, jac_scheme_len);
+    ctx_.builder().CreateCondBr(jac_svec_cond, jac_svec_copy_body, jac_svec_copy_done);
+
+    ctx_.builder().SetInsertPoint(jac_svec_copy_body);
+    Value* jac_svec_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), jac_scheme_elem_base_typed, jac_svec_i);
+    Value* jac_svec_tagged_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), jac_svec_src_ptr);
+    Value* jac_svec_double_val = tagged_.unpackDouble(jac_svec_tagged_elem);
+    Value* jac_svec_as_int64 = ctx_.builder().CreateBitCast(jac_svec_double_val, ctx_.int64Type());
+    Value* jac_svec_dst_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), jac_typed_scheme_elems, jac_svec_i);
+    ctx_.builder().CreateStore(jac_svec_as_int64, jac_svec_dst_ptr);
+    Value* jac_svec_next_i = ctx_.builder().CreateAdd(jac_svec_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(jac_svec_next_i, jac_svec_copy_i);
+    ctx_.builder().CreateBr(jac_svec_copy_cond);
+
+    ctx_.builder().SetInsertPoint(jac_svec_copy_done);
+    Value* jac_scheme_tensor_int = ctx_.builder().CreatePtrToInt(jac_typed_scheme_tensor, ctx_.int64Type());
+    Value* jac_scheme_vector_tagged = tagged_.packPtr(jac_scheme_tensor_int, ESHKOL_VALUE_HEAP_PTR);
+    ctx_.builder().CreateBr(jac_merge_input);
+    BasicBlock* jac_scheme_exit = ctx_.builder().GetInsertBlock();
+
+    // TENSOR INPUT: Use as-is
+    ctx_.builder().SetInsertPoint(jac_tensor_input);
+    ctx_.builder().CreateBr(jac_merge_input);
+    BasicBlock* jac_tensor_exit = ctx_.builder().GetInsertBlock();
+
+    // MERGE
+    ctx_.builder().SetInsertPoint(jac_merge_input);
+    PHINode* jac_actual_input = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "jac_input");
+    jac_actual_input->addIncoming(jac_scheme_vector_tagged, jac_scheme_exit);
+    jac_actual_input->addIncoming(vector_val, jac_tensor_exit);
+
+    // Extract tensor pointer from merged input
+    Value* vector_ptr_int = tagged_.unpackInt64(jac_actual_input);
+
+    // Extract input dimension n from input vector
+    Value* input_ptr = ctx_.builder().CreateIntToPtr(vector_ptr_int, ctx_.builder().getPtrTy());
+    
+    Value* input_dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), input_ptr, 0);
+    Value* input_dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), input_dims_field);
+    Value* typed_input_dims = ctx_.builder().CreatePointerCast(input_dims_ptr, ctx_.builder().getPtrTy());
+    
+    Value* input_elements_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), input_ptr, 2);
+    Value* input_elements_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), input_elements_field);
+    Value* typed_input_elements = ctx_.builder().CreatePointerCast(input_elements_ptr, ctx_.builder().getPtrTy());
+    
+    Value* n_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_input_dims,
+        ConstantInt::get(ctx_.int64Type(), 0));
+    Value* n = ctx_.builder().CreateLoad(ctx_.int64Type(), n_ptr);
+
+    // Call function once to determine output dimension m
+    // CRITICAL FIX: Pack as TENSOR_PTR not INT64, so identity lambdas preserve type
+    Value* vector_tagged = tagged_.packPtr(vector_ptr_int, ESHKOL_VALUE_HEAP_PTR);
+    // CLOSURE FIX: Load captures for function call
+    std::vector<Value*> test_call_args = {vector_tagged};
+    std::vector<Value*> jac_test_captures = loadCapturesForAutodiff(func_ptr, "Jacobian test call");
+    test_call_args.insert(test_call_args.end(), jac_test_captures.begin(), jac_test_captures.end());
+    Value* test_output_tagged = ctx_.builder().CreateCall(func_ptr, test_call_args);
+
+    // ENHANCED TYPE CHECK: Accept tensors, AD tensors, AND Scheme vectors as valid outputs
+    Value* output_type = tagged_.getType(test_output_tagged);
+    Value* output_base_type = tagged_.getBaseType(output_type);
+
+    // M1 CONSOLIDATION: Check for valid output types
+    // For HEAP_PTR, we need to check the subtype to distinguish vector (2) from tensor (3)
+    Value* output_is_heap_ptr = ctx_.builder().CreateICmpEQ(output_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    Value* output_is_callable = ctx_.builder().CreateICmpEQ(output_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+
+    // Any HEAP_PTR or CALLABLE is a valid vector type (tensor or vector)
+    Value* output_has_vector_type = ctx_.builder().CreateOr(output_is_heap_ptr, output_is_callable);
+
+    // CRITICAL FIX: Create null tagged value BEFORE branching (for PHI node dominance)
+    Value* null_jac_tagged = tagged_.packInt64(
+        ConstantInt::get(ctx_.int64Type(), 0), true);
+
+    // Create blocks for validation flow
+    BasicBlock* output_valid_block = BasicBlock::Create(ctx_.context(), "jac_output_valid", current_func);
+    BasicBlock* output_invalid_block = BasicBlock::Create(ctx_.context(), "jac_output_invalid", current_func);
+    BasicBlock* jac_return_block = BasicBlock::Create(ctx_.context(), "jac_return", current_func);
+
+    ctx_.builder().CreateCondBr(output_has_vector_type, output_valid_block, output_invalid_block);
+
+    // Invalid output: Generate runtime code to extract and report actual type value
+    ctx_.builder().SetInsertPoint(output_invalid_block);
+    // This block now only reached for genuinely invalid types (NULL, INT64, DOUBLE, CONS_PTR)
+    Function* printf_func_for_error = ctx_.lookupFunction("printf");
+    if (printf_func_for_error) {
+        // Create alloca for type value at function entry to ensure dominance
+        IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
+        Function* func = ctx_.builder().GetInsertBlock()->getParent();
+        if (func && !func->empty()) {
+            BasicBlock& entry = func->getEntryBlock();
+            ctx_.builder().SetInsertPoint(&entry, entry.begin());
+        }
+        Value* type_storage = ctx_.builder().CreateAlloca(ctx_.int8Type(), nullptr, "invalid_type");
+        ctx_.builder().restoreIP(saved_ip);
+
+        // Store the runtime type value and extend to int for printf
+        ctx_.builder().CreateStore(output_base_type, type_storage);
+        Value* type_val = ctx_.builder().CreateLoad(ctx_.int8Type(), type_storage);
+        Value* type_as_int = ctx_.builder().CreateZExt(type_val, ctx_.int32Type());
+
+        // Print error with actual runtime type value (provides better debugging!)
+        ctx_.builder().CreateCall(printf_func_for_error, {
+            ctx_.internString("Jacobian ERROR: function returned non-vector type %d (expected 6=TENSOR, 5=AD_TENSOR, or 4=VECTOR_PTR)\n"),
+            type_as_int
+        });
+    }
+    ctx_.builder().CreateBr(jac_return_block);
+
+    // Valid output: Handle both tensor and Scheme vector formats
+    ctx_.builder().SetInsertPoint(output_valid_block);
+
+
+    // Branch based on whether output is Scheme vector or tensor
+    // For HEAP_PTR, check subtype to distinguish vector (2) from tensor (3)
+    BasicBlock* jac_output_check_subtype = BasicBlock::Create(ctx_.context(), "jac_output_check_subtype", current_func);
+    BasicBlock* jac_output_scheme_vec = BasicBlock::Create(ctx_.context(), "jac_output_scheme_vec", current_func);
+    BasicBlock* jac_output_tensor = BasicBlock::Create(ctx_.context(), "jac_output_tensor", current_func);
+    BasicBlock* jac_output_merge = BasicBlock::Create(ctx_.context(), "jac_output_merge", current_func);
+
+    // If HEAP_PTR, check subtype; otherwise go to tensor path (AD_TENSOR/CALLABLE)
+    ctx_.builder().CreateCondBr(output_is_heap_ptr, jac_output_check_subtype, jac_output_tensor);
+
+    // Check subtype in header to distinguish Scheme vector from tensor
+    ctx_.builder().SetInsertPoint(jac_output_check_subtype);
+    Value* test_out_ptr_int = tagged_.unpackInt64(test_output_tagged);
+    Value* test_out_ptr = ctx_.builder().CreateIntToPtr(test_out_ptr_int, ctx_.builder().getPtrTy());
+    Value* test_out_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), test_out_ptr, ConstantInt::get(ctx_.int64Type(), -8));
+    Value* test_out_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), test_out_header_ptr);
+    Value* test_out_is_svec = ctx_.builder().CreateICmpEQ(test_out_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    ctx_.builder().CreateCondBr(test_out_is_svec, jac_output_scheme_vec, jac_output_tensor);
+
+    // SCHEME VECTOR OUTPUT: Extract dimension directly from vector length
+    ctx_.builder().SetInsertPoint(jac_output_scheme_vec);
+    Value* jac_out_svec_ptr_int = tagged_.unpackInt64(test_output_tagged);
+    Value* jac_out_svec_ptr = ctx_.builder().CreateIntToPtr(jac_out_svec_ptr_int, ctx_.builder().getPtrTy());
+    Value* jac_out_svec_len_ptr = ctx_.builder().CreateBitCast(jac_out_svec_ptr, PointerType::getUnqual(ctx_.context()));
+    Value* jac_out_svec_m = ctx_.builder().CreateLoad(ctx_.int64Type(), jac_out_svec_len_ptr);
+    ctx_.builder().CreateBr(jac_output_merge);
+    BasicBlock* jac_out_svec_exit = ctx_.builder().GetInsertBlock();
+
+    // TENSOR OUTPUT: Extract dimension from tensor structure
+    ctx_.builder().SetInsertPoint(jac_output_tensor);
+    Value* test_output_int = tagged_.unpackInt64(test_output_tagged);
+    Value* test_output_ptr = ctx_.builder().CreateIntToPtr(test_output_int, ctx_.builder().getPtrTy());
+
+    Value* output_dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), test_output_ptr, 0);
+    Value* output_dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), output_dims_field);
+
+    Value* typed_output_dims = ctx_.builder().CreatePointerCast(output_dims_ptr, ctx_.builder().getPtrTy());
+
+    Value* m_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_output_dims,
+        ConstantInt::get(ctx_.int64Type(), 0));
+
+    Value* jac_out_tensor_m = ctx_.builder().CreateLoad(ctx_.int64Type(), m_ptr);
+    ctx_.builder().CreateBr(jac_output_merge);
+    BasicBlock* jac_out_tensor_exit = ctx_.builder().GetInsertBlock();
+
+    // MERGE: Get m from whichever path we took
+    ctx_.builder().SetInsertPoint(jac_output_merge);
+    PHINode* m = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "jac_output_m");
+    m->addIncoming(jac_out_svec_m, jac_out_svec_exit);
+    m->addIncoming(jac_out_tensor_m, jac_out_tensor_exit);
+    
+    // Allocate Jacobian matrix via arena (OALR compliant - no malloc)
+    Value* typed_jac_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set dimensions [m, n]
+    Value* jac_dims_size = ctx_.builder().CreateMul(
+        ConstantInt::get(ctx_.int64Type(), 2),
+        ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t)));
+    Value* jac_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_dims_size});
+    Value* typed_jac_dims = ctx_.builder().CreatePointerCast(jac_dims_ptr, ctx_.builder().getPtrTy());
+
+    ctx_.builder().CreateStore(m, typed_jac_dims);
+    Value* jac_dim1_slot = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_jac_dims,
+        ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(n, jac_dim1_slot);
+
+    // Store dimensions in tensor
+    Value* jac_dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_jac_ptr, 0);
+    ctx_.builder().CreateStore(typed_jac_dims, jac_dims_field);
+
+    // Set num_dimensions = 2
+    Value* jac_num_dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_jac_ptr, 1);
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 2), jac_num_dims_field);
+
+    // Set total_elements = m * n
+    Value* total_elems = ctx_.builder().CreateMul(m, n);
+    Value* jac_total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_jac_ptr, 3);
+    ctx_.builder().CreateStore(total_elems, jac_total_field);
+
+    // Allocate elements array (m*n doubles)
+    Value* jac_elems_size = ctx_.builder().CreateMul(total_elems,
+        ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    Value* jac_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_elems_size});
+    Value* typed_jac_elems = ctx_.builder().CreatePointerCast(jac_elems_ptr, ctx_.builder().getPtrTy());
+    
+    Value* jac_elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_jac_ptr, 2);
+    ctx_.builder().CreateStore(typed_jac_elems, jac_elems_field);
+
+    BasicBlock* outer_cond = BasicBlock::Create(ctx_.context(), "jac_outer_cond", current_func);
+    BasicBlock* outer_body = BasicBlock::Create(ctx_.context(), "jac_outer_body", current_func);
+    BasicBlock* inner_cond = BasicBlock::Create(ctx_.context(), "jac_inner_cond", current_func);
+    BasicBlock* inner_body = BasicBlock::Create(ctx_.context(), "jac_inner_body", current_func);
+    BasicBlock* inner_exit = BasicBlock::Create(ctx_.context(), "jac_inner_exit", current_func);
+    BasicBlock* outer_exit = BasicBlock::Create(ctx_.context(), "jac_outer_exit", current_func);
+
+    Value* out_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "out_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), out_idx);
+
+    ctx_.builder().CreateBr(outer_cond);
+    
+    // Outer: i_out < m
+    ctx_.builder().SetInsertPoint(outer_cond);
+    Value* i_out = ctx_.builder().CreateLoad(ctx_.int64Type(), out_idx);
+    Value* i_out_less_m = ctx_.builder().CreateICmpULT(i_out, m);
+    ctx_.builder().CreateCondBr(i_out_less_m, outer_body, outer_exit);
+    
+    ctx_.builder().SetInsertPoint(outer_body);
+
+    Value* in_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "in_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), in_idx);
+    ctx_.builder().CreateBr(inner_cond);
+    
+    // Inner: j_in < n
+    ctx_.builder().SetInsertPoint(inner_cond);
+    Value* j_in = ctx_.builder().CreateLoad(ctx_.int64Type(), in_idx);
+    Value* j_in_less_n = ctx_.builder().CreateICmpULT(j_in, n);
+    ctx_.builder().CreateCondBr(j_in_less_n, inner_body, inner_exit);
+    
+    // Compute ∂Fᵢ/∂xⱼ
+    ctx_.builder().SetInsertPoint(inner_body);
+
+    // arena_ptr defined at function start
+    Value* jac_tape = ctx_.builder().CreateCall(mem_.getArenaAllocateTape(),
+        {arena_ptr, ConstantInt::get(ctx_.int64Type(), 1024)});
+    
+    // CRITICAL FIX: Use global AD tape pointer, not member variable!
+    // current_tape_ptr is compile-time C++ state, jac_tape is runtime LLVM Value*
+    // Assigning Value* to member variable corrupts memory - use global instead
+    ctx_.builder().CreateStore(jac_tape, ctx_.currentAdTape());
+    
+    // Create n AD variable nodes via arena (OALR compliant - no malloc)
+    Value* jac_var_nodes_size = ctx_.builder().CreateMul(n,
+        ConstantInt::get(ctx_.int64Type(), sizeof(void*)));
+    Value* jac_var_nodes = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_var_nodes_size});
+    Value* typed_jac_var_nodes = ctx_.builder().CreatePointerCast(jac_var_nodes, ctx_.builder().getPtrTy());
+    
+    // Initialize all variable nodes with input values
+    BasicBlock* jac_init_cond = BasicBlock::Create(ctx_.context(), "jac_init_cond", current_func);
+    BasicBlock* jac_init_body = BasicBlock::Create(ctx_.context(), "jac_init_body", current_func);
+    BasicBlock* jac_init_exit = BasicBlock::Create(ctx_.context(), "jac_init_exit", current_func);
+    
+    Value* jac_init_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "jac_init_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), jac_init_idx);
+
+    ctx_.builder().CreateBr(jac_init_cond);
+    
+    ctx_.builder().SetInsertPoint(jac_init_cond);
+    Value* jac_init_i = ctx_.builder().CreateLoad(ctx_.int64Type(), jac_init_idx);
+    Value* jac_init_less = ctx_.builder().CreateICmpULT(jac_init_i, n);
+    ctx_.builder().CreateCondBr(jac_init_less, jac_init_body, jac_init_exit);
+    
+    ctx_.builder().SetInsertPoint(jac_init_body);
+
+    // CRITICAL FIX: Tensor elements stored as int64, load as int64 then convert
+    Value* jac_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(),
+        typed_input_elements, jac_init_i);
+    Value* jac_elem_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), jac_elem_ptr);
+
+    // FIX 1b: BitCast preserves IEEE754 bits, SIToFP corrupts them
+    Value* jac_elem_val = ctx_.builder().CreateBitCast(jac_elem_int64, ctx_.doubleType());
+    Value* jac_var_node = createADVariable(jac_elem_val, 0);
+    
+    Value* jac_node_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+        typed_jac_var_nodes, jac_init_i);
+    ctx_.builder().CreateStore(jac_var_node, jac_node_slot);
+    
+    Value* jac_next_init = ctx_.builder().CreateAdd(jac_init_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(jac_next_init, jac_init_idx);
+    ctx_.builder().CreateBr(jac_init_cond);
+    
+    ctx_.builder().SetInsertPoint(jac_init_exit);
+    
+    // Build AD tensor for function call via arena (OALR compliant - no malloc)
+    Value* typed_jac_ad_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+
+    // Set AD tensor structure
+    Value* jac_ad_dims_size = ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t));
+    Value* jac_ad_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_ad_dims_size});
+    Value* typed_jac_ad_dims = ctx_.builder().CreatePointerCast(jac_ad_dims_ptr, ctx_.builder().getPtrTy());
+
+    ctx_.builder().CreateStore(n, typed_jac_ad_dims);
+
+    // Set tensor fields directly
+    ctx_.builder().CreateStore(typed_jac_ad_dims,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_jac_ad_tensor, 0));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_jac_ad_tensor, 1));
+    ctx_.builder().CreateStore(n,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_jac_ad_tensor, 3));
+
+    // Allocate elements via arena
+    Value* jac_ad_elems_size = ctx_.builder().CreateMul(n,
+        ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t)));
+    Value* jac_ad_elems_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, jac_ad_elems_size});
+    Value* typed_jac_ad_elems = ctx_.builder().CreatePointerCast(jac_ad_elems_ptr, ctx_.builder().getPtrTy());
+    
+    ctx_.builder().CreateStore(typed_jac_ad_elems,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_jac_ad_tensor, 2));
+
+    // Copy nodes
+    BasicBlock* jac_copy_cond = BasicBlock::Create(ctx_.context(), "jac_copy_cond", current_func);
+    BasicBlock* jac_copy_body = BasicBlock::Create(ctx_.context(), "jac_copy_body", current_func);
+    BasicBlock* jac_copy_exit = BasicBlock::Create(ctx_.context(), "jac_copy_exit", current_func);
+    
+    Value* jac_copy_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "jac_copy_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), jac_copy_idx);
+    ctx_.builder().CreateBr(jac_copy_cond);
+    
+    ctx_.builder().SetInsertPoint(jac_copy_cond);
+    Value* jac_copy_i = ctx_.builder().CreateLoad(ctx_.int64Type(), jac_copy_idx);
+    Value* jac_copy_less = ctx_.builder().CreateICmpULT(jac_copy_i, n);
+    ctx_.builder().CreateCondBr(jac_copy_less, jac_copy_body, jac_copy_exit);
+    
+    ctx_.builder().SetInsertPoint(jac_copy_body);
+
+    Value* jac_src_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+        typed_jac_var_nodes, jac_copy_i);
+    Value* jac_src_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), jac_src_slot);
+
+    Value* jac_node_int = ctx_.builder().CreatePtrToInt(jac_src_node, ctx_.int64Type());
+
+    Value* jac_dst_slot = ctx_.builder().CreateGEP(ctx_.int64Type(),
+        typed_jac_ad_elems, jac_copy_i);
+    ctx_.builder().CreateStore(jac_node_int, jac_dst_slot);
+    
+    Value* jac_next_copy = ctx_.builder().CreateAdd(jac_copy_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(jac_next_copy, jac_copy_idx);
+    ctx_.builder().CreateBr(jac_copy_cond);
+
+    ctx_.builder().SetInsertPoint(jac_copy_exit);
+    
+    // Call function to get output
+    Value* jac_ad_tensor_int = ctx_.builder().CreatePtrToInt(typed_jac_ad_tensor, ctx_.int64Type());
+    // CRITICAL FIX: Pack as TENSOR_PTR not INT64, so identity lambdas preserve type
+    Value* jac_ad_tensor_tagged = tagged_.packPtr(jac_ad_tensor_int, ESHKOL_VALUE_HEAP_PTR);
+    
+    // PHASE 1 FIX: Set AD mode flag to true before calling lambda
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
+
+    // CLOSURE FIX: Load captures for function call
+    std::vector<Value*> jac_call_args = {jac_ad_tensor_tagged};
+    std::vector<Value*> jac_captures = loadCapturesForAutodiff(func_ptr, "Jacobian AD call");
+    jac_call_args.insert(jac_call_args.end(), jac_captures.begin(), jac_captures.end());
+    Value* jac_output_tagged = ctx_.builder().CreateCall(func_ptr, jac_call_args);
+
+    // PHASE 1 FIX: Set AD mode flag back to false after lambda call
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
+
+    Value* jac_output_int = tagged_.unpackInt64(jac_output_tagged);
+    Value* jac_output_ptr = ctx_.builder().CreateIntToPtr(jac_output_int, ctx_.builder().getPtrTy());
+
+    // M1 CONSOLIDATION: Handle both tensor and Scheme vector output
+    // For HEAP_PTR, read the header subtype to distinguish vector vs tensor
+    Value* jac_loop_output_type = tagged_.getType(jac_output_tagged);
+    Value* jac_loop_output_base = tagged_.getBaseType(jac_loop_output_type);
+    Value* jac_loop_is_heap_ptr = ctx_.builder().CreateICmpEQ(jac_loop_output_base,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+    BasicBlock* jac_loop_svec_out = BasicBlock::Create(ctx_.context(), "jac_loop_svec_out", current_func);
+    BasicBlock* jac_loop_tensor_out = BasicBlock::Create(ctx_.context(), "jac_loop_tensor_out", current_func);
+    BasicBlock* jac_loop_merge_out = BasicBlock::Create(ctx_.context(), "jac_loop_merge_out", current_func);
+    BasicBlock* jac_loop_check_subtype = BasicBlock::Create(ctx_.context(), "jac_loop_check_subtype", current_func);
+
+    // First check if HEAP_PTR - if so, check subtype; otherwise go to tensor path
+    ctx_.builder().CreateCondBr(jac_loop_is_heap_ptr, jac_loop_check_subtype, jac_loop_tensor_out);
+
+    // Check subtype to distinguish Scheme vector (2) from tensor (3)
+    ctx_.builder().SetInsertPoint(jac_loop_check_subtype);
+    // Header is at ptr - 8 bytes
+    Value* jac_loop_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), jac_output_ptr,
+        ConstantInt::get(ctx_.int64Type(), -8));
+    // Subtype is first byte of header
+    Value* jac_loop_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), jac_loop_header_ptr);
+    Value* jac_is_scheme_vec = ctx_.builder().CreateICmpEQ(jac_loop_subtype,
+        ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    ctx_.builder().CreateCondBr(jac_is_scheme_vec, jac_loop_svec_out, jac_loop_tensor_out);
+
+    // SCHEME VECTOR OUTPUT: Extract element from Scheme vector
+    ctx_.builder().SetInsertPoint(jac_loop_svec_out);
+    // Scheme vector layout: [len: i64][elem0: tagged_value][elem1: tagged_value]...
+    Value* jac_svec_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), jac_output_ptr,
+        ConstantInt::get(ctx_.int64Type(), 8));  // Skip length field
+    Value* jac_svec_elem_base_typed = ctx_.builder().CreateBitCast(jac_svec_elem_base, PointerType::getUnqual(ctx_.context()));
+    Value* jac_svec_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), jac_svec_elem_base_typed, i_out);
+    Value* jac_svec_elem_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(), jac_svec_elem_ptr);
+    // Extract the int64 component from the tagged value (could be AD node ptr or double bits)
+    Value* jac_svec_elem_int = tagged_.unpackInt64(jac_svec_elem_tagged);
+    ctx_.builder().CreateBr(jac_loop_merge_out);
+    BasicBlock* jac_svec_out_exit = ctx_.builder().GetInsertBlock();
+
+    // TENSOR OUTPUT: Extract element from tensor structure
+    ctx_.builder().SetInsertPoint(jac_loop_tensor_out);
+    Value* out_elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), jac_output_ptr, 2);
+    Value* out_elems_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), out_elems_field);
+    Value* typed_out_elems = ctx_.builder().CreatePointerCast(out_elems_ptr, ctx_.builder().getPtrTy());
+    Value* jac_tensor_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_out_elems, i_out);
+    Value* jac_tensor_elem_int = ctx_.builder().CreateLoad(ctx_.int64Type(), jac_tensor_elem_ptr);
+    ctx_.builder().CreateBr(jac_loop_merge_out);
+    BasicBlock* jac_tensor_out_exit = ctx_.builder().GetInsertBlock();
+
+    // MERGE: Get output component from whichever path
+    ctx_.builder().SetInsertPoint(jac_loop_merge_out);
+    PHINode* out_comp_int = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "jac_out_comp");
+    out_comp_int->addIncoming(jac_svec_elem_int, jac_svec_out_exit);
+    out_comp_int->addIncoming(jac_tensor_elem_int, jac_tensor_out_exit);
+    
+    // CRITICAL SAFETY CHECK: Detect if output element is AD node or regular value
+    // AD nodes are allocated in heap (> 1000), doubles have IEEE754 exponent bits
+    Value* is_small_value = ctx_.builder().CreateICmpULT(out_comp_int,
+        ConstantInt::get(ctx_.int64Type(), 1000));
+    
+    // Check IEEE754 exponent for doubles (bit pattern detection)
+    Value* exp_mask_jac = ConstantInt::get(ctx_.int64Type(), 0x7FF0000000000000ULL);
+    Value* exp_bits_jac = ctx_.builder().CreateAnd(out_comp_int, exp_mask_jac);
+    Value* has_exponent_jac = ctx_.builder().CreateICmpNE(exp_bits_jac,
+        ConstantInt::get(ctx_.int64Type(), 0));
+    
+    // If has exponent, it's a double, not an AD node pointer
+    Value* is_likely_double_jac = ctx_.builder().CreateAnd(has_exponent_jac,
+        ctx_.builder().CreateNot(is_small_value));
+    
+    // Output is AD node only if: not small AND not double
+    Value* elem_is_ad_node = ctx_.builder().CreateAnd(
+        ctx_.builder().CreateNot(is_small_value),
+        ctx_.builder().CreateNot(is_likely_double_jac));
+    
+    // Allocate storage for partial derivative result (accessible across blocks)
+    Value* partial_deriv_storage = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "jac_partial_storage");
+    
+    BasicBlock* run_jac_backward = BasicBlock::Create(ctx_.context(), "jac_run_backward", current_func);
+    BasicBlock* skip_jac_backward = BasicBlock::Create(ctx_.context(), "jac_skip_backward", current_func);
+    BasicBlock* after_jac_backward = BasicBlock::Create(ctx_.context(), "jac_after_backward", current_func);
+    
+    ctx_.builder().CreateCondBr(elem_is_ad_node, run_jac_backward, skip_jac_backward);
+    
+    // Run backward pass only if output element is AD node
+    ctx_.builder().SetInsertPoint(run_jac_backward);
+
+    Value* out_comp_node = ctx_.builder().CreateIntToPtr(out_comp_int, PointerType::getUnqual(ctx_.context()));
+    backpropagate(out_comp_node, jac_tape);
+    
+    // Extract gradient from variable j_in
+    Value* jac_grad_var_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+        typed_jac_var_nodes, j_in);
+    Value* jac_grad_var_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), jac_grad_var_slot);
+    Value* computed_partial_deriv = loadNodeGradient(jac_grad_var_node);
+    ctx_.builder().CreateStore(computed_partial_deriv, partial_deriv_storage);
+    ctx_.builder().CreateBr(after_jac_backward);
+    
+    // Skip backward pass if output is not AD node (constant function)
+    ctx_.builder().SetInsertPoint(skip_jac_backward);
+
+    Value* zero_deriv_jac = ConstantFP::get(ctx_.doubleType(), 0.0);
+    ctx_.builder().CreateStore(zero_deriv_jac, partial_deriv_storage);
+    ctx_.builder().CreateBr(after_jac_backward);
+    
+    // Merge paths - load result from storage
+    ctx_.builder().SetInsertPoint(after_jac_backward);
+    Value* partial_deriv = ctx_.builder().CreateLoad(ctx_.doubleType(), partial_deriv_storage);
+    
+    // Store J[i_out,j_in] at linear index: i_out*n + j_in
+    Value* linear_idx = ctx_.builder().CreateMul(i_out, n);
+    linear_idx = ctx_.builder().CreateAdd(linear_idx, j_in);
+    
+    Value* jac_result_elem_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(),
+        typed_jac_elems, linear_idx);
+    ctx_.builder().CreateStore(partial_deriv, jac_result_elem_ptr);
+    
+    ctx_.builder().CreateCall(mem_.getArenaTapeReset(), {jac_tape});
+    
+    // CRITICAL FIX: Clear global tape pointer (like gradient does)
+    ctx_.builder().CreateStore(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())), ctx_.currentAdTape());
+    
+    Value* next_j_in = ctx_.builder().CreateAdd(j_in, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_j_in, in_idx);
+    ctx_.builder().CreateBr(inner_cond);
+    
+    ctx_.builder().SetInsertPoint(inner_exit);
+    Value* next_i_out = ctx_.builder().CreateAdd(i_out, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_i_out, out_idx);
+    ctx_.builder().CreateBr(outer_cond);
+    
+    ctx_.builder().SetInsertPoint(outer_exit);
+
+    // FIX: Return 2D tensor directly (like Hessian does) instead of converting to nested lists
+    // The tensor display now handles N-dimensional tensors correctly
+    // Tensor elements are stored as doubles (int64 bit representation)
+    // We need to convert from double to int64 bit pattern for proper storage
+
+    // The elements in typed_jac_elems were stored as double type - convert to int64 bit pattern
+    BasicBlock* jac_convert_cond = BasicBlock::Create(ctx_.context(), "jac_convert_cond", current_func);
+    BasicBlock* jac_convert_body = BasicBlock::Create(ctx_.context(), "jac_convert_body", current_func);
+    BasicBlock* jac_convert_exit = BasicBlock::Create(ctx_.context(), "jac_convert_exit", current_func);
+
+    Value* jac_convert_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "jac_convert_idx");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), jac_convert_idx);
+    ctx_.builder().CreateBr(jac_convert_cond);
+
+    ctx_.builder().SetInsertPoint(jac_convert_cond);
+    Value* jac_cvt_i = ctx_.builder().CreateLoad(ctx_.int64Type(), jac_convert_idx);
+    Value* jac_cvt_less = ctx_.builder().CreateICmpULT(jac_cvt_i, total_elems);
+    ctx_.builder().CreateCondBr(jac_cvt_less, jac_convert_body, jac_convert_exit);
+
+    ctx_.builder().SetInsertPoint(jac_convert_body);
+    // Load as double, convert to int64 bits, store back
+    Value* jac_cvt_elem_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), typed_jac_elems, jac_cvt_i);
+    Value* jac_cvt_elem_double = ctx_.builder().CreateLoad(ctx_.doubleType(), jac_cvt_elem_ptr);
+    Value* jac_cvt_elem_bits = ctx_.builder().CreateBitCast(jac_cvt_elem_double, ctx_.int64Type());
+    // Store as int64 (tensor elements are stored as int64 bit patterns)
+    Value* jac_cvt_store_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_jac_elems, jac_cvt_i);
+    ctx_.builder().CreateStore(jac_cvt_elem_bits, jac_cvt_store_ptr);
+    Value* jac_cvt_next = ctx_.builder().CreateAdd(jac_cvt_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(jac_cvt_next, jac_convert_idx);
+    ctx_.builder().CreateBr(jac_convert_cond);
+
+    ctx_.builder().SetInsertPoint(jac_convert_exit);
+
+    // Return the 2D Jacobian tensor directly
+    Value* jac_result_int = ctx_.builder().CreatePtrToInt(typed_jac_ptr, ctx_.int64Type());
+    Value* jac_result = tagged_.packPtr(jac_result_int, ESHKOL_VALUE_HEAP_PTR);
+    ctx_.builder().CreateBr(jac_return_block);
+
+    // Merge null and valid results
+    ctx_.builder().SetInsertPoint(jac_return_block);
+    PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "jac_result");
+    result_phi->addIncoming(null_jac_tagged, output_invalid_block);
+    result_phi->addIncoming(jac_result, jac_convert_exit);
+
+    return result_phi;
 }
+
 
 llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
     using namespace llvm;
@@ -3358,10 +4030,10 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
 
     llvm::GlobalVariable* ad_tape_depth = ctx_.adTapeDepth();
     llvm::GlobalVariable* ad_tape_stack = ctx_.adTapeStack();
-    llvm::GlobalVariable* current_ad_tape = ctx_.currentAdTape();
+    llvm::GlobalVariable* ctx_.currentAdTape() = ctx_.currentAdTape();
     llvm::GlobalVariable* ad_mode_active = ctx_.adModeActive();
 
-    if (!ad_tape_depth || !ad_tape_stack || !current_ad_tape || !ad_mode_active) {
+    if (!ad_tape_depth || !ad_tape_stack || !ctx_.currentAdTape() || !ad_mode_active) {
         eshkol_warn("pushTapeContext: AD globals not initialized");
         return;
     }
@@ -3395,7 +4067,7 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
     }
 
     // Save current tape to stack[depth]
-    llvm::Value* current_tape = ctx_.builder().CreateLoad(ctx_.ptrType(), current_ad_tape);
+    llvm::Value* current_tape = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
     llvm::ArrayType* stack_type = llvm::ArrayType::get(ctx_.ptrType(), CodegenContext::MAX_TAPE_DEPTH);
     llvm::Value* slot_ptr = ctx_.builder().CreateGEP(stack_type, ad_tape_stack,
         {llvm::ConstantInt::get(ctx_.int64Type(), 0), depth});
@@ -3406,7 +4078,7 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
     ctx_.builder().CreateStore(new_depth, ad_tape_depth);
 
     // Set new tape as current
-    ctx_.builder().CreateStore(new_tape, current_ad_tape);
+    ctx_.builder().CreateStore(new_tape, ctx_.currentAdTape());
 
     // Set AD mode active
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int1Type(), 1), ad_mode_active);
@@ -3415,10 +4087,10 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
 void AutodiffCodegen::popTapeContext() {
     llvm::GlobalVariable* ad_tape_depth = ctx_.adTapeDepth();
     llvm::GlobalVariable* ad_tape_stack = ctx_.adTapeStack();
-    llvm::GlobalVariable* current_ad_tape = ctx_.currentAdTape();
+    llvm::GlobalVariable* ctx_.currentAdTape() = ctx_.currentAdTape();
     llvm::GlobalVariable* ad_mode_active = ctx_.adModeActive();
 
-    if (!ad_tape_depth || !ad_tape_stack || !current_ad_tape || !ad_mode_active) {
+    if (!ad_tape_depth || !ad_tape_stack || !ctx_.currentAdTape() || !ad_mode_active) {
         eshkol_warn("popTapeContext: AD globals not initialized");
         return;
     }
@@ -3437,7 +4109,7 @@ void AutodiffCodegen::popTapeContext() {
     llvm::Value* saved_tape = ctx_.builder().CreateLoad(ctx_.ptrType(), slot_ptr);
 
     // Set restored tape as current
-    ctx_.builder().CreateStore(saved_tape, current_ad_tape);
+    ctx_.builder().CreateStore(saved_tape, ctx_.currentAdTape());
 
     // Set AD mode based on whether we still have active tapes
     // If new_depth == 0, we're exiting the outermost gradient
