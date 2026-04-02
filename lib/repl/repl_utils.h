@@ -11,10 +11,8 @@
 #include <vector>
 #include <unordered_set>
 #include <cstdlib>
-#include <filesystem>
+#include <unistd.h>
 #include <iostream>
-
-#include <eshkol/platform_runtime.h>
 
 namespace eshkol {
 namespace repl {
@@ -33,14 +31,10 @@ inline bool supports_color() {
 
         if (no_color && no_color[0] != '\0') {
             cached = 0;
-        } else if (!platform::stdout_isatty()) {
+        } else if (!isatty(STDOUT_FILENO)) {
             cached = 0;
         } else if (colorterm && colorterm[0] != '\0') {
             cached = 1;
-#ifdef _WIN32
-        } else if (std::getenv("WT_SESSION") || std::getenv("ANSICON")) {
-            cached = 1;
-#endif
         } else if (term) {
             std::string t(term);
             cached = (t.find("color") != std::string::npos ||
@@ -266,9 +260,9 @@ inline const std::vector<ReplCommand>& get_repl_commands() {
 // ============================================================================
 
 inline std::string get_history_file_path() {
-    auto home = platform::home_directory();
-    if (!home.empty()) {
-        return (std::filesystem::path(home) / ".eshkol_history").string();
+    const char* home = std::getenv("HOME");
+    if (home) {
+        return std::string(home) + "/.eshkol_history";
     }
     return ".eshkol_history";
 }
@@ -299,30 +293,6 @@ inline std::string truncate_string(const std::string& str, size_t max_len = 80) 
     return str.substr(0, max_len - 3) + "...";
 }
 
-inline bool supports_unicode_ui() {
-    return platform::stdout_supports_utf8();
-}
-
-inline const char* repl_rule() {
-    return supports_unicode_ui()
-        ? "───────────────────────────────────────────────────────────"
-        : "-----------------------------------------------------------";
-}
-
-inline const char* repl_short_rule() {
-    return supports_unicode_ui()
-        ? "─────────────────────────────────────"
-        : "-------------------------------------";
-}
-
-inline const char* repl_timing_header() {
-    return supports_unicode_ui() ? "─── Timing ───" : "--- Timing ---";
-}
-
-inline const char* repl_microseconds_unit() {
-    return supports_unicode_ui() ? " μs" : " us";
-}
-
 // ============================================================================
 // Welcome Banner
 // ============================================================================
@@ -331,30 +301,19 @@ inline void print_welcome_banner() {
     using namespace color;
 
     std::cout << "\n";
-    if (supports_unicode_ui()) {
-        std::cout << bold() << bright_cyan();
-        std::cout << R"(  ╭────────────────────────────────────────────────────────────────╮)" << "\n";
-        std::cout << R"(  │                                                                │)" << "\n";
-        std::cout << R"(  │)" << bright_yellow() << "        ███████╗███████╗██╗  ██╗██╗  ██╗ ██████╗ ██╗            " << bright_cyan() << R"(│)" << "\n";
-        std::cout << R"(  │)" << bright_yellow() << "        ██╔════╝██╔════╝██║  ██║██║ ██╔╝██╔═══██╗██║            " << bright_cyan() << R"(│)" << "\n";
-        std::cout << R"(  │)" << bright_yellow() << "        █████╗  ███████╗███████║█████╔╝ ██║   ██║██║            " << bright_cyan() << R"(│)" << "\n";
-        std::cout << R"(  │)" << bright_yellow() << "        ██╔══╝  ╚════██║██╔══██║██╔═██╗ ██║   ██║██║            " << bright_cyan() << R"(│)" << "\n";
-        std::cout << R"(  │)" << bright_yellow() << "        ███████╗███████║██║  ██║██║  ██╗╚██████╔╝███████╗       " << bright_cyan() << R"(│)" << "\n";
-        std::cout << R"(  │)" << bright_yellow() << "        ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝       " << bright_cyan() << R"(│)" << "\n";
-        std::cout << R"(  │                                                                │)" << "\n";
-        std::cout << R"(  │)" << reset() << dim() << "        A Scheme dialect with automatic differentiation         " << bold() << bright_cyan() << R"(│)" << "\n";
-        std::cout << R"(  │                                                                │)" << "\n";
-        std::cout << R"(  ╰────────────────────────────────────────────────────────────────╯)" << reset() << "\n";
-    } else {
-        std::cout << bold() << bright_cyan();
-        std::cout << R"(  .----------------------------------------------------------------.)" << "\n";
-        std::cout << R"(  |                                                                |)" << "\n";
-        std::cout << R"(  |                           E S H K O L                           |)" << "\n";
-        std::cout << R"(  |                                                                |)" << "\n";
-        std::cout << R"(  |        A Scheme dialect with automatic differentiation         |)" << "\n";
-        std::cout << R"(  |                                                                |)" << "\n";
-        std::cout << R"(  '----------------------------------------------------------------')" << reset() << "\n";
-    }
+    std::cout << bold() << bright_cyan();
+    std::cout << R"(  ╭────────────────────────────────────────────────────────────────╮)" << "\n";
+    std::cout << R"(  │                                                                │)" << "\n";
+    std::cout << R"(  │)" << bright_yellow() << "        ███████╗███████╗██╗  ██╗██╗  ██╗ ██████╗ ██╗            " << bright_cyan() << R"(│)" << "\n";
+    std::cout << R"(  │)" << bright_yellow() << "        ██╔════╝██╔════╝██║  ██║██║ ██╔╝██╔═══██╗██║            " << bright_cyan() << R"(│)" << "\n";
+    std::cout << R"(  │)" << bright_yellow() << "        █████╗  ███████╗███████║█████╔╝ ██║   ██║██║            " << bright_cyan() << R"(│)" << "\n";
+    std::cout << R"(  │)" << bright_yellow() << "        ██╔══╝  ╚════██║██╔══██║██╔═██╗ ██║   ██║██║            " << bright_cyan() << R"(│)" << "\n";
+    std::cout << R"(  │)" << bright_yellow() << "        ███████╗███████║██║  ██║██║  ██╗╚██████╔╝███████╗       " << bright_cyan() << R"(│)" << "\n";
+    std::cout << R"(  │)" << bright_yellow() << "        ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝       " << bright_cyan() << R"(│)" << "\n";
+    std::cout << R"(  │                                                                │)" << "\n";
+    std::cout << R"(  │)" << reset() << dim() << "        A Scheme dialect with automatic differentiation         " << bold() << bright_cyan() << R"(│)" << "\n";
+    std::cout << R"(  │                                                                │)" << "\n";
+    std::cout << R"(  ╰────────────────────────────────────────────────────────────────╯)" << reset() << "\n";
     std::cout << "\n";
 
     std::cout << dim() << "  Version " << reset() << "0.1.1" << dim() << " | ";
@@ -372,7 +331,7 @@ inline void print_examples() {
     using namespace color;
 
     std::cout << "\n" << bold() << bright_cyan() << "Eshkol Examples" << reset() << "\n";
-    std::cout << dim() << repl_rule() << reset() << "\n\n";
+    std::cout << dim() << "───────────────────────────────────────────────────────────" << reset() << "\n\n";
 
     std::cout << keyword() << "Arithmetic:" << reset() << "\n";
     std::cout << "  " << function() << "(+ 1 2)" << reset() << "               " << dim() << "; => 3" << reset() << "\n";
@@ -756,7 +715,7 @@ inline void print_doc(const std::string& name) {
 
     std::cout << "\n";
     std::cout << bold() << bright_cyan() << doc->name << reset() << "\n";
-    std::cout << dim() << repl_short_rule() << reset() << "\n";
+    std::cout << dim() << "─────────────────────────────────────" << reset() << "\n";
     std::cout << keyword() << "Signature: " << reset() << doc->signature << "\n";
     std::cout << "\n" << doc->description << "\n";
     std::cout << "\n" << dim() << "Example:" << reset() << "\n";
@@ -769,7 +728,7 @@ inline void print_doc_topics() {
     using namespace color;
 
     std::cout << "\n" << bold() << bright_cyan() << "Available Documentation Topics" << reset() << "\n";
-    std::cout << dim() << repl_rule() << reset() << "\n\n";
+    std::cout << dim() << "───────────────────────────────────────────────────────────" << reset() << "\n\n";
 
     std::cout << dim() << "Use " << reset() << bright_blue() << ":doc <name>" << reset() << dim() << " to get details\n\n" << reset();
 

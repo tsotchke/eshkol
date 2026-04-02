@@ -4,13 +4,8 @@
 #include <math.h>
 #include <stdio.h>
 #include <time.h>
-#ifdef _WIN32
-#include <Windows.h>
-#include <process.h>
-#else
 #include <unistd.h>
 #include <sys/time.h>
-#endif
 
 // Enhanced physical constants for quantum operations
 #define QRNG_FINE_STRUCTURE 0x7297352743776A1BULL
@@ -37,30 +32,6 @@ static inline uint64_t hadamard_gate(uint64_t x);
 static inline uint64_t phase_gate(uint64_t x, uint64_t angle);
 static uint64_t measure_state(qrng_ctx *ctx, double quantum_state, uint64_t last);
 static void quantum_step(qrng_ctx *ctx);
-
-static inline uint32_t qrng_process_id(void) {
-#ifdef _WIN32
-    return (uint32_t)_getpid();
-#else
-    return (uint32_t)getpid();
-#endif
-}
-
-static inline uint64_t qrng_wall_clock_entropy(void) {
-#ifdef _WIN32
-    FILETIME ft;
-    ULARGE_INTEGER value;
-
-    GetSystemTimeAsFileTime(&ft);
-    value.LowPart = ft.dwLowDateTime;
-    value.HighPart = ft.dwHighDateTime;
-    return value.QuadPart;
-#else
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return ((uint64_t)tv.tv_sec << 32) ^ (uint64_t)tv.tv_usec;
-#endif
-}
 
 // Enhanced quantum noise function with multiple transformations
 static inline double quantum_noise(double x) {
@@ -111,13 +82,14 @@ static inline uint64_t hadamard_mix(uint64_t x) {
 
 // Enhanced system entropy collection
 static uint64_t get_system_entropy(void) {
-    uint64_t entropy = qrng_wall_clock_entropy();
-    entropy ^= (uint64_t)qrng_process_id() << 32;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    uint64_t entropy = ((uint64_t)tv.tv_sec << 32) | tv.tv_usec;
+    entropy ^= (uint64_t)getpid() << 32;
     entropy ^= (uint64_t)clock();
     
     // Use memory address of stack variable as additional entropy
-    volatile uint64_t stack_value = entropy;
-    volatile void* stack_addr = (void*)&stack_value;
+    volatile void* stack_addr = &tv;
     entropy ^= (uint64_t)stack_addr;
     
     // Mix in CPU cycle count if available
@@ -131,7 +103,10 @@ static uint64_t get_system_entropy(void) {
 
 // Enhanced runtime entropy collection
 static uint64_t get_runtime_entropy(qrng_ctx *ctx) {
-    uint64_t runtime = qrng_wall_clock_entropy();
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    
+    uint64_t runtime = ((uint64_t)tv.tv_sec << 32) | tv.tv_usec;
     runtime ^= ctx->system_entropy;
     runtime ^= ctx->unique_id;
     runtime ^= ctx->counter;
@@ -287,8 +262,8 @@ qrng_error qrng_init(qrng_ctx **ctx, const uint8_t *seed, size_t seed_len) {
     if (!*ctx) return QRNG_ERROR_NULL_CONTEXT;
     
     // Initialize context with system-specific entropy
-    (*ctx)->init_timestamp = qrng_wall_clock_entropy();
-    (*ctx)->pid = qrng_process_id();
+    gettimeofday(&(*ctx)->init_time, NULL);
+    (*ctx)->pid = getpid();
     (*ctx)->system_entropy = get_system_entropy();
     (*ctx)->unique_id = splitmix64((*ctx)->system_entropy);
     (*ctx)->pool_mixer = QRNG_HEISENBERG ^ (*ctx)->unique_id;
@@ -298,7 +273,7 @@ qrng_error qrng_init(qrng_ctx **ctx, const uint8_t *seed, size_t seed_len) {
     for (int i = 0; i < 16; i++) {
         (*ctx)->entropy_pool[i] = quantum_noise(
             (double)((*ctx)->system_entropy >> i) / UINT64_MAX +
-            (double)((*ctx)->init_timestamp >> (i % 20)) / UINT64_MAX +
+            (double)((*ctx)->init_time.tv_usec >> (i % 20)) / UINT64_MAX +
             (double)((*ctx)->pid << (i % 16)) / UINT64_MAX +
             (double)(*ctx)->runtime_entropy / UINT64_MAX
         );

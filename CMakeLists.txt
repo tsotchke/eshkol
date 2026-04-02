@@ -135,6 +135,15 @@ else()
 
     find_program(LLVM_CONFIG_EXECUTABLE NAMES llvm-config REQUIRED)
 
+    # Generated build config for toolchain/runtime helpers (Windows port)
+    set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
+    configure_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_config.h.in"
+      "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/build_config.h"
+      @ONLY
+    )
+
     # Get LLVM configuration
     execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --cxxflags OUTPUT_VARIABLE LLVM_CXXFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
     execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --ldflags OUTPUT_VARIABLE LLVM_LDFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -545,6 +554,8 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
 
 # Exclude standalone .cpp programs with main()
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
+# platform_runtime.cpp excluded from static lib (linked separately for REPL/executables)
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/core/platform_runtime\\.cpp$")
 
 # Add eshkol_vm.c (unity build: includes vm_*.c, eskb_*.c internally)
 list(APPEND LIB_SRC lib/backend/eshkol_vm.c)
@@ -567,6 +578,7 @@ target_include_directories(
   eshkol-static
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc/>
+    $<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>
 )
 
 # Always add LLVM support to static library

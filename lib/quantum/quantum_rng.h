@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <unistd.h>
+#include <sys/time.h>
 
 /**
  * @file quantum_rng.h
@@ -52,8 +54,8 @@ typedef struct qrng_ctx_t {
     double entropy_pool[16];
     uint64_t pool_mixer;
     uint8_t pool_index;
-    uint64_t init_timestamp;
-    uint32_t pid;
+    struct timeval init_time;
+    pid_t pid;
     uint64_t unique_id;
     uint64_t system_entropy;
     uint64_t runtime_entropy;

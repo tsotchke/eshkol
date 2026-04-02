@@ -126,8 +126,3 @@ compile_commands.json
 CMakeCache.txt
 CMakeFiles/
 Makefile
-# Windows build artifacts
-*.exe
-*.obj
-*.pdb
-build-msys/

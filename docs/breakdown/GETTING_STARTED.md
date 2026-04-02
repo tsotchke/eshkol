@@ -73,15 +73,6 @@ cmake -B build -G Ninja \
 cmake --build build -j$(sysctl -n hw.ncpu)
 ```
 
-#### Windows (MSYS2 MinGW64)
-
-```bash
-pacman -S --needed mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-llvm mingw-w64-x86_64-readline
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
-./build/eshkol-run.exe --version
-```
-
 ### Verification
 
 ```bash
