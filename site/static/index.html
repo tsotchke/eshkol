@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Eshkol — Mathematics as a First-Class Citizen</title>
+  <meta name="description" content="Eshkol is a compiled programming language with compiler-integrated automatic differentiation, deterministic memory management, and heterogeneous computing. The first production language where calculus is a compiler primitive.">
+  <meta property="og:title" content="Eshkol Programming Language">
+  <meta property="og:description" content="Compiler-native automatic differentiation. Zero garbage collection. GPU acceleration. Cross-platform.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://eshkol.ai">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="loading">
+    <div class="loading-spinner"></div>
+    <p>Loading Eshkol...</p>
+    <p class="loading-sub">This website is written in Eshkol, compiled to WebAssembly.</p>
+  </div>
+  <script src="eshkol-runtime.js"></script>
+  <script>
+    (async () => {
+      try {
+        const runtime = new EshkolRuntime();
+        const response = await fetch('eshkol-site.wasm');
+        const { instance } = await WebAssembly.instantiate(
+          await response.arrayBuffer(),
+          runtime.createImports()
+        );
+        runtime.setInstance(instance);
+        document.getElementById('loading').remove();
+        if (instance.exports.main) {
+          instance.exports.main();
+        }
+      } catch (e) {
+        document.getElementById('loading').innerHTML =
+          '<p style="color:#ff4444">Failed to load: ' + e.message + '</p>' +
+          '<p>Try refreshing or visit <a href="https://github.com/tsotchke/eshkol">GitHub</a></p>';
+        console.error(e);
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1520,6 +1520,21 @@ static std::string resolve_module_path(const std::string& module_name, const std
         if (std::filesystem::exists(lib_path)) {
             return std::filesystem::canonical(lib_path).string();
         }
+        // Directory-as-module: if lib/web.esk doesn't exist, try lib/web/web.esk
+        // This allows (require web) to find lib/web/web.esk as the package entry point
+        std::filesystem::path dir_module = std::filesystem::path(lib_dir) / module_name;
+        if (std::filesystem::is_directory(dir_module)) {
+            // Try same-name entry point: lib/web/web.esk
+            std::filesystem::path entry = dir_module / (module_name + ".esk");
+            if (std::filesystem::exists(entry)) {
+                return std::filesystem::canonical(entry).string();
+            }
+            // Try index.esk: lib/web/index.esk
+            std::filesystem::path index = dir_module / "index.esk";
+            if (std::filesystem::exists(index)) {
+                return std::filesystem::canonical(index).string();
+            }
+        }
     }
 
     // Try $ESHKOL_PATH

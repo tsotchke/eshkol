@@ -1,0 +1,408 @@
+;;; web.esk - Eshkol Web Platform Library
+;;;
+;;; This module provides DOM manipulation and browser APIs for building
+;;; web applications in Eshkol. All functions work with integer handles
+;;; that reference JavaScript objects.
+;;;
+;;; Handle Types:
+;;;   - element-handle: DOM Element
+;;;   - node-handle: DOM Node
+;;;   - event-handle: Event object
+;;;   - context-handle: Canvas 2D context
+;;;   - callback-id: Event listener ID
+;;;
+;;; Example:
+;;;   (define btn (web-create-element "button"))
+;;;   (web-set-text-content btn "Click me!")
+;;;   (web-append-child (web-get-body) btn)
+
+(provide
+  ;; Special handles
+  web-get-document web-get-window web-get-body
+  ;; Document methods
+  web-create-element web-create-text-node
+  web-get-element-by-id web-query-selector web-query-selector-all
+  ;; Node tree manipulation
+  web-append-child web-remove-child web-insert-before web-replace-child
+  web-clone-node web-get-parent web-get-first-child web-get-last-child
+  web-get-next-sibling web-get-prev-sibling
+  web-get-children-count web-get-child-at
+  ;; Attributes
+  web-set-attribute web-get-attribute web-remove-attribute web-has-attribute
+  ;; Content
+  web-set-inner-html web-get-inner-html
+  web-set-text-content web-get-text-content
+  ;; CSS classes
+  web-add-class web-remove-class web-toggle-class web-has-class
+  ;; Styles
+  web-set-style web-get-style
+  ;; Form elements
+  web-get-value web-set-value web-get-checked web-set-checked
+  ;; Focus
+  web-focus web-blur
+  ;; Events
+  web-add-event-listener web-remove-event-listener
+  web-event-prevent-default web-event-stop-propagation web-event-get-target
+  web-event-get-key web-event-get-key-code
+  web-event-get-mouse-x web-event-get-mouse-y
+  ;; Timers
+  web-set-timeout web-set-interval web-clear-timeout web-clear-interval
+  web-request-animation-frame web-cancel-animation-frame
+  ;; Console
+  web-console-log web-console-warn web-console-error
+  ;; Window
+  web-alert web-confirm web-prompt
+  web-get-window-width web-get-window-height
+  web-get-scroll-x web-get-scroll-y web-scroll-to
+  ;; Location
+  web-get-href web-set-href web-get-hash web-set-hash
+  ;; Storage
+  web-storage-get web-storage-set web-storage-remove web-storage-clear
+  ;; Fetch
+  web-fetch
+  ;; Canvas 2D
+  web-get-context-2d
+  web-canvas-fill-rect web-canvas-stroke-rect web-canvas-clear-rect
+  web-canvas-fill-style web-canvas-stroke-style web-canvas-line-width
+  web-canvas-begin-path web-canvas-close-path
+  web-canvas-move-to web-canvas-line-to web-canvas-arc
+  web-canvas-fill web-canvas-stroke web-canvas-fill-text web-canvas-font
+  web-canvas-save web-canvas-restore
+  web-canvas-translate web-canvas-rotate web-canvas-scale
+  ;; Handle management
+  web-release-handle)
+
+;;; ===========================================
+;;; Special Handles
+;;; ===========================================
+
+;; Get the document handle (always handle 1)
+(extern i32 web-get-document :real web_get_document)
+
+;; Get the window handle (always handle 2)
+(extern i32 web-get-window :real web_get_window)
+
+;; Get the body element handle (always handle 3)
+(extern i32 web-get-body :real web_get_body)
+
+;;; ===========================================
+;;; Document Methods
+;;; ===========================================
+
+;; Create a new element with the given tag name
+;; (web-create-element "div") -> element-handle
+(extern i32 web-create-element ptr :real web_create_element)
+
+;; Create a text node with the given content
+;; (web-create-text-node "Hello") -> node-handle
+(extern i32 web-create-text-node ptr :real web_create_text_node)
+
+;; Find an element by ID
+;; (web-get-element-by-id "my-id") -> element-handle or 0
+(extern i32 web-get-element-by-id ptr :real web_get_element_by_id)
+
+;; Find first element matching CSS selector
+;; (web-query-selector ".my-class") -> element-handle or 0
+(extern i32 web-query-selector ptr :real web_query_selector)
+
+;; Find all elements matching CSS selector
+;; (web-query-selector-all "button") -> nodelist-handle
+(extern i32 web-query-selector-all ptr :real web_query_selector_all)
+
+;;; ===========================================
+;;; Node Tree Manipulation
+;;; ===========================================
+
+;; Append a child node to a parent
+;; (web-append-child parent child) -> 1 on success, 0 on failure
+(extern i32 web-append-child i32 i32 :real web_append_child)
+
+;; Remove a child node from its parent
+(extern i32 web-remove-child i32 i32 :real web_remove_child)
+
+;; Insert a node before a reference node
+(extern i32 web-insert-before i32 i32 i32 :real web_insert_before)
+
+;; Replace a child node with a new node
+(extern i32 web-replace-child i32 i32 i32 :real web_replace_child)
+
+;; Clone a node (deep=1 for deep clone)
+(extern i32 web-clone-node i32 i32 :real web_clone_node)
+
+;; Get parent node
+(extern i32 web-get-parent i32 :real web_get_parent)
+
+;; Get first/last child nodes
+(extern i32 web-get-first-child i32 :real web_get_first_child)
+(extern i32 web-get-last-child i32 :real web_get_last_child)
+
+;; Get sibling nodes
+(extern i32 web-get-next-sibling i32 :real web_get_next_sibling)
+(extern i32 web-get-prev-sibling i32 :real web_get_prev_sibling)
+
+;; Get children count and child at index
+(extern i32 web-get-children-count i32 :real web_get_children_count)
+(extern i32 web-get-child-at i32 i32 :real web_get_child_at)
+
+;;; ===========================================
+;;; Attributes
+;;; ===========================================
+
+;; Set an attribute on an element
+;; (web-set-attribute el "href" "https://example.com")
+(extern i32 web-set-attribute i32 ptr ptr :real web_set_attribute)
+
+;; Get an attribute value (returns length, writes to buffer)
+(extern i32 web-get-attribute i32 ptr ptr i32 :real web_get_attribute)
+
+;; Remove an attribute
+(extern i32 web-remove-attribute i32 ptr :real web_remove_attribute)
+
+;; Check if element has an attribute
+(extern i32 web-has-attribute i32 ptr :real web_has_attribute)
+
+;;; ===========================================
+;;; Content
+;;; ===========================================
+
+;; Set innerHTML of an element
+;; (web-set-inner-html el "<strong>Hello</strong>")
+(extern i32 web-set-inner-html i32 ptr :real web_set_inner_html)
+
+;; Get innerHTML (returns length, writes to buffer)
+(extern i32 web-get-inner-html i32 ptr i32 :real web_get_inner_html)
+
+;; Set textContent of an element (safer than innerHTML)
+;; (web-set-text-content el "Hello World")
+(extern i32 web-set-text-content i32 ptr :real web_set_text_content)
+
+;; Get textContent (returns length, writes to buffer)
+(extern i32 web-get-text-content i32 ptr i32 :real web_get_text_content)
+
+;;; ===========================================
+;;; CSS Classes
+;;; ===========================================
+
+;; Add a CSS class
+(extern i32 web-add-class i32 ptr :real web_add_class)
+
+;; Remove a CSS class
+(extern i32 web-remove-class i32 ptr :real web_remove_class)
+
+;; Toggle a CSS class (returns new state: 1=added, 0=removed)
+(extern i32 web-toggle-class i32 ptr :real web_toggle_class)
+
+;; Check if element has a CSS class
+(extern i32 web-has-class i32 ptr :real web_has_class)
+
+;;; ===========================================
+;;; Inline Styles
+;;; ===========================================
+
+;; Set an inline style property
+;; (web-set-style el "backgroundColor" "red")
+(extern i32 web-set-style i32 ptr ptr :real web_set_style)
+
+;; Get an inline style property (returns length, writes to buffer)
+(extern i32 web-get-style i32 ptr ptr i32 :real web_get_style)
+
+;;; ===========================================
+;;; Form Elements
+;;; ===========================================
+
+;; Get input/textarea value (returns length, writes to buffer)
+(extern i32 web-get-value i32 ptr i32 :real web_get_value)
+
+;; Set input/textarea value
+(extern i32 web-set-value i32 ptr :real web_set_value)
+
+;; Get checkbox/radio checked state
+(extern i32 web-get-checked i32 :real web_get_checked)
+
+;; Set checkbox/radio checked state
+(extern i32 web-set-checked i32 i32 :real web_set_checked)
+
+;;; ===========================================
+;;; Focus
+;;; ===========================================
+
+;; Focus an element
+(extern i32 web-focus i32 :real web_focus)
+
+;; Blur (unfocus) an element
+(extern i32 web-blur i32 :real web_blur)
+
+;;; ===========================================
+;;; Events
+;;; ===========================================
+
+;; Add an event listener
+;; (web-add-event-listener el "click" callback-ptr) -> callback-id
+(extern i32 web-add-event-listener i32 ptr i32 :real web_add_event_listener)
+
+;; Remove an event listener by callback ID
+(extern i32 web-remove-event-listener i32 :real web_remove_event_listener)
+
+;; Prevent default event action
+(extern i32 web-event-prevent-default i32 :real web_event_prevent_default)
+
+;; Stop event propagation
+(extern i32 web-event-stop-propagation i32 :real web_event_stop_propagation)
+
+;; Get the event target element
+(extern i32 web-event-get-target i32 :real web_event_get_target)
+
+;; Get key from keyboard event (returns length, writes to buffer)
+(extern i32 web-event-get-key i32 ptr i32 :real web_event_get_key)
+
+;; Get keyCode from keyboard event
+(extern i32 web-event-get-key-code i32 :real web_event_get_key_code)
+
+;; Get mouse position from mouse event
+(extern i32 web-event-get-mouse-x i32 :real web_event_get_mouse_x)
+(extern i32 web-event-get-mouse-y i32 :real web_event_get_mouse_y)
+
+;;; ===========================================
+;;; Timers
+;;; ===========================================
+
+;; Set a timeout (returns timer ID)
+;; (web-set-timeout callback-ptr 1000)
+(extern i32 web-set-timeout i32 i32 :real web_set_timeout)
+
+;; Set an interval (returns timer ID)
+(extern i32 web-set-interval i32 i32 :real web_set_interval)
+
+;; Clear a timeout
+(extern void web-clear-timeout i32 :real web_clear_timeout)
+
+;; Clear an interval
+(extern void web-clear-interval i32 :real web_clear_interval)
+
+;; Request animation frame (returns request ID)
+(extern i32 web-request-animation-frame i32 :real web_request_animation_frame)
+
+;; Cancel animation frame
+(extern void web-cancel-animation-frame i32 :real web_cancel_animation_frame)
+
+;;; ===========================================
+;;; Console
+;;; ===========================================
+
+;; Log to browser console
+(extern void web-console-log ptr :real web_console_log)
+
+;; Warning to browser console
+(extern void web-console-warn ptr :real web_console_warn)
+
+;; Error to browser console
+(extern void web-console-error ptr :real web_console_error)
+
+;;; ===========================================
+;;; Window
+;;; ===========================================
+
+;; Show alert dialog
+(extern void web-alert ptr :real web_alert)
+
+;; Show confirm dialog (returns 1 for OK, 0 for Cancel)
+(extern i32 web-confirm ptr :real web_confirm)
+
+;; Show prompt dialog (returns length of input, writes to buffer)
+(extern i32 web-prompt ptr ptr ptr i32 :real web_prompt)
+
+;; Get window dimensions
+(extern i32 web-get-window-width :real web_get_window_width)
+(extern i32 web-get-window-height :real web_get_window_height)
+
+;; Get scroll position
+(extern i32 web-get-scroll-x :real web_get_scroll_x)
+(extern i32 web-get-scroll-y :real web_get_scroll_y)
+
+;; Scroll to position
+(extern void web-scroll-to i32 i32 :real web_scroll_to)
+
+;;; ===========================================
+;;; Location
+;;; ===========================================
+
+;; Get current URL (returns length, writes to buffer)
+(extern i32 web-get-href ptr i32 :real web_get_href)
+
+;; Navigate to URL
+(extern void web-set-href ptr :real web_set_href)
+
+;; Get URL hash (returns length, writes to buffer)
+(extern i32 web-get-hash ptr i32 :real web_get_hash)
+
+;; Set URL hash
+(extern void web-set-hash ptr :real web_set_hash)
+
+;;; ===========================================
+;;; Local Storage
+;;; ===========================================
+
+;; Get item from localStorage (returns length, writes to buffer)
+(extern i32 web-storage-get ptr ptr i32 :real web_storage_get)
+
+;; Set item in localStorage
+(extern i32 web-storage-set ptr ptr :real web_storage_set)
+
+;; Remove item from localStorage
+(extern i32 web-storage-remove ptr :real web_storage_remove)
+
+;; Clear all localStorage
+(extern i32 web-storage-clear :real web_storage_clear)
+
+;;; ===========================================
+;;; Fetch API
+;;; ===========================================
+
+;; Fetch a URL (returns promise handle)
+;; (web-fetch "https://api.example.com" "GET" "")
+(extern i32 web-fetch ptr ptr ptr :real web_fetch)
+
+;;; ===========================================
+;;; Canvas 2D API
+;;; ===========================================
+
+;; Get 2D rendering context from canvas element
+(extern i32 web-get-context-2d i32 :real web_get_context_2d)
+
+;; Rectangle drawing
+(extern void web-canvas-fill-rect i32 double double double double :real web_canvas_fill_rect)
+(extern void web-canvas-stroke-rect i32 double double double double :real web_canvas_stroke_rect)
+(extern void web-canvas-clear-rect i32 double double double double :real web_canvas_clear_rect)
+
+;; Colors and line styles
+(extern void web-canvas-fill-style i32 ptr :real web_canvas_fill_style)
+(extern void web-canvas-stroke-style i32 ptr :real web_canvas_stroke_style)
+(extern void web-canvas-line-width i32 double :real web_canvas_line_width)
+
+;; Path operations
+(extern void web-canvas-begin-path i32 :real web_canvas_begin_path)
+(extern void web-canvas-close-path i32 :real web_canvas_close_path)
+(extern void web-canvas-move-to i32 double double :real web_canvas_move_to)
+(extern void web-canvas-line-to i32 double double :real web_canvas_line_to)
+(extern void web-canvas-arc i32 double double double double double :real web_canvas_arc)
+(extern void web-canvas-fill i32 :real web_canvas_fill)
+(extern void web-canvas-stroke i32 :real web_canvas_stroke)
+
+;; Text
+(extern void web-canvas-fill-text i32 ptr double double :real web_canvas_fill_text)
+(extern void web-canvas-font i32 ptr :real web_canvas_font)
+
+;; Transformations
+(extern void web-canvas-save i32 :real web_canvas_save)
+(extern void web-canvas-restore i32 :real web_canvas_restore)
+(extern void web-canvas-translate i32 double double :real web_canvas_translate)
+(extern void web-canvas-rotate i32 double :real web_canvas_rotate)
+(extern void web-canvas-scale i32 double double :real web_canvas_scale)
+
+;;; ===========================================
+;;; Handle Management
+;;; ===========================================
+
+;; Release a handle when no longer needed
+;; (web-release-handle el)
+(extern void web-release-handle i32 :real web_release_handle)
