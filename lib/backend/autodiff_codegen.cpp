@@ -1810,14 +1810,14 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
             // REPL MODE FIX: Check *repl_symbol_addresses_ for functions defined in REPL
             if (!var_value && (repl_mode_enabled_ && *repl_mode_enabled_)) {
                 std::lock_guard<std::mutex> lock(*repl_mutex_);
-                auto repl_it = *repl_symbol_addresses_.find(func_name);
-                if (repl_it != *repl_symbol_addresses_.end()) {
+                auto repl_it = repl_symbol_addresses_->find(func_name);
+                if (repl_it != repl_symbol_addresses_->end()) {
                     eshkol_debug("derivative: found '%s' in REPL symbol addresses", func_name.c_str());
                     // Create external declaration for the global variable
                     GlobalVariable* global_var = ctx_.module().getGlobalVariable(func_name);
                     if (!global_var) {
                         global_var = new GlobalVariable(
-                            *module,
+                            ctx_.module(),
                             ctx_.taggedValueType(),
                             false,
                             GlobalValue::ExternalLinkage,
@@ -1835,11 +1835,12 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                 if (isa<Argument>(var_value) && (var_value->getType() == ctx_.taggedValueType() || var_value->getType()->isStructTy())) {
                     eshkol_debug("derivative: using runtime dispatch for function parameter '%s'", func_name.c_str());
                     std::vector<Value*> call_args = {x_dual_tagged};
-                    Value* result = closure_call_callback_(var_value, call_args);
+                    Value* result = closure_call_callback_(var_value, call_args, "derivative", callback_context_);
 
                     // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result, "autodiff", callback_context_);
-                    auto [value, derivative] = uncreateDualNumber(result_dual);
+                    Value* result_dual = unpackDualFromTagged(result);
+                    Value* value = getDualPrimal(result_dual);
+                    Value* derivative = getDualTangent(result_dual);
                     return tagged_.packDouble(derivative);
                 }
                 // Check if it's a pointer to closure (mutable capture)
@@ -1847,11 +1848,12 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     eshkol_debug("derivative: using runtime dispatch for captured function '%s'", func_name.c_str());
                     Value* loaded_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
                     std::vector<Value*> call_args = {x_dual_tagged};
-                    Value* result = closure_call_callback_(loaded_val, call_args);
+                    Value* result = closure_call_callback_(loaded_val, call_args, "derivative", callback_context_);
 
                     // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result, "autodiff", callback_context_);
-                    auto [value, derivative] = uncreateDualNumber(result_dual);
+                    Value* result_dual = unpackDualFromTagged(result);
+                    Value* value = getDualPrimal(result_dual);
+                    Value* derivative = getDualTangent(result_dual);
                     return tagged_.packDouble(derivative);
                 }
                 // Check if it's an AllocaInst (local variable holding a closure)
@@ -1861,11 +1863,12 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                         eshkol_debug("derivative: using runtime dispatch for local function '%s'", func_name.c_str());
                         Value* loaded_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
                         std::vector<Value*> call_args = {x_dual_tagged};
-                        Value* result = closure_call_callback_(loaded_val, call_args);
+                        Value* result = closure_call_callback_(loaded_val, call_args, "derivative", callback_context_);
 
                         // Unpack result and extract derivative
-                        Value* result_dual = unpackDualFromTagged(result, "autodiff", callback_context_);
-                        auto [value, derivative] = uncreateDualNumber(result_dual);
+                        Value* result_dual = unpackDualFromTagged(result);
+                        Value* value = getDualPrimal(result_dual);
+                    Value* derivative = getDualTangent(result_dual);
                         return tagged_.packDouble(derivative);
                     }
                 }
@@ -1873,11 +1876,12 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                 if (isa<LoadInst>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
                     eshkol_debug("derivative: using runtime dispatch for loaded function '%s'", func_name.c_str());
                     std::vector<Value*> call_args = {x_dual_tagged};
-                    Value* result = closure_call_callback_(var_value, call_args);
+                    Value* result = closure_call_callback_(var_value, call_args, "derivative", callback_context_);
 
                     // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result, "autodiff", callback_context_);
-                    auto [value, derivative] = uncreateDualNumber(result_dual);
+                    Value* result_dual = unpackDualFromTagged(result);
+                    Value* value = getDualPrimal(result_dual);
+                    Value* derivative = getDualTangent(result_dual);
                     return tagged_.packDouble(derivative);
                 }
                 // Check if it's a GlobalVariable (letrec captured function)
@@ -1886,11 +1890,12 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     GlobalVariable* global = cast<GlobalVariable>(var_value);
                     Value* loaded_val = ctx_.builder().CreateLoad(global->getValueType(), var_value);
                     std::vector<Value*> call_args = {x_dual_tagged};
-                    Value* result = closure_call_callback_(loaded_val, call_args);
+                    Value* result = closure_call_callback_(loaded_val, call_args, "derivative", callback_context_);
 
                     // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result, "autodiff", callback_context_);
-                    auto [value, derivative] = uncreateDualNumber(result_dual);
+                    Value* result_dual = unpackDualFromTagged(result);
+                    Value* value = getDualPrimal(result_dual);
+                    Value* derivative = getDualTangent(result_dual);
                     return tagged_.packDouble(derivative);
                 }
             }
@@ -1919,8 +1924,8 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
         std::vector<std::string> capture_names;
         if ((repl_mode_enabled_ && *repl_mode_enabled_)) {
             std::lock_guard<std::mutex> lock(*repl_mutex_);
-            auto captures_it = *repl_lambda_captures_.find(lambda_name);
-            if (captures_it != *repl_lambda_captures_.end()) {
+            auto captures_it = repl_lambda_captures_->find(lambda_name);
+            if (captures_it != repl_lambda_captures_->end()) {
                 capture_names = captures_it->second;
             }
         }
@@ -1971,13 +1976,13 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
             // REPL MODE: Try creating external declaration for capture global
             if (!found && (repl_mode_enabled_ && *repl_mode_enabled_)) {
                 std::lock_guard<std::mutex> lock(*repl_mutex_);
-                auto sym_it = *repl_symbol_addresses_.find(capture_key);
-                if (sym_it != *repl_symbol_addresses_.end()) {
+                auto sym_it = repl_symbol_addresses_->find(capture_key);
+                if (sym_it != repl_symbol_addresses_->end()) {
                     // Create external declaration for capture global
                     GlobalVariable* capture_global = ctx_.module().getGlobalVariable(capture_key);
                     if (!capture_global) {
                         capture_global = new GlobalVariable(
-                            *module,
+                            ctx_.module(),
                             ctx_.taggedValueType(),
                             false,
                             GlobalValue::ExternalLinkage,
@@ -2021,7 +2026,8 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
     Value* result_dual = unpackDualFromTagged(result_tagged);
     
     // Extract derivative component from result
-    auto [value, derivative] = uncreateDualNumber(result_dual);
+    Value* value = getDualPrimal(result_dual);
+                    Value* derivative = getDualTangent(result_dual);
 
     eshkol_debug("Derivative operator: extracted derivative component");
 
@@ -2257,12 +2263,12 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
 
             // Call f(plus_args) and f(minus_args) using codegenClosureCall
             Value* f_plus = closure_call_callback_(f_closure, plus_args, "autodiff", callback_context_);
-            Value* f_minus = closure_call_callback_(f_closure, minus_args);
+            Value* f_minus = closure_call_callback_(f_closure, minus_args, "derivative", callback_context_);
 
             // Compute partial derivative: (f_plus - f_minus) / (2h)
             Value* f_plus_d = tagged_.unpackDouble(f_plus);
             Value* f_minus_d = tagged_.unpackDouble(f_minus);
-            Value* diff = ctx_.builder(, "autodiff", callback_context_).CreateFSub(f_plus_d, f_minus_d);
+            Value* diff = ctx_.builder().CreateFSub(f_plus_d, f_minus_d);
             Value* partial = ctx_.builder().CreateFDiv(diff, two_h);
 
             // Store in result array
@@ -2744,7 +2750,8 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                 // Dual path: extract tangent normally
                 ctx_.builder().SetInsertPoint(rt_dual_bb);
                 Value* rt_result_dual = unpackDualFromTagged(call_result);
-                auto [rt_result_primal, rt_dual_deriv] = uncreateDualNumber(rt_result_dual);
+                Value* rt_result_primal = getDualPrimal(rt_result_dual);
+                    Value* rt_dual_deriv = getDualTangent(rt_result_dual);
                 ctx_.builder().CreateBr(rt_merge_bb);
                 BasicBlock* rt_dual_exit = ctx_.builder().GetInsertBlock();
 
@@ -2808,8 +2815,8 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     } else if (vector_val_raw->getType()->isDoubleTy()) {
         vector_val = tagged_.packDouble(vector_val_raw); // Pack double
     } else {
-        TypedValue tv = detectValueType(vector_val_raw);
-        vector_val = typedValueToTaggedValue(tv); // Pack other types
+        // direct packing
+        vector_val = tagged_.packInt64(vector_val_raw, true); // Pack other types
     }
     
     // Alloca for effective svec input (updated by tensor→svec conversion)
@@ -3196,7 +3203,8 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // Dual path: extract tangent normally
     ctx_.builder().SetInsertPoint(svec_dual_bb);
     Value* svec_result_dual = unpackDualFromTagged(svec_call_result);
-    auto [svec_result_primal, svec_dual_deriv] = uncreateDualNumber(svec_result_dual);
+    Value* svec_result_primal = getDualPrimal(svec_result_dual);
+                    Value* svec_dual_deriv = getDualTangent(svec_result_dual);
     ctx_.builder().CreateBr(svec_merge_bb);
     BasicBlock* svec_dual_exit = ctx_.builder().GetInsertBlock();
 
@@ -3364,12 +3372,12 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 
     // Step 1: Create tape for this partial derivative (arena_ptr defined at function start)
     Value* tape_capacity = ConstantInt::get(ctx_.int64Type(), 1024);
-    Value* partial_tape = ctx_.builder().CreateCall(getArenaAllocateTapeFunc(),
+    Value* partial_tape = ctx_.builder().CreateCall(mem_.getArenaAllocateTape(),
         {arena_ptr, tape_capacity});
     
     // Store tape as current (required by recordADNode* functions)
-    Value* saved_tape = current_tape_ptr;
-    current_tape_ptr = partial_tape;
+    Value* saved_tape = current_tape_ptr_;
+    current_tape_ptr_ = partial_tape;
     
     // Step 2: Create n AD variable nodes (one per vector component)
     // Allocate array to hold variable node pointers via arena (OALR compliant - no malloc)
@@ -3666,8 +3674,8 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         std::vector<std::string> capture_names;
         if ((repl_mode_enabled_ && *repl_mode_enabled_)) {
             std::lock_guard<std::mutex> lock(*repl_mutex_);
-            auto captures_it = *repl_lambda_captures_.find(lambda_name);
-            if (captures_it != *repl_lambda_captures_.end()) {
+            auto captures_it = repl_lambda_captures_->find(lambda_name);
+            if (captures_it != repl_lambda_captures_->end()) {
                 capture_names = captures_it->second;
             }
         }
@@ -3715,13 +3723,13 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
             // REPL MODE: Try creating external declaration for capture global
             if (!found && (repl_mode_enabled_ && *repl_mode_enabled_)) {
                 std::lock_guard<std::mutex> lock(*repl_mutex_);
-                auto sym_it = *repl_symbol_addresses_.find(capture_key);
-                if (sym_it != *repl_symbol_addresses_.end()) {
+                auto sym_it = repl_symbol_addresses_->find(capture_key);
+                if (sym_it != repl_symbol_addresses_->end()) {
                     // Create external declaration for capture global
                     GlobalVariable* capture_global = ctx_.module().getGlobalVariable(capture_key);
                     if (!capture_global) {
                         capture_global = new GlobalVariable(
-                            *module,
+                            ctx_.module(),
                             ctx_.taggedValueType(),
                             false,
                             GlobalValue::ExternalLinkage,
@@ -3818,7 +3826,7 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(active_var_node, ctx_.innerVarNodePtr());
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), ctx_.gradientXDegree());
 
-    codegenBackward(output_node_ptr, partial_tape);
+    backpropagate(output_node_ptr, partial_tape);
     ctx_.builder().CreateBr(after_backward);
     
     // Skip backward pass if output is invalid (placeholder function returning scalar)
@@ -3858,10 +3866,10 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(partial_grad_as_int64, result_elem_ptr);
     
     // Step 9: Reset tape for next iteration (MUST call to zero gradients)
-    ctx_.builder().CreateCall(getArenaTapeResetFunc(), {partial_tape});
+    ctx_.builder().CreateCall(mem_.getArenaTapeReset(), {partial_tape});
     
     // Restore previous tape
-    current_tape_ptr = saved_tape;
+    current_tape_ptr_ = saved_tape;
     
     // Increment component counter
     Value* next_i = ctx_.builder().CreateAdd(i, ConstantInt::get(ctx_.int64Type(), 1));
@@ -4993,7 +5001,8 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
     return tagged_.packDouble(derivative_val);
 }
 
-Value* hessian(const eshkol_operations_t* op) {
+llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
+    using namespace llvm;
     if (!op->hessian_op.function || !op->hessian_op.point) {
         eshkol_error("Invalid hessian operation");
         return nullptr;
@@ -5342,7 +5351,7 @@ Value* hessian(const eshkol_operations_t* op) {
     Value* bg_output_node = ctx_.builder().CreateIntToPtr(bg_output_int, PointerType::getUnqual(ctx_.context()));
     
     // Backward pass
-    codegenBackward(bg_output_node, bg_tape);
+    backpropagate(bg_output_node, bg_tape);
     
     // Extract gradient for component bg_i
     Value* bg_active_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
@@ -5548,7 +5557,7 @@ Value* hessian(const eshkol_operations_t* op) {
     Value* pert_output_node = ctx_.builder().CreateIntToPtr(pert_output_int, PointerType::getUnqual(ctx_.context()));
     
     // Run backward pass
-    codegenBackward(pert_output_node, pert_tape);
+    backpropagate(pert_output_node, pert_tape);
     
     // Allocate array for perturbed gradient via arena (OALR compliant - no malloc)
     Value* pert_grad_size = ctx_.builder().CreateMul(n,
@@ -5899,7 +5908,7 @@ llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
         vector_val = tagged_.packDouble(vector_val_raw);
     } else {
         // Ensure tagged value (direct packing)
-        vector_val = typedValueToTaggedValue(tv);
+        vector_val = tagged_.packInt64(vector_val_raw, true);
     }
 
     // Get arena for OALR-compliant tensor allocation
@@ -6293,7 +6302,7 @@ llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* o
         direction_val = tagged_.packDouble(direction_val_raw);
     } else {
         // direct packing
-        direction_val = typedValueToTaggedValue(tv);
+        direction_val = tagged_.packInt64(direction_val_raw, true);
     }
 
     // Get arena for OALR-compliant tensor allocation
@@ -8182,10 +8191,10 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
 
     llvm::GlobalVariable* ad_tape_depth = ctx_.adTapeDepth();
     llvm::GlobalVariable* ad_tape_stack = ctx_.adTapeStack();
-    llvm::GlobalVariable* ctx_.currentAdTape() = ctx_.currentAdTape();
+    llvm::GlobalVariable* current_ad_tape_var = ctx_.currentAdTape();
     llvm::GlobalVariable* ad_mode_active = ctx_.adModeActive();
 
-    if (!ad_tape_depth || !ad_tape_stack || !ctx_.currentAdTape() || !ad_mode_active) {
+    if (!ad_tape_depth || !ad_tape_stack || !current_ad_tape_var || !ad_mode_active) {
         eshkol_warn("pushTapeContext: AD globals not initialized");
         return;
     }
@@ -8239,10 +8248,10 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
 void AutodiffCodegen::popTapeContext() {
     llvm::GlobalVariable* ad_tape_depth = ctx_.adTapeDepth();
     llvm::GlobalVariable* ad_tape_stack = ctx_.adTapeStack();
-    llvm::GlobalVariable* ctx_.currentAdTape() = ctx_.currentAdTape();
+    llvm::GlobalVariable* current_ad_tape_var = ctx_.currentAdTape();
     llvm::GlobalVariable* ad_mode_active = ctx_.adModeActive();
 
-    if (!ad_tape_depth || !ad_tape_stack || !ctx_.currentAdTape() || !ad_mode_active) {
+    if (!ad_tape_depth || !ad_tape_stack || !current_ad_tape_var || !ad_mode_active) {
         eshkol_warn("popTapeContext: AD globals not initialized");
         return;
     }
