@@ -29738,15 +29738,18 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
         std::string features = "";
 
         auto codegen_opt = getCodeGenOptLevel();
+        // Use Reloc::Static for standalone WASM modules loaded via WebAssembly.instantiate().
+        // Reloc::PIC_ generates GOT (Global Offset Table) entries that require a dynamic
+        // linker — browsers reject these with "Import GOT.func: module is not an object".
 #if LLVM_VERSION_MAJOR >= 18
         std::unique_ptr<TargetMachine> target_machine(
             target->createTargetMachine(wasm_triple, cpu, features,
-                                       target_options, Reloc::PIC_, std::nullopt,
+                                       target_options, Reloc::Static, std::nullopt,
                                        codegen_opt));
 #else
         std::unique_ptr<TargetMachine> target_machine(
             target->createTargetMachine(target_triple, cpu, features,
-                                       target_options, Reloc::PIC_, std::nullopt,
+                                       target_options, Reloc::Static, std::nullopt,
                                        codegen_opt));
 #endif
 

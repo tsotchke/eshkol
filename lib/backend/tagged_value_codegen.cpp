@@ -36,32 +36,37 @@ llvm::Value* TaggedValueCodegen::createEntryAlloca(const char* name) {
     return alloca;
 }
 
-// === Pack Functions ===
+// === SSA Pack Helper ===
+// Builds a tagged value using insertvalue (pure SSA, zero allocas).
+// Struct: {i8 type, i8 flags, i16 reserved, i32 padding, i64 data}
+
+llvm::Value* TaggedValueCodegen::buildTaggedValue(uint8_t type, uint8_t flags, llvm::Value* data_i64) {
+    auto& B = ctx_.builder();
+    llvm::Value* v = llvm::UndefValue::get(ctx_.taggedValueType());
+    v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int8Type(), type), {0});
+    v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int8Type(), flags), {1});
+    v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int32Type(), 0), {3});
+    v = B.CreateInsertValue(v, data_i64, {4});
+    return v;
+}
+
+llvm::Value* TaggedValueCodegen::buildTaggedValueDyn(llvm::Value* type_val, llvm::Value* flags_val, llvm::Value* data_i64) {
+    auto& B = ctx_.builder();
+    llvm::Value* v = llvm::UndefValue::get(ctx_.taggedValueType());
+    v = B.CreateInsertValue(v, type_val, {0});
+    v = B.CreateInsertValue(v, flags_val, {1});
+    v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int32Type(), 0), {3});
+    v = B.CreateInsertValue(v, data_i64, {4});
+    return v;
+}
+
+// === Pack Functions (SSA form — zero allocas) ===
 
 llvm::Value* TaggedValueCodegen::packInt64(llvm::Value* int64_val, bool is_exact) {
-    llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_val");
-
-    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 0);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64), type_ptr);
-
-    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 1);
     uint8_t flags = is_exact ? ESHKOL_VALUE_EXACT_FLAG : 0;
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), flags), flags_ptr);
-
-    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 2);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 4);
-    ctx_.builder().CreateStore(int64_val, data_ptr);
-
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+    return buildTaggedValue(ESHKOL_VALUE_INT64, flags, int64_val);
 }
 
 llvm::Value* TaggedValueCodegen::packInt64WithType(
@@ -69,27 +74,6 @@ llvm::Value* TaggedValueCodegen::packInt64WithType(
     eshkol_value_type_t type,
     uint8_t flags) {
 
-    llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_val_typed");
-
-    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 0);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), type), type_ptr);
-
-    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 1);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), flags), flags_ptr);
-
-    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 2);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 4);
-
-    // Ensure value is i64
     llvm::Value* val_as_i64;
     if (int64_val->getType()->isIntegerTy(64)) {
         val_as_i64 = int64_val;
@@ -102,89 +86,24 @@ llvm::Value* TaggedValueCodegen::packInt64WithType(
         val_as_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 0);
     }
 
-    ctx_.builder().CreateStore(val_as_i64, data_ptr);
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+    return buildTaggedValue(type, flags, val_as_i64);
 }
 
 llvm::Value* TaggedValueCodegen::packBool(llvm::Value* bool_val) {
-    llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_bool");
-
-    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 0);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL), type_ptr);
-
-    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 1);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), flags_ptr);
-
-    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 2);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 4);
-    // Extend boolean to int64 for storage
     llvm::Value* int64_val = ctx_.builder().CreateZExt(bool_val, ctx_.int64Type());
-    ctx_.builder().CreateStore(int64_val, data_ptr);
-
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+    return buildTaggedValue(ESHKOL_VALUE_BOOL, 0, int64_val);
 }
 
 llvm::Value* TaggedValueCodegen::packInt64WithTypeAndFlags(
     llvm::Value* int64_val,
     llvm::Value* type_val,
     llvm::Value* flags_val) {
-
-    llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_val");
-
-    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 0);
-    ctx_.builder().CreateStore(type_val, type_ptr);
-
-    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 1);
-    ctx_.builder().CreateStore(flags_val, flags_ptr);
-
-    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 2);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 4);
-    ctx_.builder().CreateStore(int64_val, data_ptr);
-
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+    return buildTaggedValueDyn(type_val, flags_val, int64_val);
 }
 
 llvm::Value* TaggedValueCodegen::packDouble(llvm::Value* double_val) {
-    llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_val");
-
-    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 0);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE), type_ptr);
-
-    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 1);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INEXACT_FLAG), flags_ptr);
-
-    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 2);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 4);
-    llvm::Value* double_as_int64 = ctx_.builder().CreateBitCast(
-        double_val, ctx_.int64Type());
-    ctx_.builder().CreateStore(double_as_int64, data_ptr);
-
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+    llvm::Value* double_as_int64 = ctx_.builder().CreateBitCast(double_val, ctx_.int64Type());
+    return buildTaggedValue(ESHKOL_VALUE_DOUBLE, ESHKOL_VALUE_INEXACT_FLAG, double_as_int64);
 }
 
 llvm::Value* TaggedValueCodegen::packPtr(
@@ -192,27 +111,6 @@ llvm::Value* TaggedValueCodegen::packPtr(
     eshkol_value_type_t type,
     uint8_t flags) {
 
-    llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_val");
-
-    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 0);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), type), type_ptr);
-
-    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 1);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), flags), flags_ptr);
-
-    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 2);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 4);
-
-    // Handle ptr_val that might already be i64 (from PtrToInt elsewhere)
     llvm::Value* ptr_as_int64;
     if (ptr_val->getType()->isIntegerTy(64)) {
         ptr_as_int64 = ptr_val;
@@ -223,8 +121,7 @@ llvm::Value* TaggedValueCodegen::packPtr(
         ptr_as_int64 = llvm::ConstantInt::get(ctx_.int64Type(), 0);
     }
 
-    ctx_.builder().CreateStore(ptr_as_int64, data_ptr);
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+    return buildTaggedValue(type, flags, ptr_as_int64);
 }
 
 llvm::Value* TaggedValueCodegen::packPtrWithFlags(
@@ -232,25 +129,6 @@ llvm::Value* TaggedValueCodegen::packPtrWithFlags(
     llvm::Value* type_val,
     llvm::Value* flags_val) {
 
-    llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_val_dyn");
-
-    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 0);
-    ctx_.builder().CreateStore(type_val, type_ptr);
-
-    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 1);
-    ctx_.builder().CreateStore(flags_val, flags_ptr);
-
-    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 2);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 4);
-
-    // Convert pointer to i64 if needed
     llvm::Value* ptr_as_int64;
     if (ptr_val->getType()->isIntegerTy(64)) {
         ptr_as_int64 = ptr_val;
@@ -261,8 +139,7 @@ llvm::Value* TaggedValueCodegen::packPtrWithFlags(
         ptr_as_int64 = llvm::ConstantInt::get(ctx_.int64Type(), 0);
     }
 
-    ctx_.builder().CreateStore(ptr_as_int64, data_ptr);
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+    return buildTaggedValueDyn(type_val, flags_val, ptr_as_int64);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -354,61 +231,57 @@ llvm::Value* TaggedValueCodegen::packChar(llvm::Value* char_val) {
 
 // === Unpack Functions ===
 
-llvm::Value* TaggedValueCodegen::getType(llvm::Value* tagged_val) {
-    llvm::Value* temp_ptr = createEntryAlloca("temp_tagged");
-    ctx_.builder().CreateStore(tagged_val, temp_ptr);
+// === Unpack Functions (SSA form — zero allocas) ===
 
-    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), temp_ptr, 0);
-    return ctx_.builder().CreateLoad(ctx_.int8Type(), type_ptr);
+llvm::Value* TaggedValueCodegen::getType(llvm::Value* tagged_val) {
+    // Verify input is actually a tagged value struct, not a raw type
+    if (tagged_val->getType() != ctx_.taggedValueType()) {
+        // Caller passed a non-tagged value — return DOUBLE type tag for raw doubles,
+        // INT64 for raw integers (backward compatibility with pre-SSA alloca behavior)
+        if (tagged_val->getType()->isDoubleTy()) {
+            return llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE);
+        } else if (tagged_val->getType()->isIntegerTy(64)) {
+            return llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64);
+        } else if (tagged_val->getType()->isPointerTy()) {
+            return llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR);
+        }
+        return llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL);
+    }
+    return ctx_.builder().CreateExtractValue(tagged_val, {0});
 }
 
 llvm::Value* TaggedValueCodegen::getFlags(llvm::Value* tagged_val) {
-    llvm::Value* temp_ptr = createEntryAlloca("temp_tagged_flags");
-    ctx_.builder().CreateStore(tagged_val, temp_ptr);
-
-    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), temp_ptr, 1);
-    return ctx_.builder().CreateLoad(ctx_.int8Type(), flags_ptr);
+    return ctx_.builder().CreateExtractValue(tagged_val, {1});
 }
 
 llvm::Value* TaggedValueCodegen::unpackInt64(llvm::Value* tagged_val) {
-    llvm::Value* temp_ptr = createEntryAlloca("temp_tagged");
-    ctx_.builder().CreateStore(tagged_val, temp_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), temp_ptr, 4);
-    return ctx_.builder().CreateLoad(ctx_.int64Type(), data_ptr);
+    if (tagged_val->getType() != ctx_.taggedValueType()) {
+        // Raw value — convert to i64 directly
+        if (tagged_val->getType()->isIntegerTy(64)) return tagged_val;
+        if (tagged_val->getType()->isDoubleTy())
+            return ctx_.builder().CreateBitCast(tagged_val, ctx_.int64Type());
+        if (tagged_val->getType()->isPointerTy())
+            return ctx_.builder().CreatePtrToInt(tagged_val, ctx_.int64Type());
+        if (tagged_val->getType()->isIntegerTy())
+            return ctx_.builder().CreateZExtOrTrunc(tagged_val, ctx_.int64Type());
+        return llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    }
+    return ctx_.builder().CreateExtractValue(tagged_val, {4});
 }
 
 llvm::Value* TaggedValueCodegen::unpackDouble(llvm::Value* tagged_val) {
-    llvm::Value* temp_ptr = createEntryAlloca("temp_tagged");
-    ctx_.builder().CreateStore(tagged_val, temp_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), temp_ptr, 4);
-    llvm::Value* data_as_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), data_ptr);
-    return ctx_.builder().CreateBitCast(data_as_int64, ctx_.doubleType());
+    llvm::Value* data_i64 = ctx_.builder().CreateExtractValue(tagged_val, {4});
+    return ctx_.builder().CreateBitCast(data_i64, ctx_.doubleType());
 }
 
 llvm::Value* TaggedValueCodegen::unpackPtr(llvm::Value* tagged_val) {
-    llvm::Value* temp_ptr = createEntryAlloca("temp_tagged");
-    ctx_.builder().CreateStore(tagged_val, temp_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), temp_ptr, 4);
-    llvm::Value* data_as_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), data_ptr);
-    return ctx_.builder().CreateIntToPtr(data_as_int64, ctx_.ptrType());
+    llvm::Value* data_i64 = ctx_.builder().CreateExtractValue(tagged_val, {4});
+    return ctx_.builder().CreateIntToPtr(data_i64, ctx_.ptrType());
 }
 
 llvm::Value* TaggedValueCodegen::unpackBool(llvm::Value* tagged_val) {
-    llvm::Value* temp_ptr = createEntryAlloca("temp_tagged");
-    ctx_.builder().CreateStore(tagged_val, temp_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), temp_ptr, 4);
-    llvm::Value* data_as_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), data_ptr);
-    return ctx_.builder().CreateTrunc(data_as_int64, ctx_.builder().getInt1Ty(), "bool_val");
+    llvm::Value* data_i64 = ctx_.builder().CreateExtractValue(tagged_val, {4});
+    return ctx_.builder().CreateTrunc(data_i64, ctx_.builder().getInt1Ty(), "bool_val");
 }
 
 // === Utility Functions ===
