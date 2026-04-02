@@ -51,7 +51,7 @@ llvm::Function* FunctionCache::getOrCreateFunction(const char* name,
 // size_t strlen(const char*)
 llvm::Function* FunctionCache::getStrlen() {
     if (!strlen_func) {
-        auto ft = llvm::FunctionType::get(types.getInt64Type(),
+        auto ft = llvm::FunctionType::get(types.getSizeType(),
             {types.getPtrType()}, false);
         getOrCreateFunction("strlen", ft, strlen_func);
     }
@@ -72,7 +72,7 @@ llvm::Function* FunctionCache::getStrcmp() {
 llvm::Function* FunctionCache::getStrncmp() {
     if (!strncmp_func) {
         auto ft = llvm::FunctionType::get(types.getInt32Type(),
-            {types.getPtrType(), types.getPtrType(), types.getInt64Type()}, false);
+            {types.getPtrType(), types.getPtrType(), types.getSizeType()}, false);
         getOrCreateFunction("strncmp", ft, strncmp_func);
     }
     return strncmp_func;
@@ -122,7 +122,7 @@ llvm::Function* FunctionCache::getStrcasecmp() {
 llvm::Function* FunctionCache::getMalloc() {
     if (!malloc_func) {
         auto ft = llvm::FunctionType::get(types.getPtrType(),
-            {types.getInt64Type()}, false);
+            {types.getSizeType()}, false);
         getOrCreateFunction("malloc", ft, malloc_func);
     }
     return malloc_func;
@@ -132,7 +132,7 @@ llvm::Function* FunctionCache::getMalloc() {
 llvm::Function* FunctionCache::getMemcpy() {
     if (!memcpy_func) {
         auto ft = llvm::FunctionType::get(types.getPtrType(),
-            {types.getPtrType(), types.getPtrType(), types.getInt64Type()}, false);
+            {types.getPtrType(), types.getPtrType(), types.getSizeType()}, false);
         getOrCreateFunction("memcpy", ft, memcpy_func);
     }
     return memcpy_func;
@@ -142,7 +142,7 @@ llvm::Function* FunctionCache::getMemcpy() {
 llvm::Function* FunctionCache::getMemset() {
     if (!memset_func) {
         auto ft = llvm::FunctionType::get(types.getPtrType(),
-            {types.getPtrType(), types.getInt32Type(), types.getInt64Type()}, false);
+            {types.getPtrType(), types.getInt32Type(), types.getSizeType()}, false);
         getOrCreateFunction("memset", ft, memset_func);
     }
     return memset_func;
