@@ -117,9 +117,14 @@ static llvm::OptimizationLevel getPassBuilderOptLevel() {
 }
 
 // Run LLVM optimization passes on a module before codegen
-static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM) {
+static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool is_wasm = false) {
     auto opt_level = getPassBuilderOptLevel();
-    if (opt_level == llvm::OptimizationLevel::O0) return;  // Skip for -O0
+
+    // For WASM targets, always run at least mem2reg even at -O0.
+    // WASM has a hard limit on local count (~50,000) that native targets don't.
+    // Without mem2reg, each tagged value pack/unpack creates an alloca that
+    // becomes a WASM local, easily exceeding the limit for non-trivial programs.
+    if (opt_level == llvm::OptimizationLevel::O0 && !is_wasm) return;
 
     llvm::PassBuilder PB(TM);
 
@@ -134,10 +139,16 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM) {
     PB.registerLoopAnalyses(LAM);
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
-    llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(opt_level);
-    MPM.run(module, MAM);
-
-    eshkol_info("Applied LLVM optimization passes at -O%d", g_optimization_level);
+    if (opt_level == llvm::OptimizationLevel::O0) {
+        // WASM at -O0: run minimal passes (mem2reg + simplifycfg) to reduce local count
+        llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O1);
+        MPM.run(module, MAM);
+        eshkol_info("Applied minimal LLVM optimization passes for WASM target");
+    } else {
+        llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(opt_level);
+        MPM.run(module, MAM);
+        eshkol_info("Applied LLVM optimization passes at -O%d", g_optimization_level);
+    }
 }
 
 #include <memory>
@@ -29748,7 +29759,8 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
         module->setDataLayout(target_machine->createDataLayout());
 
         // Run LLVM optimization passes before WASM codegen
-        optimizeModule(*module, target_machine.get());
+        // Always optimize for WASM (even at -O0) to avoid exceeding local count limits
+        optimizeModule(*module, target_machine.get(), /*is_wasm=*/true);
 
         // Emit to memory buffer
         SmallVector<char, 0> buffer;
