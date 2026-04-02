@@ -110,8 +110,8 @@ std::atomic<arena_t*> __repl_shared_arena{nullptr};
 // Global command-line arguments (for (command-line) procedure)
 // In REPL mode, these remain zero/null since there's no real main()
 // Use weak linkage so generated code can override in standalone mode
-__attribute__((weak)) int32_t __eshkol_argc = 0;
-__attribute__((weak)) char** __eshkol_argv = nullptr;
+int32_t __eshkol_argc = 0;
+char** __eshkol_argv = nullptr;
 
 // Utility function to align size to boundary
 static size_t align_size(size_t size, size_t alignment) {
@@ -1515,7 +1515,7 @@ thread_local uint64_t __region_stack_depth = 0;
 // Default global arena for allocations outside of any region
 // Non-static to allow JIT code to access it directly
 // Use weak linkage so generated code can override in standalone mode
-__attribute__((weak)) arena_t* __global_arena = nullptr;
+arena_t* __global_arena = nullptr;
 
 // Thread-safe global arena initialization
 static pthread_once_t global_arena_once = PTHREAD_ONCE_INIT;
