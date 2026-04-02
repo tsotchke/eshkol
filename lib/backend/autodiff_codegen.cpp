@@ -3826,7 +3826,7 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(active_var_node, ctx_.innerVarNodePtr());
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), ctx_.gradientXDegree());
 
-    backpropagate(output_node_ptr, partial_tape);
+    backpropagate(partial_tape, output_node_ptr);
     ctx_.builder().CreateBr(after_backward);
     
     // Skip backward pass if output is invalid (placeholder function returning scalar)
@@ -4710,7 +4710,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(run_jac_backward);
 
     Value* out_comp_node = ctx_.builder().CreateIntToPtr(out_comp_int, PointerType::getUnqual(ctx_.context()));
-    backpropagate(out_comp_node, jac_tape);
+    backpropagate(jac_tape, out_comp_node);
     
     // Extract gradient from variable j_in
     Value* jac_grad_var_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
@@ -5351,7 +5351,7 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     Value* bg_output_node = ctx_.builder().CreateIntToPtr(bg_output_int, PointerType::getUnqual(ctx_.context()));
     
     // Backward pass
-    backpropagate(bg_output_node, bg_tape);
+    backpropagate(bg_tape, bg_output_node);
     
     // Extract gradient for component bg_i
     Value* bg_active_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
@@ -5557,7 +5557,7 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     Value* pert_output_node = ctx_.builder().CreateIntToPtr(pert_output_int, PointerType::getUnqual(ctx_.context()));
     
     // Run backward pass
-    backpropagate(pert_output_node, pert_tape);
+    backpropagate(pert_tape, pert_output_node);
     
     // Allocate array for perturbed gradient via arena (OALR compliant - no malloc)
     Value* pert_grad_size = ctx_.builder().CreateMul(n,
