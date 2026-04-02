@@ -1,0 +1,29 @@
+;; Test define inside if/begin - matches original failing pattern
+(display "=== Nested Define in If Test ===") (newline)
+
+;; Test: Define inside begin inside if inside function inside function
+(define n 3)
+(define (make-matrix)
+  (define data (make-vector 9 0.0))
+  (define (fill-row i)
+    (if (< i n)
+        (begin
+          (define (fill-col j)
+            (if (< j n)
+                (begin
+                  (vector-set! data (+ (* i n) j) (+ i 1.0))
+                  (fill-col (+ j 1)))
+                #t))
+          (fill-col 0)
+          (fill-row (+ i 1)))
+        #t))
+  (fill-row 0)
+  data)
+
+(define result (make-matrix))
+(display "Result: ") (display result) (newline)
+(display "data[0] = ") (display (vector-ref result 0)) (display " (expected 1)") (newline)
+(display "data[3] = ") (display (vector-ref result 3)) (display " (expected 2)") (newline)
+(display "data[6] = ") (display (vector-ref result 6)) (display " (expected 3)") (newline)
+
+(display "=== Done ===") (newline)

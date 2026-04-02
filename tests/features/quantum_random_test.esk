@@ -1,0 +1,67 @@
+;; Quantum Random Number Generation Test Suite
+;; Tests: quantum-random, quantum-random-int, quantum-random-range
+
+(display "TEST: quantum random number generation") (newline)
+
+;; --- Test 1: quantum-random returns a number ---
+(define r1 (quantum-random))
+(display (if (number? r1) "PASS" "FAIL"))
+(display ": (number? (quantum-random)) should be #t")
+(newline)
+
+;; --- Test 2: quantum-random in [0, 1) ---
+(define r2 (quantum-random))
+(display (if (and (>= r2 0.0) (< r2 1.0)) "PASS" "FAIL"))
+(display ": (quantum-random) should be >= 0.0 and < 1.0")
+(newline)
+
+;; --- Test 3: quantum-random-int returns an integer ---
+(define r3 (quantum-random-int 100))
+(display (if (integer? r3) "PASS" "FAIL"))
+(display ": (integer? (quantum-random-int 100)) should be #t")
+(newline)
+
+;; --- Test 4: quantum-random-int in [0, 10) ---
+(define r4 (quantum-random-int 10))
+(display (if (and (>= r4 0) (< r4 10)) "PASS" "FAIL"))
+(display ": (quantum-random-int 10) should be >= 0 and < 10")
+(newline)
+
+;; --- Test 5: quantum-random-int 1 should always be 0 ---
+(define r5a (quantum-random-int 1))
+(define r5b (quantum-random-int 1))
+(define r5c (quantum-random-int 1))
+(display (if (and (= r5a 0) (= r5b 0) (= r5c 0)) "PASS" "FAIL"))
+(display ": (quantum-random-int 1) should always be 0")
+(newline)
+
+;; --- Test 6: quantum-random-range in [5.0, 10.0) ---
+(define r6 (quantum-random-range 5.0 10.0))
+(display (if (and (>= r6 5.0) (< r6 10.0)) "PASS" "FAIL"))
+(display ": (quantum-random-range 5.0 10.0) should be >= 5.0 and < 10.0")
+(newline)
+
+;; --- Test 7: quantum-random-range in [0.0, 1.0) ---
+(define r7 (quantum-random-range 0.0 1.0))
+(display (if (and (>= r7 0.0) (< r7 1.0)) "PASS" "FAIL"))
+(display ": (quantum-random-range 0.0 1.0) should be >= 0.0 and < 1.0")
+(newline)
+
+;; --- Test 8: two calls to quantum-random should (almost certainly) differ ---
+(define r8a (quantum-random))
+(define r8b (quantum-random))
+(display (if (not (= r8a r8b)) "PASS" "FAIL"))
+(display ": two calls to (quantum-random) should return different values")
+(newline)
+
+;; --- Test 9: quantum-random-int with large bound ---
+(define r9 (quantum-random-int 1000000))
+(display (if (and (>= r9 0) (< r9 1000000)) "PASS" "FAIL"))
+(display ": (quantum-random-int 1000000) should be >= 0 and < 1000000")
+(newline)
+
+;; --- Test 10: quantum-random-range with negative bounds ---
+(define r10 (quantum-random-range -10.0 -5.0))
+(display (if (and (>= r10 -10.0) (< r10 -5.0)) "PASS" "FAIL"))
+(display ": (quantum-random-range -10.0 -5.0) should be >= -10.0 and < -5.0")
+(newline)

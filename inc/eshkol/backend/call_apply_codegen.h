@@ -194,6 +194,22 @@ public:
         get_builtin_arithmetic_callback_ = callback;
     }
 
+    /**
+     * Callback type for applying builtin functions with runtime argument list.
+     * Used for tensor/vector functions that need special handling in apply.
+     * @param func_name Name of the builtin function (rand, randn, zeros, ones, etc.)
+     * @param args Vector of argument values extracted from the list
+     * @param context Callback context pointer
+     * @return Result of the builtin function, or nullptr if not handled
+     */
+    using ApplyBuiltinCallback = llvm::Value* (*)(const std::string& func_name,
+                                                   const std::vector<llvm::Value*>& args,
+                                                   llvm::Value* arg_count,
+                                                   void* context);
+    void setApplyBuiltinCallback(ApplyBuiltinCallback callback) {
+        apply_builtin_callback_ = callback;
+    }
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
@@ -217,6 +233,9 @@ private:
 
     // Builtin arithmetic callback
     GetBuiltinArithmeticCallback get_builtin_arithmetic_callback_ = nullptr;
+
+    // Apply builtin callback for tensor/vector functions
+    ApplyBuiltinCallback apply_builtin_callback_ = nullptr;
 
     // === Internal Helpers ===
 

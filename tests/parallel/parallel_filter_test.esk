@@ -1,0 +1,37 @@
+;; Test parallel-filter functionality
+;; Tests parallel filtering with predicates
+
+(display "=== Parallel Filter Tests ===") (newline)
+
+;; Test 1: Filter even numbers
+(define evens (parallel-filter (lambda (x) (= 0 (modulo x 2))) (list 1 2 3 4 5 6 7 8 9 10)))
+(display "parallel-filter evens: ")
+(display evens)
+(newline)
+
+;; Test 2: Filter positive numbers
+(define positives (parallel-filter (lambda (x) (> x 0)) (list -3 -2 -1 0 1 2 3)))
+(display "parallel-filter positive: ")
+(display positives)
+(newline)
+
+;; Test 3: Filter all elements (everything passes)
+(define all-pass (parallel-filter (lambda (x) (> x 0)) (list 1 2 3 4 5)))
+(display "parallel-filter all pass: ")
+(display all-pass)
+(newline)
+
+;; Test 4: Filter no elements (nothing passes)
+(define none-pass (parallel-filter (lambda (x) (> x 100)) (list 1 2 3 4 5)))
+(display "parallel-filter none pass: ")
+(display none-pass)
+(newline)
+
+;; Test 5: Filter with larger list
+(define big-filter (parallel-filter (lambda (x) (= 0 (modulo x 3)))
+                                    (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15)))
+(display "parallel-filter mod3: ")
+(display big-filter)
+(newline)
+
+(display "=== Parallel Filter Tests Complete ===") (newline)

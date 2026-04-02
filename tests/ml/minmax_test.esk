@@ -1,0 +1,45 @@
+;;; Min/Max and Argmin/Argmax Test Suite
+
+(define (run-tests)
+  (display "=== Min/Max Operations Tests ===")
+  (newline)
+
+  ;; Test tensor-min
+  (display "-- Testing tensor-min --")
+  (newline)
+  (let ((input (tensor 5 3.0 1.0 4.0 1.5 2.0)))
+    (display "input: ")
+    (display input)
+    (newline)
+    (display "min: ")
+    (display (tensor-min input))
+    (newline))
+
+  ;; Test tensor-max
+  (display "-- Testing tensor-max --")
+  (newline)
+  (let ((input (tensor 5 3.0 1.0 4.0 1.5 2.0)))
+    (display "max: ")
+    (display (tensor-max input))
+    (newline))
+
+  ;; Test tensor-argmin
+  (display "-- Testing tensor-argmin --")
+  (newline)
+  (let ((input (tensor 5 3.0 1.0 4.0 1.5 2.0)))
+    (display "argmin: ")
+    (display (tensor-argmin input))
+    (newline))
+
+  ;; Test tensor-argmax
+  (display "-- Testing tensor-argmax --")
+  (newline)
+  (let ((input (tensor 5 3.0 1.0 4.0 1.5 2.0)))
+    (display "argmax: ")
+    (display (tensor-argmax input))
+    (newline))
+
+  (display "=== Min/Max Tests Complete ===")
+  (newline))
+
+(run-tests)

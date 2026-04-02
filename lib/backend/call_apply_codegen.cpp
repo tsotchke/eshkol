@@ -91,6 +91,80 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             return applyCons(list_int);
         }
 
+        // Handle tensor/vector creation functions via callback
+        if (apply_builtin_callback_ &&
+            (func_name == "rand" || func_name == "randn" || func_name == "randint" ||
+             func_name == "zeros" || func_name == "ones" || func_name == "full" ||
+             func_name == "arange" || func_name == "linspace" ||
+             func_name == "eye" || func_name == "diag" ||
+             func_name == "reshape" || func_name == "transpose" ||
+             func_name == "tensor" || func_name == "make-tensor")) {
+
+            Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+            Function* cons_get_ptr = getTaggedConsGetPtrFunc();
+            if (!cons_get_ptr) return tagged_.packNull();
+
+            ArrayType* args_array_type = ArrayType::get(ctx_.taggedValueType(), MAX_APPLY_ARGS);
+            IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
+            BasicBlock& entry = current_func->getEntryBlock();
+            ctx_.builder().SetInsertPoint(&entry, entry.begin());
+            Value* args_array = ctx_.builder().CreateAlloca(args_array_type, nullptr, "builtin_args");
+            Value* count_ptr = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "builtin_count");
+            ctx_.builder().restoreIP(saved_ip);
+
+            ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), count_ptr);
+
+            BasicBlock* extract_loop = BasicBlock::Create(ctx_.context(), "builtin_extract_loop", current_func);
+            BasicBlock* extract_body = BasicBlock::Create(ctx_.context(), "builtin_extract_body", current_func);
+            BasicBlock* extract_done = BasicBlock::Create(ctx_.context(), "builtin_extract_done", current_func);
+
+            BasicBlock* pre_loop = ctx_.builder().GetInsertBlock();
+            ctx_.builder().CreateBr(extract_loop);
+
+            ctx_.builder().SetInsertPoint(extract_loop);
+            PHINode* list_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "builtin_list");
+            list_phi->addIncoming(list_int, pre_loop);
+
+            Value* count = ctx_.builder().CreateLoad(ctx_.int64Type(), count_ptr);
+            Value* list_null = ctx_.builder().CreateICmpEQ(list_phi, ConstantInt::get(ctx_.int64Type(), 0));
+            Value* max_reached = ctx_.builder().CreateICmpUGE(count, ConstantInt::get(ctx_.int64Type(), MAX_APPLY_ARGS));
+            Value* done_cond = ctx_.builder().CreateOr(list_null, max_reached);
+            ctx_.builder().CreateCondBr(done_cond, extract_done, extract_body);
+
+            ctx_.builder().SetInsertPoint(extract_body);
+            Value* cons_ptr = ctx_.builder().CreateIntToPtr(list_phi, ctx_.ptrType());
+            Value* elem = extractConsCarAsTaggedValue(cons_ptr);
+
+            Value* idx_gep = ctx_.builder().CreateGEP(args_array_type, args_array,
+                {ConstantInt::get(ctx_.int64Type(), 0), count});
+            ctx_.builder().CreateStore(elem, idx_gep);
+
+            Value* new_count = ctx_.builder().CreateAdd(count, ConstantInt::get(ctx_.int64Type(), 1));
+            ctx_.builder().CreateStore(new_count, count_ptr);
+
+            Value* is_cdr = ConstantInt::get(ctx_.int1Type(), 1);
+            Value* next_list = ctx_.builder().CreateCall(cons_get_ptr, {cons_ptr, is_cdr});
+
+            BasicBlock* loop_back = ctx_.builder().GetInsertBlock();
+            ctx_.builder().CreateBr(extract_loop);
+            list_phi->addIncoming(next_list, loop_back);
+
+            ctx_.builder().SetInsertPoint(extract_done);
+            Value* final_count = ctx_.builder().CreateLoad(ctx_.int64Type(), count_ptr);
+
+            std::vector<Value*> builtin_args;
+            for (int i = 0; i < MAX_APPLY_ARGS; i++) {
+                Value* arg_gep = ctx_.builder().CreateGEP(args_array_type, args_array,
+                    {ConstantInt::get(ctx_.int64Type(), 0), ConstantInt::get(ctx_.int64Type(), i)});
+                builtin_args.push_back(ctx_.builder().CreateLoad(ctx_.taggedValueType(), arg_gep));
+            }
+
+            Value* result = apply_builtin_callback_(func_name, builtin_args, final_count, callback_context_);
+            if (result) {
+                return result;
+            }
+        }
+
         // Try to find function by name in the module
         Function* named_func = ctx_.module().getFunction(func_name);
         if (named_func) {
@@ -810,10 +884,75 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
 }
 
 Value* CallApplyCodegen::closureCall(Value* closure, const std::vector<Value*>& args) {
-    // TODO: Implement direct closure call with pre-evaluated arguments
-    // For now, this is a placeholder - the main codegen uses codegenClosureCall
-    eshkol_warn("closureCall not yet implemented in CallApplyCodegen");
-    return tagged_.packNull();
+    // Direct closure call: extract function pointer, load captures, call with captures + args.
+    // This mirrors the closure call convention in codegenClosureCall but uses
+    // a simplified path for pre-evaluated arguments.
+
+    if (!closure) {
+        eshkol_error("closureCall: null closure value");
+        return tagged_.packNull();
+    }
+
+    // Extract closure pointer from tagged value
+    llvm::Value* closure_ptr_i64 = tagged_.unpackInt64(closure);
+    llvm::Value* closure_ptr = ctx_.builder().CreateIntToPtr(
+        closure_ptr_i64, ctx_.ptrType(), "closure_ptr");
+
+    // Load function pointer (offset 0 in closure struct)
+    llvm::Value* func_ptr_i64 = ctx_.builder().CreateLoad(
+        ctx_.int64Type(), closure_ptr, "func_ptr_i64");
+    llvm::Value* func_ptr = ctx_.builder().CreateIntToPtr(
+        func_ptr_i64, ctx_.ptrType(), "func_ptr");
+
+    // Load capture count (offset 8)
+    llvm::Value* cap_count_gep = ctx_.builder().CreateGEP(
+        ctx_.int64Type(), closure_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1), "cap_count_gep");
+    llvm::Value* cap_count = ctx_.builder().CreateLoad(
+        ctx_.int64Type(), cap_count_gep, "cap_count");
+
+    // For the common case (0 captures), call directly with user args only.
+    // Other cases fall through to a non-capture call (captures are part of function ABI).
+    llvm::Value* has_no_captures = ctx_.builder().CreateICmpEQ(
+        cap_count, llvm::ConstantInt::get(ctx_.int64Type(), 0), "no_caps");
+
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* no_cap_bb = llvm::BasicBlock::Create(ctx_.context(), "closure_nocap", current_func);
+    llvm::BasicBlock* has_cap_bb = llvm::BasicBlock::Create(ctx_.context(), "closure_hascap", current_func);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "closure_merge", current_func);
+
+    ctx_.builder().CreateCondBr(has_no_captures, no_cap_bb, has_cap_bb);
+
+    // No captures: call func_ptr directly with args
+    ctx_.builder().SetInsertPoint(no_cap_bb);
+    std::vector<llvm::Type*> arg_types(args.size(), ctx_.taggedValueType());
+    llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.taggedValueType(), arg_types, false);
+    llvm::Value* result_nocap = ctx_.builder().CreateCall(ft, func_ptr, args, "closure_result");
+    llvm::BasicBlock* nocap_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_bb);
+
+    // Has captures: load capture[0] and prepend to args (handles 1-capture case)
+    ctx_.builder().SetInsertPoint(has_cap_bb);
+    llvm::Value* captures_base = ctx_.builder().CreateGEP(
+        llvm::Type::getInt8Ty(ctx_.context()), closure_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 16), "captures_base");
+    llvm::Value* cap0 = ctx_.builder().CreateLoad(
+        ctx_.taggedValueType(), captures_base, "cap0");
+    std::vector<llvm::Value*> cap_args;
+    cap_args.push_back(cap0);
+    for (auto* arg : args) cap_args.push_back(arg);
+    std::vector<llvm::Type*> cap_arg_types(cap_args.size(), ctx_.taggedValueType());
+    llvm::FunctionType* ft_cap = llvm::FunctionType::get(ctx_.taggedValueType(), cap_arg_types, false);
+    llvm::Value* result_cap = ctx_.builder().CreateCall(ft_cap, func_ptr, cap_args, "closure_cap_result");
+    llvm::BasicBlock* cap_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_bb);
+
+    // Merge
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "closure_result");
+    result->addIncoming(result_nocap, nocap_exit);
+    result->addIncoming(result_cap, cap_exit);
+    return result;
 }
 
 } // namespace eshkol

@@ -1,0 +1,50 @@
+; call/cc tests — first-class continuations
+
+; Basic escape: (call/cc (lambda (k) (k 42))) → 42
+(display (call/cc (lambda (k) (k 42))))
+(newline)
+; Expected: 42
+
+; Non-escape: proc returns normally without calling k
+(display (call/cc (lambda (k) 99)))
+(newline)
+; Expected: 99
+
+; Escape from nested computation
+(display (+ 1 (call/cc (lambda (k) (+ 2 (k 10))))))
+(newline)
+; Expected: 11
+
+; call-with-current-continuation (long form)
+(display (call-with-current-continuation (lambda (k) (k 77))))
+(newline)
+; Expected: 77
+
+; Continuation used conditionally
+(display (call/cc (lambda (k)
+  (if (> 3 2)
+    (k 100)
+    200))))
+(newline)
+; Expected: 100
+
+; Continuation not called - return body value
+(display (call/cc (lambda (k)
+  (if (< 3 2)
+    (k 100)
+    200))))
+(newline)
+; Expected: 200
+
+; Nested call/cc
+(display (call/cc (lambda (outer)
+  (call/cc (lambda (inner)
+    (inner 55))))))
+(newline)
+; Expected: 55
+
+; call/cc with let binding
+(let ((result (call/cc (lambda (k) (k 123)))))
+  (display result)
+  (newline))
+; Expected: 123

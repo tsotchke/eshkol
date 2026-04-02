@@ -1,0 +1,18 @@
+;;; Minimal test to isolate nested let issue
+
+(define (test-nested-let)
+  (display "Testing nested let...")
+  (newline)
+  (let ((x 5))
+    (display "outer x: ")
+    (display x)
+    (newline)
+    (let ((y 10))
+      (display "inner y: ")
+      (display y)
+      (newline)
+      (display "x visible? ")
+      (display x)
+      (newline))))
+
+(test-nested-let)

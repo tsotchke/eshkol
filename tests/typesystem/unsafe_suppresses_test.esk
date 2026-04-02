@@ -1,0 +1,9 @@
+;; Type System Test: Unsafe mode suppresses all type diagnostics
+;; EXPECT-MODE: unsafe
+;; EXPECT-NO-STDERR: Type error
+;; EXPECT-NO-STDERR: Type warning
+
+;; Same mismatch — unsafe mode should produce zero type output
+(define (add-nums a b) (+ a b))
+(display (add-nums "hello" 42))
+(newline)

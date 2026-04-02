@@ -1,0 +1,37 @@
+;;; Timing Test
+;;; Tests current-time-ms function
+
+(define (run-tests)
+  (display "=== Timing Test ===")
+  (newline)
+
+  ;; Test current-time-ms
+  (display "Testing current-time-ms:")
+  (newline)
+  (let ((t1 (current-time-ms)))
+    (display "  Time 1: ")
+    (display t1)
+    (display " ms")
+    (newline)
+
+    ;; Do some work
+    (let loop ((i 0) (sum 0.0))
+      (if (< i 100000)
+          (loop (+ i 1) (+ sum (* i 0.001)))
+          sum))
+
+    (let ((t2 (current-time-ms)))
+      (display "  Time 2: ")
+      (display t2)
+      (display " ms")
+      (newline)
+      (display "  Elapsed: ")
+      (display (- t2 t1))
+      (display " ms")
+      (newline)))
+
+  (newline)
+  (display "=== Timing Test Complete ===")
+  (newline))
+
+(run-tests)

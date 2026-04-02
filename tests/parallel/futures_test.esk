@@ -1,0 +1,23 @@
+;; Test future/force functionality
+;; Tests asynchronous computation with futures
+
+(display "=== Futures Tests ===") (newline)
+
+;; Test 1: Basic future creation and force
+(define f1 (future (* 6 7)))
+(display "Created future") (newline)
+(define r1 (force f1))
+(display "future (* 6 7): ")
+(display r1)
+(newline)
+
+;; Test 2: Multiple futures
+(define fa (future (* 10 10)))
+(define fb (future (* 20 20)))
+(display "futures: ")
+(display (force fa))
+(display " ")
+(display (force fb))
+(newline)
+
+(display "=== Futures Tests Complete ===") (newline)

@@ -1,0 +1,41 @@
+(require stdlib)
+
+(display "TEST: Rounding function edge cases") (newline)
+
+; floor tests
+(display (if (= (floor 2.7) 2.0) "PASS" "FAIL")) (display ": floor 2.7 => 2.0") (newline)
+(display (if (= (floor -2.7) -3.0) "PASS" "FAIL")) (display ": floor -2.7 => -3.0") (newline)
+(display (if (= (floor 2.0) 2.0) "PASS" "FAIL")) (display ": floor 2.0 => 2.0") (newline)
+
+; ceiling tests
+(display (if (= (ceiling 2.3) 3.0) "PASS" "FAIL")) (display ": ceiling 2.3 => 3.0") (newline)
+(display (if (= (ceiling -2.3) -2.0) "PASS" "FAIL")) (display ": ceiling -2.3 => -2.0") (newline)
+(display (if (= (ceiling 2.0) 2.0) "PASS" "FAIL")) (display ": ceiling 2.0 => 2.0") (newline)
+
+; truncate tests
+(display (if (= (truncate 2.7) 2.0) "PASS" "FAIL")) (display ": truncate 2.7 => 2.0") (newline)
+(display (if (= (truncate -2.7) -2.0) "PASS" "FAIL")) (display ": truncate -2.7 => -2.0") (newline)
+
+; round tests — R7RS banker's rounding (round half to even)
+(display (if (= (round 2.5) 2.0) "PASS" "FAIL")) (display ": round 2.5 => 2.0 (banker's rounding, even)") (newline)
+(display (if (= (round 3.5) 4.0) "PASS" "FAIL")) (display ": round 3.5 => 4.0 (banker's rounding, even)") (newline)
+(display (if (= (round 2.3) 2.0) "PASS" "FAIL")) (display ": round 2.3 => 2.0") (newline)
+(display (if (= (round 2.7) 3.0) "PASS" "FAIL")) (display ": round 2.7 => 3.0") (newline)
+
+; negative round
+(display (if (= (round -2.5) -2.0) "PASS" "FAIL")) (display ": round -2.5 => -2.0 (banker's rounding, even)") (newline)
+
+; integer inputs
+(display (if (= (floor 5) 5) "PASS" "FAIL")) (display ": floor 5 => 5 (integer input)") (newline)
+(display (if (= (ceiling 5) 5) "PASS" "FAIL")) (display ": ceiling 5 => 5 (integer input)") (newline)
+(display (if (= (truncate 5) 5) "PASS" "FAIL")) (display ": truncate 5 => 5 (integer input)") (newline)
+(display (if (= (round 5) 5) "PASS" "FAIL")) (display ": round 5 => 5 (integer input)") (newline)
+
+; zero and near-zero
+(display (if (= (floor 0.0) 0.0) "PASS" "FAIL")) (display ": floor 0.0 => 0.0") (newline)
+(display (if (= (floor 0.1) 0.0) "PASS" "FAIL")) (display ": floor 0.1 => 0.0 (very small positive)") (newline)
+(display (if (= (floor -0.1) -1.0) "PASS" "FAIL")) (display ": floor -0.1 => -1.0 (very small negative)") (newline)
+
+; large floats
+(display (if (= (floor 1e15) 1e15) "PASS" "FAIL")) (display ": floor 1e15 => 1e15 (large float, already integral)") (newline)
+(display (if (= (ceiling 1e15) 1e15) "PASS" "FAIL")) (display ": ceiling 1e15 => 1e15 (large float, already integral)") (newline)

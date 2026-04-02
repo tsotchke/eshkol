@@ -1,0 +1,47 @@
+;; XLA Matrix Multiplication Tests
+;; Tests matmul through the XLA/BLAS dispatch path with assertions
+
+;; Basic 2x2 matmul
+(define A (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
+(define B (reshape (vector 5.0 6.0 7.0 8.0) 2 2))
+(define C (matmul A B))
+
+;; Expected: [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]]
+;;         = [[19, 22], [43, 50]]
+(define c00 (tensor-get C 0 0))
+(define c01 (tensor-get C 0 1))
+(define c10 (tensor-get C 1 0))
+(define c11 (tensor-get C 1 1))
+
+(if (and (= c00 19.0) (= c01 22.0) (= c10 43.0) (= c11 50.0))
+    (display "PASS: 2x2 matmul correct")
+    (display "FAIL: 2x2 matmul incorrect"))
+(newline)
+
+;; Identity matmul: A @ I = A
+(define I2 (reshape (vector 1.0 0.0 0.0 1.0) 2 2))
+(define AI (matmul A I2))
+(if (and (= (tensor-get AI 0 0) 1.0) (= (tensor-get AI 0 1) 2.0)
+         (= (tensor-get AI 1 0) 3.0) (= (tensor-get AI 1 1) 4.0))
+    (display "PASS: identity matmul correct")
+    (display "FAIL: identity matmul incorrect"))
+(newline)
+
+;; Larger matmul: 3x2 @ 2x4
+(define M (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 3 2))
+(define N (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0) 2 4))
+(define R (matmul M N))
+
+;; Check element [0,0] = 1*1 + 2*5 = 11
+(if (= (tensor-get R 0 0) 11.0)
+    (display "PASS: 3x2 @ 2x4 element [0,0] = 11")
+    (begin (display "FAIL: 3x2 @ 2x4 element [0,0] = ")
+           (display (tensor-get R 0 0))))
+(newline)
+
+;; Check element [2,3] = 5*4 + 6*8 = 68
+(if (= (tensor-get R 2 3) 68.0)
+    (display "PASS: 3x2 @ 2x4 element [2,3] = 68")
+    (begin (display "FAIL: 3x2 @ 2x4 element [2,3] = ")
+           (display (tensor-get R 2 3))))
+(newline)

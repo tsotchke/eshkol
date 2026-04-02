@@ -1,0 +1,133 @@
+{
+  "Define Function": {
+    "prefix": "defn",
+    "body": [
+      "(define (${1:name} ${2:params})",
+      "  ${0:body})"
+    ],
+    "description": "Define a named function"
+  },
+  "Define Variable": {
+    "prefix": "def",
+    "body": [
+      "(define ${1:name} ${0:value})"
+    ],
+    "description": "Define a variable"
+  },
+  "Lambda": {
+    "prefix": "lambda",
+    "body": [
+      "(lambda (${1:params})",
+      "  ${0:body})"
+    ],
+    "description": "Anonymous function"
+  },
+  "Let Binding": {
+    "prefix": "let",
+    "body": [
+      "(let ((${1:var} ${2:val}))",
+      "  ${0:body})"
+    ],
+    "description": "Local variable binding"
+  },
+  "Let* Binding": {
+    "prefix": "let*",
+    "body": [
+      "(let* ((${1:var1} ${2:val1})",
+      "       (${3:var2} ${4:val2}))",
+      "  ${0:body})"
+    ],
+    "description": "Sequential local variable bindings"
+  },
+  "If Expression": {
+    "prefix": "if",
+    "body": [
+      "(if ${1:test}",
+      "    ${2:consequent}",
+      "    ${0:alternate})"
+    ],
+    "description": "Conditional expression"
+  },
+  "Cond Expression": {
+    "prefix": "cond",
+    "body": [
+      "(cond",
+      "  (${1:test1} ${2:expr1})",
+      "  (${3:test2} ${4:expr2})",
+      "  (else ${0:default}))"
+    ],
+    "description": "Multi-way conditional"
+  },
+  "Map": {
+    "prefix": "map",
+    "body": [
+      "(map (lambda (${1:x}) ${2:body}) ${0:list})"
+    ],
+    "description": "Map function over list"
+  },
+  "Tensor": {
+    "prefix": "tensor",
+    "body": [
+      "(tensor (${1:dims}) ${0:values})"
+    ],
+    "description": "Create a tensor"
+  },
+  "Gradient": {
+    "prefix": "grad",
+    "body": [
+      "(gradient (lambda (${1:x}) ${2:body}) ${0:point})"
+    ],
+    "description": "Compute gradient via autodiff"
+  },
+  "Parallel Map": {
+    "prefix": "pmap",
+    "body": [
+      "(parallel-map (lambda (${1:x}) ${2:body}) ${0:list})"
+    ],
+    "description": "Parallel map using thread pool"
+  },
+  "With Region": {
+    "prefix": "region",
+    "body": [
+      "(with-region",
+      "  ${0:body})"
+    ],
+    "description": "Lexical memory region"
+  },
+  "Guard Exception": {
+    "prefix": "guard",
+    "body": [
+      "(guard (${1:exn}",
+      "        ((${2:test}) ${3:handler}))",
+      "  ${0:body})"
+    ],
+    "description": "Exception handler"
+  },
+  "Match Expression": {
+    "prefix": "match",
+    "body": [
+      "(match ${1:expr}",
+      "  (${2:pattern1} ${3:body1})",
+      "  (${0:pattern2} body2))"
+    ],
+    "description": "Pattern matching"
+  },
+  "Begin Block": {
+    "prefix": "begin",
+    "body": [
+      "(begin",
+      "  ${1:expr1}",
+      "  ${0:expr2})"
+    ],
+    "description": "Sequential evaluation block"
+  },
+  "Do Loop": {
+    "prefix": "do",
+    "body": [
+      "(do ((${1:var} ${2:init} ${3:step}))",
+      "    ((${4:test}) ${5:result})",
+      "  ${0:body})"
+    ],
+    "description": "Iteration construct"
+  }
+}

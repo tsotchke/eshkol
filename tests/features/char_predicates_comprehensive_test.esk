@@ -1,0 +1,84 @@
+;; Comprehensive Character Predicates and Operations Test Suite
+;; Tests: char-alphabetic?, char-numeric?, char-whitespace?,
+;;        char-upper-case?, char-lower-case?, char-upcase, char-downcase,
+;;        char-ci=?
+
+;; === char-alphabetic? ===
+
+(display "TEST: char-alphabetic? on lowercase letter") (newline)
+(display (if (char-alphabetic? #\a) "PASS" "FAIL")) (display ": char-alphabetic? #\\a is #t") (newline)
+
+(display "TEST: char-alphabetic? on uppercase letter") (newline)
+(display (if (char-alphabetic? #\Z) "PASS" "FAIL")) (display ": char-alphabetic? #\\Z is #t") (newline)
+
+(display "TEST: char-alphabetic? on digit") (newline)
+(display (if (not (char-alphabetic? #\5)) "PASS" "FAIL")) (display ": char-alphabetic? #\\5 is #f") (newline)
+
+(display "TEST: char-alphabetic? on space") (newline)
+(display (if (not (char-alphabetic? #\space)) "PASS" "FAIL")) (display ": char-alphabetic? #\\space is #f") (newline)
+
+;; === char-numeric? ===
+
+(display "TEST: char-numeric? on digit") (newline)
+(display (if (char-numeric? #\5) "PASS" "FAIL")) (display ": char-numeric? #\\5 is #t") (newline)
+
+(display "TEST: char-numeric? on zero") (newline)
+(display (if (char-numeric? #\0) "PASS" "FAIL")) (display ": char-numeric? #\\0 is #t") (newline)
+
+(display "TEST: char-numeric? on letter") (newline)
+(display (if (not (char-numeric? #\a)) "PASS" "FAIL")) (display ": char-numeric? #\\a is #f") (newline)
+
+;; === char-whitespace? ===
+
+(display "TEST: char-whitespace? on space") (newline)
+(display (if (char-whitespace? #\space) "PASS" "FAIL")) (display ": char-whitespace? #\\space is #t") (newline)
+
+(display "TEST: char-whitespace? on tab") (newline)
+(display (if (char-whitespace? #\tab) "PASS" "FAIL")) (display ": char-whitespace? #\\tab is #t") (newline)
+
+(display "TEST: char-whitespace? on newline") (newline)
+(display (if (char-whitespace? #\newline) "PASS" "FAIL")) (display ": char-whitespace? #\\newline is #t") (newline)
+
+;; === char-upper-case? and char-lower-case? ===
+
+(display "TEST: char-upper-case? on uppercase") (newline)
+(display (if (char-upper-case? #\A) "PASS" "FAIL")) (display ": char-upper-case? #\\A is #t") (newline)
+
+(display "TEST: char-upper-case? on lowercase") (newline)
+(display (if (not (char-upper-case? #\a)) "PASS" "FAIL")) (display ": char-upper-case? #\\a is #f") (newline)
+
+(display "TEST: char-lower-case? on lowercase") (newline)
+(display (if (char-lower-case? #\a) "PASS" "FAIL")) (display ": char-lower-case? #\\a is #t") (newline)
+
+(display "TEST: char-lower-case? on uppercase") (newline)
+(display (if (not (char-lower-case? #\A)) "PASS" "FAIL")) (display ": char-lower-case? #\\A is #f") (newline)
+
+;; === char-upcase and char-downcase ===
+
+(display "TEST: char-upcase converts lowercase to uppercase") (newline)
+(display (if (char=? (char-upcase #\a) #\A) "PASS" "FAIL")) (display ": (char-upcase #\\a) is #\\A") (newline)
+
+(display "TEST: char-upcase leaves uppercase unchanged") (newline)
+(display (if (char=? (char-upcase #\A) #\A) "PASS" "FAIL")) (display ": (char-upcase #\\A) is #\\A") (newline)
+
+(display "TEST: char-downcase converts uppercase to lowercase") (newline)
+(display (if (char=? (char-downcase #\A) #\a) "PASS" "FAIL")) (display ": (char-downcase #\\A) is #\\a") (newline)
+
+(display "TEST: char-downcase leaves lowercase unchanged") (newline)
+(display (if (char=? (char-downcase #\a) #\a) "PASS" "FAIL")) (display ": (char-downcase #\\a) is #\\a") (newline)
+
+(display "TEST: char-upcase on non-alpha is identity") (newline)
+(display (if (char=? (char-upcase #\5) #\5) "PASS" "FAIL")) (display ": (char-upcase #\\5) is #\\5") (newline)
+
+;; === char-ci=? (case-insensitive comparison) ===
+
+(display "TEST: char-ci=? same case") (newline)
+(display (if (char-ci=? #\a #\a) "PASS" "FAIL")) (display ": (char-ci=? #\\a #\\a) is #t") (newline)
+
+(display "TEST: char-ci=? different case") (newline)
+(display (if (char-ci=? #\a #\A) "PASS" "FAIL")) (display ": (char-ci=? #\\a #\\A) is #t") (newline)
+
+(display "TEST: char-ci=? different letters") (newline)
+(display (if (not (char-ci=? #\a #\B)) "PASS" "FAIL")) (display ": (char-ci=? #\\a #\\B) is #f") (newline)
+
+(display "Done.") (newline)

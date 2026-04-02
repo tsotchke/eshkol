@@ -6,14 +6,18 @@
  */
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
+#include <eshkol/core/runtime.h>
+#include <eshkol/core/resource_limits.h>
 
 #include <eshkol/llvm_backend.h>
+#include "../lib/repl/repl_jit.h"
 
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <getopt.h>
 #include <unistd.h>
+#include <errno.h>
 #include <filesystem>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>  // For _NSGetExecutablePath on macOS
@@ -39,11 +43,22 @@ static struct option long_options[] = {
     {"output", required_argument, nullptr, 'o'},
     {"compile-only", no_argument, nullptr, 'c'},
     {"shared-lib", no_argument, nullptr, 's'},
+    {"wasm", no_argument, nullptr, 'w'},
     {"lib", required_argument, nullptr, 'l'},
     {"lib-path", required_argument, nullptr, 'L'},
     {"no-stdlib", no_argument, nullptr, 'n'},
+    {"eval", required_argument, nullptr, 'e'},
+    {"run", no_argument, nullptr, 'r'},
+    {"strict-types", no_argument, nullptr, 256},
+    {"unsafe", no_argument, nullptr, 257},
+    {"debug-info", no_argument, nullptr, 'g'},
+    {"optimize", required_argument, nullptr, 'O'},
+    {"emit-eskb", required_argument, nullptr, 'B'},
     {0, 0, 0, 0}
 };
+
+/* Bytecode VM compiler — emit ESKB format */
+extern "C" int eshkol_emit_eskb(const char* source, const char* output_path);
 
 // Set to track imported files (prevent circular imports)
 static std::set<std::string> imported_files;
@@ -158,6 +173,9 @@ private:
 
 // Global module resolver instance
 static ModuleDependencyResolver g_module_resolver;
+
+// Set of modules currently being loaded (for cycle detection during recursive require)
+static std::set<std::string> g_loading_modules;
 
 // ===== END MODULE DEPENDENCY RESOLVER =====
 
@@ -395,7 +413,7 @@ private:
                     bool is_owned = transfersOwnership(op->define_op.value);
                     currentScope().variables[name] = {
                         is_owned ? State::OWNED : State::UNOWNED,
-                        "",  // TODO: add location tracking
+                        name,  // Use variable name as location identifier
                         is_owned
                     };
                     // Analyze the value (this handles the move marking)
@@ -1138,7 +1156,9 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
 static void print_help(int x = 0)
 {
     printf(
-        "Usage: eshkol-run [options] <input.esk|input.o> [input.esk|input.o]\n\n"
+        "Usage: eshkol-run [options] <input.esk|input.o> [input.esk|input.o]\n"
+        "       eshkol-run -e '<expression>'   (JIT evaluate expression)\n"
+        "       eshkol-run -r <file.esk>       (JIT run file)\n\n"
         "\t--help:[-h] = Print this help message.\n"
         "\t--debug:[-d] = Debugging information added inside the program.\n"
         "\t--dump-ast:[-a] = Dumps the AST into a .ast file.\n"
@@ -1146,10 +1166,17 @@ static void print_help(int x = 0)
         "\t--output:[-o] = Outputs into a binary file.\n"
         "\t--compile-only:[-c] = Compiles into an intermediate object file.\n"
         "\t--shared-lib:[-s] = Compiles it into a shared library.\n"
+        "\t--wasm:[-w] = Compiles to WebAssembly (.wasm) format.\n"
         "\t--lib:[-l] = Links a shared library to the resulting executable.\n"
         "\t--lib-path:[-L] = Adds a directory to the library search path.\n"
-        "\t--no-stdlib:[-n] = Do not auto-load the standard library.\n\n"
-        "This is an early developer release (%s) of the Eshkol Compiler/Interpreter.\n",
+        "\t--no-stdlib:[-n] = Do not auto-load the standard library.\n"
+        "\t--eval:[-e] = JIT evaluate an expression and print the result.\n"
+        "\t--run:[-r] = JIT run a file (interpret without compiling).\n"
+        "\t--debug-info:[-g] = Emit DWARF debug info (enables lldb/gdb source-level debugging).\n"
+        "\t--optimize:[-O] N = Set LLVM optimization level (0=none, 1=basic, 2=full, 3=aggressive).\n"
+        "\t--strict-types = Type errors are fatal (default: gradual/warnings).\n"
+        "\t--unsafe = Skip all type checks.\n\n"
+        "Eshkol Compiler v%s\n",
         ESHKOL_VER
     );
     exit(x);
@@ -1514,6 +1541,36 @@ static std::string resolve_module_path(const std::string& module_name, const std
 // Global library directory (cached)
 static std::string g_lib_dir;
 
+// Recursively discover all modules that a library requires.
+// Used to mark all sub-modules of a pre-compiled library as pre-compiled.
+// NOTE: Does NOT use load_file_asts to avoid polluting imported_files.
+static void collect_all_submodules(const std::string& module_name,
+                                   std::set<std::string>& out,
+                                   const std::string& lib_dir) {
+    if (out.count(module_name)) return;  // already visited
+    out.insert(module_name);
+
+    // Find and parse the module source to discover its requires
+    std::string module_path = resolve_module_path(module_name, ".", lib_dir);
+    if (module_path.empty()) return;
+
+    // Parse directly — do NOT use load_file_asts (it tracks imported_files
+    // and would prevent process_requires from loading these modules later)
+    std::ifstream file(module_path);
+    if (!file.is_open()) return;
+
+    eshkol_ast_t ast = eshkol_parse_next_ast(file);
+    while (ast.type != ESHKOL_INVALID) {
+        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
+            for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
+                std::string sub = ast.operation.require_op.module_names[i];
+                collect_all_submodules(sub, out, lib_dir);
+            }
+        }
+        ast = eshkol_parse_next_ast(file);
+    }
+}
+
 // ===== SYMBOL VISIBILITY HELPERS =====
 
 // Collect exported symbols from provide declarations in ASTs
@@ -1556,7 +1613,7 @@ static void update_ast_references(eshkol_ast_t* ast,
             if (ast->variable.id) {
                 auto it = rename_map.find(ast->variable.id);
                 if (it != rename_map.end()) {
-                    free(ast->variable.id);
+                    delete[] ast->variable.id;
                     ast->variable.id = strdup(it->second.c_str());
                 }
             }
@@ -1597,6 +1654,7 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_LET_OP:
                 case ESHKOL_LET_STAR_OP:
                 case ESHKOL_LETREC_OP:
+                case ESHKOL_LETREC_STAR_OP:  // R7RS letrec* - used for internal defines
                     // Each binding is a CONS cell: (var . value)
                     for (uint64_t i = 0; i < ast->operation.let_op.num_bindings; i++) {
                         eshkol_ast_t* binding = &ast->operation.let_op.bindings[i];
@@ -1624,17 +1682,181 @@ static void update_ast_references(eshkol_ast_t* ast,
                     if (ast->operation.set_op.name) {
                         auto it = rename_map.find(ast->operation.set_op.name);
                         if (it != rename_map.end()) {
-                            free(ast->operation.set_op.name);
+                            delete[] ast->operation.set_op.name;
                             ast->operation.set_op.name = strdup(it->second.c_str());
                         }
                     }
                     update_ast_references(ast->operation.set_op.value, rename_map);
                     break;
 
+                // Calculus operations - function + point (or expression)
+                case ESHKOL_GRADIENT_OP:
+                    if (ast->operation.gradient_op.function) {
+                        update_ast_references(ast->operation.gradient_op.function, rename_map);
+                    }
+                    if (ast->operation.gradient_op.point) {
+                        update_ast_references(ast->operation.gradient_op.point, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_DERIVATIVE_OP:
+                    if (ast->operation.derivative_op.function) {
+                        update_ast_references(ast->operation.derivative_op.function, rename_map);
+                    }
+                    if (ast->operation.derivative_op.point) {
+                        update_ast_references(ast->operation.derivative_op.point, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_DIRECTIONAL_DERIV_OP:
+                    if (ast->operation.directional_deriv_op.function) {
+                        update_ast_references(ast->operation.directional_deriv_op.function, rename_map);
+                    }
+                    if (ast->operation.directional_deriv_op.point) {
+                        update_ast_references(ast->operation.directional_deriv_op.point, rename_map);
+                    }
+                    if (ast->operation.directional_deriv_op.direction) {
+                        update_ast_references(ast->operation.directional_deriv_op.direction, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_JACOBIAN_OP:
+                    if (ast->operation.jacobian_op.function) {
+                        update_ast_references(ast->operation.jacobian_op.function, rename_map);
+                    }
+                    if (ast->operation.jacobian_op.point) {
+                        update_ast_references(ast->operation.jacobian_op.point, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_HESSIAN_OP:
+                    if (ast->operation.hessian_op.function) {
+                        update_ast_references(ast->operation.hessian_op.function, rename_map);
+                    }
+                    if (ast->operation.hessian_op.point) {
+                        update_ast_references(ast->operation.hessian_op.point, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_DIVERGENCE_OP:
+                    if (ast->operation.divergence_op.function) {
+                        update_ast_references(ast->operation.divergence_op.function, rename_map);
+                    }
+                    if (ast->operation.divergence_op.point) {
+                        update_ast_references(ast->operation.divergence_op.point, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_CURL_OP:
+                    if (ast->operation.curl_op.function) {
+                        update_ast_references(ast->operation.curl_op.function, rename_map);
+                    }
+                    if (ast->operation.curl_op.point) {
+                        update_ast_references(ast->operation.curl_op.point, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_LAPLACIAN_OP:
+                    if (ast->operation.laplacian_op.function) {
+                        update_ast_references(ast->operation.laplacian_op.function, rename_map);
+                    }
+                    if (ast->operation.laplacian_op.point) {
+                        update_ast_references(ast->operation.laplacian_op.point, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_DIFF_OP:
+                    if (ast->operation.diff_op.expression) {
+                        update_ast_references(ast->operation.diff_op.expression, rename_map);
+                    }
+                    break;
+
+                // call_op structure operations (same as CALL_OP handler)
+                case ESHKOL_WHEN_OP:
+                case ESHKOL_UNLESS_OP:
+                case ESHKOL_DO_OP:
+                case ESHKOL_CASE_OP:
+                case ESHKOL_QUOTE_OP:
+                case ESHKOL_QUASIQUOTE_OP:
+                case ESHKOL_UNQUOTE_OP:
+                case ESHKOL_UNQUOTE_SPLICING_OP:
+                    if (ast->operation.call_op.func) {
+                        update_ast_references(ast->operation.call_op.func, rename_map);
+                    }
+                    for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
+                        update_ast_references(&ast->operation.call_op.variables[i], rename_map);
+                    }
+                    break;
+
+                // Control flow operations
+                case ESHKOL_DYNAMIC_WIND_OP:
+                    if (ast->operation.dynamic_wind_op.before) {
+                        update_ast_references(ast->operation.dynamic_wind_op.before, rename_map);
+                    }
+                    if (ast->operation.dynamic_wind_op.thunk) {
+                        update_ast_references(ast->operation.dynamic_wind_op.thunk, rename_map);
+                    }
+                    if (ast->operation.dynamic_wind_op.after) {
+                        update_ast_references(ast->operation.dynamic_wind_op.after, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_CALL_CC_OP:
+                    if (ast->operation.call_cc_op.proc) {
+                        update_ast_references(ast->operation.call_cc_op.proc, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_GUARD_OP: {
+                    for (uint64_t i = 0; i < ast->operation.guard_op.num_body_exprs; i++) {
+                        update_ast_references(&ast->operation.guard_op.body[i], rename_map);
+                    }
+                    for (uint64_t i = 0; i < ast->operation.guard_op.num_clauses; i++) {
+                        update_ast_references(&ast->operation.guard_op.clauses[i], rename_map);
+                    }
+                    break;
+                }
+
+                case ESHKOL_RAISE_OP:
+                    if (ast->operation.raise_op.exception) {
+                        update_ast_references(ast->operation.raise_op.exception, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_VALUES_OP:
+                    for (uint64_t i = 0; i < ast->operation.values_op.num_values; i++) {
+                        update_ast_references(&ast->operation.values_op.expressions[i], rename_map);
+                    }
+                    break;
+
+                case ESHKOL_CALL_WITH_VALUES_OP:
+                    if (ast->operation.call_with_values_op.producer) {
+                        update_ast_references(ast->operation.call_with_values_op.producer, rename_map);
+                    }
+                    if (ast->operation.call_with_values_op.consumer) {
+                        update_ast_references(ast->operation.call_with_values_op.consumer, rename_map);
+                    }
+                    break;
+
+                case ESHKOL_MATCH_OP: {
+                    if (ast->operation.match_op.expr) {
+                        update_ast_references(ast->operation.match_op.expr, rename_map);
+                    }
+                    for (uint64_t i = 0; i < ast->operation.match_op.num_clauses; i++) {
+                        if (ast->operation.match_op.clauses[i].guard) {
+                            update_ast_references(ast->operation.match_op.clauses[i].guard, rename_map);
+                        }
+                        if (ast->operation.match_op.clauses[i].body) {
+                            update_ast_references(ast->operation.match_op.clauses[i].body, rename_map);
+                        }
+                    }
+                    break;
+                }
+
+                // Memory management operations - FIXED: with_region_op.body is an array
                 case ESHKOL_WITH_REGION_OP:
-                    // Update references in with-region body
-                    if (ast->operation.with_region_op.body) {
-                        update_ast_references(ast->operation.with_region_op.body, rename_map);
+                    for (uint64_t i = 0; i < ast->operation.with_region_op.num_body_exprs; i++) {
+                        update_ast_references(&ast->operation.with_region_op.body[i], rename_map);
                     }
                     break;
 
@@ -1646,10 +1868,13 @@ static void update_ast_references(eshkol_ast_t* ast,
                     update_ast_references(ast->operation.move_op.value, rename_map);
                     break;
 
+                // FIXED: borrow_op.body is an array
                 case ESHKOL_BORROW_OP:
-                    update_ast_references(ast->operation.borrow_op.value, rename_map);
-                    if (ast->operation.borrow_op.body) {
-                        update_ast_references(ast->operation.borrow_op.body, rename_map);
+                    if (ast->operation.borrow_op.value) {
+                        update_ast_references(ast->operation.borrow_op.value, rename_map);
+                    }
+                    for (uint64_t i = 0; i < ast->operation.borrow_op.num_body_exprs; i++) {
+                        update_ast_references(&ast->operation.borrow_op.body[i], rename_map);
                     }
                     break;
 
@@ -1661,8 +1886,37 @@ static void update_ast_references(eshkol_ast_t* ast,
                     update_ast_references(ast->operation.weak_ref_op.value, rename_map);
                     break;
 
+                // Logic/consciousness operations use call_op structure
+                case ESHKOL_UNIFY_OP:
+                case ESHKOL_MAKE_SUBST_OP:
+                case ESHKOL_WALK_OP:
+                case ESHKOL_MAKE_FACT_OP:
+                case ESHKOL_MAKE_KB_OP:
+                case ESHKOL_KB_ASSERT_OP:
+                case ESHKOL_KB_QUERY_OP:
+                case ESHKOL_LOGIC_VAR_PRED_OP:
+                case ESHKOL_SUBSTITUTION_PRED_OP:
+                case ESHKOL_KB_PRED_OP:
+                case ESHKOL_FACT_PRED_OP:
+                case ESHKOL_FACTOR_GRAPH_PRED_OP:
+                case ESHKOL_WORKSPACE_PRED_OP:
+                case ESHKOL_MAKE_FACTOR_GRAPH_OP:
+                case ESHKOL_FG_ADD_FACTOR_OP:
+                case ESHKOL_FG_INFER_OP:
+                case ESHKOL_FG_UPDATE_CPT_OP:
+                case ESHKOL_FREE_ENERGY_OP:
+                case ESHKOL_EXPECTED_FREE_ENERGY_OP:
+                case ESHKOL_MAKE_WORKSPACE_OP:
+                case ESHKOL_WS_REGISTER_OP:
+                case ESHKOL_WS_STEP_OP:
+                case ESHKOL_EXTERN_OP:
+                    for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
+                        update_ast_references(&ast->operation.call_op.variables[i], rename_map);
+                    }
+                    break;
+
                 default:
-                    // Other operations - no recursive update needed or not applicable
+                    eshkol_debug("update_ast_references: unhandled op type %d", ast->operation.op);
                     break;
             }
             break;
@@ -1720,7 +1974,7 @@ static void rename_private_symbols(std::vector<eshkol_ast_t>& asts,
             if (ast.operation.define_op.name) {
                 auto it = rename_map.find(ast.operation.define_op.name);
                 if (it != rename_map.end()) {
-                    free(ast.operation.define_op.name);
+                    delete[] ast.operation.define_op.name;
                     ast.operation.define_op.name = strdup(it->second.c_str());
                 }
             }
@@ -1751,17 +2005,9 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                 // Check if this module is pre-compiled (e.g., from stdlib.o)
                 bool is_precompiled = precompiled_modules.count(module_name) > 0;
 
-                // Also check if module is covered by a parent pre-compiled module
-                // e.g., if "stdlib" is pre-compiled, skip "core.io" and "core.list.*"
-                if (!is_precompiled) {
-                    for (const auto& precompiled : precompiled_modules) {
-                        if (precompiled == "stdlib" &&
-                            (module_name.find("core.") == 0 || module_name == "stdlib")) {
-                            is_precompiled = true;
-                            break;
-                        }
-                    }
-                }
+                // All sub-modules of pre-compiled libraries are already in
+                // precompiled_modules (populated by collect_all_submodules),
+                // so the direct lookup above is sufficient.
 
                 if (is_precompiled) {
                     // For pre-compiled modules, we parse to get function declarations
@@ -1870,6 +2116,19 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                     eshkol_info("Requiring module '%s' from: %s", module_name.c_str(), module_path.c_str());
                 }
 
+                // Normalize path for cycle detection
+                std::string norm_path = std::filesystem::canonical(module_path).string();
+
+                // Circular dependency detection: if this module is currently being loaded
+                // higher up the call stack AND hasn't been fully loaded yet, we have a cycle.
+                // If it's already in imported_files, it's fully loaded — not a cycle.
+                if (g_loading_modules.count(norm_path) && !imported_files.count(norm_path)) {
+                    eshkol_error("Circular dependency detected: module '%s' requires itself (directly or indirectly)",
+                                module_name.c_str());
+                    continue;
+                }
+                g_loading_modules.insert(norm_path);
+
                 // Load the module file
                 std::vector<eshkol_ast_t> module_asts;
                 load_file_asts(module_path, module_asts, debug_mode);
@@ -1910,6 +2169,9 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                 for (auto& module_ast : module_asts) {
                     required_asts.push_back(module_ast);
                 }
+
+                // Remove from loading stack (module fully processed)
+                g_loading_modules.erase(norm_path);
             }
             // Don't add the require statement itself to new_asts
         } else if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_PROVIDE_OP) {
@@ -1948,7 +2210,12 @@ int main(int argc, char **argv)
     uint8_t dump_ir = 0;
     uint8_t compile_only = 0;
     uint8_t shared_lib = 0;
+    uint8_t wasm_output = 0;
     uint8_t no_stdlib = 0;
+    uint8_t strict_types = 0;
+    uint8_t unsafe_mode = 0;
+    uint8_t debug_info = 0;  // -g flag: emit DWARF debug info for lldb/gdb
+    int opt_level = 0;       // -O flag: LLVM optimization level (0-3)
 
     std::vector<char*> source_files;
     std::vector<char*> compiled_files;
@@ -1958,10 +2225,13 @@ int main(int argc, char **argv)
     std::vector<eshkol_ast_t> asts;
 
     char *output = nullptr;
+    char *eval_expr = nullptr;  // For -e/--eval flag
+    uint8_t run_mode = 0;       // For -r/--run flag (JIT run file)
 
     if (argc == 1) print_help(1);
 
-    while ((ch = getopt_long(argc, argv, "hdaio:csl:L:n", long_options, nullptr)) != -1) {
+    const char* eskb_output_path = nullptr;
+    while ((ch = getopt_long(argc, argv, "hdaio:cswl:L:ne:rgO:B:", long_options, nullptr)) != -1) {
         switch (ch) {
         case 'h':
             print_help(0);
@@ -1986,6 +2256,9 @@ int main(int argc, char **argv)
             shared_lib = 1;
             compile_only = 1;  // Library mode implies compile to object file
             break;
+        case 'w':
+            wasm_output = 1;
+            break;
         case 'l':
             linked_libs.push_back(optarg);
             break;
@@ -1995,12 +2268,194 @@ int main(int argc, char **argv)
         case 'n':
             no_stdlib = 1;
             break;
+        case 'e':
+            eval_expr = optarg;
+            break;
+        case 'r':
+            run_mode = 1;
+            break;
+        case 'g':
+            debug_info = 1;
+            break;
+        case 'O':
+            opt_level = atoi(optarg);
+            if (opt_level < 0 || opt_level > 3) {
+                fprintf(stderr, "Invalid optimization level: %s (must be 0-3)\n", optarg);
+                return 1;
+            }
+            break;
+        case 256:
+            strict_types = 1;
+            break;
+        case 257:
+            unsafe_mode = 1;
+            break;
+        case 'B':
+            eskb_output_path = optarg;
+            break;
         default:
             print_help(1);
         }
     }
 
+    // If we have an eval expression, use JIT mode
+    if (eval_expr) {
+        // Initialize runtime system
+        if (eshkol_runtime_init() != 0) {
+            eshkol_error("Failed to initialize runtime system");
+            return 1;
+        }
+        eshkol_init_limits_from_env();
+
+        // Create JIT context
+        eshkol::ReplJITContext jit_ctx;
+
+        // Load stdlib for eval mode
+        if (!no_stdlib) {
+            jit_ctx.loadStdlib();
+        }
+
+        // Parse the expression using istringstream (no temp file needed)
+        std::string eval_input = std::string(eval_expr) + "\n";
+        std::istringstream eval_stream(eval_input);
+
+        // Parse and execute ALL expressions from the input (not just one)
+        eshkol_ast_t ast = eshkol_parse_next_ast_from_stream(eval_stream);
+        bool parsed_any = false;
+
+        while (ast.type != ESHKOL_INVALID) {
+            parsed_any = true;
+
+            if (debug_mode) {
+                printf("=== AST ===\n");
+                eshkol_ast_pretty_print(&ast, 0);
+                printf("===========\n");
+            }
+
+            // Execute the AST (definitions don't print, expressions do via display)
+            bool is_define = (ast.type == ESHKOL_OP &&
+                (ast.operation.op == ESHKOL_DEFINE_OP ||
+                 ast.operation.op == ESHKOL_REQUIRE_OP ||
+                 ast.operation.op == ESHKOL_IMPORT_OP));
+
+            // Check if it's a display/print call (don't wrap these)
+            bool is_output_call = false;
+            if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_CALL_OP &&
+                ast.operation.call_op.func && ast.operation.call_op.func->type == ESHKOL_VAR) {
+                const char* name = ast.operation.call_op.func->variable.id;
+                if (name && (strcmp(name, "display") == 0 || strcmp(name, "newline") == 0 ||
+                             strcmp(name, "print") == 0 || strcmp(name, "write") == 0)) {
+                    is_output_call = true;
+                }
+            }
+
+            // Execute directly (don't auto-wrap with display - let user control output)
+            jit_ctx.execute(&ast);
+
+            // Parse next expression
+            ast = eshkol_parse_next_ast_from_stream(eval_stream);
+        }
+
+        if (!parsed_any) {
+            eshkol_error("Failed to parse expression: %s", eval_expr);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+        return 0;
+    }
+
+    // If run mode, JIT execute all expressions from file(s)
+    if (run_mode) {
+        if (optind == argc) {
+            eshkol_error("No input file specified for --run mode");
+            print_help(1);
+        }
+
+        // Initialize runtime system
+        if (eshkol_runtime_init() != 0) {
+            eshkol_error("Failed to initialize runtime system");
+            return 1;
+        }
+        eshkol_init_limits_from_env();
+
+        // Create JIT context
+        eshkol::ReplJITContext jit_ctx;
+
+        // Load stdlib for run mode
+        if (!no_stdlib) {
+            jit_ctx.loadStdlib();
+        }
+
+        // Process each input file
+        for (int i = optind; i < argc; i++) {
+            std::string filepath = argv[i];
+
+            if (!std::filesystem::exists(filepath)) {
+                eshkol_error("File not found: %s", filepath.c_str());
+                continue;
+            }
+
+            std::ifstream file(filepath);
+            if (!file.is_open()) {
+                eshkol_error("Failed to open file: %s", filepath.c_str());
+                continue;
+            }
+
+            if (debug_mode) {
+                eshkol_info("JIT running: %s", filepath.c_str());
+            }
+
+            // Parse and execute all expressions in the file
+            eshkol_ast_t ast = eshkol_parse_next_ast(file);
+            while (ast.type != ESHKOL_INVALID) {
+                if (debug_mode) {
+                    printf("=== AST ===\n");
+                    eshkol_ast_pretty_print(&ast, 0);
+                    printf("===========\n");
+                }
+
+                // Execute the AST (definitions don't print, expressions do via display)
+                bool is_define = (ast.type == ESHKOL_OP &&
+                    (ast.operation.op == ESHKOL_DEFINE_OP ||
+                     ast.operation.op == ESHKOL_REQUIRE_OP ||
+                     ast.operation.op == ESHKOL_IMPORT_OP));
+
+                // Check if it's a display/print call
+                bool is_output_call = false;
+                if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_CALL_OP &&
+                    ast.operation.call_op.func && ast.operation.call_op.func->type == ESHKOL_VAR) {
+                    const char* name = ast.operation.call_op.func->variable.id;
+                    if (name && (strcmp(name, "display") == 0 || strcmp(name, "newline") == 0 ||
+                                 strcmp(name, "print") == 0 || strcmp(name, "write") == 0)) {
+                        is_output_call = true;
+                    }
+                }
+
+                jit_ctx.execute(&ast);
+
+                // Parse next expression
+                ast = eshkol_parse_next_ast(file);
+            }
+            file.close();
+        }
+
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+        return 0;
+    }
+
     if (optind == argc) print_help(1);
+
+    // Initialize runtime system (signal handlers, shutdown hooks)
+    if (eshkol_runtime_init() != 0) {
+        eshkol_error("Failed to initialize runtime system");
+        return 1;
+    }
+
+    // Initialize resource limits from environment variables
+    // Supported: ESHKOL_MAX_HEAP, ESHKOL_TIMEOUT_MS, ESHKOL_MAX_STACK, etc.
+    eshkol_init_limits_from_env();
 
     // Helper function to check string suffix (C++17 compatible)
     auto ends_with = [](const std::string& str, const std::string& suffix) {
@@ -2053,15 +2508,16 @@ int main(int argc, char **argv)
         }
     }
 
-    // Detect pre-compiled libraries to avoid recompiling their modules
-    // If we're linking with stdlib.o, mark stdlib and all core.* modules as pre-compiled
+    // Detect pre-compiled libraries and discover ALL their sub-modules.
+    // Every module recursively required by a pre-compiled library is also pre-compiled.
+    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
     for (const auto& obj_file : compiled_files) {
         std::string filename = std::filesystem::path(obj_file).filename().string();
         if (filename == "stdlib.o" || filename == "libstdlib.o") {
             eshkol_info("Detected pre-compiled stdlib: %s", obj_file);
-            precompiled_modules.insert("stdlib");
-            // All core.* modules are included in stdlib
-            // No need to list them individually - the check in process_requires handles it
+            // Recursively discover all modules included in stdlib
+            collect_all_submodules("stdlib", precompiled_modules, g_lib_dir);
+            eshkol_info("Pre-compiled modules: %zu total", precompiled_modules.size());
             // Tell codegen that stdlib is being used (for homoiconic display support)
             eshkol_set_uses_stdlib(1);
         }
@@ -2167,7 +2623,27 @@ int main(int argc, char **argv)
             }
         }
         
+        // Apply type system flags to global config
+        if (strict_types || unsafe_mode) {
+            eshkol_config_t cfg = *eshkol_config_get();
+            cfg.strict_types = strict_types;
+            cfg.unsafe_mode = unsafe_mode;
+            eshkol_config_set(&cfg);
+        }
+
         eshkol_info("Generating LLVM IR for module: %s", module_name.c_str());
+
+        // LLVM OPTIMIZATION: Set optimization level before compilation
+        if (opt_level > 0) {
+            eshkol_set_optimization_level(opt_level);
+        }
+
+        // DWARF DEBUG INFO: Enable debug info before IR generation if -g flag was set
+        if (debug_info && !source_files.empty()) {
+            // Resolve the source file to an absolute path for DWARF
+            std::filesystem::path abs_source = std::filesystem::absolute(source_files[0]);
+            eshkol_enable_debug_info(abs_source.string().c_str());
+        }
 
         // Generate LLVM IR (use library mode if --shared-lib flag is set)
         LLVMModuleRef llvm_module;
@@ -2214,6 +2690,32 @@ int main(int argc, char **argv)
             eshkol_print_llvm_ir(llvm_module);
         }
         
+        /* Emit ESKB bytecode if requested */
+        if (eskb_output_path) {
+            /* Read source file for bytecode compilation */
+            FILE* eskb_src_f = source_files.empty() ? NULL : fopen(source_files[0], "r");
+            if (eskb_src_f) {
+                fseek(eskb_src_f, 0, SEEK_END);
+                long eskb_len = ftell(eskb_src_f);
+                fseek(eskb_src_f, 0, SEEK_SET);
+                char* eskb_source = (char*)malloc(eskb_len + 1);
+                if (eskb_source) {
+                    fread(eskb_source, 1, eskb_len, eskb_src_f);
+                    eskb_source[eskb_len] = 0;
+                    fclose(eskb_src_f);
+                    int eskb_result = eshkol_emit_eskb(eskb_source, eskb_output_path);
+                    if (eskb_result == 0) {
+                        printf("[ESKB] Emitted bytecode to %s\n", eskb_output_path);
+                    } else {
+                        fprintf(stderr, "WARNING: ESKB emission failed\n");
+                    }
+                    free(eskb_source);
+                } else {
+                    fclose(eskb_src_f);
+                }
+            }
+        }
+
         if (compile_only) {
             // Compile to object file
             std::string obj_filename;
@@ -2229,7 +2731,35 @@ int main(int argc, char **argv)
                 eshkol_dispose_llvm_module(llvm_module);
                 return 1;
             }
-        } else if (!compile_only && !dump_ir && !dump_ast) {
+
+            // Also emit bitcode for REPL JIT loading (avoids ABI mismatch with addObjectFile)
+            std::string bc_filename;
+            if (output) {
+                bc_filename = std::string(output) + ".bc";
+            } else {
+                bc_filename = module_name + ".bc";
+            }
+            eshkol_compile_llvm_ir_to_bitcode(llvm_module, bc_filename.c_str());
+        } else if (wasm_output) {
+            // Compile to WebAssembly
+            std::string wasm_filename;
+            if (output) {
+                wasm_filename = std::string(output);
+                // Add .wasm extension if not present
+                if (wasm_filename.size() < 5 || wasm_filename.substr(wasm_filename.size() - 5) != ".wasm") {
+                    wasm_filename += ".wasm";
+                }
+            } else {
+                wasm_filename = module_name + ".wasm";
+            }
+
+            eshkol_info("Compiling to WebAssembly: %s", wasm_filename.c_str());
+            if (eshkol_compile_llvm_ir_to_wasm_file(llvm_module, wasm_filename.c_str()) != 0) {
+                eshkol_error("WebAssembly compilation failed");
+                eshkol_dispose_llvm_module(llvm_module);
+                return 1;
+            }
+        } else if (!compile_only) {
             // Default behavior: compile to executable
             // If we have object files to link (like stdlib.o), compile to temp .o first
             // then link everything together
@@ -2237,7 +2767,20 @@ int main(int argc, char **argv)
 
             if (!compiled_files.empty()) {
                 // Compile main program to temp .o, then link with stdlib.o etc.
-                std::string temp_obj = exe_name + ".tmp.o";
+                // Use mkstemp for safe temp file creation (avoids symlink attacks)
+                const char* tmpdir = getenv("TMPDIR");
+                if (!tmpdir) tmpdir = P_tmpdir;  // POSIX fallback (usually /tmp)
+                std::string temp_template = std::string(tmpdir) + "/eshkol_XXXXXX.o";
+                std::vector<char> temp_buf(temp_template.begin(), temp_template.end());
+                temp_buf.push_back('\0');
+                int tmp_fd = mkstemps(temp_buf.data(), 2);  // 2 = strlen(".o")
+                if (tmp_fd < 0) {
+                    eshkol_error("Failed to create temp file: %s", strerror(errno));
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                close(tmp_fd);  // eshkol_compile_llvm_ir_to_object opens by name
+                std::string temp_obj(temp_buf.data());
                 eshkol_info("Compiling to temp object: %s", temp_obj.c_str());
                 if (eshkol_compile_llvm_ir_to_object(llvm_module, temp_obj.c_str()) != 0) {
                     eshkol_error("Object file compilation failed");
@@ -2277,7 +2820,8 @@ int main(int argc, char **argv)
     }
 
     // Process compiled object files if we have them and an output target
-    if (!compiled_files.empty() && output) {
+    // Don't link in compile-only mode (-c flag) - user can link manually
+    if (!compiled_files.empty() && output && !compile_only) {
         std::string link_cmd = "c++ -fPIE";
 
         // Add all object files
@@ -2306,30 +2850,54 @@ int main(int argc, char **argv)
             link_cmd += " -l" + std::string(linked_lib);
         }
 
+        // Add BLAS framework/library (required for libeshkol-static.a BLAS functions)
+#ifdef __APPLE__
+        // Link with Accelerate framework for BLAS (Apple Silicon optimized)
+        link_cmd += " -framework Accelerate";
+#elif defined(__linux__)
+        // Link with OpenBLAS on Linux
+        link_cmd += " -lopenblas";
+#endif
+
+        // Add GPU frameworks/libraries (for GPU-accelerated tensor operations)
+        // Metal: System framework on macOS, always safe to link (like Accelerate)
+        // CUDA: Not a system library, requires explicit detection (handled by cmake)
+#ifdef __APPLE__
+        // Metal and MetalPerformanceShaders for GPU on macOS
+        link_cmd += " -framework Metal -framework MetalPerformanceShaders -framework Foundation";
+        link_cmd += " -lobjc";  // Objective-C runtime
+#endif
+
         // Add output
         link_cmd += " -o " + std::string(output) + " -lm";
         
         eshkol_info("Linking object files: %s", link_cmd.c_str());
         int result = system(link_cmd.c_str());
 
-        // Clean up temp object files
+        // Clean up temp object files (mkstemp-created files in TMPDIR)
         for (const auto &compiled_file : compiled_files) {
             std::string file(compiled_file);
-            if (file.find(".tmp.o") != std::string::npos) {
+            if (file.find("eshkol_") != std::string::npos && file.find(".o") != std::string::npos) {
                 std::remove(file.c_str());
             }
         }
 
         if (result != 0) {
             eshkol_error("Linking failed with exit code %d", result);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
             return 1;
         }
 
         eshkol_info("Successfully created executable: %s", output);
-    } else if (!compiled_files.empty()) {
+    } else if (!compiled_files.empty() && !compile_only) {
+        // Only warn about unused object files if we're not in compile-only mode
+        // In compile-only mode, we intentionally don't link
         eshkol_warn("Object files provided but no output specified. Use -o to specify output executable.");
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
         return 1;
     }
 
+    // Graceful shutdown - calls all registered shutdown hooks
+    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
     return 0;
 }

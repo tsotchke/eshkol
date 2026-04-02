@@ -8,20 +8,38 @@ This hands-on tutorial introduces Eshkol's core features through practical examp
 
 ## Installation
 
-### From Source
+### macOS (Homebrew)
 
 ```bash
-# Clone repository
+brew tap tsotchke/eshkol
+brew install eshkol
+```
+
+### Linux (Debian/Ubuntu)
+
+```bash
+# Download .deb from https://github.com/tsotchke/eshkol/releases
+sudo dpkg -i eshkol_*.deb
+```
+
+### Windows (MSYS2/MinGW64)
+
+```bash
+# In MSYS2 MinGW64 shell:
+pacman -S mingw-w64-x86_64-llvm mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
 git clone https://github.com/tsotchke/eshkol.git
 cd eshkol
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+```
 
-# Build (requires LLVM 18+, CMake 3.20+)
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make -j$(nproc)
+### From Source (macOS/Linux)
 
-# Install
-sudo make install
+```bash
+git clone https://github.com/tsotchke/eshkol.git
+cd eshkol
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
 ```
 
 ### Quick Test
@@ -30,13 +48,18 @@ sudo make install
 # Interactive REPL
 eshkol-repl
 
-# Run a program
+# Compile and run a program
 echo '(display "Hello, Eshkol!")' > hello.esk
-eshkol-run hello.esk
+eshkol-run hello.esk -o hello
+./hello
 ```
 
-**Requirements**: LLVM 18+, C++20 compiler, CMake 3.20+  
-**Platforms**: Linux, macOS (x86-64, ARM64)
+**Requirements**: LLVM 17+, C++20 compiler, CMake 3.14+, Ninja
+**Platforms**: Linux, macOS (x86-64, ARM64), Windows (MSYS2/MinGW64)
+
+**Web REPL**: Open `web/index.html` in a browser for an interactive Eshkol environment without installation.
+
+**Bytecode**: Emit portable ESKB bytecode alongside native compilation: `eshkol-run hello.esk -B hello.eskb`
 
 ---
 
@@ -121,8 +144,8 @@ Lists are the fundamental data structure for symbolic computation.
 
 **Import Standard Library**:
 ```scheme
-(import core.list.higher_order)  ; fold, filter, map, etc.
-(import core.list.sort)           ; sort, merge
+(require core.list.higher_order)  ; fold, filter, map, etc.
+(require core.list.sort)           ; sort, merge
 ```
 
 ---
@@ -306,7 +329,7 @@ Physics and field theory operators.
 Here's a complete 2-layer neural network with backpropagation:
 
 ```scheme
-(import core.functional)
+(require core.functional)
 
 ; Network parameters
 (define input-size 3)
@@ -557,7 +580,7 @@ f(optimum) = 8.4e-7
 Solve the 1D heat equation: ∂u/∂t = α∇²u
 
 ```scheme
-(import core.functional)
+(require core.functional)
 
 ; Discretized Laplacian (finite differences)
 (define (discrete-laplacian u dx)
@@ -654,10 +677,10 @@ Solve the 1D heat equation: ∂u/∂t = α∇²u
 
 ### Learn More
 
-1. **[API Reference](API_REFERENCE.md)** - Complete function reference (70+ special forms, 180+ functions)
-2. **[Architecture Guide](ESHKOL_V1_ARCHITECTURE.md)** - System internals (memory, types, compilation)
-3. **[Language Guide](../ESHKOL_LANGUAGE_GUIDE.md)** - Comprehensive tutorial
-4. **[Autodiff Guide](AUTODIFF_GUIDE.md)** - Deep dive on differentiation modes (coming soon)
+1. **[API Reference](API_REFERENCE.md)** — Complete function reference (550+ functions)
+2. **[Architecture Guide](ESHKOL_V1_ARCHITECTURE.md)** — System internals (memory, types, compilation)
+3. **[Language Reference](../ESHKOL_V1_LANGUAGE_REFERENCE.md)** — Comprehensive language guide
+4. **[Autodiff Deep Dive](breakdown/AUTODIFF.md)** — Three differentiation modes in detail
 
 ### Example Programs
 
@@ -671,14 +694,78 @@ Explore the examples directory:
 
 ```scheme
 ; Import modules
-(import core.list.higher_order)  ; fold, filter, any, every
-(import core.list.sort)           ; sort, merge
-(import core.functional)          ; compose, curry, flip
-(import core.strings)             ; String utilities
-(import core.json)                ; JSON parsing
+(require core.list.higher_order)  ; fold, filter, any, every
+(require core.list.sort)           ; sort, merge
+(require core.functional)          ; compose, curry, flip
+(require core.strings)             ; String utilities
+(require core.json)                ; JSON parsing
+
+; Or import everything at once
+(require stdlib)
 ```
 
 Full module list in [`lib/stdlib.esk`](../lib/stdlib.esk)
+
+---
+
+### Statistics
+
+```scheme
+(require math.statistics)
+
+(define data '(4.0 7.0 13.0 2.0 9.0 15.0 6.0 11.0))
+
+(display (median data))         ; => 8.0
+(display (std-dev data))        ; => 4.183...
+(display (percentile data 75))  ; => 13.0
+
+;; Summary statistics
+(define summary (describe data))
+;; Returns: ((count . 8) (mean . 8.375) (std . 4.183) (min . 2.0)
+;;           (q1 . 5.5) (median . 8.0) (q3 . 12.5) (max . 15.0))
+```
+
+---
+
+### ODE Solvers
+
+```scheme
+(require math.ode)
+
+;; Solve dy/dt = -y, y(0) = 1.0 (analytical: y = e^(-t))
+(define (f t y) (- y))
+
+;; Euler method
+(display (euler-final f 0.0 1.0 0.01 100))  ; => ~0.366 (e^(-1))
+
+;; 4th-order Runge-Kutta (more accurate)
+(display (rk4-final f 0.0 1.0 0.01 100))    ; => ~0.3679 (closer to e^(-1))
+```
+
+---
+
+### CLI Compilation Workflow
+
+```bash
+# Compile to named executable
+eshkol-run program.esk -o program
+./program
+
+# Compile-only (produce .o file without linking)
+eshkol-run -c program.esk -o program.o
+
+# Evaluate expression directly
+eshkol-run -e '(display (* 6 7))'
+
+# Dump LLVM IR for debugging
+eshkol-run --dump-ir program.esk
+
+# Optimize level (0-3)
+eshkol-run -O2 program.esk -o program
+
+# Compile without stdlib (bare metal)
+eshkol-run --no-stdlib program.esk -o program
+```
 
 ---
 
@@ -752,7 +839,7 @@ Full module list in [`lib/stdlib.esk`](../lib/stdlib.esk)
 
 **Error: "Unknown function"**
 - Check spelling and imports
-- Use `(import core.module)` for standard library
+- Use `(require core.module)` for standard library
 
 **Error: "Type mismatch"**
 - Eshkol uses gradual typing - type errors are warnings
@@ -763,7 +850,7 @@ Full module list in [`lib/stdlib.esk`](../lib/stdlib.esk)
 - Check if using external pointers correctly
 
 **Slow performance**
-- Compile with `eshkol-compile` for production (not REPL)
+- Compile with `eshkol-run` for production (not REPL)
 - Use tensors for numerical code
 - Enable tail call optimization with `letrec`
 
@@ -795,10 +882,10 @@ eshkol> (exit)
 
 ```bash
 # Single file
-eshkol-compile program.esk -o program
+eshkol-run program.esk -o program
 
 # With standard library
-eshkol-compile -c program.esk -o program.o
+eshkol-run -c program.esk -o program.o
 gcc program.o build/libeshkol-static.a -o program -lm
 
 # Run
@@ -808,9 +895,276 @@ gcc program.o build/libeshkol-static.a -o program -lm
 ### Compile to Object File
 
 ```bash
-eshkol-compile -c mylib.esk -o mylib.o
+eshkol-run -c mylib.esk -o mylib.o
 ar rcs libmylib.a mylib.o
 ```
+
+---
+
+## v1.1 Features
+
+### Exact Arithmetic (Bignums & Rationals)
+
+```scheme
+;; Arbitrary-precision integers
+(define big (+ 9223372036854775807 1))  ; Overflows int64 → bignum
+(display big)       ; => 9223372036854775808
+(exact? big)        ; => #t
+
+;; Exact exponentiation
+(expt 2 64)         ; => 18446744073709551616 (exact bignum)
+
+;; Rational numbers
+(define r (make-rational 1 3))
+(+ r r)             ; => 2/3 (exact)
+
+;; R7RS: exact + inexact → inexact
+(+ big 0.5)         ; => 9.223372036854776e+18 (double)
+```
+
+---
+
+### Complex Numbers
+
+```scheme
+;; Create complex numbers
+(define z (make-rectangular 3.0 4.0))
+(magnitude z)       ; => 5.0
+(angle z)           ; => 0.9273...
+
+;; Complex arithmetic
+(+ z (make-rectangular 1.0 -1.0))  ; => 4.0+3.0i
+(* z z)             ; => -7.0+24.0i
+
+;; Smith's formula for numerical stability
+(/ (make-rectangular 1e300 1e300)
+   (make-rectangular 1e300 1e300))  ; => 1.0+0.0i (no overflow)
+```
+
+---
+
+### GPU Acceleration
+
+GPU dispatch is automatic — no code changes needed:
+
+```scheme
+;; Large matrix multiply automatically uses GPU when beneficial
+(define A (make-tensor (list 1000 1000) 1.0))
+(define B (make-tensor (list 1000 1000) 2.0))
+(define C (matmul A B))  ; Dispatches to Metal/CUDA if available
+```
+
+Control GPU behavior with environment variables:
+```bash
+ESHKOL_ENABLE_GPU=1 eshkol-run my_program.esk    # Force GPU
+ESHKOL_GPU_VERBOSE=1 eshkol-run my_program.esk   # See dispatch decisions
+```
+
+---
+
+### Parallel Programming
+
+```scheme
+;; Parallel map — distributes work across threads
+(parallel-map (lambda (x) (* x x)) '(1 2 3 4 5))  ; => (1 4 9 16 25)
+
+;; Parallel fold
+(parallel-fold + 0 (range 1 1001))  ; => 500500
+
+;; Futures for async computation
+(define f1 (future (expensive-computation-1)))
+(define f2 (future (expensive-computation-2)))
+(+ (force f1) (force f2))  ; Both run concurrently
+```
+
+---
+
+### Consciousness Engine
+
+```scheme
+;; Logic programming — unification
+(define s (make-substitution))
+(define s2 (unify ?x 42 s))
+(walk ?x s2)  ; => 42
+
+;; Knowledge base
+(define kb (make-kb))
+(kb-assert! kb (make-fact 'parent 'alice 'bob))
+(kb-assert! kb (make-fact 'parent 'bob 'charlie))
+(kb-query kb (make-fact 'parent ?who 'charlie))
+;; => list of substitutions where ?who = bob
+
+;; Active inference with factor graphs
+(define fg (make-factor-graph 2 #(2 2)))   ; 2 binary variables
+(fg-add-factor! fg #(0 1) #(-0.1 -2.3 -1.6 -0.2))  ; log-probabilities
+(define beliefs (fg-infer! fg 20))         ; belief propagation
+(free-energy fg #(1.0 0.0))               ; variational free energy
+```
+
+---
+
+### Signal Processing
+
+```scheme
+(require signal)
+
+;; FFT — Cooley-Tukey radix-2 (input length must be power of 2)
+(define signal #(1.0 0.0 1.0 0.0 1.0 0.0 1.0 0.0))
+(define spectrum (fft signal))
+(define recovered (ifft spectrum))   ; inverse FFT recovers original
+
+;; Window functions for spectral analysis
+(define win (hamming-window 256))
+(define windowed (apply-window signal (hamming-window 8)))
+
+;; Butterworth lowpass filter (cutoff normalized 0..1, 1=Nyquist)
+(define lp (butterworth-lowpass 4 0.2))  ; 4th order, cutoff at 0.2×Nyquist
+(define filtered (fir-filter (car lp) signal))
+
+;; Frequency response analysis
+(define resp (frequency-response (car lp) (cdr lp) 512))
+;; resp = (magnitudes . phases)
+```
+
+---
+
+### REPL
+
+```bash
+$ eshkol-repl
+
+eshkol> (define (f x) (* x x x))
+eshkol> (derivative f 2.0)
+12.0
+eshkol> (require stdlib)
+eshkol> (sort < '(3 1 4 1 5 9))
+(1 1 3 4 5 9)
+eshkol> :type 42
+Integer
+eshkol> :quit
+```
+
+**REPL Features**: Cross-eval persistence, hot code reload, stdlib support, type introspection.
+
+---
+
+### Machine Learning with v1.1 Builtins
+
+```scheme
+;; Initialize weights with Kaiming initialization
+(define W1 (zeros 4 3))
+(kaiming-normal! W1 3)              ; fan-in = 3
+(define W2 (zeros 2 4))
+(kaiming-normal! W2 4)              ; fan-in = 4
+
+;; Forward pass using builtin activations
+(define (forward x)
+  (let* ((h (relu (matmul x W1)))    ; hidden layer + ReLU
+         (out (sigmoid (matmul h W2)))) ; output + sigmoid
+    out))
+
+;; Training with Adam optimizer
+(define m1 (zeros 4 3))  ; 1st moment
+(define v1 (zeros 4 3))  ; 2nd moment
+(define m2 (zeros 2 4))
+(define v2 (zeros 2 4))
+
+(define (train-step x target step)
+  (let* ((pred (forward x))
+         (loss (mse-loss pred target))
+         (grad-w1 (gradient (lambda (w)
+                    (mse-loss (sigmoid (matmul (relu (matmul x w)) W2)) target)) W1))
+         (grad-w2 (gradient (lambda (w)
+                    (mse-loss (sigmoid (matmul (relu (matmul x W1)) w)) target)) W2)))
+    ;; Clip gradients to prevent explosion
+    (clip-grad-norm! grad-w1 1.0)
+    (clip-grad-norm! grad-w2 1.0)
+    ;; Adam updates (modifies W1, W2, m1, v1, m2, v2 in-place)
+    (adam-step W1 grad-w1 0.001 m1 v1 step)
+    (adam-step W2 grad-w2 0.001 m2 v2 step)
+    loss))
+```
+
+---
+
+### Package Manager
+
+```bash
+# Create a new project
+eshkol-pkg init my-project
+cd my-project
+
+# Project structure created:
+# eshkol.toml     — manifest file
+# src/main.esk    — entry point
+
+# Build and run
+eshkol-pkg build
+eshkol-pkg run
+
+# Add a dependency
+eshkol-pkg add some-package 1.0.0
+
+# Clean build artifacts
+eshkol-pkg clean
+```
+
+The `eshkol.toml` manifest:
+```toml
+[package]
+name = "my-project"
+version = "0.1.0"
+license = "MIT"
+entry = "src/main.esk"
+
+[dependencies]
+```
+
+---
+
+### Web/WASM Platform
+
+Compile Eshkol to WebAssembly for browser deployment:
+
+```bash
+# Compile to WASM
+eshkol-run --wasm app.esk -o app.wasm
+```
+
+```scheme
+;; app.esk — interactive web application
+(require web)
+
+;; Get DOM handles
+(define body (web-get-body))
+
+;; Create UI
+(define btn (web-create-element "button"))
+(web-set-text-content btn "Click me!")
+(web-set-style btn "fontSize" "18px")
+(web-append-child body btn)
+
+;; Counter with event handling
+(define count 0)
+(web-add-event-listener btn "click"
+  (lambda (event)
+    (set! count (+ count 1))
+    (web-set-text-content btn
+      (string-append "Clicked " (number->string count) " times"))))
+
+;; Canvas drawing
+(define canvas (web-create-element "canvas"))
+(web-set-attribute canvas "width" "400")
+(web-set-attribute canvas "height" "300")
+(web-append-child body canvas)
+
+(define ctx (web-get-context-2d canvas))
+(web-canvas-fill-style ctx "blue")
+(web-canvas-fill-rect ctx 50.0 50.0 100.0 80.0)
+(web-canvas-fill-text ctx "Hello from Eshkol!" 60.0 100.0)
+```
+
+73 web API functions available: DOM manipulation, events, Canvas 2D, localStorage, fetch, timers.
 
 ---
 
@@ -819,21 +1173,21 @@ ar rcs libmylib.a mylib.o
 - **GitHub**: https://github.com/tsotchke/eshkol
 - **Documentation**: [`docs/`](.)
 - **Examples**: [`examples-dep/`](../examples-dep)
-- **Tests**: [`tests/`](../tests) (300+ verified test cases)
+- **Tests**: [`tests/`](../tests) (434 test files across 35 suites)
 
 ---
 
 ## Community & Support
 
-**Report Issues**: GitHub Issues  
-**Discussions**: GitHub Discussions  
+**Report Issues**: GitHub Issues
+**Discussions**: GitHub Discussions
 **License**: MIT
 
 ---
 
-**Next**: Read the [API Reference](API_REFERENCE.md) for complete function documentation, or dive into [autodiff examples](AUTODIFF_GUIDE.md) for machine learning applications.
+**Next**: Read the [API Reference](API_REFERENCE.md) for complete function documentation, or dive into the [Machine Learning deep dive](breakdown/MACHINE_LEARNING.md) for neural network training patterns.
 
 ---
 
-**Copyright** © 2025 tsotchke  
+**Copyright** © 2025-2026 tsotchke
 **License**: MIT

@@ -45,7 +45,8 @@ public:
     llvm::Function* getStrncmp();  // int strncmp(const char*, const char*, size_t)
     llvm::Function* getStrcpy();   // char* strcpy(char*, const char*)
     llvm::Function* getStrcat();   // char* strcat(char*, const char*)
-    llvm::Function* getStrstr();   // char* strstr(const char*, const char*)
+    llvm::Function* getStrstr();      // char* strstr(const char*, const char*)
+    llvm::Function* getStrcasecmp();  // int strcasecmp(const char*, const char*)
 
     // Memory functions
     llvm::Function* getMalloc();   // void* malloc(size_t)
@@ -72,6 +73,7 @@ private:
     llvm::Function* strcpy_func;
     llvm::Function* strcat_func;
     llvm::Function* strstr_func;
+    llvm::Function* strcasecmp_func;
     llvm::Function* malloc_func;
     llvm::Function* memcpy_func;
     llvm::Function* memset_func;

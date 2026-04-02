@@ -1,0 +1,105 @@
+;;; Binary I/O Test Suite
+;;; Tests R7RS binary port operations:
+;;;   open-binary-input-file, open-binary-output-file,
+;;;   read-u8, write-u8, read-bytevector, write-bytevector,
+;;;   binary-port?
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define test-file "/tmp/eshkol_binary_io_test.bin")
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (display "PASS: ")
+        (display name)
+        (newline)
+        (set! passed (+ passed 1)))
+      (begin
+        (display "FAIL: ")
+        (display name)
+        (display " expected=")
+        (display expected)
+        (display " actual=")
+        (display actual)
+        (newline)
+        (set! failed (+ failed 1)))))
+
+;;; Test 1: open-binary-output-file and write-u8
+(define out (open-binary-output-file test-file))
+(check "binary-port? on binary output" #t (binary-port? out))
+(write-u8 65 out)   ; 'A' = 65
+(write-u8 66 out)   ; 'B' = 66
+(write-u8 0 out)    ; null byte
+(write-u8 255 out)  ; max byte
+(write-u8 42 out)   ; '*' = 42
+(close-port out)
+
+;;; Test 2: open-binary-input-file and read-u8
+(define in (open-binary-input-file test-file))
+(check "binary-port? on binary input" #t (binary-port? in))
+(check "read-u8 byte 1 (A)" 65 (read-u8 in))
+(check "read-u8 byte 2 (B)" 66 (read-u8 in))
+(check "read-u8 byte 3 (null)" 0 (read-u8 in))
+(check "read-u8 byte 4 (255)" 255 (read-u8 in))
+(check "read-u8 byte 5 (42)" 42 (read-u8 in))
+(check "read-u8 at EOF" #t (eof-object? (read-u8 in)))
+(close-port in)
+
+;;; Test 3: write-bytevector and read-bytevector
+(define out2 (open-binary-output-file test-file))
+(define bv (bytevector 10 20 30 40 50 60 70 80))
+(write-bytevector bv out2)
+(close-port out2)
+
+(define in2 (open-binary-input-file test-file))
+(define result-bv (read-bytevector 8 in2))
+(check "read-bytevector length" 8 (bytevector-length result-bv))
+(check "read-bytevector byte 0" 10 (bytevector-u8-ref result-bv 0))
+(check "read-bytevector byte 3" 40 (bytevector-u8-ref result-bv 3))
+(check "read-bytevector byte 7" 80 (bytevector-u8-ref result-bv 7))
+(check "read-bytevector at EOF" #t (eof-object? (read-bytevector 1 in2)))
+(close-port in2)
+
+;;; Test 4: write-bytevector with start/end
+(define out3 (open-binary-output-file test-file))
+(write-bytevector bv out3 2 5)  ; write bytes 30, 40, 50
+(close-port out3)
+
+(define in3 (open-binary-input-file test-file))
+(define partial-bv (read-bytevector 3 in3))
+(check "partial write-bytevector byte 0" 30 (bytevector-u8-ref partial-bv 0))
+(check "partial write-bytevector byte 1" 40 (bytevector-u8-ref partial-bv 1))
+(check "partial write-bytevector byte 2" 50 (bytevector-u8-ref partial-bv 2))
+(close-port in3)
+
+;;; Test 5: binary-port? on non-port values
+(check "binary-port? on number" #f (binary-port? 42))
+(check "binary-port? on string" #f (binary-port? "hello"))
+
+;;; Test 6: binary-port? on textual port
+(define text-out (open-output-file "/tmp/eshkol_bio_text_test.txt"))
+(check "binary-port? on textual output" #f (binary-port? text-out))
+(close-port text-out)
+
+;;; Test 7: u8-ready? always true for file ports
+(define in4 (open-binary-input-file test-file))
+(check "u8-ready? on binary input" #t (u8-ready? in4))
+(close-port in4)
+
+;; Cleanup
+(delete-file test-file)
+(delete-file "/tmp/eshkol_bio_text_test.txt")
+
+;; Summary
+(newline)
+(display "Binary I/O Tests: ")
+(display passed)
+(display " passed, ")
+(display failed)
+(display " failed")
+(newline)
+
+(if (> failed 0) (exit 1) (exit 0))

@@ -1,0 +1,22 @@
+;; Test parallel-for-each functionality
+;; Tests parallel side-effect iteration
+
+(display "=== Parallel For-Each Tests ===") (newline)
+
+;; Test 1: parallel-for-each with display (side effects)
+(display "parallel-for-each display: ")
+(parallel-for-each (lambda (x) (display x) (display " ")) (list 1 2 3 4 5))
+(newline)
+
+;; Test 2: parallel-for-each returns void/unspecified
+(define result (parallel-for-each (lambda (x) (* x 2)) (list 1 2 3)))
+(display "parallel-for-each return: ")
+(display result)
+(newline)
+
+;; Test 3: parallel-for-each with empty list (no-op)
+(parallel-for-each (lambda (x) (display "should not print")) '())
+(display "parallel-for-each empty: OK")
+(newline)
+
+(display "=== Parallel For-Each Tests Complete ===") (newline)

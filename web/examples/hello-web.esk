@@ -1,0 +1,96 @@
+;;; hello-web.esk - Test the Eshkol Web API
+;;;
+;;; This example creates a simple interactive counter to test
+;;; DOM manipulation, events, and styling.
+
+;; External declarations for web functions
+(extern i32 web-get-body :real web_get_body)
+(extern i32 web-create-element ptr :real web_create_element)
+(extern i32 web-create-text-node ptr :real web_create_text_node)
+(extern i32 web-append-child i32 i32 :real web_append_child)
+(extern i32 web-set-text-content i32 ptr :real web_set_text_content)
+(extern i32 web-set-attribute i32 ptr ptr :real web_set_attribute)
+(extern i32 web-set-style i32 ptr ptr :real web_set_style)
+(extern i32 web-add-class i32 ptr :real web_add_class)
+(extern void web-console-log ptr :real web_console_log)
+
+;; Create a heading
+(define (create-heading)
+  (let ((h1 (web-create-element "h1")))
+    (web-set-text-content h1 "Hello from Eshkol!")
+    (web-set-style h1 "color" "#7c3aed")
+    (web-set-style h1 "fontFamily" "system-ui, sans-serif")
+    (web-set-style h1 "textAlign" "center")
+    (web-append-child (web-get-body) h1)
+    (web-console-log "Created heading")
+    h1))
+
+;; Create a paragraph
+(define (create-paragraph text)
+  (let ((p (web-create-element "p")))
+    (web-set-text-content p text)
+    (web-set-style p "fontSize" "18px")
+    (web-set-style p "textAlign" "center")
+    (web-set-style p "color" "#333")
+    (web-append-child (web-get-body) p)
+    p))
+
+;; Create a styled button
+(define (create-button label)
+  (let ((btn (web-create-element "button")))
+    (web-set-text-content btn label)
+    (web-set-style btn "padding" "12px 24px")
+    (web-set-style btn "fontSize" "16px")
+    (web-set-style btn "backgroundColor" "#7c3aed")
+    (web-set-style btn "color" "white")
+    (web-set-style btn "border" "none")
+    (web-set-style btn "borderRadius" "8px")
+    (web-set-style btn "cursor" "pointer")
+    (web-set-style btn "margin" "8px")
+    btn))
+
+;; Create a container div
+(define (create-container)
+  (let ((div (web-create-element "div")))
+    (web-set-style div "display" "flex")
+    (web-set-style div "flexDirection" "column")
+    (web-set-style div "alignItems" "center")
+    (web-set-style div "padding" "40px")
+    (web-set-style div "fontFamily" "system-ui, sans-serif")
+    (web-append-child (web-get-body) div)
+    div))
+
+;; Main function - called when WASM loads
+(define (main)
+  (web-console-log "Eshkol Web App Starting...")
+
+  ;; Set body styles
+  (let ((body (web-get-body)))
+    (web-set-style body "margin" "0")
+    (web-set-style body "padding" "20px")
+    (web-set-style body "backgroundColor" "#f5f5f5")
+    (web-set-style body "minHeight" "100vh"))
+
+  ;; Create UI elements
+  (create-heading)
+  (create-paragraph "This page was built entirely in Eshkol!")
+  (create-paragraph "Eshkol compiles to WebAssembly and can manipulate the DOM.")
+
+  ;; Create some buttons
+  (let ((container (web-create-element "div")))
+    (web-set-style container "display" "flex")
+    (web-set-style container "justifyContent" "center")
+    (web-set-style container "gap" "16px")
+    (web-set-style container "marginTop" "20px")
+
+    (let ((btn1 (create-button "Button 1"))
+          (btn2 (create-button "Button 2"))
+          (btn3 (create-button "Button 3")))
+      (web-append-child container btn1)
+      (web-append-child container btn2)
+      (web-append-child container btn3))
+
+    (web-append-child (web-get-body) container))
+
+  (web-console-log "Eshkol Web App Ready!")
+  0)

@@ -1,0 +1,37 @@
+;; Test parallel-map functionality
+;; Tests parallel mapping across various list sizes
+
+(display "=== Parallel Map Tests ===") (newline)
+
+;; Test 1: Basic parallel-map with simple function
+(define result1 (parallel-map (lambda (x) (* x 2)) (list 1 2 3 4 5)))
+(display "parallel-map double: ")
+(display result1)
+(newline)
+
+;; Test 2: parallel-map with math function
+(define result2 (parallel-map (lambda (x) (+ x 10)) (list 1 2 3 4 5)))
+(display "parallel-map +10: ")
+(display result2)
+(newline)
+
+;; Test 3: parallel-map with larger list
+(define big-list (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))
+(define result3 (parallel-map (lambda (x) (* x x)) big-list))
+(display "parallel-map square 16 elements: ")
+(display result3)
+(newline)
+
+;; Test 4: parallel-map with single element
+(define result4 (parallel-map (lambda (x) (* x 3)) (list 42)))
+(display "parallel-map single: ")
+(display result4)
+(newline)
+
+;; Test 5: parallel-map with empty list
+(define result5 (parallel-map (lambda (x) x) '()))
+(display "parallel-map empty: ")
+(display result5)
+(newline)
+
+(display "=== Parallel Map Tests Complete ===") (newline)

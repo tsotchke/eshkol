@@ -1,0 +1,99 @@
+;; Data Encoding Test Suite
+;; Tests: base64-encode-string, base64-decode-string,
+;;        utf8->string, string->utf8, roundtrip correctness
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Base64 encoding
+;; ============================================================================
+
+(display "=== Testing base64-encode-string ===\n")
+
+(test-case "base64 encode 'Hello'"
+  "SGVsbG8="
+  (base64-encode-string "Hello"))
+
+(test-case "base64 encode empty string"
+  ""
+  (base64-encode-string ""))
+
+(test-case "base64 encode 'ABC'"
+  "QUJD"
+  (base64-encode-string "ABC"))
+
+;; ============================================================================
+;; Test: Base64 decoding
+;; ============================================================================
+
+(display "\n=== Testing base64-decode-string ===\n")
+
+(test-case "base64 decode 'SGVsbG8='"
+  "Hello"
+  (base64-decode-string "SGVsbG8="))
+
+(test-case "base64 decode empty string"
+  ""
+  (base64-decode-string ""))
+
+(test-case "base64 decode 'QUJD'"
+  "ABC"
+  (base64-decode-string "QUJD"))
+
+;; ============================================================================
+;; Test: Base64 roundtrip
+;; ============================================================================
+
+(display "\n=== Testing base64 roundtrip ===\n")
+
+(test-case "base64 roundtrip 'test'"
+  "test"
+  (base64-decode-string (base64-encode-string "test")))
+
+(test-case "base64 roundtrip 'Hello, World!'"
+  "Hello, World!"
+  (base64-decode-string (base64-encode-string "Hello, World!")))
+
+;; ============================================================================
+;; Test: UTF-8 conversion
+;; ============================================================================
+
+(display "\n=== Testing string/bytevector conversion ===\n")
+
+(test-case "string->utf8 byte values"
+  #t
+  (let ((bv (string->utf8 "ABC")))
+    (and (= (bytevector-u8-ref bv 0) 65)
+         (= (bytevector-u8-ref bv 1) 66)
+         (= (bytevector-u8-ref bv 2) 67))))
+
+(test-case "string->utf8 length"
+  3
+  (bytevector-length (string->utf8 "ABC")))
+
+(test-case "utf8->string roundtrip"
+  "hello"
+  (utf8->string (string->utf8 "hello")))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Data Encoding Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)

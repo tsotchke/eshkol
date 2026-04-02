@@ -1,0 +1,16 @@
+;; Test that shadowing with actual functions still works
+
+(require stdlib)
+
+(display "=== Function Shadowing Test ===\n")
+
+;; Shadow + with a function that multiplies
+(display "Redefining + to multiply instead...\n")
+(define + (lambda (a b) (* a b)))
+
+(define result (+ 3 4))
+(display "+ 3 4 with shadowed + = ") (display result) (display "\n")
+
+(if (= result 12)
+    (display "PASS: Function shadowing works!\n")
+    (display "FAIL: Expected 12\n"))

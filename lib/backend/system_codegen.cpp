@@ -231,6 +231,137 @@ llvm::Value* SystemCodegen::currentSeconds(const eshkol_operations_t* op) {
     return tagged_.packInt64(result, true);
 }
 
+llvm::Value* SystemCodegen::currentTime(const eshkol_operations_t* op) {
+    (void)op;
+
+    llvm::Function* gettimeofday_func = function_table_["gettimeofday"];
+    if (!gettimeofday_func) {
+        // Fallback: integer seconds
+        llvm::Function* time_func = function_table_["time"];
+        if (time_func) {
+            llvm::Value* null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+            llvm::Value* secs = ctx_.builder().CreateCall(time_func, {null_ptr});
+            llvm::Value* secs_dbl = ctx_.builder().CreateSIToFP(secs, ctx_.doubleType());
+            return tagged_.packDouble(secs_dbl);
+        }
+        return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+    }
+
+    // struct timeval { int64 tv_sec; int32 tv_usec; int32 padding; }
+    llvm::StructType* timeval_type = llvm::StructType::get(
+        ctx_.context(), {ctx_.int64Type(), ctx_.int32Type(), ctx_.int32Type()});
+
+    llvm::Value* tv_alloca = ctx_.builder().CreateAlloca(timeval_type, nullptr, "timeval");
+    llvm::Value* null_tz = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    ctx_.builder().CreateCall(gettimeofday_func, {tv_alloca, null_tz});
+
+    llvm::Value* sec_ptr = ctx_.builder().CreateStructGEP(timeval_type, tv_alloca, 0);
+    llvm::Value* usec_ptr = ctx_.builder().CreateStructGEP(timeval_type, tv_alloca, 1);
+    llvm::Value* tv_sec = ctx_.builder().CreateLoad(ctx_.int64Type(), sec_ptr);
+    llvm::Value* tv_usec_32 = ctx_.builder().CreateLoad(ctx_.int32Type(), usec_ptr);
+    llvm::Value* tv_usec = ctx_.builder().CreateSExt(tv_usec_32, ctx_.int64Type());
+
+    // seconds = tv_sec + tv_usec / 1000000.0
+    llvm::Value* sec_dbl = ctx_.builder().CreateSIToFP(tv_sec, ctx_.doubleType());
+    llvm::Value* usec_dbl = ctx_.builder().CreateSIToFP(tv_usec, ctx_.doubleType());
+    llvm::Value* frac = ctx_.builder().CreateFDiv(usec_dbl,
+        llvm::ConstantFP::get(ctx_.doubleType(), 1000000.0));
+    llvm::Value* result = ctx_.builder().CreateFAdd(sec_dbl, frac);
+
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* SystemCodegen::currentTimeMs(const eshkol_operations_t* op) {
+    (void)op;  // No arguments needed
+
+    llvm::Function* gettimeofday_func = function_table_["gettimeofday"];
+    if (!gettimeofday_func) {
+        // Fallback: return current seconds * 1000
+        llvm::Function* time_func = function_table_["time"];
+        if (time_func) {
+            llvm::Value* null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+            llvm::Value* secs = ctx_.builder().CreateCall(time_func, {null_ptr});
+            llvm::Value* ms = ctx_.builder().CreateMul(secs, llvm::ConstantInt::get(ctx_.int64Type(), 1000));
+            llvm::Value* ms_double = ctx_.builder().CreateSIToFP(ms, ctx_.doubleType());
+            return tagged_.packDouble(ms_double);
+        }
+        return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+    }
+
+    // Create struct timeval { int64 tv_sec; int32 tv_usec; int32 padding; }
+    // On macOS/Darwin: time_t is long (64-bit), suseconds_t is int32_t
+    llvm::StructType* timeval_type = llvm::StructType::get(
+        ctx_.context(), {ctx_.int64Type(), ctx_.int32Type(), ctx_.int32Type()});
+
+    // Allocate timeval on stack
+    llvm::Value* tv_alloca = ctx_.builder().CreateAlloca(timeval_type, nullptr, "timeval");
+
+    // Call gettimeofday(tv, NULL)
+    llvm::Value* null_tz = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    ctx_.builder().CreateCall(gettimeofday_func, {tv_alloca, null_tz});
+
+    // Load tv_sec (index 0) and tv_usec (index 1)
+    llvm::Value* sec_ptr = ctx_.builder().CreateStructGEP(timeval_type, tv_alloca, 0, "tv_sec_ptr");
+    llvm::Value* usec_ptr = ctx_.builder().CreateStructGEP(timeval_type, tv_alloca, 1, "tv_usec_ptr");
+    llvm::Value* tv_sec = ctx_.builder().CreateLoad(ctx_.int64Type(), sec_ptr, "tv_sec");
+    llvm::Value* tv_usec_32 = ctx_.builder().CreateLoad(ctx_.int32Type(), usec_ptr, "tv_usec_32");
+    // Sign-extend to int64 for arithmetic
+    llvm::Value* tv_usec = ctx_.builder().CreateSExt(tv_usec_32, ctx_.int64Type(), "tv_usec");
+
+    // Compute milliseconds: tv_sec * 1000 + tv_usec / 1000
+    llvm::Value* sec_ms = ctx_.builder().CreateMul(tv_sec,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1000), "sec_ms");
+    llvm::Value* usec_ms = ctx_.builder().CreateSDiv(tv_usec,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1000), "usec_ms");
+    llvm::Value* total_ms = ctx_.builder().CreateAdd(sec_ms, usec_ms, "total_ms");
+
+    // Convert to double for return
+    llvm::Value* result = ctx_.builder().CreateSIToFP(total_ms, ctx_.doubleType(), "ms_double");
+
+    return tagged_.packDouble(result);
+}
+
+llvm::Value* SystemCodegen::currentTimeNs(const eshkol_operations_t* op) {
+    (void)op;  // No arguments needed
+
+    // Use clock_gettime for nanosecond precision
+    // struct timespec { time_t tv_sec; long tv_nsec; }
+    // On macOS arm64: time_t is long (8 bytes), tv_nsec is long (8 bytes)
+    llvm::StructType* timespec_type = llvm::StructType::get(
+        ctx_.context(), {ctx_.int64Type(), ctx_.int64Type()});
+
+    // Get or declare clock_gettime
+    llvm::Function* clock_gettime_func = ctx_.module().getFunction("clock_gettime");
+    if (!clock_gettime_func) {
+        llvm::FunctionType* cgt_type = llvm::FunctionType::get(
+            ctx_.int32Type(),
+            {ctx_.int32Type(), ctx_.ptrType()},
+            false);
+        clock_gettime_func = llvm::Function::Create(
+            cgt_type, llvm::Function::ExternalLinkage, "clock_gettime", &ctx_.module());
+    }
+
+    llvm::Value* ts_alloca = ctx_.builder().CreateAlloca(timespec_type, nullptr, "timespec");
+
+    // CLOCK_REALTIME = 0 on both macOS and Linux - Unix time
+    llvm::Value* clock_id = llvm::ConstantInt::get(ctx_.int32Type(), 0);  // CLOCK_REALTIME
+
+    ctx_.builder().CreateCall(clock_gettime_func, {clock_id, ts_alloca});
+
+    llvm::Value* sec_ptr = ctx_.builder().CreateStructGEP(timespec_type, ts_alloca, 0, "ts_sec_ptr");
+    llvm::Value* nsec_ptr = ctx_.builder().CreateStructGEP(timespec_type, ts_alloca, 1, "ts_nsec_ptr");
+    llvm::Value* tv_sec = ctx_.builder().CreateLoad(ctx_.int64Type(), sec_ptr, "tv_sec");
+    llvm::Value* tv_nsec = ctx_.builder().CreateLoad(ctx_.int64Type(), nsec_ptr, "tv_nsec");
+
+    // Compute nanoseconds: tv_sec * 1000000000 + tv_nsec
+    llvm::Value* sec_ns = ctx_.builder().CreateMul(tv_sec,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1000000000LL), "sec_ns");
+    llvm::Value* total_ns = ctx_.builder().CreateAdd(sec_ns, tv_nsec, "total_ns");
+
+    llvm::Value* result = ctx_.builder().CreateSIToFP(total_ns, ctx_.doubleType(), "ns_double");
+    return tagged_.packDouble(result);
+}
+
 llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("exit requires exactly 1 argument (exit code)");

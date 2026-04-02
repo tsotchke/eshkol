@@ -23,9 +23,9 @@ Thank you for your interest in contributing to Eshkol! This document provides gu
     - [Testing](#testing)
   - [Project Structure](#project-structure)
   - [Communication](#communication)
-  - [Priority Areas for Contribution (v1.1+)](#priority-areas-for-contribution-v11)
-    - [Immediate Priorities (v1.1-acceleration - Q1 2026)](#immediate-priorities-v11-acceleration---q1-2026)
-    - [Near-Term (v1.2-scale - Q2 2026)](#near-term-v12-scale---q2-2026)
+  - [Priority Areas for Contribution (v1.2+)](#priority-areas-for-contribution-v12)
+    - [Immediate Priorities (v1.2-scale - Q2 2026)](#immediate-priorities-v12-scale---q2-2026)
+    - [Near-Term (v1.5-intelligence - Q3 2026)](#near-term-v15-intelligence---q3-2026)
     - [Ongoing](#ongoing)
   - [Recognition](#recognition)
 
@@ -43,17 +43,20 @@ To set up your development environment for Eshkol, you'll need:
    - GCC 9.0+ or Clang 10.0+
    - On macOS: `brew install gcc` or use the default Clang
    - On Linux: `sudo apt install build-essential`
-   - On Windows: Install MinGW or use WSL
+   - On Windows: MSYS2 MinGW64
 
 2. **CMake**
-   - Version 3.12 or higher
+   - Version 3.14 or higher
    - On macOS: `brew install cmake`
    - On Linux: `sudo apt install cmake`
    - On Windows: Download from [cmake.org](https://cmake.org/download/)
 
-3. **Node.js** (for MCP tools)
-   - Version 14.0+ recommended
-   - Download from [nodejs.org](https://nodejs.org/)
+3. **LLVM**
+   - Version 17 required (CI tests against LLVM 17)
+   - On macOS: `brew install llvm@17`
+   - On Linux: `sudo apt install llvm-17-dev`
+   - On Windows: Install via MSYS2 MinGW64: `pacman -S mingw-w64-x86_64-llvm`
+   - Ensure `llvm-config` is in your PATH
 
 4. **Git**
    - On macOS: `brew install git`
@@ -76,29 +79,26 @@ To set up your development environment for Eshkol, you'll need:
    make
    ```
 
-3. Install the MCP tools (optional, for development tools):
-   ```bash
-   cd ../eshkol-tools
-   npm install
-   ```
-
 ### Running Tests
 
-Run the test suite to ensure everything is working correctly:
+Run the full test suite:
 
 ```bash
-cd build
-ctest
+# From the project root
+bash scripts/run_all_tests.sh
 ```
 
 Or run specific test categories:
 
 ```bash
-# Run unit tests only
-ctest -R unit
-
-# Run integration tests only
-ctest -R integration
+# Individual test suites
+bash scripts/run_bignum_tests.sh
+bash scripts/run_rational_tests.sh
+bash scripts/run_parallel_tests.sh
+bash scripts/run_gpu_tests.sh
+bash scripts/run_signal_tests.sh
+bash scripts/run_macros_tests.sh
+# ... see scripts/ directory for all test runners
 ```
 
 ## How to Contribute
@@ -133,7 +133,7 @@ We follow a standard GitHub flow for contributions:
 5. Update documentation to reflect your changes.
 6. Commit your changes with clear, descriptive commit messages.
 7. Push your branch to your fork: `git push origin your-branch-name`.
-8. Submit a pull request to the `main` branch of the Eshkol repository.
+8. Submit a pull request to the `master` branch of the Eshkol repository.
 9. Respond to any feedback or questions during the review process.
 
 ## Development Guidelines
@@ -189,27 +189,47 @@ Understanding the project structure will help you contribute effectively:
 eshkol/
 ├── build/                  # Build output (generated)
 ├── docs/                   # Documentation
-│   ├── architecture/       # Architecture documentation
+│   ├── architecture/       # Architecture overview
+│   ├── breakdown/          # Deep-dive technical docs (20 files)
 │   ├── components/         # Component documentation
-│   ├── reference/          # API reference
-│   ├── scheme_compatibility/ # Scheme compatibility docs
-│   ├── tutorials/          # Tutorials
-│   ├── type_system/        # Type system documentation
-│   └── vision/             # Vision and roadmap
-├── examples/               # Example Eshkol programs
-├── include/                # Public header files
-│   ├── backend/            # Code generation headers
-│   ├── core/               # Core functionality headers
-│   └── frontend/           # Parser and type system headers
-├── src/                    # Source code
-│   ├── backend/            # Code generation implementation
-│   ├── core/               # Core functionality implementation
-│   └── frontend/           # Parser and type system implementation
-├── tests/                  # Test suite
-│   ├── integration/        # Integration tests
-│   └── unit/               # Unit tests
-├── eshkol-tools/           # MCP tools for development
-├── eshkol-vscode/          # VSCode extension
+│   ├── development/        # Development workflow
+│   └── vision/             # Vision and design history
+├── exe/                    # Compiler and REPL executables
+│   ├── eshkol-run.cpp      # AOT compiler
+│   └── eshkol-repl.cpp     # JIT REPL
+├── inc/eshkol/             # Public header files
+│   ├── backend/            # Code generation headers (21 modules)
+│   ├── core/               # Runtime headers (logic, inference, workspace)
+│   ├── frontend/           # Parser, macro expander headers
+│   └── types/              # Type system headers
+├── lib/                    # Implementation source code
+│   ├── backend/            # LLVM codegen (21 modules)
+│   │   ├── gpu/            # GPU backends (Metal, CUDA)
+│   │   └── xla/            # XLA/StableHLO backend
+│   ├── core/               # Runtime (arena, AST, logic, inference, workspace)
+│   ├── frontend/           # Parser, macro expander
+│   ├── math/               # Math stdlib (special functions, ODE, constants)
+│   ├── signal/             # Signal processing (FFT, filters)
+│   ├── ml/                 # Machine learning stdlib
+│   ├── random/             # Random number generators
+│   ├── web/                # Web/WASM platform
+│   ├── repl/               # JIT compiler
+│   └── types/              # Type checker, HoTT types
+├── tests/                  # Test suite (35 suites by feature)
+│   ├── autodiff/           # AD tests (3 modes)
+│   ├── bignum/             # Arbitrary-precision integer tests
+│   ├── complex/            # Complex number tests
+│   ├── features/           # Core language features
+│   ├── logic/              # Consciousness engine tests
+│   ├── numeric/            # Numeric regression tests
+│   ├── parallel/           # Parallel primitives tests
+│   ├── signal/             # Signal processing tests
+│   └── ...                 # 26 more test directories
+├── tools/                  # Developer tools
+│   ├── lsp/                # Language Server Protocol
+│   ├── pkg/                # Package manager (eshkol-pkg)
+│   └── vscode-eshkol/      # VSCode extension
+├── scripts/                # Build and test scripts
 ├── CMakeLists.txt          # Main build configuration
 ├── CONTRIBUTING.md         # This file
 ├── LICENSE                 # MIT license
@@ -223,21 +243,22 @@ eshkol/
 - **GitHub Discussions**: For general questions, ideas, and community discussions.
 - **Pull Requests**: For code contributions and code reviews.
 
-## Priority Areas for Contribution (v1.1+)
+## Priority Areas for Contribution (v1.2+)
 
-v1.0-foundation is **complete**. We welcome contributions for upcoming releases:
+v1.0-foundation and v1.1-accelerate are **complete**. We welcome contributions for upcoming releases:
 
-### Immediate Priorities (v1.1-acceleration - Q1 2026)
-1. **XLA Backend Integration**: Accelerated tensor operations
-2. **SIMD Vectorization**: SSE/AVX/NEON instruction generation
-3. **Parallelism Primitives**: parallel-map, parallel-fold, work-stealing scheduler
-4. **Extended Math Library**: Complex numbers, FFT, signal processing
+### Immediate Priorities (v1.2-scale - Q2 2026)
+1. **Distributed Computing**: Multi-node gradient synchronization
+2. **Model Deployment**: ONNX/TFLite/CoreML export
+3. **Vulkan Compute**: Cross-platform GPU backend (Metal and CUDA already shipped in v1.1)
+4. **Visual Debugger**: Source-level debugging UI
+5. **Python Bindings**: Interoperability with Python ML ecosystem
 
-### Near-Term (v1.2-scale - Q2 2026)
-1. **GPU Backends**: CUDA, Metal, Vulkan implementation
-2. **Distributed Training**: Multi-node gradient synchronization
-3. **Model Deployment**: ONNX/TFLite/CoreML export
-4. **Inference Optimization**: Operator fusion, quantization
+### Near-Term (v1.5-intelligence - Q3 2026)
+1. **Neural-Symbolic Search**: Differentiable logic programs (building on v1.1 consciousness engine)
+2. **Multi-GPU Support**: Distribute work across multiple GPUs
+3. **Profile-Guided Optimization**: Runtime profile-based optimization
+4. **Full R7RS Library System**: `define-library` / `import` with renaming
 
 ### Ongoing
 1. **Documentation**: Tutorials, examples, case studies
@@ -245,7 +266,7 @@ v1.0-foundation is **complete**. We welcome contributions for upcoming releases:
 3. **Standard Library**: Additional modules and utilities
 4. **Bug Fixes**: Report and fix any issues found
 
-See [ROADMAP.md](ROADMAP.md) and [docs/vision/FUTURE_ROADMAP.md](docs/vision/FUTURE_ROADMAP.md) for complete development plans.
+See [ROADMAP.md](ROADMAP.md) for complete development plans.
 
 ## Recognition
 

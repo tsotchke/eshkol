@@ -1,0 +1,10 @@
+; REPL Test: Stdlib combined operations in one session
+; Tests that all stdlib HOFs work after each other (regression for fold segfault)
+:stdlib
+(define (double x) (* x 2))
+(map double '(1 2 3))
+(filter (lambda (x) (> x 3)) '(1 2 3 4 5))
+(fold + 0 '(1 2 3 4 5))
+(length '(a b c d))
+(reverse '(1 2 3))
+(append '(1 2) '(3 4))

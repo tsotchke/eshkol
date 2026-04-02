@@ -38,6 +38,7 @@ TEST_SCRIPTS=(
     "run_neural_tests_with_output.sh"
     "run_json_tests_with_output.sh"
     "run_system_tests_with_output.sh"
+    "run_complex_tests_with_output.sh"
     "run_cpp_type_tests.sh"
 )
 

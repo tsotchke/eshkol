@@ -1,0 +1,48 @@
+; Port predicate tests for Eshkol
+; Tests input-port?, output-port?, port?, current-input-port, current-output-port
+
+(display "TEST: Port Predicates") (newline)
+
+; Test 1: current-output-port is an output port
+(display (if (output-port? (current-output-port)) "PASS" "FAIL"))
+(display ": (output-port? (current-output-port)) should be #t") (newline)
+
+; Test 2: current-input-port is an input port
+(display (if (input-port? (current-input-port)) "PASS" "FAIL"))
+(display ": (input-port? (current-input-port)) should be #t") (newline)
+
+; Test 3: current-input-port is NOT an output port
+(display (if (not (output-port? (current-input-port))) "PASS" "FAIL"))
+(display ": (output-port? (current-input-port)) should be #f") (newline)
+
+; Test 4: current-output-port is NOT an input port
+(display (if (not (input-port? (current-output-port))) "PASS" "FAIL"))
+(display ": (input-port? (current-output-port)) should be #f") (newline)
+
+; Test 5: a number is not an input port
+(display (if (not (input-port? 42)) "PASS" "FAIL"))
+(display ": (input-port? 42) should be #f") (newline)
+
+; Test 6: a string is not an output port
+(display (if (not (output-port? "hello")) "PASS" "FAIL"))
+(display ": (output-port? \"hello\") should be #f") (newline)
+
+; Test 7: a boolean is not an input port
+(display (if (not (input-port? #t)) "PASS" "FAIL"))
+(display ": (input-port? #t) should be #f") (newline)
+
+; Test 8: a boolean is not an output port
+(display (if (not (output-port? #f)) "PASS" "FAIL"))
+(display ": (output-port? #f) should be #f") (newline)
+
+; Test 9: port? recognizes input port
+(display (if (port? (current-input-port)) "PASS" "FAIL"))
+(display ": (port? (current-input-port)) should be #t") (newline)
+
+; Test 10: port? recognizes output port
+(display (if (port? (current-output-port)) "PASS" "FAIL"))
+(display ": (port? (current-output-port)) should be #t") (newline)
+
+; Test 11: port? rejects non-port values
+(display (if (not (port? 42)) "PASS" "FAIL"))
+(display ": (port? 42) should be #f") (newline)

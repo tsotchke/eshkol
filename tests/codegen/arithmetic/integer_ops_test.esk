@@ -1,0 +1,209 @@
+;; Arithmetic Codegen Test: Integer Operations
+;; Tests code generation for integer arithmetic
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Basic Addition
+;; ============================================================================
+
+(display "=== Testing Integer Addition ===\n")
+
+;; Two operands
+(test-case "add two" 5 (+ 2 3))
+(test-case "add zero" 5 (+ 5 0))
+(test-case "add negative" 2 (+ 5 -3))
+(test-case "add negatives" -8 (+ -3 -5))
+
+;; Multiple operands
+(test-case "add three" 6 (+ 1 2 3))
+(test-case "add four" 10 (+ 1 2 3 4))
+(test-case "add five" 15 (+ 1 2 3 4 5))
+(test-case "add many" 55 (+ 1 2 3 4 5 6 7 8 9 10))
+
+;; Single operand (identity)
+(test-case "add single" 5 (+ 5))
+(test-case "add single neg" -5 (+ -5))
+
+;; No operands (identity element)
+(test-case "add none" 0 (+))
+
+;; ============================================================================
+;; Test: Basic Subtraction
+;; ============================================================================
+
+(display "=== Testing Integer Subtraction ===\n")
+
+;; Two operands
+(test-case "sub two" 2 (- 5 3))
+(test-case "sub zero" 5 (- 5 0))
+(test-case "sub negative" 8 (- 5 -3))
+(test-case "sub from zero" -5 (- 0 5))
+
+;; Single operand (negation)
+(test-case "negate positive" -5 (- 5))
+(test-case "negate negative" 5 (- -5))
+(test-case "negate zero" 0 (- 0))
+
+;; Multiple operands (left associative)
+(test-case "sub three" 0 (- 10 5 5))
+(test-case "sub four" -10 (- 10 5 5 10))
+
+;; ============================================================================
+;; Test: Basic Multiplication
+;; ============================================================================
+
+(display "=== Testing Integer Multiplication ===\n")
+
+;; Two operands
+(test-case "mul two" 6 (* 2 3))
+(test-case "mul by zero" 0 (* 5 0))
+(test-case "mul by one" 5 (* 5 1))
+(test-case "mul negatives" 15 (* -3 -5))
+(test-case "mul mixed signs" -15 (* 3 -5))
+
+;; Multiple operands
+(test-case "mul three" 24 (* 2 3 4))
+(test-case "mul four" 120 (* 2 3 4 5))
+(test-case "mul many" 3628800 (* 1 2 3 4 5 6 7 8 9 10))
+
+;; Single operand (identity)
+(test-case "mul single" 5 (* 5))
+
+;; No operands (identity element)
+(test-case "mul none" 1 (*))
+
+;; ============================================================================
+;; Test: Integer Division
+;; ============================================================================
+
+(display "=== Testing Integer Division ===\n")
+
+;; Quotient
+(test-case "quotient exact" 5 (quotient 10 2))
+(test-case "quotient truncate" 3 (quotient 10 3))
+(test-case "quotient negative" -3 (quotient -10 3))
+(test-case "quotient neg neg" 3 (quotient -10 -3))
+(test-case "quotient by one" 10 (quotient 10 1))
+
+;; Remainder
+(test-case "remainder exact" 0 (remainder 10 2))
+(test-case "remainder nonzero" 1 (remainder 10 3))
+(test-case "remainder negative" -1 (remainder -10 3))
+(test-case "remainder neg neg" -1 (remainder -10 -3))
+
+;; Modulo
+(test-case "modulo positive" 1 (modulo 10 3))
+(test-case "modulo negative" 2 (modulo -10 3))
+
+;; Division combinations
+(test-case "quotient+remainder" 10 (+ (* (quotient 10 3) 3) (remainder 10 3)))
+
+;; ============================================================================
+;; Test: Comparison Operations
+;; ============================================================================
+
+(display "=== Testing Integer Comparisons ===\n")
+
+;; Equality
+(test-case "= true" #t (= 5 5))
+(test-case "= false" #f (= 5 6))
+(test-case "= multiple true" #t (= 5 5 5 5))
+(test-case "= multiple false" #f (= 5 5 6 5))
+
+;; Less than
+(test-case "< true" #t (< 3 5))
+(test-case "< false" #f (< 5 3))
+(test-case "< equal" #f (< 5 5))
+(test-case "< chain true" #t (< 1 2 3 4 5))
+(test-case "< chain false" #f (< 1 2 5 4))
+
+;; Greater than
+(test-case "> true" #t (> 5 3))
+(test-case "> false" #f (> 3 5))
+(test-case "> equal" #f (> 5 5))
+(test-case "> chain true" #t (> 5 4 3 2 1))
+(test-case "> chain false" #f (> 5 4 2 3))
+
+;; Less than or equal
+(test-case "<= less" #t (<= 3 5))
+(test-case "<= equal" #t (<= 5 5))
+(test-case "<= greater" #f (<= 6 5))
+(test-case "<= chain" #t (<= 1 2 2 3 3))
+
+;; Greater than or equal
+(test-case ">= greater" #t (>= 5 3))
+(test-case ">= equal" #t (>= 5 5))
+(test-case ">= less" #f (>= 4 5))
+(test-case ">= chain" #t (>= 5 4 4 3 3))
+
+;; ============================================================================
+;; Test: Other Integer Operations
+;; ============================================================================
+
+(display "=== Testing Other Integer Ops ===\n")
+
+;; Absolute value
+(test-case "abs positive" 5 (abs 5))
+(test-case "abs negative" 5 (abs -5))
+(test-case "abs zero" 0 (abs 0))
+
+;; Min/max
+(test-case "max two" 5 (max 3 5))
+(test-case "max three" 7 (max 3 7 5))
+(test-case "max negative" -1 (max -3 -1 -5))
+(test-case "min two" 3 (min 3 5))
+(test-case "min three" 3 (min 5 3 7))
+(test-case "min negative" -5 (min -3 -1 -5))
+
+;; GCD/LCM
+(test-case "gcd" 6 (gcd 12 18))
+(test-case "gcd three" 3 (gcd 9 12 15))
+(test-case "lcm" 36 (lcm 12 18))
+
+;; ============================================================================
+;; Test: Integer Predicates
+;; ============================================================================
+
+(display "=== Testing Integer Predicates ===\n")
+
+(test-case "zero? true" #t (zero? 0))
+(test-case "zero? false" #f (zero? 1))
+(test-case "positive? true" #t (positive? 5))
+(test-case "positive? false" #f (positive? -5))
+(test-case "positive? zero" #f (positive? 0))
+(test-case "negative? true" #t (negative? -5))
+(test-case "negative? false" #f (negative? 5))
+(test-case "negative? zero" #f (negative? 0))
+(test-case "even? true" #t (even? 4))
+(test-case "even? false" #f (even? 5))
+(test-case "even? zero" #t (even? 0))
+(test-case "odd? true" #t (odd? 5))
+(test-case "odd? false" #f (odd? 4))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

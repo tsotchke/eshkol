@@ -1,0 +1,11 @@
+;; Type System Test: Strict mode detects type mismatch
+;; EXPECT-MODE: strict-types
+;; EXPECT-STDERR: Type error: argument 1
+;; EXPECT-STDERR: expected Number, got String
+
+;; add-nums uses + on a and b, so backward inference narrows both to Number
+(define (add-nums a b) (+ a b))
+
+;; Passing a string where Number is expected should trigger a type error
+(display (add-nums "hello" 42))
+(newline)

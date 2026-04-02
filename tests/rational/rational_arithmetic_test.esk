@@ -1,0 +1,84 @@
+; Rational number arithmetic tests
+
+; Basic rational creation via division
+(display (/ 1 3))
+(newline)
+; Expected: 1/3
+
+(display (/ 2 4))
+(newline)
+; Expected: 1/2 (auto-reduced by GCD)
+
+(display (/ 6 9))
+(newline)
+; Expected: 2/3
+
+; Exact division stays integer
+(display (/ 10 5))
+(newline)
+; Expected: 2
+
+; Negative rationals
+(display (/ -3 4))
+(newline)
+; Expected: -3/4
+
+(display (/ 3 -4))
+(newline)
+; Expected: -3/4
+
+; Rational arithmetic
+(display (+ (/ 1 3) (/ 1 6)))
+(newline)
+; Expected: 1/2
+
+(display (- (/ 3 4) (/ 1 4)))
+(newline)
+; Expected: 1/2
+
+(display (* (/ 2 3) (/ 3 4)))
+(newline)
+; Expected: 1/2
+
+(display (/ (/ 1 2) (/ 1 3)))
+(newline)
+; Expected: 3/2
+
+; Rational + integer
+(display (+ (/ 1 3) 1))
+(newline)
+; Expected: 4/3
+
+(display (* (/ 1 2) 6))
+(newline)
+; Expected: 3
+
+; Predicates
+(display (rational? (/ 1 3)))
+(newline)
+; Expected: #t
+
+(display (rational? 42))
+(newline)
+; Expected: #t (integers are rational)
+
+(display (rational? 3.14))
+(newline)
+; Expected: #f
+
+; Numerator/denominator access
+(display (numerator (/ 3 7)))
+(newline)
+; Expected: 3
+
+(display (denominator (/ 3 7)))
+(newline)
+; Expected: 7
+
+(display (numerator 5))
+(newline)
+; Expected: 5
+
+(display (denominator 5))
+(newline)
+; Expected: 1

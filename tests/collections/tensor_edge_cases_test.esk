@@ -1,0 +1,146 @@
+(require stdlib)
+
+(display "TEST: Tensor edge cases") (newline)
+
+; 1. Single-element tensor length
+(display (if (= (vector-length #(42.0)) 1) "PASS" "FAIL")) (display ": single-element tensor has length 1") (newline)
+
+; 2. Single-element tensor access
+(display (if (= (vector-ref #(42.0) 0) 42.0) "PASS" "FAIL")) (display ": single-element tensor access returns correct value") (newline)
+
+; 3. tensor-sum of single element
+(display (if (= (tensor-sum #(5.0)) 5.0) "PASS" "FAIL")) (display ": tensor-sum of single element") (newline)
+
+; 4. tensor-sum of multiple elements
+(display (if (< (abs (- (tensor-sum #(1.0 2.0 3.0)) 6.0)) 1e-10) "PASS" "FAIL")) (display ": tensor-sum of #(1.0 2.0 3.0) = 6.0") (newline)
+
+; 5. tensor-map on single element
+(let ((result (tensor-map (lambda (x) (* x 2.0)) #(7.0))))
+  (display (if (= (vector-ref result 0) 14.0) "PASS" "FAIL")) (display ": tensor-map on single element doubles it") (newline))
+
+; 6. Zeros tensor via make-vector
+(let ((t (make-vector 5 0.0)))
+  (display (if (and (= (vector-length t) 5)
+                    (= (vector-ref t 0) 0.0)
+                    (= (vector-ref t 4) 0.0))
+               "PASS" "FAIL"))
+  (display ": make-vector 5 zeros has correct length and values") (newline))
+
+; 7. tensor-dot product
+(display (if (< (abs (- (tensor-dot #(1.0 2.0 3.0) #(4.0 5.0 6.0)) 32.0)) 1e-10) "PASS" "FAIL")) (display ": tensor-dot #(1 2 3) . #(4 5 6) = 32.0") (newline)
+
+; 8. Large tensor creation
+(let ((t (make-vector 1000 1.0)))
+  (display (if (= (vector-length t) 1000) "PASS" "FAIL")) (display ": make-vector 1000 elements has correct length") (newline))
+
+; 9. tensor-scale multiplies all elements by scalar
+(let ((result (tensor-scale #(1.0 2.0 3.0 4.0) 3.0)))
+  (display (if (and (< (abs (- (vector-ref result 0) 3.0)) 1e-10)
+                    (< (abs (- (vector-ref result 1) 6.0)) 1e-10)
+                    (< (abs (- (vector-ref result 2) 9.0)) 1e-10)
+                    (< (abs (- (vector-ref result 3) 12.0)) 1e-10))
+               "PASS" "FAIL"))
+  (display ": tensor-scale #(1 2 3 4) by 3 = #(3 6 9 12)") (newline))
+
+; 10a. vector-ref at first boundary
+(display (if (= (vector-ref #(10.0 20.0 30.0) 0) 10.0) "PASS" "FAIL")) (display ": vector-ref at index 0 (first boundary)") (newline)
+
+; 10b. vector-ref at last boundary
+(display (if (= (vector-ref #(10.0 20.0 30.0) 2) 30.0) "PASS" "FAIL")) (display ": vector-ref at last index (last boundary)") (newline)
+
+; 11. Negative values in tensor
+(let ((t #(-1.0 -2.0 -3.0)))
+  (display (if (and (= (vector-ref t 0) -1.0)
+                    (= (vector-ref t 1) -2.0)
+                    (= (vector-ref t 2) -3.0))
+               "PASS" "FAIL"))
+  (display ": negative values stored correctly in tensor") (newline))
+
+; 12. Mixed positive/negative in tensor-sum
+(display (if (< (abs (- (tensor-sum #(1.0 -1.0 2.0 -2.0 3.0)) 3.0)) 1e-10) "PASS" "FAIL")) (display ": tensor-sum of mixed positive/negative values") (newline)
+
+; 13. Tensor operations preserve precision
+(let ((t #(0.1 0.2 0.3)))
+  (display (if (< (abs (- (tensor-sum t) 0.6000000000000001)) 1e-14) "PASS" "FAIL"))
+  (display ": tensor-sum preserves floating-point precision") (newline))
+
+; 14. Tensor-map with computed values
+(let* ((base #(1.0 4.0 9.0 16.0))
+       (result (tensor-map (lambda (x) (sqrt x)) base)))
+  (display (if (and (< (abs (- (vector-ref result 0) 1.0)) 1e-10)
+                    (< (abs (- (vector-ref result 1) 2.0)) 1e-10)
+                    (< (abs (- (vector-ref result 2) 3.0)) 1e-10)
+                    (< (abs (- (vector-ref result 3) 4.0)) 1e-10))
+               "PASS" "FAIL"))
+  (display ": tensor-map with sqrt over #(1 4 9 16)") (newline))
+
+; 15. vector-set! on tensor
+(let ((t (make-vector 3 0.0)))
+  (vector-set! t 1 99.0)
+  (display (if (and (= (vector-ref t 0) 0.0)
+                    (= (vector-ref t 1) 99.0)
+                    (= (vector-ref t 2) 0.0))
+               "PASS" "FAIL"))
+  (display ": vector-set! mutates correct index in tensor") (newline))
+
+; 16. Two-element tensor
+(let ((t #(3.14 2.71)))
+  (display (if (and (= (vector-length t) 2)
+                    (< (abs (- (vector-ref t 0) 3.14)) 1e-10)
+                    (< (abs (- (vector-ref t 1) 2.71)) 1e-10))
+               "PASS" "FAIL"))
+  (display ": two-element tensor stores and retrieves correctly") (newline))
+
+; 17. tensor-sum of large tensor (all ones)
+(let ((t (make-vector 100 1.0)))
+  (display (if (< (abs (- (tensor-sum t) 100.0)) 1e-10) "PASS" "FAIL")) (display ": tensor-sum of 100 ones = 100.0") (newline))
+
+; 18. tensor-dot with zeros
+(display (if (< (abs (tensor-dot #(1.0 2.0 3.0) #(0.0 0.0 0.0))) 1e-10) "PASS" "FAIL")) (display ": tensor-dot with zero vector = 0.0") (newline)
+
+; 19. tensor-map identity
+(let ((t #(5.0 6.0 7.0))
+      )
+  (let ((result (tensor-map (lambda (x) x) t)))
+    (display (if (and (= (vector-ref result 0) 5.0)
+                      (= (vector-ref result 1) 6.0)
+                      (= (vector-ref result 2) 7.0))
+                 "PASS" "FAIL"))
+    (display ": tensor-map with identity function") (newline)))
+
+; 20. tensor-scale by zero
+(let ((result (tensor-scale #(1.0 2.0 3.0) 0.0)))
+  (display (if (and (= (vector-ref result 0) 0.0)
+                    (= (vector-ref result 1) 0.0)
+                    (= (vector-ref result 2) 0.0))
+               "PASS" "FAIL"))
+  (display ": tensor-scale by 0.0 produces all zeros") (newline))
+
+; 21. tensor-scale by negative scalar
+(let ((result (tensor-scale #(1.0 2.0 3.0) -1.0)))
+  (display (if (and (= (vector-ref result 0) -1.0)
+                    (= (vector-ref result 1) -2.0)
+                    (= (vector-ref result 2) -3.0))
+               "PASS" "FAIL"))
+  (display ": tensor-scale by -1.0 negates all elements") (newline))
+
+; 22. vector-ref on large tensor
+(let ((t (make-vector 1000 0.0)))
+  (vector-set! t 999 42.0)
+  (display (if (= (vector-ref t 999) 42.0) "PASS" "FAIL")) (display ": vector-ref/set! at last index of 1000-element tensor") (newline))
+
+; 23. tensor-sum of negative-only tensor
+(display (if (< (abs (- (tensor-sum #(-1.0 -2.0 -3.0 -4.0)) -10.0)) 1e-10) "PASS" "FAIL")) (display ": tensor-sum of all-negative tensor") (newline)
+
+; 24. tensor-dot with self (squared norm)
+(display (if (< (abs (- (tensor-dot #(3.0 4.0) #(3.0 4.0)) 25.0)) 1e-10) "PASS" "FAIL")) (display ": tensor-dot of #(3 4) with itself = 25.0 (squared norm)") (newline)
+
+; 25. tensor-map applies to all elements
+(let ((result (tensor-map (lambda (x) (* x x)) #(1.0 2.0 3.0 4.0 5.0))))
+  (display (if (and (< (abs (- (vector-ref result 0) 1.0)) 1e-10)
+                    (< (abs (- (vector-ref result 1) 4.0)) 1e-10)
+                    (< (abs (- (vector-ref result 2) 9.0)) 1e-10)
+                    (< (abs (- (vector-ref result 3) 16.0)) 1e-10)
+                    (< (abs (- (vector-ref result 4) 25.0)) 1e-10))
+               "PASS" "FAIL"))
+  (display ": tensor-map squares all 5 elements correctly") (newline))

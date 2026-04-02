@@ -72,7 +72,7 @@ The OALR system provides **five ownership modes** for different memory managemen
 
 **Implementation:** [`lib/core/arena_memory.cpp:1-3210`](lib/core/arena_memory.cpp:1)
 
-Eshkol uses a **single global arena** (`__global_arena`) for all heap allocations. The arena grows automatically as needed.
+Eshkol uses a **hybrid arena model**: a global arena (`__global_arena`) for the main thread, plus **per-thread arenas** (1 MB each, lazily allocated via `thread_local` storage) for parallel worker threads. The global arena grows automatically as needed; per-thread arenas provide contention-free allocation during parallel operations.
 
 ### Arena Structure
 
@@ -527,7 +527,7 @@ uint8_t subtype = header->subtype;
 | String (n chars) | 8 bytes | 16 + n bytes | 8 bytes |
 | Vector (n elems) | 8 bytes | 16 + 16n bytes | 8 bytes |
 | Tensor | 8 bytes | 32 + 8n bytes | 8 bytes |
-| Closure | 8 bytes | 32 bytes | 8 bytes (25%) |
+| Closure | 8 bytes | 40 bytes | 8 bytes (20%) |
 
 **Header overhead:** Fixed 8 bytes per object, amortized over object size.
 
@@ -600,6 +600,321 @@ Eshkol provides **compile-time memory safety** through:
 4. **No dangling pointers** - Weak references become `nothing` when freed
 
 **These guarantees eliminate entire classes of memory bugs at compile time.**
+
+---
+
+## v1.1 Memory Patterns
+
+This section documents the memory allocation and lifecycle patterns introduced in Eshkol v1.1, covering the consciousness engine (logic, inference, workspace), parallel execution, and GPU buffer management. All descriptions are grounded in the source code as it exists on the `refactor/optimisation` branch.
+
+### 1. Consciousness Engine Allocation
+
+All consciousness engine objects use the same `arena_allocate_with_header` primitive as bignums and rationals. Every heap-allocated object carries an 8-byte `eshkol_object_header_t` prepended before the data pointer:
+
+```
+Memory layout:  [header: 8 bytes][object data: variable]
+                ^                ^
+                |                +-- pointer returned to caller
+                +-- accessible via ESHKOL_GET_HEADER(ptr) = ptr - 8
+```
+
+The header contains `{subtype: u8, flags: u8, ref_count: u16, size: u32}`. Each consciousness engine type has a dedicated subtype constant:
+
+| Object             | Heap Subtype                  | Allocated via                     |
+|---------------------|------------------------------|----------------------------------|
+| Substitution        | `HEAP_SUBTYPE_SUBSTITUTION` (12) | `alloc_substitution(arena, capacity)` |
+| Fact                | `HEAP_SUBTYPE_FACT` (13)         | `alloc_fact(arena, arity)`            |
+| Knowledge Base      | `HEAP_SUBTYPE_KNOWLEDGE_BASE` (15) | `alloc_kb(arena)`                 |
+| Factor Graph        | `HEAP_SUBTYPE_FACTOR_GRAPH` (16) | `arena_allocate_with_header`      |
+| Workspace           | `HEAP_SUBTYPE_WORKSPACE` (17)    | `arena_allocate_with_header`      |
+
+**Note:** Individual `eshkol_factor_t` structs do NOT get their own heap subtype. They are allocated with `arena_allocate_aligned` (no header) and stored as pointers inside the factor graph's `factors` array. Only the factor graph itself carries a header for type dispatch.
+
+#### Substitution Copy-on-Extend
+
+Substitutions follow a **copy-on-extend** discipline. `eshkol_extend_subst` never mutates the input substitution. Instead, it:
+
+1. Allocates a **new** substitution via `alloc_substitution(arena, new_capacity)`.
+2. `memcpy`s the old bindings (var IDs and terms) into the new allocation.
+3. Appends the new binding.
+4. Returns the new substitution pointer.
+
+This means every call to `eshkol_extend_subst` produces a fresh arena allocation. The old substitution remains valid and unmodified, which is essential for backtracking during unification (failed unification branches don't corrupt the substitution passed in).
+
+The capacity growth strategy is: if the new binding fits within the existing capacity, reuse that capacity; otherwise double the capacity (minimum 8 slots).
+
+```
+Substitution memory layout (variable-length):
+[header: 8B][num_bindings: u32, capacity: u32]
+            [var_ids: capacity * u64]
+            [terms:   capacity * eshkol_tagged_value_t (16B each)]
+
+Total data size = sizeof(eshkol_substitution_t) + capacity * (8 + 16) bytes
+```
+
+#### Temporary Substitutions During Unification
+
+When `eshkol_unify` recurses (e.g., structural unification of facts), each recursive call may allocate intermediate substitutions via `eshkol_extend_subst`. If unification ultimately fails (returns NULL), all those intermediate substitutions remain allocated in the arena -- they are **not** freed. The arena's bump allocator has no per-object free; these temporaries persist until the arena is reset or destroyed.
+
+For `kb_query`, which tries unification against every fact in the knowledge base, failed unification attempts accumulate dead substitutions in the arena. This is acceptable because:
+- The arena is typically reset after a query cycle completes.
+- Substitution sizes are small (typically tens of bytes).
+- The arena grows in blocks (default 64KB for the global arena, 1MB for thread-local arenas), so fragmentation is not a concern.
+
+#### Knowledge Base Mutation Strategy
+
+`kb_assert!` **mutates the KB in place** -- it does NOT copy. The `eshkol_kb_assert` function:
+
+1. Checks if `num_facts >= capacity`.
+2. If growth is needed, allocates a **new** `facts` pointer array (double the capacity) via `arena_allocate_aligned`, copies old pointers, and swings the KB's `facts` field to point to the new array. The old pointer array is abandoned in the arena (never freed).
+3. Stores the fact pointer at `facts[num_facts++]`.
+
+The fact itself is not copied -- the KB stores a pointer to the fact's existing arena location. This means mutating a fact after assertion would affect the KB's view of it (though the API does not expose fact mutation).
+
+Initial capacity is 16 (`KB_INITIAL_CAPACITY`), growing by 2x.
+
+#### Factor Graph CPT Allocation and Mutation
+
+When a factor is created (`eshkol_make_factor`), its conditional probability table (CPT) is allocated as a flat `double` array via `arena_allocate_aligned`:
+
+```
+CPT size = product(dims[0..num_vars-1]) doubles
+Memory: arena_allocate_aligned(arena, cpt_size * sizeof(double), 8)
+```
+
+The CPT data is copied from the caller's input at creation time.
+
+`fg_update_cpt!` (`eshkol_fg_update_cpt_tagged`) **mutates the CPT in place**: it overwrites the factor's existing `cpt` array with values extracted from the new tensor argument, entry by entry. No new allocation occurs for the CPT itself during update.
+
+After CPT mutation, the function **nulls out** the message arrays (`fg->msg_fv = NULL; fg->msg_vf = NULL`). This forces the next `fg-infer!` call to re-allocate fresh message storage (via `allocate_messages`), causing belief propagation to reconverge from scratch with the new CPT. The old message arrays remain allocated in the arena but are unreferenced.
+
+#### Message Array Allocation
+
+Belief propagation messages are allocated lazily on the first call to `fg-infer!` via `allocate_messages`:
+
+```
+For each factor f with num_vars variables connected to the factor graph:
+  For each factor-variable edge:
+    msg_fv[edge] = alloc_doubles(arena, var_dim)  // factor-to-variable message
+    msg_vf[edge] = alloc_doubles(arena, var_dim)  // variable-to-factor message
+```
+
+Messages are updated in-place during iteration (the BP loop overwrites `old_msg[s] = new_msg[s]`). Temporary per-iteration messages use `alloca` (stack allocation), not arena allocation, so BP iterations do not consume arena memory beyond the initial message allocation.
+
+#### Workspace Module Storage
+
+`eshkol_make_workspace` allocates the workspace struct and its inline module array as a single contiguous allocation:
+
+```
+data_size = sizeof(eshkol_workspace_t) + max_modules * sizeof(eshkol_workspace_module_t)
+```
+
+This is a fixed-capacity design: the maximum number of modules is set at creation time. The `content` buffer (a `double` array of dimension `dim`) is allocated separately via `arena_allocate_aligned`.
+
+Module registration (`ws-register!`) copies the module name into the arena via `arena_allocate_aligned(arena, name_len + 1, 1)` and stores the process function as a tagged value (a closure). The module struct is filled in-place within the pre-allocated array.
+
+The `ws-step!` finalization (`eshkol_ws_step_finalize`) uses stack-allocated arrays (max 16 modules) for salience scores and proposal pointers -- no arena allocation occurs during the step computation itself. The winning module's proposal tensor content is copied into the workspace's pre-allocated `content` buffer via element-wise conversion from int64 bit patterns to doubles.
+
+### 2. Parallel Arena Isolation
+
+#### Per-Thread Arena Architecture
+
+Each worker thread in the thread pool gets its own arena, managed through `thread_local` storage in `thread_pool.cpp`:
+
+```cpp
+thread_local arena_t* tls_arena = nullptr;
+thread_local bool tls_is_worker_thread = false;
+thread_local size_t tls_arena_size = 0;
+```
+
+When a worker thread starts (in either `work_stealing_worker_func` or `legacy_worker_func`), it sets:
+```cpp
+tls_is_worker_thread = true;
+tls_arena_size = pool->thread_arena_size;  // from config, default 1MB
+```
+
+The arena itself is **lazily created** on first call to `get_thread_local_arena()`:
+```cpp
+arena_t* get_thread_local_arena(void) {
+    if (!tls_arena) {
+        size_t size = tls_arena_size > 0 ? tls_arena_size : (1024 * 1024);  // 1MB default
+        tls_arena = arena_create(size);  // NOT thread-safe variant -- single-thread access
+    }
+    return tls_arena;
+}
+```
+
+Key design choice: per-thread arenas use `arena_create` (not `arena_create_threadsafe`), because each arena is only accessed by its owning thread. This avoids mutex overhead on every allocation within a worker.
+
+The default configuration in `thread_pool.h` is:
+```c
+#define ESHKOL_THREAD_POOL_DEFAULT_CONFIG { \
+    .num_threads = 0,              /* hardware_concurrency */  \
+    .task_queue_capacity = 0,      /* unlimited */             \
+    .thread_arena_size = 1024 * 1024,  /* 1MB per thread */    \
+    .enable_metrics = true,                                    \
+    .name = "default"                                          \
+}
+```
+
+#### Arena Allocation During Parallel Operations
+
+The current parallel primitives (`parallel-map`, `parallel-filter`, `parallel-fold`, `parallel-for-each`, `parallel-execute`) do **not** use per-thread arenas for task execution. Instead, the architecture works as follows:
+
+1. **Task decomposition** happens on the main thread. The input Scheme list is converted to a `std::vector<eshkol_tagged_value_t>` (heap-allocated via the C++ allocator, not the arena).
+
+2. **Task structs** (`llvm_parallel_map_task`) are allocated in a `std::vector` on the main thread's stack/heap. Each task contains decomposed i64 fields (closure pointer, item type, item data, result pointer) -- no tagged value structs cross the C/LLVM boundary.
+
+3. **Workers** execute LLVM-generated functions (`__parallel_map_worker`, etc.) that reconstruct tagged values in pure LLVM IR and call the closure dispatcher. The worker writes its result via a pointer to a pre-allocated result slot in the main thread's `results` vector.
+
+4. **Result marshaling** back to the main thread uses `vector_to_list(results, arena)`, which allocates cons cells in the **main thread's arena** (the global arena passed to the parallel function).
+
+This means the per-thread arenas (`tls_arena`) are available but currently go unused by the built-in parallel primitives. They exist for user-level parallel code that might need arena allocation within worker tasks (e.g., closures that create heap objects during parallel-map). Any heap objects created by closures during parallel execution would be allocated in the global arena (passed through the LLVM codegen), not in thread-local arenas.
+
+#### What Happens When an Arena Is Exhausted
+
+When an arena's current block is full, `arena_allocate_aligned` allocates a **new block** via `malloc`:
+
+```cpp
+size_t new_block_size = (aligned_size > arena->default_block_size) ?
+                        aligned_size : arena->default_block_size;
+arena_block_t* new_block = create_arena_block(new_block_size);
+new_block->next = arena->current_block;
+arena->current_block = new_block;
+```
+
+Blocks form a singly-linked list. The new block becomes the current block; old blocks remain linked for later cleanup. If `malloc` fails, the allocation returns `nullptr`. There is no built-in overflow signal or exception -- callers must check for NULL returns.
+
+For thread-local arenas, `arena_reset` is available via `thread_pool_reset_thread_arena()`. Reset frees all blocks except the original one and resets `used` to 0, effectively recycling the arena's memory for the next task.
+
+#### Synchronization Guarantees
+
+The parallel primitives provide the following guarantees:
+
+- **No data races on results**: each task writes to its own dedicated result slot (`results[i]`). Slots are pre-allocated in a contiguous vector before task submission.
+- **Future-based synchronization**: `future_get(futures[i])` blocks until task `i` completes, ensuring all results are visible before the main thread reads them.
+- **Small list optimization**: lists with fewer than 4 elements bypass the thread pool entirely and execute sequentially on the main thread.
+- **No arena synchronization**: the global arena is thread-safe (created via `arena_create_threadsafe` with a `pthread_mutex_t`), so concurrent allocations from closures are serialized. However, the parallel primitives themselves minimize contention by performing arena allocation only during result marshaling on the main thread.
+
+#### AD Tape Isolation
+
+For parallel autodiff, the AD tape state uses `thread_local` storage:
+
+```cpp
+thread_local ad_tape_t* __ad_tape_stack[MAX_TAPE_DEPTH];
+thread_local uint64_t __ad_tape_depth = 0;
+```
+
+This ensures that parallel workers performing gradient computation do not corrupt each other's tape state. Each thread maintains its own tape stack independently.
+
+### 3. GPU Buffer Marshaling
+
+#### Arena-to-GPU Data Flow
+
+Tensor data in Eshkol is arena-allocated as arrays of `int64_t` values that are actually `double` bit patterns (the `tensor_layout_t` struct). When GPU computation is needed (e.g., for matrix multiplication), the data flow is:
+
+```
+Arena tensor (int64 bit patterns)
+    |
+    v  (interpret as double* -- same bit pattern)
+eshkol_gpu_wrap_host(host_ptr, size_bytes)
+    |
+    v
+MTLBuffer (zero-copy if page-aligned, else copy)
+    |
+    v
+GPU kernel execution
+    |
+    v
+memcpy result back to host_ptr (if fallback allocation was used)
+    |
+    v
+Arena tensor updated in-place
+```
+
+#### MTLBuffer Allocation Strategy
+
+Metal buffers use **`MTLResourceStorageModeShared`** (unified memory) as the primary allocation mode. On Apple Silicon, shared mode means both CPU and GPU access the same physical memory -- no explicit DMA transfers are needed.
+
+The `eshkol_gpu_wrap_host` function attempts zero-copy wrapping first:
+
+```objc
+id<MTLBuffer> buffer = [g_metal_device newBufferWithBytesNoCopy:host_ptr
+                                                         length:size_bytes
+                                                        options:MTLResourceStorageModeShared
+                                                    deallocator:nil];
+```
+
+This succeeds only if `host_ptr` is page-aligned. If it fails (arena allocations are 8-byte aligned, not page-aligned), the fallback path allocates a new MTLBuffer and copies data:
+
+```objc
+int result = metal_alloc(size_bytes, ESHKOL_MEM_UNIFIED, out);
+memcpy(out->host_ptr, host_ptr, size_bytes);
+```
+
+The `metal_alloc` function supports three storage modes depending on `EshkolMemoryType`:
+
+| Memory Type          | Storage Mode                | Use Case                     |
+|----------------------|----------------------------|------------------------------|
+| `ESHKOL_MEM_DEVICE`  | `MTLResourceStorageModePrivate` | GPU-only (no CPU access)     |
+| `ESHKOL_MEM_HOST_PINNED` | Shared or Managed (based on unified memory detection) | Pinned host memory |
+| Default              | `MTLResourceStorageModeShared`  | General purpose (unified)    |
+
+#### Buffer Pool
+
+To avoid repeated `MTLBuffer` allocation/deallocation overhead (significant for iterative workloads like ML training loops), gpu_memory.mm implements a **size-binned buffer pool**:
+
+```
+Allocation request (N bytes)
+    |
+    v
+Round up to next power-of-2 -> bucket size
+    |
+    v
+Check g_buffer_pool[bucket] for available buffer
+    |
+    +-- Found -> return pooled buffer (no Metal allocation)
+    |
+    +-- Empty -> [g_metal_device newBufferWithLength:bucket
+                                            options:MTLResourceStorageModeShared]
+```
+
+Buffer return (`pool_release`) stores the buffer back in its size bucket, up to `POOL_MAX_PER_BUCKET = 8` buffers per bucket. Excess buffers are dropped and freed by ARC. The pool is drained (`pool_drain` / `g_buffer_pool.clear()`) during `metal_shutdown`.
+
+The pool is used extensively within the matmul implementations for intermediate buffers (f32 conversion buffers, computation buffers) but NOT for the user's input/output buffers (those use `eshkol_gpu_wrap_host`).
+
+#### Result Copy-Back
+
+After GPU kernel execution, results are copied back to the host pointer. The copy-back strategy depends on whether zero-copy wrapping succeeded:
+
+**Zero-copy case** (`newBufferWithBytesNoCopy` succeeded): The GPU writes directly to the arena tensor's memory. The MTLBuffer wraps the host pointer, so `[buffer contents]` IS the host pointer. No copy needed -- `buf_c.host_ptr == (void*)C` evaluates true, and the `memcpy` is skipped.
+
+**Fallback case** (arena pointer not page-aligned): The MTLBuffer has its own allocation. After GPU completion, results must be explicitly copied:
+
+```cpp
+if (buf_c.host_ptr != (void*)C) {
+    memcpy((void*)C, buf_c.host_ptr, M * N * sizeof(double));
+}
+```
+
+For precision-converted kernels (sf64, df64, f32_simd), the copy-back always uses `memcpy(C->host_ptr, [result_buffer contents], elementsC * 8)` because the computation uses intermediate pooled buffers, not the original user buffer.
+
+#### GPU Buffer Lifetime
+
+GPU buffers are explicitly freed by calling `eshkol_gpu_free`, which:
+
+1. For Metal: releases the `__bridge_retained` reference, allowing ARC to free the MTLBuffer. The underlying memory is freed when ARC drops the last reference.
+2. For wrapped buffers (`flags & 1`): does NOT free the host pointer (it belongs to the arena). Only the MTLBuffer wrapper is released.
+3. For non-wrapped buffers: `free(host_ptr)` is called.
+
+The typical lifecycle in `eshkol_blas_matmul_dispatch`:
+```
+wrap_host(A) -> wrap_host(B) -> wrap_host(C) -> gpu_matmul -> copy_back_if_needed -> free(A,B,C)
+```
+
+GPU buffers are stack-local (`EshkolGPUBuffer buf_a, buf_b, buf_c`) and freed immediately after use. They do not persist beyond the matmul call. Intermediate pooled buffers (for f32 conversion, etc.) are returned to the pool via `pool_release`, not freed.
+
+**Important lifetime note:** The arena tensor's memory outlives the GPU buffer. The GPU buffer is a transient wrapper. The arena tensor persists until arena reset/destroy. There is no risk of use-after-free because `eshkol_gpu_free` on a wrapped buffer only releases the MTLBuffer, not the underlying arena-owned memory.
 
 ---
 

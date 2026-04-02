@@ -85,14 +85,6 @@ public:
      */
     llvm::Value* createTailCall(llvm::Function* func, const std::vector<llvm::Value*>& args);
 
-    /**
-     * Create a tail call to a closure.
-     * @param closure The closure tagged value
-     * @param args The arguments
-     * @return The result of the tail call
-     */
-    llvm::Value* createClosureTailCall(llvm::Value* closure, const std::vector<llvm::Value*>& args);
-
     // === Trampoline Support ===
 
     /**
@@ -102,32 +94,14 @@ public:
     static constexpr uint64_t BOUNCE_TAG = 0x0F00000000000000ULL;
 
     /**
-     * Create a bounce value (a thunk that continues the computation).
-     * @param thunk_func The 0-argument function to call
-     * @return Tagged bounce value
-     */
-    llvm::Value* createBounce(llvm::Value* thunk_func);
-
-    /**
      * Check if a value is a bounce (continuation).
-     * @param value The tagged value to check
-     * @return Boolean indicating if it's a bounce
      */
     llvm::Value* isBounce(llvm::Value* value);
 
     /**
      * Extract the thunk function from a bounce value.
-     * @param bounce The bounce value
-     * @return The thunk function pointer
      */
     llvm::Value* extractBounceThunk(llvm::Value* bounce);
-
-    /**
-     * Create a trampoline that evaluates a thunk until it returns a non-bounce value.
-     * @param initial_thunk The initial thunk to evaluate
-     * @return The final result
-     */
-    llvm::Value* createTrampoline(llvm::Value* initial_thunk);
 
     /**
      * Generate the trampoline runtime function.
@@ -160,6 +134,39 @@ public:
         const eshkol_ast_t* body
     );
 
+    // === Iterative Transform Query ===
+
+    /**
+     * Info about an active iterative transformation.
+     * Main codegen queries this to redirect self-calls in the body.
+     */
+    struct IterativeInfo {
+        llvm::Function* func = nullptr;
+        std::string func_name;
+        std::vector<llvm::AllocaInst*> param_allocas;
+        llvm::BasicBlock* loop_header = nullptr;
+        const eshkol_ast_t* body = nullptr;
+        bool active = false;
+    };
+
+    /**
+     * Get the active iterative transformation info.
+     * Returns info with active=false if no transformation is in progress.
+     */
+    const IterativeInfo& getIterativeInfo() const { return iterative_info_; }
+
+    /**
+     * Clear iterative transformation state after body codegen is complete.
+     */
+    void clearIterativeInfo() { iterative_info_ = {}; }
+
+    /**
+     * Generate a self-call redirect: store new args to allocas and branch to loop.
+     * Used by main codegen when it detects a self-call during iterative transform.
+     * @param new_args The new argument values for the recursive call
+     */
+    void emitIterativeSelfCall(const std::vector<llvm::Value*>& new_args);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
@@ -167,6 +174,9 @@ private:
 
     // Trampoline runtime function
     llvm::Function* trampoline_func_ = nullptr;
+
+    // Active iterative transformation state
+    IterativeInfo iterative_info_;
 
     // Helper to determine if an expression is the last in a sequence
     bool isLastInSequence(const eshkol_ast_t* expr, const eshkol_operations_t* parent) const;

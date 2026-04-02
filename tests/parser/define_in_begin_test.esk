@@ -1,0 +1,50 @@
+;; Test define placement patterns
+
+(display "=== Define Placement Test ===") (newline)
+
+;; Test 1: Define in begin at top level of nested function - WORKS
+(define (test1)
+  (define x 10)
+  (define (inner)
+    (begin
+      (define y 5)
+      x))  ;; Access outer variable after inner define
+  (inner))
+
+(display "Test 1 (define then access outer): ") (display (test1)) (display " (expected 10)") (newline)
+
+;; Test 2: Define in begin, access outer INSIDE the inner define - MIGHT FAIL
+(define (test2)
+  (define x 20)
+  (define (inner)
+    (begin
+      (define (nested) x)  ;; Nested define that accesses outer
+      (nested)))
+  (inner))
+
+(display "Test 2 (nested define accessing outer): ") (display (test2)) (display " (expected 20)") (newline)
+
+;; Test 3: Same as test2 but without the begin
+(define (test3)
+  (define x 30)
+  (define (inner)
+    (define (nested) x)
+    (nested))
+  (inner))
+
+(display "Test 3 (no begin): ") (display (test3)) (display " (expected 30)") (newline)
+
+;; Test 4: With if expression
+(define (test4)
+  (define x 40)
+  (define (inner cond)
+    (if cond
+        (begin
+          (define (nested) x)
+          (nested))
+        0))
+  (inner #t))
+
+(display "Test 4 (if then begin): ") (display (test4)) (display " (expected 40)") (newline)
+
+(display "=== Done ===") (newline)

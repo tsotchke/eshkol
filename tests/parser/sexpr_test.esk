@@ -1,0 +1,203 @@
+;; Parser Test: S-Expression Parsing
+;; Tests parsing of basic S-expressions, nested structures, and edge cases
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Atoms
+;; ============================================================================
+
+(display "=== Testing Atoms ===\n")
+
+;; Numbers
+(test-case "integer atom" 42 42)
+(test-case "negative atom" -17 -17)
+(test-case "float atom" 3.14 3.14)
+
+;; Booleans
+(test-case "true atom" #t #t)
+(test-case "false atom" #f #f)
+
+;; Symbols (via quote)
+(test-case "symbol atom" 'hello 'hello)
+(test-case "symbol equality" #t (eq? 'foo 'foo))
+(test-case "symbol inequality" #f (eq? 'foo 'bar))
+
+;; Characters
+(test-case "char a" #\a #\a)
+(test-case "char space" #\space #\space)
+(test-case "char newline" #\newline #\newline)
+
+;; ============================================================================
+;; Test: Lists
+;; ============================================================================
+
+(display "=== Testing Lists ===\n")
+
+;; Empty list
+(test-case "empty list" '() '())
+(test-case "null? empty" #t (null? '()))
+(test-case "list? empty" #t (list? '()))
+
+;; Simple lists
+(test-case "simple list length" 3 (length '(1 2 3)))
+(test-case "list car" 1 (car '(1 2 3)))
+(test-case "list cadr" 2 (cadr '(1 2 3)))
+(test-case "list caddr" 3 (caddr '(1 2 3)))
+
+;; Nested lists
+(define nested '((1 2) (3 4) (5 6)))
+(test-case "nested list length" 3 (length nested))
+(test-case "nested car" '(1 2) (car nested))
+(test-case "nested caar" 1 (caar nested))
+(test-case "nested cadar" 2 (cadar nested))
+
+;; Mixed type lists
+(define mixed '(1 "two" three 4.0 #t))
+(test-case "mixed list length" 5 (length mixed))
+(test-case "mixed car" 1 (car mixed))
+(test-case "mixed cadr" "two" (cadr mixed))
+
+;; ============================================================================
+;; Test: Pairs
+;; ============================================================================
+
+(display "=== Testing Pairs ===\n")
+
+;; Dotted pairs
+(define pair1 (cons 1 2))
+(test-case "pair car" 1 (car pair1))
+(test-case "pair cdr" 2 (cdr pair1))
+(test-case "pair? true" #t (pair? pair1))
+
+;; Nested pairs
+(define pair2 (cons (cons 1 2) (cons 3 4)))
+(test-case "nested pair caar" 1 (caar pair2))
+(test-case "nested pair cdar" 2 (cdar pair2))
+(test-case "nested pair cadr" 3 (cadr pair2))
+(test-case "nested pair cddr" 4 (cddr pair2))
+
+;; ============================================================================
+;; Test: Vectors
+;; ============================================================================
+
+(display "=== Testing Vectors ===\n")
+
+;; Vector literals
+(define vec1 #(1 2 3 4 5))
+(test-case "vector length" 5 (vector-length vec1))
+(test-case "vector-ref 0" 1 (vector-ref vec1 0))
+(test-case "vector-ref 2" 3 (vector-ref vec1 2))
+(test-case "vector-ref 4" 5 (vector-ref vec1 4))
+(test-case "vector? true" #t (vector? vec1))
+(test-case "vector? list" #f (vector? '(1 2 3)))
+
+;; Nested vectors
+(define vec2 #(#(1 2) #(3 4)))
+(test-case "nested vector length" 2 (vector-length vec2))
+(test-case "nested vector-ref" #(1 2) (vector-ref vec2 0))
+
+;; ============================================================================
+;; Test: Quoted Expressions
+;; ============================================================================
+
+(display "=== Testing Quote ===\n")
+
+;; Quote shorthand
+(test-case "quote shorthand" '(1 2 3) '(1 2 3))
+(test-case "quoted symbol" 'foo 'foo)
+(test-case "quoted list" '(a b c) '(a b c))
+
+;; Explicit quote
+(test-case "explicit quote" (quote hello) 'hello)
+(test-case "explicit quote list" (quote (1 2)) '(1 2))
+
+;; Nested quotes
+(test-case "nested quote" ''foo (quote (quote foo)))
+
+;; ============================================================================
+;; Test: Deeply Nested Structures
+;; ============================================================================
+
+(display "=== Testing Deep Nesting ===\n")
+
+;; Deep list nesting
+(define deep-list '((((1)))))
+(test-case "deep list access" 1 (caaaar deep-list))
+
+;; Deep function nesting
+(test-case "deep function nest" 10
+  ((lambda (x)
+     ((lambda (y)
+        ((lambda (z)
+           (+ x (+ y z)))
+         3))
+      2))
+   5))
+
+;; Deep let nesting
+(test-case "deep let nest" 15
+  (let ((a 1))
+    (let ((b 2))
+      (let ((c 3))
+        (let ((d 4))
+          (let ((e 5))
+            (+ a (+ b (+ c (+ d e))))))))))
+
+;; ============================================================================
+;; Test: Special Characters in Symbols
+;; ============================================================================
+
+(display "=== Testing Symbol Characters ===\n")
+
+;; Symbols with special characters
+(define foo-bar 1)
+(test-case "symbol with hyphen" 1 foo-bar)
+
+(define foo_bar 2)
+(test-case "symbol with underscore" 2 foo_bar)
+
+(define foo? 3)
+(test-case "symbol with question" 3 foo?)
+
+(define foo! 4)
+(test-case "symbol with bang" 4 foo!)
+
+(define ->foo 5)
+(test-case "symbol with arrow" 5 ->foo)
+
+(define foo->bar 6)
+(test-case "symbol with middle arrow" 6 foo->bar)
+
+(define *global* 7)
+(test-case "symbol with stars" 7 *global*)
+
+(define <=> 8)
+(test-case "symbol all special" 8 <=>)
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

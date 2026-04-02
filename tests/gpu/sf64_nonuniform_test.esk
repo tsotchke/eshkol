@@ -1,0 +1,73 @@
+;; Test sf64 with non-uniform values
+(display "=== Non-Uniform Value Test ===") (newline)
+
+;; Test 1: 2x2 with different values
+;; [[1, 2], [3, 4]] * [[5, 6], [7, 8]]
+;; = [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]]
+;; = [[5+14, 6+16], [15+28, 18+32]]
+;; = [[19, 22], [43, 50]]
+(display "--- 2x2 non-uniform matmul ---") (newline)
+(define A (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
+(define B (reshape (vector 5.0 6.0 7.0 8.0) 2 2))
+(define C (matmul A B))
+(define Cd (tensor-data C))
+(display "[[1,2],[3,4]] * [[5,6],[7,8]] = ")
+(display Cd) (newline)
+(display "Expected: #(19 22 43 50)") (newline)
+(display "C[0,0]=") (display (vector-ref Cd 0)) (display " (exp 19)") (newline)
+(display "C[0,1]=") (display (vector-ref Cd 1)) (display " (exp 22)") (newline)
+(display "C[1,0]=") (display (vector-ref Cd 2)) (display " (exp 43)") (newline)
+(display "C[1,1]=") (display (vector-ref Cd 3)) (display " (exp 50)") (newline)
+
+;; Test 2: 3x3 identity test
+;; [[1,0,0],[0,2,0],[0,0,3]] * [[1,0,0],[0,1,0],[0,0,1]] should = [[1,0,0],[0,2,0],[0,0,3]]
+(display "--- 3x3 diagonal * identity ---") (newline)
+(define D (reshape (vector 1.0 0.0 0.0  0.0 2.0 0.0  0.0 0.0 3.0) 3 3))
+(define I3 (reshape (vector 1.0 0.0 0.0  0.0 1.0 0.0  0.0 0.0 1.0) 3 3))
+(define DI (matmul D I3))
+(define DId (tensor-data DI))
+(display "diag(1,2,3) * I = ") (display DId) (newline)
+(display "Expected: #(1 0 0 0 2 0 0 0 3)") (newline)
+
+;; Test 3: Large non-uniform (GPU path, 50x50)
+;; Create matrix with A[i,j] = i+j+1, multiply by ones matrix
+;; Result C[i,j] = sum over k of (i+k+1) = sum_{k=0}^{n-1}(i+k+1) = n*i + n(n-1)/2 + n = n*i + n(n+1)/2
+;; For n=50, C[0,j] = 50*0 + 50*51/2 = 1275
+;; C[1,j] = 50*1 + 1275 = 1325
+(display "--- 50x50 GPU path non-uniform ---") (newline)
+(define n 50)
+(define size (* n n))
+
+;; Create A where A[i,j] = i + 1 (constant across row)
+(define (make-row-matrix)
+  (define data (make-vector size 0.0))
+  (define (fill-row i)
+    (if (< i n)
+        (begin
+          (define (fill-col j)
+            (if (< j n)
+                (begin
+                  (vector-set! data (+ (* i n) j) (+ i 1.0))
+                  (fill-col (+ j 1)))
+                #t))
+          (fill-col 0)
+          (fill-row (+ i 1)))
+        #t))
+  (fill-row 0)
+  data)
+
+(define Alarge-data (make-row-matrix))
+(define Blarge-data (make-vector size 1.0))
+(define Alarge (reshape Alarge-data n n))
+(define Blarge (reshape Blarge-data n n))
+(define Clarge (matmul Alarge Blarge))
+(define Clarge-data (tensor-data Clarge))
+
+;; C[0,0] = sum of row 0 of A * col 0 of B = n * A[0,0] = 50 * 1 = 50
+;; C[1,0] = sum of row 1 of A * col 0 of B = n * A[1,0] = 50 * 2 = 100
+(display "C[0,0] = ") (display (vector-ref Clarge-data 0)) (display " (expected 50)") (newline)
+(display "C[1,0] = ") (display (vector-ref Clarge-data n)) (display " (expected 100)") (newline)
+(display "C[2,0] = ") (display (vector-ref Clarge-data (* 2 n))) (display " (expected 150)") (newline)
+(display "C[49,0] = ") (display (vector-ref Clarge-data (* 49 n))) (display " (expected 2500)") (newline)
+
+(display "=== Done ===") (newline)

@@ -53,7 +53,7 @@ Eshkol v1.0-architecture represents a **production-ready foundation** for scient
 - AD integration (`vref` creates graph nodes)
 
 ✅ **Compiler Infrastructure**
-- LLVM 14+ backend with 19 modular codegen components
+- LLVM 17 backend with 21 modular codegen components
 - 5-phase compilation: macro expansion → parsing → type checking → LLVM IR → optimization
 - AOT compiler (`eshkol-run`) and JIT REPL (`eshkol-repl`)
 - Function cache for lambda deduplication
@@ -79,20 +79,20 @@ Eshkol v1.0-architecture represents a **production-ready foundation** for scient
 ### v1.1 - Ecosystem Foundations (Q1 2026)
 
 **Package Management**
-- Central package repository
-- Dependency resolution
-- Versioning system (`@1.0.0` syntax)
-- Lock files for reproducible builds
+- ✅ Central package repository (`eshkol-pkg` with 9 commands)
+- ✅ Dependency resolution
+- ✅ Versioning system (`@1.0.0` syntax)
+- ✅ Lock files for reproducible builds
 
 **Developer Tooling**
-- Language Server Protocol (LSP) implementation
+- ✅ Language Server Protocol (LSP) implementation (`eshkol-lsp`, 5 LSP methods)
 - VS Code extension with syntax highlighting, autocomplete
-- Source-level debugger (beyond GDB wrapper)
+- Source-level debugger (DWARF via `-g` flag; visual debugger planned)
 - Documentation generator from type annotations
 
 **Language Features**
-- `eval` implementation (leverage homoiconicity)
-- Full `call/cc` support (currently AST-defined but not fully implemented)
+- ✅ `eval` implementation (via REPL JIT)
+- ✅ Full `call/cc` support with `dynamic-wind` (first-class continuations)
 - Pattern matching expansion (beyond basic `match`)
 
 ### v1.2 - Performance and Interoperability (Q1-2 2026)

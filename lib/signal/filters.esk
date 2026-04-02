@@ -1,0 +1,439 @@
+;;; Eshkol Signal Processing Library
+;;; FIR/IIR filters, window functions, convolution, and filter design
+;;;
+;;; Provides digital signal processing primitives for Eshkol v1.1-accelerate
+;;;
+;;; Usage: (require signal.filters)
+
+;; FFT/IFFT for fast-convolve
+(require signal.fft)
+
+(provide hamming-window hann-window blackman-window kaiser-window
+         apply-window
+         convolve fast-convolve
+         fir-filter iir-filter
+         butterworth-lowpass butterworth-highpass butterworth-bandpass
+         frequency-response)
+
+;;; ============================================================
+;;; Constants
+;;; ============================================================
+
+(define *pi* 3.141592653589793)
+
+;;; ============================================================
+;;; Window Functions
+;;; ============================================================
+
+;; hamming-window: Hamming window of length N
+;; w[n] = 0.54 - 0.46 * cos(2*pi*n / (N-1))
+(define (hamming-window N)
+  (let ((result (make-vector N 0.0))
+        (denom (- N 1)))
+    (letrec ((loop (lambda (i)
+              (if (< i N)
+                  (begin
+                    (vector-set! result i
+                      (- 0.54 (* 0.46 (cos (* 2.0 *pi* (/ i denom))))))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; hann-window: Hann (Hanning) window of length N
+;; w[n] = 0.5 * (1 - cos(2*pi*n / (N-1)))
+(define (hann-window N)
+  (let ((result (make-vector N 0.0))
+        (denom (- N 1)))
+    (letrec ((loop (lambda (i)
+              (if (< i N)
+                  (begin
+                    (vector-set! result i
+                      (* 0.5 (- 1.0 (cos (* 2.0 *pi* (/ i denom))))))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; blackman-window: Blackman window of length N
+;; w[n] = 0.42 - 0.5*cos(2*pi*n/(N-1)) + 0.08*cos(4*pi*n/(N-1))
+(define (blackman-window N)
+  (let ((result (make-vector N 0.0))
+        (denom (- N 1)))
+    (letrec ((loop (lambda (i)
+              (if (< i N)
+                  (let ((x (/ i denom)))
+                    (vector-set! result i
+                      (+ 0.42
+                         (- (* 0.5 (cos (* 2.0 *pi* x))))
+                         (* 0.08 (cos (* 4.0 *pi* x)))))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; bessel-i0: Modified Bessel function of the first kind, order 0
+;; Used by Kaiser window. Series expansion: I0(x) = sum_{k=0}^{25} ((x/2)^k / k!)^2
+(define (bessel-i0 x)
+  (let ((half-x (* 0.5 x)))
+    (letrec ((loop (lambda (k term sum)
+              (if (> k 25)
+                  sum
+                  (let ((new-term (* term (/ (* half-x half-x) (* k k)))))
+                    (loop (+ k 1) new-term (+ sum new-term)))))))
+      (loop 1 1.0 1.0))))
+
+;; kaiser-window: Kaiser window of length N with shape parameter beta
+;; w[n] = I0(beta * sqrt(1 - ((2n/(N-1)) - 1)^2)) / I0(beta)
+(define (kaiser-window N beta)
+  (let ((result (make-vector N 0.0))
+        (denom (- N 1))
+        (i0-beta (bessel-i0 beta)))
+    (letrec ((loop (lambda (i)
+              (if (< i N)
+                  (let* ((normalized (- (* 2.0 (/ i denom)) 1.0))
+                         (arg (* beta (sqrt (max 0.0 (- 1.0 (* normalized normalized)))))))
+                    (vector-set! result i (/ (bessel-i0 arg) i0-beta))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; apply-window: Element-wise multiply signal by window
+(define (apply-window signal window)
+  (let* ((n (vector-length signal))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (* (vref signal i) (vref window i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;;; ============================================================
+;;; Convolution
+;;; ============================================================
+
+;; convolve: Direct time-domain convolution of two signals
+;; Output length = len(a) + len(b) - 1
+(define (convolve a b)
+  (let* ((na (vector-length a))
+         (nb (vector-length b))
+         (nc (- (+ na nb) 1))
+         (result (make-vector nc 0.0)))
+    (letrec ((outer (lambda (i)
+              (if (< i na)
+                  (begin
+                    (letrec ((inner (lambda (j)
+                              (if (< j nb)
+                                  (begin
+                                    (vector-set! result (+ i j)
+                                      (+ (vref result (+ i j))
+                                         (* (vref a i) (vref b j))))
+                                    (inner (+ j 1)))
+                                  #t))))
+                      (inner 0))
+                    (outer (+ i 1)))
+                  result))))
+      (outer 0))))
+
+;; next-power-of-2: Find smallest power of 2 >= n
+(define (next-power-of-2 n)
+  (letrec ((loop (lambda (p)
+            (if (>= p n) p (loop (* p 2))))))
+    (loop 1)))
+
+;; zero-pad-vector: Pad vector to length fft-len with zeros
+(define (zero-pad-vector v fft-len)
+  (let* ((n (vector-length v))
+         (result (make-vector fft-len 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (vref v i))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; complex-vector-real: Extract real parts from complex vector
+(define (complex-vector-real cv)
+  (let* ((n (vector-length cv))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (real-part (vref cv i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; fast-convolve: FFT-based convolution O(N log N)
+;; Zero-pads both signals to next power of 2 >= na+nb-1
+(define (fast-convolve a b)
+  (let* ((na (vector-length a))
+         (nb (vector-length b))
+         (nc (- (+ na nb) 1))
+         (fft-len (next-power-of-2 nc))
+         ;; Zero-pad signals to fft-len using vectors
+         (pa (zero-pad-vector a fft-len))
+         (pb (zero-pad-vector b fft-len)))
+    ;; FFT both, multiply, IFFT
+    (let* ((fa (fft pa))
+           (fb (fft pb))
+           (n-fft (vector-length fa))
+           ;; Element-wise complex multiply
+           (fc (make-vector n-fft (make-rectangular 0.0 0.0))))
+      (letrec ((mul-loop (lambda (i)
+                (if (< i n-fft)
+                    (begin
+                      (vector-set! fc i (* (vref fa i) (vref fb i)))
+                      (mul-loop (+ i 1)))
+                    #t))))
+        (mul-loop 0))
+      ;; IFFT and take real parts, truncate to nc
+      (let* ((ifft-result (ifft fc))
+             (result (make-vector nc 0.0)))
+        (letrec ((trunc (lambda (i)
+                  (if (< i nc)
+                      (begin
+                        (vector-set! result i (real-part (vref ifft-result i)))
+                        (trunc (+ i 1)))
+                      result))))
+          (trunc 0))))))
+
+;;; ============================================================
+;;; FIR and IIR Filters
+;;; ============================================================
+
+;; fir-filter: Apply FIR filter coefficients to signal
+;; y[n] = sum_{k=0}^{M} b[k] * x[n-k]
+(define (fir-filter coeffs signal)
+  (let* ((n (vector-length signal))
+         (m (vector-length coeffs))
+         (result (make-vector n 0.0)))
+    (letrec ((outer (lambda (i)
+              (if (< i n)
+                  (begin
+                    (letrec ((inner (lambda (k acc)
+                              (if (or (>= k m) (< (- i k) 0))
+                                  (begin
+                                    (vector-set! result i acc)
+                                    #t)
+                                  (inner (+ k 1)
+                                         (+ acc (* (vref coeffs k)
+                                                   (vref signal (- i k)))))))))
+                      (inner 0 0.0))
+                    (outer (+ i 1)))
+                  result))))
+      (outer 0))))
+
+;; iir-filter: Apply IIR filter (Direct Form I)
+;; y[n] = (1/a[0]) * (sum_{k=0}^{M} b[k]*x[n-k] - sum_{k=1}^{N} a[k]*y[n-k])
+(define (iir-filter b-coeffs a-coeffs signal)
+  (let* ((n (vector-length signal))
+         (nb (vector-length b-coeffs))
+         (na (vector-length a-coeffs))
+         (a0 (vref a-coeffs 0))
+         (result (make-vector n 0.0)))
+    (letrec ((outer (lambda (i)
+              (if (< i n)
+                  (let ((ff-sum 0.0)
+                        (fb-sum 0.0))
+                    ;; Feedforward (b coefficients)
+                    (letrec ((ff-loop (lambda (k acc)
+                              (if (or (>= k nb) (< (- i k) 0))
+                                  acc
+                                  (ff-loop (+ k 1)
+                                           (+ acc (* (vref b-coeffs k)
+                                                     (vref signal (- i k)))))))))
+                      (set! ff-sum (ff-loop 0 0.0)))
+                    ;; Feedback (a coefficients, starting at index 1)
+                    (letrec ((fb-loop (lambda (k acc)
+                              (if (or (>= k na) (< (- i k) 0))
+                                  acc
+                                  (fb-loop (+ k 1)
+                                           (+ acc (* (vref a-coeffs k)
+                                                     (vref result (- i k)))))))))
+                      (set! fb-sum (fb-loop 1 0.0)))
+                    (vector-set! result i (/ (- ff-sum fb-sum) a0))
+                    (outer (+ i 1)))
+                  result))))
+      (outer 0))))
+
+;;; ============================================================
+;;; Butterworth Filter Design
+;;; ============================================================
+
+;; butterworth-poles: Compute analog prototype poles for Nth-order Butterworth
+;; Poles lie on unit circle in left half-plane at angles (2k+N+1)*pi/(2N)
+(define (butterworth-poles order)
+  (let ((result (make-vector order (make-rectangular 0.0 0.0))))
+    (letrec ((loop (lambda (k)
+              (if (< k order)
+                  (let ((angle (/ (* *pi* (+ (* 2 k) order 1)) (* 2 order))))
+                    (vector-set! result k (make-rectangular (cos angle) (sin angle)))
+                    (loop (+ k 1)))
+                  result))))
+      (loop 0))))
+
+;; bilinear-transform: Map s-plane pole to z-plane via bilinear transform
+;; z = (1 + s*T/2) / (1 - s*T/2), where T = 2*tan(wc/2) for frequency prewarping
+(define (bilinear-transform s-pole T)
+  (let ((sT/2 (* s-pole (/ T 2.0))))
+    (/ (+ 1.0 sT/2) (- 1.0 sT/2))))
+
+;; poly-from-roots: Compute polynomial coefficients from roots
+;; (z - r1)(z - r2)... expanded to coefficient vector [1, c1, c2, ...]
+(define (poly-from-roots roots)
+  (let ((n (vector-length roots)))
+    (if (= n 0)
+        (vector 1.0)
+        (letrec ((expand (lambda (k coeffs)
+                  (if (>= k n)
+                      coeffs
+                      (let* ((root (vref roots k))
+                             (m (vector-length coeffs))
+                             (new-coeffs (make-vector (+ m 1) 0.0)))
+                        ;; Multiply (z - root) into existing coefficients
+                        (letrec ((mul (lambda (j)
+                                  (if (< j m)
+                                      (begin
+                                        (vector-set! new-coeffs j
+                                          (+ (vref new-coeffs j) (vref coeffs j)))
+                                        (vector-set! new-coeffs (+ j 1)
+                                          (- (vref new-coeffs (+ j 1))
+                                             (* root (vref coeffs j))))
+                                        (mul (+ j 1)))
+                                      #t))))
+                          (mul 0))
+                        (expand (+ k 1) new-coeffs))))))
+          (expand 0 (vector 1.0))))))
+
+;; real-part-vector: Extract real parts from complex coefficient vector
+(define (real-part-vector v)
+  (let* ((n (vector-length v))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (real-part (vref v i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; butterworth-lowpass: Design Nth-order Butterworth lowpass filter
+;; cutoff: normalized cutoff frequency (0 to 1, where 1 = Nyquist)
+;; Returns (b-coeffs . a-coeffs)
+(define (butterworth-lowpass order cutoff)
+  (let* ((wc (* *pi* cutoff))
+         (T (* 2.0 (tan (/ wc 2.0))))
+         ;; Get analog prototype poles and transform to z-plane
+         (s-poles (butterworth-poles order))
+         (z-poles (make-vector order (make-rectangular 0.0 0.0))))
+    ;; Bilinear transform each pole
+    (letrec ((transform (lambda (i)
+              (if (< i order)
+                  (begin
+                    (vector-set! z-poles i
+                      (bilinear-transform (* T (vref s-poles i)) 1.0))
+                    (transform (+ i 1)))
+                  #t))))
+      (transform 0))
+    ;; Denominator from z-plane poles
+    (let* ((a-complex (poly-from-roots z-poles))
+           (a-coeffs (real-part-vector a-complex))
+           ;; Numerator: all zeros at z=-1 for lowpass
+           (z-zeros (make-vector order (make-rectangular -1.0 0.0)))
+           (b-complex (poly-from-roots z-zeros))
+           (b-coeffs (real-part-vector b-complex))
+           ;; Normalize gain at DC (z=1): H(1) = sum(b)/sum(a) should equal 1
+           (sum-b (letrec ((s (lambda (i acc)
+                     (if (< i (vector-length b-coeffs)) (s (+ i 1) (+ acc (vref b-coeffs i))) acc))))
+                    (s 0 0.0)))
+           (sum-a (letrec ((s (lambda (i acc)
+                     (if (< i (vector-length a-coeffs)) (s (+ i 1) (+ acc (vref a-coeffs i))) acc))))
+                    (s 0 0.0)))
+           (gain (/ sum-a sum-b)))
+      ;; Scale b coefficients
+      (letrec ((scale (lambda (i)
+                (if (< i (vector-length b-coeffs))
+                    (begin
+                      (vector-set! b-coeffs i (* gain (vref b-coeffs i)))
+                      (scale (+ i 1)))
+                    #t))))
+        (scale 0))
+      (cons b-coeffs a-coeffs))))
+
+;; butterworth-highpass: Design Nth-order Butterworth highpass filter
+;; Uses lowpass-to-highpass transform: z -> -z
+(define (butterworth-highpass order cutoff)
+  (let* ((lp (butterworth-lowpass order (- 1.0 cutoff)))
+         (b-lp (car lp))
+         (a-lp (cdr lp))
+         (nb (vector-length b-lp))
+         (b-hp (make-vector nb 0.0)))
+    ;; Negate alternate b coefficients for HP transform
+    (letrec ((loop (lambda (i)
+              (if (< i nb)
+                  (begin
+                    (vector-set! b-hp i
+                      (if (odd? i)
+                          (- (vref b-lp i))
+                          (vref b-lp i)))
+                    (loop (+ i 1)))
+                  #t))))
+      (loop 0))
+    (cons b-hp a-lp)))
+
+;; butterworth-bandpass: Design Nth-order Butterworth bandpass filter
+;; low-cutoff, high-cutoff: normalized frequencies (0 to 1)
+;; Cascades lowpass and highpass
+(define (butterworth-bandpass order low-cutoff high-cutoff)
+  (let* ((lp (butterworth-lowpass order high-cutoff))
+         (hp (butterworth-highpass order low-cutoff)))
+    ;; Return both filter pairs for cascade application
+    (list lp hp)))
+
+;;; ============================================================
+;;; Frequency Response
+;;; ============================================================
+
+;; frequency-response: Compute magnitude and phase response
+;; b-coeffs, a-coeffs: filter coefficients
+;; n-points: number of frequency points (0 to pi)
+;; Returns (magnitudes . phases) as vectors
+(define (frequency-response b-coeffs a-coeffs n-points)
+  (let ((magnitudes (make-vector n-points 0.0))
+        (phases (make-vector n-points 0.0))
+        (nb (vector-length b-coeffs))
+        (na (vector-length a-coeffs)))
+    (letrec ((outer (lambda (i)
+              (if (< i n-points)
+                  (let* ((w (* *pi* (/ i (- n-points 1))))
+                         ;; Evaluate H(e^jw) = B(e^jw) / A(e^jw)
+                         (num (make-rectangular 0.0 0.0))
+                         (den (make-rectangular 0.0 0.0)))
+                    ;; Numerator: sum of b[k] * e^(-jwk)
+                    (letrec ((b-loop (lambda (k n-acc)
+                              (if (>= k nb)
+                                  (set! num n-acc)
+                                  (let ((ejwk (make-rectangular
+                                               (cos (* (- w) k))
+                                               (sin (* (- w) k)))))
+                                    (b-loop (+ k 1)
+                                            (+ n-acc (* (vref b-coeffs k) ejwk))))))))
+                      (b-loop 0 (make-rectangular 0.0 0.0)))
+                    ;; Denominator: sum of a[k] * e^(-jwk)
+                    (letrec ((a-loop (lambda (k d-acc)
+                              (if (>= k na)
+                                  (set! den d-acc)
+                                  (let ((ejwk (make-rectangular
+                                               (cos (* (- w) k))
+                                               (sin (* (- w) k)))))
+                                    (a-loop (+ k 1)
+                                            (+ d-acc (* (vref a-coeffs k) ejwk))))))))
+                      (a-loop 0 (make-rectangular 0.0 0.0)))
+                    ;; H(w) = num / den
+                    (let ((h (/ num den)))
+                      (vector-set! magnitudes i (magnitude h))
+                      (vector-set! phases i (angle h)))
+                    (outer (+ i 1)))
+                  (cons magnitudes phases)))))
+      (outer 0))))

@@ -1,0 +1,69 @@
+;; Trigonometric and Hyperbolic Function Tests
+;; Tests atan (two-arg), sinh, cosh, asinh, acosh, atanh, exp, log
+
+(define pi 3.141592653589793)
+(define epsilon 1e-10)
+
+(define (approx-equal? a b)
+  (< (abs (- a b)) epsilon))
+
+;; --- atan (two-argument form) ---
+
+(display "TEST: atan two-arg (1.0, 1.0) = pi/4") (newline)
+(display (if (approx-equal? (atan 1.0 1.0) (/ pi 4.0)) "PASS" "FAIL")) (display ": atan(1,1) approx pi/4") (newline)
+
+(display "TEST: atan two-arg (0.0, -1.0) = pi") (newline)
+(display (if (approx-equal? (atan 0.0 -1.0) pi) "PASS" "FAIL")) (display ": atan(0,-1) approx pi") (newline)
+
+(display "TEST: atan two-arg (1.0, 0.0) = pi/2") (newline)
+(display (if (approx-equal? (atan 1.0 0.0) (/ pi 2.0)) "PASS" "FAIL")) (display ": atan(1,0) approx pi/2") (newline)
+
+(display "TEST: atan two-arg (-1.0, 0.0) = -pi/2") (newline)
+(display (if (approx-equal? (atan -1.0 0.0) (/ pi -2.0)) "PASS" "FAIL")) (display ": atan(-1,0) approx -pi/2") (newline)
+
+;; --- sinh ---
+
+(display "TEST: sinh(0.0) = 0.0") (newline)
+(display (if (approx-equal? (sinh 0.0) 0.0) "PASS" "FAIL")) (display ": sinh(0) is 0") (newline)
+
+(display "TEST: sinh(1.0) approx 1.1752011936") (newline)
+(display (if (approx-equal? (sinh 1.0) 1.1752011936438014) "PASS" "FAIL")) (display ": sinh(1) value") (newline)
+
+;; --- cosh ---
+
+(display "TEST: cosh(0.0) = 1.0") (newline)
+(display (if (approx-equal? (cosh 0.0) 1.0) "PASS" "FAIL")) (display ": cosh(0) is 1") (newline)
+
+(display "TEST: cosh(1.0) approx 1.5430806348") (newline)
+(display (if (approx-equal? (cosh 1.0) 1.5430806348152437) "PASS" "FAIL")) (display ": cosh(1) value") (newline)
+
+;; --- cosh^2 - sinh^2 = 1 identity ---
+
+(display "TEST: cosh^2(2.0) - sinh^2(2.0) = 1") (newline)
+(display (if (approx-equal? (- (* (cosh 2.0) (cosh 2.0)) (* (sinh 2.0) (sinh 2.0))) 1.0) "PASS" "FAIL")) (display ": hyperbolic identity") (newline)
+
+;; --- asinh ---
+
+(display "TEST: asinh(0.0) = 0.0") (newline)
+(display (if (approx-equal? (asinh 0.0) 0.0) "PASS" "FAIL")) (display ": asinh(0) is 0") (newline)
+
+(display "TEST: asinh(sinh(1.5)) roundtrip") (newline)
+(display (if (approx-equal? (asinh (sinh 1.5)) 1.5) "PASS" "FAIL")) (display ": asinh(sinh(1.5)) approx 1.5") (newline)
+
+;; --- acosh ---
+
+(display "TEST: acosh(1.0) = 0.0") (newline)
+(display (if (approx-equal? (acosh 1.0) 0.0) "PASS" "FAIL")) (display ": acosh(1) is 0") (newline)
+
+(display "TEST: acosh(cosh(2.0)) roundtrip") (newline)
+(display (if (approx-equal? (acosh (cosh 2.0)) 2.0) "PASS" "FAIL")) (display ": acosh(cosh(2)) approx 2") (newline)
+
+;; --- atanh ---
+
+(display "TEST: atanh(0.0) = 0.0") (newline)
+(display (if (approx-equal? (atanh 0.0) 0.0) "PASS" "FAIL")) (display ": atanh(0) is 0") (newline)
+
+;; --- exp and log ---
+
+(display "TEST: log(exp(3.0)) roundtrip") (newline)
+(display (if (approx-equal? (log (exp 3.0)) 3.0) "PASS" "FAIL")) (display ": log(exp(3)) approx 3") (newline)

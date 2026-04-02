@@ -1,8 +1,24 @@
 # Build directories
 build/
+build-debug/
 build-x86/
 build-test/
 dist/
+
+# Reference PDFs (large binary files)
+*.pdf
+
+# Tool artifacts
+.codex_edit_access
+
+# Proprietary / unreleased
+lib/tsotchke/
+examples/agent.esk
+examples/consciousness_grr_inference.esk
+examples/consciousness_inference.esk
+examples/consciousness_model_analysis.esk
+examples/selene_*.esk
+examples/qllm_*.esk
 
 # Environment and secrets
 .env
@@ -74,12 +90,39 @@ math_test_outputs/
 *.bak*
 *.backup
 a.out
+*.out
+*.bc
+
+# Test artifacts (root-level)
+*_test.txt
+test_*.txt
+inline_test.txt
+port_test.txt
+simple_test.txt
+trace_test.txt
+
+# Package manager
+eshkol_deps/
+
+# VS Code extension build
+tools/vscode-eshkol/out/
+tools/vscode-eshkol/node_modules/
 
 #local specific files
 docs/private/*
 examples-dep/
+build-lite/
+build-xla/
+deps/
+
 
 compile_commands.json
 .aider*
 .claude/
 .cache/
+
+*.cmake
+*.tcl
+CMakeCache.txt
+CMakeFiles/
+Makefile

@@ -1,0 +1,210 @@
+;; Control Flow Test: Named Let Loops
+;; Tests loop constructs using named let
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Basic Named Let
+;; ============================================================================
+
+(display "=== Testing Basic Named Let ===\n")
+
+;; Simple countdown
+(test-case "countdown" 0
+  (let loop ((n 10))
+    (if (= n 0)
+        n
+        (loop (- n 1)))))
+
+;; Sum 1 to n
+(test-case "sum 1 to 10" 55
+  (let loop ((n 10) (sum 0))
+    (if (= n 0)
+        sum
+        (loop (- n 1) (+ sum n)))))
+
+;; Factorial via named let
+(test-case "factorial 5" 120
+  (let fact ((n 5) (acc 1))
+    (if (<= n 1)
+        acc
+        (fact (- n 1) (* n acc)))))
+
+;; ============================================================================
+;; Test: List Processing Loops
+;; ============================================================================
+
+(display "=== Testing List Processing ===\n")
+
+;; Sum list elements
+(test-case "sum list" 15
+  (let loop ((lst '(1 2 3 4 5)) (sum 0))
+    (if (null? lst)
+        sum
+        (loop (cdr lst) (+ sum (car lst))))))
+
+;; Count elements
+(test-case "count list" 5
+  (let loop ((lst '(a b c d e)) (count 0))
+    (if (null? lst)
+        count
+        (loop (cdr lst) (+ count 1)))))
+
+;; Find maximum
+(test-case "max list" 9
+  (let loop ((lst '(3 1 4 1 5 9 2 6)) (max-val -999999))
+    (if (null? lst)
+        max-val
+        (loop (cdr lst) (if (> (car lst) max-val) (car lst) max-val)))))
+
+;; Build list in reverse
+(test-case "reverse list" '(5 4 3 2 1)
+  (let loop ((lst '(1 2 3 4 5)) (acc '()))
+    (if (null? lst)
+        acc
+        (loop (cdr lst) (cons (car lst) acc)))))
+
+;; ============================================================================
+;; Test: Numeric Loops
+;; ============================================================================
+
+(display "=== Testing Numeric Loops ===\n")
+
+;; Count up
+(test-case "count up" 10
+  (let loop ((i 0))
+    (if (= i 10)
+        i
+        (loop (+ i 1)))))
+
+;; Count by 2
+(test-case "count by 2" 10
+  (let loop ((i 0))
+    (if (>= i 10)
+        i
+        (loop (+ i 2)))))
+
+;; Power function
+(test-case "power 2^10" 1024
+  (let loop ((base 2) (exp 10) (result 1))
+    (if (= exp 0)
+        result
+        (loop base (- exp 1) (* result base)))))
+
+;; GCD via Euclidean algorithm
+(test-case "gcd 48 18" 6
+  (let loop ((a 48) (b 18))
+    (if (= b 0)
+        a
+        (loop b (remainder a b)))))
+
+;; ============================================================================
+;; Test: Early Exit
+;; ============================================================================
+
+(display "=== Testing Early Exit ===\n")
+
+;; Find first even number
+(test-case "find first even" 2
+  (let loop ((lst '(1 3 2 4 5)))
+    (cond ((null? lst) #f)
+          ((even? (car lst)) (car lst))
+          (else (loop (cdr lst))))))
+
+;; Check if all positive
+(test-case "all positive true" #t
+  (let loop ((lst '(1 2 3 4 5)))
+    (cond ((null? lst) #t)
+          ((< (car lst) 0) #f)
+          (else (loop (cdr lst))))))
+
+(test-case "all positive false" #f
+  (let loop ((lst '(1 2 -3 4 5)))
+    (cond ((null? lst) #t)
+          ((< (car lst) 0) #f)
+          (else (loop (cdr lst))))))
+
+;; ============================================================================
+;; Test: Nested Loops
+;; ============================================================================
+
+(display "=== Testing Nested Loops ===\n")
+
+;; Sum of nested loop
+(test-case "nested sum" 30
+  (let outer ((i 0) (total 0))
+    (if (= i 3)
+        total
+        (outer (+ i 1)
+               (let inner ((j 0) (sum total))
+                 (if (= j 4)
+                     sum
+                     (inner (+ j 1) (+ sum i j))))))))
+
+;; Multiplication table sum (1x1 + 1x2 + ... + 3x3)
+(test-case "mult table sum" 36
+  (let outer ((i 1) (total 0))
+    (if (> i 3)
+        total
+        (outer (+ i 1)
+               (let inner ((j 1) (sum total))
+                 (if (> j 3)
+                     sum
+                     (inner (+ j 1) (+ sum (* i j)))))))))
+
+;; ============================================================================
+;; Test: Building Results
+;; ============================================================================
+
+(display "=== Testing Result Building ===\n")
+
+;; Build list 1 to n
+(test-case "build 1 to 5" '(1 2 3 4 5)
+  (let loop ((n 5) (acc '()))
+    (if (= n 0)
+        acc
+        (loop (- n 1) (cons n acc)))))
+
+;; Filter with loop
+(test-case "filter evens" '(2 4 6)
+  (let loop ((lst '(1 2 3 4 5 6)) (acc '()))
+    (if (null? lst)
+        (reverse acc)
+        (loop (cdr lst)
+              (if (even? (car lst))
+                  (cons (car lst) acc)
+                  acc)))))
+
+;; Map with loop
+(test-case "map double" '(2 4 6 8 10)
+  (let loop ((lst '(1 2 3 4 5)) (acc '()))
+    (if (null? lst)
+        (reverse acc)
+        (loop (cdr lst) (cons (* 2 (car lst)) acc)))))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

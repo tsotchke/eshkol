@@ -1,0 +1,136 @@
+;; Critical Regression Tests for v1.1-accelerate
+;; Tests bug fixes that had no regression coverage
+;; Each test targets a specific bug from the development history
+
+(display "=== CRITICAL REGRESSION TESTS ===") (newline)
+
+(define max-int 9223372036854775807)
+(define big (+ max-int 1))
+
+;; ================================================================
+;; Bug #1: bignum + double returns 0
+;; tagged_to_bignum() returned nullptr for DOUBLE type
+;; Fix: added double dispatch in eshkol_bignum_binary_tagged
+;; R7RS: exact+inexact → inexact (double), so we check non-zero
+;; ================================================================
+(display (if (> (+ big 0.5) 0.0) "PASS" "FAIL"))
+(display ": bignum + double is non-zero (bug: returned 0)")
+(newline)
+
+(display (if (> (+ 0.5 big) 0.0) "PASS" "FAIL"))
+(display ": double + bignum is non-zero (commutative)")
+(newline)
+
+;; ================================================================
+;; Bug #3: bignum expt always returned double
+;; ArithmeticCodegen::pow always used extractAsDouble+pow()
+;; Fix: added eshkol_bignum_pow (repeated squaring)
+;; ================================================================
+(define big-pow (expt 2 64))
+(display (if (exact? big-pow) "PASS" "FAIL"))
+(display ": (expt 2 64) returns exact integer (bug: expt always returned double)")
+(newline)
+
+(display (if (= big-pow 18446744073709551616) "PASS" "FAIL"))
+(display ": (expt 2 64) = 2^64 exact value")
+(newline)
+
+;; ================================================================
+;; Bug #5: bignum min/max precision loss >2^53
+;; extractAsDouble loses precision for bignums >2^53
+;; Fix: added emitIsBignumCheck dispatch before extractAsDouble
+;; ================================================================
+(define big-a (+ max-int 100))
+(define big-b (+ max-int 200))
+(display (if (= (max big-a big-b) big-b) "PASS" "FAIL"))
+(display ": (max big-a big-b) preserves exact bignum (bug: precision loss >2^53)")
+(newline)
+
+(display (if (= (min big-a big-b) big-a) "PASS" "FAIL"))
+(display ": (min big-a big-b) preserves exact bignum")
+(newline)
+
+;; ================================================================
+;; Bug #6: reduce type promotion
+;; codegenReduce used packInt64ToTaggedValue for init even when double
+;; Fix: use ensureTaggedValue which dispatches on LLVM type
+;; ================================================================
+(require stdlib)
+
+(define sum-result (reduce + 0.0 (list 1 2 3)))
+(display (if (= sum-result 6.0) "PASS" "FAIL"))
+(display ": (reduce + 0.0 '(1 2 3)) = 6.0 (bug: double init tagged as INT64)")
+(newline)
+
+;; ================================================================
+;; Bug #9: bignum*double returns 0 (related to #1 but for *)
+;; R7RS: exact*inexact → inexact. Check result is non-zero.
+;; ================================================================
+(display (if (> (* big 1.0) 0.0) "PASS" "FAIL"))
+(display ": bignum * 1.0 is non-zero (mixed exact/inexact multiply)")
+(newline)
+
+;; ================================================================
+;; Bug #10: number->string missing bignum
+;; numberToString only branched double/int64, bignums formatted ptr bits
+;; Fix: add HEAP_PTR dispatch calling eshkol_bignum_to_string
+;; ================================================================
+(display (if (string=? (number->string big) "9223372036854775808") "PASS" "FAIL"))
+(display ": (number->string bignum) = correct string (bug: formatted ptr bits)")
+(newline)
+
+;; ================================================================
+;; Bug #11: string->number missing bignum
+;; stringToNumber used strtod only, losing precision
+;; Fix: eshkol_string_to_number_tagged tries strtoll, falls to bignum
+;; ================================================================
+(define str-big (string->number "9223372036854775808"))
+(display (if (and (exact? str-big) (= str-big big)) "PASS" "FAIL"))
+(display ": (string->number bignum-str) preserves exact (bug: strtod lost precision)")
+(newline)
+
+;; ================================================================
+;; Bug #4: floor/ceil/round/truncate bignum (PHI predecessor mismatch)
+;; ================================================================
+(display (if (= (floor big) big) "PASS" "FAIL"))
+(display ": (floor bignum) = bignum (bug: PHI predecessor mismatch)")
+(newline)
+
+(display (if (= (ceiling big) big) "PASS" "FAIL"))
+(display ": (ceiling bignum) = bignum")
+(newline)
+
+(display (if (= (round big) big) "PASS" "FAIL"))
+(display ": (round bignum) = bignum")
+(newline)
+
+(display (if (= (truncate big) big) "PASS" "FAIL"))
+(display ": (truncate bignum) = bignum")
+(newline)
+
+;; ================================================================
+;; Bug: Complex division overflow (Smith's formula)
+;; Division with large magnitudes caused overflow
+;; Fix: Smith's formula for numerical stability
+;; ================================================================
+(define z1 (make-rectangular 1e300 1e300))
+(define z2 (make-rectangular 1e300 1e300))
+(define z-div (/ z1 z2))
+(display (if (and (finite? (real-part z-div)) (= (real-part z-div) 1.0)) "PASS" "FAIL"))
+(display ": complex division with large magnitudes (bug: overflow without Smith's)")
+(newline)
+
+;; ================================================================
+;; Bug: abs missing bignum path
+;; codegenAbs only dispatched AD→dual→INT64→double, bignums fell to double
+;; Fix: delegate to arith_->abs() for numeric types
+;; ================================================================
+(define neg-big2 (- 0 big))
+(display (if (= (abs neg-big2) big) "PASS" "FAIL"))
+(display ": (abs negative-bignum) = positive bignum (bug: abs missing bignum)")
+(newline)
+
+;; ================================================================
+;; Summary
+;; ================================================================
+(display "=== END CRITICAL REGRESSION TESTS ===") (newline)

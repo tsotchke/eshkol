@@ -1,0 +1,234 @@
+;; Continuation & Multiple Values Edge Case Tests
+;; Tests: call/cc edge cases, values, call-with-values, escape semantics
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (test name expected actual)
+  (if (equal? expected actual)
+      (begin (set! pass-count (+ pass-count 1))
+             (display (string-append "PASS: " name "\n")))
+      (begin (set! fail-count (+ fail-count 1))
+             (display (string-append "FAIL: " name "\n"))
+             (display "  Expected: ") (display expected) (newline)
+             (display "  Actual:   ") (display actual) (newline))))
+
+;; ============================================================================
+;; Section 1: Basic call/cc return semantics
+;; ============================================================================
+
+(display "=== Basic call/cc return ===\n")
+
+;; Return value without invoking continuation
+(test "call/cc body returns normally"
+  42
+  (call/cc (lambda (k) 42)))
+
+;; Return from nested expression
+(test "call/cc returns from arithmetic"
+  10
+  (call/cc (lambda (k) (+ 3 7))))
+
+;; Return boolean
+(test "call/cc returns #t"
+  #t
+  (call/cc (lambda (k) #t)))
+
+;; Return string
+(test "call/cc returns string"
+  "hello"
+  (call/cc (lambda (k) "hello")))
+
+;; Return null
+(test "call/cc returns null"
+  '()
+  (call/cc (lambda (k) '())))
+
+;; ============================================================================
+;; Section 2: Escape continuations
+;; ============================================================================
+
+(display "\n=== Escape continuations ===\n")
+
+;; Basic escape: k short-circuits, 20 is never reached
+(test "escape skips rest of body"
+  11
+  (+ 1 (call/cc (lambda (k) (k 10) 20))))
+
+;; Escape from nested arithmetic
+(test "escape from nested +"
+  100
+  (+ 50 (call/cc (lambda (k) (+ 1 (k 50))))))
+
+;; Escape from begin
+(test "escape from begin block"
+  7
+  (call/cc (lambda (k)
+    (begin
+      (k 7)
+      (+ 1 2 3)))))
+
+;; Escape with zero
+(test "escape with zero"
+  0
+  (call/cc (lambda (k) (k 0) 999)))
+
+;; Escape with negative
+(test "escape with negative"
+  -42
+  (call/cc (lambda (k) (k -42) 999)))
+
+;; Escape with boolean
+(test "escape with #f"
+  #f
+  (call/cc (lambda (k) (k #f) #t)))
+
+;; ============================================================================
+;; Section 3: call/cc in binding forms
+;; ============================================================================
+
+(display "\n=== call/cc in bindings ===\n")
+
+;; call/cc inside let
+(test "call/cc in let init"
+  42
+  (let ((x (call/cc (lambda (k) 42)))) x))
+
+;; call/cc escape in let
+(test "call/cc escape in let"
+  10
+  (let ((x (call/cc (lambda (k) (k 10) 20)))) x))
+
+;; call/cc in let body
+(test "call/cc in let body"
+  55
+  (let ((a 5))
+    (+ a (call/cc (lambda (k) 50)))))
+
+;; Nested let with call/cc
+(test "nested let with call/cc"
+  30
+  (let ((a 10))
+    (let ((b (call/cc (lambda (k) 20))))
+      (+ a b))))
+
+;; ============================================================================
+;; Section 4: Conditional continuations
+;; ============================================================================
+
+(display "\n=== Conditional continuations ===\n")
+
+;; Continuation used when condition is true
+(test "conditional escape true branch"
+  100
+  (call/cc (lambda (k)
+    (if (> 3 2) (k 100) 200))))
+
+;; Continuation NOT used when condition is false
+(test "conditional no escape false branch"
+  200
+  (call/cc (lambda (k)
+    (if (< 3 2) (k 100) 200))))
+
+;; Nested if with escape
+(test "nested if escape"
+  42
+  (call/cc (lambda (k)
+    (if #t
+        (if #t (k 42) 0)
+        0))))
+
+;; ============================================================================
+;; Section 5: Nested call/cc
+;; ============================================================================
+
+(display "\n=== Nested call/cc ===\n")
+
+;; Inner continuation invoked
+(test "inner continuation escapes"
+  55
+  (call/cc (lambda (outer)
+    (call/cc (lambda (inner)
+      (inner 55))))))
+
+;; Outer continuation invoked from inner
+(test "outer continuation from inner body"
+  77
+  (call/cc (lambda (outer)
+    (call/cc (lambda (inner)
+      (outer 77)))
+    999)))
+
+;; Both continuations unused
+(test "neither continuation invoked"
+  42
+  (call/cc (lambda (outer)
+    (call/cc (lambda (inner)
+      42)))))
+
+;; ============================================================================
+;; Section 6: call-with-current-continuation (long form)
+;; ============================================================================
+
+(display "\n=== call-with-current-continuation long form ===\n")
+
+(test "long form basic"
+  42
+  (call-with-current-continuation (lambda (k) 42)))
+
+(test "long form escape"
+  10
+  (+ 1 (call-with-current-continuation (lambda (k) (k 9)))))
+
+;; ============================================================================
+;; Section 7: values and call-with-values
+;; ============================================================================
+
+(display "\n=== values and call-with-values ===\n")
+
+;; Basic call-with-values: producer returns two values, consumer adds them
+(test "call-with-values two values"
+  3
+  (call-with-values (lambda () (values 1 2)) +))
+
+;; Three values
+(test "call-with-values three values"
+  6
+  (call-with-values (lambda () (values 1 2 3)) +))
+
+;; Single value pass-through
+(test "call-with-values single value"
+  42
+  (call-with-values (lambda () (values 42)) (lambda (x) x)))
+
+;; Zero values with nullary consumer
+(test "call-with-values zero values"
+  42
+  (call-with-values (lambda () (values)) (lambda () 42)))
+
+;; call-with-values with multiplication
+(test "call-with-values multiply"
+  12
+  (call-with-values (lambda () (values 3 4)) *))
+
+;; call-with-values consumer uses values in expression
+(test "call-with-values consumer expression"
+  7
+  (call-with-values
+    (lambda () (values 3 4))
+    (lambda (a b) (+ a b))))
+
+;; call-with-values with subtraction
+(test "call-with-values subtract"
+  5
+  (call-with-values
+    (lambda () (values 10 5))
+    (lambda (a b) (- a b))))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Results ===\n")
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)

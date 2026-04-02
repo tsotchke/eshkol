@@ -1,0 +1,109 @@
+;; String Operations Tests
+;; Tests string-upcase, string-downcase, string-contains, string-split,
+;; string-reverse, string-repeat, string-starts-with, string-ends-with,
+;; string-count, string-ci=?
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+(display "=== STRING OPERATIONS TESTS ===\n\n")
+
+;; ============================================================================
+;; Test: string-upcase
+;; ============================================================================
+
+(display "--- string-upcase ---\n")
+
+(test-case "string-upcase hello" #t (string=? "HELLO" (string-upcase "hello")))
+(test-case "string-upcase already upper" #t (string=? "HELLO" (string-upcase "HELLO")))
+(test-case "string-upcase mixed case" #t (string=? "HELLO WORLD" (string-upcase "Hello World")))
+
+;; ============================================================================
+;; Test: string-downcase
+;; ============================================================================
+
+(display "\n--- string-downcase ---\n")
+
+(test-case "string-downcase HELLO" #t (string=? "hello" (string-downcase "HELLO")))
+(test-case "string-downcase already lower" #t (string=? "hello" (string-downcase "hello")))
+(test-case "string-downcase mixed case" #t (string=? "hello world" (string-downcase "Hello World")))
+
+;; ============================================================================
+;; Test: string-contains
+;; ============================================================================
+
+(display "\n--- string-contains ---\n")
+
+(test-case "string-contains found" 2 (string-contains "hello" "llo"))
+(test-case "string-contains not found" #f (string-contains "hello" "xyz"))
+
+;; ============================================================================
+;; Test: string-reverse
+;; ============================================================================
+
+(display "\n--- string-reverse ---\n")
+
+(test-case "string-reverse abcd" #t (string=? "dcba" (string-reverse "abcd")))
+(test-case "string-reverse single" #t (string=? "a" (string-reverse "a")))
+
+;; ============================================================================
+;; Test: string-repeat
+;; ============================================================================
+
+(display "\n--- string-repeat ---\n")
+
+(test-case "string-repeat ab 3" #t (string=? "ababab" (string-repeat "ab" 3)))
+(test-case "string-repeat x 1" #t (string=? "x" (string-repeat "x" 1)))
+
+;; ============================================================================
+;; Test: string-starts-with / string-ends-with
+;; ============================================================================
+
+(display "\n--- string-starts-with / string-ends-with ---\n")
+
+(test-case "string-starts-with match" #t (string-starts-with "hello" "hel"))
+(test-case "string-starts-with no match" #f (string-starts-with "hello" "world"))
+(test-case "string-ends-with match" #t (string-ends-with "hello" "llo"))
+(test-case "string-ends-with no match" #f (string-ends-with "hello" "hel"))
+
+;; ============================================================================
+;; Test: string-count
+;; ============================================================================
+
+(display "\n--- string-count ---\n")
+
+(test-case "string-count banana a" 3 (string-count "banana" #\a))
+(test-case "string-count hello z" 0 (string-count "hello" #\z))
+
+;; ============================================================================
+;; Test: string-ci=?
+;; ============================================================================
+
+(display "\n--- string-ci=? ---\n")
+
+(test-case "string-ci=? mixed vs lower" #t (string-ci=? "Hello" "hello"))
+(test-case "string-ci=? different strings" #f (string-ci=? "Hello" "world"))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Results ===\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
+
+(if (= tests-failed 0)
+    (display "All tests passed!\n")
+    (display "Some tests failed!\n"))

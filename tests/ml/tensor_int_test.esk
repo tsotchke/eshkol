@@ -1,0 +1,11 @@
+;;; Test tensor function with integers
+
+(define (test-tensor-int)
+  (display "Testing tensor with ints...")
+  (newline)
+  (let ((k (tensor 1 2 3)))
+    (display "tensor 1 2 3: ")
+    (display k)
+    (newline)))
+
+(test-tensor-int)

@@ -22,7 +22,9 @@
 #include <eshkol/backend/tagged_value_codegen.h>
 #include <eshkol/backend/tensor_codegen.h>
 #include <eshkol/backend/autodiff_codegen.h>
+#include <eshkol/backend/complex_codegen.h>
 #include <llvm/IR/Value.h>
+#include <functional>
 
 namespace eshkol {
 
@@ -48,7 +50,8 @@ public:
      * @param autodiff Automatic differentiation helper
      */
     ArithmeticCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged,
-                      TensorCodegen& tensor, AutodiffCodegen& autodiff);
+                      TensorCodegen& tensor, AutodiffCodegen& autodiff,
+                      ComplexCodegen& complex);
 
     // === Binary Arithmetic Operations ===
 
@@ -196,11 +199,57 @@ public:
      */
     llvm::Value* extractAsDouble(llvm::Value* tagged);
 
+    // === Central AD Dispatch Handlers ===
+
+    /**
+     * Central binary AD dispatch handler.
+     * Checks if either operand is an AD node (CALLABLE + AD_NODE subtype).
+     * If so, converts both to AD nodes, records binary op on tape, returns result.
+     * Otherwise, calls regular_fn lambda for normal dispatch.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @param ad_op_type AD operation type code (e.g., AD_NODE_ADD=2, AD_NODE_MUL=4)
+     * @param regular_fn Lambda that emits all non-AD code paths, returns tagged_value
+     * @return Result as tagged_value (either AD-wrapped or regular)
+     */
+    llvm::Value* withADBinaryDispatch(
+        llvm::Value* left, llvm::Value* right,
+        int ad_op_type,
+        std::function<llvm::Value*()> regular_fn);
+
+    /**
+     * Central unary AD dispatch handler.
+     * Checks if operand is an AD node (CALLABLE + AD_NODE subtype).
+     * If so, records unary op on tape, returns result.
+     * Otherwise, calls regular_fn lambda for normal dispatch.
+     * @param operand Operand (tagged_value)
+     * @param ad_op_type AD operation type code (e.g., AD_NODE_NEG=11, AD_NODE_ABS=42)
+     * @param regular_fn Lambda that emits all non-AD code paths, returns tagged_value
+     * @return Result as tagged_value (either AD-wrapped or regular)
+     */
+    llvm::Value* withADUnaryDispatch(
+        llvm::Value* operand,
+        int ad_op_type,
+        std::function<llvm::Value*()> regular_fn);
+
+    // === Bignum dispatch helpers (public for use by llvm_codegen eqv?/equal?) ===
+
+    llvm::Value* emitBignumBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
+    llvm::Value* emitBignumCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
+    llvm::Value* emitIsBignumCheck(llvm::Value* left, llvm::Value* right);
+
+    // === Rational dispatch helpers ===
+
+    llvm::Value* emitIsRationalCheck(llvm::Value* left, llvm::Value* right);
+    llvm::Value* emitRationalBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
+    llvm::Value* emitRationalCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
     TensorCodegen& tensor_;
     AutodiffCodegen& autodiff_;
+    ComplexCodegen& complex_;
 
     // === Internal Helpers ===
 
@@ -237,6 +286,24 @@ private:
      * Creates an exception object and calls eshkol_raise().
      */
     void raiseDivideByZeroException();
+
+    /**
+     * Emit code to raise an integer overflow exception.
+     * Creates an exception object and calls eshkol_raise(), then emits unreachable.
+     */
+    void emitOverflowError(const char* message);
+
+    /**
+     * Convert a tagged value to a complex number.
+     * Promotes int/double to complex with zero imaginary part.
+     * @param operand Tagged value operand
+     * @param is_complex Whether operand is already complex
+     * @param base_type The base type of the operand
+     * @return Complex number struct pointer
+     */
+    llvm::Value* convertToComplex(llvm::Value* operand, llvm::Value* is_complex,
+                                   llvm::Value* base_type);
+
 };
 
 } // namespace eshkol

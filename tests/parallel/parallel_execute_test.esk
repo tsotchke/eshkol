@@ -1,0 +1,30 @@
+;; Test parallel-execute functionality
+;; Tests executing multiple thunks in parallel
+
+(display "=== Parallel Execute Tests ===") (newline)
+
+;; Test 1: Execute multiple computations in parallel
+(define results (parallel-execute
+  (lambda () (* 10 10))
+  (lambda () (* 20 20))
+  (lambda () (* 30 30))))
+(display "parallel-execute results: ")
+(display results)
+(newline)
+
+;; Test 2: Execute with different operations
+(define results2 (parallel-execute
+  (lambda () (+ 1 2 3))
+  (lambda () (* 4 5 6))))
+(display "parallel-execute two thunks: ")
+(display results2)
+(newline)
+
+;; Test 3: Single thunk
+(define results3 (parallel-execute
+  (lambda () 42)))
+(display "parallel-execute single: ")
+(display results3)
+(newline)
+
+(display "=== Parallel Execute Tests Complete ===") (newline)

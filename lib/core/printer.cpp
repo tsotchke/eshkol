@@ -33,6 +33,8 @@ static const char* type_to_string(eshkol_type_t type) {
         case ESHKOL_FUNC: return "FUNC";
         case ESHKOL_VAR: return "VAR";
         case ESHKOL_OP: return "OP";
+        case ESHKOL_BIGNUM_LITERAL: return "BIGNUM_LITERAL";
+        case ESHKOL_SYMBOL: return "SYMBOL";
         default: return "UNKNOWN";
     }
 }
@@ -49,6 +51,89 @@ static const char* op_to_string(eshkol_op_t op) {
         case ESHKOL_CALL_OP: return "CALL_OP";
         case ESHKOL_DEFINE_OP: return "DEFINE_OP";
         case ESHKOL_SEQUENCE_OP: return "SEQUENCE_OP";
+        case ESHKOL_EXTERN_OP: return "EXTERN_OP";
+        case ESHKOL_EXTERN_VAR_OP: return "EXTERN_VAR_OP";
+        case ESHKOL_LAMBDA_OP: return "LAMBDA_OP";
+        case ESHKOL_LET_OP: return "LET_OP";
+        case ESHKOL_LET_STAR_OP: return "LET*_OP";
+        case ESHKOL_LETREC_OP: return "LETREC_OP";
+        case ESHKOL_LETREC_STAR_OP: return "LETREC*_OP";
+        case ESHKOL_AND_OP: return "AND_OP";
+        case ESHKOL_OR_OP: return "OR_OP";
+        case ESHKOL_COND_OP: return "COND_OP";
+        case ESHKOL_CASE_OP: return "CASE_OP";
+        case ESHKOL_MATCH_OP: return "MATCH_OP";
+        case ESHKOL_DO_OP: return "DO_OP";
+        case ESHKOL_WHEN_OP: return "WHEN_OP";
+        case ESHKOL_UNLESS_OP: return "UNLESS_OP";
+        case ESHKOL_QUOTE_OP: return "QUOTE_OP";
+        case ESHKOL_QUASIQUOTE_OP: return "QUASIQUOTE_OP";
+        case ESHKOL_UNQUOTE_OP: return "UNQUOTE_OP";
+        case ESHKOL_UNQUOTE_SPLICING_OP: return "UNQUOTE_SPLICING_OP";
+        case ESHKOL_SET_OP: return "SET!_OP";
+        case ESHKOL_DEFINE_TYPE_OP: return "DEFINE_TYPE_OP";
+        case ESHKOL_IMPORT_OP: return "IMPORT_OP";
+        case ESHKOL_REQUIRE_OP: return "REQUIRE_OP";
+        case ESHKOL_PROVIDE_OP: return "PROVIDE_OP";
+        case ESHKOL_WITH_REGION_OP: return "WITH_REGION_OP";
+        case ESHKOL_OWNED_OP: return "OWNED_OP";
+        case ESHKOL_MOVE_OP: return "MOVE_OP";
+        case ESHKOL_BORROW_OP: return "BORROW_OP";
+        case ESHKOL_SHARED_OP: return "SHARED_OP";
+        case ESHKOL_WEAK_REF_OP: return "WEAK_REF_OP";
+        case ESHKOL_TENSOR_OP: return "TENSOR_OP";
+        case ESHKOL_DIFF_OP: return "DIFF_OP";
+        case ESHKOL_DERIVATIVE_OP: return "DERIVATIVE_OP";
+        case ESHKOL_GRADIENT_OP: return "GRADIENT_OP";
+        case ESHKOL_JACOBIAN_OP: return "JACOBIAN_OP";
+        case ESHKOL_HESSIAN_OP: return "HESSIAN_OP";
+        case ESHKOL_DIVERGENCE_OP: return "DIVERGENCE_OP";
+        case ESHKOL_CURL_OP: return "CURL_OP";
+        case ESHKOL_LAPLACIAN_OP: return "LAPLACIAN_OP";
+        case ESHKOL_DIRECTIONAL_DERIV_OP: return "DIRECTIONAL_DERIV_OP";
+        case ESHKOL_TYPE_ANNOTATION_OP: return "TYPE_ANNOTATION_OP";
+        case ESHKOL_FORALL_OP: return "FORALL_OP";
+        case ESHKOL_GUARD_OP: return "GUARD_OP";
+        case ESHKOL_RAISE_OP: return "RAISE_OP";
+        case ESHKOL_LET_VALUES_OP: return "LET_VALUES_OP";
+        case ESHKOL_LET_STAR_VALUES_OP: return "LET*_VALUES_OP";
+        case ESHKOL_VALUES_OP: return "VALUES_OP";
+        case ESHKOL_CALL_WITH_VALUES_OP: return "CALL_WITH_VALUES_OP";
+        case ESHKOL_DEFINE_SYNTAX_OP: return "DEFINE_SYNTAX_OP";
+        case ESHKOL_LET_SYNTAX_OP: return "LET_SYNTAX_OP";
+        case ESHKOL_LETREC_SYNTAX_OP: return "LETREC_SYNTAX_OP";
+        case ESHKOL_CALL_CC_OP: return "CALL_CC_OP";
+        case ESHKOL_DYNAMIC_WIND_OP: return "DYNAMIC_WIND_OP";
+        case ESHKOL_LOGIC_VAR_OP: return "LOGIC_VAR_OP";
+        case ESHKOL_UNIFY_OP: return "UNIFY_OP";
+        case ESHKOL_MAKE_SUBST_OP: return "MAKE_SUBST_OP";
+        case ESHKOL_WALK_OP: return "WALK_OP";
+        case ESHKOL_MAKE_FACT_OP: return "MAKE_FACT_OP";
+        case ESHKOL_MAKE_KB_OP: return "MAKE_KB_OP";
+        case ESHKOL_KB_ASSERT_OP: return "KB_ASSERT_OP";
+        case ESHKOL_KB_QUERY_OP: return "KB_QUERY_OP";
+        case ESHKOL_MAKE_FACTOR_GRAPH_OP: return "MAKE_FACTOR_GRAPH_OP";
+        case ESHKOL_FG_ADD_FACTOR_OP: return "FG_ADD_FACTOR_OP";
+        case ESHKOL_FG_INFER_OP: return "FG_INFER_OP";
+        case ESHKOL_FREE_ENERGY_OP: return "FREE_ENERGY_OP";
+        case ESHKOL_EXPECTED_FREE_ENERGY_OP: return "EXPECTED_FREE_ENERGY_OP";
+        case ESHKOL_MAKE_WORKSPACE_OP: return "MAKE_WORKSPACE_OP";
+        case ESHKOL_WS_REGISTER_OP: return "WS_REGISTER_OP";
+        case ESHKOL_WS_STEP_OP: return "WS_STEP_OP";
+        case ESHKOL_FG_UPDATE_CPT_OP: return "FG_UPDATE_CPT_OP";
+        case ESHKOL_LOGIC_VAR_PRED_OP: return "LOGIC_VAR_PRED_OP";
+        case ESHKOL_SUBSTITUTION_PRED_OP: return "SUBSTITUTION_PRED_OP";
+        case ESHKOL_KB_PRED_OP: return "KB_PRED_OP";
+        case ESHKOL_FACT_PRED_OP: return "FACT_PRED_OP";
+        case ESHKOL_FACTOR_GRAPH_PRED_OP: return "FACTOR_GRAPH_PRED_OP";
+        case ESHKOL_WORKSPACE_PRED_OP: return "WORKSPACE_PRED_OP";
+        case ESHKOL_CASE_LAMBDA_OP: return "CASE_LAMBDA_OP";
+        case ESHKOL_DEFINE_RECORD_TYPE_OP: return "DEFINE_RECORD_TYPE_OP";
+        case ESHKOL_PARAMETERIZE_OP: return "PARAMETERIZE_OP";
+        case ESHKOL_MAKE_PARAMETER_OP: return "MAKE_PARAMETER_OP";
+        case ESHKOL_COND_EXPAND_OP: return "COND_EXPAND_OP";
+        case ESHKOL_INCLUDE_OP: return "INCLUDE_OP";
+        case ESHKOL_SYNTAX_ERROR_OP: return "SYNTAX_ERROR_OP";
         default: return "UNKNOWN_OP";
     }
 }
@@ -194,8 +279,16 @@ static void print_operation(const eshkol_operations_t *op, int indent) {
             break;
             
         default:
-            print_indent(indent + 1);
-            printf("(Operation details not implemented)\n");
+            // Print generic operation info with arguments if available
+            if (op->call_op.variables && op->call_op.num_vars > 0) {
+                print_indent(indent + 1);
+                printf("Arguments (%llu):\n", (unsigned long long)op->call_op.num_vars);
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    print_indent(indent + 2);
+                    printf("Arg[%llu]:\n", (unsigned long long)i);
+                    eshkol_ast_pretty_print(&op->call_op.variables[i], indent + 3);
+                }
+            }
             break;
     }
 }
@@ -263,11 +356,23 @@ void eshkol_ast_pretty_print(const eshkol_ast_t *ast, int indent) {
             
         case ESHKOL_STRING:
             print_indent(indent + 1);
-            printf("Value: \"%s\" (size: %llu)\n", 
+            printf("Value: \"%s\" (size: %llu)\n",
                    ast->str_val.ptr ? ast->str_val.ptr : "(null)",
                    (unsigned long long)ast->str_val.size);
             break;
-            
+
+        case ESHKOL_BIGNUM_LITERAL:
+            print_indent(indent + 1);
+            printf("Value: %s (bignum literal)\n",
+                   ast->str_val.ptr ? ast->str_val.ptr : "(null)");
+            break;
+
+        case ESHKOL_SYMBOL:
+            print_indent(indent + 1);
+            printf("Value: %s (symbol)\n",
+                   ast->str_val.ptr ? ast->str_val.ptr : "(null)");
+            break;
+
         case ESHKOL_VAR:
             print_indent(indent + 1);
             printf("ID: %s\n", ast->variable.id ? ast->variable.id : "(null)");

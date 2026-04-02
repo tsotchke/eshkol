@@ -1,0 +1,54 @@
+;;; Loss Functions Test Suite
+;;; Tests binary-cross-entropy-loss, hinge-loss, kl-div-loss, smooth-l1-loss
+
+(require stdlib)
+
+;; Test 1: BCE loss with good predictions near targets
+(display "TEST: binary-cross-entropy-loss with good predictions") (newline)
+(let ((loss (binary-cross-entropy-loss #(0.9 0.1 0.8) #(1.0 0.0 1.0))))
+  (display (if (< (abs loss) 0.2) "PASS" "FAIL")) (display ": BCE with good predictions should be small") (newline))
+
+;; Test 2: BCE loss with bad predictions (high loss)
+(display "TEST: binary-cross-entropy-loss with bad predictions") (newline)
+(let ((loss (binary-cross-entropy-loss #(0.1 0.9 0.2) #(1.0 0.0 1.0))))
+  (display (if (> loss 1.0) "PASS" "FAIL")) (display ": BCE with bad predictions should be large") (newline))
+
+;; Test 3: BCE loss is non-negative
+(display "TEST: binary-cross-entropy-loss is non-negative") (newline)
+(let ((loss (binary-cross-entropy-loss #(0.5 0.5 0.5) #(1.0 0.0 1.0))))
+  (display (if (>= loss 0.0) "PASS" "FAIL")) (display ": BCE loss should always be >= 0") (newline))
+
+;; Test 4: Hinge loss with correct classifications (margin >= 1)
+(display "TEST: hinge-loss with correct large-margin predictions") (newline)
+(let ((loss (hinge-loss #(2.0 -2.0 1.5) #(1.0 -1.0 1.0))))
+  (display (if (< (abs loss) 0.01) "PASS" "FAIL")) (display ": hinge loss should be 0 when margin >= 1") (newline))
+
+;; Test 5: Hinge loss with misclassified points
+(display "TEST: hinge-loss with misclassified points") (newline)
+(let ((loss (hinge-loss #(-1.0 1.0 -0.5) #(1.0 -1.0 1.0))))
+  (display (if (> loss 1.0) "PASS" "FAIL")) (display ": hinge loss should be large when misclassified") (newline))
+
+;; Test 6: Hinge loss with borderline predictions (margin < 1)
+(display "TEST: hinge-loss with borderline margin") (newline)
+(let ((loss (hinge-loss #(0.5 -0.5 0.5) #(1.0 -1.0 1.0))))
+  (display (if (< (abs (- loss 0.5)) 0.01) "PASS" "FAIL")) (display ": hinge loss with margin 0.5 should be 0.5") (newline))
+
+;; Test 7: KL divergence of identical distributions is 0
+(display "TEST: kl-div-loss of identical distributions") (newline)
+(let ((loss (kl-div-loss #(0.25 0.25 0.25 0.25) #(0.25 0.25 0.25 0.25))))
+  (display (if (< (abs loss) 0.01) "PASS" "FAIL")) (display ": KL divergence of identical distributions should be 0") (newline))
+
+;; Test 8: KL divergence is non-negative (Gibbs' inequality)
+(display "TEST: kl-div-loss is non-negative") (newline)
+(let ((loss (kl-div-loss #(0.5 0.3 0.2) #(0.3 0.4 0.3))))
+  (display (if (>= loss 0.0) "PASS" "FAIL")) (display ": KL divergence should always be >= 0") (newline))
+
+;; Test 9: Smooth L1 loss with small differences (quadratic region)
+(display "TEST: smooth-l1-loss with small differences") (newline)
+(let ((loss (smooth-l1-loss #(1.0 2.0 3.0) #(1.1 2.2 3.3))))
+  (display (if (< loss 0.1) "PASS" "FAIL")) (display ": smooth L1 with small diff should be small (quadratic)") (newline))
+
+;; Test 10: Smooth L1 loss with large differences (linear region)
+(display "TEST: smooth-l1-loss with large differences") (newline)
+(let ((loss (smooth-l1-loss #(0.0 0.0 0.0) #(5.0 5.0 5.0))))
+  (display (if (> loss 1.0) "PASS" "FAIL")) (display ": smooth L1 with large diff should be significant") (newline))

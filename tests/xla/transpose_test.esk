@@ -1,0 +1,30 @@
+;; XLA Transpose Tests
+
+;; 2x3 matrix transpose
+(define A (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+(define AT (transpose A))
+
+;; Check values: AT[i][j] = A[j][i]
+;; A = [[1,2,3],[4,5,6]]
+;; AT = [[1,4],[2,5],[3,6]]
+(if (and (= (tensor-get AT 0 0) 1.0)
+         (= (tensor-get AT 0 1) 4.0)
+         (= (tensor-get AT 1 0) 2.0)
+         (= (tensor-get AT 1 1) 5.0)
+         (= (tensor-get AT 2 0) 3.0)
+         (= (tensor-get AT 2 1) 6.0))
+    (display "PASS: transpose values correct")
+    (display "FAIL: transpose values incorrect"))
+(newline)
+
+;; Double transpose: (A^T)^T = A
+(define ATT (transpose AT))
+(if (and (= (tensor-get ATT 0 0) 1.0) (= (tensor-get ATT 0 2) 3.0)
+         (= (tensor-get ATT 1 0) 4.0) (= (tensor-get ATT 1 2) 6.0))
+    (display "PASS: double transpose values = original")
+    (display "FAIL: double transpose values incorrect"))
+(newline)
+
+;; Display for visual verification
+(display "A = ") (display A) (newline)
+(display "A^T = ") (display AT) (newline)

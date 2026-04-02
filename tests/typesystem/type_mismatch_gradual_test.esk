@@ -1,0 +1,9 @@
+;; Type System Test: Gradual mode warns but does not error
+;; EXPECT-MODE: default
+;; EXPECT-STDERR: [WARN] Type warning: argument 1
+;; EXPECT-NO-STDERR: [ERROR]
+
+;; Same type mismatch as strict test, but default mode should only warn
+(define (add-nums a b) (+ a b))
+(display (add-nums "hello" 42))
+(newline)

@@ -18,6 +18,7 @@
 #include <eshkol/eshkol.h>
 #include <string>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace eshkol {
@@ -65,11 +66,23 @@ public:
     /**
      * Get the number of macros defined.
      */
-    size_t macroCount() const { return macros_.size(); }
+    size_t macroCount() const {
+        size_t count = 0;
+        for (const auto& scope : scope_stack_) count += scope.size();
+        return count;
+    }
 
 private:
-    // Macro definition table
-    std::map<std::string, eshkol_macro_def_t*> macros_;
+    // Macro definition table - scope stack for hygiene
+    // scope_stack_[0] is global scope, higher indices are nested let-syntax scopes
+    std::vector<std::map<std::string, eshkol_macro_def_t*>> scope_stack_;
+
+    // Push/pop macro scopes for let-syntax/letrec-syntax
+    void pushScope();
+    void popScope();
+
+    // Look up a macro in the scope stack (inner scopes shadow outer)
+    eshkol_macro_def_t* lookupMacro(const std::string& name) const;
 
     // Bindings captured during pattern matching
     // Maps pattern variable names to captured AST nodes

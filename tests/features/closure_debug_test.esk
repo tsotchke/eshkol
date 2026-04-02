@@ -1,0 +1,36 @@
+;; Minimal test for doubly-nested closure capture
+(display "=== Doubly-Nested Closure Test ===") (newline)
+
+;; Test 1: Simple nested function with outer variable
+(define (outer-func)
+  (define x 42)
+  (define (inner-func)
+    x)  ;; Access outer variable
+  (inner-func))
+
+(display "Test 1 (single nesting): ") (display (outer-func)) (display " (expected 42)") (newline)
+
+;; Test 2: Doubly nested function accessing grandparent variable
+(define (grandparent)
+  (define data 100)
+  (define (parent)
+    (define (child)
+      data)  ;; Access grandparent variable
+    (child))
+  (parent))
+
+(display "Test 2 (double nesting): ") (display (grandparent)) (display " (expected 100)") (newline)
+
+;; Test 3: Doubly nested with intermediate variable
+(define (gp2)
+  (define outer-val 10)
+  (define (p2)
+    (define middle-val 20)
+    (define (c2)
+      (+ outer-val middle-val))  ;; Access both grandparent and parent
+    (c2))
+  (p2))
+
+(display "Test 3 (mixed nesting): ") (display (gp2)) (display " (expected 30)") (newline)
+
+(display "=== Done ===") (newline)

@@ -10,7 +10,7 @@
 
 set -e
 
-VERSION="${1:-1.0.0}"
+VERSION="${1:-1.1.0}"
 BUILD_DIR="build"
 PACKAGE_NAME="eshkol"
 
@@ -43,7 +43,8 @@ if [ -z "$DEB_FILE" ]; then
 fi
 
 # Move to project root with standardized name
-OUTPUT_NAME="${PACKAGE_NAME}_${VERSION}_amd64.deb"
+ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
+OUTPUT_NAME="${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
 mv "$DEB_FILE" "../${OUTPUT_NAME}"
 
 echo "Successfully created: ${OUTPUT_NAME}"

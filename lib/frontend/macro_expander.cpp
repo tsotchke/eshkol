@@ -14,20 +14,43 @@
 namespace eshkol {
 
 MacroExpander::MacroExpander() {
+    // Initialize with a global scope
+    scope_stack_.emplace_back();
 }
 
 MacroExpander::~MacroExpander() {
     // Macro definitions are owned by the AST, not by us
 }
 
-void MacroExpander::registerMacro(const eshkol_macro_def_t* macro) {
-    if (macro && macro->name) {
-        macros_[macro->name] = const_cast<eshkol_macro_def_t*>(macro);
+void MacroExpander::pushScope() {
+    scope_stack_.emplace_back();
+}
+
+void MacroExpander::popScope() {
+    if (scope_stack_.size() > 1) {
+        scope_stack_.pop_back();
     }
 }
 
+void MacroExpander::registerMacro(const eshkol_macro_def_t* macro) {
+    if (macro && macro->name && !scope_stack_.empty()) {
+        scope_stack_.back()[macro->name] = const_cast<eshkol_macro_def_t*>(macro);
+    }
+}
+
+eshkol_macro_def_t* MacroExpander::lookupMacro(const std::string& name) const {
+    // Search from innermost scope to outermost
+    for (auto it = scope_stack_.rbegin(); it != scope_stack_.rend(); ++it) {
+        auto found = it->find(name);
+        if (found != it->end()) {
+            return found->second;
+        }
+    }
+    return nullptr;
+}
+
 bool MacroExpander::isMacro(const std::string& name) const {
-    return macros_.find(name) != macros_.end();
+    return lookupMacro(name) != nullptr;
 }
 
 std::vector<eshkol_ast_t> MacroExpander::expandAll(const std::vector<eshkol_ast_t>& asts) {
@@ -59,31 +82,69 @@ eshkol_ast_t MacroExpander::expand(const eshkol_ast_t& ast) {
 }
 
 eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
-    // Handle define-syntax: register and return null
-    if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_DEFINE_SYNTAX_OP) {
-        if (ast.operation.define_syntax_op.macro) {
-            registerMacro(ast.operation.define_syntax_op.macro);
-        }
-        eshkol_ast_t null_ast;
-        null_ast.type = ESHKOL_NULL;
-        return null_ast;
+    // Use iterative re-expansion for macro calls to prevent unbounded recursion.
+    // A macro expanding to another macro call is handled by looping, not recursing.
+    // We track seen macro names per expansion chain to detect cycles.
+    static thread_local int expansion_depth = 0;
+    struct DepthGuard { DepthGuard() { ++expansion_depth; } ~DepthGuard() { --expansion_depth; } } depth_guard;
+    if (expansion_depth > 1000) {
+        eshkol_error("macro expansion depth limit exceeded (>1000)");
+        return ast;
     }
+    eshkol_ast_t current = ast;
+    std::set<std::string> expansion_chain; // macros seen in this chain
 
-    // Check for macro call
-    if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_CALL_OP) {
-        const auto* call = &ast.operation.call_op;
-        if (call->func && call->func->type == ESHKOL_VAR && call->func->variable.id) {
-            std::string func_name = call->func->variable.id;
-            if (isMacro(func_name)) {
-                eshkol_ast_t expanded = tryExpandMacroCall(ast);
-                // Recursively expand the result (macros can expand to other macros)
-                return expandNode(expanded);
+    // Iterative macro re-expansion loop
+    for (;;) {
+        // Handle define-syntax: register and return null
+        if (current.type == ESHKOL_OP && current.operation.op == ESHKOL_DEFINE_SYNTAX_OP) {
+            if (current.operation.define_syntax_op.macro) {
+                registerMacro(current.operation.define_syntax_op.macro);
+            }
+            eshkol_ast_t null_ast;
+            eshkol_ast_make_null(&null_ast);
+            return null_ast;
+        }
+
+        // Handle let-syntax / letrec-syntax: push scope, register macros, expand body, pop scope
+        if (current.type == ESHKOL_OP &&
+            (current.operation.op == ESHKOL_LET_SYNTAX_OP || current.operation.op == ESHKOL_LETREC_SYNTAX_OP)) {
+            const auto* ls = &current.operation.let_syntax_op;
+            pushScope();
+            for (uint64_t i = 0; i < ls->num_macros; i++) {
+                if (ls->macros[i]) {
+                    registerMacro(ls->macros[i]);
+                }
+            }
+            eshkol_ast_t expanded_body = expandNode(*ls->body);
+            popScope();
+            return expanded_body;
+        }
+
+        // Check for macro call — if found, expand and LOOP (not recurse)
+        if (current.type == ESHKOL_OP && current.operation.op == ESHKOL_CALL_OP) {
+            const auto* call = &current.operation.call_op;
+            if (call->func && call->func->type == ESHKOL_VAR && call->func->variable.id) {
+                std::string func_name = call->func->variable.id;
+                if (isMacro(func_name)) {
+                    // Cycle detection: if we've seen this macro in this chain, it's circular
+                    if (expansion_chain.count(func_name)) {
+                        eshkol_error("Circular macro expansion detected: '%s' expands back to itself", func_name.c_str());
+                        return current;
+                    }
+                    expansion_chain.insert(func_name);
+                    current = tryExpandMacroCall(current);
+                    continue; // Re-expand iteratively
+                }
             }
         }
+
+        // Not a macro call — break out to do tree traversal
+        break;
     }
 
-    // Recursively expand sub-expressions
-    eshkol_ast_t result = copyAst(ast);
+    // Recursively expand sub-expressions (tree depth is bounded by input nesting)
+    eshkol_ast_t result = copyAst(current);
 
     if (result.type == ESHKOL_OP) {
         auto* op = &result.operation;
@@ -105,6 +166,8 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 break;
 
             case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
                 if (op->sequence_op.num_expressions > 0 && op->sequence_op.expressions) {
                     eshkol_ast_t* new_exprs = new eshkol_ast_t[op->sequence_op.num_expressions];
                     for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
@@ -133,11 +196,17 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP:
             case ESHKOL_LETREC_OP:
-                // let_op uses bindings array, not values
                 if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
                     eshkol_ast_t* new_bindings = new eshkol_ast_t[op->let_op.num_bindings];
                     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                        new_bindings[i] = expandNode(op->let_op.bindings[i]);
+                        // Bindings are CONS cells (var . val) — expand the value (cdr)
+                        eshkol_ast_t binding = op->let_op.bindings[i];
+                        if (binding.type == ESHKOL_CONS && binding.cons_cell.cdr) {
+                            eshkol_ast_t* new_cdr = new eshkol_ast_t;
+                            *new_cdr = expandNode(*binding.cons_cell.cdr);
+                            binding.cons_cell.cdr = new_cdr;
+                        }
+                        new_bindings[i] = binding;
                     }
                     op->let_op.bindings = new_bindings;
                 }
@@ -165,8 +234,96 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
+            // Ops that reuse call_op struct layout
+            case ESHKOL_COND_OP:
+            case ESHKOL_CASE_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+            case ESHKOL_DO_OP:
+                if (op->call_op.func) {
+                    eshkol_ast_t* new_func = new eshkol_ast_t;
+                    *new_func = expandNode(*op->call_op.func);
+                    op->call_op.func = new_func;
+                }
+                if (op->call_op.num_vars > 0 && op->call_op.variables) {
+                    eshkol_ast_t* new_vars = new eshkol_ast_t[op->call_op.num_vars];
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        new_vars[i] = expandNode(op->call_op.variables[i]);
+                    }
+                    op->call_op.variables = new_vars;
+                }
+                break;
+
+            case ESHKOL_SET_OP:
+                if (op->set_op.value) {
+                    eshkol_ast_t* new_val = new eshkol_ast_t;
+                    *new_val = expandNode(*op->set_op.value);
+                    op->set_op.value = new_val;
+                }
+                break;
+
+            case ESHKOL_GUARD_OP:
+                if (op->guard_op.num_clauses > 0 && op->guard_op.clauses) {
+                    eshkol_ast_t* new_clauses = new eshkol_ast_t[op->guard_op.num_clauses];
+                    for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                        new_clauses[i] = expandNode(op->guard_op.clauses[i]);
+                    }
+                    op->guard_op.clauses = new_clauses;
+                }
+                if (op->guard_op.num_body_exprs > 0 && op->guard_op.body) {
+                    eshkol_ast_t* new_body = new eshkol_ast_t[op->guard_op.num_body_exprs];
+                    for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                        new_body[i] = expandNode(op->guard_op.body[i]);
+                    }
+                    op->guard_op.body = new_body;
+                }
+                break;
+
+            case ESHKOL_RAISE_OP:
+                if (op->raise_op.exception) {
+                    eshkol_ast_t* new_exc = new eshkol_ast_t;
+                    *new_exc = expandNode(*op->raise_op.exception);
+                    op->raise_op.exception = new_exc;
+                }
+                break;
+
+            case ESHKOL_VALUES_OP:
+                if (op->values_op.num_values > 0 && op->values_op.expressions) {
+                    eshkol_ast_t* new_exprs = new eshkol_ast_t[op->values_op.num_values];
+                    for (uint64_t i = 0; i < op->values_op.num_values; i++) {
+                        new_exprs[i] = expandNode(op->values_op.expressions[i]);
+                    }
+                    op->values_op.expressions = new_exprs;
+                }
+                break;
+
+            case ESHKOL_CALL_CC_OP:
+                if (op->call_cc_op.proc) {
+                    eshkol_ast_t* new_proc = new eshkol_ast_t;
+                    *new_proc = expandNode(*op->call_cc_op.proc);
+                    op->call_cc_op.proc = new_proc;
+                }
+                break;
+
+            case ESHKOL_DYNAMIC_WIND_OP:
+                if (op->dynamic_wind_op.before) {
+                    eshkol_ast_t* new_before = new eshkol_ast_t;
+                    *new_before = expandNode(*op->dynamic_wind_op.before);
+                    op->dynamic_wind_op.before = new_before;
+                }
+                if (op->dynamic_wind_op.thunk) {
+                    eshkol_ast_t* new_thunk = new eshkol_ast_t;
+                    *new_thunk = expandNode(*op->dynamic_wind_op.thunk);
+                    op->dynamic_wind_op.thunk = new_thunk;
+                }
+                if (op->dynamic_wind_op.after) {
+                    eshkol_ast_t* new_after = new eshkol_ast_t;
+                    *new_after = expandNode(*op->dynamic_wind_op.after);
+                    op->dynamic_wind_op.after = new_after;
+                }
+                break;
+
             default:
-                // Other operations - leave as is
                 break;
         }
     }
@@ -178,12 +335,10 @@ eshkol_ast_t MacroExpander::tryExpandMacroCall(const eshkol_ast_t& call) {
     const auto* call_op = &call.operation.call_op;
     std::string macro_name = call_op->func->variable.id;
 
-    auto it = macros_.find(macro_name);
-    if (it == macros_.end()) {
+    eshkol_macro_def_t* macro = lookupMacro(macro_name);
+    if (!macro) {
         return call;
     }
-
-    eshkol_macro_def_t* macro = it->second;
 
     // Build literals list for pattern matching
     std::vector<std::string> literals;
@@ -258,8 +413,12 @@ eshkol_ast_t MacroExpander::tryExpandMacroCall(const eshkol_ast_t& call) {
                 }
                 arg_idx++;
             } else if (elem->type == MACRO_PAT_LIST) {
-                // Nested list pattern
+                // Nested list pattern - delegate to recursive matchPattern
                 if (arg_idx >= call_op->num_vars) {
+                    matched = false;
+                    break;
+                }
+                if (!matchPattern(elem, call_op->variables[arg_idx], literals, bindings)) {
                     matched = false;
                     break;
                 }
@@ -282,8 +441,8 @@ eshkol_ast_t MacroExpander::tryExpandMacroCall(const eshkol_ast_t& call) {
         }
     }
 
-    // No rule matched
-    eshkol_warn("Macro '%s' call did not match any pattern", macro_name.c_str());
+    // No rule matched — this is a syntax error, not a warning
+    eshkol_error("syntax error: no matching pattern for macro '%s'", macro_name.c_str());
     return call;
 }
 
@@ -291,7 +450,7 @@ eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* t
                                                   const Bindings& bindings) {
     if (!tmpl) {
         eshkol_ast_t null_ast;
-        null_ast.type = ESHKOL_NULL;
+        eshkol_ast_make_null(&null_ast);
         return null_ast;
     }
 
@@ -307,7 +466,7 @@ eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* t
             // Look up variable in bindings
             if (!tmpl->variable_name) {
                 eshkol_ast_t null_ast;
-                null_ast.type = ESHKOL_NULL;
+                eshkol_ast_make_null(&null_ast);
                 return null_ast;
             }
             auto it = bindings.find(tmpl->variable_name);
@@ -325,7 +484,7 @@ eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* t
             // Build expression from list elements
             if (tmpl->list.num_elements == 0) {
                 eshkol_ast_t null_ast;
-                null_ast.type = ESHKOL_NULL;
+                eshkol_ast_make_null(&null_ast);
                 return null_ast;
             }
 
@@ -364,7 +523,7 @@ eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* t
     }
 
     eshkol_ast_t null_ast;
-    null_ast.type = ESHKOL_NULL;
+    eshkol_ast_make_null(&null_ast);
     return null_ast;
 }
 
@@ -378,6 +537,19 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
             return copyAst(it->second.values[0]);
         }
         return copyAst(ast);
+    }
+
+    // Recursively substitute in cons cells (used for let bindings: (var . val))
+    if (ast.type == ESHKOL_CONS) {
+        eshkol_ast_t result;
+        result.type = ESHKOL_CONS;
+        result.cons_cell.car = new eshkol_ast_t;
+        *result.cons_cell.car = ast.cons_cell.car ?
+            substituteBindings(*ast.cons_cell.car, bindings) : eshkol_ast_t{};
+        result.cons_cell.cdr = new eshkol_ast_t;
+        *result.cons_cell.cdr = ast.cons_cell.cdr ?
+            substituteBindings(*ast.cons_cell.cdr, bindings) : eshkol_ast_t{};
+        return result;
     }
 
     // For operations, recursively substitute
@@ -404,6 +576,8 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 break;
 
             case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
                 if (op->sequence_op.num_expressions > 0 && op->sequence_op.expressions) {
                     eshkol_ast_t* new_exprs = new eshkol_ast_t[op->sequence_op.num_expressions];
                     for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
@@ -443,6 +617,112 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                     eshkol_ast_t* new_body = new eshkol_ast_t;
                     *new_body = substituteBindings(*op->let_op.body, bindings);
                     op->let_op.body = new_body;
+                }
+                break;
+
+            case ESHKOL_MATCH_OP:
+                if (op->match_op.expr) {
+                    eshkol_ast_t* new_expr = new eshkol_ast_t;
+                    *new_expr = substituteBindings(*op->match_op.expr, bindings);
+                    op->match_op.expr = new_expr;
+                }
+                if (op->match_op.num_clauses > 0 && op->match_op.clauses) {
+                    for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
+                        if (op->match_op.clauses[i].body) {
+                            eshkol_ast_t* new_body = new eshkol_ast_t;
+                            *new_body = substituteBindings(*op->match_op.clauses[i].body, bindings);
+                            op->match_op.clauses[i].body = new_body;
+                        }
+                    }
+                }
+                break;
+
+            // Ops that reuse call_op struct layout
+            case ESHKOL_COND_OP:
+            case ESHKOL_CASE_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+            case ESHKOL_DO_OP:
+                if (op->call_op.func) {
+                    eshkol_ast_t* new_func = new eshkol_ast_t;
+                    *new_func = substituteBindings(*op->call_op.func, bindings);
+                    op->call_op.func = new_func;
+                }
+                if (op->call_op.num_vars > 0 && op->call_op.variables) {
+                    eshkol_ast_t* new_vars = new eshkol_ast_t[op->call_op.num_vars];
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        new_vars[i] = substituteBindings(op->call_op.variables[i], bindings);
+                    }
+                    op->call_op.variables = new_vars;
+                }
+                break;
+
+            case ESHKOL_SET_OP:
+                if (op->set_op.value) {
+                    eshkol_ast_t* new_val = new eshkol_ast_t;
+                    *new_val = substituteBindings(*op->set_op.value, bindings);
+                    op->set_op.value = new_val;
+                }
+                break;
+
+            case ESHKOL_GUARD_OP:
+                if (op->guard_op.num_clauses > 0 && op->guard_op.clauses) {
+                    eshkol_ast_t* new_clauses = new eshkol_ast_t[op->guard_op.num_clauses];
+                    for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                        new_clauses[i] = substituteBindings(op->guard_op.clauses[i], bindings);
+                    }
+                    op->guard_op.clauses = new_clauses;
+                }
+                if (op->guard_op.num_body_exprs > 0 && op->guard_op.body) {
+                    eshkol_ast_t* new_body = new eshkol_ast_t[op->guard_op.num_body_exprs];
+                    for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                        new_body[i] = substituteBindings(op->guard_op.body[i], bindings);
+                    }
+                    op->guard_op.body = new_body;
+                }
+                break;
+
+            case ESHKOL_RAISE_OP:
+                if (op->raise_op.exception) {
+                    eshkol_ast_t* new_exc = new eshkol_ast_t;
+                    *new_exc = substituteBindings(*op->raise_op.exception, bindings);
+                    op->raise_op.exception = new_exc;
+                }
+                break;
+
+            case ESHKOL_VALUES_OP:
+                if (op->values_op.num_values > 0 && op->values_op.expressions) {
+                    eshkol_ast_t* new_exprs = new eshkol_ast_t[op->values_op.num_values];
+                    for (uint64_t i = 0; i < op->values_op.num_values; i++) {
+                        new_exprs[i] = substituteBindings(op->values_op.expressions[i], bindings);
+                    }
+                    op->values_op.expressions = new_exprs;
+                }
+                break;
+
+            case ESHKOL_CALL_CC_OP:
+                if (op->call_cc_op.proc) {
+                    eshkol_ast_t* new_proc = new eshkol_ast_t;
+                    *new_proc = substituteBindings(*op->call_cc_op.proc, bindings);
+                    op->call_cc_op.proc = new_proc;
+                }
+                break;
+
+            case ESHKOL_DYNAMIC_WIND_OP:
+                if (op->dynamic_wind_op.before) {
+                    eshkol_ast_t* new_before = new eshkol_ast_t;
+                    *new_before = substituteBindings(*op->dynamic_wind_op.before, bindings);
+                    op->dynamic_wind_op.before = new_before;
+                }
+                if (op->dynamic_wind_op.thunk) {
+                    eshkol_ast_t* new_thunk = new eshkol_ast_t;
+                    *new_thunk = substituteBindings(*op->dynamic_wind_op.thunk, bindings);
+                    op->dynamic_wind_op.thunk = new_thunk;
+                }
+                if (op->dynamic_wind_op.after) {
+                    eshkol_ast_t* new_after = new eshkol_ast_t;
+                    *new_after = substituteBindings(*op->dynamic_wind_op.after, bindings);
+                    op->dynamic_wind_op.after = new_after;
                 }
                 break;
 
@@ -517,6 +797,8 @@ bool MacroExpander::matchPattern(const eshkol_macro_pattern_t* pattern,
         case MACRO_PAT_VARIABLE: {
             // Pattern variables match anything and bind the value
             std::string var_name = pattern->identifier ? pattern->identifier : "";
+            // R7RS: _ is a wildcard — match without binding
+            if (var_name == "_") return true;
             Binding binding;
             binding.name = var_name;
             binding.values.push_back(ast);

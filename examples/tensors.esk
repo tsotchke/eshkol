@@ -1,0 +1,19 @@
+;; Tensor Operations — Linear algebra and GPU dispatch
+;; Tensors dispatch through SIMD → BLAS/AMX → GPU automatically
+
+;; Create tensors
+(define A (reshape #(1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+(define B (reshape #(7.0 8.0 9.0 10.0 11.0 12.0) 3 2))
+
+;; Matrix multiplication (dispatches to BLAS)
+(define C (tensor-matmul A B))
+(display "A (2x3) @ B (3x2) = ") (display C) (newline)
+
+;; Reductions
+(display "sum(A) = ") (display (tensor-sum A)) (newline)
+(display "mean(A) = ") (display (tensor-mean A)) (newline)
+(display "max(A) = ") (display (tensor-max A)) (newline)
+
+;; Element-wise operations
+(define D (tensor-add A A))
+(display "A + A = ") (display D) (newline)

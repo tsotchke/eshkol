@@ -1,0 +1,232 @@
+;; Control Flow Test: Recursion
+;; Tests recursive function calls
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Basic Recursion
+;; ============================================================================
+
+(display "=== Testing Basic Recursion ===\n")
+
+;; Factorial
+(define (factorial n)
+  (if (<= n 1)
+      1
+      (* n (factorial (- n 1)))))
+
+(test-case "factorial 0" 1 (factorial 0))
+(test-case "factorial 1" 1 (factorial 1))
+(test-case "factorial 5" 120 (factorial 5))
+(test-case "factorial 10" 3628800 (factorial 10))
+
+;; Fibonacci
+(define (fib n)
+  (cond ((= n 0) 0)
+        ((= n 1) 1)
+        (else (+ (fib (- n 1)) (fib (- n 2))))))
+
+(test-case "fib 0" 0 (fib 0))
+(test-case "fib 1" 1 (fib 1))
+(test-case "fib 5" 5 (fib 5))
+(test-case "fib 10" 55 (fib 10))
+
+;; Sum of list
+(define (sum-list lst)
+  (if (null? lst)
+      0
+      (+ (car lst) (sum-list (cdr lst)))))
+
+(test-case "sum empty" 0 (sum-list '()))
+(test-case "sum single" 5 (sum-list '(5)))
+(test-case "sum many" 15 (sum-list '(1 2 3 4 5)))
+
+;; ============================================================================
+;; Test: Tail Recursion
+;; ============================================================================
+
+(display "=== Testing Tail Recursion ===\n")
+
+;; Tail-recursive factorial
+(define (factorial-tail n)
+  (define (iter n acc)
+    (if (<= n 1)
+        acc
+        (iter (- n 1) (* n acc))))
+  (iter n 1))
+
+(test-case "fact-tail 0" 1 (factorial-tail 0))
+(test-case "fact-tail 5" 120 (factorial-tail 5))
+(test-case "fact-tail 10" 3628800 (factorial-tail 10))
+
+;; Tail-recursive sum
+(define (sum-tail lst)
+  (define (iter lst acc)
+    (if (null? lst)
+        acc
+        (iter (cdr lst) (+ (car lst) acc))))
+  (iter lst 0))
+
+(test-case "sum-tail empty" 0 (sum-tail '()))
+(test-case "sum-tail many" 55 (sum-tail '(1 2 3 4 5 6 7 8 9 10)))
+
+;; Tail-recursive length
+(define (length-tail lst)
+  (define (iter lst acc)
+    (if (null? lst)
+        acc
+        (iter (cdr lst) (+ acc 1))))
+  (iter lst 0))
+
+(test-case "length-tail empty" 0 (length-tail '()))
+(test-case "length-tail many" 5 (length-tail '(a b c d e)))
+
+;; ============================================================================
+;; Test: Mutual Recursion
+;; ============================================================================
+
+(display "=== Testing Mutual Recursion ===\n")
+
+;; Even/odd mutual recursion
+(define (my-even? n)
+  (if (= n 0)
+      #t
+      (my-odd? (- n 1))))
+
+(define (my-odd? n)
+  (if (= n 0)
+      #f
+      (my-even? (- n 1))))
+
+(test-case "even 0" #t (my-even? 0))
+(test-case "even 4" #t (my-even? 4))
+(test-case "even 5" #f (my-even? 5))
+(test-case "odd 0" #f (my-odd? 0))
+(test-case "odd 3" #t (my-odd? 3))
+(test-case "odd 4" #f (my-odd? 4))
+
+;; Using letrec for mutual recursion
+(define (even-odd-letrec n)
+  (letrec ((is-even? (lambda (x)
+                       (if (= x 0) #t (is-odd? (- x 1)))))
+           (is-odd? (lambda (x)
+                      (if (= x 0) #f (is-even? (- x 1))))))
+    (list (is-even? n) (is-odd? n))))
+
+(test-case "letrec even-odd 6" '(#t #f) (even-odd-letrec 6))
+(test-case "letrec even-odd 7" '(#f #t) (even-odd-letrec 7))
+
+;; ============================================================================
+;; Test: List Recursion
+;; ============================================================================
+
+(display "=== Testing List Recursion ===\n")
+
+;; Recursive map
+(define (my-map f lst)
+  (if (null? lst)
+      '()
+      (cons (f (car lst)) (my-map f (cdr lst)))))
+
+(test-case "my-map double" '(2 4 6) (my-map (lambda (x) (* x 2)) '(1 2 3)))
+(test-case "my-map empty" '() (my-map (lambda (x) x) '()))
+
+;; Recursive filter
+(define (my-filter pred lst)
+  (cond ((null? lst) '())
+        ((pred (car lst)) (cons (car lst) (my-filter pred (cdr lst))))
+        (else (my-filter pred (cdr lst)))))
+
+(test-case "my-filter even" '(2 4 6) (my-filter even? '(1 2 3 4 5 6)))
+(test-case "my-filter empty" '() (my-filter even? '()))
+
+;; Recursive reverse
+(define (my-reverse lst)
+  (if (null? lst)
+      '()
+      (append (my-reverse (cdr lst)) (list (car lst)))))
+
+(test-case "my-reverse" '(3 2 1) (my-reverse '(1 2 3)))
+(test-case "my-reverse empty" '() (my-reverse '()))
+
+;; Recursive append
+(define (my-append lst1 lst2)
+  (if (null? lst1)
+      lst2
+      (cons (car lst1) (my-append (cdr lst1) lst2))))
+
+(test-case "my-append" '(1 2 3 4) (my-append '(1 2) '(3 4)))
+(test-case "my-append empty first" '(3 4) (my-append '() '(3 4)))
+
+;; ============================================================================
+;; Test: Tree Recursion
+;; ============================================================================
+
+(display "=== Testing Tree Recursion ===\n")
+
+;; Count atoms in nested list
+(define (count-atoms tree)
+  (cond ((null? tree) 0)
+        ((not (pair? tree)) 1)
+        (else (+ (count-atoms (car tree))
+                 (count-atoms (cdr tree))))))
+
+(test-case "count flat" 3 (count-atoms '(a b c)))
+(test-case "count nested" 4 (count-atoms '((a b) (c d))))
+(test-case "count deep" 3 (count-atoms '(((a)) ((b)) ((c)))))
+
+;; Flatten nested list
+(define (flatten tree)
+  (cond ((null? tree) '())
+        ((not (pair? tree)) (list tree))
+        (else (append (flatten (car tree))
+                      (flatten (cdr tree))))))
+
+(test-case "flatten nested" '(a b c d) (flatten '((a b) (c d))))
+(test-case "flatten deep" '(1 2 3) (flatten '(((1) 2) (3))))
+
+;; ============================================================================
+;; Test: Accumulator Pattern
+;; ============================================================================
+
+(display "=== Testing Accumulator Pattern ===\n")
+
+;; Reverse with accumulator
+(define (reverse-acc lst)
+  (define (iter lst acc)
+    (if (null? lst)
+        acc
+        (iter (cdr lst) (cons (car lst) acc))))
+  (iter lst '()))
+
+(test-case "reverse-acc" '(3 2 1) (reverse-acc '(1 2 3)))
+
+;; count-if is already defined in stdlib
+(test-case "count-if even" 3 (count-if even? '(1 2 3 4 5 6)))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

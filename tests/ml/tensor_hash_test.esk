@@ -1,0 +1,11 @@
+;;; Test #(...) tensor literal syntax
+
+(define (test-hash-tensor)
+  (display "Testing #(...) tensor...")
+  (newline)
+  (let ((k #(1.0 0.0 -1.0)))
+    (display "#(1.0 0.0 -1.0): ")
+    (display k)
+    (newline)))
+
+(test-hash-tensor)

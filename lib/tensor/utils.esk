@@ -1,0 +1,105 @@
+;;; Eshkol Tensor Utilities Library
+;;; High-level shape manipulation utilities
+;;;
+;;; Provides convenience wrappers for tensor operations
+;;;
+;;; Usage: (require tensor-utils)
+
+(provide hstack vstack reshape-as squeeze-all unsqueeze-first unsqueeze-last)
+
+;;; ============================================================
+;;; Shape Utilities
+;;; ============================================================
+
+;; hstack: Horizontal stack (concatenate along axis 1)
+;; For 2D tensors, joins columns side by side
+(define (hstack . tensors)
+  (apply concatenate 1 tensors))
+
+;; vstack: Vertical stack (concatenate along axis 0)
+;; For 2D tensors, joins rows top to bottom
+(define (vstack . tensors)
+  (apply concatenate 0 tensors))
+
+;; reshape-as: Reshape tensor to match another tensor's shape
+(define (reshape-as tensor template)
+  (let ((target-shape (tensor-shape template)))
+    (apply reshape tensor target-shape)))
+
+;; squeeze-all: Remove all dimensions of size 1
+(define (squeeze-all tensor)
+  (squeeze tensor))
+
+;; unsqueeze-first: Add a dimension at the beginning (axis 0)
+(define (unsqueeze-first tensor)
+  (unsqueeze tensor 0))
+
+;; unsqueeze-last: Add a dimension at the end
+(define (unsqueeze-last tensor)
+  (let ((shape (tensor-shape tensor)))
+    (unsqueeze tensor (length shape))))
+
+;;; ============================================================
+;;; Tensor Query Utilities
+;;; ============================================================
+
+;; tensor-ndim: Get number of dimensions
+(define (tensor-ndim tensor)
+  (length (tensor-shape tensor)))
+
+;; tensor-size: Get total number of elements
+(define (tensor-size tensor)
+  (apply * (tensor-shape tensor)))
+
+;; is-scalar?: Check if tensor is a scalar (0D or 1D with 1 element)
+(define (is-scalar? tensor)
+  (= (tensor-size tensor) 1))
+
+;; is-vector?: Check if tensor is 1D
+(define (is-vector? tensor)
+  (= (tensor-ndim tensor) 1))
+
+;; is-matrix?: Check if tensor is 2D
+(define (is-matrix? tensor)
+  (= (tensor-ndim tensor) 2))
+
+;;; ============================================================
+;;; Advanced Reshaping
+;;; ============================================================
+
+;; expand-dims: Alias for unsqueeze
+(define expand-dims unsqueeze)
+
+;; broadcast-to: Broadcast tensor to target shape
+;; Note: This is a convenience wrapper; actual broadcasting
+;; happens automatically in arithmetic operations
+(define (broadcast-to tensor target-shape)
+  ;; For now, reshape if same total elements
+  ;; Full broadcasting would require more complex logic
+  (let ((src-size (tensor-size tensor))
+        (dst-size (apply * target-shape)))
+    (if (= src-size dst-size)
+        (apply reshape tensor target-shape)
+        (error "Cannot broadcast: size mismatch"))))
+
+;;; ============================================================
+;;; Slicing Utilities
+;;; ============================================================
+
+;; take: Take first n elements from 1D tensor
+(define (tensor-take tensor n)
+  (slice tensor 0 n))
+
+;; drop: Drop first n elements from 1D tensor
+(define (tensor-drop tensor n)
+  (let ((size (car (tensor-shape tensor))))
+    (slice tensor n size)))
+
+;; tensor-head: Get first element (as scalar tensor)
+(define (tensor-head tensor)
+  (slice tensor 0 1))
+
+;; tensor-tail: Get all but first element
+(define (tensor-tail tensor)
+  (let ((size (car (tensor-shape tensor))))
+    (slice tensor 1 size)))

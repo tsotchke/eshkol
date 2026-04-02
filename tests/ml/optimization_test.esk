@@ -1,0 +1,170 @@
+;; Optimization Algorithms Test Suite
+;; Tests gradient descent, Adam, L-BFGS, conjugate gradient
+
+(require ml.optimization)
+
+(display "=== OPTIMIZATION ALGORITHMS TESTS ===") (newline)
+
+;; Helper: check approximate equality
+(define (approx= a b tol)
+  (< (abs (- a b)) tol))
+
+;; ============================================================
+;; Test 1: tensor-dot product
+;; ============================================================
+(display "Test 1: tensor-dot... ")
+(let* ((a (vector 1.0 2.0 3.0))
+       (b (vector 4.0 5.0 6.0))
+       (result (tensor-dot a b)))
+  ;; 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+  (if (approx= result 32.0 0.001)
+      (display "PASS")
+      (begin (display "FAIL: expected 32.0 got ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 2: tensor-norm
+;; ============================================================
+(display "Test 2: tensor-norm... ")
+(let* ((v (vector 3.0 4.0))
+       (result (tensor-norm v)))
+  ;; sqrt(9 + 16) = 5.0
+  (if (approx= result 5.0 0.001)
+      (display "PASS")
+      (begin (display "FAIL: expected 5.0 got ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 3: Gradient descent on sphere function
+;; f(x) = x1^2 + x2^2, minimum at (0, 0)
+;; ============================================================
+(display "Test 3: Gradient descent on sphere... ")
+(define (sphere x)
+  (+ (* (vref x 0) (vref x 0))
+     (* (vref x 1) (vref x 1))))
+
+(let* ((x0 (vector 5.0 3.0))
+       (result (gradient-descent sphere x0 0.1 500 1e-6)))
+  ;; Should converge near (0, 0)
+  (if (and (approx= (vref result 0) 0.0 0.01)
+           (approx= (vref result 1) 0.0 0.01))
+      (display "PASS")
+      (begin (display "FAIL: ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 4: Gradient descent on shifted quadratic
+;; f(x) = (x1 - 1)^2 + (x2 - 2)^2, minimum at (1, 2)
+;; ============================================================
+(display "Test 4: GD on shifted quadratic... ")
+(define (shifted-quad x)
+  (+ (* (- (vref x 0) 1.0) (- (vref x 0) 1.0))
+     (* (- (vref x 1) 2.0) (- (vref x 1) 2.0))))
+
+(let* ((x0 (vector 0.0 0.0))
+       (result (gradient-descent shifted-quad x0 0.1 1000 1e-8)))
+  (if (and (approx= (vref result 0) 1.0 0.01)
+           (approx= (vref result 1) 2.0 0.01))
+      (display "PASS")
+      (begin (display "FAIL: ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 5: Adam on sphere function
+;; ============================================================
+(display "Test 5: Adam on sphere... ")
+(let* ((x0 (vector 5.0 3.0))
+       (result (adam sphere x0 0.1)))
+  ;; Adam with lr=0.1 should converge near (0, 0)
+  (if (and (approx= (vref result 0) 0.0 0.1)
+           (approx= (vref result 1) 0.0 0.1))
+      (display "PASS")
+      (begin (display "FAIL: ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 6: Line search (Armijo)
+;; ============================================================
+(display "Test 6: Line search... ")
+(let* ((x (vector 5.0 3.0))
+       (g (gradient sphere x))
+       ;; Search direction: negative gradient
+       (d (let* ((n (vector-length g))
+                 (r (make-vector n 0.0)))
+            (letrec ((loop (lambda (i)
+                      (if (< i n)
+                          (begin
+                            (vector-set! r i (- (vref g i)))
+                            (loop (+ i 1)))
+                          r))))
+              (loop 0))))
+       (alpha (line-search sphere x d g)))
+  ;; Alpha should be positive and reasonable
+  (if (and (> alpha 0.0)
+           (<= alpha 1.0))
+      (display "PASS")
+      (begin (display "FAIL: alpha=") (display alpha)))
+  (newline))
+
+;; ============================================================
+;; Test 7: Conjugate gradient on quadratic
+;; CG should solve quadratic functions exactly in N iterations
+;; ============================================================
+(display "Test 7: Conjugate gradient on quadratic... ")
+(let* ((x0 (vector 10.0 -5.0))
+       (result (conjugate-gradient sphere x0 200 1e-6)))
+  (if (and (approx= (vref result 0) 0.0 0.01)
+           (approx= (vref result 1) 0.0 0.01))
+      (display "PASS")
+      (begin (display "FAIL: ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 8: L-BFGS on shifted quadratic
+;; ============================================================
+(display "Test 8: L-BFGS on shifted quadratic... ")
+(let* ((x0 (vector 0.0 0.0))
+       (result (l-bfgs shifted-quad x0 200 1e-6)))
+  (if (and (approx= (vref result 0) 1.0 0.05)
+           (approx= (vref result 1) 2.0 0.05))
+      (display "PASS")
+      (begin (display "FAIL: ") (display result)))
+  (newline))
+
+;; ============================================================
+;; Test 9: Rosenbrock function (harder test)
+;; f(x,y) = (1-x)^2 + 100*(y-x^2)^2, minimum at (1, 1)
+;; ============================================================
+(display "Test 9: GD on Rosenbrock (convergence direction)... ")
+(define (rosenbrock x)
+  (let ((x1 (vref x 0))
+        (x2 (vref x 1)))
+    (+ (* (- 1.0 x1) (- 1.0 x1))
+       (* 100.0 (* (- x2 (* x1 x1)) (- x2 (* x1 x1)))))))
+
+(let* ((x0 (vector 0.0 0.0))
+       ;; Small learning rate for Rosenbrock
+       (result (gradient-descent rosenbrock x0 0.001 5000 1e-4)))
+  ;; Rosenbrock is hard - just check we moved toward (1,1)
+  (let ((f-start (rosenbrock x0))
+        (f-end (rosenbrock result)))
+    (if (< f-end f-start)
+        (display "PASS")
+        (begin (display "FAIL: no improvement f_start=") (display f-start)
+               (display " f_end=") (display f-end))))
+  (newline))
+
+;; ============================================================
+;; Test 10: L-BFGS on Rosenbrock (should do better)
+;; ============================================================
+(display "Test 10: L-BFGS on Rosenbrock... ")
+(let* ((x0 (vector 0.0 0.0))
+       (result (l-bfgs rosenbrock x0 500 1e-6)))
+  (let ((f-end (rosenbrock result)))
+    ;; L-BFGS should get close to minimum (f ≈ 0)
+    (if (< f-end 1.0)
+        (display "PASS")
+        (begin (display "FAIL: f=") (display f-end) (display " x=") (display result))))
+  (newline))
+
+(display "=== OPTIMIZATION ALGORITHMS TESTS COMPLETE ===") (newline)

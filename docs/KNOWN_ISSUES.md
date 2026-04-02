@@ -1,163 +1,87 @@
-# Known Issues and Limitations - Eshkol v1.0-Architecture
+# Known Issues — Eshkol v1.1.11-accelerate
 
-**Status**: v1.0.0-foundation - Production-ready with known limitations
-
-This document catalogs known limitations in v1.0-architecture and planned future enhancements.
+**Status**: Production release
 
 ---
 
-## Not Yet Implemented (Planned for Future Releases)
+## Resolved in v1.1 (Previously Listed as Planned)
 
-### Language Features
-
-❌ **`eval` function** - Dynamic code evaluation
-- **Status**: Planned for v1.1
-- **Workaround**: Homoiconicity provides partial alternative (lambdas preserve S-expressions)
-- **Technical note**: Will leverage lambda registry and JIT compiler
-
-❌ **Full `call/cc` support** - First-class continuations
-- **Status**: AST structures defined, implementation planned for v1.1  
-- **Current**: Limited continuation support
-- **Use case**: Non-local control flow
-
-❌ **Exact arithmetic** - Arbitrary precision integers and rationals
-- **Status**: Planned for v1.2
-- **Current**: Primarily uses IEEE 754 doubles for performance
-- **Workaround**: Symbolic mode for exact differentiation
-
-❌ **Bytevectors** - R7RS bytevector operations
-- **Status**: Type defined (`HEAP_SUBTYPE_BYTEVECTOR`), operations planned for v1.1
-- **Current**: Use regular vectors or tensors
-
-❌ **Records** - User-defined record types
-- **Status**: Type defined (`HEAP_SUBTYPE_RECORD`), syntax planned for v1.2
-- **Current**: Use vectors or hash tables
-
-### Ecosystem
-
-❌ **Package manager** - Central package repository
-- **Status**: Planned for v1.1
-- **Current**: Manual module management via `require`/`provide`
-
-❌ **Language Server Protocol (LSP)** - IDE integration
-- **Status**: Planned for v1.1
-- **Current**: Basic syntax highlighting only
-
-❌ **Visual debugger** - Source-level debugging UI
-- **Status**: Planned for v1.2
-- **Current**: Use GDB/LLDB with generated binaries
-
-❌ **Foreign Function Interface (FFI)** - C/C++ library integration
-- **Status**: Planned for v1.2
-- **Current**: Must link C libraries at build time
-
-### Performance Features
-
-❌ **GPU acceleration** - CUDA/Metal/Vulkan backends
-- **Status**: Planned for v1.3
-- **Architecture**: Already designed (see docs/private/MULTIMEDIA_SYSTEM_ARCHITECTURE.md)
-
-❌ **Distributed computing** - Multi-node training
-- **Status**: Planned for v1.3
-- **Use case**: Large-scale neural network training
-
-❌ **Profile-Guided Optimization (PGO)** - Runtime profile-based optimization
-- **Status**: Planned for v1.2
-- **Current**: LLVM -O3 optimizations only
+✅ `eval` — Dynamic code evaluation via REPL JIT
+✅ `call/cc` + `dynamic-wind` — First-class continuations
+✅ Exact arithmetic — Bignums and rational numbers (35 codegen gaps fixed)
+✅ Bytevectors — R7RS bytevector operations
+✅ Package manager — `eshkol-pkg` with registry
+✅ LSP server — `eshkol-lsp` for IDE integration
+✅ GPU acceleration — Metal (Apple Silicon) + CUDA (NVIDIA), forward and backward
+✅ Complex numbers — First-class type with AD support
+✅ Parallel primitives — `parallel-map/fold/filter/execute`, `future`/`force`
+✅ Signal processing — FFT/IFFT, window functions, FIR/IIR, Butterworth
+✅ Optimization algorithms — Gradient descent, Adam, L-BFGS, conjugate gradient
+✅ Records — R7RS `define-record-type`
+✅ Backward pass dispatch — GPU → BLAS/AMX → scalar (mirrors forward hierarchy)
+✅ Windows — Tier 1 native build via MSYS2/MinGW64
 
 ---
 
-## Known Limitations (Design Trade-offs)
+## Design Choices (Not Limitations)
 
-### Memory Model
+**Arena memory (OALR) instead of garbage collection**
+Deterministic O(1) allocation with zero GC pauses. Arena regions are lexically scoped and freed automatically on scope exit. This is a deliberate architectural choice for real-time, financial, and embedded workloads where latency predictability matters. Eshkol will never have a garbage collector.
 
-**No garbage collector** (by design)
-- **Trade-off**: Deterministic timing vs. automatic memory management convenience
-- **Mitigation**: OALR system provides automatic arena deallocation
-- **Impact**: Users must understand arena lifetimes for complex programs
+**Gradual typing (warnings, not errors)**
+Type annotations are optional and informational. This preserves Scheme's exploratory programming model. Programs compile and run regardless of type warnings. This is the intended behavior — Eshkol is a dynamically-typed language with optional static analysis, not a statically-typed language with escape hatches.
 
-**Single global arena** (current implementation)
-- **Trade-off**: Simplicity vs. per-thread arenas
-- **Impact**: All allocations go through one arena (fine for single-threaded scientific computing)
-- **Future**: Per-thread arenas planned when threading is added
-
-### Type System
-
-**Gradual typing warnings (not errors)**
-- **Trade-off**: Rapid prototyping vs. compile-time safety
-- **Impact**: Type errors can reach production if warnings ignored
-- **Mitigation**: Code review should address all type warnings
-
-**No higher-rank types** (current limitation)
-- **Trade-off**: Implementation complexity vs. type system power
-- **Impact**: Rank-1 polymorphism only (`forall` at outermost level)
-- **Future**: Planned for v1.3
-
-**Limited dependent types**
-- **Trade-off**: Complexity vs. safety
-- **Current**: Tensor dimensions only
-- **Future**: Full dependent types planned for v2.0
-
-### Numeric Computing
-
-**No exact arithmetic by default**
-- **Trade-off**: Performance vs. mathematical exactness
-- **Impact**: Uses IEEE 754 doubles (inexact)
-- **Mitigation**: Symbolic differentiation for exact derivatives
-
-**No complex number type** (as first-class value)
-- **Trade-off**: Implementation simplicity vs. mathematical completeness
-- **Current**: Complex numbers work in AD context
-- **Future**: Full complex type planned for v1.2
-
-### Platform Support
-
-**Windows support is Tier 2** (best-effort, not fully tested)
-- **Tier 1**: Linux x86-64, macOS x86-64/ARM64
-- **Tier 2**: Windows x86-64 (community-tested)
-- **Future**: Windows to become Tier 1 in v1.1
-
-**No mobile/embedded targets** (currently)
-- **Status**: Planned for v1.4
-- **Architecture**: Designed but not implemented
+**Hybrid arena model (global + per-thread)**
+Global arena for main thread, per-thread arenas (1 MB, lazily allocated) for parallel workers. Zero contention for parallel workloads. This is an implementation strength, not a trade-off.
 
 ---
 
-## Resolved Issues (Fixed in v1.0)
+## Hardware Constraints
 
-✅ **Pointer Consolidation** - COMPLETE
-- Consolidated 8 pointer types into 2 (HEAP_PTR, CALLABLE)
-- Object headers enable type/subtype system
-- Frees 6 bits of type tag space for future use
+**Metal SF64 software float64 emulation**
+Apple Silicon lacks hardware float64 compute shaders. Eshkol uses SF64 software emulation (~200 GFLOPS) for GPU double-precision. The cost model automatically prefers CPU cBLAS/AMX (~1.2 TFLOPS) when faster — GPU is only selected for matrices exceeding cBLAS capacity (~31K×31K and larger).
 
-✅ **Phase 3B Tagged Cons** - COMPLETE
-- 32-byte cons cells with direct tagged value storage
-- Improved cache efficiency
-- Simplified codegen
+**Conv2d backward is CPU-only**
+The conv2d backward pass uses stride-based scatter/gather indexing that doesn't map to GEMM. This is inherent to the convolution transpose operation. LayerNorm/BatchNorm backward are reductions, which are inherently sequential.
 
-✅ **Closure Mutable Captures** - COMPLETE
-- Pointers to captured variables (not values)
-- Enables stateful closures
-- Critical for iterative algorithms
+**Windows has no GPU acceleration**
+Windows build (MSYS2/MinGW64) does not include Metal (macOS-only) or CUDA (requires NVIDIA toolkit). GPU acceleration on Windows is planned when Vulkan Compute support is added.
 
-✅ **AD 32-Level Tape Stack** - COMPLETE
-- Nested gradient computation
-- Hessian calculation
-- Meta-learning support
+---
 
-✅ **Modular LLVM Backend** - COMPLETE
-- 19 specialized codegen modules
-- Callback-based architecture
-- Independent testing
+## Type System Scope
+
+**Rank-1 polymorphism only**
+`forall` quantification works at the outermost level. Higher-rank types (rank-2+) are not supported. This limits certain advanced functional programming patterns (e.g., ST monad encoding). Planned for a future release.
+
+**Dependent types: tensor dimensions only**
+The HoTT type system supports dependent types for tensor shape verification at compile time. Full dependent types (arbitrary value-level computation in types) are not implemented.
+
+---
+
+## Roadmap (Future Releases)
+
+These are planned features, not deficiencies in the current release:
+
+| Feature | Target | Current Alternative |
+|---------|--------|-------------------|
+| `define-library` / R7RS import with renaming | v1.3 | `require`/`provide` module system |
+| Visual debugger | v1.2 | GDB/LLDB + `--dump-ir` |
+| Full FFI with callbacks | v1.2 | `extern` C function calls work |
+| Python bindings | v1.2 | File I/O or subprocess interop |
+| Distributed computing | v1.2 | Single-machine thread pool |
+| Multi-GPU dispatch | v1.2 | Single GPU (Metal or CUDA) |
+| Vulkan Compute | v1.2 | Metal (macOS) + CUDA (Linux) |
+| Model serialization / ONNX | v1.2 | Manual file I/O |
+| Profile-Guided Optimization | v1.3 | LLVM -O3 + SIMD micro-kernels |
+| Mobile/embedded targets | v1.4 | Desktop/server only |
 
 ---
 
 ## Reporting Issues
 
-For bugs or feature requests:
-
 1. Check [Feature Matrix](FEATURE_MATRIX.md) for implementation status
-2. Review this document for known limitations
+2. Review this document for known constraints
 3. File issue on GitHub: https://github.com/tsotchke/eshkol/issues
 4. Provide: Eshkol version, platform, minimal reproduction
 
@@ -165,6 +89,6 @@ For bugs or feature requests:
 
 ## See Also
 
-- [Feature Matrix](FEATURE_MATRIX.md) - Implementation status (✅ / ⚠️ / ❌)
-- [Roadmap](docs/aidocs/ROADMAP.md) - Future development plans
-- [Master Architecture](ESHKOL_V1_ARCHITECTURE.md) - What is implemented
+- [Feature Matrix](FEATURE_MATRIX.md) — Implementation status
+- [Roadmap](../ROADMAP.md) — Future development plans
+- [API Reference](API_REFERENCE.md) — Complete function documentation

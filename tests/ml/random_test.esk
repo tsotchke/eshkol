@@ -1,0 +1,35 @@
+;;; Random Tensor Generation Test Suite
+;;; Tests rand, randn, randint
+
+(define (run-tests)
+  (display "=== Random Tensor Generation Tests ===")
+  (newline)
+
+  ;; Test rand - uniform [0, 1)
+  (display "-- Testing rand --")
+  (newline)
+  (let ((r (rand 2 3)))
+    (display "rand 2x3: ")
+    (display r)
+    (newline))
+
+  ;; Test randn - standard normal
+  (display "-- Testing randn --")
+  (newline)
+  (let ((r (randn 5)))
+    (display "randn 5: ")
+    (display r)
+    (newline))
+
+  ;; Test randint - random integers
+  (display "-- Testing randint --")
+  (newline)
+  (let ((r (randint 0 10 6)))
+    (display "randint 0-10, shape 6: ")
+    (display r)
+    (newline))
+
+  (display "=== Random Tests Complete ===")
+  (newline))
+
+(run-tests)

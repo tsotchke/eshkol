@@ -1,0 +1,174 @@
+(require stdlib)
+
+(display "TEST: Autodiff edge cases") (newline)
+
+; Test 1: Constant function gradient
+(let ((result (gradient (lambda (x) 5.0) 3.0)))
+  (display (if (< (abs (- result 0.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Constant function gradient is 0")
+  (newline))
+
+; Test 2: Identity gradient
+(let ((result (gradient (lambda (x) x) 3.0)))
+  (display (if (< (abs (- result 1.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Identity gradient is 1")
+  (newline))
+
+; Test 3: Linear gradient
+(let ((result (gradient (lambda (x) (* 2.0 x)) 3.0)))
+  (display (if (< (abs (- result 2.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Linear gradient d/dx(2x) = 2")
+  (newline))
+
+; Test 4: Quadratic gradient at x=3
+(let ((result (gradient (lambda (x) (* x x)) 3.0)))
+  (display (if (< (abs (- result 6.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Quadratic gradient d/dx(x^2) at x=3 = 6")
+  (newline))
+
+; Test 5: Cubic gradient at x=2
+(let ((result (gradient (lambda (x) (* x (* x x))) 2.0)))
+  (display (if (< (abs (- result 12.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Cubic gradient d/dx(x^3) at x=2 = 12")
+  (newline))
+
+; Test 6: Sum rule d/dx(x + x^2) at x=2 = 1 + 4 = 5
+(let ((result (gradient (lambda (x) (+ x (* x x))) 2.0)))
+  (display (if (< (abs (- result 5.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Sum rule d/dx(x + x^2) at x=2 = 5")
+  (newline))
+
+; Test 7: Product rule d/dx(x * sin(x)) at x=1
+; d/dx(x*sin(x)) = sin(x) + x*cos(x)
+(let* ((x 1.0)
+       (expected (+ (sin x) (* x (cos x))))
+       (result (gradient (lambda (x) (* x (sin x))) x)))
+  (display (if (< (abs (- result expected)) 1e-6) "PASS" "FAIL"))
+  (display ": Product rule d/dx(x*sin(x)) at x=1")
+  (newline))
+
+; Test 8: Chain rule d/dx(sin(x^2)) at x=1
+; d/dx(sin(x^2)) = cos(x^2) * 2x
+(let* ((x 1.0)
+       (expected (* (cos (* x x)) (* 2.0 x)))
+       (result (gradient (lambda (x) (sin (* x x))) x)))
+  (display (if (< (abs (- result expected)) 1e-6) "PASS" "FAIL"))
+  (display ": Chain rule d/dx(sin(x^2)) at x=1")
+  (newline))
+
+; Test 9: Gradient at zero
+(let ((result (gradient (lambda (x) (* x x)) 0.0)))
+  (display (if (< (abs (- result 0.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Quadratic gradient at x=0 is 0")
+  (newline))
+
+; Test 10: Negative input gradient
+(let ((result (gradient (lambda (x) (* x x)) -3.0)))
+  (display (if (< (abs (- result -6.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Quadratic gradient at x=-3 is -6")
+  (newline))
+
+; Test 11: exp gradient at 0 = 1
+(let ((result (gradient exp 0.0)))
+  (display (if (< (abs (- result 1.0)) 1e-6) "PASS" "FAIL"))
+  (display ": exp gradient at x=0 is 1")
+  (newline))
+
+; Test 12: sin gradient at 0 = cos(0) = 1
+(let ((result (gradient sin 0.0)))
+  (display (if (< (abs (- result 1.0)) 1e-6) "PASS" "FAIL"))
+  (display ": sin gradient at x=0 is 1 (cos(0))")
+  (newline))
+
+; Test 13: cos gradient at 0 = -sin(0) = 0
+(let ((result (gradient cos 0.0)))
+  (display (if (< (abs (- result 0.0)) 1e-6) "PASS" "FAIL"))
+  (display ": cos gradient at x=0 is 0 (-sin(0))")
+  (newline))
+
+; Test 14: Nested arithmetic d/dx((x+1)*(x-1)) = d/dx(x^2-1) = 2x at x=3 = 6
+(let ((result (gradient (lambda (x) (* (+ x 1.0) (- x 1.0))) 3.0)))
+  (display (if (< (abs (- result 6.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Nested d/dx((x+1)*(x-1)) at x=3 = 6")
+  (newline))
+
+; Test 15: Large gradient — steep quadratic at large x
+; d/dx(x^2) at x=100 = 200
+(let ((result (gradient (lambda (x) (* x x)) 100.0)))
+  (display (if (< (abs (- result 200.0)) 1e-4) "PASS" "FAIL"))
+  (display ": Large gradient d/dx(x^2) at x=100 = 200")
+  (newline))
+
+; Test 16: Small gradient near flat region
+; d/dx(sin(x)) at x=pi/2 = cos(pi/2) ≈ 0
+(let* ((pi/2 (* 2.0 (atan 1.0)))
+       (result (gradient sin pi/2)))
+  (display (if (< (abs result) 1e-6) "PASS" "FAIL"))
+  (display ": Small gradient sin'(pi/2) = cos(pi/2) ≈ 0")
+  (newline))
+
+; Test 17: exp gradient at x=1 = e
+(let* ((expected (exp 1.0))
+       (result (gradient exp 1.0)))
+  (display (if (< (abs (- result expected)) 1e-6) "PASS" "FAIL"))
+  (display ": exp gradient at x=1 = e")
+  (newline))
+
+; Test 18: Polynomial d/dx(3x^2 + 2x + 1) = 6x + 2 at x=2 = 14
+(let ((result (gradient (lambda (x) (+ (* 3.0 (* x x)) (+ (* 2.0 x) 1.0))) 2.0)))
+  (display (if (< (abs (- result 14.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Polynomial d/dx(3x^2+2x+1) at x=2 = 14")
+  (newline))
+
+; Test 19: d/dx(x^4) at x=2 = 4x^3 = 32
+(let ((result (gradient (lambda (x) (* x (* x (* x x)))) 2.0)))
+  (display (if (< (abs (- result 32.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Quartic d/dx(x^4) at x=2 = 32")
+  (newline))
+
+; Test 20: log gradient d/dx(log(x)) = 1/x at x=2
+(let* ((x 2.0)
+       (expected (/ 1.0 x))
+       (result (gradient log x)))
+  (display (if (< (abs (- result expected)) 1e-6) "PASS" "FAIL"))
+  (display ": log gradient at x=2 = 0.5")
+  (newline))
+
+; Test 21: sqrt gradient d/dx(sqrt(x)) = 1/(2*sqrt(x)) at x=4
+(let* ((x 4.0)
+       (expected (/ 1.0 (* 2.0 (sqrt x))))
+       (result (gradient sqrt x)))
+  (display (if (< (abs (- result expected)) 1e-6) "PASS" "FAIL"))
+  (display ": sqrt gradient at x=4 = 0.25")
+  (newline))
+
+; Test 22: chain rule with exp d/dx(exp(x^2)) = 2x*exp(x^2) at x=1
+(let* ((x 1.0)
+       (expected (* 2.0 x (exp (* x x))))
+       (result (gradient (lambda (x) (exp (* x x))) x)))
+  (display (if (< (abs (- result expected)) 1e-6) "PASS" "FAIL"))
+  (display ": Chain rule d/dx(exp(x^2)) at x=1")
+  (newline))
+
+; Test 23: Gradient consistency — same function, two points
+(let* ((grad-at-1 (gradient (lambda (x) (* x x x)) 1.0))
+       (grad-at-2 (gradient (lambda (x) (* x x x)) 2.0))
+       ; d/dx(x^3) = 3x^2: at 1→3, at 2→12, ratio should be 4
+       (ratio (/ grad-at-2 grad-at-1)))
+  (display (if (< (abs (- ratio 4.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Gradient ratio x^3' at x=2 vs x=1 = 4")
+  (newline))
+
+; Test 24: Negation: d/dx(-x^2) = -2x at x=3 = -6
+(let ((result (gradient (lambda (x) (- (* x x))) 3.0)))
+  (display (if (< (abs (- result -6.0)) 1e-6) "PASS" "FAIL"))
+  (display ": Negation d/dx(-x^2) at x=3 = -6")
+  (newline))
+
+; Test 25: Division: d/dx(1/x) = -1/x^2 at x=2 = -0.25
+(let* ((x 2.0)
+       (expected (/ -1.0 (* x x)))
+       (result (gradient (lambda (x) (/ 1.0 x)) x)))
+  (display (if (< (abs (- result expected)) 1e-6) "PASS" "FAIL"))
+  (display ": Division d/dx(1/x) at x=2 = -0.25")
+  (newline))

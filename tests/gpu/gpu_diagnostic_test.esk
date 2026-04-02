@@ -1,0 +1,49 @@
+;; GPU Diagnostic Test
+;; Verifies GPU is actually being used for large matrices
+
+(display "=== GPU Diagnostic Test ===") (newline)
+
+;; Helper to test matrix multiplication at a given size
+(define (test-matmul-size n expected)
+  (define size (* n n))
+  (define A-data (make-vector size 1.0))
+  (define B-data (make-vector size 1.0))
+  (define A (reshape A-data n n))
+  (define B (reshape B-data n n))
+  (define C (matmul A B))
+  (define C-data (tensor-data C))
+  (define result (vector-ref C-data 0))
+  (display "  ") (display n) (display "x") (display n)
+  (display " -> C[0,0] = ") (display result)
+  (display " (expected: ") (display expected) (display ")")
+  (if (and (>= result (* expected 0.99)) (<= result (* expected 1.01)))
+      (begin (display " PASS") (newline))
+      (begin (display " FAIL") (newline)))
+  result)
+
+;; Small matrices (BLAS/SIMD path, below threshold)
+(display "--- BLAS/SIMD path tests ---") (newline)
+(test-matmul-size 4 4.0)
+(test-matmul-size 8 8.0)
+(test-matmul-size 10 10.0)
+(test-matmul-size 16 16.0)
+(test-matmul-size 32 32.0)
+
+;; Medium matrices (still BLAS, getting close to threshold)
+(display "--- Near-threshold tests ---") (newline)
+(test-matmul-size 46 46.0)   ;; 46*46 = 2,116 output elements (below default threshold)
+(test-matmul-size 47 47.0)   ;; 47*47 = 2,209 output elements (GPU path with low threshold)
+
+;; Large matrices (GPU path)
+(display "--- GPU path tests ---") (newline)
+(test-matmul-size 50 50.0)
+(test-matmul-size 64 64.0)
+(test-matmul-size 100 100.0)
+
+;; Non-power-of-2 to test edge cases with 4x4 tiling
+(display "--- Edge case tests (non-power-of-2) ---") (newline)
+(test-matmul-size 49 49.0)   ;; Not divisible by 4
+(test-matmul-size 51 51.0)   ;; 51 % 4 = 3
+(test-matmul-size 53 53.0)   ;; 53 % 4 = 1
+
+(display "=== GPU Diagnostic Test Complete ===") (newline)

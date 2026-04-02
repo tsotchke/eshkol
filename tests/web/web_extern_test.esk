@@ -1,0 +1,30 @@
+;;; web_extern_test.esk
+;;; Tests that web external declarations compile correctly to WASM
+
+;; Basic web externals
+(extern i32 web-get-body :real web_get_body)
+(extern i32 web-create-element ptr :real web_create_element)
+(extern i32 web-append-child i32 i32 :real web_append_child)
+(extern i32 web-set-text-content i32 ptr :real web_set_text_content)
+(extern i32 web-set-style i32 ptr ptr :real web_set_style)
+(extern void web-console-log ptr :real web_console_log)
+
+;; Test function that creates a simple DOM structure
+(define (create-hello-world)
+  (let ((body (web-get-body))
+        (div (web-create-element "div")))
+    (web-set-text-content div "Hello from Eshkol!")
+    (web-set-style div "color" "blue")
+    (web-append-child body div)
+    (web-console-log "Created element")
+    div))
+
+;; Test function that creates multiple elements
+(define (create-list items)
+  (let ((ul (web-create-element "ul")))
+    ul))
+
+;; Main entry point
+(define (main)
+  (create-hello-world)
+  0)
