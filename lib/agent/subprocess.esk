@@ -1,0 +1,140 @@
+;;
+;; subprocess.esk - Subprocess management FFI wrapper
+;;
+;; Eshkol bindings to qLLM's subprocess.c for process spawning,
+;; I/O capture, timeout, and lifecycle management.
+;;
+
+(provide process-spawn process-spawn-shell
+         process-write-stdin process-close-stdin
+         process-read-stdout process-read-stderr
+         process-read-all-stdout process-read-all-stderr
+         process-wait process-running? process-exit-code
+         process-kill process-destroy
+         run-command run-command-capture)
+
+;; ============================================================================
+;; FFI Declarations
+;; ============================================================================
+
+(extern ptr process-spawn-raw ptr ptr ptr i64 :real qllm_process_spawn)
+(extern i64 process-write-stdin-raw ptr ptr i64 :real qllm_process_write_stdin)
+(extern void process-close-stdin-raw ptr :real qllm_process_close_stdin)
+(extern i64 process-read-stdout-raw ptr ptr i64 :real qllm_process_read_stdout)
+(extern i64 process-read-stderr-raw ptr ptr i64 :real qllm_process_read_stderr)
+(extern ptr process-read-all-stdout-raw ptr i64 ptr :real qllm_process_read_all_stdout)
+(extern ptr process-read-all-stderr-raw ptr i64 ptr :real qllm_process_read_all_stderr)
+(extern i32 process-wait-raw ptr i32 :real qllm_process_wait)
+(extern i32 process-running-raw ptr :real qllm_process_running)
+(extern i32 process-exit-code-raw ptr :real qllm_process_exit_code)
+(extern void process-kill-raw ptr i32 :real qllm_process_kill)
+(extern void process-destroy-raw ptr :real qllm_process_destroy)
+
+;; ============================================================================
+;; High-Level Wrappers
+;; ============================================================================
+
+(define (process-spawn command cwd)
+  "Spawn a process. Returns process handle or #f on failure.
+   command: shell command string (run via /bin/bash -c)
+   cwd: working directory"
+  (process-spawn-raw command cwd #f 0))
+
+(define (process-spawn-shell command cwd)
+  "Spawn a shell command with /bin/bash -c. Returns process handle."
+  (process-spawn command cwd))
+
+(define (process-write-stdin proc data)
+  "Write data to process stdin. Returns bytes written or -1 on error."
+  (process-write-stdin-raw proc data (string-length data)))
+
+(define (process-close-stdin proc)
+  "Close process stdin (signal EOF)."
+  (process-close-stdin-raw proc))
+
+(define (process-read-stdout proc max-bytes)
+  "Read available stdout. Returns string or empty string."
+  (let ((buf (process-read-all-stdout-raw proc max-bytes #f)))
+    (if buf buf "")))
+
+(define (process-read-stderr proc max-bytes)
+  "Read available stderr. Returns string or empty string."
+  (let ((buf (process-read-all-stderr-raw proc max-bytes #f)))
+    (if buf buf "")))
+
+(define (process-read-all-stdout proc max-bytes)
+  "Read all stdout until EOF. Returns string."
+  (process-read-stdout proc max-bytes))
+
+(define (process-read-all-stderr proc max-bytes)
+  "Read all stderr until EOF. Returns string."
+  (process-read-stderr proc max-bytes))
+
+(define (process-wait proc timeout-ms)
+  "Wait for process to exit. Returns: 0=exited, 1=timeout, -1=error."
+  (process-wait-raw proc timeout-ms))
+
+(define (process-running? proc)
+  "Check if process is still running."
+  (= (process-running-raw proc) 1))
+
+(define (process-exit-code proc)
+  "Get exit code. Only valid after process-wait returns 0."
+  (process-exit-code-raw proc))
+
+(define (process-kill proc . signal)
+  "Kill process. Default signal is SIGTERM (15)."
+  (process-kill-raw proc (if (null? signal) 15 (car signal))))
+
+(define (process-destroy proc)
+  "Free all process resources. Kills process if still running."
+  (process-destroy-raw proc))
+
+;; ============================================================================
+;; Convenience Functions
+;; ============================================================================
+
+(define (run-command command cwd timeout-ms)
+  "Run a command and wait for completion.
+   Returns: exit code (integer)."
+  (let ((proc (process-spawn command cwd)))
+    (if (not proc)
+        -1
+        (begin
+          (process-close-stdin proc)
+          (let ((wait-result (process-wait proc timeout-ms)))
+            (let ((code (if (= wait-result 0)
+                            (process-exit-code proc)
+                            (begin
+                              (process-kill proc)
+                              (process-wait proc 5000)
+                              -1))))
+              (process-destroy proc)
+              code))))))
+
+(define (run-command-capture command cwd timeout-ms max-output)
+  "Run a command and capture stdout/stderr.
+   Returns: alist with 'exit-code, 'stdout, 'stderr keys."
+  (let ((proc (process-spawn command cwd)))
+    (if (not proc)
+        (list (cons 'exit-code -1)
+              (cons 'stdout "")
+              (cons 'stderr "Error: failed to spawn process"))
+        (begin
+          (process-close-stdin proc)
+          (let* ((wait-result (process-wait proc timeout-ms))
+                 (timed-out (= wait-result 1))
+                 (_ (when timed-out
+                      (process-kill proc)
+                      (process-wait proc 5000)))
+                 (stdout (process-read-all-stdout proc max-output))
+                 (stderr (process-read-all-stderr proc max-output))
+                 (code (if timed-out 124 (process-exit-code proc))))
+            (process-destroy proc)
+            (list (cons 'exit-code code)
+                  (cons 'stdout stdout)
+                  (cons 'stderr (if timed-out
+                                    (string-append stderr "\n[Process timed out after "
+                                                   (number->string (/ timeout-ms 1000))
+                                                   "s]")
+                                    stderr))))))))

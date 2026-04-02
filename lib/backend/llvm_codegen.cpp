@@ -598,9 +598,24 @@ private:
     IntegerType* int16_type;
     IntegerType* int8_type;
     IntegerType* int1_type;
+    IntegerType* size_type;  // i32 on wasm32, i64 on native — for size_t params
     Type* double_type;
     Type* void_type;
     Type* ptr_type;
+
+    // Helper: create a size_t constant (target-dependent width)
+    Value* sizeConst(uint64_t n) {
+        return ConstantInt::get(size_type, n);
+    }
+
+    // Helper: truncate or extend a value to size_t width
+    Value* toSize(Value* v) {
+        if (v->getType() == size_type) return v;
+        if (v->getType()->isIntegerTy()) {
+            return builder->CreateIntCast(v, size_type, false);
+        }
+        return v;
+    }
 
     // LIBRARY MODE: When true, skip main function creation and export all symbols
     bool library_mode;
@@ -650,6 +665,7 @@ public:
         void_type = types->getVoidType();
         ptr_type = types->getPtrType();
         tagged_value_type = types->getTaggedValueType();
+        size_type = types->getSizeType();  // i32 on wasm32, i64 on native
 
         // Initialize function cache (lazy-loaded C library functions)
         funcs = std::make_unique<eshkol::FunctionCache>(*module, *types);
@@ -1673,7 +1689,7 @@ public:
                     );
                     arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), shared_arena_ref);
                 } else {
-                    Value* arena_size = ConstantInt::get(int64_type, 8192);
+                    Value* arena_size = sizeConst(8192);
                     arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
 
                     // Also store in __repl_shared_arena for runtime functions
@@ -3306,7 +3322,7 @@ private:
                     eshkol_debug("Loaded shared REPL arena");
                 } else {
                     // Normal mode: create new arena
-                    Value* arena_size = ConstantInt::get(int64_type, 8192);
+                    Value* arena_size = sizeConst(8192);
                     arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
 
                     // Also store in __repl_shared_arena for runtime functions
@@ -3437,7 +3453,7 @@ private:
                     eshkol_debug("Loaded shared REPL arena (no lambdas case)");
                 } else {
                     // Normal mode: create new arena
-                    Value* arena_size = ConstantInt::get(int64_type, 8192);
+                    Value* arena_size = sizeConst(8192);
                     arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
 
                     // Also store in __repl_shared_arena for runtime functions
@@ -3558,7 +3574,7 @@ private:
                 eshkol_debug("Loaded shared REPL arena (top-level expressions case)");
             } else {
                 // Normal mode: create new arena
-                Value* arena_size = ConstantInt::get(int64_type, 8192);
+                Value* arena_size = sizeConst(8192);
                 arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
 
                 // Also store in __repl_shared_arena for runtime functions
@@ -19042,7 +19058,7 @@ private:
 
                         // 1. Allocate space for tagged_value on the arena (16 bytes)
                         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                        Value* alloc_size = ConstantInt::get(int64_type, 16);  // sizeof(eshkol_tagged_value_t)
+                        Value* alloc_size = sizeConst(16);  // sizeof(eshkol_tagged_value_t)
                         Value* arena_storage = builder->CreateCall(getArenaAllocateFunc(), {arena_ptr, alloc_size});
 
                         // 2. Copy current value from stack alloca to arena storage
@@ -24571,7 +24587,7 @@ private:
         Value* arena_ptr = builder->CreateLoad(ptr_type, arena_global, "arena");
 
         // Allocate 16 bytes for complex number
-        Value* size = ConstantInt::get(int64_type, 16);
+        Value* size = sizeConst(16);
         Function* alloc_func = function_table["arena_allocate"];
         Value* complex_heap_ptr = builder->CreateCall(alloc_func, {arena_ptr, size}, "complex_ptr");
 
