@@ -15,7 +15,8 @@
 
 namespace eshkol {
 
-TypeSystem::TypeSystem(llvm::LLVMContext& ctx) : context(ctx) {
+TypeSystem::TypeSystem(llvm::LLVMContext& ctx, bool is_wasm32)
+    : context(ctx), is_wasm32_(is_wasm32) {
     // Cache primitive types (avoid repeated lookups)
     int64_type = llvm::Type::getInt64Ty(context);
     int32_type = llvm::Type::getInt32Ty(context);
@@ -25,6 +26,9 @@ TypeSystem::TypeSystem(llvm::LLVMContext& ctx) : context(ctx) {
     double_type = llvm::Type::getDoubleTy(context);
     void_type = llvm::Type::getVoidTy(context);
     ptr_type = llvm::PointerType::getUnqual(context);
+
+    // Target-dependent size type: i32 on wasm32, i64 on native 64-bit
+    size_type_ = is_wasm32_ ? int32_type : int64_type;
 
     // Create SIMD vector types for tensor operations
     // These are fixed-size vector types that map to SIMD registers

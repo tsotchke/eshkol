@@ -93,6 +93,10 @@ public:
     llvm::StructType* adNodeType() { return types_.getAdNodeType(); }
     llvm::StructType* tensorType() { return types_.getTensorType(); }
 
+    // === Target-Dependent Types ===
+    llvm::IntegerType* sizeType() { return types_.getSizeType(); }  // i32 on wasm32, i64 on native
+    bool isWasm32() const { return types_.isWasm32(); }
+
     // === SIMD Vector Types (for tensor operations) ===
     llvm::VectorType* double2Type() { return types_.getDouble2Type(); }  // SSE: 2 x double
     llvm::VectorType* double4Type() { return types_.getDouble4Type(); }  // AVX: 4 x double

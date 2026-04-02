@@ -22,9 +22,17 @@ class EshkolRuntime {
         this.memory = null;
     }
 
+    // Bump allocator for arena stubs
+    _bump(size) {
+        if (!this._bumpPtr) this._bumpPtr = 131072; // Start at 128KB
+        const ptr = this._bumpPtr;
+        this._bumpPtr += ((size + 7) & ~7); // 8-byte aligned
+        return ptr;
+    }
+
     setInstance(instance) {
         this.instance = instance;
-        this.memory = instance.exports.memory;
+        this.memory = instance.exports.memory || this._importedMemory;
     }
 
     // === Handle System ===
@@ -48,17 +56,19 @@ class EshkolRuntime {
     // === String Helpers ===
 
     readString(ptr) {
-        if (!ptr || !this.memory) return '';
-        const bytes = new Uint8Array(this.memory.buffer);
+        const mem = this.memory || this._importedMemory;
+        if (!ptr || !mem) return '';
+        const bytes = new Uint8Array(mem.buffer);
         let end = ptr;
         while (end < bytes.length && bytes[end] !== 0) end++;
         return new TextDecoder().decode(bytes.slice(ptr, end));
     }
 
     writeString(ptr, str, maxLen) {
-        if (!ptr || !this.memory) return 0;
+        const mem = this.memory || this._importedMemory;
+        if (!ptr || !mem) return 0;
         const bytes = new TextEncoder().encode(str);
-        const view = new Uint8Array(this.memory.buffer);
+        const view = new Uint8Array(mem.buffer);
         const len = Math.min(bytes.length, maxLen - 1);
         view.set(bytes.subarray(0, len), ptr);
         view[ptr + len] = 0;
@@ -72,73 +82,48 @@ class EshkolRuntime {
         return {
             env: {
                 // Memory
-                __linear_memory: new WebAssembly.Memory({ initial: 256, maximum: 1024 }),
+                __linear_memory: rt._importedMemory = new WebAssembly.Memory({ initial: 256, maximum: 1024 }),
+                // WASM linker globals (required by LLVM static relocation)
+                __stack_pointer: new WebAssembly.Global({ value: 'i32', mutable: true }, 1048576), // 1MB stack
+                __indirect_function_table: new WebAssembly.Table({ initial: 256, element: 'anyfunc' }),
 
-                // Arena stubs (minimal — use static strings in Eshkol code)
-                arena_create: (size) => 1,
-                arena_create_threadsafe: (size) => 1,
-                arena_destroy: (arena) => {},
-                arena_allocate: (arena, size) => {
-                    // Bump allocator in WASM memory
-                    if (!rt._bumpPtr) rt._bumpPtr = 65536; // Start after 64KB
-                    const ptr = rt._bumpPtr;
-                    rt._bumpPtr += ((size + 7) & ~7); // 8-byte aligned
-                    return ptr;
-                },
-                arena_allocate_with_header: (arena, size, type, subtype) => {
-                    if (!rt._bumpPtr) rt._bumpPtr = 65536;
-                    const ptr = rt._bumpPtr;
-                    rt._bumpPtr += ((size + 15) & ~7);
-                    return ptr + 8; // Skip header
-                },
-                arena_push_scope: (arena) => {},
-                arena_pop_scope: (arena) => {},
-
-                // Cons cells (for lists)
-                arena_allocate_cons_cell: (arena) => {
-                    return rt.createImports().env.arena_allocate(arena, 32);
-                },
-                arena_allocate_cons_with_header: (arena) => {
-                    return rt.createImports().env.arena_allocate_with_header(arena, 24, 8, 0);
-                },
-                arena_allocate_tagged_cons_cell: (arena) => {
-                    return rt.createImports().env.arena_allocate(arena, 48);
-                },
+                // Bump allocator (all arena functions use this)
+                // All params may be BigInt (i64) — convert with Number()
+                arena_create: () => 1,
+                arena_create_threadsafe: () => 1,
+                arena_destroy: () => {},
+                arena_allocate: (arena, size) => { return rt._bump(Number(size)); },
+                arena_allocate_with_header: (arena, size) => { return rt._bump(Number(size) + 8) + 8; },
+                arena_push_scope: () => {},
+                arena_pop_scope: () => {},
+                arena_allocate_cons_cell: () => rt._bump(32),
+                arena_allocate_cons_with_header: () => rt._bump(40) + 8,
+                arena_allocate_tagged_cons_cell: () => rt._bump(48),
                 eshkol_tagged_cons_set_tagged_value: () => {},
-
-                // Tensor stubs
-                arena_allocate_tensor_with_header: (arena) => {
-                    return rt.createImports().env.arena_allocate(arena, 64);
-                },
-                arena_allocate_tensor_full: (arena, ndim, total) => {
-                    return rt.createImports().env.arena_allocate(arena, 32 + total * 8);
-                },
-                arena_allocate_vector_with_header: (arena, n) => {
-                    return rt.createImports().env.arena_allocate(arena, 8 + n * 16);
-                },
-
-                // AD stubs
-                arena_allocate_ad_node: (arena) => rt.createImports().env.arena_allocate(arena, 128),
-                arena_allocate_ad_node_with_header: (arena) => rt.createImports().env.arena_allocate_with_header(arena, 128, 9, 2),
-                arena_allocate_tape: (arena, cap) => rt.createImports().env.arena_allocate(arena, 64),
+                arena_tagged_cons_set_ptr: () => {},
+                arena_tagged_cons_set_null: () => {},
+                arena_tagged_cons_set_int64: () => {},
+                arena_allocate_tensor_with_header: () => rt._bump(72) + 8,
+                arena_allocate_tensor_full: (arena, ndim, total) => rt._bump(32 + Number(total) * 8),
+                arena_allocate_vector_with_header: (arena, n) => rt._bump(8 + Number(n) * 16),
+                arena_allocate_ad_node: () => rt._bump(128),
+                arena_allocate_ad_node_with_header: () => rt._bump(136) + 8,
+                arena_allocate_tape: () => rt._bump(64),
                 arena_tape_add_node: () => 0,
                 arena_tape_reset: () => {},
                 arena_tape_get_node: () => 0,
                 arena_tape_get_node_count: () => 0,
-
-                // String stubs
-                arena_allocate_string_with_header: (arena, len) => {
-                    return rt.createImports().env.arena_allocate_with_header(arena, len + 1, 8, 1);
-                },
-
-                // Closure stubs
-                arena_allocate_closure_with_header: (arena, funcPtr, packed, sexpr, retType, name) => {
-                    return rt.createImports().env.arena_allocate(arena, 64);
-                },
+                arena_allocate_string_with_header: (arena, len) => rt._bump(Number(len) + 9) + 8,
+                arena_allocate_closure_with_header: () => rt._bump(64),
 
                 // Runtime functions
+                __eshkol_register_parallel_workers: () => {},
                 eshkol_init_global_arena: () => {},
                 eshkol_init_stack_size: () => {},
+                eshkol_check_recursion_depth: () => 0,
+                eshkol_decrement_recursion_depth: () => {},
+                eshkol_make_exception_with_header: () => 0,
+                eshkol_raise: (exc) => { console.error('Eshkol exception raised'); },
                 eshkol_display_value: () => {},
                 eshkol_deep_equal: () => 0,
                 eshkol_lambda_registry_init: () => {},
@@ -217,7 +202,7 @@ class EshkolRuntime {
 
                 web_set_inner_html: (elHandle, htmlPtr) => {
                     const el = rt.getHandle(elHandle);
-                    if (el) el.innerHTML = rt.readString(htmlPtr);
+                    if (el && el.innerHTML !== undefined) el.innerHTML = rt.readString(htmlPtr);
                     return 0;
                 },
 

@@ -38,7 +38,18 @@ public:
      * Construct a TypeSystem for the given LLVM context.
      * Creates and caches all LLVM types used by the compiler.
      */
-    explicit TypeSystem(llvm::LLVMContext& ctx);
+    /**
+     * @param ctx LLVM context
+     * @param is_wasm32 If true, size_t is i32 (wasm32 target). If false, i64 (native 64-bit).
+     */
+    explicit TypeSystem(llvm::LLVMContext& ctx, bool is_wasm32 = false);
+
+    // Target-dependent size type (i32 on wasm32, i64 on native 64-bit)
+    // Use this for: arena sizes, string lengths, array counts, memcpy sizes —
+    // anything that maps to C's size_t or a pointer-width integer.
+    // Do NOT use for tagged value data fields (always i64).
+    llvm::IntegerType* getSizeType() const { return size_type_; }
+    bool isWasm32() const { return is_wasm32_; }
 
     // Primitive types
     llvm::IntegerType* getInt64Type() const { return int64_type; }
@@ -115,6 +126,8 @@ public:
 
 private:
     llvm::LLVMContext& context;
+    bool is_wasm32_;
+    llvm::IntegerType* size_type_;  // i32 on wasm32, i64 on native
 
     // Cached primitive types
     llvm::IntegerType* int64_type;

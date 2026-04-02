@@ -617,7 +617,11 @@ private:
     std::string source_filename_;
 
 public:
-    EshkolLLVMCodeGen(const char* module_name, bool is_library_mode = false) {
+    EshkolLLVMCodeGen(const char* module_name, bool is_library_mode = false,
+                       const char* target_triple = nullptr) {
+        // Determine target BEFORE any type initialization
+        bool is_wasm32 = target_triple &&
+                          std::string(target_triple).find("wasm32") != std::string::npos;
         library_mode = is_library_mode;
         // Create a sanitized module prefix for lambda naming
         module_prefix = module_name;
@@ -629,8 +633,12 @@ public:
         module = std::make_unique<Module>(module_name, *context);
         builder = std::make_unique<IRBuilder<>>(*context);
 
-        // Initialize type system (creates and caches all LLVM types)
-        types = std::make_unique<eshkol::TypeSystem>(*context);
+        // Initialize type system with target awareness
+        // wasm32: size_t = i32, native: size_t = i64
+        types = std::make_unique<eshkol::TypeSystem>(*context, is_wasm32);
+
+        // Target triple will be set after LLVM target initialization below.
+        // The is_wasm32 flag already ensures TypeSystem uses correct size types.
 
         // Set local type pointers from TypeSystem for backward compatibility
         int64_type = types->getInt64Type();
@@ -660,11 +668,12 @@ public:
         InitializeAllAsmParsers();
         InitializeAllAsmPrinters();
 
-        // Set target triple
-        std::string target_triple_str = sys::getDefaultTargetTriple();
-        Triple target_triple(target_triple_str);
+        // Set target triple (use WASM triple if target_triple param is set)
+        std::string target_triple_str = target_triple ? std::string(target_triple)
+                                                       : sys::getDefaultTargetTriple();
+        Triple target_triple_obj(target_triple_str);
 #if LLVM_VERSION_MAJOR >= 18
-        module->setTargetTriple(target_triple);
+        module->setTargetTriple(target_triple_obj);
 #else
         module->setTargetTriple(target_triple_str);
 #endif
@@ -692,15 +701,16 @@ public:
 
         std::string error;
 #if LLVM_VERSION_MAJOR >= 18
-        const Target* target = TargetRegistry::lookupTarget(target_triple, error);
+        const Target* target = TargetRegistry::lookupTarget(target_triple_obj, error);
 #else
         const Target* target = TargetRegistry::lookupTarget(target_triple_str, error);
 #endif
-        if (target) {
+        if (target && !is_wasm32) {
+            // Only set data layout for native targets — WASM data layout is set in compile step
             TargetOptions options;
             std::unique_ptr<TargetMachine> target_machine(
 #if LLVM_VERSION_MAJOR >= 18
-                target->createTargetMachine(target_triple, g_cached_cpu_name, g_cached_features,
+                target->createTargetMachine(target_triple_obj, g_cached_cpu_name, g_cached_features,
                                            options, Reloc::PIC_));
 #else
                 target->createTargetMachine(target_triple_str, g_cached_cpu_name, g_cached_features,
@@ -29141,9 +29151,20 @@ int eshkol_get_optimization_level(void) {
     return g_optimization_level;
 }
 
+// Target triple for WASM compilation — set BEFORE codegen
+static const char* g_codegen_target_triple = nullptr;
+
+void eshkol_set_target(const char* triple) {
+    g_codegen_target_triple = triple;
+}
+
+const char* eshkol_get_target(void) {
+    return g_codegen_target_triple;
+}
+
 LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts, const char* module_name) {
     try {
-        EshkolLLVMCodeGen codegen(module_name, false);  // not library mode
+        EshkolLLVMCodeGen codegen(module_name, false, g_codegen_target_triple);
         auto result = codegen.generateIR(asts, num_asts);
 
         if (!result.first || !result.second) {
@@ -29760,6 +29781,17 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
 
         // Set data layout for WASM
         module->setDataLayout(target_machine->createDataLayout());
+
+        // Export main() and scheme_main() for WASM — required for browser instantiation
+        for (auto& func : *module) {
+            if (func.getName() == "main" || func.getName() == "scheme_main" ||
+                func.getName() == "_start") {
+                func.setVisibility(GlobalValue::DefaultVisibility);
+                func.setDSOLocal(false);
+                // Set wasm export name attribute
+                func.addFnAttr("wasm-export-name", func.getName());
+            }
+        }
 
         // Run LLVM optimization passes before WASM codegen
         // Always optimize for WASM (even at -O0) to avoid exceeding local count limits
