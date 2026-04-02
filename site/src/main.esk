@@ -1,0 +1,349 @@
+;;; main.esk — Eshkol website entry point
+;;;
+;;; This entire website is written in Eshkol, compiled to WebAssembly,
+;;; and served via GitHub Pages. It demonstrates Eshkol's web platform
+;;; capabilities using the DOM binding API.
+
+;; Web API extern declarations
+(extern i32 web-get-body :real web_get_body)
+(extern i32 web-get-window :real web_get_window)
+(extern i32 web-create-element ptr :real web_create_element)
+(extern i32 web-create-text-node ptr :real web_create_text_node)
+(extern i32 web-append-child i32 i32 :real web_append_child)
+(extern i32 web-set-text-content i32 ptr :real web_set_text_content)
+(extern i32 web-set-inner-html i32 ptr :real web_set_inner_html)
+(extern i32 web-set-attribute i32 ptr ptr :real web_set_attribute)
+(extern i32 web-set-style i32 ptr ptr :real web_set_style)
+(extern i32 web-add-class i32 ptr :real web_add_class)
+(extern i32 web-add-event-listener i32 ptr i32 :real web_add_event_listener)
+(extern i32 web-get-element-by-id ptr :real web_get_element_by_id)
+(extern i32 web-query-selector ptr :real web_query_selector)
+(extern void web-console-log ptr :real web_console_log)
+(extern i32 web-get-hash ptr i32 :real web_get_hash)
+(extern i32 web-set-hash ptr :real web_set_hash)
+(extern i32 web-get-window-width :real web_get_window_width)
+(extern i32 web-canvas-get-context i32 ptr :real web_canvas_get_context)
+(extern i32 web-canvas-fill-rect i32 i32 i32 i32 i32 :real web_canvas_fill_rect)
+(extern i32 web-canvas-clear-rect i32 i32 i32 i32 i32 :real web_canvas_clear_rect)
+(extern i32 web-canvas-set-fill-style i32 ptr :real web_canvas_set_fill_style)
+(extern i32 web-canvas-set-stroke-style i32 ptr :real web_canvas_set_stroke_style)
+(extern i32 web-canvas-set-line-width i32 f64 :real web_canvas_set_line_width)
+(extern i32 web-canvas-begin-path i32 :real web_canvas_begin_path)
+(extern i32 web-canvas-move-to i32 f64 f64 :real web_canvas_move_to)
+(extern i32 web-canvas-line-to i32 f64 f64 :real web_canvas_line_to)
+(extern i32 web-canvas-stroke i32 :real web_canvas_stroke)
+(extern i32 web-canvas-fill-text i32 ptr f64 f64 :real web_canvas_fill_text)
+(extern i32 web-canvas-set-font i32 ptr :real web_canvas_set_font)
+(extern i32 web-request-animation-frame i32 :real web_request_animation_frame)
+(extern i32 web-performance-now :real web_performance_now)
+(extern i32 web-set-timeout i32 i32 :real web_set_timeout)
+
+;; ═══════════════════════════════════════════════════════════
+;; HELPERS
+;; ═══════════════════════════════════════════════════════════
+
+(define (create-div parent)
+  (let ((div (web-create-element "div")))
+    (web-append-child parent div)
+    div))
+
+(define (create-text tag text parent)
+  (let ((el (web-create-element tag)))
+    (web-set-text-content el text)
+    (web-append-child parent el)
+    el))
+
+(define (style! el prop val)
+  (web-set-style el prop val)
+  el)
+
+;; ═══════════════════════════════════════════════════════════
+;; NAVIGATION
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-nav parent)
+  (let ((nav (web-create-element "nav")))
+    (style! nav "position" "fixed")
+    (style! nav "top" "0")
+    (style! nav "left" "0")
+    (style! nav "right" "0")
+    (style! nav "height" "64px")
+    (style! nav "background" "rgba(10,10,15,0.9)")
+    (style! nav "backdropFilter" "blur(12px)")
+    (style! nav "display" "flex")
+    (style! nav "alignItems" "center")
+    (style! nav "justifyContent" "space-between")
+    (style! nav "padding" "0 32px")
+    (style! nav "zIndex" "100")
+    (style! nav "borderBottom" "1px solid #2a2a3a")
+
+    ;; Logo
+    (let ((logo (create-text "a" "Eshkol" nav)))
+      (style! logo "fontSize" "1.4rem")
+      (style! logo "fontWeight" "800")
+      (style! logo "color" "#7c3aed")
+      (style! logo "textDecoration" "none")
+      (style! logo "letterSpacing" "-0.5px")
+      (web-set-attribute logo "href" "#/"))
+
+    ;; Nav links container
+    (let ((links (create-div nav)))
+      (style! links "display" "flex")
+      (style! links "gap" "28px")
+      (style! links "alignItems" "center")
+
+      (let ((make-link (lambda (text href)
+              (let ((a (create-text "a" text links)))
+                (style! a "color" "#a0a0b8")
+                (style! a "textDecoration" "none")
+                (style! a "fontSize" "0.9rem")
+                (style! a "fontWeight" "500")
+                (web-set-attribute a "href" href)
+                a))))
+        (make-link "Features" "#/features")
+        (make-link "Downloads" "#/downloads")
+        (make-link "Docs" "#/docs")
+        (make-link "Playground" "#/playground")
+
+        ;; GitHub link
+        (let ((gh (create-text "a" "GitHub" links)))
+          (style! gh "color" "#0a0a0f")
+          (style! gh "background" "#7c3aed")
+          (style! gh "padding" "6px 16px")
+          (style! gh "borderRadius" "6px")
+          (style! gh "fontSize" "0.85rem")
+          (style! gh "fontWeight" "600")
+          (style! gh "textDecoration" "none")
+          (web-set-attribute gh "href" "https://github.com/tsotchke/eshkol")
+          (web-set-attribute gh "target" "_blank"))))
+
+    (web-append-child parent nav)
+    nav))
+
+;; ═══════════════════════════════════════════════════════════
+;; HERO SECTION
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-hero parent)
+  (let ((hero (create-div parent)))
+    (style! hero "minHeight" "100vh")
+    (style! hero "display" "flex")
+    (style! hero "flexDirection" "column")
+    (style! hero "alignItems" "center")
+    (style! hero "justifyContent" "center")
+    (style! hero "paddingTop" "64px")
+    (style! hero "textAlign" "center")
+    (style! hero "position" "relative")
+
+    ;; Title
+    (let ((title (create-text "h1" "Eshkol" hero)))
+      (style! title "fontSize" "5rem")
+      (style! title "fontWeight" "900")
+      (style! title "letterSpacing" "-3px")
+      (style! title "background" "linear-gradient(135deg, #7c3aed, #a78bfa, #00ff88)")
+      (style! title "WebkitBackgroundClip" "text")
+      (style! title "WebkitTextFillColor" "transparent")
+      (style! title "marginBottom" "16px"))
+
+    ;; Subtitle
+    (let ((sub (create-text "p" "Mathematics as a First-Class Citizen" hero)))
+      (style! sub "fontSize" "1.5rem")
+      (style! sub "color" "#a0a0b8")
+      (style! sub "fontWeight" "300")
+      (style! sub "marginBottom" "12px"))
+
+    ;; Tagline
+    (let ((tag (create-text "p" "The first compiled language with compiler-native automatic differentiation." hero)))
+      (style! tag "fontSize" "1.1rem")
+      (style! tag "color" "#606078")
+      (style! tag "maxWidth" "600px")
+      (style! tag "marginBottom" "40px"))
+
+    ;; Code demo
+    (let ((code-block (create-div hero)))
+      (style! code-block "background" "#0d0d15")
+      (style! code-block "border" "1px solid #2a2a3a")
+      (style! code-block "borderRadius" "12px")
+      (style! code-block "padding" "24px 32px")
+      (style! code-block "maxWidth" "600px")
+      (style! code-block "width" "100%")
+      (style! code-block "textAlign" "left")
+
+      (web-set-inner-html code-block
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Multi-parameter gradient — computed at compile time</span>
+<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(f x y)</span>
+  <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)))</span>
+
+<span style='color:#c084fc'>(gradient</span> f <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>)</span>
+<span style='color:#606078'>;; → #(10.0 3.0)  — ∂f/∂x=2x+y, ∂f/∂y=x</span></pre>"))
+
+    ;; Install CTA
+    (let ((cta (create-div hero)))
+      (style! cta "marginTop" "40px")
+      (style! cta "display" "flex")
+      (style! cta "gap" "16px")
+      (style! cta "alignItems" "center")
+
+      (let ((install (create-text "code" "brew tap tsotchke/eshkol && brew install eshkol" cta)))
+        (style! install "background" "#1a1a28")
+        (style! install "color" "#00ff88")
+        (style! install "padding" "12px 24px")
+        (style! install "borderRadius" "8px")
+        (style! install "fontSize" "0.9rem")
+        (style! install "border" "1px solid #2a2a3a")
+        (style! install "fontFamily" "'JetBrains Mono', monospace")))
+
+    hero))
+
+;; ═══════════════════════════════════════════════════════════
+;; FEATURES SECTION
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-feature-card parent icon title desc)
+  (let ((card (create-div parent)))
+    (style! card "background" "#1a1a28")
+    (style! card "border" "1px solid #2a2a3a")
+    (style! card "borderRadius" "12px")
+    (style! card "padding" "28px")
+    (style! card "flex" "1")
+    (style! card "minWidth" "280px")
+
+    (let ((h (create-text "h3" title card)))
+      (style! h "fontSize" "1.2rem")
+      (style! h "marginBottom" "8px")
+      (style! h "color" "#a78bfa"))
+
+    (let ((p (create-text "p" desc card)))
+      (style! p "color" "#a0a0b8")
+      (style! p "fontSize" "0.9rem")
+      (style! p "lineHeight" "1.6"))
+
+    card))
+
+(define (render-pillars parent)
+  (let ((section (create-div parent)))
+    (style! section "maxWidth" "1200px")
+    (style! section "margin" "0 auto")
+    (style! section "padding" "80px 32px")
+
+    (let ((heading (create-text "h2" "Built for Scientific Computing" section)))
+      (style! heading "textAlign" "center")
+      (style! heading "fontSize" "2.2rem")
+      (style! heading "fontWeight" "700")
+      (style! heading "marginBottom" "48px"))
+
+    (let ((grid (create-div section)))
+      (style! grid "display" "flex")
+      (style! grid "gap" "24px")
+      (style! grid "flexWrap" "wrap")
+
+      (render-feature-card grid "∇"
+        "Compiler-Native AD"
+        "8 differential operators (gradient, jacobian, hessian, divergence, curl, laplacian) compiled directly to LLVM IR. Forward-mode dual numbers + reverse-mode tape. No runtime library overhead.")
+
+      (render-feature-card grid "◎"
+        "Zero Garbage Collection"
+        "Deterministic arena-based memory with ownership tracking (OALR). No GC pauses, no unpredictable latency. Memory is freed when arenas go out of scope.")
+
+      (render-feature-card grid "⚡"
+        "Heterogeneous Computing"
+        "GPU acceleration via Metal (Apple Silicon) and CUDA. XLA/StableHLO backend for ML workloads. SIMD vectorization. Automatic dispatch: GPU → BLAS → SIMD → scalar."))
+
+    section))
+
+;; ═══════════════════════════════════════════════════════════
+;; STATS SECTION
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-stat parent value label)
+  (let ((stat (create-div parent)))
+    (style! stat "textAlign" "center")
+    (style! stat "flex" "1")
+
+    (let ((num (create-text "div" value stat)))
+      (style! num "fontSize" "2.5rem")
+      (style! num "fontWeight" "800")
+      (style! num "color" "#7c3aed")
+      (style! num "marginBottom" "4px"))
+
+    (let ((lbl (create-text "div" label stat)))
+      (style! lbl "color" "#606078")
+      (style! lbl "fontSize" "0.85rem")
+      (style! lbl "fontWeight" "500")
+      (style! lbl "textTransform" "uppercase")
+      (style! lbl "letterSpacing" "1px"))
+
+    stat))
+
+(define (render-stats parent)
+  (let ((section (create-div parent)))
+    (style! section "maxWidth" "1000px")
+    (style! section "margin" "0 auto")
+    (style! section "padding" "60px 32px")
+    (style! section "display" "flex")
+    (style! section "gap" "32px")
+    (style! section "borderTop" "1px solid #1a1a28")
+    (style! section "borderBottom" "1px solid #1a1a28")
+
+    (render-stat section "300+" "Built-in Functions")
+    (render-stat section "438" "Tests Passing")
+    (render-stat section "8" "Calculus Operators")
+    (render-stat section "3" "Platforms")
+
+    section))
+
+;; ═══════════════════════════════════════════════════════════
+;; FOOTER
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-footer parent)
+  (let ((footer (create-div parent)))
+    (style! footer "padding" "40px 32px")
+    (style! footer "textAlign" "center")
+    (style! footer "borderTop" "1px solid #1a1a28")
+    (style! footer "marginTop" "80px")
+
+    (let ((p (create-text "p" "Built by Tsotchke Corporation. MIT License." footer)))
+      (style! p "color" "#606078")
+      (style! p "fontSize" "0.85rem"))
+
+    (let ((p2 (create-text "p" "This website is written in Eshkol, compiled to WebAssembly." footer)))
+      (style! p2 "color" "#404050")
+      (style! p2 "fontSize" "0.8rem")
+      (style! p2 "marginTop" "8px"))
+
+    footer))
+
+;; ═══════════════════════════════════════════════════════════
+;; LANDING PAGE
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-landing container)
+  (render-hero container)
+  (render-pillars container)
+  (render-stats container)
+  (render-footer container))
+
+;; ═══════════════════════════════════════════════════════════
+;; MAIN ENTRY POINT
+;; ═══════════════════════════════════════════════════════════
+
+(define (main)
+  (let ((body (web-get-body)))
+    ;; Base styles
+    (style! body "margin" "0")
+    (style! body "fontFamily" "'Inter', system-ui, sans-serif")
+    (style! body "backgroundColor" "#0a0a0f")
+    (style! body "color" "#e8e8f0")
+    (style! body "lineHeight" "1.6")
+
+    ;; Render navigation
+    (render-nav body)
+
+    ;; Render landing page (default route)
+    (let ((content (create-div body)))
+      (web-set-attribute content "id" "content")
+      (render-landing content))
+
+    (web-console-log "Eshkol website loaded — written in Eshkol, compiled to WebAssembly")
+    0))
