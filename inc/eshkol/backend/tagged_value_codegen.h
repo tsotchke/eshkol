@@ -388,6 +388,12 @@ private:
      */
     llvm::Value* createEntryAlloca(const char* name);
 
+    /** Build a tagged value using insertvalue (pure SSA, zero allocas) */
+    llvm::Value* buildTaggedValue(uint8_t type, uint8_t flags, llvm::Value* data_i64);
+
+    /** Build a tagged value with dynamic type/flags values */
+    llvm::Value* buildTaggedValueDyn(llvm::Value* type_val, llvm::Value* flags_val, llvm::Value* data_i64);
+
     /**
      * Read the subtype byte from an object header.
      * Objects allocated with arena_allocate_*_with_header() have an 8-byte
