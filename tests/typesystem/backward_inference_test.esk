@@ -1,0 +1,15 @@
+;; Type System Test: Backward type inference narrows params from body usage
+;; EXPECT-MODE: strict-types
+;; EXPECT-STDERR: expected Number, got String
+
+;; concat uses string-append, so a and b should be narrowed to String
+(define (concat a b) (string-append a b))
+
+;; add uses +, so x and y should be narrowed to Number
+(define (add x y) (+ x y))
+
+;; Passing a number where String is expected (concat)
+;; Note: concat's params narrowed to String via string-append usage
+;; Passing a string where Number is expected (add)
+(display (add "oops" 5))
+(newline)

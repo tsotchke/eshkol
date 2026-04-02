@@ -1,0 +1,58 @@
+;; Test: Nested pattern matching in syntax-rules macros
+
+;; Test 1: Single nested binding pair
+(display "Test 1: my-let with nested pattern... ")
+(define-syntax my-let
+  (syntax-rules ()
+    ((_ ((var val)) body)
+     (let ((var val)) body))))
+
+(if (= (my-let ((x 5)) (+ x 10)) 15)
+    (display "PASS")
+    (display "FAIL"))
+(newline)
+
+;; Test 2: Nested pair with multiple vars
+(display "Test 2: my-let2 with two bindings... ")
+(define-syntax my-let2
+  (syntax-rules ()
+    ((_ ((v1 e1) (v2 e2)) body)
+     (let ((v1 e1) (v2 e2)) body))))
+
+(if (= (my-let2 ((a 3) (b 4)) (+ a b)) 7)
+    (display "PASS")
+    (display "FAIL"))
+(newline)
+
+;; Test 3: swap macro using nested pattern
+(display "Test 3: swap macro... ")
+(define-syntax my-swap
+  (syntax-rules ()
+    ((_ (a b))
+     (let ((tmp a))
+       (list b tmp)))))
+
+(let ((result (my-swap (1 2))))
+  (if (and (= (car result) 2) (= (cadr result) 1))
+      (display "PASS")
+      (display "FAIL")))
+(newline)
+
+;; Test 4: Nested pattern in let-syntax
+(display "Test 4: let-syntax with nested pattern... ")
+(let-syntax ((my-add (syntax-rules ()
+                       ((_ (a b)) (+ a b)))))
+  (if (= (my-add (10 20)) 30)
+      (display "PASS")
+      (display "FAIL")))
+(newline)
+
+;; Test 5: Nested binding in let-syntax with body
+(display "Test 5: let-syntax binding macro... ")
+(let-syntax ((my-bind (syntax-rules ()
+                        ((_ ((name value)) body)
+                         (let ((name value)) body)))))
+  (if (= (my-bind ((z 42)) z) 42)
+      (display "PASS")
+      (display "FAIL")))
+(newline)

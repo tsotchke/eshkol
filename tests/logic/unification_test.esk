@@ -1,0 +1,65 @@
+;; Unification Tests — v1.1-accelerate (production)
+;; Tests: Robinson's unification, occurs check, deep walk, chains
+
+;; === Variable-Value Unification ===
+(define s1 (unify ?x 42 (make-substitution)))
+(display "?x = 42: ") (display s1) (newline)
+(display "walk ?x: ") (display (walk ?x s1)) (newline)
+
+;; === Variable-Variable Chaining ===
+;; ?x -> ?y -> 99
+(define s2 (unify ?x ?y (make-substitution)))
+(define s3 (unify ?y 99 s2))
+(display "?x -> ?y -> 99: ") (display (walk ?x s3)) (newline)
+
+;; Length-3 chain: ?a -> ?b -> ?c -> 'hello
+(define sc1 (unify ?a ?b (make-substitution)))
+(define sc2 (unify ?b ?c sc1))
+(define sc3 (unify ?c 'hello sc2))
+(display "3-chain walk ?a: ") (display (walk ?a sc3)) (newline)
+(display "3-chain walk ?b: ") (display (walk ?b sc3)) (newline)
+(display "3-chain walk ?c: ") (display (walk ?c sc3)) (newline)
+
+;; === Structural Unification of Facts ===
+(define f1 (make-fact 'parent ?a 'bob))
+(define f2 (make-fact 'parent 'alice ?b))
+(define s4 (unify f1 f2 (make-substitution)))
+(display "structural: ") (display s4) (newline)
+(display "walk ?a: ") (display (walk ?a s4)) (newline)
+(display "walk ?b: ") (display (walk ?b s4)) (newline)
+
+;; === Unification Failure ===
+;; Constants that don't match
+(define s5 (unify 42 99 (make-substitution)))
+(display "42 != 99: ") (display s5) (newline)
+
+;; Symbols that don't match
+(define s6 (unify 'red 'blue (make-substitution)))
+(display "red != blue: ") (display s6) (newline)
+
+;; === Same Variable Unified Twice ===
+(define s7 (unify ?x 10 (make-substitution)))
+(define s8 (unify ?x 10 s7))
+(display "same value ok: ") (display (walk ?x s8)) (newline)
+
+;; === Deep Walk Through Nested Facts ===
+;; Unify nested structures
+(define g1 (make-fact 'likes ?p 'ice-cream))
+(define g2 (make-fact 'likes 'bob 'ice-cream))
+(define sg (unify g1 g2 (make-substitution)))
+(display "nested walk ?p: ") (display (walk ?p sg)) (newline)
+
+;; === Identity Unification ===
+;; Variable with itself
+(define si (unify ?x ?x (make-substitution)))
+(display "?x = ?x: ") (display si) (newline)
+
+;; === Multiple Independent Bindings ===
+(define sm1 (unify ?x 1 (make-substitution)))
+(define sm2 (unify ?y 2 sm1))
+(define sm3 (unify ?z 3 sm2))
+(display "multi walk ?x: ") (display (walk ?x sm3)) (newline)
+(display "multi walk ?y: ") (display (walk ?y sm3)) (newline)
+(display "multi walk ?z: ") (display (walk ?z sm3)) (newline)
+
+(display "=== Unification test complete ===") (newline)

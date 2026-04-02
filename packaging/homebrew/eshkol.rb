@@ -8,8 +8,9 @@
 class Eshkol < Formula
   desc "Functional programming language with HoTT types and autodiff"
   homepage "https://eshkol.ai"
-  url "https://github.com/tsotchke/eshkol/archive/v1.0.1.1.tar.gz"
-  sha256 "PLACEHOLDER_UPDATE_AFTER_RELEASE"
+  url "https://github.com/tsotchke/eshkol/archive/v1.1.0.tar.gz"
+  # sha256 will be updated when the release tarball is published
+  sha256 ""
   license "MIT"
   head "https://github.com/tsotchke/eshkol.git", branch: "master"
 
@@ -36,35 +37,45 @@ class Eshkol < Formula
            "-DCMAKE_INSTALL_RPATH=#{llvm.opt_lib}",
            "-DCMAKE_BUILD_RPATH=#{llvm.opt_lib}",
            "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON",
+           "-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON",
            "-DCMAKE_MACOSX_RPATH=ON",
            *std_cmake_args
 
-    # Build eshkol-run, eshkol-repl, and static library (skip stdlib target - we'll generate it manually)
+    # Build eshkol-run first (without stdlib to avoid chicken-egg problem)
     system "cmake", "--build", "build", "--target", "eshkol-run"
     system "cmake", "--build", "build", "--target", "eshkol-repl"
     system "cmake", "--build", "build", "--target", "eshkol-static"
 
-    # Generate stdlib.o using the freshly built eshkol-run compiler
-    # This compiles lib/stdlib.esk to build/stdlib.o
-    # Use --no-stdlib to avoid chicken-and-egg problem
-    system "build/eshkol-run", "--no-stdlib", "--shared-lib", "-o", "build/stdlib", "lib/stdlib.esk"
+    # Compile stdlib using eshkol-run
+    system "build/eshkol-run", "--shared-lib", "-o", "build/stdlib", "lib/stdlib.esk"
 
     # Verify stdlib.o was created
-    odie "stdlib.o was not created - eshkol-run compilation failed" unless File.exist?("build/stdlib.o")
+    odie "stdlib.o was not created - compilation failed" unless File.exist?("build/stdlib.o")
 
     # Install binaries
     bin.install "build/eshkol-run"
     bin.install "build/eshkol-repl"
 
-    # Install library files
-    lib.install "build/stdlib.o"
-    lib.install "build/libeshkol-static.a"
+    # Install library files to lib/eshkol/ (primary location)
+    (lib/"eshkol").mkpath
     (lib/"eshkol").install "build/stdlib.o"
     (lib/"eshkol").install "build/libeshkol-static.a"
+
+    # Create symlinks in lib/ for convenience
+    lib.install_symlink (lib/"eshkol/stdlib.o")
+    lib.install_symlink (lib/"eshkol/libeshkol-static.a")
 
     # Install library source files
     (share/"eshkol").install "lib/stdlib.esk"
     (share/"eshkol/core").install Dir["lib/core/*"] if Dir.exist?("lib/core")
+    (share/"eshkol/math").install Dir["lib/math/*"] if Dir.exist?("lib/math")
+    (share/"eshkol").install "lib/math.esk" if File.exist?("lib/math.esk")
+    (share/"eshkol/signal").install Dir["lib/signal/*"] if Dir.exist?("lib/signal")
+    (share/"eshkol/ml").install Dir["lib/ml/*"] if Dir.exist?("lib/ml")
+    (share/"eshkol/random").install Dir["lib/random/*"] if Dir.exist?("lib/random")
+    (share/"eshkol/web").install Dir["lib/web/*"] if Dir.exist?("lib/web")
+    (share/"eshkol/tensor").install Dir["lib/tensor/*"] if Dir.exist?("lib/tensor")
+    (share/"eshkol/quantum").install Dir["lib/quantum/*"] if Dir.exist?("lib/quantum")
   end
 
   def caveats

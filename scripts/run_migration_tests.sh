@@ -1,0 +1,83 @@
+#!/bin/bash
+
+# Eshkol Migration Test Suite
+# Validates type system migration and pointer consolidation
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color
+
+# Counters
+PASS=0
+FAIL=0
+COMPILE_FAIL=0
+
+declare -a FAILED_TESTS
+
+echo "========================================="
+echo "  Eshkol Migration Test Suite"
+echo "========================================="
+echo ""
+
+if [ ! -f "build/eshkol-run" ]; then
+    echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
+    exit 1
+fi
+
+for test_file in tests/migration/*.esk; do
+    [ -f "$test_file" ] || continue
+    test_name=$(basename "$test_file")
+    printf "Testing %-50s " "$test_name"
+
+    rm -f a.out a.out.tmp.o
+
+    if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
+        if ./a.out > /tmp/test_output.txt 2>&1; then
+            if grep -q "^FAIL" /tmp/test_output.txt; then
+                echo -e "${RED}❌ FAIL${NC}"
+                FAILED_TESTS+=("$test_name")
+                ((FAIL++)) || true
+            else
+                echo -e "${GREEN}✅ PASS${NC}"
+                ((PASS++)) || true
+            fi
+        else
+            echo -e "${RED}❌ RUNTIME FAIL${NC}"
+            FAILED_TESTS+=("$test_name")
+            ((FAIL++)) || true
+        fi
+    else
+        echo -e "${RED}❌ COMPILE FAIL${NC}"
+        FAILED_TESTS+=("$test_name")
+        ((COMPILE_FAIL++)) || true
+        ((FAIL++)) || true
+    fi
+done
+
+echo ""
+echo "========================================="
+echo "  Test Results Summary"
+echo "========================================="
+echo -e "Total Tests:    $(( PASS + FAIL ))"
+echo -e "${GREEN}Passed:         $PASS${NC}"
+echo -e "${RED}Failed:         $FAIL${NC}"
+echo ""
+
+if [ $FAIL -gt 0 ]; then
+    echo "Failed Tests:"
+    for test in "${FAILED_TESTS[@]}"; do
+        echo "  - $test"
+    done
+fi
+
+echo ""
+rm -f /tmp/test_output.txt a.out
+
+if [ $FAIL -eq 0 ]; then
+    exit 0
+else
+    exit 1
+fi

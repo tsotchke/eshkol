@@ -126,6 +126,40 @@ public:
     llvm::Value* recordADNodeUnary(uint32_t op_type, llvm::Value* input);
 
     /**
+     * Record a tensor operation on the AD tape.
+     * Sets extended fields: tensor_value, saved_tensors, params, shape, ndim.
+     * @param op_type Operation type (AD_NODE_CONV2D=19, etc.)
+     * @param input1 First input AD node (or null)
+     * @param input2 Second input AD node (or null)
+     * @param input3 Third input AD node (or null, e.g. V in attention)
+     * @param input4 Fourth input AD node (or null, e.g. mask)
+     * @param tensor_result Pointer to output tensor elements (double*)
+     * @param saved_tensors Array of void* pointers to saved data for backward
+     * @param num_saved Number of saved tensors
+     * @param shape Pointer to output shape array (int64_t*)
+     * @param ndim Number of dimensions
+     * @return Result AD node
+     */
+    llvm::Value* recordADNodeTensor(
+        uint32_t op_type,
+        llvm::Value* input1, llvm::Value* input2,
+        llvm::Value* input3, llvm::Value* input4,
+        llvm::Value* tensor_result,
+        llvm::Value* saved_tensors, llvm::Value* num_saved,
+        llvm::Value* shape, llvm::Value* ndim);
+
+    /**
+     * Accumulate a tensor gradient onto an AD node's tensor_gradient field.
+     * If tensor_gradient is NULL, allocates and zero-fills it first.
+     * @param node_ptr Pointer to AD node
+     * @param grad_tensor Pointer to gradient tensor (double*)
+     * @param num_elements Number of elements in the gradient tensor
+     */
+    void accumulateTensorGradient(llvm::Value* node_ptr,
+                                  llvm::Value* grad_tensor,
+                                  llvm::Value* num_elements);
+
+    /**
      * Create a constant AD node (leaf node with no dependencies).
      * @param value The constant value
      * @return AD node
@@ -211,6 +245,40 @@ public:
      * @return Scalar directional derivative
      */
     llvm::Value* directionalDerivative(const eshkol_operations_t* op);
+
+    // === Capture Resolution (for calculus operators) ===
+
+    /**
+     * Load captured variable arguments for an autodiff function call.
+     * Resolves captures from symbol tables with REPL mode support.
+     * @param func_ptr The function to load captures for
+     * @param context_name Debug label for error messages
+     * @return Vector of capture Value* arguments
+     */
+    std::vector<llvm::Value*> loadCapturesForAutodiff(
+        llvm::Function* func_ptr,
+        const std::string& context_name);
+
+    /**
+     * Append captured variable arguments to a gradient function call.
+     * Resolves captures from symbol tables with REPL mode support.
+     * @param func_ptr The function to resolve captures for
+     * @param call_args Vector to append capture arguments to
+     * @param context_label Debug label for error messages
+     */
+    void resolveGradientCaptures(
+        llvm::Function* func_ptr,
+        std::vector<llvm::Value*>& call_args,
+        const std::string& context_label);
+
+    /** Higher-order gradient: (gradient f) → closure */
+    llvm::Value* gradientHigherOrder(const eshkol_operations_t* op);
+
+    /** Higher-order derivative: (derivative f) → closure */
+    llvm::Value* derivativeHigherOrder(const eshkol_operations_t* op);
+
+    /** Monolith derivative fallback (runtime function parameter dispatch) */
+    llvm::Value* codegenDerivativeMonolith(const eshkol_operations_t* op);
 
     // === Tape Management ===
 
@@ -305,6 +373,86 @@ public:
      * Hyperbolic tangent: (tanh(a), a' * sech²(a))
      */
     llvm::Value* dualTanh(llvm::Value* dual);
+
+    /**
+     * Inverse hyperbolic sine: (asinh(a), a' / sqrt(1 + a²))
+     */
+    llvm::Value* dualAsinh(llvm::Value* dual);
+
+    /**
+     * Inverse hyperbolic cosine: (acosh(a), a' / sqrt(a² - 1))
+     */
+    llvm::Value* dualAcosh(llvm::Value* dual);
+
+    /**
+     * Inverse hyperbolic tangent: (atanh(a), a' / (1 - a²))
+     */
+    llvm::Value* dualAtanh(llvm::Value* dual);
+
+    /**
+     * Base-10 logarithm: (log10(a), a' / (a * ln(10)))
+     */
+    llvm::Value* dualLog10(llvm::Value* dual);
+
+    /**
+     * Base-2 logarithm: (log2(a), a' / (a * ln(2)))
+     */
+    llvm::Value* dualLog2(llvm::Value* dual);
+
+    /**
+     * Base-2 exponential: (exp2(a), a' * exp2(a) * ln(2))
+     */
+    llvm::Value* dualExp2(llvm::Value* dual);
+
+    /**
+     * Cube root: (cbrt(a), a' / (3 * cbrt(a)²))
+     */
+    llvm::Value* dualCbrt(llvm::Value* dual);
+
+    // === ML Activation Function Dual Number Operations ===
+
+    /**
+     * ReLU of dual number: (max(0, a), a > 0 ? a' : 0)
+     */
+    llvm::Value* dualRelu(llvm::Value* dual);
+
+    /**
+     * Sigmoid of dual number: (σ(a), a' * σ(a) * (1 - σ(a)))
+     */
+    llvm::Value* dualSigmoid(llvm::Value* dual);
+
+    /**
+     * GELU of dual number (Gaussian Error Linear Unit)
+     * Uses approximate formula: x * σ(1.702 * x)
+     */
+    llvm::Value* dualGelu(llvm::Value* dual);
+
+    /**
+     * Leaky ReLU of dual number: (a > 0 ? a : α*a, a > 0 ? a' : α*a')
+     * @param dual The input dual number
+     * @param alpha The negative slope (typically 0.01)
+     */
+    llvm::Value* dualLeakyRelu(llvm::Value* dual, double alpha = 0.01);
+
+    /**
+     * SiLU (Swish) of dual number: (a * σ(a), a' * (σ(a) + a * σ(a) * (1 - σ(a))))
+     */
+    llvm::Value* dualSilu(llvm::Value* dual);
+
+    /**
+     * Square of dual number: (a², 2 * a * a')
+     */
+    llvm::Value* dualSquare(llvm::Value* dual);
+
+    /**
+     * Maximum of two dual numbers: (max(a,b), a > b ? a' : b')
+     */
+    llvm::Value* dualMax(llvm::Value* dual_a, llvm::Value* dual_b);
+
+    /**
+     * Minimum of two dual numbers: (min(a,b), a < b ? a' : b')
+     */
+    llvm::Value* dualMin(llvm::Value* dual_a, llvm::Value* dual_b);
 
     // === Tape Management ===
     // These enable nested gradient computations via a tape stack
@@ -540,6 +688,54 @@ public:
      */
     void setCurrentTapePtr(llvm::Value* tape) { current_tape_ptr_ = tape; }
     llvm::Value* getCurrentTapePtr() const { return current_tape_ptr_; }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CALCULUS EXTRACTION INFRASTRUCTURE
+    // Added for moving calculus codegen from llvm_codegen.cpp into this module.
+    // Follows the same pattern as setFunctionTable, setSymbolTables, etc.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /** Closure call callback — dispatches runtime closure calls */
+    using ClosureCallCallback = llvm::Value* (*)(llvm::Value*, const std::vector<llvm::Value*>&, const char*, void*);
+    void setClosureCallCallback(ClosureCallCallback callback) {
+        closure_call_callback_ = callback;
+    }
+
+    /** Function arity table — maps function name to parameter count */
+    void setFunctionArityTable(std::unordered_map<std::string, uint64_t>* table) {
+        function_arity_table_ = table;
+    }
+
+    /** Nested function captures map — maps function name to capture variable names */
+    void setNestedFunctionCaptures(std::unordered_map<std::string, std::vector<std::string>>* captures) {
+        nested_function_captures_ = captures;
+    }
+
+    /** Get arena-allocate-closure-with-header function declaration */
+    using GetClosureAllocFunc = llvm::Function* (*)(void*);
+    void setGetClosureAllocFunc(GetClosureAllocFunc func) {
+        get_closure_alloc_func_ = func;
+    }
+
+    /** Binding codegen pointer (for TCO context save/restore in higher-order gradient) */
+    void setBindingCodegen(void* binding) {
+        binding_opaque_ = binding;
+    }
+
+    // Private helpers for vector calculus
+    llvm::Value* createNullVectorTensor(llvm::Value* dimension);
+    llvm::Value* extractTensorElement(llvm::Value* tensor_ptr, std::vector<llvm::Value*> indices);
+    llvm::Value* extractJacobianElement(llvm::Value* jacobian_ptr, llvm::Value* row_idx, llvm::Value* col_idx, llvm::Value* n);
+
+private:
+    // Calculus extraction state
+    int gradient_ho_counter_ = 0;
+    int derivative_ho_counter_ = 0;
+    void* binding_opaque_ = nullptr;
+    ClosureCallCallback closure_call_callback_ = nullptr;
+    std::unordered_map<std::string, uint64_t>* function_arity_table_ = nullptr;
+    std::unordered_map<std::string, std::vector<std::string>>* nested_function_captures_ = nullptr;
+    GetClosureAllocFunc get_closure_alloc_func_ = nullptr;
 };
 
 } // namespace eshkol

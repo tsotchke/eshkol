@@ -20,17 +20,40 @@ echo ""
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
 
-# Check if llvm-config exists
-if ! command -v llvm-config &> /dev/null; then
+# Find llvm-config - check PATH first, then common locations
+LLVM_CONFIG=""
+if command -v llvm-config &> /dev/null; then
+    LLVM_CONFIG="llvm-config"
+else
+    # Search common LLVM installation locations
+    LLVM_SEARCH_PATHS=(
+        "/opt/homebrew/opt/llvm/bin/llvm-config"
+        "/opt/homebrew/opt/llvm@19/bin/llvm-config"
+        "/opt/homebrew/opt/llvm@17/bin/llvm-config"
+        "/usr/local/opt/llvm/bin/llvm-config"
+        "/usr/bin/llvm-config"
+        "/usr/local/bin/llvm-config"
+    )
+    for llvm_path in "${LLVM_SEARCH_PATHS[@]}"; do
+        if [ -x "$llvm_path" ]; then
+            LLVM_CONFIG="$llvm_path"
+            break
+        fi
+    done
+fi
+
+if [ -z "$LLVM_CONFIG" ]; then
     echo -e "${RED}Error: llvm-config not found. Please install LLVM.${NC}"
     exit 1
 fi
 
+echo "Using LLVM config: $LLVM_CONFIG"
+
 # Get LLVM configuration
-LLVM_CXXFLAGS=$(llvm-config --cxxflags)
-LLVM_LDFLAGS=$(llvm-config --ldflags)
-LLVM_LIBS=$(llvm-config --libs all)
-LLVM_SYSTEM_LIBS=$(llvm-config --system-libs)
+LLVM_CXXFLAGS=$($LLVM_CONFIG --cxxflags)
+LLVM_LDFLAGS=$($LLVM_CONFIG --ldflags)
+LLVM_LIBS=$($LLVM_CONFIG --libs all)
+LLVM_SYSTEM_LIBS=$($LLVM_CONFIG --system-libs)
 
 # Test files
 HOTT_TYPES_TEST="$PROJECT_DIR/tests/types/hott_types_test.cpp"

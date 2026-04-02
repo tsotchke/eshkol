@@ -32,8 +32,8 @@
 (define I3 (eye 3))
 (display "Identity matrix I3:") (newline)
 (display I3) (newline)
-(display "W2 * I3 = W2 (identity property):") (newline)
-(display (matmul W2 I3)) (newline)
+(display "I3 * W2 = W2 (identity property):") (newline)
+(display (matmul I3 W2)) (newline)
 (newline)
 
 ;; -------------------------------------------------------------

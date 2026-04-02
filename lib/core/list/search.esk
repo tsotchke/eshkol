@@ -1,7 +1,7 @@
 ;;; core/list/search.esk
 ;;; List searching functions (membership and association)
 
-(provide member member? memq memv assoc assq assv list-ref list-tail)
+(provide member member? memq memv assoc assq assv list-ref list-tail list-set!)
 
 ;;; member: Return sublist starting with first element equal? to x, or #f
 ;;; (member 3 '(1 2 3 4 5)) => (3 4 5)
@@ -71,3 +71,8 @@
   (if (<= n 0)
       lst
       (list-tail (cdr lst) (- n 1))))
+
+;;; list-set!: Mutate the nth element of a list (0-indexed)
+;;; (define x '(1 2 3)) (list-set! x 1 99) => x is now (1 99 3)
+(define (list-set! lst n val)
+  (set-car! (list-tail lst n) val))

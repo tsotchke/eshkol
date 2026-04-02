@@ -1,0 +1,61 @@
+;; Active Inference Tests — v1.1-accelerate (production)
+;; Tests: factor graph, belief propagation, free energy, EFE, fg-update-cpt!, predicates
+
+;; === Simple 2-Variable Model ===
+;; Variables: 0=weather(sunny/rainy), 1=umbrella(yes/no)
+(define fg (make-factor-graph 2 #(2 2)))
+
+;; Prior over weather: P(sunny)=0.7, P(rainy)=0.3 (log-space)
+(fg-add-factor! fg #(0) #(-0.3567 -1.2040))
+
+;; P(umbrella|weather): [[0.9, 0.1], [0.2, 0.8]] (log-space)
+(fg-add-factor! fg #(0 1) #(-0.1054 -2.3026 -1.6094 -0.2231))
+
+;; === Belief Propagation ===
+(define beliefs (fg-infer! fg 20))
+(display "beliefs: ") (display beliefs) (newline)
+
+;; === Free Energy ===
+;; Observe umbrella=yes (variable 1, state 0)
+(define fe (free-energy fg #(1.0 0.0)))
+(display "free energy (umbrella=yes): ") (display fe) (newline)
+
+;; === Expected Free Energy ===
+(define efe0 (expected-free-energy fg 0 0))
+(display "EFE(sunny): ") (display efe0) (newline)
+(define efe1 (expected-free-energy fg 0 1))
+(display "EFE(rainy): ") (display efe1) (newline)
+
+;; === Type Predicate: factor-graph? ===
+(display "factor-graph? fg: ") (display (factor-graph? fg)) (newline)
+(display "factor-graph? 42: ") (display (factor-graph? 42)) (newline)
+(display "factor-graph? #t: ") (display (factor-graph? #t)) (newline)
+
+;; === fg-update-cpt! ===
+;; Flip the prior: P(rainy)=0.8, P(sunny)=0.2
+(fg-update-cpt! fg 0 #(-1.6094 -0.2231))
+(define beliefs2 (fg-infer! fg 20))
+(display "after CPT update beliefs: ") (display beliefs2) (newline)
+
+;; Free energy should change with updated prior
+(define fe2 (free-energy fg #(1.0 0.0)))
+(display "free energy after update: ") (display fe2) (newline)
+
+;; === 3-Variable Model ===
+;; Variables: traffic(2), weather(2), commute(2)
+(define fg3 (make-factor-graph 3 #(2 2 2)))
+
+;; Prior on traffic
+(fg-add-factor! fg3 #(0) #(-0.6931 -0.6931))
+
+;; Weather affects traffic
+(fg-add-factor! fg3 #(0 1) #(-0.5108 -1.2040 -1.2040 -0.5108))
+
+;; Traffic affects commute
+(fg-add-factor! fg3 #(0 2) #(-0.2231 -1.6094 -1.6094 -0.2231))
+
+(define b3 (fg-infer! fg3 30))
+(display "3-var beliefs: ") (display b3) (newline)
+(display "factor-graph? fg3: ") (display (factor-graph? fg3)) (newline)
+
+(display "=== Inference test complete ===") (newline)

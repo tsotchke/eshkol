@@ -1,0 +1,81 @@
+;; XLA Integration Test: Special Matrices
+;; Tests with identity, zero, and special matrices
+
+(display "=== XLA Special Matrix Tests ===") (newline)
+
+;; Test 1: Identity matrix property
+(display "Test 1: Identity matrix (A * I = A)") (newline)
+(define A (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0) 3 3))
+(define I (eye 3))
+(define AI (matmul A I))
+(display "A = [[1,2,3],[4,5,6],[7,8,9]]") (newline)
+(display "A * I = ") (display AI) (newline)
+;; Verify A * I = A
+(display "Verification: ")
+(if (< (abs (- (tensor-get A 1 1) (tensor-get AI 1 1))) 0.0001)
+    (display "PASS")
+    (display "FAIL"))
+(newline)
+(newline)
+
+;; Test 2: Zero matrix
+(display "Test 2: Zero matrix (A * 0 = 0)") (newline)
+(define Z (zeros 3 3))
+(define AZ (matmul A Z))
+(display "A * 0 = ") (display AZ) (newline)
+(display "Should be all zeros: ")
+(if (< (tensor-get AZ 1 1) 0.0001)
+    (display "PASS")
+    (display "FAIL"))
+(newline)
+(newline)
+
+;; Test 3: Diagonal matrix
+(display "Test 3: Diagonal matrix (scaling)") (newline)
+(define D (reshape (vector 2.0 0.0 0.0 0.0 3.0 0.0 0.0 0.0 4.0) 3 3))
+(define v (reshape (vector 1.0 1.0 1.0) 3 1))
+(define Dv (matmul D v))
+(display "D = diag(2,3,4)") (newline)
+(display "v = [1,1,1]^T") (newline)
+(display "D * v = ") (display Dv) (newline)
+(display "Expected: [2,3,4]^T: ")
+(if (and (< (abs (- (tensor-get Dv 0 0) 2.0)) 0.0001)
+         (< (abs (- (tensor-get Dv 1 0) 3.0)) 0.0001)
+         (< (abs (- (tensor-get Dv 2 0) 4.0)) 0.0001))
+    (display "PASS")
+    (display "FAIL"))
+(newline)
+(newline)
+
+;; Test 4: Transpose property: (AB)^T = B^T A^T
+(display "Test 4: Transpose property") (newline)
+(define M1 (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
+(define M2 (reshape (vector 5.0 6.0 7.0 8.0) 2 2))
+(define M1M2 (matmul M1 M2))
+(define M1M2T (transpose M1M2))
+(define M2T (transpose M2))
+(define M1T (transpose M1))
+(define M2TM1T (matmul M2T M1T))
+(display "(AB)^T = ") (display M1M2T) (newline)
+(display "B^T A^T = ") (display M2TM1T) (newline)
+(display "Equality check: ")
+(if (< (abs (- (tensor-get M1M2T 0 0) (tensor-get M2TM1T 0 0))) 0.0001)
+    (display "PASS")
+    (display "FAIL"))
+(newline)
+(newline)
+
+;; Test 5: Single element matrices
+(display "Test 5: 1x1 matrices (scalar multiplication)") (newline)
+(define s1 (reshape (vector 3.0) 1 1))
+(define s2 (reshape (vector 7.0) 1 1))
+(define s1s2 (matmul s1 s2))
+(display "[[3]] * [[7]] = ") (display s1s2) (newline)
+(display "Expected: [[21]]: ")
+(if (< (abs (- (tensor-get s1s2 0 0) 21.0)) 0.0001)
+    (display "PASS")
+    (display "FAIL"))
+(newline)
+(newline)
+
+(display "=== Special Matrix Tests Complete ===") (newline)

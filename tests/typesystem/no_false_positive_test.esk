@@ -1,0 +1,17 @@
+;; Type System Test: Valid programs produce no type warnings
+;; EXPECT-MODE: default
+;; EXPECT-NO-STDERR: [WARN]
+;; EXPECT-NO-STDERR: [ERROR]
+
+;; All operations here are type-correct — no warnings expected
+(define (add a b) (+ a b))
+(define (greet s) (string-append "Hello, " s))
+
+(display (add 3 4))
+(newline)
+(display (greet "world"))
+(newline)
+(display (vector-ref #(10 20 30) 1))
+(newline)
+(display (= 5 5))
+(newline)

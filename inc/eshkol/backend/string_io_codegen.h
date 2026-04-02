@@ -100,6 +100,14 @@ public:
     llvm::Value* stringCompare(const eshkol_operations_t* op, const std::string& cmp_type);
 
     /**
+     * Case-insensitive string compare: (string-ci=? s1 s2), (string-ci<? s1 s2), etc.
+     * @param op The operation AST node
+     * @param cmp_type One of "eq", "lt", "gt", "le", "ge"
+     * @return Boolean as tagged value
+     */
+    llvm::Value* stringCiCompare(const eshkol_operations_t* op, const std::string& cmp_type);
+
+    /**
      * Convert string to number: (string->number s)
      * @param op The operation AST node
      * @return Number as tagged value
@@ -126,6 +134,13 @@ public:
      * @return Void/unspecified value
      */
     llvm::Value* stringSet(const eshkol_operations_t* op);
+
+    /**
+     * Fill string with character: (string-fill! s char)
+     * @param op The operation AST node
+     * @return Void/unspecified value
+     */
+    llvm::Value* stringFill(const eshkol_operations_t* op);
 
     /**
      * Convert string to list of characters: (string->list s)
@@ -224,6 +239,13 @@ public:
     llvm::Value* readLine(const eshkol_operations_t* op);
 
     /**
+     * Read k characters from port: (read-string k) or (read-string k port)
+     * @param op The operation AST node
+     * @return String or eof-object as tagged value
+     */
+    llvm::Value* readString(const eshkol_operations_t* op);
+
+    /**
      * Open file for input: (open-input-file filename)
      * @param op The operation AST node
      * @return Port as tagged value
@@ -278,6 +300,78 @@ public:
      * @return Unspecified value
      */
     llvm::Value* flushOutputPort(const eshkol_operations_t* op);
+
+    /**
+     * Read a character from a port: (read-char [port])
+     * @param op The operation AST node
+     * @return Character or eof-object as tagged value
+     */
+    llvm::Value* readChar(const eshkol_operations_t* op);
+
+    /**
+     * Peek at next character without consuming: (peek-char [port])
+     * @param op The operation AST node
+     * @return Character or eof-object as tagged value
+     */
+    llvm::Value* peekChar(const eshkol_operations_t* op);
+
+    /**
+     * Check if character is ready on port: (char-ready? [port])
+     * @param op The operation AST node
+     * @return Boolean as tagged value
+     */
+    llvm::Value* charReady(const eshkol_operations_t* op);
+
+    // === Binary I/O Operations (R7RS) ===
+
+    /**
+     * Open file for binary input: (open-binary-input-file filename)
+     * @param op The operation AST node
+     * @return Binary input port as tagged value
+     */
+    llvm::Value* openBinaryInputFile(const eshkol_operations_t* op);
+
+    /**
+     * Open file for binary output: (open-binary-output-file filename)
+     * @param op The operation AST node
+     * @return Binary output port as tagged value
+     */
+    llvm::Value* openBinaryOutputFile(const eshkol_operations_t* op);
+
+    /**
+     * Read a single byte: (read-u8 [port])
+     * @param op The operation AST node
+     * @return Integer (0-255) or eof-object as tagged value
+     */
+    llvm::Value* readU8(const eshkol_operations_t* op);
+
+    /**
+     * Peek at next byte without consuming: (peek-u8 [port])
+     * @param op The operation AST node
+     * @return Integer (0-255) or eof-object as tagged value
+     */
+    llvm::Value* peekU8(const eshkol_operations_t* op);
+
+    /**
+     * Write a single byte: (write-u8 byte [port])
+     * @param op The operation AST node
+     * @return Unspecified value
+     */
+    llvm::Value* writeU8(const eshkol_operations_t* op);
+
+    /**
+     * Read k bytes into a bytevector: (read-bytevector k [port])
+     * @param op The operation AST node
+     * @return Bytevector or eof-object as tagged value
+     */
+    llvm::Value* readBytevector(const eshkol_operations_t* op);
+
+    /**
+     * Write bytevector to port: (write-bytevector bv [port [start [end]]])
+     * @param op The operation AST node
+     * @return Unspecified value
+     */
+    llvm::Value* writeBytevector(const eshkol_operations_t* op);
 
     // === Printf Declaration ===
 

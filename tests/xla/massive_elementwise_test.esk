@@ -1,0 +1,40 @@
+;; XLA massive elementwise test - triggers XLA for element-wise ops
+;; Tests add, sub, mul, div on tensors with 100K+ elements
+(display "=== XLA Massive Element-wise Test ===") (newline)
+
+;; Create large tensors: 400x400 = 160,000 elements (> 100K threshold)
+(define size 400)
+(define n (* size size))
+(define A (reshape (arange n) size size))
+(define B (reshape (arange 1 (+ n 1)) size size))  ;; B = A + 1
+
+(display "Tensor A shape: ") (display (tensor-shape A)) (newline)
+(display "Tensor B shape: ") (display (tensor-shape B)) (newline)
+(display "Elements: ") (display n) (newline)
+
+;; Test addition
+(display "--- tensor-add ---") (newline)
+(define sum-AB (tensor-add A B))
+(display "A[0,0] + B[0,0] = 0 + 1 = ") (display (tensor-get sum-AB 0 0)) (newline)
+(display "Expected: 1") (newline)
+
+;; Test subtraction
+(display "--- tensor-sub ---") (newline)
+(define diff-AB (tensor-sub B A))
+(display "B[0,0] - A[0,0] = 1 - 0 = ") (display (tensor-get diff-AB 0 0)) (newline)
+(display "Expected: 1 (all elements should be 1)") (newline)
+
+;; Test multiplication
+(display "--- tensor-mul ---") (newline)
+(define prod-AB (tensor-mul A B))
+(display "A[1,1] * B[1,1] = 401 * 402 = ") (display (tensor-get prod-AB 1 1)) (newline)
+(display "Expected: 161202") (newline)
+
+;; Test division
+(display "--- tensor-div ---") (newline)
+(define quot-AB (tensor-div B A))
+;; B[1,0] / A[1,0] = 401 / 400 = 1.0025
+(display "B[1,0] / A[1,0] = 401 / 400 = ") (display (tensor-get quot-AB 1 0)) (newline)
+(display "Expected: 1.0025") (newline)
+
+(display "Massive elementwise test: PASS") (newline)

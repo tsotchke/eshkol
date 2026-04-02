@@ -2,6 +2,10 @@
 ;;; Numerical algorithms implemented in Eshkol itself
 ;;; For linear algebra, statistics, and numerical methods
 
+(provide mat-ref tensor-copy det inv solve cross dot normalize
+         mat-vec-mul power-iteration integrate newton
+         variance std covariance)
+
 ;;; ============================================================
 ;;; Constants
 ;;; ============================================================

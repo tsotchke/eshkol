@@ -1,0 +1,9 @@
+;; Type System Test: Dimension checking for negative vector indices
+;; EXPECT-MODE: strict-types
+;; EXPECT-STDERR: negative index
+
+;; vector-ref and vector-set! with literal negative indices
+(define v #(10 20 30))
+(display (vector-ref v -1))
+(newline)
+(vector-set! v -2 99)

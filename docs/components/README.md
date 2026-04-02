@@ -9,7 +9,7 @@ For detailed component documentation, see:
 **[Compiler Architecture](../breakdown/COMPILER_ARCHITECTURE.md)** - Complete pipeline documentation:
 - Frontend: Macro expansion, parsing, type checking
 - Backend: LLVM IR generation, optimization, native codegen
-- Modular architecture: 19 specialized codegen files with callback pattern
+- Modular architecture: 21 specialized codegen files with callback pattern
 
 ## Implementation Components
 
@@ -44,7 +44,7 @@ For detailed component documentation, see:
 
 **Main Codegen** - [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp)
 - AST → LLVM IR translation
-- Orchestrates 19 specialized modules
+- Orchestrates 21 specialized modules
 
 **Specialized Modules**:
 - Arithmetic: [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp)
@@ -52,7 +52,34 @@ For detailed component documentation, see:
 - Tensors: [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp)
 - Autodiff: [`autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp)
 - Functions: [`function_codegen.cpp`](../../lib/backend/function_codegen.cpp)
-- (...14 more modules)
+- System: [`system_codegen.cpp`](../../lib/backend/system_codegen.cpp) — parallel, continuations, signal processing
+- BLAS/GPU dispatch: [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp)
+- Strings/IO: [`string_io_codegen.cpp`](../../lib/backend/string_io_codegen.cpp)
+- Control flow: [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp)
+- Bindings: [`binding_codegen.cpp`](../../lib/backend/binding_codegen.cpp)
+- Hash tables: [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp)
+- Homoiconic: [`homoiconic_codegen.cpp`](../../lib/backend/homoiconic_codegen.cpp)
+- Tail calls: [`tail_call_codegen.cpp`](../../lib/backend/tail_call_codegen.cpp)
+- Tagged values: [`tagged_value_codegen.cpp`](../../lib/backend/tagged_value_codegen.cpp)
+- Call/Apply: [`call_apply_codegen.cpp`](../../lib/backend/call_apply_codegen.cpp)
+- Map operations: [`map_codegen.cpp`](../../lib/backend/map_codegen.cpp)
+- Memory: [`memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp)
+- Complex numbers: [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp)
+- Parallel: [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp)
+- Tensor backward: [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp)
+
+### v1.1 Runtime Components
+
+**Consciousness Engine**:
+- Logic: [`lib/core/logic.cpp`](../../lib/core/logic.cpp) — unification, substitutions, KB
+- Inference: [`lib/core/inference.cpp`](../../lib/core/inference.cpp) — factor graphs, belief propagation
+- Workspace: [`lib/core/workspace.cpp`](../../lib/core/workspace.cpp) — global workspace, softmax competition
+
+**GPU Backends**:
+- Metal: [`lib/backend/gpu/gpu_memory.mm`](../../lib/backend/gpu/gpu_memory.mm) — Apple Silicon, SF64
+- CUDA: [`lib/backend/gpu/gpu_memory_cuda.cpp`](../../lib/backend/gpu/gpu_memory_cuda.cpp)
+
+**XLA Backend**: [`lib/backend/xla/xla_runtime.cpp`](../../lib/backend/xla/xla_runtime.cpp)
 
 ### Runtime System
 
@@ -61,13 +88,16 @@ For detailed component documentation, see:
 - Object header management
 - Display system
 
+**Bignum/Rational** - [`lib/core/bignum.cpp`](../../lib/core/bignum.cpp), [`lib/core/rational.cpp`](../../lib/core/rational.cpp)
+- Arbitrary-precision integers and exact fractions
+
 **AST Manipulation** - [`lib/core/ast.cpp`](../../lib/core/ast.cpp)
 - AST data structures
 - Symbolic differentiation helpers
 
 **JIT Compiler** - [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp)
 - LLVM OrcJIT integration
-- Interactive REPL
+- Interactive REPL with stdlib preloading
 
 ## See Also
 

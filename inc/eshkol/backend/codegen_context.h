@@ -89,8 +89,14 @@ public:
     llvm::PointerType* ptrType() { return types_.getPtrType(); }
     llvm::StructType* taggedValueType() { return types_.getTaggedValueType(); }
     llvm::StructType* dualNumberType() { return types_.getDualNumberType(); }
+    llvm::StructType* complexNumberType() { return types_.getComplexNumberType(); }
     llvm::StructType* adNodeType() { return types_.getAdNodeType(); }
     llvm::StructType* tensorType() { return types_.getTensorType(); }
+
+    // === SIMD Vector Types (for tensor operations) ===
+    llvm::VectorType* double2Type() { return types_.getDouble2Type(); }  // SSE: 2 x double
+    llvm::VectorType* double4Type() { return types_.getDouble4Type(); }  // AVX: 4 x double
+    llvm::VectorType* double8Type() { return types_.getDouble8Type(); }  // AVX-512: 8 x double
 
     // === Symbol Table Management ===
 

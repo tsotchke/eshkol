@@ -1,0 +1,64 @@
+;; GPU Matrix Multiply Correctness Tests
+
+;; --- Small matmul: 2x2 @ 2x2 ---
+(define A (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
+(define B (reshape (vector 5.0 6.0 7.0 8.0) 2 2))
+;; A @ B = [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]]
+;;       = [[19, 22], [43, 50]]
+(define C (matmul A B))
+(if (and (= (tensor-get C 0 0) 19.0)
+         (= (tensor-get C 0 1) 22.0)
+         (= (tensor-get C 1 0) 43.0)
+         (= (tensor-get C 1 1) 50.0))
+    (display "PASS: matmul 2x2 correct")
+    (display "FAIL: matmul 2x2 incorrect"))
+(newline)
+
+;; --- Identity matmul: I @ A = A ---
+(define I2 (reshape (vector 1.0 0.0 0.0 1.0) 2 2))
+(define IA (matmul I2 A))
+(if (and (= (tensor-get IA 0 0) 1.0)
+         (= (tensor-get IA 0 1) 2.0)
+         (= (tensor-get IA 1 0) 3.0)
+         (= (tensor-get IA 1 1) 4.0))
+    (display "PASS: I @ A = A")
+    (display "FAIL: I @ A != A"))
+(newline)
+
+;; --- Non-square: 2x3 @ 3x2 ---
+(define M (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+(define N (reshape (vector 7.0 8.0 9.0 10.0 11.0 12.0) 3 2))
+;; M @ N = [[1*7+2*9+3*11, 1*8+2*10+3*12], [4*7+5*9+6*11, 4*8+5*10+6*12]]
+;;       = [[58, 64], [139, 154]]
+(define MN (matmul M N))
+(if (and (= (tensor-get MN 0 0) 58.0)
+         (= (tensor-get MN 0 1) 64.0)
+         (= (tensor-get MN 1 0) 139.0)
+         (= (tensor-get MN 1 1) 154.0))
+    (display "PASS: matmul 2x3 @ 3x2 correct")
+    (display "FAIL: matmul 2x3 @ 3x2 incorrect"))
+(newline)
+
+;; --- Matmul + transpose: (A @ B)^T = B^T @ A^T ---
+(define ABt (transpose (matmul A B)))
+(define BtAt (matmul (transpose B) (transpose A)))
+(if (and (= (tensor-get ABt 0 0) (tensor-get BtAt 0 0))
+         (= (tensor-get ABt 0 1) (tensor-get BtAt 0 1))
+         (= (tensor-get ABt 1 0) (tensor-get BtAt 1 0))
+         (= (tensor-get ABt 1 1) (tensor-get BtAt 1 1)))
+    (display "PASS: (AB)^T = B^T A^T")
+    (display "FAIL: (AB)^T != B^T A^T"))
+(newline)
+
+;; --- Chain: A @ B @ A ---
+(define ABA (matmul (matmul A B) A))
+;; A@B = [[19,22],[43,50]]
+;; (A@B)@A = [[19*1+22*3, 19*2+22*4], [43*1+50*3, 43*2+50*4]]
+;;         = [[85, 126], [193, 286]]
+(if (and (= (tensor-get ABA 0 0) 85.0)
+         (= (tensor-get ABA 0 1) 126.0)
+         (= (tensor-get ABA 1 0) 193.0)
+         (= (tensor-get ABA 1 1) 286.0))
+    (display "PASS: A @ B @ A chain correct")
+    (display "FAIL: A @ B @ A chain incorrect"))
+(newline)

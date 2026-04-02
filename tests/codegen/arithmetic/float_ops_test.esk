@@ -1,0 +1,202 @@
+;; Arithmetic Codegen Test: Floating Point Operations
+;; Tests code generation for floating point arithmetic
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (approx-equal? a b epsilon)
+  (< (abs (- a b)) epsilon))
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+(define (test-approx name expected actual)
+  (if (approx-equal? expected actual 0.0001)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Float Addition
+;; ============================================================================
+
+(display "=== Testing Float Addition ===\n")
+
+(test-approx "fadd two" 5.5 (+ 2.5 3.0))
+(test-approx "fadd zero" 3.14 (+ 3.14 0.0))
+(test-approx "fadd negative" 1.5 (+ 3.5 -2.0))
+(test-approx "fadd small" 0.3 (+ 0.1 0.2))
+(test-approx "fadd many" 10.0 (+ 1.0 2.0 3.0 4.0))
+
+;; ============================================================================
+;; Test: Float Subtraction
+;; ============================================================================
+
+(display "=== Testing Float Subtraction ===\n")
+
+(test-approx "fsub two" 1.5 (- 4.0 2.5))
+(test-approx "fsub zero" 3.14 (- 3.14 0.0))
+(test-approx "fsub negative" 5.5 (- 3.5 -2.0))
+(test-approx "fnegate" -3.14 (- 3.14))
+
+;; ============================================================================
+;; Test: Float Multiplication
+;; ============================================================================
+
+(display "=== Testing Float Multiplication ===\n")
+
+(test-approx "fmul two" 6.25 (* 2.5 2.5))
+(test-approx "fmul zero" 0.0 (* 3.14 0.0))
+(test-approx "fmul one" 3.14 (* 3.14 1.0))
+(test-approx "fmul negative" -6.0 (* 2.0 -3.0))
+(test-approx "fmul many" 24.0 (* 2.0 3.0 4.0))
+
+;; ============================================================================
+;; Test: Float Division
+;; ============================================================================
+
+(display "=== Testing Float Division ===\n")
+
+(test-approx "fdiv two" 2.5 (/ 5.0 2.0))
+(test-approx "fdiv one" 3.14 (/ 3.14 1.0))
+(test-approx "fdiv fraction" 0.5 (/ 1.0 2.0))
+(test-approx "fdiv negative" -2.0 (/ 6.0 -3.0))
+(test-approx "frecip" 0.25 (/ 4.0))
+
+;; ============================================================================
+;; Test: Math Functions
+;; ============================================================================
+
+(display "=== Testing Math Functions ===\n")
+
+;; Square root
+(test-approx "sqrt 4" 2.0 (sqrt 4.0))
+(test-approx "sqrt 2" 1.4142 (sqrt 2.0))
+(test-approx "sqrt 9" 3.0 (sqrt 9.0))
+
+;; Exponential and logarithm
+(test-approx "exp 0" 1.0 (exp 0.0))
+(test-approx "exp 1" 2.7182 (exp 1.0))
+(test-approx "log 1" 0.0 (log 1.0))
+(test-approx "log e" 1.0 (log 2.7182818))
+
+;; Power
+(test-approx "expt 2 3" 8.0 (expt 2.0 3.0))
+(test-approx "expt 10 2" 100.0 (expt 10.0 2.0))
+(test-approx "expt 4 0.5" 2.0 (expt 4.0 0.5))
+
+;; ============================================================================
+;; Test: Trigonometric Functions
+;; ============================================================================
+
+(display "=== Testing Trigonometric Functions ===\n")
+
+;; Sine
+(test-approx "sin 0" 0.0 (sin 0.0))
+(test-approx "sin pi/2" 1.0 (sin 1.5707963))
+(test-approx "sin pi" 0.0 (sin 3.1415926))
+
+;; Cosine
+(test-approx "cos 0" 1.0 (cos 0.0))
+(test-approx "cos pi/2" 0.0 (cos 1.5707963))
+(test-approx "cos pi" -1.0 (cos 3.1415926))
+
+;; Tangent
+(test-approx "tan 0" 0.0 (tan 0.0))
+(test-approx "tan pi/4" 1.0 (tan 0.7853981))
+
+;; Arc functions
+(test-approx "asin 0" 0.0 (asin 0.0))
+(test-approx "asin 1" 1.5707 (asin 1.0))
+(test-approx "acos 1" 0.0 (acos 1.0))
+(test-approx "acos 0" 1.5707 (acos 0.0))
+(test-approx "atan 0" 0.0 (atan 0.0))
+(test-approx "atan 1" 0.7853 (atan 1.0))
+
+;; ============================================================================
+;; Test: Float Predicates
+;; ============================================================================
+
+(display "=== Testing Float Predicates ===\n")
+
+(test-case "number? float" #t (number? 3.14))
+(test-case "real? float" #t (real? 3.14))
+(test-case "zero? 0.0" #t (zero? 0.0))
+(test-case "zero? 0.001" #f (zero? 0.001))
+(test-case "positive? 0.1" #t (positive? 0.1))
+(test-case "negative? -0.1" #t (negative? -0.1))
+
+;; ============================================================================
+;; Test: Float Comparisons
+;; ============================================================================
+
+(display "=== Testing Float Comparisons ===\n")
+
+(test-case "f= true" #t (= 3.14 3.14))
+(test-case "f= false" #f (= 3.14 3.15))
+(test-case "f< true" #t (< 3.14 3.15))
+(test-case "f< false" #f (< 3.15 3.14))
+(test-case "f> true" #t (> 3.15 3.14))
+(test-case "f> false" #f (> 3.14 3.15))
+(test-case "f<= less" #t (<= 3.14 3.15))
+(test-case "f<= equal" #t (<= 3.14 3.14))
+(test-case "f>= greater" #t (>= 3.15 3.14))
+(test-case "f>= equal" #t (>= 3.14 3.14))
+
+;; ============================================================================
+;; Test: Mixed Integer/Float
+;; ============================================================================
+
+(display "=== Testing Mixed Operations ===\n")
+
+(test-approx "int + float" 5.5 (+ 2 3.5))
+(test-approx "float + int" 5.5 (+ 3.5 2))
+(test-approx "int - float" -1.5 (- 2 3.5))
+(test-approx "int * float" 7.5 (* 3 2.5))
+(test-approx "float / int" 2.5 (/ 5.0 2))
+(test-approx "int / float" 4.0 (/ 10 2.5))
+
+;; ============================================================================
+;; Test: Float Edge Cases
+;; ============================================================================
+
+(display "=== Testing Float Edge Cases ===\n")
+
+;; Very small numbers
+(test-approx "very small" 1e-10 1e-10)
+(test-approx "add very small" 2e-10 (+ 1e-10 1e-10))
+
+;; Very large numbers
+(test-approx "very large" 1e10 1e10)
+(test-approx "mul large" 1e20 (* 1e10 1e10))
+
+;; Precision edge cases
+(test-approx "0.1 + 0.2" 0.3 (+ 0.1 0.2))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

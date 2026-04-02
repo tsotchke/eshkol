@@ -1,9 +1,9 @@
-# Eshkol v1.0-Architecture: System Architecture Reference
+# Eshkol System Architecture Reference
 
-**Version**: 1.0.0
-**Release**: v1.0-architecture
-**Date**: December 2025
-**Status**: Production-ready core compiler
+**Version**: 1.1.11
+**Release**: v1.1-accelerate
+**Date**: March 2026
+**Status**: Production-ready compiler with GPU acceleration, consciousness engine, and exact arithmetic
 
 > **Note**: This document describes the **actual implemented system** based on comprehensive code analysis. Features marked as "planned" or "future" are documented separately in roadmap documents.
 
@@ -24,6 +24,7 @@
 11. [Standard Library](#standard-library)
 12. [Code Organization](#code-organization)
 13. [Performance Characteristics](#performance-characteristics)
+14. [v1.1 Architecture Extensions](#v11-architecture-extensions)
 
 ---
 
@@ -44,14 +45,14 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 | Metric | Value |
 |--------|-------|
-| Total codebase | ~80,000 lines |
-| Core compiler | 67,000+ lines analyzed |
-| Main codegen | 27,079 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp:1)) |
-| Parser | 5,487 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp:1)) |
-| Memory manager | 3,210 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp:1)) |
-| Type checker | 1,561 lines ([`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp:1)) |
-| Backend modules | 19 files, ~20,000 lines |
-| Test suite | 300+ tests across 10 categories |
+| Total codebase | ~232,000 lines |
+| LLVM backend | 21 codegen modules, ~86,000 lines |
+| Bytecode VM | 63 opcodes, 250+ native calls, ~41,000 lines |
+| Main codegen | 35,074 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp:1)) |
+| Parser | 7,551 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp:1)) |
+| Memory manager | 4,972 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp:1)) |
+| Weight matrix transformer | 2,299 lines, 55/55 tests, 3-way verified |
+| Test suite | 434 tests across 35 suites (525+ assertions, 0 failures) |
 
 ---
 
@@ -77,10 +78,10 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
                          │
 ┌────────────────────────▼────────────────────────────────────────┐
 │                 COMPILER BACKEND (C++/LLVM)                     │
-│  Main Codegen (27K) + 19 Specialized Modules (20K)              │
-│  • Arithmetic  • Autodiff  • Tensor  • Collection               │
-│  • Control Flow  • Binding  • Call/Apply  • Map                 │
-│  • Homoiconic  • String/IO  • Hash  • Tail Call                 │
+│  Main Codegen (35K) + 21 Specialized Modules (20K)              │
+│  • Arithmetic  • Autodiff  • Tensor  • Collection  • Complex    │
+│  • Control Flow  • Binding  • Call/Apply  • Map  • Parallel     │
+│  • Homoiconic  • String/IO  • Hash  • Tail Call  • Memory       │
 └────────────────────────┬────────────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────────────┐
@@ -127,7 +128,7 @@ arena_t* __global_arena;
 #define DEFAULT_BLOCK_SIZE 8192  // 8KB blocks
 ```
 
-**Key insight**: Unlike per-function arenas (which fragment memory), Eshkol uses a single global arena with scope tracking.
+**Key insight**: Eshkol uses a hybrid arena model — a global arena with scope tracking for the main thread, plus per-thread arenas (1 MB, lazily allocated via `thread_local`) for parallel workers. This avoids both fragmentation and contention.
 
 ### Object Header System
 
@@ -512,7 +513,7 @@ All implemented and tested in [`tests/autodiff/phase4_vector_calculus_test.esk`]
 
 **Implementation**: [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp:15000), [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h:1)
 
-### Closure Structure (32 bytes)
+### Closure Structure (40 bytes)
 
 ```c
 typedef struct eshkol_closure {
@@ -524,7 +525,7 @@ typedef struct eshkol_closure {
     uint8_t flags;                  // CLOSURE_FLAG_VARIADIC, etc. (1 byte)
     uint8_t reserved;               // Alignment (1 byte)
     uint32_t hott_type_id;          // HoTT type ID for return (4 bytes)
-} eshkol_closure_t;                 // Total: 32 bytes
+} eshkol_closure_t;                 // Total: 40 bytes
 ```
 
 ### Environment (Packed Format)
@@ -1036,7 +1037,7 @@ eshkol/
 │   ├── stdlib.esk          # Standard library (42 lines, re-exports)
 │   ├── math.esk            # Math library (441 lines)
 │   │
-│   ├── backend/            # 19 backend modules (~20K lines)
+│   ├── backend/            # 21 backend modules (~20K lines)
 │   │   ├── llvm_codegen.cpp      # Main engine (27,079 lines!)
 │   │   ├── arithmetic_codegen.cpp# Polymorphic arithmetic (1,478 lines)
 │   │   ├── autodiff_codegen.cpp  # AD operations (1,766 lines)
@@ -1087,7 +1088,7 @@ eshkol/
 │   ├── eshkol-run.cpp      # Compiler executable (2,260 lines)
 │   └── eshkol-repl.cpp     # REPL executable (1,051 lines)
 │
-└── tests/                  # 300+ test files
+└── tests/                  # 400+ test files
     ├── autodiff/           # AD tests (40+ files)
     ├── lists/              # List tests (60+ files)
     ├── tensors/            # Tensor tests
@@ -1101,7 +1102,7 @@ eshkol/
 
 ### Backend Modular Refactoring
 
-**Status**: 19 modules extracted from monolithic codegen
+**Status**: 21 modules extracted from monolithic codegen
 
 **Callback Pattern** for inter-module communication:
 ```cpp
@@ -1216,7 +1217,7 @@ This makes arena functions, autodiff tape operations, etc. available to JIT-comp
 
 ### Test Suite Organization
 
-**300+ tests** across categories:
+**434 tests** across 35 suites:
 
 | Category | Count | Purpose |
 |----------|-------|---------|
@@ -1235,7 +1236,7 @@ This makes arena functions, autodiff tape operations, etc. available to JIT-comp
 
 ```bash
 # All tests
-./scripts/verify_all_tests.sh
+./scripts/run_all_tests.sh
 
 # Specific category
 ./scripts/run_autodiff_tests.sh
@@ -1256,20 +1257,20 @@ Each test verifies:
 
 ---
 
-## What's NOT in v1.0
+## What's NOT in v1.1
 
 These features are **designed but not implemented**. See roadmap documents for details:
 
-❌ **Native Quantum Types**: Qubit, qreg, quantum gates (design in `QUANTUM_STOCHASTIC_COMPUTING_ARCHITECTURE.md`)
-- **What IS implemented**: Quantum RNG ([`lib/quantum/quantum_rng.c`](../lib/quantum/quantum_rng.c:1))
+- **Native Quantum Types**: Qubit, qreg, quantum gates (design in `QUANTUM_STOCHASTIC_COMPUTING_ARCHITECTURE.md`)
+  - **What IS implemented**: Quantum RNG ([`lib/quantum/quantum_rng.c`](../lib/quantum/quantum_rng.c:1))
 
-❌ **Logic Programming**: Unification, logic variables `?x`, backtracking (design in `NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md`)
+- **Multimedia**: Windows, graphics, audio, GPIO (design in `MULTIMEDIA_SYSTEM_ARCHITECTURE.md`)
 
-❌ **Multimedia**: Windows, graphics, audio, GPIO (design in `MULTIMEDIA_SYSTEM_ARCHITECTURE.md`)
+- **Full Linear Types**: Compile-time enforcement of use-exactly-once (partial: warnings only)
 
-❌ **Full Linear Types**: Compile-time enforcement of use-exactly-once (partial: warnings only)
+- **Dependent Types with Proofs**: Full proof terms (partial: dimension checking only)
 
-❌ **Dependent Types with Proofs**: Full proof terms (partial: dimension checking only)
+**Note**: Logic programming, previously listed as unimplemented, shipped in v1.1 as part of the Consciousness Engine (see [v1.1 Architecture Extensions](#v11-architecture-extensions)).
 
 **See**: [`ROADMAP.md`](ROADMAP.md) for future releases.
 
@@ -1298,10 +1299,254 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 - [`API_REFERENCE.md`](API_REFERENCE.md) - Complete API with examples
 - [`QUICKSTART.md`](QUICKSTART.md) - 15-minute getting started guide
-- [`MEMORY_ARCHITECTURE.md`](MEMORY_ARCHITECTURE.md) - OALR deep dive
-- [`AUTODIFF_GUIDE.md`](AUTODIFF_GUIDE.md) - Using automatic differentiation
-- [`LANGUAGE_GUIDE.md`](LANGUAGE_GUIDE.md) - Comprehensive language manual
+- [`API_REFERENCE.md`](API_REFERENCE.md) - Complete API documentation (700+ builtins)
+- [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) - Current limitations and planned features
+- [`QUICKSTART.md`](QUICKSTART.md) - Getting started guide
 
 ---
 
-*This document reflects the v1.0-architecture release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*
+## v1.1 Architecture Extensions
+
+The v1.1-accelerate release adds six major subsystems to the compiler and runtime. Each integrates with the existing LLVM codegen pipeline, arena memory, and module system described above.
+
+---
+
+### XLA Backend (Dual-Mode)
+
+**Implementation**: [`lib/backend/xla/`](../lib/backend/xla/)
+
+Eshkol v1.1 provides an optional XLA compilation path for tensor-heavy workloads. The backend operates in dual mode:
+
+1. **StableHLO/MLIR path**: Emits StableHLO dialect operations for dynamic shapes, broadcasting, and large tensor programs. The [`stablehlo_emitter.cpp`](../lib/backend/xla/stablehlo_emitter.cpp:1) translates Eshkol tensor AST nodes into StableHLO IR. [`xla_compiler.cpp`](../lib/backend/xla/xla_compiler.cpp:1) lowers StableHLO through the MLIR pipeline to executable code.
+
+2. **LLVM-direct fallback**: Operations that do not benefit from XLA overhead (small tensors, scalar-heavy code) remain on the standard LLVM codegen path. The cost model in [`xla_codegen.cpp`](../lib/backend/xla/xla_codegen.cpp:1) selects the appropriate backend per operation.
+
+**Key files**:
+
+| File | Role |
+|------|------|
+| [`xla_codegen.cpp`](../lib/backend/xla/xla_codegen.cpp:1) | Top-level dispatch, cost model, LLVM integration |
+| [`stablehlo_emitter.cpp`](../lib/backend/xla/stablehlo_emitter.cpp:1) | AST → StableHLO dialect translation |
+| [`xla_compiler.cpp`](../lib/backend/xla/xla_compiler.cpp:1) | StableHLO → executable lowering pipeline |
+| [`xla_runtime.cpp`](../lib/backend/xla/xla_runtime.cpp:1) | Runtime buffer management, execution |
+| [`xla_memory.cpp`](../lib/backend/xla/xla_memory.cpp:1) | XLA-specific memory allocation and lifetime |
+| [`xla_types.cpp`](../lib/backend/xla/xla_types.cpp:1) | Eshkol type ↔ XLA element type mapping |
+
+**ORC JIT integration**: StableHLO programs are compiled at runtime via LLVM ORC, enabling the REPL to execute XLA-accelerated tensor code without ahead-of-time compilation.
+
+---
+
+### GPU Acceleration
+
+**Implementation**: [`lib/backend/gpu/`](../lib/backend/gpu/)
+
+Two GPU backends provide hardware-accelerated tensor operations:
+
+**Metal (Apple Silicon)**:
+- [`gpu_memory.mm`](../lib/backend/gpu/gpu_memory.mm:1): Objective-C++ Metal API integration
+- Software float64 (SF64) emulation — Metal lacks native float64 support
+- [`metal_softfloat.h`](../lib/backend/gpu/metal_softfloat.h:1): IEEE 754 double-precision arithmetic in Metal shading language
+- Shader source embedded at build time; no runtime file I/O
+
+**CUDA**:
+- [`gpu_memory_cuda.cpp`](../lib/backend/gpu/gpu_memory_cuda.cpp:1): CUDA API integration
+- [`gpu_cuda_kernels.cu`](../lib/backend/gpu/gpu_cuda_kernels.cu:1): Native float64 kernels, cuBLAS for matrix operations
+- [`gpu_memory_stub.cpp`](../lib/backend/gpu/gpu_memory_stub.cpp:1): No-op stub for builds without GPU support
+
+**Cost-Model Dispatch**:
+
+The runtime selects the execution path based on tensor element count:
+
+```
+SIMD vectorization     ← element count ≥ 64
+cBLAS (Accelerate/MKL) ← element count ≥ 64, matmul-class operations
+GPU offload            ← element count ≥ 100,000
+```
+
+Peak GFLOPS parameters calibrated on Apple M1:
+- `blas_peak_gflops = 1100` (measured via Apple Accelerate AMX, sustained ~1.2 TFLOPS for matmul up to 15000x15000)
+- `gpu_peak_gflops = 200` (SF64 emulation overhead on Metal)
+
+Dispatch proceeds SIMD → cBLAS → GPU; the GPU path is selected only when the cost model predicts it will outperform the CPU path for the given operation and size.
+
+---
+
+### Consciousness Engine
+
+**Implementation**: [`lib/core/logic.cpp`](../lib/core/logic.cpp:1), [`lib/core/inference.cpp`](../lib/core/inference.cpp:1), [`lib/core/workspace.cpp`](../lib/core/workspace.cpp:1)
+
+Three interconnected subsystems implement a compiled consciousness architecture:
+
+#### Logic Programming
+
+**Files**: [`inc/eshkol/core/logic.h`](../inc/eshkol/core/logic.h:1), [`lib/core/logic.cpp`](../lib/core/logic.cpp:1)
+
+- First-order unification (Martelli-Montanari algorithm) with occurs check and triangular substitution chains
+- Knowledge base with fact assertion and pattern-matching conjunctive query
+- Walk operation: chain dereferencing through substitution bindings to ground values
+- Parser extension: `?x` syntax produces `ESHKOL_LOGIC_VAR_OP` AST nodes (R7RS-compatible — `?` is a valid identifier start character)
+
+#### Active Inference
+
+**Files**: [`inc/eshkol/core/inference.h`](../inc/eshkol/core/inference.h:1), [`lib/core/inference.cpp`](../lib/core/inference.cpp:1)
+
+- Factor graphs: bipartite graph G = (V, F, E) with discrete variable nodes and factor nodes
+- Conditional probability tables (CPTs) as flat log-probability tensors indexed by joint state assignment
+- Sum-product belief propagation in log-space (`fg-infer!`) with configurable max iterations
+- CPT mutation for online learning (`fg-update-cpt!` — replaces CPT, resets all messages, beliefs reconverge on next inference pass)
+- Variational free energy: F = E_q[log q(s)] - E_q[log p(o, s)]
+- Expected free energy (EFE) for action selection: G = E_q[log q(s') - log p(o', s')]
+- Observation format: `#(var_index observed_state)` pairs, not state vectors
+
+#### Global Workspace
+
+**Files**: [`inc/eshkol/core/workspace.h`](../inc/eshkol/core/workspace.h:1), [`lib/core/workspace.cpp`](../lib/core/workspace.cpp:1)
+
+- Module registration with closure-based content generators
+- Softmax competition across modules (temperature-controlled)
+- Winner content broadcasting to all registered modules
+- `ws-step!` fully compiled: LLVM codegen loop calls closures via `codegenClosureCall`; C runtime helpers (`eshkol_ws_make_content_tensor`, `eshkol_ws_step_finalize`) handle tensor wrapping and softmax broadcast
+
+**22 Compiled Primitives**:
+
+| Category | Primitives |
+|----------|-----------|
+| Logic | `unify`, `walk`, `make-substitution`, `make-fact`, `make-kb`, `kb-assert!`, `kb-query`, `logic-var?`, `substitution?`, `kb?`, `fact?` |
+| Inference | `make-factor-graph`, `fg-add-factor!`, `fg-infer!`, `fg-update-cpt!`, `free-energy`, `expected-free-energy`, `factor-graph?` |
+| Workspace | `make-workspace`, `ws-register!`, `ws-step!`, `workspace?` |
+
+**Heap Subtypes**: SUBSTITUTION=12, FACT=13, KNOWLEDGE\_BASE=15, FACTOR\_GRAPH=16, WORKSPACE=17. Type tag: `ESHKOL_VALUE_LOGIC_VAR` = 10.
+
+---
+
+### Parallel Worker Thread Pool
+
+**Implementation**: [`lib/backend/parallel_llvm_codegen.cpp`](../lib/backend/parallel_llvm_codegen.cpp:1)
+
+Work-stealing deque architecture for data-parallel operations:
+
+- Hardware-aware thread count (defaults to `std::thread::hardware_concurrency()`)
+- Task granularity control to amortize dispatch overhead
+- Per-thread arena isolation — no cross-thread arena contention
+
+**Primitives**:
+
+```scheme
+(parallel-map f lst)           ; Map with work distribution across threads
+(parallel-fold f init lst)     ; Parallel reduction with associative combiner
+(parallel-filter pred lst)     ; Concurrent predicate evaluation
+(parallel-for-each f lst)      ; Side-effecting parallel traversal
+(parallel-execute thunk1 ...)  ; Concurrent evaluation of independent thunks
+(future expr)                  ; Deferred concurrent computation
+(force future)                 ; Block until result available
+```
+
+**Linkage**: Worker function symbols use `LinkOnceODRLinkage` to prevent duplicate symbol errors when linking parallel-compiled modules with stdlib.o. This matches the stdlib linkage convention established for all library symbols.
+
+---
+
+### Exact Arithmetic Runtime
+
+Two exact numeric types extend the R7RS numeric tower beyond machine integers and IEEE 754 doubles.
+
+#### Bignum (Arbitrary-Precision Integers)
+
+**Implementation**: [`inc/eshkol/core/bignum.h`](../inc/eshkol/core/bignum.h:1), [`lib/core/bignum.cpp`](../lib/core/bignum.cpp:1)
+
+- Sign-magnitude representation with dynamic limb array
+- Automatic int64 → bignum promotion on overflow; demotion back to int64 when result fits
+- C runtime dispatch replaces ~1300 lines of inline LLVM IR
+
+**Runtime entry points**:
+
+| Function | Purpose |
+|----------|---------|
+| `eshkol_bignum_binary_tagged` | +, -, *, /, modulo on tagged values |
+| `eshkol_bignum_compare_tagged` | Exact comparison (avoids extractAsDouble precision loss) |
+| `eshkol_bignum_pow` | Exponentiation via repeated squaring |
+| `eshkol_bignum_to_string` | Decimal string conversion |
+| `eshkol_bignum_from_string` | Parse arbitrarily long integer literals |
+| `eshkol_is_bignum_tagged` | Type predicate for dispatch |
+
+**Codegen helpers**: `emitBignumBinaryCall`, `emitBignumCompareCall`, `emitIsBignumCheck` in [`arithmetic_codegen.cpp`](../lib/backend/arithmetic_codegen.cpp:1).
+
+#### Rational (Exact Fractions)
+
+**Implementation**: [`inc/eshkol/core/rational.h`](../inc/eshkol/core/rational.h:1), [`lib/core/rational.cpp`](../lib/core/rational.cpp:1)
+
+- GCD-reduced canonical form with positive denominator invariant
+- Heap-allocated as `HEAP_PTR` with subtype discrimination
+- `eshkol_rational_compare_tagged_ptr` for comparison dispatch in [`arithmetic_codegen.cpp`](../lib/backend/arithmetic_codegen.cpp:1)
+
+#### Numeric Tower
+
+The full R7RS numeric tower as implemented:
+
+```
+int64 < bignum < rational < double < complex
+       exact                inexact
+```
+
+Mixed-exactness arithmetic follows R7RS: exact + inexact produces inexact. The `exact?` and `inexact?` predicates reflect this at runtime via the tagged value flags byte.
+
+---
+
+### Signal Processing Stdlib
+
+**Implementation**: [`lib/signal/`](../lib/signal/)
+
+A compiled DSP library providing 13 signal processing functions:
+
+```scheme
+;; FFT/IFFT (Cooley-Tukey radix-2 decimation-in-time)
+(fft signal)
+(ifft spectrum)
+
+;; Window functions
+(hamming-window n)
+(hann-window n)
+(blackman-window n)
+(kaiser-window n beta)
+
+;; Filtering
+(convolution signal kernel)
+(butterworth-lowpass order cutoff sample-rate)
+(butterworth-highpass order cutoff sample-rate)
+
+;; Spectral analysis
+(power-spectrum signal)
+(magnitude-spectrum signal)
+(phase-spectrum signal)
+```
+
+All functions operate on Eshkol tensors. The module compiles to `stdlib.o` and is available via `(require signal.filters)`.
+
+---
+
+### REPL JIT Enhancements
+
+**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp:1), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp:1)
+
+v1.1 resolves several production issues in the interactive JIT:
+
+**Stdlib hot-loading**: Pre-compiled `stdlib.o` is loaded via `addObjectFile` (no recompilation). Symbol discovery uses `.bc` metadata extracted at build time, exposing 237 functions and 305 globals to the JIT symbol resolver.
+
+**ABI-correct optimization level**: `JITTargetMachineBuilder::setCodeGenOptLevel(CodeGenOptLevel::None)` matches the `-O0` level used to compile `stdlib.o`. On ARM64, mismatched optimization levels produce different stack layouts for the `{i8,i8,i16,i32,i64}` tagged value struct, causing the 3rd+ function argument to arrive as zero. This was the root cause of stdlib functions with 3+ arguments returning incorrect results in the REPL.
+
+**Crash recovery**: Signal handlers for `SIGSEGV`, `SIGFPE`, and `SIGBUS` catch runtime faults in JIT-compiled code and return control to the REPL prompt rather than terminating the process.
+
+**Archive linking**: `-force_load` on macOS and `--whole-archive` on Linux prevent the linker from dead-stripping archive members (e.g., XLA runtime functions) that are referenced only by JIT-compiled code at runtime. Combined with `-export_dynamic`, all runtime symbols are visible to the ORC `DynamicLibrarySearchGenerator`.
+
+### v1.1 Feature Integration
+
+**Consciousness Engine in the Runtime Layer.** The consciousness engine (logic inference, active inference, and global workspace) integrates into the runtime as a set of 22 builtin functions backed by three C++ modules: `logic.h/logic.cpp` (unification, substitution, knowledge base), `inference.h/inference.cpp` (factor graph belief propagation, free energy minimization), and `workspace.h/workspace.cpp` (module registration, softmax competition). These are not separate subsystems -- they use the same arena allocator and tagged value representation as the core runtime, with dedicated heap subtypes (SUBSTITUTION=12, FACT=13, KNOWLEDGE_BASE=15, FACTOR_GRAPH=16, WORKSPACE=17) and a logic variable type tag (ESHKOL_VALUE_LOGIC_VAR=10). The `?x` syntax for logic variables is parsed as `ESHKOL_LOGIC_VAR_OP`, remaining compatible with R7RS since `?` is a valid identifier start character. Workspace stepping (`ws-step!`) uses `codegenClosureCall` in LLVM IR to invoke module closures, while C runtime helpers handle tensor wrapping and softmax broadcast.
+
+**GPU Dispatch in the Compilation Pipeline.** GPU acceleration is transparent to the compilation pipeline. The LLVM codegen emits calls to XLA C runtime functions (e.g., `eshkol_xla_matmul`, `eshkol_xla_elementwise`) when tensor sizes exceed the XLA threshold (default 100K elements). These runtime functions internally probe GPU availability via `eshkol_gpu_should_use()` and wrap host pointers into Metal buffers using `newBufferWithBytesNoCopy` for zero-copy access on Apple Silicon's unified memory. The cost model in `blas_backend.cpp` selects between scalar, SIMD (NEON 4x4 micro-kernel / AVX 4x8 micro-kernel), cBLAS (Apple Accelerate AMX at ~1100 GFLOPS), and GPU (Metal sf64 compute shaders at ~200 GFLOPS) based on estimated execution time. GPU dispatch adds 200 microseconds of overhead per operation, so it is reserved for matrices exceeding ~1 billion output elements. The decision is entirely runtime -- the compiled binary contains all code paths, and environment variables (`ESHKOL_BLAS_PEAK_GFLOPS`, `ESHKOL_GPU_PEAK_GFLOPS`, `ESHKOL_GPU_MATMUL_THRESHOLD`) allow tuning without recompilation.
+
+**Parallel Execution in the Memory Model.** Eshkol's arena-based memory model supports parallel execution through per-worker arena allocation and `LinkOnceODRLinkage` for parallel worker functions to prevent duplicate symbol conflicts at link time. The parallel primitives (`parallel-map`, `parallel-for`, etc.) partition work across OS threads, each operating on independent arena segments. Tensor operations that internally parallelize (e.g., GPU compute kernels, cBLAS) are safe because they operate on pre-allocated contiguous buffers -- the arena allocator is only invoked to allocate result tensors before the parallel kernel launches. The REPL JIT uses `-force_load` / `--whole-archive` on the static library and matches the compilation's `CodeGenOptLevel::None` to avoid ABI divergence in struct passing on ARM64, which is critical for correct tagged value transmission across the JIT boundary.
+
+**Exact Arithmetic in the Numeric Tower.** The numeric tower extends from fixnums through bignums, rationals, and complex to tensors, with all transitions handled by the tagged value system's 16-byte `{type:8, flags:8, reserved:16, padding:32, data:64}` representation. Bignum operations dispatch through C runtime functions (`eshkol_bignum_binary_tagged`, `eshkol_bignum_compare_tagged`) that examine the type tag at index 0 and operate on GMP-backed arbitrary-precision integers stored as heap pointers. R7RS exactness semantics are preserved: mixed exact/inexact operations promote to inexact (e.g., bignum + double returns double), while `expt` with exact integer arguments and non-negative exponent uses repeated squaring (`eshkol_bignum_pow`) to return an exact bignum result. The rational type stores numerator/denominator bignums and dispatches through `eshkol_rational_compare_tagged_ptr` for comparisons. All numeric types are checked in `ArithmeticCodegen::compare()`, `abs()`, `min/max`, and `pow()` to prevent precision loss from fallthrough to double paths.
+
+---
+
+*This document reflects the v1.1-accelerate release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*

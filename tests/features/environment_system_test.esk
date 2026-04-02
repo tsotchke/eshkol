@@ -1,0 +1,17 @@
+; Environment and system functions test suite
+; Tests current-environment, command-line, jiffies-per-second
+
+(display "TEST: environment and system functions") (newline)
+
+; current-environment tests
+(display (if (list? (current-environment)) "PASS" "FAIL")) (display ": current-environment returns a list") (newline)
+
+; command-line tests
+(display (if (list? (command-line)) "PASS" "FAIL")) (display ": command-line returns a list") (newline)
+(display (if (not (null? (command-line))) "PASS" "FAIL")) (display ": command-line is non-empty") (newline)
+(display (if (string? (car (command-line))) "PASS" "FAIL")) (display ": command-line first element is a string") (newline)
+
+; jiffies-per-second tests
+(display (if (> (jiffies-per-second) 0) "PASS" "FAIL")) (display ": jiffies-per-second is positive") (newline)
+(display (if (integer? (jiffies-per-second)) "PASS" "FAIL")) (display ": jiffies-per-second is an integer") (newline)
+(display (if (exact? (jiffies-per-second)) "PASS" "FAIL")) (display ": jiffies-per-second is exact") (newline)

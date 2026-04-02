@@ -1,0 +1,103 @@
+;; GPU Reduce Correctness Tests
+;; Tests full-tensor reduce and axis-specific reduce.
+
+;; --- Full-tensor reduce ---
+(define A (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+
+;; Sum all: 1+2+3+4+5+6 = 21
+(define s (tensor-sum A))
+(if (< (abs (- s 21.0)) 1e-10)
+    (display "PASS: tensor-sum all = 21")
+    (begin (display "FAIL: tensor-sum all = ") (display s)))
+(newline)
+
+;; Max all: 6
+(define mx (tensor-max A))
+(if (< (abs (- mx 6.0)) 1e-10)
+    (display "PASS: tensor-max all = 6")
+    (begin (display "FAIL: tensor-max all = ") (display mx)))
+(newline)
+
+;; Min all: 1
+(define mn (tensor-min A))
+(if (< (abs (- mn 1.0)) 1e-10)
+    (display "PASS: tensor-min all = 1")
+    (begin (display "FAIL: tensor-min all = ") (display mn)))
+(newline)
+
+;; Mean all: 21/6 = 3.5
+(define avg (tensor-mean A))
+(if (< (abs (- avg 3.5)) 1e-10)
+    (display "PASS: tensor-mean all = 3.5")
+    (begin (display "FAIL: tensor-mean all = ") (display avg)))
+(newline)
+
+;; --- Axis-specific reduce ---
+;; A = [[1,2,3],[4,5,6]]
+;; Sum along axis 0 (columns): [5, 7, 9]
+(define col-sum (tensor-sum A 0))
+(if (and (< (abs (- (tensor-get col-sum 0) 5.0)) 1e-10)
+         (< (abs (- (tensor-get col-sum 1) 7.0)) 1e-10)
+         (< (abs (- (tensor-get col-sum 2) 9.0)) 1e-10))
+    (display "PASS: tensor-sum axis=0 = [5,7,9]")
+    (display "FAIL: tensor-sum axis=0 incorrect"))
+(newline)
+
+;; Sum along axis 1 (rows): [6, 15]
+(define row-sum (tensor-sum A 1))
+(if (and (< (abs (- (tensor-get row-sum 0) 6.0)) 1e-10)
+         (< (abs (- (tensor-get row-sum 1) 15.0)) 1e-10))
+    (display "PASS: tensor-sum axis=1 = [6,15]")
+    (display "FAIL: tensor-sum axis=1 incorrect"))
+(newline)
+
+;; Max along axis 0: [4, 5, 6]
+(define col-max (tensor-max A 0))
+(if (and (< (abs (- (tensor-get col-max 0) 4.0)) 1e-10)
+         (< (abs (- (tensor-get col-max 1) 5.0)) 1e-10)
+         (< (abs (- (tensor-get col-max 2) 6.0)) 1e-10))
+    (display "PASS: tensor-max axis=0 = [4,5,6]")
+    (display "FAIL: tensor-max axis=0 incorrect"))
+(newline)
+
+;; Min along axis 1: [1, 4]
+(define row-min (tensor-min A 1))
+(if (and (< (abs (- (tensor-get row-min 0) 1.0)) 1e-10)
+         (< (abs (- (tensor-get row-min 1) 4.0)) 1e-10))
+    (display "PASS: tensor-min axis=1 = [1,4]")
+    (display "FAIL: tensor-min axis=1 incorrect"))
+(newline)
+
+;; Mean along axis 0: [2.5, 3.5, 4.5]
+(define col-mean (tensor-mean A 0))
+(if (and (< (abs (- (tensor-get col-mean 0) 2.5)) 1e-10)
+         (< (abs (- (tensor-get col-mean 1) 3.5)) 1e-10)
+         (< (abs (- (tensor-get col-mean 2) 4.5)) 1e-10))
+    (display "PASS: tensor-mean axis=0 = [2.5,3.5,4.5]")
+    (display "FAIL: tensor-mean axis=0 incorrect"))
+(newline)
+
+;; Negative axis: axis=-1 should be same as axis=1 for 2D
+(define neg-sum (tensor-sum A -1))
+(if (and (< (abs (- (tensor-get neg-sum 0) 6.0)) 1e-10)
+         (< (abs (- (tensor-get neg-sum 1) 15.0)) 1e-10))
+    (display "PASS: tensor-sum axis=-1 = tensor-sum axis=1")
+    (display "FAIL: tensor-sum axis=-1 incorrect"))
+(newline)
+
+;; 1D reduce
+(define v (vector 10.0 20.0 30.0))
+(define vs (tensor-sum v))
+(if (< (abs (- vs 60.0)) 1e-10)
+    (display "PASS: 1D tensor-sum = 60")
+    (begin (display "FAIL: 1D tensor-sum = ") (display vs)))
+(newline)
+
+;; arange reduce
+(define seq (arange 100))
+(define seq-sum (tensor-sum seq))
+;; sum 0..99 = 99*100/2 = 4950
+(if (< (abs (- seq-sum 4950.0)) 1e-10)
+    (display "PASS: arange(100) sum = 4950")
+    (begin (display "FAIL: arange(100) sum = ") (display seq-sum)))
+(newline)

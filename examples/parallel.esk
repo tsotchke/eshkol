@@ -1,0 +1,13 @@
+;; Parallel Computation — Work-stealing thread pool
+;; parallel-execute runs thunks concurrently and collects results
+
+(define results (parallel-execute
+  (lambda () (* 10 10))
+  (lambda () (* 20 20))
+  (lambda () (* 30 30))))
+
+(display "Parallel results: ") (display results) (newline)
+;; Expected: (100 400 900)
+
+;; Thread pool info
+(display "Worker threads: ") (display (thread-pool-info)) (newline)

@@ -1,0 +1,96 @@
+;;; Eshkol FFT/IFFT Implementation
+;;; Cooley-Tukey radix-2 decimation-in-time FFT
+;;;
+;;; Provides: fft, ifft
+;;; Usage: (require signal.fft)
+
+(provide fft ifft)
+
+;;; ============================================================
+;;; FFT — Cooley-Tukey Radix-2 Decimation-in-Time
+;;; ============================================================
+
+;; fft: Compute the discrete Fourier transform of a vector.
+;; Input: vector of real or complex numbers (length must be power of 2).
+;; Output: vector of complex numbers.
+;;
+;; Algorithm: Recursive Cooley-Tukey radix-2 DIT.
+;; X[k] = E[k] + W_N^k * O[k]   for k = 0..N/2-1
+;; X[k+N/2] = E[k] - W_N^k * O[k]
+;; where E = FFT(even-indexed), O = FFT(odd-indexed), W_N = e^{-2*pi*i/N}
+
+(define (fft x)
+  (let ((n (vector-length x)))
+    (if (<= n 1)
+        ;; Base case: single element → wrap as complex
+        (let ((result (make-vector 1 (make-rectangular 0.0 0.0))))
+          (vector-set! result 0
+            (if (number? (vref x 0))
+                (make-rectangular (vref x 0) 0.0)
+                (vref x 0)))
+          result)
+        ;; Recursive case: split into even/odd
+        (let* ((half (quotient n 2))
+               (x-even (make-vector half 0.0))
+               (x-odd  (make-vector half 0.0)))
+          ;; Separate even and odd indices
+          (letrec ((split (lambda (i)
+                    (if (< i half)
+                        (begin
+                          (vector-set! x-even i (vref x (* i 2)))
+                          (vector-set! x-odd  i (vref x (+ (* i 2) 1)))
+                          (split (+ i 1)))
+                        #t))))
+            (split 0))
+          ;; Recurse
+          (let* ((fe (fft x-even))
+                 (fo (fft x-odd))
+                 (result (make-vector n (make-rectangular 0.0 0.0)))
+                 (pi 3.141592653589793))
+            ;; Butterfly: combine even and odd halves
+            (letrec ((butterfly (lambda (k)
+                      (if (< k half)
+                          (let* ((angle (/ (* -2.0 pi k) n))
+                                 (twiddle (make-rectangular (cos angle) (sin angle)))
+                                 (t (* twiddle (vref fo k)))
+                                 (ek (vref fe k)))
+                            (vector-set! result k (+ ek t))
+                            (vector-set! result (+ k half) (- ek t))
+                            (butterfly (+ k 1)))
+                          #t))))
+              (butterfly 0))
+            result)))))
+
+;; ifft: Compute the inverse discrete Fourier transform.
+;; Input: vector of complex numbers (length must be power of 2).
+;; Output: vector of complex numbers.
+;;
+;; Uses the conjugate trick: IFFT(x) = conj(FFT(conj(x))) / N
+
+(define (ifft x)
+  (let* ((n (vector-length x))
+         ;; Conjugate the input
+         (x-conj (make-vector n (make-rectangular 0.0 0.0))))
+    (letrec ((conj-loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! x-conj i
+                      (make-rectangular (real-part (vref x i))
+                                        (- 0.0 (imag-part (vref x i)))))
+                    (conj-loop (+ i 1)))
+                  #t))))
+      (conj-loop 0))
+    ;; Forward FFT of conjugated input
+    (let* ((fft-result (fft x-conj))
+           (result (make-vector n (make-rectangular 0.0 0.0))))
+      ;; Conjugate and scale by 1/N
+      (letrec ((scale-loop (lambda (i)
+                (if (< i n)
+                    (begin
+                      (vector-set! result i
+                        (make-rectangular (/ (real-part (vref fft-result i)) n)
+                                          (/ (- 0.0 (imag-part (vref fft-result i))) n)))
+                      (scale-loop (+ i 1)))
+                    #t))))
+        (scale-loop 0))
+      result)))

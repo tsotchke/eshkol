@@ -1,0 +1,142 @@
+;; String Boundary Condition Tests
+;; Tests boundary conditions: single chars, full ranges, first/last elements,
+;; conversion edge cases
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+(display "=== STRING BOUNDARY TESTS ===\n\n")
+
+;; ============================================================================
+;; Test: Single character strings
+;; ============================================================================
+
+(display "--- single character strings ---\n")
+
+(test-case "single char length" 1 (string-length "a"))
+(test-case "single char ref 0" #\a (string-ref "a" 0))
+(test-case "single space length" 1 (string-length " "))
+(test-case "single space ref 0" #\space (string-ref " " 0))
+(test-case "single char string=?" #t (string=? "x" "x"))
+(test-case "single char string<?" #t (string<? "a" "b"))
+
+;; ============================================================================
+;; Test: substring boundary conditions
+;; ============================================================================
+
+(display "\n--- substring boundaries ---\n")
+
+(test-case "substring full string" "hello" (substring "hello" 0 5))
+(test-case "substring empty range" "" (substring "hello" 2 2))
+(test-case "substring first char" "h" (substring "hello" 0 1))
+(test-case "substring last char" "o" (substring "hello" 4 5))
+(test-case "substring first two" "he" (substring "hello" 0 2))
+(test-case "substring last two" "lo" (substring "hello" 3 5))
+(test-case "substring middle one" "l" (substring "hello" 2 3))
+(test-case "substring single char string full" "a" (substring "a" 0 1))
+(test-case "substring single char string empty" "" (substring "a" 0 0))
+(test-case "substring single char string end" "" (substring "a" 1 1))
+
+;; ============================================================================
+;; Test: string-append boundary conditions
+;; ============================================================================
+
+(display "\n--- string-append boundaries ---\n")
+
+(test-case "string-append single chars" "abc" (string-append "a" "b" "c"))
+(test-case "string-append one arg" "hello" (string-append "hello"))
+(test-case "string-append two single" "ab" (string-append "a" "b"))
+
+;; ============================================================================
+;; Test: string-ref at boundaries
+;; ============================================================================
+
+(display "\n--- string-ref boundaries ---\n")
+
+(test-case "string-ref first of hello" #\h (string-ref "hello" 0))
+(test-case "string-ref last of hello" #\o (string-ref "hello" 4))
+(test-case "string-ref middle of hello" #\l (string-ref "hello" 2))
+
+;; ============================================================================
+;; Test: string->number edge cases
+;; ============================================================================
+
+(display "\n--- string->number boundaries ---\n")
+
+(test-case "string->number 0" 0 (string->number "0"))
+(test-case "string->number -1" -1 (string->number "-1"))
+(test-case "string->number 1" 1 (string->number "1"))
+(test-case "string->number empty is #f" #f (string->number ""))
+(test-case "string->number non-numeric is #f" #f (string->number "abc"))
+(test-case "string->number 0.0" 0.0 (string->number "0.0"))
+(test-case "string->number -3.14" -3.14 (string->number "-3.14"))
+(test-case "string->number large" 999999 (string->number "999999"))
+
+;; ============================================================================
+;; Test: number->string edge cases
+;; ============================================================================
+
+(display "\n--- number->string boundaries ---\n")
+
+(test-case "number->string 0" "0" (number->string 0))
+(test-case "number->string -1" "-1" (number->string -1))
+(test-case "number->string 1" "1" (number->string 1))
+(test-case "number->string 42" "42" (number->string 42))
+(test-case "number->string -999" "-999" (number->string -999))
+
+;; ============================================================================
+;; Test: string comparison boundary conditions
+;; ============================================================================
+
+(display "\n--- string comparison boundaries ---\n")
+
+(test-case "string=? identical single" #t (string=? "a" "a"))
+(test-case "string=? different single" #f (string=? "a" "b"))
+(test-case "string<? prefix shorter" #t (string<? "abc" "abcd"))
+(test-case "string>? prefix longer" #t (string>? "abcd" "abc"))
+(test-case "string=? same content" #t (string=? "test" "test"))
+
+;; ============================================================================
+;; Test: make-string boundary conditions
+;; ============================================================================
+
+(display "\n--- make-string boundaries ---\n")
+
+(test-case "make-string 1 char" "z" (make-string 1 #\z))
+(test-case "make-string 1 length" 1 (string-length (make-string 1 #\a)))
+(test-case "make-string 5 content check" #\x (string-ref (make-string 5 #\x) 4))
+
+;; ============================================================================
+;; Test: list->string / string->list roundtrip
+;; ============================================================================
+
+(display "\n--- list<->string roundtrip ---\n")
+
+(test-case "string->list single char" '(#\a) (string->list "a"))
+(test-case "list->string single char" "a" (list->string '(#\a)))
+(test-case "roundtrip hello" "hello" (list->string (string->list "hello")))
+(test-case "roundtrip single" "x" (list->string (string->list "x")))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Results ===\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
+
+(if (= tests-failed 0)
+    (display "All tests passed!\n")
+    (display "Some tests failed!\n"))

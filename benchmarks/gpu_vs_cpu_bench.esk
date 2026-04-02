@@ -1,0 +1,113 @@
+;;; GPU vs CPU Matrix Multiplication Benchmark
+;;; Compares softfloat f64 (Metal GPU) with native BLAS (CPU)
+;;;
+;;; Dispatch thresholds:
+;;; - GPU (Metal softfloat): >= 100K elements
+;;; - cBLAS (Accelerate): >= 4K elements
+;;; - SIMD: >= 64 elements
+;;; - Scalar: < 64 elements
+
+(require stdlib)
+
+(define (format-time ns)
+  "Format nanoseconds to human-readable"
+  (cond
+    ((>= ns 1e9) (string-append (number->string (/ (round (* ns 1e-6)) 1000.0)) " s"))
+    ((>= ns 1e6) (string-append (number->string (round (* ns 1e-6) 0.01)) " ms"))
+    ((>= ns 1e3) (string-append (number->string (round (* ns 1e-3) 0.01)) " us"))
+    (else (string-append (number->string (round ns 1)) " ns"))))
+
+(define (format-gflops gflops)
+  "Format GFLOPS"
+  (cond
+    ((>= gflops 1000) (string-append (number->string (round gflops 1)) " TFLOPS"))
+    ((>= gflops 1) (string-append (number->string (round gflops 0.01)) " GFLOPS"))
+    (else (string-append (number->string (round (* gflops 1000) 0.1)) " MFLOPS"))))
+
+(define (benchmark-matmul-size n iterations)
+  "Benchmark NxN matmul"
+  (let* ((elements (* n n))
+         (ops (* 2 n n n))  ; 2*M*K*N floating point ops
+         (a (random-tensor (list n n)))
+         (b (random-tensor (list n n)))
+         (time-ns (time-it (lambda () (matmul a b)) iterations))
+         (time-s (/ time-ns 1e9))
+         (gflops (/ ops (* time-s 1e9)))
+         (path (cond
+                 ((>= elements 100000) "GPU+softfloat")
+                 ((>= elements 4096) "cBLAS")
+                 ((>= elements 64) "SIMD")
+                 (else "scalar"))))
+    (display "  ")
+    (display n) (display "x") (display n)
+    (display " (") (display elements) (display " elem, ")
+    (display path) (display "): ")
+    (display (format-time time-ns))
+    (display " @ ")
+    (display (format-gflops gflops))
+    (newline)
+    (list n time-ns gflops path)))
+
+(define (run-gpu-cpu-benchmark)
+  (display "==========================================================") (newline)
+  (display "  GPU (Metal softfloat f64) vs CPU (cBLAS) Benchmark") (newline)
+  (display "==========================================================") (newline)
+  (display "") (newline)
+  (display "Thresholds:") (newline)
+  (display "  GPU softfloat: >= 100K elements (~316x316)") (newline)
+  (display "  cBLAS:         >= 4K elements (64x64)") (newline)
+  (display "  SIMD:          >= 64 elements (8x8)") (newline)
+  (display "") (newline)
+
+  ;; Small matrices - scalar/SIMD path (baseline)
+  (display "--- Small matrices (scalar/SIMD) ---") (newline)
+  (benchmark-matmul-size 4 10000)
+  (benchmark-matmul-size 8 5000)
+  (benchmark-matmul-size 16 2000)
+  (benchmark-matmul-size 32 1000)
+  (newline)
+
+  ;; Medium matrices - cBLAS path (baseline for large comparison)
+  (display "--- Medium matrices (cBLAS/Accelerate) ---") (newline)
+  (benchmark-matmul-size 64 500)    ; 4K elements - BLAS threshold
+  (benchmark-matmul-size 128 200)   ; 16K elements
+  (benchmark-matmul-size 192 100)   ; 37K elements
+  (benchmark-matmul-size 256 50)    ; 65K elements
+  (newline)
+
+  ;; Near GPU threshold - critical comparison zone
+  (display "--- GPU threshold zone (100K elements = ~316x316) ---") (newline)
+  (benchmark-matmul-size 300 30)    ; 90K elements - still CPU
+  (benchmark-matmul-size 316 25)    ; ~100K elements - GPU threshold
+  (benchmark-matmul-size 320 25)    ; 102K elements - GPU
+  (benchmark-matmul-size 350 20)    ; 122K elements - GPU
+  (newline)
+
+  ;; Large matrices - GPU should shine here
+  (display "--- Large matrices (GPU softfloat vs cBLAS) ---") (newline)
+  (benchmark-matmul-size 400 15)    ; 160K elements
+  (benchmark-matmul-size 512 10)    ; 262K elements
+  (benchmark-matmul-size 640 5)     ; 410K elements
+  (benchmark-matmul-size 800 3)     ; 640K elements
+  (benchmark-matmul-size 1024 2)    ; 1M elements
+  (newline)
+
+  ;; Very large matrices - GPU parallelism dominates
+  (display "--- Very large matrices (GPU parallelism) ---") (newline)
+  (benchmark-matmul-size 1280 1)    ; 1.6M elements
+  (benchmark-matmul-size 1536 1)    ; 2.4M elements
+  (benchmark-matmul-size 2048 1)    ; 4.2M elements
+  (newline)
+
+  (display "==========================================================") (newline)
+  (display "  Benchmark Complete") (newline)
+  (display "==========================================================") (newline)
+  (display "") (newline)
+  (display "Analysis:") (newline)
+  (display "  - GPU softfloat has ~50-100x per-op overhead vs native f64") (newline)
+  (display "  - GPU has ~1000-5000 concurrent threads (M1/M2/M3)") (newline)
+  (display "  - Crossover depends on your specific Apple Silicon chip") (newline)
+  (display "  - Unified memory = zero copy overhead on Apple Silicon") (newline)
+  (newline))
+
+(run-gpu-cpu-benchmark)

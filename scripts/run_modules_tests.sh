@@ -54,8 +54,8 @@ for test_file in tests/modules/*.esk; do
         compile_output=$(./build/eshkol-run "$test_file" -L./build 2>&1)
         compile_exit=$?
 
-        # Check if compile failed OR compile output contains error
-        if [ $compile_exit -ne 0 ] || echo "$compile_output" | grep -q "error:"; then
+        # Check if compile failed OR compile output contains error (case-insensitive)
+        if [ $compile_exit -ne 0 ] || echo "$compile_output" | grep -qi "error:"; then
             # Check if it's a compile-time failure
             if [ $compile_exit -ne 0 ] || [ ! -f a.out ]; then
                 echo -e "${GREEN}✅ PASS (expected compile error)${NC}"

@@ -1,0 +1,78 @@
+; R7RS read tests - parse S-expressions at runtime
+
+; Read from string port
+(let ((p (open-input-string "42")))
+  (display (read p))
+  (newline))
+; Expected: 42
+
+(let ((p (open-input-string "3.14")))
+  (display (read p))
+  (newline))
+; Expected: 3.14
+
+(let ((p (open-input-string "#t")))
+  (display (read p))
+  (newline))
+; Expected: #t
+
+(let ((p (open-input-string "\"hello\"")))
+  (display (read p))
+  (newline))
+; Expected: hello
+
+(let ((p (open-input-string "(1 2 3)")))
+  (display (read p))
+  (newline))
+; Expected: (1 2 3)
+
+(let ((p (open-input-string "(+ 1 2)")))
+  (write (read p))
+  (newline))
+; Expected: (+ 1 2)
+
+; Read a nested list
+(let ((p (open-input-string "(define (f x) (+ x 1))")))
+  (write (read p))
+  (newline))
+; Expected: (define (f x) (+ x 1))
+
+; Read vector
+(let ((p (open-input-string "#(1 2 3)")))
+  (display (read p))
+  (newline))
+; Expected: #(1 2 3)
+
+; Read character
+(let ((p (open-input-string "#\\a")))
+  (write (read p))
+  (newline))
+; Expected: #\a
+
+; Read boolean
+(let ((p (open-input-string "#f")))
+  (display (read p))
+  (newline))
+; Expected: #f
+
+; Multiple reads from same port
+(let ((p (open-input-string "1 2 3")))
+  (display (read p))
+  (display " ")
+  (display (read p))
+  (display " ")
+  (display (read p))
+  (newline))
+; Expected: 1 2 3
+
+; Read with comments
+(let ((p (open-input-string "; comment\n42")))
+  (display (read p))
+  (newline))
+; Expected: 42
+
+; Quoted form
+(let ((p (open-input-string "'hello")))
+  (write (read p))
+  (newline))
+; Expected: (quote hello)

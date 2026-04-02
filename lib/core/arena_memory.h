@@ -49,11 +49,18 @@ struct arena {
     size_t default_block_size;     // Default size for new blocks
     size_t total_allocated;        // Total memory allocated
     size_t alignment;              // Memory alignment requirement
+    void* mutex;                   // Optional mutex for thread-safe access (pthread_mutex_t*)
+    bool thread_safe;              // Whether this arena uses mutex locking
 };
 
 // Arena management functions
 arena_t* arena_create(size_t default_block_size);
+arena_t* arena_create_threadsafe(size_t default_block_size);  // Thread-safe variant with mutex
 void arena_destroy(arena_t* arena);
+
+// Thread-safety control
+void arena_lock(arena_t* arena);
+void arena_unlock(arena_t* arena);
 
 // Memory allocation
 void* arena_allocate(arena_t* arena, size_t size);
@@ -121,11 +128,17 @@ char* arena_allocate_string_with_header(arena_t* arena, size_t length);
 // Returns pointer to vector data (header is at offset -8)
 void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity);
 
+// Allocate symbol with object header (for symbol->string conversion)
+// Returns pointer to symbol data (header is at offset -8)
+void* arena_allocate_symbol_with_header(arena_t* arena, size_t length);
+
 // Allocate closure with object header (for consolidated CALLABLE type)
 // Returns pointer to closure data (header is at offset -8)
+// name: bound procedure name from (define name ...) or NULL for anonymous lambdas
 eshkol_closure_t* arena_allocate_closure_with_header(arena_t* arena, uint64_t func_ptr,
                                                       size_t num_captures, uint64_t sexpr_ptr,
-                                                      uint64_t return_type_info);
+                                                      uint64_t return_type_info,
+                                                      const char* name);
 
 // Convenience constructors
 arena_tagged_cons_cell_t* arena_create_int64_cons(arena_t* arena,
@@ -194,7 +207,7 @@ void debug_print_ad_mode(const char* context);
 void debug_print_ptr(const char* context, void* ptr);
 
 // Global shared arena for REPL mode (persistent across evaluations)
-extern arena_t* __repl_shared_arena;
+// NOTE: Actual type is std::atomic<arena_t*> — declared in C++ section below
 
 // Global command-line arguments (for (command-line) procedure in REPL)
 extern int32_t __eshkol_argc;
@@ -229,10 +242,10 @@ struct eshkol_region {
     uint8_t is_active;               // Whether this region is currently active
 };
 
-// Global region stack
+// Thread-local region stack (safe for parallel-map + with-region)
 #define MAX_REGION_DEPTH 64
-extern eshkol_region_t* __region_stack[MAX_REGION_DEPTH];
-extern uint64_t __region_stack_depth;
+extern thread_local eshkol_region_t* __region_stack[MAX_REGION_DEPTH];
+extern thread_local uint64_t __region_stack_depth;
 
 // Region lifecycle functions
 eshkol_region_t* region_create(const char* name, size_t size_hint);
@@ -251,6 +264,13 @@ void* region_allocate_zeroed(size_t size);
 // Region-aware cons cell allocation
 arena_tagged_cons_cell_t* region_allocate_tagged_cons_cell(void);
 
+// Region escape - copy value from current region to parent (or global arena)
+// Returns pointer to the escaped copy. Increments region->escape_count.
+void* region_escape(const void* ptr, size_t size);
+void* region_escape_string(const char* str);
+arena_tagged_cons_cell_t* region_escape_tagged_cons_cell(const arena_tagged_cons_cell_t* cell);
+eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_t val);
+
 // Region statistics
 size_t region_get_used_memory(const eshkol_region_t* region);
 size_t region_get_total_memory(const eshkol_region_t* region);
@@ -265,8 +285,10 @@ eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_capt
 
 // Allocate full closure structure (func_ptr + environment + sexpr for homoiconicity)
 // return_type_info: packed return type metadata (return_type | (input_arity << 8) | (hott_type_id << 16))
+// name: bound procedure name from (define name ...) or NULL for anonymous lambdas
 eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t func_ptr, size_t num_captures,
-                                         uint64_t sexpr_ptr, uint64_t return_type_info);
+                                         uint64_t sexpr_ptr, uint64_t return_type_info,
+                                         const char* name);
 
 // ===== END CLOSURE ENVIRONMENT MEMORY MANAGEMENT =====
 
@@ -342,6 +364,9 @@ eshkol_tensor_t* arena_allocate_tensor_with_header(arena_t* arena);
 // Returns fully initialized tensor with dims and elements arrays allocated
 eshkol_tensor_t* arena_allocate_tensor_full(arena_t* arena, uint64_t num_dims, uint64_t total_elements);
 
+// Extract tensor elements (double bitpatterns) as int64 dimension values
+int64_t eshkol_tensor_to_dims(const void* tensor_ptr, int64_t* dims_out, int64_t max_dims);
+
 // ===== END TENSOR MEMORY MANAGEMENT =====
 
 // ===== HASH TABLE MEMORY MANAGEMENT =====
@@ -402,6 +427,12 @@ bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t
 
 #ifdef __cplusplus
 } // extern "C"
+
+#include <atomic>
+
+// Global shared arena for REPL mode (persistent across evaluations)
+// Atomic to synchronize writes (REPL init) and reads (runtime exception handlers)
+extern std::atomic<arena_t*> __repl_shared_arena;
 
 // C++ Arena wrapper class for RAII
 class Arena {

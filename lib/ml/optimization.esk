@@ -1,0 +1,349 @@
+;;; Eshkol Optimization Algorithms Library
+;;; Gradient-based optimization using automatic differentiation
+;;;
+;;; Provides gradient descent, Adam, L-BFGS, and conjugate gradient
+;;; Uses the builtin `gradient` function (forward-mode AD with dual numbers)
+;;;
+;;; Usage: (require ml.optimization)
+
+(require core.list.query)   ;; length
+(require core.list.search)  ;; list-ref
+
+(provide gradient-descent adam l-bfgs conjugate-gradient
+         line-search tensor-dot tensor-norm)
+
+;;; ============================================================
+;;; Vector/Tensor Utilities
+;;; ============================================================
+
+;; tensor-dot: Dot product of two vectors
+(define (tensor-dot a b)
+  (let* ((n (vector-length a))
+         (result 0.0))
+    (letrec ((loop (lambda (i acc)
+              (if (< i n)
+                  (loop (+ i 1) (+ acc (* (vref a i) (vref b i))))
+                  acc))))
+      (loop 0 0.0))))
+
+;; tensor-norm: L2 norm of a vector
+(define (tensor-norm v)
+  (sqrt (tensor-dot v v)))
+
+;; vec-add: Element-wise vector addition
+(define (vec-add a b)
+  (let* ((n (vector-length a))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (+ (vref a i) (vref b i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; vec-sub: Element-wise vector subtraction
+(define (vec-sub a b)
+  (let* ((n (vector-length a))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (- (vref a i) (vref b i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; vec-scale: Scalar-vector multiplication
+(define (vec-scale s v)
+  (let* ((n (vector-length v))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (* s (vref v i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;; vec-neg: Negate a vector
+(define (vec-neg v)
+  (vec-scale -1.0 v))
+
+;; vec-zeros: Create zero vector of given length
+(define (vec-zeros n)
+  (make-vector n 0.0))
+
+;; vec-sq: Element-wise squaring of a vector
+(define (vec-sq v)
+  (let* ((n (vector-length v))
+         (r (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! r i (* (vref v i) (vref v i)))
+                    (loop (+ i 1)))
+                  r))))
+      (loop 0))))
+
+;; adam-apply-update: x = x - lr * m-hat / (sqrt(v-hat) + eps)
+(define (adam-apply-update x m-hat v-hat lr epsilon)
+  (let* ((n (vector-length x))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i
+                      (- (vref x i)
+                         (* lr (/ (vref m-hat i)
+                                  (+ (sqrt (vref v-hat i)) epsilon)))))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+;;; ============================================================
+;;; Line Search (Backtracking Armijo)
+;;; ============================================================
+
+;; line-search: Find step size alpha satisfying Armijo condition
+;; f(x + alpha*d) <= f(x) + c1*alpha*grad^T*d
+;; Parameters:
+;;   f: objective function
+;;   x: current point (vector)
+;;   d: search direction (vector)
+;;   grad: gradient at x (vector)
+;;   alpha0: initial step size (default 1.0)
+;;   c1: Armijo parameter (default 1e-4)
+;;   rho: backtracking factor (default 0.5)
+;;   max-iter: maximum iterations (default 30)
+(define (line-search f x d grad . opts)
+  (let ((alpha0 (if (null? opts) 1.0 (car opts)))
+        (c1 (if (or (null? opts) (null? (cdr opts))) 1e-4 (cadr opts)))
+        (rho (if (or (null? opts) (null? (cdr opts)) (null? (cddr opts))) 0.5 (caddr opts)))
+        (max-iter 30))
+    (let ((fx (f x))
+          (slope (* c1 (tensor-dot grad d))))
+      (letrec ((search (lambda (alpha iter)
+                (if (>= iter max-iter)
+                    alpha  ;; Return current alpha even if not converged
+                    (let ((f-new (f (vec-add x (vec-scale alpha d)))))
+                      (if (<= f-new (+ fx (* alpha slope)))
+                          alpha  ;; Armijo condition satisfied
+                          (search (* rho alpha) (+ iter 1))))))))
+        (search alpha0 0)))))
+
+;;; ============================================================
+;;; Gradient Descent
+;;; ============================================================
+
+;; gradient-descent: Basic gradient descent optimizer
+;; Parameters:
+;;   f: objective function (vector -> scalar)
+;;   x0: initial point (vector)
+;;   lr: learning rate (default 0.01)
+;;   max-iter: maximum iterations (default 1000)
+;;   tol: convergence tolerance on gradient norm (default 1e-8)
+;; Returns: optimized point x
+(define (gradient-descent f x0 . opts)
+  (let ((lr (if (null? opts) 0.01 (car opts)))
+        (max-iter (if (or (null? opts) (null? (cdr opts))) 1000 (cadr opts)))
+        (tol (if (or (null? opts) (null? (cdr opts)) (null? (cddr opts))) 1e-8 (caddr opts))))
+    (letrec ((step (lambda (x iter)
+              (if (>= iter max-iter)
+                  x
+                  (let* ((g (gradient f x))
+                         (gnorm (tensor-norm g)))
+                    (if (< gnorm tol)
+                        x  ;; Converged
+                        (step (vec-sub x (vec-scale lr g)) (+ iter 1))))))))
+      (step x0 0))))
+
+;;; ============================================================
+;;; Adam Optimizer
+;;; ============================================================
+
+;; adam: Adam optimizer (Adaptive Moment Estimation)
+;; Parameters:
+;;   f: objective function (vector -> scalar)
+;;   x0: initial point (vector)
+;;   lr: learning rate (default 0.001)
+;;   beta1: first moment decay (default 0.9)
+;;   beta2: second moment decay (default 0.999)
+;;   epsilon: numerical stability (default 1e-8)
+;;   max-iter: maximum iterations (default 1000)
+;;   tol: convergence tolerance on gradient norm (default 1e-8)
+;; Returns: optimized point x
+(define (adam f x0 . opts)
+  (let ((lr (if (null? opts) 0.001 (car opts)))
+        (beta1 (if (or (null? opts) (null? (cdr opts))) 0.9 (cadr opts)))
+        (beta2 (if (or (null? opts) (null? (cdr opts)) (null? (cddr opts))) 0.999 (caddr opts)))
+        (epsilon 1e-8)
+        (max-iter 1000)
+        (tol 1e-8)
+        (n (vector-length x0)))
+    (letrec ((step (lambda (x m v t)
+              (if (> t max-iter)
+                  x
+                  (let* ((g (gradient f x))
+                         (gnorm (tensor-norm g)))
+                    (if (< gnorm tol)
+                        x
+                        (let* ((m-new (vec-add (vec-scale beta1 m)
+                                               (vec-scale (- 1.0 beta1) g)))
+                               (g-sq (vec-sq g))
+                               (v-new (vec-add (vec-scale beta2 v)
+                                               (vec-scale (- 1.0 beta2) g-sq)))
+                               (m-hat (vec-scale (/ 1.0 (- 1.0 (expt beta1 t))) m-new))
+                               (v-hat (vec-scale (/ 1.0 (- 1.0 (expt beta2 t))) v-new))
+                               (x-new (adam-apply-update x m-hat v-hat lr epsilon)))
+                          (step x-new m-new v-new (+ t 1)))))))))
+      (step x0 (vec-zeros n) (vec-zeros n) 1))))
+
+;;; ============================================================
+;;; L-BFGS (Limited-memory BFGS)
+;;; ============================================================
+
+;; l-bfgs-direction: Compute search direction using two-loop recursion
+;; g: current gradient
+;; history: list of (s . y) pairs, newest first
+(define (l-bfgs-direction g history)
+  (if (null? history)
+      (vec-neg g)  ;; First iteration: steepest descent
+      (let* ((m (length history))
+             (alphas (make-vector m 0.0))
+             (rhos (make-vector m 0.0)))
+        ;; Pre-compute rhos: rho_i = 1 / (y_i^T s_i)
+        (letrec ((rho-loop (lambda (pairs i)
+                  (if (null? pairs)
+                      #t
+                      (let* ((pair (car pairs))
+                             (s (car pair))
+                             (y (cdr pair))
+                             (ys (tensor-dot y s)))
+                        (vector-set! rhos i (if (> (abs ys) 1e-10) (/ 1.0 ys) 0.0))
+                        (rho-loop (cdr pairs) (+ i 1)))))))
+          (rho-loop history 0))
+        ;; First loop: newest to oldest (walk list front-to-back)
+        (letrec ((loop1 (lambda (pairs i q-val)
+                  (if (null? pairs)
+                      q-val
+                      (let* ((pair (car pairs))
+                             (s (car pair))
+                             (y (cdr pair))
+                             (alpha-i (* (vref rhos i) (tensor-dot s q-val))))
+                        (vector-set! alphas i alpha-i)
+                        (loop1 (cdr pairs) (+ i 1)
+                               (vec-sub q-val (vec-scale alpha-i y))))))))
+          (let* ((q-final (loop1 history 0 g))
+                 ;; Initial Hessian approximation: H0 = (y_k^T s_k)/(y_k^T y_k) * I
+                 (latest (car history))
+                 (s0 (car latest))
+                 (y0 (cdr latest))
+                 (gamma (let ((yy (tensor-dot y0 y0)))
+                          (if (> yy 1e-10) (/ (tensor-dot y0 s0) yy) 1.0)))
+                 (r (vec-scale gamma q-final))
+                 ;; Reverse history for second loop (oldest to newest)
+                 (rev-history (letrec ((rev (lambda (lst acc)
+                                (if (null? lst) acc
+                                    (rev (cdr lst) (cons (car lst) acc))))))
+                               (rev history '()))))
+            ;; Second loop: oldest to newest (walk reversed list)
+            (letrec ((loop2 (lambda (pairs i r-val)
+                      (if (null? pairs)
+                          r-val
+                          (let* ((pair (car pairs))
+                                 (s (car pair))
+                                 (y (cdr pair))
+                                 (beta-i (* (vref rhos (- (- m 1) i)) (tensor-dot y r-val))))
+                            (loop2 (cdr pairs) (+ i 1)
+                                   (vec-add r-val
+                                            (vec-scale (- (vref alphas (- (- m 1) i)) beta-i) s))))))))
+              (vec-neg (loop2 rev-history 0 r))))))))
+
+;; l-bfgs: L-BFGS optimizer
+;; Parameters:
+;;   f: objective function (vector -> scalar)
+;;   x0: initial point (vector)
+;;   max-iter: maximum iterations (default 200)
+;;   tol: convergence tolerance on gradient norm (default 1e-8)
+;;   m: history size (default 10)
+;; Returns: optimized point x
+(define (l-bfgs f x0 . opts)
+  (let ((max-iter (if (null? opts) 200 (car opts)))
+        (tol (if (or (null? opts) (null? (cdr opts))) 1e-8 (cadr opts)))
+        (m (if (or (null? opts) (null? (cdr opts)) (null? (cddr opts))) 10 (caddr opts))))
+    (letrec ((step (lambda (x g-prev history iter)
+              (if (>= iter max-iter)
+                  x
+                  (let* ((g (gradient f x))
+                         (gnorm (tensor-norm g)))
+                    (if (< gnorm tol)
+                        x  ;; Converged
+                        (let* ((d0 (l-bfgs-direction g history))
+                               ;; Descent check: if g^T d >= 0, fall back to steepest descent
+                               (gd (tensor-dot g d0))
+                               (d (if (< gd 0.0) d0 (vec-neg g)))
+                               (alpha (line-search f x d g))
+                               (x-new (vec-add x (vec-scale alpha d)))
+                               (g-new (gradient f x-new))
+                               (s (vec-sub x-new x))
+                               (y (vec-sub g-new g))
+                               (ys (tensor-dot y s))
+                               ;; Curvature safeguard: only add to history if y^T s > 0
+                               (new-history
+                                 (if (> ys 1e-10)
+                                     (let ((h (cons (cons s y) history)))
+                                       (if (> (length h) m)
+                                           (letrec ((take-m (lambda (lst n)
+                                                     (if (or (= n 0) (null? lst))
+                                                         '()
+                                                         (cons (car lst) (take-m (cdr lst) (- n 1)))))))
+                                             (take-m h m))
+                                           h))
+                                     history)))
+                          (step x-new g-new new-history (+ iter 1)))))))))
+      (step x0 (vec-zeros (vector-length x0)) '() 0))))
+
+;;; ============================================================
+;;; Conjugate Gradient (Fletcher-Reeves)
+;;; ============================================================
+
+;; conjugate-gradient: Nonlinear conjugate gradient optimizer
+;; Parameters:
+;;   f: objective function (vector -> scalar)
+;;   x0: initial point (vector)
+;;   max-iter: maximum iterations (default 200)
+;;   tol: convergence tolerance on gradient norm (default 1e-8)
+;;   restart-interval: restart CG every N iterations (default: dimension of x0)
+;; Returns: optimized point x
+(define (conjugate-gradient f x0 . opts)
+  (let ((max-iter (if (null? opts) 200 (car opts)))
+        (tol (if (or (null? opts) (null? (cdr opts))) 1e-8 (cadr opts)))
+        (restart (if (or (null? opts) (null? (cdr opts)) (null? (cddr opts)))
+                     (vector-length x0)
+                     (caddr opts))))
+    (let* ((g0 (gradient f x0))
+           (d0 (vec-neg g0)))
+      (letrec ((step (lambda (x g d iter)
+                (if (>= iter max-iter)
+                    x
+                    (let ((gnorm (tensor-norm g)))
+                      (if (< gnorm tol)
+                          x  ;; Converged
+                          (let* ((alpha (line-search f x d g))
+                                 (x-new (vec-add x (vec-scale alpha d)))
+                                 (g-new (gradient f x-new))
+                                 ;; Fletcher-Reeves beta
+                                 (g-new-dot (tensor-dot g-new g-new))
+                                 (g-dot (tensor-dot g g))
+                                 (beta-fr (if (> g-dot 1e-10)
+                                              (/ g-new-dot g-dot)
+                                              0.0))
+                                 ;; Restart: reset to steepest descent periodically
+                                 (beta (if (= (remainder (+ iter 1) restart) 0)
+                                           0.0
+                                           beta-fr))
+                                 (d-new (vec-add (vec-neg g-new)
+                                                 (vec-scale beta d))))
+                            (step x-new g-new d-new (+ iter 1)))))))))
+        (step x0 g0 d0 0)))))

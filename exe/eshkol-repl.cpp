@@ -46,16 +46,45 @@ void sigint_handler(int sig) {
     g_interrupted = 1;
 }
 
+// Helper to install crash signal handler using sigaction with SA_RESETHAND
+static void install_crash_handler(int signum);
+
 // Signal handler for crashes during JIT execution (SIGSEGV, SIGFPE, SIGBUS)
+// IMPORTANT: Only async-signal-safe functions may be called here.
 void crash_handler(int sig) {
     if (g_in_jit) {
         g_crash_signal = sig;
+        // SA_RESETHAND already reset this signal to SIG_DFL, so if siglongjmp
+        // fails or crashes again, the default handler will terminate the process.
         siglongjmp(g_crash_jmp_buf, 1);
     } else {
-        // Not in JIT - reraise with default handler
-        signal(sig, SIG_DFL);
+        // Not in JIT - the handler was installed with SA_RESETHAND, so the
+        // default disposition is already restored. Just re-raise to get the
+        // default behavior (core dump / termination).
         raise(sig);
     }
+}
+
+// Install crash handler for a single signal using sigaction
+static void install_crash_handler(int signum) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = crash_handler;
+    sigemptyset(&sa.sa_mask);
+    // SA_RESETHAND: one-shot handler, automatically resets to SIG_DFL after firing
+    // SA_NODEFER: allow the signal to be received while in the handler (needed for siglongjmp)
+    sa.sa_flags = SA_RESETHAND | SA_NODEFER;
+    sigaction(signum, &sa, nullptr);
+}
+
+// Install SIGINT handler using sigaction (persistent, no SA_RESETHAND)
+static void install_sigint_handler() {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;  // persistent handler
+    sigaction(SIGINT, &sa, nullptr);
 }
 
 // Get human-readable message for crash signal
@@ -279,31 +308,11 @@ int get_paren_depth(const std::string& input) {
     return depth;
 }
 
-// Helper: Parse a string to AST by writing to temp file
+// Helper: Parse a string to AST using istringstream (no temp file needed)
 eshkol_ast_t parse_string(const std::string& input) {
-    std::string temp_file = "/tmp/eshkol_repl_input_XXXXXX";
-    char temp_name[256];
-    strcpy(temp_name, temp_file.c_str());
-
-    int fd = mkstemp(temp_name);
-    if (fd == -1) {
-        eshkol_ast_t invalid_ast;
-        invalid_ast.type = ESHKOL_INVALID;
-        return invalid_ast;
-    }
-
-    std::ofstream temp_out(temp_name);
-    temp_out << input << "\n";
-    temp_out.close();
-    close(fd);
-
-    std::ifstream temp_in(temp_name);
-    eshkol_ast_t ast = eshkol_parse_next_ast(temp_in);
-    temp_in.close();
-
-    unlink(temp_name);
-
-    return ast;
+    std::string parse_input = input + "\n";
+    std::istringstream stream(parse_input);
+    return eshkol_parse_next_ast_from_stream(stream);
 }
 
 // Helper: Check if AST is a statement that shouldn't be wrapped with display
@@ -811,11 +820,11 @@ int main(int argc, char** argv) {
     // Check if running interactively
     g_interactive = isatty(STDIN_FILENO);
 
-    // Install signal handlers
-    signal(SIGINT, sigint_handler);
-    signal(SIGSEGV, crash_handler);
-    signal(SIGFPE, crash_handler);
-    signal(SIGBUS, crash_handler);
+    // Install signal handlers using sigaction (async-signal-safe)
+    install_sigint_handler();
+    install_crash_handler(SIGSEGV);
+    install_crash_handler(SIGFPE);
+    install_crash_handler(SIGBUS);
 
     // Initialize readline with completion and history (only if interactive)
     if (g_interactive) {
@@ -1051,8 +1060,8 @@ int main(int argc, char** argv) {
                 // Crash occurred - display error and continue
                 had_error = true;
                 print_error("Runtime error", crash_signal_message(g_crash_signal));
-                // Re-install signal handler (it was reset to default)
-                signal(g_crash_signal, crash_handler);
+                // Re-install signal handler (SA_RESETHAND reset it to SIG_DFL)
+                install_crash_handler(g_crash_signal);
             }
             g_in_jit = 0;
 

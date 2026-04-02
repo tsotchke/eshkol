@@ -1,0 +1,47 @@
+; Bitwise Operations Test Suite
+; Tests bitwise-and, bitwise-or, bitwise-xor, bitwise-not, arithmetic-shift
+
+(display "TEST: bitwise-and basic") (newline)
+(display (if (= (bitwise-and 12 10) 8) "PASS" "FAIL")) (display ": bitwise-and 12 10 = 8") (newline)
+
+(display "TEST: bitwise-or basic") (newline)
+(display (if (= (bitwise-or 12 10) 14) "PASS" "FAIL")) (display ": bitwise-or 12 10 = 14") (newline)
+
+(display "TEST: bitwise-xor basic") (newline)
+(display (if (= (bitwise-xor 12 10) 6) "PASS" "FAIL")) (display ": bitwise-xor 12 10 = 6") (newline)
+
+(display "TEST: bitwise-not zero") (newline)
+(display (if (= (bitwise-not 0) -1) "PASS" "FAIL")) (display ": bitwise-not 0 = -1") (newline)
+
+(display "TEST: bitwise-not negative one") (newline)
+(display (if (= (bitwise-not -1) 0) "PASS" "FAIL")) (display ": bitwise-not -1 = 0") (newline)
+
+(display "TEST: arithmetic-shift left") (newline)
+(display (if (= (arithmetic-shift 1 4) 16) "PASS" "FAIL")) (display ": arithmetic-shift 1 4 = 16") (newline)
+
+(display "TEST: arithmetic-shift right") (newline)
+(display (if (= (arithmetic-shift 16 -4) 1) "PASS" "FAIL")) (display ": arithmetic-shift 16 -4 = 1") (newline)
+
+(display "TEST: bitwise-and mask") (newline)
+(display (if (= (bitwise-and 255 15) 15) "PASS" "FAIL")) (display ": bitwise-and 255 15 = 15") (newline)
+
+(display "TEST: bitwise-xor self identity") (newline)
+(display (if (= (bitwise-xor 42 42) 0) "PASS" "FAIL")) (display ": bitwise-xor 42 42 = 0") (newline)
+
+(display "TEST: bitwise-or identity with zero") (newline)
+(display (if (= (bitwise-or 73 0) 73) "PASS" "FAIL")) (display ": bitwise-or 73 0 = 73") (newline)
+
+(display "TEST: bitwise-and with zero") (newline)
+(display (if (= (bitwise-and 73 0) 0) "PASS" "FAIL")) (display ": bitwise-and 73 0 = 0") (newline)
+
+(display "TEST: bitwise-not positive") (newline)
+(display (if (= (bitwise-not 42) -43) "PASS" "FAIL")) (display ": bitwise-not 42 = -43") (newline)
+
+(display "TEST: arithmetic-shift left by one") (newline)
+(display (if (= (arithmetic-shift 7 1) 14) "PASS" "FAIL")) (display ": arithmetic-shift 7 1 = 14") (newline)
+
+(display "TEST: arithmetic-shift right by one") (newline)
+(display (if (= (arithmetic-shift 14 -1) 7) "PASS" "FAIL")) (display ": arithmetic-shift 14 -1 = 7") (newline)
+
+(display "TEST: bitwise-or all bits") (newline)
+(display (if (= (bitwise-or 170 85) 255) "PASS" "FAIL")) (display ": bitwise-or 170 85 = 255 (0xAA | 0x55 = 0xFF)") (newline)

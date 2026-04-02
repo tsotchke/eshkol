@@ -1,0 +1,36 @@
+;;; Covariance and Correlation Test Suite
+
+(define (run-tests)
+  (display "=== Covariance & Correlation Tests ===")
+  (newline)
+
+  ;; Test tensor-cov
+  (display "-- Testing tensor-cov --")
+  (newline)
+  (let ((x (tensor 5 1.0 2.0 3.0 4.0 5.0))
+        (y (tensor 5 2.0 4.0 5.0 4.0 5.0)))
+    (display "x: ")
+    (display x)
+    (newline)
+    (display "y: ")
+    (display y)
+    (newline)
+    (display "covariance: ")
+    (display (tensor-cov x y))
+    (newline))
+
+  ;; Test tensor-corrcoef
+  (display "-- Testing tensor-corrcoef --")
+  (newline)
+  (let ((x (tensor 5 1.0 2.0 3.0 4.0 5.0))
+        (y (tensor 5 1.0 2.0 3.0 4.0 5.0)))
+    (display "Perfect correlation x=y:")
+    (newline)
+    (display "corrcoef: ")
+    (display (tensor-corrcoef x y))
+    (newline))
+
+  (display "=== Cov/Corr Tests Complete ===")
+  (newline))
+
+(run-tests)

@@ -1,0 +1,190 @@
+;; Parser Test: Comments and Whitespace
+;; Tests that comments are properly ignored and whitespace is handled correctly
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Line Comments
+;; ============================================================================
+
+(display "=== Testing Line Comments ===\n")
+
+;; Comment at end of line
+(define x 42) ; this is a comment
+(test-case "end of line comment" 42 x)
+
+;; Comment on its own line
+; This entire line is a comment
+(define y 100)
+(test-case "full line comment" 100 y)
+
+;; Multiple consecutive comments
+; Comment 1
+; Comment 2
+; Comment 3
+(define z 200)
+(test-case "multiple comments" 200 z)
+
+;; Comment after expression
+(test-case "comment after expr" 10 (+ 5 5)) ; adding two fives
+
+;; Nested semicolons in comment
+(define a 1) ; semicolons ; in ; comment ; are ; fine
+(test-case "nested semicolons" 1 a)
+
+;; ============================================================================
+;; Test: Whitespace Handling
+;; ============================================================================
+
+(display "=== Testing Whitespace Handling ===\n")
+
+;; Multiple spaces
+(define   b   2)
+(test-case "multiple spaces" 2 b)
+
+;; Tabs
+(define	c	3)
+(test-case "tabs" 3 c)
+
+;; Mixed whitespace
+(define  	 d  	 4)
+(test-case "mixed whitespace" 4 d)
+
+;; Newlines in expression
+(define e
+  5)
+(test-case "newline in define" 5 e)
+
+;; Multi-line expression
+(define f (+ 1
+             2
+             3))
+(test-case "multi-line expression" 6 f)
+
+;; Multi-line with comments
+(define g (+ 1  ; first
+             2  ; second
+             3)) ; third
+(test-case "multi-line with comments" 6 g)
+
+;; ============================================================================
+;; Test: Whitespace in Lists
+;; ============================================================================
+
+(display "=== Testing Whitespace in Lists ===\n")
+
+;; Compact list
+(test-case "compact list" 6 (length '(1 2 3 4 5 6)))
+
+;; Spaced list
+(test-case "spaced list" 3 (length '( 1   2   3 )))
+
+;; Multi-line list
+(define my-list '(1
+                  2
+                  3
+                  4))
+(test-case "multi-line list" 4 (length my-list))
+
+;; List with comments
+(define commented-list '(1  ; first element
+                         2  ; second element
+                         3)) ; third element
+(test-case "list with comments" 3 (length commented-list))
+
+;; ============================================================================
+;; Test: Whitespace in Function Definitions
+;; ============================================================================
+
+(display "=== Testing Whitespace in Functions ===\n")
+
+;; Normal function
+(define (add-normal a b) (+ a b))
+(test-case "normal function" 5 (add-normal 2 3))
+
+;; Spaced parameters
+(define (add-spaced  a  b ) (+ a b))
+(test-case "spaced params" 7 (add-spaced 3 4))
+
+;; Multi-line body
+(define (multi-body x)
+  (let ((doubled (* x 2)))
+    (let ((tripled (* x 3)))
+      (+ doubled tripled))))
+(test-case "multi-line body" 25 (multi-body 5))
+
+;; ============================================================================
+;; Test: Whitespace in Let Forms
+;; ============================================================================
+
+(display "=== Testing Whitespace in Let ===\n")
+
+;; Compact let
+(test-case "compact let" 5 (let ((a 2)(b 3)) (+ a b)))
+
+;; Spaced let
+(test-case "spaced let" 7 (let ( ( x 3 ) ( y 4 ) ) (+ x y)))
+
+;; Multi-line let
+(test-case "multi-line let" 9
+  (let ((p 4)
+        (q 5))
+    (+ p q)))
+
+;; Let with comments
+(test-case "let with comments" 11
+  (let ((r 5)   ; five
+        (s 6))  ; six
+    (+ r s)))   ; sum
+
+;; ============================================================================
+;; Test: Edge Cases
+;; ============================================================================
+
+(display "=== Testing Edge Cases ===\n")
+
+;; Empty line handling
+(define h 10)
+
+(define i 20)
+(test-case "empty lines" 30 (+ h i))
+
+;; Comment-only lines between code
+
+
+; Just a comment
+
+
+(define j 30)
+(test-case "comment-only lines" 30 j)
+
+;; Trailing whitespace (invisible but present)
+(define k 40)
+(test-case "trailing whitespace" 40 k)
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

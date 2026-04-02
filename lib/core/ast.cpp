@@ -8,6 +8,7 @@
 #include <eshkol/logger.h>
 #include <cstring>
 #include <cstdlib>
+#include <cmath>
 
 void eshkol_ast_clean(eshkol_ast_t *ast)
 {
@@ -15,6 +16,7 @@ void eshkol_ast_clean(eshkol_ast_t *ast)
 
     switch (ast->type) {
     case ESHKOL_STRING:
+    case ESHKOL_BIGNUM_LITERAL:
         if (ast->str_val.ptr != nullptr) delete [] ast->str_val.ptr;
         ast->str_val.ptr = nullptr;
         break;
@@ -118,6 +120,10 @@ eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast) {
     // Deep copy string fields if needed
     if (ast->type == ESHKOL_VAR && ast->variable.id) {
         copy->variable.id = strdup(ast->variable.id);
+    }
+    if ((ast->type == ESHKOL_STRING || ast->type == ESHKOL_BIGNUM_LITERAL) && ast->str_val.ptr) {
+        copy->str_val.ptr = new char[ast->str_val.size];
+        memcpy(copy->str_val.ptr, ast->str_val.ptr, ast->str_val.size);
     }
     
     // Deep copy nested structures
@@ -395,7 +401,24 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
     if (!type) return strdup("null");
 
     char buffer[1024];
-    buffer[0] = '\0';
+    size_t off = 0;
+    const size_t cap = sizeof(buffer);
+
+    // Safe append: writes to buffer+off, advances off, never overflows.
+    // When full, truncates with "..." suffix.
+    #define BUF_APPEND(fmt, ...) do { \
+        if (off < cap) { \
+            int _n = snprintf(buffer + off, cap - off, fmt, ##__VA_ARGS__); \
+            if (_n > 0) { \
+                if ((size_t)_n >= cap - off) { \
+                    off = cap; \
+                    if (cap >= 4) memcpy(buffer + cap - 4, "...", 4); \
+                } else { \
+                    off += (size_t)_n; \
+                } \
+            } \
+        } \
+    } while(0)
 
     switch (type->kind) {
         case HOTT_TYPE_INVALID:
@@ -423,86 +446,72 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
             return strdup(type->var_name ? type->var_name : "?");
 
         case HOTT_TYPE_ARROW: {
-            strcpy(buffer, "(-> ");
+            BUF_APPEND("(-> ");
             for (uint64_t i = 0; i < type->arrow.num_params; i++) {
                 char* param_str = hott_type_to_string(type->arrow.param_types[i]);
-                strcat(buffer, param_str);
-                strcat(buffer, " ");
+                BUF_APPEND("%s ", param_str);
                 free(param_str);
             }
             char* ret_str = hott_type_to_string(type->arrow.return_type);
-            strcat(buffer, ret_str);
-            strcat(buffer, ")");
+            BUF_APPEND("%s)", ret_str);
             free(ret_str);
             return strdup(buffer);
         }
 
         case HOTT_TYPE_FORALL: {
-            strcpy(buffer, "(forall (");
+            BUF_APPEND("(forall (");
             for (uint64_t i = 0; i < type->forall.num_vars; i++) {
-                if (i > 0) strcat(buffer, " ");
-                strcat(buffer, type->forall.type_vars[i]);
+                if (i > 0) BUF_APPEND(" ");
+                BUF_APPEND("%s", type->forall.type_vars[i]);
             }
-            strcat(buffer, ") ");
+            BUF_APPEND(") ");
             char* body_str = hott_type_to_string(type->forall.body);
-            strcat(buffer, body_str);
-            strcat(buffer, ")");
+            BUF_APPEND("%s)", body_str);
             free(body_str);
             return strdup(buffer);
         }
 
         case HOTT_TYPE_LIST: {
-            strcpy(buffer, "(list ");
+            BUF_APPEND("(list ");
             char* elem_str = hott_type_to_string(type->container.element_type);
-            strcat(buffer, elem_str);
-            strcat(buffer, ")");
+            BUF_APPEND("%s)", elem_str);
             free(elem_str);
             return strdup(buffer);
         }
 
         case HOTT_TYPE_VECTOR: {
-            strcpy(buffer, "(vector ");
+            BUF_APPEND("(vector ");
             char* elem_str = hott_type_to_string(type->container.element_type);
-            strcat(buffer, elem_str);
-            strcat(buffer, ")");
+            BUF_APPEND("%s)", elem_str);
             free(elem_str);
             return strdup(buffer);
         }
 
         case HOTT_TYPE_PAIR: {
-            strcpy(buffer, "(pair ");
+            BUF_APPEND("(pair ");
             char* left_str = hott_type_to_string(type->pair.left);
             char* right_str = hott_type_to_string(type->pair.right);
-            strcat(buffer, left_str);
-            strcat(buffer, " ");
-            strcat(buffer, right_str);
-            strcat(buffer, ")");
+            BUF_APPEND("%s %s)", left_str, right_str);
             free(left_str);
             free(right_str);
             return strdup(buffer);
         }
 
         case HOTT_TYPE_PRODUCT: {
-            strcpy(buffer, "(* ");
+            BUF_APPEND("(* ");
             char* left_str = hott_type_to_string(type->pair.left);
             char* right_str = hott_type_to_string(type->pair.right);
-            strcat(buffer, left_str);
-            strcat(buffer, " ");
-            strcat(buffer, right_str);
-            strcat(buffer, ")");
+            BUF_APPEND("%s %s)", left_str, right_str);
             free(left_str);
             free(right_str);
             return strdup(buffer);
         }
 
         case HOTT_TYPE_SUM: {
-            strcpy(buffer, "(+ ");
+            BUF_APPEND("(+ ");
             char* left_str = hott_type_to_string(type->sum.left);
             char* right_str = hott_type_to_string(type->sum.right);
-            strcat(buffer, left_str);
-            strcat(buffer, " ");
-            strcat(buffer, right_str);
-            strcat(buffer, ")");
+            BUF_APPEND("%s %s)", left_str, right_str);
             free(left_str);
             free(right_str);
             return strdup(buffer);
@@ -521,6 +530,8 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
         default:
             return strdup("unknown");
     }
+
+    #undef BUF_APPEND
 }
 
 // ===== REPL DISPLAY HELPER =====

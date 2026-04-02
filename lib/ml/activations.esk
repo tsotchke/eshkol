@@ -1,0 +1,106 @@
+;;; Eshkol Machine Learning Library
+;;; Activation functions and ML utilities
+;;;
+;;; Provides SIMD-accelerated activation functions and ML helpers
+;;;
+;;; Usage: (require ml)
+
+(provide relu-scalar sigmoid-scalar tanh-scalar softplus-scalar
+         silu swish mish
+         normalize-minmax normalize-zscore)
+
+;;; ============================================================
+;;; Scalar Activation Functions
+;;; These operate on individual values
+;;; ============================================================
+
+;; relu-scalar: ReLU for scalar value
+(define (relu-scalar x)
+  (if (> x 0.0) x 0.0))
+
+;; sigmoid-scalar: Sigmoid for scalar value
+(define (sigmoid-scalar x)
+  (/ 1.0 (+ 1.0 (exp (- x)))))
+
+;; tanh-scalar: Hyperbolic tangent (already a builtin, but aliased here)
+(define (tanh-scalar x)
+  (let ((e2x (exp (* 2.0 x))))
+    (/ (- e2x 1.0) (+ e2x 1.0))))
+
+;; softplus-scalar: Softplus activation: log(1 + exp(x))
+;; Numerically stable version
+(define (softplus-scalar x)
+  (if (> x 20.0)
+      x
+      (log (+ 1.0 (exp x)))))
+
+;;; ============================================================
+;;; Advanced Activation Functions
+;;; These use SIMD-accelerated tensor operations internally
+;;; ============================================================
+
+;; silu: Sigmoid Linear Unit (also called Swish with beta=1)
+;; SiLU(x) = x * sigmoid(x)
+(define (silu tensor)
+  (tensor-mul tensor (sigmoid tensor)))
+
+;; swish: Swish activation with configurable beta
+;; Swish(x) = x * sigmoid(beta * x)
+(define (swish tensor beta)
+  (let ((scaled (tensor-mul tensor (tensor-from-scalar beta))))
+    (tensor-mul tensor (sigmoid scaled))))
+
+;; mish: Mish activation: x * tanh(softplus(x))
+;; Note: Requires tensor-tanh to be implemented
+(define (mish tensor)
+  (let ((sp (tensor-apply tensor softplus-scalar)))
+    (tensor-mul tensor (tensor-apply sp tanh-scalar))))
+
+;;; ============================================================
+;;; Normalization Functions
+;;; ============================================================
+
+;; normalize-minmax: Min-max normalization to [0, 1] range
+(define (normalize-minmax tensor)
+  (let* ((min-val (tensor-min tensor))
+         (max-val (tensor-max tensor))
+         (range (- max-val min-val)))
+    (if (= range 0.0)
+        tensor  ; All same values
+        (tensor-div (tensor-sub tensor (tensor-from-scalar min-val))
+                    (tensor-from-scalar range)))))
+
+;; normalize-zscore: Z-score normalization (standardization)
+(define (normalize-zscore tensor)
+  (let* ((mean-val (tensor-mean tensor))
+         (std-val (tensor-std tensor)))
+    (if (= std-val 0.0)
+        (tensor-sub tensor (tensor-from-scalar mean-val))  ; Zero std
+        (tensor-div (tensor-sub tensor (tensor-from-scalar mean-val))
+                    (tensor-from-scalar std-val)))))
+
+;;; ============================================================
+;;; Utility Functions
+;;; ============================================================
+
+;; tensor-from-scalar: Create 1-element tensor from scalar
+;; This is a helper for operations that need tensor arguments
+(define (tensor-from-scalar x)
+  (let ((t (zeros 1)))
+    (tensor-set! t 0 x)
+    t))
+
+;; clip: Clip tensor values to range [min-val, max-val]
+(define (clip tensor min-val max-val)
+  (tensor-apply tensor
+    (lambda (x)
+      (cond ((< x min-val) min-val)
+            ((> x max-val) max-val)
+            (else x)))))
+
+;; dropout: Apply dropout (set random elements to 0)
+;; Note: This is training-only; for inference, use identity
+(define (dropout tensor rate)
+  (let ((mask (tensor-apply (zeros (car (tensor-shape tensor)))
+                (lambda (x) (if (< (random) rate) 0.0 1.0)))))
+    (tensor-mul tensor mask)))

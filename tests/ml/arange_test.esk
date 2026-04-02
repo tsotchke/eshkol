@@ -1,0 +1,11 @@
+;;; Test arange function
+
+(define (test-arange)
+  (display "Testing arange...")
+  (newline)
+  (let ((x (arange 1 9)))
+    (display "arange 1 9: ")
+    (display x)
+    (newline)))
+
+(test-arange)

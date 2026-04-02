@@ -1,0 +1,272 @@
+/*
+ * XLA Backend Codegen for Eshkol
+ *
+ * Provides accelerated tensor operations via XLA/StableHLO for large tensors.
+ * Falls back to SIMD implementation for small tensors (below threshold).
+ *
+ * Copyright (C) tsotchke
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef ESHKOL_XLA_CODEGEN_H
+#define ESHKOL_XLA_CODEGEN_H
+
+#include <cstddef>
+#include <memory>
+#include <vector>
+#include <string>
+
+// Forward declarations
+namespace llvm {
+    class Value;
+}
+
+namespace eshkol {
+
+class CodegenContext;
+
+namespace xla {
+
+// Runtime-configurable threshold (default: 100000 elements = ~320x320 matrix)
+// XLA is reserved for massive tensors only to amortize compilation overhead
+// Dispatch hierarchy: XLA (≥100K) → cBLAS (≥4K) → SIMD (≥64) → scalar
+// Override via ESHKOL_XLA_THRESHOLD environment variable
+extern size_t g_xla_threshold;
+
+// API for runtime configuration
+void xla_set_threshold(size_t threshold);
+size_t xla_get_threshold();
+
+// Element-wise operation types
+enum class ElementwiseOp {
+    ADD,
+    SUB,
+    MUL,
+    DIV,
+    EXP,
+    LOG,
+    SIN,
+    COS,
+    TANH,
+    RELU,
+    SIGMOID
+};
+
+// Reduce operation types
+enum class ReduceOp {
+    SUM,
+    MEAN,
+    MAX,
+    MIN,
+    PROD
+};
+
+// Target backend for compilation
+enum class Target {
+    CPU,      // XLA CPU backend
+    CUDA,     // NVIDIA GPU via CUDA
+    Metal,    // Apple GPU via Metal
+    Vulkan    // Cross-platform GPU via Vulkan
+};
+
+/**
+ * XLACodegen - Main XLA backend class
+ *
+ * Integrates with the existing TensorCodegen to provide XLA-accelerated
+ * tensor operations for large tensors while maintaining compatibility
+ * with the SIMD path for small tensors.
+ *
+ * Thread-safe: Can be used from multiple threads concurrently.
+ */
+class XLACodegen {
+public:
+    explicit XLACodegen(CodegenContext& ctx);
+    ~XLACodegen();
+
+    // Non-copyable
+    XLACodegen(const XLACodegen&) = delete;
+    XLACodegen& operator=(const XLACodegen&) = delete;
+
+    // Movable
+    XLACodegen(XLACodegen&&) noexcept;
+    XLACodegen& operator=(XLACodegen&&) noexcept;
+
+    // ===== Backend Selection =====
+
+    /**
+     * Set the threshold for using XLA vs BLAS/SIMD.
+     * Tensors with fewer elements than this will use BLAS/SIMD.
+     * @param min_elements Minimum elements to use XLA (default: 100000)
+     */
+    void setThreshold(size_t min_elements);
+
+    /**
+     * Check if XLA should be used for an operation.
+     * @param num_elements Number of elements in the operation
+     * @return true if XLA should be used, false for SIMD
+     */
+    bool shouldUseXLA(size_t num_elements) const;
+
+    // ===== Tensor Operations =====
+
+    /**
+     * Emit XLA-accelerated matrix multiplication.
+     * @param a Left operand tensor
+     * @param b Right operand tensor
+     * @return Result tensor value
+     */
+    llvm::Value* emitMatmul(llvm::Value* a, llvm::Value* b);
+
+    /**
+     * Emit XLA-accelerated element-wise operation.
+     * @param a First operand tensor
+     * @param b Second operand tensor (nullptr for unary ops)
+     * @param op Element-wise operation type
+     * @return Result tensor value
+     */
+    llvm::Value* emitElementwise(llvm::Value* a, llvm::Value* b, ElementwiseOp op);
+
+    /**
+     * Emit XLA-accelerated reduction.
+     * @param input Input tensor
+     * @param axis Axis to reduce along (-1 for all axes)
+     * @param op Reduction operation type
+     * @return Result tensor value
+     */
+    llvm::Value* emitReduce(llvm::Value* input, int64_t axis, ReduceOp op);
+
+    /**
+     * Emit XLA-accelerated tensor transpose.
+     * For 2D tensors, swaps rows and columns (permutation [1,0]).
+     * @param input Input tensor (struct pointer)
+     * @return Transposed tensor (struct pointer)
+     */
+    llvm::Value* emitTranspose(llvm::Value* input);
+
+    /**
+     * Emit XLA broadcast from src_shape to tgt_shape.
+     * @param input Input tensor
+     * @param tgt_shape Target shape values (LLVM i64 constants)
+     * @param tgt_rank Target rank
+     * @return Broadcasted tensor
+     */
+    llvm::Value* emitBroadcast(llvm::Value* input,
+                                const std::vector<llvm::Value*>& tgt_shape,
+                                int64_t tgt_rank);
+
+    /**
+     * Emit XLA tensor slice.
+     * @param input Input tensor
+     * @param starts Start indices per dimension
+     * @param limits End indices per dimension
+     * @param strides Step sizes per dimension (nullptr for all-1s)
+     * @return Sliced tensor
+     */
+    llvm::Value* emitSlice(llvm::Value* input,
+                            const std::vector<llvm::Value*>& starts,
+                            const std::vector<llvm::Value*>& limits,
+                            const std::vector<llvm::Value*>& strides);
+
+    // ===== Autodiff Integration =====
+
+    /**
+     * Emit matmul gradient: dC/dA = grad @ B^T, dC/dB = A^T @ grad.
+     * @param output_node Upstream gradient tensor
+     * @param wrt_vars [A, B] forward operands
+     * @return Pointer to 2-element array [grad_A, grad_B]
+     */
+    llvm::Value* emitGradient(llvm::Value* output_node,
+                               const std::vector<llvm::Value*>& wrt_vars);
+
+    /**
+     * Emit elementwise gradient via chain rule.
+     * @param grad Upstream gradient
+     * @param a Forward left operand
+     * @param b Forward right operand (nullptr for unary)
+     * @param result Forward output
+     * @param op The elementwise operation
+     * @return Pointer to 2-element array [grad_a, grad_b]
+     */
+    llvm::Value* emitElementwiseGradient(llvm::Value* grad,
+                                          llvm::Value* a,
+                                          llvm::Value* b,
+                                          llvm::Value* result,
+                                          ElementwiseOp op);
+
+    /**
+     * Emit reduce gradient (broadcast upstream grad back to input shape).
+     * @param grad Upstream gradient
+     * @param input Original input tensor (for shape)
+     * @param axis Reduction axis (-1 for all)
+     * @param op Reduce operation
+     * @return Gradient tensor with input shape
+     */
+    llvm::Value* emitReduceGradient(llvm::Value* grad,
+                                     llvm::Value* input,
+                                     int64_t axis,
+                                     ReduceOp op);
+
+    /**
+     * Emit transpose gradient (transpose with inverse permutation).
+     * @param grad Upstream gradient
+     * @return Transposed gradient
+     */
+    llvm::Value* emitTransposeGradient(llvm::Value* grad);
+
+    // ===== Compilation =====
+
+    /**
+     * Compile accumulated XLA computations to target.
+     * @param target Target backend (CPU, CUDA, Metal, Vulkan)
+     */
+    void compile(Target target);
+
+    /**
+     * Get compiled executable.
+     * @return Pointer to executable (type depends on target)
+     */
+    void* getExecutable() const;
+
+    // ===== Memory Integration =====
+
+    /**
+     * Wrap an arena buffer for XLA use.
+     * Zero-copy for CPU target, pinned for GPU.
+     * @param arena_ptr Arena pointer
+     * @param tensor_ptr Tensor pointer
+     * @return XLA buffer value
+     */
+    llvm::Value* wrapArenaBuffer(llvm::Value* arena_ptr, llvm::Value* tensor_ptr);
+
+    /**
+     * Ensure tensor is on the specified device.
+     * No-op for CPU, transfers for GPU.
+     * @param tensor_ptr Tensor pointer
+     * @param target Target device
+     * @return Device tensor value
+     */
+    llvm::Value* ensureDevice(llvm::Value* tensor_ptr, Target target);
+
+    // ===== Status =====
+
+    /**
+     * Check if XLA backend is available.
+     * @return true if XLA is initialized and ready
+     */
+    bool isAvailable() const;
+
+    /**
+     * Get description of XLA configuration.
+     * @return Human-readable configuration string
+     */
+    std::string getDescription() const;
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+} // namespace xla
+} // namespace eshkol
+
+#endif // ESHKOL_XLA_CODEGEN_H

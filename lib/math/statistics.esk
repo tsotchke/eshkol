@@ -1,0 +1,207 @@
+;;; Eshkol Statistics Library
+;;; Statistical functions for tensors and lists
+;;;
+;;; Provides median, percentile, histogram, correlation, and more
+;;;
+;;; Usage: (require statistics)
+
+(provide median percentile quartiles iqr
+         variance std-dev
+         correlation covariance
+         histogram bin-data
+         zscore describe)
+
+;;; ============================================================
+;;; Central Tendency and Spread
+;;; ============================================================
+
+;; median: Median value (50th percentile)
+;; For tensors, flattens and finds middle value
+(define (median data)
+  (let* ((sorted (sort (flatten-to-list data) <))
+         (n (length sorted))
+         (mid (quotient n 2)))
+    (if (odd? n)
+        (list-ref sorted mid)
+        (/ (+ (list-ref sorted (- mid 1))
+              (list-ref sorted mid))
+           2.0))))
+
+;; percentile: Get value at given percentile (0-100)
+(define (percentile data p)
+  (let* ((sorted (sort (flatten-to-list data) <))
+         (n (length sorted))
+         (idx (* (/ p 100.0) (- n 1)))
+         (lo (truncate idx))
+         (hi (+ lo 1))
+         (frac (- idx lo)))
+    (if (>= lo (- n 1))
+        (list-ref sorted (- n 1))
+        (+ (* (- 1.0 frac) (list-ref sorted lo))
+           (* frac (list-ref sorted hi))))))
+
+;; quartiles: Return (Q1 Q2 Q3) - 25th, 50th, 75th percentiles
+(define (quartiles data)
+  (list (percentile data 25)
+        (percentile data 50)
+        (percentile data 75)))
+
+;; iqr: Interquartile range (Q3 - Q1)
+(define (iqr data)
+  (let ((qs (quartiles data)))
+    (- (caddr qs) (car qs))))
+
+;; variance: Population variance (for sample variance, divide by n-1)
+(define (variance data)
+  (let* ((xs (flatten-to-list data))
+         (n (length xs))
+         (mean (/ (apply + xs) n))
+         (sq-diffs (map (lambda (x) (* (- x mean) (- x mean))) xs)))
+    (/ (apply + sq-diffs) n)))
+
+;; std-dev: Standard deviation (population)
+(define (std-dev data)
+  (sqrt (variance data)))
+
+;;; ============================================================
+;;; Correlation and Covariance
+;;; ============================================================
+
+;; covariance: Covariance between two datasets
+(define (covariance xs ys)
+  (let* ((x-list (flatten-to-list xs))
+         (y-list (flatten-to-list ys))
+         (n (min (length x-list) (length y-list)))
+         (x-mean (/ (apply + (take x-list n)) n))
+         (y-mean (/ (apply + (take y-list n)) n))
+         (products (map (lambda (x y) (* (- x x-mean) (- y y-mean)))
+                       (take x-list n) (take y-list n))))
+    (/ (apply + products) n)))
+
+;; correlation: Pearson correlation coefficient
+(define (correlation xs ys)
+  (let* ((x-list (flatten-to-list xs))
+         (y-list (flatten-to-list ys))
+         (n (min (length x-list) (length y-list)))
+         (cov (covariance (take x-list n) (take y-list n)))
+         (x-std (std-dev (take x-list n)))
+         (y-std (std-dev (take y-list n))))
+    (if (or (= x-std 0.0) (= y-std 0.0))
+        0.0
+        (/ cov (* x-std y-std)))))
+
+;;; ============================================================
+;;; Histogram and Binning
+;;; ============================================================
+
+;; histogram: Create histogram with n bins
+;; Returns list of (bin-center . count) pairs
+(define (histogram data num-bins)
+  (let* ((xs (flatten-to-list data))
+         (min-val (apply min xs))
+         (max-val (apply max xs))
+         (range (- max-val min-val))
+         (bin-width (/ range num-bins))
+         (counts (make-vector num-bins 0)))
+    ;; Count values in each bin
+    (for-each
+      (lambda (x)
+        (let ((bin (min (truncate (/ (- x min-val) bin-width))
+                        (- num-bins 1))))
+          (vector-set! counts bin (+ (vector-ref counts bin) 1))))
+      xs)
+    ;; Return list of (center . count)
+    (let loop ((i 0) (result '()))
+      (if (>= i num-bins)
+          (reverse result)
+          (loop (+ i 1)
+                (cons (cons (+ min-val (* bin-width (+ i 0.5)))
+                           (vector-ref counts i))
+                      result))))))
+
+;; bin-data: Assign each value to a bin index (0-based)
+(define (bin-data data num-bins)
+  (let* ((xs (flatten-to-list data))
+         (min-val (apply min xs))
+         (max-val (apply max xs))
+         (range (- max-val min-val))
+         (bin-width (/ range num-bins)))
+    (map (lambda (x)
+           (min (truncate (/ (- x min-val) bin-width))
+                (- num-bins 1)))
+         xs)))
+
+;;; ============================================================
+;;; Normalization and Scoring
+;;; ============================================================
+
+;; zscore: Compute z-scores for data
+(define (zscore data)
+  (let* ((xs (flatten-to-list data))
+         (mean-val (/ (apply + xs) (length xs)))
+         (std-val (std-dev xs)))
+    (if (= std-val 0.0)
+        (map (lambda (x) 0.0) xs)
+        (map (lambda (x) (/ (- x mean-val) std-val)) xs))))
+
+;; describe: Summary statistics for data
+;; Returns association list of statistics
+(define (describe data)
+  (let* ((xs (flatten-to-list data))
+         (n (length xs))
+         (sum (apply + xs))
+         (mean-val (/ sum n))
+         (min-val (apply min xs))
+         (max-val (apply max xs))
+         (var (variance xs))
+         (std (sqrt var))
+         (qs (quartiles xs)))
+    (list (cons 'count n)
+          (cons 'mean mean-val)
+          (cons 'std std)
+          (cons 'min min-val)
+          (cons 'q1 (car qs))
+          (cons 'median (cadr qs))
+          (cons 'q3 (caddr qs))
+          (cons 'max max-val))))
+
+;;; ============================================================
+;;; Helper Functions
+;;; ============================================================
+
+;; flatten-to-list: Convert tensor or list to flat list
+(define (flatten-to-list data)
+  (cond
+    ;; If it's a tensor, use tensor->vector then convert
+    ((tensor? data)
+     (vector->list (tensor->vector data)))
+    ;; If it's a vector, convert to list
+    ((vector? data)
+     (vector->list data))
+    ;; If it's already a list, flatten it
+    ((list? data)
+     (flatten data))
+    ;; If it's a single number, wrap in list
+    ((number? data)
+     (list data))
+    (else
+     (error "flatten-to-list: unsupported data type"))))
+
+;; flatten: Flatten nested list
+(define (flatten lst)
+  (cond
+    ((null? lst) '())
+    ((list? (car lst))
+     (append (flatten (car lst)) (flatten (cdr lst))))
+    (else
+     (cons (car lst) (flatten (cdr lst))))))
+
+;; take: Take first n elements from list
+(define (take lst n)
+  (if (or (= n 0) (null? lst))
+      '()
+      (cons (car lst) (take (cdr lst) (- n 1)))))
+
+;; odd?: Check if number is odd
+(define (odd? n)
+  (= (remainder n 2) 1))

@@ -43,11 +43,11 @@ struct TypeCheckResult {
 
     // Factory methods
     static TypeCheckResult ok(TypeId type) {
-        return {true, type, ""};
+        return {true, type, "", 0, 0, "", "", "", ""};
     }
 
     static TypeCheckResult error(const std::string& msg, int line = 0, int col = 0) {
-        return {false, TypeId{}, msg, line, col};
+        return {false, TypeId{}, msg, line, col, "", "", "", ""};
     }
 
     // Enhanced error factory with context
@@ -320,7 +320,7 @@ private:
  */
 class TypeChecker {
 public:
-    explicit TypeChecker(TypeEnvironment& env);
+    explicit TypeChecker(TypeEnvironment& env, bool strict_types = false, bool unsafe_mode = false);
 
     // === Bidirectional Type Checking ===
 
@@ -435,7 +435,19 @@ public:
     BorrowChecker& borrowChecker() { return borrow_; }
     const BorrowChecker& borrowChecker() const { return borrow_; }
 
+    // === Unified Enforcement ===
+
+    /**
+     * Unified enforcement point: respects strict_types/unsafe_mode config.
+     * In unsafe mode: silently ignores.
+     * In strict mode: calls eshkol_error() (compilation stops).
+     * In gradual mode (default): calls eshkol_warn() (continues).
+     */
+    void reportTypeIssue(const std::string& msg, const eshkol_ast_t* node = nullptr);
+
 private:
+    bool strict_types_ = false;
+    bool unsafe_mode_ = false;
     TypeEnvironment& env_;
     Context ctx_;
     BorrowChecker borrow_;

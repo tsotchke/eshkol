@@ -1411,6 +1411,45 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
 
     // === 1D TENSOR PATH: Return single element (original behavior) ===
     ctx_.builder().SetInsertPoint(tensor_1d_path);
+
+    // Bounds check: 0 <= idx < total_elements (mirrors vector path for R7RS guard compatibility)
+    {
+        llvm::Value* idx_neg = ctx_.builder().CreateICmpSLT(idx,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Value* idx_oob = ctx_.builder().CreateICmpSGE(idx, total_elements);
+        llvm::Value* bad = ctx_.builder().CreateOr(idx_neg, idx_oob);
+
+        llvm::BasicBlock* tvref_ok = llvm::BasicBlock::Create(ctx_.context(), "tvref_bounds_ok", current_func);
+        llvm::BasicBlock* tvref_fail = llvm::BasicBlock::Create(ctx_.context(), "tvref_bounds_fail", current_func);
+        ctx_.builder().CreateCondBr(bad, tvref_fail, tvref_ok);
+
+        ctx_.builder().SetInsertPoint(tvref_fail);
+        {
+            llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+            if (!raise_func) {
+                llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                    ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+                raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                    "eshkol_raise", &ctx_.module());
+                raise_func->setDoesNotReturn();
+            }
+            llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+            if (!make_exc_func) {
+                llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                    {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+                make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                    "eshkol_make_exception_with_header", &ctx_.module());
+            }
+            llvm::Value* msg = ctx_.builder().CreateGlobalString("vector-ref: index out of bounds");
+            llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+            llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {exc_type, msg});
+            ctx_.builder().CreateCall(raise_func, {exc});
+            ctx_.builder().CreateUnreachable();
+        }
+
+        ctx_.builder().SetInsertPoint(tvref_ok);
+    }
+
     llvm::Value* tensor_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elems_ptr, idx);
     llvm::Value* tensor_elem_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), tensor_elem_ptr);
 
@@ -1448,6 +1487,47 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
 
     // === N-D TENSOR PATH: Return row slice as 1D tensor ===
     ctx_.builder().SetInsertPoint(tensor_nd_path);
+
+    // Bounds check: idx must be < dims[0] (number of rows)
+    {
+        llvm::Value* dim0 = ctx_.builder().CreateLoad(ctx_.int64Type(),
+            ctx_.builder().CreateGEP(ctx_.int64Type(), dims_ptr,
+                llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+        llvm::Value* idx_neg = ctx_.builder().CreateICmpSLT(idx,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Value* idx_oob = ctx_.builder().CreateICmpSGE(idx, dim0);
+        llvm::Value* bad = ctx_.builder().CreateOr(idx_neg, idx_oob);
+
+        llvm::BasicBlock* nd_ok = llvm::BasicBlock::Create(ctx_.context(), "vref_nd_bounds_ok", current_func);
+        llvm::BasicBlock* nd_fail = llvm::BasicBlock::Create(ctx_.context(), "vref_nd_bounds_fail", current_func);
+        ctx_.builder().CreateCondBr(bad, nd_fail, nd_ok);
+
+        ctx_.builder().SetInsertPoint(nd_fail);
+        {
+            llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+            if (!raise_func) {
+                llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                    ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+                raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                    "eshkol_raise", &ctx_.module());
+                raise_func->setDoesNotReturn();
+            }
+            llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+            if (!make_exc_func) {
+                llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                    {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+                make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                    "eshkol_make_exception_with_header", &ctx_.module());
+            }
+            llvm::Value* msg = ctx_.builder().CreateGlobalString("vector-ref: index out of bounds");
+            llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+            llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {exc_type, msg});
+            ctx_.builder().CreateCall(raise_func, {exc});
+            ctx_.builder().CreateUnreachable();
+        }
+
+        ctx_.builder().SetInsertPoint(nd_ok);
+    }
 
     // Get row size from dims[1] (number of columns)
     llvm::Value* row_size_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), dims_ptr,
@@ -1500,10 +1580,53 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(merge_path);
     llvm::BasicBlock* tensor_exit = ctx_.builder().GetInsertBlock();
 
-    // VECTOR PATH: Original Scheme vector logic
+    // VECTOR PATH: Original Scheme vector logic with bounds checking
     ctx_.builder().SetInsertPoint(vector_path);
     llvm::Value* vec_ptr_int = tagged_.unpackInt64(vec_arg);
     llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(vec_ptr_int, ctx_.ptrType());
+
+    // Load vector length from offset 0 (int64)
+    llvm::Value* vec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vec_len");
+
+    // Bounds check: index must be >= 0 and < length
+    llvm::Value* idx_negative = ctx_.builder().CreateICmpSLT(idx,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* idx_too_large = ctx_.builder().CreateICmpSGE(idx, vec_len);
+    llvm::Value* out_of_bounds = ctx_.builder().CreateOr(idx_negative, idx_too_large);
+
+    llvm::BasicBlock* bounds_ok = llvm::BasicBlock::Create(ctx_.context(), "vref_bounds_ok", current_func);
+    llvm::BasicBlock* bounds_fail = llvm::BasicBlock::Create(ctx_.context(), "vref_bounds_fail", current_func);
+    ctx_.builder().CreateCondBr(out_of_bounds, bounds_fail, bounds_ok);
+
+    // Bounds check failure: emit runtime error
+    ctx_.builder().SetInsertPoint(bounds_fail);
+    {
+        llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+        if (!raise_func) {
+            llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+            raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                "eshkol_raise", &ctx_.module());
+            raise_func->setDoesNotReturn();
+        }
+        llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+            make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", &ctx_.module());
+        }
+        // Create error message string
+        llvm::Value* fmt_str = ctx_.builder().CreateGlobalString(
+            "vector-ref: index out of bounds");
+        llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, fmt_str});
+        ctx_.builder().CreateCall(raise_func, {exception});
+        ctx_.builder().CreateUnreachable();
+    }
+
+    // Bounds OK: proceed with element access
+    ctx_.builder().SetInsertPoint(bounds_ok);
 
     // Get pointer to elements (after length field)
     llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
@@ -1548,11 +1671,6 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
     llvm::Value* vec_ptr_int = tagged_.unpackInt64(vec_arg);
     llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(vec_ptr_int, ctx_.ptrType());
 
-    // Get pointer to elements (after length field)
-    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
-
     // Extract index
     llvm::Value* idx = idx_tagged;
     if (idx->getType() == ctx_.taggedValueType()) {
@@ -1565,11 +1683,455 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
         }
     }
 
+    // Bounds check: load vector length and validate index
+    llvm::Value* vec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vset_len");
+    llvm::Value* idx_negative = ctx_.builder().CreateICmpSLT(idx,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* idx_too_large = ctx_.builder().CreateICmpSGE(idx, vec_len);
+    llvm::Value* out_of_bounds = ctx_.builder().CreateOr(idx_negative, idx_too_large);
+
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bounds_ok = llvm::BasicBlock::Create(ctx_.context(), "vset_ok", current_func);
+    llvm::BasicBlock* bounds_fail = llvm::BasicBlock::Create(ctx_.context(), "vset_fail", current_func);
+    ctx_.builder().CreateCondBr(out_of_bounds, bounds_fail, bounds_ok);
+
+    // Bounds check failure: emit runtime error
+    ctx_.builder().SetInsertPoint(bounds_fail);
+    {
+        llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+        if (!raise_func) {
+            llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+            raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                "eshkol_raise", &ctx_.module());
+            raise_func->setDoesNotReturn();
+        }
+        llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+            make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", &ctx_.module());
+        }
+        llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
+            "vector-set!: index out of bounds");
+        llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
+        ctx_.builder().CreateCall(raise_func, {exception});
+        ctx_.builder().CreateUnreachable();
+    }
+
+    // Bounds OK: proceed with element store
+    ctx_.builder().SetInsertPoint(bounds_ok);
+
+    // Get pointer to elements (after length field)
+    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
+
     llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base_typed, idx);
     ctx_.builder().CreateStore(tagged_val, elem_ptr);
 
     // Return the vector
     return vec_arg;
+}
+
+llvm::Value* CollectionCodegen::vectorCopy(const eshkol_operations_t* op) {
+    if (!codegen_ast_callback_ || !codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("CollectionCodegen::vectorCopy - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    // (vector-copy! to at from)
+    // (vector-copy! to at from start)
+    // (vector-copy! to at from start end)
+    if (op->call_op.num_vars < 3 || op->call_op.num_vars > 5) {
+        eshkol_warn("vector-copy! requires 3-5 arguments");
+        return nullptr;
+    }
+
+    // Get dest vector
+    llvm::Value* to_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!to_arg) return nullptr;
+
+    // Get 'at' index
+    void* at_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+    if (!at_typed) return nullptr;
+    llvm::Value* at_tagged = typed_to_tagged_callback_(at_typed, callback_context_);
+    if (!at_tagged) return nullptr;
+    llvm::Value* at_idx = tagged_.unpackInt64(at_tagged);
+
+    // Get source vector
+    llvm::Value* from_arg = codegen_ast_callback_(&op->call_op.variables[2], callback_context_);
+    if (!from_arg) return nullptr;
+
+    // Extract dest pointer
+    llvm::Value* to_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(to_arg), ctx_.ptrType());
+
+    // Extract source pointer and length
+    llvm::Value* from_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(from_arg), ctx_.ptrType());
+    llvm::Value* from_len = ctx_.builder().CreateLoad(ctx_.int64Type(), from_ptr, "from_len");
+
+    // Get start (default 0) and end (default from_len)
+    llvm::Value* start;
+    if (op->call_op.num_vars >= 4) {
+        void* start_typed = codegen_typed_ast_callback_(&op->call_op.variables[3], callback_context_);
+        if (!start_typed) return nullptr;
+        llvm::Value* start_tagged = typed_to_tagged_callback_(start_typed, callback_context_);
+        if (!start_tagged) return nullptr;
+        start = tagged_.unpackInt64(start_tagged);
+    } else {
+        start = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    }
+
+    llvm::Value* end;
+    if (op->call_op.num_vars >= 5) {
+        void* end_typed = codegen_typed_ast_callback_(&op->call_op.variables[4], callback_context_);
+        if (!end_typed) return nullptr;
+        llvm::Value* end_tagged = typed_to_tagged_callback_(end_typed, callback_context_);
+        if (!end_tagged) return nullptr;
+        end = tagged_.unpackInt64(end_tagged);
+    } else {
+        end = from_len;
+    }
+
+    // Number of elements to copy
+    llvm::Value* count = ctx_.builder().CreateSub(end, start, "copy_count");
+
+    // Get element bases (after length field at offset 8)
+    llvm::Value* to_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), to_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* to_elem_typed = ctx_.builder().CreatePointerCast(to_elem_base, ctx_.ptrType());
+
+    llvm::Value* from_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), from_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* from_elem_typed = ctx_.builder().CreatePointerCast(from_elem_base, ctx_.ptrType());
+
+    // Use memmove (handles overlapping regions) on tagged values (16 bytes each)
+    llvm::Value* dest_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), to_elem_typed, at_idx);
+    llvm::Value* src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), from_elem_typed, start);
+    llvm::Value* byte_count = ctx_.builder().CreateMul(count,
+        llvm::ConstantInt::get(ctx_.int64Type(), 16), "byte_count");
+
+    ctx_.builder().CreateMemMove(
+        dest_ptr, llvm::MaybeAlign(8),
+        src_ptr, llvm::MaybeAlign(8),
+        byte_count);
+
+    return tagged_.packNull();
+}
+
+llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
+    if (!codegen_ast_callback_) {
+        eshkol_warn("CollectionCodegen::vectorAppend - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    uint64_t num_vecs = op->call_op.num_vars;
+    if (num_vecs == 0) {
+        // (vector-append) => empty vector
+        llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
+            {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 0)});
+        llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), len_ptr);
+        return tagged_.packHeapPtr(vec_ptr);
+    }
+
+    // Collect all source vector pointers and compute total length
+    std::vector<llvm::Value*> src_ptrs;
+    std::vector<llvm::Value*> src_lens;
+
+    for (uint64_t i = 0; i < num_vecs; i++) {
+        llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+        if (!vec_arg) return nullptr;
+
+        llvm::Value* ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
+        llvm::Value* len = ctx_.builder().CreateLoad(ctx_.int64Type(), ptr, "src_len");
+        src_ptrs.push_back(ptr);
+        src_lens.push_back(len);
+    }
+
+    // Sum up total length
+    llvm::Value* total_len = src_lens[0];
+    for (uint64_t i = 1; i < num_vecs; i++) {
+        total_len = ctx_.builder().CreateAdd(total_len, src_lens[i]);
+    }
+
+    // Allocate new vector
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* new_vec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
+        {arena_ptr, total_len});
+
+    // Store length
+    llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(new_vec, ctx_.ptrType());
+    ctx_.builder().CreateStore(total_len, len_ptr);
+
+    // Get element base of new vector
+    llvm::Value* new_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), new_vec,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* new_elem_typed = ctx_.builder().CreatePointerCast(new_elem_base, ctx_.ptrType());
+
+    // Copy elements from each source vector
+    llvm::Value* offset = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    for (uint64_t i = 0; i < num_vecs; i++) {
+        llvm::Value* src_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), src_ptrs[i],
+            llvm::ConstantInt::get(ctx_.int64Type(), 8));
+        llvm::Value* src_elem_typed = ctx_.builder().CreatePointerCast(src_elem_base, ctx_.ptrType());
+
+        llvm::Value* dest_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), new_elem_typed, offset);
+        llvm::Value* byte_count = ctx_.builder().CreateMul(src_lens[i],
+            llvm::ConstantInt::get(ctx_.int64Type(), 16));
+
+        ctx_.builder().CreateMemCpy(
+            dest_ptr, llvm::MaybeAlign(8),
+            src_elem_typed, llvm::MaybeAlign(8),
+            byte_count);
+
+        offset = ctx_.builder().CreateAdd(offset, src_lens[i]);
+    }
+
+    return tagged_.packHeapPtr(new_vec);
+}
+
+llvm::Value* CollectionCodegen::vectorFill(const eshkol_operations_t* op) {
+    if (!codegen_ast_callback_ || !codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("CollectionCodegen::vectorFill - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars != 2) {
+        eshkol_warn("vector-fill! requires exactly 2 arguments");
+        return nullptr;
+    }
+
+    // Get vector
+    llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!vec_arg) return nullptr;
+
+    // Get fill value
+    void* fill_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+    if (!fill_typed) return nullptr;
+    llvm::Value* fill_val = typed_to_tagged_callback_(fill_typed, callback_context_);
+    if (!fill_val) return nullptr;
+
+    // Extract vector pointer and length
+    llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
+    llvm::Value* length = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vfill_len");
+
+    // Get element base
+    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* elem_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
+
+    // Fill loop
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_header = llvm::BasicBlock::Create(ctx_.context(), "vfill_header", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "vfill_body", current_func);
+    llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(ctx_.context(), "vfill_exit", current_func);
+
+    ctx_.builder().CreateBr(loop_header);
+
+    ctx_.builder().SetInsertPoint(loop_header);
+    llvm::PHINode* i = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "fill_i");
+    i->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0),
+        loop_header->getSinglePredecessor());
+    llvm::Value* done = ctx_.builder().CreateICmpUGE(i, length);
+    ctx_.builder().CreateCondBr(done, loop_exit, loop_body);
+
+    ctx_.builder().SetInsertPoint(loop_body);
+    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_typed, i);
+    ctx_.builder().CreateStore(fill_val, elem_ptr);
+    llvm::Value* next_i = ctx_.builder().CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    i->addIncoming(next_i, loop_body);
+    ctx_.builder().CreateBr(loop_header);
+
+    ctx_.builder().SetInsertPoint(loop_exit);
+    return tagged_.packNull();
+}
+
+llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
+    if (!codegen_ast_callback_) {
+        eshkol_warn("CollectionCodegen::vectorToList - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 3) {
+        eshkol_warn("vector->list requires 1-3 arguments");
+        return nullptr;
+    }
+
+    // Get vector
+    llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!vec_arg) return nullptr;
+
+    // Extract vector pointer and length
+    llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
+    llvm::Value* vec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "v2l_len");
+
+    // Get optional start/end
+    llvm::Value* start;
+    if (op->call_op.num_vars >= 2) {
+        void* start_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!start_typed) return nullptr;
+        llvm::Value* start_tagged = typed_to_tagged_callback_(start_typed, callback_context_);
+        if (!start_tagged) return nullptr;
+        start = tagged_.unpackInt64(start_tagged);
+    } else {
+        start = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    }
+
+    llvm::Value* end;
+    if (op->call_op.num_vars >= 3) {
+        void* end_typed = codegen_typed_ast_callback_(&op->call_op.variables[2], callback_context_);
+        if (!end_typed) return nullptr;
+        llvm::Value* end_tagged = typed_to_tagged_callback_(end_typed, callback_context_);
+        if (!end_tagged) return nullptr;
+        end = tagged_.unpackInt64(end_tagged);
+    } else {
+        end = vec_len;
+    }
+
+    // Get element base
+    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* elem_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
+
+    // Build list right-to-left (from end-1 down to start)
+    // Start with null (empty list)
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* loop_header = llvm::BasicBlock::Create(ctx_.context(), "v2l_header", current_func);
+    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "v2l_body", current_func);
+    llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(ctx_.context(), "v2l_exit", current_func);
+
+    llvm::Value* init_i = ctx_.builder().CreateSub(end, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateBr(loop_header);
+
+    ctx_.builder().SetInsertPoint(loop_header);
+    llvm::PHINode* i = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "v2l_i");
+    llvm::PHINode* list_acc = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "v2l_acc");
+    i->addIncoming(init_i, loop_header->getSinglePredecessor());
+    list_acc->addIncoming(tagged_.packNull(), loop_header->getSinglePredecessor());
+
+    llvm::Value* done = ctx_.builder().CreateICmpSLT(i, start);
+    ctx_.builder().CreateCondBr(done, loop_exit, loop_body);
+
+    ctx_.builder().SetInsertPoint(loop_body);
+    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_typed, i);
+    llvm::Value* elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem_ptr, "v2l_elem");
+
+    // cons elem onto list_acc
+    llvm::Value* new_cell = allocConsCell(elem, list_acc);
+
+    llvm::Value* prev_i = ctx_.builder().CreateSub(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    i->addIncoming(prev_i, loop_body);
+    list_acc->addIncoming(new_cell, loop_body);
+    ctx_.builder().CreateBr(loop_header);
+
+    ctx_.builder().SetInsertPoint(loop_exit);
+    return list_acc;
+}
+
+llvm::Value* CollectionCodegen::listToVector(const eshkol_operations_t* op) {
+    if (!codegen_ast_callback_) {
+        eshkol_warn("CollectionCodegen::listToVector - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars != 1) {
+        eshkol_warn("list->vector requires exactly 1 argument");
+        return nullptr;
+    }
+
+    // Get list
+    llvm::Value* list_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!list_arg) return nullptr;
+
+    // First, count list length by traversal
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* count_header = llvm::BasicBlock::Create(ctx_.context(), "l2v_count_hdr", current_func);
+    llvm::BasicBlock* count_body = llvm::BasicBlock::Create(ctx_.context(), "l2v_count_body", current_func);
+    llvm::BasicBlock* count_done = llvm::BasicBlock::Create(ctx_.context(), "l2v_count_done", current_func);
+
+    ctx_.builder().CreateBr(count_header);
+
+    ctx_.builder().SetInsertPoint(count_header);
+    llvm::PHINode* count_node = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "l2v_node");
+    llvm::PHINode* count_n = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "l2v_n");
+    count_node->addIncoming(list_arg, count_header->getSinglePredecessor());
+    count_n->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0), count_header->getSinglePredecessor());
+
+    // Check if null (end of list): type == ESHKOL_VALUE_NULL
+    llvm::Value* node_type = tagged_.getType(count_node);
+    llvm::Value* base_type = tagged_.getBaseType(node_type);
+    llvm::Value* is_null = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
+    ctx_.builder().CreateCondBr(is_null, count_done, count_body);
+
+    ctx_.builder().SetInsertPoint(count_body);
+    // Get cdr via pointer dereference: cons cell is [car(16) | cdr(16)]
+    llvm::Value* cons_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(count_node), ctx_.ptrType());
+    llvm::Value* cdr_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), cons_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* cdr_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), cdr_ptr, "l2v_cdr");
+    llvm::Value* next_n = ctx_.builder().CreateAdd(count_n, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    count_node->addIncoming(cdr_val, count_body);
+    count_n->addIncoming(next_n, count_body);
+    ctx_.builder().CreateBr(count_header);
+
+    ctx_.builder().SetInsertPoint(count_done);
+    llvm::Value* length = count_n;
+
+    // Allocate vector
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
+        {arena_ptr, length});
+
+    // Store length
+    llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
+    ctx_.builder().CreateStore(length, len_ptr);
+
+    // Get element base
+    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* elem_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
+
+    // Second pass: walk list and copy elements into vector
+    llvm::BasicBlock* fill_header = llvm::BasicBlock::Create(ctx_.context(), "l2v_fill_hdr", current_func);
+    llvm::BasicBlock* fill_body = llvm::BasicBlock::Create(ctx_.context(), "l2v_fill_body", current_func);
+    llvm::BasicBlock* fill_done = llvm::BasicBlock::Create(ctx_.context(), "l2v_fill_done", current_func);
+
+    ctx_.builder().CreateBr(fill_header);
+
+    ctx_.builder().SetInsertPoint(fill_header);
+    llvm::PHINode* fill_node = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "l2v_fill_node");
+    llvm::PHINode* fill_i = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "l2v_fill_i");
+    fill_node->addIncoming(list_arg, count_done);
+    fill_i->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0), count_done);
+
+    llvm::Value* fill_done_cond = ctx_.builder().CreateICmpUGE(fill_i, length);
+    ctx_.builder().CreateCondBr(fill_done_cond, fill_done, fill_body);
+
+    ctx_.builder().SetInsertPoint(fill_body);
+    // Load car
+    llvm::Value* fill_cons_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(fill_node), ctx_.ptrType());
+    llvm::Value* car_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), fill_cons_ptr, "l2v_car");
+
+    // Store into vector
+    llvm::Value* vec_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_typed, fill_i);
+    ctx_.builder().CreateStore(car_val, vec_elem_ptr);
+
+    // Get cdr
+    llvm::Value* fill_cdr_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), fill_cons_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* fill_cdr = ctx_.builder().CreateLoad(ctx_.taggedValueType(), fill_cdr_ptr, "l2v_fill_cdr");
+    llvm::Value* fill_next_i = ctx_.builder().CreateAdd(fill_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    fill_node->addIncoming(fill_cdr, fill_body);
+    fill_i->addIncoming(fill_next_i, fill_body);
+    ctx_.builder().CreateBr(fill_header);
+
+    ctx_.builder().SetInsertPoint(fill_done);
+    return tagged_.packHeapPtr(vec_ptr);
 }
 
 } // namespace eshkol

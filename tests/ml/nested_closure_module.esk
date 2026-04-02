@@ -1,0 +1,62 @@
+;;; Test: 3-level nested closure via module require
+;;; This reproduces the segfault with deeply nested closures in module context
+
+;; Create a simple module-like file that has 3-level nesting
+;; Level 1: outer function (top-level define)
+;; Level 2: letrec lambda (captures from level 1)
+;; Level 3: letrec lambda inside let* (captures from level 2's scope)
+
+(define (helper-scale s v)
+  (let* ((n (vector-length v))
+         (result (make-vector n 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! result i (* s (vref v i)))
+                    (loop (+ i 1)))
+                  result))))
+      (loop 0))))
+
+(define (three-level-test f x0 lr max-iter)
+  (letrec ((step (lambda (x iter)
+              (if (>= iter max-iter)
+                  x
+                  (let* ((g (gradient f x))
+                         ;; 3-level: letrec loop inside let* inside step's lambda
+                         (g-sq (let* ((n (vector-length g))
+                                      (r (make-vector n 0.0)))
+                                 (letrec ((loop (lambda (i)
+                                           (if (< i n)
+                                               (begin
+                                                 (vector-set! r i (* (vref g i) (vref g i)))
+                                                 (loop (+ i 1)))
+                                               r))))
+                                   (loop 0))))
+                         (gnorm (sqrt (+ (vref g-sq 0) (vref g-sq 1)))))
+                    (if (< gnorm 1e-6)
+                        x
+                        (step (helper-scale 1.0 (let* ((n2 (vector-length x))
+                                                        (r2 (make-vector n2 0.0)))
+                                                  (letrec ((loop2 (lambda (j)
+                                                            (if (< j n2)
+                                                                (begin
+                                                                  (vector-set! r2 j (- (vref x j) (* lr (vref g j))))
+                                                                  (loop2 (+ j 1)))
+                                                                r2))))
+                                                    (loop2 0))))
+                              (+ iter 1))))))))
+    (step x0 0)))
+
+(define (sphere x)
+  (+ (* (vref x 0) (vref x 0))
+     (* (vref x 1) (vref x 1))))
+
+(display "Testing 3-level nested closure...") (newline)
+(let ((result (three-level-test sphere (vector 5.0 3.0) 0.1 500)))
+  (display "Result: ")
+  (display (vref result 0)) (display " ") (display (vref result 1)) (newline)
+  (if (and (< (abs (vref result 0)) 0.1)
+           (< (abs (vref result 1)) 0.1))
+      (display "PASS")
+      (display "FAIL"))
+  (newline))

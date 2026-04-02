@@ -1,0 +1,89 @@
+;; Exception Nesting Test
+;; Tests: basic guard, nested guard with else, exception value preservation
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: Basic guard catches raise
+;; ============================================================================
+
+(display "=== Testing basic guard ===\n")
+
+(test-case "guard catches raise"
+  "caught"
+  (guard (exn (else "caught"))
+    (raise "error")))
+
+(test-case "guard passes normal value"
+  10
+  (guard (exn (else -1))
+    (+ 5 5)))
+
+;; ============================================================================
+;; Test: Nested guard — outer catches when inner has else
+;; ============================================================================
+
+(display "\n=== Testing nested guard ===\n")
+
+(test-case "inner guard else catches"
+  "inner caught"
+  (guard (outer-exn (else "outer caught"))
+    (guard (inner-exn (else "inner caught"))
+      (raise "test"))))
+
+;; Inner guard doesn't fire when no exception
+(test-case "nested guard no exception"
+  42
+  (guard (outer-exn (else "outer caught"))
+    (guard (inner-exn (else "inner caught"))
+      (+ 40 2))))
+
+;; ============================================================================
+;; Test: Exception value preserved through guard
+;; ============================================================================
+
+(display "\n=== Testing exception value preservation ===\n")
+
+(test-case "number exception preserved"
+  99
+  (guard (exn ((number? exn) exn) (else -1))
+    (raise 99)))
+
+(test-case "guard with arithmetic on exn"
+  100
+  (guard (exn ((number? exn) (+ exn 1)) (else -1))
+    (raise 99)))
+
+;; ============================================================================
+;; Test: error procedure generates catchable exception
+;; ============================================================================
+
+(display "\n=== Testing error procedure ===\n")
+
+(test-case "error is catchable"
+  "caught error"
+  (guard (exn (else "caught error"))
+    (error "something went wrong")))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Exception Nesting Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)

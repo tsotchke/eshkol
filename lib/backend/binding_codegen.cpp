@@ -87,7 +87,7 @@ Value* BindingCodegen::ensureTaggedValue(Value* value, eshkol_value_type_t value
     }
 
     // Fallback: pack as INT64
-    eshkol_warn("ensureTaggedValue: fallback to INT64 for type %d", (int)value_type);
+    eshkol_error("ensureTaggedValue: fallback to INT64 for type %d", (int)value_type);
     if (value->getType()->isIntegerTy(64)) {
         return tagged_.packInt64(value, true);
     } else if (value->getType()->isIntegerTy()) {
@@ -116,12 +116,13 @@ Value* BindingCodegen::storeBinding(
         GlobalVariable* gv = ctx_.module().getNamedGlobal(name);
         if (!gv) {
             // Create zero-initialized tagged_value global
+            bool is_repl = isReplMode(repl_mode_);
             Constant* zero_init = ConstantAggregateZero::get(ctx_.taggedValueType());
             gv = new GlobalVariable(
                 ctx_.module(),
                 ctx_.taggedValueType(),
                 false,  // not constant
-                GlobalValue::ExternalLinkage,
+                is_repl ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
                 zero_init,
                 name
             );
@@ -217,13 +218,72 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     bool is_lambda = op->define_op.value->type == ESHKOL_OP &&
                      op->define_op.value->operation.op == ESHKOL_LAMBDA_OP;
 
-    // Get typed value from callback
+    // FIX FOR RECURSIVE DEFINES: Pre-declare binding for lambda expressions
+    // so the lambda can reference itself (like letrec does)
+    Function* current = getCurrentFunction(current_function_);
+    bool is_global_init = current && current->getName() == "__global_init";
+    bool is_lib_init = current && current->getName() == "__eshkol_lib_init__";
+    bool is_repl = isReplMode(repl_mode_);
+    bool is_main = current && current->getName() == "main";
+    GlobalVariable* existing_global = ctx_.module().getNamedGlobal(var_name);
+    // Top-level defines in main should always be global, not local
+    bool use_global = !current || is_global_init || is_lib_init || is_repl || is_main;
+
+    Value* pre_declared_binding = nullptr;
+    if (is_lambda) {
+        if (use_global) {
+            // Pre-declare global variable
+            GlobalVariable* gv = ctx_.module().getNamedGlobal(var_name);
+            if (!gv) {
+                Constant* zero_init = ConstantAggregateZero::get(ctx_.taggedValueType());
+                gv = new GlobalVariable(
+                    ctx_.module(),
+                    ctx_.taggedValueType(),
+                    false,
+                    (is_lib_init || is_repl) ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
+                    zero_init,
+                    var_name
+                );
+                gv->setAlignment(Align(16));
+            }
+            pre_declared_binding = gv;
+            if (symbol_table_) (*symbol_table_)[var_name] = gv;
+            if (global_symbol_table_) (*global_symbol_table_)[var_name] = gv;
+        } else {
+            // Pre-declare local alloca
+            AllocaInst* alloca = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(),
+                nullptr,
+                var_name
+            );
+            alloca->setAlignment(Align(16));
+            pre_declared_binding = alloca;
+            if (symbol_table_) (*symbol_table_)[var_name] = alloca;
+        }
+        eshkol_debug("Pre-declared binding for recursive lambda: %s", var_name);
+    }
+
+    // RECURSIVE LAMBDA FIX: Add to exclusion set to prevent self-capture
+    // This is the same mechanism letrec uses for self-recursive bindings (see lines 601-606)
+    // Prevents the lambda from capturing itself while allowing recursive calls via dynamic lookup
+    if (is_lambda && letrec_excluded_capture_names_) {
+        letrec_excluded_capture_names_->insert(var_name);
+        eshkol_debug("Added %s to letrec_excluded_capture_names for recursive define", var_name);
+    }
+
+    // Get typed value from callback (lambda generation happens here)
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_error("define: callbacks not set");
         return nullptr;
     }
 
     void* typed_ptr = codegen_typed_ast_callback_(op->define_op.value, callback_context_);
+
+    // RECURSIVE LAMBDA FIX: Remove from exclusion set after lambda generation
+    if (is_lambda && letrec_excluded_capture_names_) {
+        letrec_excluded_capture_names_->erase(var_name);
+        eshkol_debug("Removed %s from letrec_excluded_capture_names after lambda generation", var_name);
+    }
     if (!typed_ptr) {
         eshkol_error("define: failed to evaluate value for %s", var_name);
         return nullptr;
@@ -257,16 +317,6 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
         register_func_binding_callback_(var_name, typed_ptr, callback_context_);
     }
 
-    // Determine if this should be global
-    Function* current = getCurrentFunction(current_function_);
-    bool is_global_init = current && current->getName() == "__global_init";
-    bool is_lib_init = current && current->getName() == "__eshkol_lib_init__";
-    bool is_repl = isReplMode(repl_mode_);
-    bool is_main = current && current->getName() == "main";
-
-    // Check if a global already exists for this variable (pre-declared in pass 1.5)
-    GlobalVariable* existing_global = ctx_.module().getNamedGlobal(var_name);
-
     // Debug: log what function we're in
     if (current) {
         eshkol_debug("BindingCodegen::define: in function %s (global_init=%d, lib_init=%d, repl=%d, main=%d, existing=%d)",
@@ -275,12 +325,6 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     } else {
         eshkol_debug("BindingCodegen::define: no current function (repl=%d)", is_repl);
     }
-
-    // Top-level defines or REPL mode: use global
-    // Nested defines inside functions: use local (alloca)
-    // CRITICAL: If a global already exists (pre-declared), use it even in main
-    // LIBRARY MODE: __eshkol_lib_init__ is like __global_init for libraries
-    bool use_global = !current || is_global_init || is_lib_init || is_repl || (is_main && existing_global);
 
     // Store the binding
     if (use_global) {
@@ -292,7 +336,7 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
                 ctx_.module(),
                 ctx_.taggedValueType(),
                 false,
-                GlobalValue::ExternalLinkage,
+                (is_lib_init || is_repl) ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
                 zero_init,
                 var_name
             );
@@ -307,12 +351,21 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
         eshkol_debug("BindingCodegen::define: global %s", var_name);
     } else {
         // Local define (inside a function, not __global_init)
+        // Place alloca in the entry block (standard LLVM practice) to avoid
+        // dynamic allocas that can confuse backend alias analysis
+        llvm::IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
+        Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
+        if (parent_func && !parent_func->empty()) {
+            BasicBlock& entry = parent_func->getEntryBlock();
+            ctx_.builder().SetInsertPoint(&entry, entry.begin());
+        }
         AllocaInst* alloca = ctx_.builder().CreateAlloca(
             ctx_.taggedValueType(),
             nullptr,
             var_name
         );
         alloca->setAlignment(Align(16));
+        ctx_.builder().restoreIP(saved_ip);
 
         ctx_.builder().CreateStore(tagged_val, alloca);
 
@@ -370,13 +423,19 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
         // Evaluate value
         void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
         if (!typed_ptr) {
-            eshkol_warn("let: failed to evaluate binding for %s", var_name.c_str());
+            eshkol_error("let: failed to evaluate binding for '%s'", var_name.c_str());
             continue;
+        }
+
+        // NORETURN SAFETY: If the value expression terminated the block (e.g., raise),
+        // we cannot emit any more instructions. Stop processing bindings.
+        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+            break;
         }
 
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
         if (!tagged_val) {
-            eshkol_warn("let: failed to convert binding for %s", var_name.c_str());
+            eshkol_error("let: failed to convert binding for '%s'", var_name.c_str());
             continue;
         }
 
@@ -434,9 +493,11 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
     // so that the enclosing scope sees the modified value after set! inside the lambda.
     std::unordered_map<std::string, Value*> entries_to_preserve;
     for (auto& entry : *symbol_table_) {
-        // Preserve function references (_func entries)
+        // Preserve function references (_func entries) - ONLY scoped keys
+        // NESTED DEFINE COLLISION FIX: Unscoped keys like "loop_func" collide between functions
         if (entry.first.length() > 5 &&
-            entry.first.substr(entry.first.length() - 5) == "_func") {
+            entry.first.substr(entry.first.length() - 5) == "_func" &&
+            entry.first.find('.') != std::string::npos) {
             entries_to_preserve[entry.first] = entry.second;
             if (global_symbol_table_) {
                 (*global_symbol_table_)[entry.first] = entry.second;
@@ -456,11 +517,16 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
         // and updates symbol_table[var_name]. This arena storage is the result of a CallInst
         // (not GlobalVariable), so we need to preserve it by detecting modification.
         // Check if the entry existed in saved_symbols with a DIFFERENT value.
+        // CRITICAL: Do NOT preserve AllocaInst entries - those are let bindings that
+        // should be discarded when the let scope ends. Only preserve non-alloca modifications
+        // (like arena storage for captures).
         auto saved_it = saved_symbols.find(entry.first);
         if (saved_it != saved_symbols.end() && saved_it->second != entry.second) {
-            // Entry was modified - preserve the new value
+            // Entry was modified - preserve the new value ONLY if it's not an alloca
+            // Allocas are let bindings that should NOT leak out of the let scope
             // Skip internal capture storage entries
-            if (entry.first.find("_capture_") == std::string::npos) {
+            if (entry.first.find("_capture_") == std::string::npos &&
+                !isa<AllocaInst>(entry.second)) {
                 entries_to_preserve[entry.first] = entry.second;
                 eshkol_debug("let: preserving modified entry %s (arena capture)", entry.first.c_str());
             }
@@ -492,6 +558,11 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     }
 
     eshkol_debug("BindingCodegen::letrec: %llu bindings", (unsigned long long)op->let_op.num_bindings);
+
+    // Save TCO context — nested letrecs must not destroy outer TCO
+    // Example: step (tail-recursive) → body contains inner letrec for loop →
+    // without save/restore, loop's letrec overwrites step's TCO context → stack overflow
+    TailCallContext saved_tco = tco_context_;
 
     // Save current symbol table
     std::unordered_map<std::string, Value*> saved_symbols = *symbol_table_;
@@ -604,8 +675,14 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         }
 
         if (!typed_ptr) {
-            eshkol_warn("letrec: failed to evaluate lambda binding for %s", var_names[i].c_str());
+            eshkol_error("letrec: failed to evaluate lambda binding for '%s'", var_names[i].c_str());
             continue;
+        }
+
+        // NORETURN SAFETY: If the lambda expression terminated the block (e.g., raise),
+        // we cannot emit any more instructions. Stop processing bindings.
+        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+            break;
         }
 
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
@@ -650,8 +727,14 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         // Evaluate value
         void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
         if (!typed_ptr) {
-            eshkol_warn("letrec: failed to evaluate binding for %s", var_names[i].c_str());
+            eshkol_error("letrec: failed to evaluate binding for '%s'", var_names[i].c_str());
             continue;
+        }
+
+        // NORETURN SAFETY: If the value expression terminated the block (e.g., raise),
+        // we cannot emit any more instructions. Stop processing bindings.
+        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+            break;
         }
 
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
@@ -679,9 +762,11 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     // Preserve _func entries and GlobalVariable captures
     std::unordered_map<std::string, Value*> entries_to_preserve;
     for (auto& entry : *symbol_table_) {
-        // Preserve function references (_func entries)
+        // Preserve function references (_func entries) - ONLY scoped keys
+        // NESTED DEFINE COLLISION FIX: Unscoped keys like "loop_func" collide between functions
         if (entry.first.length() > 5 &&
-            entry.first.substr(entry.first.length() - 5) == "_func") {
+            entry.first.substr(entry.first.length() - 5) == "_func" &&
+            entry.first.find('.') != std::string::npos) {
             entries_to_preserve[entry.first] = entry.second;
             if (global_symbol_table_) {
                 (*global_symbol_table_)[entry.first] = entry.second;
@@ -698,11 +783,14 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         // and updates symbol_table[var_name]. This arena storage is the result of a CallInst
         // (not GlobalVariable), so we need to preserve it by detecting modification.
         // Check if the entry existed in saved_symbols with a DIFFERENT value.
+        // CRITICAL: Do NOT preserve AllocaInst entries - those are let bindings that
+        // should be discarded when the let scope ends.
         auto saved_it = saved_symbols.find(entry.first);
         if (saved_it != saved_symbols.end() && saved_it->second != entry.second) {
-            // Entry was modified - preserve the new value
+            // Entry was modified - preserve the new value ONLY if it's not an alloca
             // Skip internal capture storage entries
-            if (entry.first.find("_capture_") == std::string::npos) {
+            if (entry.first.find("_capture_") == std::string::npos &&
+                !isa<AllocaInst>(entry.second)) {
                 entries_to_preserve[entry.first] = entry.second;
                 eshkol_debug("letrec: preserving modified entry %s (arena capture)", entry.first.c_str());
             }
@@ -718,6 +806,9 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     }
 
     eshkol_debug("letrec: completed, restored scope");
+
+    // Restore outer TCO context (may have been corrupted by inner letrec)
+    tco_context_ = saved_tco;
 
     return body_result ? body_result : ConstantInt::get(ctx_.int64Type(), 0);
 }
@@ -761,13 +852,13 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
         // Evaluate value (can see previous bindings)
         void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
         if (!typed_ptr) {
-            eshkol_warn("let*: failed to evaluate binding for %s", var_name.c_str());
+            eshkol_error("let*: failed to evaluate binding for '%s'", var_name.c_str());
             continue;
         }
 
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
         if (!tagged_val) {
-            eshkol_warn("let*: failed to convert binding for %s", var_name.c_str());
+            eshkol_error("let*: failed to convert binding for '%s'", var_name.c_str());
             continue;
         }
 
@@ -800,9 +891,11 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
     // Preserve _func entries and GlobalVariable captures
     std::unordered_map<std::string, Value*> entries_to_preserve;
     for (auto& entry : *symbol_table_) {
-        // Preserve function references (_func entries)
+        // Preserve function references (_func entries) - ONLY scoped keys
+        // NESTED DEFINE COLLISION FIX: Unscoped keys like "loop_func" collide between functions
         if (entry.first.length() > 5 &&
-            entry.first.substr(entry.first.length() - 5) == "_func") {
+            entry.first.substr(entry.first.length() - 5) == "_func" &&
+            entry.first.find('.') != std::string::npos) {
             entries_to_preserve[entry.first] = entry.second;
             if (global_symbol_table_) {
                 (*global_symbol_table_)[entry.first] = entry.second;
@@ -825,6 +918,181 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
     }
 
     eshkol_debug("let*: completed, restored scope");
+
+    return body_result ? body_result : ConstantInt::get(ctx_.int64Type(), 0);
+}
+
+Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
+    // letrec* (R7RS): Sequential recursive bindings
+    // - Like letrec: all bindings are mutually visible (can call each other)
+    // - Like let*: bindings are evaluated left-to-right
+    // - Each binding's value is stored immediately, so subsequent bindings can use it
+
+    if (!op || !op->let_op.body) {
+        eshkol_error("letrec*: missing body");
+        return nullptr;
+    }
+
+    if (!symbol_table_) {
+        eshkol_error("letrec*: symbol table not set");
+        return nullptr;
+    }
+
+    eshkol_debug("BindingCodegen::letrec*: %llu bindings", (unsigned long long)op->let_op.num_bindings);
+
+    // Save TCO context — nested letrecs must not destroy outer TCO
+    TailCallContext saved_tco = tco_context_;
+
+    // Save current symbol table
+    std::unordered_map<std::string, Value*> saved_symbols = *symbol_table_;
+
+    // Collect all variable names for exclusion set
+    std::vector<std::string> var_names;
+    for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+        const eshkol_ast_t* binding = &op->let_op.bindings[i];
+        if (binding->type == ESHKOL_CONS && binding->cons_cell.car &&
+            binding->cons_cell.car->type == ESHKOL_VAR && binding->cons_cell.car->variable.id) {
+            var_names.push_back(binding->cons_cell.car->variable.id);
+        }
+    }
+
+    // Add all names to exclusion set (for recursive reference handling)
+    if (letrec_excluded_capture_names_) {
+        for (const std::string& name : var_names) {
+            letrec_excluded_capture_names_->insert(name);
+            eshkol_debug("letrec*: added %s to exclusion set", name.c_str());
+        }
+    }
+
+    // Create GlobalVariables for all bindings upfront (enables mutual recursion)
+    std::vector<GlobalVariable*> globals;
+    static int letrec_star_global_counter = 0;
+
+    for (size_t i = 0; i < var_names.size(); i++) {
+        const std::string& var_name = var_names[i];
+
+        std::string global_name = "letrecstar_" + var_name + "_" + std::to_string(letrec_star_global_counter++);
+        GlobalVariable* global = new GlobalVariable(
+            ctx_.module(),
+            ctx_.taggedValueType(),
+            false,
+            GlobalValue::InternalLinkage,
+            Constant::getNullValue(ctx_.taggedValueType()),
+            global_name
+        );
+
+        globals.push_back(global);
+        (*symbol_table_)[var_name] = global;
+        eshkol_debug("letrec*: created global %s for %s", global_name.c_str(), var_name.c_str());
+    }
+
+    // Evaluate and store bindings left-to-right (key difference from letrec)
+    for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+        const eshkol_ast_t* binding = &op->let_op.bindings[i];
+
+        if (binding->type != ESHKOL_CONS || !binding->cons_cell.car || !binding->cons_cell.cdr) {
+            eshkol_error("letrec*: invalid binding structure");
+            continue;
+        }
+
+        const eshkol_ast_t* var_ast = binding->cons_cell.car;
+        std::string var_name = var_ast->variable.id;
+        const eshkol_ast_t* val_ast = binding->cons_cell.cdr;
+
+        bool is_lambda = val_ast && val_ast->type == ESHKOL_OP &&
+                         val_ast->operation.op == ESHKOL_LAMBDA_OP;
+
+        // Check for TCO on lambda bindings
+        bool use_tco = false;
+        if (is_lambda && is_tail_recursive_callback_) {
+            use_tco = is_tail_recursive_callback_(&val_ast->operation, var_name.c_str(), callback_context_);
+            if (use_tco) {
+                eshkol_debug("TCO: Enabling tail call optimization for letrec* lambda %s", var_name.c_str());
+                tco_context_.func_name = var_name;
+                tco_context_.enabled = true;
+                tco_context_.param_allocas.clear();
+                tco_context_.param_names.clear();
+            }
+        }
+
+        // Evaluate value (can see ALL bindings, and VALUES of previous bindings)
+        void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
+
+        // Clear TCO context after lambda generation (only if we set it)
+        if (use_tco) {
+            tco_context_.enabled = false;
+            tco_context_.func_name = "";
+        }
+
+        if (!typed_ptr) {
+            eshkol_error("letrec*: failed to evaluate binding for '%s'", var_name.c_str());
+            continue;
+        }
+
+        Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
+
+        // Store immediately (key for letrec* left-to-right semantics)
+        ctx_.builder().CreateStore(tagged_val, globals[i]);
+        eshkol_debug("letrec*: stored %s", var_name.c_str());
+
+        // Register lambda binding immediately so subsequent bindings can use it
+        if (is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
+            registerLambdaBinding(var_name, *last_generated_lambda_name_);
+            eshkol_debug("letrec*: registered lambda binding %s -> %s", var_name.c_str(), last_generated_lambda_name_->c_str());
+        }
+    }
+
+    // Clear exclusion set
+    if (letrec_excluded_capture_names_) {
+        for (const std::string& name : var_names) {
+            letrec_excluded_capture_names_->erase(name);
+        }
+    }
+
+    // Evaluate body
+    Value* body_result = nullptr;
+    if (codegen_ast_callback_) {
+        body_result = static_cast<Value*>(codegen_ast_callback_(op->let_op.body, callback_context_));
+    }
+
+    // Preserve _func entries and GlobalVariable captures
+    std::unordered_map<std::string, Value*> entries_to_preserve;
+    for (auto& entry : *symbol_table_) {
+        if (entry.first.length() > 5 &&
+            entry.first.substr(entry.first.length() - 5) == "_func") {
+            // NESTED DEFINE COLLISION FIX: Only preserve SCOPED _func keys.
+            // Unscoped keys like "loop_func" would collide with other functions' same-named
+            // nested helpers. Scoped keys have a "." (e.g., "outer_func.loop_func").
+            if (entry.first.find('.') != std::string::npos) {
+                entries_to_preserve[entry.first] = entry.second;
+                if (global_symbol_table_) {
+                    (*global_symbol_table_)[entry.first] = entry.second;
+                }
+            }
+        }
+        // CRITICAL: Do NOT preserve AllocaInst entries - those are let bindings
+        // that should be discarded when the let scope ends.
+        auto saved_it = saved_symbols.find(entry.first);
+        if (saved_it != saved_symbols.end() && saved_it->second != entry.second) {
+            if (entry.first.find("_capture_") == std::string::npos &&
+                !isa<AllocaInst>(entry.second)) {
+                entries_to_preserve[entry.first] = entry.second;
+            }
+        }
+    }
+
+    // Restore symbol table
+    *symbol_table_ = saved_symbols;
+
+    // Re-add preserved entries
+    for (auto& entry : entries_to_preserve) {
+        (*symbol_table_)[entry.first] = entry.second;
+    }
+
+    eshkol_debug("letrec*: completed, restored scope");
+
+    // Restore outer TCO context (may have been corrupted by inner letrec)
+    tco_context_ = saved_tco;
 
     return body_result ? body_result : ConstantInt::get(ctx_.int64Type(), 0);
 }

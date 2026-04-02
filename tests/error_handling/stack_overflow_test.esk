@@ -1,0 +1,63 @@
+(require stdlib)
+
+(display "TEST: Stack depth and overflow") (newline)
+
+; Test 1: Normal recursion at moderate depth works
+(define (count-down n)
+  (if (= n 0)
+      0
+      (count-down (- n 1))))
+
+(display (if (= (count-down 1000) 0) "PASS" "FAIL"))
+(display ": Normal recursion at moderate depth (count-down 1000)")
+(newline)
+
+; Test 2: Tail-recursive function at large depth works (TCO)
+(define (tc-count n acc)
+  (if (= n 0)
+      acc
+      (tc-count (- n 1) (+ acc 1))))
+
+(display (if (= (tc-count 100000 0) 100000) "PASS" "FAIL"))
+(display ": Tail-recursive function at large depth (TCO, count to 100000)")
+(newline)
+
+; Test 3: Non-tail recursion that builds a list at moderate depth
+(define (build-list n)
+  (if (= n 0)
+      '()
+      (cons n (build-list (- n 1)))))
+
+(display (if (= (length (build-list 100)) 100) "PASS" "FAIL"))
+(display ": Non-tail recursion building list (build-list 100)")
+(newline)
+
+; Test 4: Deep nested let expressions work
+(let ((a 1))
+  (let ((b (+ a 1)))
+    (let ((c (+ b 1)))
+      (let ((d (+ c 1)))
+        (let ((e (+ d 1)))
+          (let ((f (+ e 1)))
+            (let ((g (+ f 1)))
+              (let ((h (+ g 1)))
+                (let ((i (+ h 1)))
+                  (let ((j (+ i 1)))
+                    (display (if (= j 10) "PASS" "FAIL"))
+                    (display ": Deep nested let expressions (10 levels)")
+                    (newline)))))))))))
+
+; Test 5: Mutual recursion at moderate depth
+(define (f n)
+  (if (= n 0)
+      #t
+      (g (- n 1))))
+
+(define (g n)
+  (if (= n 0)
+      #t
+      (f (- n 1))))
+
+(display (if (equal? (f 1000) #t) "PASS" "FAIL"))
+(display ": Mutual recursion at moderate depth (f/g 1000 steps)")
+(newline)

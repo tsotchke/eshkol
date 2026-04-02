@@ -1,0 +1,75 @@
+;; XLA Integration Test: Numerical Accuracy
+;; Tests precision of matrix multiplication results
+
+(display "=== XLA Numerical Accuracy Tests ===") (newline)
+
+;; Test 1: Known exact result - Identity matrix
+(display "Test 1: Exact integer result") (newline)
+(define I1 (eye 2))
+(define B1 (reshape (vector 5.0 6.0 7.0 8.0) 2 2))
+(define C1 (matmul I1 B1))
+(display "I * B = B check: ")
+;; Identity * B should equal B exactly
+(define b00 (tensor-get B1 0 0))
+(define c00 (tensor-get C1 0 0))
+(if (= b00 c00)
+    (display "PASS (I*B = B)")
+    (display "FAIL"))
+(newline)
+(newline)
+
+;; Test 2: Floating point precision
+(display "Test 2: Floating point precision") (newline)
+(define tiny 0.000001)
+(define A2 (reshape (vector tiny tiny tiny tiny) 2 2))
+(define B2 (reshape (vector 1000000.0 0.0 0.0 1000000.0) 2 2))
+(define C2 (matmul A2 B2))
+(display "Small * Large matmul: ")
+(define expected 1.0)  ;; tiny * 1000000 = 1
+(define actual (tensor-get C2 0 0))
+(define error (abs (- actual expected)))
+(if (< error 0.0001)
+    (begin (display "PASS (error: ") (display error) (display ")"))
+    (begin (display "FAIL (error: ") (display error) (display ")")))
+(newline)
+(newline)
+
+;; Test 3: Accumulation test
+(display "Test 3: Accumulation precision") (newline)
+;; Sum of 1+2+3+...+N = N*(N+1)/2
+;; Row of ones times column of 1,2,3,...,N
+(define N 100)
+(define row-ones (reshape (ones N) 1 N))
+(define col-seq (reshape (arange N) N 1))
+(define sum-result (matmul row-ones col-seq))
+;; arange gives 0,1,2,...,N-1, sum = (N-1)*N/2
+(define expected-sum (/ (* (- N 1) N) 2.0))
+(define actual-sum (tensor-get sum-result 0 0))
+(display "Sum of 0..99 = ")
+(display actual-sum)
+(display " (expected: ")
+(display expected-sum)
+(display ") ")
+(if (< (abs (- actual-sum expected-sum)) 0.001)
+    (display "PASS")
+    (display "FAIL"))
+(newline)
+(newline)
+
+;; Test 4: Commutative check (AB != BA in general)
+(display "Test 4: Non-commutativity check") (newline)
+(define Ma (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
+(define Mb (reshape (vector 0.0 1.0 1.0 0.0) 2 2))
+(define AB (matmul Ma Mb))
+(define BA (matmul Mb Ma))
+(display "A*B[0,0] = ") (display (tensor-get AB 0 0)) (newline)
+(display "B*A[0,0] = ") (display (tensor-get BA 0 0)) (newline)
+(define ab00 (tensor-get AB 0 0))
+(define ba00 (tensor-get BA 0 0))
+(if (not (= ab00 ba00))
+    (display "PASS (AB != BA as expected)")
+    (display "Note: AB = BA for this case"))
+(newline)
+(newline)
+
+(display "=== Numerical Accuracy Tests Complete ===") (newline)

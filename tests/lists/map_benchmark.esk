@@ -31,8 +31,8 @@
       (cons (apply proc (all-cars lists))
             (apply vmap (cons proc (all-cdrs lists))))))
 
-;; Test function
-(define (double x) (* x 2))
+;; Test function — uses increment to avoid integer overflow across iterations
+(define (inc x) (+ x 1))
 (define (add2 a b) (+ a b))
 
 ;; Build test list
@@ -51,12 +51,12 @@
 (define (repeat-map-builtin n lst)
   (if (<= n 0)
       lst
-      (repeat-map-builtin (- n 1) (map double lst))))
+      (repeat-map-builtin (- n 1) (map inc lst))))
 
 (define (repeat-vmap n lst)
   (if (<= n 0)
       lst
-      (repeat-vmap (- n 1) (vmap double lst))))
+      (repeat-vmap (- n 1) (vmap inc lst))))
 
 (define (repeat-map2-builtin n lst1 lst2)
   (if (<= n 0)
@@ -129,12 +129,12 @@
 
 (define large-list (build-list 500))
 
-(display "Builtin map double on 500 elements: ")
-(display (sum-list (map double large-list)))
+(display "Builtin map inc on 500 elements: ")
+(display (sum-list (map inc large-list)))
 (newline)
 
-(display "Vmap double on 500 elements:        ")
-(display (sum-list (vmap double large-list)))
+(display "Vmap inc on 500 elements:        ")
+(display (sum-list (vmap inc large-list)))
 (newline)
 
 (newline)

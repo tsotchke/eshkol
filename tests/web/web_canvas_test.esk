@@ -1,0 +1,41 @@
+;;; web_canvas_test.esk
+;;; Tests canvas 2D API external declarations
+
+(extern i32 web-get-element-by-id ptr :real web_get_element_by_id)
+(extern i32 web-get-context-2d i32 :real web_get_context_2d)
+(extern void web-canvas-fill-style i32 ptr :real web_canvas_fill_style)
+(extern void web-canvas-fill-rect i32 double double double double :real web_canvas_fill_rect)
+(extern void web-canvas-stroke-rect i32 double double double double :real web_canvas_stroke_rect)
+(extern void web-canvas-begin-path i32 :real web_canvas_begin_path)
+(extern void web-canvas-move-to i32 double double :real web_canvas_move_to)
+(extern void web-canvas-line-to i32 double double :real web_canvas_line_to)
+(extern void web-canvas-arc i32 double double double double double :real web_canvas_arc)
+(extern void web-canvas-fill i32 :real web_canvas_fill)
+(extern void web-canvas-stroke i32 :real web_canvas_stroke)
+
+;; Draw a red rectangle
+(define (draw-rect ctx x y w h color)
+  (web-canvas-fill-style ctx color)
+  (web-canvas-fill-rect ctx x y w h))
+
+;; Draw a circle
+(define (draw-circle ctx x y radius color)
+  (web-canvas-fill-style ctx color)
+  (web-canvas-begin-path ctx)
+  (web-canvas-arc ctx x y radius 0.0 6.28318)
+  (web-canvas-fill ctx))
+
+;; Draw a line
+(define (draw-line ctx x1 y1 x2 y2)
+  (web-canvas-begin-path ctx)
+  (web-canvas-move-to ctx x1 y1)
+  (web-canvas-line-to ctx x2 y2)
+  (web-canvas-stroke ctx))
+
+;; Main drawing function
+(define (main)
+  (let ((canvas (web-get-element-by-id "canvas"))
+        (ctx (web-get-context-2d canvas)))
+    (draw-rect ctx 10.0 10.0 100.0 50.0 "#ff0000")
+    (draw-circle ctx 200.0 100.0 40.0 "#00ff00")
+    0))

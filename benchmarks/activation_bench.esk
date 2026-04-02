@@ -1,0 +1,76 @@
+;;; Activation Functions Benchmark
+;;; Tests elementwise activation performance
+
+(define (time-ms thunk iterations)
+  "Execute thunk multiple times and return average time in ms"
+  (let ((start (current-time-ms)))
+    (let loop ((i 0))
+      (when (< i iterations)
+        (thunk)
+        (loop (+ i 1))))
+    (/ (- (current-time-ms) start) iterations)))
+
+(define (benchmark-activation name func size iterations)
+  "Benchmark an activation function"
+  (let* ((input (random-tensor (list size)))
+         (time (time-ms (lambda () (func input)) iterations))
+         (throughput (/ size (* time 1e3))))  ; elements per second
+    (display "  ") (display name)
+    (display " (n=") (display size) (display "): ")
+    (display (round time)) (display " ms")
+    (display " (") (display (round (/ throughput 1e6))) (display " M elem/s)")
+    (newline)
+    throughput))
+
+(define (run-benchmarks)
+  (display "=== Activation Function Benchmarks ===")
+  (newline)
+  (newline)
+
+  ;; Small tensors
+  (display "Small tensors (n=1000):")
+  (newline)
+  (benchmark-activation "relu" relu 1000 1000)
+  (benchmark-activation "sigmoid" sigmoid 1000 1000)
+  (benchmark-activation "tanh" tanh 1000 1000)
+  (benchmark-activation "gelu" gelu 1000 500)
+  (benchmark-activation "silu" silu 1000 500)
+  (benchmark-activation "leaky-relu" (lambda (x) (leaky-relu x 0.01)) 1000 1000)
+  (newline)
+
+  ;; Medium tensors
+  (display "Medium tensors (n=100000):")
+  (newline)
+  (benchmark-activation "relu" relu 100000 100)
+  (benchmark-activation "sigmoid" sigmoid 100000 100)
+  (benchmark-activation "tanh" tanh 100000 100)
+  (benchmark-activation "gelu" gelu 100000 50)
+  (benchmark-activation "silu" silu 100000 50)
+  (benchmark-activation "softmax" softmax 100000 20)
+  (newline)
+
+  ;; Large tensors (XLA threshold)
+  (display "Large tensors (n=1000000):")
+  (newline)
+  (benchmark-activation "relu" relu 1000000 10)
+  (benchmark-activation "sigmoid" sigmoid 1000000 10)
+  (benchmark-activation "tanh" tanh 1000000 10)
+  (benchmark-activation "gelu" gelu 1000000 5)
+  (newline)
+
+  ;; Comparison: scalar ops
+  (display "Scalar math ops (n=100000):")
+  (newline)
+  (let* ((x (random-tensor (list 100000)))
+         (y (random-tensor (list 100000))))
+    (benchmark-activation "exp" exp 100000 100)
+    (benchmark-activation "log" log 100000 100)
+    (benchmark-activation "sin" sin 100000 100)
+    (benchmark-activation "cos" cos 100000 100)
+    (benchmark-activation "sqrt" sqrt 100000 100))
+  (newline)
+
+  (display "=== Benchmark Complete ===")
+  (newline))
+
+(run-benchmarks)

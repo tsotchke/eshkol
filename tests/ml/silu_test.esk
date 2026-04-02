@@ -1,0 +1,17 @@
+;;; SiLU Activation Test
+
+(define (run-tests)
+  (display "=== SiLU Activation Test ===")
+  (newline)
+  (let ((input (tensor 5 -2.0 -1.0 0.0 1.0 2.0)))
+    (display "input: ")
+    (display input)
+    (newline)
+    (let ((result (silu input)))
+      (display "silu:  ")
+      (display result)
+      (newline)))
+  (display "=== SiLU Test Complete ===")
+  (newline))
+
+(run-tests)

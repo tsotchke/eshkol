@@ -57,6 +57,20 @@ echo "Testing all .esk files in examples/ directory..."
 echo "Log files will be saved to: $LOG_DIR"
 echo ""
 
+# Check if examples directory exists and has .esk files
+if [ ! -d "examples" ] || [ -z "$(ls -A examples/*.esk 2>/dev/null)" ]; then
+    echo "No examples found in examples/ directory. Skipping."
+    echo ""
+    echo "========================================="
+    echo "  Test Results Summary"
+    echo "========================================="
+    echo "Total Examples:     0"
+    echo "Pass Rate: N/A (no examples to test)"
+    echo ""
+    rm -f a.out a.out.tmp.o
+    exit 0
+fi
+
 # Count total examples
 TOTAL=$(ls -1 examples/*.esk 2>/dev/null | wc -l | tr -d ' ')
 CURRENT=0
@@ -65,6 +79,11 @@ CURRENT=0
 for test_file in examples/*.esk; do
     ((CURRENT++))
     test_name=$(basename "$test_file")
+
+    # Skip proprietary/unreleased examples
+    case "$test_name" in
+        selene_*|qllm_*|agent.esk|consciousness_*) printf "SKIP (proprietary)\n"; continue ;;
+    esac
     printf "[%3d/%3d] %-50s " "$CURRENT" "$TOTAL" "$test_name"
 
     # Clean up stale temp files before each test
@@ -87,7 +106,7 @@ for test_file in examples/*.esk; do
             else
                 echo -e "${GREEN}✅ PASS${NC}"
                 WORKING_EXAMPLES+=("$test_name")
-                ((PASS++))
+                ((PASS++)) || true
             fi
         else
             exit_code=$?
@@ -103,7 +122,7 @@ for test_file in examples/*.esk; do
     else
         echo -e "${RED}❌ COMPILE FAIL${NC}"
         COMPILE_FAILURES+=("$test_name")
-        ((COMPILE_FAIL++))
+        ((COMPILE_FAIL++)) || true
     fi
 done
 

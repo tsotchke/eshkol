@@ -1,0 +1,223 @@
+;; Parser Test: Special Forms
+;; Tests parsing of all Scheme special forms
+
+(require stdlib)
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; Test: define forms
+;; ============================================================================
+
+(display "=== Testing define forms ===\n")
+
+;; Simple variable definition
+(define x 42)
+(test-case "define simple variable" 42 x)
+
+;; Definition with expression
+(define y (+ 1 2))
+(test-case "define with expression" 3 y)
+
+;; Function definition (shorthand)
+(define (square n) (* n n))
+(test-case "define function (shorthand)" 25 (square 5))
+
+;; Function with multiple params
+(define (add3 a b c) (+ a (+ b c)))
+(test-case "define multi-param function" 6 (add3 1 2 3))
+
+;; ============================================================================
+;; Test: lambda forms
+;; ============================================================================
+
+(display "=== Testing lambda forms ===\n")
+
+;; Simple lambda
+(define f1 (lambda (x) (* x 2)))
+(test-case "lambda single param" 10 (f1 5))
+
+;; Lambda with multiple params
+(define f2 (lambda (a b) (+ a b)))
+(test-case "lambda multi-param" 7 (f2 3 4))
+
+;; Lambda with no params
+(define f3 (lambda () 42))
+(test-case "lambda no params" 42 (f3))
+
+;; Nested lambda
+(define f4 (lambda (x) (lambda (y) (+ x y))))
+(test-case "nested lambda" 8 ((f4 3) 5))
+
+;; Variadic lambda (rest parameter)
+(define f5 (lambda args (length args)))
+(test-case "variadic lambda" 3 (f5 1 2 3))
+
+;; ============================================================================
+;; Test: if forms
+;; ============================================================================
+
+(display "=== Testing if forms ===\n")
+
+;; if true branch
+(test-case "if true branch" 1 (if #t 1 2))
+
+;; if false branch
+(test-case "if false branch" 2 (if #f 1 2))
+
+;; if with expressions
+(test-case "if with expressions" 10 (if (> 5 3) (* 2 5) (* 3 5)))
+
+;; Nested if
+(test-case "nested if" 3 (if #f 1 (if #f 2 3)))
+
+;; ============================================================================
+;; Test: let forms
+;; ============================================================================
+
+(display "=== Testing let forms ===\n")
+
+;; Simple let
+(test-case "simple let" 5 (let ((a 2) (b 3)) (+ a b)))
+
+;; Nested let
+(test-case "nested let" 9 (let ((x 3)) (let ((y 6)) (+ x y))))
+
+;; let with shadowing
+(define z 10)
+(test-case "let with shadowing" 20 (let ((z 20)) z))
+(test-case "outer scope after let" 10 z)
+
+;; ============================================================================
+;; Test: let* forms
+;; ============================================================================
+
+(display "=== Testing let* forms ===\n")
+
+;; let* sequential binding
+(test-case "let* sequential" 15 (let* ((a 5) (b (+ a 10))) b))
+
+;; let* with multiple dependencies
+(test-case "let* multiple deps" 30 (let* ((x 2) (y (* x 3)) (z (* y 5))) z))
+
+;; ============================================================================
+;; Test: letrec forms
+;; ============================================================================
+
+(display "=== Testing letrec forms ===\n")
+
+;; letrec for mutual recursion
+(define letrec-result
+  (letrec ((even? (lambda (n) (if (= n 0) #t (odd? (- n 1)))))
+           (odd? (lambda (n) (if (= n 0) #f (even? (- n 1))))))
+    (even? 10)))
+(test-case "letrec mutual recursion" #t letrec-result)
+
+;; ============================================================================
+;; Test: begin forms
+;; ============================================================================
+
+(display "=== Testing begin forms ===\n")
+
+;; begin returns last value
+(test-case "begin returns last" 3 (begin 1 2 3))
+
+;; begin with side effects
+(define begin-test-var 0)
+(begin
+  (set! begin-test-var 1)
+  (set! begin-test-var (+ begin-test-var 1)))
+(test-case "begin with side effects" 2 begin-test-var)
+
+;; ============================================================================
+;; Test: cond forms
+;; ============================================================================
+
+(display "=== Testing cond forms ===\n")
+
+(define (cond-test n)
+  (cond
+    ((< n 0) -1)
+    ((= n 0) 0)
+    (else 1)))
+
+(test-case "cond negative" -1 (cond-test -5))
+(test-case "cond zero" 0 (cond-test 0))
+(test-case "cond positive" 1 (cond-test 5))
+
+;; ============================================================================
+;; Test: case forms
+;; ============================================================================
+
+(display "=== Testing case forms ===\n")
+
+(define (case-test x)
+  (case x
+    ((1 2 3) 10)
+    ((4 5 6) 20)
+    (else 30)))
+
+(test-case "case small" 10 (case-test 2))
+(test-case "case medium" 20 (case-test 5))
+(test-case "case large" 30 (case-test 100))
+
+;; ============================================================================
+;; Test: and/or forms
+;; ============================================================================
+
+(display "=== Testing and/or forms ===\n")
+
+(test-case "and all true" #t (and #t #t #t))
+(test-case "and with false" #f (and #t #f #t))
+(test-case "and short-circuit" 3 (and 1 2 3))
+
+(test-case "or all false" #f (or #f #f #f))
+(test-case "or with true" #t (or #f #t #f))
+(test-case "or short-circuit" 1 (or 1 2 3))
+
+;; ============================================================================
+;; Test: quote forms
+;; ============================================================================
+
+(display "=== Testing quote forms ===\n")
+
+;; Quote symbol equality tested via length of symbol name would require string conversion
+;; Instead, test quoted list operations which work with numeric comparison
+(test-case "quoted list length" 3 (length '(1 2 3)))
+(test-case "quoted list car" 1 (car '(1 2 3)))
+(test-case "quoted list cadr" 2 (cadr '(1 2 3)))
+
+;; ============================================================================
+;; Test: set! forms
+;; ============================================================================
+
+(display "=== Testing set! forms ===\n")
+
+(define set-test-var 0)
+(set! set-test-var 42)
+(test-case "set! variable" 42 set-test-var)
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))

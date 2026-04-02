@@ -1,0 +1,185 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Eshkol",
+  "scopeName": "source.eshkol",
+  "fileTypes": ["esk"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#character" },
+    { "include": "#boolean" },
+    { "include": "#number" },
+    { "include": "#vector-literal" },
+    { "include": "#quoted" },
+    { "include": "#definition" },
+    { "include": "#special-form" },
+    { "include": "#memory-form" },
+    { "include": "#autodiff-form" },
+    { "include": "#parallel-form" },
+    { "include": "#tensor-form" },
+    { "include": "#builtin-function" },
+    { "include": "#function-call" },
+    { "include": "#identifier" }
+  ],
+  "repository": {
+    "comment": {
+      "patterns": [
+        {
+          "name": "comment.line.semicolon.eshkol",
+          "match": ";.*$"
+        },
+        {
+          "name": "comment.block.eshkol",
+          "begin": "#\\|",
+          "end": "\\|#"
+        }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.eshkol",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.eshkol",
+          "match": "\\\\(?:[\"\\\\nrt0abfv]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4})"
+        }
+      ]
+    },
+    "character": {
+      "name": "constant.character.eshkol",
+      "match": "#\\\\(?:space|newline|tab|return|alarm|backspace|delete|escape|null|[^ \\t\\n])"
+    },
+    "boolean": {
+      "name": "constant.language.boolean.eshkol",
+      "match": "#[tf]\\b"
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.complex.eshkol",
+          "match": "(?<![a-zA-Z_\\-!?*+/<>=.])[+-]?[0-9]+(?:\\.[0-9]+)?[+-][0-9]+(?:\\.[0-9]+)?i\\b"
+        },
+        {
+          "name": "constant.numeric.float.eshkol",
+          "match": "(?<![a-zA-Z_\\-!?*+/<>=.])[+-]?[0-9]+\\.[0-9]+(?:[eE][+-]?[0-9]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.hex.eshkol",
+          "match": "#x[0-9a-fA-F]+"
+        },
+        {
+          "name": "constant.numeric.binary.eshkol",
+          "match": "#b[01]+"
+        },
+        {
+          "name": "constant.numeric.octal.eshkol",
+          "match": "#o[0-7]+"
+        },
+        {
+          "name": "constant.numeric.integer.eshkol",
+          "match": "(?<![a-zA-Z_\\-!?*+/<>=.])[+-]?[0-9]+(?:[eE][+-]?[0-9]+)?\\b"
+        }
+      ]
+    },
+    "vector-literal": {
+      "name": "punctuation.definition.vector.eshkol",
+      "match": "#\\("
+    },
+    "quoted": {
+      "patterns": [
+        {
+          "name": "constant.other.quote.eshkol",
+          "match": "(?<![a-zA-Z0-9])'"
+        },
+        {
+          "name": "constant.other.quasiquote.eshkol",
+          "match": "`"
+        },
+        {
+          "name": "constant.other.unquote-splicing.eshkol",
+          "match": ",@"
+        },
+        {
+          "name": "constant.other.unquote.eshkol",
+          "match": ","
+        }
+      ]
+    },
+    "definition": {
+      "patterns": [
+        {
+          "match": "(\\()\\s*(define-syntax|define-record-type|define-type)\\s+([a-zA-Z_][a-zA-Z0-9_\\-!?*+/<>=.]*)",
+          "captures": {
+            "1": { "name": "punctuation.paren.open.eshkol" },
+            "2": { "name": "keyword.control.definition.eshkol" },
+            "3": { "name": "entity.name.type.eshkol" }
+          }
+        },
+        {
+          "match": "(\\()\\s*(define)\\s+(\\()\\s*([a-zA-Z_][a-zA-Z0-9_\\-!?*+/<>=.]*)",
+          "captures": {
+            "1": { "name": "punctuation.paren.open.eshkol" },
+            "2": { "name": "keyword.control.definition.eshkol" },
+            "3": { "name": "punctuation.paren.open.eshkol" },
+            "4": { "name": "entity.name.function.eshkol" }
+          }
+        },
+        {
+          "match": "(\\()\\s*(define)\\s+([a-zA-Z_][a-zA-Z0-9_\\-!?*+/<>=.]*)",
+          "captures": {
+            "1": { "name": "punctuation.paren.open.eshkol" },
+            "2": { "name": "keyword.control.definition.eshkol" },
+            "3": { "name": "variable.other.definition.eshkol" }
+          }
+        }
+      ]
+    },
+    "special-form": {
+      "match": "(?<=\\()\\s*(lambda|if|cond|else|case|let|let\\*|letrec|letrec\\*|begin|do|and|or|not|when|unless|set!|quote|quasiquote|unquote|unquote-splicing|import|export|library|require|provide|guard|raise|with-exception-handler|values|call-with-values|call-with-current-continuation|dynamic-wind|parameterize|make-parameter|define-syntax|syntax-rules|let-syntax|letrec-syntax|match|eval|apply)(?=[\\s\\)])",
+      "captures": {
+        "1": { "name": "keyword.control.eshkol" }
+      }
+    },
+    "memory-form": {
+      "match": "(?<=\\()\\s*(with-region|owned|move|borrow|shared|weak-ref)(?=[\\s\\)])",
+      "captures": {
+        "1": { "name": "keyword.other.memory.eshkol" }
+      }
+    },
+    "autodiff-form": {
+      "match": "(?<=\\()\\s*(gradient|jacobian|hessian|derivative|divergence|curl|laplacian|directional-derivative|dual|dual-value|dual-derivative)(?=[\\s\\)])",
+      "captures": {
+        "1": { "name": "keyword.other.autodiff.eshkol" }
+      }
+    },
+    "parallel-form": {
+      "match": "(?<=\\()\\s*(parallel-map|parallel-filter|parallel-fold|parallel-execute|future|force)(?=[\\s\\)])",
+      "captures": {
+        "1": { "name": "keyword.other.parallel.eshkol" }
+      }
+    },
+    "tensor-form": {
+      "match": "(?<=\\()\\s*(tensor|tensor-rank|tensor-shape|tensor-ref|tensor-dot|tensor-sum|tensor-mean|tensor-map|tensor-apply|tensor-reduce|tensor-reshape|tensor-transpose|tensor-slice)(?=[\\s\\)])",
+      "captures": {
+        "1": { "name": "support.function.tensor.eshkol" }
+      }
+    },
+    "builtin-function": {
+      "match": "(?<=\\()\\s*(cons|car|cdr|list|length|append|reverse|map|for-each|filter|fold|assoc|assv|assq|member|memv|memq|caar|cadr|cdar|cddr|make-vector|vector|vector-length|vector-ref|vector-set!|string-length|string-ref|string-append|substring|string-copy|string->list|list->string|symbol->string|string->symbol|number->string|string->number|exact->inexact|inexact->exact|display|newline|write|read|read-line|read-file|write-file|open-input-file|close-port|eof-object\\?|abs|max|min|modulo|remainder|quotient|floor|ceiling|truncate|round|sin|cos|tan|exp|log|sqrt|expt|number\\?|integer\\?|real\\?|complex\\?|exact\\?|inexact\\?|zero\\?|positive\\?|negative\\?|boolean\\?|char\\?|string\\?|symbol\\?|procedure\\?|null\\?|pair\\?|list\\?|vector\\?|tensor\\?|eq\\?|eqv\\?|equal\\?|string=\\?|string<\\?|system|sleep|exit|command-line|current-seconds|current-time-ms|current-time-ns|error|interaction-environment|scheme-report-environment|null-environment|current-environment)(?=[\\s\\)])",
+      "captures": {
+        "1": { "name": "support.function.builtin.eshkol" }
+      }
+    },
+    "function-call": {
+      "match": "(?<=\\()\\s*([a-zA-Z_][a-zA-Z0-9_\\-!?*+/<>=.]*)",
+      "captures": {
+        "1": { "name": "entity.name.function.call.eshkol" }
+      }
+    },
+    "identifier": {
+      "name": "variable.other.eshkol",
+      "match": "[a-zA-Z_][a-zA-Z0-9_\\-!?*+/<>=.]*"
+    }
+  }
+}

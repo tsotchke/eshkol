@@ -298,6 +298,11 @@ Value* MapCodegen::mapWithClosure(Value* closure_val, Value* list) {
         return tagged_.packNull();
     }
 
+    // NORETURN SAFETY: If the closure call somehow terminated the block, bail out
+    if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+        return tagged_.packNull();
+    }
+
     // Allocate new cons cell
     Value* null_tagged = tagged_.packNull();
     Value* new_cons_int = nullptr;

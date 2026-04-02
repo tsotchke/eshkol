@@ -1,0 +1,102 @@
+;;; Shape Operations Test Suite
+;;; Tests for squeeze, unsqueeze, flatten, concatenate, stack, split, slice
+
+(define (assert-equal name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (display "PASS: ")
+        (display name)
+        (newline))
+      (begin
+        (display "FAIL: ")
+        (display name)
+        (display " - expected ")
+        (display expected)
+        (display " got ")
+        (display actual)
+        (newline))))
+
+(define (assert-shape name expected-shape tensor)
+  (let ((actual-shape (tensor-shape tensor)))
+    (assert-equal name expected-shape actual-shape)))
+
+(define (run-tests)
+  (display "=== Shape Operations Tests ===")
+  (newline)
+
+  ;; Test flatten
+  (display "-- Testing flatten --")
+  (newline)
+  (let* ((m (reshape (arange 1 7) 2 3))
+         (f (flatten m)))
+    (assert-shape "flatten 2x3 -> 6" '(6) f)
+    (display "flatten result: ")
+    (display f)
+    (newline))
+
+  ;; Test squeeze
+  (display "-- Testing squeeze --")
+  (newline)
+  (let* ((t (reshape (arange 1 4) 1 3 1))
+         (s (squeeze t)))
+    (assert-shape "squeeze (1,3,1) -> (3)" '(3) s)
+    (display "squeeze result shape: ")
+    (display (tensor-shape s))
+    (newline))
+
+  ;; Test unsqueeze
+  (display "-- Testing unsqueeze --")
+  (newline)
+  (let* ((v (arange 1 4))
+         (u (unsqueeze v 0)))
+    (assert-shape "unsqueeze at 0: (3) -> (1,3)" '(1 3) u))
+
+  (let* ((v (arange 1 4))
+         (u (unsqueeze v 1)))
+    (assert-shape "unsqueeze at 1: (3) -> (3,1)" '(3 1) u))
+
+  ;; Test concatenate
+  (display "-- Testing concatenate --")
+  (newline)
+  (let* ((a (arange 1 4))
+         (b (arange 4 7))
+         (c (concatenate 0 a b)))
+    (assert-shape "concatenate axis 0" '(6) c)
+    (display "concatenate result: ")
+    (display c)
+    (newline))
+
+  ;; Test stack
+  (display "-- Testing stack --")
+  (newline)
+  (let* ((a (arange 1 4))
+         (b (arange 4 7))
+         (s (stack 0 a b)))
+    (assert-shape "stack axis 0: 2 x (3) -> (2,3)" '(2 3) s)
+    (display "stack result: ")
+    (display s)
+    (newline))
+
+  ;; Test slice
+  (display "-- Testing slice --")
+  (newline)
+  (let* ((v (arange 10))
+         (s (slice v 2 7)))
+    (assert-shape "slice [2:7]" '(5) s)
+    (display "slice result: ")
+    (display s)
+    (newline))
+
+  ;; Test split
+  (display "-- Testing split --")
+  (newline)
+  (let* ((v (arange 6))
+         (chunks (split v 3 0)))
+    (display "split into 3 chunks: ")
+    (display chunks)
+    (newline))
+
+  (display "=== Shape Operations Tests Complete ===")
+  (newline))
+
+(run-tests)

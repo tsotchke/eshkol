@@ -55,6 +55,32 @@ void eshkol_register_external_functions(const eshkol_ast_t* asts, size_t num_ast
 void eshkol_set_uses_stdlib(int uses_stdlib);
 
 /*
+ * Enable DWARF debug info generation
+ * When enabled, the compiler emits DIBuilder metadata for source-level debugging (lldb, gdb).
+ * Must be called BEFORE eshkol_generate_llvm_ir().
+ * @param source_filename Full path to the source file (used for file/directory in DWARF)
+ */
+void eshkol_enable_debug_info(const char* source_filename);
+
+/*
+ * Disable DWARF debug info generation
+ */
+void eshkol_disable_debug_info(void);
+
+/*
+ * Set LLVM optimization level (0-3)
+ * Must be called BEFORE eshkol_compile_llvm_ir_to_object().
+ * @param level 0 = no optimization, 1 = basic, 2 = full (inlining, GVN, SROA), 3 = aggressive
+ */
+void eshkol_set_optimization_level(int level);
+
+/*
+ * Get current LLVM optimization level
+ * @return Current optimization level (0-3)
+ */
+int eshkol_get_optimization_level(void);
+
+/*
  * Write LLVM IR to a file in textual format
  * @param module LLVM module reference
  * @param filename Output filename (should end with .ll)
@@ -71,6 +97,16 @@ int eshkol_dump_llvm_ir_to_file(LLVMModuleRef module, const char* filename);
 int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module, const char* filename);
 
 /*
+ * Emit LLVM IR as bitcode (.bc) for REPL JIT loading
+ * Unlike .o files, bitcode is re-compiled by LLJIT's ConcurrentIRCompiler,
+ * ensuring the same TargetMachine is used for both stdlib and REPL expressions.
+ * @param module LLVM module reference
+ * @param filename Output bitcode filename (e.g., "stdlib.bc")
+ * @return 0 on success, non-zero on error
+ */
+int eshkol_compile_llvm_ir_to_bitcode(LLVMModuleRef module, const char* filename);
+
+/*
  * Compile LLVM IR to executable
  * @param module LLVM module reference
  * @param filename Output executable filename
@@ -80,9 +116,26 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module, const char* filename)
  * @param num_linked_libs Number of libraries to link
  * @return 0 on success, non-zero on error
  */
-int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module, const char* filename, 
+int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module, const char* filename,
                                         const char* const* lib_paths, size_t num_lib_paths,
                                         const char* const* linked_libs, size_t num_linked_libs);
+
+/*
+ * Compile LLVM IR to WebAssembly binary
+ * @param module LLVM module reference
+ * @param output_buffer Pointer to receive allocated buffer (caller must free with free())
+ * @param output_size Pointer to receive buffer size in bytes
+ * @return 0 on success, non-zero on error
+ */
+int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module, uint8_t** output_buffer, size_t* output_size);
+
+/*
+ * Compile LLVM IR to WebAssembly file
+ * @param module LLVM module reference
+ * @param filename Output WASM filename (should end with .wasm)
+ * @return 0 on success, non-zero on error
+ */
+int eshkol_compile_llvm_ir_to_wasm_file(LLVMModuleRef module, const char* filename);
 
 /*
  * Clean up LLVM module
@@ -154,15 +207,35 @@ void eshkol_repl_register_lambda_name(const char* var_name, const char* lambda_n
  */
 void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value);
 
+/*
+ * REPL Mode: Register a private (non-exported) symbol from a module
+ * @param name Symbol name that is private to its defining module
+ */
+void eshkol_repl_register_private_symbol(const char* name);
+
+/*
+ * REPL Mode: Check if a symbol is private (non-exported)
+ * @param name Symbol name to check
+ * @return true if the symbol is private and should not be accessible
+ */
+bool eshkol_repl_is_private_symbol(const char* name);
+
 #else
 
 // Stub implementations when LLVM backend is disabled
 #define eshkol_generate_llvm_ir(asts, num_asts, module_name) (NULL)
 #define eshkol_generate_llvm_ir_library(asts, num_asts, module_name) (NULL)
 #define eshkol_register_external_functions(asts, num_asts) do {} while(0)
+#define eshkol_enable_debug_info(source_filename) do {} while(0)
+#define eshkol_disable_debug_info() do {} while(0)
+#define eshkol_set_optimization_level(level) do {} while(0)
+#define eshkol_get_optimization_level() (0)
 #define eshkol_dump_llvm_ir_to_file(module, filename) (-1)
 #define eshkol_compile_llvm_ir_to_object(module, filename) (-1)
+#define eshkol_compile_llvm_ir_to_bitcode(module, filename) (-1)
 #define eshkol_compile_llvm_ir_to_executable(module, filename, lib_paths, num_lib_paths, linked_libs, num_linked_libs) (-1)
+#define eshkol_compile_llvm_ir_to_wasm(module, output_buffer, output_size) (-1)
+#define eshkol_compile_llvm_ir_to_wasm_file(module, filename) (-1)
 #define eshkol_dispose_llvm_module(module) do {} while(0)
 #define eshkol_print_llvm_ir(module) do {} while(0)
 #define eshkol_repl_enable() do {} while(0)
@@ -172,6 +245,8 @@ void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value);
 #define eshkol_repl_register_variadic_function(name, fixed_params, is_variadic) do {} while(0)
 #define eshkol_repl_register_lambda_name(var_name, lambda_name) do {} while(0)
 #define eshkol_repl_register_sexpr(sexpr_name, sexpr_value) do {} while(0)
+#define eshkol_repl_register_private_symbol(name) do {} while(0)
+#define eshkol_repl_is_private_symbol(name) (false)
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED
 

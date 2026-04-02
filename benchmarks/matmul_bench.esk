@@ -1,0 +1,112 @@
+;;; Matrix Multiplication Benchmark - System Limit Stress Test
+;;; Tests matmul performance from tiny to maximum system capacity
+;;; Dispatch: scalar (<=16 elem) → cBLAS (all sizes) → GPU (only when infeasible)
+;;;
+;;; Memory: arena allocator accumulates ALL tensors (no GC).
+;;; Each test creates ~4 NxN matrices. Extreme sizes use separate processes.
+;;; See: benchmarks/matmul_extreme.sh for N>20000 (runs each in fresh process)
+
+(require stdlib)
+
+(define (format-time ns)
+  (cond
+    ((>= ns 1e12) (string-append (number->string (round (/ ns 1e9) 0.01)) " s"))
+    ((>= ns 1e9) (string-append (number->string (round (/ ns 1e6) 0.1)) " ms"))
+    ((>= ns 1e6) (string-append (number->string (round (/ ns 1e3) 0.1)) " us"))
+    (else (string-append (number->string (round ns 0.1)) " ns"))))
+
+(define (format-perf gflops)
+  (if (>= gflops 1000)
+      (string-append (number->string (round (/ gflops 1000.0) 0.001)) " TFLOPS")
+      (string-append (number->string (round gflops 0.1)) " GFLOPS")))
+
+(define (format-mem n)
+  (let ((bytes (* 3.0 n n 8)))
+    (cond
+      ((>= bytes 1e9) (string-append (number->string (round (/ bytes 1e9) 0.1)) " GB"))
+      ((>= bytes 1e6) (string-append (number->string (round (/ bytes 1e6) 0.1)) " MB"))
+      (else (string-append (number->string (round (/ bytes 1e3) 0.1)) " KB")))))
+
+(define (bench n iters)
+  (let* ((a (random-tensor (list n n)))
+         (b (random-tensor (list n n)))
+         (_ (matmul a b))
+         (actual-iters (if (< iters 3) 3 iters))
+         (time-ns (time-it (lambda () (matmul a b)) actual-iters))
+         (flops (* 2.0 n n n))
+         (gflops (/ flops (* (/ time-ns 1e9) 1e9))))
+    (display "  ")
+    (if (< n 10) (display "    ") #t)
+    (if (and (>= n 10) (< n 100)) (display "   ") #t)
+    (if (and (>= n 100) (< n 1000)) (display "  ") #t)
+    (if (and (>= n 1000) (< n 10000)) (display " ") #t)
+    (display n) (display "x") (display n)
+    (display "  ") (display (format-mem n))
+    (display "  ") (display (format-time time-ns))
+    (display "  @ ") (display (format-perf gflops))
+    (newline)
+    gflops))
+
+(define (bench1 n)
+  "Single iteration, no extra warmup — for large sizes"
+  (let* ((a (random-tensor (list n n)))
+         (b (random-tensor (list n n)))
+         (time-ns (time-it (lambda () (matmul a b)) 1))
+         (flops (* 2.0 n n n))
+         (gflops (/ flops (* (/ time-ns 1e9) 1e9))))
+    (display "  ")
+    (if (< n 10000) (display " ") #t)
+    (display n) (display "x") (display n)
+    (display "  ") (display (format-mem n))
+    (display "  ") (display (format-time time-ns))
+    (display "  @ ") (display (format-perf gflops))
+    (newline)
+    gflops))
+
+(display "=====================================================================") (newline)
+(display "  ESHKOL MATMUL BENCHMARK — SYSTEM LIMIT STRESS TEST") (newline)
+(display "  Dispatch: scalar (<=16) → cBLAS → GPU (only when infeasible)") (newline)
+(display "  System: 192 GB unified memory") (newline)
+(display "=====================================================================") (newline)
+(newline)
+
+;; Warmup
+(display "Warming up cBLAS + AMX...") (newline)
+(matmul (random-tensor (list 2048 2048)) (random-tensor (list 2048 2048)))
+(display "Ready.") (newline) (newline)
+
+;; === TIER 1: Scalar ===
+(display "--- TIER 1: SCALAR (N<=4) ---") (newline)
+(bench 2 50000) (bench 3 50000) (bench 4 50000) (newline)
+
+;; === TIER 2: Small cBLAS ===
+(display "--- TIER 2: SMALL cBLAS (N=8-64) ---") (newline)
+(bench 8 20000) (bench 16 5000) (bench 32 2000) (bench 48 800) (bench 64 400) (newline)
+
+;; === TIER 3: Medium cBLAS ===
+(display "--- TIER 3: MEDIUM cBLAS (N=96-512) ---") (newline)
+(bench 96 200) (bench 128 100) (bench 192 40) (bench 256 25) (bench 384 10) (bench 512 6) (newline)
+
+;; === TIER 4: Large cBLAS ===
+(display "--- TIER 4: LARGE cBLAS (N=768-2048) ---") (newline)
+(bench 768 4) (bench 1024 3) (bench 1536 1) (bench 2048 1) (newline)
+
+;; === TIER 5: Massive cBLAS ===
+(display "--- TIER 5: MASSIVE cBLAS (N=3072-6000) ---") (newline)
+(bench 3072 1) (bench 4096 1) (bench 5000 1) (bench 6000 1) (newline)
+
+;; === TIER 6: Giant cBLAS ===
+(display "--- TIER 6: GIANT cBLAS (N=7000-10000, 1.2-2.4 GB) ---") (newline)
+(bench1 7000) (bench1 8000) (bench1 9000) (bench1 10000) (newline)
+
+;; === TIER 7: Colossal (N=12000-20000) ===
+;; Accumulated arena: ~30-40 GB after all previous tiers
+(display "--- TIER 7: COLOSSAL (N=12000-20000, 3.4-9.6 GB per test) ---") (newline)
+(bench1 12000) (bench1 14000) (bench1 16000) (bench1 18000) (bench1 20000) (newline)
+
+;; === TIER 8: Extreme — Run from benchmarks/matmul_extreme.sh for N>20000 ===
+(display "=====================================================================") (newline)
+(display "  INLINE BENCHMARK COMPLETE") (newline)
+(display "  For N>20000: run benchmarks/matmul_extreme.sh") (newline)
+(display "  (Each extreme size runs in a fresh process to avoid arena OOM)") (newline)
+(display "=====================================================================") (newline)

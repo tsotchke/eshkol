@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eshkol REPL</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Eshkol REPL</h1>
+            <p class="subtitle">Compile and run Eshkol code in WebAssembly</p>
+        </header>
+
+        <div class="repl-container">
+            <div class="editor-section">
+                <div class="section-header">
+                    <span>Code Editor</span>
+                    <div class="button-group">
+                        <button id="compile-btn" class="btn btn-primary">Compile</button>
+                        <button id="run-btn" class="btn btn-success" disabled>Run</button>
+                        <button id="clear-btn" class="btn btn-secondary">Clear</button>
+                    </div>
+                </div>
+                <textarea id="code-editor" placeholder="Enter Eshkol code...
+; Example:
+(define (factorial n)
+  (if (<= n 1)
+      1
+      (* n (factorial (- n 1)))))
+
+(define (square x) (* x x))
+"></textarea>
+            </div>
+
+            <div class="output-section">
+                <div class="section-header">
+                    <span>Output</span>
+                    <span id="status" class="status"></span>
+                </div>
+                <div id="output" class="output"></div>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <div class="info-card">
+                <h3>Session Info</h3>
+                <div id="session-info">
+                    <p>Session: <span id="session-id">Not connected</span></p>
+                    <p>WASM Modules: <span id="module-count">0</span></p>
+                    <p>Defined Symbols: <span id="symbol-count">0</span></p>
+                </div>
+            </div>
+            <div class="info-card">
+                <h3>Server</h3>
+                <div>
+                    <label for="server-url">Server URL:</label>
+                    <input type="text" id="server-url" value="http://localhost:8080">
+                    <button id="connect-btn" class="btn btn-small">Connect</button>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Eshkol Compiler - WebAssembly Backend</p>
+        </footer>
+    </div>
+
+    <script src="eshkol-repl.js"></script>
+    <script>
+        // Initialize REPL
+        const repl = new EshkolRepl(document.getElementById('server-url').value);
+
+        // UI Elements
+        const codeEditor = document.getElementById('code-editor');
+        const output = document.getElementById('output');
+        const status = document.getElementById('status');
+        const compileBtn = document.getElementById('compile-btn');
+        const runBtn = document.getElementById('run-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        const connectBtn = document.getElementById('connect-btn');
+        const serverUrl = document.getElementById('server-url');
+        const sessionId = document.getElementById('session-id');
+        const moduleCount = document.getElementById('module-count');
+        const symbolCount = document.getElementById('symbol-count');
+
+        function log(message, type = 'info') {
+            const line = document.createElement('div');
+            line.className = `log-line log-${type}`;
+            line.textContent = message;
+            output.appendChild(line);
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function setStatus(message, type = 'info') {
+            status.textContent = message;
+            status.className = `status status-${type}`;
+        }
+
+        function updateSessionInfo() {
+            sessionId.textContent = repl.sessionId || 'Not connected';
+            moduleCount.textContent = repl.modules.length;
+            symbolCount.textContent = repl.symbols.size;
+        }
+
+        // Connect to server
+        connectBtn.addEventListener('click', async () => {
+            repl.serverUrl = serverUrl.value;
+            setStatus('Connecting...', 'pending');
+
+            const connected = await repl.checkHealth();
+            if (connected) {
+                setStatus('Connected', 'success');
+                log('Connected to server: ' + serverUrl.value, 'success');
+            } else {
+                setStatus('Connection failed', 'error');
+                log('Failed to connect to server', 'error');
+            }
+        });
+
+        // Compile code
+        compileBtn.addEventListener('click', async () => {
+            const code = codeEditor.value.trim();
+            if (!code) {
+                log('No code to compile', 'warning');
+                return;
+            }
+
+            setStatus('Compiling...', 'pending');
+            compileBtn.disabled = true;
+
+            try {
+                const result = await repl.compile(code);
+
+                if (result.success) {
+                    setStatus('Compiled', 'success');
+                    log(`Compiled successfully! WASM size: ${result.size} bytes`, 'success');
+                    runBtn.disabled = false;
+                    updateSessionInfo();
+                } else {
+                    setStatus('Compile error', 'error');
+                    log(`Compile error: ${result.error}`, 'error');
+                }
+            } catch (e) {
+                setStatus('Error', 'error');
+                log(`Request failed: ${e.message}`, 'error');
+            }
+
+            compileBtn.disabled = false;
+        });
+
+        // Run WASM
+        runBtn.addEventListener('click', async () => {
+            if (repl.modules.length === 0) {
+                log('No WASM modules to run', 'warning');
+                return;
+            }
+
+            setStatus('Running...', 'pending');
+
+            try {
+                const result = await repl.instantiateLatest();
+                if (result) {
+                    setStatus('Ready', 'success');
+                    log('WASM module instantiated', 'success');
+
+                    // List exported functions
+                    const exports = Object.keys(result.instance.exports);
+                    log(`Exports: ${exports.join(', ')}`, 'info');
+                } else {
+                    setStatus('Instantiation failed', 'error');
+                    log('Failed to instantiate WASM module', 'error');
+                }
+            } catch (e) {
+                setStatus('Error', 'error');
+                log(`Runtime error: ${e.message}`, 'error');
+            }
+        });
+
+        // Clear output
+        clearBtn.addEventListener('click', () => {
+            output.innerHTML = '';
+            setStatus('', 'info');
+        });
+
+        // Keyboard shortcut: Ctrl+Enter to compile
+        codeEditor.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.key === 'Enter') {
+                e.preventDefault();
+                compileBtn.click();
+            }
+        });
+
+        // Initial connection check
+        (async () => {
+            const connected = await repl.checkHealth();
+            if (connected) {
+                setStatus('Connected', 'success');
+                log('Connected to Eshkol server', 'success');
+            } else {
+                setStatus('Disconnected', 'warning');
+                log('Server not available. Start the server with: ./build/eshkol-server', 'warning');
+            }
+        })();
+    </script>
+</body>
+</html>

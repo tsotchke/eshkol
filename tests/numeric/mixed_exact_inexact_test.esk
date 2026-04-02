@@ -1,0 +1,65 @@
+(require stdlib)
+
+(display "TEST: Mixed exact/inexact coercion") (newline)
+
+; 1. exact? predicates
+(display (if (exact? 1) "PASS" "FAIL")) (display ": (exact? 1) is true") (newline)
+(display (if (exact? 1/2) "PASS" "FAIL")) (display ": (exact? 1/2) is true") (newline)
+(display (if (not (exact? 1.0)) "PASS" "FAIL")) (display ": (not (exact? 1.0)) is true") (newline)
+
+; 2. inexact? predicates
+(display (if (inexact? 1.0) "PASS" "FAIL")) (display ": (inexact? 1.0) is true") (newline)
+(display (if (not (inexact? 1)) "PASS" "FAIL")) (display ": (not (inexact? 1)) is true") (newline)
+
+; 3. exact->inexact
+(display (if (= (exact->inexact 1) 1.0) "PASS" "FAIL")) (display ": (exact->inexact 1) = 1.0") (newline)
+(display (if (inexact? (exact->inexact 1)) "PASS" "FAIL")) (display ": (inexact? (exact->inexact 1)) is true") (newline)
+(display (if (inexact? (exact->inexact 42)) "PASS" "FAIL")) (display ": (inexact? (exact->inexact 42)) is true") (newline)
+
+; 4. inexact->exact
+(display (if (exact? (inexact->exact 1.0)) "PASS" "FAIL")) (display ": (exact? (inexact->exact 1.0)) is true") (newline)
+(display (if (exact? (inexact->exact 2.5)) "PASS" "FAIL")) (display ": (exact? (inexact->exact 2.5)) is true") (newline)
+
+; 5. R7RS rule: exact + inexact -> inexact
+(display (if (inexact? (+ 1 1.0)) "PASS" "FAIL")) (display ": (inexact? (+ 1 1.0)) — exact+inexact->inexact") (newline)
+
+; 6. inexact? (* 2 1.5)
+(display (if (inexact? (* 2 1.5)) "PASS" "FAIL")) (display ": (inexact? (* 2 1.5)) — exact*inexact->inexact") (newline)
+
+; 7. inexact? (- 5 0.5)
+(display (if (inexact? (- 5 0.5)) "PASS" "FAIL")) (display ": (inexact? (- 5 0.5)) — exact-inexact->inexact") (newline)
+
+; 8. Integer + float value check
+(display (if (= (+ 1 0.5) 1.5) "PASS" "FAIL")) (display ": (+ 1 0.5) = 1.5") (newline)
+
+; 9. Float precision: same value compares equal
+(display (if (= 0.1 0.1) "PASS" "FAIL")) (display ": (= 0.1 0.1) — same float value is equal") (newline)
+
+; 10. Classic float issue: 0.1 + 0.2 != 0.3 exactly
+(display (if (not (= (+ 0.1 0.2) 0.3)) "PASS" "FAIL")) (display ": (not (= (+ 0.1 0.2) 0.3)) — classic float imprecision") (newline)
+
+; 11. exact->inexact on rationals
+(display (if (< (abs (- (exact->inexact 1/3) 0.3333333333333333)) 1e-15) "PASS" "FAIL")) (display ": (exact->inexact 1/3) close to 0.3333...") (newline)
+(display (if (< (abs (- (exact->inexact 1/4) 0.25)) 1e-15) "PASS" "FAIL")) (display ": (exact->inexact 1/4) = 0.25") (newline)
+
+; 12. number? on all types
+(display (if (number? 1) "PASS" "FAIL")) (display ": (number? 1) is true") (newline)
+(display (if (number? 1.0) "PASS" "FAIL")) (display ": (number? 1.0) is true") (newline)
+(display (if (number? 1/2) "PASS" "FAIL")) (display ": (number? 1/2) is true") (newline)
+
+; 13. real? on integers and floats
+(display (if (real? 1) "PASS" "FAIL")) (display ": (real? 1) is true") (newline)
+(display (if (real? 1.5) "PASS" "FAIL")) (display ": (real? 1.5) is true") (newline)
+
+; 14. Comparison across types
+(display (if (= 1 1.0) "PASS" "FAIL")) (display ": (= 1 1.0) — int equals float") (newline)
+(display (if (< 0 0.5) "PASS" "FAIL")) (display ": (< 0 0.5) — int less than float") (newline)
+
+; 15. min/max across types
+(display (if (= (min 1 0.5) 0.5) "PASS" "FAIL")) (display ": (min 1 0.5) = 0.5") (newline)
+(display (if (= (max 1 0.5) 1.0) "PASS" "FAIL")) (display ": (max 1 0.5) = 1.0") (newline)
+
+; 16. abs on integers and floats
+(display (if (= (abs -3) 3) "PASS" "FAIL")) (display ": (abs -3) = 3") (newline)
+(display (if (= (abs -2.5) 2.5) "PASS" "FAIL")) (display ": (abs -2.5) = 2.5") (newline)
+(display (if (= (abs 0) 0) "PASS" "FAIL")) (display ": (abs 0) = 0") (newline)

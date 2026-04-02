@@ -29,7 +29,7 @@ Eshkol provides first-class functions with full closure support, enabling functi
 
 **Implementation:** [`inc/eshkol/eshkol.h:649-658`](inc/eshkol/eshkol.h:649)
 
-Closures are **32-byte structures** allocated in the global arena:
+Closures are **40-byte structures** allocated in the global arena:
 
 ```c
 typedef struct eshkol_closure {
@@ -367,8 +367,8 @@ When a variadic closure is created, the variadic flag is set and the rest parame
 
 | Operation | Cost | Notes |
 |-----------|------|-------|
-| Create closure (no captures) | 32 bytes | Just the closure struct |
-| Create closure (n captures) | 32 + 8 + 16n bytes | Closure + env header + n*16-byte tagged values |
+| Create closure (no captures) | 40 bytes | Just the closure struct |
+| Create closure (n captures) | 40 + 8 + 16n bytes | Closure + env header + n*16-byte tagged values |
 | Call closure | 1 indirect jump | Function pointer dereference |
 | Access captured variable | 1-2 pointer dereferences | env → captures[i] → value |
 
@@ -403,6 +403,105 @@ Closures are arena-allocated and persist until arena reset. For long-running pro
 
 ;; For very large n, consider using shared closures or function caching
 ```
+
+---
+
+## Closures in v1.1 Contexts
+
+### 1. AD-Aware Closure Calls
+
+The `codegenClosureCall` function (starting at line 4723 of `lib/backend/llvm_codegen.cpp`) is the central dispatch mechanism for calling closures at runtime. It generates a substantial amount of LLVM IR -- typically **15 or more basic blocks** -- because it must handle multiple orthogonal concerns in a single dispatch:
+
+**Basic block breakdown of `codegenClosureCall`:**
+
+1. **Type dispatch** (3 blocks): `call_closure` / `call_direct` / `call_merge` -- branch on whether the tagged value is a CALLABLE type or a direct function pointer.
+2. **Continuation short-circuit** (3 blocks): Check the closure header subtype for `CALLABLE_SUBTYPE_CONTINUATION`. If so, load the jmp_buf, store the return value, unwind the dynamic-wind stack, and `longjmp` back. This path ends with `CreateUnreachable`.
+3. **Builtin arithmetic detection** (9 blocks): For each of +, -, *, /, check if the closure wraps a builtin arithmetic function by comparing function pointers. If so, dispatch to `polymorphicAdd`/`Sub`/`Mul`/`Div` which handle type-heterogeneous operands (int+double, bignum+rational, etc.). Each arithmetic path branches to `merge_bb`.
+4. **Environment null check** (3 blocks): `env_null` / `env_valid` / `env_checked` -- closures with zero captures have a null environment pointer. The null path reads arity and variadic flag directly from the closure struct layout (offset 33 for `input_arity`, offset 34 for `flags`). The valid path loads `packed_info` from the environment (format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic).
+5. **Variadic dispatch** (33+ blocks): If `is_variadic`, build a rest list by consing arguments right-to-left, then switch on `num_captures` (0 to 32), each case constructing the appropriate function call signature `(rest_list, &cap[0], ..., &cap[N-1])`.
+6. **Non-variadic dispatch** (33+ blocks): Switch on capture count (0 to 32 via `MAX_CAPTURES`), building call signatures `(arg0, arg1, ..., &cap[0], &cap[1], ..., &cap[N-1])`. Includes arity mismatch padding (up to `MAX_CALL_ARGS = 4`).
+7. **Direct function path** (1-2 blocks): For non-closure callable values, cast the tagged value's data to a function pointer and call directly.
+8. **Merge block**: PHI node collecting results from all paths.
+
+**Why this matters for PHI nodes:** LLVM PHI nodes require that each predecessor basic block appears exactly once and that the PHI dominates all its uses. When `codegenClosureCall` is placed inside a loop body, it inserts all of the above blocks between the loop header and the loop latch. A PHI node at the loop header that was supposed to reference `loop_body` as a predecessor now has a broken CFG because `loop_body` no longer branches back to the header -- instead, one of 30+ switch-case blocks does.
+
+**The alloca+store/load pattern:** The proven fix (used in `string-for-each`, `string-map`, `vector-for-each`, `vector-map`, `codegenReduce`, and `mapWithClosure`) is to replace loop counter PHI nodes with stack allocations:
+
+```
+;; BROKEN: PHI pattern
+loop_header:
+  %i = phi i64 [0, %entry], [%i_next, %loop_body]  ;; FAILS: %loop_body is gone
+  ...
+  call codegenClosureCall(...)  ;; inserts 15+ blocks, %loop_body no longer exists
+  %i_next = add %i, 1
+  br %loop_header
+
+;; CORRECT: alloca pattern
+entry:
+  %i_ptr = alloca i64
+  store i64 0, %i_ptr
+loop_header:
+  %i = load i64, %i_ptr
+  ...
+  call codegenClosureCall(...)  ;; can insert any number of blocks safely
+  %i_next = add %i, 1
+  store i64 %i_next, %i_ptr     ;; store survives block restructuring
+  br %loop_header
+```
+
+LLVM's `mem2reg` pass promotes these allocas back to SSA registers when possible, so there is no performance penalty.
+
+**Dual number propagation through closure calls:** When `codegenDerivative` encounters a function parameter (not a known lambda), it falls through to a runtime dispatch path. The function argument is packed as a dual number tagged value (`ESHKOL_VALUE_DUAL_NUMBER`), heap-allocated via the arena (16 bytes for two doubles). This tagged value is passed through `codegenClosureCall` like any other argument. The called function, if AD-aware, checks for dual number inputs and propagates tangents through its operations. The result is unpacked with `unpackDualFromTaggedValue` and the tangent component (field 1 of the dual struct) is extracted as the derivative.
+
+This means dual numbers flow through the standard closure calling convention without modification: they are tagged values like any other, and the closure dispatch mechanism (capture count switch, variadic rest list, etc.) is completely agnostic to whether the payload is an int64, double, dual number, or any other type. The AD awareness resides entirely in the arithmetic operations that inspect the type tag and dispatch to `dualAdd`, `dualMul`, etc.
+
+### 2. Closures in Parallel Context
+
+**How closures are passed to parallel workers:**
+
+The parallel runtime (`lib/backend/parallel_codegen.cpp`) passes closures to worker threads by **value decomposition**, not by passing the closure struct directly. This is a deliberate ABI decision to avoid struct-by-value issues at the C/LLVM boundary.
+
+For `parallel-map`, the task struct decomposes the closure into raw integer fields:
+
+```c
+struct llvm_parallel_map_task {
+    uint64_t closure_ptr;   // pointer to closure struct (from fn.data.ptr_val)
+    uint64_t item_type;     // item type field (i64-extended from i8)
+    uint64_t item_data;     // item data field (raw_val)
+    uint64_t result_ptr;    // pointer to result storage
+};
+```
+
+The `closure_ptr` is the raw pointer to the `eshkol_closure_t` struct on the arena heap. This pointer is **shared** across all worker threads -- the closure itself is not copied. The LLVM-generated `__parallel_map_worker` function runs on worker threads and reconstructs tagged values from these i64 fields, then calls `__eshkol_call_unary_closure` which performs the same capture-count dispatch as `codegenClosureCall`.
+
+**Captured environments are shared, not copied:** When multiple parallel workers receive the same `closure_ptr`, they all read from the same environment pointer (offset 8 in the closure struct), which points to the same captures array on the arena. This means:
+
+- **Immutable captures** (the common case) are safe: all workers read the same tagged values from the same memory locations. Since captures are passed as pointers to tagged values in the environment (`&cap[0]`, `&cap[1]`, ...), and workers only load from these pointers, there are no data races.
+- **Mutable captures** (via `set!` on captured variables) are **not thread-safe**. The "MUTABLE CAPTURE FIX" pattern throughout the codebase passes pointers to capture slots rather than copies of their values. If a closure captured via `set!` modifies a captured variable, and that closure runs on multiple threads via `parallel-map`, the writes to the capture slot are unprotected. There is no locking or atomic operation on capture pointer loads/stores.
+
+**Thread safety model:** The parallel primitives assume closures are functionally pure. The runtime documentation notes that `parallel-fold` is "inherently sequential for non-associative operations" -- it uses the binary closure dispatcher sequentially rather than parallelizing the fold. `parallel-map` submits tasks to a thread pool with `thread_pool_submit` and waits for all futures before building the result list. Small lists (fewer than 4 elements) bypass the thread pool entirely and execute sequentially.
+
+### 3. Workspace Module Closures
+
+The consciousness engine's `ws-register!` and `ws-step!` builtins (implemented starting at line 33887 of `lib/backend/llvm_codegen.cpp`) demonstrate how closures are stored and later invoked via `codegenClosureCall` in a loop.
+
+**`ws-register!` closure storage:** The builtin takes three arguments: workspace, name, and process-fn (a closure). All three are passed as tagged value pointers to the C runtime function `eshkol_ws_register_tagged`. The closure is stored as a raw 16-byte `eshkol_tagged_value_t` inside the `workspace_module_t` struct at offset 8 (after the 8-byte name pointer). The workspace stores up to 16 modules, each 32 bytes: `name(8) + process_fn(16) + salience(8)`.
+
+**`ws-step!` closure invocation loop:** The `codegenWSStep` function generates a loop that iterates over all registered modules and calls each module's closure:
+
+1. Load `num_modules` from the workspace struct (offset 0).
+2. Wrap the workspace's `content` double array as a tensor tagged value via `eshkol_ws_make_content_tensor`.
+3. Allocate a stack array of up to 16 result tagged values.
+4. Loop using the **alloca+store/load pattern** (not PHI nodes):
+   - Load `process_fn` tagged value from `modules_base + i * 32 + 8`.
+   - Call `codegenClosureCall(fn_tv, {content_tv}, "ws-step-module")` -- this is a full closure dispatch with all 15+ basic blocks per iteration.
+   - Store the result in the results array.
+   - Increment the alloca counter.
+5. After the loop, call `eshkol_ws_step_finalize` which performs softmax competition across module outputs and broadcasts the winning module's content back to the workspace.
+
+The use of `alloca+store/load` for the loop counter (`ws_i`) is critical here because `codegenClosureCall` in the loop body creates the full set of dispatch blocks on every iteration. The alloca counter at `%ws_i` is immune to the CFG restructuring that would break a PHI-based counter.
+
+**Interaction with AD:** The workspace closures are not AD-aware. The `content_tv` tensor passed to each module's closure is a regular tensor tagged value, not a dual number. If a workspace module's process function contains AD operations internally (e.g., computing a gradient as part of its inference step), those operations create their own tape on the thread-local tape stack. The workspace loop itself does not participate in any gradient computation.
 
 ---
 

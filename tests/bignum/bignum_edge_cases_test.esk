@@ -1,0 +1,72 @@
+;; Bignum Edge Case Tests
+;; Tests: negative bignums, zero, mixed operations, division, bitwise, comparisons
+
+(display "=== BIGNUM EDGE CASE TESTS ===") (newline)
+
+;; Helpers
+(define max-int 9223372036854775807)
+(define big (+ max-int 1))
+
+;; Test 1: Negative bignum
+(display "Negative bignum: ")
+(define neg-big (- 0 big))
+(display neg-big) (newline)
+
+;; Test 2: Bignum + 0 = bignum
+(display "Bignum + 0: ")
+(display (+ big 0)) (newline)
+
+;; Test 3: Bignum - bignum = 0 (back to fixnum)
+(display "big - big = ")
+(display (- big big)) (newline)
+
+;; Test 4: Negative * negative = positive
+(display "(-big) * (-1) = ")
+(display (* neg-big -1)) (newline)
+
+;; Test 5: Mixed bignum + fixnum
+(display "big + 42 = ")
+(display (+ big 42)) (newline)
+
+;; Test 6: Fixnum + bignum (reversed operand order)
+(display "42 + big = ")
+(display (+ 42 big)) (newline)
+
+;; Test 7: Bignum division (exact)
+(display "big * 3 / 3 = ")
+(define big3 (* big 3))
+(display (/ big3 3)) (newline)
+
+;; Test 8: Bignum modulo
+(display "(big + 7) mod 10 = ")
+(display (modulo (+ big 7) 10)) (newline)
+
+;; Test 9: Bignum comparisons
+(display "big > max-int: ")
+(display (> big max-int)) (newline)
+
+(display "big < (big + 1): ")
+(display (< big (+ big 1))) (newline)
+
+(display "big = big: ")
+(display (= big big)) (newline)
+
+(display "neg-big < 0: ")
+(display (< neg-big 0)) (newline)
+
+;; Test 10: Bignum negation
+(display "neg(big) = ")
+(display (- big)) (newline)
+
+(display "neg(neg-big) = ")
+(display (- neg-big)) (newline)
+
+;; Test 11: Zero operations with bignum
+(display "big * 0 = ")
+(display (* big 0)) (newline)
+
+;; Test 12: Bignum abs
+(display "abs(neg-big) = ")
+(display (abs neg-big)) (newline)
+
+(display "=== BIGNUM EDGE CASE TESTS COMPLETE ===") (newline)

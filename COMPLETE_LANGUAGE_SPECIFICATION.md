@@ -1,7 +1,7 @@
 # Eshkol Language - Complete Technical Specification
 
-**Version:** 1.0.0-foundation  
-**Generated:** 2025-12-12  
+**Version:** 1.1.11-accelerate
+**Generated:** 2026-03-27
 **Status:** Comprehensive implementation documentation from source code
 
 ---
@@ -21,6 +21,20 @@
 11. [REPL and JIT](#11-repl-and-jit)
 12. [Advanced Features](#12-advanced-features)
 13. [Runtime Architecture](#13-runtime-architecture)
+14. [Exact Arithmetic Specification](#14-exact-arithmetic-specification)
+15. [Complex Number Type](#15-complex-number-type)
+16. [Continuation Semantics](#16-continuation-semantics)
+17. [Consciousness Engine Specification](#17-consciousness-engine-specification)
+18. [Parallel Execution Model](#18-parallel-execution-model)
+19. [GPU Dispatch Specification](#19-gpu-dispatch-specification)
+20. [Signal Processing Operations](#20-signal-processing-operations)
+21. [Quantum RNG](#21-quantum-rng)
+22. [Complete Operator and Function Reference](#22-complete-operator-and-function-reference)
+23. [Complete Language Capabilities Summary](#23-complete-language-capabilities-summary)
+24. [Compiler Capabilities](#24-compiler-capabilities)
+25. [Implementation Details](#25-implementation-details)
+26. [Version Information](#26-version-information)
+27. [File Organization](#27-file-organization)
 
 ---
 
@@ -131,6 +145,15 @@ struct {
 - `HEAP_SUBTYPE_RECORD` (7) - User-defined record
 - `HEAP_SUBTYPE_BYTEVECTOR` (8) - Raw byte vector (R7RS)
 - `HEAP_SUBTYPE_PORT` (9) - I/O port
+- `HEAP_SUBTYPE_SYMBOL` (10) - Interned symbol
+- `HEAP_SUBTYPE_BIGNUM` (11) - Arbitrary-precision integer (R7RS exact)
+- `HEAP_SUBTYPE_SUBSTITUTION` (12) - Logic variable bindings
+- `HEAP_SUBTYPE_FACT` (13) - Knowledge base fact
+- `HEAP_SUBTYPE_KNOWLEDGE_BASE` (15) - Knowledge base container
+- `HEAP_SUBTYPE_FACTOR_GRAPH` (16) - Active inference factor graph
+- `HEAP_SUBTYPE_WORKSPACE` (17) - Global workspace
+- `HEAP_SUBTYPE_PROMISE` (18) - Lazy/future promise
+- `HEAP_SUBTYPE_RATIONAL` (19) - Exact rational number
 
 ##### CONS (Pair/List Node)
 - **Subtype:** `HEAP_SUBTYPE_CONS` (0)
@@ -773,6 +796,15 @@ x  ; => 20
 (require core.functional.compose)
 (require core.list.higher_order)
 ```
+
+#### 3.7.1b `load` - Load File (R7RS)
+**Syntax:**
+```scheme
+(load "path/to/file.esk")
+```
+
+Alias for `require` with automatic path conversion. Slashes are converted to dots, and `.esk` suffix is stripped:
+- `(load "core/list/transform.esk")` → `(require core.list.transform)`
 
 #### 3.7.2 `provide` - Export Symbols
 **Syntax:**
@@ -1442,7 +1474,18 @@ All comparison operators return booleans and support numeric type promotion.
 
 ## 5. Standard Library
 
-The standard library is organized into modules under `lib/core/`:
+The standard library is organized into modules under `lib/`:
+
+**v1.1 stdlib directories:**
+- `lib/core/` — Core language functions (operators, lists, strings, I/O, etc.)
+- `lib/math/` — Mathematical functions (constants, special functions, ODE solvers)
+- `lib/signal/` — Signal processing (FFT, filters, window functions)
+- `lib/ml/` — Machine learning (optimization algorithms, activations, normalization)
+- `lib/random/` — Random number generation (PRNG, quantum, distributions)
+- `lib/web/` — Web platform (WASM support)
+- `lib/tensor/` — Tensor utilities (shape manipulation, stacking)
+
+The core modules are under `lib/core/`:
 
 ### 5.1 core.functional
 
@@ -1854,47 +1897,123 @@ Value (root)
 
 #### 7.6.1 Bidirectional Type Checking
 
-**Synthesis Mode (⇒):** Infer type from expression
+The type checker operates in two complementary modes:
+
+**Synthesis Mode (⇒):** Infer type from expression structure (bottom-up)
 ```
 Γ ⊢ e ⇒ τ
 ```
 
-**Checking Mode (⇐):** Verify expression has expected type
+**Checking Mode (⇐):** Verify expression has expected type (top-down)
 ```
 Γ ⊢ e ⇐ τ
 ```
 
-#### 7.6.2 Type Inference
+#### 7.6.2 Synthesis Rules
 
-The type checker infers types for:
-- Literals (int64, float64, string, boolean, etc.)
-- Variables (from context)
-- Applications (from function type)
-- Lambda expressions (from parameter annotations and body)
-- Let bindings (from value expressions)
+```
+                                    x:A ∈ Γ
+─────────────── (Syn-Int)      ────────────── (Syn-Var)
+Γ ⊢ n ⇒ Integer                Γ ⊢ x ⇒ A
 
-#### 7.6.3 Subtyping
+Γ ⊢ f ⇒ (→ A₁...Aₙ R)    Γ ⊢ aᵢ ⇐ Aᵢ  (for each i)
+──────────────────────────────────────────────────────── (Syn-App)
+                    Γ ⊢ (f a₁...aₙ) ⇒ R
+```
+
+#### 7.6.3 Checking Rules
+
+```
+    Γ, x:A ⊢ e ⇐ B
+──────────────────────── (Chk-Lambda)
+Γ ⊢ (lambda (x) e) ⇐ (→ A B)
+
+    Γ ⊢ e ⇒ A      A ~ B
+─────────────────────────── (Chk-Subsumption)
+        Γ ⊢ e ⇐ B
+```
+
+The subsumption rule uses the **consistency relation** `~` from gradual typing: `τ ~ σ` iff `τ = ?` or `σ = ?` or `τ` structurally matches `σ`. This allows typed and untyped code to interoperate.
+
+#### 7.6.4 Subtyping
 
 Transitive subtype relations with caching:
 - Int64 <: Integer <: Number <: Value
 - Float64 <: Real <: Number <: Value
+- BigInt <: Integer <: Number <: Value
+- Complex <: Number <: Value
 - String <: Text <: Value
 
-Type promotion for arithmetic:
-- int + int => int
-- int + float => float
-- float + float => float
+Type promotion for arithmetic (R7RS semantics):
+- exact + exact => exact (Int64 + Int64 => Int64)
+- exact + inexact => inexact (Int64 + Float64 => Float64)
+- bignum + int64 => bignum (wider exact type)
+- any + complex => complex
 
-### 7.7 Dependent Types (Phase 5)
+#### 7.6.5 Dependent Function Types (Π-Types)
+
+```
+Γ ⊢ A : Uᵢ      Γ, x:A ⊢ B : Uⱼ
+─────────────────────────────────── (Π-formation)
+     Γ ⊢ Π(x:A).B : U_max(i,j)
+
+     Γ, x:A ⊢ b : B
+──────────────────────── (Π-introduction)
+ Γ ⊢ λx.b : Π(x:A).B
+
+Γ ⊢ f : Π(x:A).B      Γ ⊢ a : A
+────────────────────────────────── (Π-elimination)
+        Γ ⊢ f(a) : B[a/x]
+```
+
+When B does not depend on x, Π(x:A).B reduces to the ordinary function type A → B.
+
+#### 7.6.6 Dependent Pair Types (Σ-Types)
+
+```
+Γ ⊢ A : Uᵢ      Γ, x:A ⊢ B : Uⱼ
+─────────────────────────────────── (Σ-formation)
+     Γ ⊢ Σ(x:A).B : U_max(i,j)
+
+Γ ⊢ a : A      Γ ⊢ b : B[a/x]
+────────────────────────────────── (Σ-introduction)
+   Γ ⊢ (a, b) : Σ(x:A).B
+
+     Γ ⊢ p : Σ(x:A).B
+────────────────────────── (Σ-elim)
+ Γ ⊢ π₁(p) : A    Γ ⊢ π₂(p) : B[π₁(p)/x]
+```
+
+#### 7.6.7 Identity/Path Types
+
+```
+Γ ⊢ A : Uᵢ    Γ ⊢ a : A    Γ ⊢ b : A
+──────────────────────────────────────── (Id-formation)
+        Γ ⊢ Id_A(a, b) : Uᵢ
+
+      Γ ⊢ a : A
+─────────────────── (reflexivity)
+Γ ⊢ refl_a : Id_A(a, a)
+```
+
+Path types (identity proofs) exist at the U₂ proposition level and are **erased at runtime** — they guide type checking and optimization with zero runtime overhead.
+
+### 7.7 Dependent Types
 
 #### 7.7.1 Compile-Time Values
+
+The dependent type layer tracks values known at compile time for dimension verification:
+
 ```cpp
 class CTValue {
     Kind: Nat | Bool | Expr | Unknown
-    
-    // Operations
+
+    // Evaluation
     tryEvalNat() -> Optional<uint64_t>
     tryEvalFloat() -> Optional<double>
+    tryEvalBool() -> Optional<bool>
+
+    // Arithmetic
     add(other) -> CTValue
     mul(other) -> CTValue
 }
@@ -2481,10 +2600,12 @@ Every value at runtime is a 16-byte `eshkol_tagged_value_t`:
 - 4: CHAR
 - 5: SYMBOL
 - 6: DUAL_NUMBER
+- 7: COMPLEX
 
-**Consolidated Types (8-9):** Subtype in header
-- 8: HEAP_PTR (cons, string, vector, tensor, hash, exception)
-- 9: CALLABLE (closure, lambda-sexpr, ad-node)
+**Consolidated Types (8-10):** Subtype in header
+- 8: HEAP_PTR (cons, string, vector, tensor, hash, exception, bignum, rational, etc.)
+- 9: CALLABLE (closure, lambda-sexpr, ad-node, continuation)
+- 10: LOGIC_VAR (consciousness engine logic variables)
 
 **Multimedia Types (16-19):** Reserved for future
 - 16: HANDLE
@@ -2568,11 +2689,809 @@ struct eshkol_display_opts {
 
 ---
 
-## 14. Quantum RNG
+## 14. Exact Arithmetic Specification
 
-### 14.1 Quantum-Inspired Random Number Generator
+Eshkol implements the R7RS numeric tower (R7RS 6.2) with exact arithmetic support extending beyond the fixed-width `INT64` representation. This section specifies the representation, promotion rules, and semantic invariants for exact arithmetic.
 
-#### 14.1.1 Core Principles
+### 14.1 Bignum Representation
+
+#### 14.1.1 Storage Layout
+
+Bignums are heap-allocated, sign-magnitude integers with arbitrary precision.
+
+**Runtime Structure:**
+```c
+struct eshkol_bignum {
+    int sign;           // +1 or -1 (0 represented as +1 with zero limbs)
+    uint32_t num_limbs; // Number of 64-bit limbs
+    uint64_t limbs[];   // Flexible array, least-significant limb first
+}
+```
+
+**Type Identification:**
+- **Type tag:** `ESHKOL_VALUE_HEAP_PTR` (8)
+- **Heap subtype:** `HEAP_SUBTYPE_BIGNUM` (11)
+- **Predicate:** `eshkol_is_bignum_tagged(tagged_value)` -- inspects type tag and heap header subtype
+
+#### 14.1.2 Runtime Dispatch
+
+All bignum arithmetic is dispatched through a single polymorphic entry point:
+
+```c
+eshkol_tagged_value_t eshkol_bignum_binary_tagged(
+    eshkol_tagged_value_t lhs,
+    eshkol_tagged_value_t rhs,
+    int op_code
+);
+```
+
+**Operation codes:** 0=add, 1=sub, 2=mul, 3=div, 4=quotient, 5=remainder, 6=modulo, 7=neg (unary, rhs ignored).
+
+**Codegen helpers:** `emitBignumBinaryCall(lhs, rhs, op_code)` and `emitBignumCompareCall(lhs, rhs, op_code)` generate the appropriate LLVM `CallInst`.
+
+#### 14.1.3 Promotion: INT64 to Bignum
+
+Checked arithmetic uses LLVM overflow intrinsics:
+- `llvm.sadd.with.overflow.i64` -- addition
+- `llvm.ssub.with.overflow.i64` -- subtraction
+- `llvm.smul.with.overflow.i64` -- multiplication
+
+**Invariant:** If the overflow flag is set, the operation is re-dispatched to `eshkol_bignum_binary_tagged` with both operands promoted. Promotion from `INT64` to bignum is performed by `eshkol_bignum_from_int64(int64_t)`.
+
+#### 14.1.4 Demotion: Bignum to INT64
+
+After any bignum operation, if the result magnitude fits within `[-2^63, 2^63 - 1]`, the result is demoted to `INT64`. This preserves the invariant that small exact integers are always stored in the immediate `INT64` representation for performance.
+
+**Invariant:** `forall v : bignum, |v| <= 2^63 - 1 => demote(v) : INT64`.
+
+### 14.2 Rational Representation
+
+#### 14.2.1 Storage Layout
+
+Rationals are heap-allocated pairs of bignums representing p/q in canonical form.
+
+**Runtime Structure:**
+```c
+struct eshkol_rational {
+    eshkol_bignum* numerator;
+    eshkol_bignum* denominator;
+}
+```
+
+**Type Identification:**
+- **Type tag:** `ESHKOL_VALUE_HEAP_PTR` (8)
+- **Heap subtype:** `HEAP_SUBTYPE_RATIONAL` (19)
+
+#### 14.2.2 Canonical Form
+
+**Invariants:**
+1. `gcd(|numerator|, denominator) = 1` -- GCD-reduced
+2. `denominator > 0` -- positive denominator (sign carried by numerator)
+3. `0/1` is the canonical representation of rational zero
+4. If `denominator = 1`, the value MAY be demoted to bignum or INT64
+
+#### 14.2.3 Comparison
+
+```c
+int eshkol_rational_compare_tagged_ptr(
+    eshkol_tagged_value_t lhs,
+    eshkol_tagged_value_t rhs
+);
+```
+
+Returns -1, 0, or +1. Cross-compares a/b vs c/d as `a*d` vs `c*b` (exact, no floating-point).
+
+### 14.3 Numeric Tower
+
+#### 14.3.1 Promotion Lattice
+
+The formal promotion order for exact/inexact coercion:
+
+```
+INT64 < BIGNUM < RATIONAL < DOUBLE < COMPLEX
+  |        |         |          |         |
+exact    exact     exact    inexact   inexact
+```
+
+**Rules (per R7RS 6.2.3):**
+1. Arithmetic on two exact values produces an exact result when mathematically defined.
+2. Arithmetic involving at least one inexact operand produces an inexact result.
+3. `exact->inexact` converts to the nearest IEEE 754 double. Precision loss is possible for bignums with magnitude > 2^53.
+4. `inexact->exact` converts a double to the nearest rational representation via continued fraction expansion.
+
+#### 14.3.2 Mixed-Exactness Dispatch
+
+When a binary arithmetic operation receives one exact and one inexact operand:
+1. The exact operand is converted to inexact (double) via `extractAsDouble`.
+2. The operation proceeds in double arithmetic.
+3. The result is tagged as inexact (`ESHKOL_VALUE_DOUBLE`).
+
+**Exception:** Division of two exact integers where the result is not an integer produces a rational (exact), not a double.
+
+### 14.4 Overflow Handling
+
+#### 14.4.1 Compile-Time Strategy
+
+The LLVM backend emits checked arithmetic for all `INT64` operations:
+
+```llvm
+%result = call {i64, i1} @llvm.sadd.with.overflow.i64(i64 %a, i64 %b)
+%value = extractvalue {i64, i1} %result, 0
+%overflow = extractvalue {i64, i1} %result, 1
+br i1 %overflow, label %bignum_path, label %int64_path
+```
+
+**Bignum path:** Both operands are promoted to bignum via `eshkol_bignum_from_int64`, and the operation is re-executed via `eshkol_bignum_binary_tagged`.
+
+#### 14.4.2 Exponentiation
+
+`(expt base exp)` where both operands are exact non-negative integers dispatches to `eshkol_bignum_pow_tagged`, which implements repeated squaring in O(log n) multiplications. If either operand is inexact, the operation falls through to `pow(double, double)`.
+
+#### 14.4.3 Edge Cases
+
+- `(expt 0 0)` returns `1` (R7RS 6.2.6).
+- `(/ 1 0)` raises `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`.
+- `(quotient x 0)` and `(remainder x 0)` raise `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`.
+- Bignum operations that produce a result fitting INT64 always demote.
+
+---
+
+## 15. Complex Number Type
+
+Eshkol provides complex numbers as a first-class numeric type, following R7RS 6.2.5.
+
+### 15.1 Representation
+
+#### 15.1.1 Storage Layout
+
+Complex numbers are heap-allocated structs containing two IEEE 754 double-precision components.
+
+```c
+struct eshkol_complex {
+    double real;    // Real part
+    double imag;    // Imaginary part
+}
+```
+
+**Type Identification:**
+- **Type tag:** `ESHKOL_VALUE_COMPLEX` (7)
+- **Heap subtype:** Not used; complex has a dedicated type tag distinct from `HEAP_PTR`.
+
+**Invariant:** Complex values are always inexact. There is no exact complex representation.
+
+#### 15.1.2 Constructors
+
+- `(make-rectangular re im)` -- Cartesian form. Returns a complex with `real = re`, `imag = im`.
+- `(make-polar mag ang)` -- Polar form. Returns a complex with `real = mag * cos(ang)`, `imag = mag * sin(ang)`.
+
+**Predicate:** `(complex? v)` returns `#t` for complex values, and also for all real numbers (per R7RS: every real is a complex with zero imaginary part).
+
+### 15.2 Arithmetic
+
+#### 15.2.1 Standard Operations
+
+For `z1 = a + bi` and `z2 = c + di`:
+
+- **Addition:** `z1 + z2 = (a+c) + (b+d)i`
+- **Subtraction:** `z1 - z2 = (a-c) + (b-d)i`
+- **Multiplication:** `z1 * z2 = (ac - bd) + (ad + bc)i`
+
+#### 15.2.2 Division (Smith's Formula)
+
+Complex division uses Smith's algorithm for overflow safety, avoiding intermediate products that may exceed double range:
+
+**Case 1:** `|d| >= |c|`:
+```
+r = c / d
+denom = c * r + d
+result_real = (a * r + b) / denom
+result_imag = (b * r - a) / denom
+```
+
+**Case 2:** `|c| > |d|`:
+```
+r = d / c
+denom = d * r + c
+result_real = (a + b * r) / denom
+result_imag = (b - a * r) / denom
+```
+
+**Invariant:** Smith's formula avoids overflow when `|c|` or `|d|` is near `DBL_MAX`, which would cause naive `c*c + d*d` to overflow.
+
+### 15.3 Functions
+
+#### 15.3.1 Magnitude and Angle
+
+- `(magnitude z)` -- Computed via `hypot(re, im)` for numerical stability (avoids overflow in `sqrt(re^2 + im^2)`).
+- `(angle z)` -- Computed via `atan2(im, re)`. Returns a value in `(-pi, pi]`.
+
+#### 15.3.2 Component Access
+
+- `(real-part z)` -- Returns the real component as a double.
+- `(imag-part z)` -- Returns the imaginary component as a double.
+
+#### 15.3.3 Promotion from Real
+
+When a real number is used in a context requiring a complex (e.g., arithmetic with a complex operand), it is promoted to complex with `imag = 0.0`. The `convertToComplex` codegen path handles INT64, DOUBLE, and HEAP_PTR (bignum) inputs, converting bignums via `eshkol_bignum_to_double` before constructing the complex.
+
+---
+
+## 16. Continuation Semantics
+
+Eshkol implements first-class continuations and dynamic extent management per R7RS 6.10-6.11.
+
+### 16.1 `call-with-current-continuation`
+
+#### 16.1.1 Capture Mechanism
+
+`(call-with-current-continuation proc)` (abbreviated `call/cc`) captures the current continuation as a first-class callable object.
+
+**Implementation:** Single-shot capture via `setjmp`/`longjmp`.
+
+**Type Identification:**
+- **Type tag:** `ESHKOL_VALUE_CALLABLE` (9)
+- **Callable subtype:** `CALLABLE_SUBTYPE_CONTINUATION` (4)
+
+#### 16.1.2 Invocation Semantics
+
+Invoking a captured continuation `k` with value `v`:
+1. Abandons the current continuation.
+2. Restores the captured continuation's dynamic extent.
+3. Returns `v` as the result of the original `call/cc` expression.
+
+**Constraint:** Continuations in Eshkol are single-shot; invoking a continuation more than once results in undefined behavior. This is a deliberate implementation restriction for performance (full `setjmp`/`longjmp` restores stack state, which is invalidated after first use).
+
+#### 16.1.3 Interaction with Dynamic Wind
+
+When a continuation is invoked, `dynamic-wind` before/after thunks along the path from the current dynamic extent to the captured extent are called in the correct order (see 16.2).
+
+### 16.2 `dynamic-wind`
+
+#### 16.2.1 Contract
+
+```scheme
+(dynamic-wind before thunk after)
+```
+
+**Semantics:**
+1. `before` is called (with zero arguments) upon entry to the dynamic extent of `thunk`.
+2. `thunk` is called (with zero arguments); its result is the result of the `dynamic-wind` expression.
+3. `after` is called (with zero arguments) upon exit from the dynamic extent, whether by normal return or continuation invocation.
+
+**Invariant:** For any dynamic-wind frame, `before` and `after` are called in matched pairs. If the extent is exited N times (via continuations), `after` is called N times.
+
+#### 16.2.2 Continuation Interaction
+
+When a continuation crosses dynamic-wind boundaries:
+
+1. **Unwinding:** `after` thunks are called in reverse order (innermost first) for each dynamic-wind frame being exited.
+2. **Rewinding:** `before` thunks are called in forward order (outermost first) for each dynamic-wind frame being entered.
+
+**Compliance:** R7RS 6.10. The implementation maintains a linked list of active dynamic-wind frames on the C stack, traversed during continuation invocation.
+
+### 16.3 `guard` / `raise`
+
+#### 16.3.1 Exception Handling
+
+```scheme
+(guard (var
+        (test1 handler1 ...)
+        (test2 handler2 ...)
+        (else  default ...))
+  body ...)
+```
+
+**Semantics (R7RS 6.11):**
+1. A continuation is captured at the `guard` form.
+2. `body` is evaluated.
+3. If `(raise obj)` is called during evaluation of `body`, execution transfers to the `guard` handler.
+4. `var` is bound to `obj`.
+5. Cond clauses `(test handler ...)` are evaluated in the dynamic environment of the `guard` form (not the `raise` site).
+6. If a test succeeds, its handler expressions are evaluated and the result is returned from the `guard` form.
+7. If no test succeeds and there is no `else` clause, the exception is re-raised to the next enclosing handler.
+
+#### 16.3.2 `raise` Semantics
+
+`(raise obj)` invokes the innermost exception handler established by `guard`. If no handler is active, the program terminates with an unhandled exception diagnostic.
+
+`(raise-continuable obj)` is not currently supported; all raises are non-continuable.
+
+#### 16.3.3 Implementation
+
+Exception handling uses the C `setjmp`/`longjmp` mechanism:
+- `guard` calls `setjmp` to establish a return point.
+- `raise` calls `longjmp` to transfer control.
+- A global `g_current_exception` pointer holds the raised object.
+- Handler stack is maintained for nested `guard` forms.
+
+---
+
+## 17. Consciousness Engine Specification
+
+The consciousness engine provides logic programming, probabilistic inference, and global workspace theory primitives. These facilities are exposed as first-class Eshkol values with dedicated type tags and heap subtypes.
+
+### 17.1 Type Tags and Heap Subtypes
+
+#### 17.1.1 Logic Variable
+
+- **Type tag:** `ESHKOL_VALUE_LOGIC_VAR` (10)
+- **Syntax:** `?x`, `?name` -- the `?` prefix denotes a logic variable (R7RS compatible; `?` is a valid identifier start character)
+- **AST node:** `ESHKOL_LOGIC_VAR_OP`
+- **Predicate:** `(logic-var? v)` returns `#t` iff `v` has type tag 10
+
+#### 17.1.2 Substitution
+
+- **Heap subtype:** `HEAP_SUBTYPE_SUBSTITUTION` (12)
+- **Description:** Triangular substitution map from logic variables to terms
+- **Constructor:** `(make-substitution)` -- returns an empty substitution
+- **Predicate:** `(substitution? v)`
+
+#### 17.1.3 Fact
+
+- **Heap subtype:** `HEAP_SUBTYPE_FACT` (13)
+- **Description:** A ground or partially-ground term stored in a knowledge base
+- **Constructor:** `(make-fact term)` -- wraps a term as a fact
+- **Predicate:** `(fact? v)`
+
+#### 17.1.4 Knowledge Base
+
+- **Heap subtype:** `HEAP_SUBTYPE_KNOWLEDGE_BASE` (15)
+- **Description:** Collection of facts supporting assertion and query
+- **Constructor:** `(make-kb)` -- returns an empty knowledge base
+- **Mutation:** `(kb-assert! kb fact)` -- adds a fact
+- **Query:** `(kb-query kb pattern)` -- returns list of substitutions matching pattern
+- **Predicate:** `(kb? v)`
+
+#### 17.1.5 Factor Graph
+
+- **Heap subtype:** `HEAP_SUBTYPE_FACTOR_GRAPH` (16)
+- **Description:** Bipartite probabilistic graphical model for active inference
+- **Constructor:** `(make-factor-graph n-vars dims-tensor)` -- creates a factor graph with `n-vars` variable nodes; `dims-tensor` is a tensor of per-variable state counts (e.g., `#(2 3)` for a 2-state and a 3-state variable)
+- **Predicate:** `(factor-graph? v)`
+
+#### 17.1.6 Workspace
+
+- **Heap subtype:** `HEAP_SUBTYPE_WORKSPACE` (17)
+- **Description:** Global workspace for competitive module activation
+- **Constructor:** `(make-workspace content-dim max-modules)` -- creates a workspace with content tensors of `content-dim` dimensions and capacity for `max-modules` module slots
+- **Predicate:** `(workspace? v)`
+
+### 17.2 Unification Algorithm
+
+#### 17.2.1 Core Algorithm
+
+`(unify t1 t2 subst)` attempts to find a substitution extending `subst` that makes `t1` and `t2` identical.
+
+**Algorithm (Martelli-Montanari with occurs check):**
+1. Walk `t1` and `t2` through the substitution (resolve variable bindings).
+2. If both are identical atoms, return `subst` unchanged.
+3. If `t1` is a logic variable, check occurs (t1 must not appear in t2). If clear, extend `subst` with `t1 -> t2`.
+4. If `t2` is a logic variable, symmetric to case 3.
+5. If both are pairs (cons cells), recursively unify `car` parts, then `cdr` parts with the intermediate substitution.
+6. Otherwise, unification fails; return `#f`.
+
+**Invariant:** Occurs check prevents circular substitutions. `(unify ?x (list ?x) subst)` fails.
+
+#### 17.2.2 Substitution Walking
+
+`(walk var subst)` follows the substitution chain: if `var` is bound to another variable in `subst`, recursively walk that variable. Returns the fully dereferenced value.
+
+**Invariant:** Substitutions are triangular (no direct cycles by construction with occurs check). Walking always terminates.
+
+### 17.3 Active Inference
+
+#### 17.3.1 Factor Graph Structure
+
+A factor graph is a bipartite graph `G = (V, F, E)` where:
+- `V` is the set of variable nodes (random variables with discrete state spaces)
+- `F` is the set of factor nodes (local functions/constraints)
+- `E` connects each factor to the variables in its scope
+
+Each variable node `v_i` has `n_states` possible values. Each factor node `f_j` stores a conditional probability table (CPT) as a flat `double` array of size `product(n_states for each variable in scope)`.
+
+#### 17.3.2 Sum-Product Belief Propagation
+
+`(fg-infer! fg n-iterations)` runs loopy belief propagation for `n-iterations` rounds.
+
+**Message updates:**
+
+Factor-to-variable message:
+```
+mu_{f->v}(x_v) = sum_{x_{ne(f)\v}} [ f(x_{ne(f)}) * prod_{v' in ne(f)\v} nu_{v'->f}(x_{v'}) ]
+```
+
+Variable-to-factor message:
+```
+nu_{v->f}(x_v) = prod_{f' in ne(v)\f} mu_{f'->v}(x_v)
+```
+
+**Beliefs (marginals):**
+```
+b(x_v) = (1/Z) * prod_{f in ne(v)} mu_{f->v}(x_v)
+```
+where `Z` is a normalization constant ensuring `sum_x b(x) = 1`.
+
+#### 17.3.3 CPT Mutation
+
+`(fg-update-cpt! fg factor-index new-cpt)` replaces the CPT of factor `factor-index` with `new-cpt` (a tensor of doubles) and resets all messages in the graph. Subsequent calls to `fg-infer!` will reconverge beliefs under the new parameters.
+
+**Use case:** Enables learning by iteratively updating CPTs based on observed data.
+
+#### 17.3.4 Free Energy
+
+`(free-energy fg observations)` computes the variational free energy:
+
+```
+F = E_q[log q(s)] - E_q[log p(o, s)]
+  = - sum_i sum_s q(s_i) * log p(o | s_i) + sum_i sum_s q(s_i) * log q(s_i)
+```
+
+where `q(s_i) = b(x_i)` are the current beliefs, and observations is a tensor of `#(var_index observed_state)` pairs.
+
+**Note:** Observations are provided as `#(var_index observed_state)` pairs, NOT full state vectors.
+
+#### 17.3.5 Expected Free Energy
+
+`(expected-free-energy fg action-var action-state)` computes:
+
+```
+G = E_q[ log q(s') - log p(o', s') ]
+```
+
+where `action-var` is the variable index and `action-state` is the discrete state being evaluated. This quantity guides action selection in active inference: the action minimizing expected free energy is preferred.
+
+### 17.4 Global Workspace
+
+#### 17.4.1 Architecture
+
+The global workspace implements a simplified Global Workspace Theory (GWT) model:
+- **Modules:** Each module registers an activation function (a closure returning a content tensor).
+- **Competition:** Modules compete for workspace access via activation strength.
+- **Broadcast:** The winning module's content is broadcast to all modules.
+
+#### 17.4.2 Registration
+
+`(ws-register! ws name activation-fn)` registers a closure `activation-fn` with the given string `name`. The closure must accept one argument (the current broadcast content tensor) and return `(cons salience proposal-tensor)` where `salience` is a real number indicating activation strength and `proposal-tensor` is the content to broadcast if this module wins.
+
+#### 17.4.3 Step Execution
+
+`(ws-step! ws)` executes one competition cycle:
+
+1. Call each registered module's activation function with the current broadcast content.
+2. Extract activation strengths (first element of each returned tensor).
+3. Apply softmax: `sigma(z_i) = exp(z_i) / sum_j exp(z_j)`.
+4. Select the module with highest softmax probability as the winner.
+5. Broadcast the winner's content tensor to the workspace state.
+6. Return the winning module's index.
+
+**Implementation:** LLVM codegen generates a loop calling `codegenClosureCall` for each module. C runtime helpers `eshkol_ws_make_content_tensor` and `eshkol_ws_step_finalize` handle tensor wrapping and softmax computation respectively.
+
+#### 17.4.4 Builtins Summary
+
+The consciousness engine exposes 22 builtins:
+
+| Category | Builtins |
+|---|---|
+| Unification | `unify`, `walk`, `make-substitution` |
+| Facts/KB | `make-fact`, `make-kb`, `kb-assert!`, `kb-query` |
+| Predicates | `logic-var?`, `substitution?`, `kb?`, `fact?`, `factor-graph?`, `workspace?` |
+| Factor Graphs | `make-factor-graph`, `fg-add-factor!`, `fg-infer!`, `fg-update-cpt!` |
+| Free Energy | `free-energy`, `expected-free-energy` |
+| Workspace | `make-workspace`, `ws-register!`, `ws-step!` |
+
+---
+
+## 18. Parallel Execution Model
+
+Eshkol provides deterministic parallel execution primitives with memory safety guarantees.
+
+### 18.1 Thread Pool
+
+#### 18.1.1 Architecture
+
+The thread pool uses a work-stealing scheduler:
+
+- **Worker count:** `std::thread::hardware_concurrency()` by default, capped at a compile-time maximum. Overridable via `ESHKOL_NUM_THREADS` environment variable.
+- **Work-stealing deque:** Each worker maintains a local double-ended queue. Workers pop from their own deque's bottom (LIFO for locality); idle workers steal from other workers' tops (FIFO for load balance).
+- **Task granularity:** A minimum chunk size prevents scheduling overhead from dominating small workloads. For `parallel-map`, the chunk size is `max(1, n / (4 * num_workers))`.
+
+#### 18.1.2 Compilation
+
+Worker functions (the parallel task bodies) are compiled with `LinkOnceODRLinkage` to permit multiple compilation units (e.g., stdlib + user code) to define the same worker template without duplicate symbol errors at link time.
+
+### 18.2 Memory Safety
+
+#### 18.2.1 Per-Thread Arenas
+
+Each worker thread allocates from a thread-local arena region via `thread_local` storage. This eliminates contention on the global arena allocator.
+
+**Invariant:** No two threads share a mutable arena region. Results are communicated via the task's return value (a tagged value), not through shared mutable state.
+
+#### 18.2.2 No Shared Mutable State
+
+User-level parallel primitives (`parallel-map`, `parallel-for-each`, `future`) enforce the constraint that the parallel closure captures values by copy (tagged value semantics -- 16 bytes per capture). Mutations to captured variables within a parallel task are local to that task and do not propagate back.
+
+**Invariant:** Parallel execution is observationally equivalent to sequential execution for pure functions. Side effects within parallel tasks are unordered.
+
+### 18.3 Future Semantics
+
+#### 18.3.1 `future`
+
+```scheme
+(future thunk)
+```
+
+Evaluates `thunk` (a zero-argument closure) eagerly in the thread pool. Returns a future object immediately.
+
+**Type:** Future objects are opaque heap-allocated values. The internal structure contains a mutex, condition variable, result slot, and completion flag.
+
+#### 18.3.2 `force`
+
+```scheme
+(force f)
+```
+
+Blocks the calling thread until the future `f` has completed, then returns its result value. If `f` has already completed, returns immediately.
+
+**Invariant:** `force` is idempotent. Multiple calls to `(force f)` return the same value.
+
+#### 18.3.3 `future-ready?`
+
+```scheme
+(future-ready? f)
+```
+
+Non-blocking predicate. Returns `#t` if the future has completed, `#f` otherwise. Does not synchronize or block.
+
+---
+
+## 19. GPU Dispatch Specification
+
+Eshkol implements transparent GPU offloading for tensor operations with an automatic cost-model-based dispatch strategy.
+
+### 19.1 Cost Model
+
+#### 19.1.1 Dispatch Thresholds
+
+Tensor operations are dispatched to one of three backends based on problem size:
+
+| Backend | Minimum Elements | Description |
+|---|---|---|
+| SIMD (scalar) | 1 | Default path for small tensors |
+| cBLAS / Accelerate | 64 | BLAS library for medium tensors |
+| GPU (Metal/CUDA) | 100,000 | GPU offloading for large tensors |
+
+**Decision function:** For a given operation with input size `n`:
+1. If `n < 64`: SIMD scalar path.
+2. If `64 <= n < threshold_gpu`: cBLAS/Accelerate library.
+3. If `n >= threshold_gpu`: GPU path (if available; fallback to cBLAS otherwise).
+
+The GPU threshold `threshold_gpu` is calibrated per-platform at build time.
+
+#### 19.1.2 Peak GFLOPS Calibration
+
+Cost model parameters, measured empirically:
+
+- `blas_peak_gflops = 1100` -- Apple AMX via Accelerate framework (measured on Apple Silicon).
+- `gpu_peak_gflops = 200` -- Metal compute with SF64 software float64 emulation.
+
+**Dispatch rule for matmul:** Estimated time = `2 * m * n * k / (peak_gflops * 1e9)`. The backend with lowest estimated time is selected.
+
+**Invariant:** The dispatch order is SIMD, then cBLAS, then GPU. GPU is only selected when it is estimated to genuinely outperform the CPU path. The old default values (150/2000) incorrectly favored GPU; the corrected values reflect measured AMX throughput.
+
+### 19.2 Metal Backend
+
+#### 19.2.1 Software Float64 (SF64)
+
+Metal GPU shaders do not natively support `float64` (double precision). Eshkol implements software float64 emulation via `metal_softfloat.h`:
+
+- Each `double` is represented as a pair of `uint32_t` values (high and low words).
+- Arithmetic operations (add, sub, mul, div, fma) are implemented in software using integer ALU operations.
+- Rounding follows IEEE 754 round-to-nearest-even. Rounding bit mask: `0x3FF` (10 bits).
+
+#### 19.2.2 Shader Kernels
+
+Metal compute kernels are embedded at build time as string constants. Supported operations:
+
+| Operation | Kernel | Complexity |
+|---|---|---|
+| Elementwise (add, sub, mul, div) | `elementwise_kernel` | O(n) |
+| Reduce (sum, min, max) | `reduce_kernel` | O(n) with parallel reduction |
+| Matrix multiply | `matmul_kernel` | O(m*n*k) tiled |
+| Transpose | `transpose_kernel` | O(m*n) |
+| Softmax | `softmax_kernel` | O(n) two-pass (max + exp-sum) |
+| Normalize | `normalize_kernel` | O(n) |
+
+#### 19.2.3 Memory Management
+
+GPU memory is managed through `GpuMemory` (Objective-C++ on macOS):
+- `gpu_alloc(size)` -- allocates a `MTLBuffer` in shared memory mode.
+- `gpu_free(ptr)` -- releases the Metal buffer.
+- `gpu_copy_to_device(host_ptr, size)` -- creates a buffer and copies host data.
+- `gpu_copy_from_device(device_ptr, host_ptr, size)` -- reads back results.
+
+**Invariant:** All GPU buffers use `MTLResourceStorageModeShared` for zero-copy access on unified memory architectures (Apple Silicon).
+
+### 19.3 CUDA Backend
+
+#### 19.3.1 Native Float64
+
+CUDA devices with compute capability >= 1.3 support native `float64` arithmetic. No software emulation is required.
+
+#### 19.3.2 cuBLAS Integration
+
+Matrix multiplication dispatches to `cublasDgemm` for GEMM operations when CUDA is available and the tensor size exceeds the GPU threshold.
+
+#### 19.3.3 Kernel Launch Configuration
+
+Custom CUDA kernels use:
+- **Block size:** 256 threads per block.
+- **Grid size:** `ceil(n / 256)` blocks.
+- **Shared memory:** Tiled matmul uses `256 * sizeof(double)` bytes of shared memory per block.
+
+**Stub:** On platforms without CUDA (e.g., macOS), `gpu_memory_stub.cpp` provides no-op implementations that always return failure, causing the cost model to fall back to CPU paths.
+
+---
+
+## 20. Signal Processing Operations
+
+Eshkol provides signal processing primitives as a standard library module (`signal.*`).
+
+### 20.1 FFT (Fast Fourier Transform)
+
+#### 20.1.1 Algorithm
+
+Cooley-Tukey radix-2 decimation-in-time (DIT) FFT:
+
+1. **Bit-reversal permutation:** Reorder input elements by bit-reversing their indices.
+2. **Butterfly computation:** For each stage `s` from 1 to `log2(N)`:
+   - Stride = `2^s`
+   - Twiddle factor: `W_N^k = exp(-2*pi*i*k/N)` for forward transform
+   - For each butterfly pair `(j, j + stride/2)`:
+     ```
+     t = W * x[j + stride/2]
+     x[j + stride/2] = x[j] - t
+     x[j] = x[j] + t
+     ```
+
+**Complexity:** O(N log N) for N-point transform.
+
+**Constraint:** Input length `N` must be a power of 2. Non-power-of-2 inputs should be zero-padded by the caller.
+
+#### 20.1.2 Interface
+
+```scheme
+(fft signal)          ; Forward FFT, returns complex tensor
+(ifft spectrum)       ; Inverse FFT, returns complex tensor
+```
+
+The result is a tensor of complex numbers (pairs of doubles: real and imaginary parts interleaved).
+
+### 20.2 Window Functions
+
+#### 20.2.1 Supported Windows
+
+All window functions map sample index `n` in `[0, N-1]` to a multiplicative weight:
+
+**Hamming:**
+```
+w(n) = 0.54 - 0.46 * cos(2*pi*n / (N-1))
+```
+
+**Hann:**
+```
+w(n) = 0.5 * (1 - cos(2*pi*n / (N-1)))
+```
+
+**Blackman (3-term):**
+```
+w(n) = 0.42 - 0.5 * cos(2*pi*n / (N-1)) + 0.08 * cos(4*pi*n / (N-1))
+```
+
+**Kaiser (parameterized):**
+```
+w(n) = I_0(beta * sqrt(1 - ((2n/(N-1)) - 1)^2)) / I_0(beta)
+```
+where `I_0` is the zeroth-order modified Bessel function of the first kind, and `beta` controls the trade-off between main-lobe width and side-lobe attenuation.
+
+#### 20.2.2 Interface
+
+```scheme
+(hamming-window n)          ; Returns N-element tensor
+(hann-window n)             ; Returns N-element tensor
+(blackman-window n)         ; Returns N-element tensor
+(kaiser-window n beta)      ; Returns N-element tensor
+(apply-window signal window) ; Element-wise multiplication
+```
+
+### 20.3 Filter Design
+
+#### 20.3.1 Butterworth Filter
+
+Analog Butterworth prototype poles lie on the unit circle in the s-plane at angles:
+
+```
+theta_k = pi * (2k + 1) / (2n)    for k = 0, 1, ..., n-1
+```
+
+where `n` is the filter order. The poles are:
+```
+s_k = -sin(theta_k) + j*cos(theta_k)
+```
+
+#### 20.3.2 Bilinear Transform
+
+The analog prototype is converted to a digital (z-plane) filter via the bilinear transform:
+
+```
+s = (2/T) * (z - 1) / (z + 1)
+```
+
+where `T` is the sampling period. Frequency pre-warping is applied:
+```
+omega_a = (2/T) * tan(omega_d * T / 2)
+```
+to ensure the digital cutoff frequency matches the desired specification.
+
+#### 20.3.3 Cascaded Second-Order Sections (SOS)
+
+For numerical stability, high-order IIR filters are decomposed into cascaded biquad (second-order) sections:
+
+```
+H(z) = prod_k [ (b0_k + b1_k*z^-1 + b2_k*z^-2) / (1 + a1_k*z^-1 + a2_k*z^-2) ]
+```
+
+Each section is implemented as a Direct Form II transposed structure to minimize coefficient sensitivity.
+
+#### 20.3.4 Interface
+
+```scheme
+(butterworth-lowpass order cutoff-freq sample-rate)  ; Returns filter coefficients
+(butterworth-highpass order cutoff-freq sample-rate)
+(apply-filter coefficients signal)                   ; Apply IIR filter to signal
+```
+
+### 20.4 Convolution
+
+#### 20.4.1 Direct Convolution
+
+For short filters (length `m`), direct convolution computes:
+
+```
+y(n) = sum_{k=0}^{m-1} h(k) * x(n - k)
+```
+
+**Complexity:** O(n * m) where `n` is the signal length and `m` is the filter length.
+
+#### 20.4.2 FFT-Based Convolution
+
+For long filters, the overlap-save method is used:
+
+1. Zero-pad filter to length `N = n + m - 1` (rounded up to next power of 2).
+2. Compute `H = FFT(h_padded)`.
+3. Compute `X = FFT(x_padded)`.
+4. Compute `Y = H * X` (element-wise complex multiplication).
+5. Compute `y = IFFT(Y)`.
+
+**Complexity:** O(N log N) where `N` is the padded length.
+
+#### 20.4.3 Automatic Selection
+
+The convolution function automatically selects between direct and FFT-based methods:
+
+```scheme
+(convolve signal filter)  ; Automatic method selection
+```
+
+**Heuristic:** If `m > 64` or `n * m > 4 * (n + m) * log2(n + m)`, FFT-based convolution is used. Otherwise, direct convolution is preferred.
+
+---
+
+## 21. Quantum RNG
+
+### 21.1 Quantum-Inspired Random Number Generator
+
+#### 21.1.1 Core Principles
 - **Quantum Circuit Simulation:** 8-qubit quantum state
 - **Hadamard Gates:** Create superposition
 - **Phase Gates:** Quantum entanglement
@@ -2580,7 +3499,7 @@ struct eshkol_display_opts {
 - **Entropy Pooling:** 16-element entropy pool
 - **Runtime Entropy:** Continuous entropy injection
 
-#### 14.1.2 API Functions
+#### 21.1.2 API Functions
 
 **Initialization:**
 ```c
@@ -2601,7 +3520,7 @@ qrng_error qrng_entangle_states(ctx, state1, state2, len)  // Create entanglemen
 qrng_error qrng_measure_state(ctx, state, len)             // Collapse superposition
 ```
 
-#### 14.1.3 Eshkol Wrapper Functions
+#### 21.1.3 Eshkol Wrapper Functions
 ```c
 eshkol_qrng_init()           // Initialize global context
 eshkol_qrng_double()         // Get random [0,1)
@@ -2612,9 +3531,9 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 
 ---
 
-## 15. Complete Operator and Function Reference
+## 22. Complete Operator and Function Reference
 
-### 15.1 All Special Forms (38 Total)
+### 22.1 All Special Forms (38 Total)
 
 1. `define` - Variable/function definition
 2. `lambda` - Anonymous function
@@ -2656,7 +3575,7 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 38. `values` - Multiple return values
 39. `call-with-values` - Consume multiple values
 
-### 15.2 All Arithmetic/Math Functions (50+)
+### 22.2 All Arithmetic/Math Functions (50+)
 
 **Arithmetic:**
 `+`, `-`, `*`, `/`, `quotient`, `remainder`, `modulo`, `abs`, `min`, `max`, `expt`
@@ -2679,7 +3598,7 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 **Numeric Predicates:**
 `zero?`, `positive?`, `negative?`, `odd?`, `even?`, `exact?`, `inexact?`
 
-### 15.3 All List Functions (60+)
+### 22.3 All List Functions (60+)
 
 **Core:**
 `cons`, `car`, `cdr`, `set-car!`, `set-cdr!`, `list`, `list*`, `make-list`
@@ -2711,7 +3630,7 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 **Conversion:**
 `list->vector`, `vector->list`, `string->list`, `list->string`
 
-### 15.4 All String Functions (30+)
+### 22.4 All String Functions (30+)
 
 **Construction:**
 `string`, `make-string`, `string-append`, `substring`
@@ -2728,7 +3647,7 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 **Conversions:**
 `string->number`, `number->string`, `string->symbol`, `symbol->string`, `string->list`, `list->string`
 
-### 15.5 All Tensor Operations (25+)
+### 22.5 All Tensor Operations (25+)
 
 **Creation:**
 `vector`, `matrix`, `tensor`, `make-vector`, `zeros`, `ones`, `eye`, `arange`, `linspace`
@@ -2748,11 +3667,11 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 **Queries:**
 `tensor-shape`, `tensor-rank`, `tensor-size`
 
-### 15.6 All Hash Table Operations (10+)
+### 22.6 All Hash Table Operations (10+)
 
 `make-hash-table`, `hash`, `hash-ref`, `hash-set!`, `hash-has-key?`, `hash-remove!`, `hash-keys`, `hash-values`, `hash-count`, `hash-clear!`, `hash-table?`
 
-### 15.7 All Autodiff Operators (8)
+### 22.7 All Autodiff Operators (8)
 
 **Univariate:**
 `derivative`
@@ -2763,15 +3682,15 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 **Vector Calculus:**
 `divergence`, `curl`, `laplacian`, `directional-derivative`
 
-### 15.8 All Type Predicates (20+)
+### 22.8 All Type Predicates (20+)
 
 `null?`, `boolean?`, `char?`, `string?`, `symbol?`, `number?`, `integer?`, `real?`, `complex?`, `pair?`, `list?`, `vector?`, `procedure?`, `hash-table?`, `tensor?`, `input-port?`, `output-port?`, `port?`, `eof-object?`
 
-### 15.9 All Equality/Comparison (3)
+### 22.9 All Equality/Comparison (3)
 
 `eq?`, `eqv?`, `equal?`
 
-### 15.10 All I/O Functions (20+)
+### 22.10 All I/O Functions (20+)
 
 **Output:**
 `display`, `write`, `newline`, `write-char`, `write-string`, `write-line`, `flush-output-port`
@@ -2788,33 +3707,33 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 **Directories:**
 `directory-exists?`, `make-directory`, `delete-directory`, `directory-list`, `current-directory`, `set-current-directory!`
 
-### 15.11 All System Functions (5+)
+### 22.11 All System Functions (5+)
 
 `getenv`, `setenv`, `unsetenv`, `system`, `exit`, `sleep`, `current-seconds`, `command-line`
 
-### 15.12 All Functional Programming (10+)
+### 22.12 All Functional Programming (10+)
 
 `compose`, `compose3`, `curry2`, `curry3`, `uncurry2`, `partial`, `partial1`, `partial2`, `partial3`, `flip`, `identity`, `constantly`, `negate`
 
-### 15.13 All JSON Operations (10)
+### 22.13 All JSON Operations (10)
 
 `json-parse`, `json-stringify`, `json-get`, `json-array-ref`, `hash-table->alist`, `alist->hash-table`, `json-read-file`, `json-write-file`, `alist->json`, `alist-write-json`
 
-### 15.14 All CSV Operations (6)
+### 22.14 All CSV Operations (6)
 
 `csv-parse`, `csv-parse-file`, `csv-stringify`, `csv-write-file`, `csv-parse-line`, `csv-stringify-row`
 
-### 15.15 All Base64 Operations (6)
+### 22.15 All Base64 Operations (6)
 
 `base64-encode`, `base64-decode`, `base64-encode-string`, `base64-decode-string`, `string->bytes`, `bytes->string`
 
-### 15.16 All Conversion Functions (12)
+### 22.16 All Conversion Functions (12)
 
 `exact->inexact`, `inexact->exact`, `string->number`, `number->string`, `string->symbol`, `symbol->string`, `char->integer`, `integer->char`, `list->vector`, `vector->list`, `string->list`, `list->string`
 
 ---
 
-## 16. Complete Language Capabilities Summary
+## 23. Complete Language Capabilities Summary
 
 ### Total Language Elements:
 - **Special Forms:** 39
@@ -2840,9 +3759,9 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 
 ---
 
-## 17. Compiler Capabilities
+## 24. Compiler Capabilities
 
-### 17.1 Supported Optimizations
+### 24.1 Supported Optimizations
 1. **Tail Call Elimination** - Self-recursive functions → loops
 2. **Closure Optimization** - Static capture analysis
 3. **Inline Expansion** - Small functions inlined
@@ -2850,7 +3769,7 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 5. **Constant Folding** - Compile-time evaluation
 6. **Dead Code Elimination** - LLVM optimization passes
 
-### 17.2 Compilation Modes
+### 24.2 Compilation Modes
 
 #### Standard Compilation
 ```bash
@@ -2872,7 +3791,7 @@ eshkol-run --dump-ir input.esk  # Produces input.ll
 eshkol-run --dump-ast input.esk  # Produces input.ast
 ```
 
-### 17.3 Linking
+### 24.3 Linking
 
 **Auto-linking stdlib:**
 If source requires stdlib, `stdlib.o` is automatically linked.
@@ -2884,9 +3803,9 @@ eshkol-run input.esk stdlib.o utils.o -o output
 
 ---
 
-## 18. Implementation Details
+## 25. Implementation Details
 
-### 18.1 Numeric Tower Promotion
+### 25.1 Numeric Tower Promotion
 
 **Rules:**
 - `int + int` → `int`
@@ -2894,7 +3813,7 @@ eshkol-run input.esk stdlib.o utils.o -o output
 - `float + float` → `float`
 - Operations preserve exactness when possible
 
-### 18.2 Function Calling Convention
+### 25.2 Function Calling Convention
 
 **Standard Functions:**
 ```c
@@ -2910,7 +3829,7 @@ eshkol_tagged_value_t func(args..., captures...)
 - Fixed parameters first
 - Rest parameter as tagged cons list
 
-### 18.3 Exception Handling Mechanism
+### 25.3 Exception Handling Mechanism
 
 **Implementation:**
 - C `setjmp`/`longjmp` for non-local exits
@@ -2918,7 +3837,7 @@ eshkol_tagged_value_t func(args..., captures...)
 - Global `g_current_exception` pointer
 - Automatic handler cleanup
 
-### 18.4 Module Name Mangling
+### 25.4 Module Name Mangling
 
 **Private Symbols:**
 - Module: `foo.bar.baz`
@@ -2930,11 +3849,12 @@ Keep original name (exported via `provide`)
 
 ---
 
-## 19. Version Information
+## 26. Version Information
 
-**Current Version:** 1.0.0-foundation
+**Current Version:** 1.1.11-accelerate
 
 **Version History:**
+- v1.1.11-accelerate - Exact arithmetic, continuations, consciousness engine, parallelism, GPU dispatch, signal processing
 - v1.0.0-foundation - Initial stable release
   - Core Scheme compatibility
   - Automatic differentiation system
@@ -2945,7 +3865,7 @@ Keep original name (exported via `provide`)
 
 ---
 
-## 20. File Organization
+## 27. File Organization
 
 ### Source Code Structure
 ```
@@ -2981,19 +3901,86 @@ tests/                   # Test suites
 
 ---
 
+## 28. Bytecode VM and ESKB Format
+
+Eshkol provides a dual backend architecture: the primary LLVM compilation path and a complementary bytecode VM for the qLLM/transformer weight pipeline and portable execution.
+
+### 28.1 Bytecode Emission
+
+**Syntax:** `eshkol-run input.esk -B output.eskb`
+
+The `-B` flag compiles source to ESKB (Eshkol Serialized Key Bytecode) binary format alongside normal LLVM compilation. The ESKB file can be executed by the standalone VM or loaded by the weight matrix transformer.
+
+### 28.2 ESKB Binary Format
+
+Section-based container with:
+- **Header**: Magic (`ESKB`), version, flags, CRC32 checksum
+- **CONST section**: Constant pool (NIL, INT64, F64, BOOL, STRING) with LEB128 encoding
+- **CODE section**: Instruction stream (opcode + signed LEB128 operand per instruction)
+- **META section**: Optional debug metadata (source file path)
+
+### 28.3 VM Architecture
+
+63-opcode register+stack interpreter (`eshkol_vm.c`):
+- **Value representation**: Tagged values {type, union{int64, double, bool, heap_ptr}}
+- **Memory**: Arena-based (OALR regions), heap object table
+- **Closures**: Heap-allocated with upvalue capture and mutation
+- **Continuations**: call/cc with stack snapshot, dynamic-wind support
+- **Native calls**: 250+ runtime functions covering math, strings, I/O, complex, rational, bignum, dual numbers, AD tape, tensors, logic, inference, workspace, hash tables, bytevectors, parameters, errors
+
+### 28.4 Weight Matrix Transformer
+
+Programs encoded as neural network weights (`weight_matrices.c`):
+- Architecture: d_model=36, 5 layers, FFN_DIM=512, 307K parameters
+- 25 core opcodes in weights, 38 via native dispatch
+- 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass
+- Exports QLMW binary format for qLLM loading
+
+
+### 28.6 `parameterize` (R7RS)
+
+**Syntax:**
+```scheme
+(parameterize ((param value) ...)
+  body ...)
+```
+
+Dynamic binding of parameter objects. Parameters created with `make-parameter` are thread-local and restored on scope exit.
+
+```scheme
+(define my-param (make-parameter 10))
+(parameterize ((my-param 42))
+  (display (my-param)))  ; => 42
+(display (my-param))     ; => 10
+```
+
+---
+
 ## Conclusion
 
-This document provides a **complete** specification of the Eshkol programming language version 1.0.0-foundation, documenting **every** feature, function, operator, and capability found in the implementation.
+This document provides a **complete** specification of the Eshkol programming language version 1.1.11-accelerate, documenting **every** feature, function, operator, and capability found in the implementation.
 
 **Total Coverage:**
-- ✅ All 39 special forms
-- ✅ All 300+ built-in functions and operators
-- ✅ Complete type system (15+ types with subtypes)
-- ✅ Full memory management system
-- ✅ Entire standard library
-- ✅ Complete autodiff system
-- ✅ Module system
-- ✅ REPL features
-- ✅ Quantum RNG
-- ✅ Compilation pipeline
-- ✅ Runtime architecture
+- All 101 special forms and parser operations
+- All 555+ LLVM-compiled built-in functions
+- 250+ VM native call IDs
+- 63-opcode bytecode VM with ESKB binary format
+- Complete type system (15+ types with 18+ heap subtypes)
+- Full memory management system (OALR arenas)
+- Entire standard library (40 modules)
+- Complete autodiff system (forward, reverse, symbolic, 73 AD node types)
+- Dual backend architecture (LLVM + bytecode VM)
+- Weight matrix transformer (3-way verified)
+- Module system with `require`, `provide`, `load`
+- REPL JIT with precompiled stdlib
+- Quantum RNG (8-qubit circuit simulation)
+- GPU dispatch (Metal SF64 + CUDA, forward and backward)
+- Compilation pipeline (LLVM 17-21 compatible)
+- Runtime architecture
+- Exact arithmetic (bignum, rational, numeric tower)
+- Complex number type with overflow-safe division
+- First-class continuations, dynamic-wind, and exception handling
+- Consciousness engine (logic programming, active inference, global workspace)
+- Parallel execution model (thread pool, futures, memory safety)
+- GPU dispatch (Metal SF64, CUDA, cost model)
+- Signal processing (FFT, windows, filters, convolution)

@@ -1,7 +1,7 @@
 ;;; core/list/transform.esk
 ;;; List transformation functions
 
-(provide take drop append reverse filter unzip partition)
+(provide take drop append reverse filter unzip partition list-copy)
 ;;; Note: remove is kept as a builtin for performance
 
 ;;; take: Return first n elements of a list
@@ -47,6 +47,12 @@
                         (cons (car pair) firsts)
                         (cons (cadr pair) seconds)))))
   (unzip-helper pairs '() '()))
+
+;;; list-copy: Shallow copy of a list (R7RS)
+(define (list-copy lst)
+  (if (null? lst)
+      '()
+      (cons (car lst) (list-copy (cdr lst)))))
 
 ;;; partition: Split list into two based on predicate
 (define (partition pred lst)

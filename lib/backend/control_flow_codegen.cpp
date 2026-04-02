@@ -37,14 +37,14 @@ llvm::Value* ControlFlowCodegen::isTruthy(llvm::Value* val) {
         return val;  // Already i1, use directly
     }
 
-    // Handle raw int64 - truthy if non-zero
+    // Handle raw int64 - ALWAYS truthy in Scheme (0 is truthy!)
     if (val->getType()->isIntegerTy(64)) {
-        return ctx_.builder().CreateICmpNE(val, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        return llvm::ConstantInt::getTrue(ctx_.context());
     }
 
-    // Handle raw double - truthy if non-zero
+    // Handle raw double - ALWAYS truthy in Scheme (0.0 is truthy!)
     if (val->getType()->isDoubleTy()) {
-        return ctx_.builder().CreateFCmpONE(val, llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+        return llvm::ConstantInt::getTrue(ctx_.context());
     }
 
     // Handle tagged_value
@@ -54,39 +54,18 @@ llvm::Value* ControlFlowCodegen::isTruthy(llvm::Value* val) {
         // DO NOT use 0x0F mask - 32 & 0x0F = 0 (NULL) which is WRONG!
         llvm::Value* base_type = tagged_.getBaseType(type);
 
-        // Check for false/null (type 0 with value 0)
-        llvm::Value* is_null_type = ctx_.builder().CreateICmpEQ(base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
-        llvm::Value* data = tagged_.unpackInt64(val);
-        llvm::Value* is_false_val = ctx_.builder().CreateICmpEQ(data,
-            llvm::ConstantInt::get(ctx_.int64Type(), 0));
-        llvm::Value* is_null_or_false = ctx_.builder().CreateAnd(is_null_type, is_false_val);
-
+        // SCHEME TRUTHINESS: Only #f is false. Everything else is truthy.
+        // This includes: 0, 0.0, '(), "", and all other values.
         // Check for BOOL type with value 0 (#f)
         llvm::Value* is_bool = ctx_.builder().CreateICmpEQ(base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
+        llvm::Value* data = tagged_.unpackInt64(val);
         llvm::Value* bool_is_false = ctx_.builder().CreateICmpEQ(data,
             llvm::ConstantInt::get(ctx_.int64Type(), 0));
-        llvm::Value* bool_false = ctx_.builder().CreateAnd(is_bool, bool_is_false);
+        llvm::Value* is_false = ctx_.builder().CreateAnd(is_bool, bool_is_false);
 
-        // Check for zero (int or double)
-        llvm::Value* is_int = ctx_.builder().CreateICmpEQ(base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
-        llvm::Value* int_is_zero = ctx_.builder().CreateICmpEQ(data,
-            llvm::ConstantInt::get(ctx_.int64Type(), 0));
-        llvm::Value* int_zero = ctx_.builder().CreateAnd(is_int, int_is_zero);
-
-        llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-        llvm::Value* double_val = tagged_.unpackDouble(val);
-        llvm::Value* double_is_zero = ctx_.builder().CreateFCmpOEQ(double_val,
-            llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
-        llvm::Value* double_zero = ctx_.builder().CreateAnd(is_double, double_is_zero);
-
-        // Truthy = NOT (null/false OR bool-false OR int-zero OR double-zero)
-        llvm::Value* is_falsy = ctx_.builder().CreateOr(is_null_or_false,
-            ctx_.builder().CreateOr(bool_false, ctx_.builder().CreateOr(int_zero, double_zero)));
-        return ctx_.builder().CreateNot(is_falsy);
+        // Truthy = NOT false (only #f is false)
+        return ctx_.builder().CreateNot(is_false);
     }
 
     // Default: assume truthy
@@ -129,6 +108,12 @@ llvm::Value* ControlFlowCodegen::codegenAnd(const eshkol_operations_t* op) {
 
         llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
 
+        // NORETURN SAFETY: If block is already terminated (e.g., by raise in sub-expression),
+        // we cannot emit any more instructions. Break out of the loop.
+        if (current_block->getTerminator()) {
+            break;
+        }
+
         if (i == num_args - 1) {
             // Last argument - always return its value
             phi_inputs.push_back({arg, current_block});
@@ -150,6 +135,12 @@ llvm::Value* ControlFlowCodegen::codegenAnd(const eshkol_operations_t* op) {
             // Continue evaluation with next arg
             ctx_.builder().SetInsertPoint(next_block);
         }
+    }
+
+    // NORETURN SAFETY: If no inputs reach merge (all paths terminated), remove merge block
+    if (phi_inputs.empty()) {
+        merge_block->eraseFromParent();
+        return llvm::UndefValue::get(ctx_.taggedValueType());
     }
 
     // Merge block with PHI
@@ -191,6 +182,12 @@ llvm::Value* ControlFlowCodegen::codegenOr(const eshkol_operations_t* op) {
 
         llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
 
+        // NORETURN SAFETY: If block is already terminated (e.g., by raise in sub-expression),
+        // we cannot emit any more instructions. Break out of the loop.
+        if (current_block->getTerminator()) {
+            break;
+        }
+
         if (i == num_args - 1) {
             // Last arg - just branch to merge with this value
             phi_inputs.push_back({arg, current_block});
@@ -211,6 +208,12 @@ llvm::Value* ControlFlowCodegen::codegenOr(const eshkol_operations_t* op) {
             // Continue evaluation in next_block
             ctx_.builder().SetInsertPoint(next_block);
         }
+    }
+
+    // NORETURN SAFETY: If no inputs reach merge (all paths terminated), remove merge block
+    if (phi_inputs.empty()) {
+        merge_block->eraseFromParent();
+        return llvm::UndefValue::get(ctx_.taggedValueType());
     }
 
     ctx_.builder().SetInsertPoint(merge_block);
@@ -290,11 +293,11 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
             // TCO FIX: Check if block is already terminated
             llvm::BasicBlock* else_block = ctx_.builder().GetInsertBlock();
             bool else_terminated = else_block->getTerminator() != nullptr;
-            if (result) {
-                phi_inputs.push_back({result, else_block});
-            }
-            // TCO FIX: Only add branch if block isn't already terminated
+            // TCO FIX: Only add to PHI and branch if block isn't already terminated
             if (!else_terminated) {
+                if (result) {
+                    phi_inputs.push_back({result, else_block});
+                }
                 ctx_.builder().CreateBr(done_block);
             }
             break;
@@ -320,11 +323,11 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
             // TCO FIX: Update then_block to current block (code gen may have created new blocks)
             then_block = ctx_.builder().GetInsertBlock();
             bool then_terminated = then_block->getTerminator() != nullptr;
-            if (result) {
-                phi_inputs.push_back({result, then_block});
-            }
-            // TCO FIX: Only add branch if block isn't already terminated
+            // TCO FIX: Only add to PHI and branch if block isn't already terminated
             if (!then_terminated) {
+                if (result) {
+                    phi_inputs.push_back({result, then_block});
+                }
                 ctx_.builder().CreateBr(done_block);
             }
 
@@ -366,15 +369,8 @@ llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
     llvm::Value* condition = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!condition) return nullptr;
 
-    // Convert condition to boolean
-    llvm::Value* cond_bool;
-    if (condition->getType() == ctx_.taggedValueType()) {
-        cond_bool = isTruthy(condition);
-    } else if (condition->getType()->isIntegerTy(64)) {
-        cond_bool = ctx_.builder().CreateICmpNE(condition, llvm::ConstantInt::get(ctx_.int64Type(), 0));
-    } else {
-        cond_bool = llvm::ConstantInt::getTrue(ctx_.context());
-    }
+    // Convert condition to boolean using isTruthy for consistent Scheme semantics
+    llvm::Value* cond_bool = isTruthy(condition);
 
     llvm::Function* function = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* then_block = llvm::BasicBlock::Create(ctx_.context(), "then", function);
@@ -541,15 +537,27 @@ llvm::Value* ControlFlowCodegen::codegenWhen(const eshkol_operations_t* op) {
     }
     if (!result) result = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
     llvm::BasicBlock* then_exit = ctx_.builder().GetInsertBlock();
-    ctx_.builder().CreateBr(done_block);
+
+    // Only add branch if block doesn't already have a terminator (e.g., from TCO tail call)
+    bool then_branches_to_done = !then_exit->getTerminator();
+    if (then_branches_to_done) {
+        ctx_.builder().CreateBr(done_block);
+    }
 
     // Done block - PHI for result
     ctx_.builder().SetInsertPoint(done_block);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "when_result");
-    phi->addIncoming(result, then_exit);
-    phi->addIncoming(false_result, branch_block);
 
-    return phi;
+    // If then block doesn't branch to done (TCO case), we only have one incoming edge
+    if (then_branches_to_done) {
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "when_result");
+        phi->addIncoming(result, then_exit);
+        phi->addIncoming(false_result, branch_block);
+        return phi;
+    } else {
+        // TCO case - condition was false, just return false_result
+        // The then block jumped elsewhere, so only the false path reaches here
+        return false_result;
+    }
 }
 
 llvm::Value* ControlFlowCodegen::codegenUnless(const eshkol_operations_t* op) {
@@ -589,15 +597,27 @@ llvm::Value* ControlFlowCodegen::codegenUnless(const eshkol_operations_t* op) {
     }
     if (!result) result = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
     llvm::BasicBlock* else_exit = ctx_.builder().GetInsertBlock();
-    ctx_.builder().CreateBr(done_block);
+
+    // Only add branch if block doesn't already have a terminator (e.g., from TCO tail call)
+    bool else_branches_to_done = !else_exit->getTerminator();
+    if (else_branches_to_done) {
+        ctx_.builder().CreateBr(done_block);
+    }
 
     // Done block - PHI for result
     ctx_.builder().SetInsertPoint(done_block);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "unless_result");
-    phi->addIncoming(result, else_exit);
-    phi->addIncoming(false_result, branch_block);
 
-    return phi;
+    // If else block doesn't branch to done (TCO case), we only have one incoming edge
+    if (else_branches_to_done) {
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "unless_result");
+        phi->addIncoming(result, else_exit);
+        phi->addIncoming(false_result, branch_block);
+        return phi;
+    } else {
+        // TCO case - condition was true, just return false_result
+        // The else block jumped elsewhere, so only the true path reaches here
+        return false_result;
+    }
 }
 
 // ============================================================================
