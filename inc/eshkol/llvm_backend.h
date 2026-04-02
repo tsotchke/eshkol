@@ -81,6 +81,15 @@ void eshkol_set_optimization_level(int level);
 int eshkol_get_optimization_level(void);
 
 /*
+ * Set the compilation target triple.
+ * Must be called BEFORE eshkol_generate_llvm_ir().
+ * Pass "wasm32-unknown-unknown" for WebAssembly output.
+ * Pass NULL to reset to native target (default).
+ */
+void eshkol_set_target(const char* triple);
+const char* eshkol_get_target(void);
+
+/*
  * Write LLVM IR to a file in textual format
  * @param module LLVM module reference
  * @param filename Output filename (should end with .ll)

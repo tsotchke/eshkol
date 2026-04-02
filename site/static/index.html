@@ -23,6 +23,7 @@
   <script src="eshkol-runtime.js"></script>
   <script>
     (async () => {
+      const loadingEl = document.getElementById('loading');
       try {
         const runtime = new EshkolRuntime();
         const response = await fetch('eshkol-site.wasm');
@@ -31,15 +32,17 @@
           runtime.createImports()
         );
         runtime.setInstance(instance);
-        document.getElementById('loading').remove();
+        if (loadingEl) loadingEl.remove();
         if (instance.exports.main) {
-          instance.exports.main();
+          instance.exports.main(0, 0);
         }
       } catch (e) {
-        document.getElementById('loading').innerHTML =
-          '<p style="color:#ff4444">Failed to load: ' + e.message + '</p>' +
-          '<p>Try refreshing or visit <a href="https://github.com/tsotchke/eshkol">GitHub</a></p>';
-        console.error(e);
+        console.error('Eshkol WASM error:', e);
+        if (loadingEl) {
+          loadingEl.innerHTML =
+            '<p style="color:#ff4444">Failed to load: ' + e.message + '</p>' +
+            '<p>Try refreshing or visit <a href="https://github.com/tsotchke/eshkol">GitHub</a></p>';
+        }
       }
     })();
   </script>

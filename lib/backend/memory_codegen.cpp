@@ -30,12 +30,12 @@ llvm::Function* MemoryCodegen::createFunc(const char* name, llvm::FunctionType* 
 
 void MemoryCodegen::createCoreArenaFunctions() {
     auto ptr = types.getPtrType();
-    auto i64 = types.getInt64Type();
+    auto szTy = types.getSizeType();  // i32 on wasm32, i64 on native
     auto voidTy = types.getVoidType();
 
     // arena_create: arena_t* (size_t)
     arena_create = createFunc("arena_create",
-        llvm::FunctionType::get(ptr, {i64}, false));
+        llvm::FunctionType::get(ptr, {szTy}, false));
 
     // arena_destroy: void (arena_t*)
     arena_destroy = createFunc("arena_destroy",
@@ -43,13 +43,12 @@ void MemoryCodegen::createCoreArenaFunctions() {
 
     // arena_allocate: void* (arena_t*, size_t)
     arena_allocate = createFunc("arena_allocate",
-        llvm::FunctionType::get(ptr, {ptr, i64}, false));
+        llvm::FunctionType::get(ptr, {ptr, szTy}, false));
 
     // arena_allocate_with_header: void* (arena_t*, size_t data_size, uint8_t subtype, uint8_t flags)
-    // Returns pointer to data (header is at offset -8)
     auto i8 = types.getInt8Type();
     arena_allocate_with_header = createFunc("arena_allocate_with_header",
-        llvm::FunctionType::get(ptr, {ptr, i64, i8, i8}, false));
+        llvm::FunctionType::get(ptr, {ptr, szTy, i8, i8}, false));
 
     // arena_push_scope: void (arena_t*)
     arena_push_scope = createFunc("arena_push_scope",
@@ -74,7 +73,7 @@ void MemoryCodegen::createConsCellFunctions() {
 
 void MemoryCodegen::createClosureFunctions() {
     auto ptr = types.getPtrType();
-    auto i64 = types.getInt64Type();
+    auto i64 = types.getInt64Type();  // Closure params are actual i64 data values, not sizes
 
     // arena_allocate_closure: eshkol_closure_t* (arena_t*, uint64_t func_ptr, size_t num_captures, uint64_t sexpr_ptr, uint64_t return_type_info, const char* name)
     arena_allocate_closure = createFunc("arena_allocate_closure",
@@ -83,7 +82,7 @@ void MemoryCodegen::createClosureFunctions() {
 
 void MemoryCodegen::createTaggedConsGetters() {
     auto ptr = types.getPtrType();
-    auto i64 = types.getInt64Type();
+    auto i64 = types.getInt64Type();  // Data values in cons cells are i64
     auto i8 = types.getInt8Type();
     auto i1 = types.getInt1Type();
     auto dbl = types.getDoubleType();
@@ -116,7 +115,7 @@ void MemoryCodegen::createTaggedConsGetters() {
 
 void MemoryCodegen::createTaggedConsSetters() {
     auto ptr = types.getPtrType();
-    auto i64 = types.getInt64Type();
+    auto i64 = types.getInt64Type();  // Data values in cons cells are i64
     auto i8 = types.getInt8Type();
     auto i1 = types.getInt1Type();
     auto dbl = types.getDoubleType();
@@ -146,16 +145,16 @@ void MemoryCodegen::createTaggedConsSetters() {
 
 void MemoryCodegen::createTapeFunctions() {
     auto ptr = types.getPtrType();
-    auto i64 = types.getInt64Type();
+    auto szTy = types.getSizeType();
     auto voidTy = types.getVoidType();
 
     // arena_allocate_tape: ad_tape_t* (arena_t*, size_t capacity)
     arena_allocate_tape = createFunc("arena_allocate_tape",
-        llvm::FunctionType::get(ptr, {ptr, i64}, false));
+        llvm::FunctionType::get(ptr, {ptr, szTy}, false));
 
     // arena_tape_add_node: size_t (ad_tape_t*, ad_node_t*)
     arena_tape_add_node = createFunc("arena_tape_add_node",
-        llvm::FunctionType::get(i64, {ptr, ptr}, false));
+        llvm::FunctionType::get(szTy, {ptr, ptr}, false));
 
     // arena_tape_reset: void (ad_tape_t*)
     arena_tape_reset = createFunc("arena_tape_reset",
@@ -163,11 +162,11 @@ void MemoryCodegen::createTapeFunctions() {
 
     // arena_tape_get_node: ad_node_t* (ad_tape_t*, size_t index)
     arena_tape_get_node = createFunc("arena_tape_get_node",
-        llvm::FunctionType::get(ptr, {ptr, i64}, false));
+        llvm::FunctionType::get(ptr, {ptr, szTy}, false));
 
     // arena_tape_get_node_count: size_t (ad_tape_t*)
     arena_tape_get_node_count = createFunc("arena_tape_get_node_count",
-        llvm::FunctionType::get(i64, {ptr}, false));
+        llvm::FunctionType::get(szTy, {ptr}, false));
 }
 
 void MemoryCodegen::createAdNodeFunctions() {
@@ -186,7 +185,8 @@ void MemoryCodegen::createTypedAllocatorFunctions() {
     // ═══════════════════════════════════════════════════════════════════════
 
     auto ptr = types.getPtrType();
-    auto i64 = types.getInt64Type();
+    auto szTy = types.getSizeType();
+    auto i64 = types.getInt64Type();  // Closure data values are i64
 
     // arena_allocate_cons_with_header: arena_tagged_cons_cell_t* (arena_t*)
     // Allocates cons cell with object header prepended.
@@ -200,21 +200,21 @@ void MemoryCodegen::createTypedAllocatorFunctions() {
     // Returns pointer to string data (header is at offset -8).
     // C signature: char* arena_allocate_string_with_header(arena_t* arena, size_t length)
     arena_allocate_string_with_header = createFunc("arena_allocate_string_with_header",
-        llvm::FunctionType::get(ptr, {ptr, i64}, false));
+        llvm::FunctionType::get(ptr, {ptr, szTy}, false));
 
     // arena_allocate_vector_with_header: void* (arena_t*, size_t capacity)
     // Allocates vector with object header prepended.
     // Returns pointer to arena_vector_data_t (header is at offset -8).
     // C signature: void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity)
     arena_allocate_vector_with_header = createFunc("arena_allocate_vector_with_header",
-        llvm::FunctionType::get(ptr, {ptr, i64}, false));
+        llvm::FunctionType::get(ptr, {ptr, szTy}, false));
 
     // arena_allocate_symbol_with_header: void* (arena_t*, size_t length)
     // Allocates symbol with object header prepended (HEAP_SUBTYPE_SYMBOL).
     // Returns pointer to symbol data (header is at offset -8).
     // C signature: void* arena_allocate_symbol_with_header(arena_t* arena, size_t length)
     arena_allocate_symbol_with_header = createFunc("arena_allocate_symbol_with_header",
-        llvm::FunctionType::get(ptr, {ptr, i64}, false));
+        llvm::FunctionType::get(ptr, {ptr, szTy}, false));
 
     // arena_allocate_closure_with_header: eshkol_closure_t* (arena_t*, uint64_t func_ptr,
     //                                     size_t num_captures, uint64_t sexpr_ptr, uint64_t return_type_info, const char* name)
@@ -247,7 +247,7 @@ void MemoryCodegen::createTypedAllocatorFunctions() {
     // Allocates complete tensor with header, dims array, and elements array.
     // Returns fully initialized tensor with dims and elements arrays allocated.
     arena_allocate_tensor_full = createFunc("arena_allocate_tensor_full",
-        llvm::FunctionType::get(ptr, {ptr, i64, i64}, false));
+        llvm::FunctionType::get(ptr, {ptr, szTy, szTy}, false));
 
     // eshkol_make_exception_with_header: eshkol_exception_t* (int32_t type, const char* message)
     // Allocates exception with object header prepended for HEAP_PTR type.

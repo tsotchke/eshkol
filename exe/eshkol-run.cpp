@@ -2273,6 +2273,7 @@ int main(int argc, char **argv)
             break;
         case 'w':
             wasm_output = 1;
+            eshkol_set_target("wasm32-unknown-unknown");
             break;
         case 'l':
             linked_libs.push_back(optarg);
