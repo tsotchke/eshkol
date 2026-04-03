@@ -3481,7 +3481,13 @@ vm_exit:
  * Fallback: standard switch dispatch for non-GCC/Clang compilers (MSVC etc.)
  * ========================================================================= */
 
+    int step_count = 0;
     while (!vm->halted && !vm->error && vm->pc < vm->code_len) {
+        if (++step_count > 10000000) {
+            fprintf(stderr, "VM: 10M steps exceeded at pc=%d op=%d fp=%d sp=%d fc=%d\n",
+                    vm->pc, vm->code[vm->pc].op, vm->fp, vm->sp, vm->frame_count);
+            vm->error = 1; break;
+        }
         Instr instr = vm->code[vm->pc++];
 
         switch (instr.op) {
@@ -3623,6 +3629,8 @@ vm_exit:
                 vm->stack[vm->fp + i] = vm->stack[vm->sp - argc + i];
             }
             vm->sp = vm->fp + argc;
+            /* Update closure slot so GET_UPVALUE sees the NEW closure's upvalues */
+            vm->stack[vm->fp - 1] = func;
             vm->pc = cl->closure.func_pc;
             break;
         }
@@ -3694,6 +3702,8 @@ vm_exit:
         /* I/O */
         case OP_PRINT: {
             Value v = vm_pop(vm);
+            fprintf(stderr, "[PRINT] type=%d i=%lld f=%f sp=%d fp=%d\n",
+                    v.type, (long long)v.as.i, v.as.f, vm->sp, vm->fp);
             print_value(vm, v);
             printf("\n");
             if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
@@ -3701,6 +3711,7 @@ vm_exit:
         }
 
         case OP_HALT:
+            fprintf(stderr, "[HALT] at sp=%d fp=%d frames=%d\n", vm->sp, vm->fp, vm->frame_count);
             vm->halted = 1;
             break;
 
@@ -6286,14 +6297,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         /* Store closure in loop_slot */
         chunk_emit(c, OP_SET_LOCAL, loop_slot);
 
-        /* Open upvalues for mutual reference */
-        if (n_upvals > 0) {
-            chunk_emit(c, OP_GET_LOCAL, loop_slot);
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(saved_locals)));
-            chunk_emit(c, OP_NATIVE_CALL, 131);
-            chunk_emit(c, OP_POP, 0);
-        }
+        /* Note: self-reference upvalue is already patched by OP_CLOSE_UPVALUE
+         * at line above (after OP_CLOSURE). No additional open_upvalues needed. */
 
         /* Call the loop function with initial values */
         chunk_emit(c, OP_GET_LOCAL, loop_slot);
@@ -8315,7 +8320,8 @@ static void compile_and_run(const char* source) {
     printf("  [compiled: %d instructions, %d constants, %d locals]\n",
            main_chunk.code_len, main_chunk.n_constants, main_chunk.n_locals);
 
-    /* Disassemble */
+    /* Disassemble (skip when ESHKOL_VM_NO_DISASM is set) */
+    if (getenv("ESHKOL_VM_NO_DISASM")) goto skip_disasm;
     static const char* opn[] = {
         "NOP","CONST","NIL","TRUE","FALSE","POP","DUP",
         "ADD","SUB","MUL","DIV","MOD","NEG","ABS",
@@ -8420,6 +8426,7 @@ static void compile_and_run(const char* source) {
         free(eskb_consts);
     }
 
+    skip_disasm:
     /* Run peephole optimization before execution */
     peephole_optimize(&main_chunk);
 
