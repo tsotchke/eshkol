@@ -76,6 +76,9 @@
 /* S-expression parser */
 #include "vm_parser.c"
 
+/* Hygienic macro expander (syntax-rules) — must precede compiler */
+#include "vm_macro.c"
+
 /* Bytecode compiler */
 #include "vm_compiler.c"
 
