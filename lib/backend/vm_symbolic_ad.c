@@ -200,3 +200,130 @@ static SymNode* sym_simplify(SymNode* expr) {
 static void sym_arena_reset(void) {
     sym_arena_len = 0;
 }
+
+/*******************************************************************************
+ * Bytecode Trace → Symbolic Graph
+ ******************************************************************************/
+
+/* Build a symbolic expression graph from a bytecode instruction sequence.
+ * Traces the stack effect of each instruction to build the expression tree. */
+static SymNode* sym_trace_bytecode(const Instr* code, int start, int end,
+                                     const Value* constants, int n_constants) {
+    /* Symbolic stack — tracks expressions, not values */
+    SymNode* stack[256];
+    int sp = 0;
+
+    for (int pc = start; pc < end; pc++) {
+        uint8_t op = code[pc].op;
+        int32_t operand = code[pc].operand;
+
+        switch (op) {
+        case 1: /* OP_CONST */
+            if (operand >= 0 && operand < n_constants) {
+                Value v = constants[operand];
+                if (v.type == 1) /* VAL_INT */
+                    stack[sp++] = sym_const((double)v.as.i);
+                else if (v.type == 2) /* VAL_FLOAT */
+                    stack[sp++] = sym_const(v.as.f);
+                else
+                    stack[sp++] = sym_const(0);
+            }
+            break;
+        case 7: /* OP_ADD */
+            if (sp >= 2) { SymNode* b = stack[--sp]; SymNode* a = stack[--sp]; stack[sp++] = sym_binop(SYM_ADD, a, b); }
+            break;
+        case 8: /* OP_SUB */
+            if (sp >= 2) { SymNode* b = stack[--sp]; SymNode* a = stack[--sp]; stack[sp++] = sym_binop(SYM_SUB, a, b); }
+            break;
+        case 9: /* OP_MUL */
+            if (sp >= 2) { SymNode* b = stack[--sp]; SymNode* a = stack[--sp]; stack[sp++] = sym_binop(SYM_MUL, a, b); }
+            break;
+        case 10: /* OP_DIV */
+            if (sp >= 2) { SymNode* b = stack[--sp]; SymNode* a = stack[--sp]; stack[sp++] = sym_binop(SYM_DIV, a, b); }
+            break;
+        case 12: /* OP_NEG */
+            if (sp >= 1) { SymNode* a = stack[--sp]; stack[sp++] = sym_unop(SYM_NEG, a); }
+            break;
+        case 20: /* OP_GET_LOCAL — treat as variable */
+            stack[sp++] = sym_var(operand);
+            break;
+        default:
+            /* Unknown op — push a variable placeholder */
+            stack[sp++] = sym_var(-(pc + 1));
+            break;
+        }
+
+        if (sp >= 256) break; /* stack overflow protection */
+    }
+
+    return (sp > 0) ? stack[sp - 1] : sym_const(0);
+}
+
+/* Generate bytecode from a simplified symbolic expression.
+ * Emits OP_CONST for constants, OP_GET_LOCAL for variables,
+ * and arithmetic ops for operators. */
+static void sym_compile(SymNode* expr, FuncChunk* output) {
+    if (!expr || !output) return;
+
+    switch (expr->type) {
+    case SYM_CONST:
+        chunk_emit(output, 1 /* OP_CONST */,
+                   chunk_add_const(output, (Value){.type = 2, .as.f = expr->const_val}));
+        break;
+    case SYM_VAR:
+        chunk_emit(output, 20 /* OP_GET_LOCAL */, expr->var_id);
+        break;
+    case SYM_ADD:
+        sym_compile(expr->left, output);
+        sym_compile(expr->right, output);
+        chunk_emit(output, 7 /* OP_ADD */, 0);
+        break;
+    case SYM_SUB:
+        sym_compile(expr->left, output);
+        sym_compile(expr->right, output);
+        chunk_emit(output, 8 /* OP_SUB */, 0);
+        break;
+    case SYM_MUL:
+        sym_compile(expr->left, output);
+        sym_compile(expr->right, output);
+        chunk_emit(output, 9 /* OP_MUL */, 0);
+        break;
+    case SYM_DIV:
+        sym_compile(expr->left, output);
+        sym_compile(expr->right, output);
+        chunk_emit(output, 10 /* OP_DIV */, 0);
+        break;
+    case SYM_NEG:
+        sym_compile(expr->left, output);
+        chunk_emit(output, 12 /* OP_NEG */, 0);
+        break;
+    case SYM_SIN:
+        sym_compile(expr->left, output);
+        chunk_emit(output, 37 /* OP_NATIVE_CALL */, 20); /* sin */
+        break;
+    case SYM_COS:
+        sym_compile(expr->left, output);
+        chunk_emit(output, 37 /* OP_NATIVE_CALL */, 21); /* cos */
+        break;
+    case SYM_EXP:
+        sym_compile(expr->left, output);
+        chunk_emit(output, 37 /* OP_NATIVE_CALL */, 23); /* exp */
+        break;
+    case SYM_LOG:
+        sym_compile(expr->left, output);
+        chunk_emit(output, 37 /* OP_NATIVE_CALL */, 24); /* log */
+        break;
+    case SYM_SQRT:
+        sym_compile(expr->left, output);
+        chunk_emit(output, 37 /* OP_NATIVE_CALL */, 25); /* sqrt */
+        break;
+    case SYM_POW:
+        sym_compile(expr->left, output);
+        sym_compile(expr->right, output);
+        chunk_emit(output, 37 /* OP_NATIVE_CALL */, 32); /* expt */
+        break;
+    default:
+        chunk_emit(output, 2 /* OP_NIL */, 0);
+        break;
+    }
+}

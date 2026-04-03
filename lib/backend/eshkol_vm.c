@@ -690,15 +690,53 @@ typedef struct {
     int initialized;
 } ReplSession;
 
+/* Load prelude from cache if available (eliminates ~50ms recompilation) */
+#ifdef ESHKOL_VM_NO_DISASM
+#include "vm_prelude_cache.h"
+#endif
+
+static int repl_load_prelude_cache(FuncChunk* chunk) {
+#ifdef ESHKOL_VM_NO_DISASM
+    /* Load cached prelude bytecode directly — skip parse+compile */
+    chunk_ensure_code_cap(chunk, prelude_code_len);
+    for (int i = 0; i < prelude_code_len; i++) {
+        chunk->code[i] = (Instr){prelude_ops[i], prelude_operands[i]};
+    }
+    chunk->code_len = prelude_code_len;
+
+    for (int i = 0; i < prelude_n_constants; i++) {
+        Value v;
+        v.type = prelude_const_types[i];
+        if (v.type == VAL_FLOAT) v.as.f = prelude_const_floats[i];
+        else v.as.i = prelude_const_ints[i];
+        chunk_add_const(chunk, v);
+    }
+
+    for (int i = 0; i < prelude_n_locals; i++) {
+        add_local(chunk, prelude_local_names[i]);
+    }
+    return 1; /* cache loaded */
+#else
+    (void)chunk;
+    return 0; /* no cache available */
+#endif
+}
+
 /* Create a REPL session: compile prelude, create VM, run prelude */
 static ReplSession* repl_session_create(void) {
     ReplSession* rs = (ReplSession*)calloc(1, sizeof(ReplSession));
     if (!rs) return NULL;
 
     chunk_init_arrays(&rs->chunk);
-    emit_builtin_preamble(&rs->chunk);
 
-    /* Compile Scheme prelude into the chunk */
+    /* Try loading prelude from cache first (skips ~50ms recompilation) */
+    int cache_loaded = repl_load_prelude_cache(&rs->chunk);
+
+    if (!cache_loaded) {
+        /* No cache — compile builtins + prelude from source */
+        emit_builtin_preamble(&rs->chunk);
+    }
+
     static const char* scheme_prelude =
         "(define (map f lst)\n"
         "  (let loop ((l lst) (acc (list)))\n"
@@ -733,15 +771,17 @@ static ReplSession* repl_session_create(void) {
         "(define * (lambda args (fold-left mul2 1 args)))\n"
         "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
         "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n";
-    src_ptr = scheme_prelude;
-    while (1) {
-        skip_ws(); if (!*src_ptr) break;
-        Node* expr = parse_sexp(); if (!expr) break;
-        int lb = rs->chunk.n_locals;
-        compile_expr(&rs->chunk, expr, 0);
-        if (rs->chunk.n_locals == lb)
-            chunk_emit(&rs->chunk, OP_POP, 0);
-        free_node(expr);
+    if (!cache_loaded) {
+        src_ptr = scheme_prelude;
+        while (1) {
+            skip_ws(); if (!*src_ptr) break;
+            Node* expr = parse_sexp(); if (!expr) break;
+            int lb = rs->chunk.n_locals;
+            compile_expr(&rs->chunk, expr, 0);
+            if (rs->chunk.n_locals == lb)
+                chunk_emit(&rs->chunk, OP_POP, 0);
+            free_node(expr);
+        }
     }
 
     /* Add HALT so we can run the prelude */
