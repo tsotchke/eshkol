@@ -32,8 +32,21 @@ typedef struct MacroNode {
 } MacroNode;
 #include "vm_macro.c"
 
-static const char* src_ptr = NULL;
-static int g_trace_on = 0;  /* global, set by --trace flag */
+/* Compiler context — encapsulates all mutable state for reentrancy and REPL */
+typedef struct {
+    const char* src_ptr;       /* Current parse position */
+    int trace_on;              /* Trace execution flag */
+    const char* eskb_output;   /* ESKB output path (--emit-eskb) */
+    const char* source_path;   /* Source file path */
+    char loaded_modules[64][128]; /* Module cache for require */
+    int n_loaded;
+} CompilerContext;
+
+static CompilerContext g_compiler_ctx = {0};
+
+/* Convenience macros — allow existing code to use src_ptr directly */
+#define src_ptr   g_compiler_ctx.src_ptr
+#define g_trace_on g_compiler_ctx.trace_on
 
 static void skip_ws(void) {
     while (*src_ptr) {

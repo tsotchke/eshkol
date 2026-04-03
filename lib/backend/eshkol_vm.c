@@ -319,9 +319,9 @@ static void emit_builtin_preamble(FuncChunk* c) {
     }
 }
 
-/* Global ESKB output path (set by --emit-eskb flag in main) */
-static const char* g_eskb_output_path = NULL;
-static const char* g_source_file_path = NULL;
+/* Global ESKB output path — aliased through CompilerContext */
+#define g_eskb_output_path g_compiler_ctx.eskb_output
+#define g_source_file_path g_compiler_ctx.source_path
 
 static void compile_and_run(const char* source) {
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
