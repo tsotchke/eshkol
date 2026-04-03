@@ -103,6 +103,23 @@
             }
           }
         });
+        // Doc tab switching — click handler for documentation tabs
+        document.addEventListener('click', (e) => {
+          const tab = e.target.closest('[data-url]');
+          if (tab) {
+            e.preventDefault();
+            const url = tab.getAttribute('data-url') || tab.getAttribute('href');
+            const area = document.getElementById('doc-content-area');
+            if (area && url) {
+              area.innerHTML = '<p style="color:#606078;font-style:italic">Loading...</p>';
+              fetch(url).then(r => r.text()).then(md => {
+                area.innerHTML = runtime.renderMarkdown(md);
+              }).catch(err => {
+                area.innerHTML = '<p style="color:#ff4444">Failed to load: ' + err.message + '</p>';
+              });
+            }
+          }
+        });
       } catch (e) {
         console.error('Eshkol WASM error:', e);
         if (loadingEl) {

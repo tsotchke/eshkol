@@ -670,12 +670,12 @@
       (style! tabs "marginBottom" "32px")
       (style! tabs "flexWrap" "wrap")
 
-      (render-doc-tab tabs "Quick Reference" "content/eshkol_quick_reference.html")
-      (render-doc-tab tabs "Language Guide" "content/eshkol_language_guide.html")
-      (render-doc-tab tabs "API Reference" "content/api_reference.html")
-      (render-doc-tab tabs "Quick Start" "content/quickstart.html")
-      (render-doc-tab tabs "Feature Matrix" "content/feature_matrix.html")
-      (render-doc-tab tabs "Roadmap" "content/roadmap.html"))
+      (render-doc-tab tabs "Quick Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_QUICK_REFERENCE.md")
+      (render-doc-tab tabs "Language Guide" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_LANGUAGE_GUIDE.md")
+      (render-doc-tab tabs "API Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/API_REFERENCE.md")
+      (render-doc-tab tabs "Quick Start" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/QUICKSTART.md")
+      (render-doc-tab tabs "Feature Matrix" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/FEATURE_MATRIX.md")
+      (render-doc-tab tabs "Roadmap" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ROADMAP.md"))
 
     ;; Content area
     (let ((doc-area (create-div page)))
@@ -684,7 +684,7 @@
       (web-set-attribute doc-area "id" "doc-content-area")
 
       ;; Load quick reference by default
-      (web-load-content "content/eshkol_quick_reference.html" doc-area)
+      (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_QUICK_REFERENCE.md" doc-area)
 
       ;; Instruction
       (let ((hint (create-text "p" "Click a tab above to load documentation." doc-area)))
