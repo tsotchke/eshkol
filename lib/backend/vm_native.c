@@ -2560,23 +2560,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     default:
-        /* Unimplemented native call — push NIL and continue */
+        /* Check geometric manifold operations (800-859) */
+        if (fid >= 800 && fid <= 859) {
+            vm_dispatch_geometric(vm, fid);
+            break;
+        }
+        /* Unknown native ID — warn but don't crash */
+        fprintf(stderr, "WARNING: unhandled native call ID %d\n", fid);
         vm_push(vm, NIL_VAL);
         break;
-
-
-        break;
     }
-
-    /* Geometric manifold operations (800-859) */
-    if (fid >= 800 && fid <= 859) {
-        vm_dispatch_geometric(vm, fid);
-        return;
-    }
-
-    /* Unknown native ID — warn but don't crash */
-    fprintf(stderr, "WARNING: unhandled native call ID %d\n", fid);
-    vm_push(vm, NIL_VAL);
 }
 
 /*******************************************************************************

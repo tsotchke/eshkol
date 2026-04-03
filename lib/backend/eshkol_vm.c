@@ -82,6 +82,9 @@
 /* Peephole optimizer */
 #include "vm_peephole.c"
 
+/* Symbolic automatic differentiation */
+#include "vm_symbolic_ad.c"
+
 
 /*******************************************************************************
  * Compile & Run
