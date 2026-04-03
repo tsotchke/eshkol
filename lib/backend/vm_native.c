@@ -2517,11 +2517,62 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(vec ? vec->len : 0));
         } else vm_push(vm, INT_VAL(0)); break; }
-    case 222: case 223: case 224: case 225: case 226:
-        /* string->list, list->string, gcd, lcm, make-string — stubs */
-        { int nargs = (fid >= 224) ? 2 : 1;
-          for (int i = 0; i < nargs; i++) vm_pop(vm);
-          vm_push(vm, NIL_VAL); break; }
+    case 222: { /* string->list */
+        Value s_val = vm_pop(vm);
+        Value result = NIL_VAL;
+        if (s_val.type == VAL_STRING) {
+            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
+            if (s) for (int i = s->char_len - 1; i >= 0; i--) {
+                int cp = vm_string_ref(s, i);
+                int32_t p = heap_alloc(&vm->heap); if (p < 0) break;
+                vm->heap.objects[p]->type = HEAP_CONS;
+                vm->heap.objects[p]->cons.car = INT_VAL(cp);
+                vm->heap.objects[p]->cons.cdr = result;
+                result = PAIR_VAL(p);
+            }
+        }
+        vm_push(vm, result); break;
+    }
+    case 223: { /* list->string */
+        Value lst = vm_pop(vm);
+        char buf[4096]; int len = 0;
+        Value cur = lst;
+        while (cur.type == VAL_PAIR && len < 4095) {
+            int cp = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+            if (cp >= 0 && cp < 128) buf[len++] = (char)cp;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        buf[len] = 0;
+        VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+        if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); }
+        else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 224: { /* gcd */
+        Value b = vm_pop(vm), a = vm_pop(vm);
+        int64_t x = llabs((int64_t)as_number(a)), y = llabs((int64_t)as_number(b));
+        while (y != 0) { int64_t t = y; y = x % y; x = t; }
+        vm_push(vm, INT_VAL(x)); break;
+    }
+    case 225: { /* lcm */
+        Value b = vm_pop(vm), a = vm_pop(vm);
+        int64_t x = llabs((int64_t)as_number(a)), y = llabs((int64_t)as_number(b));
+        if (x == 0 || y == 0) { vm_push(vm, INT_VAL(0)); break; }
+        int64_t g = x, h = y;
+        while (h != 0) { int64_t t = h; h = g % h; g = t; }
+        vm_push(vm, INT_VAL(x / g * y)); break;
+    }
+    case 226: { /* make-string(n, char) */
+        Value ch = vm_pop(vm), n = vm_pop(vm);
+        int sz = (int)as_number(n), c = (int)as_number(ch);
+        if (sz < 0) sz = 0; if (sz > 65536) sz = 65536;
+        char* buf = (char*)malloc(sz + 1);
+        if (buf) { memset(buf, c > 0 && c < 128 ? c : ' ', sz); buf[sz] = 0;
+            VmString* s = vm_string_from_cstr(&vm->heap.regions, buf); free(buf);
+            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+        }
+        vm_push(vm, NIL_VAL); break;
+    }
 
     case 151: { /* direct open slot: set closure upvalue to reference a stack slot */
         Value slot_v = vm_pop(vm), uv_idx_v = vm_pop(vm), cl_val = vm_pop(vm);

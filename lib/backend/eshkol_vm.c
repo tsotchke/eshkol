@@ -299,8 +299,8 @@ static const BuiltinDef BUILTINS[] = {
     {"linspace", 746, 3}, {"eye", 745, 1},
     /* Missing hash */
     {"hash-clear!", 668, 1},
-    /* gcd / lcm */
-    {"gcd", 346, 2}, {"lcm", 347, 2},
+    /* numerator / denominator (rational parts) */
+    {"numerator", 346, 1}, {"denominator", 347, 1},
     {NULL, 0, 0}  /* sentinel */
 };
 
