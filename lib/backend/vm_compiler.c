@@ -66,6 +66,8 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
     chunk_emit(c, OP_NIL, 0);
 }
 
+/* compile_depth tracked in global context — not in CompilerContext struct
+ * because it's transient per-compilation, not persistent state */
 static int compile_depth = 0;
 
 static void compile_expr(FuncChunk* c, Node* node, int tail) {
@@ -171,12 +173,11 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
     if (node->n_children >= 2 && node->children[1]->type == N_SYMBOL) {
         const char* mod_name = node->children[1]->symbol;
         /* Track already-loaded modules to avoid double-loading */
-        static char loaded_modules[64][128];
-        static int n_loaded = 0;
-        for (int i = 0; i < n_loaded; i++) {
-            if (strcmp(loaded_modules[i], mod_name) == 0) return; /* already loaded */
+        for (int i = 0; i < g_compiler_ctx.n_loaded; i++) {
+            if (strcmp(g_compiler_ctx.loaded_modules[i], mod_name) == 0) return;
         }
-        if (n_loaded < 64) strncpy(loaded_modules[n_loaded++], mod_name, 127);
+        if (g_compiler_ctx.n_loaded < 64)
+            strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded++], mod_name, 127);
 
         /* stdlib is the prelude — builtins already available */
         if (strcmp(mod_name, "stdlib") == 0) return;
