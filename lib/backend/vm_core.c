@@ -105,6 +105,7 @@ typedef enum {
     VAL_CLOSURE = 5,    /* heap pointer to closure */
     VAL_STRING = 6,     /* heap pointer to string */
     VAL_VECTOR = 7,     /* heap pointer to vector */
+    VAL_CONTINUATION = 15, /* heap pointer to saved continuation */
 } ValType;
 
 typedef struct {
@@ -266,6 +267,15 @@ typedef struct {
     /* Output */
     Value outputs[256];
     int n_outputs;
+
+    /* Exception handling */
+    struct { int pc; int sp; int fp; int frame_count; } handler_stack[16];
+    int n_handlers;
+    Value current_exception;
+
+    /* Dynamic-wind stack */
+    struct { Value before; Value after; } wind_stack[32];
+    int n_winds;
 
     /* Status */
     int halted;
@@ -483,6 +493,13 @@ static int vm_extract_shape(VM* vm, Value shape_val, int64_t* shape, int max_dim
     }
     return n_dims;
 }
+
+/* Continuation: saved VM state for call/cc */
+typedef struct {
+    int pc, fp, sp, frame_count, n_handlers, n_winds;
+    Value* saved_stack;
+    CallFrame* saved_frames;
+} VmContinuation;
 
 /* Simple vector for VEC_CREATE/VEC_REF/VEC_SET/VEC_LEN opcodes */
 /* VmVector defined earlier (before print_value) */

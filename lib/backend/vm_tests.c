@@ -764,12 +764,12 @@ static void run_source_tests(void) {
     source_test("quasiquote-splice","(define xs (list 2 3 4)) (display `(1 ,@xs 5))");
 
     /* Multiple values */
-    source_test("values-basic",
-        "(call-with-values (lambda () (values 1 2 3)) (lambda (a b c) (display (+ a b c))))");
+    source_test_expect("values-basic",
+        "(call-with-values (lambda () (values 1 2 3)) (lambda (a b c) (display (+ a b c))))", "6");
 
     /* Continuations */
-    source_test("call/cc-escape",
-        "(display (+ 1 (call-with-current-continuation (lambda (k) (+ 2 (k 10))))))") ;
+    source_test_expect("call/cc-escape",
+        "(display (+ 1 (call-with-current-continuation (lambda (k) (+ 2 (k 10))))))", "11");
 
     /* Exception handling */
     source_test_expect("guard-basic", "(display (guard (e (#t \"caught\")) (raise \"err\")))", "caught");
