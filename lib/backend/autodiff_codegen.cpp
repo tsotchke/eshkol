@@ -105,7 +105,7 @@ llvm::Value* AutodiffCodegen::packDualToTagged(llvm::Value* dual) {
 
     // Allocate space for dual number on the heap (arena)
     // dual_number is 16 bytes (two doubles)
-    llvm::Value* size = llvm::ConstantInt::get(ctx_.int64Type(), 16);
+    llvm::Value* size = llvm::ConstantInt::get(ctx_.sizeType(), 16);
     llvm::Function* alloc_func = mem_.getArenaAllocate();
     if (!alloc_func) {
         eshkol_warn("packDualToTagged: arena_allocate not found");

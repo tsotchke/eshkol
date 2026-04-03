@@ -1,0 +1,63 @@
+;;
+;; layout.esk - Flexbox layout engine FFI wrapper
+;; Pure Eshkol implementation (no C FFI needed - the TUI layout.esk handles this)
+;; This module re-exports the TUI layout for stdlib consumers.
+;;
+(provide layout-compute layout-box layout-text
+         layout-node-bounds)
+
+;; Layout is computed in pure Eshkol in tui/layout.esk.
+;; This module provides a simplified API for non-TUI consumers
+;; (e.g., formatting tool output, table rendering).
+
+(define (layout-box direction width children)
+  "Compute layout for a flex container.
+   direction: 'row or 'column
+   width: available width
+   children: list of (content . min-width) pairs
+   Returns: list of (content x y width) tuples."
+  (if (eq? direction 'row)
+      (layout-row children width)
+      (layout-column children width)))
+
+(define (layout-row children avail-width)
+  "Layout children in a row."
+  (let* ((n (length children))
+         (per-child (if (> n 0) (quotient avail-width n) avail-width)))
+    (let loop ((cs children) (x 0) (result '()))
+      (if (null? cs) (reverse result)
+          (let* ((child (car cs))
+                 (content (car child))
+                 (min-w (cdr child))
+                 (w (max min-w (min per-child (- avail-width x)))))
+            (loop (cdr cs) (+ x w)
+                  (cons (list content x 0 w) result)))))))
+
+(define (layout-column children avail-width)
+  "Layout children in a column."
+  (let loop ((cs children) (y 0) (result '()))
+    (if (null? cs) (reverse result)
+        (let* ((child (car cs))
+               (content (car child))
+               (h 1))  ;; Each item takes 1 row
+          (loop (cdr cs) (+ y h)
+                (cons (list content 0 y avail-width) result))))))
+
+(define (layout-text text width)
+  "Wrap text to fit within width. Returns list of lines."
+  (if (<= (string-length text) width) (list text)
+      (let loop ((remaining text) (lines '()))
+        (if (string=? remaining "") (reverse lines)
+            (let* ((chunk-len (min width (string-length remaining)))
+                   ;; Try to break at word boundary
+                   (break-at (let find-space ((i (- chunk-len 1)))
+                               (cond ((<= i 0) chunk-len)
+                                     ((char=? (string-ref remaining i) #\space) i)
+                                     (else (find-space (- i 1))))))
+                   (line (substring remaining 0 break-at))
+                   (rest (string-trim (substring remaining break-at (string-length remaining)))))
+              (loop rest (cons line lines)))))))
+
+(define (layout-node-bounds node)
+  "Get (x y width height) from a layout result tuple."
+  (list (cadr node) (caddr node) (cadddr node) 1))

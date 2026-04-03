@@ -1,0 +1,38 @@
+;;
+;; crypto.esk - Cryptographic primitives FFI wrapper
+;; Bindings to agent_crypto.c (OpenSSL/CommonCrypto)
+;;
+(provide hmac-sha256 sha256 random-bytes random-hex)
+
+;; FFI declarations
+(extern i32 hmac-sha256-raw ptr i64 ptr i64 ptr i64 :real eshkol_hmac_sha256)
+(extern i32 sha256-raw ptr i64 ptr i64 :real eshkol_sha256)
+(extern i32 random-bytes-raw ptr i64 :real eshkol_random_bytes)
+(extern i32 random-hex-raw ptr i64 :real eshkol_random_hex)
+
+;; High-level wrappers
+(define (hmac-sha256 key data)
+  "Compute HMAC-SHA256. Returns 64-char hex string."
+  (let ((buf (make-string 65 #\nul)))
+    (let ((rc (hmac-sha256-raw key (string-length key)
+                                data (string-length data)
+                                buf 65)))
+      (if (= rc 0) (substring buf 0 64) #f))))
+
+(define (sha256 data)
+  "Compute SHA256 hash. Returns 64-char hex string."
+  (let ((buf (make-string 65 #\nul)))
+    (let ((rc (sha256-raw data (string-length data) buf 65)))
+      (if (= rc 0) (substring buf 0 64) #f))))
+
+(define (random-bytes len)
+  "Generate cryptographically secure random bytes as a string."
+  (let ((buf (make-string len #\nul)))
+    (let ((rc (random-bytes-raw buf len)))
+      (if (= rc 0) buf #f))))
+
+(define (random-hex hex-len)
+  "Generate random hex string of given length."
+  (let ((buf (make-string (+ hex-len 1) #\nul)))
+    (let ((rc (random-hex-raw buf hex-len)))
+      (if (= rc 0) (substring buf 0 hex-len) #f))))

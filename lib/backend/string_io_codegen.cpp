@@ -581,7 +581,7 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
     if (!tv->llvm_value) return nullptr;
 
     // Allocate buffer for string with header (64 bytes should be enough for any number)
-    llvm::Value* buf_size = llvm::ConstantInt::get(ctx_.int64Type(), 64);
+    llvm::Value* buf_size = llvm::ConstantInt::get(ctx_.sizeType(), 64);
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* buf = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
@@ -890,7 +890,7 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::Value* char_val = tagged_.unpackInt64(delim_arg);
     // Allocate 2 bytes for single char + null terminator (no header needed for temp buffer)
     llvm::Value* char_buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocate(), {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 2)});
+        ctx_.memory().getArenaAllocate(), {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), 2)});
     // Store char and null terminator
     llvm::Value* char_i8 = ctx_.builder().CreateTrunc(char_val, ctx_.int8Type());
     ctx_.builder().CreateStore(char_i8, char_buf);
@@ -1882,7 +1882,7 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
     }
 
     // Allocate a buffer with header for reading (1024 bytes)
-    llvm::Value* buffer_size = llvm::ConstantInt::get(ctx_.int64Type(), 1024);
+    llvm::Value* buffer_size = llvm::ConstantInt::get(ctx_.sizeType(), 1024);
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* buffer = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buffer_size});

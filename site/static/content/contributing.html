@@ -1,0 +1,305 @@
+<h1 id="contributing-to-eshkol">Contributing to Eshkol</h1>
+<p>Thank you for your interest in contributing to Eshkol! This document
+provides guidelines and instructions for contributing to the
+project.</p>
+<h2 id="table-of-contents">Table of Contents</h2>
+<ul>
+<li><a href="#contributing-to-eshkol">Contributing to Eshkol</a>
+<ul>
+<li><a href="#table-of-contents">Table of Contents</a></li>
+<li><a href="#code-of-conduct">Code of Conduct</a></li>
+<li><a href="#getting-started">Getting Started</a>
+<ul>
+<li><a href="#development-environment-setup">Development Environment
+Setup</a></li>
+<li><a href="#building-the-project">Building the Project</a></li>
+<li><a href="#running-tests">Running Tests</a></li>
+</ul></li>
+<li><a href="#how-to-contribute">How to Contribute</a>
+<ul>
+<li><a href="#reporting-issues">Reporting Issues</a></li>
+<li><a href="#suggesting-enhancements">Suggesting Enhancements</a></li>
+<li><a href="#pull-requests">Pull Requests</a></li>
+</ul></li>
+<li><a href="#development-guidelines">Development Guidelines</a>
+<ul>
+<li><a href="#coding-standards">Coding Standards</a>
+<ul>
+<li><a href="#c-code">C Code</a></li>
+<li><a href="#typescript-code-mcp-tools">TypeScript Code (MCP
+Tools)</a></li>
+</ul></li>
+<li><a href="#documentation">Documentation</a></li>
+<li><a href="#testing">Testing</a></li>
+</ul></li>
+<li><a href="#project-structure">Project Structure</a></li>
+<li><a href="#communication">Communication</a></li>
+<li><a href="#priority-areas-for-contribution-v12">Priority Areas for
+Contribution (v1.2+)</a>
+<ul>
+<li><a href="#immediate-priorities-v12-scale---q2-2026">Immediate
+Priorities (v1.2-scale - Q2 2026)</a></li>
+<li><a href="#near-term-v15-intelligence---q3-2026">Near-Term
+(v1.5-intelligence - Q3 2026)</a></li>
+<li><a href="#ongoing">Ongoing</a></li>
+</ul></li>
+<li><a href="#recognition">Recognition</a></li>
+</ul></li>
+</ul>
+<h2 id="code-of-conduct">Code of Conduct</h2>
+<p>We expect all contributors to adhere to our Code of Conduct. Please
+be respectful and considerate of others when participating in our
+community.</p>
+<h2 id="getting-started">Getting Started</h2>
+<h3 id="development-environment-setup">Development Environment
+Setup</h3>
+<p>To set up your development environment for Eshkol, you’ll need:</p>
+<ol type="1">
+<li><strong>C/C++ Compiler</strong>
+<ul>
+<li>GCC 9.0+ or Clang 10.0+</li>
+<li>On macOS: <code>brew install gcc</code> or use the default
+Clang</li>
+<li>On Linux: <code>sudo apt install build-essential</code></li>
+<li>On Windows: MSYS2 MinGW64</li>
+</ul></li>
+<li><strong>CMake</strong>
+<ul>
+<li>Version 3.14 or higher</li>
+<li>On macOS: <code>brew install cmake</code></li>
+<li>On Linux: <code>sudo apt install cmake</code></li>
+<li>On Windows: Download from <a
+href="https://cmake.org/download/">cmake.org</a></li>
+</ul></li>
+<li><strong>LLVM</strong>
+<ul>
+<li>Version 17 required (CI tests against LLVM 17)</li>
+<li>On macOS: <code>brew install llvm@17</code></li>
+<li>On Linux: <code>sudo apt install llvm-17-dev</code></li>
+<li>On Windows: Install via MSYS2 MinGW64:
+<code>pacman -S mingw-w64-x86_64-llvm</code></li>
+<li>Ensure <code>llvm-config</code> is in your PATH</li>
+</ul></li>
+<li><strong>Git</strong>
+<ul>
+<li>On macOS: <code>brew install git</code></li>
+<li>On Linux: <code>sudo apt install git</code></li>
+<li>On Windows: Download from <a
+href="https://git-scm.com/download/win">git-scm.com</a></li>
+</ul></li>
+</ol>
+<h3 id="building-the-project">Building the Project</h3>
+<ol type="1">
+<li><p>Clone the repository:</p>
+<pre class="bash"><code>git clone https://github.com/tsotchke/eshkol.git
+cd eshkol</code></pre></li>
+<li><p>Create a build directory and build the project:</p>
+<pre class="bash"><code>mkdir -p build
+cd build
+cmake ..
+make</code></pre></li>
+</ol>
+<h3 id="running-tests">Running Tests</h3>
+<p>Run the full test suite:</p>
+<pre class="bash"><code># From the project root
+bash scripts/run_all_tests.sh</code></pre>
+<p>Or run specific test categories:</p>
+<pre class="bash"><code># Individual test suites
+bash scripts/run_bignum_tests.sh
+bash scripts/run_rational_tests.sh
+bash scripts/run_parallel_tests.sh
+bash scripts/run_gpu_tests.sh
+bash scripts/run_signal_tests.sh
+bash scripts/run_macros_tests.sh
+# ... see scripts/ directory for all test runners</code></pre>
+<h2 id="how-to-contribute">How to Contribute</h2>
+<h3 id="reporting-issues">Reporting Issues</h3>
+<p>If you find a bug or have a suggestion for improvement:</p>
+<ol type="1">
+<li>Check the <a href="https://github.com/tsotchke/eshkol/issues">GitHub
+Issues</a> to see if the issue has already been reported.</li>
+<li>If not, create a new issue with a clear title and description.</li>
+<li>Include steps to reproduce the issue, expected behavior, and actual
+behavior.</li>
+<li>If possible, include code examples, logs, or screenshots.</li>
+</ol>
+<h3 id="suggesting-enhancements">Suggesting Enhancements</h3>
+<p>We welcome suggestions for new features or improvements:</p>
+<ol type="1">
+<li>Check the <a href="ROADMAP.md">ROADMAP.md</a> to see if your
+suggestion is already planned.</li>
+<li>Check existing issues to avoid duplicates.</li>
+<li>Create a new issue with the label “enhancement”.</li>
+<li>Clearly describe the feature and its benefits.</li>
+<li>If possible, outline how the feature might be implemented.</li>
+</ol>
+<h3 id="pull-requests">Pull Requests</h3>
+<p>We follow a standard GitHub flow for contributions:</p>
+<ol type="1">
+<li>Fork the repository.</li>
+<li>Create a new branch for your feature or bugfix:
+<code>git checkout -b feature/your-feature-name</code> or
+<code>git checkout -b fix/issue-description</code>.</li>
+<li>Make your changes, following our <a href="#coding-standards">coding
+standards</a>.</li>
+<li>Add or update tests as necessary.</li>
+<li>Update documentation to reflect your changes.</li>
+<li>Commit your changes with clear, descriptive commit messages.</li>
+<li>Push your branch to your fork:
+<code>git push origin your-branch-name</code>.</li>
+<li>Submit a pull request to the <code>master</code> branch of the
+Eshkol repository.</li>
+<li>Respond to any feedback or questions during the review process.</li>
+</ol>
+<h2 id="development-guidelines">Development Guidelines</h2>
+<h3 id="coding-standards">Coding Standards</h3>
+<p>We follow these coding standards for consistency:</p>
+<h4 id="c-code">C Code</h4>
+<ul>
+<li>Use 4 spaces for indentation (no tabs).</li>
+<li>Follow the <a
+href="https://www.kernel.org/doc/html/latest/process/coding-style.html">Linux
+kernel coding style</a> with some modifications:
+<ul>
+<li>Use camelCase for function names and variables.</li>
+<li>Use PascalCase for struct and enum names.</li>
+<li>Use ALL_CAPS for macros and constants.</li>
+</ul></li>
+<li>Prefix all public functions with <code>eshkol_</code>.</li>
+<li>Keep lines under 100 characters when possible.</li>
+<li>Add comments for complex logic or non-obvious behavior.</li>
+<li>Use descriptive variable and function names.</li>
+</ul>
+<h4 id="typescript-code-mcp-tools">TypeScript Code (MCP Tools)</h4>
+<ul>
+<li>Use 2 spaces for indentation.</li>
+<li>Follow the <a
+href="https://google.github.io/styleguide/tsguide.html">TypeScript Style
+Guide</a>.</li>
+<li>Use camelCase for variables and functions.</li>
+<li>Use PascalCase for classes, interfaces, and type aliases.</li>
+<li>Use descriptive names and add JSDoc comments.</li>
+</ul>
+<h3 id="documentation">Documentation</h3>
+<p>Good documentation is crucial for the project:</p>
+<ul>
+<li>Update relevant documentation when making changes.</li>
+<li>Document all public APIs with clear descriptions, parameters, and
+return values.</li>
+<li>Add examples for complex features.</li>
+<li>Keep the README and other high-level documentation up to date.</li>
+<li>Use Markdown for all documentation files.</li>
+</ul>
+<h3 id="testing">Testing</h3>
+<p>We strive for good test coverage:</p>
+<ul>
+<li>Add tests for new features.</li>
+<li>Update tests when modifying existing features.</li>
+<li>Ensure all tests pass before submitting a pull request.</li>
+<li>Follow the existing test patterns in the codebase.</li>
+</ul>
+<h2 id="project-structure">Project Structure</h2>
+<p>Understanding the project structure will help you contribute
+effectively:</p>
+<pre><code>eshkol/
+├── build/                  # Build output (generated)
+├── docs/                   # Documentation
+│   ├── architecture/       # Architecture overview
+│   ├── breakdown/          # Deep-dive technical docs (20 files)
+│   ├── components/         # Component documentation
+│   ├── development/        # Development workflow
+│   └── vision/             # Vision and design history
+├── exe/                    # Compiler and REPL executables
+│   ├── eshkol-run.cpp      # AOT compiler
+│   └── eshkol-repl.cpp     # JIT REPL
+├── inc/eshkol/             # Public header files
+│   ├── backend/            # Code generation headers (21 modules)
+│   ├── core/               # Runtime headers (logic, inference, workspace)
+│   ├── frontend/           # Parser, macro expander headers
+│   └── types/              # Type system headers
+├── lib/                    # Implementation source code
+│   ├── backend/            # LLVM codegen (21 modules)
+│   │   ├── gpu/            # GPU backends (Metal, CUDA)
+│   │   └── xla/            # XLA/StableHLO backend
+│   ├── core/               # Runtime (arena, AST, logic, inference, workspace)
+│   ├── frontend/           # Parser, macro expander
+│   ├── math/               # Math stdlib (special functions, ODE, constants)
+│   ├── signal/             # Signal processing (FFT, filters)
+│   ├── ml/                 # Machine learning stdlib
+│   ├── random/             # Random number generators
+│   ├── web/                # Web/WASM platform
+│   ├── repl/               # JIT compiler
+│   └── types/              # Type checker, HoTT types
+├── tests/                  # Test suite (35 suites by feature)
+│   ├── autodiff/           # AD tests (3 modes)
+│   ├── bignum/             # Arbitrary-precision integer tests
+│   ├── complex/            # Complex number tests
+│   ├── features/           # Core language features
+│   ├── logic/              # Consciousness engine tests
+│   ├── numeric/            # Numeric regression tests
+│   ├── parallel/           # Parallel primitives tests
+│   ├── signal/             # Signal processing tests
+│   └── ...                 # 26 more test directories
+├── tools/                  # Developer tools
+│   ├── lsp/                # Language Server Protocol
+│   ├── pkg/                # Package manager (eshkol-pkg)
+│   └── vscode-eshkol/      # VSCode extension
+├── scripts/                # Build and test scripts
+├── CMakeLists.txt          # Main build configuration
+├── CONTRIBUTING.md         # This file
+├── LICENSE                 # MIT license
+├── README.md               # Project overview
+└── ROADMAP.md              # Development roadmap</code></pre>
+<h2 id="communication">Communication</h2>
+<ul>
+<li><strong>GitHub Issues</strong>: For bug reports, feature requests,
+and specific technical discussions.</li>
+<li><strong>GitHub Discussions</strong>: For general questions, ideas,
+and community discussions.</li>
+<li><strong>Pull Requests</strong>: For code contributions and code
+reviews.</li>
+</ul>
+<h2 id="priority-areas-for-contribution-v1.2">Priority Areas for
+Contribution (v1.2+)</h2>
+<p>v1.0-foundation and v1.1-accelerate are <strong>complete</strong>. We
+welcome contributions for upcoming releases:</p>
+<h3 id="immediate-priorities-v1.2-scale---q2-2026">Immediate Priorities
+(v1.2-scale - Q2 2026)</h3>
+<ol type="1">
+<li><strong>Distributed Computing</strong>: Multi-node gradient
+synchronization</li>
+<li><strong>Model Deployment</strong>: ONNX/TFLite/CoreML export</li>
+<li><strong>Vulkan Compute</strong>: Cross-platform GPU backend (Metal
+and CUDA already shipped in v1.1)</li>
+<li><strong>Visual Debugger</strong>: Source-level debugging UI</li>
+<li><strong>Python Bindings</strong>: Interoperability with Python ML
+ecosystem</li>
+</ol>
+<h3 id="near-term-v1.5-intelligence---q3-2026">Near-Term
+(v1.5-intelligence - Q3 2026)</h3>
+<ol type="1">
+<li><strong>Neural-Symbolic Search</strong>: Differentiable logic
+programs (building on v1.1 consciousness engine)</li>
+<li><strong>Multi-GPU Support</strong>: Distribute work across multiple
+GPUs</li>
+<li><strong>Profile-Guided Optimization</strong>: Runtime profile-based
+optimization</li>
+<li><strong>Full R7RS Library System</strong>:
+<code>define-library</code> / <code>import</code> with renaming</li>
+</ol>
+<h3 id="ongoing">Ongoing</h3>
+<ol type="1">
+<li><strong>Documentation</strong>: Tutorials, examples, case
+studies</li>
+<li><strong>Testing</strong>: Expanded test coverage, benchmarking</li>
+<li><strong>Standard Library</strong>: Additional modules and
+utilities</li>
+<li><strong>Bug Fixes</strong>: Report and fix any issues found</li>
+</ol>
+<p>See <a href="ROADMAP.md">ROADMAP.md</a> for complete development
+plans.</p>
+<h2 id="recognition">Recognition</h2>
+<p>We value all contributions and will recognize contributors in our
+release notes and on the project website. Significant contributors may
+be invited to join the core team.</p>
+<p>Thank you for contributing to Eshkol!</p>

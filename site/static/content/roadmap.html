@@ -1,0 +1,736 @@
+<h1 id="eshkol-development-roadmap">Eshkol Development Roadmap</h1>
+<p>This roadmap tracks Eshkol’s evolution from the <strong>completed
+v1.0-foundation release</strong> through upcoming versions that will
+establish Eshkol as the definitive platform for gradient-based computing
+and integrated AI.</p>
+<hr />
+<h2 id="v1.0-foundation-2025---completed">✅ v1.0-foundation (2025) -
+COMPLETED</h2>
+<p><strong>Production Release Delivered</strong></p>
+<h3 id="completed-core-implementation">Completed Core
+Implementation</h3>
+<ul>
+<li>✅ LLVM-based modular backend with 21 specialized codegen
+modules</li>
+<li>✅ Recursive descent parser with HoTT type expression support</li>
+<li>✅ Bidirectional type checker with gradual typing</li>
+<li>✅ Ownership and escape analysis for memory optimization</li>
+<li>✅ Module system with dependency resolution and cycle detection</li>
+<li>✅ Hygienic macro system (syntax-rules)</li>
+<li>✅ R7RS Scheme compatibility (subset)</li>
+</ul>
+<h3 id="completed-automatic-differentiation">Completed Automatic
+Differentiation</h3>
+<ul>
+<li>✅ Forward-mode AD (dual numbers)</li>
+<li>✅ Reverse-mode AD (computational graphs)</li>
+<li>✅ Nested gradients (32-level tape stack)</li>
+<li>✅ Vector calculus operators (8 total): derivative, gradient,
+jacobian, hessian, divergence, curl, laplacian,
+directional-derivative</li>
+<li>✅ Polymorphic arithmetic (int64/double/dual/tensor/AD-node)</li>
+</ul>
+<h3 id="completed-memory-management">Completed Memory Management</h3>
+<ul>
+<li>✅ Arena allocation with OALR (Ownership-Aware Lexical Regions)</li>
+<li>✅ Escape analysis (stack/region/shared allocation decisions)</li>
+<li>✅ with-region syntax for lexical memory scopes</li>
+<li>✅ Ownership tracking (owned, moved, borrowed states)</li>
+<li>✅ Zero garbage collection - fully deterministic</li>
+</ul>
+<h3 id="completed-data-structures">Completed Data Structures</h3>
+<ul>
+<li>✅ 16-byte tagged values with consolidated types</li>
+<li>✅ 32-byte cons cells supporting mixed-type lists</li>
+<li>✅ N-dimensional tensors with autodiff integration</li>
+<li>✅ Hash tables (FNV-1a hashing, open addressing)</li>
+<li>✅ Heterogeneous vectors</li>
+<li>✅ Exception handling (guard/raise)</li>
+</ul>
+<h3 id="completed-standard-library">Completed Standard Library</h3>
+<ul>
+<li>✅ 60+ list operations</li>
+<li>✅ 30+ string utilities</li>
+<li>✅ Functional programming (compose, curry, flip)</li>
+<li>✅ JSON/CSV/Base64 support</li>
+<li>✅ Math library (linear algebra, numerical methods, statistics)</li>
+</ul>
+<h3 id="completed-development-tools">Completed Development Tools</h3>
+<ul>
+<li>✅ Interactive REPL with LLVM ORC JIT</li>
+<li>✅ Standalone compiler (eshkol-run)</li>
+<li>✅ Library compilation mode</li>
+<li>✅ Comprehensive test suite (170+ files)</li>
+<li>✅ CMake build system</li>
+<li>✅ Docker containers</li>
+</ul>
+<hr />
+<h2 id="v1.1-accelerate-q1-2026---completed">✅ v1.1-accelerate (Q1
+2026) - COMPLETED</h2>
+<p><strong>Focus:</strong> Performance acceleration through XLA, SIMD,
+and parallelism</p>
+<h3 id="xla-backend-integration">XLA Backend Integration</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />XLA type system and
+codegen infrastructure</label></li>
+<li><label><input type="checkbox" checked="" />XLA fusion for tensor
+operation chains</label></li>
+<li><label><input type="checkbox" checked="" />Automatic kernel
+generation</label></li>
+<li><label><input type="checkbox" checked="" />CPU/GPU code generation
+from single source</label></li>
+<li><label><input type="checkbox" checked="" />JIT compilation for
+dynamic shapes</label></li>
+</ul>
+<h3 id="simd-vectorization">SIMD Vectorization</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />SSE/AVX/NEON instruction
+generation</label></li>
+<li><label><input type="checkbox" checked="" />Loop vectorization for
+tensor operations</label></li>
+<li><label><input type="checkbox" checked="" />Memory alignment
+optimization</label></li>
+<li><label><input type="checkbox" checked="" />Platform-specific
+tuning</label></li>
+</ul>
+<h3 id="concurrency-primitives">Concurrency Primitives</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>parallel-map</code>
+for data parallelism</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>parallel-fold</code> for parallel
+reduction</label></li>
+<li><label><input type="checkbox" checked="" /><code>future</code> for
+asynchronous computation</label></li>
+<li><label><input type="checkbox" checked="" />Work-stealing thread pool
+scheduler</label></li>
+<li><label><input type="checkbox" checked="" />Thread-safe memory
+management</label></li>
+</ul>
+<h3 id="extended-math-library">Extended Math Library</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Complex numbers with
+autodiff</label></li>
+<li><label><input type="checkbox" checked="" />FFT/IFFT
+operations</label></li>
+<li><label><input type="checkbox" checked="" />Signal processing
+filters</label></li>
+<li><label><input type="checkbox" checked="" />Statistical
+distributions</label></li>
+<li><label><input type="checkbox" checked="" />Optimization algorithms
+(L-BFGS, conjugate gradient)</label></li>
+</ul>
+<h3 id="arbitrary-precision-arithmetic-added">Arbitrary-Precision
+Arithmetic (Added)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Bignum
+(arbitrary-precision integers) — full R7RS compliance</label></li>
+<li><label><input type="checkbox" checked="" />Rational numbers (exact
+fractions)</label></li>
+<li><label><input type="checkbox" checked="" />Overflow detection and
+automatic promotion (int64 → bignum)</label></li>
+<li><label><input type="checkbox" checked="" />Bignum demotion
+(normalize back to int64 when possible)</label></li>
+<li><label><input type="checkbox" checked="" />Bitwise operations on
+bignums (two’s complement semantics)</label></li>
+<li><label><input type="checkbox" checked="" />All arithmetic,
+comparison, predicate, equality ops for bignums</label></li>
+</ul>
+<h3 id="consciousness-engine-added">Consciousness Engine (Added)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Logic programming
+primitives (unification, substitutions, knowledge base)</label></li>
+<li><label><input type="checkbox" checked="" />Active inference engine
+(factor graphs, belief propagation, free energy)</label></li>
+<li><label><input type="checkbox" checked="" />Global workspace theory
+implementation (modules, softmax competition)</label></li>
+<li><label><input type="checkbox" checked="" />22 builtin operations for
+logic, inference, and workspace</label></li>
+</ul>
+<h3 id="r7rs-compliance-extensions-added">R7RS Compliance Extensions
+(Added)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />call/cc and
+dynamic-wind</label></li>
+<li><label><input type="checkbox" checked="" />guard/raise exception
+handling</label></li>
+<li><label><input type="checkbox" checked="" />Bytevectors</label></li>
+<li><label><input type="checkbox" checked="" />let-syntax / syntax-rules
+hygienic macros</label></li>
+<li><label><input type="checkbox" checked="" />Tail call optimization
+validation</label></li>
+<li><label><input type="checkbox" checked="" />Symbol
+operations</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>(load "path")</code> R7RS file loading
+support</label></li>
+</ul>
+<h3 id="dual-backend-architecture-added">Dual Backend Architecture
+(Added)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Bytecode VM — 63-opcode
+register+stack interpreter with 250+ native call IDs</label></li>
+<li><label><input type="checkbox" checked="" />ESKB binary format —
+section-based bytecode container with CRC32</label></li>
+<li><label><input type="checkbox" checked="" /><code>-B</code> flag for
+bytecode emission from eshkol-run</label></li>
+<li><label><input type="checkbox" checked="" />VM compiler integration —
+eshkol_vm.c linked into compiler build</label></li>
+<li><label><input type="checkbox" checked="" />Weight matrix transformer
+— programs as neural network weights (55/55, 3-way
+verified)</label></li>
+<li><label><input type="checkbox" checked="" />qLLM bridge — Eshkol↔︎qLLM
+tensor conversion with AD integration</label></li>
+</ul>
+<h3 id="gpu-acceleration-added">GPU Acceleration (Added)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Metal
+SF64/DF64/F32/FP24/FP53 precision tiers</label></li>
+<li><label><input type="checkbox" checked="" />Ozaki-II CRT-based exact
+matrix multiplication</label></li>
+<li><label><input type="checkbox" checked="" />CUDA backend with
+cuBLAS</label></li>
+<li><label><input type="checkbox" checked="" />Cost-model dispatch (SIMD
+→ cBLAS → GPU)</label></li>
+<li><label><input type="checkbox" checked="" />Occupancy-aware kernel
+configuration</label></li>
+</ul>
+<h3 id="signal-processing-added">Signal Processing (Added)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />FFT/IFFT (Cooley-Tukey
+radix-2)</label></li>
+<li><label><input type="checkbox" checked="" />Window functions
+(Hamming, Hann, Blackman, Kaiser)</label></li>
+<li><label><input type="checkbox" checked="" />FIR/IIR
+filters</label></li>
+<li><label><input type="checkbox" checked="" />Butterworth filter design
+(lowpass, highpass, bandpass)</label></li>
+</ul>
+<h3 id="web-platform-added">Web Platform (Added)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />WebAssembly compilation
+target</label></li>
+<li><label><input type="checkbox" checked="" />Browser-based REPL
+(web/)</label></li>
+<li><label><input type="checkbox" checked="" />JavaScript
+interop</label></li>
+</ul>
+<h3 id="windows-platform-support-added">Windows Platform Support
+(Added)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Native Windows build via
+MSYS2/MinGW64 (PR #9, mattneel)</label></li>
+<li><label><input type="checkbox" checked="" />UTF-8-safe REPL console
+output</label></li>
+<li><label><input type="checkbox" checked="" />Platform runtime
+abstraction layer</label></li>
+</ul>
+<hr />
+<h2 id="v1.2-scale-q2-2026---planned">📋 v1.2-scale (Q2 2026) -
+PLANNED</h2>
+<p><strong>Focus:</strong> Data I/O, model deployment, distributed
+computing, and ecosystem expansion</p>
+<h3 id="multimedia-data-io">Multimedia &amp; Data I/O</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Image I/O (PNG, JPEG read/write via
+stb or libpng)</label></li>
+<li><label><input type="checkbox" />Audio I/O (WAV read/write, PCM
+streaming)</label></li>
+<li><label><input type="checkbox" />Video frame extraction (FFmpeg
+integration)</label></li>
+<li><label><input type="checkbox" />Typed data buffers (pixel formats:
+RGBA8/BGRA8/GRAY8/RGBAF; audio sample formats:
+I16/I24/F32/F64)</label></li>
+<li><label><input type="checkbox" />Stream abstraction for
+file/network/audio data pipelines with combinators (map, filter, take,
+concat)</label></li>
+<li><label><input type="checkbox" />DataFrame / table abstraction
+(CSV/Parquet backed)</label></li>
+<li><label><input type="checkbox" />Plotting / visualization (SVG
+output, terminal sparklines)</label></li>
+</ul>
+<h3 id="gpu-compute">GPU &amp; Compute</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Vulkan Compute for cross-platform
+GPU (beyond Metal/CUDA)</label></li>
+<li><label><input type="checkbox" />Multi-GPU support (device selection,
+peer-to-peer transfer)</label></li>
+<li><label><input type="checkbox" />Mixed-precision training (fp16/bf16
+accumulation with fp32 master weights)</label></li>
+<li><label><input type="checkbox" />Basic networking (TCP/UDP sockets
+for distributed training prerequisites)</label></li>
+</ul>
+<h3 id="model-deployment">Model Deployment</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Model serialization (save/load
+weight tensors to binary format)</label></li>
+<li><label><input type="checkbox" />ONNX export (computational graph +
+weights)</label></li>
+<li><label><input type="checkbox" />Inference optimization (operator
+fusion, weight quantization)</label></li>
+<li><label><input type="checkbox" />Core ML export for Apple
+platforms</label></li>
+</ul>
+<h3 id="ecosystem">Ecosystem</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Python bindings (call Eshkol from
+Python, call Python from Eshkol)</label></li>
+<li><label><input type="checkbox" />Improved error messages with source
+location spans</label></li>
+<li><label><input type="checkbox" />Visual debugger integration (DAP
+protocol)</label></li>
+<li><label><input type="checkbox" />Per-thread arenas for concurrent
+memory management</label></li>
+</ul>
+<h3 id="distributed-training">Distributed Training</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Data parallelism across machines
+(AllReduce)</label></li>
+<li><label><input type="checkbox" />Model parallelism for large
+networks</label></li>
+<li><label><input type="checkbox" />MPI integration for HPC
+clusters</label></li>
+<li><label><input type="checkbox" />gRPC for cloud
+deployments</label></li>
+</ul>
+<hr />
+<h2 id="v1.3-evolve-q3-2026---planned">📋 v1.3-evolve (Q3 2026) -
+PLANNED</h2>
+<p><strong>Focus:</strong> Language maturity, advanced type system, and
+compiler optimization</p>
+<h3 id="language-extensions">Language Extensions</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Full R7RS library system
+(<code>define-library</code> / <code>import</code> with renaming and
+prefixing)</label></li>
+<li><label><input type="checkbox" />Syntax-rules with ellipsis patterns
+and template matching</label></li>
+<li><label><input type="checkbox" />String interpolation
+(<code>~{expr}</code> or <code>$expr</code> within strings)</label></li>
+<li><label><input type="checkbox" />Named keyword arguments
+(<code>(f #:key value)</code>)</label></li>
+<li><label><input type="checkbox" />Pattern matching in <code>let</code>
+bindings (destructuring <code>let-match</code>)</label></li>
+</ul>
+<h3 id="advanced-type-system">Advanced Type System</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Full dependent type enforcement
+(beyond gradual — compile-time errors for type violations)</label></li>
+<li><label><input type="checkbox" />Refinement types (e.g.,
+<code>(: x (Refine Integer (&gt; x 0)))</code>) with SMT solver
+integration</label></li>
+<li><label><input type="checkbox" />Effect types for tracking side
+effects (<code>Pure</code>, <code>IO</code>, <code>State</code>,
+<code>Exception</code>)</label></li>
+<li><label><input type="checkbox" />Row polymorphism for records
+(structural subtyping)</label></li>
+<li><label><input type="checkbox" />Higher-rank types (rank-2
+polymorphism for combinators like <code>fold</code>)</label></li>
+</ul>
+<h3 id="compiler-optimization">Compiler Optimization</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Profile-guided optimization (PGO) —
+runtime profiling feeds back into codegen</label></li>
+<li><label><input type="checkbox" />Whole-program optimization across
+modules (cross-module inlining, dead code elimination)</label></li>
+<li><label><input type="checkbox" />Polyhedral loop optimization for
+nested tensor operations</label></li>
+<li><label><input type="checkbox" />Automatic parallelization of
+independent tensor operation chains</label></li>
+</ul>
+<hr />
+<h2 id="v1.4-connection-q4-2026---planned">📋 v1.4-connection (Q4 2026)
+- PLANNED</h2>
+<p><strong>Focus:</strong> Platform abstraction, interactive systems,
+and hardware connectivity</p>
+<p>Informed by the <a
+href="docs/future/MULTIMEDIA_SYSTEM_ARCHITECTURE.md">Multimedia System
+Architecture</a> specification, v1.4 extends Eshkol from a
+computation-focused language into a platform for interactive
+applications, real-time systems, and embedded/robotics development.</p>
+<h3 id="platform-abstraction-layer">Platform Abstraction Layer</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Cross-platform window system
+(X11/Wayland on Linux, Cocoa on macOS, Win32 on Windows, framebuffer on
+embedded)</label></li>
+<li><label><input type="checkbox" />Event system (keyboard, mouse,
+touch, window resize, timer events)</label></li>
+<li><label><input type="checkbox" />Event loop pattern with poll/wait
+semantics and callback registration</label></li>
+<li><label><input type="checkbox" /><code>with-window</code> bracket
+pattern for automatic resource cleanup</label></li>
+</ul>
+<h3 id="real-time-audio">Real-Time Audio</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Audio device management (ALSA on
+Linux, CoreAudio on macOS, WASAPI on Windows)</label></li>
+<li><label><input type="checkbox" />Callback-based and queue-based audio
+I/O for low-latency processing</label></li>
+<li><label><input type="checkbox" />Real-time audio synthesis
+(integration with v1.1 signal processing stdlib)</label></li>
+<li><label><input type="checkbox" />MIDI input/output for musical
+instrument control</label></li>
+<li><label><input type="checkbox" /><code>with-audio</code> bracket
+pattern for automatic device release</label></li>
+</ul>
+<h3 id="networking">Networking</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />TCP/UDP socket handles with linear
+resource management (guaranteed close)</label></li>
+<li><label><input type="checkbox" />Stream-based network I/O with typed
+buffers from v1.2</label></li>
+<li><label><input type="checkbox" />Unix domain sockets for local
+IPC</label></li>
+<li><label><input type="checkbox" />Non-blocking I/O with event loop
+integration</label></li>
+<li><label><input type="checkbox" />TLS/SSL support via system
+libraries</label></li>
+</ul>
+<h3 id="embedded-robotics">Embedded &amp; Robotics</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />GPIO pin control (Linux sysfs,
+Raspberry Pi direct memory-mapped I/O)</label></li>
+<li><label><input type="checkbox" />I2C/SPI/UART bus communication for
+sensor and actuator interfacing</label></li>
+<li><label><input type="checkbox" />PWM output for motor control and LED
+dimming</label></li>
+<li><label><input type="checkbox" />ADC/DAC for analog sensor reading
+and signal generation</label></li>
+<li><label><input type="checkbox" />Camera and LIDAR device
+handles</label></li>
+<li><label><input type="checkbox" />Mobile/embedded cross-compilation
+targets (ARM bare-metal, RISC-V)</label></li>
+</ul>
+<h3 id="type-system-extensions-for-resources">Type System Extensions for
+Resources</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Linear types for hardware handles
+(guaranteed cleanup — no leaked file descriptors or
+sockets)</label></li>
+<li><label><input type="checkbox" />Borrow pattern for temporary
+resource access without ownership transfer</label></li>
+<li><label><input type="checkbox" />Handle lifecycle states:
+<code>invalid → open → borrowed → closed</code> with compile-time
+tracking</label></li>
+<li><label><input type="checkbox" />Typed buffer system for zero-copy
+data exchange (pixel formats, audio samples, complex
+numbers)</label></li>
+<li><label><input type="checkbox" />Stream combinators (map, filter,
+take, drop, concat) over typed streams</label></li>
+</ul>
+<hr />
+<h2 id="v1.5-intelligence-q1-2027---planned">📋 v1.5-intelligence (Q1
+2027) - PLANNED</h2>
+<p><strong>Focus:</strong> Neuro-symbolic integration and advanced AI
+primitives</p>
+<p>Informed by the <a
+href="docs/future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md">Neuro-Symbolic
+Architecture</a> specification, v1.5 extends the v1.1 consciousness
+engine into a complete neuro-symbolic programming framework where neural
+(differentiable) and symbolic (discrete) computation flow
+bidirectionally through a unified substrate.</p>
+<h3 id="symbolic-reasoning-expand-v1.1-foundation">Symbolic Reasoning
+(expand v1.1 foundation)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Unification engine with
+occurs check — Done in v1.1</label></li>
+<li><label><input type="checkbox" checked="" />Knowledge base with
+pattern-matching query — Done in v1.1</label></li>
+<li><label><input type="checkbox" />Backward chaining inference
+(Prolog-style goal-directed proof search with backtracking)</label></li>
+<li><label><input type="checkbox" />Forward chaining inference
+(production rules with fixed-point derivation)</label></li>
+<li><label><input type="checkbox" />Constraint solving (finite domain
+constraints, SAT solver integration)</label></li>
+<li><label><input type="checkbox" />Triple store / knowledge graphs
+(RDF-style with SPO/POS/OSP indexing for efficient query)</label></li>
+</ul>
+<h3 id="neural-symbolic-bridge">Neural-Symbolic Bridge</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Symbol embeddings (learnable vector
+representations of symbols in the knowledge base)</label></li>
+<li><label><input type="checkbox" />Soft unification (differentiable
+similarity via cosine distance — gradients flow through
+matching)</label></li>
+<li><label><input type="checkbox" />Attention over knowledge base
+(neural query mechanism over symbolic facts)</label></li>
+<li><label><input type="checkbox" />Gradient estimators for discrete
+operations (Gumbel-Softmax, straight-through estimator)</label></li>
+<li><label><input type="checkbox" />Differentiable logic programs
+(gradients flow through symbolic rule application)</label></li>
+</ul>
+<h3 id="advanced-neural-architectures">Advanced Neural
+Architectures</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Attention mechanisms —
+Done in v1.1 (scaled-dot, multi-head attention)</label></li>
+<li><label><input type="checkbox" checked="" />Convolution operations —
+Done in v1.1 (conv1d/2d/3d, pooling)</label></li>
+<li><label><input type="checkbox" />Recurrent structures (LSTM cells,
+GRU cells with forget/update gates)</label></li>
+<li><label><input type="checkbox" checked="" />Transformer blocks — Done
+in v1.1 (feed-forward, positional encoding, RoPE)</label></li>
+<li><label><input type="checkbox" />Graph Neural Networks (message
+passing, neighborhood aggregation, graph attention)</label></li>
+</ul>
+<h3 id="program-synthesis">Program Synthesis</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Type-directed synthesis holes
+(<code>??</code> syntax — compiler searches for well-typed
+completions)</label></li>
+<li><label><input type="checkbox" />Program enumeration with
+type-directed pruning (enumerate candidates up to depth N)</label></li>
+<li><label><input type="checkbox" />Neural-guided program search (beam
+search with neural heuristic scoring for candidate ranking)</label></li>
+<li><label><input type="checkbox" />Synthesis from input-output examples
+(inductive programming)</label></li>
+</ul>
+<h3 id="neuro-symbolic-models">Neuro-Symbolic Models</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Knowledge graph embeddings (embed
+entity-relation-entity triples as vectors)</label></li>
+<li><label><input type="checkbox" />Neural theorem provers (neural
+heuristic guides symbolic proof search)</label></li>
+<li><label><input type="checkbox" />Explainable neural networks
+(symbolic rule extraction from trained weights)</label></li>
+<li><label><input type="checkbox" />Self-improving code (gradient
+descent on program embeddings for program optimization)</label></li>
+<li><label><input type="checkbox" />Knowledge-grounded language models
+(KB-biased generation for factual consistency)</label></li>
+</ul>
+<hr />
+<h2 id="v2.0-starlight-2027---research">🔬 v2.0-starlight (2027+) -
+RESEARCH</h2>
+<p><strong>Focus:</strong> Quantum computing, formal verification, and
+next-generation type system</p>
+<p>Informed by the <a
+href="docs/future/external/eshkol_quantum_computing.md">Quantum
+Computing Architecture</a> specification, v2.0 introduces first-class
+quantum computing support, leveraging Eshkol’s existing linear type
+infrastructure (OALR) and automatic differentiation system to enable
+hybrid classical-quantum algorithms with compile-time safety
+guarantees.</p>
+<h3 id="quantum-type-system">Quantum Type System</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Qubit type with linear resource
+tracking (no-cloning theorem enforced at compile time)</label></li>
+<li><label><input type="checkbox" />Quantum register types
+<code>qreg&lt;n&gt;</code> with compile-time dimension
+tracking</label></li>
+<li><label><input type="checkbox" />Quantum state types
+<code>qstate&lt;H&gt;</code> parameterized by Hilbert space</label></li>
+<li><label><input type="checkbox" />Quantum operation types
+<code>qop&lt;H1, H2&gt;</code> for maps between Hilbert
+spaces</label></li>
+<li><label><input type="checkbox" /><code>define-quantum-region</code>
+scoping for qubit allocation and automatic deallocation</label></li>
+</ul>
+<h3 id="quantum-operations">Quantum Operations</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Quantum gate primitives: Hadamard
+(H), CNOT, Rz, T, S, SWAP, Toffoli, arbitrary unitaries</label></li>
+<li><label><input type="checkbox" />Measurement operations with
+classical outcome (collapses superposition, returns bit)</label></li>
+<li><label><input type="checkbox" />Quantum control flow
+(<code>qif</code> for superposition-based branching)</label></li>
+<li><label><input type="checkbox" />Quantum circuit compilation and
+optimization (gate fusion, qubit mapping, routing)</label></li>
+<li><label><input type="checkbox" />Integration with AD for variational
+quantum algorithms (gradients of parameterized circuits)</label></li>
+</ul>
+<h3 id="hybrid-classical-quantum-algorithms">Hybrid Classical-Quantum
+Algorithms</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Variational Quantum Eigensolver
+(VQE) with classical optimizer integration</label></li>
+<li><label><input type="checkbox" />Quantum Approximate Optimization
+Algorithm (QAOA)</label></li>
+<li><label><input type="checkbox" />Quantum machine learning
+(parameterized quantum circuits with automatic
+differentiation)</label></li>
+<li><label><input type="checkbox" />Hybrid classical-quantum loop
+patterns (classical optimization drives quantum circuit
+parameters)</label></li>
+<li><label><input type="checkbox" />Quantum error mitigation techniques
+(zero-noise extrapolation, probabilistic error
+cancellation)</label></li>
+</ul>
+<h3 id="formal-verification">Formal Verification</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Integration with proof assistants
+(Coq, Lean) for certified compilation</label></li>
+<li><label><input type="checkbox" />Quantum program verification
+(unitary equivalence checking)</label></li>
+<li><label><input type="checkbox" />Certified quantum circuit
+compilation (provably correct gate decomposition)</label></li>
+<li><label><input type="checkbox" />Session types for quantum
+communication protocols</label></li>
+</ul>
+<h3 id="next-generation-type-system">Next-Generation Type System</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Full dependent type enforcement with
+decidable type checking</label></li>
+<li><label><input type="checkbox" />Session types for concurrent
+communication patterns</label></li>
+<li><label><input type="checkbox" />Algebraic effects and handlers
+(structured side-effect management)</label></li>
+<li><label><input type="checkbox" />Quantitative type theory
+(resource-tracking types for quantum and linear resources)</label></li>
+</ul>
+<hr />
+<h2 id="development-priorities">Development Priorities</h2>
+<h3 id="immediate-v1.2-q2-2026">Immediate (v1.2 — Q2 2026)</h3>
+<ol type="1">
+<li>Data I/O (image, audio, typed buffers, streams)</li>
+<li>Model serialization and ONNX export</li>
+<li>Vulkan Compute for cross-platform GPU</li>
+<li>Python bindings and distributed training (MPI)</li>
+</ol>
+<h3 id="near-term-v1.3-q3-2026">Near-Term (v1.3 — Q3 2026)</h3>
+<ol type="1">
+<li>Full R7RS library system with <code>define-library</code></li>
+<li>Refinement types and effect types</li>
+<li>Profile-guided optimization (PGO)</li>
+<li>Higher-rank types</li>
+</ol>
+<h3 id="medium-term-v1.4-q4-2026">Medium-Term (v1.4 — Q4 2026)</h3>
+<ol type="1">
+<li>Platform abstraction layer (windows, events, audio)</li>
+<li>Real-time audio and MIDI integration</li>
+<li>Networking (TCP/UDP with linear resource management)</li>
+<li>Embedded/robotics targets (GPIO, I2C, SPI)</li>
+</ol>
+<h3 id="long-term-v1.5-q1-2027">Long-Term (v1.5 — Q1 2027)</h3>
+<ol type="1">
+<li>Neuro-symbolic bridge (soft unification, symbol embeddings)</li>
+<li>Graph Neural Networks and recurrent structures</li>
+<li>Program synthesis with type-directed search</li>
+<li>Knowledge graph embeddings</li>
+</ol>
+<h3 id="research-v2.0-2027">Research (v2.0 — 2027+)</h3>
+<ol type="1">
+<li>Quantum computing integration (qubit types, gates, VQE/QAOA)</li>
+<li>Formal verification with proof assistant integration</li>
+<li>Session types and algebraic effects</li>
+<li>Quantum machine learning (AD through parameterized circuits)</li>
+</ol>
+<hr />
+<h2 id="component-status">Component Status</h2>
+<h3 id="core-compiler">Core Compiler</h3>
+<ul>
+<li>✅ Parser - Complete</li>
+<li>✅ Type Checker - Complete</li>
+<li>✅ LLVM Backend - Complete (34,928 lines)</li>
+<li>✅ Module System - Complete</li>
+<li>✅ Macro System - Complete</li>
+</ul>
+<h3 id="automatic-differentiation">Automatic Differentiation</h3>
+<ul>
+<li>✅ Forward Mode - Complete</li>
+<li>✅ Reverse Mode - Complete</li>
+<li>✅ Nested Gradients - Complete (32-level tape stack)</li>
+<li>✅ Vector Calculus - Complete (8 operators)</li>
+</ul>
+<h3 id="memory-management">Memory Management</h3>
+<ul>
+<li>✅ Arena Allocation - Complete</li>
+<li>✅ OALR System - Complete</li>
+<li>✅ Ownership Tracking - Complete</li>
+<li>✅ Escape Analysis - Complete</li>
+</ul>
+<h3 id="standard-library-v1.1">Standard Library (v1.1)</h3>
+<ul>
+<li>✅ Core Functions (60+ list ops, 30+ string utils) - Complete</li>
+<li>✅ Math Library (linear algebra, statistics, ODE solvers) -
+Complete</li>
+<li>✅ Signal Processing (FFT, filters, window functions) -
+Complete</li>
+<li>✅ ML Library (optimizers, activations, normalization) -
+Complete</li>
+<li>✅ Web Platform (80+ DOM API functions, WASM target) - Complete</li>
+<li>✅ JSON/CSV/Base64 Support - Complete</li>
+</ul>
+<h3 id="development-tools">Development Tools</h3>
+<ul>
+<li>✅ REPL with JIT (stdlib preloading, cross-eval persistence) -
+Complete</li>
+<li>✅ Compiler (eshkol-run, AOT + script mode) - Complete</li>
+<li>✅ Package Manager (eshkol-pkg, TOML manifest) - Complete</li>
+<li>✅ LSP Server (diagnostics, completion, hover) - Complete</li>
+<li>✅ VSCode Extension (syntax highlighting, LSP client) -
+Complete</li>
+<li>✅ Test Suite (35 suites, 434 tests) - Complete</li>
+</ul>
+<h3 id="v1.1-accelerate-complete">v1.1-accelerate (Complete)</h3>
+<ul>
+<li>✅ XLA Backend (StableHLO/MLIR + LLVM-direct) - Complete</li>
+<li>✅ GPU Acceleration (Metal SF64 + CUDA cuBLAS) - Complete</li>
+<li>✅ SIMD Vectorization (SSE/AVX/NEON) - Complete</li>
+<li>✅ Parallel Primitives (work-stealing thread pool) - Complete</li>
+<li>✅ Exact Arithmetic (bignums + rationals + complex) - Complete</li>
+<li>✅ Consciousness Engine (logic, inference, workspace — 22 builtins)
+- Complete</li>
+<li>✅ ML Framework (75+ builtins: activations, losses, optimizers, CNN,
+transformers) - Complete</li>
+<li>✅ Signal Processing (FFT, filters, window functions) -
+Complete</li>
+<li>✅ R7RS Extensions (call/cc, dynamic-wind, bytevectors) -
+Complete</li>
+</ul>
+<h3 id="planned-v1.2">Planned (v1.2+)</h3>
+<ul>
+<li>📋 Data I/O (image, audio, typed buffers) — v1.2</li>
+<li>📋 Distributed Computing (MPI, AllReduce) — v1.2</li>
+<li>📋 Vulkan Compute — v1.2</li>
+<li>📋 Platform Abstraction (windows, audio, networking) — v1.4</li>
+<li>📋 Neuro-Symbolic Bridge — v1.5</li>
+<li>📋 Quantum Computing — v2.0</li>
+</ul>
+<hr />
+<h2 id="research-directions">Research Directions</h2>
+<p><strong>Active Research:</strong> - Polyhedral optimization for
+nested tensor loops (v1.3) - Linear type systems for hardware resources
+(v1.4) - Neuro-symbolic bridging — differentiable symbolic operations
+(v1.5) - Effect systems for purity tracking and algebraic effects
+(v1.3/v2.0)</p>
+<p><strong>Exploratory Research:</strong> - Quantum machine learning —
+AD through parameterized quantum circuits - Probabilistic programming
+with exact inference via factor graphs - Formal verification of
+automatic differentiation correctness - Hardware-software co-design for
+quantum-classical hybrid systems - Self-improving programs via gradient
+descent on code embeddings</p>
+<hr />
+<h2 id="community-engagement">Community Engagement</h2>
+<p><strong>Open Source Development:</strong> - GitHub repository with
+MIT license - Active issue tracking and PR reviews - Quarterly release
+cycle - Community contribution guidelines</p>
+<p><strong>Academic Partnerships:</strong> - University curriculum
+integration - Research collaborations - Conference presentations -
+Student project sponsorship</p>
+<p><strong>Enterprise Support:</strong> - Professional consulting -
+Custom feature development - Training and workshops - Priority
+support</p>
+<hr />
+<h2 id="how-to-contribute">How to Contribute</h2>
+<p>We welcome contributions in all areas:</p>
+<p><strong>Core Development:</strong> - Implement planned features -
+Optimize existing code - Fix bugs and issues - Improve test coverage</p>
+<p><strong>Research:</strong> - Explore new AD techniques - Investigate
+type system extensions - Study memory management innovations - Publish
+findings</p>
+<p><strong>Documentation:</strong> - Improve user guides - Write
+tutorials - Create examples - Update specifications</p>
+<p><strong>Ecosystem:</strong> - Develop libraries - Create tools -
+Build integrations - Share use cases</p>
+<p>See <a href="CONTRIBUTING.md">CONTRIBUTING.md</a> for detailed
+contribution guidelines.</p>
+<hr />
+<p><em>Last Updated: March 2026</em></p>
+<p><em>Eshkol v1.1-accelerate is now complete, delivering XLA, SIMD, GPU
+acceleration, parallel primitives, exact arithmetic, consciousness
+engine, 75+ ML builtins, signal processing, and full R7RS extensions.
+The roadmap progresses through data I/O and deployment (v1.2-scale),
+language maturity (v1.3-evolve), platform abstraction and hardware
+connectivity (v1.4-connection), neuro-symbolic integration
+(v1.5-intelligence), and quantum computing with formal verification
+(v2.0-starlight).</em></p>

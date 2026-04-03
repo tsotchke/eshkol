@@ -94,7 +94,8 @@ public:
     llvm::StructType* tensorType() { return types_.getTensorType(); }
 
     // === Target-Dependent Types ===
-    llvm::IntegerType* sizeType() { return types_.getSizeType(); }  // i32 on wasm32, i64 on native
+    llvm::IntegerType* sizeType() { return types_.getSizeType(); }      // C size_t: i32 on wasm32, i64 on native
+    llvm::IntegerType* intPtrType() { return types_.getIntPtrType(); }  // C intptr_t: i32 on wasm32, i64 on native
     bool isWasm32() const { return types_.isWasm32(); }
 
     // === SIMD Vector Types (for tensor operations) ===

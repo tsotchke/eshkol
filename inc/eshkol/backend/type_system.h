@@ -45,10 +45,17 @@ public:
     explicit TypeSystem(llvm::LLVMContext& ctx, bool is_wasm32 = false);
 
     // Target-dependent size type (i32 on wasm32, i64 on native 64-bit)
-    // Use this for: arena sizes, string lengths, array counts, memcpy sizes —
-    // anything that maps to C's size_t or a pointer-width integer.
-    // Do NOT use for tagged value data fields (always i64).
+    // Use for: arena sizes, string lengths, array counts, memcpy sizes —
+    // anything that maps to C's size_t.
     llvm::IntegerType* getSizeType() const { return size_type_; }
+
+    // Target-dependent pointer-width integer (i32 on wasm32, i64 on native 64-bit)
+    // Use for: PtrToInt results, function table indices, pointer arithmetic,
+    // closure func_ptr params, lambda registry pointer params.
+    // On wasm32: getSizeType() == getIntPtrType() == i32.
+    // On native 64-bit: both == i64.
+    llvm::IntegerType* getIntPtrType() const { return intptr_type_; }
+
     bool isWasm32() const { return is_wasm32_; }
 
     // Primitive types
@@ -127,7 +134,8 @@ public:
 private:
     llvm::LLVMContext& context;
     bool is_wasm32_;
-    llvm::IntegerType* size_type_;  // i32 on wasm32, i64 on native
+    llvm::IntegerType* size_type_;    // i32 on wasm32, i64 on native (C size_t)
+    llvm::IntegerType* intptr_type_;  // i32 on wasm32, i64 on native (C intptr_t)
 
     // Cached primitive types
     llvm::IntegerType* int64_type;

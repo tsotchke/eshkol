@@ -1,0 +1,45 @@
+;;
+;; glob.esk - File pattern matching
+;; Uses POSIX find (no C FFI needed — find is universally available and fast)
+;;
+(provide glob-files glob-files-sorted)
+
+(define (shell-escape s)
+  (string-append "'" (string-replace s "'" "'\"'\"'") "'"))
+
+(define (glob-files pattern directory max-results)
+  "Find files matching a glob pattern. Returns list of paths."
+  (let* ((tmp (string-append "/tmp/eshkol-glob-" (number->string (current-seconds)) ".txt"))
+         (cmd (string-append
+                "find " (shell-escape directory) " "
+                "-name " (shell-escape pattern) " "
+                "-not -path '*/.git/*' "
+                "-not -path '*/node_modules/*' "
+                "-not -path '*/.svn/*' "
+                "-not -path '*/__pycache__/*' "
+                "2>/dev/null | head -" (number->string max-results)
+                " > " tmp))
+         (_ (system cmd))
+         (output (guard (e (#t "")) (read-file tmp))))
+    (guard (e (#t #f)) (file-delete tmp))
+    (if (string=? output "") '()
+        (filter (lambda (s) (not (string=? s "")))
+                (string-split-ordered output "\n")))))
+
+(define (glob-files-sorted pattern directory max-results)
+  "Find files matching pattern, sorted by modification time (newest first)."
+  (let* ((tmp (string-append "/tmp/eshkol-glob-s-" (number->string (current-seconds)) ".txt"))
+         (cmd (string-append
+                "find " (shell-escape directory) " "
+                "-name " (shell-escape pattern) " "
+                "-not -path '*/.git/*' "
+                "-not -path '*/node_modules/*' "
+                "2>/dev/null | "
+                "xargs ls -1t 2>/dev/null | head -" (number->string max-results)
+                " > " tmp))
+         (_ (system cmd))
+         (output (guard (e (#t "")) (read-file tmp))))
+    (guard (e (#t #f)) (file-delete tmp))
+    (if (string=? output "") '()
+        (filter (lambda (s) (not (string=? s "")))
+                (string-split-ordered output "\n")))))

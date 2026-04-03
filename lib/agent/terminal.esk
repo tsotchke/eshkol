@@ -1,0 +1,61 @@
+;;
+;; terminal.esk - Terminal control FFI wrapper
+;; Bindings to agent_terminal.c
+;;
+(provide term-init term-shutdown term-raw-mode term-cooked-mode
+         term-width term-height term-resized?
+         term-read-key term-read-key-timeout
+         term-clear term-move-to term-cursor-pos
+         term-show-cursor term-hide-cursor
+         term-write term-flush term-set-title
+         KEY_UP KEY_DOWN KEY_LEFT KEY_RIGHT KEY_HOME KEY_END
+         KEY_BACKSPACE KEY_DELETE KEY_TAB KEY_ENTER KEY_ESCAPE
+         KEY_PAGE_UP KEY_PAGE_DOWN KEY_F1 KEY_F2 KEY_F3 KEY_F4)
+
+;; Key constants
+(define KEY_UP        1001) (define KEY_DOWN      1002)
+(define KEY_LEFT      1003) (define KEY_RIGHT     1004)
+(define KEY_HOME      1005) (define KEY_END       1006)
+(define KEY_BACKSPACE 1007) (define KEY_DELETE    1008)
+(define KEY_TAB       1009) (define KEY_ENTER     1010)
+(define KEY_ESCAPE    1011) (define KEY_PAGE_UP   1012)
+(define KEY_PAGE_DOWN 1013) (define KEY_F1        1014)
+(define KEY_F2        1015) (define KEY_F3        1016)
+(define KEY_F4        1017)
+
+;; FFI declarations
+(extern i32 term-init-raw :real eshkol_term_init)
+(extern void term-shutdown-raw :real eshkol_term_shutdown)
+(extern void term-raw-mode-raw :real eshkol_term_raw_mode)
+(extern void term-cooked-mode-raw :real eshkol_term_cooked_mode)
+(extern i32 term-width-raw :real eshkol_term_width)
+(extern i32 term-height-raw :real eshkol_term_height)
+(extern i32 term-resized-raw :real eshkol_term_resized)
+(extern i32 term-read-key-raw :real eshkol_term_read_key)
+(extern i32 term-read-key-timeout-raw i32 :real eshkol_term_read_key_timeout)
+(extern void term-clear-raw :real eshkol_term_clear)
+(extern void term-move-to-raw i32 i32 :real eshkol_term_move_to)
+(extern void term-show-cursor-raw :real eshkol_term_show_cursor)
+(extern void term-hide-cursor-raw :real eshkol_term_hide_cursor)
+(extern void term-write-raw ptr :real eshkol_term_write)
+(extern void term-flush-raw :real eshkol_term_flush)
+(extern void term-set-title-raw ptr :real eshkol_term_set_title)
+
+;; High-level wrappers
+(define (term-init) (= (term-init-raw) 1))
+(define (term-shutdown) (term-shutdown-raw))
+(define (term-raw-mode) (term-raw-mode-raw))
+(define (term-cooked-mode) (term-cooked-mode-raw))
+(define (term-width) (term-width-raw))
+(define (term-height) (term-height-raw))
+(define (term-resized?) (= (term-resized-raw) 1))
+(define (term-read-key) (term-read-key-raw))
+(define (term-read-key-timeout ms) (term-read-key-timeout-raw ms))
+(define (term-clear) (term-clear-raw))
+(define (term-move-to row col) (term-move-to-raw row col))
+(define (term-cursor-pos) (cons 0 0))  ;; Requires struct return, use DSR query
+(define (term-show-cursor) (term-show-cursor-raw))
+(define (term-hide-cursor) (term-hide-cursor-raw))
+(define (term-write str) (term-write-raw str))
+(define (term-flush) (term-flush-raw))
+(define (term-set-title title) (term-set-title-raw title))

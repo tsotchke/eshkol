@@ -21,6 +21,7 @@
     <p class="loading-sub">This website is written in Eshkol, compiled to WebAssembly.</p>
   </div>
   <script src="eshkol-runtime.js"></script>
+  <script src="eshkol-vm.js"></script>
   <script>
     (async () => {
       const loadingEl = document.getElementById('loading');
@@ -36,6 +37,72 @@
         if (instance.exports.main) {
           instance.exports.main(0, 0);
         }
+        // SPA routing: re-call scheme_main on hash change
+        window.addEventListener('hashchange', () => {
+          if (instance.exports.scheme_main) {
+            instance.exports.scheme_main(0);
+          }
+        });
+        // Initialize the Eshkol bytecode VM for the browser REPL
+        // Capture stdout from Emscripten into a buffer for the REPL terminal
+        window._vmOutput = '';
+        if (typeof EshkolVM !== 'undefined') {
+          EshkolVM({
+            print: (text) => { window._vmOutput += text + '\n'; },
+            printErr: (text) => { console.warn('[VM]', text); }
+          }).then(vm => {
+            runtime._eshkolVM = vm;
+            vm.ccall('repl_init', null, [], []);
+            console.log('Eshkol VM REPL ready (bytecode interpreter)');
+            window._eshkolVM = vm;
+          }).catch(e => console.warn('VM load deferred:', e.message));
+        }
+        // REPL input handler (Enter key evaluates, Up/Down for history)
+        const replHistory = [];
+        let historyIdx = -1;
+        document.addEventListener('keydown', (e) => {
+          const input = document.getElementById('repl-input');
+          const output = document.getElementById('repl-output');
+          if (!input || !output || document.activeElement !== input) return;
+          if (e.key === 'Enter') {
+            const source = input.value.trim();
+            if (!source) return;
+            replHistory.unshift(source);
+            historyIdx = -1;
+            output.textContent += 'eshkol> ' + source + '\n';
+            if (window._eshkolVM) {
+              try {
+                window._vmOutput = '';
+                const evalFn = window._eshkolVM.cwrap('repl_eval', 'string', ['string']);
+                evalFn(source);
+                if (window._vmOutput) {
+                  output.textContent += window._vmOutput;
+                }
+              } catch(err) {
+                output.textContent += 'Error: ' + err.message + '\n';
+              }
+            } else {
+              output.textContent += 'VM loading...\n';
+            }
+            input.value = '';
+            output.scrollTop = output.scrollHeight;
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (historyIdx < replHistory.length - 1) {
+              historyIdx++;
+              input.value = replHistory[historyIdx];
+            }
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (historyIdx > 0) {
+              historyIdx--;
+              input.value = replHistory[historyIdx];
+            } else {
+              historyIdx = -1;
+              input.value = '';
+            }
+          }
+        });
       } catch (e) {
         console.error('Eshkol WASM error:', e);
         if (loadingEl) {

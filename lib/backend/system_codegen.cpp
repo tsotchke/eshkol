@@ -1129,12 +1129,12 @@ llvm::Value* SystemCodegen::currentDirectory(const eshkol_operations_t* op) {
     // Allocate buffer for path (PATH_MAX is typically 4096)
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* buf = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {
-        arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 4096)
+        arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), 4096)
     });
 
     // Call getcwd(buf, 4096)
     llvm::Value* result = ctx_.builder().CreateCall(getcwd_func, {
-        buf, llvm::ConstantInt::get(ctx_.int64Type(), 4096)
+        buf, llvm::ConstantInt::get(ctx_.sizeType(), 4096)
     });
 
     // Check if NULL (error)
