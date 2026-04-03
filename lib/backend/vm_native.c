@@ -73,6 +73,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value args_list = vm_pop(vm);
         Value func = vm_pop(vm);
         if (func.type != VAL_CLOSURE) { vm->error = 1; break; }
+        /* Push closure below args (OP_CALL convention: closure at fp-1) */
+        vm_push(vm, func);
         int argc = 0;
         Value cur = args_list;
         while (cur.type == VAL_PAIR && argc < 16) {

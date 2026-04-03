@@ -136,6 +136,8 @@ static double as_number(Value v) {
     return 0.0;
 }
 
+/* as_number_vm defined after VM struct (needs heap access for rationals) */
+
 static Value number_val(double d) {
     if (d == (int64_t)d && fabs(d) < 1e15) return INT_VAL((int64_t)d);
     return FLOAT_VAL(d);
@@ -278,6 +280,17 @@ static void vm_init(VM* vm) {
 /* Validate a heap pointer */
 static inline int is_valid_heap_ptr(VM* vm, int32_t ptr) {
     return ptr >= 0 && ptr < vm->heap.next_free;
+}
+
+/* VM-aware as_number: handles rationals via heap access */
+static double as_number_vm(VM* vm, Value v) {
+    if (v.type == VAL_INT) return (double)v.as.i;
+    if (v.type == VAL_FLOAT) return v.as.f;
+    if (v.type == VAL_RATIONAL && vm) {
+        VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (r && r->denom != 0) return (double)r->num / (double)r->denom;
+    }
+    return 0.0;
 }
 
 /* Validate heap pointer AND check object type */

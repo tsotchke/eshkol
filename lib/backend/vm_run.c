@@ -105,13 +105,21 @@ static void vm_run(VM* vm) {
 
     /* --- Arithmetic --- */
 
-    lbl_ADD: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) + as_number(b))); DISPATCH(); }
-    lbl_SUB: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) - as_number(b))); DISPATCH(); }
-    lbl_MUL: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) * as_number(b))); DISPATCH(); }
+    lbl_ADD: { Value b = vm_pop(vm), a = vm_pop(vm);
+        if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 331); }
+        else vm_push(vm, number_val(as_number(a) + as_number(b))); DISPATCH(); }
+    lbl_SUB: { Value b = vm_pop(vm), a = vm_pop(vm);
+        if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 332); }
+        else vm_push(vm, number_val(as_number(a) - as_number(b))); DISPATCH(); }
+    lbl_MUL: { Value b = vm_pop(vm), a = vm_pop(vm);
+        if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 333); }
+        else vm_push(vm, number_val(as_number(a) * as_number(b))); DISPATCH(); }
     lbl_DIV: { Value b = vm_pop(vm), a = vm_pop(vm);
+        if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334); }
+        else {
         double bd = as_number(b);
         if (bd == 0) { printf("DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
-        vm_push(vm, number_val(as_number(a) / bd)); DISPATCH(); }
+        vm_push(vm, number_val(as_number(a) / bd)); } DISPATCH(); }
     lbl_MOD: {
         Value b = vm_pop(vm), a = vm_pop(vm);
         double bd = as_number(b);
@@ -126,11 +134,11 @@ static void vm_run(VM* vm) {
 
     /* --- Comparison --- */
 
-    lbl_EQ: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) == as_number(b))); DISPATCH(); }
-    lbl_LT: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) <  as_number(b))); DISPATCH(); }
-    lbl_GT: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) >  as_number(b))); DISPATCH(); }
-    lbl_LE: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) <= as_number(b))); DISPATCH(); }
-    lbl_GE: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) >= as_number(b))); DISPATCH(); }
+    lbl_EQ: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number_vm(vm, a) == as_number_vm(vm, b))); DISPATCH(); }
+    lbl_LT: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <  as_number_vm(vm, b))); DISPATCH(); }
+    lbl_GT: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >  as_number_vm(vm, b))); DISPATCH(); }
+    lbl_LE: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <= as_number_vm(vm, b))); DISPATCH(); }
+    lbl_GE: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >= as_number_vm(vm, b))); DISPATCH(); }
     lbl_NOT: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); DISPATCH(); }
 
     /* --- Variables --- */
@@ -225,6 +233,8 @@ static void vm_run(VM* vm) {
             vm->stack[vm->fp + i] = vm->stack[vm->sp - argc + i];
         }
         vm->sp = vm->fp + argc;
+        /* Update closure slot so GET_UPVALUE sees the NEW closure's upvalues */
+        vm->stack[vm->fp - 1] = func;
         vm->pc = cl->closure.func_pc;
         DISPATCH();
     }
