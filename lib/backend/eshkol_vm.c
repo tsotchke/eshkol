@@ -921,6 +921,7 @@ int main(int argc, char** argv) {
         test_map();
         test_closures();
         printf("\n=== Tests complete ===\n");
+        run_source_tests();
     }
     return 0;
 }

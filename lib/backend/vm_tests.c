@@ -615,3 +615,82 @@ static void test_closures(void) {
     vm_free(vm);
 }
 
+
+/*******************************************************************************
+ * Source-Level Tests — test full pipeline (parse → compile → run)
+ * These use compile_and_run() which is defined in eshkol_vm.c (hub).
+ * Called from main() after all modules are included.
+ ******************************************************************************/
+
+/* Forward declaration — compile_and_run is defined in eshkol_vm.c hub */
+static void compile_and_run(const char* source);
+
+static int source_test_count = 0, source_test_pass = 0;
+
+static void source_test(const char* name, const char* source) {
+    source_test_count++;
+    printf("  %s: ", name);
+    fflush(stdout);
+    compile_and_run(source);
+    source_test_pass++;
+    printf("PASS\n");
+}
+
+static void run_source_tests(void) {
+    printf("\n=== Source-Level Tests ===\n\n");
+
+    /* Strings */
+    source_test("string-length", "(display (string-length \"hello\"))");
+    source_test("string-append", "(display (string-append \"hello\" \" world\"))");
+
+    /* Higher-order functions */
+    source_test("map-square", "(display (map (lambda (x) (* x x)) (list 1 2 3 4 5)))");
+    source_test("filter-even", "(display (filter even? (list 1 2 3 4 5 6 7 8)))");
+    source_test("fold-sum", "(display (fold-left + 0 (list 1 2 3 4 5)))");
+    source_test("sort-ascending", "(display (sort < (list 5 3 1 4 2)))");
+
+    /* Closures and captures */
+    source_test("closure-capture", "(define (make-counter) (let ((n 0)) (lambda () (set! n (+ n 1)) n))) (define c (make-counter)) (c) (c) (display (c))");
+    source_test("mutual-recursion", "(define (even2? n) (if (= n 0) #t (odd2? (- n 1)))) (define (odd2? n) (if (= n 0) #f (even2? (- n 1)))) (display (even2? 10))");
+
+    /* Named let */
+    source_test("named-let-fib", "(display (let fib ((n 10)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))");
+    source_test("named-let-sum", "(display (let loop ((i 0) (sum 0)) (if (= i 100) sum (loop (+ i 1) (+ sum i)))))");
+
+    /* Tail call optimization */
+    source_test("tco-million", "(define (count n) (if (= n 0) 0 (count (- n 1)))) (display (count 1000000))");
+
+    /* Vectors */
+    source_test("vector-ops", "(define v (vector 10 20 30)) (display (vector-ref v 1))");
+    source_test("vector-set", "(define v (make-vector 3 0)) (vector-set! v 1 42) (display (vector-ref v 1))");
+
+    /* Let forms */
+    source_test("let-star", "(display (let* ((x 10) (y (* x 2))) (+ x y)))");
+    source_test("letrec", "(display (letrec ((f (lambda (n) (if (= n 0) 1 (* n (f (- n 1))))))) (f 5)))");
+
+    /* Boolean logic */
+    source_test("and-or", "(display (and #t #t (or #f 42)))");
+    source_test("not", "(display (not (= 1 2)))");
+
+    /* Cond */
+    source_test("cond", "(display (cond ((= 1 2) \"no\") ((= 1 1) \"yes\") (else \"maybe\")))");
+
+    /* Do loop */
+    source_test("do-loop", "(display (do ((i 0 (+ i 1)) (sum 0 (+ sum i))) ((= i 5) sum)))");
+
+    /* Begin */
+    source_test("begin", "(display (begin 1 2 3 42))");
+
+    /* Apply */
+    source_test("apply", "(display (apply + (list 1 2 3 4 5)))");
+
+    /* Nested defines */
+    source_test("nested-define", "(define (f x) (define (g y) (+ x y)) (g 10)) (display (f 32))");
+
+    /* First-class operators */
+    source_test("first-class-lt", "(display (< 1 2))");
+    source_test("map-car", "(display (map car (list (list 1 2) (list 3 4) (list 5 6))))");
+    source_test("sort-descending", "(display (sort > (list 1 5 3 2 4)))");
+
+    printf("\n  Source tests: %d/%d passed\n", source_test_pass, source_test_count);
+}
