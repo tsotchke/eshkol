@@ -692,5 +692,55 @@ static void run_source_tests(void) {
     source_test("map-car", "(display (map car (list (list 1 2) (list 3 4) (list 5 6))))");
     source_test("sort-descending", "(display (sort > (list 1 5 3 2 4)))");
 
+    /* String operations */
+    source_test("string-ref", "(display (string-ref \"hello\" 1))");
+    source_test("substring", "(display (substring \"hello\" 1 3))");
+    source_test("number->string", "(display (number->string 42))");
+    source_test("string->number", "(display (string->number \"99\"))");
+    source_test("string-upcase", "(display (string-upcase \"hello\"))");
+
+    /* Quasiquote / unquote */
+    source_test("quasiquote", "(define x 7) (display `(the answer is ,x))");
+    source_test("quasiquote-splice", "(define xs (list 2 3 4)) (display `(1 ,@xs 5))");
+
+    /* Multiple values */
+    source_test("values-basic", "(call-with-values (lambda () (values 1 2 3)) (lambda (a b c) (display (+ a b c))))");
+
+    /* Continuations */
+    source_test("call/cc-escape", "(display (+ 1 (call-with-current-continuation (lambda (k) (+ 2 (k 10))))))");
+
+    /* Exception handling */
+    source_test("guard-basic", "(display (guard (e (#t \"caught\")) (raise \"err\")))");
+    source_test("dynamic-wind-order",
+        "(let ((r '()))"
+        "  (dynamic-wind"
+        "    (lambda () (set! r (cons 'in r)))"
+        "    (lambda () (set! r (cons 'body r)))"
+        "    (lambda () (set! r (cons 'out r))))"
+        "  (display (reverse r)))");
+
+    /* Exact arithmetic */
+    source_test("rational-arith", "(display (+ 1/3 1/6))");
+    source_test("rational-compare", "(display (< 1/3 1/2))");
+    source_test("complex-arith", "(display (+ 3+4i 1-2i))");
+    source_test("complex-magnitude", "(display (magnitude 3+4i))");
+
+    /* Tensor operations */
+    source_test("tensor-create", "(define t (make-tensor '(3) 0.0)) (display (tensor? t))");
+    source_test("tensor-zeros", "(define t (tensor-zeros '(2 3))) (display (tensor? t))");
+    source_test("tensor-ref", "(define t (make-tensor '(3) 1.5)) (display (tensor-ref t '(0)))");
+
+    /* Logic / knowledge base */
+    source_test("unify-basic", "(display (unify '(a ?x c) '(a b c) (make-substitution)))");
+    source_test("logic-var", "(display (logic-var? '?x))");
+
+    /* Workspace / inference */
+    source_test("make-workspace", "(define ws (make-workspace)) (display (workspace? ws))");
+    source_test("make-factor-graph", "(define fg (make-factor-graph 3)) (display (factor-graph? fg))");
+
+    /* Recursive data structures */
+    source_test("assoc-list", "(define al (list (cons 'a 1) (cons 'b 2) (cons 'c 3))) (display (cdr (assoc 'b al)))");
+    source_test("deep-recursion", "(define (depth n) (if (= n 0) 0 (+ 1 (depth (- n 1))))) (display (depth 10000))");
+
     printf("\n  Source tests: %d/%d passed\n", source_test_pass, source_test_count);
 }
