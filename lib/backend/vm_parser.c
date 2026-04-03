@@ -89,7 +89,7 @@ static Node* parse_sexp(void) {
         src_ptr++;
         Node* q = make_node(N_LIST); if (!q) return NULL;
         Node* qs = make_node(N_SYMBOL); if (!qs) { free_node(q); return NULL; }
-        strcpy(qs->symbol, "quote");
+        strncpy(qs->symbol, "quote", 127); qs->symbol[127] = 0;
         add_child(q, qs);
         Node* datum = parse_sexp();
         if (datum) add_child(q, datum);
@@ -100,7 +100,7 @@ static Node* parse_sexp(void) {
         src_ptr++;
         Node* q = make_node(N_LIST); if (!q) return NULL;
         Node* tag = make_node(N_SYMBOL); if (!tag) { free_node(q); return NULL; }
-        strcpy(tag->symbol, "quasiquote");
+        strncpy(tag->symbol, "quasiquote", 127); tag->symbol[127] = 0;
         add_child(q, tag);
         Node* datum = parse_sexp();
         if (datum) add_child(q, datum);
@@ -111,7 +111,7 @@ static Node* parse_sexp(void) {
         src_ptr += 2;
         Node* q = make_node(N_LIST); if (!q) return NULL;
         Node* tag = make_node(N_SYMBOL); if (!tag) { free_node(q); return NULL; }
-        strcpy(tag->symbol, "unquote-splicing");
+        strncpy(tag->symbol, "unquote-splicing", 127); tag->symbol[127] = 0;
         add_child(q, tag);
         Node* datum = parse_sexp();
         if (datum) add_child(q, datum);
@@ -122,7 +122,7 @@ static Node* parse_sexp(void) {
         src_ptr++;
         Node* q = make_node(N_LIST); if (!q) return NULL;
         Node* tag = make_node(N_SYMBOL); if (!tag) { free_node(q); return NULL; }
-        strcpy(tag->symbol, "unquote");
+        strncpy(tag->symbol, "unquote", 127); tag->symbol[127] = 0;
         add_child(q, tag);
         Node* datum = parse_sexp();
         if (datum) add_child(q, datum);
@@ -131,8 +131,14 @@ static Node* parse_sexp(void) {
     /* String literal */
     if (*src_ptr == '"') {
         src_ptr++; /* skip opening quote */
-        char buf[256]; int i = 0;
-        while (*src_ptr && *src_ptr != '"' && i < 255) {
+        int buf_cap = 256;
+        char* buf = (char*)malloc(buf_cap);
+        int i = 0;
+        while (*src_ptr && *src_ptr != '"') {
+            if (i >= buf_cap - 2) {
+                buf_cap *= 2;
+                buf = (char*)realloc(buf, buf_cap);
+            }
             if (*src_ptr == '\\' && src_ptr[1]) {
                 src_ptr++;
                 switch (*src_ptr) {
@@ -149,16 +155,17 @@ static Node* parse_sexp(void) {
         }
         if (*src_ptr == '"') src_ptr++; /* skip closing quote */
         buf[i] = 0;
-        Node* n = make_node(N_STRING); if (!n) return NULL;
+        Node* n = make_node(N_STRING); if (!n) { free(buf); return NULL; }
         strncpy(n->symbol, buf, 127); n->symbol[127] = 0;
+        free(buf);
         return n;
     }
     if (*src_ptr == '#') {
         if (src_ptr[1] == 't' && (src_ptr[2] == 0 || isspace(src_ptr[2]) || src_ptr[2] == ')')) {
-            src_ptr += 2; Node* n = make_node(N_BOOL); if (!n) return NULL; n->numval = 1; strcpy(n->symbol, "#t"); return n;
+            src_ptr += 2; Node* n = make_node(N_BOOL); if (!n) return NULL; n->numval = 1; strncpy(n->symbol, "#t", 127); n->symbol[127] = 0; return n;
         }
         if (src_ptr[1] == 'f' && (src_ptr[2] == 0 || isspace(src_ptr[2]) || src_ptr[2] == ')')) {
-            src_ptr += 2; Node* n = make_node(N_BOOL); if (!n) return NULL; n->numval = 0; strcpy(n->symbol, "#f"); return n;
+            src_ptr += 2; Node* n = make_node(N_BOOL); if (!n) return NULL; n->numval = 0; strncpy(n->symbol, "#f", 127); n->symbol[127] = 0; return n;
         }
         /* Character literal: #\a, #\space, #\newline, #\tab */
         if (src_ptr[1] == '\\') {
@@ -184,7 +191,7 @@ static Node* parse_sexp(void) {
             src_ptr += 2; /* skip #( */
             Node* vec = make_node(N_LIST); if (!vec) return NULL;
             Node* tag = make_node(N_SYMBOL); if (!tag) { free_node(vec); return NULL; }
-            strcpy(tag->symbol, "vector");
+            strncpy(tag->symbol, "vector", 127); tag->symbol[127] = 0;
             add_child(vec, tag);
             while (1) { skip_ws(); if (!*src_ptr || *src_ptr == ')') break; Node* el = parse_sexp(); if (!el) break; add_child(vec, el); }
             if (*src_ptr == ')') src_ptr++;

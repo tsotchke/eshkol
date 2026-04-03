@@ -1253,10 +1253,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 Value content_val = (Value){.type = VAL_INT, .as.ptr = tptr};
 
                 /* Call each module's closure, collect salience + proposal */
-                double saliences[32];
-                Value proposals[32];
                 int n_mod = ws->n_modules;
-                if (n_mod > 32) n_mod = 32;
+                if (n_mod > 256) n_mod = 256;
+                double* saliences = (double*)calloc(n_mod, sizeof(double));
+                Value* proposals = (Value*)calloc(n_mod, sizeof(Value));
+                if (!saliences || !proposals) { free(saliences); free(proposals); vm_push(vm, NIL_VAL); break; }
                 for (int i = 0; i < n_mod; i++) {
                     Value* closure_ptr = (Value*)ws->modules[i].process_fn;
                     if (closure_ptr && closure_ptr->type == VAL_CLOSURE) {
@@ -1278,7 +1279,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 for (int i = 1; i < n_mod; i++)
                     if (saliences[i] > saliences[winner]) winner = i;
                 ws->step_count++;
-                vm_push(vm, proposals[winner]);
+                Value winner_proposal = proposals[winner];
+                free(saliences); free(proposals);
+                vm_push(vm, winner_proposal);
                 break;
             }
         }
