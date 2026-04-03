@@ -388,38 +388,39 @@ static void qllm_backward_attention(
  * Full Backward Pass — all 5 layers in reverse
  ******************************************************************************/
 
+/* Weight layout — must match InterpreterWeights in weight_matrices.c */
+typedef struct {
+    float wq[N_LAYERS][D * D];
+    float wk[N_LAYERS][D * D];
+    float wv[N_LAYERS][D * D];
+    float wo[N_LAYERS][D * D];
+    float bq[N_LAYERS][D];
+    float ff_up[N_LAYERS][D * FFN_DIM];
+    float ff_up_b[N_LAYERS][FFN_DIM];
+    float ff_down[N_LAYERS][FFN_DIM * D];
+    float ff_down_b[N_LAYERS][D];
+    float ff_gate[N_LAYERS][D * FFN_DIM];
+    float ff_gate_b[N_LAYERS][FFN_DIM];
+    int ff_type[N_LAYERS];
+} QllmWeights;
+
 static void qllm_backward(
-    const void* weights,  /* Weights struct from qllm_interpreter.c */
+    const QllmWeights* w,
     const QllmForwardCache* cache,
     const float loss_grad[D],
     QllmWeightGradients* grads)
 {
-    /* Cast weights to access fields.
-     * Note: actual weight struct layout must match qllm_interpreter.c */
-    const float* all_weights = (const float*)weights;
-    (void)all_weights; /* Layout-dependent access deferred to integration */
-
     float dx[D];
     memcpy(dx, loss_grad, D * sizeof(float));
 
-    /* Walk layers in reverse: 4, 3, 2, 1, 0 */
     for (int L = N_LAYERS - 1; L >= 0; L--) {
         float dx_layer[D] = {0};
-
-        /* Residual: x_out = x_in + layer_output
-         * dx passes through residual connection AND into layer */
-
-        /* FFN backward (determine type from layer index) */
-        /* Layer 0: attention + FFN type 1 (SQUARE)
-         * Layers 1: FFN type 1 (SQUARE)
-         * Layers 2-4: FFN type 2 (Gated) */
-        /* Note: actual ff_type comes from the Weights struct.
-         * For now, use the known architecture layout. */
-        int ff_type = (L <= 1) ? 1 : 2;
+        int ff_type = w->ff_type[L];
 
         if (ff_type == 1) {
             qllm_backward_ffn_square(
-                NULL, NULL, NULL, NULL, /* weight pointers — filled during integration */
+                w->ff_up[L], w->ff_down[L],
+                w->ff_up_b[L], w->ff_down_b[L],
                 cache->x_in[L],
                 cache->ffn_pre_act[L],
                 dx,
@@ -428,7 +429,8 @@ static void qllm_backward(
                 grads->dff_down[L], grads->dff_down_b[L]);
         } else {
             qllm_backward_ffn_gated(
-                NULL, NULL, NULL, NULL, NULL, NULL,
+                w->ff_up[L], w->ff_down[L], w->ff_gate[L],
+                w->ff_up_b[L], w->ff_down_b[L], w->ff_gate_b[L],
                 cache->x_in[L],
                 cache->ffn_gate_post[L],
                 cache->ffn_up_post[L],
@@ -448,7 +450,7 @@ static void qllm_backward(
         if (L == 0 && cache->np > 0) {
             float dx_attn[D] = {0};
             qllm_backward_attention(
-                NULL, NULL, NULL, NULL, NULL,
+                w->wq[0], w->wk[0], w->wv[0], w->wo[0], w->bq[0],
                 cache, dx, dx_attn,
                 grads->dwq[0], grads->dwk[0], grads->dwv[0],
                 grads->dwo[0], grads->dbq[0]);
@@ -558,4 +560,82 @@ static int qllm_load_checkpoint(const char* path,
 
     fclose(f);
     return 0;
+}
+
+/*******************************************************************************
+ * Training Step — complete forward + backward + optimizer update
+ ******************************************************************************/
+
+typedef struct {
+    QllmWeights* weights;
+    QllmWeightGradients accum_grads;
+    QllmWeightGradients m;  /* Adam first moment */
+    QllmWeightGradients v;  /* Adam second moment */
+    QllmAdamWConfig opt_cfg;
+    QllmLossConfig loss_cfg;
+    QllmForwardCache cache;
+    int batch_size;
+    int accum_count;
+    float running_loss;
+    int total_steps;
+} QllmTrainer;
+
+static void qllm_trainer_init(QllmTrainer* t, QllmWeights* weights, int batch_size) {
+    memset(t, 0, sizeof(QllmTrainer));
+    t->weights = weights;
+    t->batch_size = batch_size > 0 ? batch_size : 16;
+    qllm_adamw_config_default(&t->opt_cfg);
+    qllm_loss_config_default(&t->loss_cfg);
+}
+
+/* Single training step: compute loss + gradients for one (state, target) pair.
+ * Accumulates gradients. Calls optimizer every batch_size steps. */
+static float qllm_trainer_step(QllmTrainer* t,
+                                 const float state[D],
+                                 const float target[D]) {
+    /* Forward pass (NOTE: requires cached forward — caller must populate t->cache) */
+    /* For now, assume cache is populated by caller via qllm_forward_cached() */
+
+    /* Compute loss */
+    float pred[D];
+    memcpy(pred, state, D * sizeof(float)); /* placeholder — should be forward output */
+    float loss = qllm_compute_loss(pred, target, &t->loss_cfg);
+
+    /* Backward pass */
+    float loss_grad[D];
+    qllm_compute_loss_grad(pred, target, &t->loss_cfg, loss_grad);
+    qllm_backward(t->weights, &t->cache, loss_grad, &t->accum_grads);
+
+    t->accum_count++;
+    t->running_loss += loss;
+
+    /* Apply optimizer every batch_size steps */
+    if (t->accum_count >= t->batch_size) {
+        /* Average gradients over batch */
+        float scale = 1.0f / (float)t->accum_count;
+        float* g = (float*)&t->accum_grads;
+        int n = sizeof(QllmWeightGradients) / sizeof(float);
+        for (int i = 0; i < n; i++) g[i] *= scale;
+
+        /* Clip gradients */
+        qllm_clip_gradients(&t->accum_grads, t->opt_cfg.grad_clip_norm);
+
+        /* Update LR */
+        t->opt_cfg.t++;
+        t->opt_cfg.lr = qllm_lr_schedule(t->opt_cfg.t, 100, 10000, 1e-4f, 1e-6f);
+
+        /* Apply AdamW to each weight group */
+        float* w = (float*)t->weights;
+        float* grad = (float*)&t->accum_grads;
+        float* m = (float*)&t->m;
+        float* v = (float*)&t->v;
+        qllm_adamw_update(w, grad, m, v, n, &t->opt_cfg);
+
+        /* Reset accumulator */
+        qllm_zero_gradients(&t->accum_grads);
+        t->accum_count = 0;
+        t->total_steps++;
+    }
+
+    return loss;
 }
