@@ -4804,15 +4804,56 @@ static void chunk_destroy(FuncChunk* c) {
 
 static int is_sym(Node* n, const char* s) { return n && n->type == N_SYMBOL && strcmp(n->symbol, s) == 0; }
 
-static void chunk_emit(FuncChunk* c, uint8_t op, int32_t operand) {
-    if (c->code_len >= c->code_cap) {
+static void chunk_ensure_code_cap(FuncChunk* c, int needed) {
+    while (c->code_len + needed > c->code_cap) {
         int new_cap = c->code_cap * 2;
         Instr* new_code = (Instr*)realloc(c->code, new_cap * sizeof(Instr));
         if (!new_code) { fprintf(stderr, "ERROR: bytecode realloc failed\n"); return; }
         c->code = new_code;
         c->code_cap = new_cap;
     }
+}
+
+static void chunk_emit(FuncChunk* c, uint8_t op, int32_t operand) {
+    chunk_ensure_code_cap(c, 1);
     c->code[c->code_len++] = (Instr){op, operand};
+}
+
+/* Copy an instruction directly (used when inlining function code) */
+static void chunk_emit_instr(FuncChunk* c, Instr fi) {
+    chunk_ensure_code_cap(c, 1);
+    c->code[c->code_len++] = fi;
+}
+
+/* Map constants from inner chunk to outer chunk.
+ * Returns heap-allocated array of size src->n_constants (caller must free). */
+static int* chunk_map_constants(FuncChunk* dst, FuncChunk* src) {
+    if (src->n_constants == 0) return NULL;
+    int* map = (int*)malloc(src->n_constants * sizeof(int));
+    if (!map) { fprintf(stderr, "ERROR: const_map alloc failed\n"); return NULL; }
+    for (int i = 0; i < src->n_constants; i++)
+        map[i] = chunk_add_const(dst, src->constants[i]);
+    return map;
+}
+
+/* Inline inner function code into outer chunk, remapping constants and jumps.
+ * Returns the PC of the inlined function start in the outer chunk. */
+static int chunk_inline_code(FuncChunk* dst, FuncChunk* src, int* const_map) {
+    int func_pc = dst->code_len;
+    chunk_ensure_code_cap(dst, src->code_len);
+    for (int i = 0; i < src->code_len; i++) {
+        Instr fi = src->code[i];
+        if (fi.op == OP_CONST && const_map) fi.operand = const_map[fi.operand];
+        if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
+            fi.operand += func_pc;
+        if (fi.op == OP_CLOSURE && const_map) {
+            int ci = fi.operand & 0xFFFF;
+            int nu = (fi.operand >> 16) & 0xFF;
+            fi.operand = const_map[ci] | (nu << 16);
+        }
+        dst->code[dst->code_len++] = fi;
+    }
+    return func_pc;
 }
 
 static int chunk_add_const(FuncChunk* c, Value v) {
@@ -5614,7 +5655,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             int jover = placeholder(c);
             int func_start = c->code_len;
             c->constants[cfunc].as.i = func_start;
-            int const_map[MAX_CONSTS];
+            int const_map[4096];
             for (int i = 0; i < func.n_constants; i++)
                 const_map[i] = chunk_add_const(c, func.constants[i]);
             for (int i = 0; i < func.code_len; i++) {
@@ -5622,7 +5663,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
                 if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
                     fi.operand += func_start;
-                c->code[c->code_len++] = fi;
+                chunk_emit_instr(c, fi);
             }
             patch(c, jover, OP_JUMP, c->code_len);
             chunk_emit(c, OP_CLOSURE, cfunc);
@@ -5644,13 +5685,13 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             int jover = placeholder(c);
             int func_start = c->code_len;
             c->constants[cfunc].as.i = func_start;
-            int const_map[MAX_CONSTS];
+            int const_map[4096];
             for (int i = 0; i < func.n_constants; i++)
                 const_map[i] = chunk_add_const(c, func.constants[i]);
             for (int i = 0; i < func.code_len; i++) {
                 Instr fi = func.code[i];
                 if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-                c->code[c->code_len++] = fi;
+                chunk_emit_instr(c, fi);
             }
             patch(c, jover, OP_JUMP, c->code_len);
             chunk_emit(c, OP_CLOSURE, cfunc);
@@ -5679,13 +5720,13 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 int jover = placeholder(c);
                 int func_start = c->code_len;
                 c->constants[cfunc].as.i = func_start;
-                int const_map[MAX_CONSTS];
+                int const_map[4096];
                 for (int i2 = 0; i2 < func.n_constants; i2++)
                     const_map[i2] = chunk_add_const(c, func.constants[i2]);
                 for (int i2 = 0; i2 < func.code_len; i2++) {
                     Instr fi = func.code[i2];
                     if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-                    c->code[c->code_len++] = fi;
+                    chunk_emit_instr(c, fi);
                 }
                 patch(c, jover, OP_JUMP, c->code_len);
                 chunk_emit(c, OP_CLOSURE, cfunc);
@@ -5710,13 +5751,13 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 int jover = placeholder(c);
                 int func_start = c->code_len;
                 c->constants[cfunc].as.i = func_start;
-                int const_map[MAX_CONSTS];
+                int const_map[4096];
                 for (int i2 = 0; i2 < func.n_constants; i2++)
                     const_map[i2] = chunk_add_const(c, func.constants[i2]);
                 for (int i2 = 0; i2 < func.code_len; i2++) {
                     Instr fi = func.code[i2];
                     if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-                    c->code[c->code_len++] = fi;
+                    chunk_emit_instr(c, fi);
                 }
                 patch(c, jover, OP_JUMP, c->code_len);
                 chunk_emit(c, OP_CLOSURE, cfunc);
@@ -5935,7 +5976,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(&handler_func, OP_RETURN, 0);
 
         /* Inline handler function code into parent chunk */
-        int const_map_h[MAX_CONSTS];
+        int const_map_h[4096];
         for (int i = 0; i < handler_func.n_constants; i++)
             const_map_h[i] = chunk_add_const(c, handler_func.constants[i]);
         int hfunc_const = chunk_add_const(c, INT_VAL(0)); /* placeholder */
@@ -5959,7 +6000,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 int nu2 = (fi.operand >> 16) & 0xFF;
                 fi.operand = const_map_h[ci2] | (nu2 << 16);
             }
-            c->code[c->code_len++] = fi;
+            chunk_emit_instr(c, fi);
         }
 
         patch(c, hjover, OP_JUMP, c->code_len);
@@ -6235,7 +6276,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(&func, OP_RETURN, 0);
 
         /* Inline function code */
-        int const_map_nl[MAX_CONSTS];
+        int const_map_nl[4096];
         for (int i = 0; i < func.n_constants; i++)
             const_map_nl[i] = chunk_add_const(c, func.constants[i]);
         int cfunc = chunk_add_const(c, INT_VAL(0));
@@ -6253,7 +6294,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 int nu2 = (fi.operand >> 16) & 0xFF;
                 fi.operand = const_map_nl[ci2] | (nu2 << 16);
             }
-            c->code[c->code_len++] = fi;
+            chunk_emit_instr(c, fi);
         }
         patch(c, jover, OP_JUMP, c->code_len);
 
@@ -6536,7 +6577,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             /* Emit function code at end of current chunk, record its PC */
             int func_pc = c->code_len + 2; /* +2 for CLOSURE + NOP below */
             /* Map child constants to parent indices */
-            int const_map[MAX_CONSTS];
+            int const_map[4096];
             for (int i = 0; i < func.n_constants; i++) {
                 const_map[i] = chunk_add_const(c, func.constants[i]);
             }
@@ -6570,7 +6611,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                     int nu = (fi.operand >> 16) & 0xFF;
                     fi.operand = const_map[ci] | (nu << 16);
                 }
-                c->code[c->code_len++] = fi;
+                chunk_emit_instr(c, fi);
             }
 
             /* Patch jump over function body */
@@ -6901,7 +6942,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 int nu = (fi.operand >> 16) & 0xFF;
                 fi.operand = const_map2[ci] | (nu << 16);
             }
-            c->code[c->code_len++] = fi;
+            chunk_emit_instr(c, fi);
         }
         patch(c, jover, OP_JUMP, c->code_len);
         int n_upvals = func.n_upvalues;
@@ -6977,7 +7018,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 int nu = (fi.operand >> 16) & 0xFF;
                 fi.operand = const_map2[ci] | (nu << 16);
             }
-            c->code[c->code_len++] = fi;
+            chunk_emit_instr(c, fi);
         }
         patch(c, jover, OP_JUMP, c->code_len);
 
