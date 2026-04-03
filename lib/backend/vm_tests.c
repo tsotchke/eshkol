@@ -742,10 +742,10 @@ static void run_source_tests(void) {
     source_test_expect("begin", "(display (begin 1 2 3 42))", "42");
 
     /* Apply */
-    source_test("apply", "(display (apply + (list 1 2 3 4 5)))");
+    source_test_expect("apply", "(display (apply + (list 1 2 3 4 5)))", "15");
 
     /* Nested defines */
-    source_test("nested-define", "(define (f x) (define (g y) (+ x y)) (g 10)) (display (f 32))");
+    source_test_expect("nested-define", "(define (f x) (define (g y) (+ x y)) (g 10)) (display (f 32))", "42");
 
     /* First-class operators */
     source_test_expect("first-class-lt",  "(display (< 1 2))", "#t");
@@ -754,10 +754,10 @@ static void run_source_tests(void) {
 
     /* String operations */
     source_test_expect("string-ref",     "(display (string-ref \"hello\" 1))",    "101");
-    source_test("substring",             "(display (substring \"hello\" 1 3))");
+    source_test_expect("substring",      "(display (substring \"hello\" 1 3))",   "el");
     source_test_expect("number->string", "(display (number->string 42))",          "42");
-    source_test("string->number",        "(display (string->number \"99\"))");
-    source_test("string-upcase",         "(display (string-upcase \"hello\"))");
+    source_test_expect("string->number", "(display (string->number \"99\"))",      "99");
+    source_test_expect("string-upcase",  "(display (string-upcase \"hello\"))",    "HELLO");
 
     /* Quasiquote */
     source_test("quasiquote",       "(define x 7) (display `(the answer is ,x))");
@@ -782,8 +782,8 @@ static void run_source_tests(void) {
         "  (display (reverse r)))");
 
     /* Exact arithmetic */
-    source_test("rational-arith",          "(display (+ 1/3 1/6))");
-    source_test("rational-compare",        "(display (< 1/3 1/2))");
+    source_test_expect("rational-arith",   "(display (+ 1/3 1/6))",       "1/2");
+    source_test_expect("rational-compare", "(display (< 1/3 1/2))",       "#t");
     source_test("complex-arith",           "(display (+ 3+4i 1-2i))");
     source_test("complex-magnitude",       "(display (magnitude 3+4i))");
 

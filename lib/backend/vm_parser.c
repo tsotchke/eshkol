@@ -198,11 +198,29 @@ static Node* parse_sexp(void) {
             return vec;
         }
     }
-    /* Number */
+    /* Number (including rational literals like 1/3) */
     if (isdigit(*src_ptr) || (*src_ptr == '-' && isdigit(src_ptr[1]))) {
         char buf[64]; int i = 0;
         if (*src_ptr == '-') buf[i++] = *src_ptr++;
         while ((isdigit(*src_ptr) || *src_ptr == '.') && i < 63) buf[i++] = *src_ptr++;
+        /* Check for rational literal: digits/digits */
+        if (*src_ptr == '/' && isdigit(src_ptr[1])) {
+            int64_t num = atoll(buf);
+            src_ptr++; /* skip '/' */
+            char den_buf[32]; int j = 0;
+            while (isdigit(*src_ptr) && j < 31) den_buf[j++] = *src_ptr++;
+            den_buf[j] = 0;
+            int64_t denom = atoll(den_buf);
+            if (denom == 0) denom = 1;
+            /* Emit as (/ num denom) — a list node */
+            Node* div_node = make_node(N_LIST); if (!div_node) return NULL;
+            Node* op = make_node(N_SYMBOL); if (!op) return NULL;
+            strncpy(op->symbol, "exact-rational", 127);
+            Node* n_node = make_node(N_NUMBER); if (!n_node) return NULL; n_node->numval = (double)num;
+            Node* d_node = make_node(N_NUMBER); if (!d_node) return NULL; d_node->numval = (double)denom;
+            add_child(div_node, op); add_child(div_node, n_node); add_child(div_node, d_node);
+            return div_node;
+        }
         buf[i] = 0;
         Node* n = make_node(N_NUMBER); if (!n) return NULL; n->numval = atof(buf); return n;
     }
