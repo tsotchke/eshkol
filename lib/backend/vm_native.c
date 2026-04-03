@@ -56,9 +56,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 54: { Value b = vm_pop(vm); Value a = vm_pop(vm); (void)a; (void)b; vm_push(vm, NIL_VAL); break; }
     case 55: { Value b = vm_pop(vm); Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) == as_number(b))); break; }
-    case 56: { Value a = vm_pop(vm); (void)a; vm_push(vm, INT_VAL(0)); break; }
 
     /* ══════════════════════════════════════════════════════════════════════
      * I/O (60-61)
@@ -140,6 +138,46 @@ static void vm_dispatch_native(VM* vm, int fid) {
             rev = vm->heap.objects[rev.as.ptr]->cons.cdr;
         }
         vm_push(vm, result2);
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * List search: member (137), assoc (138)
+     * ══════════════════════════════════════════════════════════════════════ */
+    case 137: { /* member: (member obj list) — returns sublist starting from obj, or #f */
+        Value lst = vm_pop(vm), obj = vm_pop(vm);
+        while (lst.type == VAL_PAIR) {
+            Value car = vm->heap.objects[lst.as.ptr]->cons.car;
+            if (car.type == obj.type && ((car.type == VAL_INT && car.as.i == obj.as.i) ||
+                (car.type == VAL_FLOAT && car.as.f == obj.as.f) ||
+                (car.type == VAL_BOOL && car.as.b == obj.as.b) ||
+                (car.type == VAL_STRING && obj.type == VAL_STRING &&
+                 vm->heap.objects[car.as.ptr]->opaque.ptr && vm->heap.objects[obj.as.ptr]->opaque.ptr &&
+                 strcmp(((VmString*)vm->heap.objects[car.as.ptr]->opaque.ptr)->data,
+                        ((VmString*)vm->heap.objects[obj.as.ptr]->opaque.ptr)->data) == 0))) {
+                vm_push(vm, lst); break;
+            }
+            lst = vm->heap.objects[lst.as.ptr]->cons.cdr;
+        }
+        if (lst.type != VAL_PAIR) vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 138: { /* assoc: (assoc key alist) — returns (key . val) pair, or #f */
+        Value alist = vm_pop(vm), key = vm_pop(vm);
+        int found = 0;
+        while (alist.type == VAL_PAIR) {
+            Value pair = vm->heap.objects[alist.as.ptr]->cons.car;
+            if (pair.type == VAL_PAIR) {
+                Value car = vm->heap.objects[pair.as.ptr]->cons.car;
+                if (car.type == key.type && ((car.type == VAL_INT && car.as.i == key.as.i) ||
+                    (car.type == VAL_FLOAT && car.as.f == key.as.f) ||
+                    (car.type == VAL_BOOL && car.as.b == key.as.b))) {
+                    vm_push(vm, pair); found = 1; break;
+                }
+            }
+            alist = vm->heap.objects[alist.as.ptr]->cons.cdr;
+        }
+        if (!found) vm_push(vm, BOOL_VAL(0));
         break;
     }
 
@@ -2267,10 +2305,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else { vm_push(vm, FLOAT_VAL(0)); }
         break;
     }
-    case 752: { /* hessian — second derivative via nested dual */
+    case 752: { /* hessian — second derivative via finite differences on gradient */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
-        (void)x_val; (void)f_val;
-        vm_push(vm, FLOAT_VAL(0)); /* nested dual not yet supported */
+        double x = as_number(x_val);
+        double h = 1e-5;
+        double grads[2];
+        double pts[2] = { x + h, x - h };
+        for (int gi = 0; gi < 2; gi++) {
+            VmDual* d = vm_dual_new(&vm->heap.regions, pts[gi], 1.0);
+            if (!d) { grads[gi] = 0; continue; }
+            int32_t dp = heap_alloc(&vm->heap);
+            if (dp < 0) { grads[gi] = 0; continue; }
+            vm->heap.objects[dp]->type = HEAP_DUAL;
+            vm->heap.objects[dp]->opaque.ptr = d;
+            Value da = (Value){.type = VAL_DUAL, .as.ptr = dp};
+            Value r = vm_call_closure_from_native(vm, f_val, &da, 1);
+            if (r.type == VAL_DUAL && r.as.ptr >= 0) {
+                VmDual* rd = (VmDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
+                grads[gi] = rd ? rd->tangent : 0;
+            } else grads[gi] = 0;
+        }
+        vm_push(vm, FLOAT_VAL((grads[0] - grads[1]) / (2 * h)));
         break;
     }
 
@@ -2587,9 +2642,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else vm_push(vm, result);
         break;
     }
-    case 252: { /* propagate open slot from parent */
+    case 252: { /* propagate open slot: patch closure upvalue to reference parent's slot */
         Value slot_v = vm_pop(vm), uv_idx_v = vm_pop(vm), cl_val = vm_pop(vm);
-        (void)slot_v; (void)uv_idx_v; (void)cl_val;
+        if (cl_val.type == VAL_CLOSURE) {
+            HeapObject* cl = vm->heap.objects[cl_val.as.ptr];
+            int uv_idx = (int)as_number(uv_idx_v);
+            int slot = (int)as_number(slot_v);
+            if (uv_idx >= 0 && uv_idx < cl->closure.n_upvalues && slot >= 0 && slot < vm->sp) {
+                cl->closure.upvalues[uv_idx] = vm->stack[vm->fp + slot];
+            }
+        }
         vm_push(vm, NIL_VAL);
         break;
     }

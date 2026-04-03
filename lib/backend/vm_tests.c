@@ -800,6 +800,9 @@ static void run_source_tests(void) {
     source_test_expect("make-workspace",   "(define ws (make-workspace)) (display (workspace? ws))",   "#t");
     source_test_expect("make-factor-graph","(define fg (make-factor-graph 3)) (display (factor-graph? fg))", "#t");
 
+    /* Lazy evaluation */
+    source_test("force-delay", "(define p (delay (+ 1 2))) (display (force p))");
+
     /* Recursive data structures */
     source_test("assoc-list",
         "(define al (list (cons 'a 1) (cons 'b 2) (cons 'c 3))) (display (cdr (assoc 'b al)))");
