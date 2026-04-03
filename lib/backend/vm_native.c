@@ -2471,8 +2471,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 210: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_VECTOR)); break; } /* vector? */
     case 211: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, NIL_VAL); break; } /* display */
     case 212: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, NIL_VAL); break; } /* write */
-    case 213: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(as_number(a))); break; }  /* exact->inexact */
-    case 214: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a))); break; } /* inexact->exact */
+    case 213: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(as_number_vm(vm, a))); break; }  /* exact->inexact */
+    case 214: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number_vm(vm, a))); break; } /* inexact->exact */
     case 215: { /* string->number */
         Value a = vm_pop(vm);
         if (a.type == VAL_STRING) {

@@ -867,9 +867,8 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         Node* sig = node->children[1];
         char* fname = sig->children[0]->symbol;
 
-        /* Reserve local slot — the CLOSURE instruction below will push the
-         * closure directly into this slot (no NIL placeholder needed). */
         int func_slot = add_local(c, fname);
+        int pre_registered = 0;
 
         /* Compile function body into a separate chunk.
          * The body can reference fname via GET_UPVALUE which will be captured
@@ -977,11 +976,7 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);  /* patch self-ref */
         }
         /* Convert local upvalues to open (stack slot references)
-         * for top-level defines only (where enclosing scope persists forever).
-         * This enables set! mutations of top-level variables.
-         * NOTE: closures inside function bodies that capture mutable locals
-         * need heap boxing (not yet implemented) for set! to work correctly
-         * when the closure outlives the enclosing scope. */
+         * for top-level defines only (where enclosing scope persists forever). */
         if (c->enclosing == NULL) {
             for (int i = 0; i < n_upvals; i++) {
                 if (i == self_uv_idx) continue;
@@ -2280,14 +2275,32 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_NATIVE_CALL, 332);
         return;
     }
+    /* Variadic max/min: chain 2-arg native calls */
+    if (is_sym(head, "max") && node->n_children >= 3) {
+        compile_expr(c, node->children[1], 0);
+        for (int i = 2; i < node->n_children; i++) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_NATIVE_CALL, 34); /* 2-arg max */
+        }
+        return;
+    }
+    if (is_sym(head, "min") && node->n_children >= 3) {
+        compile_expr(c, node->children[1], 0);
+        for (int i = 2; i < node->n_children; i++) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_NATIVE_CALL, 33); /* 2-arg min */
+        }
+        return;
+    }
+
     if (is_sym(head, "exact->inexact") && node->n_children == 2) {
         compile_expr(c, node->children[1], 0);
-        chunk_emit(c, OP_NATIVE_CALL, 343);
+        chunk_emit(c, OP_NATIVE_CALL, 213);
         return;
     }
     if (is_sym(head, "inexact->exact") && node->n_children == 2) {
         compile_expr(c, node->children[1], 0);
-        chunk_emit(c, OP_NATIVE_CALL, 344);
+        chunk_emit(c, OP_NATIVE_CALL, 214);
         return;
     }
     if (is_sym(head, "rationalize") && node->n_children == 3) {
