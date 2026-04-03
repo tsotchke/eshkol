@@ -673,6 +673,165 @@ int eshkol_emit_eskb(const char* source, const char* output_path) {
     return result;
 }
 
+/*******************************************************************************
+ * Persistent REPL API — compile incrementally into an existing VM
+ ******************************************************************************/
+
+typedef struct {
+    VM* vm;
+    FuncChunk chunk;
+    int initialized;
+} ReplSession;
+
+/* Create a REPL session: compile prelude, create VM, run prelude */
+static ReplSession* repl_session_create(void) {
+    ReplSession* rs = (ReplSession*)calloc(1, sizeof(ReplSession));
+    if (!rs) return NULL;
+
+    chunk_init_arrays(&rs->chunk);
+    emit_builtin_preamble(&rs->chunk);
+
+    /* Compile Scheme prelude into the chunk */
+    static const char* scheme_prelude =
+        "(define (map f lst)\n"
+        "  (let loop ((l lst) (acc (list)))\n"
+        "    (if (null? l) (reverse acc)\n"
+        "      (loop (cdr l) (cons (f (car l)) acc)))))\n"
+        "(define (filter pred lst)\n"
+        "  (let loop ((l lst) (acc (list)))\n"
+        "    (if (null? l) (reverse acc)\n"
+        "      (if (pred (car l)) (loop (cdr l) (cons (car l) acc))\n"
+        "        (loop (cdr l) acc)))))\n"
+        "(define (fold-left f init lst)\n"
+        "  (let loop ((l lst) (acc init))\n"
+        "    (if (null? l) acc\n"
+        "      (loop (cdr l) (f acc (car l))))))\n"
+        "(define (fold-right f init lst) (if (null? lst) init (f (car lst) (fold-right f init (cdr lst)))))\n"
+        "(define (for-each f lst) (if (null? lst) 0 (begin (f (car lst)) (for-each f (cdr lst)))))\n"
+        "(define (any pred lst) (if (null? lst) #f (if (pred (car lst)) #t (any pred (cdr lst)))))\n"
+        "(define (every pred lst) (if (null? lst) #t (if (pred (car lst)) (every pred (cdr lst)) #f)))\n"
+        "(define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))\n"
+        "(define (take n lst) (if (= n 0) (list) (if (null? lst) (list) (cons (car lst) (take (- n 1) (cdr lst))))))\n"
+        "(define (drop n lst) (if (= n 0) lst (if (null? lst) (list) (drop (- n 1) (cdr lst)))))\n"
+        "(define (reduce f init lst) (fold-left f init lst))\n"
+        "(define (merge compare a b)\n"
+        "  (cond ((null? a) b) ((null? b) a)\n"
+        "    ((compare (car a) (car b)) (cons (car a) (merge compare (cdr a) b)))\n"
+        "    (else (cons (car b) (merge compare a (cdr b))))))\n"
+        "(define (sort compare lst)\n"
+        "  (if (or (null? lst) (null? (cdr lst))) lst\n"
+        "    (let ((half (quotient (length lst) 2)))\n"
+        "      (merge compare (sort compare (take half lst)) (sort compare (drop half lst))))))\n"
+        "(define + (lambda args (fold-left add2 0 args)))\n"
+        "(define * (lambda args (fold-left mul2 1 args)))\n"
+        "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
+        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n";
+    src_ptr = scheme_prelude;
+    while (1) {
+        skip_ws(); if (!*src_ptr) break;
+        Node* expr = parse_sexp(); if (!expr) break;
+        int lb = rs->chunk.n_locals;
+        compile_expr(&rs->chunk, expr, 0);
+        if (rs->chunk.n_locals == lb)
+            chunk_emit(&rs->chunk, OP_POP, 0);
+        free_node(expr);
+    }
+
+    /* Add HALT so we can run the prelude */
+    int halt_pos = rs->chunk.code_len;
+    chunk_emit(&rs->chunk, OP_HALT, 0);
+
+    /* Create VM and transfer prelude code */
+    rs->vm = vm_create();
+    if (!rs->vm) { free(rs); return NULL; }
+
+    free(rs->vm->code);
+    rs->vm->code = (Instr*)calloc(rs->chunk.code_len, sizeof(Instr));
+    rs->vm->code_len = rs->chunk.code_len;
+    for (int i = 0; i < rs->chunk.code_len; i++)
+        rs->vm->code[i] = rs->chunk.code[i];
+    for (int i = 0; i < rs->chunk.n_constants && i < MAX_CONSTS; i++)
+        rs->vm->constants[i] = rs->chunk.constants[i];
+    rs->vm->n_constants = rs->chunk.n_constants;
+
+    /* Run prelude to populate stack with closures */
+    vm_run(rs->vm);
+    rs->vm->halted = 0;
+    rs->vm->error = 0;
+
+    /* Remove the HALT — chunk is now the living base for incremental compilation */
+    rs->chunk.code_len = halt_pos;
+
+    rs->initialized = 1;
+    return rs;
+}
+
+/* Evaluate an expression in an existing REPL session.
+ * Definitions persist across calls. */
+static void repl_session_eval(ReplSession* rs, const char* source, int auto_print) {
+    if (!rs || !rs->initialized) return;
+
+    /* Save chunk state so we know where user code starts */
+    int code_start = rs->chunk.code_len;
+    int const_start = rs->chunk.n_constants;
+    int locals_start = rs->chunk.n_locals;
+
+    /* Parse and compile user expression INTO the existing chunk */
+    src_ptr = source;
+    Node* top_exprs[256];
+    int n_top = 0;
+    while (1) {
+        skip_ws(); if (!*src_ptr) break;
+        Node* expr = parse_sexp(); if (!expr) break;
+        if (n_top < 256) top_exprs[n_top++] = expr;
+    }
+
+    for (int i = 0; i < n_top; i++) {
+        int lb = rs->chunk.n_locals;
+        compile_expr(&rs->chunk, top_exprs[i], 0);
+        if (rs->chunk.n_locals == lb) {
+            if (auto_print && i == n_top - 1)
+                chunk_emit(&rs->chunk, OP_PRINT, 0);
+            else
+                chunk_emit(&rs->chunk, OP_POP, 0);
+        }
+        free_node(top_exprs[i]);
+    }
+    chunk_emit(&rs->chunk, OP_HALT, 0);
+
+    /* Update VM code (full rebuild — base + user) */
+    free(rs->vm->code);
+    rs->vm->code = (Instr*)calloc(rs->chunk.code_len, sizeof(Instr));
+    rs->vm->code_len = rs->chunk.code_len;
+    for (int i = 0; i < rs->chunk.code_len; i++)
+        rs->vm->code[i] = rs->chunk.code[i];
+
+    /* Update VM constants */
+    for (int i = const_start; i < rs->chunk.n_constants && i < MAX_CONSTS; i++)
+        rs->vm->constants[i] = rs->chunk.constants[i];
+    rs->vm->n_constants = rs->chunk.n_constants;
+
+    /* Run from where user code starts */
+    rs->vm->pc = code_start;
+    rs->vm->halted = 0;
+    rs->vm->error = 0;
+    vm_run(rs->vm);
+
+    /* Remove the HALT — keep the code for future reference */
+    rs->chunk.code_len--;
+
+    /* Reset for next eval */
+    rs->vm->halted = 0;
+    rs->vm->error = 0;
+}
+
+static void repl_session_destroy(ReplSession* rs) {
+    if (!rs) return;
+    if (rs->vm) vm_free(rs->vm);
+    chunk_free_arrays(&rs->chunk);
+    free(rs);
+}
+
 #ifndef ESHKOL_VM_LIBRARY_MODE
 int main(int argc, char** argv) {
     if (argc > 1) {
