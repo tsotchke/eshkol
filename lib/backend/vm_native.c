@@ -181,6 +181,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    case 139: { /* memq: (memq obj list) — identity-based search (eq?) */
+        Value lst = vm_pop(vm), obj = vm_pop(vm);
+        while (lst.type == VAL_PAIR) {
+            Value car = vm->heap.objects[lst.as.ptr]->cons.car;
+            /* eq?: same type + same value/pointer */
+            if (car.type == obj.type && car.as.i == obj.as.i) {
+                vm_push(vm, lst); break;
+            }
+            lst = vm->heap.objects[lst.as.ptr]->cons.cdr;
+        }
+        if (lst.type != VAL_PAIR) vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
      * Make-vector (260)
      * ══════════════════════════════════════════════════════════════════════ */
