@@ -8397,7 +8397,19 @@ static void compile_and_run(const char* source) {
         } else {
             compile_expr(&main_chunk, expr, 0);
             if (main_chunk.n_locals == locals_before) {
+                /* Last non-define expression: print result (REPL behavior).
+                 * Non-last expressions: discard result. */
+                int is_last_expr = (i == n_top_exprs - 1);
+#ifdef ESHKOL_VM_NO_DISASM
+                /* WASM REPL mode: auto-print last expression result */
+                if (is_last_expr) {
+                    chunk_emit(&main_chunk, OP_PRINT, 0);
+                } else {
+                    chunk_emit(&main_chunk, OP_POP, 0);
+                }
+#else
                 chunk_emit(&main_chunk, OP_POP, 0);
+#endif
             }
         }
     }
