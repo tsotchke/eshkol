@@ -36,6 +36,9 @@
 ;; REPL evaluation (bytecode VM compiled to WASM)
 (extern i32 web-repl-eval ptr i32 :real web_repl_eval)
 
+;; Runnable code block (code display + Run button + output area)
+(extern i32 web-create-runnable-code ptr ptr i32 :real web_create_runnable_code)
+
 ;; Canvas
 (extern i32 web-canvas-get-context i32 ptr :real web_canvas_get_context)
 (extern i32 web-canvas-fill-rect i32 i32 i32 i32 i32 :real web_canvas_fill_rect)
@@ -111,6 +114,10 @@
     (style! block "overflow" "auto")
     (web-set-inner-html block code-html)
     block))
+
+;; Runnable variant: code block + Run ▶ button + output area
+(define (create-runnable-code-block parent raw-code code-html)
+  (web-create-runnable-code raw-code code-html parent))
 
 (define (create-page-header parent title subtitle)
   (let ((header (create-div parent)))
@@ -352,12 +359,13 @@
       (style! tag "marginBottom" "40px"))
 
     ;; Code demo
-    (create-code-block hero
+    (create-runnable-code-block hero
+      "(define (f x y)\n  (+ (* x x) (* x y)))\n\n(display (gradient f 3.0 4.0))"
       "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Automatic differentiation — compiled to native code</span>
 <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(f x y)</span>
   <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)))</span>
 
-<span style='color:#c084fc'>(gradient</span> f <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>)</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> f <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>))</span>
 <span style='color:#606078'>;; => #(10.0 3.0)  -- df/dx=2x+y, df/dy=x</span></pre>")
 
     ;; CTAs
@@ -440,7 +448,7 @@
 
     section))
 
-(define (render-code-example parent title code-html caption)
+(define (render-code-example parent title raw-code code-html caption)
   (let ((card (create-div parent)))
     (style! card "background" "#0d0d15")
     (style! card "border" "1px solid #2a2a3a")
@@ -457,8 +465,10 @@
       (style! h "letterSpacing" "1px")
       (style! h "marginBottom" "16px"))
 
-    (let ((code (create-div card)))
-      (web-set-inner-html code code-html))
+    (if (string=? raw-code "")
+      (let ((code (create-div card)))
+        (web-set-inner-html code code-html))
+      (create-runnable-code-block card raw-code code-html))
 
     (let ((cap (create-text "p" caption card)))
       (style! cap "color" "#606078")
@@ -475,28 +485,29 @@
     (let ((grid (create-grid section)))
       (render-code-example grid
         "Automatic Differentiation"
+        "(define (loss W x y)\n  (tensor-sum\n    (tensor-mul\n      (tensor-sub (tensor-dot W x) y)\n      (tensor-sub (tensor-dot W x) y))))\n\n(display (gradient loss W x y))"
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss W x y)</span>
   <span style='color:#c084fc'>(tensor-sum</span>
     <span style='color:#c084fc'>(tensor-mul</span>
       <span style='color:#c084fc'>(tensor-sub</span> <span style='color:#c084fc'>(tensor-dot</span> W x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>)</span>
       <span style='color:#c084fc'>(tensor-sub</span> <span style='color:#c084fc'>(tensor-dot</span> W x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>))))</span>
 
-<span style='color:#c084fc'>(gradient</span> loss W x y<span style='color:#c084fc'>)</span></pre>"
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> loss W x y<span style='color:#c084fc'>))</span></pre>"
         "8 differential operators compiled to native code.")
 
       (render-code-example grid
         "Tensor Computing"
+        "(define A #((1.0 2.0 3.0) (4.0 5.0 6.0)))\n(define B #((7.0 8.0) (9.0 10.0) (11.0 12.0)))\n(display (tensor-dot A B))"
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> A <span style='color:#00ff88'>#((1 2 3) (4 5 6))</span><span style='color:#c084fc'>)</span>
 <span style='color:#c084fc'>(define</span> B <span style='color:#00ff88'>#((7 8) (9 10) (11 12))</span><span style='color:#c084fc'>)</span>
 
-<span style='color:#c084fc'>(tensor-dot</span> A B<span style='color:#c084fc'>)</span>
-<span style='color:#606078'>;; => #((58 64) (139 154))</span>
-
-<span style='color:#c084fc'>(tensor-reshape</span> A <span style='color:#00ff88'>#(3 2)</span><span style='color:#c084fc'>)</span></pre>"
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-dot</span> A B<span style='color:#c084fc'>))</span>
+<span style='color:#606078'>;; => #((58 64) (139 154))</span></pre>"
         "GPU-accelerated via Metal and CUDA.")
 
       (render-code-example grid
         "First-Class Functions"
+        "(define (compose f g)\n  (lambda (x) (f (g x))))\n\n(define inc-then-double\n  (compose\n    (lambda (x) (* x 2))\n    (lambda (x) (+ x 1))))\n\n(display (map inc-then-double '(1 2 3)))"
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(compose f g)</span>
   <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(f (g</span> x<span style='color:#c084fc'>))))</span>
 
@@ -505,7 +516,7 @@
     <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x <span style='color:#00ff88'>2</span><span style='color:#c084fc'>))</span>
     <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(+</span> x <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>
 
-<span style='color:#c084fc'>(map</span> inc-then-double <span style='color:#00ff88'>'(1 2 3)</span><span style='color:#c084fc'>)</span></pre>"
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(map</span> inc-then-double <span style='color:#00ff88'>'(1 2 3)</span><span style='color:#c084fc'>))</span></pre>"
         "Full R7RS Scheme with closures and continuations."))
 
     section))
@@ -560,14 +571,16 @@
 ;; PAGE: FEATURES
 ;; ═══════════════════════════════════════════════════════════
 
-(define (render-feature-section parent title desc code-html)
+(define (render-feature-section parent title desc raw-code code-html)
   (let ((s (create-div parent)))
     (style! s "marginBottom" "48px")
     (section-subheading s title)
     (body-text s desc)
     (if (string=? code-html "")
       s
-      (create-code-block s code-html))
+      (if (string=? raw-code "")
+        (create-code-block s code-html)
+        (create-runnable-code-block s raw-code code-html)))
     s))
 
 (define (render-features-page content)
@@ -577,42 +590,42 @@
     (render-feature-section page
       "Automatic Differentiation"
       "8 differential operators compiled directly to LLVM IR. Forward-mode via dual numbers for single derivatives. Reverse-mode via computational tapes for gradients. Supports 32 levels of nested differentiation. Operators: gradient, jacobian, hessian, divergence, curl, laplacian, derivative, directional-derivative."
+      "(display (derivative (lambda (x) (* x x x)) 2.0))\n(newline)\n(display (gradient (lambda (x y) (+ (* x x) (* x y))) 3.0 4.0))"
       "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Forward-mode derivative</span>
-<span style='color:#c084fc'>(derivative</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 12.0</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(derivative</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 12.0</span>
 
 <span style='color:#606078'>;; Reverse-mode gradient</span>
-<span style='color:#c084fc'>(gradient</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x y)</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)))</span> <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>)</span>
-<span style='color:#606078'>;; => #(10.0 3.0)</span>
-
-<span style='color:#606078'>;; Jacobian matrix</span>
-<span style='color:#c084fc'>(jacobian</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x y)</span> <span style='color:#c084fc'>(vector</span> <span style='color:#c084fc'>(+</span> x y<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)))</span> <span style='color:#00ff88'>2.0</span> <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)</span></pre>")
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x y)</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)))</span> <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>))</span>
+<span style='color:#606078'>;; => #(10.0 3.0)</span></pre>")
 
     (render-feature-section page
       "Tensor Operations"
       "N-dimensional tensors with GPU-accelerated operations. Automatic dispatch across Metal (Apple Silicon), CUDA, BLAS, and SIMD backends. Operations: dot, matmul, reshape, transpose, slice, broadcast, map, reduce, SVD, QR, eigenvalues."
+      "(define A #((1.0 2.0) (3.0 4.0)))\n(display (tensor-dot A A))\n(newline)\n(display (tensor-transpose A))\n(newline)\n(display (tensor-reshape A #(4)))"
       "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> A <span style='color:#00ff88'>#((1 2) (3 4))</span><span style='color:#c084fc'>)</span>
-<span style='color:#c084fc'>(tensor-dot</span> A A<span style='color:#c084fc'>)</span>        <span style='color:#606078'>;; => #((7 10) (15 22))</span>
-<span style='color:#c084fc'>(tensor-transpose</span> A<span style='color:#c084fc'>)</span>    <span style='color:#606078'>;; => #((1 3) (2 4))</span>
-<span style='color:#c084fc'>(tensor-reshape</span> A <span style='color:#00ff88'>#(4)</span><span style='color:#c084fc'>)</span> <span style='color:#606078'>;; => #(1 2 3 4)</span></pre>")
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-dot</span> A A<span style='color:#c084fc'>))</span>        <span style='color:#606078'>;; => #((7 10) (15 22))</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-transpose</span> A<span style='color:#c084fc'>))</span>    <span style='color:#606078'>;; => #((1 3) (2 4))</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-reshape</span> A <span style='color:#00ff88'>#(4)</span><span style='color:#c084fc'>))</span> <span style='color:#606078'>;; => #(1 2 3 4)</span></pre>")
 
     (render-feature-section page
       "Deterministic Memory"
       "Arena-based allocation with Ownership-Aware Lexical Regions (OALR). No garbage collector, no reference counting, no unpredictable pauses. Allocation in O(1) via bump pointer. Deallocation at scope boundaries. Microsecond worst-case guarantees."
-      "")
+      "" "")
 
     (render-feature-section page
       "GPU Acceleration"
       "4-tier automatic dispatch: SIMD vectorization for small tensors, cBLAS/Accelerate for linear algebra, Metal compute shaders on Apple Silicon, CUDA on NVIDIA GPUs. XLA/StableHLO backend for ML training workloads. One expression compiles to the optimal backend."
-      "")
+      "" "")
 
     (render-feature-section page
       "Type System"
       "Gradual typing with Homotopy Type Theory (HoTT) foundations. Full numeric tower: int64, bignum (arbitrary precision), rational (exact fractions), double (IEEE 754), complex. Tagged values enable dynamic dispatch with zero overhead for known types."
-      "")
+      "" "")
 
     (render-feature-section page
       "R7RS Scheme"
       "Full R7RS compatibility: closures, first-class continuations (call/cc), dynamic-wind, hygienic macros (syntax-rules), tail call optimization, pattern matching. Homoiconic: every function can display its own source code as an S-expression."
+      "(call/cc (lambda (k)\n  (dynamic-wind\n    (lambda () (display \"enter \"))\n    (lambda () (k 42))\n    (lambda () (display \"exit\")))))"
       "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(call/cc</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(k)</span>
   <span style='color:#c084fc'>(dynamic-wind</span>
     <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>()</span> <span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"enter \"</span><span style='color:#c084fc'>))</span>
@@ -622,22 +635,19 @@
     (render-feature-section page
       "Parallel Computing"
       "Work-stealing thread pool with parallel-map, parallel-fold, parallel-filter, and futures. Automatic work distribution across CPU cores. Thread-safe arena allocation."
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(parallel-map</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>)</span>
-<span style='color:#606078'>;; => (1 4 9 16 25)  -- computed across all cores</span>
-
-<span style='color:#c084fc'>(let</span> (<span style='color:#a78bfa'>(f</span> <span style='color:#c084fc'>(future</span> <span style='color:#c084fc'>(heavy-computation)</span><span style='color:#c084fc'>)</span>))
-  <span style='color:#606078'>;; ... do other work ...</span>
-  <span style='color:#c084fc'>(force</span> f<span style='color:#c084fc'>))</span></pre>")
+      "(display (map (lambda (x) (* x x)) '(1 2 3 4 5)))"
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(map</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>))</span>
+<span style='color:#606078'>;; => (1 4 9 16 25)</span></pre>")
 
     (render-feature-section page
       "Standard Library"
       "555+ built-in functions across 25+ modules. List processing (60+ operations), string manipulation (30+), mathematics (trigonometry, statistics, special functions), JSON parsing, signal processing (FFT/IFFT, window functions, FIR/IIR filters), ODE solvers, pattern matching, and more."
-      "")
+      "" "")
 
     (render-feature-section page
       "Web Platform"
       "Compile to WebAssembly with a single flag. 90+ DOM API bindings for building full web applications. This entire website is an Eshkol program compiled to WASM — the ultimate proof of concept."
-      "")
+      "" "")
 
     (render-footer page)))
 
@@ -697,13 +707,16 @@
 ;; PAGE: LEARN
 ;; ═══════════════════════════════════════════════════════════
 
-(define (render-lesson parent title description code-html output)
+(define (render-lesson parent title description raw-code code-html output)
   (let ((lesson (create-div parent)))
     (style! lesson "marginBottom" "48px")
 
     (section-subheading lesson title)
     (body-text lesson description)
-    (create-code-block lesson code-html)
+
+    (if (string=? raw-code "")
+      (create-code-block lesson code-html)
+      (create-runnable-code-block lesson raw-code code-html))
 
     (if (string=? output "")
       lesson
@@ -721,65 +734,63 @@
 
     (render-lesson page
       "1. Hello World"
-      "Write your first Eshkol program. Save it as hello.esk, compile with eshkol-run, and run the binary."
+      "Write your first Eshkol program. Try it live in the browser VM, or compile with eshkol-run."
+      "(display \"Hello, world!\")\n(newline)"
       "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"Hello, world!\"</span><span style='color:#c084fc'>)</span>
 <span style='color:#c084fc'>(newline)</span>
 
-<span style='color:#606078'>;; Compile and run:</span>
-<span style='color:#606078'>;; $ eshkol-run hello.esk -o hello && ./hello</span></pre>"
-      "Output: Hello, world!")
+<span style='color:#606078'>;; Native compile: eshkol-run hello.esk -o hello && ./hello</span></pre>"
+      "")
 
     (render-lesson page
       "2. Numbers and Functions"
       "Eshkol supports the full numeric tower: integers, bignums, rationals, doubles, and complex numbers. Functions are defined with define."
+      "(define (square x) (* x x))\n(define (hypotenuse a b)\n  (sqrt (+ (square a) (square b))))\n(display (hypotenuse 3 4))\n(newline)\n(display (+ 1/3 1/6))"
       "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(square x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span>
 <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(hypotenuse a b)</span>
   <span style='color:#c084fc'>(sqrt</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(square</span> a<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(square</span> b<span style='color:#c084fc'>))))</span>
 
 <span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(hypotenuse</span> <span style='color:#00ff88'>3</span> <span style='color:#00ff88'>4</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 5.0</span>
-
-<span style='color:#606078'>;; Exact arithmetic</span>
-<span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1/3</span> <span style='color:#00ff88'>1/6</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 1/2 (exact rational)</span></pre>"
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1/3</span> <span style='color:#00ff88'>1/6</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 1/2 (exact rational)</span></pre>"
       "")
 
     (render-lesson page
       "3. Higher-Order Functions"
       "Functions are first-class values. Pass them as arguments, return them from functions, store them in data structures."
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(map</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>)</span>
+      "(display (map (lambda (x) (* x x)) '(1 2 3 4 5)))\n(newline)\n(display (filter even? '(1 2 3 4 5 6)))\n(newline)\n(display (fold-left + 0 '(1 2 3 4 5)))"
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(map</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>))</span>
 <span style='color:#606078'>;; => (1 4 9 16 25)</span>
 
-<span style='color:#c084fc'>(filter</span> even? <span style='color:#00ff88'>'(1 2 3 4 5 6)</span><span style='color:#c084fc'>)</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(filter</span> even? <span style='color:#00ff88'>'(1 2 3 4 5 6)</span><span style='color:#c084fc'>))</span>
 <span style='color:#606078'>;; => (2 4 6)</span>
 
-<span style='color:#c084fc'>(fold</span> + <span style='color:#00ff88'>0</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>)</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(fold-left</span> + <span style='color:#00ff88'>0</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>))</span>
 <span style='color:#606078'>;; => 15</span></pre>"
       "")
 
     (render-lesson page
       "4. Tensors"
       "Tensors are N-dimensional arrays of doubles. Create them with literal syntax or constructors. Operations dispatch automatically to the fastest available backend."
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> v <span style='color:#00ff88'>#(1 2 3 4 5)</span><span style='color:#c084fc'>)</span>
-<span style='color:#c084fc'>(define</span> M <span style='color:#00ff88'>#((1 0) (0 1))</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; 2x2 identity</span>
+      "(define v #(1.0 2.0 3.0 4.0 5.0))\n(define M #((1.0 0.0) (0.0 1.0)))\n(display (tensor-sum v))\n(newline)\n(display (tensor-mean v))\n(newline)\n(display (tensor-dot M #(3.0 4.0)))"
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> v <span style='color:#00ff88'>#(1.0 2.0 3.0 4.0 5.0)</span><span style='color:#c084fc'>)</span>
+<span style='color:#c084fc'>(define</span> M <span style='color:#00ff88'>#((1.0 0.0) (0.0 1.0))</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; 2x2 identity</span>
 
-<span style='color:#c084fc'>(tensor-sum</span> v<span style='color:#c084fc'>)</span>          <span style='color:#606078'>;; => 15.0</span>
-<span style='color:#c084fc'>(tensor-mean</span> v<span style='color:#c084fc'>)</span>         <span style='color:#606078'>;; => 3.0</span>
-<span style='color:#c084fc'>(tensor-dot</span> M <span style='color:#00ff88'>#(3 4)</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => #(3 4)</span></pre>"
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-sum</span> v<span style='color:#c084fc'>))</span>          <span style='color:#606078'>;; => 15.0</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-mean</span> v<span style='color:#c084fc'>))</span>         <span style='color:#606078'>;; => 3.0</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-dot</span> M <span style='color:#00ff88'>#(3.0 4.0)</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => #(3.0 4.0)</span></pre>"
       "")
 
     (render-lesson page
       "5. Automatic Differentiation"
-      "Eshkol's signature feature. Compute derivatives, gradients, and Jacobians of any function. The compiler transforms your code to propagate derivatives automatically."
+      "Eshkol's signature feature. Compute derivatives, gradients, and Jacobians of any function. Requires the native compiler (eshkol-run) — try the playground for browser execution."
+      "(display (derivative (lambda (x) (* x x x)) 2.0))\n(newline)\n(define (f x y) (+ (* x x) (* 3.0 y)))\n(display (gradient f 2.0 1.0))"
       "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Scalar derivative: d/dx(x^3) at x=2</span>
-<span style='color:#c084fc'>(derivative</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>)</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(derivative</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>))</span>
 <span style='color:#606078'>;; => 12.0</span>
 
 <span style='color:#606078'>;; Multi-parameter gradient</span>
-<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(f x y)</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3</span> y<span style='color:#c084fc'>)))</span>
-<span style='color:#c084fc'>(gradient</span> f <span style='color:#00ff88'>2.0</span> <span style='color:#00ff88'>1.0</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => #(4.0 3.0)</span>
-
-<span style='color:#606078'>;; Gradient descent in 3 lines</span>
-<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(step x lr)</span>
-  <span style='color:#c084fc'>(tensor-sub</span> x <span style='color:#c084fc'>(tensor-mul</span> lr <span style='color:#c084fc'>(gradient</span> loss x<span style='color:#c084fc'>))))</span></pre>"
+<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(f x y)</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3.0</span> y<span style='color:#c084fc'>)))</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> f <span style='color:#00ff88'>2.0</span> <span style='color:#00ff88'>1.0</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => #(4.0 3.0)</span></pre>"
       "")
 
     (render-footer page)))
@@ -788,7 +799,7 @@
 ;; PAGE: EXAMPLES
 ;; ═══════════════════════════════════════════════════════════
 
-(define (render-example-card parent title desc code-html)
+(define (render-example-card parent title desc raw-code code-html)
   (let ((card (create-card parent)))
     (style! card "flex" "1")
     (style! card "minWidth" "400px")
@@ -803,7 +814,9 @@
       (style! d "fontSize" "0.85rem")
       (style! d "marginBottom" "16px"))
 
-    (create-code-block card code-html)
+    (if (string=? raw-code "")
+      (create-code-block card code-html)
+      (create-runnable-code-block card raw-code code-html))
 
     card))
 
@@ -816,24 +829,27 @@
       (render-example-card grid
         "Hello World"
         "The simplest Eshkol program."
+        "(display \"Hello, world!\")\n(newline)"
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"Hello, world!\"</span><span style='color:#c084fc'>)</span>
 <span style='color:#c084fc'>(newline)</span></pre>")
 
       (render-example-card grid
         "Fibonacci"
         "Recursive with tail call optimization."
+        "(define (fib n)\n  (define (loop a b i)\n    (if (= i n) a\n      (loop b (+ a b) (+ i 1))))\n  (loop 0 1 0))\n(display (fib 30))"
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(fib n)</span>
   <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loop a b i)</span>
     <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> i n<span style='color:#c084fc'>)</span> a
       <span style='color:#c084fc'>(loop</span> b <span style='color:#c084fc'>(+</span> a b<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> i <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>
   <span style='color:#c084fc'>(loop</span> <span style='color:#00ff88'>0</span> <span style='color:#00ff88'>1</span> <span style='color:#00ff88'>0</span><span style='color:#c084fc'>))</span>
 
-<span style='color:#c084fc'>(fib</span> <span style='color:#00ff88'>50</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 12586269025</span></pre>")
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(fib</span> <span style='color:#00ff88'>30</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 832040</span></pre>")
 
       (render-example-card grid
         "Gradient Descent"
-        "Train a model using automatic differentiation."
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss x)</span> <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(- </span>x <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(-</span> x <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)))</span>
+        "Train a model using automatic differentiation (native compiler)."
+        "(define (loss x) (* (- x 3.0) (- x 3.0)))\n(define (train x lr steps)\n  (if (= steps 0) x\n    (train\n      (- x (* lr (derivative loss x)))\n      lr (- steps 1))))\n(display (train 0.0 0.1 100))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss x)</span> <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(-</span> x <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(-</span> x <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)))</span>
 
 <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(train x lr steps)</span>
   <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> steps <span style='color:#00ff88'>0</span><span style='color:#c084fc'>)</span> x
@@ -841,37 +857,41 @@
       <span style='color:#c084fc'>(-</span> x <span style='color:#c084fc'>(*</span> lr <span style='color:#c084fc'>(derivative</span> loss x<span style='color:#c084fc'>)))</span>
       lr <span style='color:#c084fc'>(-</span> steps <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>
 
-<span style='color:#c084fc'>(train</span> <span style='color:#00ff88'>0.0</span> <span style='color:#00ff88'>0.1</span> <span style='color:#00ff88'>100</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => ~3.0</span></pre>")
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(train</span> <span style='color:#00ff88'>0.0</span> <span style='color:#00ff88'>0.1</span> <span style='color:#00ff88'>100</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => ~3.0</span></pre>")
 
       (render-example-card grid
         "Pattern Matching"
         "Destructure and dispatch with match."
+        "(define (describe x)\n  (match x\n    (0 \"zero\")\n    ((? positive?) \"positive\")\n    ((? negative?) \"negative\")\n    (_ \"other\")))\n(display (describe 5))\n(newline)\n(display (describe -2))"
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(describe x)</span>
   <span style='color:#c084fc'>(match</span> x
     (<span style='color:#00ff88'>0</span> <span style='color:#00ff88'>\"zero\"</span>)
     ((<span style='color:#a78bfa'>? positive?</span>) <span style='color:#00ff88'>\"positive\"</span>)
     ((<span style='color:#a78bfa'>? negative?</span>) <span style='color:#00ff88'>\"negative\"</span>)
-    (_ <span style='color:#00ff88'>\"other\"</span>)<span style='color:#c084fc'>))</span></pre>")
+    (_ <span style='color:#00ff88'>\"other\"</span>)<span style='color:#c084fc'>))</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(describe</span> <span style='color:#00ff88'>5</span><span style='color:#c084fc'>))</span></pre>")
 
       (render-example-card grid
         "Exact Arithmetic"
         "Arbitrary precision with no loss."
+        "(display (expt 2 64))\n(newline)\n(display (+ 1/7 2/7))\n(newline)\n(display (* 3/4 4/3))"
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Bignums — no overflow</span>
-<span style='color:#c084fc'>(expt</span> <span style='color:#00ff88'>2</span> <span style='color:#00ff88'>200</span><span style='color:#c084fc'>)</span>
-<span style='color:#606078'>;; => 1606938044258990275541962...</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(expt</span> <span style='color:#00ff88'>2</span> <span style='color:#00ff88'>64</span><span style='color:#c084fc'>))</span>
+<span style='color:#606078'>;; => 18446744073709551616</span>
 
 <span style='color:#606078'>;; Exact rationals</span>
-<span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1/7</span> <span style='color:#00ff88'>2/7</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 3/7</span>
-<span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3/4</span> <span style='color:#00ff88'>4/3</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 1</span></pre>")
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1/7</span> <span style='color:#00ff88'>2/7</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 3/7</span>
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3/4</span> <span style='color:#00ff88'>4/3</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 1</span></pre>")
 
       (render-example-card grid
         "This Website"
         "This site is written in Eshkol, compiled to WASM."
+        ""
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; The actual code powering this page</span>
 <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(render-hero parent)</span>
   <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>hero</span> <span style='color:#c084fc'>(create-div</span> parent<span style='color:#c084fc'>)))</span>
     <span style='color:#c084fc'>(style!</span> hero <span style='color:#00ff88'>\"minHeight\"</span> <span style='color:#00ff88'>\"100vh\"</span><span style='color:#c084fc'>)</span>
-    <span style='color:#606078'>;; ... 586 lines of pure Eshkol</span>
+    <span style='color:#606078'>;; ... 600+ lines of pure Eshkol</span>
     hero<span style='color:#c084fc'>))</span></pre>"))
 
     (render-footer page)))

@@ -763,8 +763,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* a = (VmTensor*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
         VmTensor* b = (VmTensor*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
         if (!a || !b) { vm_push(vm, NIL_VAL); break; }
+        /* GPU dispatch for add/sub/mul/div (ops 0-3) */
         VmTensor* out = NULL;
-        switch (fid) {
+        static const int gpu_binary_ops[] = {0,1,2,3,-1,-1,-1}; /* add,sub,mul,div,pow,max,min */
+        int gpu_op = gpu_binary_ops[fid - 441];
+        if (gpu_op >= 0) out = vm_gpu_try_binary(&vm->heap.regions, a, b, gpu_op);
+        if (!out) switch (fid) {
             case 441: out = vm_tensor_add(&vm->heap.regions, a, b); break;
             case 442: out = vm_tensor_sub(&vm->heap.regions, a, b); break;
             case 443: out = vm_tensor_mul(&vm->heap.regions, a, b); break;
@@ -826,8 +830,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
         if (!t) { vm_push(vm, NIL_VAL); break; }
         int axis = (int)as_number(axis_val);
+        /* GPU dispatch for full-tensor reductions (axis=-1 or axis covers all) */
         VmTensor* out = NULL;
-        switch (fid) {
+        if (axis < 0 || t->n_dims == 1) {
+            static const int gpu_reduce_ops[] = {0, 4, 3, 2}; /* sum=0, mean=4, max=3, min=2 */
+            double gpu_result = vm_gpu_try_reduce(t, gpu_reduce_ops[fid - 457]);
+            if (!isnan(gpu_result)) {
+                int64_t shape[1] = {1};
+                out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+                if (out) out->data[0] = gpu_result;
+            }
+        }
+        if (!out) switch (fid) {
             case 457: out = vm_tensor_sum(&vm->heap.regions, t, axis); break;
             case 458: out = vm_tensor_mean(&vm->heap.regions, t, axis); break;
             case 459: out = vm_tensor_max(&vm->heap.regions, t, axis); break;
@@ -851,7 +865,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VmTensor* out = NULL;
-        switch (fid) {
+        /* GPU dispatch for softmax */
+        if (fid == 463) out = vm_gpu_try_softmax(&vm->heap.regions, t);
+        if (!out) switch (fid) {
             case 462: out = vm_tensor_relu(&vm->heap.regions, t); break;
             case 463: out = vm_tensor_softmax(&vm->heap.regions, t, t->n_dims - 1); break;
             case 464: out = vm_tensor_sigmoid(&vm->heap.regions, t); break;

@@ -590,6 +590,46 @@ class EshkolRuntime {
                     if (el) el.value = rt.readString(valuePtr);
                     return 0;
                 },
+
+                // Runnable code block — code block + Run ▶ button + output area
+                web_create_runnable_code: (rawCodePtr, htmlPtr, parentHandle) => {
+                    const rawCode = rt.readString(rawCodePtr);
+                    const html = rt.readString(htmlPtr);
+                    const parent = rt.getHandle(parentHandle);
+                    if (!parent) return 0;
+
+                    const wrapper = document.createElement('div');
+                    wrapper.className = 'runnable-code';
+                    wrapper.style.cssText = 'background:#0d0d15;border:1px solid #2a2a3a;border-radius:12px;overflow:hidden;margin-bottom:0';
+
+                    // Code display
+                    const codeDiv = document.createElement('div');
+                    codeDiv.style.cssText = 'padding:24px 28px;overflow:auto';
+                    codeDiv.innerHTML = html;
+                    wrapper.appendChild(codeDiv);
+
+                    // Toolbar
+                    const toolbar = document.createElement('div');
+                    toolbar.style.cssText = 'display:flex;align-items:center;justify-content:flex-end;padding:6px 16px;border-top:1px solid #1a1a28;background:#0a0a0f';
+
+                    const btn = document.createElement('button');
+                    btn.textContent = 'Run \u25b6';
+                    btn.dataset.runCode = rawCode;
+                    btn.style.cssText = 'background:#7c3aed;color:#fff;border:none;padding:4px 14px;border-radius:5px;font-size:0.78rem;font-weight:600;cursor:pointer;font-family:JetBrains Mono,monospace;letter-spacing:0.5px';
+                    btn.addEventListener('mouseenter', () => { btn.style.background = '#6d28d9'; });
+                    btn.addEventListener('mouseleave', () => { btn.style.background = '#7c3aed'; });
+                    toolbar.appendChild(btn);
+                    wrapper.appendChild(toolbar);
+
+                    // Output area (hidden until first run)
+                    const output = document.createElement('pre');
+                    output.setAttribute('data-run-output', '1');
+                    output.style.cssText = 'display:none;margin:0;padding:10px 28px;color:#00ff88;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.5;background:#050510;border-top:1px solid #1a1a28;white-space:pre-wrap';
+                    wrapper.appendChild(output);
+
+                    parent.appendChild(wrapper);
+                    return rt.createHandle(wrapper);
+                },
             }
         };
     }

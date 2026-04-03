@@ -103,6 +103,33 @@
             }
           }
         });
+        // Run button click handler for runnable code examples
+        document.addEventListener('click', (e) => {
+          const btn = e.target.closest('button[data-run-code]');
+          if (btn) {
+            e.preventDefault();
+            const code = btn.dataset.runCode;
+            const wrapper = btn.closest('.runnable-code');
+            const output = wrapper ? wrapper.querySelector('[data-run-output]') : null;
+            if (!output) return;
+            output.style.display = 'block';
+            output.textContent = 'Running\u2026';
+            if (window._eshkolVM) {
+              try {
+                window._vmOutput = '';
+                const evalFn = window._eshkolVM.cwrap('repl_eval', 'string', ['string']);
+                evalFn(code);
+                output.textContent = window._vmOutput || '(no output)';
+              } catch(err) {
+                output.textContent = 'Error: ' + err.message;
+              }
+            } else {
+              output.textContent = 'VM loading \u2014 try again in a moment.';
+            }
+            return;
+          }
+        });
+
         // Doc tab switching — click handler for documentation tabs
         document.addEventListener('click', (e) => {
           const tab = e.target.closest('[data-url]');

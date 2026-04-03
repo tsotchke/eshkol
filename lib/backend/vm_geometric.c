@@ -586,8 +586,32 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 833: case 834: { /* interior-product, pullback — 2 args */
-        vm_pop(vm); vm_pop(vm);
+    case 833: { /* interior-product(vector, form) */
+        VmTensor* fv = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* vv = vm_get_tensor(vm, vm_pop(vm));
+        if (vv && fv) {
+            int dim = (int)vv->total;
+            qllm_differential_form_t* form = qllm_form_create(dim, 2);
+            if (form) {
+                for (int64_t i = 0; i < fv->total; i++)
+                    qllm_form_set_component(form, (int)i, (float)fv->data[i]);
+                float vec[64]; for (int i = 0; i < dim && i < 64; i++) vec[i] = (float)vv->data[i];
+                qllm_differential_form_t* result = qllm_form_interior_product(form, vec);
+                if (result) {
+                    int rsize = qllm_form_num_components(result);
+                    int64_t shape[1] = {rsize > 0 ? rsize : 1};
+                    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+                    if (out) for (int i = 0; i < rsize; i++) out->data[i] = qllm_form_get_component(result, i);
+                    qllm_form_destroy(result); qllm_form_destroy(form);
+                    if (out) { VM_PUSH_TENSOR(vm, out); break; }
+                }
+                qllm_form_destroy(form);
+            }
+        }
+        vm_push(vm, NIL_VAL); break;
+    }
+    case 834: { /* pullback(form, jacobian) — 2 args */
+        vm_pop(vm); vm_pop(vm); /* Pullback requires full Jacobian matrix — complex */
         vm_push(vm, NIL_VAL); break;
     }
 
@@ -620,11 +644,93 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 836: case 837: case 838: case 839: {
-        /* riemannian-adam-step, riemannian-grad, retraction, vector-transport */
-        /* These need optimizer state — pop args, return NIL for now */
-        int nargs = (fid == 836) ? 5 : (fid == 839) ? 4 : 3;
-        for (int i = 0; i < nargs; i++) vm_pop(vm);
+    case 836: { /* riemannian-adam-step(point, gradient, lr, beta1, beta2, curvature) */
+        float c = (float)as_number(vm_pop(vm));
+        float b2 = (float)as_number(vm_pop(vm));
+        float b1 = (float)as_number(vm_pop(vm));
+        float lr = (float)as_number(vm_pop(vm));
+        VmTensor* gv = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
+        if (pv && gv) {
+            /* Adam step: retract(-lr * grad) with momentum (simplified) */
+            float* pf = vm_tensor_to_float(pv);
+            float* gf = vm_tensor_to_float(gv);
+            int n = (int)pv->total;
+            float* step = (float*)malloc(n * sizeof(float));
+            if (step) {
+                (void)b1; (void)b2; /* Full Adam needs state — use SGD as fallback */
+                for (int i = 0; i < n; i++) step[i] = -lr * gf[i];
+                qllm_tensor_t* result = qllm_hyperbolic_exp_map(pf, step, n, c);
+                free(step);
+                if (result) {
+                    float* rd = (float*)qllm_tensor_get_data(result);
+                    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, pv->shape, pv->n_dims);
+                    if (out && rd) for (int64_t i = 0; i < out->total; i++) out->data[i] = rd[i];
+                    qllm_tensor_destroy(result);
+                    free(pf); free(gf);
+                    if (out) { VM_PUSH_TENSOR(vm, out); break; }
+                }
+            }
+            free(pf); free(gf);
+        }
+        vm_push(vm, NIL_VAL); break;
+    }
+    case 837: { /* riemannian-grad(euclidean_grad, point, curvature) — project to tangent space */
+        float c = (float)as_number(vm_pop(vm));
+        VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* gv = vm_get_tensor(vm, vm_pop(vm));
+        if (gv && pv) {
+            /* Riemannian gradient = conformal_factor^2 * euclidean_gradient */
+            float* pf = vm_tensor_to_float(pv);
+            float cf = qllm_hyperbolic_conformal_factor(pf, (int)pv->total, c);
+            free(pf);
+            VmTensor* out = vm_tensor_zeros(&vm->heap.regions, gv->shape, gv->n_dims);
+            if (out) {
+                float scale = cf * cf;
+                for (int64_t i = 0; i < out->total; i++) out->data[i] = gv->data[i] * scale;
+                VM_PUSH_TENSOR(vm, out); break;
+            }
+        }
+        vm_push(vm, NIL_VAL); break;
+    }
+    case 838: { /* retraction(base, tangent, curvature) — exp map */
+        float c = (float)as_number(vm_pop(vm));
+        VmTensor* tv = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
+        if (bv && tv) {
+            float* bf = vm_tensor_to_float(bv);
+            float* tf = vm_tensor_to_float(tv);
+            qllm_tensor_t* result = qllm_hyperbolic_exp_map(bf, tf, (int)bv->total, c);
+            free(bf); free(tf);
+            if (result) {
+                float* rd = (float*)qllm_tensor_get_data(result);
+                VmTensor* out = vm_tensor_zeros(&vm->heap.regions, bv->shape, bv->n_dims);
+                if (out && rd) for (int64_t i = 0; i < out->total; i++) out->data[i] = rd[i];
+                qllm_tensor_destroy(result);
+                if (out) { VM_PUSH_TENSOR(vm, out); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL); break;
+    }
+    case 839: { /* vector-transport(x, y, v, curvature) — parallel transport */
+        float c = (float)as_number(vm_pop(vm));
+        VmTensor* vv = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
+        if (xv && yv && vv) {
+            float* xf = vm_tensor_to_float(xv);
+            float* yf = vm_tensor_to_float(yv);
+            float* vf = vm_tensor_to_float(vv);
+            qllm_tensor_t* result = qllm_hyperbolic_parallel_transport(xf, yf, vf, (int)xv->total, c);
+            free(xf); free(yf); free(vf);
+            if (result) {
+                float* rd = (float*)qllm_tensor_get_data(result);
+                VmTensor* out = vm_tensor_zeros(&vm->heap.regions, xv->shape, xv->n_dims);
+                if (out && rd) for (int64_t i = 0; i < out->total; i++) out->data[i] = rd[i];
+                qllm_tensor_destroy(result);
+                if (out) { VM_PUSH_TENSOR(vm, out); break; }
+            }
+        }
         vm_push(vm, NIL_VAL); break;
     }
 
@@ -655,10 +761,86 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 841: case 842: case 843: case 844: case 845:
-    case 846: case 847: case 848: case 849: {
-        /* Remaining geodesic attention ops */
-        int nargs = 3;
+    case 841: { /* geodesic-attention-values(scores, V, curvature) — weighted Fréchet mean */
+        float c = (float)as_number(vm_pop(vm));
+        VmTensor* vv = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* sv = vm_get_tensor(vm, vm_pop(vm));
+        if (sv && vv && vv->n_dims >= 2) {
+            int n = (int)vv->shape[0], dim = (int)vv->shape[1];
+            float* vf = vm_tensor_to_float(vv);
+            float* sf = vm_tensor_to_float(sv);
+            /* Weighted Fréchet mean of value vectors */
+            qllm_tensor_t* result = qllm_hyperbolic_frechet_mean(vf, sf, n, dim, c, 50, 1e-5f);
+            free(vf); free(sf);
+            if (result) {
+                float* rd = (float*)qllm_tensor_get_data(result);
+                int64_t shape[1] = {dim};
+                VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+                if (out && rd) for (int i = 0; i < dim; i++) out->data[i] = rd[i];
+                qllm_tensor_destroy(result);
+                if (out) { VM_PUSH_TENSOR(vm, out); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL); break;
+    }
+    case 842: { /* curvature-softmax(scores, curvature) — curvature-scaled softmax */
+        float c = (float)as_number(vm_pop(vm));
+        VmTensor* sv = vm_get_tensor(vm, vm_pop(vm));
+        if (sv) {
+            VmTensor* out = vm_tensor_zeros(&vm->heap.regions, sv->shape, sv->n_dims);
+            if (out) {
+                double scale = fabsf(c) > 0 ? 1.0 / sqrtf(fabsf(c)) : 1.0;
+                double max_val = sv->data[0];
+                for (int64_t i = 1; i < sv->total; i++) if (sv->data[i] > max_val) max_val = sv->data[i];
+                double sum = 0;
+                for (int64_t i = 0; i < sv->total; i++) { out->data[i] = exp((sv->data[i] - max_val) * scale); sum += out->data[i]; }
+                for (int64_t i = 0; i < sv->total; i++) out->data[i] /= sum;
+                VM_PUSH_TENSOR(vm, out); break;
+            }
+        }
+        vm_push(vm, NIL_VAL); break;
+    }
+    case 843: { /* geodesic-attention-forward(Q, K, V, curvature) — full attention */
+        float c = (float)as_number(vm_pop(vm));
+        VmTensor* vv = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* kv = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* qv = vm_get_tensor(vm, vm_pop(vm));
+        if (qv && kv && vv && qv->n_dims >= 2 && kv->n_dims >= 2) {
+            int n_q = (int)qv->shape[0], n_k = (int)kv->shape[0];
+            int dim = (int)qv->shape[1];
+            float* qf = vm_tensor_to_float(qv);
+            float* kf = vm_tensor_to_float(kv);
+            float* vf = vm_tensor_to_float(vv);
+            /* Compute distance-based attention scores */
+            int64_t out_shape[2] = {n_q, dim};
+            VmTensor* out = vm_tensor_zeros(&vm->heap.regions, out_shape, 2);
+            if (out) {
+                for (int i = 0; i < n_q; i++) {
+                    float scores[256]; float mx = -1e30f;
+                    for (int j = 0; j < n_k && j < 256; j++) {
+                        scores[j] = -qllm_hyperbolic_distance(qf+i*dim, kf+j*dim, dim, c);
+                        if (scores[j] > mx) mx = scores[j];
+                    }
+                    float sum = 0;
+                    for (int j = 0; j < n_k; j++) { scores[j] = expf(scores[j]-mx); sum += scores[j]; }
+                    for (int j = 0; j < n_k; j++) scores[j] /= sum;
+                    /* Weighted sum of values */
+                    for (int d = 0; d < dim; d++) {
+                        double v = 0;
+                        for (int j = 0; j < n_k; j++) v += scores[j] * vf[j*dim+d];
+                        out->data[i*dim+d] = v;
+                    }
+                }
+                free(qf); free(kf); free(vf);
+                VM_PUSH_TENSOR(vm, out); break;
+            }
+            free(qf); free(kf); free(vf);
+        }
+        vm_push(vm, NIL_VAL); break;
+    }
+    case 844: case 845: case 846: case 847: case 848: case 849: {
+        /* attention-backward, attention-mask, multi-head variants */
+        int nargs = (fid <= 845) ? 4 : 3;
         for (int i = 0; i < nargs; i++) vm_pop(vm);
         vm_push(vm, NIL_VAL); break;
     }
@@ -683,12 +865,61 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         } else vm_push(vm, NIL_VAL);
         break;
     }
-    case 852: case 853: case 854: case 855: case 856:
-    case 857: case 858: case 859: {
-        /* Remaining adaptive curvature ops */
-        int nargs = 2;
-        for (int i = 0; i < nargs; i++) vm_pop(vm);
-        vm_push(vm, NIL_VAL); break;
+    case 852: { /* curvature-gradient(manifold, loss_grad) — gradient of loss w.r.t. curvature */
+        VmTensor* grad = vm_get_tensor(vm, vm_pop(vm));
+        Value mv = vm_pop(vm);
+        if (is_heap_type(vm, mv, HEAP_MANIFOLD) && grad) {
+            /* Curvature gradient: sum of loss gradient components (simplified) */
+            double sum = 0;
+            for (int64_t i = 0; i < grad->total; i++) sum += grad->data[i];
+            vm_push_float(vm, sum);
+        } else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 853: { /* transition-geometry(manifold, target_curvature, rate) */
+        float rate = (float)as_number(vm_pop(vm));
+        float target = (float)as_number(vm_pop(vm));
+        Value mv = vm_pop(vm);
+        if (is_heap_type(vm, mv, HEAP_MANIFOLD)) {
+            qllm_manifold_t* m = (qllm_manifold_t*)vm->heap.objects[mv.as.ptr]->opaque.ptr;
+            float cur = qllm_manifold_get_curvature(m);
+            float new_c = cur + rate * (target - cur); /* linear interpolation */
+            qllm_manifold_set_curvature(m, new_c);
+            vm_push_float(vm, new_c);
+        } else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 854: { /* manifold-interpolate(m1, m2, t) — interpolate between manifolds */
+        float t = (float)as_number(vm_pop(vm));
+        Value m2v = vm_pop(vm), m1v = vm_pop(vm);
+        if (is_heap_type(vm, m1v, HEAP_MANIFOLD) && is_heap_type(vm, m2v, HEAP_MANIFOLD)) {
+            float c1 = qllm_manifold_get_curvature((qllm_manifold_t*)vm->heap.objects[m1v.as.ptr]->opaque.ptr);
+            float c2 = qllm_manifold_get_curvature((qllm_manifold_t*)vm->heap.objects[m2v.as.ptr]->opaque.ptr);
+            float interp = c1 * (1.0f - t) + c2 * t;
+            vm_push_float(vm, interp);
+        } else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 855: case 856: case 857: case 858: case 859: {
+        /* curvature-hessian, adaptive-step, manifold-type, manifold-dim, manifold-destroy */
+        if (fid == 859) { /* manifold-destroy */
+            Value mv = vm_pop(vm);
+            if (is_heap_type(vm, mv, HEAP_MANIFOLD)) {
+                qllm_manifold_destroy((qllm_manifold_t*)vm->heap.objects[mv.as.ptr]->opaque.ptr);
+                vm->heap.objects[mv.as.ptr]->opaque.ptr = NULL;
+            }
+            vm_push(vm, NIL_VAL);
+        } else if (fid == 857) { /* manifold-type */
+            Value mv = vm_pop(vm);
+            if (is_heap_type(vm, mv, HEAP_MANIFOLD))
+                vm_push(vm, INT_VAL((int)qllm_manifold_get_type(
+                    (qllm_manifold_t*)vm->heap.objects[mv.as.ptr]->opaque.ptr)));
+            else vm_push(vm, NIL_VAL);
+        } else {
+            int nargs = 2; for (int i = 0; i < nargs; i++) vm_pop(vm);
+            vm_push(vm, NIL_VAL);
+        }
+        break;
     }
 
     default:
