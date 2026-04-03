@@ -2867,6 +2867,86 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 143: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) - as_number(b))); break; } /* sub2 */
     case 144: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) * as_number(b))); break; } /* mul2 */
     case 145: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) / as_number(b))); break; } /* div2 */
+    /* Comparison operators as first-class functions (for sort, map, fold, etc.) */
+    case 146: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) < as_number(b))); break; }  /* < */
+    case 147: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) > as_number(b))); break; }  /* > */
+    case 148: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) <= as_number(b))); break; } /* <= */
+    case 149: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) >= as_number(b))); break; } /* >= */
+    case 150: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) == as_number(b))); break; } /* = */
+
+    /* Core operations as first-class native functions (IDs 200-226) */
+    case 200: { Value a = vm_pop(vm); /* car */
+        if (a.type == VAL_PAIR) { HeapObject* o = vm->heap.objects[a.as.ptr]; vm_push(vm, o->cons.car); }
+        else { printf("CAR on non-pair\n"); vm_push(vm, NIL_VAL); } break; }
+    case 201: { Value a = vm_pop(vm); /* cdr */
+        if (a.type == VAL_PAIR) { HeapObject* o = vm->heap.objects[a.as.ptr]; vm_push(vm, o->cons.cdr); }
+        else { printf("CDR on non-pair\n"); vm_push(vm, NIL_VAL); } break; }
+    case 202: { Value b = vm_pop(vm), a = vm_pop(vm); /* cons */
+        int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
+        vm->heap.objects[p]->type = HEAP_CONS;
+        vm->heap.objects[p]->cons.car = a; vm->heap.objects[p]->cons.cdr = b;
+        vm_push(vm, (Value){VAL_PAIR, {.ptr = p}}); break; }
+    case 203: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_NIL)); break; }  /* null? */
+    case 204: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_PAIR)); break; } /* pair? */
+    case 205: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); break; }      /* not */
+    case 206: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_FLOAT)); break; } /* number? */
+    case 207: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_STRING)); break; } /* string? */
+    case 208: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_BOOL)); break; }   /* boolean? */
+    case 209: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CLOSURE)); break; }/* procedure? */
+    case 210: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_VECTOR)); break; } /* vector? */
+    case 211: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, NIL_VAL); break; } /* display */
+    case 212: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, NIL_VAL); break; } /* write */
+    case 213: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(as_number(a))); break; }  /* exact->inexact */
+    case 214: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a))); break; } /* inexact->exact */
+    case 215: { /* string->number */
+        Value a = vm_pop(vm);
+        if (a.type == VAL_STRING) {
+            VmString* s = (VmString*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            if (s && s->data) {
+                double v = atof(s->data);
+                vm_push(vm, (v == (int64_t)v) ? INT_VAL((int64_t)v) : FLOAT_VAL(v));
+            } else vm_push(vm, NIL_VAL);
+        } else vm_push(vm, NIL_VAL);
+        break; }
+    case 216: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a))); break; } /* char->integer */
+    case 217: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a))); break; } /* integer->char */
+    case 218: { /* make-vector */
+        Value fill = vm_pop(vm), size_v = vm_pop(vm);
+        int sz = (int)as_number(size_v);
+        int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
+        vm->heap.objects[p]->type = HEAP_VECTOR;
+        VmVector* v = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
+        v->len = sz; v->cap = sz;
+        v->items = (Value*)vm_alloc(&vm->heap.regions, sz * sizeof(Value));
+        for (int i = 0; i < sz; i++) v->items[i] = fill;
+        vm->heap.objects[p]->opaque.ptr = v;
+        vm_push(vm, (Value){VAL_VECTOR, {.ptr = p}}); break; }
+    case 219: { /* vector-ref */
+        Value idx_v = vm_pop(vm), vec_v = vm_pop(vm);
+        if (vec_v.type == VAL_VECTOR) {
+            VmVector* v = (VmVector*)vm->heap.objects[vec_v.as.ptr]->opaque.ptr;
+            int idx = (int)as_number(idx_v);
+            if (v && idx >= 0 && idx < v->len) vm_push(vm, v->items[idx]);
+            else vm_push(vm, NIL_VAL);
+        } else vm_push(vm, NIL_VAL); break; }
+    case 220: { /* vector-set! */
+        Value val = vm_pop(vm), idx_v = vm_pop(vm), vec_v = vm_pop(vm);
+        if (vec_v.type == VAL_VECTOR) {
+            VmVector* v = (VmVector*)vm->heap.objects[vec_v.as.ptr]->opaque.ptr;
+            int idx = (int)as_number(idx_v);
+            if (v && idx >= 0 && idx < v->len) v->items[idx] = val;
+        } vm_push(vm, NIL_VAL); break; }
+    case 221: { /* vector-length */
+        Value v = vm_pop(vm);
+        if (v.type == VAL_VECTOR) {
+            VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+            vm_push(vm, INT_VAL(vec ? vec->len : 0));
+        } else vm_push(vm, INT_VAL(0)); break; }
+    case 222: case 223: case 224: case 225: case 226:
+        /* string->list, list->string, gcd, lcm, make-string — stubs */
+        { int nargs = (fid >= 224) ? 2 : 1;
+          for (int i = 0; i < nargs; i++) vm_pop(vm);
+          vm_push(vm, NIL_VAL); break; }
 
     case 151: { /* direct open slot: set closure upvalue to reference a stack slot */
         Value slot_v = vm_pop(vm), uv_idx_v = vm_pop(vm), cl_val = vm_pop(vm);
@@ -8015,6 +8095,22 @@ static const BuiltinDef BUILTINS[] = {
     /* Arithmetic as first-class (2-arg, for use with apply/map/fold) */
     /* +,-,*,/ defined in scheme prelude as variadic folds */
     {"add2", 142, 2}, {"sub2", 143, 2}, {"mul2", 144, 2}, {"div2", 145, 2},
+    /* Comparison operators as first-class functions */
+    {"<", 146, 2}, {">", 147, 2}, {"<=", 148, 2}, {">=", 149, 2}, {"=", 150, 2},
+    /* Core operations as first-class closures (native IDs 200-220) */
+    {"car", 200, 1}, {"cdr", 201, 1}, {"cons", 202, 2},
+    {"null?", 203, 1}, {"pair?", 204, 1}, {"not", 205, 1},
+    {"number?", 206, 1}, {"string?", 207, 1}, {"boolean?", 208, 1},
+    {"procedure?", 209, 1}, {"vector?", 210, 1},
+    {"display", 211, 1}, {"write", 212, 1},
+    {"exact->inexact", 213, 1}, {"inexact->exact", 214, 1},
+    {"string->number", 215, 1},
+    {"char->integer", 216, 1}, {"integer->char", 217, 1},
+    {"make-vector", 218, 2}, {"vector-ref", 219, 2}, {"vector-set!", 220, 3},
+    {"vector-length", 221, 1},
+    {"string->list", 222, 1}, {"list->string", 223, 1},
+    {"gcd", 224, 2}, {"lcm", 225, 2},
+    {"make-string", 226, 2},
     /* Additional predicates */
     {"symbol?", 160, 1}, {"char?", 161, 1},
     {"exact?", 162, 1}, {"inexact?", 163, 1},
@@ -8056,16 +8152,11 @@ static const BuiltinDef BUILTINS[] = {
     /* Additional string ops */
     {"string-repeat", 231, 2}, {"string-trim", 232, 1},
     {"string-split", 233, 2}, {"string-join", 234, 2},
-    /* First-class core ops */
-    {"cons", 74, 2}, {"car", 72, 1}, {"cdr", 73, 1},
-    {"null?", 45, 1}, {"pair?", 46, 1}, {"number?", 47, 1},
-    {"boolean?", 48, 1}, {"procedure?", 49, 1}, {"vector?", 50, 1},
-    {"string?", 160, 1},
+    /* First-class core ops — handled by native IDs 200-226 (defined above) */
     /* Misc */
-    {"not", 235, 1}, {"boolean=?", 236, 2},
+    {"boolean=?", 236, 2},
     {"error", 237, 1}, {"void", 238, 0},
     {"hash-table?", 239, 1},
-    {"display", 240, 1}, {"write", 241, 1},
     /* Complex numbers (300-319) */
     {"make-rectangular", 300, 2}, {"make-polar", 301, 2},
     {"real-part", 302, 1}, {"imag-part", 303, 1},
@@ -8206,7 +8297,7 @@ static void compile_and_run(const char* source) {
         "(define (reduce f init lst) (fold-left f init lst))\n"
         "(define (merge compare a b)\n"
         "  (cond ((null? a) b) ((null? b) a)\n"
-        "    ((compare (car a) (car b)) (cons (car a) (merge compare (cdr a) (cdr b))))\n"
+        "    ((compare (car a) (car b)) (cons (car a) (merge compare (cdr a) b)))\n"
         "    (else (cons (car b) (merge compare a (cdr b))))))\n"
         "(define (sort compare lst)\n"
         "  (if (or (null? lst) (null? (cdr lst))) lst\n"
