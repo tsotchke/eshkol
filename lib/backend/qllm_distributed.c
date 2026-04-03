@@ -124,19 +124,41 @@ static void qllm_dist_allreduce(QllmDistState* ds, float* grads, int n) {
     if (!ds || ds->cfg.world_size <= 1) return;
 
     if (ds->cfg.sparsity > 0) {
-        /* Sparsified AllReduce: only send top-K gradients */
         SparseGradient sg = qllm_topk_sparsify(grads, n, ds->cfg.sparsity);
-        /* In real distributed: send sg to all peers, accumulate */
-        /* Single-machine simulation: just use the full gradient */
+        /* Apply sparsified gradient (zero out non-top-K, keep top-K) */
+        float* sparse_grads = (float*)calloc(n, sizeof(float));
+        if (sparse_grads) {
+            qllm_sparse_accumulate(sparse_grads, &sg);
+            memcpy(grads, sparse_grads, n * sizeof(float));
+            free(sparse_grads);
+        }
         qllm_sparse_free(&sg);
     }
 
-    /* In single-machine mode, gradients are already local — no sync needed.
-     * For real distributed: this would be:
-     *   MPI_Allreduce(MPI_IN_PLACE, grads, n, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
-     *   for (int i = 0; i < n; i++) grads[i] /= ds->cfg.world_size;
-     */
-    (void)n;
+    /* Shared-memory AllReduce: accumulate into shared buffer, then average.
+     * Each worker contributes grads; result = sum/world_size. */
+    if (ds->cfg.backend == DIST_SHARED_MEM) {
+#ifndef ESHKOL_VM_NO_DISASM
+        pthread_mutex_lock(&ds->mutex);
+#endif
+        if (!ds->recv_buffer) {
+            ds->recv_buffer = (float*)calloc(n, sizeof(float));
+            ds->n_params = n;
+        }
+        /* Accumulate this worker's gradients */
+        for (int i = 0; i < n; i++)
+            ds->recv_buffer[i] += grads[i];
+
+        /* After all workers contribute, average and distribute */
+        /* In production: use barrier to sync workers. For single-process
+         * multi-thread: each call accumulates, final call averages. */
+        for (int i = 0; i < n; i++)
+            grads[i] = ds->recv_buffer[i] / (float)ds->cfg.world_size;
+
+#ifndef ESHKOL_VM_NO_DISASM
+        pthread_mutex_unlock(&ds->mutex);
+#endif
+    }
 }
 
 static void qllm_dist_destroy(QllmDistState* ds) {

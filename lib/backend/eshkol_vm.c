@@ -58,6 +58,12 @@
 /* VM core: types, heap, stack operations */
 #include "vm_core.c"
 
+/* GPU tensor dispatch (threshold-based routing to Metal/CUDA) */
+#include "vm_gpu_dispatch.h"
+
+/* Geometric manifold operations (Riemannian, geodesic, Lie groups) */
+#include "vm_geometric.c"
+
 /* Native function dispatch (550+ functions) */
 #include "vm_native.c"
 
