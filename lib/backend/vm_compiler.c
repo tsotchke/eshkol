@@ -192,6 +192,10 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
         path[pi] = '\0';
         strncat(path, ".esk", sizeof(path) - pi - 1);
 
+#ifdef ESHKOL_VM_NO_DISASM
+        /* WASM mode: no filesystem access. Prelude builtins already available. */
+        return;
+#endif
         /* Read and parse the file */
         FILE* mf = fopen(path, "r");
         if (!mf) {
@@ -2718,8 +2722,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
-    /* -- include -- */
-    if (is_sym(head, "include") && node->n_children >= 2) {
+    /* -- include / include-ci -- */
+    if ((is_sym(head, "include") || is_sym(head, "include-ci")) && node->n_children >= 2) {
+#ifdef ESHKOL_VM_NO_DISASM
+        /* WASM: no filesystem, skip include */
+        return;
+#else
         const char* path = node->children[1]->symbol;
         FILE* incf = fopen(path, "r");
         if (incf) {
@@ -2733,23 +2741,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             } else fclose(incf);
         }
         return;
-    }
-
-    /* -- include-ci -- */
-    if (is_sym(head, "include-ci") && node->n_children >= 2) {
-        const char* path = node->children[1]->symbol;
-        FILE* incf = fopen(path, "r");
-        if (incf) {
-            fseek(incf, 0, SEEK_END); long len = ftell(incf); fseek(incf, 0, SEEK_SET);
-            char* src = (char*)malloc(len + 1);
-            if (src) {
-                fread(src, 1, len, incf); src[len] = 0; fclose(incf);
-                const char* saved = src_ptr; src_ptr = src;
-                while (1) { skip_ws(); if (!*src_ptr) break; Node* e = parse_sexp(); if (!e) break; compile_expr(c, e, 0); free_node(e); }
-                src_ptr = saved; free(src);
-            } else fclose(incf);
-        }
-        return;
+#endif
     }
 
     /* -- OALR forms (pass-through: ownership enforced at compile-time, not runtime) -- */

@@ -280,6 +280,12 @@ static inline int is_valid_heap_ptr(VM* vm, int32_t ptr) {
     return ptr >= 0 && ptr < vm->heap.next_free;
 }
 
+/* Validate heap pointer AND check object type */
+static inline int is_heap_type(VM* vm, Value v, HeapType type) {
+    return v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
+           vm->heap.objects[v.as.ptr]->type == type;
+}
+
 static void vm_push(VM* vm, Value v) {
     if (vm->sp >= STACK_SIZE) { printf("STACK OVERFLOW\n"); vm->error = 1; return; }
     vm->stack[vm->sp++] = v;
