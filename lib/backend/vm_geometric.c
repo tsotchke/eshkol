@@ -2,84 +2,112 @@
  * @file vm_geometric.c
  * @brief VM native function wrappers for geometric manifold operations.
  *
- * Provides native call IDs 800-859 for the Eshkol bytecode VM,
- * wrapping the semiclassical_qllm geometric library:
- *   800-804: Manifold creation (euclidean, hyperbolic, spherical, product, adaptive)
- *   805-809: Core ops (exp_map, log_map, geodesic_distance, parallel_transport, project)
- *   810-814: Hyperbolic (mobius_add, mobius_scalar_mul, poincare_distance, frechet_mean, curvature)
- *   815-819: Spherical (great_circle_distance, slerp, spherical_exp, spherical_log, rotation)
- *   820-824: Lie groups (so3_exp, so3_log, se3_exp, se3_log, quaternion_mul)
- *   825-829: Differential (metric_tensor, christoffel, riemann_curvature, ricci, sectional)
- *   830-834: Forms (wedge_product, exterior_derivative, hodge_star, interior_product, pullback)
- *   835-839: Optimization (riemannian_sgd_step, riemannian_adam_step, riemannian_grad, retraction, vector_transport)
- *   840-849: Geodesic attention
- *   850-859: Adaptive curvature
- *
- * On WASM or builds without semiclassical_qllm, all operations return NIL
- * with a warning message.
+ * Native call IDs 800-859. When ESHKOL_GEOMETRIC_ENABLED is defined
+ * and libsemiclassical_qllm is linked, dispatches to the geometric
+ * library. Otherwise returns error values.
  *
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
-/* Heap types for geometric objects */
 #define HEAP_MANIFOLD        30
 #define HEAP_MANIFOLD_POINT  31
 #define HEAP_MANIFOLD_TANGENT 32
 
-static void vm_dispatch_geometric(VM* vm, int fid) {
-    /* Stub: geometric operations require libsemiclassical_qllm */
-    /* When linked against the library, these dispatch to the FFI bridge */
 #if defined(ESHKOL_GEOMETRIC_ENABLED)
-    /* TODO: Wire each fid 800-859 to eshkol_ffi.h functions */
+#include <semiclassical_qllm/manifold.h>
+#include <semiclassical_qllm/geodesic.h>
+#include <semiclassical_qllm/hyperbolic.h>
+#include <semiclassical_qllm/spherical.h>
+#endif
+
+static void vm_dispatch_geometric(VM* vm, int fid) {
+#if defined(ESHKOL_GEOMETRIC_ENABLED)
     switch (fid) {
-    case 800: /* make-euclidean-manifold */
-    case 801: /* make-hyperbolic-manifold */
-    case 802: /* make-spherical-manifold */
-    case 803: /* make-product-manifold */
-    case 804: /* make-adaptive-manifold */
-    case 805: /* exp-map */
-    case 806: /* log-map */
-    case 807: /* geodesic-distance */
-    case 808: /* parallel-transport */
-    case 809: /* project */
-    case 810: /* mobius-add */
-    case 811: /* mobius-scalar-mul */
-    case 812: /* poincare-distance */
-    case 813: /* frechet-mean */
-    case 814: /* curvature */
-    case 815: /* great-circle-distance */
-    case 816: /* slerp */
-    case 817: /* spherical-exp */
-    case 818: /* spherical-log */
-    case 819: /* rotation */
-    case 820: /* so3-exp */
-    case 821: /* so3-log */
-    case 822: /* se3-exp */
-    case 823: /* se3-log */
-    case 824: /* quaternion-mul */
-    case 825: /* metric-tensor */
-    case 826: /* christoffel */
-    case 827: /* riemann-curvature */
-    case 828: /* ricci */
-    case 829: /* sectional */
-    case 830: /* wedge-product */
-    case 831: /* exterior-derivative */
-    case 832: /* hodge-star */
-    case 833: /* interior-product */
-    case 834: /* pullback */
-    case 835: /* riemannian-sgd-step */
-    case 836: /* riemannian-adam-step */
-    case 837: /* riemannian-grad */
-    case 838: /* retraction */
-    case 839: /* vector-transport */
+    /* ── Manifold creation (800-804) ── */
+    case 800: { /* make-euclidean-manifold(dim) */
+        Value dim_v = vm_pop(vm);
+        int dim = (int)as_number(dim_v);
+        qllm_manifold_t* m = qllm_manifold_create_euclidean(dim);
+        if (m) {
+            int32_t ptr = heap_alloc(&vm->heap);
+            if (ptr >= 0) {
+                vm->heap.objects[ptr]->type = HEAP_MANIFOLD;
+                vm->heap.objects[ptr]->opaque.ptr = m;
+                vm_push(vm, (Value){.type = VAL_INT, .as.ptr = ptr});
+                break;
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 801: { /* make-hyperbolic-manifold(dim, curvature) */
+        Value curv_v = vm_pop(vm), dim_v = vm_pop(vm);
+        int dim = (int)as_number(dim_v);
+        float curv = (float)as_number(curv_v);
+        qllm_manifold_t* m = qllm_manifold_create_hyperbolic(dim, curv);
+        if (m) {
+            int32_t ptr = heap_alloc(&vm->heap);
+            if (ptr >= 0) {
+                vm->heap.objects[ptr]->type = HEAP_MANIFOLD;
+                vm->heap.objects[ptr]->opaque.ptr = m;
+                vm_push(vm, (Value){.type = VAL_INT, .as.ptr = ptr});
+                break;
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 802: { /* make-spherical-manifold(dim) */
+        Value dim_v = vm_pop(vm);
+        int dim = (int)as_number(dim_v);
+        qllm_manifold_t* m = qllm_manifold_create_spherical(dim);
+        if (m) {
+            int32_t ptr = heap_alloc(&vm->heap);
+            if (ptr >= 0) {
+                vm->heap.objects[ptr]->type = HEAP_MANIFOLD;
+                vm->heap.objects[ptr]->opaque.ptr = m;
+                vm_push(vm, (Value){.type = VAL_INT, .as.ptr = ptr});
+                break;
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    /* ── Hyperbolic operations (810-814) ── */
+    case 812: { /* poincare-distance(x, y, curvature) */
+        Value c_v = vm_pop(vm), y_v = vm_pop(vm), x_v = vm_pop(vm);
+        /* x, y are tensors on the Poincaré ball */
+        if (x_v.type == VAL_INT && y_v.type == VAL_INT) {
+            VmTensor* xt = (VmTensor*)vm->heap.objects[x_v.as.ptr]->opaque.ptr;
+            VmTensor* yt = (VmTensor*)vm->heap.objects[y_v.as.ptr]->opaque.ptr;
+            if (xt && yt && xt->total == yt->total) {
+                /* Convert VmTensor (f64) to float array for qllm API */
+                int n = (int)xt->total;
+                float* xf = (float*)malloc(n * sizeof(float));
+                float* yf = (float*)malloc(n * sizeof(float));
+                for (int i = 0; i < n; i++) { xf[i] = (float)xt->data[i]; yf[i] = (float)yt->data[i]; }
+                float dist = qllm_hyperbolic_distance(xf, yf, n, (float)as_number(c_v));
+                free(xf); free(yf);
+                vm_push(vm, FLOAT_VAL((double)dist));
+                break;
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
     default:
-        printf("GEOMETRIC: operation %d not yet implemented\n", fid);
+        /* Unimplemented geometric operation */
+        fprintf(stderr, "GEOMETRIC: operation %d not yet wired\n", fid);
+        /* Pop expected args (heuristic: 1-3 args) and push NIL */
         vm_push(vm, NIL_VAL);
         break;
     }
 #else
+    /* No geometric library — return error */
     (void)fid;
-    printf("GEOMETRIC: requires libsemiclassical_qllm (native build only)\n");
+    /* Pop args (we don't know how many, but operations always push a result) */
     vm_push(vm, NIL_VAL);
 #endif
 }

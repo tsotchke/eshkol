@@ -404,6 +404,101 @@ typedef struct {
     int ff_type[N_LAYERS];
 } QllmWeights;
 
+/* Helper: matrix-vector multiply y = x @ W (x: 1×in, W: in×out, y: 1×out) */
+static void qllm_matvec(const float* x, const float* W, float* y, int in_dim, int out_dim) {
+    memset(y, 0, out_dim * sizeof(float));
+    for (int j = 0; j < out_dim; j++)
+        for (int i = 0; i < in_dim; i++)
+            y[j] += x[i] * W[i * out_dim + j];
+}
+
+static float qllm_sigmoidf(float x) { return 1.0f / (1.0f + expf(-x)); }
+
+/*******************************************************************************
+ * Cached Forward Pass — saves all activations for backward
+ ******************************************************************************/
+
+static void qllm_forward_cached(const QllmWeights* w, const float state[D],
+                                  const float pe[][D], int np,
+                                  float next[D], QllmForwardCache* cache) {
+    float x[D]; memcpy(x, state, sizeof(float) * D);
+    cache->np = np;
+
+    for (int L = 0; L < N_LAYERS; L++) {
+        memcpy(cache->x_in[L], x, sizeof(float) * D);
+
+        /* Attention (layer 0 only) */
+        float ao[D]; memset(ao, 0, sizeof(ao));
+        if (L == 0 && np > 0) {
+            memset(cache->Q, 0, sizeof(cache->Q));
+            for (int i = 0; i < D; i++)
+                for (int j = 0; j < D; j++)
+                    cache->Q[i] += w->wq[L][i * D + j] * x[j];
+            for (int i = 0; i < D; i++) cache->Q[i] += w->bq[L][i];
+
+            float mx = -1e30f;
+            for (int p = 0; p < np && p < 256; p++) {
+                float K[D]; memset(K, 0, sizeof(K));
+                memset(cache->V_all[p], 0, sizeof(cache->V_all[p]));
+                memset(cache->K_all[p], 0, sizeof(cache->K_all[p]));
+                for (int i = 0; i < D; i++)
+                    for (int j = 0; j < D; j++) {
+                        cache->K_all[p][i] += w->wk[L][i * D + j] * pe[p][j];
+                        cache->V_all[p][i] += w->wv[L][i * D + j] * pe[p][j];
+                    }
+                cache->scores_raw[p] = (cache->Q[0] * cache->K_all[p][0] +
+                                         cache->Q[1] * cache->K_all[p][1]) / sqrtf((float)HD);
+                if (cache->scores_raw[p] > mx) mx = cache->scores_raw[p];
+            }
+            float sum = 0;
+            for (int p = 0; p < np; p++) {
+                cache->attn_weights[p] = expf(cache->scores_raw[p] - mx);
+                sum += cache->attn_weights[p];
+            }
+            for (int p = 0; p < np; p++) cache->attn_weights[p] /= sum;
+
+            memset(cache->hout, 0, sizeof(cache->hout));
+            for (int p = 0; p < np; p++)
+                for (int d = 0; d < HD; d++)
+                    cache->hout[d] += cache->attn_weights[p] * cache->V_all[p][d];
+
+            for (int i = 0; i < D; i++)
+                for (int j = 0; j < D; j++)
+                    ao[i] += w->wo[L][i * D + j] * cache->hout[j];
+        }
+        for (int i = 0; i < D; i++) x[i] += ao[i];
+
+        /* FFN */
+        float fo[D]; memset(fo, 0, sizeof(fo));
+        if (w->ff_type[L] == 1) {
+            /* Type 1: SQUARE */
+            qllm_matvec(x, w->ff_up[L], cache->ffn_pre_act[L], D, FFN_DIM);
+            for (int i = 0; i < FFN_DIM; i++)
+                cache->ffn_pre_act[L][i] += w->ff_up_b[L][i];
+            /* h^2 */
+            for (int i = 0; i < FFN_DIM; i++)
+                cache->ffn_h[L][i] = cache->ffn_pre_act[L][i] * cache->ffn_pre_act[L][i];
+            qllm_matvec(cache->ffn_h[L], w->ff_down[L], fo, FFN_DIM, D);
+            for (int i = 0; i < D; i++) fo[i] += w->ff_down_b[L][i];
+        } else if (w->ff_type[L] == 2) {
+            /* Type 2: Gated */
+            qllm_matvec(x, w->ff_gate[L], cache->ffn_gate_pre[L], D, FFN_DIM);
+            for (int i = 0; i < FFN_DIM; i++)
+                cache->ffn_gate_post[L][i] = qllm_sigmoidf(cache->ffn_gate_pre[L][i] + w->ff_gate_b[L][i]);
+            qllm_matvec(x, w->ff_up[L], cache->ffn_up_post[L], D, FFN_DIM);
+            for (int i = 0; i < FFN_DIM; i++)
+                cache->ffn_up_post[L][i] += w->ff_up_b[L][i];
+            for (int i = 0; i < FFN_DIM; i++)
+                cache->ffn_h[L][i] = cache->ffn_gate_post[L][i] * cache->ffn_up_post[L][i];
+            qllm_matvec(cache->ffn_h[L], w->ff_down[L], fo, FFN_DIM, D);
+            for (int i = 0; i < D; i++) fo[i] += w->ff_down_b[L][i];
+        }
+        memcpy(cache->ffn_out[L], fo, sizeof(float) * D);
+        for (int i = 0; i < D; i++) x[i] += fo[i];
+    }
+    memcpy(next, x, sizeof(float) * D);
+}
+
 static void qllm_backward(
     const QllmWeights* w,
     const QllmForwardCache* cache,
@@ -593,12 +688,12 @@ static void qllm_trainer_init(QllmTrainer* t, QllmWeights* weights, int batch_si
 static float qllm_trainer_step(QllmTrainer* t,
                                  const float state[D],
                                  const float target[D]) {
-    /* Forward pass (NOTE: requires cached forward — caller must populate t->cache) */
-    /* For now, assume cache is populated by caller via qllm_forward_cached() */
+    /* Forward pass with activation caching */
+    float pred[D];
+    /* pe (position embeddings) not available here — use NULL/0 for non-attention layers */
+    qllm_forward_cached(t->weights, state, NULL, 0, pred, &t->cache);
 
     /* Compute loss */
-    float pred[D];
-    memcpy(pred, state, D * sizeof(float)); /* placeholder — should be forward output */
     float loss = qllm_compute_loss(pred, target, &t->loss_cfg);
 
     /* Backward pass */

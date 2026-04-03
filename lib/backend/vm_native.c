@@ -751,12 +751,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* a = (VmTensor*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
         VmTensor* b = (VmTensor*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
         if (!a || !b) { vm_push(vm, NIL_VAL); break; }
-        VmTensor* out = NULL;
-        /* Try GPU path for large tensors */
-        if (vm_gpu_should_dispatch(a->total * b->total)) {
-            /* GPU matmul would go here via vm_gpu_try_matmul */
-            /* Falls through to CPU if GPU unavailable or tensor too small */
-        }
+        /* Try GPU first, fall through to CPU */
+        VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
         if (!out) out = vm_tensor_matmul(&vm->heap.regions, a, b);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, out);
