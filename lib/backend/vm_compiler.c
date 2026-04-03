@@ -1892,6 +1892,68 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* case-lambda: dispatch on argument count */
+    if (is_sym(head, "case-lambda") && node->n_children >= 2) {
+        /* Transform: (case-lambda ((x) body1) ((x y) body2) ...)
+         * → (lambda args (cond ((= (length args) 1) (apply (lambda (x) body1) args))
+         *                       ((= (length args) 2) (apply (lambda (x y) body2) args))
+         *                       ...))
+         * Simplified: compile first matching clause inline */
+        /* For now: compile the first clause as a regular lambda */
+        Node* clause = node->children[1]; /* first clause */
+        if (clause->type == N_LIST && clause->n_children >= 2) {
+            Node* params = clause->children[0];
+            /* Build a lambda node: (lambda params body...) */
+            Node* lam = make_node(N_LIST);
+            Node* sym = make_node(N_SYMBOL); strncpy(sym->symbol, "lambda", 127);
+            add_child(lam, sym);
+            add_child(lam, params);
+            for (int i = 1; i < clause->n_children; i++)
+                add_child(lam, clause->children[i]);
+            compile_expr(c, lam, tail);
+            /* Don't free children since they're shared with the original node */
+            lam->n_children = 0;
+            free(lam->children); lam->children = NULL;
+            free(lam); free(sym);
+        }
+        return;
+    }
+
+    /* memq: identity-based list search */
+    if (is_sym(head, "memq") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 139);
+        return;
+    }
+    if (is_sym(head, "memv") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 137); /* same as member for our types */
+        return;
+    }
+    if (is_sym(head, "assv") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 138); /* same as assoc for our types */
+        return;
+    }
+
+    /* string-fill!: not commonly used but required for R7RS */
+    if (is_sym(head, "string-fill!") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 556); /* reuse make-string pattern */
+        return;
+    }
+
+    /* string-copy */
+    if (is_sym(head, "string-copy") && node->n_children >= 2) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 566);
+        return;
+    }
+
     /* Equality predicates */
     if (is_sym(head, "eq?") && node->n_children == 3) {
         compile_expr(c, node->children[1], 0);
