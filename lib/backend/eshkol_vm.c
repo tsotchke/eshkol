@@ -4825,36 +4825,6 @@ static void chunk_emit_instr(FuncChunk* c, Instr fi) {
     c->code[c->code_len++] = fi;
 }
 
-/* Map constants from inner chunk to outer chunk.
- * Returns heap-allocated array of size src->n_constants (caller must free). */
-static int* chunk_map_constants(FuncChunk* dst, FuncChunk* src) {
-    if (src->n_constants == 0) return NULL;
-    int* map = (int*)malloc(src->n_constants * sizeof(int));
-    if (!map) { fprintf(stderr, "ERROR: const_map alloc failed\n"); return NULL; }
-    for (int i = 0; i < src->n_constants; i++)
-        map[i] = chunk_add_const(dst, src->constants[i]);
-    return map;
-}
-
-/* Inline inner function code into outer chunk, remapping constants and jumps.
- * Returns the PC of the inlined function start in the outer chunk. */
-static int chunk_inline_code(FuncChunk* dst, FuncChunk* src, int* const_map) {
-    int func_pc = dst->code_len;
-    chunk_ensure_code_cap(dst, src->code_len);
-    for (int i = 0; i < src->code_len; i++) {
-        Instr fi = src->code[i];
-        if (fi.op == OP_CONST && const_map) fi.operand = const_map[fi.operand];
-        if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
-            fi.operand += func_pc;
-        if (fi.op == OP_CLOSURE && const_map) {
-            int ci = fi.operand & 0xFFFF;
-            int nu = (fi.operand >> 16) & 0xFF;
-            fi.operand = const_map[ci] | (nu << 16);
-        }
-        dst->code[dst->code_len++] = fi;
-    }
-    return func_pc;
-}
 
 static int chunk_add_const(FuncChunk* c, Value v) {
     /* No deduplication — function PC placeholders get patched after creation,
