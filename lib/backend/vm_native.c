@@ -2467,18 +2467,46 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 130: { /* raise: unhandled exception */
+    case 130: { /* raise: dispatch to handler or error */
         Value exn = vm_pop(vm);
-        fprintf(stderr, "ERROR: unhandled exception: ");
-        print_value(vm, exn);
-        fprintf(stderr, "\n");
-        vm->error = 1;
+        vm->current_exception = exn;
+        if (vm->n_handlers > 0) {
+            /* Pop handler and restore state */
+            vm->n_handlers--;
+            vm->sp = vm->handler_stack[vm->n_handlers].sp;
+            vm->fp = vm->handler_stack[vm->n_handlers].fp;
+            vm->frame_count = vm->handler_stack[vm->n_handlers].frame_count;
+            vm->pc = vm->handler_stack[vm->n_handlers].pc;
+        } else {
+            fprintf(stderr, "ERROR: unhandled exception: ");
+            print_value(vm, exn);
+            fprintf(stderr, "\n");
+            vm->error = 1;
+        }
         break;
     }
 
-    case 132: { /* force: force a promise */
+    case 132: { /* force: force a promise (thunk memoization) */
         Value promise = vm_pop(vm);
-        vm_push(vm, promise); /* simplified: just return the value */
+        if (promise.type == VAL_VECTOR) {
+            /* Promise is a vector: #(forced? thunk result) */
+            VmVector* v = (VmVector*)vm->heap.objects[promise.as.ptr]->opaque.ptr;
+            if (v && v->len >= 3) {
+                if (is_truthy(v->items[0])) {
+                    vm_push(vm, v->items[2]); /* already forced: return cached */
+                } else {
+                    /* Call thunk, cache result */
+                    Value thunk = v->items[1];
+                    Value result = vm_call_closure_from_native(vm, thunk, NULL, 0);
+                    v->items[0] = BOOL_VAL(1); /* mark forced */
+                    v->items[2] = result;
+                    vm_push(vm, result);
+                }
+                break;
+            }
+        }
+        /* Fallback: non-promise, return as-is */
+        vm_push(vm, promise);
         break;
     }
 
@@ -2538,13 +2566,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, FLOAT_VAL(atan2(as_number(y), as_number(x))));
         break;
     }
-    case 251: { /* call-with-values-apply: simplified */
+    case 251: { /* call-with-values-apply: unpack multi-value result */
         Value consumer = vm_pop(vm), result = vm_pop(vm);
-        /* Simple: call consumer with single result */
         if (consumer.type == VAL_CLOSURE) {
-            Value args[1] = {result};
-            Value r = vm_call_closure_from_native(vm, consumer, args, 1);
-            vm_push(vm, r);
+            /* If result is a vector (multi-value container), unpack */
+            if (result.type == VAL_VECTOR) {
+                VmVector* mv = (VmVector*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                if (mv && mv->len > 0) {
+                    Value r = vm_call_closure_from_native(vm, consumer, mv->items, mv->len);
+                    vm_push(vm, r);
+                } else {
+                    Value r = vm_call_closure_from_native(vm, consumer, NULL, 0);
+                    vm_push(vm, r);
+                }
+            } else {
+                Value args[1] = {result};
+                Value r = vm_call_closure_from_native(vm, consumer, args, 1);
+                vm_push(vm, r);
+            }
         } else vm_push(vm, result);
         break;
     }
