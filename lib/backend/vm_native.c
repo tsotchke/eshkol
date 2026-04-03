@@ -883,8 +883,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 501: { /* logic-var? — check heap type for LOGIC_VAR */
         Value v = vm_pop(vm);
-        int is_lv = (v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
-                     vm->heap.objects[v.as.ptr]->type == HEAP_LOGIC_VAR);
+        int is_lv = (is_heap_type(vm, v, HEAP_LOGIC_VAR));
         vm_push(vm, BOOL_VAL(is_lv));
         break;
     }
@@ -917,8 +916,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 506: { /* substitution? */
         Value v = vm_pop(vm);
-        int is_subst = (v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
-                        vm->heap.objects[v.as.ptr]->type == HEAP_SUBST);
+        int is_subst = (is_heap_type(vm, v, HEAP_SUBST));
         vm_push(vm, BOOL_VAL(is_subst));
         break;
     }
@@ -930,8 +928,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 510: { /* kb? */
         Value v = vm_pop(vm);
-        int is_kb = (v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
-                     vm->heap.objects[v.as.ptr]->type == HEAP_KB);
+        int is_kb = (is_heap_type(vm, v, HEAP_KB));
         vm_push(vm, BOOL_VAL(is_kb));
         break;
     }
@@ -1004,8 +1001,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 508: { /* fact? */
         Value v = vm_pop(vm);
-        int is_fact = (v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
-                       vm->heap.objects[v.as.ptr]->type == HEAP_FACT);
+        int is_fact = (is_heap_type(vm, v, HEAP_FACT));
         vm_push(vm, BOOL_VAL(is_fact));
         break;
     }
@@ -1069,8 +1065,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 521: { /* factor-graph? */
         Value v = vm_pop(vm);
-        vm_push(vm, BOOL_VAL(v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
-                              vm->heap.objects[v.as.ptr]->type == HEAP_FACTOR_GRAPH));
+        vm_push(vm, BOOL_VAL(is_heap_type(vm, v, HEAP_FACTOR_GRAPH)));
         break;
     }
     case 522: { /* fg-add-factor!(fg, var_indices, cpt) */
@@ -1219,8 +1214,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 541: { /* workspace? */
         Value v = vm_pop(vm);
-        vm_push(vm, BOOL_VAL(v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
-                              vm->heap.objects[v.as.ptr]->type == HEAP_WORKSPACE));
+        vm_push(vm, BOOL_VAL(is_heap_type(vm, v, HEAP_WORKSPACE)));
         break;
     }
     case 542: { /* ws-register!(ws, name, closure) */
@@ -1848,8 +1842,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 652: { /* multi-value-count(mv) — number of values in container */
         Value mv = vm_pop(vm);
-        if (mv.as.ptr >= 0 && mv.as.ptr < vm->heap.next_free &&
-            vm->heap.objects[mv.as.ptr]->type == HEAP_MULTI_VALUE) {
+        if (is_heap_type(vm, mv, HEAP_MULTI_VALUE)) {
             VmMultiValue* mvobj = (VmMultiValue*)vm->heap.objects[mv.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(mvobj ? mvobj->count : 1));
         } else {
@@ -1859,8 +1852,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 653: { /* multi-value? — check if value is a multi-value container */
         Value v = vm_pop(vm);
-        int is_mv = (v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
-                     vm->heap.objects[v.as.ptr]->type == HEAP_MULTI_VALUE);
+        int is_mv = (is_heap_type(vm, v, HEAP_MULTI_VALUE));
         vm_push(vm, BOOL_VAL(is_mv));
         break;
     }
@@ -1998,8 +1990,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 670: { /* hash-table? */
         Value v = vm_pop(vm);
-        int is_ht = (v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
-                     vm->heap.objects[v.as.ptr]->type == HEAP_HASH);
+        int is_ht = (is_heap_type(vm, v, HEAP_HASH));
         vm_push(vm, BOOL_VAL(is_ht));
         break;
     }
@@ -2070,8 +2061,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 686: { /* bytevector? */
         Value v = vm_pop(vm);
-        int is_bv = (v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
-                     vm->heap.objects[v.as.ptr]->type == HEAP_BYTEVECTOR);
+        int is_bv = (is_heap_type(vm, v, HEAP_BYTEVECTOR));
         vm_push(vm, BOOL_VAL(is_bv));
         break;
     }
@@ -2165,8 +2155,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 704: { /* parameter? */
         Value v = vm_pop(vm);
-        int is_param = (v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
-                        vm->heap.objects[v.as.ptr]->type == HEAP_PARAMETER);
+        int is_param = (is_heap_type(vm, v, HEAP_PARAMETER));
         vm_push(vm, BOOL_VAL(is_param));
         break;
     }
@@ -2209,8 +2198,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 714: { /* error? */
         Value v = vm_pop(vm);
-        int is_err = (v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
-                      vm->heap.objects[v.as.ptr]->type == HEAP_ERROR);
+        int is_err = (is_heap_type(vm, v, HEAP_ERROR));
         vm_push(vm, BOOL_VAL(is_err));
         break;
     }

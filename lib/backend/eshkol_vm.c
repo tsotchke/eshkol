@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
@@ -768,6 +769,9 @@ static ReplSession* repl_session_create(void) {
 
 /* Evaluate an expression in an existing REPL session.
  * Definitions persist across calls. */
+static jmp_buf g_repl_jmp;
+static int g_repl_jmp_active = 0;
+
 static void repl_session_eval(ReplSession* rs, const char* source, int auto_print) {
     if (!rs || !rs->initialized) return;
 
@@ -778,6 +782,25 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
     int saved_sp = rs->vm->sp;
     int saved_fp = rs->vm->fp;
     int saved_frame_count = rs->vm->frame_count;
+
+    /* setjmp boundary — catches fatal errors during compilation/execution */
+    g_repl_jmp_active = 1;
+    if (setjmp(g_repl_jmp) != 0) {
+        /* Error occurred — roll back */
+        rs->chunk.code_len = code_start;
+        rs->chunk.n_constants = const_start;
+        for (int i = locals_start; i < rs->chunk.n_locals; i++)
+            free(rs->chunk.locals[i].name);
+        rs->chunk.n_locals = locals_start;
+        rs->vm->sp = saved_sp;
+        rs->vm->fp = saved_fp;
+        rs->vm->frame_count = saved_frame_count;
+        rs->vm->halted = 0;
+        rs->vm->error = 0;
+        g_repl_jmp_active = 0;
+        printf("Error during evaluation\n");
+        return;
+    }
 
     /* Parse and compile user expression INTO the existing chunk */
     src_ptr = source;
@@ -840,6 +863,7 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
 
     rs->vm->halted = 0;
     rs->vm->error = 0;
+    g_repl_jmp_active = 0;
 }
 
 static void repl_session_destroy(ReplSession* rs) {
@@ -849,7 +873,7 @@ static void repl_session_destroy(ReplSession* rs) {
     free(rs);
 }
 
-#ifndef ESHKOL_VM_LIBRARY_MODE
+#if !defined(ESHKOL_VM_LIBRARY_MODE) && !defined(GENERATE_PRELUDE_CACHE)
 int main(int argc, char** argv) {
     if (argc > 1) {
         /* Parse flags */
