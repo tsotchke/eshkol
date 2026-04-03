@@ -17,6 +17,9 @@
 #include <errno.h>
 #include <poll.h>
 
+/* Forward declarations */
+int eshkol_term_read_key_timeout(int timeout_ms);
+
 /* Key code constants (match Eshkol FFI expectations) */
 #define KEY_UP        1001
 #define KEY_DOWN      1002

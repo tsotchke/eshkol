@@ -75,6 +75,67 @@ class EshkolRuntime {
         return len;
     }
 
+    // === Markdown Renderer ===
+    // Lightweight markdown-to-HTML converter (no external dependencies)
+
+    renderMarkdown(md) {
+        let html = md;
+        // Fenced code blocks (```lang ... ```)
+        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+            const escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            // Eshkol/Scheme syntax highlighting
+            if (lang === 'scheme' || lang === 'eshkol' || lang === 'lisp' || lang === 'scm') {
+                let highlighted = escaped
+                    .replace(/;[^\n]*/g, m => `<span style="color:#606078">${m}</span>`)
+                    .replace(/\b(define|lambda|let|let\*|letrec|if|cond|begin|set!|when|unless|do|case|match|and|or|not|quote|require|provide|extern|gradient|derivative|jacobian|hessian|divergence|curl|laplacian)\b/g,
+                        m => `<span style="color:#c084fc">${m}</span>`)
+                    .replace(/"[^"]*"/g, m => `<span style="color:#a78bfa">${m}</span>`)
+                    .replace(/\b\d+\.?\d*\b/g, m => `<span style="color:#00ff88">${m}</span>`)
+                    .replace(/#t\b|#f\b|#\\./g, m => `<span style="color:#00ff88">${m}</span>`);
+                return `<pre style="background:#0d0d15;border:1px solid #2a2a3a;border-radius:8px;padding:16px 20px;overflow-x:auto;margin:1em 0"><code style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;line-height:1.5">${highlighted}</code></pre>`;
+            }
+            return `<pre style="background:#0d0d15;border:1px solid #2a2a3a;border-radius:8px;padding:16px 20px;overflow-x:auto;margin:1em 0"><code style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;line-height:1.5;color:#e8e8f0">${escaped}</code></pre>`;
+        });
+        // Inline code
+        html = html.replace(/`([^`]+)`/g, '<code style="background:#0d0d15;padding:2px 6px;border-radius:4px;font-size:0.85em;color:#a78bfa">$1</code>');
+        // Headers
+        html = html.replace(/^######\s+(.+)$/gm, '<h6 style="margin-top:1.5em;margin-bottom:0.3em;font-size:0.85rem;color:#a0a0b8">$1</h6>');
+        html = html.replace(/^#####\s+(.+)$/gm, '<h5 style="margin-top:1.5em;margin-bottom:0.3em;font-size:0.9rem;color:#a0a0b8">$1</h5>');
+        html = html.replace(/^####\s+(.+)$/gm, '<h4 style="margin-top:1.8em;margin-bottom:0.4em;font-size:1rem;color:#a0a0b8">$1</h4>');
+        html = html.replace(/^###\s+(.+)$/gm, '<h3 style="margin-top:2em;margin-bottom:0.5em;font-size:1.2rem;color:#e8e8f0">$1</h3>');
+        html = html.replace(/^##\s+(.+)$/gm, '<h2 style="margin-top:2.5em;margin-bottom:0.5em;font-size:1.5rem;color:#e8e8f0;border-bottom:1px solid #2a2a3a;padding-bottom:0.3em">$1</h2>');
+        html = html.replace(/^#\s+(.+)$/gm, '<h1 style="margin-top:2em;margin-bottom:0.5em;font-size:2rem;color:#e8e8f0;border-bottom:1px solid #2a2a3a;padding-bottom:0.3em">$1</h1>');
+        // Bold and italic
+        html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+        // Links
+        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#a78bfa">$1</a>');
+        // Images (just show as links)
+        html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<em>[$1]</em>');
+        // Blockquotes
+        html = html.replace(/^>\s+(.+)$/gm, '<blockquote style="border-left:3px solid #7c3aed;padding-left:16px;margin:1em 0;color:#a0a0b8">$1</blockquote>');
+        // Horizontal rules
+        html = html.replace(/^---+$/gm, '<hr style="border:none;border-top:1px solid #2a2a3a;margin:2em 0">');
+        // Tables
+        html = html.replace(/^\|(.+)\|$/gm, (line) => {
+            const cells = line.split('|').filter(c => c.trim());
+            if (cells.every(c => /^[-:\s]+$/.test(c))) return ''; // separator row
+            const tag = 'td';
+            const cellHtml = cells.map(c => `<${tag} style="border:1px solid #2a2a3a;padding:8px 12px;color:#a0a0b8">${c.trim()}</${tag}>`).join('');
+            return `<tr>${cellHtml}</tr>`;
+        });
+        html = html.replace(/(<tr>[\s\S]*?<\/tr>\n?)+/g, m => `<table style="width:100%;border-collapse:collapse;margin:1em 0">${m}</table>`);
+        // Unordered lists
+        html = html.replace(/^[\s]*[-*]\s+(.+)$/gm, '<li style="color:#a0a0b8;margin:0.2em 0">$1</li>');
+        html = html.replace(/(<li[\s\S]*?<\/li>\n?)+/g, m => `<ul style="margin:0.8em 0;padding-left:1.5em">${m}</ul>`);
+        // Ordered lists
+        html = html.replace(/^\d+\.\s+(.+)$/gm, '<li style="color:#a0a0b8;margin:0.2em 0">$1</li>');
+        // Paragraphs (lines not already tagged)
+        html = html.replace(/^(?!<[huplbtdoa]|<\/|<hr|<code|<str|<em>|$)(.+)$/gm, '<p style="margin:0.6em 0;color:#a0a0b8;line-height:1.7">$1</p>');
+        return html;
+    }
+
     // === WASM Imports ===
 
     createImports() {
@@ -120,7 +181,7 @@ class EshkolRuntime {
                 __eshkol_register_parallel_workers: () => {},
                 eshkol_init_global_arena: () => {},
                 eshkol_init_stack_size: () => {},
-                eshkol_check_recursion_depth: () => 0,
+                eshkol_check_recursion_depth: () => 0,  // returns i32 (size_t)
                 eshkol_decrement_recursion_depth: () => {},
                 eshkol_make_exception_with_header: () => 0,
                 eshkol_raise: (exc) => { console.error('Eshkol exception raised'); },
@@ -133,6 +194,35 @@ class EshkolRuntime {
                 eshkol_bignum_compare_tagged: () => 0,
                 eshkol_is_bignum_tagged: () => 0,
                 eshkol_rational_compare_tagged_ptr: () => 0,
+                eshkol_is_rational_tagged_ptr: () => 0,
+
+                // C library
+                strcmp: (a, b) => {
+                    const mem = new Uint8Array(rt._importedMemory?.buffer || rt.instance?.exports?.memory?.buffer);
+                    let i = 0;
+                    while (true) {
+                        const ca = mem[a + i], cb = mem[b + i];
+                        if (ca !== cb) return ca < cb ? -1 : 1;
+                        if (ca === 0) return 0;
+                        i++;
+                    }
+                },
+                strlen: (s) => {
+                    const mem = new Uint8Array(rt._importedMemory?.buffer || rt.instance?.exports?.memory?.buffer);
+                    let i = 0;
+                    while (mem[s + i] !== 0) i++;
+                    return i;
+                },
+                memcpy: (dst, src, n) => {
+                    const mem = new Uint8Array(rt._importedMemory?.buffer || rt.instance?.exports?.memory?.buffer);
+                    mem.copyWithin(dst, src, src + Number(n));
+                    return dst;
+                },
+                memset: (dst, val, n) => {
+                    const mem = new Uint8Array(rt._importedMemory?.buffer || rt.instance?.exports?.memory?.buffer);
+                    mem.fill(val, dst, dst + Number(n));
+                    return dst;
+                },
 
                 // I/O
                 printf: (fmt, ...args) => { console.log('printf:', rt.readString(fmt)); return 0; },
@@ -413,10 +503,46 @@ class EshkolRuntime {
                     return rt.writeString(bufPtr, window.location.href, bufLen);
                 },
 
+                // REPL evaluation (uses eshkol-vm.wasm — the full bytecode VM)
+                web_repl_eval: (sourcePtr, resultHandle) => {
+                    const source = rt.readString(sourcePtr);
+                    const target = rt.handles.get(resultHandle);
+                    if (target && rt._eshkolVM) {
+                        try {
+                            const evalFn = rt._eshkolVM.cwrap('repl_eval', 'string', ['string']);
+                            const result = evalFn(source);
+                            target.textContent += result;
+                        } catch (e) {
+                            target.textContent += 'Error: ' + e.message + '\n';
+                        }
+                    }
+                    return 0;
+                },
+
+                // Content loading (fetch URL, render as markdown into target element)
+                web_load_content: (urlPtr, targetHandle) => {
+                    const url = rt.readString(urlPtr);
+                    const target = rt.handles.get(targetHandle);
+                    if (target) {
+                        target.innerHTML = '<p style="color:#606078;font-style:italic">Loading...</p>';
+                        fetch(url).then(r => {
+                            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                            return r.text();
+                        }).then(text => {
+                            // Render markdown to HTML with syntax highlighting
+                            target.innerHTML = rt.renderMarkdown(text);
+                        }).catch(e => {
+                            target.innerHTML = '<p style="color:#ff4444">Failed to load: ' + e.message + '</p>';
+                        });
+                    }
+                    return 0;
+                },
+
                 // Window
                 web_get_window_width: () => window.innerWidth,
                 web_get_window_height: () => window.innerHeight,
                 web_get_scroll_y: () => window.scrollY | 0,
+                web_scroll_to: (x, y) => { window.scrollTo(Number(x), Number(y)); return 0; },
 
                 // Performance
                 web_performance_now: () => performance.now() | 0,

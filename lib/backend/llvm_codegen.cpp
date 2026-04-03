@@ -598,7 +598,8 @@ private:
     IntegerType* int16_type;
     IntegerType* int8_type;
     IntegerType* int1_type;
-    IntegerType* size_type;  // i32 on wasm32, i64 on native — for size_t params
+    IntegerType* size_type;    // i32 on wasm32, i64 on native — for size_t params
+    IntegerType* intptr_type;  // i32 on wasm32, i64 on native — for intptr_t (PtrToInt, closure func_ptr)
     Type* double_type;
     Type* void_type;
     Type* ptr_type;
@@ -608,11 +609,25 @@ private:
         return ConstantInt::get(size_type, n);
     }
 
+    // Helper: create an intptr_t constant (target-dependent width)
+    Value* intPtrConst(uint64_t n) {
+        return ConstantInt::get(intptr_type, n);
+    }
+
     // Helper: truncate or extend a value to size_t width
     Value* toSize(Value* v) {
         if (v->getType() == size_type) return v;
         if (v->getType()->isIntegerTy()) {
             return builder->CreateIntCast(v, size_type, false);
+        }
+        return v;
+    }
+
+    // Helper: truncate or extend a value to intptr_t width
+    Value* toIntPtr(Value* v) {
+        if (v->getType() == intptr_type) return v;
+        if (v->getType()->isIntegerTy()) {
+            return builder->CreateIntCast(v, intptr_type, false);
         }
         return v;
     }
@@ -665,7 +680,8 @@ public:
         void_type = types->getVoidType();
         ptr_type = types->getPtrType();
         tagged_value_type = types->getTaggedValueType();
-        size_type = types->getSizeType();  // i32 on wasm32, i64 on native
+        size_type = types->getSizeType();      // i32 on wasm32, i64 on native
+        intptr_type = types->getIntPtrType();  // i32 on wasm32, i64 on native
 
         // Initialize function cache (lazy-loaded C library functions)
         funcs = std::make_unique<eshkol::FunctionCache>(*module, *types);
@@ -1515,11 +1531,10 @@ public:
                                 // Register this lambda in the registry for homoiconic display
                                 Function* reg_lambda_func = module->getFunction(meta.lambda_name);
                                 if (reg_lambda_func) {
-                                    Value* reg_func_ptr_int = builder->CreatePtrToInt(reg_lambda_func, int64_type);
-                                    // sexpr_ptr is already i64 from codegenLambdaToSExpr, use directly
+                                    Value* reg_func_ptr_int = builder->CreatePtrToInt(reg_lambda_func, intptr_type);
                                     Value* reg_name_str = builder->CreateGlobalString(meta.lambda_name);
                                     builder->CreateCall(eshkol_lambda_registry_add_func,
-                                        {reg_func_ptr_int, sexpr_ptr, reg_name_str});
+                                        {reg_func_ptr_int, toIntPtr(sexpr_ptr), reg_name_str});
                                     eshkol_debug("Registered lambda '%s' in homoiconic registry (user main case)", meta.lambda_name.c_str());
                                 }
 
@@ -1750,11 +1765,10 @@ public:
                         // Register this lambda in the registry for homoiconic display
                         Function* lambda_func = module->getFunction(meta.lambda_name);
                         if (lambda_func) {
-                            Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, int64_type);
-                            // sexpr_ptr is already i64 from codegenLambdaToSExpr, use directly
+                            Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                             Value* name_str = builder->CreateGlobalString(meta.lambda_name);
                             builder->CreateCall(eshkol_lambda_registry_add_func,
-                                {func_ptr_int, sexpr_ptr, name_str});
+                                {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
                             eshkol_debug("Registered lambda '%s' in homoiconic registry", meta.lambda_name.c_str());
                         }
                     }
@@ -3189,11 +3203,10 @@ private:
                 // Register this lambda in the registry for homoiconic display
                 Function* lambda_func = module->getFunction(meta.lambda_name);
                 if (lambda_func) {
-                    Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, int64_type);
-                    // sexpr_ptr is already i64 from codegenLambdaToSExpr, use directly
+                    Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                     Value* name_str = builder->CreateGlobalString(meta.lambda_name);
                     builder->CreateCall(eshkol_lambda_registry_add_func,
-                        {func_ptr_int, sexpr_ptr, name_str});
+                        {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
                     eshkol_debug("Library init: registered lambda '%s' in homoiconic registry", meta.lambda_name.c_str());
                 }
             }
@@ -3371,11 +3384,10 @@ private:
                     // Register this lambda in the registry for homoiconic display
                     Function* lambda_func = module->getFunction(meta.lambda_name);
                     if (lambda_func) {
-                        Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, int64_type);
-                        // sexpr_ptr is already i64 from codegenLambdaToSExpr, use directly
+                        Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                         Value* name_str = builder->CreateGlobalString(meta.lambda_name);
                         builder->CreateCall(eshkol_lambda_registry_add_func,
-                            {func_ptr_int, sexpr_ptr, name_str});
+                            {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
                         eshkol_debug("Registered lambda '%s' in homoiconic registry", meta.lambda_name.c_str());
                     }
                 }
@@ -3642,11 +3654,10 @@ private:
                     // Register this lambda in the registry for homoiconic display
                     Function* lambda_func = module->getFunction(meta.lambda_name);
                     if (lambda_func) {
-                        Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, int64_type);
-                        // sexpr_ptr is already i64 from codegenLambdaToSExpr, use directly
+                        Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                         Value* name_str = builder->CreateGlobalString(meta.lambda_name);
                         builder->CreateCall(eshkol_lambda_registry_add_func,
-                            {func_ptr_int, sexpr_ptr, name_str});
+                            {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
                         eshkol_debug("Registered lambda '%s' in homoiconic registry (top-level case)", meta.lambda_name.c_str());
                     }
                 }
@@ -6628,11 +6639,11 @@ private:
             Function* wrapper_func = createBuiltinUnaryMathFunction(var_name);
             if (wrapper_func) {
                 // Create closure for the wrapper function
-                Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, int64_type);
+                Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                Value* packed_info = ConstantInt::get(int64_type, 0);  // No captures
-                Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
-                Value* return_type_info = ConstantInt::get(int64_type, CLOSURE_RETURN_SCALAR);  // Math builtins return scalars
+                Value* packed_info = sizeConst(0);  // No captures
+                Value* sexpr_ptr = intPtrConst(0);
+                Value* return_type_info = intPtrConst(CLOSURE_RETURN_SCALAR);  // Math builtins return scalars
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
@@ -6654,22 +6665,22 @@ private:
             if (arity_it != function_arity_table.end()) {
                 // User-defined function with known arity - wrap in closure
                 uint64_t num_params = arity_it->second;
-                Value* func_ptr_int = builder->CreatePtrToInt(func, int64_type);
+                Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
                 // Pack closure info: no captures, arity in bits 16-31
-                // Format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic
+                // Format: bits 0-15 = num_captures, bits 16-31 = fixed_params
                 uint64_t packed_info = 0;  // No captures (bits 0-15 = 0)
                 packed_info |= (num_params & 0xFFFF) << 16;  // Arity in bits 16-31
-                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
+                Value* packed_info_val = sizeConst(packed_info);
 
                 // No S-expression for now
-                Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+                Value* sexpr_ptr = intPtrConst(0);
 
                 // Return type unknown for general user functions
                 // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
                 uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
-                Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* return_type_info = intPtrConst(return_type_info_val);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
                 // Use with_header allocator for consolidated CALLABLE type
@@ -6692,15 +6703,15 @@ private:
             Function* builtin_func = createBuiltinComparisonFunction(var_name);
             if (builtin_func) {
                 // Create closure for the comparison function
-                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, int64_type);
+                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=2
                 uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
-                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
-                Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+                Value* packed_info_val = sizeConst(packed_info);
+                Value* sexpr_ptr = intPtrConst(0);
                 // Comparison builtins return booleans
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
-                Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* return_type_info = intPtrConst(return_type_info_val);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
@@ -6715,17 +6726,17 @@ private:
             Function* builtin_func = createBuiltinArithmeticFunction(var_name, 2);
             if (builtin_func) {
                 // Create closure for the arithmetic function (like math builtins above)
-                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, int64_type);
+                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=2
                 uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
-                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
+                Value* packed_info_val = sizeConst(packed_info);
                 // Create S-expression for homoiconicity: (primitive +)
                 Value* sexpr_cons = homoiconic_->builtinToSExpr(var_name);
-                Value* sexpr_ptr = sexpr_cons;  // builtinToSExpr returns i64 cons ptr
+                Value* sexpr_ptr = toIntPtr(sexpr_cons);  // builtinToSExpr returns cons ptr as int
                 // Arithmetic builtins return scalars
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
-                Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* return_type_info = intPtrConst(return_type_info_val);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
@@ -6743,15 +6754,15 @@ private:
             Function* builtin_func = createBuiltinPredicateFunction(var_name);
             if (builtin_func) {
                 // Create closure for the predicate function
-                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, int64_type);
+                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity=1 (predicates are unary)
                 uint64_t packed_info = 0 | (1 << 16);  // arity in bits 16-31
-                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
-                Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+                Value* packed_info_val = sizeConst(packed_info);
+                Value* sexpr_ptr = intPtrConst(0);
                 // Predicates return booleans
                 uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (1 << 8);
-                Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* return_type_info = intPtrConst(return_type_info_val);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
@@ -6777,16 +6788,16 @@ private:
             if (builtin_func && isa<Function>(builtin_func)) {
                 // Wrap in closure for proper first-class function use
                 Function* func = cast<Function>(builtin_func);
-                Value* func_ptr_int = builder->CreatePtrToInt(func, int64_type);
+                Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                 // Pack info: no captures, arity
                 uint64_t packed_info = 0 | (arity << 16);  // arity in bits 16-31
-                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
-                Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+                Value* packed_info_val = sizeConst(packed_info);
+                Value* sexpr_ptr = intPtrConst(0);
                 // cons returns a list (pair), car/cdr return unknown
                 uint64_t return_type = (var_name == "cons") ? CLOSURE_RETURN_LIST : CLOSURE_RETURN_UNKNOWN;
                 uint64_t return_type_info_val = return_type | (arity << 8);
-                Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* return_type_info = intPtrConst(return_type_info_val);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
@@ -6898,20 +6909,20 @@ private:
                 }
 
                 // Wrap in closure for proper first-class function use
-                Value* func_ptr_int = builder->CreatePtrToInt(repl_func, int64_type);
+                Value* func_ptr_int = builder->CreatePtrToInt(repl_func, intptr_type);
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
                 // Pack closure info: no captures, arity in bits 16-31
                 uint64_t packed_info = 0;
                 packed_info |= (num_params & 0xFFFF) << 16;
-                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
+                Value* packed_info_val = sizeConst(packed_info);
 
                 // No S-expression for now
-                Value* sexpr_ptr = ConstantInt::get(int64_type, 0);
+                Value* sexpr_ptr = intPtrConst(0);
 
                 // Return type unknown
                 uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
-                Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+                Value* return_type_info = intPtrConst(return_type_info_val);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
                 // Use with_header allocator for consolidated CALLABLE type
@@ -18569,7 +18580,7 @@ private:
         {
             Function* check_depth_func = module->getFunction("eshkol_check_recursion_depth");
             if (!check_depth_func) {
-                FunctionType* check_type = FunctionType::get(int64_type, {}, false);
+                FunctionType* check_type = FunctionType::get(size_type, {}, false);
                 check_depth_func = Function::Create(check_type, Function::ExternalLinkage,
                     "eshkol_check_recursion_depth", module.get());
             }
@@ -18885,8 +18896,8 @@ private:
 
         // CLOSURE FIX: If there are captures, allocate a closure at runtime
         if (!free_vars.empty()) {
-            // Get function pointer as i64
-            Value* func_ptr = builder->CreatePtrToInt(lambda_func, int64_type);
+            // Get function pointer as intptr_t (i32 on wasm32, i64 on native)
+            Value* func_ptr = builder->CreatePtrToInt(lambda_func, intptr_type);
 
             // HOMOICONICITY FIX: Generate S-expression at closure creation time
             // We're past restoreIP so control flow disruption is acceptable - we'll end up
@@ -18911,7 +18922,7 @@ private:
             if (is_variadic) {
                 packed_info |= (1ULL << 63);
             }
-            Value* packed_captures = ConstantInt::get(int64_type, packed_info);
+            Value* packed_captures = sizeConst(packed_info);
 
             // Compute return type info for closure metadata:
             //   - Bits 0-7:   return_type (CLOSURE_RETURN_*)
@@ -18991,7 +19002,7 @@ private:
             uint64_t return_type_info = (uint64_t)return_type_category;
             return_type_info |= ((uint64_t)(op->lambda_op.num_params & 0xFF)) << 8;
             return_type_info |= ((uint64_t)hott_type_id) << 16;  // Pack HoTT type ID into bits 16-47
-            Value* return_type_val = ConstantInt::get(int64_type, return_type_info);
+            Value* return_type_val = intPtrConst(return_type_info);
 
             eshkol_debug("Closure %s: packed_info=0x%llx (captures=%zu, fixed_params=%llu, variadic=%d), return_type=%d",
                         lambda_name.c_str(), (unsigned long long)packed_info,
@@ -19002,7 +19013,7 @@ private:
             // set when processed through (define name ...)
             Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
             Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                     {arena_ptr, func_ptr, packed_captures, sexpr_ptr, return_type_val, closure_name});
+                                                     {arena_ptr, func_ptr, packed_captures, toIntPtr(sexpr_ptr), return_type_val, closure_name});
 
             // Store captured values into closure environment
             // The closure struct is: { uint64_t func_ptr, eshkol_closure_env_t* env }
@@ -19188,7 +19199,7 @@ private:
 
         // HOMOICONICITY FIX: Even for lambdas without captures, create a closure
         // so we have a place to store the S-expression for display
-        Value* func_ptr = builder->CreatePtrToInt(lambda_func, int64_type);
+        Value* func_ptr = builder->CreatePtrToInt(lambda_func, intptr_type);
 
         // HOMOICONICITY FIX: Generate S-expression at closure creation time
         // We're past restoreIP so control flow disruption is acceptable
@@ -19205,13 +19216,13 @@ private:
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
         // VARIADIC FIX: Pack closure info even for 0 captures
-        // Format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic
+        // Format: bits 0-15 = num_captures, bits 16-31 = fixed_params
         uint64_t packed_info = 0;  // 0 captures
         packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 16;  // Fixed params
         if (is_variadic) {
-            packed_info |= (1ULL << 63);  // Variadic flag
+            packed_info |= (1ULL << 63);
         }
-        Value* num_captures = ConstantInt::get(int64_type, packed_info);
+        Value* num_captures = sizeConst(packed_info);
 
         // Compute return type info for closure metadata (same logic as captures path)
         uint8_t return_type_category = CLOSURE_RETURN_UNKNOWN;
@@ -19288,12 +19299,12 @@ private:
         uint64_t return_type_info_val = (uint64_t)return_type_category;
         return_type_info_val |= ((uint64_t)(op->lambda_op.num_params & 0xFF)) << 8;
         return_type_info_val |= ((uint64_t)hott_type_id) << 16;  // Pack HoTT type ID into bits 16-47
-        Value* return_type_info = ConstantInt::get(int64_type, return_type_info_val);
+        Value* return_type_info = intPtrConst(return_type_info_val);
         Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
         // Use with_header allocator for consolidated CALLABLE type
         Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                 {arena_ptr, func_ptr, num_captures, sexpr_ptr, return_type_info, closure_name});
+                                                 {arena_ptr, func_ptr, num_captures, toIntPtr(sexpr_ptr), return_type_info, closure_name});
 
         // Pack as CALLABLE (subtype CLOSURE is in header)
         Value* closure_tagged = packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);

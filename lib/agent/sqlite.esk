@@ -1,0 +1,104 @@
+;;
+;; sqlite.esk - SQLite3 FFI wrapper
+;; Bindings to agent_sqlite.c
+;;
+(provide sqlite-open sqlite-close sqlite-exec
+         sqlite-prepare sqlite-step sqlite-reset sqlite-finalize
+         sqlite-bind-text sqlite-bind-int sqlite-bind-double sqlite-bind-null
+         sqlite-column-text sqlite-column-int sqlite-column-double
+         sqlite-column-count sqlite-column-name sqlite-column-type
+         sqlite-last-error sqlite-last-insert-rowid sqlite-changes
+         SQLITE_ROW SQLITE_DONE
+         with-db with-statement)
+
+;; Constants
+(define SQLITE_ROW  100)
+(define SQLITE_DONE 101)
+
+;; FFI declarations
+(extern i64 sqlite-open-raw ptr :real eshkol_sqlite_open)
+(extern void sqlite-close-raw i64 :real eshkol_sqlite_close)
+(extern i32 sqlite-exec-raw i64 ptr :real eshkol_sqlite_exec)
+(extern i64 sqlite-prepare-raw i64 ptr :real eshkol_sqlite_prepare)
+(extern i32 sqlite-step-raw i64 :real eshkol_sqlite_step)
+(extern i32 sqlite-reset-raw i64 :real eshkol_sqlite_reset)
+(extern void sqlite-finalize-raw i64 :real eshkol_sqlite_finalize)
+(extern i32 sqlite-bind-text-raw i64 i32 ptr :real eshkol_sqlite_bind_text)
+(extern i32 sqlite-bind-int-raw i64 i32 i64 :real eshkol_sqlite_bind_int)
+(extern i32 sqlite-bind-double-raw i64 i32 double :real eshkol_sqlite_bind_double)
+(extern i32 sqlite-bind-null-raw i64 i32 :real eshkol_sqlite_bind_null)
+(extern i32 sqlite-column-text-raw i64 i32 ptr i64 :real eshkol_sqlite_column_text)
+(extern i64 sqlite-column-int-raw i64 i32 :real eshkol_sqlite_column_int)
+(extern double sqlite-column-double-raw i64 i32 :real eshkol_sqlite_column_double)
+(extern i32 sqlite-column-count-raw i64 :real eshkol_sqlite_column_count)
+(extern i32 sqlite-column-name-raw i64 i32 ptr i64 :real eshkol_sqlite_column_name)
+(extern i32 sqlite-column-type-raw i64 i32 :real eshkol_sqlite_column_type)
+(extern i32 sqlite-last-error-raw i64 ptr i64 :real eshkol_sqlite_last_error)
+(extern i64 sqlite-last-insert-rowid-raw i64 :real eshkol_sqlite_last_insert_rowid)
+(extern i32 sqlite-changes-raw i64 :real eshkol_sqlite_changes)
+
+;; High-level wrappers
+(define (sqlite-open path)
+  "Open a database. Returns handle or -1 on error."
+  (sqlite-open-raw path))
+
+(define (sqlite-close handle) (sqlite-close-raw handle))
+
+(define (sqlite-exec handle sql)
+  "Execute SQL statement(s). Returns 0 on success."
+  (sqlite-exec-raw handle sql))
+
+(define (sqlite-prepare handle sql)
+  "Prepare a statement. Returns stmt handle or -1."
+  (sqlite-prepare-raw handle sql))
+
+(define (sqlite-step stmt) (sqlite-step-raw stmt))
+(define (sqlite-reset stmt) (sqlite-reset-raw stmt))
+(define (sqlite-finalize stmt) (sqlite-finalize-raw stmt))
+
+(define (sqlite-bind-text stmt idx text) (sqlite-bind-text-raw stmt idx text))
+(define (sqlite-bind-int stmt idx val) (sqlite-bind-int-raw stmt idx val))
+(define (sqlite-bind-double stmt idx val) (sqlite-bind-double-raw stmt idx val))
+(define (sqlite-bind-null stmt idx) (sqlite-bind-null-raw stmt idx))
+
+(define (sqlite-column-text stmt idx)
+  "Get text column value."
+  (let ((buf (make-string 8192 #\nul)))
+    (let ((n (sqlite-column-text-raw stmt idx buf 8192)))
+      (if (> n 0) (substring buf 0 n) ""))))
+
+(define (sqlite-column-int stmt idx) (sqlite-column-int-raw stmt idx))
+(define (sqlite-column-double stmt idx) (sqlite-column-double-raw stmt idx))
+(define (sqlite-column-count stmt) (sqlite-column-count-raw stmt))
+
+(define (sqlite-column-name stmt idx)
+  (let ((buf (make-string 256 #\nul)))
+    (let ((n (sqlite-column-name-raw stmt idx buf 256)))
+      (if (> n 0) (substring buf 0 n) ""))))
+
+(define (sqlite-column-type stmt idx) (sqlite-column-type-raw stmt idx))
+
+(define (sqlite-last-error handle)
+  (let ((buf (make-string 1024 #\nul)))
+    (let ((n (sqlite-last-error-raw handle buf 1024)))
+      (if (> n 0) (substring buf 0 n) "unknown error"))))
+
+(define (sqlite-last-insert-rowid handle) (sqlite-last-insert-rowid-raw handle))
+(define (sqlite-changes handle) (sqlite-changes-raw handle))
+
+;; Convenience: auto-close on exit
+(define (with-db path fn)
+  "Open database, call fn with handle, close on exit."
+  (let ((db (sqlite-open path)))
+    (if (< db 0) (error "Failed to open database")
+        (dynamic-wind (lambda () #f)
+                      (lambda () (fn db))
+                      (lambda () (sqlite-close db))))))
+
+(define (with-statement db sql fn)
+  "Prepare statement, call fn with stmt handle, finalize on exit."
+  (let ((stmt (sqlite-prepare db sql)))
+    (if (< stmt 0) (error (string-append "Failed to prepare: " (sqlite-last-error db)))
+        (dynamic-wind (lambda () #f)
+                      (lambda () (fn stmt))
+                      (lambda () (sqlite-finalize stmt))))))

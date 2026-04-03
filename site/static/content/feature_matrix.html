@@ -1,0 +1,3959 @@
+<h1 id="eshkol-v1.1-accelerate-feature-matrix">Eshkol v1.1-accelerate
+Feature Matrix</h1>
+<p><strong>Status Key</strong>: ✅ Production | 🚧 In Progress | 📋
+Planned | ❌ Not Planned</p>
+<p>This matrix documents all implemented and planned features for the
+Eshkol language ecosystem. All <strong>Production</strong> features are
+code-verified with extensive test coverage (35 test suites, 434 test
+files).</p>
+<hr />
+<h2 id="core-language-features">Core Language Features</h2>
+<table>
+<colgroup>
+<col style="width: 23%" />
+<col style="width: 20%" />
+<col style="width: 17%" />
+<col style="width: 38%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Notes</th>
+<th>Test Coverage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Special Forms</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>define</code> (variables)</td>
+<td>✅</td>
+<td>Global and local bindings</td>
+<td>50+ tests</td>
+</tr>
+<tr>
+<td><code>define</code> (functions)</td>
+<td>✅</td>
+<td>Top-level and nested</td>
+<td>50+ tests</td>
+</tr>
+<tr>
+<td><code>lambda</code></td>
+<td>✅</td>
+<td>Closures with captures</td>
+<td>100+ tests</td>
+</tr>
+<tr>
+<td><code>let</code>, <code>let*</code>, <code>letrec</code></td>
+<td>✅</td>
+<td>All binding forms</td>
+<td>80+ tests</td>
+</tr>
+<tr>
+<td>Named let (iteration)</td>
+<td>✅</td>
+<td>Tail-recursive loops</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td><code>set!</code></td>
+<td>✅</td>
+<td>Mutable variables and captures</td>
+<td>30+ tests</td>
+</tr>
+<tr>
+<td><code>if</code>, <code>cond</code>, <code>case</code></td>
+<td>✅</td>
+<td>All conditionals</td>
+<td>40+ tests</td>
+</tr>
+<tr>
+<td><code>begin</code></td>
+<td>✅</td>
+<td>Sequence evaluation</td>
+<td>20+ tests</td>
+</tr>
+<tr>
+<td><code>and</code>, <code>or</code>, <code>not</code></td>
+<td>✅</td>
+<td>Short-circuit boolean logic</td>
+<td>15+ tests</td>
+</tr>
+<tr>
+<td><code>when</code>, <code>unless</code></td>
+<td>✅</td>
+<td>One-armed conditionals</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td><code>do</code> loops</td>
+<td>✅</td>
+<td>Iteration with state</td>
+<td>5+ tests</td>
+</tr>
+<tr>
+<td><code>quote</code>, <code>quasiquote</code></td>
+<td>✅</td>
+<td>S-expression literals</td>
+<td>20+ tests</td>
+</tr>
+<tr>
+<td><code>apply</code></td>
+<td>✅</td>
+<td>Dynamic function application</td>
+<td>15+ tests</td>
+</tr>
+<tr>
+<td><strong>Pattern Matching</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>match</code></td>
+<td>✅</td>
+<td>Full pattern matching</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td>Variable patterns</td>
+<td>✅</td>
+<td>Binding in patterns</td>
+<td>Verified</td>
+</tr>
+<tr>
+<td>Literal patterns</td>
+<td>✅</td>
+<td>Constant matching</td>
+<td>Verified</td>
+</tr>
+<tr>
+<td>Cons patterns</td>
+<td>✅</td>
+<td><code>(p1 . p2)</code> destructuring</td>
+<td>Verified</td>
+</tr>
+<tr>
+<td>List patterns</td>
+<td>✅</td>
+<td><code>(p1 p2 ...)</code> matching</td>
+<td>Verified</td>
+</tr>
+<tr>
+<td>Predicate patterns</td>
+<td>✅</td>
+<td><code>(? pred)</code> guards</td>
+<td>Verified</td>
+</tr>
+<tr>
+<td>Or-patterns</td>
+<td>✅</td>
+<td><code>(or p1 p2 ...)</code> alternatives</td>
+<td>Verified</td>
+</tr>
+<tr>
+<td><strong>Closures</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Basic closures</td>
+<td>✅</td>
+<td>Capture environment</td>
+<td>50+ tests</td>
+</tr>
+<tr>
+<td>Mutable captures</td>
+<td>✅</td>
+<td><code>set!</code> on captured vars</td>
+<td>20+ tests</td>
+</tr>
+<tr>
+<td>Nested closures</td>
+<td>✅</td>
+<td>Arbitrary depth</td>
+<td>15+ tests</td>
+</tr>
+<tr>
+<td>Variadic closures</td>
+<td>✅</td>
+<td>Rest parameters</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td>Closure homoiconicity</td>
+<td>✅</td>
+<td>Display shows source code</td>
+<td>Verified</td>
+</tr>
+<tr>
+<td><strong>Tail Call Optimization</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Self-recursive TCO</td>
+<td>✅</td>
+<td>Functions calling themselves</td>
+<td>15+ tests</td>
+</tr>
+<tr>
+<td>Mutual recursion TCO</td>
+<td>✅</td>
+<td>Functions calling each other</td>
+<td>Trampoline-based</td>
+</tr>
+<tr>
+<td>Trampoline runtime</td>
+<td>✅</td>
+<td>Non-self tail calls</td>
+<td>5+ tests</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="type-system">Type System</h2>
+<table>
+<colgroup>
+<col style="width: 22%" />
+<col style="width: 20%" />
+<col style="width: 17%" />
+<col style="width: 40%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Notes</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Runtime Tagged Values</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Int64</td>
+<td>✅</td>
+<td>Exact integers</td>
+<td>16-byte struct</td>
+</tr>
+<tr>
+<td>Double</td>
+<td>✅</td>
+<td>IEEE 754 floats</td>
+<td>16-byte struct</td>
+</tr>
+<tr>
+<td>Boolean</td>
+<td>✅</td>
+<td>#t/#f</td>
+<td>Type tag + bit</td>
+</tr>
+<tr>
+<td>Char</td>
+<td>✅</td>
+<td>Unicode codepoints</td>
+<td>Type tag + int64</td>
+</tr>
+<tr>
+<td>String</td>
+<td>✅</td>
+<td>Heap-allocated</td>
+<td>HEAP_PTR + header</td>
+</tr>
+<tr>
+<td>Symbol</td>
+<td>✅</td>
+<td>Interned strings</td>
+<td>HEAP_PTR + header</td>
+</tr>
+<tr>
+<td>Cons/List</td>
+<td>✅</td>
+<td>Heterogeneous pairs</td>
+<td>HEAP_PTR + header</td>
+</tr>
+<tr>
+<td>Vector</td>
+<td>✅</td>
+<td>Scheme vectors</td>
+<td>HEAP_PTR + header</td>
+</tr>
+<tr>
+<td>Tensor</td>
+<td>✅</td>
+<td>N-dimensional arrays</td>
+<td>HEAP_PTR + header</td>
+</tr>
+<tr>
+<td>Closure</td>
+<td>✅</td>
+<td>Function + environment</td>
+<td>CALLABLE + header</td>
+</tr>
+<tr>
+<td>Hash Table</td>
+<td>✅</td>
+<td>Mutable maps</td>
+<td>HEAP_PTR + header</td>
+</tr>
+<tr>
+<td><strong>HoTT Compile-Time Types</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Integer, Real, Number</td>
+<td>✅</td>
+<td>Numeric hierarchy</td>
+<td>Gradual typing</td>
+</tr>
+<tr>
+<td>Boolean, Char, String</td>
+<td>✅</td>
+<td>Primitive types</td>
+<td>Gradual typing</td>
+</tr>
+<tr>
+<td>List<T>, Vector<T></td>
+<td>✅</td>
+<td>Parameterized collections</td>
+<td>Element type tracking</td>
+</tr>
+<tr>
+<td>Tensor<T></td>
+<td>✅</td>
+<td>Typed tensors</td>
+<td>Element type tracking</td>
+</tr>
+<tr>
+<td>Function arrows (→)</td>
+<td>✅</td>
+<td><code>(→ A B)</code> types</td>
+<td>Type inference</td>
+</tr>
+<tr>
+<td>Dependent types</td>
+<td>✅</td>
+<td>Path types, universes</td>
+<td>Proof erasure</td>
+</tr>
+<tr>
+<td>Gradual typing</td>
+<td>✅</td>
+<td>Optional annotations</td>
+<td>Warning-only errors</td>
+</tr>
+<tr>
+<td><strong>Exact Arithmetic (v1.1)</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Bignum (arbitrary-precision int)</td>
+<td>✅</td>
+<td>Automatic overflow promotion</td>
+<td>int64 → bignum</td>
+</tr>
+<tr>
+<td>Rational numbers</td>
+<td>✅</td>
+<td>Exact fractions (num/den)</td>
+<td>HEAP_PTR + header</td>
+</tr>
+<tr>
+<td>Complex numbers</td>
+<td>✅</td>
+<td><code>make-rectangular</code>, <code>make-polar</code></td>
+<td>Type tag 7</td>
+</tr>
+<tr>
+<td><code>exact?</code>, <code>inexact?</code></td>
+<td>✅</td>
+<td>Exactness predicates</td>
+<td>Runtime tags</td>
+</tr>
+<tr>
+<td><code>exact-&gt;inexact</code>, <code>inexact-&gt;exact</code></td>
+<td>✅</td>
+<td>Exactness conversion</td>
+<td>Type conversion</td>
+</tr>
+<tr>
+<td><strong>Type Predicates</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>number?</code>, <code>integer?</code>, <code>real?</code></td>
+<td>✅</td>
+<td>Numeric predicates</td>
+<td>Runtime tags</td>
+</tr>
+<tr>
+<td><code>string?</code>, <code>char?</code>, <code>boolean?</code></td>
+<td>✅</td>
+<td>Primitive predicates</td>
+<td>Runtime tags</td>
+</tr>
+<tr>
+<td><code>null?</code>, <code>pair?</code>, <code>list?</code></td>
+<td>✅</td>
+<td>List predicates</td>
+<td>Runtime tags</td>
+</tr>
+<tr>
+<td><code>vector?</code>, <code>procedure?</code></td>
+<td>✅</td>
+<td>Compound predicates</td>
+<td>Header subtype</td>
+</tr>
+<tr>
+<td><code>complex?</code>, <code>rational?</code></td>
+<td>✅</td>
+<td>Extended numeric predicates</td>
+<td>Runtime tags</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="automatic-differentiation">Automatic Differentiation</h2>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 22%" />
+<col style="width: 16%" />
+<col style="width: 36%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Mode</th>
+<th>Performance</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Symbolic Differentiation</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Compile-time AST transform</td>
+<td>✅</td>
+<td>Symbolic</td>
+<td>O(1) - compile time</td>
+</tr>
+<tr>
+<td>Sum rule</td>
+<td>✅</td>
+<td>Symbolic</td>
+<td>Verified</td>
+</tr>
+<tr>
+<td>Product rule</td>
+<td>✅</td>
+<td>Symbolic</td>
+<td>Verified</td>
+</tr>
+<tr>
+<td>Quotient rule</td>
+<td>✅</td>
+<td>Symbolic</td>
+<td>Verified</td>
+</tr>
+<tr>
+<td>Chain rule</td>
+<td>✅</td>
+<td>Symbolic</td>
+<td>sin, cos, exp, log, pow, sqrt</td>
+</tr>
+<tr>
+<td>Algebraic simplification</td>
+<td>✅</td>
+<td>Symbolic</td>
+<td>0 + x → x, etc.</td>
+</tr>
+<tr>
+<td><code>diff</code> operator</td>
+<td>✅</td>
+<td>Symbolic</td>
+<td>20+ tests</td>
+</tr>
+<tr>
+<td><strong>Forward-Mode AD</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Dual numbers</td>
+<td>✅</td>
+<td>Forward</td>
+<td>O(1) overhead/op</td>
+</tr>
+<tr>
+<td>Scalar derivatives</td>
+<td>✅</td>
+<td>Forward</td>
+<td><code>derivative</code></td>
+</tr>
+<tr>
+<td>Higher-order derivatives</td>
+<td>✅</td>
+<td>Forward</td>
+<td>Nested differentials</td>
+</tr>
+<tr>
+<td>Math function support</td>
+<td>✅</td>
+<td>Forward</td>
+<td>sin, cos, exp, log, sqrt, tan, sinh, cosh, tanh, abs, pow</td>
+</tr>
+<tr>
+<td>Dual arithmetic</td>
+<td>✅</td>
+<td>Forward</td>
+<td>+, -, *, /</td>
+</tr>
+<tr>
+<td><code>derivative</code> operator</td>
+<td>✅</td>
+<td>Forward</td>
+<td>30+ tests</td>
+</tr>
+<tr>
+<td><strong>Reverse-Mode AD</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Computational graphs</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>Tape-based</td>
+</tr>
+<tr>
+<td>Gradient computation</td>
+<td>✅</td>
+<td>Reverse</td>
+<td><code>gradient</code></td>
+</tr>
+<tr>
+<td>Backpropagation</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>Full backward pass</td>
+</tr>
+<tr>
+<td>Nested gradients</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>Arbitrary depth</td>
+</tr>
+<tr>
+<td>Double backward</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>Second derivatives</td>
+</tr>
+<tr>
+<td>Jacobian matrices</td>
+<td>✅</td>
+<td>Reverse</td>
+<td><code>jacobian</code></td>
+</tr>
+<tr>
+<td>Hessian matrices</td>
+<td>✅</td>
+<td>Reverse</td>
+<td><code>hessian</code></td>
+</tr>
+<tr>
+<td>Tape stack (nesting)</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>32-level depth</td>
+</tr>
+<tr>
+<td>AD-aware tensor ops</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>vref, matmul work with AD nodes</td>
+</tr>
+<tr>
+<td><code>gradient</code> operator</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>40+ tests</td>
+</tr>
+<tr>
+<td><code>jacobian</code> operator</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>15+ tests</td>
+</tr>
+<tr>
+<td><code>hessian</code> operator</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td><strong>Vector Calculus</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Divergence</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>∇·F (trace of Jacobian)</td>
+</tr>
+<tr>
+<td>Curl</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>∇×F (3D + generalized 2-forms)</td>
+</tr>
+<tr>
+<td>Laplacian</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>∇²f (trace of Hessian)</td>
+</tr>
+<tr>
+<td>Directional derivative</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>D_v f = ∇f·v</td>
+</tr>
+<tr>
+<td><code>divergence</code> operator</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>5+ tests</td>
+</tr>
+<tr>
+<td><code>curl</code> operator</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>5+ tests</td>
+</tr>
+<tr>
+<td><code>laplacian</code> operator</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>5+ tests</td>
+</tr>
+<tr>
+<td><code>directional-deriv</code> operator</td>
+<td>✅</td>
+<td>Reverse</td>
+<td>5+ tests</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="tensor-linear-algebra">Tensor &amp; Linear Algebra</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Dimensions</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Tensor Creation</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Literals <code>#(...)</code></td>
+<td>✅</td>
+<td>1D-4D</td>
+<td>Uniform syntax</td>
+</tr>
+<tr>
+<td><code>zeros</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Efficient memset</td>
+</tr>
+<tr>
+<td><code>ones</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Fill with 1.0</td>
+</tr>
+<tr>
+<td><code>eye</code></td>
+<td>✅</td>
+<td>2D</td>
+<td>Identity matrix</td>
+</tr>
+<tr>
+<td><code>arange</code></td>
+<td>✅</td>
+<td>1D</td>
+<td>Range with step</td>
+</tr>
+<tr>
+<td><code>linspace</code></td>
+<td>✅</td>
+<td>1D</td>
+<td>Evenly spaced</td>
+</tr>
+<tr>
+<td><strong>Tensor Access</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>tensor-get</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Multi-index access</td>
+</tr>
+<tr>
+<td><code>vref</code> (1D shorthand)</td>
+<td>✅</td>
+<td>1D</td>
+<td>AD-aware</td>
+</tr>
+<tr>
+<td>Slicing</td>
+<td>✅</td>
+<td>N-D</td>
+<td>Zero-copy views</td>
+</tr>
+<tr>
+<td><code>tensor-set</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Mutable update</td>
+</tr>
+<tr>
+<td><strong>Tensor Reshaping</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>reshape</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Zero-copy</td>
+</tr>
+<tr>
+<td><code>transpose</code></td>
+<td>✅</td>
+<td>2D</td>
+<td>Matrix transpose</td>
+</tr>
+<tr>
+<td><code>flatten</code></td>
+<td>✅</td>
+<td>N-D → 1D</td>
+<td>Zero-copy</td>
+</tr>
+<tr>
+<td><code>tensor-shape</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Dimension query</td>
+</tr>
+<tr>
+<td><strong>Element-wise Ops</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>tensor-add</code>, <code>tensor-sub</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Broadcasting: ✅</td>
+</tr>
+<tr>
+<td><code>tensor-mul</code>, <code>tensor-div</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Element-wise</td>
+</tr>
+<tr>
+<td><code>tensor-apply</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Map function</td>
+</tr>
+<tr>
+<td><strong>Linear Algebra</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>tensor-dot</code> / <code>matmul</code></td>
+<td>✅</td>
+<td>1D, 2D</td>
+<td>Dot product, matrix multiply</td>
+</tr>
+<tr>
+<td><code>trace</code></td>
+<td>✅</td>
+<td>2D</td>
+<td>Diagonal sum</td>
+</tr>
+<tr>
+<td><code>norm</code></td>
+<td>✅</td>
+<td>1D</td>
+<td>L2 norm (Euclidean)</td>
+</tr>
+<tr>
+<td><code>outer</code></td>
+<td>✅</td>
+<td>1D×1D→2D</td>
+<td>Outer product</td>
+</tr>
+<tr>
+<td>Determinant</td>
+<td>✅</td>
+<td>2D</td>
+<td>Via lib/math.esk (LU decomposition)</td>
+</tr>
+<tr>
+<td>Matrix inverse</td>
+<td>✅</td>
+<td>2D</td>
+<td>Via lib/math.esk (Gauss-Jordan)</td>
+</tr>
+<tr>
+<td>Linear solve</td>
+<td>✅</td>
+<td>2D</td>
+<td>Via lib/math.esk</td>
+</tr>
+<tr>
+<td>Eigenvalues</td>
+<td>✅</td>
+<td>2D</td>
+<td>Via lib/math.esk (power iteration)</td>
+</tr>
+<tr>
+<td>SVD</td>
+<td>✅</td>
+<td>2D</td>
+<td>Native (tensor_codegen.cpp)</td>
+</tr>
+<tr>
+<td>QR decomposition</td>
+<td>✅</td>
+<td>2D</td>
+<td>Native (tensor_codegen.cpp)</td>
+</tr>
+<tr>
+<td><strong>Reductions</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>tensor-sum</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Sum all elements</td>
+</tr>
+<tr>
+<td><code>tensor-mean</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Average</td>
+</tr>
+<tr>
+<td><code>tensor-reduce</code></td>
+<td>✅</td>
+<td>N-D</td>
+<td>Custom reduction</td>
+</tr>
+<tr>
+<td>Axis-specific reduce</td>
+<td>✅</td>
+<td>N-D</td>
+<td>Reduce along dimension</td>
+</tr>
+<tr>
+<td><strong>Data Types</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Float64 elements</td>
+<td>✅</td>
+<td>N-D</td>
+<td>IEEE 754 double</td>
+</tr>
+<tr>
+<td>Int64 elements</td>
+<td>📋</td>
+<td>N-D</td>
+<td>Planned integer tensors</td>
+</tr>
+<tr>
+<td>Complex elements</td>
+<td>📋</td>
+<td>N-D</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>Sparse tensors</td>
+<td>📋</td>
+<td>N-D</td>
+<td>Planned</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="list-processing">List Processing</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Performance</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Basic Operations</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>cons</code>, <code>car</code>, <code>cdr</code></td>
+<td>✅</td>
+<td>O(1)</td>
+<td>Tagged cons cells</td>
+</tr>
+<tr>
+<td><code>list</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Left-to-right eval</td>
+</tr>
+<tr>
+<td><code>list*</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Improper lists</td>
+</tr>
+<tr>
+<td><code>length</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><code>append</code></td>
+<td>✅</td>
+<td>O(n+m)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><code>reverse</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><code>list-ref</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><strong>Higher-Order</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>map</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Builtin (iterative IR)</td>
+</tr>
+<tr>
+<td><code>filter</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><code>fold</code>, <code>fold-right</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><code>for-each</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><code>any</code>, <code>every</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><strong>Search &amp; Query</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>member</code>, <code>memq</code>, <code>memv</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><code>assoc</code>, <code>assq</code>, <code>assv</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><code>find</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td>Binary search</td>
+<td>✅</td>
+<td>O(log n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><strong>Transformations</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>take</code>, <code>drop</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><code>split-at</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Builtin</td>
+</tr>
+<tr>
+<td><code>partition</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Builtin</td>
+</tr>
+<tr>
+<td><code>zip</code>, <code>unzip</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><strong>Sorting</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Merge sort</td>
+<td>✅</td>
+<td>O(n log n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td>Quick sort</td>
+<td>✅</td>
+<td>O(n log n) avg</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td>Custom comparator</td>
+<td>✅</td>
+<td>-</td>
+<td>Passed as function</td>
+</tr>
+<tr>
+<td><strong>Generators</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>range</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><code>iota</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+<tr>
+<td><code>make-list</code></td>
+<td>✅</td>
+<td>O(n)</td>
+<td>Stdlib</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="memory-management">Memory Management</h2>
+<table>
+<colgroup>
+<col style="width: 30%" />
+<col style="width: 26%" />
+<col style="width: 20%" />
+<col style="width: 23%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>OALR System</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Arena allocation</td>
+<td>✅</td>
+<td>Manual</td>
+<td>Bump-pointer, O(1) alloc</td>
+</tr>
+<tr>
+<td>Lexical regions</td>
+<td>✅</td>
+<td>Manual</td>
+<td><code>with-region</code></td>
+</tr>
+<tr>
+<td>Global arena</td>
+<td>✅</td>
+<td>Manual</td>
+<td>Shared across functions</td>
+</tr>
+<tr>
+<td>Region nesting</td>
+<td>✅</td>
+<td>Manual</td>
+<td>Stack-based</td>
+</tr>
+<tr>
+<td>Zero-copy views</td>
+<td>✅</td>
+<td>Automatic</td>
+<td>reshape, slice, transpose</td>
+</tr>
+<tr>
+<td><strong>Ownership</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Linear types</td>
+<td>✅</td>
+<td>Compile-time</td>
+<td><code>owned</code>, <code>move</code> markers</td>
+</tr>
+<tr>
+<td>Borrow checking</td>
+<td>✅</td>
+<td>Compile-time</td>
+<td><code>borrow</code> construct</td>
+</tr>
+<tr>
+<td>Escape analysis</td>
+<td>✅</td>
+<td>Compile-time</td>
+<td>Region-based with conservative heap fallback</td>
+</tr>
+<tr>
+<td>Reference counting</td>
+<td>📋</td>
+<td>Runtime</td>
+<td>Planned (<code>shared</code>, <code>weak-ref</code>)</td>
+</tr>
+<tr>
+<td><strong>Garbage Collection</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Mark-sweep GC</td>
+<td>❌</td>
+<td>-</td>
+<td>By design (arena-based instead)</td>
+</tr>
+<tr>
+<td>Generational GC</td>
+<td>❌</td>
+<td>-</td>
+<td>By design</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="compilation-runtime">Compilation &amp; Runtime</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Backend</th>
+<th>Performance</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Compiler</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>S-expression parser</td>
+<td>✅</td>
+<td>Recursive descent</td>
+<td>Fast</td>
+</tr>
+<tr>
+<td>Macro system</td>
+<td>✅</td>
+<td>Hygenic macros</td>
+<td><code>define-syntax</code></td>
+</tr>
+<tr>
+<td>HoTT type checker</td>
+<td>✅</td>
+<td>Bidirectional</td>
+<td>Gradual typing</td>
+</tr>
+<tr>
+<td>LLVM IR generation</td>
+<td>✅</td>
+<td>LLVM 17</td>
+<td>34,928 lines</td>
+</tr>
+<tr>
+<td>Native code emission</td>
+<td>✅</td>
+<td>x86-64, ARM64</td>
+<td>Object files</td>
+</tr>
+<tr>
+<td>Executable linking</td>
+<td>✅</td>
+<td>System linker</td>
+<td>Standalone binaries</td>
+</tr>
+<tr>
+<td><strong>Optimizations</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Constant folding</td>
+<td>✅</td>
+<td>LLVM</td>
+<td>Automatic</td>
+</tr>
+<tr>
+<td>Dead code elimination</td>
+<td>✅</td>
+<td>LLVM</td>
+<td>Automatic</td>
+</tr>
+<tr>
+<td>Inlining</td>
+<td>✅</td>
+<td>LLVM</td>
+<td>Automatic</td>
+</tr>
+<tr>
+<td>Tail call optimization</td>
+<td>✅</td>
+<td>Custom</td>
+<td>Self-recursion</td>
+</tr>
+<tr>
+<td>Type-directed optimization</td>
+<td>✅</td>
+<td>HoTT</td>
+<td>When types known</td>
+</tr>
+<tr>
+<td>SIMD vectorization</td>
+<td>✅</td>
+<td>LLVM</td>
+<td>Loop metadata + micro-kernels</td>
+</tr>
+<tr>
+<td><strong>REPL</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Interactive evaluation</td>
+<td>✅</td>
+<td>JIT</td>
+<td>LLVM ORC</td>
+</tr>
+<tr>
+<td>Cross-eval persistence</td>
+<td>✅</td>
+<td>JIT</td>
+<td>Symbols/functions persist</td>
+</tr>
+<tr>
+<td>Incremental compilation</td>
+<td>✅</td>
+<td>JIT</td>
+<td>Per-expression</td>
+</tr>
+<tr>
+<td>Hot code reload</td>
+<td>✅</td>
+<td>JIT</td>
+<td>LLVM ORC remove()</td>
+</tr>
+<tr>
+<td><strong>Debugging</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Source location tracking</td>
+<td>✅</td>
+<td>DWARF</td>
+<td>Via <code>-g</code> flag</td>
+</tr>
+<tr>
+<td>Stack traces</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>Breakpoint support</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>REPL introspection</td>
+<td>✅</td>
+<td>-</td>
+<td><code>type-of</code>, <code>display</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="standard-library">Standard Library</h2>
+<table>
+<colgroup>
+<col style="width: 19%" />
+<col style="width: 19%" />
+<col style="width: 26%" />
+<col style="width: 35%" />
+</colgroup>
+<thead>
+<tr>
+<th>Module</th>
+<th>Status</th>
+<th>Functions</th>
+<th>Test Coverage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>core.operators.arithmetic</code></td>
+<td>✅</td>
+<td>+, -, *, /, mod, quotient, gcd, lcm, min, max</td>
+<td>20+ tests</td>
+</tr>
+<tr>
+<td><code>core.operators.compare</code></td>
+<td>✅</td>
+<td>&lt;, &gt;, =, &lt;=, &gt;=</td>
+<td>15+ tests</td>
+</tr>
+<tr>
+<td><code>core.logic.boolean</code></td>
+<td>✅</td>
+<td>and, or, not, xor</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td><code>core.logic.predicates</code></td>
+<td>✅</td>
+<td>even?, odd?, zero?, positive?, negative?</td>
+<td>15+ tests</td>
+</tr>
+<tr>
+<td><code>core.logic.types</code></td>
+<td>✅</td>
+<td>Type conversions</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td><code>core.list.compound</code></td>
+<td>✅</td>
+<td>cadr, caddr, etc. (16 functions)</td>
+<td>20+ tests</td>
+</tr>
+<tr>
+<td><code>core.list.higher_order</code></td>
+<td>✅</td>
+<td>fold, filter, any, every</td>
+<td>25+ tests</td>
+</tr>
+<tr>
+<td><code>core.list.query</code></td>
+<td>✅</td>
+<td>length, find, take, drop</td>
+<td>20+ tests</td>
+</tr>
+<tr>
+<td><code>core.list.search</code></td>
+<td>✅</td>
+<td>member, assoc, binary-search</td>
+<td>15+ tests</td>
+</tr>
+<tr>
+<td><code>core.list.sort</code></td>
+<td>✅</td>
+<td>sort, merge, insertion-sort</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td><code>core.list.transform</code></td>
+<td>✅</td>
+<td>append, reverse, map, filter</td>
+<td>30+ tests</td>
+</tr>
+<tr>
+<td><code>core.list.generate</code></td>
+<td>✅</td>
+<td>range, iota, make-list, zip</td>
+<td>15+ tests</td>
+</tr>
+<tr>
+<td><code>core.functional.compose</code></td>
+<td>✅</td>
+<td>compose, pipe</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td><code>core.functional.curry</code></td>
+<td>✅</td>
+<td>curry, uncurry</td>
+<td>5+ tests</td>
+</tr>
+<tr>
+<td><code>core.functional.flip</code></td>
+<td>✅</td>
+<td>flip arguments</td>
+<td>5+ tests</td>
+</tr>
+<tr>
+<td><code>core.strings</code></td>
+<td>✅</td>
+<td>String utilities</td>
+<td>20+ tests</td>
+</tr>
+<tr>
+<td><code>core.json</code></td>
+<td>✅</td>
+<td>JSON parse/generate</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td><code>core.io</code></td>
+<td>✅</td>
+<td>File I/O, ports</td>
+<td>15+ tests</td>
+</tr>
+<tr>
+<td><code>core.data.base64</code></td>
+<td>✅</td>
+<td>Base64 encode/decode</td>
+<td>5+ tests</td>
+</tr>
+<tr>
+<td><code>core.data.csv</code></td>
+<td>✅</td>
+<td>CSV parsing</td>
+<td>5+ tests</td>
+</tr>
+<tr>
+<td><code>core.control.trampoline</code></td>
+<td>✅</td>
+<td>TCO helpers</td>
+<td>5+ tests</td>
+</tr>
+<tr>
+<td>Math library</td>
+<td>✅</td>
+<td>det, inv, solve, integrate, newton</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td><code>math.statistics</code></td>
+<td>✅</td>
+<td>mean, variance, normal, poisson, binomial</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td><code>math.ode</code></td>
+<td>✅</td>
+<td>rk4, euler, midpoint ODE solvers</td>
+<td>5+ tests</td>
+</tr>
+<tr>
+<td><code>signal.filters</code></td>
+<td>✅</td>
+<td>Window functions, FIR/IIR, Butterworth, convolution</td>
+<td>12+ tests</td>
+</tr>
+<tr>
+<td><code>ml.optimization</code></td>
+<td>✅</td>
+<td>Gradient descent, Adam, L-BFGS, conjugate gradient</td>
+<td>10+ tests</td>
+</tr>
+<tr>
+<td><code>ml.activations</code></td>
+<td>✅</td>
+<td>relu, sigmoid, tanh, gelu, leaky-relu, silu</td>
+<td>5+ tests</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="io-system-integration">I/O &amp; System Integration</h2>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 27%" />
+<col style="width: 17%" />
+<col style="width: 24%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>API</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>File I/O</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Text file reading</td>
+<td>✅</td>
+<td><code>open-input-file</code>, <code>read-line</code></td>
+<td>Buffered</td>
+</tr>
+<tr>
+<td>Text file writing</td>
+<td>✅</td>
+<td><code>open-output-file</code>, <code>write-line</code></td>
+<td>Buffered</td>
+</tr>
+<tr>
+<td>Binary I/O</td>
+<td>✅</td>
+<td>R7RS bytevectors</td>
+<td>Full R7RS binary I/O</td>
+</tr>
+<tr>
+<td>Port operations</td>
+<td>✅</td>
+<td><code>close-port</code>, <code>eof-object?</code></td>
+<td>Complete</td>
+</tr>
+<tr>
+<td><strong>Console I/O</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>display</code></td>
+<td>✅</td>
+<td>-</td>
+<td>Homoiconic (shows lambdas)</td>
+</tr>
+<tr>
+<td><code>newline</code></td>
+<td>✅</td>
+<td>-</td>
+<td>Standard</td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td>✅</td>
+<td>-</td>
+<td>Exception-based</td>
+</tr>
+<tr>
+<td><strong>System</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Environment vars</td>
+<td>✅</td>
+<td><code>getenv</code>, <code>setenv</code>, <code>unsetenv</code></td>
+<td>POSIX</td>
+</tr>
+<tr>
+<td>Command execution</td>
+<td>✅</td>
+<td><code>system</code></td>
+<td>Shell commands</td>
+</tr>
+<tr>
+<td>Process control</td>
+<td>✅</td>
+<td><code>exit</code></td>
+<td>Exit codes</td>
+</tr>
+<tr>
+<td>Time</td>
+<td>✅</td>
+<td><code>current-seconds</code></td>
+<td>Unix timestamp</td>
+</tr>
+<tr>
+<td>Sleep</td>
+<td>✅</td>
+<td><code>sleep</code></td>
+<td>Milliseconds</td>
+</tr>
+<tr>
+<td>Command-line args</td>
+<td>✅</td>
+<td><code>command-line</code></td>
+<td>argc/argv</td>
+</tr>
+<tr>
+<td><strong>File System</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>File queries</td>
+<td>✅</td>
+<td><code>file-exists?</code>, <code>file-size</code>, etc.</td>
+<td>POSIX stat</td>
+</tr>
+<tr>
+<td>Directory ops</td>
+<td>✅</td>
+<td><code>make-directory</code>, <code>directory-list</code></td>
+<td>POSIX</td>
+</tr>
+<tr>
+<td>Current directory</td>
+<td>✅</td>
+<td><code>current-directory</code>,
+<code>set-current-directory!</code></td>
+<td>chdir</td>
+</tr>
+<tr>
+<td>File operations</td>
+<td>✅</td>
+<td><code>file-delete</code>, <code>file-rename</code></td>
+<td>POSIX</td>
+</tr>
+<tr>
+<td><strong>Random Numbers</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Pseudo-random</td>
+<td>✅</td>
+<td><code>random</code></td>
+<td>drand48</td>
+</tr>
+<tr>
+<td>Quantum random</td>
+<td>✅</td>
+<td><code>quantum-random</code></td>
+<td>ANU QRNG API</td>
+</tr>
+<tr>
+<td>Integer ranges</td>
+<td>✅</td>
+<td><code>quantum-random-range</code></td>
+<td>Uniform distribution</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="advanced-features">Advanced Features</h2>
+<table>
+<colgroup>
+<col style="width: 26%" />
+<col style="width: 23%" />
+<col style="width: 29%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Maturity</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Metaprogramming</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Homoiconic code</td>
+<td>✅</td>
+<td>Stable</td>
+<td>Code-as-data</td>
+</tr>
+<tr>
+<td>S-expression manipulation</td>
+<td>✅</td>
+<td>Stable</td>
+<td>quote, quasiquote</td>
+</tr>
+<tr>
+<td>Lambda S-expression display</td>
+<td>✅</td>
+<td>Stable</td>
+<td>Shows source code</td>
+</tr>
+<tr>
+<td>Macro system</td>
+<td>✅</td>
+<td>Stable</td>
+<td><code>define-syntax</code></td>
+</tr>
+<tr>
+<td><strong>Exception Handling</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>guard</code> / <code>raise</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>setjmp/longjmp</td>
+</tr>
+<tr>
+<td>Exception types</td>
+<td>✅</td>
+<td>Stable</td>
+<td>User-defined</td>
+</tr>
+<tr>
+<td>Stack unwinding</td>
+<td>✅</td>
+<td>Stable</td>
+<td>Handler stack</td>
+</tr>
+<tr>
+<td><strong>Multiple Return Values</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>values</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Multi-value objects</td>
+</tr>
+<tr>
+<td><code>call-with-values</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Consumer pattern</td>
+</tr>
+<tr>
+<td><code>let-values</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Destructuring</td>
+</tr>
+<tr>
+<td><strong>Control Flow (v1.1)</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>call/cc</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>First-class continuations</td>
+</tr>
+<tr>
+<td><code>dynamic-wind</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Cleanup handlers</td>
+</tr>
+<tr>
+<td><code>guard</code> / <code>raise</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Exception handling</td>
+</tr>
+<tr>
+<td><strong>FFI (Foreign Function Interface)</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>C function calls</td>
+<td>✅</td>
+<td>Stable</td>
+<td><code>extern</code> declarations</td>
+</tr>
+<tr>
+<td>C variable access</td>
+<td>✅</td>
+<td>Stable</td>
+<td><code>extern-var</code></td>
+</tr>
+<tr>
+<td>Variadic C functions</td>
+<td>✅</td>
+<td>Stable</td>
+<td>printf, etc.</td>
+</tr>
+<tr>
+<td>Callback registration</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td><strong>Concurrency (v1.1)</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>parallel-map</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Work-stealing thread pool</td>
+</tr>
+<tr>
+<td><code>parallel-fold</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Parallel reduction</td>
+</tr>
+<tr>
+<td><code>parallel-filter</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Parallel predicate filter</td>
+</tr>
+<tr>
+<td><code>parallel-for-each</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Parallel side effects</td>
+</tr>
+<tr>
+<td><code>parallel-execute</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Concurrent execution</td>
+</tr>
+<tr>
+<td><code>future</code> / <code>force</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Asynchronous computation</td>
+</tr>
+<tr>
+<td>Thread pool scheduler</td>
+<td>✅</td>
+<td>Stable</td>
+<td>Hardware-aware sizing</td>
+</tr>
+<tr>
+<td><strong>Module System</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>import</code> / <code>require</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>DFS dependency resolution</td>
+</tr>
+<tr>
+<td><code>load</code> (R7RS file loading)</td>
+<td>✅</td>
+<td>Stable</td>
+<td>Alias for require with file path conversion</td>
+</tr>
+<tr>
+<td><code>provide</code> / <code>export</code></td>
+<td>✅</td>
+<td>Stable</td>
+<td>Symbol export</td>
+</tr>
+<tr>
+<td>Module prefixing</td>
+<td>✅</td>
+<td>Stable</td>
+<td>Namespace isolation</td>
+</tr>
+<tr>
+<td>Circular dependency detection</td>
+<td>✅</td>
+<td>Stable</td>
+<td>Compile-time error</td>
+</tr>
+<tr>
+<td>Separate compilation</td>
+<td>✅</td>
+<td>Stable</td>
+<td>.o file linking</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="performance-characteristics">Performance Characteristics</h2>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Big-O</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Memory</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Arena allocation</td>
+<td>O(1)</td>
+<td>Bump pointer</td>
+</tr>
+<tr>
+<td>Cons cell creation</td>
+<td>O(1)</td>
+<td>32 bytes + header</td>
+</tr>
+<tr>
+<td>Tensor creation (n elements)</td>
+<td>O(n)</td>
+<td>Contiguous allocation</td>
+</tr>
+<tr>
+<td>Region cleanup</td>
+<td>O(1)</td>
+<td>Mark used pointer</td>
+</tr>
+<tr>
+<td><strong>Arithmetic</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Int64 operations</td>
+<td>O(1)</td>
+<td>Direct CPU instructions</td>
+</tr>
+<tr>
+<td>Double operations</td>
+<td>O(1)</td>
+<td>FPU instructions</td>
+</tr>
+<tr>
+<td>Polymorphic dispatch</td>
+<td>O(1)</td>
+<td>Runtime type check</td>
+</tr>
+<tr>
+<td><strong>AD Operations</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Forward-mode derivative</td>
+<td>O(1)</td>
+<td>Per operation overhead</td>
+</tr>
+<tr>
+<td>Reverse-mode gradient (n→1)</td>
+<td>O(1)</td>
+<td>One backward pass</td>
+</tr>
+<tr>
+<td>Jacobian (n→m)</td>
+<td>O(m)</td>
+<td>m gradient computations</td>
+</tr>
+<tr>
+<td>Hessian (n→1)</td>
+<td>O(n²)</td>
+<td>Numerical finite differences</td>
+</tr>
+<tr>
+<td><strong>List Operations</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>cons, car, cdr</td>
+<td>O(1)</td>
+<td>Pointer operations</td>
+</tr>
+<tr>
+<td>length</td>
+<td>O(n)</td>
+<td>Traversal</td>
+</tr>
+<tr>
+<td>append</td>
+<td>O(n+m)</td>
+<td>Copy first list</td>
+</tr>
+<tr>
+<td>reverse</td>
+<td>O(n)</td>
+<td>Iterative</td>
+</tr>
+<tr>
+<td>map</td>
+<td>O(n)</td>
+<td>Single pass</td>
+</tr>
+<tr>
+<td>sort (merge)</td>
+<td>O(n log n)</td>
+<td>Divide-and-conquer</td>
+</tr>
+<tr>
+<td><strong>Tensor Operations</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Element access</td>
+<td>O(1)</td>
+<td>Computed index</td>
+</tr>
+<tr>
+<td>Reshape</td>
+<td>O(1)</td>
+<td>Zero-copy view</td>
+</tr>
+<tr>
+<td>Transpose (2D)</td>
+<td>O(mn)</td>
+<td>Element reordering</td>
+</tr>
+<tr>
+<td>Matrix multiply (m×k, k×n)</td>
+<td>O(mnk)</td>
+<td>Triple loop</td>
+</tr>
+<tr>
+<td>Element-wise ops</td>
+<td>O(n)</td>
+<td>Single pass</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="platform-support">Platform Support</h2>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 20%" />
+<col style="width: 35%" />
+<col style="width: 17%" />
+</colgroup>
+<thead>
+<tr>
+<th>Platform</th>
+<th>Status</th>
+<th>Architecture</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Operating Systems</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Linux</td>
+<td>✅</td>
+<td>x86-64, ARM64</td>
+<td>Primary platform</td>
+</tr>
+<tr>
+<td>macOS</td>
+<td>✅</td>
+<td>x86-64, ARM64</td>
+<td>Full support</td>
+</tr>
+<tr>
+<td>Windows</td>
+<td>✅</td>
+<td>x86-64</td>
+<td>MSYS2/MinGW64 native (PR #9, mattneel)</td>
+</tr>
+<tr>
+<td>FreeBSD</td>
+<td>📋</td>
+<td>x86-64</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td><strong>Architectures</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>x86-64</td>
+<td>✅</td>
+<td>SSE2+</td>
+<td>AVX/AVX2/AVX-512 supported</td>
+</tr>
+<tr>
+<td>ARM64</td>
+<td>✅</td>
+<td>Neon</td>
+<td>Full support</td>
+</tr>
+<tr>
+<td>RISC-V</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>WebAssembly</td>
+<td>✅</td>
+<td>wasm32</td>
+<td>Via <code>--wasm</code> flag (LLVM 17 backend)</td>
+</tr>
+<tr>
+<td>Web REPL</td>
+<td>✅</td>
+<td>Browser</td>
+<td><code>web/index.html</code> — interactive Eshkol in-browser</td>
+</tr>
+<tr>
+<td><strong>Build Systems</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>CMake</td>
+<td>✅</td>
+<td>3.14+</td>
+<td>Primary (Ninja recommended)</td>
+</tr>
+<tr>
+<td>Makefile</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>Nix</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td><strong>Package Managers</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Homebrew</td>
+<td>✅</td>
+<td>macOS/Linux</td>
+<td>Formula complete</td>
+</tr>
+<tr>
+<td>APT (Debian/Ubuntu)</td>
+<td>✅</td>
+<td>Linux</td>
+<td>.deb pipeline complete</td>
+</tr>
+<tr>
+<td>RPM (Fedora/RHEL)</td>
+<td>📋</td>
+<td>Linux</td>
+<td>Planned</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="tooling-ecosystem">Tooling &amp; Ecosystem</h2>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 26%" />
+<col style="width: 30%" />
+<col style="width: 23%" />
+</colgroup>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Status</th>
+<th>Purpose</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Compiler Tools</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>eshkol-compile</code></td>
+<td>✅</td>
+<td>Ahead-of-time compiler</td>
+<td>Produces executables</td>
+</tr>
+<tr>
+<td><code>eshkol-run</code></td>
+<td>✅</td>
+<td>Script runner</td>
+<td>Compile + execute</td>
+</tr>
+<tr>
+<td><code>eshkol-repl</code></td>
+<td>✅</td>
+<td>Interactive shell</td>
+<td>JIT-based with stdlib</td>
+</tr>
+<tr>
+<td><code>eshkol-pkg</code></td>
+<td>✅</td>
+<td>Package manager</td>
+<td>Registry support</td>
+</tr>
+<tr>
+<td><code>eshkol-lsp</code></td>
+<td>✅</td>
+<td>Language server</td>
+<td>IDE integration</td>
+</tr>
+<tr>
+<td><strong>Development Tools</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Syntax highlighter</td>
+<td>✅</td>
+<td>Editor support</td>
+<td>VS Code extension</td>
+</tr>
+<tr>
+<td>LSP server</td>
+<td>✅</td>
+<td>IDE integration</td>
+<td>Diagnostics, completion</td>
+</tr>
+<tr>
+<td>Debugger</td>
+<td>📋</td>
+<td>Interactive debugging</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>Profiler</td>
+<td>📋</td>
+<td>Performance analysis</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td><strong>Documentation</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>API Reference</td>
+<td>✅</td>
+<td>Complete</td>
+<td>700+ builtins</td>
+</tr>
+<tr>
+<td>Quickstart Guide</td>
+<td>✅</td>
+<td>Tutorial</td>
+<td>15-minute intro</td>
+</tr>
+<tr>
+<td>Architecture Guide</td>
+<td>✅</td>
+<td>Internals</td>
+<td>System design</td>
+</tr>
+<tr>
+<td>Type System Guide</td>
+<td>✅</td>
+<td>HoTT types</td>
+<td>Dependent types</td>
+</tr>
+<tr>
+<td>Examples</td>
+<td>✅</td>
+<td>Demo programs</td>
+<td>Neural networks, physics, ML</td>
+</tr>
+<tr>
+<td><strong>Testing</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Unit tests</td>
+<td>✅</td>
+<td>Component tests</td>
+<td>426 files</td>
+</tr>
+<tr>
+<td>Integration tests</td>
+<td>✅</td>
+<td>End-to-end</td>
+<td>Full programs</td>
+</tr>
+<tr>
+<td>AD verification</td>
+<td>✅</td>
+<td>Numerical validation</td>
+<td>Gradient checking</td>
+</tr>
+<tr>
+<td>Benchmark suite</td>
+<td>✅</td>
+<td>Performance tracking</td>
+<td>GPU + CPU benchmarks</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="ml-ai-capabilities">ML &amp; AI Capabilities</h2>
+<table>
+<colgroup>
+<col style="width: 23%" />
+<col style="width: 21%" />
+<col style="width: 18%" />
+<col style="width: 36%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Level</th>
+<th>Applications</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Neural Networks</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Forward pass</td>
+<td>✅</td>
+<td>Production</td>
+<td>Any architecture</td>
+</tr>
+<tr>
+<td>Backpropagation</td>
+<td>✅</td>
+<td>Production</td>
+<td>Via <code>gradient</code></td>
+</tr>
+<tr>
+<td>Activation functions</td>
+<td>✅</td>
+<td>Production</td>
+<td>14 builtins: relu, sigmoid, softmax, gelu, silu, mish, etc.</td>
+</tr>
+<tr>
+<td>Loss functions</td>
+<td>✅</td>
+<td>Production</td>
+<td>14 builtins: MSE, cross-entropy, focal, triplet, etc.</td>
+</tr>
+<tr>
+<td>Optimizers</td>
+<td>✅</td>
+<td>Production</td>
+<td>SGD, Adam, AdamW, RMSprop, Adagrad (builtins) + stdlib</td>
+</tr>
+<tr>
+<td>Weight initialization</td>
+<td>✅</td>
+<td>Production</td>
+<td>xavier, kaiming, lecun (5 builtin initializers)</td>
+</tr>
+<tr>
+<td>LR schedulers</td>
+<td>✅</td>
+<td>Production</td>
+<td>cosine-annealing, step-decay, warmup, exponential</td>
+</tr>
+<tr>
+<td><strong>Supported Architectures</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Feedforward</td>
+<td>✅</td>
+<td>Production</td>
+<td>Fully connected</td>
+</tr>
+<tr>
+<td>CNN</td>
+<td>✅</td>
+<td>Production</td>
+<td>conv1d/2d/3d, max-pool2d, avg-pool2d, batch/layer norm</td>
+</tr>
+<tr>
+<td>RNN</td>
+<td>🚧</td>
+<td>Prototype</td>
+<td>Sequential processing</td>
+</tr>
+<tr>
+<td>Transformer</td>
+<td>✅</td>
+<td>Production</td>
+<td>scaled-dot-attention, multi-head, RoPE, positional-encoding</td>
+</tr>
+<tr>
+<td><strong>Training Features</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Batch training</td>
+<td>✅</td>
+<td>Production</td>
+<td>Via user code</td>
+</tr>
+<tr>
+<td>Mini-batch SGD</td>
+<td>✅</td>
+<td>Production</td>
+<td>Via user code</td>
+</tr>
+<tr>
+<td>Learning rate scheduling</td>
+<td>✅</td>
+<td>Production</td>
+<td>Via user code</td>
+</tr>
+<tr>
+<td>Regularization</td>
+<td>✅</td>
+<td>Production</td>
+<td>L1/L2 in loss</td>
+</tr>
+<tr>
+<td>Early stopping</td>
+<td>✅</td>
+<td>Production</td>
+<td>Via user code</td>
+</tr>
+<tr>
+<td><strong>Model Operations</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Save/load weights</td>
+<td>🚧</td>
+<td>-</td>
+<td>Via file I/O</td>
+</tr>
+<tr>
+<td>Model serialization</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>ONNX export</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td><strong>Datasets</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>In-memory datasets</td>
+<td>✅</td>
+<td>Production</td>
+<td>Lists/tensors</td>
+</tr>
+<tr>
+<td>Lazy loading</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>Data augmentation</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="scientific-computing">Scientific Computing</h2>
+<table>
+<colgroup>
+<col style="width: 22%" />
+<col style="width: 22%" />
+<col style="width: 27%" />
+<col style="width: 27%" />
+</colgroup>
+<thead>
+<tr>
+<th>Domain</th>
+<th>Status</th>
+<th>Features</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Numerical Analysis</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Root finding</td>
+<td>✅</td>
+<td>Newton-Raphson</td>
+<td>lib/math.esk</td>
+</tr>
+<tr>
+<td>Integration</td>
+<td>✅</td>
+<td>Simpson’s rule</td>
+<td>lib/math.esk</td>
+</tr>
+<tr>
+<td>Interpolation</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>ODE solvers</td>
+<td>✅</td>
+<td>RK4, Euler, Midpoint</td>
+<td>math.ode</td>
+</tr>
+<tr>
+<td>PDE solvers</td>
+<td>🚧</td>
+<td>Finite differences</td>
+<td>Via user code</td>
+</tr>
+<tr>
+<td><strong>Linear Algebra</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Matrix operations</td>
+<td>✅</td>
+<td>Full suite</td>
+<td>matmul, transpose, trace</td>
+</tr>
+<tr>
+<td>LU decomposition</td>
+<td>✅</td>
+<td>Pure Eshkol</td>
+<td>lib/math.esk</td>
+</tr>
+<tr>
+<td>Matrix inverse</td>
+<td>✅</td>
+<td>Gauss-Jordan</td>
+<td>lib/math.esk</td>
+</tr>
+<tr>
+<td>Linear systems</td>
+<td>✅</td>
+<td>Gaussian elim</td>
+<td>lib/math.esk</td>
+</tr>
+<tr>
+<td>Eigenvalues</td>
+<td>✅</td>
+<td>Power iteration</td>
+<td>lib/math.esk</td>
+</tr>
+<tr>
+<td><strong>Statistics</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Descriptive stats</td>
+<td>✅</td>
+<td>mean, variance, std</td>
+<td>lib/math.esk</td>
+</tr>
+<tr>
+<td>Covariance</td>
+<td>✅</td>
+<td>Vector covariance</td>
+<td>lib/math.esk</td>
+</tr>
+<tr>
+<td>Distributions</td>
+<td>✅</td>
+<td>Normal, Poisson, Binomial, etc.</td>
+<td>math.statistics</td>
+</tr>
+<tr>
+<td>Hypothesis testing</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td><strong>Optimization</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Gradient descent</td>
+<td>✅</td>
+<td>Via <code>gradient</code></td>
+<td>ml.optimization</td>
+</tr>
+<tr>
+<td>Adam optimizer</td>
+<td>✅</td>
+<td>Adaptive moments</td>
+<td>ml.optimization</td>
+</tr>
+<tr>
+<td>L-BFGS</td>
+<td>✅</td>
+<td>Two-loop recursion</td>
+<td>ml.optimization</td>
+</tr>
+<tr>
+<td>Conjugate gradient</td>
+<td>✅</td>
+<td>Fletcher-Reeves</td>
+<td>ml.optimization</td>
+</tr>
+<tr>
+<td>Newton’s method</td>
+<td>✅</td>
+<td>Via <code>hessian</code></td>
+<td>Second-order</td>
+</tr>
+<tr>
+<td>Constrained optimization</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td><strong>Physics Simulation</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Vector calculus</td>
+<td>✅</td>
+<td>∇, ∇·, ∇×, ∇²</td>
+<td>Full support</td>
+</tr>
+<tr>
+<td>Field theory</td>
+<td>✅</td>
+<td>Differential forms</td>
+<td>curl, divergence</td>
+</tr>
+<tr>
+<td>Heat equation</td>
+<td>✅</td>
+<td>Via Laplacian</td>
+<td>Verified</td>
+</tr>
+<tr>
+<td>Wave propagation</td>
+<td>🚧</td>
+<td>-</td>
+<td>Via user code</td>
+</tr>
+<tr>
+<td>Fluid dynamics</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="signal-processing-v1.1">Signal Processing (v1.1)</h2>
+<table>
+<colgroup>
+<col style="width: 28%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 21%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Module</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Window Functions</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Hamming window</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>w[n] = 0.54 - 0.46<em>cos(2</em>pi*n/(N-1))</td>
+</tr>
+<tr>
+<td>Hann window</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>w[n] = 0.5<em>(1 - cos(2</em>pi*n/(N-1)))</td>
+</tr>
+<tr>
+<td>Blackman window</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>3-term Blackman</td>
+</tr>
+<tr>
+<td>Kaiser window</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>Parametric beta, inline Bessel I0</td>
+</tr>
+<tr>
+<td><strong>Convolution</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Direct convolution</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>O(N*M) time-domain</td>
+</tr>
+<tr>
+<td>FFT convolution</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>O(N log N) via fft/ifft</td>
+</tr>
+<tr>
+<td><strong>Filters</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>FIR filter</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>Arbitrary coefficient application</td>
+</tr>
+<tr>
+<td>IIR filter</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>Direct Form I</td>
+</tr>
+<tr>
+<td>Butterworth lowpass</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>Bilinear transform</td>
+</tr>
+<tr>
+<td>Butterworth highpass</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>Frequency inversion</td>
+</tr>
+<tr>
+<td>Butterworth bandpass</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>Two-stage cascade</td>
+</tr>
+<tr>
+<td><strong>Analysis</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Frequency response</td>
+<td>✅</td>
+<td><code>signal.filters</code></td>
+<td>Magnitude + phase at N points</td>
+</tr>
+<tr>
+<td>FFT</td>
+<td>✅</td>
+<td>Builtin</td>
+<td>Cooley-Tukey radix-2</td>
+</tr>
+<tr>
+<td>IFFT</td>
+<td>✅</td>
+<td>Builtin</td>
+<td>Inverse FFT</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="consciousness-engine-v1.1">Consciousness Engine (v1.1)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Module</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Logic Programming</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Unification</td>
+<td>✅</td>
+<td>Builtin</td>
+<td><code>unify</code>, <code>walk</code></td>
+</tr>
+<tr>
+<td>Substitutions</td>
+<td>✅</td>
+<td>Builtin</td>
+<td><code>make-substitution</code></td>
+</tr>
+<tr>
+<td>Knowledge base</td>
+<td>✅</td>
+<td>Builtin</td>
+<td><code>make-kb</code>, <code>kb-assert!</code>,
+<code>kb-query</code></td>
+</tr>
+<tr>
+<td>Logic variables</td>
+<td>✅</td>
+<td>Builtin</td>
+<td><code>?x</code> syntax</td>
+</tr>
+<tr>
+<td><strong>Active Inference</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Factor graphs</td>
+<td>✅</td>
+<td>Builtin</td>
+<td><code>make-factor-graph</code>, <code>fg-add-factor!</code></td>
+</tr>
+<tr>
+<td>Belief propagation</td>
+<td>✅</td>
+<td>Builtin</td>
+<td><code>fg-infer!</code></td>
+</tr>
+<tr>
+<td>CPT mutation</td>
+<td>✅</td>
+<td>Builtin</td>
+<td><code>fg-update-cpt!</code></td>
+</tr>
+<tr>
+<td>Free energy</td>
+<td>✅</td>
+<td>Builtin</td>
+<td><code>free-energy</code>, <code>expected-free-energy</code></td>
+</tr>
+<tr>
+<td><strong>Global Workspace</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Workspace creation</td>
+<td>✅</td>
+<td>Builtin</td>
+<td><code>make-workspace</code></td>
+</tr>
+<tr>
+<td>Module registration</td>
+<td>✅</td>
+<td>Builtin</td>
+<td><code>ws-register!</code></td>
+</tr>
+<tr>
+<td>Softmax competition</td>
+<td>✅</td>
+<td>Builtin</td>
+<td><code>ws-step!</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="gpu-acceleration-v1.1">GPU Acceleration (v1.1)</h2>
+<table>
+<colgroup>
+<col style="width: 27%" />
+<col style="width: 24%" />
+<col style="width: 27%" />
+<col style="width: 21%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Backend</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Metal (Apple Silicon)</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Elementwise operations</td>
+<td>✅</td>
+<td>Metal</td>
+<td>SF64 software float64</td>
+</tr>
+<tr>
+<td>Matrix multiplication</td>
+<td>✅</td>
+<td>Metal</td>
+<td>Ozaki-II adaptive N</td>
+</tr>
+<tr>
+<td>Reduce operations</td>
+<td>✅</td>
+<td>Metal</td>
+<td>Sum, max, min</td>
+</tr>
+<tr>
+<td>Softmax</td>
+<td>✅</td>
+<td>Metal</td>
+<td>Numerically stable</td>
+</tr>
+<tr>
+<td>Transpose</td>
+<td>✅</td>
+<td>Metal</td>
+<td>2D matrix transpose</td>
+</tr>
+<tr>
+<td><strong>CUDA (NVIDIA)</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Elementwise operations</td>
+<td>✅</td>
+<td>CUDA</td>
+<td>cuBLAS integration</td>
+</tr>
+<tr>
+<td>Matrix multiplication</td>
+<td>✅</td>
+<td>CUDA</td>
+<td>cuBLAS GEMM</td>
+</tr>
+<tr>
+<td>Reduce operations</td>
+<td>✅</td>
+<td>CUDA</td>
+<td>Custom kernels</td>
+</tr>
+<tr>
+<td>Softmax</td>
+<td>✅</td>
+<td>CUDA</td>
+<td>Numerically stable</td>
+</tr>
+<tr>
+<td>Transpose</td>
+<td>✅</td>
+<td>CUDA</td>
+<td>cuBLAS transpose</td>
+</tr>
+<tr>
+<td><strong>Dispatch</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Automatic CPU/GPU selection</td>
+<td>✅</td>
+<td>Runtime</td>
+<td>Cost model based</td>
+</tr>
+<tr>
+<td>Threshold-based dispatch</td>
+<td>✅</td>
+<td>Runtime</td>
+<td>XLA → cBLAS → SIMD → scalar</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="xla-backend-v1.1">XLA Backend (v1.1)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Mode</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>StableHLO/MLIR path</td>
+<td>✅</td>
+<td>When MLIR available</td>
+<td>Hardware-optimized</td>
+</tr>
+<tr>
+<td>LLVM-direct path</td>
+<td>✅</td>
+<td>Default</td>
+<td>Hand-tuned IR</td>
+</tr>
+<tr>
+<td>Matmul fusion</td>
+<td>✅</td>
+<td>Both</td>
+<td>Fused multiply-add</td>
+</tr>
+<tr>
+<td>Elementwise fusion</td>
+<td>✅</td>
+<td>Both</td>
+<td>Operation chains</td>
+</tr>
+<tr>
+<td>Reduce operations</td>
+<td>✅</td>
+<td>Both</td>
+<td>Sum, max, min</td>
+</tr>
+<tr>
+<td>Transpose</td>
+<td>✅</td>
+<td>Both</td>
+<td>Shape operations</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="interoperability">Interoperability</h2>
+<table>
+<thead>
+<tr>
+<th>Interface</th>
+<th>Status</th>
+<th>Direction</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>C Integration</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Call C functions</td>
+<td>✅</td>
+<td>Eshkol → C</td>
+<td>extern declarations</td>
+</tr>
+<tr>
+<td>Access C globals</td>
+<td>✅</td>
+<td>Eshkol → C</td>
+<td>extern-var</td>
+</tr>
+<tr>
+<td>C calls Eshkol</td>
+<td>📋</td>
+<td>C → Eshkol</td>
+<td>Planned callback API</td>
+</tr>
+<tr>
+<td><strong>Python Integration</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Call Python from Eshkol</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned (ctypes/cffi)</td>
+</tr>
+<tr>
+<td>Call Eshkol from Python</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned (wrapper lib)</td>
+</tr>
+<tr>
+<td>NumPy interop</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned (array protocol)</td>
+</tr>
+<tr>
+<td><strong>Data Formats</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>JSON</td>
+<td>✅</td>
+<td>-</td>
+<td>Parse and generate</td>
+</tr>
+<tr>
+<td>CSV</td>
+<td>✅</td>
+<td>-</td>
+<td>Read and write</td>
+</tr>
+<tr>
+<td>Base64</td>
+<td>✅</td>
+<td>-</td>
+<td>Encode and decode</td>
+</tr>
+<tr>
+<td>MessagePack</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>Protocol Buffers</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td><strong>Databases</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>SQLite</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>PostgreSQL</td>
+<td>📋</td>
+<td>-</td>
+<td>Planned</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="comparison-with-other-languages">Comparison with Other
+Languages</h2>
+<table>
+<colgroup>
+<col style="width: 18%" />
+<col style="width: 16%" />
+<col style="width: 16%" />
+<col style="width: 14%" />
+<col style="width: 18%" />
+<col style="width: 16%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Eshkol</th>
+<th>Python</th>
+<th>Julia</th>
+<th>Haskell</th>
+<th>Scheme</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Language Type</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Paradigm</td>
+<td>Functional-first</td>
+<td>Multi-paradigm</td>
+<td>Multi-paradigm</td>
+<td>Purely functional</td>
+<td>Functional</td>
+</tr>
+<tr>
+<td>Type System</td>
+<td>Gradual + Dependent</td>
+<td>Dynamic</td>
+<td>Dynamic</td>
+<td>Static</td>
+<td>Dynamic</td>
+</tr>
+<tr>
+<td>Memory Model</td>
+<td>OALR (regions)</td>
+<td>GC</td>
+<td>GC</td>
+<td>GC</td>
+<td>GC</td>
+</tr>
+<tr>
+<td><strong>Automatic Differentiation</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Built-in AD</td>
+<td>✅ 3 modes</td>
+<td>❌ (libraries)</td>
+<td>✅ (libraries)</td>
+<td>❌ (libraries)</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>Forward-mode</td>
+<td>✅ Dual numbers</td>
+<td>JAX, PyTorch</td>
+<td>ForwardDiff.jl</td>
+<td>ad</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>Reverse-mode</td>
+<td>✅ Tape-based</td>
+<td>JAX, PyTorch</td>
+<td>Zygote.jl</td>
+<td>-</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>Symbolic</td>
+<td>✅ Compile-time</td>
+<td>SymPy</td>
+<td>Symbolics.jl</td>
+<td>-</td>
+<td>❌</td>
+</tr>
+<tr>
+<td><strong>Performance</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Native compilation</td>
+<td>✅ LLVM</td>
+<td>❌ (CPython)</td>
+<td>✅ LLVM</td>
+<td>✅ GHC</td>
+<td>❌ (most)</td>
+</tr>
+<tr>
+<td>JIT available</td>
+<td>✅ REPL</td>
+<td>❌ (CPython)</td>
+<td>✅</td>
+<td>❌</td>
+<td>❌ (most)</td>
+</tr>
+<tr>
+<td>Zero-copy views</td>
+<td>✅</td>
+<td>✅ (NumPy)</td>
+<td>✅</td>
+<td>❌</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>Tail call optimization</td>
+<td>✅</td>
+<td>❌</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>Ease of Use</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Interactive REPL</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Package manager</td>
+<td>✅ eshkol-pkg</td>
+<td>✅ pip</td>
+<td>✅ Pkg</td>
+<td>✅ cabal</td>
+<td>Varies</td>
+</tr>
+<tr>
+<td>IDE support</td>
+<td>✅ LSP</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Learning curve</td>
+<td>Medium</td>
+<td>Low</td>
+<td>Medium</td>
+<td>High</td>
+<td>Medium</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="test-coverage-summary">Test Coverage Summary</h2>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Test Files</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Core Language</strong></td>
+<td>80+</td>
+<td>✅</td>
+<td>All special forms verified</td>
+</tr>
+<tr>
+<td><strong>List Processing</strong></td>
+<td>60+</td>
+<td>✅</td>
+<td>Comprehensive coverage</td>
+</tr>
+<tr>
+<td><strong>Automatic Differentiation</strong></td>
+<td>50+</td>
+<td>✅</td>
+<td>All 3 modes validated</td>
+</tr>
+<tr>
+<td><strong>Tensors</strong></td>
+<td>30+</td>
+<td>✅</td>
+<td>N-D operations verified</td>
+</tr>
+<tr>
+<td><strong>Neural Networks</strong></td>
+<td>10+</td>
+<td>✅</td>
+<td>Training loops work</td>
+</tr>
+<tr>
+<td><strong>Standard Library</strong></td>
+<td>40+</td>
+<td>✅</td>
+<td>All modules tested</td>
+</tr>
+<tr>
+<td><strong>Type System</strong></td>
+<td>15+</td>
+<td>✅</td>
+<td>HoTT types validated</td>
+</tr>
+<tr>
+<td><strong>Memory Management</strong></td>
+<td>20+</td>
+<td>✅</td>
+<td>Arena correctness</td>
+</tr>
+<tr>
+<td><strong>System Integration</strong></td>
+<td>15+</td>
+<td>✅</td>
+<td>File I/O, system calls</td>
+</tr>
+<tr>
+<td><strong>REPL/JIT</strong></td>
+<td>10+</td>
+<td>✅</td>
+<td>Cross-eval persistence</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>426</strong></td>
+<td><strong>✅</strong></td>
+<td><strong>High confidence</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="roadmap">Roadmap</h2>
+<h3 id="v1.1-accelerate-q1-2026-completed">v1.1-accelerate (Q1 2026) —
+COMPLETED</h3>
+<ul>
+<li>✅ <strong>GPU Support</strong>: Metal (Apple Silicon) + CUDA
+(NVIDIA)</li>
+<li>✅ <strong>XLA Backend</strong>: StableHLO/MLIR + LLVM-direct</li>
+<li>✅ <strong>Parallel Primitives</strong>: parallel-map,
+parallel-fold, future/force</li>
+<li>✅ <strong>Exact Arithmetic</strong>: Bignums, rationals, full
+numeric tower</li>
+<li>✅ <strong>Consciousness Engine</strong>: Logic, inference,
+workspace (22 builtins)</li>
+<li>✅ <strong>Signal Processing</strong>: FFT, filters, window
+functions</li>
+<li>✅ <strong>Optimizers</strong>: Adam, L-BFGS, conjugate gradient in
+stdlib</li>
+<li>✅ <strong>R7RS Extensions</strong>: call/cc, dynamic-wind,
+bytevectors, let-syntax</li>
+</ul>
+<h3 id="v1.2-scale-q2-2026">v1.2-scale (Q2 2026)</h3>
+<ul>
+<li><strong>Data I/O</strong>: Image/audio I/O, typed buffers, streams,
+DataFrame, plotting</li>
+<li><strong>Vulkan Compute</strong>: Cross-platform GPU backend,
+multi-GPU</li>
+<li><strong>Model Deployment</strong>: Serialization, ONNX export,
+quantization</li>
+<li><strong>Python Bindings</strong>: Call Eshkol from Python and vice
+versa</li>
+<li><strong>Distributed Training</strong>: AllReduce, MPI, gRPC</li>
+</ul>
+<h3 id="v1.3-evolve-q3-2026">v1.3-evolve (Q3 2026)</h3>
+<ul>
+<li><strong>Language Extensions</strong>: Full R7RS library system,
+string interpolation, keyword arguments</li>
+<li><strong>Advanced Types</strong>: Refinement types, effect types,
+higher-rank types, row polymorphism</li>
+<li><strong>Compiler Optimization</strong>: PGO, whole-program
+optimization, polyhedral loop optimization</li>
+</ul>
+<h3 id="v1.4-connection-q4-2026">v1.4-connection (Q4 2026)</h3>
+<ul>
+<li><strong>Platform Abstraction</strong>: Cross-platform windows, event
+system, event loop</li>
+<li><strong>Real-Time Audio</strong>: Device management, synthesis, MIDI
+I/O</li>
+<li><strong>Networking</strong>: TCP/UDP sockets with linear resource
+management</li>
+<li><strong>Embedded &amp; Robotics</strong>: GPIO, I2C/SPI/UART, PWM,
+ADC/DAC, mobile targets</li>
+</ul>
+<h3 id="v1.5-intelligence-q1-2027">v1.5-intelligence (Q1 2027)</h3>
+<ul>
+<li><strong>Neuro-Symbolic Bridge</strong>: Soft unification, symbol
+embeddings, attention over KB</li>
+<li><strong>Program Synthesis</strong>: Type-directed holes,
+neural-guided search</li>
+<li><strong>Advanced Neural</strong>: LSTM/GRU cells, Graph Neural
+Networks</li>
+</ul>
+<h3 id="v2.0-starlight-2027">v2.0-starlight (2027+)</h3>
+<ul>
+<li><strong>Quantum Computing</strong>: Qubit types with linear
+tracking, gates, VQE/QAOA</li>
+<li><strong>Formal Verification</strong>: Proof assistant integration,
+certified compilation</li>
+<li><strong>Next-Gen Types</strong>: Session types, algebraic effects,
+quantitative type theory</li>
+</ul>
+<hr />
+<h2 id="production-readiness">Production Readiness</h2>
+<h3 id="production-ready-v1.1">✅ Production-Ready (v1.1)</h3>
+<ul>
+<li>Core language (70+ special forms, 700+ builtins)</li>
+<li>Automatic differentiation (3 modes)</li>
+<li>Tensor operations (30+ functions)</li>
+<li>List processing (50+ operations)</li>
+<li>Standard library (25+ modules, 300+ functions)</li>
+<li>LLVM-based native compilation</li>
+<li>Arena-based memory management</li>
+<li>REPL with JIT compilation and stdlib</li>
+<li>Module system with package manager</li>
+<li>GPU acceleration (Metal + CUDA)</li>
+<li>Parallel primitives (thread pool, futures)</li>
+<li>Exact arithmetic (bignums, rationals)</li>
+<li>Complex numbers with AD</li>
+<li>Signal processing (FFT, filters)</li>
+<li>Consciousness engine (22 builtins)</li>
+<li>call/cc and dynamic-wind</li>
+<li>Bytevectors</li>
+<li>LSP server</li>
+</ul>
+<h3 id="beta-quality">🚧 Beta Quality</h3>
+<ul>
+<li>FFI (works but callback registration planned)</li>
+<li>Quantum RNG (external dependency)</li>
+<li>XLA StableHLO path (requires MLIR, LLVM-direct is default)</li>
+</ul>
+<h3 id="not-yet-production">📋 Not Yet Production</h3>
+<ul>
+<li>Distributed computing</li>
+<li>Model serialization/ONNX export</li>
+<li>Vulkan Compute</li>
+</ul>
+<hr />
+<h2 id="dual-backend-architecture-v1.1">Dual Backend Architecture
+(v1.1)</h2>
+<table>
+<colgroup>
+<col style="width: 37%" />
+<col style="width: 33%" />
+<col style="width: 29%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Bytecode VM</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>63-opcode ISA</td>
+<td>✅</td>
+<td>Register+stack architecture, computed-goto dispatch</td>
+</tr>
+<tr>
+<td>250+ native call IDs</td>
+<td>✅</td>
+<td>Math, string, IO, complex, rational, bignum, dual, AD, tensor,
+logic, inference, workspace, hash, bytevector, parameter</td>
+</tr>
+<tr>
+<td>ESKB binary format</td>
+<td>✅</td>
+<td>Section-based layout, LEB128 encoding, CRC32 checksums</td>
+</tr>
+<tr>
+<td><code>-B</code> flag (bytecode emission)</td>
+<td>✅</td>
+<td><code>eshkol-run input.esk -B output.eskb</code></td>
+</tr>
+<tr>
+<td>VM compiler integration</td>
+<td>✅</td>
+<td>eshkol_vm.c linked into compiler build</td>
+</tr>
+<tr>
+<td>Closures &amp; upvalues</td>
+<td>✅</td>
+<td>Closure creation, open/close upvalues, mutable captures</td>
+</tr>
+<tr>
+<td>call/cc &amp; dynamic-wind</td>
+<td>✅</td>
+<td>Continuation capture, wind stack</td>
+</tr>
+<tr>
+<td>guard/raise exceptions</td>
+<td>✅</td>
+<td>Handler stack with continuation restore</td>
+</tr>
+<tr>
+<td>Variadic functions</td>
+<td>✅</td>
+<td>OP_PACK_REST for rest parameters</td>
+</tr>
+<tr>
+<td><strong>Weight Matrix Transformer</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Transformer interpreter</td>
+<td>✅</td>
+<td>d_model=36, 5 layers, FFN_DIM=512, 307K params</td>
+</tr>
+<tr>
+<td>3-way verification</td>
+<td>✅</td>
+<td>Reference = simulated = matrix-based (55/55 tests)</td>
+</tr>
+<tr>
+<td>QLMW binary export</td>
+<td>✅</td>
+<td>For qLLM weight loading</td>
+</tr>
+<tr>
+<td>25 core opcodes in weights</td>
+<td>✅</td>
+<td>Remaining 38 via native dispatch</td>
+</tr>
+<tr>
+<td><strong>qLLM Bridge</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Eshkol↔︎qLLM tensors</td>
+<td>✅</td>
+<td>Type conversion (double↔︎float32) with AD integration</td>
+</tr>
+</tbody>
+</table>
+<h2 id="tensor-linear-algebra-v1.1">Tensor Linear Algebra (v1.1)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tensor-cholesky</code></td>
+<td>✅</td>
+<td>Cholesky decomposition</td>
+</tr>
+<tr>
+<td><code>tensor-lu</code></td>
+<td>✅</td>
+<td>LU decomposition</td>
+</tr>
+<tr>
+<td><code>tensor-qr</code></td>
+<td>✅</td>
+<td>QR decomposition</td>
+</tr>
+<tr>
+<td><code>tensor-svd</code></td>
+<td>✅</td>
+<td>Singular value decomposition</td>
+</tr>
+<tr>
+<td><code>tensor-solve</code></td>
+<td>✅</td>
+<td>Linear system solver</td>
+</tr>
+<tr>
+<td><code>tensor-det</code></td>
+<td>✅</td>
+<td>Determinant</td>
+</tr>
+<tr>
+<td><code>tensor-inverse</code></td>
+<td>✅</td>
+<td>Matrix inverse</td>
+</tr>
+<tr>
+<td><code>tensor-cov</code></td>
+<td>✅</td>
+<td>Covariance matrix</td>
+</tr>
+<tr>
+<td><code>tensor-corrcoef</code></td>
+<td>✅</td>
+<td>Correlation coefficient matrix</td>
+</tr>
+</tbody>
+</table>
+<h2 id="data-loading-v1.1">Data Loading (v1.1)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>make-dataloader</code></td>
+<td>✅</td>
+<td>Create batched data iterator</td>
+</tr>
+<tr>
+<td><code>dataloader-next</code></td>
+<td>✅</td>
+<td>Get next batch</td>
+</tr>
+<tr>
+<td><code>dataloader-reset</code></td>
+<td>✅</td>
+<td>Reset to beginning</td>
+</tr>
+<tr>
+<td><code>dataloader-length</code></td>
+<td>✅</td>
+<td>Total number of batches</td>
+</tr>
+<tr>
+<td><code>dataloader-has-next</code></td>
+<td>✅</td>
+<td>Check if more batches available</td>
+</tr>
+<tr>
+<td><code>train-test-split</code></td>
+<td>✅</td>
+<td>Split dataset into train/test</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="known-limitations">Known Limitations</h2>
+<ol type="1">
+<li><strong>Single GPU dispatch</strong> - One GPU at a time (multi-GPU
+planned v1.2)</li>
+<li><strong>Small ecosystem</strong> - Growing standard library, but not
+as extensive as Python/Julia</li>
+<li><strong>Learning curve</strong> - Functional programming + AD
+concepts require study</li>
+<li><strong>Platform support</strong> - Linux, macOS, and Windows
+(MSYS2/MinGW64)</li>
+</ol>
+<hr />
+<h2 id="strengths">Strengths</h2>
+<ol type="1">
+<li><strong>Best-in-class AD</strong> - Three modes (symbolic, forward,
+reverse) in one language</li>
+<li><strong>Zero manual derivatives</strong> - Compute gradients of
+<strong>any</strong> Eshkol function automatically</li>
+<li><strong>Production compiler</strong> - LLVM backend produces
+optimized native code</li>
+<li><strong>Scientific focus</strong> - Designed for numerical computing
+and physics simulation</li>
+<li><strong>Homoiconic</strong> - Code is data, metaprogramming is
+natural</li>
+<li><strong>Memory safety</strong> - OALR prevents leaks without GC
+pauses</li>
+<li><strong>Scheme heritage</strong> - Clean, powerful functional
+programming model</li>
+</ol>
+<hr />
+<h2 id="version-history">Version History</h2>
+<h3 id="v1.1-march-2026---accelerate-release">v1.1 (March 2026) -
+Accelerate Release</h3>
+<p><strong>Highlights</strong>: - XLA backend with dual-mode tensor
+acceleration - GPU acceleration: Metal (Apple Silicon) + CUDA (NVIDIA) -
+Parallel primitives with work-stealing thread pool - Arbitrary-precision
+arithmetic (bignums + rationals) - Consciousness engine (logic,
+inference, workspace) - Signal processing library (FFT, filters, window
+functions) - R7RS extensions (call/cc, dynamic-wind, bytevectors) - 700+
+builtins, 35 test suites, 434 test files</p>
+<p><strong>Codebase</strong>: ~232,000 lines of production C/C++</p>
+<h3 id="v1.0-december-2025---foundation-release">v1.0 (December 2025) -
+Foundation Release</h3>
+<p><strong>Highlights</strong>: - Complete automatic differentiation
+system (3 modes) - N-dimensional tensor operations - 70+ special forms -
+180+ standard library functions - HoTT dependent type system - LLVM
+native compilation - Arena-based memory management</p>
+<p><strong>Codebase</strong>: 67,079 lines of production C++</p>
+<hr />
+<h2 id="contributing">Contributing</h2>
+<p>See <a href="../CONTRIBUTING.md">CONTRIBUTING.md</a> for development
+guidelines.</p>
+<p><strong>Key Areas</strong>: - GPU acceleration (CUDA/Metal backends)
+- Advanced ML ops (convolution, attention) - IDE tooling (LSP, debugger)
+- Python/Julia interop - Package ecosystem</p>
+<hr />
+<h2 id="license-credits">License &amp; Credits</h2>
+<p><strong>License</strong>: MIT<br />
+<strong>Copyright</strong>: © 2025 tsotchke<br />
+<strong>LLVM</strong>: Apache 2.0 with LLVM Exception</p>
+<p><strong>Acknowledgments</strong>: - LLVM Project (compiler
+infrastructure) - Scheme community (language design inspiration) -
+JAX/PyTorch (AD implementation insights) - Julia (technical computing
+design patterns)</p>
+<hr />
+<p><strong>Last Updated</strong>: 2026-03-27 <strong>Document
+Version</strong>: 1.1.11</p>
+<p>For detailed API documentation, see <a
+href="API_REFERENCE.md">API_REFERENCE.md</a></p>

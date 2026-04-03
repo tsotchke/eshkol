@@ -1,0 +1,43 @@
+;;
+;; git-ffi.esk - Git operations via shell
+;; Thin wrapper for common git commands (no libgit2 FFI needed)
+;;
+(provide git-run git-status git-diff-stat git-branch-current
+         git-is-repo? git-root git-log-oneline)
+
+(define (shell-escape s)
+  (string-append "'" (string-replace s "'" "'\"'\"'") "'"))
+
+(define (git-run cwd . args)
+  "Run a git command, return (exit-code . output)."
+  (let* ((cmd (string-append "cd " (shell-escape cwd)
+                              " && git " (string-join args " ")))
+         (tmp (string-append "/tmp/eshkol-git-"
+                              (number->string (modulo (current-seconds) 99999)) ".out"))
+         (rc (system (string-append cmd " > " tmp " 2>&1")))
+         (out (guard (e (#t "")) (read-file tmp))))
+    (guard (e (#t #f)) (file-delete tmp))
+    (cons rc out)))
+
+(define (git-is-repo? cwd)
+  (= (car (git-run cwd "rev-parse" "--is-inside-work-tree")) 0))
+
+(define (git-root cwd)
+  (let ((r (git-run cwd "rev-parse" "--show-toplevel")))
+    (if (= (car r) 0) (string-trim (cdr r)) #f)))
+
+(define (git-branch-current cwd)
+  (let ((r (git-run cwd "branch" "--show-current")))
+    (if (= (car r) 0) (string-trim (cdr r)) #f)))
+
+(define (git-status cwd)
+  (let ((r (git-run cwd "status" "--short")))
+    (if (= (car r) 0) (cdr r) "")))
+
+(define (git-diff-stat cwd)
+  (let ((r (git-run cwd "diff" "--stat")))
+    (if (= (car r) 0) (cdr r) "")))
+
+(define (git-log-oneline cwd count)
+  (let ((r (git-run cwd "log" (string-append "--oneline -" (number->string count)))))
+    (if (= (car r) 0) (cdr r) "")))

@@ -1,0 +1,41 @@
+;;
+;; keychain.esk - macOS Keychain FFI wrapper
+;; Uses shell `security` command (no C FFI needed — Security.framework is complex)
+;;
+(provide keychain-get keychain-set! keychain-delete keychain-has?)
+
+(define KEYCHAIN_SERVICE "eshkol-agent")
+
+(define (shell-escape s)
+  (string-append "'" (string-replace s "'" "'\"'\"'") "'"))
+
+(define (keychain-get account)
+  "Retrieve a password from macOS Keychain."
+  (let* ((tmp "/tmp/eshkol-kc.txt")
+         (cmd (string-append "security find-generic-password -s "
+                              (shell-escape KEYCHAIN_SERVICE) " -a "
+                              (shell-escape account) " -w > " tmp " 2>/dev/null"))
+         (rc (system cmd))
+         (val (guard (e (#t #f)) (string-trim (read-file tmp)))))
+    (guard (e (#t #f)) (file-delete tmp))
+    (if (= rc 0) val #f)))
+
+(define (keychain-set! account value)
+  "Store a password in macOS Keychain."
+  (system (string-append "security delete-generic-password -s "
+                          (shell-escape KEYCHAIN_SERVICE) " -a "
+                          (shell-escape account) " 2>/dev/null"))
+  (= (system (string-append "security add-generic-password -s "
+                              (shell-escape KEYCHAIN_SERVICE) " -a "
+                              (shell-escape account) " -w "
+                              (shell-escape value) " -U 2>/dev/null")) 0))
+
+(define (keychain-delete account)
+  (= (system (string-append "security delete-generic-password -s "
+                              (shell-escape KEYCHAIN_SERVICE) " -a "
+                              (shell-escape account) " 2>/dev/null")) 0))
+
+(define (keychain-has? account)
+  (= (system (string-append "security find-generic-password -s "
+                              (shell-escape KEYCHAIN_SERVICE) " -a "
+                              (shell-escape account) " >/dev/null 2>&1")) 0))

@@ -152,7 +152,7 @@ llvm::Function* FunctionCache::getMemset() {
 llvm::Function* FunctionCache::getSnprintf() {
     if (!snprintf_func) {
         auto ft = llvm::FunctionType::get(types.getInt32Type(),
-            {types.getPtrType(), types.getInt64Type(), types.getPtrType()}, true);
+            {types.getPtrType(), types.getSizeType(), types.getPtrType()}, true);
         getOrCreateFunction("snprintf", ft, snprintf_func);
     }
     return snprintf_func;

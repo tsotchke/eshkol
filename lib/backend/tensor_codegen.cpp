@@ -176,7 +176,7 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
     }
 
     // Allocate dimensions array using arena
-    llvm::Value* dims_size = llvm::ConstantInt::get(ctx_.int64Type(),
+    llvm::Value* dims_size = llvm::ConstantInt::get(ctx_.sizeType(),
         op->tensor_op.num_dimensions * sizeof(uint64_t));
     llvm::Function* arena_alloc_func = mem_.getArenaAllocate();
     llvm::Value* dims_ptr = builder.CreateCall(arena_alloc_func, {arena_ptr, dims_size}, "dims_ptr");
@@ -189,7 +189,7 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
     }
 
     // Allocate and populate elements array using arena
-    llvm::Value* elements_size = llvm::ConstantInt::get(ctx_.int64Type(),
+    llvm::Value* elements_size = llvm::ConstantInt::get(ctx_.sizeType(),
         op->tensor_op.total_elements * sizeof(int64_t));
     llvm::Value* elements_ptr = builder.CreateCall(arena_alloc_func, {arena_ptr, elements_size}, "elems_ptr");
     llvm::Value* typed_elements_ptr = builder.CreatePointerCast(elements_ptr, builder.getPtrTy());
@@ -1875,7 +1875,7 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // 2D result: dims = [M, N], ndim = 2
     ctx_.builder().SetInsertPoint(result_2d_bb);
     llvm::Value* c_dims_2d = ctx_.builder().CreateCall(arena_alloc,
-        {dot_arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 16)}, "dot_dims_2d");
+        {dot_arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), 16)}, "dot_dims_2d");
     ctx_.builder().CreateStore(a_rows,
         ctx_.builder().CreateGEP(ctx_.int64Type(), c_dims_2d, llvm::ConstantInt::get(ctx_.int64Type(), 0)));
     ctx_.builder().CreateStore(b_cols,
@@ -1886,7 +1886,7 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // 1D result: if A was 1D → dim = [N]; if B was 1D → dim = [M]
     ctx_.builder().SetInsertPoint(result_1d_bb);
     llvm::Value* c_dims_1d = ctx_.builder().CreateCall(arena_alloc,
-        {dot_arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 8)}, "dot_dims_1d");
+        {dot_arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), 8)}, "dot_dims_1d");
     llvm::Value* contracted_dim = ctx_.builder().CreateSelect(a_is_1d, b_cols, a_rows);
     ctx_.builder().CreateStore(contracted_dim,
         ctx_.builder().CreateGEP(ctx_.int64Type(), c_dims_1d, llvm::ConstantInt::get(ctx_.int64Type(), 0)));

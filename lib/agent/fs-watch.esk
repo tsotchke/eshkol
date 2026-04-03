@@ -1,0 +1,54 @@
+;;
+;; fs-watch.esk - File system watching
+;; Uses fswatch (macOS) or inotifywait (Linux) via shell
+;;
+(provide fs-watch-start fs-watch-poll fs-watch-stop)
+
+(define (shell-escape s)
+  (string-append "'" (string-replace s "'" "'\"'\"'") "'"))
+
+(define (fs-watch-start directory callback-file)
+  "Start watching a directory for changes.
+   Writes changed paths to callback-file, one per line.
+   Returns PID of watcher process or -1 on failure."
+  (let* ((pid-file (string-append "/tmp/eshkol-fswatch-"
+                                   (number->string (current-seconds)) ".pid"))
+         ;; Try fswatch (macOS), then inotifywait (Linux), then polling
+         (cmd (string-append
+                "("
+                "if command -v fswatch >/dev/null 2>&1; then "
+                "  fswatch -1 --recursive " (shell-escape directory)
+                "  >> " (shell-escape callback-file) "; "
+                "elif command -v inotifywait >/dev/null 2>&1; then "
+                "  inotifywait -r -m --format '%w%f' "
+                (shell-escape directory) " >> " (shell-escape callback-file) "; "
+                "else "
+                "  while true; do "
+                "    find " (shell-escape directory) " -newer " (shell-escape callback-file)
+                "    -not -path '*/.git/*' 2>/dev/null >> " (shell-escape callback-file) "; "
+                "    sleep 2; "
+                "  done; "
+                "fi"
+                ") & echo $! > " pid-file))
+         (_ (system cmd))
+         (pid-str (guard (e (#t "")) (string-trim (read-file pid-file))))
+         (pid (if (string=? pid-str "") -1 (or (string->number pid-str) -1))))
+    (guard (e (#t #f)) (file-delete pid-file))
+    pid))
+
+(define (fs-watch-poll callback-file)
+  "Read and clear the list of changed files.
+   Returns list of changed paths."
+  (guard (e (#t '()))
+    (if (not (file-exists? callback-file)) '()
+        (let* ((content (read-file callback-file))
+               (paths (filter (lambda (s) (not (string=? s "")))
+                              (string-split-ordered content "\n"))))
+          ;; Clear the file
+          (write-file callback-file "")
+          paths))))
+
+(define (fs-watch-stop pid)
+  "Stop a file watcher by PID."
+  (when (> pid 0)
+    (system (string-append "kill " (number->string pid) " 2>/dev/null"))))

@@ -1,15 +1,19 @@
-;;; main.esk — Eshkol website entry point
+;;; main.esk — Eshkol website
 ;;;
 ;;; This entire website is written in Eshkol, compiled to WebAssembly,
-;;; and served via GitHub Pages. It demonstrates Eshkol's web platform
-;;; capabilities using the DOM binding API.
+;;; and served via GitHub Pages. Single-page application with hash routing.
 
-;; Web API extern declarations
+;; ═══════════════════════════════════════════════════════════
+;; EXTERN DECLARATIONS
+;; ═══════════════════════════════════════════════════════════
+
+;; DOM
 (extern i32 web-get-body :real web_get_body)
 (extern i32 web-get-window :real web_get_window)
 (extern i32 web-create-element ptr :real web_create_element)
 (extern i32 web-create-text-node ptr :real web_create_text_node)
 (extern i32 web-append-child i32 i32 :real web_append_child)
+(extern i32 web-remove-child i32 i32 :real web_remove_child)
 (extern i32 web-set-text-content i32 ptr :real web_set_text_content)
 (extern i32 web-set-inner-html i32 ptr :real web_set_inner_html)
 (extern i32 web-set-attribute i32 ptr ptr :real web_set_attribute)
@@ -19,9 +23,20 @@
 (extern i32 web-get-element-by-id ptr :real web_get_element_by_id)
 (extern i32 web-query-selector ptr :real web_query_selector)
 (extern void web-console-log ptr :real web_console_log)
+
+;; Location / Routing
 (extern i32 web-get-hash ptr i32 :real web_get_hash)
 (extern i32 web-set-hash ptr :real web_set_hash)
 (extern i32 web-get-window-width :real web_get_window_width)
+(extern void web-scroll-to i32 i32 :real web_scroll_to)
+
+;; Content loading
+(extern i32 web-load-content ptr i32 :real web_load_content)
+
+;; REPL evaluation (bytecode VM compiled to WASM)
+(extern i32 web-repl-eval ptr i32 :real web_repl_eval)
+
+;; Canvas
 (extern i32 web-canvas-get-context i32 ptr :real web_canvas_get_context)
 (extern i32 web-canvas-fill-rect i32 i32 i32 i32 i32 :real web_canvas_fill_rect)
 (extern i32 web-canvas-clear-rect i32 i32 i32 i32 i32 :real web_canvas_clear_rect)
@@ -34,12 +49,13 @@
 (extern i32 web-canvas-stroke i32 :real web_canvas_stroke)
 (extern i32 web-canvas-fill-text i32 ptr f64 f64 :real web_canvas_fill_text)
 (extern i32 web-canvas-set-font i32 ptr :real web_canvas_set_font)
+(extern i32 web-canvas-arc i32 f64 f64 f64 f64 f64 :real web_canvas_arc)
 (extern i32 web-request-animation-frame i32 :real web_request_animation_frame)
 (extern i32 web-performance-now :real web_performance_now)
 (extern i32 web-set-timeout i32 i32 :real web_set_timeout)
 
 ;; ═══════════════════════════════════════════════════════════
-;; HELPERS
+;; COMPONENT LIBRARY
 ;; ═══════════════════════════════════════════════════════════
 
 (define (create-div parent)
@@ -57,6 +73,111 @@
   (web-set-style el prop val)
   el)
 
+(define (create-section parent)
+  (let ((s (create-div parent)))
+    (style! s "maxWidth" "1200px")
+    (style! s "margin" "0 auto")
+    (style! s "padding" "80px 32px")
+    s))
+
+(define (create-narrow-section parent)
+  (let ((s (create-div parent)))
+    (style! s "maxWidth" "900px")
+    (style! s "margin" "0 auto")
+    (style! s "padding" "80px 32px")
+    s))
+
+(define (create-card parent)
+  (let ((c (create-div parent)))
+    (style! c "background" "#1a1a28")
+    (style! c "border" "1px solid #2a2a3a")
+    (style! c "borderRadius" "12px")
+    (style! c "padding" "28px")
+    c))
+
+(define (create-grid parent)
+  (let ((g (create-div parent)))
+    (style! g "display" "flex")
+    (style! g "gap" "24px")
+    (style! g "flexWrap" "wrap")
+    g))
+
+(define (create-code-block parent code-html)
+  (let ((block (create-div parent)))
+    (style! block "background" "#0d0d15")
+    (style! block "border" "1px solid #2a2a3a")
+    (style! block "borderRadius" "12px")
+    (style! block "padding" "24px 28px")
+    (style! block "overflow" "auto")
+    (web-set-inner-html block code-html)
+    block))
+
+(define (create-page-header parent title subtitle)
+  (let ((header (create-div parent)))
+    (style! header "marginBottom" "48px")
+    (style! header "paddingTop" "32px")
+
+    (let ((h (create-text "h1" title header)))
+      (style! h "fontSize" "2.8rem")
+      (style! h "fontWeight" "800")
+      (style! h "letterSpacing" "-1px")
+      (style! h "background" "linear-gradient(135deg, #7c3aed, #a78bfa, #00ff88)")
+      (style! h "WebkitBackgroundClip" "text")
+      (style! h "WebkitTextFillColor" "transparent")
+      (style! h "marginBottom" "12px"))
+
+    (let ((sub (create-text "p" subtitle header)))
+      (style! sub "fontSize" "1.1rem")
+      (style! sub "color" "#606078")
+      (style! sub "maxWidth" "700px"))
+
+    header))
+
+(define (create-nav-link text href container)
+  (let ((a (create-text "a" text container)))
+    (style! a "color" "#a0a0b8")
+    (style! a "textDecoration" "none")
+    (style! a "fontSize" "0.9rem")
+    (style! a "fontWeight" "500")
+    (web-set-attribute a "href" href)
+    a))
+
+(define (create-ext-link text href container)
+  (let ((a (create-text "a" text container)))
+    (style! a "color" "#a0a0b8")
+    (style! a "textDecoration" "none")
+    (style! a "fontSize" "0.85rem")
+    (style! a "display" "block")
+    (style! a "marginBottom" "8px")
+    (web-set-attribute a "href" href)
+    (web-set-attribute a "target" "_blank")
+    a))
+
+(define (section-heading parent title)
+  (let ((h (create-text "h2" title parent)))
+    (style! h "fontSize" "1.8rem")
+    (style! h "fontWeight" "700")
+    (style! h "marginBottom" "16px")
+    (style! h "marginTop" "48px")
+    h))
+
+(define (section-subheading parent title)
+  (let ((h (create-text "h3" title parent)))
+    (style! h "fontSize" "1.3rem")
+    (style! h "fontWeight" "600")
+    (style! h "marginBottom" "12px")
+    (style! h "marginTop" "32px")
+    (style! h "color" "#a78bfa")
+    h))
+
+(define (body-text parent text)
+  (let ((p (create-text "p" text parent)))
+    (style! p "color" "#a0a0b8")
+    (style! p "fontSize" "0.95rem")
+    (style! p "lineHeight" "1.7")
+    (style! p "marginBottom" "16px")
+    p))
+
 ;; ═══════════════════════════════════════════════════════════
 ;; NAVIGATION
 ;; ═══════════════════════════════════════════════════════════
@@ -68,7 +189,7 @@
     (style! nav "left" "0")
     (style! nav "right" "0")
     (style! nav "height" "64px")
-    (style! nav "background" "rgba(10,10,15,0.9)")
+    (style! nav "background" "rgba(10,10,15,0.92)")
     (style! nav "backdropFilter" "blur(12px)")
     (style! nav "display" "flex")
     (style! nav "alignItems" "center")
@@ -86,42 +207,116 @@
       (style! logo "letterSpacing" "-0.5px")
       (web-set-attribute logo "href" "#/"))
 
-    ;; Nav links container
+    ;; Nav links
     (let ((links (create-div nav)))
       (style! links "display" "flex")
-      (style! links "gap" "28px")
+      (style! links "gap" "24px")
       (style! links "alignItems" "center")
 
-      (let ((make-link (lambda (text href)
-              (let ((a (create-text "a" text links)))
-                (style! a "color" "#a0a0b8")
-                (style! a "textDecoration" "none")
-                (style! a "fontSize" "0.9rem")
-                (style! a "fontWeight" "500")
-                (web-set-attribute a "href" href)
-                a))))
-        (make-link "Features" "#/features")
-        (make-link "Downloads" "#/downloads")
-        (make-link "Docs" "#/docs")
-        (make-link "Playground" "#/playground")
+      (create-nav-link "Features" "#/features" links)
+      (create-nav-link "Docs" "#/docs" links)
+      (create-nav-link "Learn" "#/learn" links)
+      (create-nav-link "Examples" "#/examples" links)
+      (create-nav-link "Install" "#/install" links)
 
-        ;; GitHub link
-        (let ((gh (create-text "a" "GitHub" links)))
-          (style! gh "color" "#0a0a0f")
-          (style! gh "background" "#7c3aed")
-          (style! gh "padding" "6px 16px")
-          (style! gh "borderRadius" "6px")
-          (style! gh "fontSize" "0.85rem")
-          (style! gh "fontWeight" "600")
-          (style! gh "textDecoration" "none")
-          (web-set-attribute gh "href" "https://github.com/tsotchke/eshkol")
-          (web-set-attribute gh "target" "_blank"))))
+      ;; GitHub button (external)
+      (let ((gh (create-text "a" "GitHub" links)))
+        (style! gh "color" "#0a0a0f")
+        (style! gh "background" "#7c3aed")
+        (style! gh "padding" "6px 16px")
+        (style! gh "borderRadius" "6px")
+        (style! gh "fontSize" "0.85rem")
+        (style! gh "fontWeight" "600")
+        (style! gh "textDecoration" "none")
+        (web-set-attribute gh "href" "https://github.com/tsotchke/eshkol")
+        (web-set-attribute gh "target" "_blank")))
 
     (web-append-child parent nav)
     nav))
 
 ;; ═══════════════════════════════════════════════════════════
-;; HERO SECTION
+;; FOOTER
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-footer parent)
+  (let ((footer (create-div parent)))
+    (style! footer "padding" "60px 32px 40px")
+    (style! footer "borderTop" "1px solid #1a1a28")
+    (style! footer "marginTop" "40px")
+
+    (let ((cols (create-div footer)))
+      (style! cols "maxWidth" "1200px")
+      (style! cols "margin" "0 auto 40px")
+      (style! cols "display" "flex")
+      (style! cols "gap" "64px")
+      (style! cols "flexWrap" "wrap")
+      (style! cols "justifyContent" "space-between")
+
+      ;; Brand
+      (let ((brand (create-div cols)))
+        (style! brand "minWidth" "200px")
+        (let ((name (create-text "div" "Eshkol" brand)))
+          (style! name "fontSize" "1.3rem")
+          (style! name "fontWeight" "800")
+          (style! name "color" "#7c3aed")
+          (style! name "marginBottom" "12px"))
+        (let ((desc (create-text "p" "Compiled, deterministic, differentiable. Mathematics as a first-class citizen." brand)))
+          (style! desc "color" "#606078")
+          (style! desc "fontSize" "0.85rem")
+          (style! desc "lineHeight" "1.6")
+          (style! desc "maxWidth" "260px")))
+
+      ;; Navigate
+      (let ((nav-col (create-div cols)))
+        (style! nav-col "minWidth" "120px")
+        (let ((h (create-text "div" "Navigate" nav-col)))
+          (style! h "fontWeight" "600")
+          (style! h "marginBottom" "12px")
+          (style! h "fontSize" "0.85rem"))
+        (create-nav-link "Features" "#/features" nav-col)
+        (let ((s (web-query-selector "a:last-child"))) (style! s "display" "block") (style! s "marginBottom" "8px"))
+        (create-nav-link "Documentation" "#/docs" nav-col)
+        (let ((s (web-query-selector "a:last-child"))) (style! s "display" "block") (style! s "marginBottom" "8px"))
+        (create-nav-link "Learn" "#/learn" nav-col)
+        (let ((s (web-query-selector "a:last-child"))) (style! s "display" "block") (style! s "marginBottom" "8px"))
+        (create-nav-link "Install" "#/install" nav-col)
+        (let ((s (web-query-selector "a:last-child"))) (style! s "display" "block") (style! s "marginBottom" "8px")))
+
+      ;; Community
+      (let ((comm (create-div cols)))
+        (style! comm "minWidth" "120px")
+        (let ((h (create-text "div" "Community" comm)))
+          (style! h "fontWeight" "600")
+          (style! h "marginBottom" "12px")
+          (style! h "fontSize" "0.85rem"))
+        (create-ext-link "GitHub" "https://github.com/tsotchke/eshkol" comm)
+        (create-ext-link "Issues" "https://github.com/tsotchke/eshkol/issues" comm)
+        (create-ext-link "Discussions" "https://github.com/tsotchke/eshkol/discussions" comm)
+        (create-ext-link "Contributing" "#/community" comm)))
+
+    ;; Bottom bar
+    (let ((bottom (create-div footer)))
+      (style! bottom "maxWidth" "1200px")
+      (style! bottom "margin" "0 auto")
+      (style! bottom "paddingTop" "24px")
+      (style! bottom "borderTop" "1px solid #1a1a28")
+      (style! bottom "display" "flex")
+      (style! bottom "justifyContent" "space-between")
+      (style! bottom "flexWrap" "wrap")
+      (style! bottom "gap" "8px")
+
+      (let ((p (create-text "p" "MIT License. Tsotchke Corporation." bottom)))
+        (style! p "color" "#404050")
+        (style! p "fontSize" "0.8rem"))
+
+      (let ((p2 (create-text "p" "This website is written in Eshkol, compiled to WebAssembly." bottom)))
+        (style! p2 "color" "#404050")
+        (style! p2 "fontSize" "0.8rem")))
+
+    footer))
+
+;; ═══════════════════════════════════════════════════════════
+;; PAGE: LANDING
 ;; ═══════════════════════════════════════════════════════════
 
 (define (render-hero parent)
@@ -133,7 +328,6 @@
     (style! hero "justifyContent" "center")
     (style! hero "paddingTop" "64px")
     (style! hero "textAlign" "center")
-    (style! hero "position" "relative")
 
     ;; Title
     (let ((title (create-text "h1" "Eshkol" hero)))
@@ -145,66 +339,73 @@
       (style! title "WebkitTextFillColor" "transparent")
       (style! title "marginBottom" "16px"))
 
-    ;; Subtitle
     (let ((sub (create-text "p" "Mathematics as a First-Class Citizen" hero)))
       (style! sub "fontSize" "1.5rem")
       (style! sub "color" "#a0a0b8")
       (style! sub "fontWeight" "300")
       (style! sub "marginBottom" "12px"))
 
-    ;; Tagline
-    (let ((tag (create-text "p" "The first compiled language with compiler-native automatic differentiation." hero)))
-      (style! tag "fontSize" "1.1rem")
+    (let ((tag (create-text "p" "The first compiled language with compiler-native automatic differentiation, deterministic memory, and heterogeneous computing." hero)))
+      (style! tag "fontSize" "1.05rem")
       (style! tag "color" "#606078")
-      (style! tag "maxWidth" "600px")
+      (style! tag "maxWidth" "640px")
       (style! tag "marginBottom" "40px"))
 
     ;; Code demo
-    (let ((code-block (create-div hero)))
-      (style! code-block "background" "#0d0d15")
-      (style! code-block "border" "1px solid #2a2a3a")
-      (style! code-block "borderRadius" "12px")
-      (style! code-block "padding" "24px 32px")
-      (style! code-block "maxWidth" "600px")
-      (style! code-block "width" "100%")
-      (style! code-block "textAlign" "left")
-
-      (web-set-inner-html code-block
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Multi-parameter gradient — computed at compile time</span>
+    (create-code-block hero
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Automatic differentiation — compiled to native code</span>
 <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(f x y)</span>
   <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)))</span>
 
 <span style='color:#c084fc'>(gradient</span> f <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>)</span>
-<span style='color:#606078'>;; → #(10.0 3.0)  — ∂f/∂x=2x+y, ∂f/∂y=x</span></pre>"))
+<span style='color:#606078'>;; => #(10.0 3.0)  -- df/dx=2x+y, df/dy=x</span></pre>")
 
-    ;; Install CTA
+    ;; CTAs
     (let ((cta (create-div hero)))
       (style! cta "marginTop" "40px")
       (style! cta "display" "flex")
       (style! cta "gap" "16px")
       (style! cta "alignItems" "center")
+      (style! cta "flexWrap" "wrap")
+      (style! cta "justifyContent" "center")
 
-      (let ((install (create-text "code" "brew tap tsotchke/eshkol && brew install eshkol" cta)))
+      (let ((btn1 (create-text "a" "Get Started" cta)))
+        (style! btn1 "background" "#7c3aed")
+        (style! btn1 "color" "#fff")
+        (style! btn1 "padding" "12px 28px")
+        (style! btn1 "borderRadius" "8px")
+        (style! btn1 "fontSize" "0.95rem")
+        (style! btn1 "fontWeight" "600")
+        (style! btn1 "textDecoration" "none")
+        (web-set-attribute btn1 "href" "#/install"))
+
+      (let ((btn2 (create-text "a" "Playground" cta)))
+        (style! btn2 "background" "transparent")
+        (style! btn2 "color" "#a78bfa")
+        (style! btn2 "padding" "12px 28px")
+        (style! btn2 "borderRadius" "8px")
+        (style! btn2 "fontSize" "0.95rem")
+        (style! btn2 "fontWeight" "600")
+        (style! btn2 "textDecoration" "none")
+        (style! btn2 "border" "1px solid #7c3aed")
+        (web-set-attribute btn2 "href" "#/playground")))
+
+    ;; Install command
+    (let ((install-wrap (create-div hero)))
+      (style! install-wrap "marginTop" "24px")
+      (let ((install (create-text "code" "brew tap tsotchke/eshkol && brew install eshkol" install-wrap)))
         (style! install "background" "#1a1a28")
         (style! install "color" "#00ff88")
         (style! install "padding" "12px 24px")
         (style! install "borderRadius" "8px")
-        (style! install "fontSize" "0.9rem")
+        (style! install "fontSize" "0.85rem")
         (style! install "border" "1px solid #2a2a3a")
         (style! install "fontFamily" "'JetBrains Mono', monospace")))
 
     hero))
 
-;; ═══════════════════════════════════════════════════════════
-;; FEATURES SECTION
-;; ═══════════════════════════════════════════════════════════
-
-(define (render-feature-card parent icon title desc)
-  (let ((card (create-div parent)))
-    (style! card "background" "#1a1a28")
-    (style! card "border" "1px solid #2a2a3a")
-    (style! card "borderRadius" "12px")
-    (style! card "padding" "28px")
+(define (render-feature-card parent title desc)
+  (let ((card (create-card parent)))
     (style! card "flex" "1")
     (style! card "minWidth" "280px")
 
@@ -221,44 +422,99 @@
     card))
 
 (define (render-pillars parent)
-  (let ((section (create-div parent)))
-    (style! section "maxWidth" "1200px")
-    (style! section "margin" "0 auto")
-    (style! section "padding" "80px 32px")
+  (let ((section (create-section parent)))
+    (section-heading section "Built for Scientific Computing")
 
-    (let ((heading (create-text "h2" "Built for Scientific Computing" section)))
-      (style! heading "textAlign" "center")
-      (style! heading "fontSize" "2.2rem")
-      (style! heading "fontWeight" "700")
-      (style! heading "marginBottom" "48px"))
-
-    (let ((grid (create-div section)))
-      (style! grid "display" "flex")
-      (style! grid "gap" "24px")
-      (style! grid "flexWrap" "wrap")
-
-      (render-feature-card grid "∇"
+    (let ((grid (create-grid section)))
+      (render-feature-card grid
         "Compiler-Native AD"
-        "8 differential operators (gradient, jacobian, hessian, divergence, curl, laplacian) compiled directly to LLVM IR. Forward-mode dual numbers + reverse-mode tape. No runtime library overhead.")
+        "8 differential operators compiled directly to LLVM IR. Forward-mode dual numbers + reverse-mode tape. gradient, jacobian, hessian, divergence, curl, laplacian. No runtime library overhead.")
 
-      (render-feature-card grid "◎"
+      (render-feature-card grid
         "Zero Garbage Collection"
-        "Deterministic arena-based memory with ownership tracking (OALR). No GC pauses, no unpredictable latency. Memory is freed when arenas go out of scope.")
+        "Deterministic arena-based memory with ownership tracking. No GC pauses, no unpredictable latency. Allocation in O(1). Deallocation at scope boundaries.")
 
-      (render-feature-card grid "⚡"
+      (render-feature-card grid
         "Heterogeneous Computing"
-        "GPU acceleration via Metal (Apple Silicon) and CUDA. XLA/StableHLO backend for ML workloads. SIMD vectorization. Automatic dispatch: GPU → BLAS → SIMD → scalar."))
+        "GPU acceleration via Metal and CUDA. XLA/StableHLO for ML workloads. SIMD vectorization. Automatic dispatch: GPU, BLAS, SIMD, scalar. One expression, all backends."))
 
     section))
 
-;; ═══════════════════════════════════════════════════════════
-;; STATS SECTION
-;; ═══════════════════════════════════════════════════════════
+(define (render-code-example parent title code-html caption)
+  (let ((card (create-div parent)))
+    (style! card "background" "#0d0d15")
+    (style! card "border" "1px solid #2a2a3a")
+    (style! card "borderRadius" "12px")
+    (style! card "padding" "24px 28px")
+    (style! card "flex" "1")
+    (style! card "minWidth" "320px")
+
+    (let ((h (create-text "h4" title card)))
+      (style! h "fontSize" "0.85rem")
+      (style! h "fontWeight" "600")
+      (style! h "color" "#7c3aed")
+      (style! h "textTransform" "uppercase")
+      (style! h "letterSpacing" "1px")
+      (style! h "marginBottom" "16px"))
+
+    (let ((code (create-div card)))
+      (web-set-inner-html code code-html))
+
+    (let ((cap (create-text "p" caption card)))
+      (style! cap "color" "#606078")
+      (style! cap "fontSize" "0.8rem")
+      (style! cap "marginTop" "12px")
+      (style! cap "fontStyle" "italic"))
+
+    card))
+
+(define (render-examples-row parent)
+  (let ((section (create-section parent)))
+    (section-heading section "Expressive by Design")
+
+    (let ((grid (create-grid section)))
+      (render-code-example grid
+        "Automatic Differentiation"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss W x y)</span>
+  <span style='color:#c084fc'>(tensor-sum</span>
+    <span style='color:#c084fc'>(tensor-mul</span>
+      <span style='color:#c084fc'>(tensor-sub</span> <span style='color:#c084fc'>(tensor-dot</span> W x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>)</span>
+      <span style='color:#c084fc'>(tensor-sub</span> <span style='color:#c084fc'>(tensor-dot</span> W x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>))))</span>
+
+<span style='color:#c084fc'>(gradient</span> loss W x y<span style='color:#c084fc'>)</span></pre>"
+        "8 differential operators compiled to native code.")
+
+      (render-code-example grid
+        "Tensor Computing"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> A <span style='color:#00ff88'>#((1 2 3) (4 5 6))</span><span style='color:#c084fc'>)</span>
+<span style='color:#c084fc'>(define</span> B <span style='color:#00ff88'>#((7 8) (9 10) (11 12))</span><span style='color:#c084fc'>)</span>
+
+<span style='color:#c084fc'>(tensor-dot</span> A B<span style='color:#c084fc'>)</span>
+<span style='color:#606078'>;; => #((58 64) (139 154))</span>
+
+<span style='color:#c084fc'>(tensor-reshape</span> A <span style='color:#00ff88'>#(3 2)</span><span style='color:#c084fc'>)</span></pre>"
+        "GPU-accelerated via Metal and CUDA.")
+
+      (render-code-example grid
+        "First-Class Functions"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(compose f g)</span>
+  <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(f (g</span> x<span style='color:#c084fc'>))))</span>
+
+<span style='color:#c084fc'>(define</span> inc-then-double
+  <span style='color:#c084fc'>(compose</span>
+    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x <span style='color:#00ff88'>2</span><span style='color:#c084fc'>))</span>
+    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(+</span> x <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>
+
+<span style='color:#c084fc'>(map</span> inc-then-double <span style='color:#00ff88'>'(1 2 3)</span><span style='color:#c084fc'>)</span></pre>"
+        "Full R7RS Scheme with closures and continuations."))
+
+    section))
 
 (define (render-stat parent value label)
   (let ((stat (create-div parent)))
     (style! stat "textAlign" "center")
     (style! stat "flex" "1")
+    (style! stat "minWidth" "120px")
 
     (let ((num (create-text "div" value stat)))
       (style! num "fontSize" "2.5rem")
@@ -282,68 +538,641 @@
     (style! section "padding" "60px 32px")
     (style! section "display" "flex")
     (style! section "gap" "32px")
+    (style! section "flexWrap" "wrap")
     (style! section "borderTop" "1px solid #1a1a28")
     (style! section "borderBottom" "1px solid #1a1a28")
 
-    (render-stat section "300+" "Built-in Functions")
+    (render-stat section "555+" "Built-in Functions")
     (render-stat section "438" "Tests Passing")
     (render-stat section "8" "Calculus Operators")
-    (render-stat section "3" "Platforms")
+    (render-stat section "5" "Platforms")
 
     section))
 
-;; ═══════════════════════════════════════════════════════════
-;; FOOTER
-;; ═══════════════════════════════════════════════════════════
-
-(define (render-footer parent)
-  (let ((footer (create-div parent)))
-    (style! footer "padding" "40px 32px")
-    (style! footer "textAlign" "center")
-    (style! footer "borderTop" "1px solid #1a1a28")
-    (style! footer "marginTop" "80px")
-
-    (let ((p (create-text "p" "Built by Tsotchke Corporation. MIT License." footer)))
-      (style! p "color" "#606078")
-      (style! p "fontSize" "0.85rem"))
-
-    (let ((p2 (create-text "p" "This website is written in Eshkol, compiled to WebAssembly." footer)))
-      (style! p2 "color" "#404050")
-      (style! p2 "fontSize" "0.8rem")
-      (style! p2 "marginTop" "8px"))
-
-    footer))
+(define (render-landing content)
+  (render-hero content)
+  (render-pillars content)
+  (render-examples-row content)
+  (render-stats content)
+  (render-footer content))
 
 ;; ═══════════════════════════════════════════════════════════
-;; LANDING PAGE
+;; PAGE: FEATURES
 ;; ═══════════════════════════════════════════════════════════
 
-(define (render-landing container)
-  (render-hero container)
-  (render-pillars container)
-  (render-stats container)
-  (render-footer container))
+(define (render-feature-section parent title desc code-html)
+  (let ((s (create-div parent)))
+    (style! s "marginBottom" "48px")
+    (section-subheading s title)
+    (body-text s desc)
+    (if (string=? code-html "")
+      s
+      (create-code-block s code-html))
+    s))
+
+(define (render-features-page content)
+  (let ((page (create-section content)))
+    (create-page-header page "Features" "Everything Eshkol brings to scientific computing.")
+
+    (render-feature-section page
+      "Automatic Differentiation"
+      "8 differential operators compiled directly to LLVM IR. Forward-mode via dual numbers for single derivatives. Reverse-mode via computational tapes for gradients. Supports 32 levels of nested differentiation. Operators: gradient, jacobian, hessian, divergence, curl, laplacian, derivative, directional-derivative."
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Forward-mode derivative</span>
+<span style='color:#c084fc'>(derivative</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 12.0</span>
+
+<span style='color:#606078'>;; Reverse-mode gradient</span>
+<span style='color:#c084fc'>(gradient</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x y)</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)))</span> <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>)</span>
+<span style='color:#606078'>;; => #(10.0 3.0)</span>
+
+<span style='color:#606078'>;; Jacobian matrix</span>
+<span style='color:#c084fc'>(jacobian</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x y)</span> <span style='color:#c084fc'>(vector</span> <span style='color:#c084fc'>(+</span> x y<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)))</span> <span style='color:#00ff88'>2.0</span> <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)</span></pre>")
+
+    (render-feature-section page
+      "Tensor Operations"
+      "N-dimensional tensors with GPU-accelerated operations. Automatic dispatch across Metal (Apple Silicon), CUDA, BLAS, and SIMD backends. Operations: dot, matmul, reshape, transpose, slice, broadcast, map, reduce, SVD, QR, eigenvalues."
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> A <span style='color:#00ff88'>#((1 2) (3 4))</span><span style='color:#c084fc'>)</span>
+<span style='color:#c084fc'>(tensor-dot</span> A A<span style='color:#c084fc'>)</span>        <span style='color:#606078'>;; => #((7 10) (15 22))</span>
+<span style='color:#c084fc'>(tensor-transpose</span> A<span style='color:#c084fc'>)</span>    <span style='color:#606078'>;; => #((1 3) (2 4))</span>
+<span style='color:#c084fc'>(tensor-reshape</span> A <span style='color:#00ff88'>#(4)</span><span style='color:#c084fc'>)</span> <span style='color:#606078'>;; => #(1 2 3 4)</span></pre>")
+
+    (render-feature-section page
+      "Deterministic Memory"
+      "Arena-based allocation with Ownership-Aware Lexical Regions (OALR). No garbage collector, no reference counting, no unpredictable pauses. Allocation in O(1) via bump pointer. Deallocation at scope boundaries. Microsecond worst-case guarantees."
+      "")
+
+    (render-feature-section page
+      "GPU Acceleration"
+      "4-tier automatic dispatch: SIMD vectorization for small tensors, cBLAS/Accelerate for linear algebra, Metal compute shaders on Apple Silicon, CUDA on NVIDIA GPUs. XLA/StableHLO backend for ML training workloads. One expression compiles to the optimal backend."
+      "")
+
+    (render-feature-section page
+      "Type System"
+      "Gradual typing with Homotopy Type Theory (HoTT) foundations. Full numeric tower: int64, bignum (arbitrary precision), rational (exact fractions), double (IEEE 754), complex. Tagged values enable dynamic dispatch with zero overhead for known types."
+      "")
+
+    (render-feature-section page
+      "R7RS Scheme"
+      "Full R7RS compatibility: closures, first-class continuations (call/cc), dynamic-wind, hygienic macros (syntax-rules), tail call optimization, pattern matching. Homoiconic: every function can display its own source code as an S-expression."
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(call/cc</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(k)</span>
+  <span style='color:#c084fc'>(dynamic-wind</span>
+    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>()</span> <span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"enter \"</span><span style='color:#c084fc'>))</span>
+    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>()</span> <span style='color:#c084fc'>(k</span> <span style='color:#00ff88'>42</span><span style='color:#c084fc'>))</span>
+    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>()</span> <span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"exit\"</span><span style='color:#c084fc'>)))))</span></pre>")
+
+    (render-feature-section page
+      "Parallel Computing"
+      "Work-stealing thread pool with parallel-map, parallel-fold, parallel-filter, and futures. Automatic work distribution across CPU cores. Thread-safe arena allocation."
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(parallel-map</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>)</span>
+<span style='color:#606078'>;; => (1 4 9 16 25)  -- computed across all cores</span>
+
+<span style='color:#c084fc'>(let</span> (<span style='color:#a78bfa'>(f</span> <span style='color:#c084fc'>(future</span> <span style='color:#c084fc'>(heavy-computation)</span><span style='color:#c084fc'>)</span>))
+  <span style='color:#606078'>;; ... do other work ...</span>
+  <span style='color:#c084fc'>(force</span> f<span style='color:#c084fc'>))</span></pre>")
+
+    (render-feature-section page
+      "Standard Library"
+      "555+ built-in functions across 25+ modules. List processing (60+ operations), string manipulation (30+), mathematics (trigonometry, statistics, special functions), JSON parsing, signal processing (FFT/IFFT, window functions, FIR/IIR filters), ODE solvers, pattern matching, and more."
+      "")
+
+    (render-feature-section page
+      "Web Platform"
+      "Compile to WebAssembly with a single flag. 90+ DOM API bindings for building full web applications. This entire website is an Eshkol program compiled to WASM — the ultimate proof of concept."
+      "")
+
+    (render-footer page)))
+
+;; ═══════════════════════════════════════════════════════════
+;; PAGE: DOCS
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-doc-tab parent label content-url)
+  (let ((tab (create-text "a" label parent)))
+    (style! tab "color" "#a0a0b8")
+    (style! tab "textDecoration" "none")
+    (style! tab "padding" "8px 20px")
+    (style! tab "borderRadius" "6px")
+    (style! tab "fontSize" "0.9rem")
+    (style! tab "fontWeight" "500")
+    (style! tab "cursor" "pointer")
+    (style! tab "border" "1px solid #2a2a3a")
+    (web-set-attribute tab "href" content-url)
+    (web-set-attribute tab "data-url" content-url)
+    tab))
+
+(define (render-docs-page content)
+  (let ((page (create-narrow-section content)))
+    (create-page-header page "Documentation" "Language guides, API reference, and quick start.")
+
+    ;; Tab bar
+    (let ((tabs (create-div page)))
+      (style! tabs "display" "flex")
+      (style! tabs "gap" "12px")
+      (style! tabs "marginBottom" "32px")
+      (style! tabs "flexWrap" "wrap")
+
+      (render-doc-tab tabs "Quick Reference" "content/eshkol_quick_reference.html")
+      (render-doc-tab tabs "Language Guide" "content/eshkol_language_guide.html")
+      (render-doc-tab tabs "API Reference" "content/api_reference.html")
+      (render-doc-tab tabs "Quick Start" "content/quickstart.html")
+      (render-doc-tab tabs "Feature Matrix" "content/feature_matrix.html")
+      (render-doc-tab tabs "Roadmap" "content/roadmap.html"))
+
+    ;; Content area
+    (let ((doc-area (create-div page)))
+      (web-add-class doc-area "doc-content")
+      (style! doc-area "minHeight" "400px")
+      (web-set-attribute doc-area "id" "doc-content-area")
+
+      ;; Load quick reference by default
+      (web-load-content "content/eshkol_quick_reference.html" doc-area)
+
+      ;; Instruction
+      (let ((hint (create-text "p" "Click a tab above to load documentation." doc-area)))
+        (style! hint "color" "#606078")
+        (style! hint "fontStyle" "italic")))
+
+    (render-footer page)))
+
+;; ═══════════════════════════════════════════════════════════
+;; PAGE: LEARN
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-lesson parent title description code-html output)
+  (let ((lesson (create-div parent)))
+    (style! lesson "marginBottom" "48px")
+
+    (section-subheading lesson title)
+    (body-text lesson description)
+    (create-code-block lesson code-html)
+
+    (if (string=? output "")
+      lesson
+      (let ((out (create-text "p" output lesson)))
+        (style! out "color" "#00ff88")
+        (style! out "fontSize" "0.85rem")
+        (style! out "fontFamily" "'JetBrains Mono', monospace")
+        (style! out "marginTop" "8px")))
+
+    lesson))
+
+(define (render-learn-page content)
+  (let ((page (create-narrow-section content)))
+    (create-page-header page "Learn Eshkol" "From hello world to automatic differentiation in 5 lessons.")
+
+    (render-lesson page
+      "1. Hello World"
+      "Write your first Eshkol program. Save it as hello.esk, compile with eshkol-run, and run the binary."
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"Hello, world!\"</span><span style='color:#c084fc'>)</span>
+<span style='color:#c084fc'>(newline)</span>
+
+<span style='color:#606078'>;; Compile and run:</span>
+<span style='color:#606078'>;; $ eshkol-run hello.esk -o hello && ./hello</span></pre>"
+      "Output: Hello, world!")
+
+    (render-lesson page
+      "2. Numbers and Functions"
+      "Eshkol supports the full numeric tower: integers, bignums, rationals, doubles, and complex numbers. Functions are defined with define."
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(square x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span>
+<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(hypotenuse a b)</span>
+  <span style='color:#c084fc'>(sqrt</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(square</span> a<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(square</span> b<span style='color:#c084fc'>))))</span>
+
+<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(hypotenuse</span> <span style='color:#00ff88'>3</span> <span style='color:#00ff88'>4</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 5.0</span>
+
+<span style='color:#606078'>;; Exact arithmetic</span>
+<span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1/3</span> <span style='color:#00ff88'>1/6</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 1/2 (exact rational)</span></pre>"
+      "")
+
+    (render-lesson page
+      "3. Higher-Order Functions"
+      "Functions are first-class values. Pass them as arguments, return them from functions, store them in data structures."
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(map</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>)</span>
+<span style='color:#606078'>;; => (1 4 9 16 25)</span>
+
+<span style='color:#c084fc'>(filter</span> even? <span style='color:#00ff88'>'(1 2 3 4 5 6)</span><span style='color:#c084fc'>)</span>
+<span style='color:#606078'>;; => (2 4 6)</span>
+
+<span style='color:#c084fc'>(fold</span> + <span style='color:#00ff88'>0</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>)</span>
+<span style='color:#606078'>;; => 15</span></pre>"
+      "")
+
+    (render-lesson page
+      "4. Tensors"
+      "Tensors are N-dimensional arrays of doubles. Create them with literal syntax or constructors. Operations dispatch automatically to the fastest available backend."
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> v <span style='color:#00ff88'>#(1 2 3 4 5)</span><span style='color:#c084fc'>)</span>
+<span style='color:#c084fc'>(define</span> M <span style='color:#00ff88'>#((1 0) (0 1))</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; 2x2 identity</span>
+
+<span style='color:#c084fc'>(tensor-sum</span> v<span style='color:#c084fc'>)</span>          <span style='color:#606078'>;; => 15.0</span>
+<span style='color:#c084fc'>(tensor-mean</span> v<span style='color:#c084fc'>)</span>         <span style='color:#606078'>;; => 3.0</span>
+<span style='color:#c084fc'>(tensor-dot</span> M <span style='color:#00ff88'>#(3 4)</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => #(3 4)</span></pre>"
+      "")
+
+    (render-lesson page
+      "5. Automatic Differentiation"
+      "Eshkol's signature feature. Compute derivatives, gradients, and Jacobians of any function. The compiler transforms your code to propagate derivatives automatically."
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Scalar derivative: d/dx(x^3) at x=2</span>
+<span style='color:#c084fc'>(derivative</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>)</span>
+<span style='color:#606078'>;; => 12.0</span>
+
+<span style='color:#606078'>;; Multi-parameter gradient</span>
+<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(f x y)</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3</span> y<span style='color:#c084fc'>)))</span>
+<span style='color:#c084fc'>(gradient</span> f <span style='color:#00ff88'>2.0</span> <span style='color:#00ff88'>1.0</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => #(4.0 3.0)</span>
+
+<span style='color:#606078'>;; Gradient descent in 3 lines</span>
+<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(step x lr)</span>
+  <span style='color:#c084fc'>(tensor-sub</span> x <span style='color:#c084fc'>(tensor-mul</span> lr <span style='color:#c084fc'>(gradient</span> loss x<span style='color:#c084fc'>))))</span></pre>"
+      "")
+
+    (render-footer page)))
+
+;; ═══════════════════════════════════════════════════════════
+;; PAGE: EXAMPLES
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-example-card parent title desc code-html)
+  (let ((card (create-card parent)))
+    (style! card "flex" "1")
+    (style! card "minWidth" "400px")
+
+    (let ((h (create-text "h3" title card)))
+      (style! h "fontSize" "1.1rem")
+      (style! h "color" "#a78bfa")
+      (style! h "marginBottom" "4px"))
+
+    (let ((d (create-text "p" desc card)))
+      (style! d "color" "#606078")
+      (style! d "fontSize" "0.85rem")
+      (style! d "marginBottom" "16px"))
+
+    (create-code-block card code-html)
+
+    card))
+
+(define (render-examples-page content)
+  (let ((page (create-section content)))
+    (create-page-header page "Examples" "Curated code examples showing Eshkol's capabilities.")
+
+    (let ((grid (create-grid page)))
+
+      (render-example-card grid
+        "Hello World"
+        "The simplest Eshkol program."
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"Hello, world!\"</span><span style='color:#c084fc'>)</span>
+<span style='color:#c084fc'>(newline)</span></pre>")
+
+      (render-example-card grid
+        "Fibonacci"
+        "Recursive with tail call optimization."
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(fib n)</span>
+  <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loop a b i)</span>
+    <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> i n<span style='color:#c084fc'>)</span> a
+      <span style='color:#c084fc'>(loop</span> b <span style='color:#c084fc'>(+</span> a b<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> i <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>
+  <span style='color:#c084fc'>(loop</span> <span style='color:#00ff88'>0</span> <span style='color:#00ff88'>1</span> <span style='color:#00ff88'>0</span><span style='color:#c084fc'>))</span>
+
+<span style='color:#c084fc'>(fib</span> <span style='color:#00ff88'>50</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 12586269025</span></pre>")
+
+      (render-example-card grid
+        "Gradient Descent"
+        "Train a model using automatic differentiation."
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss x)</span> <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(- </span>x <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(-</span> x <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)))</span>
+
+<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(train x lr steps)</span>
+  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> steps <span style='color:#00ff88'>0</span><span style='color:#c084fc'>)</span> x
+    <span style='color:#c084fc'>(train</span>
+      <span style='color:#c084fc'>(-</span> x <span style='color:#c084fc'>(*</span> lr <span style='color:#c084fc'>(derivative</span> loss x<span style='color:#c084fc'>)))</span>
+      lr <span style='color:#c084fc'>(-</span> steps <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>
+
+<span style='color:#c084fc'>(train</span> <span style='color:#00ff88'>0.0</span> <span style='color:#00ff88'>0.1</span> <span style='color:#00ff88'>100</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => ~3.0</span></pre>")
+
+      (render-example-card grid
+        "Pattern Matching"
+        "Destructure and dispatch with match."
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(describe x)</span>
+  <span style='color:#c084fc'>(match</span> x
+    (<span style='color:#00ff88'>0</span> <span style='color:#00ff88'>\"zero\"</span>)
+    ((<span style='color:#a78bfa'>? positive?</span>) <span style='color:#00ff88'>\"positive\"</span>)
+    ((<span style='color:#a78bfa'>? negative?</span>) <span style='color:#00ff88'>\"negative\"</span>)
+    (_ <span style='color:#00ff88'>\"other\"</span>)<span style='color:#c084fc'>))</span></pre>")
+
+      (render-example-card grid
+        "Exact Arithmetic"
+        "Arbitrary precision with no loss."
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Bignums — no overflow</span>
+<span style='color:#c084fc'>(expt</span> <span style='color:#00ff88'>2</span> <span style='color:#00ff88'>200</span><span style='color:#c084fc'>)</span>
+<span style='color:#606078'>;; => 1606938044258990275541962...</span>
+
+<span style='color:#606078'>;; Exact rationals</span>
+<span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1/7</span> <span style='color:#00ff88'>2/7</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 3/7</span>
+<span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3/4</span> <span style='color:#00ff88'>4/3</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 1</span></pre>")
+
+      (render-example-card grid
+        "This Website"
+        "This site is written in Eshkol, compiled to WASM."
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; The actual code powering this page</span>
+<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(render-hero parent)</span>
+  <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>hero</span> <span style='color:#c084fc'>(create-div</span> parent<span style='color:#c084fc'>)))</span>
+    <span style='color:#c084fc'>(style!</span> hero <span style='color:#00ff88'>\"minHeight\"</span> <span style='color:#00ff88'>\"100vh\"</span><span style='color:#c084fc'>)</span>
+    <span style='color:#606078'>;; ... 586 lines of pure Eshkol</span>
+    hero<span style='color:#c084fc'>))</span></pre>"))
+
+    (render-footer page)))
+
+;; ═══════════════════════════════════════════════════════════
+;; PAGE: INSTALL
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-install-page content)
+  (let ((page (create-narrow-section content)))
+    (create-page-header page "Install Eshkol" "Up and running in 30 seconds.")
+
+    ;; macOS
+    (section-subheading page "macOS (Homebrew)")
+    (body-text page "The fastest way to install on macOS. Supports both Apple Silicon and Intel.")
+    (create-code-block page
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.8;color:#e8e8f0'><span style='color:#00ff88'>$</span> brew tap tsotchke/eshkol
+<span style='color:#00ff88'>$</span> brew install eshkol</pre>")
+
+    ;; Linux
+    (section-subheading page "Linux (Debian/Ubuntu)")
+    (body-text page "Install from the .deb package for x86_64 or ARM64.")
+    (create-code-block page
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.8;color:#e8e8f0'><span style='color:#00ff88'>$</span> wget https://github.com/tsotchke/eshkol/releases/latest/download/eshkol_amd64.deb
+<span style='color:#00ff88'>$</span> sudo dpkg -i eshkol_amd64.deb</pre>")
+
+    ;; From source
+    (section-subheading page "From Source")
+    (body-text page "Build from source with CMake. Requires LLVM 17+, C++20 compiler, and CMake 3.14+.")
+    (create-code-block page
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.8;color:#e8e8f0'><span style='color:#00ff88'>$</span> git clone https://github.com/tsotchke/eshkol.git
+<span style='color:#00ff88'>$</span> cd eshkol && mkdir build && cd build
+<span style='color:#00ff88'>$</span> cmake .. -DCMAKE_BUILD_TYPE=Release
+<span style='color:#00ff88'>$</span> make -j$(nproc)</pre>")
+
+    ;; Verify
+    (section-subheading page "Verify Installation")
+    (body-text page "Compile and run a simple program to verify everything works.")
+    (create-code-block page
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.8;color:#e8e8f0'><span style='color:#00ff88'>$</span> echo '<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>))</span>' > test.esk
+<span style='color:#00ff88'>$</span> eshkol-run test.esk -o test && ./test
+<span style='color:#a78bfa'>#(6.0)</span></pre>")
+
+    ;; Platform badges
+    (let ((badges (create-div page)))
+      (style! badges "marginTop" "40px")
+      (style! badges "display" "flex")
+      (style! badges "gap" "12px")
+      (style! badges "flexWrap" "wrap")
+
+      (let ((make-badge (lambda (text)
+              (let ((badge (create-text "span" text badges)))
+                (style! badge "background" "#1a1a28")
+                (style! badge "color" "#a0a0b8")
+                (style! badge "padding" "8px 16px")
+                (style! badge "borderRadius" "20px")
+                (style! badge "fontSize" "0.8rem")
+                (style! badge "fontWeight" "500")
+                (style! badge "border" "1px solid #2a2a3a")
+                badge))))
+        (make-badge "macOS (Apple Silicon)")
+        (make-badge "macOS (Intel)")
+        (make-badge "Linux (x86_64)")
+        (make-badge "Linux (ARM64)")
+        (make-badge "WebAssembly")))
+
+    (render-footer page)))
+
+;; ═══════════════════════════════════════════════════════════
+;; PAGE: PLAYGROUND
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-playground-page content)
+  (let ((page (create-section content)))
+    (create-page-header page "Playground" "The full Eshkol bytecode VM running in your browser.")
+
+    ;; REPL Terminal
+    (let ((terminal (create-div page)))
+      (style! terminal "background" "#0a0a0f")
+      (style! terminal "border" "1px solid #2a2a3a")
+      (style! terminal "borderRadius" "12px")
+      (style! terminal "overflow" "hidden")
+      (style! terminal "marginBottom" "48px")
+
+      ;; Terminal title bar
+      (let ((titlebar (create-div terminal)))
+        (style! titlebar "background" "#1a1a28")
+        (style! titlebar "padding" "8px 16px")
+        (style! titlebar "display" "flex")
+        (style! titlebar "alignItems" "center")
+        (style! titlebar "gap" "8px")
+        (style! titlebar "borderBottom" "1px solid #2a2a3a")
+
+        ;; Window dots
+        (let ((dots (create-div titlebar)))
+          (style! dots "display" "flex")
+          (style! dots "gap" "6px")
+          (let ((d1 (create-div dots))) (style! d1 "width" "12px") (style! d1 "height" "12px") (style! d1 "borderRadius" "50%") (style! d1 "background" "#ff5f57"))
+          (let ((d2 (create-div dots))) (style! d2 "width" "12px") (style! d2 "height" "12px") (style! d2 "borderRadius" "50%") (style! d2 "background" "#febc2e"))
+          (let ((d3 (create-div dots))) (style! d3 "width" "12px") (style! d3 "height" "12px") (style! d3 "borderRadius" "50%") (style! d3 "background" "#28c840")))
+
+        (let ((title (create-text "span" "Eshkol REPL — Bytecode VM (WebAssembly)" titlebar)))
+          (style! title "color" "#606078")
+          (style! title "fontSize" "0.8rem")
+          (style! title "marginLeft" "12px")))
+
+      ;; Terminal output area
+      (let ((output (create-div terminal)))
+        (web-set-attribute output "id" "repl-output")
+        (style! output "padding" "16px 20px")
+        (style! output "fontFamily" "'JetBrains Mono', monospace")
+        (style! output "fontSize" "0.85rem")
+        (style! output "lineHeight" "1.5")
+        (style! output "color" "#e8e8f0")
+        (style! output "minHeight" "300px")
+        (style! output "maxHeight" "500px")
+        (style! output "overflow" "auto")
+        (style! output "whiteSpace" "pre-wrap")
+
+        ;; Welcome message
+        (web-set-inner-html output
+          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#606078'>v1.1-accelerate</span>\n<span style='color:#606078'>63-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#606078'>Type an expression and press Enter.</span>\n\n"))
+
+      ;; Terminal input area
+      (let ((input-row (create-div terminal)))
+        (style! input-row "display" "flex")
+        (style! input-row "alignItems" "center")
+        (style! input-row "padding" "8px 20px 12px")
+        (style! input-row "borderTop" "1px solid #1a1a28")
+
+        (let ((prompt (create-text "span" "eshkol> " input-row)))
+          (style! prompt "color" "#7c3aed")
+          (style! prompt "fontFamily" "'JetBrains Mono', monospace")
+          (style! prompt "fontSize" "0.85rem")
+          (style! prompt "fontWeight" "bold"))
+
+        (let ((input (web-create-element "input")))
+          (web-set-attribute input "id" "repl-input")
+          (web-set-attribute input "type" "text")
+          (web-set-attribute input "placeholder" "(+ 1 2)")
+          (web-set-attribute input "autocomplete" "off")
+          (web-set-attribute input "spellcheck" "false")
+          (style! input "background" "transparent")
+          (style! input "border" "none")
+          (style! input "outline" "none")
+          (style! input "color" "#e8e8f0")
+          (style! input "fontFamily" "'JetBrains Mono', monospace")
+          (style! input "fontSize" "0.85rem")
+          (style! input "flex" "1")
+          (web-append-child input-row input))))
+
+    ;; WASM showcase
+    (let ((banner (create-card page)))
+      (style! banner "background" "linear-gradient(135deg, rgba(124,58,237,0.15), rgba(0,255,136,0.08))")
+      (style! banner "border" "1px solid #7c3aed")
+      (style! banner "marginBottom" "48px")
+
+      (let ((h (create-text "h2" "Two WASM Modules, One Website" banner)))
+        (style! h "fontSize" "1.5rem")
+        (style! h "marginBottom" "12px"))
+
+      (body-text banner "This website runs TWO Eshkol WASM modules simultaneously: the site renderer (compiled via LLVM to WebAssembly) and the bytecode VM interpreter (compiled via Emscripten). The REPL above executes real Eshkol code through the full 63-opcode bytecode interpreter.")
+
+      (body-text banner "Try: (+ 1 2), (map (lambda (x) (* x x)) '(1 2 3 4 5)), (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) then (fib 20)"))
+
+    ;; Architecture
+    (section-subheading page "Architecture")
+    (create-code-block page
+      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.8;color:#e8e8f0'>  <span style='color:#a78bfa'>Website</span>                        <span style='color:#a78bfa'>REPL</span>
+  main.esk                       eshkol_vm.c + eshkol_compiler.c
+      |                                |
+  LLVM IR (eshkol-run --wasm)    Emscripten (emcc)
+      |                                |
+  eshkol-site.wasm <span style='color:#606078'>(408KB)</span>       eshkol-vm.wasm <span style='color:#606078'>(326KB)</span>
+      |                                |
+  eshkol-runtime.js              Emscripten glue
+      |                                |
+      +----------<span style='color:#00ff88'> Browser </span>-----------+</pre>")
+
+    ;; Stats
+    (section-subheading page "Site Statistics")
+    (let ((stats-grid (create-grid page)))
+      (let ((make-stat-card (lambda (label value)
+              (let ((card (create-card stats-grid)))
+                (style! card "flex" "1")
+                (style! card "minWidth" "180px")
+                (style! card "textAlign" "center")
+                (let ((v (create-text "div" value card)))
+                  (style! v "fontSize" "1.8rem")
+                  (style! v "fontWeight" "800")
+                  (style! v "color" "#7c3aed")
+                  (style! v "marginBottom" "4px"))
+                (let ((l (create-text "div" label card)))
+                  (style! l "color" "#606078")
+                  (style! l "fontSize" "0.8rem")
+                  (style! l "textTransform" "uppercase"))
+                card))))
+        (make-stat-card "Site WASM" "408KB")
+        (make-stat-card "VM WASM" "326KB")
+        (make-stat-card "VM Opcodes" "63")
+        (make-stat-card "DOM Bindings" "90+")))
+
+    (render-footer page)))
+
+;; ═══════════════════════════════════════════════════════════
+;; PAGE: COMMUNITY
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-community-page content)
+  (let ((page (create-narrow-section content)))
+    (create-page-header page "Community" "Join the Eshkol project.")
+
+    (section-subheading page "Contributing")
+    (body-text page "Eshkol is open source under the MIT License. Contributions are welcome. See the Contributing Guide for code style, PR process, and development setup.")
+
+    (section-subheading page "Links")
+    (let ((links (create-div page)))
+      (style! links "display" "flex")
+      (style! links "gap" "16px")
+      (style! links "flexWrap" "wrap")
+      (style! links "marginTop" "16px")
+
+      (let ((make-link-card (lambda (title url)
+              (let ((a (create-text "a" title links)))
+                (style! a "background" "#1a1a28")
+                (style! a "border" "1px solid #2a2a3a")
+                (style! a "borderRadius" "8px")
+                (style! a "padding" "16px 24px")
+                (style! a "color" "#a78bfa")
+                (style! a "textDecoration" "none")
+                (style! a "fontWeight" "600")
+                (web-set-attribute a "href" url)
+                (web-set-attribute a "target" "_blank")
+                a))))
+        (make-link-card "GitHub Repository" "https://github.com/tsotchke/eshkol")
+        (make-link-card "Issue Tracker" "https://github.com/tsotchke/eshkol/issues")
+        (make-link-card "Discussions" "https://github.com/tsotchke/eshkol/discussions")))
+
+    (section-subheading page "About")
+    (body-text page "Eshkol is developed by Tsotchke Corporation. The name comes from the Hebrew word for 'cluster' -- a reference to both grape clusters (abundance) and computational clusters (parallel computing).")
+    (body-text page "Eshkol is the first production programming language to integrate automatic differentiation directly at the compiler level, making calculus operations as natural and efficient as basic arithmetic.")
+
+    (section-subheading page "License")
+    (body-text page "MIT License. Free for commercial and non-commercial use.")
+
+    (render-footer page)))
+
+;; ═══════════════════════════════════════════════════════════
+;; ROUTER
+;; ═══════════════════════════════════════════════════════════
+
+;; Route buffer for reading URL hash
+(define route-buf "                                                                                                                                                                                                                                                                ")
+
+(define (route!)
+  (let ((content (web-get-element-by-id "content")))
+    (let ((hash-len (web-get-hash route-buf 256)))
+      (web-set-inner-html content "")
+      (web-scroll-to 0 0)
+      (cond
+        ((string=? route-buf "#/features")
+         (render-features-page content))
+        ((string=? route-buf "#/docs")
+         (render-docs-page content))
+        ((string=? route-buf "#/learn")
+         (render-learn-page content))
+        ((string=? route-buf "#/examples")
+         (render-examples-page content))
+        ((string=? route-buf "#/install")
+         (render-install-page content))
+        ((string=? route-buf "#/playground")
+         (render-playground-page content))
+        ((string=? route-buf "#/community")
+         (render-community-page content))
+        (else
+         (render-landing content))))))
 
 ;; ═══════════════════════════════════════════════════════════
 ;; MAIN ENTRY POINT
 ;; ═══════════════════════════════════════════════════════════
 
 (define (main)
-  (let ((body (web-get-body)))
-    ;; Base styles
-    (style! body "margin" "0")
-    (style! body "fontFamily" "'Inter', system-ui, sans-serif")
-    (style! body "backgroundColor" "#0a0a0f")
-    (style! body "color" "#e8e8f0")
-    (style! body "lineHeight" "1.6")
-
-    ;; Render navigation
-    (render-nav body)
-
-    ;; Render landing page (default route)
-    (let ((content (create-div body)))
-      (web-set-attribute content "id" "content")
-      (render-landing content))
-
-    (web-console-log "Eshkol website loaded — written in Eshkol, compiled to WebAssembly")
+  (let ((body (web-get-body))
+        (existing (web-get-element-by-id "content")))
+    (if (= existing 0)
+      ;; First load: set up body styles, nav, and content container
+      (begin
+        (style! body "margin" "0")
+        (style! body "fontFamily" "'Inter', system-ui, sans-serif")
+        (style! body "backgroundColor" "#0a0a0f")
+        (style! body "color" "#e8e8f0")
+        (style! body "lineHeight" "1.6")
+        (render-nav body)
+        (let ((content (create-div body)))
+          (web-set-attribute content "id" "content")
+          (style! content "paddingTop" "64px")
+          (route!))
+        (web-console-log "Eshkol website loaded — written in Eshkol, compiled to WebAssembly"))
+      ;; Subsequent calls (hashchange): clear content and re-route
+      (begin
+        (web-set-inner-html existing "")
+        (web-scroll-to 0 0)
+        (route!)))
     0))

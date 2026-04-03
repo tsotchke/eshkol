@@ -545,6 +545,10 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/repl/.*")
 # (Metal .mm on macOS, stub .cpp on Linux/no-GPU)
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/gpu/.*")
 
+# Exclude agent FFI sources — they are in eshkol-agent-ffi static library
+# with their own dependency management (sqlite3, pcre2, etc.)
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/agent/.*")
+
 # Exclude ALL .c files from lib/backend/ — they are either standalone programs
 # (eshkol_compiler.c, weight_matrices.c, eshkol_asm.c, etc.) or unity-build
 # includes (vm_*.c, eskb_*.c are #included by eshkol_vm.c).
@@ -877,6 +881,77 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_code
         target_link_libraries(xla_codegen_test PRIVATE "-framework Accelerate")
     else()
         target_link_options(xla_codegen_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
+# ===== Agent FFI Modules =====
+# C bridge libraries for the Eshkol agent (terminal, regex, sqlite, crypto)
+
+option(ESHKOL_BUILD_AGENT_FFI "Build agent FFI modules" ON)
+
+if(ESHKOL_BUILD_AGENT_FFI)
+    set(AGENT_FFI_DIR "${CMAKE_SOURCE_DIR}/lib/agent/c")
+
+    if(EXISTS "${AGENT_FFI_DIR}")
+        set(AGENT_FFI_SOURCES
+            ${AGENT_FFI_DIR}/agent_terminal.c
+            ${AGENT_FFI_DIR}/agent_crypto.c
+        )
+
+        # Optional: PCRE2 for regex
+        pkg_check_modules(PCRE2_AGENT pcre2-8)
+        if(PCRE2_AGENT_FOUND)
+            list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_regex.c)
+        endif()
+
+        # Optional: SQLite3
+        pkg_check_modules(SQLITE3_AGENT sqlite3)
+        if(SQLITE3_AGENT_FOUND)
+            list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_sqlite.c)
+        endif()
+
+        add_library(eshkol-agent-ffi STATIC ${AGENT_FFI_SOURCES})
+
+        target_include_directories(eshkol-agent-ffi PRIVATE
+            ${CMAKE_SOURCE_DIR}/include
+        )
+
+        # Terminal needs ncurses
+        find_library(NCURSES_AGENT ncurses)
+        if(NCURSES_AGENT)
+            target_link_libraries(eshkol-agent-ffi PRIVATE ${NCURSES_AGENT})
+        endif()
+
+        if(PCRE2_AGENT_FOUND)
+            target_include_directories(eshkol-agent-ffi PRIVATE ${PCRE2_AGENT_INCLUDE_DIRS})
+            target_link_libraries(eshkol-agent-ffi PRIVATE ${PCRE2_AGENT_LIBRARIES})
+            target_compile_definitions(eshkol-agent-ffi PRIVATE PCRE2_CODE_UNIT_WIDTH=8)
+        endif()
+
+        if(SQLITE3_AGENT_FOUND)
+            target_link_libraries(eshkol-agent-ffi PRIVATE ${SQLITE3_AGENT_LIBRARIES})
+        endif()
+
+        # Crypto: CommonCrypto on macOS, OpenSSL on Linux
+        if(APPLE)
+            target_link_libraries(eshkol-agent-ffi PRIVATE
+                "-framework Security"
+                "-framework CoreFoundation"
+            )
+        else()
+            find_package(OpenSSL)
+            if(OpenSSL_FOUND)
+                target_link_libraries(eshkol-agent-ffi PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+            endif()
+        endif()
+
+        message(STATUS "Agent FFI modules: ENABLED")
+        message(STATUS "  Terminal:  YES")
+        message(STATUS "  Crypto:    YES")
+        message(STATUS "  Regex:     ${PCRE2_AGENT_FOUND}")
+        message(STATUS "  SQLite:    ${SQLITE3_AGENT_FOUND}")
+    else()
+        message(STATUS "Agent FFI modules: lib/agent/c/ not found, skipping")
     endif()
 endif()
 

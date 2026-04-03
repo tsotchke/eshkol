@@ -1,0 +1,61 @@
+;;
+;; regex.esk - PCRE2 regular expression FFI wrapper
+;; Bindings to agent_regex.c
+;;
+(provide regex-compile regex-match regex-match? regex-match-all
+         regex-replace regex-free
+         REGEX_CASELESS REGEX_MULTILINE REGEX_DOTALL)
+
+;; Flags
+(define REGEX_CASELESS  1)
+(define REGEX_MULTILINE 2)
+(define REGEX_DOTALL    4)
+
+;; FFI declarations
+(extern i64 regex-compile-raw ptr i32 :real eshkol_regex_compile)
+(extern i32 regex-match-raw i64 ptr ptr i64 :real eshkol_regex_match)
+(extern i32 regex-match-all-raw i64 ptr ptr i64 i32 :real eshkol_regex_match_all)
+(extern i32 regex-replace-raw i64 ptr ptr ptr i64 :real eshkol_regex_replace)
+(extern void regex-free-raw i64 :real eshkol_regex_free)
+
+;; High-level wrappers
+(define (regex-compile pattern . flags)
+  "Compile a regex pattern. Returns handle (int64) or -1 on error."
+  (let ((f (if (null? flags) 0 (car flags))))
+    (regex-compile-raw pattern f)))
+
+(define (regex-match handle subject)
+  "Match pattern against subject. Returns first match string or #f."
+  (let* ((buf (make-string 4096 #\nul))
+         (result (regex-match-raw handle subject buf 4096)))
+    (if (= result 1) (string-trim-right buf (char-set #\nul)) #f)))
+
+(define (regex-match? handle subject)
+  "Check if pattern matches subject. Returns #t or #f."
+  (= (regex-match-raw handle subject #f 0) 1))
+
+(define (regex-match-all handle subject . max)
+  "Find all matches. Returns list of match strings."
+  (let* ((max-matches (if (null? max) 100 (car max)))
+         (buf (make-string (* max-matches 256) #\nul))
+         (count (regex-match-all-raw handle subject buf (* max-matches 256) max-matches)))
+    (if (<= count 0) '()
+        ;; Split null-separated results
+        (let loop ((i 0) (start 0) (results '()))
+          (cond
+            ((>= (length results) count) (reverse results))
+            ((>= i (string-length buf)) (reverse results))
+            ((= (char->integer (string-ref buf i)) 0)
+             (loop (+ i 1) (+ i 1)
+                   (cons (substring buf start i) results)))
+            (else (loop (+ i 1) start results)))))))
+
+(define (regex-replace handle subject replacement)
+  "Replace all matches in subject. Returns new string."
+  (let* ((buf (make-string (* 2 (+ (string-length subject) (string-length replacement))) #\nul))
+         (len (regex-replace-raw handle subject replacement buf (string-length buf))))
+    (if (> len 0) (substring buf 0 len) subject)))
+
+(define (regex-free handle)
+  "Free a compiled regex."
+  (regex-free-raw handle))

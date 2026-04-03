@@ -27,8 +27,9 @@ TypeSystem::TypeSystem(llvm::LLVMContext& ctx, bool is_wasm32)
     void_type = llvm::Type::getVoidTy(context);
     ptr_type = llvm::PointerType::getUnqual(context);
 
-    // Target-dependent size type: i32 on wasm32, i64 on native 64-bit
+    // Target-dependent types: i32 on wasm32, i64 on native 64-bit
     size_type_ = is_wasm32_ ? int32_type : int64_type;
+    intptr_type_ = is_wasm32_ ? int32_type : int64_type;
 
     // Create SIMD vector types for tensor operations
     // These are fixed-size vector types that map to SIMD registers

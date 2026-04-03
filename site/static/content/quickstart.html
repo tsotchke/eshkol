@@ -1,0 +1,957 @@
+<h1 id="eshkol-quickstart-guide">Eshkol Quickstart Guide</h1>
+<p><strong>Get started with Eshkol in 15 minutes</strong></p>
+<p>This hands-on tutorial introduces Eshkol’s core features through
+practical examples. You’ll learn functions, lists, tensors, and
+automatic differentiation - the tools for scientific computing and AI
+systems programming.</p>
+<hr />
+<h2 id="installation">Installation</h2>
+<h3 id="macos-homebrew">macOS (Homebrew)</h3>
+<pre class="bash"><code>brew tap tsotchke/eshkol
+brew install eshkol</code></pre>
+<h3 id="linux-debianubuntu">Linux (Debian/Ubuntu)</h3>
+<pre class="bash"><code># Download .deb from https://github.com/tsotchke/eshkol/releases
+sudo dpkg -i eshkol_*.deb</code></pre>
+<h3 id="windows-msys2mingw64">Windows (MSYS2/MinGW64)</h3>
+<pre class="bash"><code># In MSYS2 MinGW64 shell:
+pacman -S mingw-w64-x86_64-llvm mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
+git clone https://github.com/tsotchke/eshkol.git
+cd eshkol
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel</code></pre>
+<h3 id="from-source-macoslinux">From Source (macOS/Linux)</h3>
+<pre class="bash"><code>git clone https://github.com/tsotchke/eshkol.git
+cd eshkol
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel</code></pre>
+<h3 id="quick-test">Quick Test</h3>
+<pre class="bash"><code># Interactive REPL
+eshkol-repl
+
+# Compile and run a program
+echo &#39;(display &quot;Hello, Eshkol!&quot;)&#39; &gt; hello.esk
+eshkol-run hello.esk -o hello
+./hello</code></pre>
+<p><strong>Requirements</strong>: LLVM 17+, C++20 compiler, CMake 3.14+,
+Ninja <strong>Platforms</strong>: Linux, macOS (x86-64, ARM64), Windows
+(MSYS2/MinGW64)</p>
+<p><strong>Web REPL</strong>: Open <code>web/index.html</code> in a
+browser for an interactive Eshkol environment without installation.</p>
+<p><strong>Bytecode</strong>: Emit portable ESKB bytecode alongside
+native compilation: <code>eshkol-run hello.esk -B hello.eskb</code></p>
+<hr />
+<h2 id="part-1-basics-2-minutes">Part 1: Basics (2 minutes)</h2>
+<h3 id="numbers-and-arithmetic">Numbers and Arithmetic</h3>
+<pre class="scheme"><code>; Integers are exact
+(+ 1 2 3)           ; =&gt; 6
+(* 7 6)             ; =&gt; 42
+(- 10 3)            ; =&gt; 7
+
+; Division promotes to double
+(/ 10 3)            ; =&gt; 3.333...
+
+; Mixed types promote automatically
+(+ 5 2.5)           ; =&gt; 7.5
+
+; Math functions
+(sqrt 16)           ; =&gt; 4.0
+(sin 3.14159)       ; =&gt; ~0.0
+(pow 2 10)          ; =&gt; 1024.0</code></pre>
+<p><strong>Type System</strong>: Polymorphic arithmetic with automatic
+promotion (int64 → double when needed)</p>
+<hr />
+<h3 id="variables-and-functions">Variables and Functions</h3>
+<pre class="scheme"><code>; Define variables
+(define pi 3.14159)
+(define x 42)
+
+; Define functions
+(define (square x) 
+  (* x x))
+
+(define (circle-area r)
+  (* pi r r))
+
+(circle-area 5)  ; =&gt; 78.5398...
+
+; Lambda expressions (anonymous functions)
+(define double (lambda (x) (* 2 x)))
+(double 21)      ; =&gt; 42
+
+; Functions are first-class values
+(define ops (list + - * /))
+(map (lambda (f) (f 10 2)) ops)  ; =&gt; (12 8 20 5.0)</code></pre>
+<hr />
+<h2 id="part-2-lists-3-minutes">Part 2: Lists (3 minutes)</h2>
+<p>Lists are the fundamental data structure for symbolic
+computation.</p>
+<pre class="scheme"><code>; Creating lists
+&#39;(1 2 3)                    ; Quoted literal
+(list 1 2 3)                ; Constructor
+(cons 1 (cons 2 &#39;()))       ; Build with cons
+
+; Basic operations
+(car &#39;(1 2 3))              ; =&gt; 1 (first element)
+(cdr &#39;(1 2 3))              ; =&gt; (2 3) (rest)
+(length &#39;(a b c d))         ; =&gt; 4
+
+; Nested lists
+(define matrix &#39;((1 2) (3 4) (5 6)))
+(car (car matrix))          ; =&gt; 1
+(cadr matrix)               ; =&gt; (3 4)
+
+; Higher-order operations
+(map (lambda (x) (* x 2)) &#39;(1 2 3))     ; =&gt; (2 4 6)
+(filter even? &#39;(1 2 3 4 5 6))           ; =&gt; (2 4 6)
+(fold + 0 &#39;(1 2 3 4))                   ; =&gt; 10</code></pre>
+<p><strong>Import Standard Library</strong>:</p>
+<pre class="scheme"><code>(require core.list.higher_order)  ; fold, filter, map, etc.
+(require core.list.sort)           ; sort, merge</code></pre>
+<hr />
+<h2 id="part-3-closures-2-minutes">Part 3: Closures (2 minutes)</h2>
+<p>Closures capture their environment and support mutation.</p>
+<pre class="scheme"><code>; Counter with state
+(define make-counter
+  (lambda ()
+    (let ((count 0))
+      (lambda ()
+        (set! count (+ count 1))
+        count))))
+
+(define c (make-counter))
+(c)  ; =&gt; 1
+(c)  ; =&gt; 2
+(c)  ; =&gt; 3
+
+; Function factory (currying)
+(define (make-adder n)
+  (lambda (x) (+ x n)))
+
+(define add5 (make-adder 5))
+(add5 10)  ; =&gt; 15
+
+; Mutable captures
+(define (make-account balance)
+  (lambda (amount)
+    (set! balance (+ balance amount))
+    balance))
+
+(define acct (make-account 100))
+(acct 50)   ; =&gt; 150
+(acct -30)  ; =&gt; 120</code></pre>
+<p><strong>Key Feature</strong>: Closures support <code>set!</code> on
+captured variables (mutable captures via pointer-passing)</p>
+<hr />
+<h2 id="part-4-tensors-3-minutes">Part 4: Tensors (3 minutes)</h2>
+<p>N-dimensional arrays for numerical computing.</p>
+<pre class="scheme"><code>; Create tensors
+(define v (vector 1.0 2.0 3.0))         ; 1D vector
+(define M #((1 2 3) (4 5 6)))           ; 2D matrix (literal syntax)
+
+; Tensor creation functions
+(zeros 5)           ; =&gt; #(0.0 0.0 0.0 0.0 0.0)
+(ones 2 3)          ; =&gt; #((1.0 1.0 1.0) (1.0 1.0 1.0))
+(eye 3)             ; =&gt; 3×3 identity matrix
+(arange 0.0 1.0 0.2) ; =&gt; #(0.0 0.2 0.4 0.6 0.8)
+
+; Element access
+(vref v 0)          ; =&gt; 1.0
+(tensor-get M 1 2)  ; =&gt; 6
+
+; Arithmetic (element-wise)
+(tensor-add #(1 2 3) #(4 5 6))  ; =&gt; #(5 7 9)
+(tensor-mul v v)                ; =&gt; #(1.0 4.0 9.0)
+
+; Linear algebra
+(define A #((1 2) (3 4)))
+(define B #((5 6) (7 8)))
+(matmul A B)        ; =&gt; #((19 22) (43 50))
+(transpose A)       ; =&gt; #((1 3) (2 4))
+(trace A)           ; =&gt; 5.0
+
+; Reductions
+(tensor-sum #(1 2 3 4 5))   ; =&gt; 15.0
+(tensor-mean v)             ; =&gt; 2.0
+(norm #(3.0 4.0))           ; =&gt; 5.0</code></pre>
+<p><strong>Performance</strong>: Zero-copy views for
+reshape/transpose/flatten</p>
+<hr />
+<h2 id="part-5-automatic-differentiation-5-minutes">Part 5: Automatic
+Differentiation (5 minutes)</h2>
+<p>The killer feature: <strong>three modes of
+differentiation</strong>.</p>
+<h3 id="symbolic-differentiation">Symbolic Differentiation</h3>
+<p>Compile-time transformation with algebraic simplification.</p>
+<pre class="scheme"><code>; Symbolic derivative (AST transformation)
+(diff &#39;(* x x) &#39;x)              ; =&gt; (* 2 x)
+(diff &#39;(sin (* 2 x)) &#39;x)        ; =&gt; (* 2 (cos (* 2 x)))
+(diff &#39;(/ 1 x) &#39;x)              ; =&gt; (/ -1 (* x x))</code></pre>
+<h3 id="forward-mode-ad-dual-numbers">Forward-Mode AD (Dual
+Numbers)</h3>
+<p>Efficient for functions ℝ → ℝⁿ (single input, many outputs).</p>
+<pre class="scheme"><code>; Derivative of scalar function
+(define (f x) (* x x x))  ; x³
+(derivative f 2.0)        ; =&gt; 12.0 (3x² at x=2)
+
+; Works with complex expressions
+(define (g x) (sin (exp x)))
+(derivative g 0.0)        ; =&gt; 1.0 (chain rule automatic)
+
+; Higher-order: returns derivative function
+(define df (derivative f))
+(df 3.0)  ; =&gt; 27.0</code></pre>
+<p><strong>Method</strong>: Dual numbers
+<code>(value, derivative)</code> with automatic chain rule</p>
+<hr />
+<h3 id="reverse-mode-ad-backpropagation">Reverse-Mode AD
+(Backpropagation)</h3>
+<p>Efficient for functions ℝⁿ → ℝ (many inputs, single output).
+Essential for machine learning.</p>
+<pre class="scheme"><code>; Gradient of scalar function
+(define (f v) 
+  (+ (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1))))
+
+(gradient f #(3.0 4.0))  ; =&gt; #(6.0 8.0) (∇f = [2x, 2y])
+
+; Practical example: least squares loss
+(define (loss weights data)
+  (let ((predictions (matmul data weights))
+        (errors (tensor-sub predictions targets)))
+    (tensor-sum (tensor-mul errors errors))))
+
+(define grad-loss (gradient loss))
+(grad-loss W train-data)  ; Gradient for optimization</code></pre>
+<p><strong>Method</strong>: Computational graph + backpropagation
+(reverse accumulation)</p>
+<hr />
+<h3 id="vector-calculus">Vector Calculus</h3>
+<p>Physics and field theory operators.</p>
+<pre class="scheme"><code>; Divergence (source strength)
+(define (F v) v)  ; Identity field
+(divergence F #(1.0 2.0 3.0))  ; =&gt; 3.0
+
+; Curl (rotation) - 3D only
+(define (B v) (vector (vref v 1) (- (vref v 0)) 0.0))
+(curl B #(1.0 2.0 0.0))  ; =&gt; #(0.0 0.0 -2.0)
+
+; Laplacian (heat/wave equations)
+(define (u v) (+ (* (vref v 0) (vref v 0))
+                 (* (vref v 1) (vref v 1))))
+(laplacian u #(1.0 1.0))  ; =&gt; 4.0
+
+; Jacobian matrix
+(define (F v) (vector (* 2 (vref v 0))
+                      (+ (vref v 0) (vref v 1))))
+(jacobian F #(3.0 4.0))  ; =&gt; #((2.0 0.0) (1.0 1.0))
+
+; Hessian (curvature)
+(hessian f #(1.0 1.0))  ; =&gt; #((2.0 0.0) (0.0 2.0))</code></pre>
+<p><strong>Applications</strong>: Physics simulations, optimization, PDE
+solvers</p>
+<hr />
+<h2 id="part-6-complete-example---neural-network-training">Part 6:
+Complete Example - Neural Network Training</h2>
+<p>Here’s a complete 2-layer neural network with backpropagation:</p>
+<pre class="scheme"><code>(require core.functional)
+
+; Network parameters
+(define input-size 3)
+(define hidden-size 4)
+(define output-size 2)
+
+; Xavier initialization
+(define (random-matrix rows cols)
+  (let* ((scale (sqrt (/ 2.0 (+ rows cols))))
+         (total (* rows cols))
+         (data (make-vector total 0.0)))
+    (define (init i)
+      (if (&lt; i total)
+          (begin
+            (vector-set! data i (* scale (- (random) 0.5)))
+            (init (+ i 1)))
+          (reshape data rows cols)))
+    (init 0)))
+
+; Initialize weights
+(define W1 (random-matrix input-size hidden-size))
+(define W2 (random-matrix hidden-size output-size))
+
+; Activation functions
+(define (relu x) (if (&gt; x 0.0) x 0.0))
+(define (sigmoid x) (/ 1.0 (+ 1.0 (exp (- x)))))
+
+; Forward pass
+(define (forward x)
+  (let* ((h-pre (matmul x W1))
+         (h (tensor-apply h-pre relu))
+         (y-pre (matmul h W2))
+         (y (tensor-apply y-pre sigmoid)))
+    y))
+
+; Loss function (MSE)
+(define (mse-loss pred target)
+  (let ((diff (tensor-sub pred target)))
+    (/ (tensor-sum (tensor-mul diff diff)) 2.0)))
+
+; Training step with gradient descent
+(define (train-step x target learning-rate)
+  ; Compute gradients using automatic differentiation
+  (let* ((loss-fn (lambda (w1 w2)
+                    (let* ((h-pre (matmul x w1))
+                           (h (tensor-apply h-pre relu))
+                           (y-pre (matmul h w2))
+                           (y (tensor-apply y-pre sigmoid)))
+                      (mse-loss y target))))
+         
+         ; Gradient with respect to W1 (holding W2 constant)
+         (grad-w1 (gradient (lambda (w) (loss-fn w W2)) W1))
+         
+         ; Gradient with respect to W2 (holding W1 constant)
+         (grad-w2 (gradient (lambda (w) (loss-fn W1 w)) W2)))
+    
+    ; Update weights: W := W - α∇L
+    (set! W1 (tensor-sub W1 (tensor-mul learning-rate grad-w1)))
+    (set! W2 (tensor-sub W2 (tensor-mul learning-rate grad-w2)))
+    
+    ; Return current loss
+    (loss-fn W1 W2)))
+
+; Training loop
+(define (train epochs learning-rate)
+  (define input #(1.0 0.5 -0.5))
+  (define target #(1.0 0.0))
+  
+  (define (loop epoch)
+    (if (&lt; epoch epochs)
+        (let ((loss (train-step input target learning-rate)))
+          (if (= (modulo epoch 100) 0)
+              (begin
+                (display &quot;Epoch &quot;)
+                (display epoch)
+                (display &quot; Loss: &quot;)
+                (display loss)
+                (newline)))
+          (loop (+ epoch 1)))))
+  (loop 0))
+
+; Train the network
+(train 1000 0.01)</code></pre>
+<p><strong>What just happened?</strong></p>
+<ol type="1">
+<li><strong>Defined a neural network</strong> with 2 layers (3→4→2
+neurons)</li>
+<li><strong>Automatic differentiation</strong> computed gradients of
+loss w.r.t. all weights</li>
+<li><strong>Gradient descent</strong> updated weights to minimize
+loss</li>
+<li><strong>Zero manual derivatives</strong> - the compiler computed
+them automatically!</li>
+</ol>
+<hr />
+<h2 id="key-language-features">Key Language Features</h2>
+<h3 id="homoiconic-code-as-data">1. <strong>Homoiconic
+Code-as-Data</strong></h3>
+<pre class="scheme"><code>; Code is data
+(define code &#39;(lambda (x) (* x 2)))
+
+; Manipulate code
+(define (get-lambda-params code)
+  (cadr code))  ; =&gt; (x)
+
+; Display shows source structure
+(display (lambda (x) (* x 2)))
+; Output: (lambda (x) (* x 2))</code></pre>
+<hr />
+<h3 id="pattern-matching">2. <strong>Pattern Matching</strong></h3>
+<pre class="scheme"><code>(define (classify x)
+  (match x
+    ((? number?) &#39;is-number)
+    ((a b c) &#39;is-triple)
+    ((h . t) &#39;is-pair)
+    (_ &#39;unknown)))
+
+(classify 42)           ; =&gt; is-number
+(classify &#39;(1 2 3))     ; =&gt; is-triple</code></pre>
+<hr />
+<h3 id="tail-call-optimization">3. <strong>Tail Call
+Optimization</strong></h3>
+<pre class="scheme"><code>; Tail-recursive factorial (no stack overflow)
+(define (factorial n)
+  (letrec ((fact-iter 
+            (lambda (n acc)
+              (if (= n 0) 
+                  acc
+                  (fact-iter (- n 1) (* n acc))))))
+    (fact-iter n 1)))
+
+(factorial 10000)  ; Works! (optimized to loop)</code></pre>
+<hr />
+<h3 id="exception-handling">4. <strong>Exception Handling</strong></h3>
+<pre class="scheme"><code>(guard (exn
+         ((divide-by-zero? exn) &#39;infinity)
+         (else &#39;unknown-error))
+  (/ 1 0))
+; =&gt; infinity</code></pre>
+<hr />
+<h3 id="file-io">5. <strong>File I/O</strong></h3>
+<pre class="scheme"><code>; Write to file
+(define out (open-output-file &quot;data.txt&quot;))
+(write-line out &quot;Hello, File!&quot;)
+(close-port out)
+
+; Read from file
+(define in (open-input-file &quot;data.txt&quot;))
+(define line (read-line in))
+(close-port in)
+(display line)  ; =&gt; &quot;Hello, File!&quot;</code></pre>
+<hr />
+<h2 id="advanced-example-optimization">Advanced Example:
+Optimization</h2>
+<p>Gradient descent to find minimum of Rosenbrock function.</p>
+<pre class="scheme"><code>; Rosenbrock function: f(x,y) = (1-x)² + 100(y-x²)²
+(define (rosenbrock v)
+  (let ((x (vref v 0))
+        (y (vref v 1)))
+    (+ (* (- 1.0 x) (- 1.0 x))
+       (* 100.0 (- y (* x x)) (- y (* x x))))))
+
+; Gradient descent optimizer
+(define (gradient-descent f x0 learning-rate iterations)
+  (define point x0)
+  
+  (define (step i)
+    (if (&lt; i iterations)
+        (let* ((grad (gradient f point))
+               (update (tensor-mul learning-rate grad))
+               (new-point (tensor-sub point update)))
+          
+          ; Print progress
+          (if (= (modulo i 100) 0)
+              (begin
+                (display &quot;Iter &quot;)
+                (display i)
+                (display &quot; f(x) = &quot;)
+                (display (f point))
+                (display &quot; x = &quot;)
+                (display point)
+                (newline)))
+          
+          (set! point new-point)
+          (step (+ i 1)))
+        point))
+  
+  (step 0))
+
+; Find minimum (should converge to [1, 1])
+(define result 
+  (gradient-descent rosenbrock 
+                    #(-0.5 -0.5)   ; Starting point
+                    0.001          ; Learning rate
+                    1000))         ; Iterations
+
+(display &quot;Optimum: &quot;)
+(display result)
+(newline)
+(display &quot;f(optimum) = &quot;)
+(display (rosenbrock result))</code></pre>
+<p><strong>Output</strong>:</p>
+<pre><code>Iter 0 f(x) = 26.5625 x = #(-0.5 -0.5)
+Iter 100 f(x) = 3.847 x = #(0.234 0.076)
+...
+Iter 900 f(x) = 0.00012 x = #(0.989 0.978)
+Optimum: #(0.999 0.998)
+f(optimum) = 8.4e-7</code></pre>
+<p><strong>What makes this powerful?</strong> - Gradient computed
+<strong>automatically</strong> - no manual calculus! - Works with
+<strong>any function</strong> - change <code>rosenbrock</code> to your
+objective - Scales to <strong>high dimensions</strong> - gradient
+computation is O(1) per parameter</p>
+<hr />
+<h2 id="physics-example-heat-equation">Physics Example: Heat
+Equation</h2>
+<p>Solve the 1D heat equation: ∂u/∂t = α∇²u</p>
+<pre class="scheme"><code>(require core.functional)
+
+; Discretized Laplacian (finite differences)
+(define (discrete-laplacian u dx)
+  (let* ((n (vector-length u))
+         (result (make-vector n 0.0)))
+    (define (loop i)
+      (if (&lt; i n)
+          (let ((left (if (&gt; i 0) (vref u (- i 1)) 0.0))
+                (center (vref u i))
+                (right (if (&lt; i (- n 1)) (vref u (+ i 1)) 0.0)))
+            (vector-set! result i 
+              (/ (+ left (* -2.0 center) right) (* dx dx)))
+            (loop (+ i 1)))
+          result))
+    (loop 0)))
+
+; Time step
+(define (heat-step u alpha dt dx)
+  (let ((lap (discrete-laplacian u dx)))
+    (tensor-add u (tensor-mul (* alpha dt) lap))))
+
+; Simulation
+(define (simulate-heat u0 alpha dt dx steps)
+  (define u u0)
+  (define (loop step)
+    (if (&lt; step steps)
+        (begin
+          (set! u (heat-step u alpha dt dx))
+          (if (= (modulo step 100) 0)
+              (begin
+                (display &quot;Step &quot;)
+                (display step)
+                (display &quot;: &quot;)
+                (display u)
+                (newline)))
+          (loop (+ step 1)))
+        u))
+  (loop 0))
+
+; Initial condition: Gaussian bump
+(define u0 #(0.0 0.1 0.5 1.0 0.5 0.1 0.0))
+
+; Run simulation
+(simulate-heat u0 0.1 0.01 0.1 500)</code></pre>
+<hr />
+<h2 id="quick-reference-card">Quick Reference Card</h2>
+<h3 id="essential-syntax">Essential Syntax</h3>
+<pre class="scheme"><code>; Comments
+; Single-line comment
+
+; Variables
+(define x value)
+(set! x new-value)
+
+; Functions
+(define (f x y) body)
+(lambda (x) body)
+
+; Conditionals
+(if test then else)
+(cond (test result)... (else default))
+
+; Lists
+&#39;(1 2 3)
+(car lst)
+(cdr lst)
+(cons x lst)
+
+; Loops
+(let loop ((i 0))
+  (if (&lt; i 10)
+      (begin (display i) (loop (+ i 1)))))
+
+; Tensors
+#(1 2 3)
+(vref tensor idx)
+(tensor-add a b)
+
+; AD
+(derivative f x)
+(gradient f point)
+(jacobian f point)</code></pre>
+<hr />
+<h2 id="next-steps">Next Steps</h2>
+<h3 id="learn-more">Learn More</h3>
+<ol type="1">
+<li><strong><a href="API_REFERENCE.md">API Reference</a></strong> —
+Complete function reference (550+ functions)</li>
+<li><strong><a href="ESHKOL_V1_ARCHITECTURE.md">Architecture
+Guide</a></strong> — System internals (memory, types, compilation)</li>
+<li><strong><a href="../ESHKOL_V1_LANGUAGE_REFERENCE.md">Language
+Reference</a></strong> — Comprehensive language guide</li>
+<li><strong><a href="breakdown/AUTODIFF.md">Autodiff Deep
+Dive</a></strong> — Three differentiation modes in detail</li>
+</ol>
+<h3 id="example-programs">Example Programs</h3>
+<p>Explore the examples directory: -
+<code>examples-dep/neural_network_complete.esk</code> - Full neural
+network - <code>examples-dep/vector_calculus.esk</code> - Physics
+simulations - <code>examples-dep/function_composition_closure.esk</code>
+- Functional programming patterns -
+<code>tests/ml/impressive_demo.esk</code> - ML showcase</p>
+<h3 id="standard-library">Standard Library</h3>
+<pre class="scheme"><code>; Import modules
+(require core.list.higher_order)  ; fold, filter, any, every
+(require core.list.sort)           ; sort, merge
+(require core.functional)          ; compose, curry, flip
+(require core.strings)             ; String utilities
+(require core.json)                ; JSON parsing
+
+; Or import everything at once
+(require stdlib)</code></pre>
+<p>Full module list in <a
+href="../lib/stdlib.esk"><code>lib/stdlib.esk</code></a></p>
+<hr />
+<h3 id="statistics">Statistics</h3>
+<pre class="scheme"><code>(require math.statistics)
+
+(define data &#39;(4.0 7.0 13.0 2.0 9.0 15.0 6.0 11.0))
+
+(display (median data))         ; =&gt; 8.0
+(display (std-dev data))        ; =&gt; 4.183...
+(display (percentile data 75))  ; =&gt; 13.0
+
+;; Summary statistics
+(define summary (describe data))
+;; Returns: ((count . 8) (mean . 8.375) (std . 4.183) (min . 2.0)
+;;           (q1 . 5.5) (median . 8.0) (q3 . 12.5) (max . 15.0))</code></pre>
+<hr />
+<h3 id="ode-solvers">ODE Solvers</h3>
+<pre class="scheme"><code>(require math.ode)
+
+;; Solve dy/dt = -y, y(0) = 1.0 (analytical: y = e^(-t))
+(define (f t y) (- y))
+
+;; Euler method
+(display (euler-final f 0.0 1.0 0.01 100))  ; =&gt; ~0.366 (e^(-1))
+
+;; 4th-order Runge-Kutta (more accurate)
+(display (rk4-final f 0.0 1.0 0.01 100))    ; =&gt; ~0.3679 (closer to e^(-1))</code></pre>
+<hr />
+<h3 id="cli-compilation-workflow">CLI Compilation Workflow</h3>
+<pre class="bash"><code># Compile to named executable
+eshkol-run program.esk -o program
+./program
+
+# Compile-only (produce .o file without linking)
+eshkol-run -c program.esk -o program.o
+
+# Evaluate expression directly
+eshkol-run -e &#39;(display (* 6 7))&#39;
+
+# Dump LLVM IR for debugging
+eshkol-run --dump-ir program.esk
+
+# Optimize level (0-3)
+eshkol-run -O2 program.esk -o program
+
+# Compile without stdlib (bare metal)
+eshkol-run --no-stdlib program.esk -o program</code></pre>
+<hr />
+<h2 id="tips-tricks">Tips &amp; Tricks</h2>
+<h3 id="performance">Performance</h3>
+<pre class="scheme"><code>; Use let for cached computations
+(let ((expensive-calc (big-computation)))
+  (+ expensive-calc expensive-calc))  ; Computed once
+
+; Use tensors for numerical code (not lists)
+(tensor-sum #(1 2 3))  ; Fast
+(fold + 0 &#39;(1 2 3))    ; Slower (list overhead)
+
+; Tail recursion is your friend
+(letrec ((sum (lambda (n acc)
+                (if (= n 0) acc (sum (- n 1) (+ n acc))))))
+  (sum 1000000 0))  ; No stack overflow!</code></pre>
+<hr />
+<h3 id="debugging">Debugging</h3>
+<pre class="scheme"><code>; Display shows structure
+(display my-data)
+
+; Type introspection
+(type-of x)  ; Returns type tag as integer
+
+; List inspection
+(null? lst)
+(pair? lst)
+(length lst)</code></pre>
+<hr />
+<h3 id="common-patterns">Common Patterns</h3>
+<pre class="scheme"><code>; Higher-order function composition
+(define (compose f g)
+  (lambda (x) (f (g x))))
+
+(define square-then-double
+  (compose (lambda (x) (* x 2)) 
+           (lambda (x) (* x x))))
+
+; Partial application
+(define (partial f . args)
+  (lambda rest
+    (apply f (append args rest))))
+
+(define add5 (partial + 5))
+
+; Currying
+(define (curry2 f)
+  (lambda (x) (lambda (y) (f x y))))
+
+(define curried-add (curry2 +))
+((curried-add 3) 4)  ; =&gt; 7</code></pre>
+<hr />
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p><strong>Error: “Unknown function”</strong> - Check spelling and
+imports - Use <code>(require core.module)</code> for standard
+library</p>
+<p><strong>Error: “Type mismatch”</strong> - Eshkol uses gradual typing
+- type errors are warnings - Check if you’re mixing incompatible
+types</p>
+<p><strong>Segfault or crash</strong> - Report bug with minimal
+reproducer - Check if using external pointers correctly</p>
+<p><strong>Slow performance</strong> - Compile with
+<code>eshkol-run</code> for production (not REPL) - Use tensors for
+numerical code - Enable tail call optimization with
+<code>letrec</code></p>
+<hr />
+<h2 id="repl-commands">REPL Commands</h2>
+<pre class="bash"><code># Start REPL
+eshkol-repl
+
+# Load file in REPL
+eshkol&gt; (load &quot;mycode.esk&quot;)
+
+# Exit
+eshkol&gt; (exit)</code></pre>
+<p><strong>REPL Features</strong>: - Cross-evaluation persistence
+(variables and functions persist) - JIT compilation (LLVM ORC) -
+Incremental development</p>
+<hr />
+<h2 id="compilation">Compilation</h2>
+<h3 id="compile-to-executable">Compile to Executable</h3>
+<pre class="bash"><code># Single file
+eshkol-run program.esk -o program
+
+# With standard library
+eshkol-run -c program.esk -o program.o
+gcc program.o build/libeshkol-static.a -o program -lm
+
+# Run
+./program</code></pre>
+<h3 id="compile-to-object-file">Compile to Object File</h3>
+<pre class="bash"><code>eshkol-run -c mylib.esk -o mylib.o
+ar rcs libmylib.a mylib.o</code></pre>
+<hr />
+<h2 id="v1.1-features">v1.1 Features</h2>
+<h3 id="exact-arithmetic-bignums-rationals">Exact Arithmetic (Bignums
+&amp; Rationals)</h3>
+<pre class="scheme"><code>;; Arbitrary-precision integers
+(define big (+ 9223372036854775807 1))  ; Overflows int64 → bignum
+(display big)       ; =&gt; 9223372036854775808
+(exact? big)        ; =&gt; #t
+
+;; Exact exponentiation
+(expt 2 64)         ; =&gt; 18446744073709551616 (exact bignum)
+
+;; Rational numbers
+(define r (make-rational 1 3))
+(+ r r)             ; =&gt; 2/3 (exact)
+
+;; R7RS: exact + inexact → inexact
+(+ big 0.5)         ; =&gt; 9.223372036854776e+18 (double)</code></pre>
+<hr />
+<h3 id="complex-numbers">Complex Numbers</h3>
+<pre class="scheme"><code>;; Create complex numbers
+(define z (make-rectangular 3.0 4.0))
+(magnitude z)       ; =&gt; 5.0
+(angle z)           ; =&gt; 0.9273...
+
+;; Complex arithmetic
+(+ z (make-rectangular 1.0 -1.0))  ; =&gt; 4.0+3.0i
+(* z z)             ; =&gt; -7.0+24.0i
+
+;; Smith&#39;s formula for numerical stability
+(/ (make-rectangular 1e300 1e300)
+   (make-rectangular 1e300 1e300))  ; =&gt; 1.0+0.0i (no overflow)</code></pre>
+<hr />
+<h3 id="gpu-acceleration">GPU Acceleration</h3>
+<p>GPU dispatch is automatic — no code changes needed:</p>
+<pre class="scheme"><code>;; Large matrix multiply automatically uses GPU when beneficial
+(define A (make-tensor (list 1000 1000) 1.0))
+(define B (make-tensor (list 1000 1000) 2.0))
+(define C (matmul A B))  ; Dispatches to Metal/CUDA if available</code></pre>
+<p>Control GPU behavior with environment variables:</p>
+<pre class="bash"><code>ESHKOL_ENABLE_GPU=1 eshkol-run my_program.esk    # Force GPU
+ESHKOL_GPU_VERBOSE=1 eshkol-run my_program.esk   # See dispatch decisions</code></pre>
+<hr />
+<h3 id="parallel-programming">Parallel Programming</h3>
+<pre class="scheme"><code>;; Parallel map — distributes work across threads
+(parallel-map (lambda (x) (* x x)) &#39;(1 2 3 4 5))  ; =&gt; (1 4 9 16 25)
+
+;; Parallel fold
+(parallel-fold + 0 (range 1 1001))  ; =&gt; 500500
+
+;; Futures for async computation
+(define f1 (future (expensive-computation-1)))
+(define f2 (future (expensive-computation-2)))
+(+ (force f1) (force f2))  ; Both run concurrently</code></pre>
+<hr />
+<h3 id="consciousness-engine">Consciousness Engine</h3>
+<pre class="scheme"><code>;; Logic programming — unification
+(define s (make-substitution))
+(define s2 (unify ?x 42 s))
+(walk ?x s2)  ; =&gt; 42
+
+;; Knowledge base
+(define kb (make-kb))
+(kb-assert! kb (make-fact &#39;parent &#39;alice &#39;bob))
+(kb-assert! kb (make-fact &#39;parent &#39;bob &#39;charlie))
+(kb-query kb (make-fact &#39;parent ?who &#39;charlie))
+;; =&gt; list of substitutions where ?who = bob
+
+;; Active inference with factor graphs
+(define fg (make-factor-graph 2 #(2 2)))   ; 2 binary variables
+(fg-add-factor! fg #(0 1) #(-0.1 -2.3 -1.6 -0.2))  ; log-probabilities
+(define beliefs (fg-infer! fg 20))         ; belief propagation
+(free-energy fg #(1.0 0.0))               ; variational free energy</code></pre>
+<hr />
+<h3 id="signal-processing">Signal Processing</h3>
+<pre class="scheme"><code>(require signal)
+
+;; FFT — Cooley-Tukey radix-2 (input length must be power of 2)
+(define signal #(1.0 0.0 1.0 0.0 1.0 0.0 1.0 0.0))
+(define spectrum (fft signal))
+(define recovered (ifft spectrum))   ; inverse FFT recovers original
+
+;; Window functions for spectral analysis
+(define win (hamming-window 256))
+(define windowed (apply-window signal (hamming-window 8)))
+
+;; Butterworth lowpass filter (cutoff normalized 0..1, 1=Nyquist)
+(define lp (butterworth-lowpass 4 0.2))  ; 4th order, cutoff at 0.2×Nyquist
+(define filtered (fir-filter (car lp) signal))
+
+;; Frequency response analysis
+(define resp (frequency-response (car lp) (cdr lp) 512))
+;; resp = (magnitudes . phases)</code></pre>
+<hr />
+<h3 id="repl">REPL</h3>
+<pre class="bash"><code>$ eshkol-repl
+
+eshkol&gt; (define (f x) (* x x x))
+eshkol&gt; (derivative f 2.0)
+12.0
+eshkol&gt; (require stdlib)
+eshkol&gt; (sort &lt; &#39;(3 1 4 1 5 9))
+(1 1 3 4 5 9)
+eshkol&gt; :type 42
+Integer
+eshkol&gt; :quit</code></pre>
+<p><strong>REPL Features</strong>: Cross-eval persistence, hot code
+reload, stdlib support, type introspection.</p>
+<hr />
+<h3 id="machine-learning-with-v1.1-builtins">Machine Learning with v1.1
+Builtins</h3>
+<pre class="scheme"><code>;; Initialize weights with Kaiming initialization
+(define W1 (zeros 4 3))
+(kaiming-normal! W1 3)              ; fan-in = 3
+(define W2 (zeros 2 4))
+(kaiming-normal! W2 4)              ; fan-in = 4
+
+;; Forward pass using builtin activations
+(define (forward x)
+  (let* ((h (relu (matmul x W1)))    ; hidden layer + ReLU
+         (out (sigmoid (matmul h W2)))) ; output + sigmoid
+    out))
+
+;; Training with Adam optimizer
+(define m1 (zeros 4 3))  ; 1st moment
+(define v1 (zeros 4 3))  ; 2nd moment
+(define m2 (zeros 2 4))
+(define v2 (zeros 2 4))
+
+(define (train-step x target step)
+  (let* ((pred (forward x))
+         (loss (mse-loss pred target))
+         (grad-w1 (gradient (lambda (w)
+                    (mse-loss (sigmoid (matmul (relu (matmul x w)) W2)) target)) W1))
+         (grad-w2 (gradient (lambda (w)
+                    (mse-loss (sigmoid (matmul (relu (matmul x W1)) w)) target)) W2)))
+    ;; Clip gradients to prevent explosion
+    (clip-grad-norm! grad-w1 1.0)
+    (clip-grad-norm! grad-w2 1.0)
+    ;; Adam updates (modifies W1, W2, m1, v1, m2, v2 in-place)
+    (adam-step W1 grad-w1 0.001 m1 v1 step)
+    (adam-step W2 grad-w2 0.001 m2 v2 step)
+    loss))</code></pre>
+<hr />
+<h3 id="package-manager">Package Manager</h3>
+<pre class="bash"><code># Create a new project
+eshkol-pkg init my-project
+cd my-project
+
+# Project structure created:
+# eshkol.toml     — manifest file
+# src/main.esk    — entry point
+
+# Build and run
+eshkol-pkg build
+eshkol-pkg run
+
+# Add a dependency
+eshkol-pkg add some-package 1.0.0
+
+# Clean build artifacts
+eshkol-pkg clean</code></pre>
+<p>The <code>eshkol.toml</code> manifest:</p>
+<pre class="toml"><code>[package]
+name = &quot;my-project&quot;
+version = &quot;0.1.0&quot;
+license = &quot;MIT&quot;
+entry = &quot;src/main.esk&quot;
+
+[dependencies]</code></pre>
+<hr />
+<h3 id="webwasm-platform">Web/WASM Platform</h3>
+<p>Compile Eshkol to WebAssembly for browser deployment:</p>
+<pre class="bash"><code># Compile to WASM
+eshkol-run --wasm app.esk -o app.wasm</code></pre>
+<pre class="scheme"><code>;; app.esk — interactive web application
+(require web)
+
+;; Get DOM handles
+(define body (web-get-body))
+
+;; Create UI
+(define btn (web-create-element &quot;button&quot;))
+(web-set-text-content btn &quot;Click me!&quot;)
+(web-set-style btn &quot;fontSize&quot; &quot;18px&quot;)
+(web-append-child body btn)
+
+;; Counter with event handling
+(define count 0)
+(web-add-event-listener btn &quot;click&quot;
+  (lambda (event)
+    (set! count (+ count 1))
+    (web-set-text-content btn
+      (string-append &quot;Clicked &quot; (number-&gt;string count) &quot; times&quot;))))
+
+;; Canvas drawing
+(define canvas (web-create-element &quot;canvas&quot;))
+(web-set-attribute canvas &quot;width&quot; &quot;400&quot;)
+(web-set-attribute canvas &quot;height&quot; &quot;300&quot;)
+(web-append-child body canvas)
+
+(define ctx (web-get-context-2d canvas))
+(web-canvas-fill-style ctx &quot;blue&quot;)
+(web-canvas-fill-rect ctx 50.0 50.0 100.0 80.0)
+(web-canvas-fill-text ctx &quot;Hello from Eshkol!&quot; 60.0 100.0)</code></pre>
+<p>73 web API functions available: DOM manipulation, events, Canvas 2D,
+localStorage, fetch, timers.</p>
+<hr />
+<h2 id="resources">Resources</h2>
+<ul>
+<li><strong>GitHub</strong>: https://github.com/tsotchke/eshkol</li>
+<li><strong>Documentation</strong>: <a
+href="."><code>docs/</code></a></li>
+<li><strong>Examples</strong>: <a
+href="../examples-dep"><code>examples-dep/</code></a></li>
+<li><strong>Tests</strong>: <a href="../tests"><code>tests/</code></a>
+(434 test files across 35 suites)</li>
+</ul>
+<hr />
+<h2 id="community-support">Community &amp; Support</h2>
+<p><strong>Report Issues</strong>: GitHub Issues
+<strong>Discussions</strong>: GitHub Discussions
+<strong>License</strong>: MIT</p>
+<hr />
+<p><strong>Next</strong>: Read the <a href="API_REFERENCE.md">API
+Reference</a> for complete function documentation, or dive into the <a
+href="breakdown/MACHINE_LEARNING.md">Machine Learning deep dive</a> for
+neural network training patterns.</p>
+<hr />
+<p><strong>Copyright</strong> © 2025-2026 tsotchke
+<strong>License</strong>: MIT</p>

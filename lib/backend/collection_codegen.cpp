@@ -685,7 +685,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
 
         // Allocate dims array via arena
         llvm::Value* new_dims = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
-            {tensor_arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t))});
+            {tensor_arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), sizeof(uint64_t))});
         ctx_.builder().CreateStore(tensor_new_len, new_dims);
         ctx_.builder().CreateStore(new_dims, ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 0));
         ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1),
@@ -694,7 +694,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
 
         // Allocate and copy elements via arena
         llvm::Value* new_elems_size = ctx_.builder().CreateMul(tensor_new_len,
-            llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+            llvm::ConstantInt::get(ctx_.sizeType(), sizeof(double)));
         llvm::Value* new_elems = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {tensor_arena_ptr, new_elems_size});
         ctx_.builder().CreateStore(new_elems, ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 2));
 
@@ -1222,7 +1222,7 @@ llvm::Value* CollectionCodegen::vector(const eshkol_operations_t* op) {
     // Allocate from arena with header (for consolidated HEAP_PTR type)
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
-        {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), num_elems)});
+        {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), num_elems)});
 
     // Store length at beginning (offset 0)
     llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
@@ -1545,7 +1545,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
 
     // Allocate dims array for 1D tensor via arena: 1 * 8 bytes
     llvm::Value* slice_dims = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
-        {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 8)});
+        {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), 8)});
     ctx_.builder().CreateStore(row_size, slice_dims);
 
     // Fill slice tensor struct
@@ -1832,7 +1832,7 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
         // (vector-append) => empty vector
         llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
         llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
-            {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 0)});
+            {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), 0)});
         llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
         ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), len_ptr);
         return tagged_.packHeapPtr(vec_ptr);

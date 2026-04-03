@@ -100,13 +100,13 @@ void BuiltinDeclarations::declareLambdaRegistry() {
 
     ctx_.defineFunction("eshkol_lambda_registry_init", lambda_registry_init_func_);
 
-    // eshkol_lambda_registry_add: void eshkol_lambda_registry_add(uint64_t func_ptr,
-    //                                                             uint64_t sexpr_ptr,
+    // eshkol_lambda_registry_add: void eshkol_lambda_registry_add(intptr_t func_ptr,
+    //                                                             intptr_t sexpr_ptr,
     //                                                             const char* name)
     std::vector<llvm::Type*> add_args;
-    add_args.push_back(ctx_.int64Type()); // uint64_t func_ptr
-    add_args.push_back(ctx_.int64Type()); // uint64_t sexpr_ptr
-    add_args.push_back(ctx_.ptrType());   // const char* name
+    add_args.push_back(ctx_.intPtrType()); // intptr_t func_ptr
+    add_args.push_back(ctx_.intPtrType()); // intptr_t sexpr_ptr
+    add_args.push_back(ctx_.ptrType());    // const char* name
 
     llvm::FunctionType* add_type = llvm::FunctionType::get(
         ctx_.voidType(),
@@ -123,12 +123,12 @@ void BuiltinDeclarations::declareLambdaRegistry() {
 
     ctx_.defineFunction("eshkol_lambda_registry_add", lambda_registry_add_func_);
 
-    // eshkol_lambda_registry_lookup: uint64_t eshkol_lambda_registry_lookup(uint64_t func_ptr)
+    // eshkol_lambda_registry_lookup: intptr_t eshkol_lambda_registry_lookup(intptr_t func_ptr)
     std::vector<llvm::Type*> lookup_args;
-    lookup_args.push_back(ctx_.int64Type()); // uint64_t func_ptr
+    lookup_args.push_back(ctx_.intPtrType()); // intptr_t func_ptr
 
     llvm::FunctionType* lookup_type = llvm::FunctionType::get(
-        ctx_.int64Type(), // return uint64_t (sexpr_ptr or 0)
+        ctx_.intPtrType(), // return intptr_t (sexpr_ptr or 0)
         lookup_args,
         false
     );
