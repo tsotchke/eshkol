@@ -312,6 +312,9 @@ static int add_constant(VM* vm, Value v) {
  * Print value
  ******************************************************************************/
 
+/* Forward declarations for print_value */
+typedef struct { Value* items; int len; int cap; } VmVector;
+
 static void print_value(VM* vm, Value v) {
     switch ((int)v.type) {
         case VAL_NIL:   printf("()"); break;
@@ -336,6 +339,27 @@ static void print_value(VM* vm, Value v) {
             printf(")");
             break;
         }
+        case VAL_STRING: {
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            if (obj && obj->opaque.ptr) {
+                VmString* s = (VmString*)obj->opaque.ptr;
+                printf("%.*s", s->byte_len, s->data);
+            }
+            break;
+        }
+        case VAL_VECTOR: {
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            printf("#(");
+            if (obj && obj->opaque.ptr) {
+                VmVector* vec = (VmVector*)obj->opaque.ptr;
+                for (int i = 0; i < vec->len; i++) {
+                    if (i) printf(" ");
+                    print_value(vm, vec->items[i]);
+                }
+            }
+            printf(")");
+            break;
+        }
         case VAL_CLOSURE: printf("<closure@%d>", v.as.ptr); break;
         case VAL_COMPLEX: {
             VmComplex* z = (VmComplex*)vm->heap.objects[v.as.ptr]->opaque.ptr;
@@ -343,7 +367,15 @@ static void print_value(VM* vm, Value v) {
             else printf("<complex>");
             break;
         }
-        case VAL_RATIONAL: printf("<rational>"); break;
+        case VAL_RATIONAL: {
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            if (obj && obj->opaque.ptr) {
+                VmRational* r = (VmRational*)obj->opaque.ptr;
+                if (r->denom == 1) printf("%lld", (long long)r->num);
+                else printf("%lld/%lld", (long long)r->num, (long long)r->denom);
+            } else printf("<rational>");
+            break;
+        }
         case VAL_BIGNUM: printf("<bignum>"); break;
         case VAL_DUAL: printf("<dual>"); break;
         default: printf("<unknown>"); break;
@@ -440,11 +472,7 @@ static int vm_extract_shape(VM* vm, Value shape_val, int64_t* shape, int max_dim
 }
 
 /* Simple vector for VEC_CREATE/VEC_REF/VEC_SET/VEC_LEN opcodes */
-typedef struct {
-    Value* items;
-    int len;
-    int cap;
-} VmVector;
+/* VmVector defined earlier (before print_value) */
 
 /* Macro: allocate heap object, set type, set opaque ptr, push result */
 #define VM_PUSH_HEAP_OPAQUE(vm, heap_type, val_type, ptr_val) do { \

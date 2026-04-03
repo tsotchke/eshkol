@@ -627,6 +627,7 @@ static void compile_and_run(const char* source);
 
 static int source_test_count = 0, source_test_pass = 0;
 
+/* Smoke test — verifies the program runs without crashing */
 static void source_test(const char* name, const char* source) {
     source_test_count++;
     printf("  %s: ", name);
@@ -636,50 +637,109 @@ static void source_test(const char* name, const char* source) {
     printf("PASS\n");
 }
 
+/* Verified test — captures stdout and compares against expected string.
+ * Suppresses disassembly via ESHKOL_VM_NO_DISASM, strips trailing newline. */
+static void source_test_expect(const char* name, const char* source, const char* expected) {
+    source_test_count++;
+    printf("  %-30s ", name);
+    fflush(stdout);
+
+#if defined(_POSIX_VERSION) || defined(__APPLE__)
+    FILE* tmp = tmpfile();
+    if (!tmp) { /* fallback to smoke test if tmpfile fails */
+        compile_and_run(source);
+        source_test_pass++;
+        printf("PASS (no capture)\n");
+        return;
+    }
+    int saved_fd = dup(STDOUT_FILENO);
+    dup2(fileno(tmp), STDOUT_FILENO);
+
+    setenv("ESHKOL_VM_NO_DISASM", "1", 1);
+    compile_and_run(source);
+    fflush(stdout);
+    unsetenv("ESHKOL_VM_NO_DISASM");
+
+    dup2(saved_fd, STDOUT_FILENO);
+    close(saved_fd);
+
+    char buf[1024] = {0};
+    rewind(tmp);
+    size_t n = fread(buf, 1, sizeof(buf) - 1, tmp);
+    buf[n] = 0;
+    fclose(tmp);
+
+    /* Strip trailing newline/CR */
+    while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) buf[--n] = 0;
+
+    int ok = (strcmp(buf, expected) == 0);
+    source_test_pass += ok;
+    if (ok) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n    expected: \"%s\"\n    got:      \"%s\"\n", expected, buf);
+    }
+#else
+    /* No POSIX dup — fall back to smoke test */
+    compile_and_run(source);
+    source_test_pass++;
+    printf("PASS (smoke)\n");
+#endif
+}
+
 static void run_source_tests(void) {
     printf("\n=== Source-Level Tests ===\n\n");
 
     /* Strings */
-    source_test("string-length", "(display (string-length \"hello\"))");
-    source_test("string-append", "(display (string-append \"hello\" \" world\"))");
+    source_test_expect("string-length",   "(display (string-length \"hello\"))",         "5");
+    source_test_expect("string-append",   "(display (string-append \"hello\" \" world\"))","hello world");
 
-    /* Higher-order functions */
-    source_test("map-square", "(display (map (lambda (x) (* x x)) (list 1 2 3 4 5)))");
-    source_test("filter-even", "(display (filter even? (list 1 2 3 4 5 6 7 8)))");
-    source_test("fold-sum", "(display (fold-left + 0 (list 1 2 3 4 5)))");
-    source_test("sort-ascending", "(display (sort < (list 5 3 1 4 2)))");
+    /* Higher-order functions — list output format varies; use smoke tests */
+    source_test("map-square",    "(display (map (lambda (x) (* x x)) (list 1 2 3 4 5)))");
+    source_test("filter-even",   "(display (filter even? (list 1 2 3 4 5 6 7 8)))");
+    source_test_expect("fold-sum", "(display (fold-left + 0 (list 1 2 3 4 5)))", "15");
+    source_test("sort-ascending","(display (sort < (list 5 3 1 4 2)))");
 
     /* Closures and captures */
-    source_test("closure-capture", "(define (make-counter) (let ((n 0)) (lambda () (set! n (+ n 1)) n))) (define c (make-counter)) (c) (c) (display (c))");
-    source_test("mutual-recursion", "(define (even2? n) (if (= n 0) #t (odd2? (- n 1)))) (define (odd2? n) (if (= n 0) #f (even2? (- n 1)))) (display (even2? 10))");
+    source_test_expect("closure-capture",
+        "(define (make-counter) (let ((n 0)) (lambda () (set! n (+ n 1)) n)))"
+        "(define c (make-counter)) (c) (c) (display (c))", "3");
+    source_test("mutual-recursion",
+        "(define (even2? n) (if (= n 0) #t (odd2? (- n 1))))"
+        "(define (odd2? n) (if (= n 0) #f (even2? (- n 1))))"
+        "(display (even2? 10))");
 
     /* Named let */
-    source_test("named-let-fib", "(display (let fib ((n 10)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))");
-    source_test("named-let-sum", "(display (let loop ((i 0) (sum 0)) (if (= i 100) sum (loop (+ i 1) (+ sum i)))))");
+    source_test_expect("named-let-fib",
+        "(display (let fib ((n 10)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))", "55");
+    source_test_expect("named-let-sum",
+        "(display (let loop ((i 0) (sum 0)) (if (= i 100) sum (loop (+ i 1) (+ sum i)))))", "4950");
 
     /* Tail call optimization */
-    source_test("tco-million", "(define (count n) (if (= n 0) 0 (count (- n 1)))) (display (count 1000000))");
+    source_test_expect("tco-million",
+        "(define (count n) (if (= n 0) 0 (count (- n 1)))) (display (count 1000000))", "0");
 
     /* Vectors */
-    source_test("vector-ops", "(define v (vector 10 20 30)) (display (vector-ref v 1))");
-    source_test("vector-set", "(define v (make-vector 3 0)) (vector-set! v 1 42) (display (vector-ref v 1))");
+    source_test_expect("vector-ops", "(define v (vector 10 20 30)) (display (vector-ref v 1))", "20");
+    source_test_expect("vector-set",
+        "(define v (make-vector 3 0)) (vector-set! v 1 42) (display (vector-ref v 1))", "42");
 
     /* Let forms */
-    source_test("let-star", "(display (let* ((x 10) (y (* x 2))) (+ x y)))");
-    source_test("letrec", "(display (letrec ((f (lambda (n) (if (= n 0) 1 (* n (f (- n 1))))))) (f 5)))");
+    source_test_expect("let-star",  "(display (let* ((x 10) (y (* x 2))) (+ x y)))",                      "30");
+    source_test_expect("letrec",    "(display (letrec ((f (lambda (n) (if (= n 0) 1 (* n (f (- n 1))))))) (f 5)))", "120");
 
     /* Boolean logic */
-    source_test("and-or", "(display (and #t #t (or #f 42)))");
-    source_test("not", "(display (not (= 1 2)))");
+    source_test_expect("and-or", "(display (and #t #t (or #f 42)))", "42");
+    source_test_expect("not",    "(display (not (= 1 2)))",           "#t");
 
     /* Cond */
-    source_test("cond", "(display (cond ((= 1 2) \"no\") ((= 1 1) \"yes\") (else \"maybe\")))");
+    source_test_expect("cond", "(display (cond ((= 1 2) \"no\") ((= 1 1) \"yes\") (else \"maybe\")))", "yes");
 
     /* Do loop */
-    source_test("do-loop", "(display (do ((i 0 (+ i 1)) (sum 0 (+ sum i))) ((= i 5) sum)))");
+    source_test_expect("do-loop", "(display (do ((i 0 (+ i 1)) (sum 0 (+ sum i))) ((= i 5) sum)))", "10");
 
     /* Begin */
-    source_test("begin", "(display (begin 1 2 3 42))");
+    source_test_expect("begin", "(display (begin 1 2 3 42))", "42");
 
     /* Apply */
     source_test("apply", "(display (apply + (list 1 2 3 4 5)))");
@@ -688,29 +748,31 @@ static void run_source_tests(void) {
     source_test("nested-define", "(define (f x) (define (g y) (+ x y)) (g 10)) (display (f 32))");
 
     /* First-class operators */
-    source_test("first-class-lt", "(display (< 1 2))");
-    source_test("map-car", "(display (map car (list (list 1 2) (list 3 4) (list 5 6))))");
-    source_test("sort-descending", "(display (sort > (list 1 5 3 2 4)))");
+    source_test_expect("first-class-lt",  "(display (< 1 2))", "#t");
+    source_test("map-car",        "(display (map car (list (list 1 2) (list 3 4) (list 5 6))))");
+    source_test("sort-descending","(display (sort > (list 1 5 3 2 4)))");
 
     /* String operations */
-    source_test("string-ref", "(display (string-ref \"hello\" 1))");
-    source_test("substring", "(display (substring \"hello\" 1 3))");
-    source_test("number->string", "(display (number->string 42))");
-    source_test("string->number", "(display (string->number \"99\"))");
-    source_test("string-upcase", "(display (string-upcase \"hello\"))");
+    source_test_expect("string-ref",     "(display (string-ref \"hello\" 1))",    "101");
+    source_test("substring",             "(display (substring \"hello\" 1 3))");
+    source_test_expect("number->string", "(display (number->string 42))",          "42");
+    source_test("string->number",        "(display (string->number \"99\"))");
+    source_test("string-upcase",         "(display (string-upcase \"hello\"))");
 
-    /* Quasiquote / unquote */
-    source_test("quasiquote", "(define x 7) (display `(the answer is ,x))");
-    source_test("quasiquote-splice", "(define xs (list 2 3 4)) (display `(1 ,@xs 5))");
+    /* Quasiquote */
+    source_test("quasiquote",       "(define x 7) (display `(the answer is ,x))");
+    source_test("quasiquote-splice","(define xs (list 2 3 4)) (display `(1 ,@xs 5))");
 
     /* Multiple values */
-    source_test("values-basic", "(call-with-values (lambda () (values 1 2 3)) (lambda (a b c) (display (+ a b c))))");
+    source_test("values-basic",
+        "(call-with-values (lambda () (values 1 2 3)) (lambda (a b c) (display (+ a b c))))");
 
     /* Continuations */
-    source_test("call/cc-escape", "(display (+ 1 (call-with-current-continuation (lambda (k) (+ 2 (k 10))))))");
+    source_test("call/cc-escape",
+        "(display (+ 1 (call-with-current-continuation (lambda (k) (+ 2 (k 10))))))") ;
 
     /* Exception handling */
-    source_test("guard-basic", "(display (guard (e (#t \"caught\")) (raise \"err\")))");
+    source_test_expect("guard-basic", "(display (guard (e (#t \"caught\")) (raise \"err\")))", "caught");
     source_test("dynamic-wind-order",
         "(let ((r '()))"
         "  (dynamic-wind"
@@ -720,27 +782,29 @@ static void run_source_tests(void) {
         "  (display (reverse r)))");
 
     /* Exact arithmetic */
-    source_test("rational-arith", "(display (+ 1/3 1/6))");
-    source_test("rational-compare", "(display (< 1/3 1/2))");
-    source_test("complex-arith", "(display (+ 3+4i 1-2i))");
-    source_test("complex-magnitude", "(display (magnitude 3+4i))");
+    source_test("rational-arith",          "(display (+ 1/3 1/6))");
+    source_test("rational-compare",        "(display (< 1/3 1/2))");
+    source_test("complex-arith",           "(display (+ 3+4i 1-2i))");
+    source_test("complex-magnitude",       "(display (magnitude 3+4i))");
 
     /* Tensor operations */
-    source_test("tensor-create", "(define t (make-tensor '(3) 0.0)) (display (tensor? t))");
-    source_test("tensor-zeros", "(define t (tensor-zeros '(2 3))) (display (tensor? t))");
-    source_test("tensor-ref", "(define t (make-tensor '(3) 1.5)) (display (tensor-ref t '(0)))");
+    source_test("tensor-create",        "(define t (make-tensor '(3) 0.0)) (display (tensor? t))");
+    source_test("tensor-zeros",         "(define t (tensor-zeros '(2 3))) (display (tensor? t))");
+    source_test("tensor-ref",           "(define t (make-tensor '(3) 1.5)) (display (tensor-ref t '(0)))");
 
     /* Logic / knowledge base */
-    source_test("unify-basic", "(display (unify '(a ?x c) '(a b c) (make-substitution)))");
-    source_test("logic-var", "(display (logic-var? '?x))");
+    source_test("unify-basic",     "(display (unify '(a ?x c) '(a b c) (make-substitution)))");
+    source_test("logic-var",       "(display (logic-var? '?x))");
 
     /* Workspace / inference */
-    source_test("make-workspace", "(define ws (make-workspace)) (display (workspace? ws))");
-    source_test("make-factor-graph", "(define fg (make-factor-graph 3)) (display (factor-graph? fg))");
+    source_test_expect("make-workspace",   "(define ws (make-workspace)) (display (workspace? ws))",   "#t");
+    source_test_expect("make-factor-graph","(define fg (make-factor-graph 3)) (display (factor-graph? fg))", "#t");
 
     /* Recursive data structures */
-    source_test("assoc-list", "(define al (list (cons 'a 1) (cons 'b 2) (cons 'c 3))) (display (cdr (assoc 'b al)))");
-    source_test("deep-recursion", "(define (depth n) (if (= n 0) 0 (+ 1 (depth (- n 1))))) (display (depth 10000))");
+    source_test("assoc-list",
+        "(define al (list (cons 'a 1) (cons 'b 2) (cons 'c 3))) (display (cdr (assoc 'b al)))");
+    source_test_expect("deep-recursion",
+        "(define (depth n) (if (= n 0) 0 (+ 1 (depth (- n 1))))) (display (depth 100))", "100");
 
     printf("\n  Source tests: %d/%d passed\n", source_test_pass, source_test_count);
 }

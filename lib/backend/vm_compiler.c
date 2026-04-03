@@ -292,6 +292,7 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
         patch(c, jover, OP_JUMP, c->code_len);
         chunk_emit(c, OP_CLOSURE, cfunc);
         add_local(c, ctor_name);
+        chunk_free_arrays(&func);
     }
 
     /* --- Predicate --- */
@@ -320,6 +321,7 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
         patch(c, jover, OP_JUMP, c->code_len);
         chunk_emit(c, OP_CLOSURE, cfunc);
         add_local(c, pred_name);
+        chunk_free_arrays(&func);
     }
 
     /* --- Accessors (and optional mutators) --- */
@@ -355,6 +357,7 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
             patch(c, jover, OP_JUMP, c->code_len);
             chunk_emit(c, OP_CLOSURE, cfunc);
             add_local(c, acc_name);
+            chunk_free_arrays(&func);
         }
 
         /* Mutator (optional, at children[2]) */
@@ -386,6 +389,7 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
             patch(c, jover, OP_JUMP, c->code_len);
             chunk_emit(c, OP_CLOSURE, cfunc);
             add_local(c, mut_name);
+            chunk_free_arrays(&func);
         }
     }
     return;
@@ -619,6 +623,7 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     /* end label */
     patch(c, end_patch, OP_JUMP, c->code_len);
 
+    chunk_free_arrays(&handler_func);
     c->n_locals = saved_locals;
     return;
 }
@@ -656,8 +661,7 @@ static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
     (void)head; (void)tail;
     {
         /* Save current chunk state, compile a sub-function */
-        FuncChunk func;
-        memset(&func, 0, sizeof(func));
+        FuncChunk func; chunk_init_arrays(&func);
         func.enclosing = c;
         func.param_count = 0;
         compile_expr(&func, node->children[1], 1); /* compile expr as body */
@@ -679,6 +683,7 @@ static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_FALSE, 0);
         chunk_emit(c, OP_CLOSURE, cfunc);
         chunk_emit(c, OP_VEC_CREATE, 2); /* #(#f thunk) */
+        chunk_free_arrays(&func);
     }
     return;
 }
@@ -988,6 +993,7 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
                 chunk_emit(c, OP_POP, 0);
             }
         }
+        chunk_free_arrays(&func);
         return;
     }
 }
@@ -1077,7 +1083,7 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
                 }
             }
         }
-        if (!found) printf("WARNING: set! on undefined variable '%s'\n", name);
+        if (!found) fprintf(stderr, "WARNING: set! on undefined variable '%s'\n", name);
     }
     /* set! returns void — push NIL */
     chunk_emit(c, OP_NIL, 0);
@@ -1252,6 +1258,7 @@ static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
                    func.upvalues[i].enclosing_slot);
     }
     chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
+    chunk_free_arrays(&func);
     return;
 }
 
@@ -1358,6 +1365,7 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
             }
         }
     }
+    chunk_free_arrays(&func);
     return;
 }
 
@@ -1507,7 +1515,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 }
             }
         }
-        printf("WARNING: undefined variable '%s'\n", node->symbol);
+        fprintf(stderr, "WARNING: undefined variable '%s'\n", node->symbol);
         chunk_emit(c, OP_NIL, 0);
         return;
     }
@@ -1627,7 +1635,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         if (node->n_children >= 3) compile_expr(c, node->children[2], 0);
         else chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
         /* make-vector: n and fill are on stack, dispatch to runtime native */
-        chunk_emit(c, OP_NATIVE_CALL, 260);
+        chunk_emit(c, OP_NATIVE_CALL, 218);
         return;
     }
     if (is_sym(head, "vector-ref") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_VEC_REF, 0); return; }
@@ -1850,7 +1858,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) {
             compile_expr(c, node->children[i], 0);
-            chunk_emit(c, OP_NATIVE_CALL, 54); /* 2-arg string-append */
+            chunk_emit(c, OP_NATIVE_CALL, 554); /* 2-arg string-append */
         }
         return;
     }
@@ -2030,6 +2038,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, body_tail ? OP_TAIL_CALL : OP_CALL, bindings->n_children);
 
         /* Cleanup */
+        chunk_free_arrays(&func);
         chunk_emit(c, OP_POPN, 1); /* remove loop function slot */
         c->n_locals = saved_locals;
         c->scope_depth--;
@@ -2928,7 +2937,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
-    printf("WARNING: unhandled: %s\n", head->type == N_SYMBOL ? head->symbol : "(?)");
+    fprintf(stderr, "WARNING: unhandled: %s\n", head->type == N_SYMBOL ? head->symbol : "(?)");
     chunk_emit(c, OP_NIL, 0);
 }
 
