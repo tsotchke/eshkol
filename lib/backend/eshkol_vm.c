@@ -771,10 +771,13 @@ static ReplSession* repl_session_create(void) {
 static void repl_session_eval(ReplSession* rs, const char* source, int auto_print) {
     if (!rs || !rs->initialized) return;
 
-    /* Save chunk state so we know where user code starts */
+    /* Save state for error recovery — if eval fails, roll back */
     int code_start = rs->chunk.code_len;
     int const_start = rs->chunk.n_constants;
     int locals_start = rs->chunk.n_locals;
+    int saved_sp = rs->vm->sp;
+    int saved_fp = rs->vm->fp;
+    int saved_frame_count = rs->vm->frame_count;
 
     /* Parse and compile user expression INTO the existing chunk */
     src_ptr = source;
@@ -817,10 +820,24 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
     rs->vm->error = 0;
     vm_run(rs->vm);
 
-    /* Remove the HALT — keep the code for future reference */
-    rs->chunk.code_len--;
+    if (rs->vm->error) {
+        /* Error occurred — roll back to pre-eval state.
+         * Definitions from this eval are discarded. */
+        rs->chunk.code_len = code_start;
+        rs->chunk.n_constants = const_start;
+        /* Free any new local names */
+        for (int i = locals_start; i < rs->chunk.n_locals; i++)
+            free(rs->chunk.locals[i].name);
+        rs->chunk.n_locals = locals_start;
+        /* Restore VM stack state */
+        rs->vm->sp = saved_sp;
+        rs->vm->fp = saved_fp;
+        rs->vm->frame_count = saved_frame_count;
+    } else {
+        /* Success — remove just the HALT, keep new definitions */
+        rs->chunk.code_len--;
+    }
 
-    /* Reset for next eval */
     rs->vm->halted = 0;
     rs->vm->error = 0;
 }
