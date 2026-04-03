@@ -430,6 +430,17 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
         return 1;
     if (node->type == N_LIST && node->n_children >= 1) {
         Node* head = node->children[0];
+        /* (define (name ...) body) is an implicit lambda — check params and scan body */
+        if (head->type == N_SYMBOL && strcmp(head->symbol, "define") == 0
+            && node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            Node* sig = node->children[1];
+            for (int i = 1; i < sig->n_children; i++)
+                if (sig->children[i]->type == N_SYMBOL && strcmp(sig->children[i]->symbol, name) == 0)
+                    return 0; /* rebound as parameter */
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_capture(node->children[i], name, 1)) return 1;
+            return 0;
+        }
         /* Check if this lambda/let rebinds the variable — if so, it's not a capture */
         if (head->type == N_SYMBOL && strcmp(head->symbol, "lambda") == 0 && node->n_children >= 3) {
             /* Check if name is a parameter of this lambda */
