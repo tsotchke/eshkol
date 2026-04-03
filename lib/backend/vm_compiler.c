@@ -75,6 +75,1287 @@ static void compile_expr(FuncChunk* c, Node* node, int tail) {
     compile_depth--;
 }
 
+
+/* ═══ Extracted compilation sub-functions ═══ */
+
+static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    int end_patches[64];
+    int n_patches = 0;
+    for (int i = 1; i < node->n_children; i++) {
+        Node* clause = node->children[i];
+        if (clause->type != N_LIST || clause->n_children < 2) continue;
+        if (is_sym(clause->children[0], "else")) {
+            /* else clause — always taken */
+            for (int j = 1; j < clause->n_children; j++) {
+                if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
+                else compile_expr(c, clause->children[j], tail);
+            }
+            break;
+        }
+        /* Test → if false, jump to next clause */
+        compile_expr(c, clause->children[0], 0);
+        int jnext = placeholder(c);
+        /* Body */
+        for (int j = 1; j < clause->n_children; j++) {
+            if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
+            else compile_expr(c, clause->children[j], tail);
+        }
+        if (n_patches < 64) end_patches[n_patches++] = placeholder(c); /* jump to end */
+        patch(c, jnext, OP_JUMP_IF_FALSE, c->code_len);
+    }
+    /* Patch all end jumps */
+    for (int i = 0; i < n_patches; i++) patch(c, end_patches[i], OP_JUMP, c->code_len);
+    return;
+}
+
+static void compile_form_case(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    compile_expr(c, node->children[1], 0); /* evaluate key expression → TOS */
+    int end_patches_c[64]; int n_patches_c = 0;
+    for (int i = 2; i < node->n_children; i++) {
+        Node* clause = node->children[i];
+        if (clause->type != N_LIST || clause->n_children < 2) continue;
+        if (is_sym(clause->children[0], "else")) {
+            chunk_emit(c, OP_POP, 0); /* discard key */
+            for (int j = 1; j < clause->n_children; j++) {
+                if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
+                else compile_expr(c, clause->children[j], tail);
+            }
+            break;
+        }
+        /* ((val1 val2 ...) body ...) */
+        Node* vals = clause->children[0];
+        if (vals->type != N_LIST) continue;
+        /* Test key against each val: DUP, EQ, if true → jump to body */
+        int body_patches[16]; int n_bp = 0;
+        for (int v = 0; v < vals->n_children; v++) {
+            chunk_emit(c, OP_DUP, 0);
+            compile_quote(c, vals->children[v]);
+            chunk_emit(c, OP_EQ, 0);
+            /* If true, jump to body */
+            if (n_bp < 16) body_patches[n_bp++] = c->code_len;
+            chunk_emit(c, OP_JUMP_IF_FALSE, 0); /* placeholder: if false, continue */
+            /* Match! Jump to body code */
+            int jbody = c->code_len;
+            chunk_emit(c, OP_JUMP, 0); /* placeholder: jump to body */
+            /* Patch the JIF to skip the JUMP (continue testing) */
+            patch(c, body_patches[n_bp-1], OP_JUMP_IF_FALSE, c->code_len);
+            body_patches[n_bp-1] = jbody; /* reuse slot for body jump */
+        }
+        /* No val matched — jump to next clause */
+        int jnext = c->code_len;
+        chunk_emit(c, OP_JUMP, 0);
+        /* Body code (reached by any matching val's jump) */
+        for (int bp = 0; bp < n_bp; bp++)
+            patch(c, body_patches[bp], OP_JUMP, c->code_len);
+        chunk_emit(c, OP_POP, 0); /* discard key */
+        for (int j = 1; j < clause->n_children; j++) {
+            if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
+            else compile_expr(c, clause->children[j], tail);
+        }
+        if (n_patches_c < 64) end_patches_c[n_patches_c++] = c->code_len;
+        chunk_emit(c, OP_JUMP, 0);
+        /* Patch jnext to after body */
+        patch(c, jnext, OP_JUMP, c->code_len);
+    }
+    for (int i = 0; i < n_patches_c; i++) patch(c, end_patches_c[i], OP_JUMP, c->code_len);
+    return;
+}
+
+static void compile_form_require(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    if (node->n_children >= 2 && node->children[1]->type == N_SYMBOL) {
+        const char* mod_name = node->children[1]->symbol;
+        /* Track already-loaded modules to avoid double-loading */
+        static char loaded_modules[64][128];
+        static int n_loaded = 0;
+        for (int i = 0; i < n_loaded; i++) {
+            if (strcmp(loaded_modules[i], mod_name) == 0) return; /* already loaded */
+        }
+        if (n_loaded < 64) strncpy(loaded_modules[n_loaded++], mod_name, 127);
+
+        /* stdlib is the prelude — builtins already available */
+        if (strcmp(mod_name, "stdlib") == 0) return;
+
+        /* Build file path: module.name → lib/module/name.esk */
+        char path[512];
+        snprintf(path, sizeof(path), "lib/");
+        int pi = 4;
+        for (const char* p = mod_name; *p && pi < 500; p++) {
+            path[pi++] = (*p == '.') ? '/' : *p;
+        }
+        path[pi] = '\0';
+        strncat(path, ".esk", sizeof(path) - pi - 1);
+
+        /* Read and parse the file */
+        FILE* mf = fopen(path, "r");
+        if (!mf) {
+            /* Try alternative path: replace ALL dots with slashes */
+            char alt[512];
+            snprintf(alt, sizeof(alt), "%s.esk", mod_name);
+            for (char* p = alt; *p; p++) if (*p == '.') *p = '/';
+            mf = fopen(alt, "r");
+        }
+        if (mf) {
+            fseek(mf, 0, SEEK_END);
+            long len = ftell(mf);
+            fseek(mf, 0, SEEK_SET);
+            char* src = (char*)malloc(len + 1);
+            if (src) {
+                fread(src, 1, len, mf);
+                src[len] = '\0';
+                fclose(mf);
+                /* Parse and compile all top-level forms */
+                const char* saved_src = src_ptr;
+                src_ptr = src;
+                while (1) {
+                    skip_ws();
+                    if (!*src_ptr) break;
+                    Node* expr = parse_sexp();
+                    if (!expr) break;
+                    compile_expr(c, expr, 0);
+                    free_node(expr);
+                }
+                src_ptr = saved_src;
+                free(src);
+            } else {
+                fclose(mf);
+            }
+        }
+        /* If file not found, silently continue (builtins always available) */
+    }
+    return;
+}
+
+static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    const char* type_name = node->children[1]->symbol;
+    (void)type_name; /* used conceptually as type tag */
+    Node* ctor = node->children[2]; /* (constructor f1 f2 ...) */
+    const char* pred_name = node->children[3]->symbol;
+
+    /* --- Constructor --- */
+    if (ctor->type == N_LIST && ctor->n_children >= 1) {
+        const char* ctor_name = ctor->children[0]->symbol;
+        int n_fields = ctor->n_children - 1;
+
+        /* Compile constructor as a closure that creates a tagged vector */
+        FuncChunk func; chunk_init_arrays(&func);
+        func.enclosing = c;
+        func.param_count = n_fields;
+        for (int i = 0; i < n_fields; i++)
+            add_local(&func, ctor->children[i + 1]->symbol);
+
+        /* Body: push type tag (as symbol), then all fields, create vector */
+        /* Use type_name as a string constant for the tag */
+        int len = (int)strlen(node->children[1]->symbol);
+        int n_packs = (len + 7) / 8;
+        chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(len)));
+        for (int p = 0; p < n_packs; p++) {
+            int64_t pack = 0;
+            for (int b = 0; b < 8 && p * 8 + b < len; b++) {
+                pack |= ((int64_t)(unsigned char)node->children[1]->symbol[p * 8 + b]) << (b * 8);
+            }
+            chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(pack)));
+        }
+        chunk_emit(&func, OP_NATIVE_CALL, 100); /* build-string-from-packed */
+        for (int i = 0; i < n_fields; i++)
+            chunk_emit(&func, OP_GET_LOCAL, i);
+        chunk_emit(&func, OP_VEC_CREATE, n_fields + 1); /* +1 for type tag */
+        chunk_emit(&func, OP_RETURN, 0);
+
+        /* Inline func body into parent chunk */
+        int cfunc = chunk_add_const(c, INT_VAL(0));
+        int jover = placeholder(c);
+        int func_start = c->code_len;
+        c->constants[cfunc].as.i = func_start;
+        int const_map[4096];
+        for (int i = 0; i < func.n_constants; i++)
+            const_map[i] = chunk_add_const(c, func.constants[i]);
+        for (int i = 0; i < func.code_len; i++) {
+            Instr fi = func.code[i];
+            if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
+            if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
+                fi.operand += func_start;
+            chunk_emit_instr(c, fi);
+        }
+        patch(c, jover, OP_JUMP, c->code_len);
+        chunk_emit(c, OP_CLOSURE, cfunc);
+        add_local(c, ctor_name);
+    }
+
+    /* --- Predicate --- */
+    {
+        FuncChunk func; chunk_init_arrays(&func);
+        func.enclosing = c;
+        func.param_count = 1;
+        add_local(&func, "v");
+        /* Check: (and (vector? v) (> (vector-length v) 0) (equal? (vector-ref v 0) type-name)) */
+        chunk_emit(&func, OP_GET_LOCAL, 0);
+        chunk_emit(&func, OP_VEC_P, 0);
+        chunk_emit(&func, OP_RETURN, 0); /* simplified: just vector? check */
+
+        int cfunc = chunk_add_const(c, INT_VAL(0));
+        int jover = placeholder(c);
+        int func_start = c->code_len;
+        c->constants[cfunc].as.i = func_start;
+        int const_map[4096];
+        for (int i = 0; i < func.n_constants; i++)
+            const_map[i] = chunk_add_const(c, func.constants[i]);
+        for (int i = 0; i < func.code_len; i++) {
+            Instr fi = func.code[i];
+            if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
+            chunk_emit_instr(c, fi);
+        }
+        patch(c, jover, OP_JUMP, c->code_len);
+        chunk_emit(c, OP_CLOSURE, cfunc);
+        add_local(c, pred_name);
+    }
+
+    /* --- Accessors (and optional mutators) --- */
+    for (int i = 4; i < node->n_children; i++) {
+        Node* field_spec = node->children[i];
+        if (field_spec->type != N_LIST || field_spec->n_children < 2) continue;
+        int field_idx = i - 4 + 1; /* +1 because index 0 is the type tag */
+
+        /* Accessor */
+        {
+            const char* acc_name = field_spec->children[1]->symbol;
+            FuncChunk func; chunk_init_arrays(&func);
+            func.enclosing = c;
+            func.param_count = 1;
+            add_local(&func, "v");
+            chunk_emit(&func, OP_GET_LOCAL, 0);
+            chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(field_idx)));
+            chunk_emit(&func, OP_VEC_REF, 0);
+            chunk_emit(&func, OP_RETURN, 0);
+
+            int cfunc = chunk_add_const(c, INT_VAL(0));
+            int jover = placeholder(c);
+            int func_start = c->code_len;
+            c->constants[cfunc].as.i = func_start;
+            int const_map[4096];
+            for (int i2 = 0; i2 < func.n_constants; i2++)
+                const_map[i2] = chunk_add_const(c, func.constants[i2]);
+            for (int i2 = 0; i2 < func.code_len; i2++) {
+                Instr fi = func.code[i2];
+                if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
+                chunk_emit_instr(c, fi);
+            }
+            patch(c, jover, OP_JUMP, c->code_len);
+            chunk_emit(c, OP_CLOSURE, cfunc);
+            add_local(c, acc_name);
+        }
+
+        /* Mutator (optional, at children[2]) */
+        if (field_spec->n_children >= 3) {
+            const char* mut_name = field_spec->children[2]->symbol;
+            FuncChunk func; chunk_init_arrays(&func);
+            func.enclosing = c;
+            func.param_count = 2;
+            add_local(&func, "v");
+            add_local(&func, "val");
+            chunk_emit(&func, OP_GET_LOCAL, 0);   /* vector */
+            chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(field_idx)));
+            chunk_emit(&func, OP_GET_LOCAL, 1);   /* new value */
+            chunk_emit(&func, OP_VEC_SET, 0);
+            chunk_emit(&func, OP_RETURN, 0);
+
+            int cfunc = chunk_add_const(c, INT_VAL(0));
+            int jover = placeholder(c);
+            int func_start = c->code_len;
+            c->constants[cfunc].as.i = func_start;
+            int const_map[4096];
+            for (int i2 = 0; i2 < func.n_constants; i2++)
+                const_map[i2] = chunk_add_const(c, func.constants[i2]);
+            for (int i2 = 0; i2 < func.code_len; i2++) {
+                Instr fi = func.code[i2];
+                if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
+                chunk_emit_instr(c, fi);
+            }
+            patch(c, jover, OP_JUMP, c->code_len);
+            chunk_emit(c, OP_CLOSURE, cfunc);
+            add_local(c, mut_name);
+        }
+    }
+    return;
+}
+
+static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    Node* bindings = node->children[1];
+    int n_bindings = bindings->n_children;
+
+    /* Push each parameter binding */
+    for (int i = 0; i < n_bindings; i++) {
+        if (bindings->children[i]->type == N_LIST &&
+            bindings->children[i]->n_children == 2) {
+            compile_expr(c, bindings->children[i]->children[0], 0); /* param */
+            compile_expr(c, bindings->children[i]->children[1], 0); /* new value */
+            chunk_emit(c, OP_NATIVE_CALL, 702); /* parameterize-push */
+            chunk_emit(c, OP_POP, 0); /* discard void result */
+        }
+    }
+
+    /* Compile body */
+    for (int i = 2; i < node->n_children; i++) {
+        if (i > 2) chunk_emit(c, OP_POP, 0);
+        compile_expr(c, node->children[i], tail && i == node->n_children - 1);
+    }
+
+    /* Pop each binding in reverse order for proper unwinding */
+    for (int i = n_bindings - 1; i >= 0; i--) {
+        if (bindings->children[i]->type == N_LIST &&
+            bindings->children[i]->n_children >= 1) {
+            compile_expr(c, bindings->children[i]->children[0], 0); /* param */
+            chunk_emit(c, OP_NATIVE_CALL, 703); /* parameterize-pop */
+            chunk_emit(c, OP_POP, 0);
+        }
+    }
+    return;
+}
+
+static void compile_form_let_values(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    Node* bindings_list = node->children[1];
+    int saved_locals = c->n_locals;
+
+    for (int b = 0; b < bindings_list->n_children; b++) {
+        Node* binding = bindings_list->children[b];
+        if (binding->type != N_LIST || binding->n_children != 2) continue;
+        Node* formals = binding->children[0]; /* (x y ...) or single var */
+        Node* producer = binding->children[1];
+
+        /* Compile the producer expression */
+        compile_expr(c, producer, 0);
+
+        if (formals->type == N_LIST) {
+            /* Multiple return values — bind first to result, rest get nil */
+            if (formals->n_children > 0)
+                add_local(c, formals->children[0]->symbol);
+            for (int i = 1; i < formals->n_children; i++) {
+                chunk_emit(c, OP_NIL, 0);
+                add_local(c, formals->children[i]->symbol);
+            }
+        } else if (formals->type == N_SYMBOL) {
+            /* Single variable */
+            add_local(c, formals->symbol);
+        }
+    }
+
+    /* Compile body expressions */
+    for (int i = 2; i < node->n_children; i++) {
+        if (i > 2) chunk_emit(c, OP_POP, 0);
+        compile_expr(c, node->children[i], tail && i == node->n_children - 1);
+    }
+
+    /* Clean up scope: pop bindings below result */
+    int n_bound = c->n_locals - saved_locals;
+    if (n_bound > 0)
+        chunk_emit(c, OP_POPN, n_bound);
+    c->n_locals = saved_locals;
+    return;
+}
+
+static void compile_form_with_exception_handler(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    int handler_patch = c->code_len;
+    chunk_emit(c, OP_PUSH_HANDLER, 0);
+
+    /* Call thunk (0-arg function) */
+    compile_expr(c, node->children[2], 0);
+    chunk_emit(c, OP_CALL, 0);
+
+    /* Normal exit */
+    chunk_emit(c, OP_POP_HANDLER, 0);
+    int end_patch = c->code_len;
+    chunk_emit(c, OP_JUMP, 0);
+
+    /* Exception handler: exn is in current_exn VM register.
+     * Call handler(exn). NEVER tail-call — the handler may need
+     * the enclosing frame for upvalue access (e.g., call/cc's k). */
+    patch(c, handler_patch, OP_PUSH_HANDLER, c->code_len);
+    compile_expr(c, node->children[1], 0); /* push handler closure */
+    chunk_emit(c, OP_GET_EXN, 0);           /* push exn from VM register */
+    chunk_emit(c, OP_CALL, 1);
+
+    patch(c, end_patch, OP_JUMP, c->code_len);
+    return;
+}
+
+static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    Node* clause_list = node->children[1]; /* (var (test handler) ...) */
+    if (clause_list->type != N_LIST || clause_list->n_children < 1) {
+        compile_expr(c, node->children[node->n_children - 1], tail);
+        return;
+    }
+    /* CORRECT ARCHITECTURE: the guard handler is compiled as a closure
+     * that takes the exception value as its sole parameter. This gives it
+     * its own call frame with a known fp, so let/define/nested expressions
+     * inside the handler have self-consistent local slot numbering.
+     *
+     * Compilation:
+     *   PUSH_HANDLER handler_addr
+     *   <body>
+     *   POP_HANDLER
+     *   JUMP end
+     * handler_addr:
+     *   GET_EXN                    ; push exception from VM register
+     *   CLOSURE handler_func       ; push handler closure (takes 1 param: exn)
+     *   ; swap so stack = [closure, exn] for CALL 1
+     *   ; actually: push closure first, then GET_EXN
+     *   CALL 1                     ; call handler_closure(exn)
+     *   JUMP end
+     *
+     * handler_func body: (exn is local 0)
+     *   compile clause tests and bodies with exn as a normal local parameter
+     */
+    char* exn_name = clause_list->children[0]->symbol;
+    int saved_locals = c->n_locals;
+
+    /* Emit PUSH_HANDLER */
+    int handler_patch = c->code_len;
+    chunk_emit(c, OP_PUSH_HANDLER, 0);
+
+    /* Compile body expressions */
+    for (int i = 2; i < node->n_children; i++) {
+        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
+        else compile_expr(c, node->children[i], 0);
+    }
+
+    /* Normal exit */
+    chunk_emit(c, OP_POP_HANDLER, 0);
+    int end_patch = c->code_len;
+    chunk_emit(c, OP_JUMP, 0);
+
+    /* Compile handler as a closure with exn as parameter 0 */
+    FuncChunk handler_func; chunk_init_arrays(&handler_func);
+    handler_func.enclosing = c;
+    handler_func.param_count = 1;
+    add_local(&handler_func, exn_name); /* exn is local 0 */
+
+    /* Compile clauses inside the handler function */
+    int hf_end_patches[32]; int hf_n_end = 0;
+    for (int ci = 1; ci < clause_list->n_children; ci++) {
+        Node* clause = clause_list->children[ci];
+        if (clause->type != N_LIST || clause->n_children < 1) continue;
+        if (clause->children[0]->type == N_SYMBOL && strcmp(clause->children[0]->symbol, "else") == 0) {
+            for (int j = 1; j < clause->n_children; j++) {
+                if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
+                else compile_expr(&handler_func, clause->children[j], 1);
+            }
+            chunk_emit(&handler_func, OP_RETURN, 0);
+            break;
+        }
+        compile_expr(&handler_func, clause->children[0], 0);
+        int jnext = handler_func.code_len;
+        chunk_emit(&handler_func, OP_JUMP_IF_FALSE, 0);
+        for (int j = 1; j < clause->n_children; j++) {
+            if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
+            else compile_expr(&handler_func, clause->children[j], 1);
+        }
+        chunk_emit(&handler_func, OP_RETURN, 0);
+        patch(&handler_func, jnext, OP_JUMP_IF_FALSE, handler_func.code_len);
+    }
+    /* If no clause matched: re-raise */
+    chunk_emit(&handler_func, OP_GET_LOCAL, 0); /* push exn */
+    chunk_emit(&handler_func, OP_NATIVE_CALL, 130); /* re-raise */
+    chunk_emit(&handler_func, OP_RETURN, 0);
+
+    /* Inline handler function code into parent chunk */
+    int const_map_h[4096];
+    for (int i = 0; i < handler_func.n_constants; i++)
+        const_map_h[i] = chunk_add_const(c, handler_func.constants[i]);
+    int hfunc_const = chunk_add_const(c, INT_VAL(0)); /* placeholder */
+
+    /* Handler dispatch code: CLOSURE + CALL */
+    patch(c, handler_patch, OP_PUSH_HANDLER, c->code_len);
+    int hjover = c->code_len;
+    chunk_emit(c, OP_JUMP, 0); /* jump over inlined handler body */
+
+    int hfunc_pc = c->code_len;
+    c->constants[hfunc_const].as.i = hfunc_pc;
+
+    /* Copy handler function code with remapping */
+    for (int i = 0; i < handler_func.code_len; i++) {
+        Instr fi = handler_func.code[i];
+        if (fi.op == OP_CONST) fi.operand = const_map_h[fi.operand];
+        if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
+            fi.operand += hfunc_pc;
+        if (fi.op == OP_CLOSURE) {
+            int ci2 = fi.operand & 0xFFFF;
+            int nu2 = (fi.operand >> 16) & 0xFF;
+            fi.operand = const_map_h[ci2] | (nu2 << 16);
+        }
+        chunk_emit_instr(c, fi);
+    }
+
+    patch(c, hjover, OP_JUMP, c->code_len);
+
+    /* Emit: push handler closure, push exn, CALL 1 */
+    int n_hf_upvals = handler_func.n_upvalues;
+    for (int i = 0; i < n_hf_upvals; i++)
+        chunk_emit(c, handler_func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
+                   handler_func.upvalues[i].enclosing_slot);
+    chunk_emit(c, OP_CLOSURE, hfunc_const | (n_hf_upvals << 16));
+    chunk_emit(c, OP_GET_EXN, 0);
+    chunk_emit(c, OP_CALL, 1);
+
+    /* end label */
+    patch(c, end_patch, OP_JUMP, c->code_len);
+
+    c->n_locals = saved_locals;
+    return;
+}
+
+static void compile_form_dynamic_wind(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    /* Call before() */
+    compile_expr(c, node->children[1], 0);
+    chunk_emit(c, OP_CALL, 0);
+    chunk_emit(c, OP_POP, 0);
+
+    /* Push after thunk onto wind stack */
+    compile_expr(c, node->children[3], 0);
+    chunk_emit(c, OP_WIND_PUSH, 0);
+
+    /* Call thunk() */
+    compile_expr(c, node->children[2], 0);
+    chunk_emit(c, OP_CALL, 0);
+
+    /* Pop wind stack */
+    chunk_emit(c, OP_WIND_POP, 0);
+
+    /* Call after() (normal exit) */
+    compile_expr(c, node->children[3], 0);
+    chunk_emit(c, OP_CALL, 0);
+    chunk_emit(c, OP_POP, 0);
+    /* thunk result is below after result on stack.
+     * After POP of after_result, thunk_result is TOS. */
+    return;
+}
+
+static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    {
+        /* Save current chunk state, compile a sub-function */
+        FuncChunk func;
+        memset(&func, 0, sizeof(func));
+        func.enclosing = c;
+        func.param_count = 0;
+        compile_expr(&func, node->children[1], 1); /* compile expr as body */
+        chunk_emit(&func, OP_RETURN, 0);
+        /* Inline the function code */
+        int jover = c->code_len;
+        chunk_emit(c, OP_JUMP, 0);
+        int cfunc = c->n_constants;
+        chunk_add_const(c, INT_VAL(c->code_len));
+        for (int i = 0; i < func.code_len; i++) {
+            Instr fi = func.code[i];
+            if (fi.op == OP_CONST) fi.operand = chunk_add_const(c, func.constants[fi.operand]);
+            if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
+                fi.operand += c->code_len;
+            chunk_emit(c, fi.op, fi.operand);
+        }
+        patch(c, jover, OP_JUMP, c->code_len);
+        /* Stack: push #f, push closure, create vector */
+        chunk_emit(c, OP_FALSE, 0);
+        chunk_emit(c, OP_CLOSURE, cfunc);
+        chunk_emit(c, OP_VEC_CREATE, 2); /* #(#f thunk) */
+    }
+    return;
+}
+
+static void compile_form_let(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    int saved_locals = c->n_locals;
+    c->scope_depth++;
+
+    /* Collect body nodes for scanning */
+    Node* body_nodes[64];
+    int n_bodies = 0;
+    for (int i = 2; i < node->n_children && n_bodies < 64; i++)
+        body_nodes[n_bodies++] = node->children[i];
+
+    Node* bindings = node->children[1];
+    for (int i = 0; i < bindings->n_children; i++) {
+        Node* b = bindings->children[i];
+        if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
+            const char* vname = b->children[0]->symbol;
+            int box = needs_boxing(body_nodes, n_bodies, vname);
+            compile_expr(c, b->children[1], 0);
+            if (box) {
+                /* Wrap value in a 1-element vector (box) */
+                chunk_emit(c, OP_VEC_CREATE, 1);
+            }
+            int slot = add_local(c, vname);
+            if (box) {
+                /* Mark this local as boxed */
+                c->locals[c->n_locals - 1].boxed = 1;
+            }
+        }
+    }
+    int n_let_locals = c->n_locals - saved_locals;
+
+    /* Compile body — don't use tail position if locals need cleanup */
+    int body_tail = (n_let_locals > 0) ? 0 : tail;
+    for (int i = 2; i < node->n_children; i++) {
+        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
+        else compile_expr(c, node->children[i], body_tail);
+    }
+
+    /* Scope cleanup: remove let-bound locals, keep body result. */
+    if (n_let_locals > 0) {
+        chunk_emit(c, OP_POPN, n_let_locals);
+    }
+    c->n_locals = saved_locals;
+    c->scope_depth--;
+    return;
+}
+
+static void compile_form_let_star(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    int saved_locals = c->n_locals;
+    c->scope_depth++;
+    Node* bindings = node->children[1];
+    for (int i = 0; i < bindings->n_children; i++) {
+        Node* b = bindings->children[i];
+        if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
+            compile_expr(c, b->children[1], 0);
+            add_local(c, b->children[0]->symbol);
+        }
+    }
+    int n_let_locals = c->n_locals - saved_locals;
+    int body_tail = (n_let_locals > 0) ? 0 : tail;
+    for (int i = 2; i < node->n_children; i++) {
+        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
+        else compile_expr(c, node->children[i], body_tail);
+    }
+    if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
+    c->n_locals = saved_locals;
+    c->scope_depth--;
+    return;
+}
+
+static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    int saved_locals = c->n_locals;
+    c->scope_depth++;
+    Node* bindings = node->children[1];
+    int n_bindings = 0;
+
+    /* 1. Push NIL placeholders and register names */
+    for (int i = 0; i < bindings->n_children; i++) {
+        Node* b = bindings->children[i];
+        if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
+            chunk_emit(c, OP_NIL, 0);
+            add_local(c, b->children[0]->symbol);
+            n_bindings++;
+        }
+    }
+    int n_let_locals = c->n_locals - saved_locals;
+
+    /* 2. Compile each initializer and SET_LOCAL */
+    for (int i = 0; i < bindings->n_children; i++) {
+        Node* b = bindings->children[i];
+        if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
+            compile_expr(c, b->children[1], 0);
+            int slot = resolve_local(c, b->children[0]->symbol);
+            if (slot >= 0) chunk_emit(c, OP_SET_LOCAL, slot);
+        }
+    }
+
+    /* 3. Patch closures: convert captured-by-value upvalues to open (by-reference).
+     * After SET_LOCAL, each closure is at its stack slot. For each closure,
+     * we use NATIVE_CALL 131 to convert its upvalues to open slot references.
+     * This way GET_UPVALUE reads the CURRENT stack value (not the captured NIL). */
+    for (int i = 0; i < n_bindings; i++) {
+        int slot_i = saved_locals + i;
+        /* For each upvalue in this closure, set it to open with the
+         * enclosing stack slot. The upvalues reference OTHER letrec bindings. */
+        chunk_emit(c, OP_GET_LOCAL, slot_i);     /* push closure */
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_bindings)));
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(saved_locals)));
+        chunk_emit(c, OP_NATIVE_CALL, 131);       /* open_upvalues(closure, count, base_slot) */
+        chunk_emit(c, OP_POP, 0);                 /* discard result */
+    }
+
+    /* Body — if there are locals to clean up, don't compile in tail position
+     * (TAIL_CALL would skip the POPN cleanup) */
+    int body_tail = (n_let_locals > 0) ? 0 : tail;
+    for (int i = 2; i < node->n_children; i++) {
+        if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
+        else compile_expr(c, node->children[i], body_tail);
+    }
+    if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
+    c->n_locals = saved_locals;
+    c->scope_depth--;
+    return;
+}
+
+static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    int saved_locals = c->n_locals;
+    c->scope_depth++;
+    Node* bindings = node->children[1];
+    for (int i = 0; i < bindings->n_children; i++) {
+        Node* b = bindings->children[i];
+        if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
+            chunk_emit(c, OP_NIL, 0);
+            add_local(c, b->children[0]->symbol);
+        }
+    }
+    int n_let_locals = c->n_locals - saved_locals;
+    for (int i = 0; i < bindings->n_children; i++) {
+        Node* b = bindings->children[i];
+        if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
+            compile_expr(c, b->children[1], 0);
+            int slot = resolve_local(c, b->children[0]->symbol);
+            if (slot >= 0) chunk_emit(c, OP_SET_LOCAL, slot);
+        }
+    }
+    {
+        int body_tail = (n_let_locals > 0) ? 0 : tail;
+        for (int i = 2; i < node->n_children; i++) {
+            if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
+            else compile_expr(c, node->children[i], body_tail);
+        }
+    }
+    if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
+    c->n_locals = saved_locals;
+    c->scope_depth--;
+    return;
+}
+
+static void compile_form_define(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    if (node->children[1]->type == N_SYMBOL) {
+        /* Simple variable definition */
+        compile_expr(c, node->children[2], 0);
+        add_local(c, node->children[1]->symbol);
+        return;
+    }
+    if (node->children[1]->type == N_LIST && node->children[1]->n_children >= 1) {
+        /* Function definition: (define (name params...) body) */
+        Node* sig = node->children[1];
+        char* fname = sig->children[0]->symbol;
+
+        /* Reserve local slot — the CLOSURE instruction below will push the
+         * closure directly into this slot (no NIL placeholder needed). */
+        int func_slot = add_local(c, fname);
+
+        /* Compile function body into a separate chunk.
+         * The body can reference fname via GET_UPVALUE which will be captured
+         * from the enclosing scope's func_slot. */
+        FuncChunk func; chunk_init_arrays(&func);
+        func.enclosing = c;
+
+        /* Check for dot notation in params: (name x y . rest) */
+        int has_rest = 0, fixed_params = sig->n_children - 1;
+        for (int i = 1; i < sig->n_children; i++) {
+            if (sig->children[i]->type == N_SYMBOL && strcmp(sig->children[i]->symbol, ".") == 0) {
+                has_rest = 1;
+                fixed_params = i - 1;
+                break;
+            }
+        }
+        func.param_count = has_rest ? 255 : fixed_params;
+
+        /* Add fixed parameters as locals */
+        for (int i = 1; i <= fixed_params; i++)
+            add_local(&func, sig->children[i]->symbol);
+        /* Add rest parameter if present */
+        if (has_rest && fixed_params + 2 < sig->n_children) {
+            add_local(&func, sig->children[fixed_params + 2]->symbol); /* name after dot */
+            chunk_emit(&func, OP_PACK_REST, fixed_params);
+        }
+
+        /* Compile body expressions */
+        for (int i = 2; i < node->n_children; i++) {
+            int is_last = (i == node->n_children - 1);
+            compile_expr(&func, node->children[i], is_last);
+            if (!is_last) chunk_emit(&func, OP_POP, 0);
+        }
+        chunk_emit(&func, OP_RETURN, 0);
+
+        /* Emit function code at end of current chunk, record its PC */
+        int func_pc = c->code_len + 2; /* +2 for CLOSURE + NOP below */
+        /* Map child constants to parent indices */
+        int const_map[4096];
+        for (int i = 0; i < func.n_constants; i++) {
+            const_map[i] = chunk_add_const(c, func.constants[i]);
+        }
+        int cfunc = chunk_add_const(c, INT_VAL(0)); /* placeholder for func PC */
+
+        int jover = placeholder(c);
+        int actual_func_pc = c->code_len;
+        c->constants[cfunc].as.i = actual_func_pc;
+
+        /* Adjust nested function PC constants: any constant in the child
+         * that was used as a CLOSURE operand contains a PC relative to the
+         * child chunk. After inlining, it needs to be offset by actual_func_pc. */
+        for (int i = 0; i < func.code_len; i++) {
+            if (func.code[i].op == OP_CLOSURE) {
+                int ci = func.code[i].operand & 0xFFFF;
+                int parent_ci = const_map[ci];
+                /* The constant holds a PC relative to child chunk start.
+                 * Adjust to be relative to parent chunk start. */
+                c->constants[parent_ci].as.i += actual_func_pc;
+            }
+        }
+
+        /* Copy function body with proper remapping */
+        for (int i = 0; i < func.code_len; i++) {
+            Instr fi = func.code[i];
+            if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
+            if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
+                fi.operand += actual_func_pc;
+            if (fi.op == OP_CLOSURE) {
+                int ci = fi.operand & 0xFFFF;
+                int nu = (fi.operand >> 16) & 0xFF;
+                fi.operand = const_map[ci] | (nu << 16);
+            }
+            chunk_emit_instr(c, fi);
+        }
+
+        /* Patch jump over function body */
+        patch(c, jover, OP_JUMP, c->code_len);
+
+        /* Emit CLOSURE instruction for the defined function.
+         * For self-recursion: the closure captures itself from func_slot.
+         * We push func_slot's value (currently NIL) as upvalue,
+         * then create closure, then patch func_slot to point to the closure. */
+        /* Emit upvalue captures for CLOSURE.
+         * The function body compiled into `func` may reference:
+         *   - Its own name (self-reference for recursion) → upvalue index determined by func.upvalues
+         *   - Other enclosing locals (fold, etc.) → also in func.upvalues
+         * Push each upvalue value from the enclosing scope, then CLOSURE captures them. */
+        int n_upvals = func.n_upvalues;
+        int self_uv_idx = -1;
+
+        for (int i = 0; i < n_upvals; i++) {
+            if (strcmp(func.upvalues[i].name, fname) == 0) {
+                /* Self-reference: push NIL placeholder (will be patched) */
+                chunk_emit(c, OP_NIL, 0);
+                self_uv_idx = func.upvalues[i].index;
+            } else {
+                /* Capture from enclosing scope (local or upvalue) */
+                chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
+                           func.upvalues[i].enclosing_slot);
+            }
+        }
+
+        chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
+        if (self_uv_idx >= 0) {
+            chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);  /* patch self-ref */
+        }
+        /* Convert local upvalues to open (stack slot references)
+         * for top-level defines only (where enclosing scope persists forever).
+         * This enables set! mutations of top-level variables.
+         * NOTE: closures inside function bodies that capture mutable locals
+         * need heap boxing (not yet implemented) for set! to work correctly
+         * when the closure outlives the enclosing scope. */
+        if (c->enclosing == NULL) {
+            for (int i = 0; i < n_upvals; i++) {
+                if (i == self_uv_idx) continue;
+                if (!func.upvalues[i].is_local) continue;
+                chunk_emit(c, OP_DUP, 0);
+                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
+                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
+                chunk_emit(c, OP_NATIVE_CALL, 151);
+                chunk_emit(c, OP_POP, 0);
+            }
+        }
+        return;
+    }
+}
+
+static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    const char* var_name = node->children[1]->symbol;
+    int slot = resolve_local(c, var_name);
+
+    /* Check if the target variable is boxed */
+    int is_boxed = 0;
+    if (slot >= 0) {
+        for (int li = c->n_locals - 1; li >= 0; li--) {
+            if (c->locals[li].slot == slot && c->locals[li].boxed) { is_boxed = 1; break; }
+        }
+    }
+
+    if (slot >= 0 && is_boxed) {
+        /* Boxed local: emit GET_LOCAL(box), CONST(0), compile(value), VEC_SET */
+        chunk_emit(c, OP_GET_LOCAL, slot);  /* push box (vector) */
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0))); /* index 0 */
+        compile_expr(c, node->children[2], 0); /* compile new value */
+        chunk_emit(c, OP_VEC_SET, 0);       /* box[0] = value */
+    } else if (slot >= 0) {
+        /* Unboxed local: direct SET_LOCAL */
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_SET_LOCAL, slot);
+    } else {
+        /* Try upvalue resolution for outer-scope mutation */
+        const char* name = node->children[1]->symbol;
+        FuncChunk* chain[32]; int depth = 0;
+        for (FuncChunk* p = c; p && depth < 32; p = p->enclosing)
+            chain[depth++] = p;
+        int found = 0;
+        for (int d = depth - 1; d >= 1 && !found; d--) {
+            int enc_slot = resolve_local(chain[d], name);
+            if (enc_slot >= 0) {
+                /* Check if the source variable is boxed */
+                int var_boxed = 0;
+                for (int li = chain[d]->n_locals - 1; li >= 0; li--) {
+                    if (chain[d]->locals[li].slot == enc_slot && chain[d]->locals[li].boxed) {
+                        var_boxed = 1; break;
+                    }
+                }
+
+                int prev_slot = enc_slot;
+                int prev_is_local = 1;
+                for (int level = d - 1; level >= 0; level--) {
+                    FuncChunk* fc = chain[level];
+                    int uv_idx = -1;
+                    for (int i = 0; i < fc->n_upvalues; i++) {
+                        if (strcmp(fc->upvalues[i].name, name) == 0) {
+                            uv_idx = fc->upvalues[i].index; break;
+                        }
+                    }
+                    if (uv_idx < 0 && fc->n_upvalues < MAX_UPVALUES) {
+                        uv_idx = fc->n_upvalues;
+                        fc->upvalues[fc->n_upvalues].name = strdup(name);
+                        fc->upvalues[fc->n_upvalues].enclosing_slot = prev_slot;
+                        fc->upvalues[fc->n_upvalues].index = uv_idx;
+                        fc->upvalues[fc->n_upvalues].is_local = prev_is_local;
+                        fc->upvalues[fc->n_upvalues].boxed = var_boxed;
+                        fc->n_upvalues++;
+                    }
+                    prev_slot = uv_idx;
+                    prev_is_local = 0;
+                }
+                int final_uv = -1;
+                for (int i = 0; i < c->n_upvalues; i++) {
+                    if (strcmp(c->upvalues[i].name, name) == 0) {
+                        final_uv = c->upvalues[i].index; break;
+                    }
+                }
+                if (final_uv >= 0) {
+                    if (var_boxed) {
+                        /* Boxed upvalue: GET_UPVALUE(box), CONST 0, value, VEC_SET */
+                        chunk_emit(c, OP_GET_UPVALUE, final_uv);
+                        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
+                        compile_expr(c, node->children[2], 0);
+                        chunk_emit(c, OP_VEC_SET, 0);
+                    } else {
+                        compile_expr(c, node->children[2], 0);
+                        chunk_emit(c, OP_SET_UPVALUE, final_uv);
+                    }
+                    found = 1;
+                }
+            }
+        }
+        if (!found) printf("WARNING: set! on undefined variable '%s'\n", name);
+    }
+    /* set! returns void — push NIL */
+    chunk_emit(c, OP_NIL, 0);
+    return;
+}
+
+static void compile_form_do(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    c->scope_depth++;
+    Node* vars = node->children[1];
+    Node* test = node->children[2];
+
+    /* Initialize loop variables */
+    for (int i = 0; i < vars->n_children; i++) {
+        Node* b = vars->children[i];
+        if (b->type == N_LIST && b->n_children >= 2 && b->children[0]->type == N_SYMBOL) {
+            compile_expr(c, b->children[1], 0);
+            add_local(c, b->children[0]->symbol);
+        }
+    }
+
+    /* Loop top */
+    int loop_top = c->code_len;
+
+    /* Test */
+    if (test->type == N_LIST && test->n_children >= 1) {
+        compile_expr(c, test->children[0], 0);
+        int jexit = placeholder(c);
+
+        /* Body (if any) */
+        for (int i = 3; i < node->n_children; i++) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_POP, 0);
+        }
+
+        /* Step — evaluate ALL step expressions, then store (parallel) */
+        int step_count = 0;
+        for (int i = 0; i < vars->n_children; i++) {
+            Node* b = vars->children[i];
+            if (b->type == N_LIST && b->n_children >= 3) {
+                compile_expr(c, b->children[2], 0);
+                step_count++;
+            }
+        }
+        /* Store in reverse order */
+        for (int i = vars->n_children - 1; i >= 0; i--) {
+            Node* b = vars->children[i];
+            if (b->type == N_LIST && b->n_children >= 3) {
+                int slot = resolve_local(c, b->children[0]->symbol);
+                if (slot >= 0) chunk_emit(c, OP_SET_LOCAL, slot);
+            }
+        }
+
+        /* Loop back */
+        chunk_emit(c, OP_LOOP, loop_top);
+
+        /* Exit: evaluate result expression */
+        patch(c, jexit, OP_JUMP_IF_FALSE, c->code_len - 1);
+        /* Wait — JUMP_IF_FALSE jumps when false. The test is the EXIT condition.
+         * When test is TRUE → exit. When FALSE → continue loop.
+         * So: if test is true → DON'T jump (fall through to exit).
+         *     if test is false → jump back to loop.
+         * Need: JUMP_IF_FALSE → loop_body, then after body+step → LOOP back.
+         * After LOOP: exit point. */
+        /* Actually restructure: test → if FALSE, do body+step+loop. If TRUE, exit. */
+        /* Current: test → jexit (JUMP_IF_FALSE to ???). Body. Step. LOOP.
+         * jexit should point to AFTER the LOOP (the exit point).
+         * But JUMP_IF_FALSE jumps when FALSE. If test is FALSE → continue loop body.
+         * If test is TRUE → skip to exit.
+         * So JUMP_IF_FALSE should jump PAST the exit... no.
+         *
+         * Let me use: NOT test → JUMP_IF_FALSE to exit. */
+        /* Restart: */
+        c->code_len = loop_top; /* redo from loop top */
+        compile_expr(c, test->children[0], 0);
+        /* test is TRUE when loop should exit */
+        int jbody = placeholder(c); /* JUMP_IF_FALSE → body (continue loop) */
+        /* Exit: result */
+        if (test->n_children >= 2)
+            compile_expr(c, test->children[1], tail);
+        else
+            chunk_emit(c, OP_NIL, 0);
+        int jexit2 = placeholder(c); /* JUMP over body+step */
+
+        /* Body */
+        int body_start = c->code_len;
+        patch(c, jbody, OP_JUMP_IF_FALSE, body_start);
+
+        for (int i = 3; i < node->n_children; i++) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_POP, 0);
+        }
+
+        /* Step */
+        step_count = 0;
+        for (int i = 0; i < vars->n_children; i++) {
+            Node* b = vars->children[i];
+            if (b->type == N_LIST && b->n_children >= 3) {
+                compile_expr(c, b->children[2], 0);
+                step_count++;
+            }
+        }
+        for (int i = vars->n_children - 1; i >= 0; i--) {
+            Node* b = vars->children[i];
+            if (b->type == N_LIST && b->n_children >= 3) {
+                int slot = resolve_local(c, b->children[0]->symbol);
+                if (slot >= 0) chunk_emit(c, OP_SET_LOCAL, slot);
+            }
+        }
+
+        chunk_emit(c, OP_LOOP, loop_top);
+        patch(c, jexit2, OP_JUMP, c->code_len);
+    }
+
+    /* Pop locals */
+    while (c->n_locals > 0 && c->locals[c->n_locals-1].depth == c->scope_depth)
+        c->n_locals--;
+    c->scope_depth--;
+    return;
+}
+
+static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    /* Variadic: all arguments collected into a single list parameter */
+    FuncChunk func; chunk_init_arrays(&func);
+    func.enclosing = c;
+    func.param_count = 255; /* sentinel: variadic, use PACK_REST at entry */
+    add_local(&func, node->children[1]->symbol); /* rest list at local 0 */
+    /* Emit PACK_REST 0 at function entry: pack ALL args into list at local 0 */
+    chunk_emit(&func, OP_PACK_REST, 0);
+
+    for (int i = 2; i < node->n_children; i++) {
+        int is_last = (i == node->n_children - 1);
+        compile_expr(&func, node->children[i], is_last);
+        if (!is_last) chunk_emit(&func, OP_POP, 0);
+    }
+    chunk_emit(&func, OP_RETURN, 0);
+
+    int cfunc = chunk_add_const(c, INT_VAL(0));
+    int jover = placeholder(c);
+    int func_start = c->code_len;
+    c->constants[cfunc].as.i = func_start;
+
+    int const_map2[MAX_CONSTS];
+    for (int i = 0; i < func.n_constants; i++)
+        const_map2[i] = chunk_add_const(c, func.constants[i]);
+    for (int i = 0; i < func.code_len; i++) {
+        if (func.code[i].op == OP_CLOSURE) {
+            int ci = func.code[i].operand & 0xFFFF;
+            int parent_ci = const_map2[ci];
+            c->constants[parent_ci].as.i += func_start;
+        }
+    }
+    for (int i = 0; i < func.code_len; i++) {
+        Instr fi = func.code[i];
+        if (fi.op == OP_CONST) fi.operand = const_map2[fi.operand];
+        if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
+            fi.operand += func_start;
+        if (fi.op == OP_CLOSURE) {
+            int ci = fi.operand & 0xFFFF;
+            int nu = (fi.operand >> 16) & 0xFF;
+            fi.operand = const_map2[ci] | (nu << 16);
+        }
+        chunk_emit_instr(c, fi);
+    }
+    patch(c, jover, OP_JUMP, c->code_len);
+    int n_upvals = func.n_upvalues;
+    for (int i = 0; i < n_upvals; i++) {
+        chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
+                   func.upvalues[i].enclosing_slot);
+    }
+    chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
+    return;
+}
+
+static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
+    Node* head = node->children[0];
+    (void)head; (void)tail;
+    Node* params = node->children[1];
+    FuncChunk func; chunk_init_arrays(&func);
+    func.enclosing = c;
+
+    /* Check for dot notation: (x y . rest) */
+    int has_rest = 0;
+    int fixed_params = params->n_children;
+    for (int i = 0; i < params->n_children; i++) {
+        if (params->children[i]->type == N_SYMBOL && strcmp(params->children[i]->symbol, ".") == 0) {
+            has_rest = 1;
+            fixed_params = i; /* params before the dot */
+            break;
+        }
+    }
+    func.param_count = fixed_params;
+
+    for (int i = 0; i < fixed_params; i++)
+        add_local(&func, params->children[i]->symbol);
+    if (has_rest && fixed_params + 2 <= params->n_children) {
+        /* Rest parameter name is after the dot */
+        add_local(&func, params->children[fixed_params + 1]->symbol);
+        /* At function entry: pack extra args from fp+fixed_params to sp into list */
+        chunk_emit(&func, OP_PACK_REST, fixed_params);
+        func.param_count = 255; /* sentinel: variadic */
+    }
+
+    for (int i = 2; i < node->n_children; i++) {
+        int is_last = (i == node->n_children - 1);
+        compile_expr(&func, node->children[i], is_last);
+        if (!is_last) chunk_emit(&func, OP_POP, 0);
+    }
+    chunk_emit(&func, OP_RETURN, 0);
+
+    /* Emit: JUMP over lambda body, then body, then CLOSURE */
+    int cfunc = chunk_add_const(c, INT_VAL(0));
+    int jover = placeholder(c);
+    int func_start = c->code_len;
+    c->constants[cfunc].as.i = func_start;
+
+    int const_map2[MAX_CONSTS];
+    for (int i = 0; i < func.n_constants; i++)
+        const_map2[i] = chunk_add_const(c, func.constants[i]);
+
+    /* Adjust nested CLOSURE PC constants */
+    for (int i = 0; i < func.code_len; i++) {
+        if (func.code[i].op == OP_CLOSURE) {
+            int ci = func.code[i].operand & 0xFFFF;
+            int parent_ci = const_map2[ci];
+            c->constants[parent_ci].as.i += func_start;
+        }
+    }
+
+    for (int i = 0; i < func.code_len; i++) {
+        Instr fi = func.code[i];
+        if (fi.op == OP_CONST) fi.operand = const_map2[fi.operand];
+        if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
+            fi.operand += func_start;
+        if (fi.op == OP_CLOSURE) {
+            int ci = fi.operand & 0xFFFF;
+            int nu = (fi.operand >> 16) & 0xFF;
+            fi.operand = const_map2[ci] | (nu << 16);
+        }
+        chunk_emit_instr(c, fi);
+    }
+    patch(c, jover, OP_JUMP, c->code_len);
+
+    /* Push upvalue captures from enclosing scope before creating closure */
+    int n_upvals = func.n_upvalues;
+    for (int i = 0; i < n_upvals; i++) {
+        chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
+                   func.upvalues[i].enclosing_slot);
+    }
+    chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
+    /* Convert upvalues to open slots for set! mutation visibility.
+     * For is_local upvalues at top level: use NATIVE_CALL 151 (direct open slot).
+     * For non-local upvalues: use NATIVE_CALL 252 to propagate parent's open slot. */
+    if (c->enclosing == NULL) {
+        for (int i = 0; i < n_upvals; i++) {
+            if (!func.upvalues[i].is_local) continue;
+            chunk_emit(c, OP_DUP, 0);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
+            chunk_emit(c, OP_NATIVE_CALL, 151);
+            chunk_emit(c, OP_POP, 0);
+        }
+    } else {
+        /* Inside a function: only propagate open slots from parent.
+         * DON'T create new open slots for local captures (the function's
+         * stack frame will be destroyed on return, making them invalid). */
+        for (int i = 0; i < n_upvals; i++) {
+            if (!func.upvalues[i].is_local) {
+                /* Captured from parent's upvalue — propagate parent's open slot if any */
+                chunk_emit(c, OP_DUP, 0);
+                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
+                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
+                chunk_emit(c, OP_NATIVE_CALL, 252);
+                chunk_emit(c, OP_POP, 0);
+            }
+        }
+    }
+    return;
+}
+
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (!node) return;
 
@@ -399,91 +1680,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "third") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); return; }
 
     /* (cond (test1 expr1) (test2 expr2) ... (else exprN)) */
-    if (is_sym(head, "cond") && node->n_children >= 2) {
-        int end_patches[64];
-        int n_patches = 0;
-        for (int i = 1; i < node->n_children; i++) {
-            Node* clause = node->children[i];
-            if (clause->type != N_LIST || clause->n_children < 2) continue;
-            if (is_sym(clause->children[0], "else")) {
-                /* else clause — always taken */
-                for (int j = 1; j < clause->n_children; j++) {
-                    if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
-                    else compile_expr(c, clause->children[j], tail);
-                }
-                break;
-            }
-            /* Test → if false, jump to next clause */
-            compile_expr(c, clause->children[0], 0);
-            int jnext = placeholder(c);
-            /* Body */
-            for (int j = 1; j < clause->n_children; j++) {
-                if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
-                else compile_expr(c, clause->children[j], tail);
-            }
-            if (n_patches < 64) end_patches[n_patches++] = placeholder(c); /* jump to end */
-            patch(c, jnext, OP_JUMP_IF_FALSE, c->code_len);
-        }
-        /* Patch all end jumps */
-        for (int i = 0; i < n_patches; i++) patch(c, end_patches[i], OP_JUMP, c->code_len);
-        return;
-    }
+    if (is_sym(head, "cond") && node->n_children >= 2) { compile_form_cond(c, node, tail); return; }
 
     /* (case expr ((val ...) body ...) ... (else body ...))
      * Compiles as: evaluate key, then for each clause: DUP key, test each val,
      * if any matches jump to body, else next clause. */
-    if (is_sym(head, "case") && node->n_children >= 3) {
-        compile_expr(c, node->children[1], 0); /* evaluate key expression → TOS */
-        int end_patches_c[64]; int n_patches_c = 0;
-        for (int i = 2; i < node->n_children; i++) {
-            Node* clause = node->children[i];
-            if (clause->type != N_LIST || clause->n_children < 2) continue;
-            if (is_sym(clause->children[0], "else")) {
-                chunk_emit(c, OP_POP, 0); /* discard key */
-                for (int j = 1; j < clause->n_children; j++) {
-                    if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
-                    else compile_expr(c, clause->children[j], tail);
-                }
-                break;
-            }
-            /* ((val1 val2 ...) body ...) */
-            Node* vals = clause->children[0];
-            if (vals->type != N_LIST) continue;
-            /* Test key against each val: DUP, EQ, if true → jump to body */
-            int body_patches[16]; int n_bp = 0;
-            for (int v = 0; v < vals->n_children; v++) {
-                chunk_emit(c, OP_DUP, 0);
-                compile_quote(c, vals->children[v]);
-                chunk_emit(c, OP_EQ, 0);
-                /* If true, jump to body */
-                if (n_bp < 16) body_patches[n_bp++] = c->code_len;
-                chunk_emit(c, OP_JUMP_IF_FALSE, 0); /* placeholder: if false, continue */
-                /* Match! Jump to body code */
-                int jbody = c->code_len;
-                chunk_emit(c, OP_JUMP, 0); /* placeholder: jump to body */
-                /* Patch the JIF to skip the JUMP (continue testing) */
-                patch(c, body_patches[n_bp-1], OP_JUMP_IF_FALSE, c->code_len);
-                body_patches[n_bp-1] = jbody; /* reuse slot for body jump */
-            }
-            /* No val matched — jump to next clause */
-            int jnext = c->code_len;
-            chunk_emit(c, OP_JUMP, 0);
-            /* Body code (reached by any matching val's jump) */
-            for (int bp = 0; bp < n_bp; bp++)
-                patch(c, body_patches[bp], OP_JUMP, c->code_len);
-            chunk_emit(c, OP_POP, 0); /* discard key */
-            for (int j = 1; j < clause->n_children; j++) {
-                if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
-                else compile_expr(c, clause->children[j], tail);
-            }
-            if (n_patches_c < 64) end_patches_c[n_patches_c++] = c->code_len;
-            chunk_emit(c, OP_JUMP, 0);
-            /* Patch jnext to after body */
-            patch(c, jnext, OP_JUMP, c->code_len);
-        }
-        for (int i = 0; i < n_patches_c; i++) patch(c, end_patches_c[i], OP_JUMP, c->code_len);
-        return;
-    }
+    if (is_sym(head, "case") && node->n_children >= 3) { compile_form_case(c, node, tail); return; }
 
     /* (when test body...) — one-armed if */
     if (is_sym(head, "when") && node->n_children >= 3) {
@@ -511,69 +1713,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
 
     /* (require module.name) — load and compile the module */
-    if (is_sym(head, "require")) {
-        if (node->n_children >= 2 && node->children[1]->type == N_SYMBOL) {
-            const char* mod_name = node->children[1]->symbol;
-            /* Track already-loaded modules to avoid double-loading */
-            static char loaded_modules[64][128];
-            static int n_loaded = 0;
-            for (int i = 0; i < n_loaded; i++) {
-                if (strcmp(loaded_modules[i], mod_name) == 0) return; /* already loaded */
-            }
-            if (n_loaded < 64) strncpy(loaded_modules[n_loaded++], mod_name, 127);
-
-            /* stdlib is the prelude — builtins already available */
-            if (strcmp(mod_name, "stdlib") == 0) return;
-
-            /* Build file path: module.name → lib/module/name.esk */
-            char path[512];
-            snprintf(path, sizeof(path), "lib/");
-            int pi = 4;
-            for (const char* p = mod_name; *p && pi < 500; p++) {
-                path[pi++] = (*p == '.') ? '/' : *p;
-            }
-            path[pi] = '\0';
-            strncat(path, ".esk", sizeof(path) - pi - 1);
-
-            /* Read and parse the file */
-            FILE* mf = fopen(path, "r");
-            if (!mf) {
-                /* Try alternative path: replace ALL dots with slashes */
-                char alt[512];
-                snprintf(alt, sizeof(alt), "%s.esk", mod_name);
-                for (char* p = alt; *p; p++) if (*p == '.') *p = '/';
-                mf = fopen(alt, "r");
-            }
-            if (mf) {
-                fseek(mf, 0, SEEK_END);
-                long len = ftell(mf);
-                fseek(mf, 0, SEEK_SET);
-                char* src = (char*)malloc(len + 1);
-                if (src) {
-                    fread(src, 1, len, mf);
-                    src[len] = '\0';
-                    fclose(mf);
-                    /* Parse and compile all top-level forms */
-                    const char* saved_src = src_ptr;
-                    src_ptr = src;
-                    while (1) {
-                        skip_ws();
-                        if (!*src_ptr) break;
-                        Node* expr = parse_sexp();
-                        if (!expr) break;
-                        compile_expr(c, expr, 0);
-                        free_node(expr);
-                    }
-                    src_ptr = saved_src;
-                    free(src);
-                } else {
-                    fclose(mf);
-                }
-            }
-            /* If file not found, silently continue (builtins always available) */
-        }
-        return;
-    }
+    if (is_sym(head, "require")) { compile_form_require(c, node, tail); return; }
     /* (provide name ...) — no-op: all symbols are visible */
     if (is_sym(head, "provide")) {
         return;
@@ -586,261 +1726,17 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
 
     /* (define-record-type name (constructor field...) pred (field accessor [mutator]) ...) */
-    if (is_sym(head, "define-record-type") && node->n_children >= 4) {
-        const char* type_name = node->children[1]->symbol;
-        (void)type_name; /* used conceptually as type tag */
-        Node* ctor = node->children[2]; /* (constructor f1 f2 ...) */
-        const char* pred_name = node->children[3]->symbol;
-
-        /* --- Constructor --- */
-        if (ctor->type == N_LIST && ctor->n_children >= 1) {
-            const char* ctor_name = ctor->children[0]->symbol;
-            int n_fields = ctor->n_children - 1;
-
-            /* Compile constructor as a closure that creates a tagged vector */
-            FuncChunk func; chunk_init_arrays(&func);
-            func.enclosing = c;
-            func.param_count = n_fields;
-            for (int i = 0; i < n_fields; i++)
-                add_local(&func, ctor->children[i + 1]->symbol);
-
-            /* Body: push type tag (as symbol), then all fields, create vector */
-            /* Use type_name as a string constant for the tag */
-            int len = (int)strlen(node->children[1]->symbol);
-            int n_packs = (len + 7) / 8;
-            chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(len)));
-            for (int p = 0; p < n_packs; p++) {
-                int64_t pack = 0;
-                for (int b = 0; b < 8 && p * 8 + b < len; b++) {
-                    pack |= ((int64_t)(unsigned char)node->children[1]->symbol[p * 8 + b]) << (b * 8);
-                }
-                chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(pack)));
-            }
-            chunk_emit(&func, OP_NATIVE_CALL, 100); /* build-string-from-packed */
-            for (int i = 0; i < n_fields; i++)
-                chunk_emit(&func, OP_GET_LOCAL, i);
-            chunk_emit(&func, OP_VEC_CREATE, n_fields + 1); /* +1 for type tag */
-            chunk_emit(&func, OP_RETURN, 0);
-
-            /* Inline func body into parent chunk */
-            int cfunc = chunk_add_const(c, INT_VAL(0));
-            int jover = placeholder(c);
-            int func_start = c->code_len;
-            c->constants[cfunc].as.i = func_start;
-            int const_map[4096];
-            for (int i = 0; i < func.n_constants; i++)
-                const_map[i] = chunk_add_const(c, func.constants[i]);
-            for (int i = 0; i < func.code_len; i++) {
-                Instr fi = func.code[i];
-                if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-                if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
-                    fi.operand += func_start;
-                chunk_emit_instr(c, fi);
-            }
-            patch(c, jover, OP_JUMP, c->code_len);
-            chunk_emit(c, OP_CLOSURE, cfunc);
-            add_local(c, ctor_name);
-        }
-
-        /* --- Predicate --- */
-        {
-            FuncChunk func; chunk_init_arrays(&func);
-            func.enclosing = c;
-            func.param_count = 1;
-            add_local(&func, "v");
-            /* Check: (and (vector? v) (> (vector-length v) 0) (equal? (vector-ref v 0) type-name)) */
-            chunk_emit(&func, OP_GET_LOCAL, 0);
-            chunk_emit(&func, OP_VEC_P, 0);
-            chunk_emit(&func, OP_RETURN, 0); /* simplified: just vector? check */
-
-            int cfunc = chunk_add_const(c, INT_VAL(0));
-            int jover = placeholder(c);
-            int func_start = c->code_len;
-            c->constants[cfunc].as.i = func_start;
-            int const_map[4096];
-            for (int i = 0; i < func.n_constants; i++)
-                const_map[i] = chunk_add_const(c, func.constants[i]);
-            for (int i = 0; i < func.code_len; i++) {
-                Instr fi = func.code[i];
-                if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-                chunk_emit_instr(c, fi);
-            }
-            patch(c, jover, OP_JUMP, c->code_len);
-            chunk_emit(c, OP_CLOSURE, cfunc);
-            add_local(c, pred_name);
-        }
-
-        /* --- Accessors (and optional mutators) --- */
-        for (int i = 4; i < node->n_children; i++) {
-            Node* field_spec = node->children[i];
-            if (field_spec->type != N_LIST || field_spec->n_children < 2) continue;
-            int field_idx = i - 4 + 1; /* +1 because index 0 is the type tag */
-
-            /* Accessor */
-            {
-                const char* acc_name = field_spec->children[1]->symbol;
-                FuncChunk func; chunk_init_arrays(&func);
-                func.enclosing = c;
-                func.param_count = 1;
-                add_local(&func, "v");
-                chunk_emit(&func, OP_GET_LOCAL, 0);
-                chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(field_idx)));
-                chunk_emit(&func, OP_VEC_REF, 0);
-                chunk_emit(&func, OP_RETURN, 0);
-
-                int cfunc = chunk_add_const(c, INT_VAL(0));
-                int jover = placeholder(c);
-                int func_start = c->code_len;
-                c->constants[cfunc].as.i = func_start;
-                int const_map[4096];
-                for (int i2 = 0; i2 < func.n_constants; i2++)
-                    const_map[i2] = chunk_add_const(c, func.constants[i2]);
-                for (int i2 = 0; i2 < func.code_len; i2++) {
-                    Instr fi = func.code[i2];
-                    if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-                    chunk_emit_instr(c, fi);
-                }
-                patch(c, jover, OP_JUMP, c->code_len);
-                chunk_emit(c, OP_CLOSURE, cfunc);
-                add_local(c, acc_name);
-            }
-
-            /* Mutator (optional, at children[2]) */
-            if (field_spec->n_children >= 3) {
-                const char* mut_name = field_spec->children[2]->symbol;
-                FuncChunk func; chunk_init_arrays(&func);
-                func.enclosing = c;
-                func.param_count = 2;
-                add_local(&func, "v");
-                add_local(&func, "val");
-                chunk_emit(&func, OP_GET_LOCAL, 0);   /* vector */
-                chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(field_idx)));
-                chunk_emit(&func, OP_GET_LOCAL, 1);   /* new value */
-                chunk_emit(&func, OP_VEC_SET, 0);
-                chunk_emit(&func, OP_RETURN, 0);
-
-                int cfunc = chunk_add_const(c, INT_VAL(0));
-                int jover = placeholder(c);
-                int func_start = c->code_len;
-                c->constants[cfunc].as.i = func_start;
-                int const_map[4096];
-                for (int i2 = 0; i2 < func.n_constants; i2++)
-                    const_map[i2] = chunk_add_const(c, func.constants[i2]);
-                for (int i2 = 0; i2 < func.code_len; i2++) {
-                    Instr fi = func.code[i2];
-                    if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-                    chunk_emit_instr(c, fi);
-                }
-                patch(c, jover, OP_JUMP, c->code_len);
-                chunk_emit(c, OP_CLOSURE, cfunc);
-                add_local(c, mut_name);
-            }
-        }
-        return;
-    }
+    if (is_sym(head, "define-record-type") && node->n_children >= 4) { compile_form_define_record_type(c, node, tail); return; }
 
     /* (parameterize ((param1 val1) (param2 val2) ...) body ...) */
-    if (is_sym(head, "parameterize") && node->n_children >= 3) {
-        Node* bindings = node->children[1];
-        int n_bindings = bindings->n_children;
-
-        /* Push each parameter binding */
-        for (int i = 0; i < n_bindings; i++) {
-            if (bindings->children[i]->type == N_LIST &&
-                bindings->children[i]->n_children == 2) {
-                compile_expr(c, bindings->children[i]->children[0], 0); /* param */
-                compile_expr(c, bindings->children[i]->children[1], 0); /* new value */
-                chunk_emit(c, OP_NATIVE_CALL, 702); /* parameterize-push */
-                chunk_emit(c, OP_POP, 0); /* discard void result */
-            }
-        }
-
-        /* Compile body */
-        for (int i = 2; i < node->n_children; i++) {
-            if (i > 2) chunk_emit(c, OP_POP, 0);
-            compile_expr(c, node->children[i], tail && i == node->n_children - 1);
-        }
-
-        /* Pop each binding in reverse order for proper unwinding */
-        for (int i = n_bindings - 1; i >= 0; i--) {
-            if (bindings->children[i]->type == N_LIST &&
-                bindings->children[i]->n_children >= 1) {
-                compile_expr(c, bindings->children[i]->children[0], 0); /* param */
-                chunk_emit(c, OP_NATIVE_CALL, 703); /* parameterize-pop */
-                chunk_emit(c, OP_POP, 0);
-            }
-        }
-        return;
-    }
+    if (is_sym(head, "parameterize") && node->n_children >= 3) { compile_form_parameterize(c, node, tail); return; }
 
     /* (let-values (((x y ...) producer) ...) body ...) */
-    if (is_sym(head, "let-values") && node->n_children >= 3) {
-        Node* bindings_list = node->children[1];
-        int saved_locals = c->n_locals;
-
-        for (int b = 0; b < bindings_list->n_children; b++) {
-            Node* binding = bindings_list->children[b];
-            if (binding->type != N_LIST || binding->n_children != 2) continue;
-            Node* formals = binding->children[0]; /* (x y ...) or single var */
-            Node* producer = binding->children[1];
-
-            /* Compile the producer expression */
-            compile_expr(c, producer, 0);
-
-            if (formals->type == N_LIST) {
-                /* Multiple return values — bind first to result, rest get nil */
-                if (formals->n_children > 0)
-                    add_local(c, formals->children[0]->symbol);
-                for (int i = 1; i < formals->n_children; i++) {
-                    chunk_emit(c, OP_NIL, 0);
-                    add_local(c, formals->children[i]->symbol);
-                }
-            } else if (formals->type == N_SYMBOL) {
-                /* Single variable */
-                add_local(c, formals->symbol);
-            }
-        }
-
-        /* Compile body expressions */
-        for (int i = 2; i < node->n_children; i++) {
-            if (i > 2) chunk_emit(c, OP_POP, 0);
-            compile_expr(c, node->children[i], tail && i == node->n_children - 1);
-        }
-
-        /* Clean up scope: pop bindings below result */
-        int n_bound = c->n_locals - saved_locals;
-        if (n_bound > 0)
-            chunk_emit(c, OP_POPN, n_bound);
-        c->n_locals = saved_locals;
-        return;
-    }
+    if (is_sym(head, "let-values") && node->n_children >= 3) { compile_form_let_values(c, node, tail); return; }
 
     /* (with-exception-handler handler thunk) — call thunk with handler installed.
      * Uses OP_GET_EXN to access exception from VM register. */
-    if (is_sym(head, "with-exception-handler") && node->n_children == 3) {
-        int handler_patch = c->code_len;
-        chunk_emit(c, OP_PUSH_HANDLER, 0);
-
-        /* Call thunk (0-arg function) */
-        compile_expr(c, node->children[2], 0);
-        chunk_emit(c, OP_CALL, 0);
-
-        /* Normal exit */
-        chunk_emit(c, OP_POP_HANDLER, 0);
-        int end_patch = c->code_len;
-        chunk_emit(c, OP_JUMP, 0);
-
-        /* Exception handler: exn is in current_exn VM register.
-         * Call handler(exn). NEVER tail-call — the handler may need
-         * the enclosing frame for upvalue access (e.g., call/cc's k). */
-        patch(c, handler_patch, OP_PUSH_HANDLER, c->code_len);
-        compile_expr(c, node->children[1], 0); /* push handler closure */
-        chunk_emit(c, OP_GET_EXN, 0);           /* push exn from VM register */
-        chunk_emit(c, OP_CALL, 1);
-
-        patch(c, end_patch, OP_JUMP, c->code_len);
-        return;
-    }
+    if (is_sym(head, "with-exception-handler") && node->n_children == 3) { compile_form_with_exception_handler(c, node, tail); return; }
 
     /* (call/cc proc) or (call-with-current-continuation proc) */
     if ((is_sym(head, "call/cc") || is_sym(head, "call-with-current-continuation")) && node->n_children == 2) {
@@ -868,130 +1764,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      *   <cond-like clause dispatch>
      * end:
      */
-    if (is_sym(head, "guard") && node->n_children >= 3) {
-        Node* clause_list = node->children[1]; /* (var (test handler) ...) */
-        if (clause_list->type != N_LIST || clause_list->n_children < 1) {
-            compile_expr(c, node->children[node->n_children - 1], tail);
-            return;
-        }
-        /* CORRECT ARCHITECTURE: the guard handler is compiled as a closure
-         * that takes the exception value as its sole parameter. This gives it
-         * its own call frame with a known fp, so let/define/nested expressions
-         * inside the handler have self-consistent local slot numbering.
-         *
-         * Compilation:
-         *   PUSH_HANDLER handler_addr
-         *   <body>
-         *   POP_HANDLER
-         *   JUMP end
-         * handler_addr:
-         *   GET_EXN                    ; push exception from VM register
-         *   CLOSURE handler_func       ; push handler closure (takes 1 param: exn)
-         *   ; swap so stack = [closure, exn] for CALL 1
-         *   ; actually: push closure first, then GET_EXN
-         *   CALL 1                     ; call handler_closure(exn)
-         *   JUMP end
-         *
-         * handler_func body: (exn is local 0)
-         *   compile clause tests and bodies with exn as a normal local parameter
-         */
-        char* exn_name = clause_list->children[0]->symbol;
-        int saved_locals = c->n_locals;
-
-        /* Emit PUSH_HANDLER */
-        int handler_patch = c->code_len;
-        chunk_emit(c, OP_PUSH_HANDLER, 0);
-
-        /* Compile body expressions */
-        for (int i = 2; i < node->n_children; i++) {
-            if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
-            else compile_expr(c, node->children[i], 0);
-        }
-
-        /* Normal exit */
-        chunk_emit(c, OP_POP_HANDLER, 0);
-        int end_patch = c->code_len;
-        chunk_emit(c, OP_JUMP, 0);
-
-        /* Compile handler as a closure with exn as parameter 0 */
-        FuncChunk handler_func; chunk_init_arrays(&handler_func);
-        handler_func.enclosing = c;
-        handler_func.param_count = 1;
-        add_local(&handler_func, exn_name); /* exn is local 0 */
-
-        /* Compile clauses inside the handler function */
-        int hf_end_patches[32]; int hf_n_end = 0;
-        for (int ci = 1; ci < clause_list->n_children; ci++) {
-            Node* clause = clause_list->children[ci];
-            if (clause->type != N_LIST || clause->n_children < 1) continue;
-            if (clause->children[0]->type == N_SYMBOL && strcmp(clause->children[0]->symbol, "else") == 0) {
-                for (int j = 1; j < clause->n_children; j++) {
-                    if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
-                    else compile_expr(&handler_func, clause->children[j], 1);
-                }
-                chunk_emit(&handler_func, OP_RETURN, 0);
-                break;
-            }
-            compile_expr(&handler_func, clause->children[0], 0);
-            int jnext = handler_func.code_len;
-            chunk_emit(&handler_func, OP_JUMP_IF_FALSE, 0);
-            for (int j = 1; j < clause->n_children; j++) {
-                if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
-                else compile_expr(&handler_func, clause->children[j], 1);
-            }
-            chunk_emit(&handler_func, OP_RETURN, 0);
-            patch(&handler_func, jnext, OP_JUMP_IF_FALSE, handler_func.code_len);
-        }
-        /* If no clause matched: re-raise */
-        chunk_emit(&handler_func, OP_GET_LOCAL, 0); /* push exn */
-        chunk_emit(&handler_func, OP_NATIVE_CALL, 130); /* re-raise */
-        chunk_emit(&handler_func, OP_RETURN, 0);
-
-        /* Inline handler function code into parent chunk */
-        int const_map_h[4096];
-        for (int i = 0; i < handler_func.n_constants; i++)
-            const_map_h[i] = chunk_add_const(c, handler_func.constants[i]);
-        int hfunc_const = chunk_add_const(c, INT_VAL(0)); /* placeholder */
-
-        /* Handler dispatch code: CLOSURE + CALL */
-        patch(c, handler_patch, OP_PUSH_HANDLER, c->code_len);
-        int hjover = c->code_len;
-        chunk_emit(c, OP_JUMP, 0); /* jump over inlined handler body */
-
-        int hfunc_pc = c->code_len;
-        c->constants[hfunc_const].as.i = hfunc_pc;
-
-        /* Copy handler function code with remapping */
-        for (int i = 0; i < handler_func.code_len; i++) {
-            Instr fi = handler_func.code[i];
-            if (fi.op == OP_CONST) fi.operand = const_map_h[fi.operand];
-            if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
-                fi.operand += hfunc_pc;
-            if (fi.op == OP_CLOSURE) {
-                int ci2 = fi.operand & 0xFFFF;
-                int nu2 = (fi.operand >> 16) & 0xFF;
-                fi.operand = const_map_h[ci2] | (nu2 << 16);
-            }
-            chunk_emit_instr(c, fi);
-        }
-
-        patch(c, hjover, OP_JUMP, c->code_len);
-
-        /* Emit: push handler closure, push exn, CALL 1 */
-        int n_hf_upvals = handler_func.n_upvalues;
-        for (int i = 0; i < n_hf_upvals; i++)
-            chunk_emit(c, handler_func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
-                       handler_func.upvalues[i].enclosing_slot);
-        chunk_emit(c, OP_CLOSURE, hfunc_const | (n_hf_upvals << 16));
-        chunk_emit(c, OP_GET_EXN, 0);
-        chunk_emit(c, OP_CALL, 1);
-
-        /* end label */
-        patch(c, end_patch, OP_JUMP, c->code_len);
-
-        c->n_locals = saved_locals;
-        return;
-    }
+    if (is_sym(head, "guard") && node->n_children >= 3) { compile_form_guard(c, node, tail); return; }
 
     /* (apply f args-list) — call f with list as arguments */
     if (is_sym(head, "apply") && node->n_children == 3) {
@@ -1033,63 +1806,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * R7RS: call before(), register after on wind stack, call thunk(),
      * pop wind stack, call after(). If a continuation escapes through
      * this dynamic-wind, the after thunk is called during unwinding. */
-    if (is_sym(head, "dynamic-wind") && node->n_children == 4) {
-        /* Call before() */
-        compile_expr(c, node->children[1], 0);
-        chunk_emit(c, OP_CALL, 0);
-        chunk_emit(c, OP_POP, 0);
-
-        /* Push after thunk onto wind stack */
-        compile_expr(c, node->children[3], 0);
-        chunk_emit(c, OP_WIND_PUSH, 0);
-
-        /* Call thunk() */
-        compile_expr(c, node->children[2], 0);
-        chunk_emit(c, OP_CALL, 0);
-
-        /* Pop wind stack */
-        chunk_emit(c, OP_WIND_POP, 0);
-
-        /* Call after() (normal exit) */
-        compile_expr(c, node->children[3], 0);
-        chunk_emit(c, OP_CALL, 0);
-        chunk_emit(c, OP_POP, 0);
-        /* thunk result is below after result on stack.
-         * After POP of after_result, thunk_result is TOS. */
-        return;
-    }
+    if (is_sym(head, "dynamic-wind") && node->n_children == 4) { compile_form_dynamic_wind(c, node, tail); return; }
 
     /* (delay expr) → create a promise: #(#f <thunk>)
      * The thunk is a nullary closure wrapping expr. */
-    if (is_sym(head, "delay") && node->n_children == 2) {
-        {
-            /* Save current chunk state, compile a sub-function */
-            FuncChunk func;
-            memset(&func, 0, sizeof(func));
-            func.enclosing = c;
-            func.param_count = 0;
-            compile_expr(&func, node->children[1], 1); /* compile expr as body */
-            chunk_emit(&func, OP_RETURN, 0);
-            /* Inline the function code */
-            int jover = c->code_len;
-            chunk_emit(c, OP_JUMP, 0);
-            int cfunc = c->n_constants;
-            chunk_add_const(c, INT_VAL(c->code_len));
-            for (int i = 0; i < func.code_len; i++) {
-                Instr fi = func.code[i];
-                if (fi.op == OP_CONST) fi.operand = chunk_add_const(c, func.constants[fi.operand]);
-                if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
-                    fi.operand += c->code_len;
-                chunk_emit(c, fi.op, fi.operand);
-            }
-            patch(c, jover, OP_JUMP, c->code_len);
-            /* Stack: push #f, push closure, create vector */
-            chunk_emit(c, OP_FALSE, 0);
-            chunk_emit(c, OP_CLOSURE, cfunc);
-            chunk_emit(c, OP_VEC_CREATE, 2); /* #(#f thunk) */
-        }
-        return;
-    }
+    if (is_sym(head, "delay") && node->n_children == 2) { compile_form_delay(c, node, tail); return; }
 
     /* (force promise) → force a promise (evaluate thunk if not yet forced) */
     if (is_sym(head, "force") && node->n_children == 2) {
@@ -1313,75 +2034,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* (let ((var val) ...) body) — compile using stack locals.
      * Variables that are both captured by closures AND mutated via set!
      * are heap-boxed: stored in a 1-element vector so all closures share state. */
-    if (is_sym(head, "let") && node->n_children >= 3 && node->children[1]->type == N_LIST) {
-        int saved_locals = c->n_locals;
-        c->scope_depth++;
-
-        /* Collect body nodes for scanning */
-        Node* body_nodes[64];
-        int n_bodies = 0;
-        for (int i = 2; i < node->n_children && n_bodies < 64; i++)
-            body_nodes[n_bodies++] = node->children[i];
-
-        Node* bindings = node->children[1];
-        for (int i = 0; i < bindings->n_children; i++) {
-            Node* b = bindings->children[i];
-            if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
-                const char* vname = b->children[0]->symbol;
-                int box = needs_boxing(body_nodes, n_bodies, vname);
-                compile_expr(c, b->children[1], 0);
-                if (box) {
-                    /* Wrap value in a 1-element vector (box) */
-                    chunk_emit(c, OP_VEC_CREATE, 1);
-                }
-                int slot = add_local(c, vname);
-                if (box) {
-                    /* Mark this local as boxed */
-                    c->locals[c->n_locals - 1].boxed = 1;
-                }
-            }
-        }
-        int n_let_locals = c->n_locals - saved_locals;
-
-        /* Compile body — don't use tail position if locals need cleanup */
-        int body_tail = (n_let_locals > 0) ? 0 : tail;
-        for (int i = 2; i < node->n_children; i++) {
-            if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
-            else compile_expr(c, node->children[i], body_tail);
-        }
-
-        /* Scope cleanup: remove let-bound locals, keep body result. */
-        if (n_let_locals > 0) {
-            chunk_emit(c, OP_POPN, n_let_locals);
-        }
-        c->n_locals = saved_locals;
-        c->scope_depth--;
-        return;
-    }
+    if (is_sym(head, "let") && node->n_children >= 3 && node->children[1]->type == N_LIST) { compile_form_let(c, node, tail); return; }
 
     /* (let* ((var val) ...) body) — sequential bindings */
-    if (is_sym(head, "let*") && node->n_children >= 3 && node->children[1]->type == N_LIST) {
-        int saved_locals = c->n_locals;
-        c->scope_depth++;
-        Node* bindings = node->children[1];
-        for (int i = 0; i < bindings->n_children; i++) {
-            Node* b = bindings->children[i];
-            if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
-                compile_expr(c, b->children[1], 0);
-                add_local(c, b->children[0]->symbol);
-            }
-        }
-        int n_let_locals = c->n_locals - saved_locals;
-        int body_tail = (n_let_locals > 0) ? 0 : tail;
-        for (int i = 2; i < node->n_children; i++) {
-            if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
-            else compile_expr(c, node->children[i], body_tail);
-        }
-        if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
-        c->n_locals = saved_locals;
-        c->scope_depth--;
-        return;
-    }
+    if (is_sym(head, "let*") && node->n_children >= 3 && node->children[1]->type == N_LIST) { compile_form_let_star(c, node, tail); return; }
 
     /* (letrec ((var val) ...) body) — recursive bindings with open upvalues.
      *
@@ -1400,443 +2056,19 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * Simplest correct approach: after creating all closures and SET_LOCAL'ing them,
      * use NATIVE_CALL to patch each closure's upvalue to read from the stack slot.
      * Or: use OP_CLOSE_UPVALUE to patch each closure's upvalue after all are defined. */
-    if (is_sym(head, "letrec") && node->n_children >= 3 && node->children[1]->type == N_LIST) {
-        int saved_locals = c->n_locals;
-        c->scope_depth++;
-        Node* bindings = node->children[1];
-        int n_bindings = 0;
-
-        /* 1. Push NIL placeholders and register names */
-        for (int i = 0; i < bindings->n_children; i++) {
-            Node* b = bindings->children[i];
-            if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
-                chunk_emit(c, OP_NIL, 0);
-                add_local(c, b->children[0]->symbol);
-                n_bindings++;
-            }
-        }
-        int n_let_locals = c->n_locals - saved_locals;
-
-        /* 2. Compile each initializer and SET_LOCAL */
-        for (int i = 0; i < bindings->n_children; i++) {
-            Node* b = bindings->children[i];
-            if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
-                compile_expr(c, b->children[1], 0);
-                int slot = resolve_local(c, b->children[0]->symbol);
-                if (slot >= 0) chunk_emit(c, OP_SET_LOCAL, slot);
-            }
-        }
-
-        /* 3. Patch closures: convert captured-by-value upvalues to open (by-reference).
-         * After SET_LOCAL, each closure is at its stack slot. For each closure,
-         * we use NATIVE_CALL 131 to convert its upvalues to open slot references.
-         * This way GET_UPVALUE reads the CURRENT stack value (not the captured NIL). */
-        for (int i = 0; i < n_bindings; i++) {
-            int slot_i = saved_locals + i;
-            /* For each upvalue in this closure, set it to open with the
-             * enclosing stack slot. The upvalues reference OTHER letrec bindings. */
-            chunk_emit(c, OP_GET_LOCAL, slot_i);     /* push closure */
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_bindings)));
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(saved_locals)));
-            chunk_emit(c, OP_NATIVE_CALL, 131);       /* open_upvalues(closure, count, base_slot) */
-            chunk_emit(c, OP_POP, 0);                 /* discard result */
-        }
-
-        /* Body — if there are locals to clean up, don't compile in tail position
-         * (TAIL_CALL would skip the POPN cleanup) */
-        int body_tail = (n_let_locals > 0) ? 0 : tail;
-        for (int i = 2; i < node->n_children; i++) {
-            if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
-            else compile_expr(c, node->children[i], body_tail);
-        }
-        if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
-        c->n_locals = saved_locals;
-        c->scope_depth--;
-        return;
-    }
+    if (is_sym(head, "letrec") && node->n_children >= 3 && node->children[1]->type == N_LIST) { compile_form_letrec(c, node, tail); return; }
 
     /* (letrec* ((var val) ...) body) — sequential recursive (R7RS) */
-    if (is_sym(head, "letrec*") && node->n_children >= 3 && node->children[1]->type == N_LIST) {
-        int saved_locals = c->n_locals;
-        c->scope_depth++;
-        Node* bindings = node->children[1];
-        for (int i = 0; i < bindings->n_children; i++) {
-            Node* b = bindings->children[i];
-            if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
-                chunk_emit(c, OP_NIL, 0);
-                add_local(c, b->children[0]->symbol);
-            }
-        }
-        int n_let_locals = c->n_locals - saved_locals;
-        for (int i = 0; i < bindings->n_children; i++) {
-            Node* b = bindings->children[i];
-            if (b->type == N_LIST && b->n_children == 2 && b->children[0]->type == N_SYMBOL) {
-                compile_expr(c, b->children[1], 0);
-                int slot = resolve_local(c, b->children[0]->symbol);
-                if (slot >= 0) chunk_emit(c, OP_SET_LOCAL, slot);
-            }
-        }
-        {
-            int body_tail = (n_let_locals > 0) ? 0 : tail;
-            for (int i = 2; i < node->n_children; i++) {
-                if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
-                else compile_expr(c, node->children[i], body_tail);
-            }
-        }
-        if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
-        c->n_locals = saved_locals;
-        c->scope_depth--;
-        return;
-    }
+    if (is_sym(head, "letrec*") && node->n_children >= 3 && node->children[1]->type == N_LIST) { compile_form_letrec_star(c, node, tail); return; }
 
     /* (define name value) or (define (name params...) body) */
-    if (is_sym(head, "define") && node->n_children >= 3) {
-        if (node->children[1]->type == N_SYMBOL) {
-            /* Simple variable definition */
-            compile_expr(c, node->children[2], 0);
-            add_local(c, node->children[1]->symbol);
-            return;
-        }
-        if (node->children[1]->type == N_LIST && node->children[1]->n_children >= 1) {
-            /* Function definition: (define (name params...) body) */
-            Node* sig = node->children[1];
-            char* fname = sig->children[0]->symbol;
-
-            /* Reserve local slot — the CLOSURE instruction below will push the
-             * closure directly into this slot (no NIL placeholder needed). */
-            int func_slot = add_local(c, fname);
-
-            /* Compile function body into a separate chunk.
-             * The body can reference fname via GET_UPVALUE which will be captured
-             * from the enclosing scope's func_slot. */
-            FuncChunk func; chunk_init_arrays(&func);
-            func.enclosing = c;
-
-            /* Check for dot notation in params: (name x y . rest) */
-            int has_rest = 0, fixed_params = sig->n_children - 1;
-            for (int i = 1; i < sig->n_children; i++) {
-                if (sig->children[i]->type == N_SYMBOL && strcmp(sig->children[i]->symbol, ".") == 0) {
-                    has_rest = 1;
-                    fixed_params = i - 1;
-                    break;
-                }
-            }
-            func.param_count = has_rest ? 255 : fixed_params;
-
-            /* Add fixed parameters as locals */
-            for (int i = 1; i <= fixed_params; i++)
-                add_local(&func, sig->children[i]->symbol);
-            /* Add rest parameter if present */
-            if (has_rest && fixed_params + 2 < sig->n_children) {
-                add_local(&func, sig->children[fixed_params + 2]->symbol); /* name after dot */
-                chunk_emit(&func, OP_PACK_REST, fixed_params);
-            }
-
-            /* Compile body expressions */
-            for (int i = 2; i < node->n_children; i++) {
-                int is_last = (i == node->n_children - 1);
-                compile_expr(&func, node->children[i], is_last);
-                if (!is_last) chunk_emit(&func, OP_POP, 0);
-            }
-            chunk_emit(&func, OP_RETURN, 0);
-
-            /* Emit function code at end of current chunk, record its PC */
-            int func_pc = c->code_len + 2; /* +2 for CLOSURE + NOP below */
-            /* Map child constants to parent indices */
-            int const_map[4096];
-            for (int i = 0; i < func.n_constants; i++) {
-                const_map[i] = chunk_add_const(c, func.constants[i]);
-            }
-            int cfunc = chunk_add_const(c, INT_VAL(0)); /* placeholder for func PC */
-
-            int jover = placeholder(c);
-            int actual_func_pc = c->code_len;
-            c->constants[cfunc].as.i = actual_func_pc;
-
-            /* Adjust nested function PC constants: any constant in the child
-             * that was used as a CLOSURE operand contains a PC relative to the
-             * child chunk. After inlining, it needs to be offset by actual_func_pc. */
-            for (int i = 0; i < func.code_len; i++) {
-                if (func.code[i].op == OP_CLOSURE) {
-                    int ci = func.code[i].operand & 0xFFFF;
-                    int parent_ci = const_map[ci];
-                    /* The constant holds a PC relative to child chunk start.
-                     * Adjust to be relative to parent chunk start. */
-                    c->constants[parent_ci].as.i += actual_func_pc;
-                }
-            }
-
-            /* Copy function body with proper remapping */
-            for (int i = 0; i < func.code_len; i++) {
-                Instr fi = func.code[i];
-                if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-                if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
-                    fi.operand += actual_func_pc;
-                if (fi.op == OP_CLOSURE) {
-                    int ci = fi.operand & 0xFFFF;
-                    int nu = (fi.operand >> 16) & 0xFF;
-                    fi.operand = const_map[ci] | (nu << 16);
-                }
-                chunk_emit_instr(c, fi);
-            }
-
-            /* Patch jump over function body */
-            patch(c, jover, OP_JUMP, c->code_len);
-
-            /* Emit CLOSURE instruction for the defined function.
-             * For self-recursion: the closure captures itself from func_slot.
-             * We push func_slot's value (currently NIL) as upvalue,
-             * then create closure, then patch func_slot to point to the closure. */
-            /* Emit upvalue captures for CLOSURE.
-             * The function body compiled into `func` may reference:
-             *   - Its own name (self-reference for recursion) → upvalue index determined by func.upvalues
-             *   - Other enclosing locals (fold, etc.) → also in func.upvalues
-             * Push each upvalue value from the enclosing scope, then CLOSURE captures them. */
-            int n_upvals = func.n_upvalues;
-            int self_uv_idx = -1;
-
-            for (int i = 0; i < n_upvals; i++) {
-                if (strcmp(func.upvalues[i].name, fname) == 0) {
-                    /* Self-reference: push NIL placeholder (will be patched) */
-                    chunk_emit(c, OP_NIL, 0);
-                    self_uv_idx = func.upvalues[i].index;
-                } else {
-                    /* Capture from enclosing scope (local or upvalue) */
-                    chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
-                               func.upvalues[i].enclosing_slot);
-                }
-            }
-
-            chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
-            if (self_uv_idx >= 0) {
-                chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);  /* patch self-ref */
-            }
-            /* Convert local upvalues to open (stack slot references)
-             * for top-level defines only (where enclosing scope persists forever).
-             * This enables set! mutations of top-level variables.
-             * NOTE: closures inside function bodies that capture mutable locals
-             * need heap boxing (not yet implemented) for set! to work correctly
-             * when the closure outlives the enclosing scope. */
-            if (c->enclosing == NULL) {
-                for (int i = 0; i < n_upvals; i++) {
-                    if (i == self_uv_idx) continue;
-                    if (!func.upvalues[i].is_local) continue;
-                    chunk_emit(c, OP_DUP, 0);
-                    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
-                    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
-                    chunk_emit(c, OP_NATIVE_CALL, 151);
-                    chunk_emit(c, OP_POP, 0);
-                }
-            }
-            return;
-        }
-    }
+    if (is_sym(head, "define") && node->n_children >= 3) { compile_form_define(c, node, tail); return; }
 
     /* (set! name value) */
-    if (is_sym(head, "set!") && node->n_children == 3 && node->children[1]->type == N_SYMBOL) {
-        const char* var_name = node->children[1]->symbol;
-        int slot = resolve_local(c, var_name);
-
-        /* Check if the target variable is boxed */
-        int is_boxed = 0;
-        if (slot >= 0) {
-            for (int li = c->n_locals - 1; li >= 0; li--) {
-                if (c->locals[li].slot == slot && c->locals[li].boxed) { is_boxed = 1; break; }
-            }
-        }
-
-        if (slot >= 0 && is_boxed) {
-            /* Boxed local: emit GET_LOCAL(box), CONST(0), compile(value), VEC_SET */
-            chunk_emit(c, OP_GET_LOCAL, slot);  /* push box (vector) */
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0))); /* index 0 */
-            compile_expr(c, node->children[2], 0); /* compile new value */
-            chunk_emit(c, OP_VEC_SET, 0);       /* box[0] = value */
-        } else if (slot >= 0) {
-            /* Unboxed local: direct SET_LOCAL */
-            compile_expr(c, node->children[2], 0);
-            chunk_emit(c, OP_SET_LOCAL, slot);
-        } else {
-            /* Try upvalue resolution for outer-scope mutation */
-            const char* name = node->children[1]->symbol;
-            FuncChunk* chain[32]; int depth = 0;
-            for (FuncChunk* p = c; p && depth < 32; p = p->enclosing)
-                chain[depth++] = p;
-            int found = 0;
-            for (int d = depth - 1; d >= 1 && !found; d--) {
-                int enc_slot = resolve_local(chain[d], name);
-                if (enc_slot >= 0) {
-                    /* Check if the source variable is boxed */
-                    int var_boxed = 0;
-                    for (int li = chain[d]->n_locals - 1; li >= 0; li--) {
-                        if (chain[d]->locals[li].slot == enc_slot && chain[d]->locals[li].boxed) {
-                            var_boxed = 1; break;
-                        }
-                    }
-
-                    int prev_slot = enc_slot;
-                    int prev_is_local = 1;
-                    for (int level = d - 1; level >= 0; level--) {
-                        FuncChunk* fc = chain[level];
-                        int uv_idx = -1;
-                        for (int i = 0; i < fc->n_upvalues; i++) {
-                            if (strcmp(fc->upvalues[i].name, name) == 0) {
-                                uv_idx = fc->upvalues[i].index; break;
-                            }
-                        }
-                        if (uv_idx < 0 && fc->n_upvalues < MAX_UPVALUES) {
-                            uv_idx = fc->n_upvalues;
-                            fc->upvalues[fc->n_upvalues].name = strdup(name);
-                            fc->upvalues[fc->n_upvalues].enclosing_slot = prev_slot;
-                            fc->upvalues[fc->n_upvalues].index = uv_idx;
-                            fc->upvalues[fc->n_upvalues].is_local = prev_is_local;
-                            fc->upvalues[fc->n_upvalues].boxed = var_boxed;
-                            fc->n_upvalues++;
-                        }
-                        prev_slot = uv_idx;
-                        prev_is_local = 0;
-                    }
-                    int final_uv = -1;
-                    for (int i = 0; i < c->n_upvalues; i++) {
-                        if (strcmp(c->upvalues[i].name, name) == 0) {
-                            final_uv = c->upvalues[i].index; break;
-                        }
-                    }
-                    if (final_uv >= 0) {
-                        if (var_boxed) {
-                            /* Boxed upvalue: GET_UPVALUE(box), CONST 0, value, VEC_SET */
-                            chunk_emit(c, OP_GET_UPVALUE, final_uv);
-                            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
-                            compile_expr(c, node->children[2], 0);
-                            chunk_emit(c, OP_VEC_SET, 0);
-                        } else {
-                            compile_expr(c, node->children[2], 0);
-                            chunk_emit(c, OP_SET_UPVALUE, final_uv);
-                        }
-                        found = 1;
-                    }
-                }
-            }
-            if (!found) printf("WARNING: set! on undefined variable '%s'\n", name);
-        }
-        /* set! returns void — push NIL */
-        chunk_emit(c, OP_NIL, 0);
-        return;
-    }
+    if (is_sym(head, "set!") && node->n_children == 3 && node->children[1]->type == N_SYMBOL) { compile_form_set_bang(c, node, tail); return; }
 
     /* (do ((var init step) ...) (test result) body ...) */
-    if (is_sym(head, "do") && node->n_children >= 3) {
-        c->scope_depth++;
-        Node* vars = node->children[1];
-        Node* test = node->children[2];
-
-        /* Initialize loop variables */
-        for (int i = 0; i < vars->n_children; i++) {
-            Node* b = vars->children[i];
-            if (b->type == N_LIST && b->n_children >= 2 && b->children[0]->type == N_SYMBOL) {
-                compile_expr(c, b->children[1], 0);
-                add_local(c, b->children[0]->symbol);
-            }
-        }
-
-        /* Loop top */
-        int loop_top = c->code_len;
-
-        /* Test */
-        if (test->type == N_LIST && test->n_children >= 1) {
-            compile_expr(c, test->children[0], 0);
-            int jexit = placeholder(c);
-
-            /* Body (if any) */
-            for (int i = 3; i < node->n_children; i++) {
-                compile_expr(c, node->children[i], 0);
-                chunk_emit(c, OP_POP, 0);
-            }
-
-            /* Step — evaluate ALL step expressions, then store (parallel) */
-            int step_count = 0;
-            for (int i = 0; i < vars->n_children; i++) {
-                Node* b = vars->children[i];
-                if (b->type == N_LIST && b->n_children >= 3) {
-                    compile_expr(c, b->children[2], 0);
-                    step_count++;
-                }
-            }
-            /* Store in reverse order */
-            for (int i = vars->n_children - 1; i >= 0; i--) {
-                Node* b = vars->children[i];
-                if (b->type == N_LIST && b->n_children >= 3) {
-                    int slot = resolve_local(c, b->children[0]->symbol);
-                    if (slot >= 0) chunk_emit(c, OP_SET_LOCAL, slot);
-                }
-            }
-
-            /* Loop back */
-            chunk_emit(c, OP_LOOP, loop_top);
-
-            /* Exit: evaluate result expression */
-            patch(c, jexit, OP_JUMP_IF_FALSE, c->code_len - 1);
-            /* Wait — JUMP_IF_FALSE jumps when false. The test is the EXIT condition.
-             * When test is TRUE → exit. When FALSE → continue loop.
-             * So: if test is true → DON'T jump (fall through to exit).
-             *     if test is false → jump back to loop.
-             * Need: JUMP_IF_FALSE → loop_body, then after body+step → LOOP back.
-             * After LOOP: exit point. */
-            /* Actually restructure: test → if FALSE, do body+step+loop. If TRUE, exit. */
-            /* Current: test → jexit (JUMP_IF_FALSE to ???). Body. Step. LOOP.
-             * jexit should point to AFTER the LOOP (the exit point).
-             * But JUMP_IF_FALSE jumps when FALSE. If test is FALSE → continue loop body.
-             * If test is TRUE → skip to exit.
-             * So JUMP_IF_FALSE should jump PAST the exit... no.
-             *
-             * Let me use: NOT test → JUMP_IF_FALSE to exit. */
-            /* Restart: */
-            c->code_len = loop_top; /* redo from loop top */
-            compile_expr(c, test->children[0], 0);
-            /* test is TRUE when loop should exit */
-            int jbody = placeholder(c); /* JUMP_IF_FALSE → body (continue loop) */
-            /* Exit: result */
-            if (test->n_children >= 2)
-                compile_expr(c, test->children[1], tail);
-            else
-                chunk_emit(c, OP_NIL, 0);
-            int jexit2 = placeholder(c); /* JUMP over body+step */
-
-            /* Body */
-            int body_start = c->code_len;
-            patch(c, jbody, OP_JUMP_IF_FALSE, body_start);
-
-            for (int i = 3; i < node->n_children; i++) {
-                compile_expr(c, node->children[i], 0);
-                chunk_emit(c, OP_POP, 0);
-            }
-
-            /* Step */
-            step_count = 0;
-            for (int i = 0; i < vars->n_children; i++) {
-                Node* b = vars->children[i];
-                if (b->type == N_LIST && b->n_children >= 3) {
-                    compile_expr(c, b->children[2], 0);
-                    step_count++;
-                }
-            }
-            for (int i = vars->n_children - 1; i >= 0; i--) {
-                Node* b = vars->children[i];
-                if (b->type == N_LIST && b->n_children >= 3) {
-                    int slot = resolve_local(c, b->children[0]->symbol);
-                    if (slot >= 0) chunk_emit(c, OP_SET_LOCAL, slot);
-                }
-            }
-
-            chunk_emit(c, OP_LOOP, loop_top);
-            patch(c, jexit2, OP_JUMP, c->code_len);
-        }
-
-        /* Pop locals */
-        while (c->n_locals > 0 && c->locals[c->n_locals-1].depth == c->scope_depth)
-            c->n_locals--;
-        c->scope_depth--;
-        return;
-    }
+    if (is_sym(head, "do") && node->n_children >= 3) { compile_form_do(c, node, tail); return; }
 
     /* (and e1 e2 ...) — short circuit */
     if (is_sym(head, "and") && node->n_children >= 2) {
@@ -1867,163 +2099,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (lambda (params...) body) */
     /* (lambda args body) — all args as a list */
-    if (is_sym(head, "lambda") && node->n_children >= 3 && node->children[1]->type == N_SYMBOL) {
-        /* Variadic: all arguments collected into a single list parameter */
-        FuncChunk func; chunk_init_arrays(&func);
-        func.enclosing = c;
-        func.param_count = 255; /* sentinel: variadic, use PACK_REST at entry */
-        add_local(&func, node->children[1]->symbol); /* rest list at local 0 */
-        /* Emit PACK_REST 0 at function entry: pack ALL args into list at local 0 */
-        chunk_emit(&func, OP_PACK_REST, 0);
-
-        for (int i = 2; i < node->n_children; i++) {
-            int is_last = (i == node->n_children - 1);
-            compile_expr(&func, node->children[i], is_last);
-            if (!is_last) chunk_emit(&func, OP_POP, 0);
-        }
-        chunk_emit(&func, OP_RETURN, 0);
-
-        int cfunc = chunk_add_const(c, INT_VAL(0));
-        int jover = placeholder(c);
-        int func_start = c->code_len;
-        c->constants[cfunc].as.i = func_start;
-
-        int const_map2[MAX_CONSTS];
-        for (int i = 0; i < func.n_constants; i++)
-            const_map2[i] = chunk_add_const(c, func.constants[i]);
-        for (int i = 0; i < func.code_len; i++) {
-            if (func.code[i].op == OP_CLOSURE) {
-                int ci = func.code[i].operand & 0xFFFF;
-                int parent_ci = const_map2[ci];
-                c->constants[parent_ci].as.i += func_start;
-            }
-        }
-        for (int i = 0; i < func.code_len; i++) {
-            Instr fi = func.code[i];
-            if (fi.op == OP_CONST) fi.operand = const_map2[fi.operand];
-            if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
-                fi.operand += func_start;
-            if (fi.op == OP_CLOSURE) {
-                int ci = fi.operand & 0xFFFF;
-                int nu = (fi.operand >> 16) & 0xFF;
-                fi.operand = const_map2[ci] | (nu << 16);
-            }
-            chunk_emit_instr(c, fi);
-        }
-        patch(c, jover, OP_JUMP, c->code_len);
-        int n_upvals = func.n_upvalues;
-        for (int i = 0; i < n_upvals; i++) {
-            chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
-                       func.upvalues[i].enclosing_slot);
-        }
-        chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
-        return;
-    }
+    if (is_sym(head, "lambda") && node->n_children >= 3 && node->children[1]->type == N_SYMBOL) { compile_form_lambda(c, node, tail); return; }
 
     /* (lambda (x y . rest) body) or (lambda (x y) body) — standard and variadic */
-    if (is_sym(head, "lambda") && node->n_children >= 3 && node->children[1]->type == N_LIST) {
-        Node* params = node->children[1];
-        FuncChunk func; chunk_init_arrays(&func);
-        func.enclosing = c;
-
-        /* Check for dot notation: (x y . rest) */
-        int has_rest = 0;
-        int fixed_params = params->n_children;
-        for (int i = 0; i < params->n_children; i++) {
-            if (params->children[i]->type == N_SYMBOL && strcmp(params->children[i]->symbol, ".") == 0) {
-                has_rest = 1;
-                fixed_params = i; /* params before the dot */
-                break;
-            }
-        }
-        func.param_count = fixed_params;
-
-        for (int i = 0; i < fixed_params; i++)
-            add_local(&func, params->children[i]->symbol);
-        if (has_rest && fixed_params + 2 <= params->n_children) {
-            /* Rest parameter name is after the dot */
-            add_local(&func, params->children[fixed_params + 1]->symbol);
-            /* At function entry: pack extra args from fp+fixed_params to sp into list */
-            chunk_emit(&func, OP_PACK_REST, fixed_params);
-            func.param_count = 255; /* sentinel: variadic */
-        }
-
-        for (int i = 2; i < node->n_children; i++) {
-            int is_last = (i == node->n_children - 1);
-            compile_expr(&func, node->children[i], is_last);
-            if (!is_last) chunk_emit(&func, OP_POP, 0);
-        }
-        chunk_emit(&func, OP_RETURN, 0);
-
-        /* Emit: JUMP over lambda body, then body, then CLOSURE */
-        int cfunc = chunk_add_const(c, INT_VAL(0));
-        int jover = placeholder(c);
-        int func_start = c->code_len;
-        c->constants[cfunc].as.i = func_start;
-
-        int const_map2[MAX_CONSTS];
-        for (int i = 0; i < func.n_constants; i++)
-            const_map2[i] = chunk_add_const(c, func.constants[i]);
-
-        /* Adjust nested CLOSURE PC constants */
-        for (int i = 0; i < func.code_len; i++) {
-            if (func.code[i].op == OP_CLOSURE) {
-                int ci = func.code[i].operand & 0xFFFF;
-                int parent_ci = const_map2[ci];
-                c->constants[parent_ci].as.i += func_start;
-            }
-        }
-
-        for (int i = 0; i < func.code_len; i++) {
-            Instr fi = func.code[i];
-            if (fi.op == OP_CONST) fi.operand = const_map2[fi.operand];
-            if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
-                fi.operand += func_start;
-            if (fi.op == OP_CLOSURE) {
-                int ci = fi.operand & 0xFFFF;
-                int nu = (fi.operand >> 16) & 0xFF;
-                fi.operand = const_map2[ci] | (nu << 16);
-            }
-            chunk_emit_instr(c, fi);
-        }
-        patch(c, jover, OP_JUMP, c->code_len);
-
-        /* Push upvalue captures from enclosing scope before creating closure */
-        int n_upvals = func.n_upvalues;
-        for (int i = 0; i < n_upvals; i++) {
-            chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
-                       func.upvalues[i].enclosing_slot);
-        }
-        chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
-        /* Convert upvalues to open slots for set! mutation visibility.
-         * For is_local upvalues at top level: use NATIVE_CALL 151 (direct open slot).
-         * For non-local upvalues: use NATIVE_CALL 252 to propagate parent's open slot. */
-        if (c->enclosing == NULL) {
-            for (int i = 0; i < n_upvals; i++) {
-                if (!func.upvalues[i].is_local) continue;
-                chunk_emit(c, OP_DUP, 0);
-                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
-                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
-                chunk_emit(c, OP_NATIVE_CALL, 151);
-                chunk_emit(c, OP_POP, 0);
-            }
-        } else {
-            /* Inside a function: only propagate open slots from parent.
-             * DON'T create new open slots for local captures (the function's
-             * stack frame will be destroyed on return, making them invalid). */
-            for (int i = 0; i < n_upvals; i++) {
-                if (!func.upvalues[i].is_local) {
-                    /* Captured from parent's upvalue — propagate parent's open slot if any */
-                    chunk_emit(c, OP_DUP, 0);
-                    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
-                    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
-                    chunk_emit(c, OP_NATIVE_CALL, 252);
-                    chunk_emit(c, OP_POP, 0);
-                }
-            }
-        }
-        return;
-    }
+    if (is_sym(head, "lambda") && node->n_children >= 3 && node->children[1]->type == N_LIST) { compile_form_lambda_2(c, node, tail); return; }
 
     /* (quote datum) — compile arbitrary quoted data to cons cells */
     if (is_sym(head, "quote") && node->n_children == 2) {
