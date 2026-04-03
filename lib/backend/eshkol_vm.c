@@ -8407,12 +8407,14 @@ static void compile_and_run(const char* source) {
         free_node(top_exprs[i]);
     chunk_emit(&main_chunk, OP_HALT, 0);
 
-    /* Print bytecode summary */
+    /* Print bytecode summary + disassemble (skip in WASM / quiet mode) */
+#ifdef ESHKOL_VM_NO_DISASM
+    goto skip_disasm;
+#else
+    if (getenv("ESHKOL_VM_NO_DISASM")) goto skip_disasm;
+#endif
     printf("  [compiled: %d instructions, %d constants, %d locals]\n",
            main_chunk.code_len, main_chunk.n_constants, main_chunk.n_locals);
-
-    /* Disassemble (skip when ESHKOL_VM_NO_DISASM is set) */
-    if (getenv("ESHKOL_VM_NO_DISASM")) goto skip_disasm;
     static const char* opn[] = {
         "NOP","CONST","NIL","TRUE","FALSE","POP","DUP",
         "ADD","SUB","MUL","DIV","MOD","NEG","ABS",
