@@ -84,11 +84,80 @@ static inline VmTensor* vm_gpu_try_matmul(VmRegionStack* rs,
     eshkol_gpu_free(&bc);
     return (rc == 0) ? out : NULL;
 }
+/* GPU elementwise binary: add(0), sub(1), mul(2), div(3) */
+extern int eshkol_gpu_elementwise_f64(void* a, void* b, void* out, uint64_t n, int op);
+
+static inline VmTensor* vm_gpu_try_binary(VmRegionStack* rs,
+                                            const VmTensor* a, const VmTensor* b, int gpu_op) {
+    if (!vm_gpu_should_dispatch(a->total)) return NULL;
+    if (a->total != b->total) return NULL; /* No broadcast on GPU */
+    if (gpu_op < 0) return NULL;
+
+    VmTensor* out = vm_tensor_zeros(rs, a->shape, a->n_dims);
+    if (!out) return NULL;
+
+    VmGpuBuf ba, bb, bc;
+    if (eshkol_gpu_wrap_host(a->data, a->total*8, &ba) != 0 ||
+        eshkol_gpu_wrap_host(b->data, b->total*8, &bb) != 0 ||
+        eshkol_gpu_wrap_host(out->data, out->total*8, &bc) != 0) return NULL;
+
+    int rc = eshkol_gpu_elementwise_f64(&ba, &bb, &bc, a->total, gpu_op);
+    if (rc == 0 && bc.host != (void*)out->data) memcpy(out->data, bc.host, out->total*8);
+    eshkol_gpu_free(&ba); eshkol_gpu_free(&bb); eshkol_gpu_free(&bc);
+    return (rc == 0) ? out : NULL;
+}
+
+/* GPU reduce: sum(0), min(2), max(3), mean(4) */
+extern int eshkol_gpu_reduce_f64(void* in, void* out, uint64_t n, int op);
+
+static inline double vm_gpu_try_reduce(const VmTensor* t, int gpu_op) {
+    if (!vm_gpu_should_dispatch(t->total)) return NAN;
+
+    double result = 0;
+    VmGpuBuf bi, bo;
+    if (eshkol_gpu_wrap_host(t->data, t->total*8, &bi) != 0 ||
+        eshkol_gpu_wrap_host(&result, 8, &bo) != 0) return NAN;
+
+    int rc = eshkol_gpu_reduce_f64(&bi, &bo, t->total, gpu_op);
+    if (rc == 0 && bo.host != (void*)&result) memcpy(&result, bo.host, 8);
+    eshkol_gpu_free(&bi); eshkol_gpu_free(&bo);
+    return (rc == 0) ? result : NAN;
+}
+
+/* GPU softmax */
+extern int eshkol_gpu_softmax_f64(void* in, void* out, uint64_t num_slices, uint64_t slice_len);
+
+static inline VmTensor* vm_gpu_try_softmax(VmRegionStack* rs, const VmTensor* t) {
+    if (!vm_gpu_should_dispatch(t->total)) return NULL;
+    int64_t slice_len = t->shape[t->n_dims - 1];
+    int64_t num_slices = t->total / slice_len;
+
+    VmTensor* out = vm_tensor_zeros(rs, t->shape, t->n_dims);
+    if (!out) return NULL;
+
+    VmGpuBuf bi, bo;
+    if (eshkol_gpu_wrap_host(t->data, t->total*8, &bi) != 0 ||
+        eshkol_gpu_wrap_host(out->data, out->total*8, &bo) != 0) return NULL;
+
+    int rc = eshkol_gpu_softmax_f64(&bi, &bo, num_slices, slice_len);
+    if (rc == 0 && bo.host != (void*)out->data) memcpy(out->data, bo.host, out->total*8);
+    eshkol_gpu_free(&bi); eshkol_gpu_free(&bo);
+    return (rc == 0) ? out : NULL;
+}
+
 #else
-static inline VmTensor* vm_gpu_try_matmul(VmRegionStack* rs,
-                                            const VmTensor* a, const VmTensor* b) {
-    (void)rs; (void)a; (void)b;
-    return NULL; /* No GPU — fall to CPU */
+/* No GPU — all try functions return NULL, fall to CPU */
+static inline VmTensor* vm_gpu_try_matmul(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
+    (void)rs; (void)a; (void)b; return NULL;
+}
+static inline VmTensor* vm_gpu_try_binary(VmRegionStack* rs, const VmTensor* a, const VmTensor* b, int op) {
+    (void)rs; (void)a; (void)b; (void)op; return NULL;
+}
+static inline double vm_gpu_try_reduce(const VmTensor* t, int op) {
+    (void)t; (void)op; return NAN;
+}
+static inline VmTensor* vm_gpu_try_softmax(VmRegionStack* rs, const VmTensor* t) {
+    (void)rs; (void)t; return NULL;
 }
 #endif
 
