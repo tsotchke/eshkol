@@ -3000,11 +3000,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      ***************************************************************************/
     if (is_sym(head, "gcd") && node->n_children == 3) {
         compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0);
-        chunk_emit(c, OP_NATIVE_CALL, 346); return;
+        chunk_emit(c, OP_NATIVE_CALL, 224); return;
     }
     if (is_sym(head, "lcm") && node->n_children == 3) {
         compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0);
-        chunk_emit(c, OP_NATIVE_CALL, 347); return;
+        chunk_emit(c, OP_NATIVE_CALL, 225); return;
     }
 
     /* Function call: (f arg1 arg2 ...)
