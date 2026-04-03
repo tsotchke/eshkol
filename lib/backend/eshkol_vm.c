@@ -4718,14 +4718,14 @@ static void free_node(Node* n) { if (!n) return; for (int i=0;i<n->n_children;i+
 #define MAX_FUNCS 64
 
 typedef struct {
-    char name[128];
+    char* name;   /* heap-allocated via strdup() */
     int slot;
     int depth;
-    int boxed;  /* 1 = variable is heap-boxed (stored in 1-element vector) */
+    int boxed;    /* 1 = variable is heap-boxed (stored in 1-element vector) */
 } Local;
 
 typedef struct {
-    char name[128];
+    char* name;   /* heap-allocated via strdup() */
     int enclosing_slot;  /* slot or upvalue index in the enclosing scope */
     int index;           /* upvalue index in this closure */
     int is_local;        /* 1 = enclosing_slot is a local, 0 = it's an upvalue */
@@ -4733,34 +4733,98 @@ typedef struct {
 } Upvalue;
 
 #define MAX_UPVALUES 32
+#define CHUNK_INIT_CODE 256
+#define CHUNK_INIT_CONSTS 64
+#define CHUNK_INIT_LOCALS 32
 
 typedef struct FuncChunk {
-    Instr code[MAX_CODE];
-    int code_len;
-    Value constants[MAX_CONSTS];
-    int n_constants;
-    Local locals[MAX_LOCALS];
-    int n_locals;
+    Instr* code;         int code_len;     int code_cap;
+    Value* constants;    int n_constants;  int const_cap;
+    Local* locals;       int n_locals;     int local_cap;
     Upvalue upvalues[MAX_UPVALUES];
     int n_upvalues;
     int scope_depth;
-    int scope_stack_base[32]; /* stack depth at scope entry, for cleanup on exit */
+    int scope_stack_base[64]; /* stack depth at scope entry, for cleanup on exit */
     struct FuncChunk* enclosing;
     int param_count;
     int stack_depth;  /* compile-time stack depth (values above fp) */
 } FuncChunk;
 
+/* Initialize a FuncChunk's dynamic arrays (for stack-allocated chunks) */
+static int chunk_init_arrays(FuncChunk* c) {
+    memset(c, 0, sizeof(FuncChunk));
+    c->code_cap = CHUNK_INIT_CODE;
+    c->code = (Instr*)calloc(c->code_cap, sizeof(Instr));
+    c->const_cap = CHUNK_INIT_CONSTS;
+    c->constants = (Value*)calloc(c->const_cap, sizeof(Value));
+    c->local_cap = CHUNK_INIT_LOCALS;
+    c->locals = (Local*)calloc(c->local_cap, sizeof(Local));
+    if (!c->code || !c->constants || !c->locals) {
+        free(c->code); free(c->constants); free(c->locals);
+        c->code = NULL; c->constants = NULL; c->locals = NULL;
+        fprintf(stderr, "ERROR: cannot allocate FuncChunk arrays\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* Free a FuncChunk's dynamic arrays (for stack-allocated chunks) */
+static void chunk_free_arrays(FuncChunk* c) {
+    if (!c) return;
+    for (int i = 0; i < c->n_locals; i++) free(c->locals[i].name);
+    for (int i = 0; i < c->n_upvalues; i++) free(c->upvalues[i].name);
+    free(c->code); free(c->constants); free(c->locals);
+    c->code = NULL; c->constants = NULL; c->locals = NULL;
+}
+
+/* Heap-allocate a FuncChunk with dynamic arrays (~300 bytes vs. 354KB fixed) */
+static FuncChunk* chunk_create(void) {
+    FuncChunk* c = (FuncChunk*)calloc(1, sizeof(FuncChunk));
+    if (!c) { fprintf(stderr, "ERROR: cannot allocate FuncChunk\n"); return NULL; }
+    c->code_cap = CHUNK_INIT_CODE;
+    c->code = (Instr*)calloc(c->code_cap, sizeof(Instr));
+    c->const_cap = CHUNK_INIT_CONSTS;
+    c->constants = (Value*)calloc(c->const_cap, sizeof(Value));
+    c->local_cap = CHUNK_INIT_LOCALS;
+    c->locals = (Local*)calloc(c->local_cap, sizeof(Local));
+    if (!c->code || !c->constants || !c->locals) {
+        free(c->code); free(c->constants); free(c->locals); free(c);
+        fprintf(stderr, "ERROR: cannot allocate FuncChunk arrays\n");
+        return NULL;
+    }
+    return c;
+}
+static void chunk_destroy(FuncChunk* c) {
+    if (!c) return;
+    for (int i = 0; i < c->n_locals; i++) free(c->locals[i].name);
+    for (int i = 0; i < c->n_upvalues; i++) free(c->upvalues[i].name);
+    free(c->code); free(c->constants); free(c->locals);
+    free(c);
+}
+
 static int is_sym(Node* n, const char* s) { return n && n->type == N_SYMBOL && strcmp(n->symbol, s) == 0; }
 
 static void chunk_emit(FuncChunk* c, uint8_t op, int32_t operand) {
-    if (c->code_len >= MAX_CODE) { fprintf(stderr, "ERROR: bytecode overflow (MAX_CODE=%d)\n", MAX_CODE); return; }
+    if (c->code_len >= c->code_cap) {
+        int new_cap = c->code_cap * 2;
+        Instr* new_code = (Instr*)realloc(c->code, new_cap * sizeof(Instr));
+        if (!new_code) { fprintf(stderr, "ERROR: bytecode realloc failed\n"); return; }
+        c->code = new_code;
+        c->code_cap = new_cap;
+    }
     c->code[c->code_len++] = (Instr){op, operand};
 }
 
 static int chunk_add_const(FuncChunk* c, Value v) {
     /* No deduplication — function PC placeholders get patched after creation,
      * which would corrupt literal constants that matched the placeholder value. */
-    if (c->n_constants >= MAX_CONSTS) { fprintf(stderr, "ERROR: constant pool overflow (MAX_CONSTS=%d)\n", MAX_CONSTS); return -1; }
+    if (c->n_constants >= c->const_cap) {
+        int new_cap = c->const_cap * 2;
+        Value* new_consts = (Value*)realloc(c->constants, new_cap * sizeof(Value));
+        if (!new_consts) { fprintf(stderr, "ERROR: constant pool realloc failed\n"); return -1; }
+        c->constants = new_consts;
+        c->const_cap = new_cap;
+    }
     c->constants[c->n_constants] = v;
     return c->n_constants++;
 }
@@ -4783,12 +4847,18 @@ static int resolve_local(FuncChunk* c, const char* name) {
 }
 
 static int add_local(FuncChunk* c, const char* name) {
-    if (c->n_locals >= MAX_LOCALS) { fprintf(stderr, "ERROR: local variable overflow (MAX_LOCALS=%d)\n", MAX_LOCALS); return -1; }
+    if (c->n_locals >= c->local_cap) {
+        int new_cap = c->local_cap * 2;
+        Local* new_locals = (Local*)realloc(c->locals, new_cap * sizeof(Local));
+        if (!new_locals) { fprintf(stderr, "ERROR: local variable realloc failed\n"); return -1; }
+        c->locals = new_locals;
+        c->local_cap = new_cap;
+    }
     int slot = c->n_locals;
-    strncpy(c->locals[c->n_locals].name, name, 127);
-    c->locals[c->n_locals].name[127] = 0;
+    c->locals[c->n_locals].name = strdup(name);
     c->locals[c->n_locals].slot = slot;
     c->locals[c->n_locals].depth = c->scope_depth;
+    c->locals[c->n_locals].boxed = 0;
     c->n_locals++;
     return slot;
 }
@@ -5105,8 +5175,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                         }
                         if (uv_idx < 0 && fc->n_upvalues < MAX_UPVALUES) {
                             uv_idx = fc->n_upvalues;
-                            strncpy(fc->upvalues[fc->n_upvalues].name, node->symbol, 127);
-                            fc->upvalues[fc->n_upvalues].name[127] = 0;
+                            fc->upvalues[fc->n_upvalues].name = strdup(node->symbol);
                             fc->upvalues[fc->n_upvalues].enclosing_slot = prev_slot;
                             fc->upvalues[fc->n_upvalues].index = uv_idx;
                             fc->upvalues[fc->n_upvalues].is_local = prev_is_local;
@@ -5516,7 +5585,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             int n_fields = ctor->n_children - 1;
 
             /* Compile constructor as a closure that creates a tagged vector */
-            FuncChunk func = {0};
+            FuncChunk func; chunk_init_arrays(&func);
             func.enclosing = c;
             func.param_count = n_fields;
             for (int i = 0; i < n_fields; i++)
@@ -5562,7 +5631,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
         /* --- Predicate --- */
         {
-            FuncChunk func = {0};
+            FuncChunk func; chunk_init_arrays(&func);
             func.enclosing = c;
             func.param_count = 1;
             add_local(&func, "v");
@@ -5597,7 +5666,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             /* Accessor */
             {
                 const char* acc_name = field_spec->children[1]->symbol;
-                FuncChunk func = {0};
+                FuncChunk func; chunk_init_arrays(&func);
                 func.enclosing = c;
                 func.param_count = 1;
                 add_local(&func, "v");
@@ -5626,7 +5695,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             /* Mutator (optional, at children[2]) */
             if (field_spec->n_children >= 3) {
                 const char* mut_name = field_spec->children[2]->symbol;
-                FuncChunk func = {0};
+                FuncChunk func; chunk_init_arrays(&func);
                 func.enclosing = c;
                 func.param_count = 2;
                 add_local(&func, "v");
@@ -5832,7 +5901,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_JUMP, 0);
 
         /* Compile handler as a closure with exn as parameter 0 */
-        FuncChunk handler_func = {0};
+        FuncChunk handler_func; chunk_init_arrays(&handler_func);
         handler_func.enclosing = c;
         handler_func.param_count = 1;
         add_local(&handler_func, exn_name); /* exn is local 0 */
@@ -6150,7 +6219,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int loop_slot = add_local(c, loop_name);
 
         /* Compile the loop function body */
-        FuncChunk func = {0};
+        FuncChunk func; chunk_init_arrays(&func);
         func.enclosing = c;
         func.param_count = bindings->n_children;
         for (int i = 0; i < bindings->n_children; i++) {
@@ -6433,7 +6502,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             /* Compile function body into a separate chunk.
              * The body can reference fname via GET_UPVALUE which will be captured
              * from the enclosing scope's func_slot. */
-            FuncChunk func = {0};
+            FuncChunk func; chunk_init_arrays(&func);
             func.enclosing = c;
 
             /* Check for dot notation in params: (name x y . rest) */
@@ -6609,8 +6678,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                         }
                         if (uv_idx < 0 && fc->n_upvalues < MAX_UPVALUES) {
                             uv_idx = fc->n_upvalues;
-                            strncpy(fc->upvalues[fc->n_upvalues].name, name, 127);
-                            fc->upvalues[fc->n_upvalues].name[127] = 0;
+                            fc->upvalues[fc->n_upvalues].name = strdup(name);
                             fc->upvalues[fc->n_upvalues].enclosing_slot = prev_slot;
                             fc->upvalues[fc->n_upvalues].index = uv_idx;
                             fc->upvalues[fc->n_upvalues].is_local = prev_is_local;
@@ -6794,7 +6862,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* (lambda args body) — all args as a list */
     if (is_sym(head, "lambda") && node->n_children >= 3 && node->children[1]->type == N_SYMBOL) {
         /* Variadic: all arguments collected into a single list parameter */
-        FuncChunk func = {0};
+        FuncChunk func; chunk_init_arrays(&func);
         func.enclosing = c;
         func.param_count = 255; /* sentinel: variadic, use PACK_REST at entry */
         add_local(&func, node->children[1]->symbol); /* rest list at local 0 */
@@ -6848,7 +6916,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* (lambda (x y . rest) body) or (lambda (x y) body) — standard and variadic */
     if (is_sym(head, "lambda") && node->n_children >= 3 && node->children[1]->type == N_LIST) {
         Node* params = node->children[1];
-        FuncChunk func = {0};
+        FuncChunk func; chunk_init_arrays(&func);
         func.enclosing = c;
 
         /* Check for dot notation: (x y . rest) */
@@ -8091,7 +8159,7 @@ static const char* g_eskb_output_path = NULL;
 static const char* g_source_file_path = NULL;
 
 static void compile_and_run(const char* source) {
-    FuncChunk main_chunk = {0};
+    FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
 
     /* Emit builtin function definitions as first-class closures */
     emit_builtin_preamble(&main_chunk);
@@ -8395,7 +8463,7 @@ static void compile_and_run_source_to_chunk(const char* source, FuncChunk* chunk
 /* Public API: compile Eshkol source to ESKB bytecode file.
  * Called from eshkol-run via extern "C" linkage. */
 int eshkol_emit_eskb(const char* source, const char* output_path) {
-    FuncChunk main_chunk = {0};
+    FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
 
     /* Compile prelude + builtins + source */
     compile_and_run_source_to_chunk(source, &main_chunk);
