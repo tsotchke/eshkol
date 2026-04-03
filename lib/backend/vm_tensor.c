@@ -43,6 +43,11 @@ static int64_t vm_tensor_compute_strides(const int64_t* shape, int n_dims, int64
     }
     int64_t total = 1;
     for (int i = 0; i < n_dims; i++) {
+        if (shape[i] <= 0) return 0;
+        if (total > INT64_MAX / shape[i]) {
+            fprintf(stderr, "ERROR: tensor shape overflow (dim %d = %lld)\n", i, (long long)shape[i]);
+            return -1;
+        }
         total *= shape[i];
     }
     return total;

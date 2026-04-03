@@ -846,15 +846,7 @@ vm_exit:
         }
         case OP_WIND_PUSH: vm_pop(vm); break;
         case OP_WIND_POP: break;
-        case OP_CLOSE_UPVALUE: {
-            Value cl_val2 = vm_peek(vm, 0);
-            if (cl_val2.type == VAL_CLOSURE) {
-                HeapObject* cl2 = vm->heap.objects[cl_val2.as.ptr];
-                if (instr.operand >= 0 && instr.operand < cl2->closure.n_upvalues)
-                    cl2->closure.upvalues[instr.operand] = cl_val2;
-            }
-            break;
-        }
+        /* OP_CLOSE_UPVALUE handled at line 720 — no duplicate */
 
         default:
             printf("UNKNOWN OPCODE %d\n", instr.op);
