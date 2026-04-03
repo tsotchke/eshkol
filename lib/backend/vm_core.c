@@ -275,6 +275,11 @@ static void vm_init(VM* vm) {
     heap_init(&vm->heap);
 }
 
+/* Validate a heap pointer */
+static inline int is_valid_heap_ptr(VM* vm, int32_t ptr) {
+    return ptr >= 0 && ptr < vm->heap.next_free;
+}
+
 static void vm_push(VM* vm, Value v) {
     if (vm->sp >= STACK_SIZE) { printf("STACK OVERFLOW\n"); vm->error = 1; return; }
     vm->stack[vm->sp++] = v;

@@ -16,9 +16,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef ESHKOL_VM_NO_DISASM
+/* Full POSIX I/O — not available in WASM */
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#endif
 
 /* ── Port Types ── */
 
@@ -388,13 +391,23 @@ static int vm_port_is_output(VmPort* port) {
 
 /* 596: file-exists? */
 static int vm_port_file_exists(const char* path) {
+#ifdef ESHKOL_VM_NO_DISASM
+    (void)path;
+    return 0; /* No filesystem in WASM */
+#else
     struct stat st;
     return (stat(path, &st) == 0);
+#endif
 }
 
 /* 597: delete-file */
 static int vm_port_delete_file(const char* path) {
+#ifdef ESHKOL_VM_NO_DISASM
+    (void)path;
+    return 0; /* No filesystem in WASM */
+#else
     return (unlink(path) == 0);
+#endif
 }
 
 /* ── Display / Write (Scheme-style) ── */
