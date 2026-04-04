@@ -106,16 +106,20 @@ static void vm_run(VM* vm) {
     /* --- Arithmetic --- */
 
     lbl_ADD: { Value b = vm_pop(vm), a = vm_pop(vm);
-        if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 331); }
+        if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 373); }
+        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 331); }
         else vm_push(vm, number_val(as_number(a) + as_number(b))); DISPATCH(); }
     lbl_SUB: { Value b = vm_pop(vm), a = vm_pop(vm);
-        if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 332); }
+        if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 374); }
+        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 332); }
         else vm_push(vm, number_val(as_number(a) - as_number(b))); DISPATCH(); }
     lbl_MUL: { Value b = vm_pop(vm), a = vm_pop(vm);
-        if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 333); }
+        if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 375); }
+        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 333); }
         else vm_push(vm, number_val(as_number(a) * as_number(b))); DISPATCH(); }
     lbl_DIV: { Value b = vm_pop(vm), a = vm_pop(vm);
-        if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334); }
+        if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 376); }
+        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334); }
         else {
         double bd = as_number(b);
         if (bd == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
@@ -129,8 +133,12 @@ static void vm_run(VM* vm) {
         vm_push(vm, number_val(r));
         DISPATCH();
     }
-    lbl_NEG: { Value a = vm_pop(vm); vm_push(vm, number_val(-as_number(a))); DISPATCH(); }
-    lbl_ABS: { Value a = vm_pop(vm); vm_push(vm, number_val(fabs(as_number(a)))); DISPATCH(); }
+    lbl_NEG: { Value a = vm_pop(vm);
+        if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 384); }
+        else vm_push(vm, number_val(-as_number(a))); DISPATCH(); }
+    lbl_ABS: { Value a = vm_pop(vm);
+        if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 383); }
+        else vm_push(vm, number_val(fabs(as_number(a)))); DISPATCH(); }
 
     /* --- Comparison --- */
 
@@ -626,13 +634,24 @@ vm_exit:
         case OP_DUP:   vm_push(vm, vm_peek(vm, 0)); break;
 
         /* Arithmetic */
-        case OP_ADD: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) + as_number(b))); break; }
-        case OP_SUB: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) - as_number(b))); break; }
-        case OP_MUL: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) * as_number(b))); break; }
+        case OP_ADD: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,373); }
+            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,331); }
+            else vm_push(vm, number_val(as_number(a) + as_number(b))); break; }
+        case OP_SUB: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,374); }
+            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,332); }
+            else vm_push(vm, number_val(as_number(a) - as_number(b))); break; }
+        case OP_MUL: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,375); }
+            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,333); }
+            else vm_push(vm, number_val(as_number(a) * as_number(b))); break; }
         case OP_DIV: { Value b = vm_pop(vm), a = vm_pop(vm);
-            double bd = as_number(b);
+            if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,376); }
+            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,334); }
+            else { double bd = as_number(b);
             if (bd == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
-            vm_push(vm, number_val(as_number(a) / bd)); break; }
+            vm_push(vm, number_val(as_number(a) / bd)); } break; }
         case OP_MOD: {
             Value b = vm_pop(vm), a = vm_pop(vm);
             double bd = as_number(b);
