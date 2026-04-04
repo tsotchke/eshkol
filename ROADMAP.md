@@ -136,6 +136,17 @@ This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation rele
 - [x] Browser-based REPL (web/)
 - [x] JavaScript interop
 
+### v1.1.12 Additions (April 2026)
+- [x] Production bytecode VM (555+ builtins, 176/176 tests)
+- [x] Forward-mode AD in bytecode VM (dual number propagation through all opcodes)
+- [x] eshkol.ai website written in Eshkol, compiled to WASM (8 pages, browser REPL)
+- [x] Interactive documentation with runnable code examples
+- [x] GitHub Pages deployment workflow
+- [x] R7RS control flow in VM: call/cc, guard/raise, dynamic-wind, values
+- [x] Exact arithmetic in VM: rational literals, +nan.0/+inf.0/-inf.0
+- [x] Consciousness engine in VM: KB pattern matching, factor graphs, workspace
+- [x] Top-level mutual recursion via letrec-style group compilation
+
 ### Windows Platform Support (Added)
 - [x] Native Windows build via MSYS2/MinGW64 (PR #9, mattneel)
 - [x] UTF-8-safe REPL console output
@@ -143,237 +154,210 @@ This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation rele
 
 ---
 
-## 📋 v1.2-scale (Q2 2026) - PLANNED
+## Architecture Dependency Chain
 
-**Focus:** Data I/O, model deployment, distributed computing, and ecosystem expansion
-
-### Multimedia & Data I/O
-- [ ] Image I/O (PNG, JPEG read/write via stb or libpng)
-- [ ] Audio I/O (WAV read/write, PCM streaming)
-- [ ] Video frame extraction (FFmpeg integration)
-- [ ] Typed data buffers (pixel formats: RGBA8/BGRA8/GRAY8/RGBAF; audio sample formats: I16/I24/F32/F64)
-- [ ] Stream abstraction for file/network/audio data pipelines with combinators (map, filter, take, concat)
-- [ ] DataFrame / table abstraction (CSV/Parquet backed)
-- [ ] Plotting / visualization (SVG output, terminal sparklines)
-
-### GPU & Compute
-- [ ] Vulkan Compute for cross-platform GPU (beyond Metal/CUDA)
-- [ ] Multi-GPU support (device selection, peer-to-peer transfer)
-- [ ] Mixed-precision training (fp16/bf16 accumulation with fp32 master weights)
-- [ ] Basic networking (TCP/UDP sockets for distributed training prerequisites)
-
-### Model Deployment
-- [ ] Model serialization (save/load weight tensors to binary format)
-- [ ] ONNX export (computational graph + weights)
-- [ ] Inference optimization (operator fusion, weight quantization)
-- [ ] Core ML export for Apple platforms
-
-### Ecosystem
-- [ ] Python bindings (call Eshkol from Python, call Python from Eshkol)
-- [ ] Improved error messages with source location spans
-- [ ] Visual debugger integration (DAP protocol)
-- [ ] Per-thread arenas for concurrent memory management
-
-### Distributed Training
-- [ ] Data parallelism across machines (AllReduce)
-- [ ] Model parallelism for large networks
-- [ ] MPI integration for HPC clusters
-- [ ] gRPC for cloud deployments
+```
+v1.1 (COMPLETE)
+ ├─ Consciousness engine (logic + inference + workspace)
+ ├─ XLA/GPU backend
+ ├─ Bytecode VM (production)
+ ├─ Continuations + exact arithmetic
+ └─ Web platform (WASM)
+       │
+v1.2 ──┤ Model serialization (requires tensors from v1.1)
+       ├ Python bindings (requires stable API from v1.1)
+       └ Per-thread arenas (requires OALR from v1.0)
+             │
+v1.3 ────────┤ R7RS library system (requires module system from v1.0)
+             ├ String interpolation (parser extension)
+             └ PGO (requires stable codegen from v1.1+)
+                   │
+v1.4 ──────────────┤ TCP/UDP + TLS (requires per-thread arenas from v1.2)
+                   ├ Event loop (requires non-blocking I/O)
+                   └ Linear resource types (requires HoTT from v1.0)
+                         │
+v1.5 ────────────────────┤ Symbol embeddings (requires tensors + KB from v1.1)
+                         ├ Differentiable logic (requires AD + logic from v1.1)
+                         └ LSTM/GRU (requires tensor backprop from v1.1)
+                               │
+v1.6 ──────────────────────────┤ Backward chaining (requires logic from v1.1)
+                               ├ Knowledge graphs (requires KB + embeddings from v1.5)
+                               └ Constraint solving (requires logic engine)
+                                     │
+v1.7 ────────���───────────────────────┤ Neural-guided search (requires v1.5 bridge)
+                                     ├ GNN (requires graph + tensor ops)
+                                     └ Program synthesis (requires type system)
+                                           │
+v1.8 ──────────────────────────────────────┤ Windowing + event system (requires v1.4 I/O)
+                                           ├ Real-time audio (requires signal from v1.1)
+                                           └ Embedded targets (requires bare-metal LLVM)
+                                                 │
+v1.9 ────────────────────────────────────────────┤ Linear dependent types (requires HoTT)
+                                                 ├ Effect types (requires type checker)
+                                                 └ Algebraic effects (requires continuations)
+                                                       │
+v2.0 ──────────────────────────────────────────────────┤ Quantum types (requires linear dep types)
+                                                       ├ Quantum gates + measurement
+                                                       ├ Hybrid VQE/QAOA (requires AD + quantum)
+                                                       └ Formal verification (requires dep types)
+```
 
 ---
 
-## 📋 v1.3-evolve (Q3 2026) - PLANNED
+## 📋 v1.2-scale (May 2026) - PLANNED
 
-**Focus:** Language maturity, advanced type system, and compiler optimization
+**Focus:** Get models into production. Save them, load them, deploy them.
 
-### Language Extensions
+- [ ] Model serialization (save/load tensor weights to binary format)
+- [ ] Python bindings (call Eshkol functions from Python via FFI bridge)
+- [ ] Per-thread arenas (safe concurrent memory allocation)
+- [ ] Image I/O (PNG/JPEG read/write via stb_image)
+- [ ] CSV/DataFrame (tabular data loading for ML pipelines)
+- [ ] Improved error messages with source location spans
+- [ ] Terminal plotting (sparklines + bar charts for quick visualization)
+
+---
+
+## 📋 v1.3-evolve (June 2026) - PLANNED
+
+**Focus:** Make the language a joy to use day-to-day.
+
 - [ ] Full R7RS library system (`define-library` / `import` with renaming and prefixing)
-- [ ] Syntax-rules with ellipsis patterns and template matching
-- [ ] String interpolation (`~{expr}` or `$expr` within strings)
+- [ ] String interpolation (`~{expr}` within strings)
 - [ ] Named keyword arguments (`(f #:key value)`)
 - [ ] Pattern matching in `let` bindings (destructuring `let-match`)
-
-### Advanced Type System
-- [ ] Full dependent type enforcement (beyond gradual — compile-time errors for type violations)
-- [ ] Refinement types (e.g., `(: x (Refine Integer (> x 0)))`) with SMT solver integration
-- [ ] Effect types for tracking side effects (`Pure`, `IO`, `State`, `Exception`)
-- [ ] Row polymorphism for records (structural subtyping)
-- [ ] Higher-rank types (rank-2 polymorphism for combinators like `fold`)
-
-### Compiler Optimization
-- [ ] Profile-guided optimization (PGO) — runtime profiling feeds back into codegen
-- [ ] Whole-program optimization across modules (cross-module inlining, dead code elimination)
-- [ ] Polyhedral loop optimization for nested tensor operations
-- [ ] Automatic parallelization of independent tensor operation chains
+- [ ] Profile-guided optimization (runtime profiling feeds codegen)
+- [ ] Whole-program optimization (cross-module inlining and dead code elimination)
 
 ---
 
-## 📋 v1.4-connection (Q4 2026) - PLANNED
+## 📋 v1.4-connection (July 2026) - PLANNED
 
-**Focus:** Platform abstraction, interactive systems, and hardware connectivity
+**Focus:** Connect to the outside world with compile-time safety.
 
-Informed by the [Multimedia System Architecture](docs/future/MULTIMEDIA_SYSTEM_ARCHITECTURE.md)
-specification, v1.4 extends Eshkol from a computation-focused language into a platform for
-interactive applications, real-time systems, and embedded/robotics development.
-
-### Platform Abstraction Layer
-- [ ] Cross-platform window system (X11/Wayland on Linux, Cocoa on macOS, Win32 on Windows, framebuffer on embedded)
-- [ ] Event system (keyboard, mouse, touch, window resize, timer events)
-- [ ] Event loop pattern with poll/wait semantics and callback registration
-- [ ] `with-window` bracket pattern for automatic resource cleanup
-
-### Real-Time Audio
-- [ ] Audio device management (ALSA on Linux, CoreAudio on macOS, WASAPI on Windows)
-- [ ] Callback-based and queue-based audio I/O for low-latency processing
-- [ ] Real-time audio synthesis (integration with v1.1 signal processing stdlib)
-- [ ] MIDI input/output for musical instrument control
-- [ ] `with-audio` bracket pattern for automatic device release
-
-### Networking
-- [ ] TCP/UDP socket handles with linear resource management (guaranteed close)
-- [ ] Stream-based network I/O with typed buffers from v1.2
+- [ ] TCP/UDP sockets with linear resource types (guaranteed close)
+- [ ] TLS/SSL via system libraries
+- [ ] Non-blocking I/O with event loop (epoll/kqueue)
 - [ ] Unix domain sockets for local IPC
-- [ ] Non-blocking I/O with event loop integration
-- [ ] TLS/SSL support via system libraries
-
-### Embedded & Robotics
-- [ ] GPIO pin control (Linux sysfs, Raspberry Pi direct memory-mapped I/O)
-- [ ] I2C/SPI/UART bus communication for sensor and actuator interfacing
-- [ ] PWM output for motor control and LED dimming
-- [ ] ADC/DAC for analog sensor reading and signal generation
-- [ ] Camera and LIDAR device handles
-- [ ] Mobile/embedded cross-compilation targets (ARM bare-metal, RISC-V)
-
-### Type System Extensions for Resources
-- [ ] Linear types for hardware handles (guaranteed cleanup — no leaked file descriptors or sockets)
-- [ ] Borrow pattern for temporary resource access without ownership transfer
-- [ ] Handle lifecycle states: `invalid → open → borrowed → closed` with compile-time tracking
-- [ ] Typed buffer system for zero-copy data exchange (pixel formats, audio samples, complex numbers)
-- [ ] Stream combinators (map, filter, take, drop, concat) over typed streams
+- [ ] HTTP client (built on sockets + TLS)
+- [ ] Linear types for all handles: `open → borrowed → closed` with compile-time tracking
+- [ ] Borrow pattern for temporary resource access
 
 ---
 
-## 📋 v1.5-intelligence (Q1 2027) - PLANNED
+## 📋 v1.5-intelligence (August 2026) - PLANNED
 
-**Focus:** Neuro-symbolic integration and advanced AI primitives
+**Focus:** Neural and symbolic computation flow bidirectionally.
 
-Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md)
-specification, v1.5 extends the v1.1 consciousness engine into a complete neuro-symbolic
-programming framework where neural (differentiable) and symbolic (discrete) computation
-flow bidirectionally through a unified substrate.
+Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md).
 
-### Symbolic Reasoning (expand v1.1 foundation)
-- [x] Unification engine with occurs check — Done in v1.1
-- [x] Knowledge base with pattern-matching query — Done in v1.1
+- [ ] Symbol embeddings (learnable vector representations of KB symbols)
+- [ ] Soft unification (differentiable similarity — gradients flow through matching)
+- [ ] LSTM and GRU cells (standard recurrent neural architectures)
+- [ ] Differentiable logic programs (gradients flow through rule application)
+- [ ] Attention over knowledge base (neural query mechanism over symbolic facts)
+- [ ] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through)
+
+---
+
+## 📋 v1.6-reasoning (September 2026) - PLANNED
+
+**Focus:** Make the logic engine production-grade.
+
 - [ ] Backward chaining inference (Prolog-style goal-directed proof search with backtracking)
 - [ ] Forward chaining inference (production rules with fixed-point derivation)
 - [ ] Constraint solving (finite domain constraints, SAT solver integration)
-- [ ] Triple store / knowledge graphs (RDF-style with SPO/POS/OSP indexing for efficient query)
-
-### Neural-Symbolic Bridge
-- [ ] Symbol embeddings (learnable vector representations of symbols in the knowledge base)
-- [ ] Soft unification (differentiable similarity via cosine distance — gradients flow through matching)
-- [ ] Attention over knowledge base (neural query mechanism over symbolic facts)
-- [ ] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through estimator)
-- [ ] Differentiable logic programs (gradients flow through symbolic rule application)
-
-### Advanced Neural Architectures
-- [x] Attention mechanisms — Done in v1.1 (scaled-dot, multi-head attention)
-- [x] Convolution operations — Done in v1.1 (conv1d/2d/3d, pooling)
-- [ ] Recurrent structures (LSTM cells, GRU cells with forget/update gates)
-- [x] Transformer blocks — Done in v1.1 (feed-forward, positional encoding, RoPE)
-- [ ] Graph Neural Networks (message passing, neighborhood aggregation, graph attention)
-
-### Program Synthesis
-- [ ] Type-directed synthesis holes (`??` syntax — compiler searches for well-typed completions)
-- [ ] Program enumeration with type-directed pruning (enumerate candidates up to depth N)
-- [ ] Neural-guided program search (beam search with neural heuristic scoring for candidate ranking)
-- [ ] Synthesis from input-output examples (inductive programming)
-
-### Neuro-Symbolic Models
-- [ ] Knowledge graph embeddings (embed entity-relation-entity triples as vectors)
-- [ ] Neural theorem provers (neural heuristic guides symbolic proof search)
-- [ ] Explainable neural networks (symbolic rule extraction from trained weights)
-- [ ] Self-improving code (gradient descent on program embeddings for program optimization)
-- [ ] Knowledge-grounded language models (KB-biased generation for factual consistency)
+- [ ] Knowledge graphs (RDF-style triple store with SPO/POS/OSP indexing)
+- [ ] Knowledge graph embeddings (entity-relation-entity triples as learnable vectors)
 
 ---
 
-## 🔬 v2.0-starlight (2027+) - RESEARCH
+## 📋 v1.7-synthesis (October 2026) - PLANNED
 
-**Focus:** Quantum computing, formal verification, and next-generation type system
+**Focus:** Programs that write and improve programs.
 
-Informed by the [Quantum Computing Architecture](docs/future/external/eshkol_quantum_computing.md)
-specification, v2.0 introduces first-class quantum computing support, leveraging Eshkol's
-existing linear type infrastructure (OALR) and automatic differentiation system to enable
-hybrid classical-quantum algorithms with compile-time safety guarantees.
+- [ ] Neural-guided program search (beam search with neural scoring for candidate ranking)
+- [ ] Type-directed synthesis holes (`??` syntax — compiler searches for well-typed completions)
+- [ ] Graph Neural Networks (message passing, neighborhood aggregation, graph attention)
+- [ ] Synthesis from input-output examples (inductive programming)
+- [ ] Neural theorem provers (neural heuristic guides symbolic proof search)
+
+---
+
+## 📋 v1.8-platform (November 2026) - PLANNED
+
+**Focus:** Eshkol runs on everything, controls everything.
+
+Informed by the [Multimedia System Architecture](docs/future/MULTIMEDIA_SYSTEM_ARCHITECTURE.md).
+
+- [ ] Cross-platform windowing (X11/Wayland, Cocoa, Win32)
+- [ ] Event system (keyboard, mouse, touch, window events)
+- [ ] Real-time audio (CoreAudio, ALSA, WASAPI with callback-based I/O)
+- [ ] MIDI input/output for instrument control
+- [ ] Vulkan Compute for cross-platform GPU (beyond Metal/CUDA)
+- [ ] Multi-GPU support (device selection, peer-to-peer transfer)
+- [ ] Embedded cross-compilation (ARM bare-metal, RISC-V)
+
+---
+
+## 📋 v1.9-types (December 2026) - PLANNED
+
+**Focus:** The type system becomes a proof system.
+
+- [ ] Full dependent type enforcement (compile-time errors, not just warnings)
+- [ ] Refinement types (`(Refine Integer (> x 0))` with SMT solver integration)
+- [ ] Effect types (tracking `Pure`, `IO`, `State`, `Exception` at the type level)
+- [ ] Algebraic effects and handlers (structured side-effect management)
+- [ ] Row polymorphism for records (structural subtyping)
+- [ ] Higher-rank types (rank-2 polymorphism for combinators)
+- [ ] Session types for communication protocols
+
+---
+
+## 🔬 v2.0-starlight (Q1 2027) - RESEARCH
+
+**Focus:** Quantum computing meets formal verification.
+
+Informed by the [Quantum Computing Architecture](docs/future/external/eshkol_quantum_computing.md).
+Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 
 ### Quantum Type System
-- [ ] Qubit type with linear resource tracking (no-cloning theorem enforced at compile time)
-- [ ] Quantum register types `qreg<n>` with compile-time dimension tracking
-- [ ] Quantum state types `qstate<H>` parameterized by Hilbert space
-- [ ] Quantum operation types `qop<H1, H2>` for maps between Hilbert spaces
-- [ ] `define-quantum-region` scoping for qubit allocation and automatic deallocation
+- [ ] Qubit type with linear resource tracking (no-cloning enforced at compile time)
+- [ ] Quantum register types `qreg<n>` with compile-time dimension
+- [ ] `define-quantum-region` scoping for qubit allocation and deallocation
 
 ### Quantum Operations
-- [ ] Quantum gate primitives: Hadamard (H), CNOT, Rz, T, S, SWAP, Toffoli, arbitrary unitaries
-- [ ] Measurement operations with classical outcome (collapses superposition, returns bit)
-- [ ] Quantum control flow (`qif` for superposition-based branching)
-- [ ] Quantum circuit compilation and optimization (gate fusion, qubit mapping, routing)
-- [ ] Integration with AD for variational quantum algorithms (gradients of parameterized circuits)
+- [ ] Gate primitives: H, CNOT, Rz, T, S, SWAP, Toffoli, arbitrary unitaries
+- [ ] Measurement with classical outcome
+- [ ] Circuit compilation and optimization (gate fusion, qubit mapping)
+- [ ] AD integration for variational algorithms (parameter-shift rule)
 
-### Hybrid Classical-Quantum Algorithms
-- [ ] Variational Quantum Eigensolver (VQE) with classical optimizer integration
+### Hybrid Classical-Quantum
+- [ ] Variational Quantum Eigensolver (VQE)
 - [ ] Quantum Approximate Optimization Algorithm (QAOA)
-- [ ] Quantum machine learning (parameterized quantum circuits with automatic differentiation)
-- [ ] Hybrid classical-quantum loop patterns (classical optimization drives quantum circuit parameters)
-- [ ] Quantum error mitigation techniques (zero-noise extrapolation, probabilistic error cancellation)
+- [ ] Quantum machine learning (parameterized circuits with AD)
+- [ ] Integration with Moonlab quantum simulator
 
 ### Formal Verification
-- [ ] Integration with proof assistants (Coq, Lean) for certified compilation
-- [ ] Quantum program verification (unitary equivalence checking)
-- [ ] Certified quantum circuit compilation (provably correct gate decomposition)
-- [ ] Session types for quantum communication protocols
-
-### Next-Generation Type System
-- [ ] Full dependent type enforcement with decidable type checking
-- [ ] Session types for concurrent communication patterns
-- [ ] Algebraic effects and handlers (structured side-effect management)
-- [ ] Quantitative type theory (resource-tracking types for quantum and linear resources)
+- [ ] Integration with proof assistants (Lean) for certified compilation
+- [ ] Quantitative type theory for unified linear/quantum resource tracking
 
 ---
 
-## Development Priorities
+## Release Timeline
 
-### Immediate (v1.2 — Q2 2026)
-1. Data I/O (image, audio, typed buffers, streams)
-2. Model serialization and ONNX export
-3. Vulkan Compute for cross-platform GPU
-4. Python bindings and distributed training (MPI)
-
-### Near-Term (v1.3 — Q3 2026)
-1. Full R7RS library system with `define-library`
-2. Refinement types and effect types
-3. Profile-guided optimization (PGO)
-4. Higher-rank types
-
-### Medium-Term (v1.4 — Q4 2026)
-1. Platform abstraction layer (windows, events, audio)
-2. Real-time audio and MIDI integration
-3. Networking (TCP/UDP with linear resource management)
-4. Embedded/robotics targets (GPIO, I2C, SPI)
-
-### Long-Term (v1.5 — Q1 2027)
-1. Neuro-symbolic bridge (soft unification, symbol embeddings)
-2. Graph Neural Networks and recurrent structures
-3. Program synthesis with type-directed search
-4. Knowledge graph embeddings
-
-### Research (v2.0 — 2027+)
-1. Quantum computing integration (qubit types, gates, VQE/QAOA)
-2. Formal verification with proof assistant integration
-3. Session types and algebraic effects
-4. Quantum machine learning (AD through parameterized circuits)
+| Version | Date | Theme | Key Deliverables |
+|---------|------|-------|-----------------|
+| **v1.1.12** | Apr 2026 | Accelerate | Production VM, web platform, browser AD |
+| **v1.2** | May 2026 | Scale | Model serialization, Python bindings, image I/O |
+| **v1.3** | Jun 2026 | Evolve | R7RS libraries, string interpolation, PGO |
+| **v1.4** | Jul 2026 | Connection | Networking, TLS, event loop, linear resource types |
+| **v1.5** | Aug 2026 | Intelligence | Symbol embeddings, differentiable logic, LSTM/GRU |
+| **v1.6** | Sep 2026 | Reasoning | Backward chaining, constraint solving, knowledge graphs |
+| **v1.7** | Oct 2026 | Synthesis | Neural-guided search, program synthesis, GNN |
+| **v1.8** | Nov 2026 | Platform | Windowing, audio, Vulkan, embedded targets |
+| **v1.9** | Dec 2026 | Types | Dependent types, effects, algebraic effects, session types |
+| **v2.0** | Q1 2027 | Starlight | Quantum types, VQE/QAOA, formal verification |
 
 ---
 
@@ -425,13 +409,21 @@ hybrid classical-quantum algorithms with compile-time safety guarantees.
 - ✅ Signal Processing (FFT, filters, window functions) - Complete
 - ✅ R7RS Extensions (call/cc, dynamic-wind, bytevectors) - Complete
 
+### v1.1.12 Additions
+- ✅ Production Bytecode VM (555+ builtins, 176/176 tests, dual number AD) - Complete
+- ✅ eshkol.ai Website (Eshkol→WASM, browser REPL, interactive tutorials) - Complete
+- ✅ GitHub Pages Deployment - Complete
+
 ### Planned (v1.2+)
-- 📋 Data I/O (image, audio, typed buffers) — v1.2
-- 📋 Distributed Computing (MPI, AllReduce) — v1.2
-- 📋 Vulkan Compute — v1.2
-- 📋 Platform Abstraction (windows, audio, networking) — v1.4
+- 📋 Model Serialization + Python Bindings — v1.2
+- 📋 R7RS Library System + String Interpolation — v1.3
+- 📋 Networking + Linear Resource Types — v1.4
 - 📋 Neuro-Symbolic Bridge — v1.5
-- 📋 Quantum Computing — v2.0
+- 📋 Backward Chaining + Knowledge Graphs — v1.6
+- 📋 Program Synthesis + Neural Search — v1.7
+- 📋 Platform Abstraction (windows, audio, embedded) — v1.8
+- 📋 Advanced Type Theory (dependent, effects, algebraic) — v1.9
+- 📋 Quantum Computing + Formal Verification — v2.0
 
 ---
 
@@ -508,4 +500,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 
 *Last Updated: April 2026*
 
-*Eshkol v1.1-accelerate is now complete, delivering XLA, SIMD, GPU acceleration, parallel primitives, exact arithmetic, consciousness engine, 75+ ML builtins, signal processing, and full R7RS extensions. The roadmap progresses through data I/O and deployment (v1.2-scale), language maturity (v1.3-evolve), platform abstraction and hardware connectivity (v1.4-connection), neuro-symbolic integration (v1.5-intelligence), and quantum computing with formal verification (v2.0-starlight).*
+*Eshkol v1.1-accelerate is complete with 47/47 roadmap items delivered plus the v1.1.12 additions (production VM, web platform, browser AD). The roadmap progresses through data & deployment (v1.2-scale), language maturity (v1.3-evolve), networking & resources (v1.4-connection), neuro-symbolic intelligence (v1.5-intelligence), symbolic reasoning (v1.6-reasoning), program synthesis (v1.7-synthesis), platform & hardware (v1.8-platform), advanced type theory (v1.9-types), and quantum computing with formal verification (v2.0-starlight).*
