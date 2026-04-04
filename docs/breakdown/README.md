@@ -78,6 +78,8 @@ build/eshkol-run hello.esk
 - **[Exact Arithmetic](EXACT_ARITHMETIC.md)** — Bignum/rational numeric tower, overflow detection, R7RS exactness
 - **[Continuations](CONTINUATIONS.md)** — call/cc, dynamic-wind, guard/raise, exception handling
 - **[XLA Backend](XLA_BACKEND.md)** — Tensor runtime operations, GPU dispatch, broadcasting, AD gradient support
+- **[Bytecode VM](BYTECODE_VM.md)** — 63-opcode bytecode interpreter, ESKB binary format, WebAssembly execution
+- **[Computable Transformer](COMPUTABLE_TRANSFORMER.md)** — Programs as neural network weight matrices, 5-layer transformer VM encoding
 
 ### Platform and Tools
 
@@ -85,8 +87,18 @@ build/eshkol-run hello.esk
 - **[REPL JIT](REPL_JIT.md)** — LLVM OrcJIT, CodeGenOptLevel matching, stdlib preloading, hot reload
 - **[Web Platform](WEB_PLATFORM.md)** — WASM compilation, 73 DOM/Canvas/event API functions, integer handle system
 - **[Package Manager](PACKAGE_MANAGER.md)** — eshkol-pkg CLI, TOML manifest, git-based registry
-- **[Developer Tools](DEVELOPER_TOOLS.md)** — LSP server, VSCode extension, --dump-ir/--dump-ast debug flags
+- **[Developer Tools](DEVELOPER_TOOLS.md)** — LSP server, VSCode extension, --dump-ir/--dump-ast debug flags, package manager
 - **[Math Standard Library](MATH_STDLIB.md)** — Special functions, ODE solvers, statistics, PRNG and quantum RNG
+- **[Quantum RNG](QUANTUM_RNG.md)** — Quantum-inspired random number generation, distribution sampling, tensor random functions
+- **[Command-Line Reference](COMMAND_LINE_REFERENCE.md)** — Complete flag reference for eshkol-run and eshkol-repl
+
+### Infrastructure and Deployment
+
+- **[Runtime Configuration](RUNTIME_CONFIGURATION.md)** — Environment variables, config files, resource limits, stack size tuning
+- **[Benchmarking](BENCHMARKING.md)** — Matrix multiplication, activation functions, convolution, GPU vs CPU comparison
+- **[VS Code Extension](VSCODE_EXTENSION.md)** — Installation, commands, syntax highlighting, code snippets, LSP integration
+- **[CI/CD Pipelines](CI_CD.md)** — GitHub Actions workflows, build matrix, release artifacts, Homebrew tap
+- **[Docker](DOCKER.md)** — CUDA, Debian, Ubuntu, and XLA Docker images for building and deployment
 
 ## Reference Documentation
 

@@ -1227,6 +1227,45 @@ Note that unlike the other consciousness engine types, the promise does not have
 
 ---
 
+## Implementation Source Files
+
+The type system is implemented across several files:
+
+| File | Purpose |
+|------|---------|
+| `inc/eshkol/types/hott_types.h` | HoTT foundation: universe levels (U0-UOmega), type flags (exact, linear, proof), supertype hierarchy, subtype checking with caching, type promotion rules |
+| `lib/types/hott_types.cpp` | HoTT type system implementation |
+| `inc/eshkol/types/dependent.h` | Dependent type support: CTValue (compile-time values for array dimensions, type-level naturals, booleans, symbolic expressions), DependentType for types parameterized by compile-time values |
+| `lib/types/dependent.cpp` | Dependent type checking implementation (Phase 5 of HoTT) |
+| `inc/eshkol/types/type_checker.h` | Bidirectional type checker interface |
+| `lib/types/type_checker.cpp` | Type checker implementation: synthesis mode, checking mode, constraint generation, unification |
+
+### Key Type System Concepts in Code
+
+**Universe levels** (`hott_types.h`): The type hierarchy is organized into four universe levels:
+
+- `U0` — Ground types: integer, float64, string, char, boolean
+- `U1` — Type constructors: list, vector, function (->), pair (*), tensor, handle, buffer
+- `U2` — Propositions: Eq, <:, Bounded, Linear (proof types, erased at runtime)
+- `UOmega` — Universe polymorphic (for generic functions)
+
+**Type flags** (`hott_types.h`): Additional properties carried on types:
+
+- `TYPE_FLAG_EXACT` — Scheme exactness (integer vs inexact)
+- `TYPE_FLAG_LINEAR` — Must use exactly once (linear types)
+- `TYPE_FLAG_PROOF` — Compile-time only, erased at runtime
+
+**Compile-time values** (`dependent.h`): The `CTValue` class represents values known at compile time, used for:
+
+- Array dimension indices (e.g., the 100 in `Vector<Float64, 100>`)
+- Type-level naturals for dependent types
+- Compile-time boolean flags
+- Symbolic expressions that may be reducible at compile time
+
+CTValue kinds: `Nat` (uint64_t), `Bool`, `Expr` (AST reference), `Unknown` (runtime-only).
+
+---
+
 ## See Also
 
 - [Memory Management (OALR System)](MEMORY_MANAGEMENT.md) — Arena allocation, object headers, lifetimes
