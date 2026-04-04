@@ -198,7 +198,9 @@ code {
 }
 .docs-sidebar {
   position: sticky; top: calc(var(--nav-height) + 24px);
-  align-self: start; height: fit-content;
+  align-self: start;
+  max-height: calc(100vh - var(--nav-height) - 48px);
+  overflow-y: auto;
 }
 .docs-sidebar-group { margin-bottom: 20px; }
 .docs-sidebar-group-title {

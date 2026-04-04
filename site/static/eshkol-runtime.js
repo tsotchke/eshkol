@@ -80,21 +80,28 @@ class EshkolRuntime {
 
     renderMarkdown(md) {
         let html = md;
-        // Fenced code blocks (```lang ... ```)
+        // Extract code blocks FIRST to protect them from markdown transforms
+        const codeBlocks = [];
         html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
             const escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            // Eshkol/Scheme syntax highlighting
-            if (lang === 'scheme' || lang === 'eshkol' || lang === 'lisp' || lang === 'scm') {
-                let highlighted = escaped
-                    .replace(/;[^\n]*/g, m => `<span style="color:#606078">${m}</span>`)
-                    .replace(/\b(define|lambda|let|let\*|letrec|if|cond|begin|set!|when|unless|do|case|match|and|or|not|quote|require|provide|extern|gradient|derivative|jacobian|hessian|divergence|curl|laplacian)\b/g,
-                        m => `<span style="color:#c084fc">${m}</span>`)
-                    .replace(/"[^"]*"/g, m => `<span style="color:#a78bfa">${m}</span>`)
-                    .replace(/\b\d+\.?\d*\b/g, m => `<span style="color:#00ff88">${m}</span>`)
-                    .replace(/#t\b|#f\b|#\\./g, m => `<span style="color:#00ff88">${m}</span>`);
-                return `<pre style="background:#0d0d15;border:1px solid #2a2a3a;border-radius:8px;padding:16px 20px;overflow-x:auto;margin:1em 0"><code style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;line-height:1.5">${highlighted}</code></pre>`;
+            let block;
+            if (lang === 'scheme' || lang === 'eshkol' || lang === 'lisp' || lang === 'scm' || lang === 'bash' || lang === '') {
+                let highlighted = escaped;
+                if (lang === 'scheme' || lang === 'eshkol' || lang === 'lisp' || lang === 'scm' || lang === '') {
+                    highlighted = escaped
+                        .replace(/;[^\n]*/g, m => `<span style="color:#606078">${m}</span>`)
+                        .replace(/\b(define|lambda|let|let\*|letrec|if|cond|begin|set!|when|unless|do|case|match|and|or|not|quote|require|provide|extern|gradient|derivative|jacobian|hessian|divergence|curl|laplacian)\b/g,
+                            m => `<span style="color:#c084fc">${m}</span>`)
+                        .replace(/"[^"]*"/g, m => `<span style="color:#a78bfa">${m}</span>`)
+                        .replace(/\b\d+\.?\d*\b/g, m => `<span style="color:#00ff88">${m}</span>`)
+                        .replace(/#t\b|#f\b|#\\./g, m => `<span style="color:#00ff88">${m}</span>`);
+                }
+                block = `<pre style="background:#0a0a14;border:1px solid #27272a;border-radius:8px;padding:16px 20px;overflow-x:auto;margin:1em 0"><code style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;line-height:1.6">${highlighted}</code></pre>`;
+            } else {
+                block = `<pre style="background:#0a0a14;border:1px solid #27272a;border-radius:8px;padding:16px 20px;overflow-x:auto;margin:1em 0"><code style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;line-height:1.6;color:#d4d4d8">${escaped}</code></pre>`;
             }
-            return `<pre style="background:#0d0d15;border:1px solid #2a2a3a;border-radius:8px;padding:16px 20px;overflow-x:auto;margin:1em 0"><code style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;line-height:1.5;color:#e8e8f0">${escaped}</code></pre>`;
+            codeBlocks.push(block);
+            return `\x00CODEBLOCK${codeBlocks.length - 1}\x00`;
         });
         // Inline code
         html = html.replace(/`([^`]+)`/g, '<code style="background:#0d0d15;padding:2px 6px;border-radius:4px;font-size:0.85em;color:#a78bfa">$1</code>');
@@ -131,8 +138,12 @@ class EshkolRuntime {
         html = html.replace(/(<li[\s\S]*?<\/li>\n?)+/g, m => `<ul style="margin:0.8em 0;padding-left:1.5em">${m}</ul>`);
         // Ordered lists
         html = html.replace(/^\d+\.\s+(.+)$/gm, '<li style="color:#a0a0b8;margin:0.2em 0">$1</li>');
-        // Paragraphs (lines not already tagged)
-        html = html.replace(/^(?!<[huplbtdoa]|<\/|<hr|<code|<str|<em>|$)(.+)$/gm, '<p style="margin:0.6em 0;color:#a0a0b8;line-height:1.7">$1</p>');
+        // Paragraphs (lines not already tagged — skip code block placeholders)
+        html = html.replace(/^(?!<[huplbtdoa]|<\/|<hr|<code|<str|<em>|\x00|$)(.+)$/gm, '<p style="margin:0.6em 0;color:#a0a0b8;line-height:1.7">$1</p>');
+        // Restore code blocks from placeholders
+        html = html.replace(/\x00CODEBLOCK(\d+)\x00/g, (_, idx) => codeBlocks[parseInt(idx)]);
+        // Clean up double-spaced lines in pre blocks (ASCII art, etc.)
+        html = html.replace(/<\/p>\n<p/g, '</p><p');
         return html;
     }
 
