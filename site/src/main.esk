@@ -78,44 +78,40 @@
 
 (define (create-section parent)
   (let ((s (create-div parent)))
-    (style! s "maxWidth" "1200px")
-    (style! s "margin" "0 auto")
-    (style! s "padding" "80px 32px")
+    (web-add-class s "section")
     s))
 
 (define (create-narrow-section parent)
   (let ((s (create-div parent)))
-    (style! s "maxWidth" "900px")
-    (style! s "margin" "0 auto")
-    (style! s "padding" "80px 32px")
+    (web-add-class s "section-narrow")
     s))
 
 (define (create-card parent)
   (let ((c (create-div parent)))
-    (style! c "background" "#1a1a28")
-    (style! c "border" "1px solid #2a2a3a")
-    (style! c "borderRadius" "12px")
-    (style! c "padding" "28px")
+    (web-add-class c "card")
     c))
 
-(define (create-grid parent)
+(define (create-grid-3 parent)
   (let ((g (create-div parent)))
-    (style! g "display" "flex")
-    (style! g "gap" "24px")
-    (style! g "flexWrap" "wrap")
+    (web-add-class g "grid-3")
+    g))
+
+(define (create-grid-4 parent)
+  (let ((g (create-div parent)))
+    (web-add-class g "grid-4")
+    g))
+
+(define (create-grid-2 parent)
+  (let ((g (create-div parent)))
+    (web-add-class g "grid-2")
     g))
 
 (define (create-code-block parent code-html)
-  (let ((block (create-div parent)))
-    (style! block "background" "#0d0d15")
-    (style! block "border" "1px solid #2a2a3a")
-    (style! block "borderRadius" "12px")
-    (style! block "padding" "24px 28px")
-    (style! block "overflow" "auto")
-    (web-set-inner-html block code-html)
-    block))
+  (let ((pre (web-create-element "pre")))
+    (web-set-inner-html pre code-html)
+    (web-append-child parent pre)
+    pre))
 
-;; Runnable variant: code block + Run ▶ button + output area
 (define (create-runnable-code-block parent raw-code code-html)
   (web-create-runnable-code raw-code code-html parent))
 
@@ -123,21 +119,14 @@
   (let ((header (create-div parent)))
     (style! header "marginBottom" "48px")
     (style! header "paddingTop" "32px")
-
     (let ((h (create-text "h1" title header)))
+      (web-add-class h "hero-title")
       (style! h "fontSize" "2.8rem")
-      (style! h "fontWeight" "800")
-      (style! h "letterSpacing" "-1px")
-      (style! h "background" "linear-gradient(135deg, #7c3aed, #a78bfa, #00ff88)")
-      (style! h "WebkitBackgroundClip" "text")
-      (style! h "WebkitTextFillColor" "transparent")
       (style! h "marginBottom" "12px"))
-
     (let ((sub (create-text "p" subtitle header)))
+      (web-add-class sub "text-muted")
       (style! sub "fontSize" "1.1rem")
-      (style! sub "color" "#606078")
       (style! sub "maxWidth" "700px"))
-
     header))
 
 (define (create-nav-link text href container)
@@ -185,6 +174,36 @@
     (style! p "marginBottom" "16px")
     p))
 
+(define (body-html parent html)
+  (let ((p (web-create-element "p")))
+    (web-set-inner-html p html)
+    (style! p "color" "#a0a0b8")
+    (style! p "fontSize" "0.95rem")
+    (style! p "lineHeight" "1.7")
+    (style! p "marginBottom" "16px")
+    (web-append-child parent p)
+    p))
+
+(define (create-btn-primary text href parent)
+  (let ((a (create-text "a" text parent)))
+    (web-add-class a "btn")
+    (web-add-class a "btn-primary")
+    (web-set-attribute a "href" href)
+    a))
+
+(define (create-btn-secondary text href parent)
+  (let ((a (create-text "a" text parent)))
+    (web-add-class a "btn")
+    (web-add-class a "btn-secondary")
+    (web-set-attribute a "href" href)
+    a))
+
+(define (create-divider parent)
+  (let ((hr (web-create-element "hr")))
+    (web-add-class hr "divider")
+    (web-append-child parent hr)
+    hr))
+
 ;; ═══════════════════════════════════════════════════════════
 ;; NAVIGATION
 ;; ═══════════════════════════════════════════════════════════
@@ -203,7 +222,7 @@
     (style! nav "justifyContent" "space-between")
     (style! nav "padding" "0 32px")
     (style! nav "zIndex" "100")
-    (style! nav "borderBottom" "1px solid #2a2a3a")
+    (style! nav "borderBottom" "1px solid #27272a")
 
     ;; Logo
     (let ((logo (create-text "a" "Eshkol" nav)))
@@ -220,13 +239,14 @@
       (style! links "gap" "24px")
       (style! links "alignItems" "center")
 
-      (create-nav-link "Features" "#/features" links)
-      (create-nav-link "Docs" "#/docs" links)
       (create-nav-link "Learn" "#/learn" links)
       (create-nav-link "Examples" "#/examples" links)
-      (create-nav-link "Install" "#/install" links)
+      (create-nav-link "Docs" "#/docs" links)
+      (create-nav-link "Downloads" "#/downloads" links)
+      (create-nav-link "Playground" "#/playground" links)
+      (create-nav-link "Community" "#/community" links)
 
-      ;; GitHub button (external)
+      ;; GitHub button
       (let ((gh (create-text "a" "GitHub" links)))
         (style! gh "color" "#0a0a0f")
         (style! gh "background" "#7c3aed")
@@ -248,7 +268,7 @@
 (define (render-footer parent)
   (let ((footer (create-div parent)))
     (style! footer "padding" "60px 32px 40px")
-    (style! footer "borderTop" "1px solid #1a1a28")
+    (style! footer "borderTop" "1px solid #27272a")
     (style! footer "marginTop" "40px")
 
     (let ((cols (create-div footer)))
@@ -268,7 +288,7 @@
           (style! name "color" "#7c3aed")
           (style! name "marginBottom" "12px"))
         (let ((desc (create-text "p" "Compiled, deterministic, differentiable. Mathematics as a first-class citizen." brand)))
-          (style! desc "color" "#606078")
+          (style! desc "color" "#71717a")
           (style! desc "fontSize" "0.85rem")
           (style! desc "lineHeight" "1.6")
           (style! desc "maxWidth" "260px")))
@@ -280,14 +300,10 @@
           (style! h "fontWeight" "600")
           (style! h "marginBottom" "12px")
           (style! h "fontSize" "0.85rem"))
-        (create-nav-link "Features" "#/features" nav-col)
-        (let ((s (web-query-selector "a:last-child"))) (style! s "display" "block") (style! s "marginBottom" "8px"))
-        (create-nav-link "Documentation" "#/docs" nav-col)
-        (let ((s (web-query-selector "a:last-child"))) (style! s "display" "block") (style! s "marginBottom" "8px"))
-        (create-nav-link "Learn" "#/learn" nav-col)
-        (let ((s (web-query-selector "a:last-child"))) (style! s "display" "block") (style! s "marginBottom" "8px"))
-        (create-nav-link "Install" "#/install" nav-col)
-        (let ((s (web-query-selector "a:last-child"))) (style! s "display" "block") (style! s "marginBottom" "8px")))
+        (create-ext-link "Learn" "#/learn" nav-col)
+        (create-ext-link "Examples" "#/examples" nav-col)
+        (create-ext-link "Documentation" "#/docs" nav-col)
+        (create-ext-link "Downloads" "#/downloads" nav-col))
 
       ;; Community
       (let ((comm (create-div cols)))
@@ -306,18 +322,18 @@
       (style! bottom "maxWidth" "1200px")
       (style! bottom "margin" "0 auto")
       (style! bottom "paddingTop" "24px")
-      (style! bottom "borderTop" "1px solid #1a1a28")
+      (style! bottom "borderTop" "1px solid #27272a")
       (style! bottom "display" "flex")
       (style! bottom "justifyContent" "space-between")
       (style! bottom "flexWrap" "wrap")
       (style! bottom "gap" "8px")
 
       (let ((p (create-text "p" "MIT License. Tsotchke Corporation." bottom)))
-        (style! p "color" "#404050")
+        (style! p "color" "#71717a")
         (style! p "fontSize" "0.8rem"))
 
       (let ((p2 (create-text "p" "This website is written in Eshkol, compiled to WebAssembly." bottom)))
-        (style! p2 "color" "#404050")
+        (style! p2 "color" "#71717a")
         (style! p2 "fontSize" "0.8rem")))
 
     footer))
@@ -327,471 +343,462 @@
 ;; ═══════════════════════════════════════════════════════════
 
 (define (render-hero parent)
-  (let ((hero (create-div parent)))
-    (style! hero "minHeight" "100vh")
-    (style! hero "display" "flex")
-    (style! hero "flexDirection" "column")
-    (style! hero "alignItems" "center")
-    (style! hero "justifyContent" "center")
-    (style! hero "paddingTop" "64px")
-    (style! hero "textAlign" "center")
+  (let ((hero (create-section parent)))
+    (style! hero "paddingTop" "120px")
+    (style! hero "paddingBottom" "60px")
 
-    ;; Title
-    (let ((title (create-text "h1" "Eshkol" hero)))
-      (style! title "fontSize" "5rem")
-      (style! title "fontWeight" "900")
-      (style! title "letterSpacing" "-3px")
-      (style! title "background" "linear-gradient(135deg, #7c3aed, #a78bfa, #00ff88)")
-      (style! title "WebkitBackgroundClip" "text")
-      (style! title "WebkitTextFillColor" "transparent")
-      (style! title "marginBottom" "16px"))
+    ;; Split layout: left text, right runnable code
+    (let ((split (create-div hero)))
+      (style! split "display" "flex")
+      (style! split "gap" "48px")
+      (style! split "alignItems" "center")
+      (style! split "flexWrap" "wrap")
 
-    (let ((sub (create-text "p" "Mathematics as a First-Class Citizen" hero)))
-      (style! sub "fontSize" "1.5rem")
-      (style! sub "color" "#a0a0b8")
-      (style! sub "fontWeight" "300")
-      (style! sub "marginBottom" "12px"))
+      ;; Left side: text
+      (let ((left (create-div split)))
+        (style! left "flex" "1")
+        (style! left "minWidth" "320px")
 
-    (let ((tag (create-text "p" "The first compiled language with compiler-native automatic differentiation, deterministic memory, and heterogeneous computing." hero)))
-      (style! tag "fontSize" "1.05rem")
-      (style! tag "color" "#606078")
-      (style! tag "maxWidth" "640px")
-      (style! tag "marginBottom" "40px"))
+        (let ((title (create-text "h1" "Build systems that think." left)))
+          (web-add-class title "hero-title"))
 
-    ;; Code demo
-    (create-runnable-code-block hero
-      "(define (f x y)\n  (+ (* x x) (* x y)))\n\n(display (gradient f 3.0 4.0))"
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Automatic differentiation — compiled to native code</span>
-<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(f x y)</span>
-  <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)))</span>
+        (let ((sub (create-text "p" "Eshkol compiles automatic differentiation, probabilistic inference, and self-modifying code into native machine code." left)))
+          (web-add-class sub "hero-sub"))
 
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> f <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>))</span>
-<span style='color:#606078'>;; => #(10.0 3.0)  -- df/dx=2x+y, df/dy=x</span></pre>")
+        ;; Install command
+        (let ((install (create-div left)))
+          (web-add-class install "install-cmd")
+          (style! install "marginTop" "24px")
+          (style! install "marginBottom" "24px")
+          (web-set-text-content install "brew tap tsotchke/eshkol && brew install eshkol"))
 
-    ;; CTAs
-    (let ((cta (create-div hero)))
-      (style! cta "marginTop" "40px")
-      (style! cta "display" "flex")
-      (style! cta "gap" "16px")
-      (style! cta "alignItems" "center")
-      (style! cta "flexWrap" "wrap")
-      (style! cta "justifyContent" "center")
+        ;; CTA buttons
+        (let ((btns (create-div left)))
+          (style! btns "display" "flex")
+          (style! btns "gap" "16px")
+          (style! btns "flexWrap" "wrap")
+          (create-btn-primary "Get Started" "#/downloads" btns)
+          (create-btn-secondary "Try in Browser" "#/playground" btns)))
 
-      (let ((btn1 (create-text "a" "Get Started" cta)))
-        (style! btn1 "background" "#7c3aed")
-        (style! btn1 "color" "#fff")
-        (style! btn1 "padding" "12px 28px")
-        (style! btn1 "borderRadius" "8px")
-        (style! btn1 "fontSize" "0.95rem")
-        (style! btn1 "fontWeight" "600")
-        (style! btn1 "textDecoration" "none")
-        (web-set-attribute btn1 "href" "#/install"))
-
-      (let ((btn2 (create-text "a" "Playground" cta)))
-        (style! btn2 "background" "transparent")
-        (style! btn2 "color" "#a78bfa")
-        (style! btn2 "padding" "12px 28px")
-        (style! btn2 "borderRadius" "8px")
-        (style! btn2 "fontSize" "0.95rem")
-        (style! btn2 "fontWeight" "600")
-        (style! btn2 "textDecoration" "none")
-        (style! btn2 "border" "1px solid #7c3aed")
-        (web-set-attribute btn2 "href" "#/playground")))
-
-    ;; Install command
-    (let ((install-wrap (create-div hero)))
-      (style! install-wrap "marginTop" "24px")
-      (let ((install (create-text "code" "brew tap tsotchke/eshkol && brew install eshkol" install-wrap)))
-        (style! install "background" "#1a1a28")
-        (style! install "color" "#00ff88")
-        (style! install "padding" "12px 24px")
-        (style! install "borderRadius" "8px")
-        (style! install "fontSize" "0.85rem")
-        (style! install "border" "1px solid #2a2a3a")
-        (style! install "fontFamily" "'JetBrains Mono', monospace")))
+      ;; Right side: runnable code
+      (let ((right (create-div split)))
+        (style! right "flex" "1")
+        (style! right "minWidth" "360px")
+        (create-runnable-code-block right
+          "(define (energy x y)\n  (+ (* x x) (* x y) (* y y)))\n\n(display (gradient energy 2.0 3.0))\n;; => (7.0 8.0)"
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Automatic differentiation — compiled to native code</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(energy x y)</span>\n  <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> y y<span style='color:#c084fc'>)))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> energy <span style='color:#00ff88'>2.0</span> <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => (7.0 8.0)  -- dE/dx=2x+y, dE/dy=x+2y</span></pre>")))
 
     hero))
 
+(define (render-app-cards parent)
+  (let ((section (create-section parent)))
+    (let ((grid (create-grid-3 section)))
+
+      ;; Card 1: Train a Neural Network
+      (let ((c1 (create-card grid)))
+        (let ((h (create-text "h3" "Train a Neural Network" c1)))
+          (style! h "fontSize" "1.2rem")
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "12px"))
+        (body-text c1 "Define a loss function and train with gradient descent. Automatic differentiation computes exact derivatives at compile time.")
+        (create-runnable-code-block c1
+          "(define (loss w x y)\n  (* (- (* w x) y) (- (* w x) y)))\n\n(define (train w lr data)\n  (if (null? data) w\n    (train (- w (* lr (derivative (lambda (w) (loss w (caar data) (cadar data))) w)))\n      lr (cdr data))))\n\n(display (train 0.5 0.01 '((1 2) (2 4) (3 6))))"
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss w x y)</span>\n  <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(-</span> <span style='color:#c084fc'>(*</span> w x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(-</span> <span style='color:#c084fc'>(*</span> w x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>)))</span>\n\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(train w lr data)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(null?</span> data<span style='color:#c084fc'>)</span> w\n    <span style='color:#c084fc'>(train</span> <span style='color:#c084fc'>(-</span> w <span style='color:#c084fc'>(*</span> lr <span style='color:#c084fc'>(derivative</span> ...<span style='color:#c084fc'>)))</span>\n      lr <span style='color:#c084fc'>(cdr</span> data<span style='color:#c084fc'>))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(train</span> <span style='color:#00ff88'>0.5</span> <span style='color:#00ff88'>0.01</span> <span style='color:#00ff88'>'((1 2) (2 4) (3 6))</span><span style='color:#c084fc'>))</span></pre>"))
+
+      ;; Card 2: Solve a Differential Equation
+      (let ((c2 (create-card grid)))
+        (let ((h (create-text "h3" "Solve a Differential Equation" c2)))
+          (style! h "fontSize" "1.2rem")
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "12px"))
+        (body-text c2 "Euler integration of dy/dt = -2y. Tail-recursive loop computes 200 steps of exponential decay to reach e^(-4).")
+        (create-runnable-code-block c2
+          "(define (decay t y) (* -2.0 y))\n(display (let loop ((t 0.0) (y 1.0) (i 0))\n  (if (>= i 200) y\n    (loop (+ t 0.01) (+ y (* 0.01 (* -2.0 y))) (+ i 1)))))"
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(decay t y)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>-2.0</span> y<span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span>\n  <span style='color:#c084fc'>(let</span> loop ((<span style='color:#a78bfa'>t</span> <span style='color:#00ff88'>0.0</span>) (<span style='color:#a78bfa'>y</span> <span style='color:#00ff88'>1.0</span>) (<span style='color:#a78bfa'>i</span> <span style='color:#00ff88'>0</span>))\n    <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(>=</span> i <span style='color:#00ff88'>200</span><span style='color:#c084fc'>)</span> y\n      <span style='color:#c084fc'>(loop</span> <span style='color:#c084fc'>(+</span> t <span style='color:#00ff88'>0.01</span><span style='color:#c084fc'>)</span>\n            <span style='color:#c084fc'>(+</span> y <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>0.01</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>-2.0</span> y<span style='color:#c084fc'>)))</span>\n            <span style='color:#c084fc'>(+</span> i <span style='color:#00ff88'>1</span><span style='color:#c084fc'>)))))</span>\n<span style='color:#606078'>;; => ~0.0183 (e^-4)</span></pre>"))
+
+      ;; Card 3: Reason with Logic and Probability
+      (let ((c3 (create-card grid)))
+        (let ((h (create-text "h3" "Reason with Logic and Probability" c3)))
+          (style! h "fontSize" "1.2rem")
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "12px"))
+        (body-text c3 "Built-in knowledge base with unification and probabilistic inference via factor graphs and belief propagation.")
+        (create-runnable-code-block c3
+          "(define kb (make-kb))\n(kb-assert! kb (make-fact '(parent alice bob)))\n(kb-assert! kb (make-fact '(parent bob charlie)))\n(display (kb-query kb '(parent alice ?child)))"
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> kb <span style='color:#c084fc'>(make-kb)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(parent alice bob)</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(parent bob charlie)</span><span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(kb-query</span> kb <span style='color:#00ff88'>'(parent alice ?child)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => ((parent alice bob))</span></pre>")))
+
+    section))
+
+(define (render-what-you-can-build parent)
+  (let ((section (create-section parent)))
+    (section-heading section "What you can build")
+
+    (body-html section "<strong style='color:#a78bfa'>Machine Learning Pipelines.</strong> Train neural networks with compiler-native automatic differentiation. Gradient, Jacobian, and Hessian are compiler primitives, not library calls. AD through control flow, closures, and recursion produces exact derivatives with zero overhead.")
+
+    (body-html section "<strong style='color:#a78bfa'>Scientific Simulations.</strong> Solve differential equations, run Monte Carlo simulations, and process signals with deterministic memory and GPU acceleration. Arena-based allocation gives O(1) alloc and deallocation at scope boundaries -- no GC pauses during a simulation step.")
+
+    (body-html section "<strong style='color:#a78bfa'>Autonomous Agents.</strong> Build systems that reason about their own uncertainty using the consciousness engine: knowledge bases with Prolog-style unification, factor graphs with belief propagation, and global workspace theory for competing cognitive modules.")
+
+    (body-html section "<strong style='color:#a78bfa'>Full-Stack Applications.</strong> Compile to native executables, or target WebAssembly for the browser. This entire website is a single Eshkol source file compiled to WASM. 59 DOM bindings, canvas API, hash-based routing, and a live bytecode REPL -- all from one language.")
+
+    section))
+
+(define (render-comparison-table parent)
+  (let ((section (create-section parent)))
+    (section-heading section "How Eshkol compares")
+
+    (let ((tbl (web-create-element "table")))
+      (web-add-class tbl "comparison-table")
+      (web-set-inner-html tbl "<thead><tr><th>Feature</th><th><strong>Eshkol</strong></th><th>Python / JAX</th><th>Julia</th><th>C++ / Eigen</th></tr></thead><tbody><tr><td>Automatic Differentiation</td><td><strong>Compiler-native (8 ops)</strong></td><td>Library (JAX)</td><td>Library (Zygote)</td><td>Library (Adept)</td></tr><tr><td>Memory Model</td><td><strong>Arena (zero GC)</strong></td><td>GC (refcount)</td><td>GC (generational)</td><td>Manual / RAII</td></tr><tr><td>GPU Acceleration</td><td><strong>Metal + CUDA + XLA</strong></td><td>CUDA / TPU</td><td>CUDA</td><td>CUDA</td></tr><tr><td>Compilation</td><td><strong>AOT (LLVM)</strong></td><td>JIT (XLA)</td><td>JIT (LLVM)</td><td>AOT</td></tr><tr><td>Numeric Tower</td><td><strong>int / bignum / rational / double / complex</strong></td><td>int / float</td><td>Extensive</td><td>int / float</td></tr><tr><td>First-Class Continuations</td><td><strong>Yes (call/cc)</strong></td><td>No</td><td>No</td><td>No</td></tr><tr><td>Logic Programming</td><td><strong>Built-in (KB + unification)</strong></td><td>No</td><td>No</td><td>No</td></tr><tr><td>WASM Target</td><td><strong>Yes</strong></td><td>Pyodide</td><td>No</td><td>Emscripten</td></tr></tbody>")
+      (web-append-child section tbl))
+
+    section))
+
+(define (render-stats parent)
+  (let ((section (create-div parent)))
+    (style! section "borderTop" "1px solid #27272a")
+    (style! section "borderBottom" "1px solid #27272a")
+    (style! section "padding" "48px 24px")
+
+    (let ((inner (create-div section)))
+      (style! inner "maxWidth" "1000px")
+      (style! inner "margin" "0 auto")
+      (web-add-class inner "grid-4")
+
+      (let ((s1 (create-div inner)))
+        (web-add-class s1 "stat-box")
+        (let ((v (create-text "div" "555+" s1))) (web-add-class v "stat-value"))
+        (let ((l (create-text "div" "Built-in Functions" s1))) (web-add-class l "stat-label")))
+
+      (let ((s2 (create-div inner)))
+        (web-add-class s2 "stat-box")
+        (let ((v (create-text "div" "434" s2))) (web-add-class v "stat-value"))
+        (let ((l (create-text "div" "Tests Passing" s2))) (web-add-class l "stat-label")))
+
+      (let ((s3 (create-div inner)))
+        (web-add-class s3 "stat-box")
+        (let ((v (create-text "div" "8" s3))) (web-add-class v "stat-value"))
+        (let ((l (create-text "div" "AD Operators" s3))) (web-add-class l "stat-label")))
+
+      (let ((s4 (create-div inner)))
+        (web-add-class s4 "stat-box")
+        (let ((v (create-text "div" "22" s4))) (web-add-class v "stat-value"))
+        (let ((l (create-text "div" "Consciousness Primitives" s4))) (web-add-class l "stat-label"))))
+
+    section))
+
 (define (render-feature-card parent title desc)
   (let ((card (create-card parent)))
-    (style! card "flex" "1")
-    (style! card "minWidth" "280px")
-
     (let ((h (create-text "h3" title card)))
       (style! h "fontSize" "1.2rem")
-      (style! h "marginBottom" "8px")
-      (style! h "color" "#a78bfa"))
-
+      (style! h "color" "#a78bfa")
+      (style! h "marginBottom" "8px"))
     (let ((p (create-text "p" desc card)))
       (style! p "color" "#a0a0b8")
       (style! p "fontSize" "0.9rem")
       (style! p "lineHeight" "1.6"))
-
     card))
 
 (define (render-pillars parent)
   (let ((section (create-section parent)))
     (section-heading section "Built for Scientific Computing")
 
-    (let ((grid (create-grid section)))
+    (let ((grid (create-grid-3 section)))
       (render-feature-card grid
         "Compiler-Native AD"
-        "8 differential operators compiled directly to LLVM IR. Forward-mode dual numbers + reverse-mode tape. gradient, jacobian, hessian, divergence, curl, laplacian. No runtime library overhead.")
+        "8 differential operators compiled directly to LLVM IR. Forward-mode dual numbers and reverse-mode tape. gradient, jacobian, hessian, divergence, curl, laplacian, derivative, directional-derivative. No runtime library overhead.")
 
       (render-feature-card grid
         "Zero Garbage Collection"
-        "Deterministic arena-based memory with ownership tracking. No GC pauses, no unpredictable latency. Allocation in O(1). Deallocation at scope boundaries.")
+        "Deterministic arena-based memory with ownership tracking. No GC pauses, no unpredictable latency. Allocation in O(1). Deallocation at scope boundaries. Microsecond worst-case guarantees.")
 
       (render-feature-card grid
         "Heterogeneous Computing"
         "GPU acceleration via Metal and CUDA. XLA/StableHLO for ML workloads. SIMD vectorization. Automatic dispatch: GPU, BLAS, SIMD, scalar. One expression, all backends."))
 
+    (create-divider section)
+
+    (let ((grid2 (create-grid-3 section)))
+      (render-feature-card grid2
+        "Full R7RS Scheme"
+        "Closures, first-class continuations (call/cc), dynamic-wind, hygienic macros (syntax-rules), tail call optimization, pattern matching. Homoiconic: every function can display its own source code.")
+
+      (render-feature-card grid2
+        "Complete Numeric Tower"
+        "int64, bignum (arbitrary precision), rational (exact fractions), double (IEEE 754), complex. Tagged values enable dynamic dispatch with zero overhead for known types.")
+
+      (render-feature-card grid2
+        "Consciousness Engine"
+        "Knowledge bases with unification, factor graphs with belief propagation, global workspace theory. 22 built-in primitives for systems that reason about their own uncertainty."))
+
     section))
 
-(define (render-code-example parent title raw-code code-html caption)
-  (let ((card (create-div parent)))
-    (style! card "background" "#0d0d15")
-    (style! card "border" "1px solid #2a2a3a")
-    (style! card "borderRadius" "12px")
-    (style! card "padding" "24px 28px")
-    (style! card "flex" "1")
-    (style! card "minWidth" "320px")
-
-    (let ((h (create-text "h4" title card)))
-      (style! h "fontSize" "0.85rem")
-      (style! h "fontWeight" "600")
-      (style! h "color" "#7c3aed")
-      (style! h "textTransform" "uppercase")
-      (style! h "letterSpacing" "1px")
-      (style! h "marginBottom" "16px"))
-
-    (if (string=? raw-code "")
-      (let ((code (create-div card)))
-        (web-set-inner-html code code-html))
-      (create-runnable-code-block card raw-code code-html))
-
-    (let ((cap (create-text "p" caption card)))
-      (style! cap "color" "#606078")
-      (style! cap "fontSize" "0.8rem")
-      (style! cap "marginTop" "12px")
-      (style! cap "fontStyle" "italic"))
-
-    card))
-
-(define (render-examples-row parent)
+(define (render-code-showcase parent)
   (let ((section (create-section parent)))
     (section-heading section "Expressive by Design")
 
-    (let ((grid (create-grid section)))
-      (render-code-example grid
-        "Automatic Differentiation"
-        "(define (loss W x y)\n  (tensor-sum\n    (tensor-mul\n      (tensor-sub (tensor-dot W x) y)\n      (tensor-sub (tensor-dot W x) y))))\n\n(display (gradient loss W x y))"
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss W x y)</span>
-  <span style='color:#c084fc'>(tensor-sum</span>
-    <span style='color:#c084fc'>(tensor-mul</span>
-      <span style='color:#c084fc'>(tensor-sub</span> <span style='color:#c084fc'>(tensor-dot</span> W x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>)</span>
-      <span style='color:#c084fc'>(tensor-sub</span> <span style='color:#c084fc'>(tensor-dot</span> W x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>))))</span>
+    (let ((grid (create-grid-2 section)))
 
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> loss W x y<span style='color:#c084fc'>))</span></pre>"
-        "8 differential operators compiled to native code.")
+      ;; AD showcase
+      (let ((card1 (create-card grid)))
+        (let ((h (create-text "h4" "AUTOMATIC DIFFERENTIATION" card1)))
+          (style! h "fontSize" "0.85rem")
+          (style! h "fontWeight" "600")
+          (style! h "color" "#7c3aed")
+          (style! h "textTransform" "uppercase")
+          (style! h "letterSpacing" "1px")
+          (style! h "marginBottom" "16px"))
+        (create-runnable-code-block card1
+          "(define (loss W x y)\n  (let ((pred (* W x)))\n    (* (- pred y) (- pred y))))\n\n(display (derivative (lambda (w) (loss w 2.0 4.0)) 1.5))"
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss W x y)</span>\n  <span style='color:#c084fc'>(let</span> ((pred <span style='color:#c084fc'>(*</span> W x<span style='color:#c084fc'>)))</span>\n    <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(-</span> pred y<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(-</span> pred y<span style='color:#c084fc'>))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(derivative</span>\n  <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(w)</span> <span style='color:#c084fc'>(loss</span> w <span style='color:#00ff88'>2.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>))</span> <span style='color:#00ff88'>1.5</span><span style='color:#c084fc'>))</span></pre>")
+        (let ((cap (create-text "p" "8 differential operators compiled to native code." card1)))
+          (style! cap "color" "#71717a")
+          (style! cap "fontSize" "0.8rem")
+          (style! cap "marginTop" "12px")
+          (style! cap "fontStyle" "italic")))
 
-      (render-code-example grid
-        "Tensor Computing"
-        "(define A #((1.0 2.0 3.0) (4.0 5.0 6.0)))\n(define B #((7.0 8.0) (9.0 10.0) (11.0 12.0)))\n(display (tensor-dot A B))"
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> A <span style='color:#00ff88'>#((1 2 3) (4 5 6))</span><span style='color:#c084fc'>)</span>
-<span style='color:#c084fc'>(define</span> B <span style='color:#00ff88'>#((7 8) (9 10) (11 12))</span><span style='color:#c084fc'>)</span>
+      ;; Tensor showcase
+      (let ((card2 (create-card grid)))
+        (let ((h (create-text "h4" "TENSOR COMPUTING" card2)))
+          (style! h "fontSize" "0.85rem")
+          (style! h "fontWeight" "600")
+          (style! h "color" "#7c3aed")
+          (style! h "textTransform" "uppercase")
+          (style! h "letterSpacing" "1px")
+          (style! h "marginBottom" "16px"))
+        (create-runnable-code-block card2
+          "(define A #((1.0 2.0 3.0) (4.0 5.0 6.0)))\n(define B #((7.0 8.0) (9.0 10.0) (11.0 12.0)))\n(display (tensor-dot A B))"
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> A <span style='color:#00ff88'>#((1 2 3) (4 5 6))</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(define</span> B <span style='color:#00ff88'>#((7 8) (9 10) (11 12))</span><span style='color:#c084fc'>)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-dot</span> A B<span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => #((58 64) (139 154))</span></pre>")
+        (let ((cap (create-text "p" "GPU-accelerated via Metal, CUDA, and BLAS." card2)))
+          (style! cap "color" "#71717a")
+          (style! cap "fontSize" "0.8rem")
+          (style! cap "marginTop" "12px")
+          (style! cap "fontStyle" "italic")))
 
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-dot</span> A B<span style='color:#c084fc'>))</span>
-<span style='color:#606078'>;; => #((58 64) (139 154))</span></pre>"
-        "GPU-accelerated via Metal and CUDA.")
+      ;; First-class functions
+      (let ((card3 (create-card grid)))
+        (let ((h (create-text "h4" "FIRST-CLASS FUNCTIONS" card3)))
+          (style! h "fontSize" "0.85rem")
+          (style! h "fontWeight" "600")
+          (style! h "color" "#7c3aed")
+          (style! h "textTransform" "uppercase")
+          (style! h "letterSpacing" "1px")
+          (style! h "marginBottom" "16px"))
+        (create-runnable-code-block card3
+          "(define (compose f g)\n  (lambda (x) (f (g x))))\n\n(define inc-then-double\n  (compose\n    (lambda (x) (* x 2))\n    (lambda (x) (+ x 1))))\n\n(display (map inc-then-double '(1 2 3)))"
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(compose f g)</span>\n  <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(f (g</span> x<span style='color:#c084fc'>))))</span>\n\n<span style='color:#c084fc'>(define</span> inc-then-double\n  <span style='color:#c084fc'>(compose</span>\n    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x <span style='color:#00ff88'>2</span><span style='color:#c084fc'>))</span>\n    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(+</span> x <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(map</span> inc-then-double <span style='color:#00ff88'>'(1 2 3)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => (4 6 8)</span></pre>")
+        (let ((cap (create-text "p" "Full R7RS Scheme with closures and continuations." card3)))
+          (style! cap "color" "#71717a")
+          (style! cap "fontSize" "0.8rem")
+          (style! cap "marginTop" "12px")
+          (style! cap "fontStyle" "italic")))
 
-      (render-code-example grid
-        "First-Class Functions"
-        "(define (compose f g)\n  (lambda (x) (f (g x))))\n\n(define inc-then-double\n  (compose\n    (lambda (x) (* x 2))\n    (lambda (x) (+ x 1))))\n\n(display (map inc-then-double '(1 2 3)))"
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(compose f g)</span>
-  <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(f (g</span> x<span style='color:#c084fc'>))))</span>
-
-<span style='color:#c084fc'>(define</span> inc-then-double
-  <span style='color:#c084fc'>(compose</span>
-    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x <span style='color:#00ff88'>2</span><span style='color:#c084fc'>))</span>
-    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(+</span> x <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>
-
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(map</span> inc-then-double <span style='color:#00ff88'>'(1 2 3)</span><span style='color:#c084fc'>))</span></pre>"
-        "Full R7RS Scheme with closures and continuations."))
-
-    section))
-
-(define (render-stat parent value label)
-  (let ((stat (create-div parent)))
-    (style! stat "textAlign" "center")
-    (style! stat "flex" "1")
-    (style! stat "minWidth" "120px")
-
-    (let ((num (create-text "div" value stat)))
-      (style! num "fontSize" "2.5rem")
-      (style! num "fontWeight" "800")
-      (style! num "color" "#7c3aed")
-      (style! num "marginBottom" "4px"))
-
-    (let ((lbl (create-text "div" label stat)))
-      (style! lbl "color" "#606078")
-      (style! lbl "fontSize" "0.85rem")
-      (style! lbl "fontWeight" "500")
-      (style! lbl "textTransform" "uppercase")
-      (style! lbl "letterSpacing" "1px"))
-
-    stat))
-
-(define (render-stats parent)
-  (let ((section (create-div parent)))
-    (style! section "maxWidth" "1000px")
-    (style! section "margin" "0 auto")
-    (style! section "padding" "60px 32px")
-    (style! section "display" "flex")
-    (style! section "gap" "32px")
-    (style! section "flexWrap" "wrap")
-    (style! section "borderTop" "1px solid #1a1a28")
-    (style! section "borderBottom" "1px solid #1a1a28")
-
-    (render-stat section "555+" "Built-in Functions")
-    (render-stat section "438" "Tests Passing")
-    (render-stat section "8" "Calculus Operators")
-    (render-stat section "5" "Platforms")
+      ;; Continuations showcase
+      (let ((card4 (create-card grid)))
+        (let ((h (create-text "h4" "CONTINUATIONS" card4)))
+          (style! h "fontSize" "0.85rem")
+          (style! h "fontWeight" "600")
+          (style! h "color" "#7c3aed")
+          (style! h "textTransform" "uppercase")
+          (style! h "letterSpacing" "1px")
+          (style! h "marginBottom" "16px"))
+        (create-runnable-code-block card4
+          "(call/cc (lambda (k)\n  (dynamic-wind\n    (lambda () (display \"enter \"))\n    (lambda () (k 42))\n    (lambda () (display \"exit\")))))"
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(call/cc</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(k)</span>\n  <span style='color:#c084fc'>(dynamic-wind</span>\n    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>()</span> <span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"enter \"</span><span style='color:#c084fc'>))</span>\n    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>()</span> <span style='color:#c084fc'>(k</span> <span style='color:#00ff88'>42</span><span style='color:#c084fc'>))</span>\n    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>()</span> <span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"exit\"</span><span style='color:#c084fc'>)))))</span></pre>")
+        (let ((cap (create-text "p" "First-class continuations with dynamic-wind guards." card4)))
+          (style! cap "color" "#71717a")
+          (style! cap "fontSize" "0.8rem")
+          (style! cap "marginTop" "12px")
+          (style! cap "fontStyle" "italic"))))
 
     section))
 
 (define (render-landing content)
   (render-hero content)
+  (render-app-cards content)
   (render-pillars content)
-  (render-examples-row content)
+  (render-code-showcase content)
+  (render-what-you-can-build content)
+  (render-comparison-table content)
   (render-stats content)
   (render-footer content))
-
-;; ═══════════════════════════════════════════════════════════
-;; PAGE: FEATURES
-;; ═══════════════════════════════════════════════════════════
-
-(define (render-feature-section parent title desc raw-code code-html)
-  (let ((s (create-div parent)))
-    (style! s "marginBottom" "48px")
-    (section-subheading s title)
-    (body-text s desc)
-    (if (string=? code-html "")
-      s
-      (if (string=? raw-code "")
-        (create-code-block s code-html)
-        (create-runnable-code-block s raw-code code-html)))
-    s))
-
-(define (render-features-page content)
-  (let ((page (create-section content)))
-    (create-page-header page "Features" "Everything Eshkol brings to scientific computing.")
-
-    (render-feature-section page
-      "Automatic Differentiation"
-      "8 differential operators compiled directly to LLVM IR. Forward-mode via dual numbers for single derivatives. Reverse-mode via computational tapes for gradients. Supports 32 levels of nested differentiation. Operators: gradient, jacobian, hessian, divergence, curl, laplacian, derivative, directional-derivative."
-      "(display (derivative (lambda (x) (* x x x)) 2.0))\n(newline)\n(display (gradient (lambda (x y) (+ (* x x) (* x y))) 3.0 4.0))"
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Forward-mode derivative</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(derivative</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 12.0</span>
-
-<span style='color:#606078'>;; Reverse-mode gradient</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x y)</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)))</span> <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>))</span>
-<span style='color:#606078'>;; => #(10.0 3.0)</span></pre>")
-
-    (render-feature-section page
-      "Tensor Operations"
-      "N-dimensional tensors with GPU-accelerated operations. Automatic dispatch across Metal (Apple Silicon), CUDA, BLAS, and SIMD backends. Operations: dot, matmul, reshape, transpose, slice, broadcast, map, reduce, SVD, QR, eigenvalues."
-      "(define A #((1.0 2.0) (3.0 4.0)))\n(display (tensor-dot A A))\n(newline)\n(display (tensor-transpose A))\n(newline)\n(display (tensor-reshape A #(4)))"
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> A <span style='color:#00ff88'>#((1 2) (3 4))</span><span style='color:#c084fc'>)</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-dot</span> A A<span style='color:#c084fc'>))</span>        <span style='color:#606078'>;; => #((7 10) (15 22))</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-transpose</span> A<span style='color:#c084fc'>))</span>    <span style='color:#606078'>;; => #((1 3) (2 4))</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-reshape</span> A <span style='color:#00ff88'>#(4)</span><span style='color:#c084fc'>))</span> <span style='color:#606078'>;; => #(1 2 3 4)</span></pre>")
-
-    (render-feature-section page
-      "Deterministic Memory"
-      "Arena-based allocation with Ownership-Aware Lexical Regions (OALR). No garbage collector, no reference counting, no unpredictable pauses. Allocation in O(1) via bump pointer. Deallocation at scope boundaries. Microsecond worst-case guarantees."
-      "" "")
-
-    (render-feature-section page
-      "GPU Acceleration"
-      "4-tier automatic dispatch: SIMD vectorization for small tensors, cBLAS/Accelerate for linear algebra, Metal compute shaders on Apple Silicon, CUDA on NVIDIA GPUs. XLA/StableHLO backend for ML training workloads. One expression compiles to the optimal backend."
-      "" "")
-
-    (render-feature-section page
-      "Type System"
-      "Gradual typing with Homotopy Type Theory (HoTT) foundations. Full numeric tower: int64, bignum (arbitrary precision), rational (exact fractions), double (IEEE 754), complex. Tagged values enable dynamic dispatch with zero overhead for known types."
-      "" "")
-
-    (render-feature-section page
-      "R7RS Scheme"
-      "Full R7RS compatibility: closures, first-class continuations (call/cc), dynamic-wind, hygienic macros (syntax-rules), tail call optimization, pattern matching. Homoiconic: every function can display its own source code as an S-expression."
-      "(call/cc (lambda (k)\n  (dynamic-wind\n    (lambda () (display \"enter \"))\n    (lambda () (k 42))\n    (lambda () (display \"exit\")))))"
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(call/cc</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(k)</span>
-  <span style='color:#c084fc'>(dynamic-wind</span>
-    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>()</span> <span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"enter \"</span><span style='color:#c084fc'>))</span>
-    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>()</span> <span style='color:#c084fc'>(k</span> <span style='color:#00ff88'>42</span><span style='color:#c084fc'>))</span>
-    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>()</span> <span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"exit\"</span><span style='color:#c084fc'>)))))</span></pre>")
-
-    (render-feature-section page
-      "Parallel Computing"
-      "Work-stealing thread pool with parallel-map, parallel-fold, parallel-filter, and futures. Automatic work distribution across CPU cores. Thread-safe arena allocation."
-      "(display (map (lambda (x) (* x x)) '(1 2 3 4 5)))"
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(map</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>))</span>
-<span style='color:#606078'>;; => (1 4 9 16 25)</span></pre>")
-
-    (render-feature-section page
-      "Standard Library"
-      "555+ built-in functions across 25+ modules. List processing (60+ operations), string manipulation (30+), mathematics (trigonometry, statistics, special functions), JSON parsing, signal processing (FFT/IFFT, window functions, FIR/IIR filters), ODE solvers, pattern matching, and more."
-      "" "")
-
-    (render-feature-section page
-      "Web Platform"
-      "Compile to WebAssembly with a single flag. 90+ DOM API bindings for building full web applications. This entire website is an Eshkol program compiled to WASM — the ultimate proof of concept."
-      "" "")
-
-    (render-footer page)))
-
-;; ═══════════════════════════════════════════════════════════
-;; PAGE: DOCS
-;; ═══════════════════════════════════════════════════════════
-
-(define (render-doc-tab parent label content-url)
-  (let ((tab (create-text "a" label parent)))
-    (style! tab "color" "#a0a0b8")
-    (style! tab "textDecoration" "none")
-    (style! tab "padding" "8px 20px")
-    (style! tab "borderRadius" "6px")
-    (style! tab "fontSize" "0.9rem")
-    (style! tab "fontWeight" "500")
-    (style! tab "cursor" "pointer")
-    (style! tab "border" "1px solid #2a2a3a")
-    (web-set-attribute tab "href" content-url)
-    (web-set-attribute tab "data-url" content-url)
-    tab))
-
-(define (render-docs-page content)
-  (let ((page (create-narrow-section content)))
-    (create-page-header page "Documentation" "Language guides, API reference, and quick start.")
-
-    ;; Tab bar
-    (let ((tabs (create-div page)))
-      (style! tabs "display" "flex")
-      (style! tabs "gap" "12px")
-      (style! tabs "marginBottom" "32px")
-      (style! tabs "flexWrap" "wrap")
-
-      (render-doc-tab tabs "Quick Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_QUICK_REFERENCE.md")
-      (render-doc-tab tabs "Language Guide" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_LANGUAGE_GUIDE.md")
-      (render-doc-tab tabs "API Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/API_REFERENCE.md")
-      (render-doc-tab tabs "Quick Start" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/QUICKSTART.md")
-      (render-doc-tab tabs "Feature Matrix" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/FEATURE_MATRIX.md")
-      (render-doc-tab tabs "Roadmap" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ROADMAP.md"))
-
-    ;; Content area
-    (let ((doc-area (create-div page)))
-      (web-add-class doc-area "doc-content")
-      (style! doc-area "minHeight" "400px")
-      (web-set-attribute doc-area "id" "doc-content-area")
-
-      ;; Load quick reference by default
-      (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_QUICK_REFERENCE.md" doc-area)
-
-      ;; Instruction
-      (let ((hint (create-text "p" "Click a tab above to load documentation." doc-area)))
-        (style! hint "color" "#606078")
-        (style! hint "fontStyle" "italic")))
-
-    (render-footer page)))
 
 ;; ═══════════════════════════════════════════════════════════
 ;; PAGE: LEARN
 ;; ═══════════════════════════════════════════════════════════
 
-(define (render-lesson parent title description raw-code code-html output)
-  (let ((lesson (create-div parent)))
-    (style! lesson "marginBottom" "48px")
-
-    (section-subheading lesson title)
-    (body-text lesson description)
-
-    (if (string=? raw-code "")
-      (create-code-block lesson code-html)
-      (create-runnable-code-block lesson raw-code code-html))
-
-    (if (string=? output "")
-      lesson
-      (let ((out (create-text "p" output lesson)))
-        (style! out "color" "#00ff88")
-        (style! out "fontSize" "0.85rem")
-        (style! out "fontFamily" "'JetBrains Mono', monospace")
-        (style! out "marginTop" "8px")))
-
-    lesson))
+(define (render-chapter parent number title desc)
+  (let ((ch (create-div parent)))
+    (web-add-class ch "chapter")
+    (let ((num (create-text "div" number ch)))
+      (web-add-class num "chapter-number"))
+    (let ((t (create-text "h2" title ch)))
+      (web-add-class t "chapter-title"))
+    (let ((d (create-text "p" desc ch)))
+      (web-add-class d "chapter-desc"))
+    ch))
 
 (define (render-learn-page content)
-  (let ((page (create-narrow-section content)))
-    (create-page-header page "Learn Eshkol" "From hello world to automatic differentiation in 5 lessons.")
+  (let ((page (create-section content)))
+    (create-page-header page "Learn Eshkol" "From hello world to automatic differentiation in 8 chapters.")
 
-    (render-lesson page
-      "1. Hello World"
-      "Write your first Eshkol program. Try it live in the browser VM, or compile with eshkol-run."
-      "(display \"Hello, world!\")\n(newline)"
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"Hello, world!\"</span><span style='color:#c084fc'>)</span>
-<span style='color:#c084fc'>(newline)</span>
+    ;; Prerequisites note
+    (let ((note (create-div page)))
+      (web-add-class note "card-highlight")
+      (style! note "marginBottom" "48px")
+      (let ((h (create-text "h3" "Before You Start" note)))
+        (style! h "fontSize" "1.1rem")
+        (style! h "marginBottom" "8px"))
+      (body-text note "All code examples below are runnable in the browser VM. Click the Run button to execute them. For native compilation with GPU acceleration and automatic differentiation, install Eshkol locally.")
+      (let ((a (create-text "a" "Install Eshkol" note)))
+        (web-add-class a "btn")
+        (web-add-class a "btn-primary")
+        (style! a "marginTop" "8px")
+        (web-set-attribute a "href" "#/downloads")))
 
-<span style='color:#606078'>;; Native compile: eshkol-run hello.esk -o hello && ./hello</span></pre>"
-      "")
+    ;; Chapter 1: First Programs
+    (let ((ch1 (render-chapter page "CHAPTER 1" "First Programs"
+            "Write your first Eshkol program. Every program is an expression that evaluates to a value. Eshkol uses S-expression syntax: parenthesized prefix notation where the operator comes first.")))
+      (create-runnable-code-block ch1
+        "(display \"Hello, world!\")\n(newline)"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"Hello, world!\"</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(newline)</span></pre>")
 
-    (render-lesson page
-      "2. Numbers and Functions"
-      "Eshkol supports the full numeric tower: integers, bignums, rationals, doubles, and complex numbers. Functions are defined with define."
-      "(define (square x) (* x x))\n(define (hypotenuse a b)\n  (sqrt (+ (square a) (square b))))\n(display (hypotenuse 3 4))\n(newline)\n(display (+ 1/3 1/6))"
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(square x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span>
-<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(hypotenuse a b)</span>
-  <span style='color:#c084fc'>(sqrt</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(square</span> a<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(square</span> b<span style='color:#c084fc'>))))</span>
+      (create-runnable-code-block ch1
+        "(define x 42)\n(define y 3.14)\n(display (+ x y))\n(newline)\n(display (* 2 (+ 3 4)))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> x <span style='color:#00ff88'>42</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(define</span> y <span style='color:#00ff88'>3.14</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(+</span> x y<span style='color:#c084fc'>))</span>       <span style='color:#606078'>;; => 45.14</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>2</span> <span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>3</span> <span style='color:#00ff88'>4</span><span style='color:#c084fc'>)))</span>  <span style='color:#606078'>;; => 14</span></pre>")
 
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(hypotenuse</span> <span style='color:#00ff88'>3</span> <span style='color:#00ff88'>4</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 5.0</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1/3</span> <span style='color:#00ff88'>1/6</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 1/2 (exact rational)</span></pre>"
-      "")
+      (body-text ch1 "Use if for two-way branching and cond for multi-way dispatch. define creates both variables and functions.")
 
-    (render-lesson page
-      "3. Higher-Order Functions"
-      "Functions are first-class values. Pass them as arguments, return them from functions, store them in data structures."
-      "(display (map (lambda (x) (* x x)) '(1 2 3 4 5)))\n(newline)\n(display (filter even? '(1 2 3 4 5 6)))\n(newline)\n(display (fold-left + 0 '(1 2 3 4 5)))"
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(map</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>))</span>
-<span style='color:#606078'>;; => (1 4 9 16 25)</span>
+      (create-runnable-code-block ch1
+        "(define (abs-val x)\n  (if (< x 0) (- 0 x) x))\n(display (abs-val -5))\n(newline)\n(display (abs-val 3))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Conditionals with if</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(abs-val x)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(&lt;</span> x <span style='color:#00ff88'>0</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(-</span> <span style='color:#00ff88'>0</span> x<span style='color:#c084fc'>)</span> x<span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(abs-val</span> <span style='color:#00ff88'>-5</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 5</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(abs-val</span> <span style='color:#00ff88'>3</span><span style='color:#c084fc'>))</span>   <span style='color:#606078'>;; => 3</span></pre>"))
 
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(filter</span> even? <span style='color:#00ff88'>'(1 2 3 4 5 6)</span><span style='color:#c084fc'>))</span>
-<span style='color:#606078'>;; => (2 4 6)</span>
+    ;; Chapter 2: Functions & Closures
+    (let ((ch2 (render-chapter page "CHAPTER 2" "Functions & Closures"
+            "Functions are defined with define and are first-class values. Closures capture their lexical environment.")))
+      (create-runnable-code-block ch2
+        "(define (square x) (* x x))\n(define (hypotenuse a b)\n  (sqrt (+ (square a) (square b))))\n(display (hypotenuse 3 4))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(square x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(hypotenuse a b)</span>\n  <span style='color:#c084fc'>(sqrt</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(square</span> a<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(square</span> b<span style='color:#c084fc'>))))</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(hypotenuse</span> <span style='color:#00ff88'>3</span> <span style='color:#00ff88'>4</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 5.0</span></pre>")
 
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(fold-left</span> + <span style='color:#00ff88'>0</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>))</span>
-<span style='color:#606078'>;; => 15</span></pre>"
-      "")
+      (body-text ch2 "A closure is a function that remembers its environment. lambda creates anonymous functions that capture free variables:")
 
-    (render-lesson page
-      "4. Tensors"
-      "Tensors are N-dimensional arrays of doubles. Create them with literal syntax or constructors. Operations dispatch automatically to the fastest available backend."
-      "(define v #(1.0 2.0 3.0 4.0 5.0))\n(define M #((1.0 0.0) (0.0 1.0)))\n(display (tensor-sum v))\n(newline)\n(display (tensor-mean v))\n(newline)\n(display (tensor-dot M #(3.0 4.0)))"
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> v <span style='color:#00ff88'>#(1.0 2.0 3.0 4.0 5.0)</span><span style='color:#c084fc'>)</span>
-<span style='color:#c084fc'>(define</span> M <span style='color:#00ff88'>#((1.0 0.0) (0.0 1.0))</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; 2x2 identity</span>
+      (create-runnable-code-block ch2
+        "(define (make-adder n)\n  (lambda (x) (+ x n)))\n(define add5 (make-adder 5))\n(display (add5 10))\n(newline)\n(display (add5 20))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(make-adder n)</span>\n  <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(+</span> x n<span style='color:#c084fc'>)))</span>\n<span style='color:#c084fc'>(define</span> add5 <span style='color:#c084fc'>(make-adder</span> <span style='color:#00ff88'>5</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(add5</span> <span style='color:#00ff88'>10</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 15</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(add5</span> <span style='color:#00ff88'>20</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 25</span></pre>")
 
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-sum</span> v<span style='color:#c084fc'>))</span>          <span style='color:#606078'>;; => 15.0</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-mean</span> v<span style='color:#c084fc'>))</span>         <span style='color:#606078'>;; => 3.0</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-dot</span> M <span style='color:#00ff88'>#(3.0 4.0)</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => #(3.0 4.0)</span></pre>"
-      "")
+      (body-text ch2 "Function composition builds new functions by chaining existing ones:")
 
-    (render-lesson page
-      "5. Automatic Differentiation"
-      "Eshkol's signature feature. Compute derivatives, gradients, and Jacobians of any function. Requires the native compiler (eshkol-run) — try the playground for browser execution."
-      "(display (derivative (lambda (x) (* x x x)) 2.0))\n(newline)\n(define (f x y) (+ (* x x) (* 3.0 y)))\n(display (gradient f 2.0 1.0))"
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Scalar derivative: d/dx(x^3) at x=2</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(derivative</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>))</span>
-<span style='color:#606078'>;; => 12.0</span>
+      (create-runnable-code-block ch2
+        "(define (compose f g)\n  (lambda (x) (f (g x))))\n(define inc-then-double\n  (compose (lambda (x) (* x 2))\n           (lambda (x) (+ x 1))))\n(display (inc-then-double 3))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(compose f g)</span>\n  <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(f (g</span> x<span style='color:#c084fc'>))))</span>\n<span style='color:#c084fc'>(define</span> inc-then-double\n  <span style='color:#c084fc'>(compose</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x <span style='color:#00ff88'>2</span><span style='color:#c084fc'>))</span>\n           <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(+</span> x <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(inc-then-double</span> <span style='color:#00ff88'>3</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 8</span></pre>"))
 
-<span style='color:#606078'>;; Multi-parameter gradient</span>
-<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(f x y)</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3.0</span> y<span style='color:#c084fc'>)))</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> f <span style='color:#00ff88'>2.0</span> <span style='color:#00ff88'>1.0</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => #(4.0 3.0)</span></pre>"
-      "")
+    ;; Chapter 3: Lists & Higher-Order
+    (let ((ch3 (render-chapter page "CHAPTER 3" "Lists & Higher-Order Functions"
+            "Lists are the fundamental data structure. Map, filter, and fold transform data without mutation.")))
+      (create-runnable-code-block ch3
+        "(display (map (lambda (x) (* x x)) '(1 2 3 4 5)))\n(newline)\n(display (filter even? '(1 2 3 4 5 6)))\n(newline)\n(display (fold-left + 0 '(1 2 3 4 5)))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(map</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => (1 4 9 16 25)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(filter</span> even? <span style='color:#00ff88'>'(1 2 3 4 5 6)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => (2 4 6)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(fold-left</span> + <span style='color:#00ff88'>0</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => 15</span></pre>")
+
+      (body-text ch3 "Named let provides tail-recursive loops. Map a function over a sequence to transform each element:")
+
+      (create-runnable-code-block ch3
+        "(define (fib n)\n  (define (loop a b i)\n    (if (= i n) a\n      (loop b (+ a b) (+ i 1))))\n  (loop 0 1 0))\n(display (map fib '(0 1 2 3 4 5 6 7 8 9 10)))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(fib n)</span>\n  <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loop a b i)</span>\n    <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> i n<span style='color:#c084fc'>)</span> a\n      <span style='color:#c084fc'>(loop</span> b <span style='color:#c084fc'>(+</span> a b<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> i <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>\n  <span style='color:#c084fc'>(loop</span> <span style='color:#00ff88'>0</span> <span style='color:#00ff88'>1</span> <span style='color:#00ff88'>0</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(map</span> fib <span style='color:#00ff88'>'(0 1 2 3 4 5 6 7 8 9 10)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => (0 1 1 2 3 5 8 13 21 34 55)</span></pre>")
+
+      (body-text ch3 "Higher-order functions compose naturally. Here is quicksort built from filter and append:")
+
+      (create-runnable-code-block ch3
+        "(define (quicksort lst)\n  (if (null? lst) '()\n    (let ((pivot (car lst))\n          (rest (cdr lst)))\n      (append\n        (quicksort (filter (lambda (x) (< x pivot)) rest))\n        (list pivot)\n        (quicksort (filter (lambda (x) (>= x pivot)) rest))))))\n(display (quicksort '(3 1 4 1 5 9 2 6 5 3 5)))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Quicksort with higher-order functions</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(quicksort lst)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(null?</span> lst<span style='color:#c084fc'>)</span> <span style='color:#00ff88'>'()</span>\n    <span style='color:#c084fc'>(let</span> ((pivot <span style='color:#c084fc'>(car</span> lst<span style='color:#c084fc'>))</span>\n          (rest <span style='color:#c084fc'>(cdr</span> lst<span style='color:#c084fc'>)))</span>\n      <span style='color:#c084fc'>(append</span>\n        <span style='color:#c084fc'>(quicksort</span> <span style='color:#c084fc'>(filter</span>\n          <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(&lt;</span> x pivot<span style='color:#c084fc'>))</span> rest<span style='color:#c084fc'>))</span>\n        <span style='color:#c084fc'>(list</span> pivot<span style='color:#c084fc'>)</span>\n        <span style='color:#c084fc'>(quicksort</span> <span style='color:#c084fc'>(filter</span>\n          <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(>=</span> x pivot<span style='color:#c084fc'>))</span> rest<span style='color:#c084fc'>))))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(quicksort</span> <span style='color:#00ff88'>'(3 1 4 1 5 9 2 6 5 3 5)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => (1 1 2 3 3 4 5 5 5 6 9)</span></pre>"))
+
+    ;; Chapter 4: Numeric Tower
+    (let ((ch4 (render-chapter page "CHAPTER 4" "Numeric Tower"
+            "Eshkol supports the full numeric tower: integers, bignums (arbitrary precision), rationals (exact fractions), doubles (IEEE 754), and complex numbers.")))
+      (create-runnable-code-block ch4
+        "(display (expt 2 64))\n(newline)\n(display (+ 1/3 1/6))\n(newline)\n(display (* 3/4 4/3))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Bignums — no overflow</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(expt</span> <span style='color:#00ff88'>2</span> <span style='color:#00ff88'>64</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => 18446744073709551616</span>\n\n<span style='color:#606078'>;; Exact rationals</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1/3</span> <span style='color:#00ff88'>1/6</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 1/2</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3/4</span> <span style='color:#00ff88'>4/3</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 1</span></pre>")
+
+      (create-runnable-code-block ch4
+        "(display (make-rectangular 3.0 4.0))\n(newline)\n(display (magnitude (make-rectangular 3.0 4.0)))\n(newline)\n(display (+ 2+3i 1-1i))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Complex numbers</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(make-rectangular</span> <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 3+4i</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(magnitude</span> <span style='color:#c084fc'>(make-rectangular</span> <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>)))</span>  <span style='color:#606078'>;; => 5.0</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>2+3i</span> <span style='color:#00ff88'>1-1i</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 3+2i</span></pre>")
+
+      (create-runnable-code-block ch4
+        "(display (number->string 255 16))\n(newline)\n(display (number->string 255 2))\n(newline)\n(display (string->number \"#xFF\"))\n(newline)\n(display (exact->inexact 1/3))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Numeric conversions</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(number->string</span> <span style='color:#00ff88'>255</span> <span style='color:#00ff88'>16</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => \"ff\"</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(number->string</span> <span style='color:#00ff88'>255</span> <span style='color:#00ff88'>2</span><span style='color:#c084fc'>))</span>   <span style='color:#606078'>;; => \"11111111\"</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(string->number</span> <span style='color:#00ff88'>\"#xFF\"</span><span style='color:#c084fc'>))</span> <span style='color:#606078'>;; => 255</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(exact->inexact</span> <span style='color:#00ff88'>1/3</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 0.333...</span></pre>"))
+
+    ;; Chapter 5: Automatic Differentiation
+    (let ((ch5 (render-chapter page "CHAPTER 5" "Automatic Differentiation"
+            "Eshkol's signature feature. 8 differential operators are compiled directly to LLVM IR. No runtime library overhead.")))
+      (create-runnable-code-block ch5
+        "(display (derivative (lambda (x) (* x x x)) 2.0))\n(newline)\n(define (f x y) (+ (* x x) (* 3.0 y)))\n(display (gradient f 2.0 1.0))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Scalar derivative: d/dx(x^3) at x=2</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(derivative</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => 12.0</span>\n\n<span style='color:#606078'>;; Multi-parameter gradient</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(f x y)</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3.0</span> y<span style='color:#c084fc'>)))</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> f <span style='color:#00ff88'>2.0</span> <span style='color:#00ff88'>1.0</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => #(4.0 3.0)</span></pre>")
+
+      (body-text ch5 "The gradient operator computes partial derivatives of multi-variable functions. Apply it to the Rosenbrock function to verify the minimum:")
+
+      (create-runnable-code-block ch5
+        "(define (rosenbrock x y)\n  (+ (* 100.0 (expt (- y (* x x)) 2))\n     (expt (- 1.0 x) 2)))\n(display (gradient rosenbrock 1.0 1.0))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Gradient of the Rosenbrock function</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(rosenbrock x y)</span>\n  <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>100.0</span> <span style='color:#c084fc'>(expt</span> <span style='color:#c084fc'>(-</span> y <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>2</span><span style='color:#c084fc'>))</span>\n     <span style='color:#c084fc'>(expt</span> <span style='color:#c084fc'>(-</span> <span style='color:#00ff88'>1.0</span> x<span style='color:#c084fc'>)</span> <span style='color:#00ff88'>2</span><span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> rosenbrock <span style='color:#00ff88'>1.0</span> <span style='color:#00ff88'>1.0</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => #(0.0 0.0)  (minimum at (1,1))</span></pre>")
+
+      (body-text ch5 "AD works through closures and let bindings. Compute the derivative of a loss function with respect to a weight parameter:")
+
+      (create-runnable-code-block ch5
+        "(define (loss W x y)\n  (let ((pred (* W x)))\n    (* (- pred y) (- pred y))))\n\n(display (derivative (lambda (w) (loss w 2.0 4.0)) 1.5))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Derivative of MSE loss w.r.t. weight</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss W x y)</span>\n  <span style='color:#c084fc'>(let</span> ((pred <span style='color:#c084fc'>(*</span> W x<span style='color:#c084fc'>)))</span>\n    <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(-</span> pred y<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(-</span> pred y<span style='color:#c084fc'>))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(derivative</span>\n  <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(w)</span> <span style='color:#c084fc'>(loss</span> w <span style='color:#00ff88'>2.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>))</span> <span style='color:#00ff88'>1.5</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => -4.0</span></pre>"))
+
+    ;; Chapter 6: Tensors
+    (let ((ch6 (render-chapter page "CHAPTER 6" "Tensors"
+            "N-dimensional arrays of doubles with automatic GPU dispatch. Operations span Metal, CUDA, BLAS, and SIMD backends.")))
+      (create-runnable-code-block ch6
+        "(define v #(1.0 2.0 3.0 4.0 5.0))\n(display (tensor-sum v))\n(newline)\n(display (tensor-mean v))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> v <span style='color:#00ff88'>#(1.0 2.0 3.0 4.0 5.0)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-sum</span> v<span style='color:#c084fc'>))</span>   <span style='color:#606078'>;; => 15.0</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-mean</span> v<span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 3.0</span></pre>")
+
+      (body-text ch6 "Matrix operations dispatch automatically to the fastest available backend -- Metal on Apple Silicon, CUDA on NVIDIA, BLAS for linear algebra, or SIMD for small tensors:")
+
+      (create-runnable-code-block ch6
+        "(define A #((1.0 2.0) (3.0 4.0)))\n(define B #((5.0 6.0) (7.0 8.0)))\n(display (tensor-dot A B))\n(newline)\n(display (tensor-transpose A))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> A <span style='color:#00ff88'>#((1.0 2.0) (3.0 4.0))</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(define</span> B <span style='color:#00ff88'>#((5.0 6.0) (7.0 8.0))</span><span style='color:#c084fc'>)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-dot</span> A B<span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => #((19 22) (43 50))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-transpose</span> A<span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => #((1 3) (2 4))</span></pre>")
+
+      (create-runnable-code-block ch6
+        "(define M #((1.0 2.0 3.0) (4.0 5.0 6.0)))\n(display (tensor-reshape M #(6)))\n(newline)\n(display (tensor-reshape M #(3 2)))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Reshape: change tensor dimensions</span>\n<span style='color:#c084fc'>(define</span> M <span style='color:#00ff88'>#((1 2 3) (4 5 6))</span><span style='color:#c084fc'>)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-reshape</span> M <span style='color:#00ff88'>#(6)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => #(1 2 3 4 5 6)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-reshape</span> M <span style='color:#00ff88'>#(3 2)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => #((1 2) (3 4) (5 6))</span></pre>"))
+
+    ;; Chapter 7: Scientific Computing
+    (let ((ch7 (render-chapter page "CHAPTER 7" "Scientific Computing"
+            "ODE solvers, signal processing, statistics, and special functions from the standard library.")))
+      (create-runnable-code-block ch7
+        "(define (euler-step f t y dt)\n  (+ y (* dt (f t y))))\n\n(define (solve-ode f t0 y0 t-end dt)\n  (let loop ((t t0) (y y0))\n    (if (>= t t-end) y\n      (loop (+ t dt) (euler-step f t y dt)))))\n\n(display (solve-ode (lambda (t y) (* -1.0 y)) 0.0 1.0 2.0 0.001))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Solve dy/dt = -y from t=0 to t=2</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(euler-step f t y dt)</span>\n  <span style='color:#c084fc'>(+</span> y <span style='color:#c084fc'>(*</span> dt <span style='color:#c084fc'>(f</span> t y<span style='color:#c084fc'>))))</span>\n\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(solve-ode f t0 y0 t-end dt)</span>\n  <span style='color:#c084fc'>(let</span> loop ((<span style='color:#a78bfa'>t</span> t0) (<span style='color:#a78bfa'>y</span> y0))\n    <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(>=</span> t t-end<span style='color:#c084fc'>)</span> y\n      <span style='color:#c084fc'>(loop</span> <span style='color:#c084fc'>(+</span> t dt<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(euler-step</span> f t y dt<span style='color:#c084fc'>)))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(solve-ode</span>\n  <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(t y)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>-1.0</span> y<span style='color:#c084fc'>))</span>\n  <span style='color:#00ff88'>0.0</span> <span style='color:#00ff88'>1.0</span> <span style='color:#00ff88'>2.0</span> <span style='color:#00ff88'>0.001</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => ~0.1353 (e^-2)</span></pre>")
+
+      (body-text ch7 "The exact numeric tower means factorial never overflows -- bignums automatically kick in when integers exceed 64-bit range:")
+
+      (create-runnable-code-block ch7
+        "(define (factorial n)\n  (if (<= n 1) 1\n    (* n (factorial (- n 1)))))\n(display (factorial 20))\n(newline)\n(display (factorial 50))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Exact arbitrary-precision factorial</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(factorial n)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(&lt;=</span> n <span style='color:#00ff88'>1</span><span style='color:#c084fc'>)</span> <span style='color:#00ff88'>1</span>\n    <span style='color:#c084fc'>(*</span> n <span style='color:#c084fc'>(factorial</span> <span style='color:#c084fc'>(-</span> n <span style='color:#00ff88'>1</span><span style='color:#c084fc'>)))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(factorial</span> <span style='color:#00ff88'>20</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 2432902008176640000</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(factorial</span> <span style='color:#00ff88'>50</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => exact bignum</span></pre>")
+
+      (body-text ch7 "Newton's method demonstrates iterative refinement with tail-recursive loops:")
+
+      (create-runnable-code-block ch7
+        "(define (newton-sqrt x)\n  (define (improve guess)\n    (/ (+ guess (/ x guess)) 2.0))\n  (define (good-enough? guess)\n    (< (abs (- (* guess guess) x)) 0.00001))\n  (let loop ((guess 1.0))\n    (if (good-enough? guess) guess\n      (loop (improve guess)))))\n(display (newton-sqrt 2.0))\n(newline)\n(display (newton-sqrt 9.0))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Newton's method for square roots</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(newton-sqrt x)</span>\n  <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(improve guess)</span>\n    <span style='color:#c084fc'>(/</span> <span style='color:#c084fc'>(+</span> guess <span style='color:#c084fc'>(/</span> x guess<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>))</span>\n  <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(good-enough? guess)</span>\n    <span style='color:#c084fc'>(&lt;</span> <span style='color:#c084fc'>(abs</span> <span style='color:#c084fc'>(-</span> <span style='color:#c084fc'>(*</span> guess guess<span style='color:#c084fc'>)</span> x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>0.00001</span><span style='color:#c084fc'>))</span>\n  <span style='color:#c084fc'>(let</span> loop ((<span style='color:#a78bfa'>guess</span> <span style='color:#00ff88'>1.0</span>))\n    <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(good-enough?</span> guess<span style='color:#c084fc'>)</span> guess\n      <span style='color:#c084fc'>(loop</span> <span style='color:#c084fc'>(improve</span> guess<span style='color:#c084fc'>)))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(newton-sqrt</span> <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 1.41421356...</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(newton-sqrt</span> <span style='color:#00ff88'>9.0</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 3.0</span></pre>"))
+
+    ;; Chapter 8: Consciousness Engine
+    (let ((ch8 (render-chapter page "CHAPTER 8" "Consciousness Engine"
+            "Built-in knowledge bases, logic variables, factor graphs, and global workspace theory. Build systems that reason about their own uncertainty.")))
+      (create-runnable-code-block ch8
+        "(define kb (make-kb))\n(kb-assert! kb (make-fact '(likes alice pizza)))\n(kb-assert! kb (make-fact '(likes bob sushi)))\n(kb-assert! kb (make-fact '(likes alice sushi)))\n(display (kb-query kb '(likes alice ?food)))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Knowledge base with logic variables</span>\n<span style='color:#c084fc'>(define</span> kb <span style='color:#c084fc'>(make-kb)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(likes alice pizza)</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(likes bob sushi)</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(likes alice sushi)</span><span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(kb-query</span> kb <span style='color:#00ff88'>'(likes alice ?food)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => queries all foods alice likes</span></pre>")
+
+      (body-text ch8 "Unification binds logic variables to values. walk resolves a variable through the substitution chain:")
+
+      (create-runnable-code-block ch8
+        "(define sub (make-substitution))\n(define ?x (logic-var 'x))\n(define ?y (logic-var 'y))\n(display (unify ?x 42 sub))\n(newline)\n(display (walk ?x (unify ?x 42 sub)))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Unification — Prolog-style logic</span>\n<span style='color:#c084fc'>(define</span> sub <span style='color:#c084fc'>(make-substitution)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(define</span> ?x <span style='color:#c084fc'>(logic-var</span> <span style='color:#00ff88'>'x</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(define</span> ?y <span style='color:#c084fc'>(logic-var</span> <span style='color:#00ff88'>'y</span><span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(unify</span> ?x <span style='color:#00ff88'>42</span> sub<span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(walk</span> ?x <span style='color:#c084fc'>(unify</span> ?x <span style='color:#00ff88'>42</span> sub<span style='color:#c084fc'>)))</span>\n<span style='color:#606078'>;; => 42</span></pre>")
+
+      (body-text ch8 "Factor graphs model probabilistic relationships. Belief propagation computes posterior distributions:")
+
+      (create-runnable-code-block ch8
+        "(define fg (make-factor-graph))\n(fg-add-factor! fg 'weather #(0.7 0.3))\n(fg-add-factor! fg 'mood #(0.6 0.4))\n(fg-infer! fg)\n(display (free-energy fg))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Factor graphs + belief propagation</span>\n<span style='color:#c084fc'>(define</span> fg <span style='color:#c084fc'>(make-factor-graph)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(fg-add-factor!</span> fg <span style='color:#00ff88'>'weather</span> <span style='color:#00ff88'>#(0.7 0.3)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(fg-add-factor!</span> fg <span style='color:#00ff88'>'mood</span> <span style='color:#00ff88'>#(0.6 0.4)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(fg-infer!</span> fg<span style='color:#c084fc'>)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(free-energy</span> fg<span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => variational free energy</span></pre>"))
 
     (render-footer page)))
 
@@ -801,16 +808,13 @@
 
 (define (render-example-card parent title desc raw-code code-html)
   (let ((card (create-card parent)))
-    (style! card "flex" "1")
-    (style! card "minWidth" "400px")
-
     (let ((h (create-text "h3" title card)))
       (style! h "fontSize" "1.1rem")
       (style! h "color" "#a78bfa")
       (style! h "marginBottom" "4px"))
 
     (let ((d (create-text "p" desc card)))
-      (style! d "color" "#606078")
+      (style! d "color" "#71717a")
       (style! d "fontSize" "0.85rem")
       (style! d "marginBottom" "16px"))
 
@@ -822,118 +826,208 @@
 
 (define (render-examples-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Examples" "Curated code examples showing Eshkol's capabilities.")
+    (create-page-header page "Examples" "Curated code examples showing what Eshkol can do. Click Run to execute in the browser VM.")
 
-    (let ((grid (create-grid page)))
+    (let ((grid (create-grid-2 page)))
 
+      ;; 1. Hello World
       (render-example-card grid
         "Hello World"
-        "The simplest Eshkol program."
+        "The simplest program."
         "(display \"Hello, world!\")\n(newline)"
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"Hello, world!\"</span><span style='color:#c084fc'>)</span>
-<span style='color:#c084fc'>(newline)</span></pre>")
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"Hello, world!\"</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(newline)</span></pre>")
 
+      ;; 2. Fibonacci
       (render-example-card grid
         "Fibonacci"
-        "Recursive with tail call optimization."
+        "Tail-recursive with TCO."
         "(define (fib n)\n  (define (loop a b i)\n    (if (= i n) a\n      (loop b (+ a b) (+ i 1))))\n  (loop 0 1 0))\n(display (fib 30))"
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(fib n)</span>
-  <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loop a b i)</span>
-    <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> i n<span style='color:#c084fc'>)</span> a
-      <span style='color:#c084fc'>(loop</span> b <span style='color:#c084fc'>(+</span> a b<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> i <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>
-  <span style='color:#c084fc'>(loop</span> <span style='color:#00ff88'>0</span> <span style='color:#00ff88'>1</span> <span style='color:#00ff88'>0</span><span style='color:#c084fc'>))</span>
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(fib n)</span>\n  <span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loop a b i)</span>\n    <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> i n<span style='color:#c084fc'>)</span> a\n      <span style='color:#c084fc'>(loop</span> b <span style='color:#c084fc'>(+</span> a b<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> i <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>\n  <span style='color:#c084fc'>(loop</span> <span style='color:#00ff88'>0</span> <span style='color:#00ff88'>1</span> <span style='color:#00ff88'>0</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(fib</span> <span style='color:#00ff88'>30</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 832040</span></pre>")
 
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(fib</span> <span style='color:#00ff88'>30</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 832040</span></pre>")
-
+      ;; 3. Gradient Descent
       (render-example-card grid
         "Gradient Descent"
-        "Train a model using automatic differentiation (native compiler)."
-        "(define (loss x) (* (- x 3.0) (- x 3.0)))\n(define (train x lr steps)\n  (if (= steps 0) x\n    (train\n      (- x (* lr (derivative loss x)))\n      lr (- steps 1))))\n(display (train 0.0 0.1 100))"
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss x)</span> <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(-</span> x <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(-</span> x <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)))</span>
+        "Train a linear model with AD."
+        "(define (loss x) (* (- x 3.0) (- x 3.0)))\n(define (train x lr steps)\n  (if (= steps 0) x\n    (train (- x (* lr (derivative loss x)))\n      lr (- steps 1))))\n(display (train 0.0 0.1 100))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss x)</span> <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(-</span> x <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(-</span> x <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>)))</span>\n\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(train x lr steps)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> steps <span style='color:#00ff88'>0</span><span style='color:#c084fc'>)</span> x\n    <span style='color:#c084fc'>(train</span> <span style='color:#c084fc'>(-</span> x <span style='color:#c084fc'>(*</span> lr <span style='color:#c084fc'>(derivative</span> loss x<span style='color:#c084fc'>)))</span>\n      lr <span style='color:#c084fc'>(-</span> steps <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(train</span> <span style='color:#00ff88'>0.0</span> <span style='color:#00ff88'>0.1</span> <span style='color:#00ff88'>100</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => ~3.0</span></pre>")
 
-<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(train x lr steps)</span>
-  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> steps <span style='color:#00ff88'>0</span><span style='color:#c084fc'>)</span> x
-    <span style='color:#c084fc'>(train</span>
-      <span style='color:#c084fc'>(-</span> x <span style='color:#c084fc'>(*</span> lr <span style='color:#c084fc'>(derivative</span> loss x<span style='color:#c084fc'>)))</span>
-      lr <span style='color:#c084fc'>(-</span> steps <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>
-
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(train</span> <span style='color:#00ff88'>0.0</span> <span style='color:#00ff88'>0.1</span> <span style='color:#00ff88'>100</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => ~3.0</span></pre>")
-
-      (render-example-card grid
-        "Pattern Matching"
-        "Destructure and dispatch with match."
-        "(define (describe x)\n  (match x\n    (0 \"zero\")\n    ((? positive?) \"positive\")\n    ((? negative?) \"negative\")\n    (_ \"other\")))\n(display (describe 5))\n(newline)\n(display (describe -2))"
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(describe x)</span>
-  <span style='color:#c084fc'>(match</span> x
-    (<span style='color:#00ff88'>0</span> <span style='color:#00ff88'>\"zero\"</span>)
-    ((<span style='color:#a78bfa'>? positive?</span>) <span style='color:#00ff88'>\"positive\"</span>)
-    ((<span style='color:#a78bfa'>? negative?</span>) <span style='color:#00ff88'>\"negative\"</span>)
-    (_ <span style='color:#00ff88'>\"other\"</span>)<span style='color:#c084fc'>))</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(describe</span> <span style='color:#00ff88'>5</span><span style='color:#c084fc'>))</span></pre>")
-
+      ;; 4. Exact Arithmetic
       (render-example-card grid
         "Exact Arithmetic"
-        "Arbitrary precision with no loss."
+        "Bignums and rationals with no precision loss."
         "(display (expt 2 64))\n(newline)\n(display (+ 1/7 2/7))\n(newline)\n(display (* 3/4 4/3))"
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Bignums — no overflow</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(expt</span> <span style='color:#00ff88'>2</span> <span style='color:#00ff88'>64</span><span style='color:#c084fc'>))</span>
-<span style='color:#606078'>;; => 18446744073709551616</span>
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(expt</span> <span style='color:#00ff88'>2</span> <span style='color:#00ff88'>64</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => 18446744073709551616</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1/7</span> <span style='color:#00ff88'>2/7</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 3/7</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3/4</span> <span style='color:#00ff88'>4/3</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 1</span></pre>")
 
-<span style='color:#606078'>;; Exact rationals</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1/7</span> <span style='color:#00ff88'>2/7</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 3/7</span>
-<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3/4</span> <span style='color:#00ff88'>4/3</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 1</span></pre>")
+      ;; 5. Higher-Order Functions
+      (render-example-card grid
+        "Higher-Order Functions"
+        "Map, filter, and fold over lists."
+        "(display (map (lambda (x) (* x x)) '(1 2 3 4 5)))\n(newline)\n(display (filter even? '(1 2 3 4 5 6)))\n(newline)\n(display (fold-left + 0 '(1 2 3 4 5)))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(map</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => (1 4 9 16 25)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(filter</span> even? <span style='color:#00ff88'>'(1 2 3 4 5 6)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => (2 4 6)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(fold-left</span> + <span style='color:#00ff88'>0</span> <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => 15</span></pre>")
 
+      ;; 6. Closures
+      (render-example-card grid
+        "Closures & Composition"
+        "First-class functions with lexical capture."
+        "(define (make-counter)\n  (let ((n 0))\n    (lambda ()\n      (set! n (+ n 1))\n      n)))\n(define c (make-counter))\n(display (c))\n(newline)\n(display (c))\n(newline)\n(display (c))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(make-counter)</span>\n  <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>n</span> <span style='color:#00ff88'>0</span>))\n    <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>()</span>\n      <span style='color:#c084fc'>(set!</span> n <span style='color:#c084fc'>(+</span> n <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))</span>\n      n<span style='color:#c084fc'>)))</span>\n<span style='color:#c084fc'>(define</span> c <span style='color:#c084fc'>(make-counter)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(c)</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 1</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(c)</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 2</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(c)</span><span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 3</span></pre>")
+
+      ;; 7. Matrix Multiply
+      (render-example-card grid
+        "Matrix Multiply"
+        "GPU-accelerated tensor operations."
+        "(define A #((1.0 2.0) (3.0 4.0)))\n(define B #((5.0 6.0) (7.0 8.0)))\n(display (tensor-dot A B))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> A <span style='color:#00ff88'>#((1 2) (3 4))</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(define</span> B <span style='color:#00ff88'>#((5 6) (7 8))</span><span style='color:#c084fc'>)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-dot</span> A B<span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => #((19 22) (43 50))</span></pre>")
+
+      ;; 8. ODE Solver
+      (render-example-card grid
+        "ODE Solver"
+        "Numerical integration of differential equations."
+        "(define (solve f y0 t-end dt)\n  (let loop ((t 0.0) (y y0))\n    (if (>= t t-end) y\n      (loop (+ t dt) (+ y (* dt (f t y)))))))\n\n(display (solve (lambda (t y) (* -2.0 y)) 1.0 1.0 0.001))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(solve f y0 t-end dt)</span>\n  <span style='color:#c084fc'>(let</span> loop ((<span style='color:#a78bfa'>t</span> <span style='color:#00ff88'>0.0</span>) (<span style='color:#a78bfa'>y</span> y0))\n    <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(>=</span> t t-end<span style='color:#c084fc'>)</span> y\n      <span style='color:#c084fc'>(loop</span> <span style='color:#c084fc'>(+</span> t dt<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> y <span style='color:#c084fc'>(*</span> dt <span style='color:#c084fc'>(f</span> t y<span style='color:#c084fc'>)))))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(solve</span>\n  <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(t y)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>-2.0</span> y<span style='color:#c084fc'>))</span>\n  <span style='color:#00ff88'>1.0</span> <span style='color:#00ff88'>1.0</span> <span style='color:#00ff88'>0.001</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => ~0.135 (e^-2)</span></pre>")
+
+      ;; 9. Knowledge Base
+      (render-example-card grid
+        "Knowledge Base"
+        "Prolog-style logic programming with unification."
+        "(define kb (make-kb))\n(kb-assert! kb (make-fact '(parent alice bob)))\n(kb-assert! kb (make-fact '(parent bob charlie)))\n(display (kb-query kb '(parent ?x bob)))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> kb <span style='color:#c084fc'>(make-kb)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(parent alice bob)</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(parent bob charlie)</span><span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(kb-query</span> kb <span style='color:#00ff88'>'(parent ?x bob)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => ((parent alice bob))</span></pre>")
+
+      ;; 10. This Website
       (render-example-card grid
         "This Website"
         "This site is written in Eshkol, compiled to WASM."
         ""
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; The actual code powering this page</span>
-<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(render-hero parent)</span>
-  <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>hero</span> <span style='color:#c084fc'>(create-div</span> parent<span style='color:#c084fc'>)))</span>
-    <span style='color:#c084fc'>(style!</span> hero <span style='color:#00ff88'>\"minHeight\"</span> <span style='color:#00ff88'>\"100vh\"</span><span style='color:#c084fc'>)</span>
-    <span style='color:#606078'>;; ... 600+ lines of pure Eshkol</span>
-    hero<span style='color:#c084fc'>))</span></pre>"))
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; The actual code powering this page</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(render-hero parent)</span>\n  <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>hero</span> <span style='color:#c084fc'>(create-section</span> parent<span style='color:#c084fc'>)))</span>\n    <span style='color:#c084fc'>(style!</span> hero <span style='color:#00ff88'>\"paddingTop\"</span> <span style='color:#00ff88'>\"120px\"</span><span style='color:#c084fc'>)</span>\n    <span style='color:#606078'>;; ... 1500+ lines of pure Eshkol</span>\n    hero<span style='color:#c084fc'>))</span></pre>"))
 
     (render-footer page)))
 
 ;; ═══════════════════════════════════════════════════════════
-;; PAGE: INSTALL
+;; PAGE: DOCS
 ;; ═══════════════════════════════════════════════════════════
 
-(define (render-install-page content)
-  (let ((page (create-narrow-section content)))
-    (create-page-header page "Install Eshkol" "Up and running in 30 seconds.")
+(define (render-sidebar-group parent title)
+  (let ((group (create-div parent)))
+    (web-add-class group "docs-sidebar-group")
+    (let ((t (create-text "div" title group)))
+      (web-add-class t "docs-sidebar-group-title"))
+    group))
 
-    ;; macOS
+(define (render-sidebar-item parent label url)
+  (let ((item (create-text "a" label parent)))
+    (web-add-class item "docs-sidebar-item")
+    (web-set-attribute item "href" url)
+    (web-set-attribute item "data-url" url)
+    item))
+
+(define (render-docs-page content)
+  (let ((page (create-div content)))
+    (style! page "paddingTop" "32px")
+
+    ;; Docs layout: sidebar + content
+    (let ((layout (create-div page)))
+      (web-add-class layout "docs-layout")
+
+      ;; Sidebar
+      (let ((sidebar (create-div layout)))
+        (web-add-class sidebar "docs-sidebar")
+
+        ;; Getting Started
+        (let ((g1 (render-sidebar-group sidebar "GETTING STARTED")))
+          (render-sidebar-item g1 "Quick Start" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/QUICKSTART.md")
+          (render-sidebar-item g1 "Quick Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_QUICK_REFERENCE.md"))
+
+        ;; Language
+        (let ((g2 (render-sidebar-group sidebar "LANGUAGE")))
+          (render-sidebar-item g2 "Language Guide" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_LANGUAGE_GUIDE.md")
+          (render-sidebar-item g2 "Language Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_V1_LANGUAGE_REFERENCE.md")
+          (render-sidebar-item g2 "Language Specification" "https://raw.githubusercontent.com/tsotchke/eshkol/master/COMPLETE_LANGUAGE_SPECIFICATION.md"))
+
+        ;; Reference
+        (let ((g3 (render-sidebar-group sidebar "REFERENCE")))
+          (render-sidebar-item g3 "API Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/API_REFERENCE.md")
+          (render-sidebar-item g3 "Feature Matrix" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/FEATURE_MATRIX.md")
+          (render-sidebar-item g3 "Known Issues" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/KNOWN_ISSUES.md"))
+
+        ;; Architecture
+        (let ((g4 (render-sidebar-group sidebar "ARCHITECTURE")))
+          (render-sidebar-item g4 "Architecture Overview" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_V1_ARCHITECTURE.md")
+          (render-sidebar-item g4 "Compiler Architecture" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/COMPILER_ARCHITECTURE.md")
+          (render-sidebar-item g4 "Memory Management" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/MEMORY_MANAGEMENT.md")
+          (render-sidebar-item g4 "Type System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/TYPE_SYSTEM.md"))
+
+        ;; Topics
+        (let ((g5 (render-sidebar-group sidebar "TOPICS")))
+          (render-sidebar-item g5 "Automatic Differentiation" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/AUTODIFF.md")
+          (render-sidebar-item g5 "Vector Operations" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/VECTOR_OPERATIONS.md")
+          (render-sidebar-item g5 "GPU Acceleration" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/GPU_ACCELERATION.md")
+          (render-sidebar-item g5 "Scheme Compatibility" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/SCHEME_COMPATIBILITY.md"))
+
+        ;; Project
+        (let ((g6 (render-sidebar-group sidebar "PROJECT")))
+          (render-sidebar-item g6 "Roadmap" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ROADMAP.md")
+          (render-sidebar-item g6 "Changelog" "https://raw.githubusercontent.com/tsotchke/eshkol/master/CHANGELOG.md")
+          (render-sidebar-item g6 "Contributing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/CONTRIBUTING.md")))
+
+      ;; Content area
+      (let ((doc-area (create-div layout)))
+        (web-add-class doc-area "doc-content")
+        (web-set-attribute doc-area "id" "doc-content-area")
+        (style! doc-area "minHeight" "600px")
+
+        ;; Load Quick Start by default
+        (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/QUICKSTART.md" doc-area)
+
+        (let ((hint (create-text "p" "Select a document from the sidebar to load it." doc-area)))
+          (style! hint "color" "#71717a")
+          (style! hint "fontStyle" "italic"))))))
+
+;; ═══════════════════════════════════════════════════════════
+;; PAGE: DOWNLOADS
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-downloads-page content)
+  (let ((page (create-section content)))
+    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, or build from source.")
+
+    ;; macOS Homebrew
     (section-subheading page "macOS (Homebrew)")
-    (body-text page "The fastest way to install on macOS. Supports both Apple Silicon and Intel.")
-    (create-code-block page
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.8;color:#e8e8f0'><span style='color:#00ff88'>$</span> brew tap tsotchke/eshkol
-<span style='color:#00ff88'>$</span> brew install eshkol</pre>")
+    (body-text page "The fastest way to install on macOS. Supports both Apple Silicon (M1/M2/M3/M4) and Intel.")
+    (let ((cmd (create-div page)))
+      (web-add-class cmd "install-cmd")
+      (web-set-text-content cmd "brew tap tsotchke/eshkol && brew install eshkol"))
 
     ;; Linux
-    (section-subheading page "Linux (Debian/Ubuntu)")
-    (body-text page "Install from the .deb package for x86_64 or ARM64.")
+    (section-subheading page "Linux (Debian / Ubuntu)")
+    (body-text page "Download the .deb package for your architecture.")
     (create-code-block page
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.8;color:#e8e8f0'><span style='color:#00ff88'>$</span> wget https://github.com/tsotchke/eshkol/releases/latest/download/eshkol_amd64.deb
-<span style='color:#00ff88'>$</span> sudo dpkg -i eshkol_amd64.deb</pre>")
+      "<code style='color:#22c55e'>$</code> wget https://github.com/tsotchke/eshkol/releases/latest/download/eshkol_amd64.deb\n<code style='color:#22c55e'>$</code> sudo dpkg -i eshkol_amd64.deb")
+
+    ;; Platform table
+    (section-subheading page "Platform Downloads")
+    (body-text page "Download pre-built binaries from GitHub Releases.")
+
+    (let ((tbl (web-create-element "table")))
+      (web-add-class tbl "comparison-table")
+      (web-set-inner-html tbl "<thead><tr><th>Platform</th><th>Architecture</th><th>Package</th><th>Link</th></tr></thead><tbody><tr><td>macOS</td><td>Apple Silicon (arm64)</td><td>Homebrew</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>Latest Release</a></td></tr><tr><td>macOS</td><td>Intel (x86_64)</td><td>Homebrew</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>Latest Release</a></td></tr><tr><td>Linux</td><td>x86_64</td><td>.deb</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest/download/eshkol_amd64.deb' target='_blank'>eshkol_amd64.deb</a></td></tr><tr><td>Linux</td><td>ARM64</td><td>.deb</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest/download/eshkol_arm64.deb' target='_blank'>eshkol_arm64.deb</a></td></tr><tr><td>WebAssembly</td><td>Any</td><td>WASM</td><td><a href='#/playground'>Try in Browser</a></td></tr></tbody>")
+      (web-append-child page tbl))
+
+    ;; Releases container (populated by JS in index.html)
+    (let ((rc (create-div page)))
+      (web-set-attribute rc "id" "releases-container")
+      (style! rc "marginTop" "32px"))
 
     ;; From source
-    (section-subheading page "From Source")
-    (body-text page "Build from source with CMake. Requires LLVM 17+, C++20 compiler, and CMake 3.14+.")
+    (section-subheading page "Build from Source")
+    (body-text page "Requires LLVM 17+, a C++20 compiler, and CMake 3.14+.")
     (create-code-block page
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.8;color:#e8e8f0'><span style='color:#00ff88'>$</span> git clone https://github.com/tsotchke/eshkol.git
-<span style='color:#00ff88'>$</span> cd eshkol && mkdir build && cd build
-<span style='color:#00ff88'>$</span> cmake .. -DCMAKE_BUILD_TYPE=Release
-<span style='color:#00ff88'>$</span> make -j$(nproc)</pre>")
+      "<code style='color:#22c55e'>$</code> git clone https://github.com/tsotchke/eshkol.git\n<code style='color:#22c55e'>$</code> cd eshkol && mkdir build && cd build\n<code style='color:#22c55e'>$</code> cmake .. -DCMAKE_BUILD_TYPE=Release\n<code style='color:#22c55e'>$</code> make -j$(nproc)\n<code style='color:#22c55e'>$</code> sudo make install")
 
     ;; Verify
     (section-subheading page "Verify Installation")
-    (body-text page "Compile and run a simple program to verify everything works.")
+    (body-text page "Compile and run a simple program to confirm everything works.")
     (create-code-block page
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.8;color:#e8e8f0'><span style='color:#00ff88'>$</span> echo '<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span> <span style='color:#00ff88'>3.0</span><span style='color:#c084fc'>))</span>' > test.esk
-<span style='color:#00ff88'>$</span> eshkol-run test.esk -o test && ./test
-<span style='color:#a78bfa'>#(6.0)</span></pre>")
+      "<code style='color:#22c55e'>$</code> echo '(display (+ 1 2))' > test.esk\n<code style='color:#22c55e'>$</code> eshkol-run test.esk -o test && ./test\n<span style='color:#a78bfa'>3</span>")
 
     ;; Platform badges
     (let ((badges (create-div page)))
@@ -942,21 +1036,51 @@
       (style! badges "gap" "12px")
       (style! badges "flexWrap" "wrap")
 
-      (let ((make-badge (lambda (text)
+      (let ((make-badge (lambda (text badge-class)
               (let ((badge (create-text "span" text badges)))
-                (style! badge "background" "#1a1a28")
-                (style! badge "color" "#a0a0b8")
-                (style! badge "padding" "8px 16px")
-                (style! badge "borderRadius" "20px")
-                (style! badge "fontSize" "0.8rem")
-                (style! badge "fontWeight" "500")
-                (style! badge "border" "1px solid #2a2a3a")
+                (web-add-class badge "badge")
+                (web-add-class badge badge-class)
                 badge))))
-        (make-badge "macOS (Apple Silicon)")
-        (make-badge "macOS (Intel)")
-        (make-badge "Linux (x86_64)")
-        (make-badge "Linux (ARM64)")
-        (make-badge "WebAssembly")))
+        (make-badge "macOS (Apple Silicon)" "badge-stable")
+        (make-badge "macOS (Intel)" "badge-stable")
+        (make-badge "Linux (x86_64)" "badge-stable")
+        (make-badge "Linux (ARM64)" "badge-stable")
+        (make-badge "WebAssembly" "badge-pre")))
+
+    (create-divider page)
+
+    ;; Quick start guide
+    (section-subheading page "Quick Start")
+    (body-text page "After installing, create your first program:")
+
+    (create-code-block page
+      "<code style='color:#22c55e'>$</code> cat > hello.esk\n<span style='color:#c084fc'>(display</span> <span style='color:#00ff88'>\"Hello, world!\"</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(newline)</span>\n^D\n\n<code style='color:#22c55e'>$</code> eshkol-run hello.esk -o hello\n<code style='color:#22c55e'>$</code> ./hello\n<span style='color:#a78bfa'>Hello, world!</span>")
+
+    (body-text page "Try a gradient computation:")
+
+    (create-code-block page
+      "<code style='color:#22c55e'>$</code> cat > grad.esk\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(f x y)</span> <span style='color:#c084fc'>(+</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> x y<span style='color:#c084fc'>)))</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(gradient</span> f <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>))</span>\n^D\n\n<code style='color:#22c55e'>$</code> eshkol-run grad.esk -o grad && ./grad\n<span style='color:#a78bfa'>#(10.0 3.0)</span>")
+
+    (body-text page "Launch the REPL for interactive development:")
+
+    (create-code-block page
+      "<code style='color:#22c55e'>$</code> eshkol-run --repl\n<span style='color:#7c3aed'>eshkol></span> (+ 1 2)\n<span style='color:#a78bfa'>3</span>\n<span style='color:#7c3aed'>eshkol></span> (map (lambda (x) (* x x)) '(1 2 3 4 5))\n<span style='color:#a78bfa'>(1 4 9 16 25)</span>")
+
+    ;; System requirements
+    (section-subheading page "System Requirements")
+
+    (let ((reqs (create-grid-2 page)))
+      (let ((r1 (create-card reqs)))
+        (let ((h (create-text "h3" "Runtime" r1)))
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "8px"))
+        (body-text r1 "No runtime dependencies. Eshkol compiles to standalone native binaries. The compiled output links only against libc and system libraries (libm, libpthread)."))
+
+      (let ((r2 (create-card reqs)))
+        (let ((h (create-text "h3" "Build Requirements" r2)))
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "8px"))
+        (body-text r2 "LLVM 17+ (for the compiler backend), C++20 compiler (GCC 12+ or Clang 15+), CMake 3.14+. Optional: Metal SDK (GPU on macOS), CUDA toolkit (GPU on Linux).")))
 
     (render-footer page)))
 
@@ -970,31 +1094,29 @@
 
     ;; REPL Terminal
     (let ((terminal (create-div page)))
-      (style! terminal "background" "#0a0a0f")
-      (style! terminal "border" "1px solid #2a2a3a")
-      (style! terminal "borderRadius" "12px")
-      (style! terminal "overflow" "hidden")
+      (web-add-class terminal "repl-terminal")
       (style! terminal "marginBottom" "48px")
 
-      ;; Terminal title bar
+      ;; Title bar
       (let ((titlebar (create-div terminal)))
-        (style! titlebar "background" "#1a1a28")
-        (style! titlebar "padding" "8px 16px")
-        (style! titlebar "display" "flex")
-        (style! titlebar "alignItems" "center")
-        (style! titlebar "gap" "8px")
-        (style! titlebar "borderBottom" "1px solid #2a2a3a")
+        (web-add-class titlebar "repl-titlebar")
 
         ;; Window dots
         (let ((dots (create-div titlebar)))
           (style! dots "display" "flex")
           (style! dots "gap" "6px")
-          (let ((d1 (create-div dots))) (style! d1 "width" "12px") (style! d1 "height" "12px") (style! d1 "borderRadius" "50%") (style! d1 "background" "#ff5f57"))
-          (let ((d2 (create-div dots))) (style! d2 "width" "12px") (style! d2 "height" "12px") (style! d2 "borderRadius" "50%") (style! d2 "background" "#febc2e"))
-          (let ((d3 (create-div dots))) (style! d3 "width" "12px") (style! d3 "height" "12px") (style! d3 "borderRadius" "50%") (style! d3 "background" "#28c840")))
+          (let ((d1 (create-div dots)))
+            (web-add-class d1 "repl-dot")
+            (style! d1 "background" "#ff5f57"))
+          (let ((d2 (create-div dots)))
+            (web-add-class d2 "repl-dot")
+            (style! d2 "background" "#febc2e"))
+          (let ((d3 (create-div dots)))
+            (web-add-class d3 "repl-dot")
+            (style! d3 "background" "#28c840")))
 
         (let ((title (create-text "span" "Eshkol REPL — Bytecode VM (WebAssembly)" titlebar)))
-          (style! title "color" "#606078")
+          (style! title "color" "#71717a")
           (style! title "fontSize" "0.8rem")
           (style! title "marginLeft" "12px")))
 
@@ -1013,14 +1135,14 @@
 
         ;; Welcome message
         (web-set-inner-html output
-          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#606078'>v1.1-accelerate</span>\n<span style='color:#606078'>63-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#606078'>Type an expression and press Enter.</span>\n\n"))
+          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.1-accelerate</span>\n<span style='color:#71717a'>63-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
 
       ;; Terminal input area
       (let ((input-row (create-div terminal)))
         (style! input-row "display" "flex")
         (style! input-row "alignItems" "center")
         (style! input-row "padding" "8px 20px 12px")
-        (style! input-row "borderTop" "1px solid #1a1a28")
+        (style! input-row "borderTop" "1px solid #27272a")
 
         (let ((prompt (create-text "span" "eshkol> " input-row)))
           (style! prompt "color" "#7c3aed")
@@ -1043,10 +1165,9 @@
           (style! input "flex" "1")
           (web-append-child input-row input))))
 
-    ;; WASM showcase
-    (let ((banner (create-card page)))
-      (style! banner "background" "linear-gradient(135deg, rgba(124,58,237,0.15), rgba(0,255,136,0.08))")
-      (style! banner "border" "1px solid #7c3aed")
+    ;; WASM showcase banner
+    (let ((banner (create-div page)))
+      (web-add-class banner "card-highlight")
       (style! banner "marginBottom" "48px")
 
       (let ((h (create-text "h2" "Two WASM Modules, One Website" banner)))
@@ -1057,42 +1178,63 @@
 
       (body-text banner "Try: (+ 1 2), (map (lambda (x) (* x x)) '(1 2 3 4 5)), (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) then (fib 20)"))
 
-    ;; Architecture
+    ;; Architecture diagram
     (section-subheading page "Architecture")
     (create-code-block page
-      "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.8;color:#e8e8f0'>  <span style='color:#a78bfa'>Website</span>                        <span style='color:#a78bfa'>REPL</span>
-  main.esk                       eshkol_vm.c + eshkol_compiler.c
-      |                                |
-  LLVM IR (eshkol-run --wasm)    Emscripten (emcc)
-      |                                |
-  eshkol-site.wasm <span style='color:#606078'>(408KB)</span>       eshkol-vm.wasm <span style='color:#606078'>(326KB)</span>
-      |                                |
-  eshkol-runtime.js              Emscripten glue
-      |                                |
-      +----------<span style='color:#00ff88'> Browser </span>-----------+</pre>")
+      "  <span style='color:#a78bfa'>Website</span>                        <span style='color:#a78bfa'>REPL</span>\n  main.esk                       eshkol_vm.c + eshkol_compiler.c\n      |                                |\n  LLVM IR (eshkol-run --wasm)    Emscripten (emcc)\n      |                                |\n  eshkol-site.wasm               eshkol-vm.wasm\n      |                                |\n  eshkol-runtime.js              Emscripten glue\n      |                                |\n      +----------<span style='color:#22c55e'> Browser </span>-----------+")
 
     ;; Stats
     (section-subheading page "Site Statistics")
-    (let ((stats-grid (create-grid page)))
-      (let ((make-stat-card (lambda (label value)
-              (let ((card (create-card stats-grid)))
-                (style! card "flex" "1")
-                (style! card "minWidth" "180px")
-                (style! card "textAlign" "center")
-                (let ((v (create-text "div" value card)))
-                  (style! v "fontSize" "1.8rem")
-                  (style! v "fontWeight" "800")
-                  (style! v "color" "#7c3aed")
-                  (style! v "marginBottom" "4px"))
-                (let ((l (create-text "div" label card)))
-                  (style! l "color" "#606078")
-                  (style! l "fontSize" "0.8rem")
-                  (style! l "textTransform" "uppercase"))
-                card))))
-        (make-stat-card "Site WASM" "408KB")
-        (make-stat-card "VM WASM" "326KB")
-        (make-stat-card "VM Opcodes" "63")
-        (make-stat-card "DOM Bindings" "90+")))
+    (let ((stats (create-grid-4 page)))
+      (let ((s1 (create-card stats)))
+        (web-add-class s1 "text-center")
+        (let ((v (create-text "div" "408KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
+
+      (let ((s2 (create-card stats)))
+        (web-add-class s2 "text-center")
+        (let ((v (create-text "div" "326KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((l (create-text "div" "VM WASM" s2))) (web-add-class l "stat-label")))
+
+      (let ((s3 (create-card stats)))
+        (web-add-class s3 "text-center")
+        (let ((v (create-text "div" "63" s3))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((l (create-text "div" "VM Opcodes" s3))) (web-add-class l "stat-label")))
+
+      (let ((s4 (create-card stats)))
+        (web-add-class s4 "text-center")
+        (let ((v (create-text "div" "59" s4))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((l (create-text "div" "DOM Bindings" s4))) (web-add-class l "stat-label"))))
+
+    ;; Example snippets to try
+    (create-divider page)
+    (section-subheading page "Try These")
+    (body-text page "Click to copy, then paste into the REPL above.")
+
+    (let ((snippets (create-grid-3 page)))
+      (let ((sn1 (create-card snippets)))
+        (let ((h (create-text "h4" "Arithmetic" sn1)))
+          (style! h "color" "#a78bfa")
+          (style! h "fontSize" "0.9rem")
+          (style! h "marginBottom" "8px"))
+        (create-code-block sn1
+          "<span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1</span> <span style='color:#00ff88'>2</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>6</span> <span style='color:#00ff88'>7</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(expt</span> <span style='color:#00ff88'>2</span> <span style='color:#00ff88'>10</span><span style='color:#c084fc'>)</span>"))
+
+      (let ((sn2 (create-card snippets)))
+        (let ((h (create-text "h4" "Lists" sn2)))
+          (style! h "color" "#a78bfa")
+          (style! h "fontSize" "0.9rem")
+          (style! h "marginBottom" "8px"))
+        (create-code-block sn2
+          "<span style='color:#c084fc'>(map</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(x)</span> <span style='color:#c084fc'>(*</span> x x<span style='color:#c084fc'>))</span>\n  <span style='color:#00ff88'>'(1 2 3 4 5)</span><span style='color:#c084fc'>)</span>"))
+
+      (let ((sn3 (create-card snippets)))
+        (let ((h (create-text "h4" "Recursion" sn3)))
+          (style! h "color" "#a78bfa")
+          (style! h "fontSize" "0.9rem")
+          (style! h "marginBottom" "8px"))
+        (create-code-block sn3
+          "<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(fact n)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> n <span style='color:#00ff88'>0</span><span style='color:#c084fc'>)</span> <span style='color:#00ff88'>1</span>\n    <span style='color:#c084fc'>(*</span> n <span style='color:#c084fc'>(fact</span> <span style='color:#c084fc'>(-</span> n <span style='color:#00ff88'>1</span><span style='color:#c084fc'>)))))</span>\n<span style='color:#c084fc'>(fact</span> <span style='color:#00ff88'>10</span><span style='color:#c084fc'>)</span>")))
 
     (render-footer page)))
 
@@ -1101,41 +1243,100 @@
 ;; ═══════════════════════════════════════════════════════════
 
 (define (render-community-page content)
-  (let ((page (create-narrow-section content)))
+  (let ((page (create-section content)))
     (create-page-header page "Community" "Join the Eshkol project.")
 
+    ;; GitHub links
+    (section-subheading page "GitHub")
+    (body-text page "Eshkol is developed in the open on GitHub. Star, fork, or contribute.")
+
+    (let ((links (create-grid-3 page)))
+      (let ((c1 (create-card links)))
+        (let ((h (create-text "h3" "Repository" c1)))
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "8px"))
+        (body-text c1 "Source code, issues, and pull requests.")
+        (let ((a (create-text "a" "github.com/tsotchke/eshkol" c1)))
+          (web-set-attribute a "href" "https://github.com/tsotchke/eshkol")
+          (web-set-attribute a "target" "_blank")))
+
+      (let ((c2 (create-card links)))
+        (let ((h (create-text "h3" "Issues" c2)))
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "8px"))
+        (body-text c2 "Report bugs, request features, or ask questions.")
+        (let ((a (create-text "a" "Issue Tracker" c2)))
+          (web-set-attribute a "href" "https://github.com/tsotchke/eshkol/issues")
+          (web-set-attribute a "target" "_blank")))
+
+      (let ((c3 (create-card links)))
+        (let ((h (create-text "h3" "Discussions" c3)))
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "8px"))
+        (body-text c3 "Ask questions, share ideas, and discuss the language.")
+        (let ((a (create-text "a" "GitHub Discussions" c3)))
+          (web-set-attribute a "href" "https://github.com/tsotchke/eshkol/discussions")
+          (web-set-attribute a "target" "_blank"))))
+
+    (create-divider page)
+
+    ;; Contributing
     (section-subheading page "Contributing")
-    (body-text page "Eshkol is open source under the MIT License. Contributions are welcome. See the Contributing Guide for code style, PR process, and development setup.")
+    (body-text page "Eshkol is open source under the MIT License. Contributions are welcome -- from bug fixes to new language features. See the Contributing Guide for code style, PR process, and development setup.")
+    (body-text page "The compiler is written in C++20 with LLVM 17+ as the backend. The standard library is written in Eshkol itself. Test suites use shell scripts in the scripts/ directory.")
 
-    (section-subheading page "Links")
-    (let ((links (create-div page)))
-      (style! links "display" "flex")
-      (style! links "gap" "16px")
-      (style! links "flexWrap" "wrap")
-      (style! links "marginTop" "16px")
+    (create-divider page)
 
-      (let ((make-link-card (lambda (title url)
-              (let ((a (create-text "a" title links)))
-                (style! a "background" "#1a1a28")
-                (style! a "border" "1px solid #2a2a3a")
-                (style! a "borderRadius" "8px")
-                (style! a "padding" "16px 24px")
-                (style! a "color" "#a78bfa")
-                (style! a "textDecoration" "none")
-                (style! a "fontWeight" "600")
-                (web-set-attribute a "href" url)
-                (web-set-attribute a "target" "_blank")
-                a))))
-        (make-link-card "GitHub Repository" "https://github.com/tsotchke/eshkol")
-        (make-link-card "Issue Tracker" "https://github.com/tsotchke/eshkol/issues")
-        (make-link-card "Discussions" "https://github.com/tsotchke/eshkol/discussions")))
+    ;; Development setup
+    (section-subheading page "Development Setup")
+    (body-text page "To build Eshkol from source for development, you need LLVM 17+, a C++20 compiler (GCC 12+ or Clang 15+), and CMake 3.14+.")
+    (create-code-block page
+      "<code style='color:#22c55e'>$</code> git clone https://github.com/tsotchke/eshkol.git\n<code style='color:#22c55e'>$</code> cd eshkol && mkdir build && cd build\n<code style='color:#22c55e'>$</code> cmake .. -DCMAKE_BUILD_TYPE=Debug\n<code style='color:#22c55e'>$</code> make -j8\n<code style='color:#22c55e'>$</code> ./scripts/run_all_tests.sh")
+    (body-text page "Run the full test suite with scripts/run_all_tests.sh. Individual test suites can be run with scripts/run_numeric_tests.sh, scripts/run_macros_tests.sh, etc.")
 
-    (section-subheading page "About")
+    (create-divider page)
+
+    ;; What makes Eshkol different
+    (section-subheading page "What Makes Eshkol Different")
+
+    (let ((diff-grid (create-grid-2 page)))
+      (let ((d1 (create-card diff-grid)))
+        (let ((h (create-text "h3" "AD at the Compiler Level" d1)))
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "8px"))
+        (body-text d1 "Other languages bolt on differentiation as a library (JAX, Zygote, PyTorch). Eshkol integrates AD directly into the LLVM codegen pipeline. The compiler sees gradients the same way it sees addition -- as a native operation to optimize."))
+
+      (let ((d2 (create-card diff-grid)))
+        (let ((h (create-text "h3" "Deterministic Performance" d2)))
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "8px"))
+        (body-text d2 "Arena-based memory means no garbage collector, no reference counting, no stop-the-world pauses. Allocation is O(1) via bump pointer. Deallocation is automatic at scope boundaries. Perfect for real-time systems and simulations."))
+
+      (let ((d3 (create-card diff-grid)))
+        (let ((h (create-text "h3" "Self-Modifying Programs" d3)))
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "8px"))
+        (body-text d3 "Homoiconicity means every function can inspect and transform its own source code. Combined with knowledge bases and probabilistic inference, this enables programs that reason about and improve themselves."))
+
+      (let ((d4 (create-card diff-grid)))
+        (let ((h (create-text "h3" "One Language, All Targets" d4)))
+          (style! h "color" "#a78bfa")
+          (style! h "marginBottom" "8px"))
+        (body-text d4 "Write once, compile to native ARM64/x86_64, WebAssembly, or GPU compute shaders. The same tensor operation dispatches to Metal on a MacBook, CUDA on a workstation, and SIMD on a Raspberry Pi.")))
+
+    (create-divider page)
+
+    ;; About
+    (section-subheading page "About Eshkol")
     (body-text page "Eshkol is developed by Tsotchke Corporation. The name comes from the Hebrew word for 'cluster' -- a reference to both grape clusters (abundance) and computational clusters (parallel computing).")
-    (body-text page "Eshkol is the first production programming language to integrate automatic differentiation directly at the compiler level, making calculus operations as natural and efficient as basic arithmetic.")
+    (body-text page "Eshkol is the first production programming language to integrate automatic differentiation directly at the compiler level, making calculus operations as natural and efficient as basic arithmetic. It combines the elegance of Scheme with the performance of compiled native code.")
+    (body-text page "The language targets scientific computing, machine learning, and autonomous systems -- domains where mathematical precision, deterministic performance, and hardware acceleration matter.")
 
+    (create-divider page)
+
+    ;; License
     (section-subheading page "License")
-    (body-text page "MIT License. Free for commercial and non-commercial use.")
+    (body-text page "MIT License. Free for commercial and non-commercial use. See the LICENSE file in the repository for full terms.")
 
     (render-footer page)))
 
@@ -1152,16 +1353,14 @@
       (web-set-inner-html content "")
       (web-scroll-to 0 0)
       (cond
-        ((string=? route-buf "#/features")
-         (render-features-page content))
-        ((string=? route-buf "#/docs")
-         (render-docs-page content))
         ((string=? route-buf "#/learn")
          (render-learn-page content))
         ((string=? route-buf "#/examples")
          (render-examples-page content))
-        ((string=? route-buf "#/install")
-         (render-install-page content))
+        ((string=? route-buf "#/docs")
+         (render-docs-page content))
+        ((string=? route-buf "#/downloads")
+         (render-downloads-page content))
         ((string=? route-buf "#/playground")
          (render-playground-page content))
         ((string=? route-buf "#/community")
@@ -1181,9 +1380,9 @@
       (begin
         (style! body "margin" "0")
         (style! body "fontFamily" "'Inter', system-ui, sans-serif")
-        (style! body "backgroundColor" "#0a0a0f")
-        (style! body "color" "#e8e8f0")
-        (style! body "lineHeight" "1.6")
+        (style! body "backgroundColor" "#09090b")
+        (style! body "color" "#d4d4d8")
+        (style! body "lineHeight" "1.7")
         (render-nav body)
         (let ((content (create-div body)))
           (web-set-attribute content "id" "content")
@@ -1196,3 +1395,4 @@
         (web-scroll-to 0 0)
         (route!)))
     0))
+
