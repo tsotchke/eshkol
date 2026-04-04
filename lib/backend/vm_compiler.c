@@ -868,7 +868,6 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         char* fname = sig->children[0]->symbol;
 
         int func_slot = add_local(c, fname);
-        int pre_registered = 0;
 
         /* Compile function body into a separate chunk.
          * The body can reference fname via GET_UPVALUE which will be captured
