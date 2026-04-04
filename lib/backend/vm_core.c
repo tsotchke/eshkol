@@ -282,6 +282,11 @@ typedef struct {
     int error;
 } VM;
 
+/* Command-line arguments (set in main, read by native 602) */
+static int g_vm_argc = 0;
+static char** g_vm_argv = NULL;
+static void vm_set_command_line(int argc, char** argv) { g_vm_argc = argc; g_vm_argv = argv; }
+
 static void vm_init(VM* vm) {
     memset(vm, 0, sizeof(VM));
     heap_init(&vm->heap);
@@ -310,7 +315,7 @@ static inline int is_heap_type(VM* vm, Value v, HeapType type) {
 }
 
 static void vm_push(VM* vm, Value v) {
-    if (vm->sp >= STACK_SIZE) { printf("STACK OVERFLOW\n"); vm->error = 1; return; }
+    if (vm->sp >= STACK_SIZE) { fprintf(stderr, "STACK OVERFLOW\n"); vm->error = 1; return; }
     vm->stack[vm->sp++] = v;
 }
 

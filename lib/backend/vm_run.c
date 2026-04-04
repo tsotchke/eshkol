@@ -118,12 +118,12 @@ static void vm_run(VM* vm) {
         if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334); }
         else {
         double bd = as_number(b);
-        if (bd == 0) { printf("DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
+        if (bd == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
         vm_push(vm, number_val(as_number(a) / bd)); } DISPATCH(); }
     lbl_MOD: {
         Value b = vm_pop(vm), a = vm_pop(vm);
         double bd = as_number(b);
-        if (bd == 0) { printf("MODULO BY ZERO\n"); vm->error = 1; goto vm_exit; }
+        if (bd == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; goto vm_exit; }
         double r = fmod(as_number(a), bd);
         if (r != 0 && ((r > 0) != (bd > 0))) r += bd;
         vm_push(vm, number_val(r));
@@ -157,7 +157,7 @@ static void vm_run(VM* vm) {
             if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
                 vm_push(vm, cl->closure.upvalues[instr.operand]);
             } else {
-                printf("UPVALUE INDEX OUT OF BOUNDS\n");
+                fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
                 vm_push(vm, NIL_VAL);
             }
         } else {
@@ -172,7 +172,7 @@ static void vm_run(VM* vm) {
             if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
                 cl->closure.upvalues[instr.operand] = vm_peek(vm, 0);
             } else {
-                printf("UPVALUE INDEX OUT OF BOUNDS\n");
+                fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
             }
         }
         vm_pop(vm);
@@ -228,13 +228,13 @@ static void vm_run(VM* vm) {
         }
 
         if (func.type != VAL_CLOSURE) {
-            printf("ERROR: calling non-function\n");
+            fprintf(stderr, "ERROR: calling non-function\n");
             vm->error = 1; goto vm_exit;
         }
 
         HeapObject* cl = vm->heap.objects[func.as.ptr];
 
-        if (vm->frame_count >= MAX_FRAMES) { printf("FRAME OVERFLOW\n"); vm->error = 1; goto vm_exit; }
+        if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; goto vm_exit; }
         vm->frames[vm->frame_count].return_pc = vm->pc;
         vm->frames[vm->frame_count].return_fp = vm->fp;
         vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
@@ -321,13 +321,13 @@ static void vm_run(VM* vm) {
     }
     lbl_CAR: {
         Value pair = vm_pop(vm);
-        if (pair.type != VAL_PAIR) { printf("CAR on non-pair\n"); vm->error = 1; goto vm_exit; }
+        if (pair.type != VAL_PAIR) { fprintf(stderr, "CAR on non-pair\n"); vm->error = 1; goto vm_exit; }
         vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.car);
         DISPATCH();
     }
     lbl_CDR: {
         Value pair = vm_pop(vm);
-        if (pair.type != VAL_PAIR) { printf("CDR on non-pair\n"); vm->error = 1; goto vm_exit; }
+        if (pair.type != VAL_PAIR) { fprintf(stderr, "CDR on non-pair\n"); vm->error = 1; goto vm_exit; }
         vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.cdr);
         DISPATCH();
     }
@@ -631,12 +631,12 @@ vm_exit:
         case OP_MUL: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) * as_number(b))); break; }
         case OP_DIV: { Value b = vm_pop(vm), a = vm_pop(vm);
             double bd = as_number(b);
-            if (bd == 0) { printf("DIVIDE BY ZERO\n"); vm->error = 1; break; }
+            if (bd == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
             vm_push(vm, number_val(as_number(a) / bd)); break; }
         case OP_MOD: {
             Value b = vm_pop(vm), a = vm_pop(vm);
             double bd = as_number(b);
-            if (bd == 0) { printf("MODULO BY ZERO\n"); vm->error = 1; break; }
+            if (bd == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; break; }
             double r = fmod(as_number(a), bd);
             if (r != 0 && ((r > 0) != (bd > 0))) r += bd;
             vm_push(vm, number_val(r));
@@ -668,7 +668,7 @@ vm_exit:
                 if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
                     vm_push(vm, cl->closure.upvalues[instr.operand]);
                 } else {
-                    printf("UPVALUE INDEX OUT OF BOUNDS\n");
+                    fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
                     vm_push(vm, NIL_VAL);
                 }
             } else {
@@ -683,7 +683,7 @@ vm_exit:
                 if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
                     cl->closure.upvalues[instr.operand] = vm_peek(vm, 0);
                 } else {
-                    printf("UPVALUE INDEX OUT OF BOUNDS\n");
+                    fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
                 }
             }
             vm_pop(vm);
@@ -730,14 +730,14 @@ vm_exit:
             }
 
             if (func.type != VAL_CLOSURE) {
-                printf("ERROR: calling non-function\n");
+                fprintf(stderr, "ERROR: calling non-function\n");
                 vm->error = 1; break;
             }
 
             HeapObject* cl = vm->heap.objects[func.as.ptr];
 
             /* Save call frame */
-            if (vm->frame_count >= MAX_FRAMES) { printf("FRAME OVERFLOW\n"); vm->error = 1; break; }
+            if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; break; }
             vm->frames[vm->frame_count].return_pc = vm->pc;
             vm->frames[vm->frame_count].return_fp = vm->fp;
             vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
@@ -814,13 +814,13 @@ vm_exit:
         }
         case OP_CAR: {
             Value pair = vm_pop(vm);
-            if (pair.type != VAL_PAIR) { printf("CAR on non-pair\n"); vm->error = 1; break; }
+            if (pair.type != VAL_PAIR) { fprintf(stderr, "CAR on non-pair\n"); vm->error = 1; break; }
             vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.car);
             break;
         }
         case OP_CDR: {
             Value pair = vm_pop(vm);
-            if (pair.type != VAL_PAIR) { printf("CDR on non-pair\n"); vm->error = 1; break; }
+            if (pair.type != VAL_PAIR) { fprintf(stderr, "CDR on non-pair\n"); vm->error = 1; break; }
             vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.cdr);
             break;
         }

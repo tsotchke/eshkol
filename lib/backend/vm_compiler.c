@@ -2916,10 +2916,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NUM_P, 0); return;
     }
     if (is_sym(head, "rational?") && node->n_children == 2) {
-        compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 740); return;
+        compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 1698); return;
     }
     if (is_sym(head, "tensor?") && node->n_children == 2) {
-        compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 740); return;
+        compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 1699); return;
     }
     if (is_sym(head, "port?") && node->n_children == 2) {
         compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 730); return;
