@@ -101,6 +101,39 @@ bash scripts/run_macros_tests.sh
 # ... see scripts/ directory for all test runners
 ```
 
+### Testing the Bytecode VM
+
+The bytecode VM can be built and tested independently:
+
+```bash
+# Build
+gcc -O2 -std=c11 -w lib/backend/eshkol_vm.c -o test_vm -lm -lpthread
+
+# Run all 50 built-in tests
+ESHKOL_VM_NO_DISASM=1 ./test_vm
+
+# Run a single Eshkol program through the VM
+./test_vm program.esk
+```
+
+### Building the Website
+
+The website is written in Eshkol and compiled to WebAssembly:
+
+```bash
+# Compile the website
+./build/eshkol-run --wasm site/src/main.esk -o site/static/eshkol-site.wasm
+
+# Rebuild the browser REPL VM
+emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
+  -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
+  -I lib/backend lib/backend/vm_wasm_repl.c \
+  -o site/static/eshkol-vm.js -lm
+
+# Serve locally
+cd site/static && python3 -m http.server 8888
+```
+
 ## How to Contribute
 
 ### Reporting Issues

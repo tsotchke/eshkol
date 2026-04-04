@@ -59,6 +59,19 @@ The HoTT type system supports dependent types for tensor shape verification at c
 
 ---
 
+## Current Limitations (VM)
+
+### Top-level mutual recursion grouping
+Top-level mutual recursion requires consecutive function defines. Interleaved non-define expressions break groups, causing forward references to fail. Workaround: place all mutually recursive defines together without intervening expressions.
+
+### Tensor nested syntax not supported in VM parser
+`#((1 2) (3 4))` nested tensor syntax is not supported in the bytecode VM parser. Use flat tensors with `reshape` in the native compiler instead.
+
+### Gradient limited to single-variable functions in VM
+`gradient` in the VM only handles single-variable functions. Use `derivative` for scalar AD in the REPL.
+
+---
+
 ## Roadmap (Future Releases)
 
 These are planned features, not deficiencies in the current release:

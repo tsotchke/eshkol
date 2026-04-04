@@ -29,6 +29,27 @@ without segfault, and produces no `FAIL:` assertion lines in its output.
 
 ---
 
+## Bytecode VM Tests
+
+The bytecode VM (`lib/backend/eshkol_vm.c` unity build) has its own comprehensive test suite:
+
+| Suite | Tests | Description |
+|-------|-------|-------------|
+| Built-in | 50 | 10 bytecode-level + 40 source-level with verified output capture |
+| Stress | 64 | Arithmetic, strings, lists, closures, control flow, AD, rationals |
+| Final Verification | 62 | Adversarial edge cases across all features |
+| **Total** | **176** | **All passing** |
+
+Test command:
+```bash
+gcc -O2 -std=c11 -w lib/backend/eshkol_vm.c -o test_vm -lm -lpthread
+ESHKOL_VM_NO_DISASM=1 ./test_vm
+```
+
+Coverage includes: arithmetic (int/float/rational/complex/bignum), strings (append/ref/substring/upcase/split/join), lists (map/filter/fold/sort/assoc/member), closures (capture/mutation/composition), control flow (call/cc/guard/raise/dynamic-wind/values), automatic differentiation (derivative/gradient via dual numbers), consciousness engine (KB/factor-graph/workspace), and R7RS forms (let/letrec/named-let/do/cond/case-lambda/quasiquote).
+
+---
+
 ## Test Suite Overview
 
 | # | Suite | Script | Tests | Coverage |
