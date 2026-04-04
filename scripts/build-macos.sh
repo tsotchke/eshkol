@@ -66,27 +66,14 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
+source "${SCRIPT_DIR}/lib/llvm21-env.sh"
 
 # Detect host architecture
 HOST_ARCH=$(uname -m)
 echo "Host architecture: $HOST_ARCH"
 
-# Set up LLVM path (Homebrew)
-if [ "$HOST_ARCH" = "arm64" ]; then
-    LLVM_PATH="/opt/homebrew/opt/llvm@17"
-else
-    LLVM_PATH="/usr/local/opt/llvm@17"
-fi
-
-if [ ! -d "$LLVM_PATH" ]; then
-    echo "Error: LLVM 17 not found at $LLVM_PATH"
-    echo "Install with: brew install llvm@17"
-    exit 1
-fi
-
-export PATH="$LLVM_PATH/bin:$PATH"
-export LDFLAGS="-L$LLVM_PATH/lib"
-export CPPFLAGS="-I$LLVM_PATH/include"
+eshkol_activate_llvm21
+LLVM_PATH="${ESHKOL_LLVM_ROOT}"
 
 mkdir -p "$OUTPUT_DIR"
 
