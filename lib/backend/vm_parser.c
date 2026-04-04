@@ -198,6 +198,18 @@ static Node* parse_sexp(void) {
             return vec;
         }
     }
+    /* R7RS special float literals: +nan.0, +inf.0, -inf.0 */
+    if ((src_ptr[0] == '+' || src_ptr[0] == '-') &&
+        (strncmp(src_ptr + 1, "nan.0", 5) == 0 || strncmp(src_ptr + 1, "inf.0", 5) == 0)) {
+        double val;
+        if (strncmp(src_ptr + 1, "nan.0", 5) == 0) val = NAN;
+        else if (src_ptr[0] == '+') val = INFINITY;
+        else val = -INFINITY;
+        src_ptr += 6; /* skip +nan.0 / +inf.0 / -inf.0 */
+        Node* n = make_node(N_NUMBER); if (!n) return NULL;
+        n->numval = val;
+        return n;
+    }
     /* Number (including rational literals like 1/3) */
     if (isdigit(*src_ptr) || (*src_ptr == '-' && isdigit(src_ptr[1]))) {
         char buf[64]; int i = 0;
