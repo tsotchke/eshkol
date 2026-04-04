@@ -93,7 +93,7 @@ jobs:
       - name: Install Dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev pkg-config
+          sudo apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev pkg-config libssl-dev libncurses-dev
           sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
 
       - name: Install Dependencies (macOS)
@@ -148,7 +148,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev dpkg-dev pkg-config
+          sudo apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev dpkg-dev pkg-config libssl-dev libncurses-dev
           sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
 
       - name: Build
@@ -185,7 +185,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev dpkg-dev pkg-config
+          sudo apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev dpkg-dev pkg-config libssl-dev libncurses-dev
           sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
 
       - name: Build

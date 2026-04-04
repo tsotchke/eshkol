@@ -17,7 +17,7 @@ variables:
     - wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
     - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | tee /etc/apt/sources.list.d/llvm.list
     - apt-get update
-    - apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev pkg-config build-essential
+    - apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev pkg-config build-essential libssl-dev libncurses-dev
     - ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
 
 .linux-test-base:
@@ -29,7 +29,7 @@ variables:
     - wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
     - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | tee /etc/apt/sources.list.d/llvm.list
     - apt-get update
-    - apt-get install -y llvm-17 llvm-17-dev clang-17 libreadline-dev build-essential
+    - apt-get install -y llvm-17 llvm-17-dev clang-17 libreadline-dev build-essential libssl-dev libncurses-dev
     - ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
     - ln -sf /usr/bin/clang-17 /usr/bin/clang
     - ln -sf /usr/bin/clang++-17 /usr/bin/clang++
