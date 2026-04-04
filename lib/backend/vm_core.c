@@ -320,13 +320,13 @@ static void vm_push(VM* vm, Value v) {
 }
 
 static Value vm_pop(VM* vm) {
-    if (vm->sp <= 0) { printf("STACK UNDERFLOW\n"); vm->error = 1; return NIL_VAL; }
+    if (vm->sp <= 0) { fprintf(stderr, "STACK UNDERFLOW\n"); vm->error = 1; return NIL_VAL; }
     return vm->stack[--vm->sp];
 }
 
 static Value vm_peek(VM* vm, int offset) {
     int idx = vm->sp - 1 - offset;
-    if (idx < 0 || idx >= vm->sp) { printf("PEEK OUT OF BOUNDS\n"); return NIL_VAL; }
+    if (idx < 0 || idx >= vm->sp) { fprintf(stderr, "PEEK OUT OF BOUNDS\n"); return NIL_VAL; }
     return vm->stack[idx];
 }
 

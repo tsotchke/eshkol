@@ -91,7 +91,7 @@ static void vm_run(VM* vm) {
 
     lbl_CONST:
         if (instr.operand < 0 || instr.operand >= vm->n_constants) {
-            printf("INVALID CONSTANT INDEX %d\n", instr.operand);
+            fprintf(stderr, "INVALID CONSTANT INDEX %d\n", instr.operand);
             vm->error = 1; goto vm_exit;
         }
         vm_push(vm, vm->constants[instr.operand]);
@@ -613,7 +613,7 @@ vm_exit:
 
         case OP_CONST:
             if (instr.operand < 0 || instr.operand >= vm->n_constants) {
-                printf("INVALID CONSTANT INDEX %d\n", instr.operand);
+                fprintf(stderr, "INVALID CONSTANT INDEX %d\n", instr.operand);
                 vm->error = 1; break;
             }
             vm_push(vm, vm->constants[instr.operand]);
@@ -1041,7 +1041,7 @@ vm_exit:
         /* OP_CLOSE_UPVALUE handled at line 720 — no duplicate */
 
         default:
-            printf("UNKNOWN OPCODE %d\n", instr.op);
+            fprintf(stderr, "UNKNOWN OPCODE %d\n", instr.op);
             vm->error = 1;
             break;
         }
