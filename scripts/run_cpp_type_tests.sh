@@ -19,41 +19,20 @@ echo ""
 # Get script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
+source "$SCRIPT_DIR/lib/llvm21-env.sh"
 
-# Find llvm-config - check PATH first, then common locations
-LLVM_CONFIG=""
-if command -v llvm-config &> /dev/null; then
-    LLVM_CONFIG="llvm-config"
-else
-    # Search common LLVM installation locations
-    LLVM_SEARCH_PATHS=(
-        "/opt/homebrew/opt/llvm/bin/llvm-config"
-        "/opt/homebrew/opt/llvm@19/bin/llvm-config"
-        "/opt/homebrew/opt/llvm@17/bin/llvm-config"
-        "/usr/local/opt/llvm/bin/llvm-config"
-        "/usr/bin/llvm-config"
-        "/usr/local/bin/llvm-config"
-    )
-    for llvm_path in "${LLVM_SEARCH_PATHS[@]}"; do
-        if [ -x "$llvm_path" ]; then
-            LLVM_CONFIG="$llvm_path"
-            break
-        fi
-    done
-fi
-
-if [ -z "$LLVM_CONFIG" ]; then
-    echo -e "${RED}Error: llvm-config not found. Please install LLVM.${NC}"
-    exit 1
-fi
+eshkol_activate_llvm21
+LLVM_CONFIG="$LLVM_CONFIG_EXECUTABLE"
 
 echo "Using LLVM config: $LLVM_CONFIG"
 
 # Get LLVM configuration
-LLVM_CXXFLAGS=$($LLVM_CONFIG --cxxflags)
-LLVM_LDFLAGS=$($LLVM_CONFIG --ldflags)
-LLVM_LIBS=$($LLVM_CONFIG --libs all)
-LLVM_SYSTEM_LIBS=$($LLVM_CONFIG --system-libs)
+LLVM_CXXFLAGS_RAW=$($LLVM_CONFIG --cxxflags)
+LLVM_CXXFLAGS_RAW=$(printf '%s\n' "$LLVM_CXXFLAGS_RAW" | sed -E 's/(^|[[:space:]])-std=[^[:space:]]+//g; s/(^|[[:space:]])-fno-exceptions//g')
+read -r -a LLVM_CXXFLAGS <<< "$LLVM_CXXFLAGS_RAW"
+read -r -a LLVM_LDFLAGS <<< "$($LLVM_CONFIG --ldflags)"
+read -r -a LLVM_LIBS <<< "$($LLVM_CONFIG --libs all)"
+read -r -a LLVM_SYSTEM_LIBS <<< "$($LLVM_CONFIG --system-libs)"
 
 # Test files
 HOTT_TYPES_TEST="$PROJECT_DIR/tests/types/hott_types_test.cpp"
@@ -77,10 +56,10 @@ compile_and_run_test() {
     # Compile the test
     if g++ -std=c++20 \
         -I"$PROJECT_DIR/inc" \
-        $LLVM_CXXFLAGS \
+        "${LLVM_CXXFLAGS[@]}" \
         $SOURCES \
         "$test_file" \
-        $LLVM_LDFLAGS $LLVM_LIBS $LLVM_SYSTEM_LIBS \
+        "${LLVM_LDFLAGS[@]}" "${LLVM_LIBS[@]}" "${LLVM_SYSTEM_LIBS[@]}" \
         -o "$output" 2>&1; then
 
         echo -e "${GREEN}OK${NC}"

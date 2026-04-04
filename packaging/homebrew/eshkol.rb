@@ -16,12 +16,12 @@ class Eshkol < Formula
 
   depends_on "cmake" => :build
   depends_on "ninja" => :build
-  depends_on "llvm@17"
+  depends_on "llvm@21"
   depends_on "readline"
 
   def install
     # Set LLVM paths for build and runtime
-    llvm = Formula["llvm@17"]
+    llvm = Formula["llvm@21"]
     ENV["PATH"] = "#{llvm.opt_bin}:#{ENV["PATH"]}"
     ENV["LDFLAGS"] = "-L#{llvm.opt_lib} -Wl,-rpath,#{llvm.opt_lib} #{ENV["LDFLAGS"]}"
     ENV["CPPFLAGS"] = "-I#{llvm.opt_include} #{ENV["CPPFLAGS"]}"

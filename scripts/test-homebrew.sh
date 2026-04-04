@@ -51,6 +51,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
+source "${SCRIPT_DIR}/lib/llvm21-env.sh"
 
 echo -e "${YELLOW}=== Homebrew Formula Test ===${NC}"
 
@@ -71,7 +72,7 @@ echo -e "${GREEN}Formula found: $FORMULA_PATH${NC}"
 
 # Check dependencies are available
 echo -e "${YELLOW}Checking dependencies...${NC}"
-DEPS=("llvm@17" "cmake" "ninja" "readline")
+DEPS=("llvm@21" "cmake" "ninja" "readline")
 for dep in "${DEPS[@]}"; do
     if brew list "$dep" &>/dev/null; then
         echo -e "  ${GREEN}[OK]${NC} $dep"
@@ -94,20 +95,10 @@ fi
 if [ "$LOCAL_TEST" = true ]; then
     echo -e "${YELLOW}Testing local build (simulating Homebrew)...${NC}"
 
-    # Get LLVM path
-    ARCH=$(uname -m)
-    if [ "$ARCH" = "arm64" ]; then
-        LLVM_PATH="/opt/homebrew/opt/llvm@17"
-    else
-        LLVM_PATH="/usr/local/opt/llvm@17"
-    fi
-
-    if [ ! -d "$LLVM_PATH" ]; then
-        echo -e "${RED}LLVM 17 not found. Install with: brew install llvm@17${NC}"
+    if ! eshkol_activate_llvm21; then
+        echo -e "${RED}LLVM 21 not found. Install with: brew install llvm@21${NC}"
         exit 1
     fi
-
-    export PATH="$LLVM_PATH/bin:$PATH"
 
     # Clean and build
     BUILD_DIR="build-homebrew-test"
