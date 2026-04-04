@@ -1,0 +1,15 @@
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    wget gnupg cmake ninja-build g++ \
+    libreadline-dev pkg-config libssl-dev libncurses-dev \
+    && wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc \
+    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" >> /etc/apt/sources.list.d/llvm.list \
+    && apt-get update && apt-get install -y llvm-17 llvm-17-dev \
+    && ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /eshkol
+COPY . .
+RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -5
+RUN cmake --build build --parallel 2>&1 && echo "BUILD SUCCESS" || echo "BUILD FAILED"
+RUN bash scripts/run_all_tests.sh 2>&1 | tail -20 ; echo "TESTS DONE"

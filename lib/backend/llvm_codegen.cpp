@@ -12898,9 +12898,9 @@ private:
             }
 
             if (signatures_match) {
-                eshkol_debug("Mutual TCO: emitting musttail call to %s", func_name.c_str());
+                eshkol_debug("Mutual TCO: emitting tail call to %s", func_name.c_str());
                 CallInst* call = builder->CreateCall(callee, args);
-                call->setTailCallKind(CallInst::TCK_MustTail);
+                call->setTailCallKind(CallInst::TCK_Tail);
                 builder->CreateRet(call);
                 return UndefValue::get(tagged_value_type);
             }
