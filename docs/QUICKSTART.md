@@ -69,7 +69,7 @@ eshkol-run hello.esk -o hello
 **Requirements**: LLVM 17+, C++20 compiler, CMake 3.14+, Ninja
 **Platforms**: Linux, macOS (x86-64, ARM64), Windows (MSYS2/MinGW64)
 
-**Web REPL**: Open `web/index.html` in a browser for an interactive Eshkol environment without installation.
+**Web REPL**: Visit [eshkol.ai](https://eshkol.ai) for an interactive Eshkol environment without installation — includes a full REPL, tutorials, and runnable examples.
 
 **Bytecode**: Emit portable ESKB bytecode alongside native compilation: `eshkol-run hello.esk -B hello.eskb`
 
@@ -1197,7 +1197,15 @@ eshkol-run --wasm app.esk -o app.wasm
 
 ---
 
-**Next**: Read the [API Reference](API_REFERENCE.md) for complete function documentation, or dive into the [Machine Learning deep dive](breakdown/MACHINE_LEARNING.md) for neural network training patterns.
+## Next Steps
+
+- **[API Reference](API_REFERENCE.md)** — Complete function documentation (555+ builtins)
+- **[Examples](../../examples/)** — Runnable programs demonstrating AD, tensors, parallelism, consciousness engine
+- **[Consciousness Engine](breakdown/CONSCIOUSNESS_ENGINE.md)** — Logic programming, factor graphs, global workspace
+- **[Automatic Differentiation](breakdown/AUTODIFF.md)** — Forward/reverse mode, vector calculus operators
+- **[Machine Learning](breakdown/MACHINE_LEARNING.md)** — Neural network training, optimizers, activations
+- **[Language Guide](../ESHKOL_LANGUAGE_GUIDE.md)** — Comprehensive language tutorial
+- **[eshkol.ai](https://eshkol.ai)** — Interactive browser REPL with runnable tutorials
 
 ---
 
