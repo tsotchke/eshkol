@@ -2500,10 +2500,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* Core operations as first-class native functions (IDs 200-226) */
     case 200: { Value a = vm_pop(vm); /* car */
         if (a.type == VAL_PAIR) { HeapObject* o = vm->heap.objects[a.as.ptr]; vm_push(vm, o->cons.car); }
-        else { printf("CAR on non-pair\n"); vm_push(vm, NIL_VAL); } break; }
+        else { fprintf(stderr, "CAR on non-pair\n"); vm_push(vm, NIL_VAL); } break; }
     case 201: { Value a = vm_pop(vm); /* cdr */
         if (a.type == VAL_PAIR) { HeapObject* o = vm->heap.objects[a.as.ptr]; vm_push(vm, o->cons.cdr); }
-        else { printf("CDR on non-pair\n"); vm_push(vm, NIL_VAL); } break; }
+        else { fprintf(stderr, "CDR on non-pair\n"); vm_push(vm, NIL_VAL); } break; }
     case 202: { Value b = vm_pop(vm), a = vm_pop(vm); /* cons */
         int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
         vm->heap.objects[p]->type = HEAP_CONS;
@@ -2887,9 +2887,26 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (s.type == VAL_STRING) { VmString* vs = (VmString*)vm->heap.objects[s.as.ptr]->opaque.ptr;
             if (vs) { printf("%.*s\n", vs->byte_len, vs->data); fflush(stdout); } }
         vm_push(vm, NIL_VAL); break; }
-    case 728: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(0)); break; } /* input-port? stub */
-    case 729: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(0)); break; } /* output-port? stub */
-    case 730: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(0)); break; } /* port? stub */
+    case 728: { /* input-port? */
+        Value a = vm_pop(vm);
+        int is_ip = 0;
+        if (a.as.ptr >= 0 && a.as.ptr < vm->heap.next_free && vm->heap.objects[a.as.ptr]->type == HEAP_PORT) {
+            VmPort* p = (VmPort*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            is_ip = (p && p->dir == VM_PORT_INPUT);
+        }
+        vm_push(vm, BOOL_VAL(is_ip)); break; }
+    case 729: { /* output-port? */
+        Value a = vm_pop(vm);
+        int is_op = 0;
+        if (a.as.ptr >= 0 && a.as.ptr < vm->heap.next_free && vm->heap.objects[a.as.ptr]->type == HEAP_PORT) {
+            VmPort* p = (VmPort*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            is_op = (p && p->dir == VM_PORT_OUTPUT);
+        }
+        vm_push(vm, BOOL_VAL(is_op)); break; }
+    case 730: { /* port? */
+        Value a = vm_pop(vm);
+        int is_p = (a.as.ptr >= 0 && a.as.ptr < vm->heap.next_free && vm->heap.objects[a.as.ptr]->type == HEAP_PORT);
+        vm_push(vm, BOOL_VAL(is_p)); break; }
     case 740: { /* type-of */
         Value a = vm_pop(vm);
         const char* t = "unknown";
@@ -2905,12 +2922,28 @@ static void vm_dispatch_native(VM* vm, int fid) {
         else vm_push(vm, NIL_VAL); break; }
     case 743: { Value a = vm_pop(vm); double v = as_number(a);
         vm_push(vm, INT_VAL(v > 0 ? 1 : (v < 0 ? -1 : 0))); break; }
-    case 745: { /* eye(n) — identity matrix */
-        Value n = vm_pop(vm); vm_push(vm, n); break; } /* simplified: return n */
-    case 746: { /* linspace(start, stop, n) */
-        Value n_val = vm_pop(vm), stop = vm_pop(vm), start = vm_pop(vm);
-        (void)start; (void)stop; (void)n_val;
-        vm_push(vm, NIL_VAL); break; } /* tensor op — delegated to tensor subsystem */
+    case 745: { /* eye(n) — identity matrix as n×n tensor */
+        Value n_val = vm_pop(vm);
+        int n = (int)as_number(n_val);
+        if (n <= 0 || n > 1024) { vm_push(vm, NIL_VAL); break; }
+        int64_t shape[2] = {n, n};
+        VmTensor* t = vm_tensor_zeros(&vm->heap.regions, shape, 2);
+        if (!t) { vm_push(vm, NIL_VAL); break; }
+        for (int i = 0; i < n; i++) t->data[i * n + i] = 1.0;
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_VECTOR, t);
+        break; }
+    case 746: { /* linspace(start, stop, n) — n evenly spaced points */
+        Value n_val = vm_pop(vm), stop_val = vm_pop(vm), start_val = vm_pop(vm);
+        double s = as_number(start_val), e = as_number(stop_val);
+        int n = (int)as_number(n_val);
+        if (n <= 0 || n > 100000) { vm_push(vm, NIL_VAL); break; }
+        int64_t shape[1] = {n};
+        VmTensor* t = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+        if (!t) { vm_push(vm, NIL_VAL); break; }
+        double step = (n > 1) ? (e - s) / (n - 1) : 0;
+        for (int i = 0; i < n; i++) t->data[i] = s + i * step;
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_VECTOR, t);
+        break; }
 
     /* ══════════════════════════════════════════════════════════════════════
      * Higher-order native accelerated (900-910)
