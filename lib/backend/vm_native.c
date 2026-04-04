@@ -3,22 +3,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Math functions (20-35)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 20: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(sin(as_number(a)))); break; }
-    case 21: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(cos(as_number(a)))); break; }
-    case 22: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(tan(as_number(a)))); break; }
-    case 23: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(exp(as_number(a)))); break; }
-    case 24: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(log(as_number(a)))); break; }
-    case 25: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); break; }
-    case 26: { Value a = vm_pop(vm); vm_push(vm, number_val(floor(as_number(a)))); break; }
-    case 27: { Value a = vm_pop(vm); vm_push(vm, number_val(ceil(as_number(a)))); break; }
-    case 28: { Value a = vm_pop(vm); vm_push(vm, number_val(round(as_number(a)))); break; }
-    case 29: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(asin(as_number(a)))); break; }
-    case 30: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(acos(as_number(a)))); break; }
-    case 31: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(atan(as_number(a)))); break; }
-    case 32: { Value b = vm_pop(vm); Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
-    case 33: { Value b = vm_pop(vm); Value a = vm_pop(vm); double da=as_number(a),db=as_number(b); vm_push(vm, number_val(da<db?da:db)); break; }
-    case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm); double da=as_number(a),db=as_number(b); vm_push(vm, number_val(da>db?da:db)); break; }
-    case 35: { Value a = vm_pop(vm); vm_push(vm, number_val(fabs(as_number(a)))); break; }
+    case 20: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,377); } else vm_push(vm, FLOAT_VAL(sin(as_number(a)))); break; }
+    case 21: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,378); } else vm_push(vm, FLOAT_VAL(cos(as_number(a)))); break; }
+    case 22: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { /* tan = sin/cos */ vm_push(vm,a); vm_dispatch_native(vm,377); Value s=vm_pop(vm); vm_push(vm,a); vm_dispatch_native(vm,378); Value c=vm_pop(vm); vm_push(vm,s); vm_push(vm,c); vm_dispatch_native(vm,376); } else vm_push(vm, FLOAT_VAL(tan(as_number(a)))); break; }
+    case 23: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,379); } else vm_push(vm, FLOAT_VAL(exp(as_number(a)))); break; }
+    case 24: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number(a)))); break; }
+    case 25: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); break; }
+    case 26: { Value a = vm_pop(vm); vm_push(vm, number_val(floor(as_number_vm(vm,a)))); break; }
+    case 27: { Value a = vm_pop(vm); vm_push(vm, number_val(ceil(as_number_vm(vm,a)))); break; }
+    case 28: { Value a = vm_pop(vm); vm_push(vm, number_val(round(as_number_vm(vm,a)))); break; }
+    case 29: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(asin(as_number_vm(vm,a)))); break; }
+    case 30: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(acos(as_number_vm(vm,a)))); break; }
+    case 31: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
+    case 32: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,385); }
+        else vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
+    case 33: { Value b = vm_pop(vm); Value a = vm_pop(vm); double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da<db?da:db)); break; }
+    case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm); double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da>db?da:db)); break; }
+    case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); } else vm_push(vm, number_val(fabs(as_number(a)))); break; }
 
     /* ══════════════════════════════════════════════════════════════════════
      * Predicates (40-50)
@@ -597,13 +599,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
     case 393: { /* derivative: (derivative f x) → f'(x) using forward-mode dual numbers */
-        Value x_val = vm_pop(vm), f_val = vm_pop(vm); (void)f_val;
-        /* Create dual: x + 1*epsilon */
+        Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+        /* Create dual number: x + 1ε */
         VmDual* d = vm_dual_make(&vm->heap.regions, as_number(x_val), 1.0);
-        if (!d) { vm->error = 1; break; }
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, d);
-        /* Note: can't call closure from native code in simple VM.
-         * Push the dual number — user extracts tangent after calling f. */
+        if (!d) { vm_push(vm, FLOAT_VAL(0)); break; }
+        int32_t dptr = heap_alloc(&vm->heap);
+        if (dptr < 0) { vm->error = 1; break; }
+        vm->heap.objects[dptr]->type = HEAP_DUAL;
+        vm->heap.objects[dptr]->opaque.ptr = d;
+        Value dual_arg = (Value){.type = VAL_DUAL, .as.ptr = dptr};
+        /* Call f(dual) via closure bridge */
+        Value result = vm_call_closure_from_native(vm, f_val, &dual_arg, 1);
+        /* Extract tangent = derivative */
+        if (result.type == VAL_DUAL && result.as.ptr >= 0) {
+            VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+            vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
+        } else {
+            vm_push(vm, FLOAT_VAL(0)); /* non-dual result = constant function */
+        }
         break;
     }
     case 394: case 395: case 396: case 397: { /* ad-add, ad-sub, ad-mul, ad-div(tape, left, right) */

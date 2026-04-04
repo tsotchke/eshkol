@@ -297,13 +297,17 @@ static inline int is_valid_heap_ptr(VM* vm, int32_t ptr) {
     return ptr >= 0 && ptr < vm->heap.next_free;
 }
 
-/* VM-aware as_number: handles rationals via heap access */
+/* VM-aware as_number: handles rationals and duals via heap access */
 static double as_number_vm(VM* vm, Value v) {
     if (v.type == VAL_INT) return (double)v.as.i;
     if (v.type == VAL_FLOAT) return v.as.f;
     if (v.type == VAL_RATIONAL && vm) {
         VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
         if (r && r->denom != 0) return (double)r->num / (double)r->denom;
+    }
+    if (v.type == VAL_DUAL && vm) {
+        VmDual* d = (VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (d) return d->primal;
     }
     return 0.0;
 }
