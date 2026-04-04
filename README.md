@@ -32,7 +32,25 @@ Eshkol brings **mathematical computing to Lisp** and delivers what other languag
 - **Zero-overhead abstractions** - Type-level proofs erase at compile time. Arena allocation is O(1). No runtime penalties for safety
 - **Deterministic performance** - No garbage collector means no unpredictable pauses. Critical for real-time systems and production ML
 - **Native compilation** - LLVM backend generates machine code competitive with hand-written C while preserving high-level expressiveness
+- **Web platform** - Compiles to WebAssembly with 59 DOM bindings. The project website is itself written in Eshkol. AD works in the browser via dual number propagation through a 63-opcode bytecode VM
+- **Consciousness engine** - 22 compiled primitives: logic programming (unification, knowledge bases), active inference (factor graphs, belief propagation, free energy), and global workspace theory (softmax competition, content broadcasting)
 - **Mathematical rigor** - HoTT type foundations ensure correctness properties are mathematically provable, not just tested
+
+---
+
+## Try It Now
+
+**No installation required.** Visit **[eshkol.ai](https://eshkol.ai)** to try Eshkol in your browser:
+
+- **Playground** — Full REPL with 63 opcodes and 555+ built-in functions, running in WebAssembly
+- **Learn** — 8-chapter interactive textbook where every code example is runnable
+- **Examples** — 10 complete programs you can run instantly (AD, neural networks, ODE solving, logic programming)
+
+The website itself is written in Eshkol (1,400 lines) compiled to a 502KB WASM binary. Automatic differentiation works in the browser:
+
+```scheme
+(derivative (lambda (x) (* x x x)) 2.0)  ;; => 12.0 (3x² at x=2)
+```
 
 ---
 

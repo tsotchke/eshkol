@@ -6,6 +6,29 @@ Eshkol v1.1-accelerate builds on the v1.0-foundation with comprehensive performa
 
 ## What's New in v1.1-accelerate
 
+### Web Platform
+
+Eshkol compiles to WebAssembly and runs in the browser. The project website ([eshkol.ai](https://eshkol.ai)) is itself written in Eshkol — 1,400 lines compiled to a 502KB WASM binary.
+
+- **Browser REPL**: A 63-opcode bytecode interpreter compiled via Emscripten runs in the browser with 555+ built-in functions. Users can evaluate Eshkol expressions without installing anything.
+- **Automatic Differentiation in Browser**: Forward-mode AD via dual numbers works through the bytecode VM. Arithmetic opcodes detect dual number operands and dispatch to dual arithmetic (product rule, quotient rule, chain rule). `(derivative (lambda (x) (* x x)) 3.0)` returns `6` in the browser.
+- **Interactive Examples**: Every code example on the website has a Run button with inline output. Examples span AD, neural network training, ODE solving, knowledge base queries, and exact arithmetic.
+- **59 DOM Bindings**: Create elements, manipulate styles, handle events, draw on canvas, manage routing, access local storage — all from Eshkol compiled to WASM.
+- **8-Chapter Interactive Textbook**: Progressive tutorial from basics through AD, tensors, scientific computing, and the consciousness engine — every example runnable.
+
+### Bytecode VM — Production Complete
+
+The bytecode VM is a fully production-grade execution engine:
+
+- **555+ built-in functions** including character operations, bitwise logic, type predicates, string processing, list utilities, math extensions, complex numbers, and port I/O
+- **Automatic differentiation in the VM**: Forward-mode AD via dual number propagation through all arithmetic and transcendental operations
+- **R7RS control flow**: `call/cc` with continuation capture/restore, `guard`/`raise`, `dynamic-wind`, `values`/`call-with-values`
+- **Exact arithmetic**: Rational literals (`1/3`), bignums, complex numbers, `+nan.0`/`+inf.0`/`-inf.0`
+- **Consciousness engine**: Knowledge base queries with pattern matching, factor graphs, global workspace
+- **Mutual recursion**: Top-level function defines can reference each other
+- **System integration**: `directory-entries`, `command-line`, thread pool
+- **176/176 tests passing**
+
 ### XLA Backend (Dual-Mode Architecture)
 
 Tensor operations now dispatch through a multi-tier acceleration hierarchy:

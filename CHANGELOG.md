@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Bytecode VM — Production Complete
+
+The bytecode VM is now a fully production-grade execution engine with 555+ built-in functions, forward-mode automatic differentiation, R7RS control flow, exact arithmetic, and the consciousness engine.
+
+- **Automatic differentiation**: Forward-mode AD via dual number propagation. Arithmetic and transcendental functions automatically track derivatives. `(derivative (lambda (x) (* x x)) 3.0)` → `6`
+- **R7RS control flow**: `call/cc` with full continuation capture/restore and dynamic-wind unwinding, `guard`/`raise` exception handling, `values`/`call-with-values`
+- **Exact arithmetic**: Rational literals (`1/3`), arbitrary-precision integers, complex numbers, R7RS special floats (`+nan.0`, `+inf.0`, `-inf.0`)
+- **Consciousness engine**: Knowledge base queries with `?`-wildcard pattern matching, factor graphs with belief propagation, global workspace
+- **555+ built-in functions**: Character operations, bitwise operations, type predicates, string processing (`split`, `join`, `trim`, `reverse`, `repeat`), list operations (`take`, `drop`, `any`, `every`, `find`), math extensions (`cosh`, `sinh`, `tanh`), complex numbers, port I/O
+- **Mutual recursion**: Top-level function defines can reference each other without forward declarations
+- **System integration**: `directory-entries` (POSIX readdir), `command-line` (argc/argv), thread pool
+- **176/176 tests passing**
+
+### Web Platform
+
+- **eshkol.ai**: Complete website written in Eshkol (1,400 lines), compiled to WebAssembly
+- **Browser REPL**: 63-opcode bytecode interpreter with 555+ builtins, running in WebAssembly via Emscripten
+- **AD in the browser**: Automatic differentiation works through the REPL — gradient descent converges in the browser
+- **Interactive learning**: 8-chapter textbook and 10-example gallery where every code example has a Run button
+- **Live documentation**: Docs page loads markdown directly from GitHub with syntax highlighting
+- **Downloads**: Platform-aware downloads page with GitHub Releases API integration
+- **GitHub Pages deployment**: Automated via `.github/workflows/pages.yml`
+
 ---
 
 ## [1.1.11-accelerate] - 2026-03-27
