@@ -207,6 +207,8 @@ typedef struct {
     uint64_t predicate;   /* hashed or interned symbol id */
     VmValue* args;        /* arena-allocated array of VmValue */
     int      arity;
+    int      has_datum;    /* 1 if datum_ptr is valid (VM list-based facts) */
+    int32_t  datum_ptr;   /* heap pointer to the raw Scheme list */
 } VmFact;
 
 /* 509: make-fact */
