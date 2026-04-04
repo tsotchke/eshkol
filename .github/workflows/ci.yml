@@ -27,7 +27,8 @@ jobs:
           sudo apt-get install -y \
             cmake ninja-build \
             llvm-17 llvm-17-dev \
-            libreadline-dev pkg-config
+            libreadline-dev pkg-config \
+            libssl-dev libncurses-dev
           sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
 
       - name: Configure
@@ -67,7 +68,8 @@ jobs:
           sudo apt-get install -y \
             cmake ninja-build \
             llvm-17 llvm-17-dev \
-            libreadline-dev pkg-config
+            libreadline-dev pkg-config \
+            libssl-dev libncurses-dev
           sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
 
       - name: Configure
