@@ -18,28 +18,28 @@ The state vector simultaneously serves as:
 
 ```
                     ┌─────────────────────────────┐
-                    │  Eshkol Source (.esk)         │
+                    │  Eshkol Source (.esk)       │
                     └──────────────┬──────────────┘
                                    │
                     ┌──────────────▼──────────────┐
-                    │  Bytecode Compiler            │
-                    │  (vm_compiler.c)              │
+                    │  Bytecode Compiler          │
+                    │  (vm_compiler.c)            │
                     └──────────────┬──────────────┘
                                    │
                     ┌──────────────▼──────────────┐
-                    │  ESKB Binary Format           │
-                    │  (opcodes + constants)        │
+                    │  ESKB Binary Format         │
+                    │  (opcodes + constants)      │
                     └──────────────┬──────────────┘
                                    │
               ┌────────────────────┼────────────────────┐
               │                    │                    │
-    ┌─────────▼─────────┐  ┌──────▼──────┐  ┌─────────▼─────────┐
-    │  Reference VM      │  │  Simulated   │  │  Matrix Forward   │
-    │  (C switch/case)   │  │  Transformer │  │  Pass (W @ x + b) │
-    │  63 opcodes        │  │  (C functions│  │  (actual matmul)  │
-    │                    │  │   mirroring  │  │                    │
-    │                    │  │   weights)   │  │                    │
-    └─────────┬─────────┘  └──────┬──────┘  └─────────┬─────────┘
+    ┌─────────▼─────────┐  ┌───────▼──────┐  ┌──────────▼─────────┐
+    │  Reference VM     │  │  Simulated   │  │  Matrix Forward    │
+    │  (C switch/case)  │  │  Transformer │  │  Pass (W @ x + b)  │
+    │  63 opcodes       │  │  (C functions│  │  (actual matmul)   │
+    │                   │  │   mirroring  │  │                    │
+    │                   │  │   weights)   │  │                    │
+    └─────────┬─────────┘  └───────┬──────┘  └──────────┬─────────┘
               │                    │                    │
               └────────────────────┼────────────────────┘
                                    │
