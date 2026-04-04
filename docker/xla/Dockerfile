@@ -30,6 +30,8 @@ RUN apt-get install -y \
     curl \
     git \
     pkg-config \
+    libssl-dev \
+    libncurses-dev \
     python3 \
     && rm -rf /var/lib/apt/lists/*
 

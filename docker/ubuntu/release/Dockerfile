@@ -27,6 +27,8 @@ RUN apt-get install -y \
     file \
     curl \
     pkg-config \
+    libssl-dev \
+    libncurses-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Create symlinks for LLVM tools (Ubuntu packages them versioned)
