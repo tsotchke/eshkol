@@ -7516,12 +7516,18 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
         if (in_stream.eof()) break;
 
         // Handle comments - skip to end of line
+        // BUT NOT when ; is part of a #\; character literal
         if (c == ';' && !in_quote) {
-            std::getline(in_stream, line); // consume rest of line
-            if (bracket_depth == 0 && !input.empty()) {
-                input += ' '; // Add space to separate from next token
+            size_t len = input.size();
+            bool is_char_literal = (len >= 2 && input[len-1] == '\\' && input[len-2] == '#');
+            if (!is_char_literal) {
+                std::getline(in_stream, line); // consume rest of line
+                if (bracket_depth == 0 && !input.empty()) {
+                    input += ' '; // Add space to separate from next token
+                }
+                continue;
             }
-            continue;
+            // Fall through — ; is a character literal value, not a comment
         }
 
         // Track quotes - a quote is escaped only if preceded by ODD number of backslashes

@@ -77,7 +77,7 @@ llvm::Value* ControlFlowCodegen::isTruthy(llvm::Value* val) {
 // ============================================================================
 
 llvm::Value* ControlFlowCodegen::codegenAnd(const eshkol_operations_t* op) {
-    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+    if (!codegen_ast_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenAnd - callbacks not set");
         return tagged_.packNull();
     }
@@ -96,15 +96,17 @@ llvm::Value* ControlFlowCodegen::codegenAnd(const eshkol_operations_t* op) {
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "and_merge", current_func);
 
-    // For collecting PHI inputs
     std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> phi_inputs;
 
-    // Evaluate each argument with short-circuit
     for (uint64_t i = 0; i < num_args; i++) {
-        // Use callback to get typed AST result
-        void* tv_ptr = codegen_typed_ast_callback_(&args[i], callback_context_);
-        if (!tv_ptr) return nullptr;
-        llvm::Value* arg = typed_to_tagged_callback_(tv_ptr, callback_context_);
+        // Use direct AST callback (not typed path) to avoid emitUseAfterMoveCheck
+        // creating intermediate blocks that shift the builder's insertion point
+        llvm::Value* arg = codegen_ast_callback_(&args[i], callback_context_);
+        if (!arg) return nullptr;
+        // Ensure tagged_value_type for PHI consistency
+        if (arg->getType() != ctx_.taggedValueType() && detect_and_pack_callback_) {
+            arg = detect_and_pack_callback_(arg, callback_context_);
+        }
 
         llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
 
@@ -137,24 +139,34 @@ llvm::Value* ControlFlowCodegen::codegenAnd(const eshkol_operations_t* op) {
         }
     }
 
-    // NORETURN SAFETY: If no inputs reach merge (all paths terminated), remove merge block
-    if (phi_inputs.empty()) {
+    // Handle fallthrough: if the last block has no terminator, branch to merge
+    llvm::BasicBlock* fallthrough_bb = ctx_.builder().GetInsertBlock();
+    if (fallthrough_bb && !fallthrough_bb->getTerminator()) {
+        // Last expression didn't terminate — need to branch to merge with a default value
+        llvm::Value* default_val = tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
+        phi_inputs.push_back({default_val, fallthrough_bb});
+        ctx_.builder().CreateBr(merge_block);
+    }
+
+    // If no inputs reach merge, remove it
+    if (!merge_block->hasNPredecessorsOrMore(1)) {
         merge_block->eraseFromParent();
         return llvm::UndefValue::get(ctx_.taggedValueType());
     }
 
-    // Merge block with PHI
     ctx_.builder().SetInsertPoint(merge_block);
+    if (phi_inputs.size() == 1) {
+        return phi_inputs[0].first;
+    }
     llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), phi_inputs.size(), "and_result");
     for (auto& [val, block] : phi_inputs) {
         result->addIncoming(val, block);
     }
-
     return result;
 }
 
 llvm::Value* ControlFlowCodegen::codegenOr(const eshkol_operations_t* op) {
-    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+    if (!codegen_ast_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenOr - callbacks not set");
         return tagged_.packNull();
     }
@@ -176,14 +188,18 @@ llvm::Value* ControlFlowCodegen::codegenOr(const eshkol_operations_t* op) {
     std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> phi_inputs;
 
     for (uint64_t i = 0; i < num_args; i++) {
-        void* tv_ptr = codegen_typed_ast_callback_(&args[i], callback_context_);
-        if (!tv_ptr) return nullptr;
-        llvm::Value* arg = typed_to_tagged_callback_(tv_ptr, callback_context_);
+        // Use direct AST callback (not typed path) to avoid emitUseAfterMoveCheck
+        // creating intermediate blocks that shift the builder's insertion point
+        llvm::Value* arg = codegen_ast_callback_(&args[i], callback_context_);
+        if (!arg) return nullptr;
+        // Ensure tagged_value_type for PHI consistency
+        if (arg->getType() != ctx_.taggedValueType() && detect_and_pack_callback_) {
+            arg = detect_and_pack_callback_(arg, callback_context_);
+        }
 
         llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
 
-        // NORETURN SAFETY: If block is already terminated (e.g., by raise in sub-expression),
-        // we cannot emit any more instructions. Break out of the loop.
+        // NORETURN SAFETY: If block is already terminated, stop
         if (current_block->getTerminator()) {
             break;
         }
@@ -210,13 +226,24 @@ llvm::Value* ControlFlowCodegen::codegenOr(const eshkol_operations_t* op) {
         }
     }
 
-    // NORETURN SAFETY: If no inputs reach merge (all paths terminated), remove merge block
-    if (phi_inputs.empty()) {
+    // Handle fallthrough: if the last block has no terminator, branch to merge
+    llvm::BasicBlock* or_fallthrough = ctx_.builder().GetInsertBlock();
+    if (or_fallthrough && !or_fallthrough->getTerminator()) {
+        llvm::Value* default_val = tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
+        phi_inputs.push_back({default_val, or_fallthrough});
+        ctx_.builder().CreateBr(merge_block);
+    }
+
+    // If no inputs reach merge, remove it
+    if (!merge_block->hasNPredecessorsOrMore(1)) {
         merge_block->eraseFromParent();
         return llvm::UndefValue::get(ctx_.taggedValueType());
     }
 
     ctx_.builder().SetInsertPoint(merge_block);
+    if (phi_inputs.size() == 1) {
+        return phi_inputs[0].first;
+    }
     llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), phi_inputs.size(), "or_result");
     for (auto& [val, block] : phi_inputs) {
         result->addIncoming(val, block);
@@ -250,7 +277,7 @@ llvm::Value* ControlFlowCodegen::codegenNot(const eshkol_operations_t* op) {
 // ============================================================================
 
 llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
-    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+    if (!codegen_ast_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenCond - callbacks not set");
         return tagged_.packNull();
     }
@@ -284,28 +311,29 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
         }
 
         if (is_else) {
-            // else clause - evaluate expressions and we're done
+            // Else clause — evaluate body expressions using direct AST callback
+            // (same path as codegenIf, avoids typed callback block creation issues)
             llvm::Value* result = nullptr;
             for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
-                void* tv_ptr = codegen_typed_ast_callback_(&clause->operation.call_op.variables[j], callback_context_);
-                if (tv_ptr) result = typed_to_tagged_callback_(tv_ptr, callback_context_);
+                if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
+                result = codegen_ast_callback_(&clause->operation.call_op.variables[j], callback_context_);
             }
-            // TCO FIX: Check if block is already terminated
-            llvm::BasicBlock* else_block = ctx_.builder().GetInsertBlock();
-            bool else_terminated = else_block->getTerminator() != nullptr;
-            // TCO FIX: Only add to PHI and branch if block isn't already terminated
+            llvm::BasicBlock* else_exit = ctx_.builder().GetInsertBlock();
+            bool else_terminated = else_exit->getTerminator() != nullptr;
             if (!else_terminated) {
-                if (result) {
-                    phi_inputs.push_back({result, else_block});
+                if (!result) result = tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
+                // Ensure result is tagged_value_type for PHI consistency
+                if (result->getType() != ctx_.taggedValueType() && detect_and_pack_callback_) {
+                    result = detect_and_pack_callback_(result, callback_context_);
                 }
+                phi_inputs.push_back({result, ctx_.builder().GetInsertBlock()});
                 ctx_.builder().CreateBr(done_block);
             }
             break;
         } else {
-            // Regular clause - evaluate test (func is the test condition)
-            void* test_tv = codegen_typed_ast_callback_(clause->operation.call_op.func, callback_context_);
-            if (!test_tv) continue;
-            llvm::Value* test = typed_to_tagged_callback_(test_tv, callback_context_);
+            // Regular clause — evaluate test using direct AST callback
+            llvm::Value* test = codegen_ast_callback_(clause->operation.call_op.func, callback_context_);
+            if (!test) continue;
 
             llvm::Value* is_true = isTruthy(test);
             llvm::BasicBlock* then_block = llvm::BasicBlock::Create(ctx_.context(), "cond_then", current_func);
@@ -313,21 +341,23 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
 
             ctx_.builder().CreateCondBr(is_true, then_block, next_block);
 
-            // Then block - evaluate expressions (clause body)
+            // Then block — evaluate body expressions using direct AST callback
             ctx_.builder().SetInsertPoint(then_block);
             llvm::Value* result = nullptr;
             for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
-                void* tv_ptr = codegen_typed_ast_callback_(&clause->operation.call_op.variables[j], callback_context_);
-                if (tv_ptr) result = typed_to_tagged_callback_(tv_ptr, callback_context_);
+                if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
+                result = codegen_ast_callback_(&clause->operation.call_op.variables[j], callback_context_);
             }
-            // TCO FIX: Update then_block to current block (code gen may have created new blocks)
+            // Capture actual exit block (codegen may have created new blocks)
             then_block = ctx_.builder().GetInsertBlock();
             bool then_terminated = then_block->getTerminator() != nullptr;
-            // TCO FIX: Only add to PHI and branch if block isn't already terminated
             if (!then_terminated) {
-                if (result) {
-                    phi_inputs.push_back({result, then_block});
+                if (!result) result = tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
+                // Ensure result is tagged_value_type for PHI consistency
+                if (result->getType() != ctx_.taggedValueType() && detect_and_pack_callback_) {
+                    result = detect_and_pack_callback_(result, callback_context_);
                 }
+                phi_inputs.push_back({result, ctx_.builder().GetInsertBlock()});
                 ctx_.builder().CreateBr(done_block);
             }
 
@@ -336,22 +366,30 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
         }
     }
 
-    // If no clause matched, return false
-    if (phi_inputs.empty() || ctx_.builder().GetInsertBlock()->getTerminator() == nullptr) {
-        phi_inputs.push_back({tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context())), ctx_.builder().GetInsertBlock()});
+    // If we fell through all clauses without matching, branch to done with #f
+    llvm::BasicBlock* fallthrough = ctx_.builder().GetInsertBlock();
+    if (!fallthrough->getTerminator()) {
+        llvm::Value* false_val = tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
+        phi_inputs.push_back({false_val, ctx_.builder().GetInsertBlock()});
         ctx_.builder().CreateBr(done_block);
     }
 
-    ctx_.builder().SetInsertPoint(done_block);
-    if (phi_inputs.size() == 1) {
-        return phi_inputs[0].first;
+    // If done_block has no predecessors (all branches terminated via TCO), remove it
+    if (done_block->hasNPredecessorsOrMore(1)) {
+        ctx_.builder().SetInsertPoint(done_block);
+        if (phi_inputs.size() == 1) {
+            return phi_inputs[0].first;
+        }
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), phi_inputs.size(), "cond_result");
+        for (auto& [val, block] : phi_inputs) {
+            phi->addIncoming(val, block);
+        }
+        return phi;
+    } else {
+        // All clauses terminated (e.g. all are tail calls) — no merge needed
+        done_block->eraseFromParent();
+        return llvm::UndefValue::get(ctx_.taggedValueType());
     }
-    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), phi_inputs.size(), "cond_result");
-    for (auto& [val, block] : phi_inputs) {
-        result->addIncoming(val, block);
-    }
-
-    return result;
 }
 
 llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {

@@ -1833,9 +1833,7 @@ public:
             raw_string_ostream error_stream(error_str);
             raw_string_ostream ir_stream(ir_str);
             if (verifyModule(*module, &error_stream)) {
-                module->print(ir_stream, nullptr);
                 eshkol_error("LLVM module verification failed: %s", error_str.c_str());
-                eshkol_debug("LLVM IR:\n%s", ir_str.c_str());
                 return std::make_pair(nullptr, nullptr);
             }
 
@@ -6413,70 +6411,12 @@ private:
         return strio_->createString(str);
     }
 
-    // OWNERSHIP ENFORCEMENT: Emit a runtime check for use-after-move
-    // For heap-allocated values (HEAP_PTR, CALLABLE), checks if CONSUMED flag (0x08) is set
-    // on the object header. If so, raises an exception.
+    // OWNERSHIP: Eshkol uses arena allocation with deterministic lifetimes.
+    // Values are valid for the lifetime of their arena region. No move
+    // semantics — the arena model guarantees validity within scope.
+    // This function is a no-op passthrough.
     Value* emitUseAfterMoveCheck(Value* loaded_val, const std::string& var_name) {
-        if (!loaded_val || loaded_val->getType() != tagged_value_type) return loaded_val;
-
-        Function* func = builder->GetInsertBlock()->getParent();
-        if (!func) return loaded_val;
-
-        // Check if value is heap-allocated (has object header)
-        Value* type_tag = getTaggedValueType(loaded_val);
-        Value* base_type = getBaseType(type_tag);
-        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* has_header = builder->CreateOr(is_heap, is_callable);
-
-        BasicBlock* check_consumed_bb = BasicBlock::Create(*context, "check_consumed", func);
-        BasicBlock* continue_bb = BasicBlock::Create(*context, "use_ok", func);
-        builder->CreateCondBr(has_header, check_consumed_bb, continue_bb);
-
-        // Check CONSUMED flag on object header
-        builder->SetInsertPoint(check_consumed_bb);
-        Value* ptr_int = unpackInt64FromTaggedValue(loaded_val);
-        // Guard: if pointer is null, skip the header check (no object to inspect)
-        Value* ptr_is_null = builder->CreateICmpEQ(ptr_int, ConstantInt::get(int64_type, 0));
-        BasicBlock* nonnull_bb = BasicBlock::Create(*context, "uam_nonnull", func);
-        builder->CreateCondBr(ptr_is_null, continue_bb, nonnull_bb);
-
-        builder->SetInsertPoint(nonnull_bb);
-        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
-        // Flags byte at data_ptr - 7
-        Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
-        Value* flags = builder->CreateLoad(int8_type, flags_ptr, "uam_flags");
-        Value* consumed = builder->CreateAnd(flags, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_CONSUMED));
-        Value* is_consumed = builder->CreateICmpNE(consumed, ConstantInt::get(int8_type, 0));
-
-        BasicBlock* error_bb = BasicBlock::Create(*context, "use_after_move", func);
-        builder->CreateCondBr(is_consumed, error_bb, continue_bb);
-
-        // Emit error: use after move
-        builder->SetInsertPoint(error_bb);
-        {
-            Function* raise_func = module->getFunction("eshkol_raise");
-            if (!raise_func) {
-                FunctionType* raise_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
-                raise_func = Function::Create(raise_type, Function::ExternalLinkage, "eshkol_raise", module.get());
-                raise_func->setDoesNotReturn();
-            }
-            Function* make_exc_func = module->getFunction("eshkol_make_exception_with_header");
-            if (!make_exc_func) {
-                FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
-                    {builder->getInt32Ty(), builder->getPtrTy()}, false);
-                make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
-                    "eshkol_make_exception_with_header", module.get());
-            }
-            std::string msg = "use after move: variable '" + var_name + "' has been consumed";
-            Value* error_msg = codegenString(msg.c_str());
-            Value* exc_type = ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
-            Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
-            builder->CreateCall(raise_func, {exception});
-        }
-        builder->CreateUnreachable();
-
-        builder->SetInsertPoint(continue_bb);
+        (void)var_name;
         return loaded_val;
     }
 
@@ -8903,7 +8843,12 @@ private:
             std::vector<Value*> call_args;
             for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                 Value* arg = codegenAST(&op->call_op.variables[i]);
-                if (!arg) continue;
+                if (!arg) {
+                    // If block is terminated (tail call/branch), call is unreachable
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    // Otherwise use null tagged value to maintain correct arity
+                    arg = packNullToTaggedValue();
+                }
 
                 // Pack to tagged_value if needed (lambdas expect tagged_value)
                 if (arg->getType() != tagged_value_type) {
@@ -8940,7 +8885,10 @@ private:
             std::vector<Value*> call_args;
             for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                 Value* arg = codegenAST(&op->call_op.variables[i]);
-                if (!arg) continue;
+                if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                 // Pack to tagged_value if needed
                 if (arg->getType() != tagged_value_type) {
@@ -8980,7 +8928,10 @@ private:
                 std::vector<Value*> call_args;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     Value* arg = codegenAST(&op->call_op.variables[i]);
-                    if (!arg) continue;
+                    if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                     // Pack to tagged_value if needed
                     if (arg->getType() != tagged_value_type) {
@@ -11865,7 +11816,10 @@ private:
                         std::vector<Value*> call_args;
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             Value* arg = codegenAST(&op->call_op.variables[i]);
-                            if (!arg) continue;
+                            if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                             if (arg->getType() != tagged_value_type) {
                                 if (arg->getType()->isIntegerTy(64)) {
@@ -11965,7 +11919,10 @@ private:
                     std::vector<Value*> call_args;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
-                        if (!arg) continue;
+                        if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                         // Pack to tagged_value if needed
                         if (arg->getType() != tagged_value_type) {
@@ -11997,7 +11954,10 @@ private:
                         std::vector<Value*> call_args;
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             Value* arg = codegenAST(&op->call_op.variables[i]);
-                            if (!arg) continue;
+                            if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                             // Pack to tagged_value if needed
                             if (arg->getType() != tagged_value_type) {
@@ -12024,7 +11984,10 @@ private:
                     std::vector<Value*> call_args;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
-                        if (!arg) continue;
+                        if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                         // Pack to tagged_value if needed
                         if (arg->getType() != tagged_value_type) {
@@ -12053,7 +12016,10 @@ private:
                     std::vector<Value*> call_args;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
-                        if (!arg) continue;
+                        if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                         // Pack to tagged_value if needed
                         if (arg->getType() != tagged_value_type) {
@@ -12084,7 +12050,10 @@ private:
                     std::vector<Value*> call_args;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
-                        if (!arg) continue;
+                        if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                         // Pack to tagged_value if needed
                         if (arg->getType() != tagged_value_type) {
@@ -12116,7 +12085,10 @@ private:
                     std::vector<Value*> call_args;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
-                        if (!arg) continue;
+                        if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                         // Pack to tagged_value if needed
                         if (arg->getType() != tagged_value_type) {
@@ -12257,7 +12229,10 @@ private:
                         std::vector<Value*> call_args;
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             Value* arg = codegenAST(&op->call_op.variables[i]);
-                            if (!arg) continue;
+                            if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                             // Pack to tagged_value if needed
                             if (arg->getType() != tagged_value_type) {
@@ -12315,7 +12290,10 @@ private:
                     std::vector<Value*> call_args;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
-                        if (!arg) continue;
+                        if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
                         if (arg->getType() != tagged_value_type) {
                             TypedValue tv = detectValueType(arg);
                             arg = typedValueToTaggedValue(tv);
@@ -12398,7 +12376,10 @@ private:
             // Process fixed parameters first
             for (uint64_t i = 0; i < fixed_params && i < op->call_op.num_vars; i++) {
                 Value* arg = codegenAST(&op->call_op.variables[i]);
-                if (!arg) continue;
+                if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                 // Pack to tagged_value if needed
                 if (arg->getType() != tagged_value_type) {
@@ -12432,7 +12413,10 @@ private:
             // Build list from right to left (last arg first)
             for (int64_t i = op->call_op.num_vars - 1; i >= (int64_t)fixed_params; i--) {
                 Value* arg = codegenAST(&op->call_op.variables[i]);
-                if (!arg) continue;
+                if (!arg) {
+                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                    arg = packNullToTaggedValue();
+                }
 
                 // Pack to tagged_value if needed
                 Value* arg_tagged;
@@ -12509,7 +12493,18 @@ private:
                 }
             }
 
-            // Make the call (no captures)
+            // Make the call (no captures) — verify arity first
+            {
+                FunctionType* ft = callee->getFunctionType();
+                size_t expected = ft->getNumParams();
+                size_t actual = call_args.size();
+                if (actual != expected && !ft->isVarArg()) {
+                    eshkol_warn("Arity mismatch in no-capture call to %s: expected %zu, got %zu",
+                                callee->getName().str().c_str(), expected, actual);
+                    while (call_args.size() < expected) call_args.push_back(packNullToTaggedValue());
+                    if (call_args.size() > expected) call_args.resize(expected);
+                }
+            }
             return builder->CreateCall(callee, call_args);
         }
 
@@ -12523,7 +12518,13 @@ private:
         // Add explicit arguments first
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
             Value* arg = codegenAST(&op->call_op.variables[i]);
-            if (arg && i < func_type->getNumParams()) {
+            if (!arg) {
+                // If block terminated (tail call/branch), call is unreachable
+                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                // Use null tagged value to maintain correct arity
+                arg = packNullToTaggedValue();
+            }
+            if (i < func_type->getNumParams()) {
                 Type* expected_type = func_type->getParamType(i);
                 Type* actual_type = arg->getType();
 
@@ -12696,10 +12697,18 @@ private:
             // Calculate expected regular parameters (total params - captures)
             size_t expected_params = func_type->getNumParams() - actual_captures;
 
-            // Check for arity mismatch
-            if (op->call_op.num_vars != expected_params) {
+            // Check for arity mismatch (allow variadic: caller can pass fewer args)
+            bool is_var = variadic_function_info.count(func_name) > 0 &&
+                          variadic_function_info[func_name].second;
+            size_t min_params = is_var ? variadic_function_info[func_name].first : expected_params;
+            if (!is_var && op->call_op.num_vars != expected_params) {
                 eshkol_error("Arity mismatch: %s expects %zu arguments but got %llu",
                             func_name.c_str(), expected_params, (unsigned long long)op->call_op.num_vars);
+                return nullptr;
+            }
+            if (is_var && op->call_op.num_vars < min_params) {
+                eshkol_error("Arity mismatch: %s requires at least %zu arguments but got %llu",
+                            func_name.c_str(), min_params, (unsigned long long)op->call_op.num_vars);
                 return nullptr;
             }
 
@@ -12893,11 +12902,22 @@ private:
                 CallInst* call = builder->CreateCall(callee, args);
                 call->setTailCallKind(CallInst::TCK_MustTail);
                 builder->CreateRet(call);
-                // Block is now terminated — return undef (if codegen handles terminated blocks)
                 return UndefValue::get(tagged_value_type);
             }
         }
 
+        // Verify arity before creating the call
+        {
+            FunctionType* ft = callee->getFunctionType();
+            size_t expected = ft->getNumParams();
+            size_t actual = args.size();
+            if (actual != expected && !ft->isVarArg()) {
+                eshkol_warn("Arity mismatch in general call to %s: expected %zu, got %zu",
+                            callee->getName().str().c_str(), expected, actual);
+                while (args.size() < expected) args.push_back(packNullToTaggedValue());
+                if (args.size() > expected) args.resize(expected);
+            }
+        }
         Value* result = builder->CreateCall(callee, args);
 
         /* ── FFI return value packing ──

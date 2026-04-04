@@ -204,15 +204,27 @@ llvm::Value* SystemCodegen::sleep(const eshkol_operations_t* op) {
     if (!seconds_tv_ptr) return nullptr;
 
     // Extract raw LLVM value from TypedValue
-    llvm::Value* seconds = *reinterpret_cast<llvm::Value**>(seconds_tv_ptr);
-    if (!seconds) return nullptr;
+    llvm::Value* seconds_raw = *reinterpret_cast<llvm::Value**>(seconds_tv_ptr);
+    if (!seconds_raw) return nullptr;
 
-    // Convert seconds to microseconds (seconds * 1000000)
-    if (seconds->getType()->isDoubleTy()) {
-        seconds = ctx_.builder().CreateFPToSI(seconds, ctx_.int64Type());
+    // Convert to double — sleep always works in floating-point seconds
+    llvm::Value* seconds_double;
+    if (seconds_raw->getType() == ctx_.taggedValueType()) {
+        // Tagged value: extract as double (handles both int and double tagged values)
+        seconds_double = tagged_.unpackDouble(seconds_raw);
+    } else if (seconds_raw->getType()->isDoubleTy()) {
+        seconds_double = seconds_raw;
+    } else if (seconds_raw->getType()->isIntegerTy()) {
+        seconds_double = ctx_.builder().CreateSIToFP(seconds_raw, ctx_.builder().getDoubleTy());
+    } else {
+        seconds_double = llvm::ConstantFP::get(ctx_.builder().getDoubleTy(), 0.0);
     }
-    llvm::Value* microseconds = ctx_.builder().CreateMul(seconds, llvm::ConstantInt::get(ctx_.int64Type(), 1000000));
-    llvm::Value* usec = ctx_.builder().CreateTrunc(microseconds, ctx_.int32Type());
+
+    // Convert seconds to microseconds
+    llvm::Value* usec_double = ctx_.builder().CreateFMul(seconds_double,
+        llvm::ConstantFP::get(ctx_.builder().getDoubleTy(), 1000000.0));
+    llvm::Value* usec_i64 = ctx_.builder().CreateFPToSI(usec_double, ctx_.int64Type());
+    llvm::Value* usec = ctx_.builder().CreateTrunc(usec_i64, ctx_.int32Type());
 
     // Call usleep
     ctx_.builder().CreateCall(usleep_func, {usec});
