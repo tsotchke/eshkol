@@ -11,19 +11,28 @@ Eshkol is a Scheme-based programming language that unifies functional programmin
 
 ### Why Eshkol?
 
-**Because gradient-based optimization should be native.**
+**Because calculus should be a compiler primitive, not a library.**
 
 ```scheme
-;; Define any differentiable function
-(define (loss-function params data)
-  (let ((predictions (neural-network params data)))
-    (mean-squared-error predictions (data-labels data))))
+;; Train a linear model: learn y = 2x from data
+;; The compiler differentiates the loss function automatically.
 
-;; Compute exact gradients - no approximation, no frameworks
-(define gradients
-  (gradient loss-function initial-params training-data))
+(define training-data '((1.0 2.0) (2.0 4.0) (3.0 6.0) (4.0 8.0) (5.0 10.0)))
 
-;; Eshkol's autodiff system handles the mathematics automatically
+(define (predict w x) (* w x))
+
+(define (loss w)
+  (fold-left (lambda (total pair)
+    (let ((error (- (predict w (car pair)) (cadr pair))))
+      (+ total (* error error))))
+    0.0 training-data))
+
+;; Gradient descent — the compiler computes d(loss)/dw
+(define (train w lr steps)
+  (if (= steps 0) w
+    (train (- w (* lr (derivative loss w))) lr (- steps 1))))
+
+(display (train 0.0 0.01 200))  ;; => 2.0 (learned w = 2)
 ```
 
 Eshkol brings **mathematical computing to Lisp** and delivers what other languages promise:
