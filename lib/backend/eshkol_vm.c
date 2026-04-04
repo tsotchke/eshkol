@@ -71,6 +71,11 @@
 /* Native function dispatch (550+ functions) */
 #include "vm_native.c"
 
+/* Thread pool and parallel primitives */
+#ifndef ESHKOL_VM_WASM
+#include "vm_parallel.c"
+#endif
+
 /* VM interpreter: 63-opcode dispatch loop */
 #include "vm_run.c"
 
@@ -819,6 +824,10 @@ static int g_repl_jmp_active = 0;
 static void repl_session_eval(ReplSession* rs, const char* source, int auto_print) {
     if (!rs || !rs->initialized) return;
 
+    /* Reset error flags at start of each eval */
+    rs->vm->error = 0;
+    rs->vm->halted = 0;
+
     /* Save state for error recovery — if eval fails, roll back */
     int code_start = rs->chunk.code_len;
     int const_start = rs->chunk.n_constants;
@@ -968,8 +977,10 @@ int main(int argc, char** argv) {
                 FILE* f = fopen(input, "r");
                 if (!f) { fprintf(stderr, "Cannot open %s\n", input); return 1; }
                 fseek(f, 0, SEEK_END); long flen = ftell(f); fseek(f, 0, SEEK_SET);
-                char* source = malloc(flen + 1);
-                fread(source, 1, flen, f); source[flen] = 0; fclose(f);
+                if (flen < 0 || flen > 100000000) { fprintf(stderr, "File too large or unreadable\n"); fclose(f); return 1; }
+                char* source = malloc((size_t)flen + 1);
+                if (!source) { fprintf(stderr, "Out of memory\n"); fclose(f); return 1; }
+                fread(source, 1, (size_t)flen, f); source[flen] = 0; fclose(f);
                 printf("=== Eshkol VM+Compiler — compiling %s ===\n\n", input);
                 g_source_file_path = input;
                 compile_and_run(source);

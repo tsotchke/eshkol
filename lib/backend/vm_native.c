@@ -452,7 +452,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmBignum* result = NULL;
             switch (fid) { case 355: result=bignum_add(bn_rs,a_bn,b_bn); break; case 356: result=bignum_sub(bn_rs,a_bn,b_bn); break;
                 case 357: result=bignum_mul(bn_rs,a_bn,b_bn); break; case 358: result=bignum_div(bn_rs,a_bn,b_bn); break; case 359: result=bignum_mod(bn_rs,a_bn,b_bn); break; }
-            if (!result) { vm_push(vm, INT_VAL(0)); break; }
+            if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_BIGNUM, VAL_BIGNUM, result); break; }
         case 360: { Value v = vm_pop(vm);
             VmBignum* b = (v.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[v.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(v));
@@ -475,14 +475,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
         case 363: { Value b_val = vm_pop(vm), a_val = vm_pop(vm);
             VmBignum* a_bn = (a_val.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[a_val.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(a_val));
             VmBignum* b_bn = (b_val.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[b_val.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(b_val));
-            if (!a_bn || !b_bn) { vm_push(vm, INT_VAL(0)); break; }
+            if (!a_bn || !b_bn) { vm_push(vm, NIL_VAL); break; }
             vm_push(vm, INT_VAL(bignum_compare(a_bn, b_bn))); break; }
         case 364: { Value b_val = vm_pop(vm), a_val = vm_pop(vm);
             VmBignum* a_bn = (a_val.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[a_val.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(a_val));
             VmBignum* b_bn = (b_val.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[b_val.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(b_val));
-            if (!a_bn || !b_bn) { vm_push(vm, INT_VAL(0)); break; }
+            if (!a_bn || !b_bn) { vm_push(vm, NIL_VAL); break; }
             VmBignum* result = bignum_gcd(bn_rs, a_bn, b_bn);
-            if (!result) { vm_push(vm, INT_VAL(0)); break; }
+            if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_BIGNUM, VAL_BIGNUM, result); break; }
         case 365: case 366: case 367: {
             Value b_val = vm_pop(vm), a_val = vm_pop(vm);
@@ -2639,8 +2639,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value exn = vm_pop(vm);
         vm->current_exception = exn;
         if (vm->n_handlers > 0) {
-            /* Pop handler and restore state */
             vm->n_handlers--;
+            /* Unwind dynamic-wind after-thunks */
+            int target_winds = vm->handler_stack[vm->n_handlers].n_winds;
+            while (vm->n_winds > target_winds) {
+                vm->n_winds--;
+                Value after = vm->wind_stack[vm->n_winds].after;
+                if (after.type == VAL_CLOSURE)
+                    vm_call_closure_from_native(vm, after, NULL, 0);
+            }
             vm->sp = vm->handler_stack[vm->n_handlers].sp;
             vm->fp = vm->handler_stack[vm->n_handlers].fp;
             vm->frame_count = vm->handler_stack[vm->n_handlers].frame_count;
