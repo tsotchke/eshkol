@@ -125,4 +125,4 @@ compile_commands.json
 *.tcl
 CMakeCache.txt
 CMakeFiles/
-Makefile
+MakefileSTDLIB_ADDITIONS.md
