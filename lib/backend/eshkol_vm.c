@@ -88,6 +88,12 @@
 /* Hygienic macro expander (syntax-rules) — must precede compiler */
 #include "vm_macro.c"
 
+/* Global repatch arrays for forward-reference upvalue patching (mutual recursion) */
+static int* g_repatch_func_slots = NULL;
+static int* g_repatch_uv_indices = NULL;
+static int* g_repatch_enc_slots = NULL;
+static int g_n_repatch = 0;
+
 /* Bytecode compiler */
 #include "vm_compiler.c"
 
@@ -457,24 +463,17 @@ static void compile_and_run(const char* source) {
         int locals_before = main_chunk.n_locals;
 
         if (do_box) {
-            /* Compile the init value, wrap in a box (1-element vector) */
             compile_expr(&main_chunk, expr->children[2], 0);
-            chunk_emit(&main_chunk, OP_VEC_CREATE, 1); /* box it */
+            chunk_emit(&main_chunk, OP_VEC_CREATE, 1);
             int slot = add_local(&main_chunk, expr->children[1]->symbol);
             main_chunk.locals[main_chunk.n_locals - 1].boxed = 1;
         } else {
             compile_expr(&main_chunk, expr, 0);
             if (main_chunk.n_locals == locals_before) {
-                /* Last non-define expression: print result (REPL behavior).
-                 * Non-last expressions: discard result. */
                 int is_last_expr = (i == n_top_exprs - 1);
 #ifdef ESHKOL_VM_NO_DISASM
-                /* WASM REPL mode: auto-print last expression result */
-                if (is_last_expr) {
-                    chunk_emit(&main_chunk, OP_PRINT, 0);
-                } else {
-                    chunk_emit(&main_chunk, OP_POP, 0);
-                }
+                if (is_last_expr) chunk_emit(&main_chunk, OP_PRINT, 0);
+                else chunk_emit(&main_chunk, OP_POP, 0);
 #else
                 chunk_emit(&main_chunk, OP_POP, 0);
 #endif
