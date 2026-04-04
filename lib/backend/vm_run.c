@@ -216,6 +216,7 @@ static void vm_run(VM* vm) {
                     if (after.type == VAL_CLOSURE)
                         vm_call_closure_from_native(vm, after, NULL, 0);
                 }
+                if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
                 memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value));
                 memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                 vm->sp = cont->sp; vm->fp = cont->fp;
@@ -254,6 +255,7 @@ static void vm_run(VM* vm) {
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
                 while (vm->n_winds > cont->n_winds) { vm->n_winds--; Value a = vm->wind_stack[vm->n_winds].after; if (a.type == VAL_CLOSURE) vm_call_closure_from_native(vm, a, NULL, 0); }
+                if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
                 memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                 vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
                 vm_push(vm, val); DISPATCH();
@@ -342,7 +344,7 @@ static void vm_run(VM* vm) {
     lbl_PRINT: {
         Value v = vm_pop(vm);
         print_value(vm, v);
-        printf("\n");
+        printf("\n"); fflush(stdout);
         if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
         DISPATCH();
     }
@@ -465,10 +467,10 @@ static void vm_run(VM* vm) {
     }
 
     lbl_CALLCC: {
-        /* call/cc: capture continuation, call proc with it */
         Value proc = vm_pop(vm);
         if (proc.type != VAL_CLOSURE) { vm_push(vm, NIL_VAL); DISPATCH(); }
-        /* Save continuation state as a heap object */
+        /* Validate bounds before capture */
+        if (vm->sp > STACK_SIZE || vm->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
         int32_t cont_ptr = heap_alloc(&vm->heap);
         if (cont_ptr < 0) { vm->error = 1; goto vm_exit; }
         vm->heap.objects[cont_ptr]->type = HEAP_CONTINUATION;
@@ -502,14 +504,13 @@ static void vm_run(VM* vm) {
     }
 
     lbl_PUSH_HANDLER: {
-        /* Push exception handler: save state for unwinding on raise */
-        if (vm->n_handlers < 16) {
-            vm->handler_stack[vm->n_handlers].pc = instr.operand;
-            vm->handler_stack[vm->n_handlers].sp = vm->sp;
-            vm->handler_stack[vm->n_handlers].fp = vm->fp;
-            vm->handler_stack[vm->n_handlers].frame_count = vm->frame_count;
-            vm->n_handlers++;
-        }
+        if (vm->n_handlers >= 16) { fprintf(stderr, "HANDLER STACK OVERFLOW\n"); vm->error = 1; goto vm_exit; }
+        vm->handler_stack[vm->n_handlers].pc = instr.operand;
+        vm->handler_stack[vm->n_handlers].sp = vm->sp;
+        vm->handler_stack[vm->n_handlers].fp = vm->fp;
+        vm->handler_stack[vm->n_handlers].frame_count = vm->frame_count;
+        vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
+        vm->n_handlers++;
         DISPATCH();
     }
 
@@ -537,14 +538,14 @@ static void vm_run(VM* vm) {
                     if (after.type == VAL_CLOSURE)
                         vm_call_closure_from_native(vm, after, NULL, 0);
                 }
-                /* Restore saved state */
+                /* Restore saved state (with bounds validation) */
+                if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
                 memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value));
                 memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                 vm->sp = cont->sp; vm->fp = cont->fp;
                 vm->frame_count = cont->frame_count;
                 vm->n_handlers = cont->n_handlers;
                 vm->pc = cont->pc;
-                /* Push the value as the return value of call/cc */
                 vm_push(vm, val);
             }
         }
@@ -572,11 +573,10 @@ static void vm_run(VM* vm) {
     lbl_WIND_PUSH: {
         Value after = vm_pop(vm);
         Value before = vm_pop(vm);
-        if (vm->n_winds < 32) {
-            vm->wind_stack[vm->n_winds].before = before;
-            vm->wind_stack[vm->n_winds].after = after;
-            vm->n_winds++;
-        }
+        if (vm->n_winds >= 32) { fprintf(stderr, "WIND STACK OVERFLOW\n"); vm->error = 1; goto vm_exit; }
+        vm->wind_stack[vm->n_winds].before = before;
+        vm->wind_stack[vm->n_winds].after = after;
+        vm->n_winds++;
         DISPATCH();
     }
 
@@ -722,6 +722,7 @@ vm_exit:
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
                     while (vm->n_winds > cont->n_winds) { vm->n_winds--; Value a = vm->wind_stack[vm->n_winds].after; if (a.type == VAL_CLOSURE) vm_call_closure_from_native(vm, a, NULL, 0); }
+                    if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
                     memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                     vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
                     vm_push(vm, val);
@@ -990,6 +991,7 @@ vm_exit:
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[cont_val.as.ptr]->opaque.ptr;
                 if (cont) {
                     while (vm->n_winds > cont->n_winds) { vm->n_winds--; Value a = vm->wind_stack[vm->n_winds].after; if (a.type == VAL_CLOSURE) vm_call_closure_from_native(vm, a, NULL, 0); }
+                    if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
                     memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                     vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
                     vm_push(vm, val);
@@ -999,13 +1001,13 @@ vm_exit:
         }
         case OP_OPEN_CLOSURE: break;
         case OP_PUSH_HANDLER: {
-            if (vm->n_handlers < 16) {
-                vm->handler_stack[vm->n_handlers].pc = instr.operand;
-                vm->handler_stack[vm->n_handlers].sp = vm->sp;
-                vm->handler_stack[vm->n_handlers].fp = vm->fp;
-                vm->handler_stack[vm->n_handlers].frame_count = vm->frame_count;
-                vm->n_handlers++;
-            }
+            if (vm->n_handlers >= 16) { fprintf(stderr, "HANDLER STACK OVERFLOW\n"); vm->error = 1; break; }
+            vm->handler_stack[vm->n_handlers].pc = instr.operand;
+            vm->handler_stack[vm->n_handlers].sp = vm->sp;
+            vm->handler_stack[vm->n_handlers].fp = vm->fp;
+            vm->handler_stack[vm->n_handlers].frame_count = vm->frame_count;
+            vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
+            vm->n_handlers++;
             break;
         }
         case OP_POP_HANDLER: { if (vm->n_handlers > 0) vm->n_handlers--; break; }

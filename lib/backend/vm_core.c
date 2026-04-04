@@ -269,7 +269,7 @@ typedef struct {
     int n_outputs;
 
     /* Exception handling */
-    struct { int pc; int sp; int fp; int frame_count; } handler_stack[16];
+    struct { int pc; int sp; int fp; int frame_count; int n_winds; } handler_stack[16];
     int n_handlers;
     Value current_exception;
 
