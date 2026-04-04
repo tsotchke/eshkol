@@ -444,42 +444,146 @@ static void compile_and_run(const char* source) {
         }
     }
 
-    /* Pass 3: Compile with boxing */
-    for (int i = 0; i < n_top_exprs; i++) {
-        Node* expr = top_exprs[i];
+    /* Allocate repatch arrays for group compilation */
+    g_repatch_func_slots = (int*)calloc(256, sizeof(int));
+    g_repatch_uv_indices = (int*)calloc(256, sizeof(int));
+    g_repatch_enc_slots = (int*)calloc(256, sizeof(int));
+    g_n_repatch = 0;
 
-        /* Check if this is a simple define that needs boxing */
-        int do_box = 0;
-        if (expr->type == N_LIST && expr->n_children >= 3
-            && expr->children[0]->type == N_SYMBOL
-            && strcmp(expr->children[0]->symbol, "define") == 0
-            && expr->children[1]->type == N_SYMBOL) {
-            const char* name = expr->children[1]->symbol;
-            for (int b = 0; b < n_boxed; b++) {
-                if (strcmp(boxed_names[b], name) == 0) { do_box = 1; break; }
+    /* Helper: is this a function-define? (define (name ...) body) */
+    #define IS_FUNC_DEFINE(e) ((e)->type == N_LIST && (e)->n_children >= 3 \
+        && (e)->children[0]->type == N_SYMBOL \
+        && strcmp((e)->children[0]->symbol, "define") == 0 \
+        && (e)->children[1]->type == N_LIST \
+        && (e)->children[1]->n_children >= 1 \
+        && (e)->children[1]->children[0]->type == N_SYMBOL)
+
+    /* Pass 3: Compile with boxing + letrec-style groups for mutual recursion */
+    int expr_i = 0;
+    while (expr_i < n_top_exprs) {
+        /* Detect groups of consecutive function defines (size >= 2) */
+        int group_start = expr_i;
+        while (expr_i < n_top_exprs && IS_FUNC_DEFINE(top_exprs[expr_i])) expr_i++;
+        int group_size = expr_i - group_start;
+
+        if (group_size >= 2) {
+            /* ═══ Letrec-style group compilation ═══ */
+            int group_base = main_chunk.n_locals;
+
+            /* Step 1: Push NIL placeholders, register all names */
+            for (int gi = 0; gi < group_size; gi++) {
+                char* fname = top_exprs[group_start + gi]->children[1]->children[0]->symbol;
+                chunk_emit(&main_chunk, OP_NIL, 0);
+                add_local(&main_chunk, fname);
+            }
+
+            /* Step 2: Compile each define body, SET_LOCAL to overwrite NIL */
+            /* We re-use compile_expr which dispatches to compile_form_define.
+             * BUT compile_form_define will add_local AGAIN (creating a duplicate slot).
+             * We need it to find the pre-registered slot instead.
+             * Solution: temporarily set n_locals back, let compile_form_define
+             * add_local at the right position, then fix up. */
+            /* Actually simpler: just call compile_expr for each define.
+             * compile_form_define will add_local (creating slot group_base+group_size+gi).
+             * The closure lands at that slot. Then we copy it to the pre-registered slot
+             * and pop the extra. */
+            for (int gi = 0; gi < group_size; gi++) {
+                int locals_before = main_chunk.n_locals;
+                compile_expr(&main_chunk, top_exprs[group_start + gi], 0);
+                /* compile_form_define pushed closure and added a new local.
+                 * Copy the closure to the pre-registered slot, then pop the extra. */
+                int target_slot = group_base + gi;
+                chunk_emit(&main_chunk, OP_SET_LOCAL, target_slot);
+                /* SET_LOCAL popped TOS. n_locals grew by 1 from compile_form_define.
+                 * The extra local is at the end — remove it. */
+                /* We can't easily un-add a local, so just leave it. The pre-registered
+                 * slot has the correct value. The extra slot is dead but harmless. */
+            }
+
+            /* Remove duplicate locals created by compile_form_define.
+             * Reset n_locals to group_base + group_size so resolve_local
+             * finds the pre-registered slots, not the duplicates. */
+            main_chunk.n_locals = group_base + group_size;
+
+            /* Step 3: Re-patch upvalues using saved mappings from compile_form_define.
+             * func_slot values point to duplicate slots (group_base+group_size+gi).
+             * Map them back to pre-registered slots (subtract group_size). */
+            for (int ri = 0; ri < g_n_repatch; ri++) {
+                /* Map duplicate slots back to pre-registered slots */
+                int real_func_slot = g_repatch_func_slots[ri];
+                int real_enc_slot = g_repatch_enc_slots[ri];
+                if (real_func_slot >= group_base + group_size)
+                    real_func_slot -= group_size;
+                if (real_enc_slot >= group_base + group_size)
+                    real_enc_slot -= group_size;
+                chunk_emit(&main_chunk, OP_GET_LOCAL, real_func_slot);
+                chunk_emit(&main_chunk, OP_DUP, 0);
+                chunk_emit(&main_chunk, OP_CONST, chunk_add_const(&main_chunk, INT_VAL(g_repatch_uv_indices[ri])));
+                chunk_emit(&main_chunk, OP_CONST, chunk_add_const(&main_chunk, INT_VAL(real_enc_slot)));
+                chunk_emit(&main_chunk, OP_NATIVE_CALL, 151);
+                chunk_emit(&main_chunk, OP_POP, 0);
+                chunk_emit(&main_chunk, OP_POP, 0);
+            }
+            g_n_repatch = 0;
+        } else if (group_size == 1) {
+            /* Single define — use existing compile logic */
+            Node* expr = top_exprs[group_start];
+            int do_box = 0;
+            if (expr->children[1]->type == N_SYMBOL) {
+                const char* name = expr->children[1]->symbol;
+                for (int b = 0; b < n_boxed; b++)
+                    if (strcmp(boxed_names[b], name) == 0) { do_box = 1; break; }
+            }
+            if (do_box) {
+                compile_expr(&main_chunk, expr->children[2], 0);
+                chunk_emit(&main_chunk, OP_VEC_CREATE, 1);
+                int slot = add_local(&main_chunk, expr->children[1]->symbol);
+                main_chunk.locals[main_chunk.n_locals - 1].boxed = 1;
+            } else {
+                compile_expr(&main_chunk, expr, 0);
             }
         }
 
-        int locals_before = main_chunk.n_locals;
-
-        if (do_box) {
-            compile_expr(&main_chunk, expr->children[2], 0);
-            chunk_emit(&main_chunk, OP_VEC_CREATE, 1);
-            int slot = add_local(&main_chunk, expr->children[1]->symbol);
-            main_chunk.locals[main_chunk.n_locals - 1].boxed = 1;
-        } else {
-            compile_expr(&main_chunk, expr, 0);
-            if (main_chunk.n_locals == locals_before) {
-                int is_last_expr = (i == n_top_exprs - 1);
-#ifdef ESHKOL_VM_NO_DISASM
-                if (is_last_expr) chunk_emit(&main_chunk, OP_PRINT, 0);
-                else chunk_emit(&main_chunk, OP_POP, 0);
-#else
-                chunk_emit(&main_chunk, OP_POP, 0);
-#endif
+        /* Compile non-define expressions until next define group */
+        while (expr_i < n_top_exprs && !IS_FUNC_DEFINE(top_exprs[expr_i])) {
+            Node* expr = top_exprs[expr_i];
+            /* Check for simple value define with boxing */
+            int do_box = 0;
+            if (expr->type == N_LIST && expr->n_children >= 3
+                && expr->children[0]->type == N_SYMBOL
+                && strcmp(expr->children[0]->symbol, "define") == 0
+                && expr->children[1]->type == N_SYMBOL) {
+                const char* name = expr->children[1]->symbol;
+                for (int b = 0; b < n_boxed; b++)
+                    if (strcmp(boxed_names[b], name) == 0) { do_box = 1; break; }
             }
+            int locals_before = main_chunk.n_locals;
+            if (do_box) {
+                compile_expr(&main_chunk, expr->children[2], 0);
+                chunk_emit(&main_chunk, OP_VEC_CREATE, 1);
+                int slot = add_local(&main_chunk, expr->children[1]->symbol);
+                main_chunk.locals[main_chunk.n_locals - 1].boxed = 1;
+            } else {
+                compile_expr(&main_chunk, expr, 0);
+                if (main_chunk.n_locals == locals_before) {
+                    int is_last = (expr_i == n_top_exprs - 1);
+#ifdef ESHKOL_VM_NO_DISASM
+                    if (is_last) chunk_emit(&main_chunk, OP_PRINT, 0);
+                    else chunk_emit(&main_chunk, OP_POP, 0);
+#else
+                    chunk_emit(&main_chunk, OP_POP, 0);
+#endif
+                }
+            }
+            expr_i++;
         }
     }
+    #undef IS_FUNC_DEFINE
+
+    /* Free repatch arrays */
+    free(g_repatch_func_slots); free(g_repatch_uv_indices); free(g_repatch_enc_slots);
+    g_repatch_func_slots = g_repatch_uv_indices = g_repatch_enc_slots = NULL;
+    g_n_repatch = 0;
 
     /* Free ASTs */
     for (int i = 0; i < n_top_exprs; i++)

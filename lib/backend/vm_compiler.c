@@ -985,6 +985,13 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
                 chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
                 chunk_emit(c, OP_NATIVE_CALL, 151);
                 chunk_emit(c, OP_POP, 0);
+                /* Record for group re-patching (mutual recursion) */
+                if (g_repatch_func_slots && g_n_repatch < 256) {
+                    g_repatch_func_slots[g_n_repatch] = func_slot;
+                    g_repatch_uv_indices[g_n_repatch] = i;
+                    g_repatch_enc_slots[g_n_repatch] = func.upvalues[i].enclosing_slot;
+                    g_n_repatch++;
+                }
             }
         }
         chunk_free_arrays(&func);
