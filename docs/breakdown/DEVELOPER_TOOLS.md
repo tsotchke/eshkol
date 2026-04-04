@@ -539,7 +539,63 @@ The following source locations are the primary entry points for each tool compon
 
 ---
 
-## 7. See Also
+## 7. Package Manager (eshkol-pkg)
+
+### 7.1 Overview
+
+| Property | Value |
+|----------|-------|
+| Source file | `tools/pkg/eshkol_pkg.cpp` |
+| Binary name | `eshkol-pkg` |
+| License | MIT |
+| Manifest format | TOML (`eshkol.toml`) |
+| Registry | Git-based package registry |
+
+The package manager is a standalone CLI tool for managing Eshkol projects and dependencies. It uses a minimal inline TOML parser (no external dependencies) and a git-based package registry for dependency resolution.
+
+### 7.2 Commands
+
+| Command | Description |
+|---------|-------------|
+| `eshkol-pkg init` | Create a new `eshkol.toml` manifest in the current directory |
+| `eshkol-pkg build` | Compile the current project using settings from `eshkol.toml` |
+| `eshkol-pkg install` | Install all dependencies listed in `eshkol.toml` |
+| `eshkol-pkg add <package>` | Add a dependency to `eshkol.toml` |
+| `eshkol-pkg remove <package>` | Remove a dependency from `eshkol.toml` |
+| `eshkol-pkg search <query>` | Search the package registry |
+| `eshkol-pkg publish` | Publish the current package to the registry |
+| `eshkol-pkg run` | Build and run the project |
+| `eshkol-pkg clean` | Remove build artifacts |
+
+### 7.3 Manifest Format
+
+```toml
+[package]
+name = "my-project"
+version = "0.1.0"
+entry = "src/main.esk"
+
+[dependencies]
+math-utils = "1.0.0"
+```
+
+---
+
+## 8. Web Compilation Server
+
+For web platform compilation (WASM output), see [Web Platform](WEB_PLATFORM.md). The `--wasm` flag on `eshkol-run` compiles to WebAssembly format, and the bytecode VM subsystem provides an alternative execution model documented in the bytecode VM documentation.
+
+---
+
+## 9. Additional Tool Documentation
+
+- **[VS Code Extension](VSCODE_EXTENSION.md)** — Installation, commands, configuration, syntax highlighting, snippets
+- **[Command-Line Reference](COMMAND_LINE_REFERENCE.md)** — Complete flag reference for `eshkol-run` and `eshkol-repl`
+- **[Runtime Configuration](RUNTIME_CONFIGURATION.md)** — Environment variables, config files, resource limits
+
+---
+
+## 10. See Also
 
 - `docs/breakdown/README.md` — component index
 - `docs/ESHKOL_V1_ARCHITECTURE.md` — compiler pipeline architecture
