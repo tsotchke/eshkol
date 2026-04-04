@@ -583,7 +583,7 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
     }
     if (getenv("ESHKOL_DEBUG_DL")) {
         std::cerr << "[REPL] Module DataLayout: " << module->getDataLayoutStr() << std::endl;
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
         std::cerr << "[REPL] Module Triple: " << module->getTargetTriple().str() << std::endl;
 #else
         std::cerr << "[REPL] Module Triple: " << module->getTargetTriple() << std::endl;

@@ -57,6 +57,7 @@
 #include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Scalar/GVN.h>
+#include <llvm/ADT/StringMap.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm/IR/Intrinsics.h>
@@ -69,9 +70,9 @@
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LLVM VERSION COMPATIBILITY
-// LLVM 18+ changed several APIs. This section provides compatibility for both.
+// LLVM 21 changed several APIs again. Keep older fallback paths explicit.
 // ═══════════════════════════════════════════════════════════════════════════
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
 #define ESHKOL_CODEGEN_FILETYPE CodeGenFileType::ObjectFile
 #define ESHKOL_GET_INTRINSIC(mod, id, types) Intrinsic::getOrInsertDeclaration(mod, id, types)
 #else
@@ -703,8 +704,8 @@ public:
         // Set target triple (use WASM triple if target_triple param is set)
         std::string target_triple_str = target_triple ? std::string(target_triple)
                                                        : sys::getDefaultTargetTriple();
+#if LLVM_VERSION_MAJOR >= 21
         Triple target_triple_obj(target_triple_str);
-#if LLVM_VERSION_MAJOR >= 18
         module->setTargetTriple(target_triple_obj);
 #else
         module->setTargetTriple(target_triple_str);
@@ -718,10 +719,10 @@ public:
             g_cached_target_triple = sys::getDefaultTargetTriple();
             g_cached_cpu_name = sys::getHostCPUName().str();
             SubtargetFeatures features;
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
             auto host_features = sys::getHostCPUFeatures();
 #else
-            StringMap<bool> host_features;
+            llvm::StringMap<bool> host_features;
             sys::getHostCPUFeatures(host_features);
 #endif
             for (auto& f : host_features) {
@@ -732,7 +733,7 @@ public:
         }
 
         std::string error;
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
         const Target* target = TargetRegistry::lookupTarget(target_triple_obj, error);
 #else
         const Target* target = TargetRegistry::lookupTarget(target_triple_str, error);
@@ -741,7 +742,7 @@ public:
             // Only set data layout for native targets — WASM data layout is set in compile step
             TargetOptions options;
             std::unique_ptr<TargetMachine> target_machine(
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
                 target->createTargetMachine(target_triple_obj, g_cached_cpu_name, g_cached_features,
                                            options, Reloc::PIC_));
 #else
@@ -12898,9 +12899,18 @@ private:
             }
 
             if (signatures_match) {
-                eshkol_debug("Mutual TCO: emitting musttail call to %s", func_name.c_str());
+                eshkol_debug("Mutual TCO: emitting tail call to %s", func_name.c_str());
                 CallInst* call = builder->CreateCall(callee, args);
+#if LLVM_VERSION_MAJOR >= 18
+                // LLVM 18's X86 backend rejects some musttail aggregate returns during
+                // stdlib compilation, and LLVM 21 still triggers the same failure in
+                // the shared stdlib build path. Keep the tail-position hint without
+                // hard-failing x86 builds on wrappers like second->cadr and none?->all?.
+                call->setTailCallKind(CallInst::TCK_Tail);
+#endif
+#if LLVM_VERSION_MAJOR < 18
                 call->setTailCallKind(CallInst::TCK_MustTail);
+#endif
                 builder->CreateRet(call);
                 return UndefValue::get(tagged_value_type);
             }
@@ -29389,10 +29399,10 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             g_cached_target_triple = sys::getDefaultTargetTriple();
             g_cached_cpu_name = sys::getHostCPUName().str();
             SubtargetFeatures features;
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
             auto host_features = sys::getHostCPUFeatures();
 #else
-            StringMap<bool> host_features;
+            llvm::StringMap<bool> host_features;
             sys::getHostCPUFeatures(host_features);
 #endif
             for (auto& f : host_features) {
@@ -29402,7 +29412,7 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             g_target_info_cached = true;
         }
 
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
         Triple cached_triple(g_cached_target_triple);
         module->setTargetTriple(cached_triple);
 #else
@@ -29410,7 +29420,7 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
 #endif
 
         std::string error;
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
         const Target* target = TargetRegistry::lookupTarget(cached_triple, error);
 #else
         const Target* target = TargetRegistry::lookupTarget(g_cached_target_triple, error);
@@ -29423,13 +29433,12 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         // Create target machine with configured optimization level
         TargetOptions target_options;
         auto codegen_opt = getCodeGenOptLevel();
-#if LLVM_VERSION_MAJOR >= 18
         std::unique_ptr<TargetMachine> target_machine(
+#if LLVM_VERSION_MAJOR >= 21
             target->createTargetMachine(cached_triple, g_cached_cpu_name, g_cached_features,
                                        target_options, Reloc::PIC_, std::nullopt,
                                        codegen_opt));
 #else
-        std::unique_ptr<TargetMachine> target_machine(
             target->createTargetMachine(g_cached_target_triple, g_cached_cpu_name, g_cached_features,
                                        target_options, Reloc::PIC_, std::nullopt,
                                        codegen_opt));
@@ -29779,8 +29788,7 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
 
         // Set target triple for WebAssembly
         std::string target_triple = "wasm32-unknown-unknown";
-
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
         Triple wasm_triple(target_triple);
         module->setTargetTriple(wasm_triple);
 #else
@@ -29789,7 +29797,7 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
 
         // Lookup WebAssembly target
         std::string error;
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
         const Target* target = TargetRegistry::lookupTarget(wasm_triple, error);
 #else
         const Target* target = TargetRegistry::lookupTarget(target_triple, error);
@@ -29809,13 +29817,12 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
         // Use Reloc::Static for standalone WASM modules loaded via WebAssembly.instantiate().
         // Reloc::PIC_ generates GOT (Global Offset Table) entries that require a dynamic
         // linker — browsers reject these with "Import GOT.func: module is not an object".
-#if LLVM_VERSION_MAJOR >= 18
         std::unique_ptr<TargetMachine> target_machine(
+#if LLVM_VERSION_MAJOR >= 21
             target->createTargetMachine(wasm_triple, cpu, features,
                                        target_options, Reloc::Static, std::nullopt,
                                        codegen_opt));
 #else
-        std::unique_ptr<TargetMachine> target_machine(
             target->createTargetMachine(target_triple, cpu, features,
                                        target_options, Reloc::Static, std::nullopt,
                                        codegen_opt));
@@ -29906,4 +29913,3 @@ int eshkol_compile_llvm_ir_to_wasm_file(LLVMModuleRef module_ref, const char* fi
 } // extern "C"
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED
-
