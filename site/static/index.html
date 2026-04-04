@@ -130,7 +130,7 @@
           }
         });
 
-        // Doc tab switching — click handler for documentation tabs
+        // Doc sidebar — click handler for documentation links
         document.addEventListener('click', (e) => {
           const tab = e.target.closest('[data-url]');
           if (tab) {
@@ -138,15 +138,57 @@
             const url = tab.getAttribute('data-url') || tab.getAttribute('href');
             const area = document.getElementById('doc-content-area');
             if (area && url) {
-              area.innerHTML = '<p style="color:#606078;font-style:italic">Loading...</p>';
-              fetch(url).then(r => r.text()).then(md => {
+              // Update active state on sidebar items
+              document.querySelectorAll('[data-url]').forEach(el => el.classList.remove('active'));
+              tab.classList.add('active');
+              area.innerHTML = '<p style="color:#71717a;font-style:italic">Loading...</p>';
+              fetch(url).then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.text();
+              }).then(md => {
                 area.innerHTML = runtime.renderMarkdown(md);
+                area.scrollTop = 0;
               }).catch(err => {
                 area.innerHTML = '<p style="color:#ff4444">Failed to load: ' + err.message + '</p>';
               });
             }
           }
         });
+
+        // GitHub Releases API — populate downloads page
+        const loadReleases = () => {
+          const container = document.getElementById('releases-container');
+          if (!container) return;
+          fetch('https://api.github.com/repos/tsotchke/eshkol/releases')
+            .then(r => r.json())
+            .then(releases => {
+              if (!releases.length) { container.innerHTML = '<p style="color:#a1a1aa">No releases found.</p>'; return; }
+              let html = '';
+              releases.forEach(rel => {
+                const badge = rel.prerelease
+                  ? '<span style="background:#7c3aed;color:#fff;padding:2px 8px;border-radius:100px;font-size:0.7rem;font-weight:600;margin-left:8px">PRE-RELEASE</span>'
+                  : '<span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:100px;font-size:0.7rem;font-weight:600;margin-left:8px">STABLE</span>';
+                html += '<div style="background:#111113;border:1px solid #27272a;border-radius:12px;padding:20px;margin-bottom:16px">';
+                html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">';
+                html += '<strong style="color:#fafafa;font-size:1.1rem">' + rel.tag_name + '</strong>' + badge;
+                html += '<span style="color:#71717a;font-size:0.85rem;margin-left:auto">' + new Date(rel.published_at).toLocaleDateString() + '</span>';
+                html += '</div>';
+                if (rel.assets && rel.assets.length) {
+                  html += '<div style="display:flex;flex-wrap:wrap;gap:8px">';
+                  rel.assets.forEach(a => {
+                    html += '<a href="' + a.browser_download_url + '" style="display:inline-block;padding:6px 14px;background:#18181b;border:1px solid #27272a;border-radius:6px;color:#a78bfa;font-size:0.8rem;font-family:JetBrains Mono,monospace;text-decoration:none">' + a.name + '</a>';
+                  });
+                  html += '</div>';
+                }
+                html += '</div>';
+              });
+              container.innerHTML = html;
+            })
+            .catch(err => { container.innerHTML = '<p style="color:#71717a">Could not load releases. <a href="https://github.com/tsotchke/eshkol/releases">View on GitHub</a></p>'; });
+        };
+        // Load releases when navigating to downloads page
+        window.addEventListener('hashchange', () => { setTimeout(loadReleases, 100); });
+        setTimeout(loadReleases, 500);
       } catch (e) {
         console.error('Eshkol WASM error:', e);
         if (loadingEl) {
