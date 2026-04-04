@@ -793,6 +793,10 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | 25 core opcodes in weights | ✅ | Remaining 38 via native dispatch |
 | **qLLM Bridge** |
 | Eshkol↔qLLM tensors | ✅ | Type conversion (double↔float32) with AD integration |
+| Web Platform | ✅ Complete | WebAssembly compilation, 59 DOM bindings, browser REPL, eshkol.ai |
+| VM Dual Number AD | ✅ Complete | Forward-mode AD via dual numbers in bytecode VM |
+| VM Production | ✅ Complete | 176/176 tests, zero stubs, zero stdout contamination |
+| KB Pattern Matching | ✅ Complete | Knowledge base queries with ?-wildcard pattern matching |
 
 ## Tensor Linear Algebra (v1.1)
 

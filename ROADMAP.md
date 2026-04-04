@@ -506,6 +506,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 
 ---
 
-*Last Updated: March 2026*
+*Last Updated: April 2026*
 
 *Eshkol v1.1-accelerate is now complete, delivering XLA, SIMD, GPU acceleration, parallel primitives, exact arithmetic, consciousness engine, 75+ ML builtins, signal processing, and full R7RS extensions. The roadmap progresses through data I/O and deployment (v1.2-scale), language maturity (v1.3-evolve), platform abstraction and hardware connectivity (v1.4-connection), neuro-symbolic integration (v1.5-intelligence), and quantum computing with formal verification (v2.0-starlight).*
