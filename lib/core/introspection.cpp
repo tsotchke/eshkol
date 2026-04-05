@@ -62,6 +62,13 @@ eshkol::ReplJITContext* get_eval_jit() {
 // Serialize a tagged value (S-expression) to a string buffer
 // Returns a malloc'd string that the caller must free
 char* serialize_sexp_to_string(eshkol_tagged_value_t value) {
+#ifdef _WIN32
+    FILE* memstream = tmpfile();
+    if (!memstream) {
+        eshkol_error("serialize_sexp_to_string: Failed to create temp stream");
+        return nullptr;
+    }
+#else
     char* buffer = nullptr;
     size_t size = 0;
 
@@ -71,6 +78,7 @@ char* serialize_sexp_to_string(eshkol_tagged_value_t value) {
         eshkol_error("serialize_sexp_to_string: Failed to create memstream");
         return nullptr;
     }
+#endif
 
     // Set up display options to write to the memstream
     eshkol_display_opts_t opts = eshkol_display_default_opts();
@@ -80,10 +88,35 @@ char* serialize_sexp_to_string(eshkol_tagged_value_t value) {
     // Display the value to the memstream
     eshkol_display_value_opts(&value, &opts);
 
+#ifdef _WIN32
+    fflush(memstream);
+    if (fseek(memstream, 0, SEEK_END) != 0) {
+        fclose(memstream);
+        return nullptr;
+    }
+    long end_pos = ftell(memstream);
+    if (end_pos < 0) {
+        fclose(memstream);
+        return nullptr;
+    }
+    rewind(memstream);
+
+    char* buffer = static_cast<char*>(std::malloc(static_cast<size_t>(end_pos) + 1));
+    if (!buffer) {
+        fclose(memstream);
+        return nullptr;
+    }
+
+    size_t read_len = end_pos > 0 ? fread(buffer, 1, static_cast<size_t>(end_pos), memstream) : 0;
+    buffer[read_len] = '\0';
+    fclose(memstream);
+    return buffer;
+#else
     // Close the stream to finalize the buffer
     fclose(memstream);
 
     return buffer;
+#endif
 }
 
 // ============================================================================
@@ -92,12 +125,19 @@ char* serialize_sexp_to_string(eshkol_tagged_value_t value) {
 
 // Create a null value
 inline eshkol_tagged_value_t make_null() {
-    return ESHKOL_MAKE_NULL_VALUE();
+    eshkol_tagged_value_t value;
+    std::memset(&value, 0, sizeof(value));
+    value.type = ESHKOL_VALUE_NULL;
+    return value;
 }
 
 // Create a false value
 inline eshkol_tagged_value_t make_false() {
-    return ESHKOL_MAKE_FALSE_VALUE();
+    eshkol_tagged_value_t value;
+    std::memset(&value, 0, sizeof(value));
+    value.type = ESHKOL_VALUE_BOOL;
+    value.data.int_val = 0;
+    return value;
 }
 
 // Check if value is null

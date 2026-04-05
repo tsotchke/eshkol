@@ -4,41 +4,45 @@
 
 ### What are the prerequisites?
 
-- **LLVM 17** (required — the compiler backend)
+- **LLVM 21** (required for lite/native builds)
 - **CMake 3.14+** (build system)
 - **C++20 compiler** (GCC 12+, Clang 15+, or MSVC 2022)
 - **Ninja** (recommended, but Make works too)
 
-### How do I install LLVM 17?
+### How do I install LLVM 21?
 
 **macOS:**
 ```bash
-brew install llvm@17
+brew install llvm@21
 ```
 
 **Ubuntu/Debian:**
 ```bash
-wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
-echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-sudo apt update && sudo apt install llvm-17 llvm-17-dev
+wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+sudo apt update && sudo apt install llvm-21 llvm-21-dev
 ```
 
 **Windows:**
-Use MSYS2/MinGW64:
-```bash
-pacman -S mingw-w64-x86_64-llvm mingw-w64-x86_64-cmake ninja
+Use native Visual Studio 2022 plus the official LLVM 21 SDK:
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DLLVM_DIR="C:/Program Files/LLVM/lib/cmake/llvm"
 ```
 
-### The build fails with "llvm-config not found"
+### The build fails with "llvm-config not found" or "LLVM_DIR not set"
 
-Make sure LLVM 17 is on your PATH:
+Make sure LLVM 21 is on your PATH on macOS/Linux:
 ```bash
 # macOS
-export PATH="/opt/homebrew/opt/llvm@17/bin:$PATH"
+export PATH="/opt/homebrew/opt/llvm@21/bin:$PATH"
 
-# Linux (if installed to /usr/lib/llvm-17)
-export PATH="/usr/lib/llvm-17/bin:$PATH"
+# Linux (if installed to /usr/lib/llvm-21)
+export PATH="/usr/lib/llvm-21/bin:$PATH"
 ```
+
+On native Windows, set `LLVM_DIR` to the LLVM 21 SDK's `lib/cmake/llvm` directory before configuring.
 
 Then rebuild:
 ```bash
@@ -46,9 +50,9 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-### Can I use LLVM 16 or 18?
+### Can I use an older LLVM release?
 
-LLVM 17 is required. LLVM 16 may work but is untested. LLVM 18+ may have API changes that cause build failures. Use exactly LLVM 17 for best results.
+Lite/native builds are pinned to LLVM 21. Older or intermediate LLVM releases are unsupported. The only expected exception is a separately documented bundled XLA/StableHLO toolchain when that path carries its own LLVM/MLIR stack.
 
 ### Do I need to install anything to try Eshkol?
 
@@ -124,7 +128,7 @@ This is transparent to user code — the same expression compiles to different b
 
 - macOS (Apple Silicon ARM64, Intel x86_64)
 - Linux (x86_64, ARM64)
-- Windows (MSYS2/MinGW64)
+- Windows (native x86_64 via Visual Studio 2022 + LLVM 21)
 - WebAssembly (browser)
 
 ### Can I deploy Eshkol programs as standalone binaries?

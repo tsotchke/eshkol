@@ -44,6 +44,18 @@ static bool shouldGenerateWorkerBodies(const std::string& module_name) {
     return true;  // Always generate full bodies for pure LLVM approach
 }
 
+static llvm::GlobalValue::LinkageTypes workerHelperLinkage() {
+#ifdef _WIN32
+    // COFF weak extern resolution is much less forgiving than ELF/Mach-O when
+    // stdlib.o and the main object both emit helper dispatchers. Keep these
+    // helper bodies module-local on native Windows to avoid duplicate-symbol
+    // conflicts while preserving the existing dedup behavior elsewhere.
+    return llvm::GlobalValue::InternalLinkage;
+#else
+    return llvm::GlobalValue::LinkOnceODRLinkage;
+#endif
+}
+
 ParallelCodegen::ParallelCodegen(CodegenContext& ctx)
     : ctx_(ctx)
     , parallel_map_func_(nullptr)
@@ -243,7 +255,7 @@ void ParallelCodegen::generateNullaryClosureDispatcher() {
     llvm::IRBuilder<>& builder = ctx_.builder();
 
     llvm::Function* dispatcher = llvm::Function::Create(
-        func_type, llvm::Function::LinkOnceODRLinkage,
+        func_type, workerHelperLinkage(),
         "__eshkol_call_nullary_closure", &ctx_.module());
 
     // Get function argument (just closure)
@@ -410,7 +422,7 @@ void ParallelCodegen::generateUnaryClosureDispatcher() {
     llvm::IRBuilder<>& builder = ctx_.builder();
 
     llvm::Function* dispatcher = llvm::Function::Create(
-        func_type, llvm::Function::LinkOnceODRLinkage,
+        func_type, workerHelperLinkage(),
         "__eshkol_call_unary_closure", &ctx_.module());
 
     // Get function arguments
@@ -581,7 +593,7 @@ void ParallelCodegen::generateBinaryClosureDispatcher() {
     llvm::IRBuilder<>& builder = ctx_.builder();
 
     llvm::Function* dispatcher = llvm::Function::Create(
-        func_type, llvm::Function::LinkOnceODRLinkage,
+        func_type, workerHelperLinkage(),
         "__eshkol_call_binary_closure", &ctx_.module());
 
     // Get function arguments
@@ -813,7 +825,7 @@ void ParallelCodegen::generateMapWorker() {
     llvm::StructType* task_type = getParallelMapTaskType();
 
     llvm::Function* worker = llvm::Function::Create(
-        func_type, llvm::Function::LinkOnceODRLinkage,
+        func_type, workerHelperLinkage(),
         "__parallel_map_worker", &ctx_.module());
 
     // Get argument
@@ -924,7 +936,7 @@ void ParallelCodegen::generateFoldWorker() {
     llvm::StructType* task_type = getParallelFoldTaskType();
 
     llvm::Function* worker = llvm::Function::Create(
-        func_type, llvm::Function::LinkOnceODRLinkage,
+        func_type, workerHelperLinkage(),
         "__parallel_fold_worker", &ctx_.module());
 
     llvm::Value* arg = worker->arg_begin();
@@ -1040,7 +1052,7 @@ void ParallelCodegen::generateFilterWorker() {
     llvm::StructType* task_type = getParallelMapTaskType();  // Same struct as map
 
     llvm::Function* worker = llvm::Function::Create(
-        func_type, llvm::Function::LinkOnceODRLinkage,
+        func_type, workerHelperLinkage(),
         "__parallel_filter_worker", &ctx_.module());
 
     llvm::Value* arg = worker->arg_begin();
@@ -1146,7 +1158,7 @@ void ParallelCodegen::generateExecuteWorker() {
         "parallel_execute_task");
 
     llvm::Function* worker = llvm::Function::Create(
-        func_type, llvm::Function::LinkOnceODRLinkage,
+        func_type, workerHelperLinkage(),
         "__parallel_execute_worker", &ctx_.module());
 
     llvm::Value* arg = worker->arg_begin();
@@ -1873,12 +1885,64 @@ llvm::Value* ParallelCodegen::parallelForEach(const eshkol_operations_t* op) {
     }
     llvm::Value* list_val = ensureTaggedValue(list_raw);
 
-    llvm::Value* arena_ptr = getArenaPtr();
-    if (!arena_ptr) return nullptr;
+    llvm::Function* dispatcher = ctx_.module().getFunction("__eshkol_call_unary_closure");
+    if (!dispatcher) {
+        eshkol_error("parallel-for-each: unary dispatcher not found");
+        return nullptr;
+    }
 
-    ctx_.builder().CreateCall(parallel_for_each_func_, {fn_val, list_val, arena_ptr});
+    llvm::LLVMContext& llvm_ctx = ctx_.context();
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
-    eshkol_debug("Generated parallel-for-each call");
+    llvm::BasicBlock* null_check_bb = llvm::BasicBlock::Create(llvm_ctx, "pforeach_null_check", current_func);
+    llvm::BasicBlock* loop_bb = llvm::BasicBlock::Create(llvm_ctx, "pforeach_loop", current_func);
+    llvm::BasicBlock* loop_body_bb = llvm::BasicBlock::Create(llvm_ctx, "pforeach_body", current_func);
+    llvm::BasicBlock* done_bb = llvm::BasicBlock::Create(llvm_ctx, "pforeach_done", current_func);
+
+    ctx_.builder().CreateBr(null_check_bb);
+
+    ctx_.builder().SetInsertPoint(null_check_bb);
+    llvm::Value* list_type = ctx_.builder().CreateExtractValue(list_val, {0}, "list_type");
+    llvm::Value* is_null = ctx_.builder().CreateICmpEQ(
+        list_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL),
+        "is_null");
+    ctx_.builder().CreateCondBr(is_null, done_bb, loop_bb);
+
+    ctx_.builder().SetInsertPoint(loop_bb);
+    llvm::PHINode* current_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "current");
+    current_phi->addIncoming(list_val, null_check_bb);
+
+    llvm::Value* curr_type = ctx_.builder().CreateExtractValue(current_phi, {0}, "curr_type");
+    llvm::Value* curr_is_null = ctx_.builder().CreateICmpEQ(
+        curr_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL),
+        "curr_is_null");
+    ctx_.builder().CreateCondBr(curr_is_null, done_bb, loop_body_bb);
+
+    ctx_.builder().SetInsertPoint(loop_body_bb);
+
+    llvm::StructType* cons_type = llvm::StructType::get(llvm_ctx, {
+        ctx_.taggedValueType(),
+        ctx_.taggedValueType()
+    });
+
+    llvm::Value* cell_ptr_i64 = ctx_.builder().CreateExtractValue(current_phi, {4}, "cell_ptr_i64");
+    llvm::Value* cell_ptr = ctx_.builder().CreateIntToPtr(cell_ptr_i64, ctx_.ptrType(), "cell_ptr");
+
+    llvm::Value* car_ptr = ctx_.builder().CreateStructGEP(cons_type, cell_ptr, 0, "car_ptr");
+    llvm::Value* cdr_ptr = ctx_.builder().CreateStructGEP(cons_type, cell_ptr, 1, "cdr_ptr");
+    llvm::Value* car_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), car_ptr, "car_val");
+    llvm::Value* cdr_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), cdr_ptr, "cdr_val");
+
+    ctx_.builder().CreateCall(dispatcher, {car_val, fn_val});
+    ctx_.builder().CreateBr(loop_bb);
+
+    current_phi->addIncoming(cdr_val, loop_body_bb);
+
+    ctx_.builder().SetInsertPoint(done_bb);
+
+    eshkol_debug("Generated pure LLVM parallel-for-each");
 
     // Return null value
     llvm::Value* null_val = llvm::UndefValue::get(ctx_.taggedValueType());

@@ -23,7 +23,7 @@ This sub-project does not make the entire test suite green.
 
 This sub-project does not fully update GitHub Actions, release workflows, or `act` automation. Those are follow-on changes after local/native tooling, Docker parity, and platform smoke paths are aligned on LLVM 21.
 
-This sub-project does not change the Windows runtime family. Windows remains on the existing `MSYS2 MinGW64` contract for now.
+This sub-project standardizes Windows on the native Visual Studio 2022 + ClangCL + LLVM 21 SDK path.
 
 ## Recommended Approach
 
@@ -107,15 +107,13 @@ Expected shape:
 
 ### Windows
 
-Windows remains on `MSYS2 MinGW64` for this pass.
+Windows uses native Visual Studio 2022, the ClangCL toolset, and the official LLVM 21 SDK.
 
 Expected shape:
 
-- builds run inside the MinGW64 shell
-- the active `llvm-config` must resolve from the MinGW64 environment
-- CMake validates that the reported major version is `21`
-
-This design intentionally avoids combining the LLVM migration with a separate Windows runtime migration such as switching shells or CRT families.
+- builds configure with the `Visual Studio 17 2022` generator and `-T ClangCL`
+- `LLVM_DIR` points at the LLVM 21 SDK CMake package
+- smoke validation can be driven from WSL2 into native Windows commands
 
 ## Files and Change Areas
 
@@ -162,7 +160,7 @@ This sub-project is complete when the following validations have been run agains
 2. Linux native test execution runs against the LLVM 21 build.
 3. Linux Docker parity images build with LLVM 21.
 4. macOS local/scripted build path resolves `llvm@21` correctly.
-5. Windows build can be driven from WSL2 into an `MSYS2 MinGW64` shell and complete at least a configure/build/smoke cycle.
+5. Windows build can be driven from WSL2 into a native Visual Studio 2022 + LLVM 21 environment and complete at least a configure/build/smoke cycle.
 
 Minimum Windows smoke means:
 
@@ -181,7 +179,7 @@ Required behavior:
 
 - if `llvm-config` is missing, fail with an install hint for the active platform
 - if LLVM is found but is not major version `21`, fail with a version mismatch message that shows the discovered executable and version
-- if Windows is invoked outside the intended MSYS2 MinGW64 environment, fail with a shell/environment hint
+- if Windows is invoked without a usable Visual Studio 2022 + LLVM 21 environment, fail with a setup hint
 - if `STABLEHLO_ROOT` implies a different LLVM world, make that branch explicit instead of silently reusing lite/native assumptions
 
 ## Risks
@@ -196,7 +194,7 @@ Some local fixes were introduced to repair an invalid compatibility layer. Those
 
 ### Windows environment discovery may be brittle
 
-Windows smoke from WSL2 depends on an installed and callable MSYS2 environment. That path must be validated pragmatically rather than assumed from docs.
+Windows smoke from WSL2 depends on installed and callable Visual Studio 2022 and LLVM 21 tooling. That path must be validated pragmatically rather than assumed from docs.
 
 ## Exit Criteria
 

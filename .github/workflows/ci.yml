@@ -16,25 +16,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add LLVM 17 Repository
+      - name: Add LLVM 21 Repository
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
 
       - name: Install Dependencies
         run: |
           sudo apt-get install -y \
             cmake ninja-build \
-            llvm-17 llvm-17-dev \
+            llvm-21 llvm-21-dev \
             libreadline-dev pkg-config \
             libssl-dev libncurses-dev
-          sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
 
       - name: Configure
         run: |
           cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-21
 
       - name: Build
         run: cmake --build build --parallel
@@ -57,25 +57,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add LLVM 17 Repository
+      - name: Add LLVM 21 Repository
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
 
       - name: Install Dependencies
         run: |
           sudo apt-get install -y \
             cmake ninja-build \
-            llvm-17 llvm-17-dev \
+            llvm-21 llvm-21-dev \
             libreadline-dev pkg-config \
             libssl-dev libncurses-dev
-          sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
 
       - name: Configure
         run: |
           cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-21
 
       - name: Build
         run: cmake --build build --parallel
@@ -94,17 +94,19 @@ jobs:
 
   build-macos-arm:
     runs-on: macos-14
-    env:
-      PATH: /opt/homebrew/opt/llvm@17/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Dependencies
-        run: brew install llvm@17 cmake ninja readline
+        run: brew install llvm@21 cmake ninja readline
 
       - name: Build
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          LLVM_PREFIX="$(brew --prefix llvm@21)"
+          export PATH="$LLVM_PREFIX/bin:$PATH"
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_PREFIX/bin/llvm-config"
           cmake --build build --parallel
 
       - name: Run All Tests
@@ -121,17 +123,19 @@ jobs:
 
   build-macos-intel:
     runs-on: macos-15-large
-    env:
-      PATH: /usr/local/opt/llvm@17/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Dependencies
-        run: brew install llvm@17 cmake ninja readline
+        run: brew install llvm@21 cmake ninja readline
 
       - name: Build
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          LLVM_PREFIX="$(brew --prefix llvm@21)"
+          export PATH="$LLVM_PREFIX/bin:$PATH"
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_PREFIX/bin/llvm-config"
           cmake --build build --parallel
 
       - name: Run All Tests
@@ -144,4 +148,81 @@ jobs:
           path: |
             build/eshkol-run
             build/eshkol-repl
+            build/stdlib.o
+
+  build-windows:
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 21 SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llvmVersion = '21.1.8'
+          $llvmRoot = "C:\src\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc"
+          $llvmArchive = "$env:RUNNER_TEMP\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz"
+          if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
+            Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz" -OutFile $llvmArchive
+            tar -xf $llvmArchive -C C:\src
+          }
+          "LLVM_DIR=$llvmRoot\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LLVM_HOME=$llvmRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$llvmRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -T ClangCL `
+            -DBUILD_REPL=ON `
+            -DESHKOL_GPU_ENABLED=OFF `
+            -DESHKOL_BUILD_TESTS=OFF `
+            -DLLVM_DIR="$env:LLVM_DIR"
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target eshkol-repl eshkol-run --parallel
+
+      - name: Smoke Tests
+        shell: pwsh
+        run: |
+          $evalOutput = & .\build\Release\eshkol-run.exe -n -e "(display (+ 1 2)) (newline)"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          if (($evalOutput | Out-String).Trim() -ne '3') {
+            throw "Unexpected eshkol-run output: $evalOutput"
+          }
+
+          Set-Content -Path .\repl-input.txt -Value "(display (+ 4 5))`nexit`n" -NoNewline
+          $repl = Start-Process -FilePath .\build\Release\eshkol-repl.exe `
+            -RedirectStandardInput .\repl-input.txt `
+            -RedirectStandardOutput .\repl-output.txt `
+            -RedirectStandardError .\repl-error.txt `
+            -PassThru
+          Wait-Process -Id $repl.Id -Timeout 10 -ErrorAction SilentlyContinue
+          $repl.Refresh()
+          if (-not $repl.HasExited) {
+            Stop-Process -Id $repl.Id -Force
+            throw "eshkol-repl did not exit under redirected input"
+          }
+          if ($repl.ExitCode -ne 0) {
+            if (Test-Path .\repl-error.txt) {
+              Get-Content .\repl-error.txt
+            }
+            throw "eshkol-repl exited with code $($repl.ExitCode)"
+          }
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: eshkol-windows-x64
+          path: |
+            build/Release/eshkol-run.exe
+            build/Release/eshkol-repl.exe
             build/stdlib.o

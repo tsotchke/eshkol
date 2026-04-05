@@ -19,7 +19,7 @@
 ✅ Optimization algorithms — Gradient descent, Adam, L-BFGS, conjugate gradient
 ✅ Records — R7RS `define-record-type`
 ✅ Backward pass dispatch — GPU → BLAS/AMX → scalar (mirrors forward hierarchy)
-✅ Windows — Tier 1 native build via MSYS2/MinGW64
+✅ Windows — Tier 1 native build via Visual Studio 2022 + LLVM 21
 
 ---
 
@@ -44,8 +44,8 @@ Apple Silicon lacks hardware float64 compute shaders. Eshkol uses SF64 software 
 **Conv2d backward is CPU-only**
 The conv2d backward pass uses stride-based scatter/gather indexing that doesn't map to GEMM. This is inherent to the convolution transpose operation. LayerNorm/BatchNorm backward are reductions, which are inherently sequential.
 
-**Windows has no GPU acceleration**
-Windows build (MSYS2/MinGW64) does not include Metal (macOS-only) or CUDA (requires NVIDIA toolkit). GPU acceleration on Windows is planned when Vulkan Compute support is added.
+**Windows has no GPU acceleration in the lite/native path**
+Native Windows builds do not include Metal (macOS-only) or CUDA acceleration yet. GPU acceleration on Windows will require a dedicated Windows GPU backend path.
 
 ---
 

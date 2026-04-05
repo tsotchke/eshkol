@@ -7,6 +7,10 @@
 #include "repl_jit.h"
 #include <eshkol/eshkol.h>
 #include <eshkol/llvm_backend.h>
+#include <eshkol/platform_runtime.h>
+#include <eshkol/runtime_exports.h>
+#include <eshkol/core/bignum.h>
+#include <eshkol/core/rational.h>
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
@@ -32,7 +36,6 @@
 #include <llvm/MC/TargetRegistry.h>              // For TargetRegistry
 #include <llvm/Target/TargetMachine.h>           // For TargetMachine
 #include <llvm/TargetParser/Host.h>              // For sys::getHostCPUName/Features
-#include <llvm-c/Core.h>  // For LLVMModuleRef unwrapping
 
 #include <iostream>
 #include <fstream>
@@ -43,10 +46,12 @@
 #include <set>
 #include <vector>
 #include <cctype>
-#include <unistd.h>
 
-#ifdef __APPLE__
-#include <mach-o/dyld.h>  // For _NSGetExecutablePath on macOS
+static constexpr char eshkol_path_separator =
+#ifdef _WIN32
+    ';';
+#else
+    ':';
 #endif
 
 using namespace llvm;
@@ -55,12 +60,31 @@ using namespace llvm;
 // Extracts the module's original LLVMContext and releases module ownership from g_llvm_modules.
 std::unique_ptr<LLVMContext> eshkol_extract_module_context_for_jit(LLVMModuleRef module_ref);
 
+static llvm::Module* module_from_ref(LLVMModuleRef module_ref) {
+    return reinterpret_cast<llvm::Module*>(module_ref);
+}
+
 // ===== EXTERN DECLARATIONS FOR RUNTIME SYMBOLS =====
 // These are defined in runtime.cpp with extern "C" linkage
 extern "C" {
     void eshkol_type_error(const char* proc_name, const char* expected_type);
     void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
                                        const char* actual_type);
+    int64_t eshkol_shapes_equal(const int64_t* shape_a, const int64_t* shape_b, int64_t rank);
+    int64_t eshkol_broadcast_elementwise_f64(
+        const double* a_data, const int64_t* a_shape, int64_t a_rank,
+        const double* b_data, const int64_t* b_shape, int64_t b_rank,
+        double* out_data, const int64_t* out_shape, int64_t out_rank,
+        int64_t op);
+    int64_t eshkol_check_recursion_depth(void);
+    void eshkol_decrement_recursion_depth(void);
+    int64_t eshkol_utf8_strlen(const char* s);
+    int64_t eshkol_utf8_ref(const char* s, int64_t k);
+    char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* arena);
+#ifdef _WIN32
+    double drand48(void);
+    int clock_gettime(int clock_id, void* ts_raw);
+#endif
 }
 
 // ===== PARALLEL EXECUTION RUNTIME (parallel_codegen.cpp) =====
@@ -107,7 +131,9 @@ ReplJITContext::ReplJITContext()
     , eval_counter_(0)
     , shared_arena_(nullptr)
 {
-    initializeJIT();
+    // Enable REPL-mode codegen immediately so modules compiled before LLJIT
+    // startup still emit shared runtime globals as extern declarations.
+    eshkol_repl_enable();
 }
 
 ReplJITContext::~ReplJITContext() {
@@ -121,10 +147,13 @@ ReplJITContext::~ReplJITContext() {
 }
 
 void ReplJITContext::initializeJIT() {
-    // Initialize LLVM targets (required for JIT)
-    InitializeNativeTarget();
-    InitializeNativeTargetAsmPrinter();
-    InitializeNativeTargetAsmParser();
+    // Match the batch compiler's target initialization so the Windows LLVM SDK
+    // exposes registered targets to LLJIT before host detection runs.
+    InitializeAllTargetInfos();
+    InitializeAllTargets();
+    InitializeAllTargetMCs();
+    InitializeAllAsmParsers();
+    InitializeAllAsmPrinters();
 
     // Load symbols from current process (includes eshkol-static runtime)
     // This makes arena_*, printf, malloc, etc. available to JIT code
@@ -274,6 +303,13 @@ void ReplJITContext::registerRuntimeSymbols() {
 
     // Deep equality
     ADD_SYMBOL(eshkol_deep_equal);
+    ADD_SYMBOL(eshkol_display_value);
+    ADD_SYMBOL(eshkol_lambda_registry_init);
+    ADD_SYMBOL(eshkol_lambda_registry_destroy);
+    ADD_SYMBOL(eshkol_lambda_registry_add);
+    ADD_SYMBOL(eshkol_lambda_registry_lookup);
+    ADD_SYMBOL(eshkol_init_stack_size);
+    ADD_DATA_SYMBOL(g_lambda_registry);
 
     // ===== EXCEPTION HANDLING =====
     ADD_SYMBOL(eshkol_raise);
@@ -282,8 +318,37 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_push_exception_handler);
     ADD_SYMBOL(eshkol_pop_exception_handler);
     ADD_SYMBOL(eshkol_exception_type_matches);
+    ADD_SYMBOL(eshkol_unwind_dynamic_wind);
+    ADD_SYMBOL(eshkol_check_recursion_depth);
+    ADD_SYMBOL(eshkol_decrement_recursion_depth);
     ADD_DATA_SYMBOL(g_current_exception);
     ADD_DATA_SYMBOL(g_exception_handler_stack);
+
+    // ===== PLATFORM RUNTIME EXPORTS =====
+    ADD_SYMBOL(eshkol_stdout_stream);
+    ADD_SYMBOL(eshkol_drand48);
+    ADD_SYMBOL(eshkol_srand48);
+#ifdef _WIN32
+    ADD_SYMBOL(drand48);
+    ADD_SYMBOL(clock_gettime);
+#endif
+    ADD_SYMBOL(eshkol_getenv);
+    ADD_SYMBOL(eshkol_setenv);
+    ADD_SYMBOL(eshkol_unsetenv);
+    ADD_SYMBOL(eshkol_usleep);
+    ADD_SYMBOL(eshkol_fopen);
+    ADD_SYMBOL(eshkol_access);
+    ADD_SYMBOL(eshkol_remove);
+    ADD_SYMBOL(eshkol_rename);
+    ADD_SYMBOL(eshkol_mkdir);
+    ADD_SYMBOL(eshkol_rmdir);
+    ADD_SYMBOL(eshkol_chdir);
+    ADD_SYMBOL(eshkol_stat);
+    ADD_SYMBOL(eshkol_opendir);
+    symbols[ES.intern("snprintf")] = {
+        orc::ExecutorAddr::fromPtr((void*)&::snprintf),
+        JITSymbolFlags::Callable | JITSymbolFlags::Exported
+    };
 
     // ===== TYPE ERRORS (R7RS Compliance) =====
     // Use global scope since these are declared extern "C" in global namespace
@@ -318,6 +383,32 @@ void ReplJITContext::registerRuntimeSymbols() {
     // ===== TENSOR MEMORY MANAGEMENT =====
     ADD_SYMBOL(arena_allocate_tensor_with_header);
     ADD_SYMBOL(arena_allocate_tensor_full);
+    ADD_SYMBOL(eshkol_shapes_equal);
+    ADD_SYMBOL(eshkol_broadcast_elementwise_f64);
+
+    // ===== BIGNUM / RATIONAL NUMERICS =====
+    ADD_SYMBOL(eshkol_bignum_from_overflow);
+    ADD_SYMBOL(eshkol_bignum_from_int64);
+    ADD_SYMBOL(eshkol_is_bignum_tagged);
+    ADD_SYMBOL(eshkol_bignum_binary_tagged);
+    ADD_SYMBOL(eshkol_bignum_neg);
+    ADD_SYMBOL(eshkol_bignum_pow_tagged);
+    ADD_SYMBOL(eshkol_bignum_to_double);
+    ADD_SYMBOL(eshkol_bignum_to_string);
+    ADD_SYMBOL(eshkol_bignum_is_zero);
+    ADD_SYMBOL(eshkol_bignum_is_even);
+    ADD_SYMBOL(eshkol_bignum_is_odd);
+    ADD_SYMBOL(eshkol_string_to_number_tagged);
+    ADD_SYMBOL(eshkol_rational_create);
+    ADD_SYMBOL(eshkol_rational_to_double);
+    ADD_SYMBOL(eshkol_rational_to_string);
+    ADD_SYMBOL(eshkol_is_rational_tagged_ptr);
+    ADD_SYMBOL(eshkol_rational_binary_tagged_ptr);
+    ADD_SYMBOL(eshkol_rational_compare_tagged_ptr);
+    ADD_SYMBOL(eshkol_bignum_compare_tagged);
+    ADD_SYMBOL(eshkol_utf8_strlen);
+    ADD_SYMBOL(eshkol_utf8_ref);
+    ADD_SYMBOL(eshkol_utf8_substring);
 
     // ===== BLAS ACCELERATION =====
     // Runtime matmul with automatic BLAS/scalar dispatch
@@ -463,7 +554,29 @@ static eshkol_tagged_value __repl_forward_ref_stub() {
     return result;
 }
 
+static bool is_repl_runtime_global(const llvm::GlobalVariable& global_var) {
+    auto name = global_var.getName();
+    return name == "__eshkol_argc" ||
+           name == "__eshkol_argv" ||
+           name == "__repl_shared_arena";
+}
+
 void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<LLVMContext> module_context) {
+    if (!jit_) {
+        initializeJIT();
+    }
+
+    // These globals are provided by the host process and registered into the
+    // JIT dylib explicitly. Leaving definitions in each REPL module causes
+    // duplicate-definition failures on Windows when the first module is added.
+    for (auto& gv : module->globals()) {
+        if (is_repl_runtime_global(gv) && gv.hasInitializer()) {
+            gv.setInitializer(nullptr);
+            gv.setLinkage(GlobalValue::ExternalLinkage);
+            gv.setExternallyInitialized(false);
+        }
+    }
+
     // Collect forward references and definitions to handle
     std::vector<std::pair<std::string, std::string>> forward_ref_updates;  // (ptr_name, func_name)
 
@@ -624,6 +737,10 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
 }
 
 uint64_t ReplJITContext::lookupSymbol(const std::string& name) {
+    if (!jit_) {
+        initializeJIT();
+    }
+
     // First check our local symbol table
     auto it = symbol_table_.find(name);
     if (it != symbol_table_.end()) {
@@ -647,6 +764,10 @@ uint64_t ReplJITContext::lookupSymbol(const std::string& name) {
 }
 
 bool ReplJITContext::isSymbolDefined(const std::string& name) {
+    if (!jit_) {
+        initializeJIT();
+    }
+
     // Check our local symbol table first
     if (symbol_table_.find(name) != symbol_table_.end()) {
         return true;
@@ -674,6 +795,10 @@ bool ReplJITContext::isSymbolDefined(const std::string& name) {
 }
 
 void ReplJITContext::registerSymbol(const std::string& name, uint64_t address) {
+    if (!jit_) {
+        initializeJIT();
+    }
+
     symbol_table_[name] = address;
 
     // Also register in JIT dylib so subsequent modules can link against it
@@ -713,84 +838,68 @@ void ReplJITContext::registerLambdaVar(const std::string& var_name) {
 
 // Find the pre-compiled stdlib.o file
 static std::string findStdlibObject() {
-    std::vector<std::string> stdlib_paths = {
-        "stdlib.o",
-        "build/stdlib.o",
-        "../build/stdlib.o",
-        "/usr/local/lib/eshkol/stdlib.o",
-        "/usr/lib/eshkol/stdlib.o",
+    auto cwd = platform::current_directory();
+    auto exe_dir = platform::executable_directory();
+
+#ifdef _WIN32
+    std::vector<std::filesystem::path> candidates = {
+        exe_dir / "stdlib.o",
+        exe_dir / "../lib/stdlib.o",
+        exe_dir / "../lib/eshkol/stdlib.o",
+        cwd / "stdlib.o",
+        cwd / "build/stdlib.o",
+        cwd.parent_path() / "build/stdlib.o",
     };
-
-    // Check relative to executable
-    char exe_path[4096];
-    bool got_exe_path = false;
-
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+#else
+    std::vector<std::filesystem::path> candidates = {
+        cwd / "stdlib.o",
+        cwd / "build/stdlib.o",
+        cwd.parent_path() / "build/stdlib.o",
+        exe_dir / "stdlib.o",
+        exe_dir / "../lib/stdlib.o",
+        exe_dir / "../lib/eshkol/stdlib.o",
+    };
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.o").string());
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.o").string());
-    }
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/lib/eshkol/stdlib.o");
+    candidates.emplace_back("/usr/lib/eshkol/stdlib.o");
+#endif
 
-    for (const auto& path : stdlib_paths) {
-        if (std::filesystem::exists(path)) {
-            return std::filesystem::canonical(path).string();
-        }
-    }
-    return "";
+    return platform::find_first_existing(candidates);
 }
 
 // Find the pre-compiled stdlib.bc bitcode file
 static std::string findStdlibBitcode() {
-    std::vector<std::string> stdlib_paths = {
-        "stdlib.bc",
-        "build/stdlib.bc",
-        "../build/stdlib.bc",
-        "/usr/local/lib/eshkol/stdlib.bc",
-        "/usr/lib/eshkol/stdlib.bc",
+    auto cwd = platform::current_directory();
+    auto exe_dir = platform::executable_directory();
+
+#ifdef _WIN32
+    std::vector<std::filesystem::path> candidates = {
+        exe_dir / "stdlib.bc",
+        exe_dir / "../lib/stdlib.bc",
+        exe_dir / "../lib/eshkol/stdlib.bc",
+        cwd / "stdlib.bc",
+        cwd / "build/stdlib.bc",
+        cwd.parent_path() / "build/stdlib.bc",
     };
-
-    // Check relative to executable
-    char exe_path[4096];
-    bool got_exe_path = false;
-
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+#else
+    std::vector<std::filesystem::path> candidates = {
+        cwd / "stdlib.bc",
+        cwd / "build/stdlib.bc",
+        cwd.parent_path() / "build/stdlib.bc",
+        exe_dir / "stdlib.bc",
+        exe_dir / "../lib/stdlib.bc",
+        exe_dir / "../lib/eshkol/stdlib.bc",
+    };
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.bc").string());
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.bc").string());
-    }
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/lib/eshkol/stdlib.bc");
+    candidates.emplace_back("/usr/lib/eshkol/stdlib.bc");
+#endif
 
-    for (const auto& path : stdlib_paths) {
-        if (std::filesystem::exists(path)) {
-            return std::filesystem::canonical(path).string();
-        }
-    }
-    return "";
+    return platform::find_first_existing(candidates);
 }
 
 // Discover and register stdlib symbols dynamically from .bc metadata.
@@ -876,6 +985,10 @@ void ReplJITContext::registerStdlibSymbols() {
 }
 
 bool ReplJITContext::loadStdlib() {
+    if (!jit_) {
+        initializeJIT();
+    }
+
     // Load pre-compiled stdlib.o via addObjectFile (fast, instant availability).
     std::string stdlib_obj_path = findStdlibObject();
     if (!stdlib_obj_path.empty()) {
@@ -1124,42 +1237,24 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
 
 // Find the lib directory (matches eshkol-run.cpp logic)
 static std::string findLibDir() {
-    std::vector<std::string> lib_dirs = {
-        "lib",
-        "../lib",
-        "/usr/local/share/eshkol/lib",
-        "/usr/share/eshkol/lib",
+    auto cwd = platform::current_directory();
+    auto exe_dir = platform::executable_directory();
+
+    std::vector<std::filesystem::path> candidates = {
+        cwd / "lib",
+        cwd.parent_path() / "lib",
+        cwd / "share/eshkol/lib",
+        exe_dir / "lib",
+        exe_dir / "../lib",
+        exe_dir / "../share/eshkol/lib",
     };
 
-    // Check relative to executable
-    char exe_path[4096];
-    bool got_exe_path = false;
-
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/share/eshkol/lib");
+    candidates.emplace_back("/usr/share/eshkol/lib");
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        lib_dirs.insert(lib_dirs.begin(), (exe_dir / "../lib").string());
-        lib_dirs.insert(lib_dirs.begin(), (exe_dir / "lib").string());
-    }
-
-    for (const auto& dir : lib_dirs) {
-        if (std::filesystem::exists(dir) && std::filesystem::is_directory(dir)) {
-            return std::filesystem::canonical(dir).string();
-        }
-    }
-    return "";
+    return platform::find_first_existing(candidates);
 }
 
 // Global lib directory cache
@@ -1204,7 +1299,7 @@ static std::string resolveModulePath(const std::string& module_name, const std::
     if (eshkol_path) {
         std::stringstream ss(eshkol_path);
         std::string search_dir;
-        while (std::getline(ss, search_dir, ':')) {
+        while (std::getline(ss, search_dir, eshkol_path_separator)) {
             std::filesystem::path env_path = std::filesystem::path(search_dir) / path_part;
             if (std::filesystem::exists(env_path)) {
                 return std::filesystem::canonical(env_path).string();
@@ -1272,8 +1367,7 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
         return nullptr;
     }
 
-    // Convert LLVMModuleRef (C API) to llvm::Module* (C++ API)
-    Module* cpp_module = llvm::unwrap(c_module);
+    Module* cpp_module = module_from_ref(c_module);
 
     if (!cpp_module) {
         if (!silent) {
@@ -1550,8 +1644,12 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         }
     }
 
+    // Reserve a unique module/eval id up front so failed evaluations do not
+    // reuse the same COFF init symbol names on the next attempt.
+    const std::uint64_t eval_id = eval_counter_++;
+
     // Generate LLVM IR using the existing Eshkol compiler
-    std::string module_name = "__repl_module_" + std::to_string(eval_counter_);
+    std::string module_name = "__repl_module_" + std::to_string(eval_id);
 
     // Call the existing compiler to generate LLVM IR from AST
     LLVMModuleRef c_module = eshkol_generate_llvm_ir(ast, 1, module_name.c_str());
@@ -1560,9 +1658,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         throw std::runtime_error("Failed to generate LLVM IR from AST");
     }
 
-    // Convert LLVMModuleRef (C API) to llvm::Module* (C++ API)
-    // Note: LLVMModuleRef is actually llvm::Module*, just opaque
-    Module* cpp_module = llvm::unwrap(c_module);
+    Module* cpp_module = module_from_ref(c_module);
 
     if (!cpp_module) {
         throw std::runtime_error("Failed to unwrap LLVM module");
@@ -1665,7 +1761,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     std::string func_name = entry_func->getName().str();
 
     // Rename the entry function to avoid symbol conflicts across evaluations
-    std::string unique_func_name = "__repl_eval_" + std::to_string(eval_counter_);
+    std::string unique_func_name = "__repl_eval_" + std::to_string(eval_id);
     entry_func->setName(unique_func_name);
     func_name = unique_func_name;
 
@@ -1765,9 +1861,6 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     if (func_addr == 0) {
         throw std::runtime_error("Failed to find JIT-compiled function: " + func_name);
     }
-
-    // Increment eval counter for next evaluation
-    incrementEvalCounter();
 
     // Cast to function pointer and call it
     // The compiler generates main as i32(i32, char**), so match the ABI

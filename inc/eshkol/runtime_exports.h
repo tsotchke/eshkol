@@ -16,6 +16,9 @@
 namespace eshkol::runtime {
 
 inline constexpr const char* stdout_stream_symbol = "eshkol_stdout_stream";
+inline constexpr const char* stdin_stream_symbol = "eshkol_stdin_stream";
+inline constexpr const char* stderr_stream_symbol = "eshkol_stderr_stream";
+inline constexpr const char* jmp_buf_size_symbol = "eshkol_jmp_buf_size";
 inline constexpr const char* drand48_symbol = "eshkol_drand48";
 inline constexpr const char* srand48_symbol = "eshkol_srand48";
 inline constexpr const char* getenv_symbol = "eshkol_getenv";
@@ -37,6 +40,9 @@ inline constexpr const char* opendir_symbol = "eshkol_opendir";
 extern "C" {
 
 FILE* eshkol_stdout_stream();
+FILE* eshkol_stdin_stream();
+FILE* eshkol_stderr_stream();
+std::uint64_t eshkol_jmp_buf_size();
 double eshkol_drand48();
 void eshkol_srand48(std::int64_t seed);
 char* eshkol_getenv(const char* name);

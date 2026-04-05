@@ -1,6 +1,50 @@
 set(ESHKOL_EXPECTED_LLVM_MAJOR 21)
 
 function(eshkol_find_lite_llvm)
+    if(WIN32)
+        if(NOT LLVM_DIR)
+            set(_llvm_package_hint_dirs "")
+
+            if(DEFINED ENV{LLVM_DIR} AND NOT "$ENV{LLVM_DIR}" STREQUAL "")
+                list(APPEND _llvm_package_hint_dirs "$ENV{LLVM_DIR}")
+            endif()
+            if(DEFINED ENV{LLVM_HOME} AND NOT "$ENV{LLVM_HOME}" STREQUAL "")
+                list(APPEND _llvm_package_hint_dirs "$ENV{LLVM_HOME}")
+            endif()
+
+            file(GLOB _llvm_sdk_hint_dirs LIST_DIRECTORIES TRUE
+                "C:/src/llvm-${ESHKOL_EXPECTED_LLVM_MAJOR}*"
+                "C:/src/clang+llvm-${ESHKOL_EXPECTED_LLVM_MAJOR}*"
+            )
+            list(APPEND _llvm_package_hint_dirs
+                ${_llvm_sdk_hint_dirs}
+                "C:/Program Files/LLVM"
+                "C:/LLVM"
+            )
+
+            foreach(_llvm_hint IN LISTS _llvm_package_hint_dirs)
+                file(TO_CMAKE_PATH "${_llvm_hint}" _llvm_hint_normalized)
+                if(EXISTS "${_llvm_hint_normalized}/LLVMConfig.cmake")
+                    set(LLVM_DIR "${_llvm_hint_normalized}")
+                    break()
+                endif()
+                if(EXISTS "${_llvm_hint_normalized}/lib/cmake/llvm/LLVMConfig.cmake")
+                    set(LLVM_DIR "${_llvm_hint_normalized}/lib/cmake/llvm")
+                    break()
+                endif()
+            endforeach()
+        endif()
+
+        if(NOT LLVM_DIR)
+            message(FATAL_ERROR
+                "LLVM 21 CMake package not found. Install the official LLVM 21 Windows SDK and set LLVM_DIR or LLVM_HOME.")
+        endif()
+
+        set(LLVM_DIR "${LLVM_DIR}" CACHE PATH "Path to the LLVM 21 CMake package" FORCE)
+        set(LLVM_DIR "${LLVM_DIR}" PARENT_SCOPE)
+        return()
+    endif()
+
     if(NOT LLVM_CONFIG_EXECUTABLE)
         set(_llvm_hint_dirs "")
 
@@ -10,10 +54,22 @@ function(eshkol_find_lite_llvm)
                 /usr/local/opt/llvm@21/bin
             )
         elseif(WIN32)
-            if(DEFINED ENV{MSYSTEM_PREFIX} AND NOT "$ENV{MSYSTEM_PREFIX}" STREQUAL "")
-                list(APPEND _llvm_hint_dirs "$ENV{MSYSTEM_PREFIX}/bin")
+            if(DEFINED ENV{LLVM_HOME} AND NOT "$ENV{LLVM_HOME}" STREQUAL "")
+                list(APPEND _llvm_hint_dirs "$ENV{LLVM_HOME}/bin")
             endif()
-            list(APPEND _llvm_hint_dirs C:/msys64/mingw64/bin)
+            if(DEFINED ENV{LLVM_DIR} AND NOT "$ENV{LLVM_DIR}" STREQUAL "")
+                list(APPEND _llvm_hint_dirs "$ENV{LLVM_DIR}/../bin")
+            endif()
+
+            file(GLOB _llvm_sdk_hint_dirs LIST_DIRECTORIES TRUE
+                "C:/src/llvm-${ESHKOL_EXPECTED_LLVM_MAJOR}*/bin"
+                "C:/src/clang+llvm-${ESHKOL_EXPECTED_LLVM_MAJOR}*/bin"
+            )
+            list(APPEND _llvm_hint_dirs
+                ${_llvm_sdk_hint_dirs}
+                C:/Program Files/LLVM/bin
+                C:/LLVM/bin
+            )
         else()
             list(APPEND _llvm_hint_dirs
                 /usr/lib/llvm-21/bin

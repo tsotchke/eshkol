@@ -16,6 +16,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/logger.h>
+#include <eshkol/runtime_exports.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/Config/llvm-config.h>
@@ -8154,6 +8155,13 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
             ctx_.int32Type(), {ctx_.ptrType(), ctx_.ptrType()}, true);
         llvm::FunctionCallee fprintf_fn = ctx_.module().getOrInsertFunction("fprintf", fprintf_type);
 
+        // Get stderr via platform-safe runtime wrapper on Windows.
+#ifdef _WIN32
+        llvm::FunctionType* stream_type = llvm::FunctionType::get(ctx_.ptrType(), {}, false);
+        llvm::FunctionCallee stderr_fn = ctx_.module().getOrInsertFunction(
+            runtime::stderr_stream_symbol, stream_type);
+        llvm::Value* stderr_val = ctx_.builder().CreateCall(stderr_fn, {});
+#else
         // Get stderr via platform-appropriate global name
 #ifdef __APPLE__
         const char* stderr_name = "__stderrp";
@@ -8166,6 +8174,7 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
                 llvm::GlobalValue::ExternalLinkage, nullptr, stderr_name);
         }
         llvm::Value* stderr_val = ctx_.builder().CreateLoad(ctx_.ptrType(), stderr_var);
+#endif
 
         llvm::Value* fmt_str = ctx_.builder().CreateGlobalString(
             "Error: Unknown AD node type %d in backward pass — cannot compute gradient\n");

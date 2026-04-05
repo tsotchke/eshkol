@@ -58,7 +58,7 @@ static const char* intern_var_name(const char* name) {
     return g_var_name_pool + offset;
 }
 
-uint64_t eshkol_make_logic_var(const char* name) {
+extern "C" uint64_t eshkol_make_logic_var(const char* name) {
     if (!name) return UINT64_MAX;
 
     /* Lock to protect g_var_names[] array access (find + register must be atomic) */
@@ -86,13 +86,13 @@ uint64_t eshkol_make_logic_var(const char* name) {
     return id;
 }
 
-const char* eshkol_logic_var_name(uint64_t var_id) {
+extern "C" const char* eshkol_logic_var_name(uint64_t var_id) {
     if (var_id >= g_var_count) return NULL;
     std::lock_guard<std::mutex> lock(g_var_mutex);
     return g_var_names[var_id];
 }
 
-bool eshkol_is_logic_var(const eshkol_tagged_value_t* tv) {
+extern "C" bool eshkol_is_logic_var(const eshkol_tagged_value_t* tv) {
     if (!tv) return false;
     return tv->type == ESHKOL_VALUE_LOGIC_VAR;
 }
@@ -140,13 +140,13 @@ static eshkol_knowledge_base_t* alloc_kb(arena_t* arena) {
 
 /* ===== Substitution ===== */
 
-eshkol_substitution_t* eshkol_make_substitution(arena_t* arena, uint32_t capacity) {
+extern "C" eshkol_substitution_t* eshkol_make_substitution(arena_t* arena, uint32_t capacity) {
     if (!arena) return NULL;
     if (capacity == 0) capacity = 8; /* default initial capacity */
     return alloc_substitution(arena, capacity);
 }
 
-eshkol_substitution_t* eshkol_extend_subst(arena_t* arena,
+extern "C" eshkol_substitution_t* eshkol_extend_subst(arena_t* arena,
     const eshkol_substitution_t* s, uint64_t var_id,
     const eshkol_tagged_value_t* term) {
     if (!arena || !term) return NULL;
@@ -185,7 +185,7 @@ eshkol_substitution_t* eshkol_extend_subst(arena_t* arena,
     return new_s;
 }
 
-const eshkol_tagged_value_t* eshkol_subst_lookup(
+extern "C" const eshkol_tagged_value_t* eshkol_subst_lookup(
     const eshkol_substitution_t* s, uint64_t var_id) {
     if (!s) return NULL;
     const uint64_t* ids = SUBST_VAR_IDS(s);
@@ -200,7 +200,7 @@ const eshkol_tagged_value_t* eshkol_subst_lookup(
 
 /* ===== Walk ===== */
 
-eshkol_tagged_value_t eshkol_walk(const eshkol_tagged_value_t* term,
+extern "C" eshkol_tagged_value_t eshkol_walk(const eshkol_tagged_value_t* term,
     const eshkol_substitution_t* subst) {
     if (!term) {
         eshkol_tagged_value_t null_val;
@@ -268,7 +268,7 @@ static eshkol_tagged_value_t walk_deep_impl(arena_t* arena,
     return walked;
 }
 
-eshkol_tagged_value_t eshkol_walk_deep(arena_t* arena,
+extern "C" eshkol_tagged_value_t eshkol_walk_deep(arena_t* arena,
     const eshkol_tagged_value_t* term, const eshkol_substitution_t* subst) {
     return walk_deep_impl(arena, term, subst, 0);
 }
@@ -336,7 +336,7 @@ static bool tagged_values_equal(const eshkol_tagged_value_t* a,
 
 /* ===== Unification ===== */
 
-eshkol_substitution_t* eshkol_unify(arena_t* arena,
+extern "C" eshkol_substitution_t* eshkol_unify(arena_t* arena,
     const eshkol_tagged_value_t* t1, const eshkol_tagged_value_t* t2,
     const eshkol_substitution_t* subst) {
     if (!arena || !t1 || !t2) return NULL;
@@ -400,7 +400,7 @@ eshkol_substitution_t* eshkol_unify(arena_t* arena,
 
 /* ===== Facts ===== */
 
-eshkol_fact_t* eshkol_make_fact(arena_t* arena, uint64_t predicate,
+extern "C" eshkol_fact_t* eshkol_make_fact(arena_t* arena, uint64_t predicate,
     const eshkol_tagged_value_t* args, uint32_t arity) {
     if (!arena) return NULL;
 
@@ -420,7 +420,7 @@ eshkol_fact_t* eshkol_make_fact(arena_t* arena, uint64_t predicate,
 
 #define KB_INITIAL_CAPACITY 16
 
-eshkol_knowledge_base_t* eshkol_make_kb(arena_t* arena) {
+extern "C" eshkol_knowledge_base_t* eshkol_make_kb(arena_t* arena) {
     if (!arena) return NULL;
 
     eshkol_knowledge_base_t* kb = alloc_kb(arena);
@@ -439,7 +439,7 @@ eshkol_knowledge_base_t* eshkol_make_kb(arena_t* arena) {
     return kb;
 }
 
-void eshkol_kb_assert(arena_t* arena, eshkol_knowledge_base_t* kb,
+extern "C" void eshkol_kb_assert(arena_t* arena, eshkol_knowledge_base_t* kb,
     const eshkol_fact_t* fact) {
     if (!arena || !kb || !fact) return;
 
@@ -457,7 +457,7 @@ void eshkol_kb_assert(arena_t* arena, eshkol_knowledge_base_t* kb,
     kb->facts[kb->num_facts++] = (eshkol_fact_t*)fact;
 }
 
-eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
+extern "C" eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
     const eshkol_knowledge_base_t* kb, const eshkol_fact_t* pattern,
     const eshkol_substitution_t* initial_subst) {
     eshkol_tagged_value_t null_val;
@@ -534,7 +534,7 @@ eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
 
 /* ===== Tagged Value Dispatch ===== */
 
-void eshkol_unify_tagged(arena_t* arena,
+extern "C" void eshkol_unify_tagged(arena_t* arena,
     const eshkol_tagged_value_t* t1, const eshkol_tagged_value_t* t2,
     const eshkol_tagged_value_t* subst_tv, eshkol_tagged_value_t* result) {
     if (!result) return;
@@ -555,7 +555,7 @@ void eshkol_unify_tagged(arena_t* arena,
     }
 }
 
-void eshkol_walk_tagged(
+extern "C" void eshkol_walk_tagged(
     const eshkol_tagged_value_t* term, const eshkol_tagged_value_t* subst_tv,
     eshkol_tagged_value_t* result) {
     if (!result) return;
@@ -569,7 +569,7 @@ void eshkol_walk_tagged(
     *result = eshkol_walk(term, subst);
 }
 
-void eshkol_make_fact_tagged(arena_t* arena,
+extern "C" void eshkol_make_fact_tagged(arena_t* arena,
     const eshkol_tagged_value_t* pred, const eshkol_tagged_value_t* args,
     int32_t arity, eshkol_tagged_value_t* result) {
     if (!result) return;
@@ -597,7 +597,7 @@ void eshkol_make_fact_tagged(arena_t* arena,
     }
 }
 
-void eshkol_make_kb_tagged(arena_t* arena, eshkol_tagged_value_t* result) {
+extern "C" void eshkol_make_kb_tagged(arena_t* arena, eshkol_tagged_value_t* result) {
     if (!result) return;
     memset(result, 0, sizeof(*result));
 
@@ -610,7 +610,7 @@ void eshkol_make_kb_tagged(arena_t* arena, eshkol_tagged_value_t* result) {
     }
 }
 
-void eshkol_kb_assert_tagged(arena_t* arena,
+extern "C" void eshkol_kb_assert_tagged(arena_t* arena,
     const eshkol_tagged_value_t* kb_tv, const eshkol_tagged_value_t* fact_tv) {
     if (!arena || !kb_tv || !fact_tv) return;
     if (kb_tv->type != ESHKOL_VALUE_HEAP_PTR || !kb_tv->data.ptr_val) return;
@@ -622,7 +622,7 @@ void eshkol_kb_assert_tagged(arena_t* arena,
     eshkol_kb_assert(arena, kb, fact);
 }
 
-void eshkol_kb_query_tagged(arena_t* arena,
+extern "C" void eshkol_kb_query_tagged(arena_t* arena,
     const eshkol_tagged_value_t* kb_tv, const eshkol_tagged_value_t* pattern_tv,
     eshkol_tagged_value_t* result) {
     if (!result) return;
@@ -647,7 +647,7 @@ void eshkol_kb_query_tagged(arena_t* arena,
     *result = eshkol_kb_query(arena, kb, pattern, NULL);
 }
 
-void eshkol_make_substitution_tagged(arena_t* arena,
+extern "C" void eshkol_make_substitution_tagged(arena_t* arena,
     eshkol_tagged_value_t* result) {
     if (!result) return;
     memset(result, 0, sizeof(*result));
@@ -663,7 +663,7 @@ void eshkol_make_substitution_tagged(arena_t* arena,
 
 /* ===== Display ===== */
 
-void eshkol_display_logic_var(uint64_t var_id, void* file) {
+extern "C" void eshkol_display_logic_var(uint64_t var_id, void* file) {
     FILE* f = file ? (FILE*)file : stdout;
     const char* name = eshkol_logic_var_name(var_id);
     if (name) {
@@ -677,7 +677,7 @@ void eshkol_display_logic_var(uint64_t var_id, void* file) {
 extern "C" void eshkol_display_value_opts(const eshkol_tagged_value_t* value,
                                            eshkol_display_opts_t* opts);
 
-void eshkol_display_substitution(const eshkol_substitution_t* s, void* file) {
+extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void* file) {
     FILE* f = file ? (FILE*)file : stdout;
     if (!s) {
         fprintf(f, "{}");
@@ -737,7 +737,7 @@ void eshkol_display_substitution(const eshkol_substitution_t* s, void* file) {
     fprintf(f, "}");
 }
 
-void eshkol_display_fact(const eshkol_fact_t* fact, void* file) {
+extern "C" void eshkol_display_fact(const eshkol_fact_t* fact, void* file) {
     FILE* f = file ? (FILE*)file : stdout;
     if (!fact) {
         fprintf(f, "(fact)");
@@ -795,7 +795,7 @@ void eshkol_display_fact(const eshkol_fact_t* fact, void* file) {
     fprintf(f, ")");
 }
 
-void eshkol_display_kb(const eshkol_knowledge_base_t* kb, void* file) {
+extern "C" void eshkol_display_kb(const eshkol_knowledge_base_t* kb, void* file) {
     FILE* f = file ? (FILE*)file : stdout;
     if (!kb) {
         fprintf(f, "#<knowledge-base: empty>");

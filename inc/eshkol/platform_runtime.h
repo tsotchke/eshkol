@@ -29,6 +29,7 @@ std::string cxx_compiler();
 std::string llc_executable();
 std::string executable_suffix();
 std::string static_library_name(std::string_view stem);
+std::vector<std::string> host_runtime_link_args();
 std::filesystem::path with_executable_suffix(const std::filesystem::path& path);
 std::string shell_quote(std::string_view argument);
 int run_command(const std::vector<std::string>& arguments);

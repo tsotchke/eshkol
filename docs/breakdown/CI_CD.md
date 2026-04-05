@@ -26,7 +26,7 @@ Eshkol uses three GitHub Actions workflows for continuous integration, release p
 
 ### Build Matrix
 
-The CI runs across four platform configurations:
+The CI runs across five platform configurations:
 
 | Job | Runner | Architecture | Build Types |
 |-----|--------|-------------|-------------|
@@ -34,6 +34,7 @@ The CI runs across four platform configurations:
 | `build-linux-arm64` | `ubuntu-22.04-arm` | ARM64 | Release |
 | `build-macos-arm` | `macos-14` | Apple Silicon (ARM64) | Release |
 | `build-macos-intel` | `macos-15-large` | Intel (x86-64) | Release |
+| `build-windows` | `windows-2022` | x86-64 | Release |
 
 The Linux x86-64 job tests both Debug and Release configurations. All other platforms test Release only.
 
@@ -41,11 +42,12 @@ The Linux x86-64 job tests both Debug and Release configurations. All other plat
 
 1. **Checkout** the repository
 2. **Install dependencies:**
-   - Linux: LLVM 17 from apt.llvm.org, CMake, Ninja, readline, pkg-config
-   - macOS: LLVM 17, CMake, Ninja, readline via Homebrew
-3. **Configure** with CMake and Ninja generator
+   - Linux: LLVM 21 from apt.llvm.org, CMake, Ninja, readline, pkg-config
+   - macOS: LLVM 21, CMake, Ninja, readline via Homebrew
+   - Windows: Visual Studio 2022 + ClangCL, official LLVM 21 SDK archive, native CMake
+3. **Configure** with CMake (Ninja on Linux/macOS, Visual Studio generator on Windows)
 4. **Build** in parallel
-5. **Run all tests** via `./scripts/run_all_tests.sh`
+5. **Run all tests** via `./scripts/run_all_tests.sh` on Linux/macOS and native smoke checks on Windows
 6. **Upload artifacts** (Release builds only): `eshkol-run`, `eshkol-repl`, `stdlib.o`
 
 ### Artifacts
@@ -58,6 +60,7 @@ Release builds upload platform-specific artifacts:
 | `eshkol-linux-arm64` | Linux ARM64 binaries |
 | `eshkol-macos-arm64` | macOS Apple Silicon binaries |
 | `eshkol-macos-x64` | macOS Intel binaries |
+| `eshkol-windows-x64` | Windows x86-64 binaries |
 
 ---
 
@@ -152,14 +155,14 @@ All CI and release jobs share the same dependency set:
 
 | Dependency | Version | Purpose |
 |------------|---------|---------|
-| LLVM | 17 | Compiler backend and JIT |
+| LLVM | 21 | Compiler backend and JIT |
 | CMake | 3.14+ | Build system |
 | Ninja | latest | Build generator |
 | readline | latest | REPL line editing |
 | pkg-config | latest | Library discovery |
 | OpenBLAS | latest | Linear algebra (Linux Docker builds) |
 
-On macOS, LLVM 17 is installed via Homebrew (`brew install llvm@17`). On Linux, LLVM 17 is installed from the official LLVM apt repository at `apt.llvm.org`.
+On macOS, LLVM 21 is installed via Homebrew (`brew install llvm@21`). On Linux, LLVM 21 is installed from the official LLVM apt repository at `apt.llvm.org`. On Windows, the CI downloads the official LLVM 21 SDK archive and points `LLVM_DIR` at its CMake package.
 
 ---
 
@@ -169,7 +172,7 @@ When adding a new CI job:
 
 1. Place the workflow in `.github/workflows/`
 2. Use `ubuntu-22.04` or `macos-14` runners for consistency
-3. Follow the existing LLVM 17 installation pattern
+3. Follow the existing LLVM 21 installation pattern and prefer explicit `LLVM_CONFIG_EXECUTABLE` or `LLVM_DIR`
 4. Run tests via `./scripts/run_all_tests.sh`
 5. Upload artifacts with `actions/upload-artifact@v4`
 
