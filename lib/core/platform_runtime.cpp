@@ -15,8 +15,10 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <setjmp.h>
 #include <mutex>
 #include <random>
+#include <sstream>
 #include <thread>
 #include <system_error>
 
@@ -24,16 +26,11 @@
 #include <Windows.h>
 #include <direct.h>
 #include <io.h>
-#include <process.h>
+#include <sys/stat.h>
 #else
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#endif
-
-#ifdef _WIN32
-#include <dirent.h>
-#include <sys/stat.h>
 #endif
 
 #ifdef __APPLE__
@@ -51,6 +48,22 @@ constexpr std::uint64_t kDrand48Mask = (1ULL << 48) - 1;
 std::mutex g_drand48_mutex;
 std::uint64_t g_drand48_state = 0x1234ABCD330EULL;
 
+#ifdef _WIN32
+struct windows_dirent_shim {
+    unsigned char reserved[21];
+    char d_name[MAX_PATH];
+};
+
+static_assert(offsetof(windows_dirent_shim, d_name) == 21);
+
+struct windows_dir_handle {
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    WIN32_FIND_DATAA find_data{};
+    bool first_entry = true;
+    windows_dirent_shim entry{};
+};
+#endif
+
 std::filesystem::path canonical_if_exists(const std::filesystem::path& path) {
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
@@ -63,6 +76,88 @@ std::filesystem::path canonical_if_exists(const std::filesystem::path& path) {
     }
     return canonical;
 }
+
+#ifdef _WIN32
+std::wstring widen_utf8(std::string_view value) {
+    if (value.empty()) {
+        return {};
+    }
+
+    const auto* bytes = value.data();
+    const int size = static_cast<int>(value.size());
+
+    int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes, size, nullptr, 0);
+    if (required <= 0) {
+        required = MultiByteToWideChar(CP_ACP, 0, bytes, size, nullptr, 0);
+        if (required <= 0) {
+            return {};
+        }
+
+        std::wstring wide(required, L'\0');
+        if (MultiByteToWideChar(CP_ACP, 0, bytes, size, wide.data(), required) <= 0) {
+            return {};
+        }
+        return wide;
+    }
+
+    std::wstring wide(required, L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes, size, wide.data(), required) <= 0) {
+        return {};
+    }
+    return wide;
+}
+
+std::wstring quote_windows_argument(std::string_view argument) {
+    const auto wide = widen_utf8(argument);
+    if (wide.empty()) {
+        return L"\"\"";
+    }
+
+    if (wide.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+        return wide;
+    }
+
+    std::wstring quoted;
+    quoted.reserve(wide.size() + 2);
+    quoted.push_back(L'"');
+
+    std::size_t backslash_count = 0;
+    for (wchar_t ch : wide) {
+        if (ch == L'\\') {
+            ++backslash_count;
+            continue;
+        }
+
+        if (ch == L'"') {
+            quoted.append(backslash_count * 2 + 1, L'\\');
+            quoted.push_back(L'"');
+            backslash_count = 0;
+            continue;
+        }
+
+        quoted.append(backslash_count, L'\\');
+        backslash_count = 0;
+        quoted.push_back(ch);
+    }
+
+    quoted.append(backslash_count * 2, L'\\');
+    quoted.push_back(L'"');
+    return quoted;
+}
+
+std::wstring build_windows_command_line(const std::vector<std::string>& arguments) {
+    std::wstring command_line;
+    bool first = true;
+    for (const auto& argument : arguments) {
+        if (!first) {
+            command_line.push_back(L' ');
+        }
+        first = false;
+        command_line += quote_windows_argument(argument);
+    }
+    return command_line;
+}
+#endif
 
 } // namespace
 
@@ -221,7 +316,18 @@ std::filesystem::path make_temp_path(std::string_view stem, std::string_view ext
 }
 
 std::string cxx_compiler() {
+#ifdef _WIN32
+    std::string compiler = ESHKOL_HOST_CXX_COMPILER;
+    if (compiler.size() >= 3 &&
+        std::isalpha(static_cast<unsigned char>(compiler[0])) &&
+        compiler[1] == ':' &&
+        compiler[2] == '/') {
+        std::replace(compiler.begin(), compiler.end(), '/', '\\');
+    }
+    return compiler;
+#else
     return ESHKOL_HOST_CXX_COMPILER;
+#endif
 }
 
 std::string llc_executable() {
@@ -236,6 +342,28 @@ std::string static_library_name(std::string_view stem) {
     return std::string(ESHKOL_HOST_STATIC_LIBRARY_PREFIX) +
            std::string(stem) +
            std::string(ESHKOL_HOST_STATIC_LIBRARY_SUFFIX);
+}
+
+std::vector<std::string> host_runtime_link_args() {
+    std::vector<std::string> args;
+    std::stringstream stream(ESHKOL_HOST_RUNTIME_LINK_ARGS);
+    std::string item;
+
+    while (std::getline(stream, item, ';')) {
+        if (!item.empty()) {
+#ifdef _WIN32
+            if (item.size() >= 3 &&
+                std::isalpha(static_cast<unsigned char>(item[0])) &&
+                item[1] == ':' &&
+                item[2] == '/') {
+                std::replace(item.begin(), item.end(), '/', '\\');
+            }
+#endif
+            args.push_back(item);
+        }
+    }
+
+    return args;
 }
 
 std::filesystem::path with_executable_suffix(const std::filesystem::path& path) {
@@ -288,18 +416,46 @@ int run_command(const std::vector<std::string>& arguments) {
     }
 
 #ifdef _WIN32
-    std::vector<const char*> argv;
-    argv.reserve(arguments.size() + 1);
-    for (const auto& argument : arguments) {
-        argv.push_back(argument.c_str());
+    const auto application = widen_utf8(arguments.front());
+    if (application.empty()) {
+        return ERROR_INVALID_PARAMETER;
     }
-    argv.push_back(nullptr);
 
-    int result = _spawnv(_P_WAIT, arguments.front().c_str(), argv.data());
-    if (result == -1) {
-        return errno == 0 ? -1 : errno;
+    auto command_line = build_windows_command_line(arguments);
+    if (command_line.empty()) {
+        return ERROR_INVALID_PARAMETER;
     }
-    return result;
+
+    std::vector<wchar_t> mutable_command_line(command_line.begin(), command_line.end());
+    mutable_command_line.push_back(L'\0');
+
+    STARTUPINFOW startup_info{};
+    startup_info.cb = sizeof(startup_info);
+
+    PROCESS_INFORMATION process_info{};
+    if (!CreateProcessW(application.c_str(),
+                        mutable_command_line.data(),
+                        nullptr,
+                        nullptr,
+                        FALSE,
+                        0,
+                        nullptr,
+                        nullptr,
+                        &startup_info,
+                        &process_info)) {
+        return static_cast<int>(GetLastError());
+    }
+
+    WaitForSingleObject(process_info.hProcess, INFINITE);
+
+    DWORD exit_code = 0;
+    if (!GetExitCodeProcess(process_info.hProcess, &exit_code)) {
+        exit_code = GetLastError();
+    }
+
+    CloseHandle(process_info.hThread);
+    CloseHandle(process_info.hProcess);
+    return static_cast<int>(exit_code);
 #else
     std::string command;
     for (const auto& argument : arguments) {
@@ -383,6 +539,109 @@ std::filesystem::path normalize_runtime_path(std::string_view raw_path) {
 extern "C" FILE* eshkol_stdout_stream() {
     return stdout;
 }
+
+extern "C" FILE* eshkol_stdin_stream() {
+    return stdin;
+}
+
+extern "C" FILE* eshkol_stderr_stream() {
+    return stderr;
+}
+
+extern "C" std::uint64_t eshkol_jmp_buf_size() {
+    return sizeof(jmp_buf);
+}
+
+#ifdef _WIN32
+extern "C" double drand48() {
+    return eshkol_drand48();
+}
+
+extern "C" long lrand48() {
+    std::lock_guard<std::mutex> lock(eshkol::platform::g_drand48_mutex);
+    eshkol::platform::g_drand48_state =
+        (eshkol::platform::g_drand48_state * eshkol::platform::kDrand48Multiplier +
+         eshkol::platform::kDrand48Addend) &
+        eshkol::platform::kDrand48Mask;
+    return static_cast<long>((eshkol::platform::g_drand48_state >> 17) & 0x7fffffffULL);
+}
+
+extern "C" void srand48(std::int64_t seed) {
+    eshkol_srand48(seed);
+}
+
+extern "C" int setenv(const char* name, const char* value, int overwrite) {
+    return eshkol_setenv(name, value, overwrite);
+}
+
+extern "C" int unsetenv(const char* name) {
+    return eshkol_unsetenv(name);
+}
+
+extern "C" int clock_gettime(int clock_id, void* ts_raw) {
+    (void)clock_id;
+    if (ts_raw == nullptr) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    struct timespec_shim {
+        std::int64_t tv_sec;
+        std::int64_t tv_nsec;
+    };
+
+    FILETIME file_time{};
+    if (&GetSystemTimePreciseAsFileTime != nullptr) {
+        GetSystemTimePreciseAsFileTime(&file_time);
+    } else {
+        GetSystemTimeAsFileTime(&file_time);
+    }
+
+    ULARGE_INTEGER value{};
+    value.LowPart = file_time.dwLowDateTime;
+    value.HighPart = file_time.dwHighDateTime;
+
+    constexpr std::uint64_t kUnixEpoch100ns = 116444736000000000ULL;
+    const std::uint64_t unix_100ns = value.QuadPart - kUnixEpoch100ns;
+
+    auto* ts = static_cast<timespec_shim*>(ts_raw);
+    ts->tv_sec = static_cast<std::int64_t>(unix_100ns / 10000000ULL);
+    ts->tv_nsec = static_cast<std::int64_t>((unix_100ns % 10000000ULL) * 100ULL);
+    return 0;
+}
+
+extern "C" int gettimeofday(void* tv_raw, void* tz_raw) {
+    (void)tz_raw;
+    if (tv_raw == nullptr) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    struct timeval_shim {
+        std::int64_t tv_sec;
+        std::int64_t tv_usec;
+    };
+
+    FILETIME file_time{};
+    if (&GetSystemTimePreciseAsFileTime != nullptr) {
+        GetSystemTimePreciseAsFileTime(&file_time);
+    } else {
+        GetSystemTimeAsFileTime(&file_time);
+    }
+
+    ULARGE_INTEGER value{};
+    value.LowPart = file_time.dwLowDateTime;
+    value.HighPart = file_time.dwHighDateTime;
+
+    constexpr std::uint64_t kUnixEpoch100ns = 116444736000000000ULL;
+    const std::uint64_t unix_100ns = value.QuadPart - kUnixEpoch100ns;
+
+    auto* tv = static_cast<timeval_shim*>(tv_raw);
+    tv->tv_sec = static_cast<std::int64_t>(unix_100ns / 10000000ULL);
+    tv->tv_usec = static_cast<std::int64_t>((unix_100ns % 10000000ULL) / 10ULL);
+    return 0;
+}
+#endif
 
 extern "C" void eshkol_srand48(std::int64_t seed) {
     std::lock_guard<std::mutex> lock(eshkol::platform::g_drand48_mutex);
@@ -547,5 +806,64 @@ extern "C" void* eshkol_opendir(const char* path) {
     }
 
     const auto normalized = normalize_runtime_path(path);
+#ifdef _WIN32
+    auto search_path = normalized;
+    search_path /= "*";
+
+    auto* dir = new eshkol::platform::windows_dir_handle();
+    dir->handle = ::FindFirstFileA(search_path.string().c_str(), &dir->find_data);
+    if (dir->handle == INVALID_HANDLE_VALUE) {
+        delete dir;
+        errno = ENOENT;
+        return nullptr;
+    }
+    dir->first_entry = true;
+    return dir;
+#else
     return ::opendir(normalized.string().c_str());
+#endif
 }
+
+#ifdef _WIN32
+extern "C" void* opendir(const char* path) {
+    return eshkol_opendir(path);
+}
+
+extern "C" void* readdir(void* dir_raw) {
+    if (dir_raw == nullptr) {
+        errno = EINVAL;
+        return nullptr;
+    }
+
+    auto* dir = static_cast<eshkol::platform::windows_dir_handle*>(dir_raw);
+    const WIN32_FIND_DATAA* data = nullptr;
+
+    if (dir->first_entry) {
+        dir->first_entry = false;
+        data = &dir->find_data;
+    } else {
+        if (!::FindNextFileA(dir->handle, &dir->find_data)) {
+            return nullptr;
+        }
+        data = &dir->find_data;
+    }
+
+    dir->entry = {};
+    std::snprintf(dir->entry.d_name, sizeof(dir->entry.d_name), "%s", data->cFileName);
+    return &dir->entry;
+}
+
+extern "C" int closedir(void* dir_raw) {
+    if (dir_raw == nullptr) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    auto* dir = static_cast<eshkol::platform::windows_dir_handle*>(dir_raw);
+    if (dir->handle != INVALID_HANDLE_VALUE) {
+        ::FindClose(dir->handle);
+    }
+    delete dir;
+    return 0;
+}
+#endif

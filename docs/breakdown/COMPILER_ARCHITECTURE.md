@@ -674,7 +674,7 @@ Eshkol uses CMake (minimum 3.14) with C17/C++20 standards.
 
 The build system supports two LLVM integration modes:
 
-**Lite Build (default):** Uses system `llvm-config` to discover LLVM headers, libraries, and flags. Requires LLVM 17.
+**Lite Build (default):** Uses the system LLVM 21 toolchain on macOS/Linux and the LLVM 21 CMake package on native Windows.
 
 **XLA Build:** Set `STABLEHLO_ROOT` to use StableHLO's bundled LLVM/MLIR. Enables full XLA backend with StableHLO dialect support for tensor compilation via MLIR.
 

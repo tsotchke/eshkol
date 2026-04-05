@@ -24,6 +24,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdatomic.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 /* ── Task ── */
 
@@ -122,7 +125,13 @@ static void* vm_pool_worker(void* arg) {
 static VmThreadPool* vm_pool_init(int n_threads) {
     if (n_threads <= 0) {
         /* Auto-detect: number of CPUs, clamped to [1, 64] */
+#ifdef _WIN32
+        SYSTEM_INFO sysinfo;
+        GetSystemInfo(&sysinfo);
+        long n = (long)sysinfo.dwNumberOfProcessors;
+#else
         long n = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
         if (n <= 0) n = 1;
         if (n > 64) n = 64;
         n_threads = (int)n;

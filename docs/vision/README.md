@@ -25,7 +25,7 @@ Eshkol is a **production-ready Scheme dialect** with a sophisticated LLVM-based 
 
 **Production Compiler:**
 - C/C++ implementation
-- LLVM 17 backend with 21 specialized codegen modules
+- LLVM 21 backend with 21 specialized codegen modules
 - Parser with HoTT type expression support
 - Bidirectional type checker
 - Arena memory runtime

@@ -83,29 +83,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add LLVM 17 Repository (Linux)
+      - name: Add LLVM 21 Repository (Linux)
         if: runner.os == 'Linux'
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
 
       - name: Install Dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev pkg-config libssl-dev libncurses-dev
-          sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
+          sudo apt-get install -y cmake ninja-build llvm-21 llvm-21-dev libreadline-dev pkg-config libssl-dev libncurses-dev
 
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install llvm@17 cmake ninja readline
+        run: brew install llvm@21 cmake ninja readline
 
       - name: Build
         run: |
           if [[ "$RUNNER_OS" == "macOS" ]]; then
-            export PATH="/opt/homebrew/opt/llvm@17/bin:/usr/local/opt/llvm@17/bin:$PATH"
+            LLVM_PREFIX="$(brew --prefix llvm@21)"
+            export PATH="$LLVM_PREFIX/bin:$PATH"
+            LLVM_FLAG="-DLLVM_CONFIG_EXECUTABLE=$LLVM_PREFIX/bin/llvm-config"
+          else
+            LLVM_FLAG="-DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-21"
           fi
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "$LLVM_FLAG"
           cmake --build build --parallel
 
       - name: Run Tests
@@ -140,20 +143,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add LLVM 17 Repository
+      - name: Add LLVM 21 Repository
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
 
       - name: Install Dependencies
         run: |
-          sudo apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev dpkg-dev pkg-config libssl-dev libncurses-dev
-          sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
+          sudo apt-get install -y cmake ninja-build llvm-21 llvm-21-dev libreadline-dev dpkg-dev pkg-config libssl-dev libncurses-dev
 
       - name: Build
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-21
           cmake --build build --parallel
 
       - name: Build Debian Package
@@ -177,20 +179,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add LLVM 17 Repository
+      - name: Add LLVM 21 Repository
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
 
       - name: Install Dependencies
         run: |
-          sudo apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev dpkg-dev pkg-config libssl-dev libncurses-dev
-          sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
+          sudo apt-get install -y cmake ninja-build llvm-21 llvm-21-dev libreadline-dev dpkg-dev pkg-config libssl-dev libncurses-dev
 
       - name: Build
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-21
           cmake --build build --parallel
 
       - name: Build Debian Package

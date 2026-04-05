@@ -17,14 +17,13 @@
 #ifndef ESHKOL_CORE_LOGIC_H
 #define ESHKOL_CORE_LOGIC_H
 
+#include <eshkol/eshkol.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
 
 /* Forward declarations */
 typedef struct arena arena_t;
-struct eshkol_tagged_value;
-typedef struct eshkol_tagged_value eshkol_tagged_value_t;
 
 /* Maximum number of logic variables (sufficient for v1.1) */
 #define LOGIC_VAR_MAX 65536
