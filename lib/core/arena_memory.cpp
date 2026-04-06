@@ -3901,17 +3901,47 @@ static eshkol_tagged_value_t call_thunk_closure(eshkol_closure_t* closure) {
         num_captures = CLOSURE_ENV_GET_NUM_CAPTURES(closure->env->num_captures);
     }
 
-    // Generated lambdas returning eshkol_tagged_value_t use an ABI return buffer
-    // on Linux/Windows, so the runtime thunk bridge must pass the result slot first.
+    eshkol_tagged_value_t result;
+    memset(&result, 0, sizeof(result));
+    result.type = ESHKOL_VALUE_NULL;
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+    // AArch64 returns this 16-byte aggregate in registers, so the thunk bridge
+    // must match the direct return ABI instead of passing a hidden result slot.
+    typedef eshkol_tagged_value_t (*fn0_t)(void);
+    typedef eshkol_tagged_value_t (*fn1_t)(void*);
+    typedef eshkol_tagged_value_t (*fn2_t)(void*, void*);
+    typedef eshkol_tagged_value_t (*fn3_t)(void*, void*, void*);
+    typedef eshkol_tagged_value_t (*fn4_t)(void*, void*, void*, void*);
+
+    switch (num_captures) {
+        case 0:
+            result = ((fn0_t)(uintptr_t)closure->func_ptr)();
+            break;
+        case 1:
+            result = ((fn1_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0]);
+            break;
+        case 2:
+            result = ((fn2_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1]);
+            break;
+        case 3:
+            result = ((fn3_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2]);
+            break;
+        case 4:
+            result = ((fn4_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2], &closure->env->captures[3]);
+            break;
+        default:
+            result = ((fn0_t)(uintptr_t)closure->func_ptr)();
+            break;
+    }
+#else
+    // The currently-supported x86/Windows thunk ABI uses a hidden return buffer,
+    // so the runtime bridge must pass the result slot first.
     typedef void (*fn0_t)(eshkol_tagged_value_t*);
     typedef void (*fn1_t)(eshkol_tagged_value_t*, void*);
     typedef void (*fn2_t)(eshkol_tagged_value_t*, void*, void*);
     typedef void (*fn3_t)(eshkol_tagged_value_t*, void*, void*, void*);
     typedef void (*fn4_t)(eshkol_tagged_value_t*, void*, void*, void*, void*);
-
-    eshkol_tagged_value_t result;
-    memset(&result, 0, sizeof(result));
-    result.type = ESHKOL_VALUE_NULL;
 
     switch (num_captures) {
         case 0:
@@ -3933,6 +3963,7 @@ static eshkol_tagged_value_t call_thunk_closure(eshkol_closure_t* closure) {
             ((fn0_t)(uintptr_t)closure->func_ptr)(&result);
             break;
     }
+#endif
 
     return result;
 }
