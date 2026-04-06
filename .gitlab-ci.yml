@@ -6,10 +6,6 @@ variables:
   GIT_SUBMODULE_STRATEGY: recursive
   ESHKOL_REQUIRED_LLVM_MAJOR: "21"
 
-# =============================================================================
-# Hidden job templates (prefixed with . so they don't run directly)
-# =============================================================================
-
 .linux-base:
   image: ubuntu:22.04
   before_script:
@@ -18,7 +14,7 @@ variables:
     - wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
     - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${ESHKOL_REQUIRED_LLVM_MAJOR} main" | tee /etc/apt/sources.list.d/llvm.list
     - apt-get update
-    - apt-get install -y cmake ninja-build llvm-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}-dev libreadline-dev pkg-config build-essential libssl-dev libncurses-dev
+    - apt-get install -y cmake ninja-build llvm-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}-dev libreadline-dev pkg-config build-essential libssl-dev libncurses-dev git python3
     - ln -sf /usr/bin/llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/llvm-config
 
 .linux-test-base:
@@ -30,161 +26,77 @@ variables:
     - wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
     - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${ESHKOL_REQUIRED_LLVM_MAJOR} main" | tee /etc/apt/sources.list.d/llvm.list
     - apt-get update
-    - apt-get install -y llvm-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}-dev clang-${ESHKOL_REQUIRED_LLVM_MAJOR} libreadline-dev build-essential libssl-dev libncurses-dev
+    - apt-get install -y llvm-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}-dev clang-${ESHKOL_REQUIRED_LLVM_MAJOR} libreadline-dev build-essential libssl-dev libncurses-dev git python3
     - ln -sf /usr/bin/llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/llvm-config
     - ln -sf /usr/bin/clang-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/clang
     - ln -sf /usr/bin/clang++-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/clang++
 
-# =============================================================================
-# Build jobs
-# =============================================================================
+.linux-matrix:
+  parallel:
+    matrix:
+      - BUILD_TYPE: "Debug"
+        BACKEND: "lite"
+        BUILD_DIR: "build-lite-debug"
+        XLA_ENABLED: "OFF"
+        GPU_ENABLED: "OFF"
+      - BUILD_TYPE: "Release"
+        BACKEND: "lite"
+        BUILD_DIR: "build-lite-release"
+        XLA_ENABLED: "OFF"
+        GPU_ENABLED: "OFF"
+      - BUILD_TYPE: "Debug"
+        BACKEND: "xla"
+        BUILD_DIR: "build-xla-debug"
+        XLA_ENABLED: "ON"
+        GPU_ENABLED: "OFF"
+      - BUILD_TYPE: "Release"
+        BACKEND: "xla"
+        BUILD_DIR: "build-xla-release"
+        XLA_ENABLED: "ON"
+        GPU_ENABLED: "OFF"
+      - BUILD_TYPE: "Debug"
+        BACKEND: "cuda"
+        BUILD_DIR: "build-cuda-debug"
+        XLA_ENABLED: "OFF"
+        GPU_ENABLED: "ON"
+      - BUILD_TYPE: "Release"
+        BACKEND: "cuda"
+        BUILD_DIR: "build-cuda-release"
+        XLA_ENABLED: "OFF"
+        GPU_ENABLED: "ON"
 
-build-linux-debug:
-  extends: .linux-base
+build-linux:
+  extends:
+    - .linux-base
+    - .linux-matrix
   stage: build
   script:
-    - cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DESHKOL_REQUIRED_LLVM_MAJOR=${ESHKOL_REQUIRED_LLVM_MAJOR}
-    - cmake --build build --parallel
+    - cmake -S . -B "${BUILD_DIR}" -G Ninja -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" -DESHKOL_REQUIRED_LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR}" -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR} -DESHKOL_XLA_ENABLED="${XLA_ENABLED}" -DESHKOL_GPU_ENABLED="${GPU_ENABLED}"
+    - cmake --build "${BUILD_DIR}" --parallel
   artifacts:
     paths:
-      - build/
-    expire_in: 1 hour
-
-build-linux-release:
-  extends: .linux-base
-  stage: build
-  script:
-    - cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=${ESHKOL_REQUIRED_LLVM_MAJOR}
-    - cmake --build build --parallel
-  artifacts:
-    paths:
-      - build/
+      - ${BUILD_DIR}/
     expire_in: 1 week
 
-# =============================================================================
-# Test jobs - Debug build
-# =============================================================================
-
-test-types-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
+test-linux:
+  extends:
+    - .linux-test-base
+    - .linux-matrix
   script:
-    - ./scripts/run_types_tests.sh
-
-test-cpp-types-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_cpp_type_tests.sh
-
-test-list-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_list_tests.sh
-
-test-autodiff-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_autodiff_tests.sh
-
-test-memory-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_memory_tests.sh
-
-test-modules-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_modules_tests.sh
-
-test-stdlib-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_stdlib_tests.sh
-
-test-features-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_features_tests.sh
-
-test-ml-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_ml_tests.sh
-
-test-neural-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_neural_tests.sh
-
-# =============================================================================
-# Test jobs - Release build
-# =============================================================================
-
-test-types-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_types_tests.sh
-
-test-cpp-types-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_cpp_type_tests.sh
-
-test-list-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_list_tests.sh
-
-test-autodiff-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_autodiff_tests.sh
-
-test-memory-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_memory_tests.sh
-
-test-modules-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_modules_tests.sh
-
-test-stdlib-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_stdlib_tests.sh
-
-test-features-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_features_tests.sh
-
-test-ml-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_ml_tests.sh
-
-test-neural-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_neural_tests.sh
+    - |
+      case "${BACKEND}" in
+        lite)
+          ln -sfn "${BUILD_DIR}" build
+          ./scripts/run_all_tests.sh
+          ;;
+        xla)
+          BUILD_DIR="${BUILD_DIR}" ./scripts/run_xla_tests.sh
+          ;;
+        cuda)
+          BUILD_DIR="${BUILD_DIR}" ./scripts/run_gpu_tests.sh
+          ;;
+        *)
+          echo "Unknown backend: ${BACKEND}"
+          exit 1
+          ;;
+      esac
