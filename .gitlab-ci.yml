@@ -3,6 +3,7 @@ stages:
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
+  GIT_LFS_SKIP_SMUDGE: "1"
   ESHKOL_REQUIRED_LLVM_MAJOR: "21"
   WINDOWS_LLVM_SDK_VERSION: "21.1.8"
   HOMEBREW_NO_AUTO_UPDATE: "1"
@@ -83,6 +84,7 @@ variables:
   script:
     - |
       $ErrorActionPreference = 'Stop'
+      Write-Host "=== Windows configure phase ==="
       cmake -S . -B $env:BUILD_DIR `
         -G 'Visual Studio 17 2022' `
         -A x64 `
@@ -93,12 +95,14 @@ variables:
         -DESHKOL_XLA_ENABLED=$env:XLA_ENABLED `
         -DESHKOL_GPU_ENABLED=$env:GPU_ENABLED `
         -DLLVM_DIR="$env:LLVM_DIR"
-
+      Write-Host "=== Windows build phase ==="
       $targets = @('eshkol-run', 'eshkol-repl')
       if ($env:BACKEND -eq 'xla') {
         $targets += 'xla_codegen_test'
       }
-      cmake --build $env:BUILD_DIR --config Release --target @($targets) --parallel
+      Write-Host ("Building targets: {0}" -f ($targets -join ', '))
+      cmake --build $env:BUILD_DIR --config Release --target @($targets) --parallel -- /m /verbosity:normal
+      Write-Host "=== Windows test phase ==="
       & .\scripts\run_all_tests.ps1 -BuildDir ".\$env:BUILD_DIR" -SkipConfigureBuild -Mode $env:TEST_MODE
       if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
