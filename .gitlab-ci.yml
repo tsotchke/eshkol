@@ -4,6 +4,7 @@ stages:
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
+  ESHKOL_REQUIRED_LLVM_MAJOR: "21"
 
 # =============================================================================
 # Hidden job templates (prefixed with . so they don't run directly)
@@ -15,10 +16,10 @@ variables:
     - apt-get update
     - apt-get install -y wget gnupg lsb-release software-properties-common
     - wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-    - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" | tee /etc/apt/sources.list.d/llvm.list
+    - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${ESHKOL_REQUIRED_LLVM_MAJOR} main" | tee /etc/apt/sources.list.d/llvm.list
     - apt-get update
-    - apt-get install -y cmake ninja-build llvm-21 llvm-21-dev libreadline-dev pkg-config build-essential libssl-dev libncurses-dev
-    - ln -sf /usr/bin/llvm-config-21 /usr/bin/llvm-config
+    - apt-get install -y cmake ninja-build llvm-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}-dev libreadline-dev pkg-config build-essential libssl-dev libncurses-dev
+    - ln -sf /usr/bin/llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/llvm-config
 
 .linux-test-base:
   image: ubuntu:22.04
@@ -27,12 +28,12 @@ variables:
     - apt-get update
     - apt-get install -y wget gnupg
     - wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-    - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" | tee /etc/apt/sources.list.d/llvm.list
+    - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${ESHKOL_REQUIRED_LLVM_MAJOR} main" | tee /etc/apt/sources.list.d/llvm.list
     - apt-get update
-    - apt-get install -y llvm-21 llvm-21-dev clang-21 libreadline-dev build-essential libssl-dev libncurses-dev
-    - ln -sf /usr/bin/llvm-config-21 /usr/bin/llvm-config
-    - ln -sf /usr/bin/clang-21 /usr/bin/clang
-    - ln -sf /usr/bin/clang++-21 /usr/bin/clang++
+    - apt-get install -y llvm-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}-dev clang-${ESHKOL_REQUIRED_LLVM_MAJOR} libreadline-dev build-essential libssl-dev libncurses-dev
+    - ln -sf /usr/bin/llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/llvm-config
+    - ln -sf /usr/bin/clang-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/clang
+    - ln -sf /usr/bin/clang++-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/clang++
 
 # =============================================================================
 # Build jobs
@@ -42,7 +43,7 @@ build-linux-debug:
   extends: .linux-base
   stage: build
   script:
-    - cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+    - cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DESHKOL_REQUIRED_LLVM_MAJOR=${ESHKOL_REQUIRED_LLVM_MAJOR}
     - cmake --build build --parallel
   artifacts:
     paths:
@@ -53,7 +54,7 @@ build-linux-release:
   extends: .linux-base
   stage: build
   script:
-    - cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+    - cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=${ESHKOL_REQUIRED_LLVM_MAJOR}
     - cmake --build build --parallel
   artifacts:
     paths:

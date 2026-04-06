@@ -94,7 +94,7 @@ set(ESHKOL_LLVM_ROOT "")
 
 # StableHLO Root (for XLA builds with bundled LLVM/MLIR/StableHLO)
 # Set this to the path where StableHLO was built (e.g., /tmp/stablehlo)
-# When set, uses the bundled LLVM/MLIR instead of the lite/native LLVM 21 toolchain
+# When set, uses the bundled LLVM/MLIR instead of the lite/native system LLVM toolchain
 set(STABLEHLO_ROOT "" CACHE PATH "Path to StableHLO installation with bundled LLVM/MLIR")
 
 # ===== Sanitizers =====
@@ -193,7 +193,7 @@ if(STABLEHLO_ROOT AND EXISTS "${STABLEHLO_ROOT}/llvm-build")
     message(STATUS "StableHLO LLVM Build: ${STABLEHLO_LLVM_BUILD}")
     message(STATUS "StableHLO LLVM Include: ${STABLEHLO_LLVM_BUILD}/include")
 else()
-    # ===== LITE BUILD: Use system LLVM 21 =====
+    # ===== LITE BUILD: Use system LLVM selected by ESHKOL_REQUIRED_LLVM_MAJOR =====
     message(STATUS "=== LITE BUILD MODE: Using system LLVM ===")
     set(USING_STABLEHLO_LLVM FALSE)
 
@@ -227,10 +227,7 @@ else()
         set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING
             "Match the official LLVM Windows SDK runtime linkage" FORCE)
 
-        if(NOT LLVM_VERSION_MAJOR STREQUAL "${ESHKOL_EXPECTED_LLVM_MAJOR}")
-            message(FATAL_ERROR
-                "Expected LLVM ${ESHKOL_EXPECTED_LLVM_MAJOR}, got ${LLVM_PACKAGE_VERSION} from ${LLVM_DIR}")
-        endif()
+        eshkol_validate_llvm_major("${LLVM_PACKAGE_VERSION}" "${LLVM_DIR}")
 
         if(TARGET LLVMDebugInfoPDB)
             file(GLOB _eshkol_dia_sdk_libs LIST_DIRECTORIES FALSE
@@ -385,7 +382,7 @@ if(ESHKOL_XLA_ENABLED)
     # ===== MLIR/StableHLO Detection =====
     # Two modes:
     # 1. STABLEHLO_ROOT set: Use bundled LLVM/MLIR/StableHLO (XLA build)
-    # 2. STABLEHLO_ROOT not set: Try system LLVM 21 (Lite build fallback)
+    # 2. STABLEHLO_ROOT not set: Try the configured system LLVM (lite build fallback)
 
     if(STABLEHLO_ROOT AND EXISTS "${STABLEHLO_ROOT}")
         message(STATUS "Using StableHLO installation at: ${STABLEHLO_ROOT}")

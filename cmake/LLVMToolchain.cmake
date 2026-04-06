@@ -1,4 +1,16 @@
-set(ESHKOL_EXPECTED_LLVM_MAJOR 21)
+if(NOT DEFINED ESHKOL_REQUIRED_LLVM_MAJOR OR ESHKOL_REQUIRED_LLVM_MAJOR STREQUAL "")
+    set(ESHKOL_REQUIRED_LLVM_MAJOR 21 CACHE STRING
+        "Required LLVM major version for lite/native builds")
+endif()
+
+function(eshkol_validate_llvm_major llvm_version llvm_source)
+    string(REGEX MATCH "^([0-9]+)" _llvm_major_match "${llvm_version}")
+
+    if(NOT CMAKE_MATCH_1 STREQUAL "${ESHKOL_REQUIRED_LLVM_MAJOR}")
+        message(FATAL_ERROR
+            "Expected LLVM ${ESHKOL_REQUIRED_LLVM_MAJOR}, got ${llvm_version} from ${llvm_source}")
+    endif()
+endfunction()
 
 function(eshkol_find_lite_llvm)
     if(WIN32)
@@ -13,8 +25,8 @@ function(eshkol_find_lite_llvm)
             endif()
 
             file(GLOB _llvm_sdk_hint_dirs LIST_DIRECTORIES TRUE
-                "C:/src/llvm-${ESHKOL_EXPECTED_LLVM_MAJOR}*"
-                "C:/src/clang+llvm-${ESHKOL_EXPECTED_LLVM_MAJOR}*"
+                "C:/src/llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}*"
+                "C:/src/clang+llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}*"
             )
             list(APPEND _llvm_package_hint_dirs
                 ${_llvm_sdk_hint_dirs}
@@ -37,10 +49,10 @@ function(eshkol_find_lite_llvm)
 
         if(NOT LLVM_DIR)
             message(FATAL_ERROR
-                "LLVM 21 CMake package not found. Install the official LLVM 21 Windows SDK and set LLVM_DIR or LLVM_HOME.")
+                "LLVM ${ESHKOL_REQUIRED_LLVM_MAJOR} CMake package not found. Install the official LLVM ${ESHKOL_REQUIRED_LLVM_MAJOR} Windows SDK and set LLVM_DIR or LLVM_HOME.")
         endif()
 
-        set(LLVM_DIR "${LLVM_DIR}" CACHE PATH "Path to the LLVM 21 CMake package" FORCE)
+        set(LLVM_DIR "${LLVM_DIR}" CACHE PATH "Path to the LLVM CMake package" FORCE)
         set(LLVM_DIR "${LLVM_DIR}" PARENT_SCOPE)
         return()
     endif()
@@ -50,8 +62,8 @@ function(eshkol_find_lite_llvm)
 
         if(APPLE)
             list(APPEND _llvm_hint_dirs
-                /opt/homebrew/opt/llvm@21/bin
-                /usr/local/opt/llvm@21/bin
+                "/opt/homebrew/opt/llvm@${ESHKOL_REQUIRED_LLVM_MAJOR}/bin"
+                "/usr/local/opt/llvm@${ESHKOL_REQUIRED_LLVM_MAJOR}/bin"
             )
         elseif(WIN32)
             if(DEFINED ENV{LLVM_HOME} AND NOT "$ENV{LLVM_HOME}" STREQUAL "")
@@ -62,8 +74,8 @@ function(eshkol_find_lite_llvm)
             endif()
 
             file(GLOB _llvm_sdk_hint_dirs LIST_DIRECTORIES TRUE
-                "C:/src/llvm-${ESHKOL_EXPECTED_LLVM_MAJOR}*/bin"
-                "C:/src/clang+llvm-${ESHKOL_EXPECTED_LLVM_MAJOR}*/bin"
+                "C:/src/llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}*/bin"
+                "C:/src/clang+llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}*/bin"
             )
             list(APPEND _llvm_hint_dirs
                 ${_llvm_sdk_hint_dirs}
@@ -72,29 +84,29 @@ function(eshkol_find_lite_llvm)
             )
         else()
             list(APPEND _llvm_hint_dirs
-                /usr/lib/llvm-21/bin
-                /usr/local/lib/llvm-21/bin
+                "/usr/lib/llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}/bin"
+                "/usr/local/lib/llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}/bin"
                 /usr/local/bin
                 /usr/bin
             )
         endif()
 
         find_program(LLVM_CONFIG_EXECUTABLE
-            NAMES llvm-config-21 llvm-config
+            NAMES "llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR}" llvm-config
             HINTS ${_llvm_hint_dirs}
             NO_DEFAULT_PATH
         )
 
         if(NOT LLVM_CONFIG_EXECUTABLE)
             find_program(LLVM_CONFIG_EXECUTABLE
-                NAMES llvm-config-21 llvm-config
+                NAMES "llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR}" llvm-config
             )
         endif()
     endif()
 
     if(NOT LLVM_CONFIG_EXECUTABLE)
         message(FATAL_ERROR
-            "LLVM 21 llvm-config not found. Install LLVM 21 and set LLVM_CONFIG_EXECUTABLE.")
+            "LLVM ${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-config not found. Install LLVM ${ESHKOL_REQUIRED_LLVM_MAJOR} and set LLVM_CONFIG_EXECUTABLE.")
     endif()
 
     execute_process(
@@ -103,12 +115,7 @@ function(eshkol_find_lite_llvm)
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET
     )
-    string(REGEX MATCH "^([0-9]+)" _llvm_major_match "${ESHKOL_LLVM_VERSION}")
-
-    if(NOT CMAKE_MATCH_1 STREQUAL "${ESHKOL_EXPECTED_LLVM_MAJOR}")
-        message(FATAL_ERROR
-            "Expected LLVM ${ESHKOL_EXPECTED_LLVM_MAJOR}, got ${ESHKOL_LLVM_VERSION} from ${LLVM_CONFIG_EXECUTABLE}")
-    endif()
+    eshkol_validate_llvm_major("${ESHKOL_LLVM_VERSION}" "${LLVM_CONFIG_EXECUTABLE}")
 
     set(LLVM_CONFIG_EXECUTABLE "${LLVM_CONFIG_EXECUTABLE}" PARENT_SCOPE)
     set(ESHKOL_LLVM_VERSION "${ESHKOL_LLVM_VERSION}" PARENT_SCOPE)

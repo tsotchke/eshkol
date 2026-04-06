@@ -55,6 +55,8 @@ source "${SCRIPT_DIR}/lib/llvm21-env.sh"
 
 echo -e "${YELLOW}=== Homebrew Formula Test ===${NC}"
 
+LLVM_FORMULA="llvm@${ESHKOL_REQUIRED_LLVM_MAJOR}"
+
 # Check for Homebrew
 if ! command -v brew &> /dev/null; then
     echo -e "${RED}Homebrew not installed${NC}"
@@ -72,7 +74,7 @@ echo -e "${GREEN}Formula found: $FORMULA_PATH${NC}"
 
 # Check dependencies are available
 echo -e "${YELLOW}Checking dependencies...${NC}"
-DEPS=("llvm@21" "cmake" "ninja" "readline")
+DEPS=("${LLVM_FORMULA}" "cmake" "ninja" "readline")
 for dep in "${DEPS[@]}"; do
     if brew list "$dep" &>/dev/null; then
         echo -e "  ${GREEN}[OK]${NC} $dep"
@@ -95,8 +97,8 @@ fi
 if [ "$LOCAL_TEST" = true ]; then
     echo -e "${YELLOW}Testing local build (simulating Homebrew)...${NC}"
 
-    if ! eshkol_activate_llvm21; then
-        echo -e "${RED}LLVM 21 not found. Install with: brew install llvm@21${NC}"
+    if ! eshkol_activate_llvm_toolchain; then
+        echo -e "${RED}LLVM ${ESHKOL_REQUIRED_LLVM_MAJOR} not found. Install ${LLVM_FORMULA} first.${NC}"
         exit 1
     fi
 
@@ -106,7 +108,8 @@ if [ "$LOCAL_TEST" = true ]; then
 
     echo "Configuring..."
     cmake -B "$BUILD_DIR" -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_BUILD_TYPE=Release \
+        -DESHKOL_REQUIRED_LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR}"
 
     echo "Building..."
     cmake --build "$BUILD_DIR" --parallel

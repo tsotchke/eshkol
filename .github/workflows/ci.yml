@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [master]
 
+env:
+  LLVM_MAJOR: '21'
+  WINDOWS_LLVM_SDK_VERSION: '21.1.8'
+
 jobs:
   build-linux:
     runs-on: ubuntu-22.04
@@ -16,17 +20,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add LLVM 21 Repository
+      - name: Add LLVM Repository
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
 
       - name: Install Dependencies
         run: |
           sudo apt-get install -y \
             cmake ninja-build \
-            llvm-21 llvm-21-dev \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev \
             libreadline-dev pkg-config \
             libssl-dev libncurses-dev
 
@@ -34,7 +38,8 @@ jobs:
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-21
+            -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} \
+            -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR}
 
       - name: Build
         run: cmake --build build --parallel
@@ -57,17 +62,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add LLVM 21 Repository
+      - name: Add LLVM Repository
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
 
       - name: Install Dependencies
         run: |
           sudo apt-get install -y \
             cmake ninja-build \
-            llvm-21 llvm-21-dev \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev \
             libreadline-dev pkg-config \
             libssl-dev libncurses-dev
 
@@ -75,7 +80,8 @@ jobs:
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-21
+            -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} \
+            -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR}
 
       - name: Build
         run: cmake --build build --parallel
@@ -98,14 +104,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Dependencies
-        run: brew install llvm@21 cmake ninja readline
+        run: brew install llvm@${LLVM_MAJOR} cmake ninja readline
 
       - name: Build
         run: |
-          LLVM_PREFIX="$(brew --prefix llvm@21)"
+          LLVM_PREFIX="$(brew --prefix llvm@${LLVM_MAJOR})"
           export PATH="$LLVM_PREFIX/bin:$PATH"
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_PREFIX/bin/llvm-config"
           cmake --build build --parallel
 
@@ -127,14 +134,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Dependencies
-        run: brew install llvm@21 cmake ninja readline
+        run: brew install llvm@${LLVM_MAJOR} cmake ninja readline
 
       - name: Build
         run: |
-          LLVM_PREFIX="$(brew --prefix llvm@21)"
+          LLVM_PREFIX="$(brew --prefix llvm@${LLVM_MAJOR})"
           export PATH="$LLVM_PREFIX/bin:$PATH"
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_PREFIX/bin/llvm-config"
           cmake --build build --parallel
 
@@ -156,11 +164,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM 21 SDK
+      - name: Install LLVM SDK
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $llvmVersion = '21.1.8'
+          $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
           $llvmRoot = "C:\src\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc"
           $llvmArchive = "$env:RUNNER_TEMP\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz"
           if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
@@ -181,6 +189,7 @@ jobs:
             -DBUILD_REPL=ON `
             -DESHKOL_GPU_ENABLED=OFF `
             -DESHKOL_BUILD_TESTS=OFF `
+            -DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }} `
             -DLLVM_DIR="$env:LLVM_DIR"
 
       - name: Build

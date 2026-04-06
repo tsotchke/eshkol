@@ -737,13 +737,17 @@ function Invoke-CppTypeSuite {
     Write-Section "Eshkol HoTT Type Checker C++ Tests"
     $suite = New-SuiteState "cpp_type"
     $llvmConfig = $null
+    $requiredLlvmMajor = if ($env:ESHKOL_REQUIRED_LLVM_MAJOR) { $env:ESHKOL_REQUIRED_LLVM_MAJOR } else { "21" }
 
-    $llvmCandidates = @(
-        (Join-Path $script:BuildDir "llvm-config.exe"),
-        (Join-Path "C:\src\llvm-21.1.8-msvc-sdk\bin" "llvm-config.exe")
-    )
+    $llvmCandidates = @((Join-Path $script:BuildDir "llvm-config.exe"))
+    $llvmCandidates += Get-ChildItem -Path "C:\src" -Directory -Filter "clang+llvm-$requiredLlvmMajor*" -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        ForEach-Object { Join-Path $_.FullName "bin\llvm-config.exe" }
+    $llvmCandidates += Get-ChildItem -Path "C:\src" -Directory -Filter "llvm-$requiredLlvmMajor*" -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        ForEach-Object { Join-Path $_.FullName "bin\llvm-config.exe" }
     foreach ($candidate in $llvmCandidates) {
-        if (Test-Path $candidate) {
+        if ($candidate -and (Test-Path $candidate)) {
             $llvmConfig = $candidate
             break
         }
