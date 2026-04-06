@@ -6,6 +6,8 @@ variables:
   ESHKOL_REQUIRED_LLVM_MAJOR: "21"
   WINDOWS_LLVM_SDK_VERSION: "21.1.8"
   HOMEBREW_NO_AUTO_UPDATE: "1"
+  ENABLE_GITLAB_HOSTED_GPU: "0"
+  ENABLE_GITLAB_HOSTED_MACOS: "0"
   ENABLE_SELF_HOSTED_MATRIX: "0"
 
 .linux-test-script: &linux_test_script |
@@ -188,6 +190,10 @@ test-linux-cuda-hosted:
   image: nvidia/cuda:12.4.1-devel-ubuntu22.04
   tags:
     - saas-linux-medium-amd64-gpu-standard
+  rules:
+    - if: '$ENABLE_GITLAB_HOSTED_GPU == "1"'
+      when: on_success
+    - when: never
   variables:
     BACKEND: "cuda"
     BUILD_DIR: "build-linux-amd64-cuda"
@@ -213,6 +219,10 @@ test-windows-amd64-hosted:
 test-macos-arm64-hosted:
   extends:
     - .macos-hosted
+  rules:
+    - if: '$ENABLE_GITLAB_HOSTED_MACOS == "1"'
+      when: on_success
+    - when: never
   parallel:
     matrix:
       - BACKEND: "lite"
