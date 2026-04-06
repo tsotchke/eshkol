@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-ESHKOL_EXPECTED_LLVM_MAJOR=21
+ESHKOL_REQUIRED_LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR:-21}"
 
 eshkol_find_llvm_config() {
     local candidates=()
@@ -10,19 +10,19 @@ eshkol_find_llvm_config() {
     case "$(uname -s)" in
         Darwin)
             candidates=(
-                "/opt/homebrew/opt/llvm@21/bin/llvm-config"
-                "/usr/local/opt/llvm@21/bin/llvm-config"
-                "llvm-config-21"
+                "/opt/homebrew/opt/llvm@${ESHKOL_REQUIRED_LLVM_MAJOR}/bin/llvm-config"
+                "/usr/local/opt/llvm@${ESHKOL_REQUIRED_LLVM_MAJOR}/bin/llvm-config"
+                "llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR}"
                 "llvm-config"
             )
             ;;
         Linux)
             candidates=(
-                "/usr/lib/llvm-21/bin/llvm-config"
-                "/usr/local/lib/llvm-21/bin/llvm-config"
-                "/usr/bin/llvm-config-21"
-                "/usr/local/bin/llvm-config-21"
-                "llvm-config-21"
+                "/usr/lib/llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}/bin/llvm-config"
+                "/usr/local/lib/llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}/bin/llvm-config"
+                "/usr/bin/llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR}"
+                "/usr/local/bin/llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR}"
+                "llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR}"
                 "llvm-config"
             )
             ;;
@@ -33,7 +33,7 @@ eshkol_find_llvm_config() {
             )
             ;;
         *)
-            candidates=("llvm-config-21" "llvm-config")
+            candidates=("llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR}" "llvm-config")
             ;;
     esac
 
@@ -50,11 +50,11 @@ eshkol_find_llvm_config() {
         fi
     done
 
-    echo "LLVM 21 llvm-config not found in expected locations" >&2
+    echo "LLVM ${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-config not found in expected locations" >&2
     return 1
 }
 
-eshkol_activate_llvm21() {
+eshkol_activate_llvm_toolchain() {
     local llvm_config="${LLVM_CONFIG_EXECUTABLE:-}"
     if [[ -z "${llvm_config}" ]]; then
         llvm_config="$(eshkol_find_llvm_config)"
@@ -62,8 +62,8 @@ eshkol_activate_llvm21() {
 
     local llvm_version=""
     llvm_version="$("${llvm_config}" --version)"
-    if [[ "${llvm_version%%.*}" != "${ESHKOL_EXPECTED_LLVM_MAJOR}" ]]; then
-        echo "Expected LLVM ${ESHKOL_EXPECTED_LLVM_MAJOR}, got ${llvm_version} from ${llvm_config}" >&2
+    if [[ "${llvm_version%%.*}" != "${ESHKOL_REQUIRED_LLVM_MAJOR}" ]]; then
+        echo "Expected LLVM ${ESHKOL_REQUIRED_LLVM_MAJOR}, got ${llvm_version} from ${llvm_config}" >&2
         return 1
     fi
 
@@ -77,4 +77,8 @@ eshkol_activate_llvm21() {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         export DYLD_FALLBACK_LIBRARY_PATH="${ESHKOL_LLVM_ROOT}/lib${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}"
     fi
+}
+
+eshkol_activate_llvm21() {
+    ESHKOL_REQUIRED_LLVM_MAJOR=21 eshkol_activate_llvm_toolchain
 }

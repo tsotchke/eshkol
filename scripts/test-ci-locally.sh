@@ -27,6 +27,7 @@ NC='\033[0m'
 
 TARGET="${1:-all}"
 VERSION="${ESHKOL_VERSION:-1.0.0}"
+LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR:-21}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -67,22 +68,22 @@ test_linux_ci() {
     echo "Building CI test image..."
 
     # Create a temporary Dockerfile that exactly matches CI
-    cat > /tmp/Dockerfile.ci-test << 'DOCKERFILE'
+    cat > /tmp/Dockerfile.ci-test << DOCKERFILE
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Add LLVM 21 repository (required - not in Ubuntu 22.04 default repos)
+# Add the requested LLVM repository (required - not in Ubuntu 22.04 default repos)
 RUN apt-get update && apt-get install -y \
     wget gnupg software-properties-common \
     && wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc \
-    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" >> /etc/apt/sources.list.d/llvm.list \
+    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" >> /etc/apt/sources.list.d/llvm.list \
     && apt-get update
 
 # Install build dependencies - matching GitHub Actions CI
 RUN apt-get install -y \
     cmake ninja-build \
-    llvm-21-dev llvm-21 \
+    llvm-${LLVM_MAJOR}-dev llvm-${LLVM_MAJOR} \
     libreadline-dev \
     g++ \
     file \
@@ -92,7 +93,7 @@ WORKDIR /app
 COPY . .
 
 # Configure
-RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-21
+RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR}
 
 # Build
 RUN cmake --build build --parallel
@@ -145,10 +146,10 @@ test_macos_ci() {
     ARCH=$(uname -m)
     echo "Architecture: $ARCH"
 
-    # Check dependencies (matching CI: brew install llvm@21 cmake ninja readline)
+    # Check dependencies (matching CI: brew install llvm@${LLVM_MAJOR} cmake ninja readline)
     echo "Checking dependencies..."
     DEPS_OK=true
-    for dep in llvm@21 cmake ninja readline; do
+    for dep in llvm@"$LLVM_MAJOR" cmake ninja readline; do
         if brew list "$dep" &>/dev/null; then
             echo -e "  ${GREEN}[OK]${NC} $dep"
         else
@@ -158,7 +159,7 @@ test_macos_ci() {
     done
 
     if [ "$DEPS_OK" = false ]; then
-        echo "Install missing dependencies: brew install llvm@21 cmake ninja readline"
+        echo "Install missing dependencies: brew install llvm@${LLVM_MAJOR} cmake ninja readline"
         log_fail "macos-ci-deps"
         return 1
     fi
@@ -166,9 +167,9 @@ test_macos_ci() {
 
     # Set PATH exactly as CI does
     if [ "$ARCH" = "arm64" ]; then
-        export PATH="/opt/homebrew/opt/llvm@21/bin:$PATH"
+        export PATH="/opt/homebrew/opt/llvm@${LLVM_MAJOR}/bin:$PATH"
     else
-        export PATH="/usr/local/opt/llvm@21/bin:$PATH"
+        export PATH="/usr/local/opt/llvm@${LLVM_MAJOR}/bin:$PATH"
     fi
 
     # Clean build
@@ -177,7 +178,7 @@ test_macos_ci() {
 
     # Configure - exactly as CI does
     echo "Configuring..."
-    if cmake -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_CONFIG_EXECUTABLE="$(command -v llvm-config)"; then
+    if cmake -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" -DLLVM_CONFIG_EXECUTABLE="$(command -v llvm-config)"; then
         log_pass "macos-ci-configure"
     else
         log_fail "macos-ci-configure"
@@ -247,20 +248,20 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Add LLVM 21 repository
+# Add the requested LLVM repository
 RUN apt-get update && apt-get install -y wget gnupg software-properties-common \\
     && wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc \\
-    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" >> /etc/apt/sources.list.d/llvm.list \\
+    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" >> /etc/apt/sources.list.d/llvm.list \\
     && apt-get update
 
 RUN apt-get install -y \\
-    cmake ninja-build llvm-21 llvm-21-dev libreadline-dev dpkg-dev g++ file pkg-config
+    cmake ninja-build llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev libreadline-dev dpkg-dev g++ file pkg-config
 
 WORKDIR /app
 COPY . .
 
 # Build
-RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-21
+RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR}
 RUN cmake --build build --parallel
 
 # Run subset of tests

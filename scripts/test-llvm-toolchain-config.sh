@@ -12,6 +12,7 @@ mkdir -p "${PROBE_ROOT}"
 
 rm -rf \
   "${PROJECT_ROOT}/build-toolchain-fake18" \
+  "${PROJECT_ROOT}/build-toolchain-fake18-explicit" \
   "${PROJECT_ROOT}/build-toolchain-fake21"
 
 cat > "${PROBE_ROOT}/CMakeLists.txt" <<EOF
@@ -29,6 +30,11 @@ if cmake -S "${PROBE_ROOT}" -B "${PROJECT_ROOT}/build-toolchain-fake18" -G Ninja
   echo "fake LLVM 18 configure unexpectedly succeeded" >&2
   exit 1
 fi
+
+cmake -S "${PROBE_ROOT}" -B "${PROJECT_ROOT}/build-toolchain-fake18-explicit" -G Ninja \
+  -DESHKOL_REQUIRED_LLVM_MAJOR=18 \
+  -DLLVM_CONFIG_EXECUTABLE="${PROJECT_ROOT}/tests/toolchain/fake-llvm-config-18.sh" \
+  >/tmp/eshkol-cmake-fake18-explicit.log 2>&1
 
 cmake -S "${PROBE_ROOT}" -B "${PROJECT_ROOT}/build-toolchain-fake21" -G Ninja \
   -DLLVM_CONFIG_EXECUTABLE="${PROJECT_ROOT}/tests/toolchain/fake-llvm-config-21.sh" \

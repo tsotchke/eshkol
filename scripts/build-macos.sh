@@ -72,7 +72,7 @@ source "${SCRIPT_DIR}/lib/llvm21-env.sh"
 HOST_ARCH=$(uname -m)
 echo "Host architecture: $HOST_ARCH"
 
-eshkol_activate_llvm21
+eshkol_activate_llvm_toolchain
 LLVM_PATH="${ESHKOL_LLVM_ROOT}"
 
 mkdir -p "$OUTPUT_DIR"
@@ -103,6 +103,7 @@ build_arch() {
     # Configure
     cmake -B "$build_dir" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
+        -DESHKOL_REQUIRED_LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR}" \
         $cmake_arch_flags
 
     # Build
