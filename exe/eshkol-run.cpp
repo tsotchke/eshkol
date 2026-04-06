@@ -1508,19 +1508,33 @@ static std::string find_stdlib()
 }
 
 // Find the pre-compiled stdlib.o file
-static std::string find_stdlib_object()
+static void append_library_candidates(std::vector<std::filesystem::path>& candidates,
+                                      const std::vector<char*>& lib_paths,
+                                      const std::filesystem::path& leaf_name) {
+    for (const auto* lib_path : lib_paths) {
+        if (!lib_path || lib_path[0] == '\0') {
+            continue;
+        }
+        candidates.emplace_back(std::filesystem::path(lib_path) / leaf_name);
+    }
+}
+
+static std::string find_stdlib_object(const std::vector<char*>& lib_paths)
 {
     auto cwd = eshkol::platform::current_directory();
     auto exe_dir = eshkol::platform::executable_directory();
 
-    std::vector<std::filesystem::path> candidates = {
-        cwd / "stdlib.o",
-        cwd / "build/stdlib.o",
-        cwd.parent_path() / "build/stdlib.o",
+    std::vector<std::filesystem::path> candidates;
+    append_library_candidates(candidates, lib_paths, "stdlib.o");
+
+    candidates.insert(candidates.end(), {
         exe_dir / "stdlib.o",
         exe_dir / "../lib/stdlib.o",
         exe_dir / "../lib/eshkol/stdlib.o",
-    };
+        cwd / "stdlib.o",
+        cwd / "build/stdlib.o",
+        cwd.parent_path() / "build/stdlib.o",
+    });
 
 #ifndef _WIN32
     candidates.emplace_back("/usr/local/lib/eshkol/stdlib.o");
@@ -1535,20 +1549,28 @@ static std::string find_stdlib_object()
 }
 
 // Find the runtime library (libeshkol-static.a)
-static std::string find_runtime_library()
+static std::string find_runtime_library(const std::vector<char*>& lib_paths)
 {
     auto cwd = eshkol::platform::current_directory();
     auto exe_dir = eshkol::platform::executable_directory();
     const auto library_name = eshkol::platform::static_library_name("eshkol-static");
 
-    std::vector<std::filesystem::path> candidates = {
-        cwd / library_name,
-        cwd / "build" / library_name,
-        cwd.parent_path() / "build" / library_name,
+    std::vector<std::filesystem::path> candidates;
+
+    if (const char* env_lib = std::getenv("ESHKOL_LIB_DIR")) {
+        candidates.emplace_back(std::filesystem::path(env_lib) / library_name);
+    }
+
+    append_library_candidates(candidates, lib_paths, library_name);
+
+    candidates.insert(candidates.end(), {
         exe_dir / library_name,
         exe_dir / "../lib" / library_name,
         exe_dir / "../lib/eshkol" / library_name,
-    };
+        cwd / library_name,
+        cwd / "build" / library_name,
+        cwd.parent_path() / "build" / library_name,
+    });
 
 #ifndef _WIN32
     candidates.emplace_back("/usr/local/lib" / std::filesystem::path(library_name));
@@ -2626,7 +2648,7 @@ int main(int argc, char **argv)
 
         if (!has_stdlib) {
             // Try to find stdlib.o automatically
-            std::string stdlib_path = find_stdlib_object();
+            std::string stdlib_path = find_stdlib_object(lib_paths);
             if (!stdlib_path.empty()) {
                 eshkol_info("Auto-linking pre-compiled stdlib: %s", stdlib_path.c_str());
                 compiled_files.push_back(strdup(stdlib_path.c_str()));
@@ -2955,7 +2977,7 @@ int main(int argc, char **argv)
         }
 
         // Add libeshkol-static.a (needed for arena functions)
-        std::string runtime_lib = find_runtime_library();
+        std::string runtime_lib = find_runtime_library(lib_paths);
         if (!runtime_lib.empty()) {
             link_args.emplace_back(runtime_lib);
         } else {

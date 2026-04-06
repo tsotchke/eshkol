@@ -270,7 +270,7 @@ void* region_escape(const void* ptr, size_t size);
 void* region_escape_string(const char* str);
 arena_tagged_cons_cell_t* region_escape_tagged_cons_cell(const arena_tagged_cons_cell_t* cell);
 eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_t val);
-void region_escape_tagged_value_into(eshkol_tagged_value_t* out, eshkol_tagged_value_t val);
+void region_escape_tagged_value_into(eshkol_tagged_value_t* out, const eshkol_tagged_value_t* val);
 
 // Region statistics
 size_t region_get_used_memory(const eshkol_region_t* region);
