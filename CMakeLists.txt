@@ -697,6 +697,10 @@ if(ESHKOL_GPU_ENABLED)
     endif()
 else()
     message(STATUS "GPU acceleration: DISABLED (enable with -DESHKOL_GPU_ENABLED=ON)")
+    # Keep the GPU API linked even when the feature is explicitly disabled.
+    # XLA and tensor runtime code call into this surface and rely on the
+    # CPU-backed stub implementation when no real GPU backend is enabled.
+    set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_stub.cpp")
 endif()
 
 macro(eshkol_append_host_runtime_link_arg item)
