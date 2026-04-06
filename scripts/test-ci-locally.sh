@@ -6,7 +6,10 @@
 # so you can test locally before pushing.
 #
 # Usage: ./scripts/test-ci-locally.sh [target]
-#   linux         Test Linux build via Docker (matches ubuntu-22.04)
+#   linux         Test Linux lite build via Docker (matches ubuntu-22.04)
+#   linux-xla     Test Linux XLA lane via Docker
+#   linux-cuda    Test Linux CUDA lane via Docker
+#   matrix        Validate workflow matrix metadata and Linux matrix lanes
 #   macos         Test macOS build natively
 #   release       Test full release workflow
 #   homebrew      Test Homebrew formula update process
@@ -87,7 +90,9 @@ RUN apt-get install -y \
     libreadline-dev \
     g++ \
     file \
-    pkg-config
+    pkg-config \
+    libssl-dev \
+    libncurses-dev
 
 WORKDIR /app
 COPY . .
@@ -130,6 +135,89 @@ DOCKERFILE
     rm /tmp/Dockerfile.ci-test
     echo -e "${GREEN}Linux CI test passed!${NC}"
     log_pass "linux-ci"
+}
+
+test_linux_backend_ci() {
+    local backend_name="$1"
+    local build_dir="$2"
+    local xla_enabled="$3"
+    local gpu_enabled="$4"
+    local suite_command="$5"
+
+    echo -e "${BLUE}=== Testing Linux ${backend_name} lane (ubuntu-22.04) ===${NC}"
+
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}Docker not found - cannot test Linux ${backend_name} lane${NC}"
+        log_fail "linux-${backend_name}"
+        return 1
+    fi
+
+    local docker_image="eshkol-${backend_name}-ci-test"
+    local dockerfile="/tmp/Dockerfile.${backend_name}.ci-test"
+
+    cat > "$dockerfile" << DOCKERFILE
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \\
+    wget gnupg software-properties-common \\
+    && wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc \\
+    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" >> /etc/apt/sources.list.d/llvm.list \\
+    && apt-get update
+
+RUN apt-get install -y \\
+    cmake ninja-build \\
+    llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev \\
+    libreadline-dev pkg-config \\
+    libssl-dev libncurses-dev \\
+    git python3
+
+WORKDIR /app
+COPY . .
+
+RUN cmake -S . -B ${build_dir} -G Ninja \\
+    -DCMAKE_BUILD_TYPE=Release \\
+    -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} \\
+    -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR} \\
+    -DESHKOL_XLA_ENABLED=${xla_enabled} \\
+    -DESHKOL_GPU_ENABLED=${gpu_enabled}
+
+RUN cmake --build ${build_dir} --parallel
+ENV BUILD_DIR=${build_dir}
+RUN ${suite_command}
+DOCKERFILE
+
+    if docker build --platform linux/amd64 -t "$docker_image" -f "$dockerfile" .; then
+        log_pass "linux-${backend_name}"
+    else
+        log_fail "linux-${backend_name}"
+        rm -f "$dockerfile"
+        return 1
+    fi
+
+    rm -f "$dockerfile"
+}
+
+test_workflow_matrix() {
+    echo -e "${BLUE}=== Validating workflow matrix metadata ===${NC}"
+
+    if ruby -e 'require "yaml"; YAML.load_file(".github/workflows/ci.yml"); YAML.load_file(".github/workflows/release.yml")'; then
+        log_pass "workflow-yaml"
+    else
+        log_fail "workflow-yaml"
+        return 1
+    fi
+
+    if command -v act &> /dev/null; then
+        if act -W .github/workflows/ci.yml -l; then
+            log_pass "workflow-act-list"
+        else
+            log_fail "workflow-act-list"
+        fi
+    else
+        echo -e "${YELLOW}act not found - skipping workflow listing${NC}"
+    fi
 }
 
 # =============================================================================
@@ -362,6 +450,18 @@ case "$TARGET" in
     linux)
         test_linux_ci
         ;;
+    linux-xla)
+        test_linux_backend_ci "xla" "build-xla" "ON" "OFF" "./scripts/run_xla_tests.sh"
+        ;;
+    linux-cuda)
+        test_linux_backend_ci "cuda" "build-cuda" "OFF" "ON" "./scripts/run_gpu_tests.sh"
+        ;;
+    matrix)
+        test_workflow_matrix
+        test_linux_ci
+        test_linux_backend_ci "xla" "build-xla" "ON" "OFF" "./scripts/run_xla_tests.sh"
+        test_linux_backend_ci "cuda" "build-cuda" "OFF" "ON" "./scripts/run_gpu_tests.sh"
+        ;;
     macos)
         test_macos_ci
         ;;
@@ -372,14 +472,17 @@ case "$TARGET" in
         test_homebrew
         ;;
     all)
+        test_workflow_matrix
         test_linux_ci
+        test_linux_backend_ci "xla" "build-xla" "ON" "OFF" "./scripts/run_xla_tests.sh"
+        test_linux_backend_ci "cuda" "build-cuda" "OFF" "ON" "./scripts/run_gpu_tests.sh"
         test_macos_ci
         test_release
         test_homebrew
         ;;
     *)
         echo "Unknown target: $TARGET"
-        echo "Usage: $0 [linux|macos|release|homebrew|all]"
+        echo "Usage: $0 [linux|linux-xla|linux-cuda|matrix|macos|release|homebrew|all]"
         exit 1
         ;;
 esac

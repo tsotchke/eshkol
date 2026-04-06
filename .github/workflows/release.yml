@@ -78,7 +78,7 @@ jobs:
             name: linux-arm64
           - os: macos-14
             name: macos-arm64
-          - os: macos-15-large
+          - os: macos-15-intel
             name: macos-x64
 
     runs-on: ${{ matrix.os }}
@@ -219,7 +219,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build XLA Docker Image
-        run: docker build -f docker/xla/Dockerfile --build-arg VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//') -t eshkol-xla .
+        run: docker build -f docker/xla/Dockerfile --build-arg VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//') --build-arg LLVM_MAJOR=${LLVM_MAJOR} -t eshkol-xla .
 
       - name: Extract XLA Artifacts
         run: |
@@ -248,7 +248,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build CUDA Docker Image
-        run: docker build -f docker/cuda/Dockerfile --build-arg VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//') -t eshkol-cuda .
+        run: docker build -f docker/cuda/Dockerfile --build-arg VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//') --build-arg LLVM_MAJOR=${LLVM_MAJOR} -t eshkol-cuda .
 
       - name: Extract CUDA Artifacts
         run: |

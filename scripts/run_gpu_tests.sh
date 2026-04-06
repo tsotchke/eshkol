@@ -25,18 +25,24 @@ echo "  Eshkol GPU Test Suite"
 echo "========================================="
 echo ""
 
+# Determine which build directory to use
+# Override with: BUILD_DIR=build-cuda ./scripts/run_gpu_tests.sh
+BUILD_DIR="${BUILD_DIR:-build}"
+
 # Ensure build directory exists
-if [ ! -d "build" ]; then
-    echo -e "${RED}Error: build directory not found. Run cmake first.${NC}"
+if [ ! -d "$BUILD_DIR" ]; then
+    echo -e "${RED}Error: build directory '$BUILD_DIR' not found. Run cmake first.${NC}"
     exit 1
 fi
 
 # Check if compiler exists
-if [ ! -f "build/eshkol-run" ]; then
-    echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
+if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
+    echo -e "${RED}Error: eshkol-run not found in '$BUILD_DIR'. Run make first.${NC}"
     exit 1
 fi
 
+echo -e "${GREEN}Using build directory: $BUILD_DIR${NC}"
+echo ""
 echo "Testing all files in tests/gpu/ directory..."
 echo ""
 
@@ -49,7 +55,7 @@ for test_file in tests/gpu/*.esk; do
     rm -f a.out a.out.tmp.o
 
     # Try to compile
-    if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
+    if ./"$BUILD_DIR"/eshkol-run "$test_file" -L./"$BUILD_DIR" > /dev/null 2>&1; then
         # Compilation succeeded, try to run
         if ./a.out > /tmp/gpu_test_output.txt 2>&1; then
             # Check for FAIL markers in output

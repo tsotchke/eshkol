@@ -1,6 +1,8 @@
 param(
     [string]$BuildDir = "",
-    [switch]$SkipConfigureBuild
+    [switch]$SkipConfigureBuild,
+    [ValidateSet("all", "xla", "gpu")]
+    [string]$Mode = "all"
 )
 
 $ErrorActionPreference = "Stop"
@@ -1065,44 +1067,55 @@ if (-not $SkipConfigureBuild) {
 Write-Section "Eshkol Complete Windows Test Suite"
 Write-Host ("Project Root: {0}" -f $script:ProjectRoot)
 Write-Host ("Build Dir:    {0}" -f $script:BuildDir)
+Write-Host ("Mode:         {0}" -f $Mode)
 Write-Host ""
 
 $suiteResults = @()
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "features" -Title "Eshkol Features Test Suite" -Patterns @("tests/features/*.esk") -RuntimeErrorRegex "error:"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "stdlib" -Title "Eshkol Stdlib Test Suite" -Patterns @("tests/stdlib/*.esk") -RuntimeErrorRegex "error:"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "list" -Title "Eshkol List Test Suite" -Patterns @("tests/list/*.esk") -RuntimeErrorRegex "error:"
-$suiteResults += Invoke-MemorySuite
-$suiteResults += Invoke-ModulesSuite
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "types" -Title "Eshkol HoTT Type System Test Suite" -Patterns @("tests/types/*.esk") -RuntimeErrorRegex "error:"
-$suiteResults += Invoke-TypesystemSuite
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "autodiff" -Title "Eshkol Autodiff Test Suite" -Patterns @("tests/autodiff/*.esk", "tests/autodiff_debug/*.esk") -RuntimeErrorRegex "error:"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "ml" -Title "Eshkol ML Test Suite" -Patterns @("tests/ml/*.esk") -RuntimeErrorRegex "error:"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "neural" -Title "Eshkol Neural Network Test Suite" -Patterns @("tests/neural/*.esk") -RuntimeErrorRegex "error:"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "json" -Title "JSON Test Suite Validation" -Patterns @("tests/json/*.esk") -RuntimeErrorRegex "error:"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "system" -Title "System Test Suite" -Patterns @("tests/system/*.esk")
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "complex" -Title "Eshkol Complex & FFT Test Suite" -Patterns @("tests/complex/*.esk") -RuntimeErrorRegex "error:"
-$suiteResults += Invoke-CppTypeSuite
-$suiteResults += Invoke-ParserSuite
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "control_flow" -Title "Eshkol Control Flow Test Suite" -Patterns @("tests/control_flow/*.esk") -FailRegex "FAIL:"
-$suiteResults += Invoke-LogicSuite
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "bignum" -Title "Eshkol Bignum Tests" -Patterns @("tests/bignum/*.esk") -FailRegex "^FAIL:"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "rational" -Title "Eshkol Rational Number Tests" -Patterns @("tests/rational/*.esk") -FailRegex "^FAIL:"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "parallel" -Title "Eshkol Parallel Primitives Tests" -Patterns @("tests/parallel/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "signal" -Title "Eshkol Signal Processing Tests" -Patterns @("tests/signal/*.esk") -FailRegex "^FAIL:"
-$suiteResults += Invoke-TimedCompileRunSuite -SuiteName "optimization" -Title "Eshkol Optimization Algorithms Tests" -Patterns @("tests/ml/*optimization*.esk") -TimeoutSec 60 -FailRegex "FAIL:"
-$suiteResults += Invoke-ExamplesSuite
-$suiteResults += Invoke-XlaSuite
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "gpu" -Title "Eshkol GPU Test Suite" -Patterns @("tests/gpu/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "error_handling" -Title "Eshkol Error Handling Tests" -Patterns @("tests/error_handling/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "macros" -Title "Eshkol Macros Tests" -Patterns @("tests/macros/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
-$suiteResults += Invoke-ReplSuite
-$suiteResults += Invoke-WebSuite
-$suiteResults += Invoke-TimedCompileRunSuite -SuiteName "tco" -Title "Eshkol TCO (Tail Call Optimization) Tests" -Patterns @("tests/tco/*.esk") -TimeoutSec 60 -FailRegex "FAIL" -RequirePassMarker
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "io" -Title "Eshkol I/O Test Suite" -Patterns @("tests/io/*.esk") -FailRegex "^FAIL" -TimeoutSec 10
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "benchmark" -Title "Eshkol Benchmark Test Suite" -Patterns @("tests/benchmark/*.esk", "tests/benchmarks/*.esk") -FailRegex "^FAIL"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "migration" -Title "Eshkol Migration Test Suite" -Patterns @("tests/migration/*.esk") -FailRegex "^FAIL"
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "codegen" -Title "Eshkol Codegen Test Suite" -Patterns @("tests/codegen/*.esk") -FailRegex "^FAIL" -Recurse
-$suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "numeric" -Title "Eshkol Numeric Regression Tests" -Patterns @("tests/numeric/*.esk") -FailRegex "^FAIL:"
+switch ($Mode) {
+    "all" {
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "features" -Title "Eshkol Features Test Suite" -Patterns @("tests/features/*.esk") -RuntimeErrorRegex "error:"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "stdlib" -Title "Eshkol Stdlib Test Suite" -Patterns @("tests/stdlib/*.esk") -RuntimeErrorRegex "error:"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "list" -Title "Eshkol List Test Suite" -Patterns @("tests/list/*.esk") -RuntimeErrorRegex "error:"
+        $suiteResults += Invoke-MemorySuite
+        $suiteResults += Invoke-ModulesSuite
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "types" -Title "Eshkol HoTT Type System Test Suite" -Patterns @("tests/types/*.esk") -RuntimeErrorRegex "error:"
+        $suiteResults += Invoke-TypesystemSuite
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "autodiff" -Title "Eshkol Autodiff Test Suite" -Patterns @("tests/autodiff/*.esk", "tests/autodiff_debug/*.esk") -RuntimeErrorRegex "error:"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "ml" -Title "Eshkol ML Test Suite" -Patterns @("tests/ml/*.esk") -RuntimeErrorRegex "error:"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "neural" -Title "Eshkol Neural Network Test Suite" -Patterns @("tests/neural/*.esk") -RuntimeErrorRegex "error:"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "json" -Title "JSON Test Suite Validation" -Patterns @("tests/json/*.esk") -RuntimeErrorRegex "error:"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "system" -Title "System Test Suite" -Patterns @("tests/system/*.esk")
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "complex" -Title "Eshkol Complex & FFT Test Suite" -Patterns @("tests/complex/*.esk") -RuntimeErrorRegex "error:"
+        $suiteResults += Invoke-CppTypeSuite
+        $suiteResults += Invoke-ParserSuite
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "control_flow" -Title "Eshkol Control Flow Test Suite" -Patterns @("tests/control_flow/*.esk") -FailRegex "FAIL:"
+        $suiteResults += Invoke-LogicSuite
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "bignum" -Title "Eshkol Bignum Tests" -Patterns @("tests/bignum/*.esk") -FailRegex "^FAIL:"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "rational" -Title "Eshkol Rational Number Tests" -Patterns @("tests/rational/*.esk") -FailRegex "^FAIL:"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "parallel" -Title "Eshkol Parallel Primitives Tests" -Patterns @("tests/parallel/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "signal" -Title "Eshkol Signal Processing Tests" -Patterns @("tests/signal/*.esk") -FailRegex "^FAIL:"
+        $suiteResults += Invoke-TimedCompileRunSuite -SuiteName "optimization" -Title "Eshkol Optimization Algorithms Tests" -Patterns @("tests/ml/*optimization*.esk") -TimeoutSec 60 -FailRegex "FAIL:"
+        $suiteResults += Invoke-ExamplesSuite
+        $suiteResults += Invoke-XlaSuite
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "gpu" -Title "Eshkol GPU Test Suite" -Patterns @("tests/gpu/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "error_handling" -Title "Eshkol Error Handling Tests" -Patterns @("tests/error_handling/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "macros" -Title "Eshkol Macros Tests" -Patterns @("tests/macros/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
+        $suiteResults += Invoke-ReplSuite
+        $suiteResults += Invoke-WebSuite
+        $suiteResults += Invoke-TimedCompileRunSuite -SuiteName "tco" -Title "Eshkol TCO (Tail Call Optimization) Tests" -Patterns @("tests/tco/*.esk") -TimeoutSec 60 -FailRegex "FAIL" -RequirePassMarker
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "io" -Title "Eshkol I/O Test Suite" -Patterns @("tests/io/*.esk") -FailRegex "^FAIL" -TimeoutSec 10
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "benchmark" -Title "Eshkol Benchmark Test Suite" -Patterns @("tests/benchmark/*.esk", "tests/benchmarks/*.esk") -FailRegex "^FAIL"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "migration" -Title "Eshkol Migration Test Suite" -Patterns @("tests/migration/*.esk") -FailRegex "^FAIL"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "codegen" -Title "Eshkol Codegen Test Suite" -Patterns @("tests/codegen/*.esk") -FailRegex "^FAIL" -Recurse
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "numeric" -Title "Eshkol Numeric Regression Tests" -Patterns @("tests/numeric/*.esk") -FailRegex "^FAIL:"
+    }
+    "xla" {
+        $suiteResults += Invoke-XlaSuite
+    }
+    "gpu" {
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "gpu" -Title "Eshkol GPU Test Suite" -Patterns @("tests/gpu/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
+    }
+}
 
 $suiteResults = @(
     $suiteResults |
