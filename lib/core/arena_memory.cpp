@@ -1906,9 +1906,13 @@ extern "C" eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_
     return region_escape_tagged_value_impl(val);
 }
 
-extern "C" void region_escape_tagged_value_into(eshkol_tagged_value_t* out, eshkol_tagged_value_t val) {
+extern "C" void region_escape_tagged_value_into(eshkol_tagged_value_t* out, const eshkol_tagged_value_t* val) {
     if (!out) return;
-    *out = region_escape_tagged_value_impl(val);
+    if (!val) {
+        memset(out, 0, sizeof(*out));
+        return;
+    }
+    *out = region_escape_tagged_value_impl(*val);
 }
 
 // ===== END OALR IMPLEMENTATION =====

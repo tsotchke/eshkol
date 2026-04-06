@@ -22839,15 +22839,17 @@ private:
         // Escape the result value before popping the region
         // This copies heap-allocated return values to the parent region/global arena
         if (result) {
+            AllocaInst* result_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "region_result_slot");
             AllocaInst* escaped_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "escaped_result_slot");
+            builder->CreateStore(result, result_alloca);
             FunctionType* escape_type = FunctionType::get(
                 void_type,
-                {PointerType::getUnqual(*context), tagged_value_type},
+                {PointerType::getUnqual(*context), PointerType::getUnqual(*context)},
                 false);
             FunctionCallee escape_fn = module->getOrInsertFunction(
                 "region_escape_tagged_value_into", escape_type);
 
-            builder->CreateCall(escape_fn, {escaped_alloca, result});
+            builder->CreateCall(escape_fn, {escaped_alloca, result_alloca});
             result = builder->CreateLoad(tagged_value_type, escaped_alloca, "escaped_result");
         }
 
