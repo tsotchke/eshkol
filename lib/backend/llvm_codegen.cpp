@@ -591,6 +591,7 @@ private:
     std::unordered_map<std::string, Value*> symbol_table;
     std::unordered_map<std::string, Value*> global_symbol_table; // Persistent global symbols
     std::unordered_map<std::string, Function*> function_table;
+    std::unordered_map<const eshkol_ast_t*, Function*> declared_functions_by_ast;
     std::unordered_map<std::string, std::vector<std::string>> nested_function_captures; // Free vars for nested defines
     std::unordered_map<std::string, std::string> functions_returning_lambda; // Maps function name -> lambda name it returns
 
@@ -1608,7 +1609,7 @@ public:
                                 eshkol_debug("Generated S-expression for lambda %s", meta.lambda_name.c_str());
 
                                 // Register this lambda in the registry for homoiconic display
-                                Function* reg_lambda_func = module->getFunction(meta.lambda_name);
+                                Function* reg_lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
                                 if (reg_lambda_func) {
                                     Value* reg_func_ptr_int = builder->CreatePtrToInt(reg_lambda_func, intptr_type);
                                     Value* reg_name_str = builder->CreateGlobalString(meta.lambda_name);
@@ -1620,7 +1621,7 @@ public:
                                 // Also create variable alias if this lambda was bound to a variable
                                 // CRITICAL FIX: Search for which variable maps to this lambda function
                                 // The variable is stored as "varname_func" -> Function*, where Function->getName() == meta.lambda_name
-                                Function* lambda_func_ref = module->getFunction(meta.lambda_name);
+                                Function* lambda_func_ref = resolveFunctionByLogicalName(meta.lambda_name);
                                 if (lambda_func_ref) {
                                     for (auto& entry : global_symbol_table) {
                                         // Look for keys ending in "_func"
@@ -1853,7 +1854,7 @@ public:
                         global_symbol_table[sexpr_key] = sexpr_global;
 
                         // Register this lambda in the registry for homoiconic display
-                        Function* lambda_func = module->getFunction(meta.lambda_name);
+                        Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
                         if (lambda_func) {
                             Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                             Value* name_str = builder->CreateGlobalString(meta.lambda_name);
@@ -3073,6 +3074,7 @@ private:
         }
 
         registerContextFunction(func_name, function);
+        declared_functions_by_ast[ast] = function;
         eshkol_debug("Created polymorphic function declaration: %s with %llu tagged_value parameters%s",
                     func_name, (unsigned long long)num_params, is_variadic ? " (variadic)" : "");
     }
@@ -3289,7 +3291,7 @@ private:
                 global_symbol_table[sexpr_key] = sexpr_global;
 
                 // Register this lambda in the registry for homoiconic display
-                Function* lambda_func = module->getFunction(meta.lambda_name);
+                Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
                 if (lambda_func) {
                     Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                     Value* name_str = builder->CreateGlobalString(meta.lambda_name);
@@ -3488,7 +3490,7 @@ private:
                     eshkol_debug("Generated S-expression for lambda %s", meta.lambda_name.c_str());
 
                     // Register this lambda in the registry for homoiconic display
-                    Function* lambda_func = module->getFunction(meta.lambda_name);
+                    Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
                     if (lambda_func) {
                         Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                         Value* name_str = builder->CreateGlobalString(meta.lambda_name);
@@ -3769,7 +3771,7 @@ private:
                     eshkol_debug("Generated S-expression for lambda %s (top-level case)", meta.lambda_name.c_str());
 
                     // Register this lambda in the registry for homoiconic display
-                    Function* lambda_func = module->getFunction(meta.lambda_name);
+                    Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
                     if (lambda_func) {
                         Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                         Value* name_str = builder->CreateGlobalString(meta.lambda_name);
@@ -4475,6 +4477,14 @@ private:
             eshkol_debug("REPL: Created forward reference pointer %s for function %s",
                         global_ptr_name.c_str(), name.c_str());
         }
+    }
+
+    Function* resolveFunctionByLogicalName(const std::string& name) {
+        auto it = function_table.find(name);
+        if (it != function_table.end() && it->second) {
+            return it->second;
+        }
+        return module->getFunction(name);
     }
 
     // REPL MODE: Check if a function exists in the global REPL context and create external declaration
@@ -6469,6 +6479,9 @@ private:
                 return codegenVariable(ast);
                 
             case ESHKOL_OP:
+                if (ast->operation.op == ESHKOL_DEFINE_OP) {
+                    return codegenDefine(ast);
+                }
                 return codegenOperation(&ast->operation);
                 
             case ESHKOL_CONS:
@@ -7290,12 +7303,17 @@ private:
         }
     }
     
-    Value* codegenDefine(const eshkol_operations_t* op) {
+    Value* codegenDefine(const eshkol_ast_t* ast) {
+        if (!ast || ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_DEFINE_OP) {
+            return nullptr;
+        }
+
+        const eshkol_operations_t* op = &ast->operation;
         const char* name = op->define_op.name;
         if (!name) return nullptr;
 
         if (op->define_op.is_function) {
-            return codegenFunctionDefinition(op);
+            return codegenFunctionDefinition(ast);
         } else {
             // EXTERNAL VARIABLE FIX: For external variables from pre-compiled modules,
             // just create an external GlobalVariable declaration - don't evaluate/store
@@ -7325,9 +7343,55 @@ private:
         }
     }
 
-    Value* codegenFunctionDefinition(const eshkol_operations_t* op) {
+    Value* codegenDefine(const eshkol_operations_t* op) {
+        if (!op) {
+            return nullptr;
+        }
+
+        const char* name = op->define_op.name;
+        if (!name) return nullptr;
+
+        if (op->define_op.is_function) {
+            eshkol_error("Function definition '%s' requires AST-context codegen", name);
+            return nullptr;
+        }
+
+        if (op->define_op.is_external) {
+            GlobalVariable* gv = module->getNamedGlobal(name);
+            if (!gv) {
+                gv = new GlobalVariable(
+                    *module,
+                    tagged_value_type,
+                    false,
+                    GlobalValue::ExternalLinkage,
+                    nullptr,
+                    name
+                );
+                gv->setAlignment(Align(16));
+                eshkol_debug("External variable declaration: %s", name);
+            }
+            symbol_table[name] = gv;
+            global_symbol_table[name] = gv;
+            return packNullToTaggedValue();
+        }
+
+        return binding_->define(op);
+    }
+
+    Value* codegenFunctionDefinition(const eshkol_ast_t* ast) {
+        if (!ast || ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_DEFINE_OP) {
+            return nullptr;
+        }
+
+        const eshkol_operations_t* op = &ast->operation;
         const char* func_name = op->define_op.name;
-        Function* function = function_table[func_name];
+        Function* function = nullptr;
+        auto declared_it = declared_functions_by_ast.find(ast);
+        if (declared_it != declared_functions_by_ast.end()) {
+            function = declared_it->second;
+        } else {
+            function = function_table[func_name];
+        }
 
         if (!function) {
             // This is a nested function definition - generate it like a lambda with closure support
@@ -7568,6 +7632,7 @@ private:
 
         return function;
     }
+
 
     // Generate a nested function definition as a closure (like a lambda)
     Value* codegenNestedFunctionDefinition(const eshkol_operations_t* op) {
