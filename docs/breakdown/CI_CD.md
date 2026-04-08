@@ -178,6 +178,37 @@ When adding a new CI job:
 
 ---
 
+## GitLab CI (Parallel Pipeline)
+
+The project runs a parallel CI pipeline on GitLab CI in addition to GitHub Actions, providing additional platform coverage and build matrix flexibility.
+
+**File:** `.gitlab-ci.yml`
+
+### Build Matrix
+
+| Platform | Architecture | Variant |
+|----------|-------------|---------|
+| Linux (Ubuntu) | x86-64 | lite |
+| Linux (Ubuntu) | x86-64 | XLA |
+| Linux (Ubuntu) | x86-64 | CUDA |
+| Linux (Ubuntu) | ARM64 | lite |
+| Linux (Ubuntu) | ARM64 | XLA |
+| macOS | ARM64 (Apple Silicon) | lite |
+| macOS | ARM64 (Apple Silicon) | XLA |
+| Windows | x86-64 | lite (VS 2022 + ClangCL) |
+
+### Toolchain
+
+All GitLab CI runners use **LLVM 21** via `cmake/LLVMToolchain.cmake` — the same toolchain contract as local builds and GitHub Actions. Linux runners install from the official LLVM apt repository (`llvm-toolchain-jammy-21`). macOS runners use Homebrew `llvm@21`. Windows uses the LLVM 21 SDK with Visual Studio 2022.
+
+### Pipeline Stages
+
+1. **build** — CMake configure + build (Ninja)
+2. **test** — `scripts/run_all_tests.sh`
+3. **package** — artifact collection (release matrix only)
+
+---
+
 ## See Also
 
 - [Docker](DOCKER.md) -- Docker images used by CUDA and XLA release builds

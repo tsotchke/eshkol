@@ -918,6 +918,66 @@ GPU buffers are stack-local (`EshkolGPUBuffer buf_a, buf_b, buf_c`) and freed im
 
 ---
 
+## Platform-Specific ABI Considerations
+
+Eshkol's runtime passes `eshkol_tagged_value_t` (a 16-byte struct) across function boundaries in several places. Platform ABIs differ in how they handle 16-byte aggregate return values and aggregate parameters, which required explicit platform dispatch in two functions.
+
+### ARM64 Thunk Calling Convention (`call_thunk_closure`)
+
+**File:** `lib/core/arena_memory.cpp:3908`
+
+Dynamic-wind and `call/cc` thunks are zero-argument closures invoked through a trampoline (`call_thunk_closure`). The trampoline bridges a typed function pointer (stored as `void*` in the closure) back to a call returning `eshkol_tagged_value_t`.
+
+The problem: the two dominant ABI families handle 16-byte aggregate return differently.
+- **x86-64 (System V) and Windows x64**: The caller passes a hidden first argument — a pointer to the caller's return slot. The function writes the return value there and returns `void`.
+- **AArch64**: Returns the 16-byte struct directly in register pairs (`x0:x1`). No hidden buffer is passed.
+
+Without the fix, ARM64 would treat the caller-provided hidden buffer pointer as the first data argument, shifting all real arguments by one slot and corrupting the return value.
+
+The fix introduces a compile-time branch:
+
+```c
+#if defined(__aarch64__) || defined(_M_ARM64)
+    // ARM64: direct return in registers — no hidden buffer
+    typedef eshkol_tagged_value_t (*fn0_t)(void);
+    typedef eshkol_tagged_value_t (*fn1_t)(void*);
+    // ... (fn2_t through fn4_t follow the same pattern)
+    result = ((fn0_t)(uintptr_t)closure->func_ptr)();
+#else
+    // x86/Windows: hidden return buffer as first parameter
+    typedef void (*fn0_t)(eshkol_tagged_value_t*);
+    typedef void (*fn1_t)(eshkol_tagged_value_t*, void*);
+    // ... (fn2_t through fn4_t follow the same pattern)
+    ((fn0_t)(uintptr_t)closure->func_ptr)(&result);
+#endif
+```
+
+`call_thunk_closure` is used by `call_thunk_from_tagged` (line ~3975) which is called during `call/cc` continuation unwinding and dynamic-wind before/after thunk invocation. See also [CONTINUATIONS.md](CONTINUATIONS.md) for the call/cc and dynamic-wind implementation that depends on this trampoline.
+
+### Windows x64 Struct-by-Value Parameter Fix (`region_escape_tagged_value_into`)
+
+**File:** `lib/core/arena_memory.cpp:1909`
+
+The Windows x64 ABI requires that structs larger than 8 bytes be passed by pointer, not by value. `region_escape_tagged_value_into` previously took `eshkol_tagged_value_t val` by value (16 bytes), violating this convention and causing misaligned stack frames on Windows.
+
+The fix changes the signature:
+
+```c
+// Before:
+extern "C" void region_escape_tagged_value_into(
+    eshkol_tagged_value_t* out,
+    eshkol_tagged_value_t val);           // 16-byte struct by value — illegal on Windows x64
+
+// After:
+extern "C" void region_escape_tagged_value_into(
+    eshkol_tagged_value_t* out,
+    const eshkol_tagged_value_t* val);    // pointer — correct on all platforms
+```
+
+The corresponding LLVM codegen was updated to pass the address of the value instead of the value itself. This function is called whenever a region-allocated object (OALR ownership model) is escaped into external or shared memory when returning from a lexical scope.
+
+---
+
 ## See Also
 
 - [Type System](TYPE_SYSTEM.md) - Object headers, type tags, subtypes

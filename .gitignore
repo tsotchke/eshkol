@@ -110,6 +110,7 @@ tools/vscode-eshkol/node_modules/
 
 #local specific files
 docs/private/*
+docs/superpowers/
 examples-dep/
 build-lite/
 build-xla/

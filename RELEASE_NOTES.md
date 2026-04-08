@@ -117,7 +117,7 @@ Native Windows builds are now supported:
 
 ## Test Results
 
-35 test suites passing with 434 test files covering all subsystems.
+35 test suites passing with 438 test files covering all subsystems.
 
 ---
 

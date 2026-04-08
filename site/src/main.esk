@@ -231,7 +231,7 @@
       (style! logo "color" "#7c3aed")
       (style! logo "textDecoration" "none")
       (style! logo "letterSpacing" "-0.5px")
-      (web-set-attribute logo "href" "#/"))
+      (web-set-attribute logo "href" "/"))
 
     ;; Nav links
     (let ((links (create-div nav)))
@@ -239,12 +239,12 @@
       (style! links "gap" "24px")
       (style! links "alignItems" "center")
 
-      (create-nav-link "Learn" "#/learn" links)
-      (create-nav-link "Examples" "#/examples" links)
-      (create-nav-link "Docs" "#/docs" links)
-      (create-nav-link "Downloads" "#/downloads" links)
-      (create-nav-link "Playground" "#/playground" links)
-      (create-nav-link "Community" "#/community" links)
+      (create-nav-link "Learn" "/learn" links)
+      (create-nav-link "Examples" "/examples" links)
+      (create-nav-link "Docs" "/docs" links)
+      (create-nav-link "Downloads" "/downloads" links)
+      (create-nav-link "Playground" "/playground" links)
+      (create-nav-link "Community" "/community" links)
 
       ;; GitHub button
       (let ((gh (create-text "a" "GitHub" links)))
@@ -300,10 +300,10 @@
           (style! h "fontWeight" "600")
           (style! h "marginBottom" "12px")
           (style! h "fontSize" "0.85rem"))
-        (create-ext-link "Learn" "#/learn" nav-col)
-        (create-ext-link "Examples" "#/examples" nav-col)
-        (create-ext-link "Documentation" "#/docs" nav-col)
-        (create-ext-link "Downloads" "#/downloads" nav-col))
+        (create-ext-link "Learn" "/learn" nav-col)
+        (create-ext-link "Examples" "/examples" nav-col)
+        (create-ext-link "Documentation" "/docs" nav-col)
+        (create-ext-link "Downloads" "/downloads" nav-col))
 
       ;; Community
       (let ((comm (create-div cols)))
@@ -315,7 +315,7 @@
         (create-ext-link "GitHub" "https://github.com/tsotchke/eshkol" comm)
         (create-ext-link "Issues" "https://github.com/tsotchke/eshkol/issues" comm)
         (create-ext-link "Discussions" "https://github.com/tsotchke/eshkol/discussions" comm)
-        (create-ext-link "Contributing" "#/community" comm)))
+        (create-ext-link "Contributing" "/community" comm)))
 
     ;; Bottom bar
     (let ((bottom (create-div footer)))
@@ -377,8 +377,8 @@
           (style! btns "display" "flex")
           (style! btns "gap" "16px")
           (style! btns "flexWrap" "wrap")
-          (create-btn-primary "Get Started" "#/downloads" btns)
-          (create-btn-secondary "Try in Browser" "#/playground" btns)))
+          (create-btn-primary "Get Started" "/downloads" btns)
+          (create-btn-secondary "Try in Browser" "/playground" btns)))
 
       ;; Right side: runnable code
       (let ((right (create-div split)))
@@ -400,10 +400,10 @@
           (style! h "fontSize" "1.2rem")
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "12px"))
-        (body-text c1 "Define a loss function and train with gradient descent. Automatic differentiation computes exact derivatives at compile time.")
+        (body-text c1 "Define a loss function and train with gradient descent. Autodiff computes exact derivatives — no manual calculus needed.")
         (create-runnable-code-block c1
-          "(define (loss w x y)\n  (* (- (* w x) y) (- (* w x) y)))\n\n(define (train w lr data)\n  (if (null? data) w\n    (train (- w (* lr (derivative (lambda (w) (loss w (caar data) (cadar data))) w)))\n      lr (cdr data))))\n\n(display (train 0.5 0.01 '((1 2) (2 4) (3 6))))"
-          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss w x y)</span>\n  <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(-</span> <span style='color:#c084fc'>(*</span> w x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(-</span> <span style='color:#c084fc'>(*</span> w x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>)))</span>\n\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(train w lr data)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(null?</span> data<span style='color:#c084fc'>)</span> w\n    <span style='color:#c084fc'>(train</span> <span style='color:#c084fc'>(-</span> w <span style='color:#c084fc'>(*</span> lr <span style='color:#c084fc'>(derivative</span> ...<span style='color:#c084fc'>)))</span>\n      lr <span style='color:#c084fc'>(cdr</span> data<span style='color:#c084fc'>))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(train</span> <span style='color:#00ff88'>0.5</span> <span style='color:#00ff88'>0.01</span> <span style='color:#00ff88'>'((1 2) (2 4) (3 6))</span><span style='color:#c084fc'>))</span></pre>"))
+          "(define (loss w x y)\n  (* (- (* w x) y) (- (* w x) y)))\n\n(define (train w lr data)\n  (if (null? data) w\n    (let ((x (caar data)) (y (cadar data)))\n      (train (- w (* lr (derivative (lambda (w) (loss w x y)) w)))\n             lr (cdr data)))))\n\n(display (train 0.5 0.01 '((1 2) (2 4) (3 6))))"
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss w x y)</span>\n  <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(-</span> <span style='color:#c084fc'>(*</span> w x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(-</span> <span style='color:#c084fc'>(*</span> w x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>)))</span>\n\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(train w lr data)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(null?</span> data<span style='color:#c084fc'>)</span> w\n    <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>x</span> <span style='color:#c084fc'>(caar</span> data<span style='color:#c084fc'>))</span> (<span style='color:#a78bfa'>y</span> <span style='color:#c084fc'>(cadar</span> data<span style='color:#c084fc'>)))</span>\n      <span style='color:#c084fc'>(train</span> <span style='color:#c084fc'>(-</span> w <span style='color:#c084fc'>(*</span> lr <span style='color:#c084fc'>(derivative</span> <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(w)</span> <span style='color:#c084fc'>(loss</span> w x y<span style='color:#c084fc'>))</span> w<span style='color:#c084fc'>)))</span>\n             lr <span style='color:#c084fc'>(cdr</span> data<span style='color:#c084fc'>)))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(train</span> <span style='color:#00ff88'>0.5</span> <span style='color:#00ff88'>0.01</span> <span style='color:#00ff88'>'((1 2) (2 4) (3 6))</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => 0.891 (converges to 2.0 over epochs)</span></pre>"))
 
       ;; Card 2: Solve a Differential Equation
       (let ((c2 (create-card grid)))
@@ -411,10 +411,10 @@
           (style! h "fontSize" "1.2rem")
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "12px"))
-        (body-text c2 "Euler integration of dy/dt = -2y. Tail-recursive loop computes 200 steps of exponential decay to reach e^(-4).")
+        (body-text c2 "RK4 integration of dy/dt = -2y. Takes the ODE as a higher-order function. 200 steps reaches machine-precision e^(-4).")
         (create-runnable-code-block c2
-          "(define (decay t y) (* -2.0 y))\n(display (let loop ((t 0.0) (y 1.0) (i 0))\n  (if (>= i 200) y\n    (loop (+ t 0.01) (+ y (* 0.01 (* -2.0 y))) (+ i 1)))))"
-          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(decay t y)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>-2.0</span> y<span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span>\n  <span style='color:#c084fc'>(let</span> loop ((<span style='color:#a78bfa'>t</span> <span style='color:#00ff88'>0.0</span>) (<span style='color:#a78bfa'>y</span> <span style='color:#00ff88'>1.0</span>) (<span style='color:#a78bfa'>i</span> <span style='color:#00ff88'>0</span>))\n    <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(>=</span> i <span style='color:#00ff88'>200</span><span style='color:#c084fc'>)</span> y\n      <span style='color:#c084fc'>(loop</span> <span style='color:#c084fc'>(+</span> t <span style='color:#00ff88'>0.01</span><span style='color:#c084fc'>)</span>\n            <span style='color:#c084fc'>(+</span> y <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>0.01</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>-2.0</span> y<span style='color:#c084fc'>)))</span>\n            <span style='color:#c084fc'>(+</span> i <span style='color:#00ff88'>1</span><span style='color:#c084fc'>)))))</span>\n<span style='color:#606078'>;; => ~0.0183 (e^-4)</span></pre>"))
+          "(define (decay t y) (* -2.0 y))\n(define (rk4 f t y h)\n  (let* ((k1 (* h (f t y)))\n         (k2 (* h (f (+ t (* 0.5 h)) (+ y (* 0.5 k1)))))\n         (k3 (* h (f (+ t (* 0.5 h)) (+ y (* 0.5 k2)))))\n         (k4 (* h (f (+ t h) (+ y k3)))))\n    (+ y (* (/ 1.0 6.0) (+ k1 (* 2.0 k2) (* 2.0 k3) k4)))))\n(display\n  (let loop ((t 0.0) (y 1.0) (i 0))\n    (if (>= i 200) y\n      (loop (+ t 0.01) (rk4 decay t y 0.01) (+ i 1)))))"
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(decay t y)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>-2.0</span> y<span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(rk4 f t y h)</span>\n  <span style='color:#c084fc'>(let*</span> ((<span style='color:#a78bfa'>k1</span> <span style='color:#c084fc'>(*</span> h <span style='color:#c084fc'>(f</span> t y<span style='color:#c084fc'>)))</span>\n         (<span style='color:#a78bfa'>k2</span> <span style='color:#c084fc'>(*</span> h <span style='color:#c084fc'>(f</span> <span style='color:#c084fc'>(+</span> t <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>0.5</span> h<span style='color:#c084fc'>))</span> <span style='color:#c084fc'>(+</span> y <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>0.5</span> k1<span style='color:#c084fc'>)))))</span>\n         (<span style='color:#a78bfa'>k3</span> <span style='color:#c084fc'>(*</span> h <span style='color:#c084fc'>(f</span> <span style='color:#c084fc'>(+</span> t <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>0.5</span> h<span style='color:#c084fc'>))</span> <span style='color:#c084fc'>(+</span> y <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>0.5</span> k2<span style='color:#c084fc'>)))))</span>\n         (<span style='color:#a78bfa'>k4</span> <span style='color:#c084fc'>(*</span> h <span style='color:#c084fc'>(f</span> <span style='color:#c084fc'>(+</span> t h<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> y k3<span style='color:#c084fc'>)))))</span>\n    <span style='color:#c084fc'>(+</span> y <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(/</span> <span style='color:#00ff88'>1.0</span> <span style='color:#00ff88'>6.0</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> k1 <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>2.0</span> k2<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>2.0</span> k3<span style='color:#c084fc'>)</span> k4<span style='color:#c084fc'>)))))</span>\n<span style='color:#c084fc'>(display</span>\n  <span style='color:#c084fc'>(let</span> loop ((<span style='color:#a78bfa'>t</span> <span style='color:#00ff88'>0.0</span>) (<span style='color:#a78bfa'>y</span> <span style='color:#00ff88'>1.0</span>) (<span style='color:#a78bfa'>i</span> <span style='color:#00ff88'>0</span>))\n    <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(>=</span> i <span style='color:#00ff88'>200</span><span style='color:#c084fc'>)</span> y\n      <span style='color:#c084fc'>(loop</span> <span style='color:#c084fc'>(+</span> t <span style='color:#00ff88'>0.01</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(rk4</span> decay t y <span style='color:#00ff88'>0.01</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> i <span style='color:#00ff88'>1</span><span style='color:#c084fc'>)))))</span>\n<span style='color:#606078'>;; => 0.01832 (e^-4, machine precision)</span></pre>"))
 
       ;; Card 3: Reason with Logic and Probability
       (let ((c3 (create-card grid)))
@@ -654,7 +654,7 @@
         (web-add-class a "btn")
         (web-add-class a "btn-primary")
         (style! a "marginTop" "8px")
-        (web-set-attribute a "href" "#/downloads")))
+        (web-set-attribute a "href" "/downloads")))
 
     ;; Chapter 1: First Programs
     (let ((ch1 (render-chapter page "CHAPTER 1" "First Programs"
@@ -1019,7 +1019,7 @@
 
     ;; From source
     (section-subheading page "Build from Source")
-    (body-text page "Requires LLVM 17+, a C++20 compiler, and CMake 3.14+.")
+    (body-text page "Requires LLVM 21+, a C++20 compiler, and CMake 3.14+.")
     (create-code-block page
       "<code style='color:#22c55e'>$</code> git clone https://github.com/tsotchke/eshkol.git\n<code style='color:#22c55e'>$</code> cd eshkol && mkdir build && cd build\n<code style='color:#22c55e'>$</code> cmake .. -DCMAKE_BUILD_TYPE=Release\n<code style='color:#22c55e'>$</code> make -j$(nproc)\n<code style='color:#22c55e'>$</code> sudo make install")
 
@@ -1080,7 +1080,7 @@
         (let ((h (create-text "h3" "Build Requirements" r2)))
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "8px"))
-        (body-text r2 "LLVM 17+ (for the compiler backend), C++20 compiler (GCC 12+ or Clang 15+), CMake 3.14+. Optional: Metal SDK (GPU on macOS), CUDA toolkit (GPU on Linux).")))
+        (body-text r2 "LLVM 21+ (for the compiler backend), C++20 compiler (GCC 12+ or Clang 15+), CMake 3.14+. Optional: Metal SDK (GPU on macOS), CUDA toolkit (GPU on Linux).")))
 
     (render-footer page)))
 
@@ -1188,12 +1188,12 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "408KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "484KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))
         (web-add-class s2 "text-center")
-        (let ((v (create-text "div" "326KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "380KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "VM WASM" s2))) (web-add-class l "stat-label")))
 
       (let ((s3 (create-card stats)))
@@ -1283,13 +1283,13 @@
     ;; Contributing
     (section-subheading page "Contributing")
     (body-text page "Eshkol is open source under the MIT License. Contributions are welcome -- from bug fixes to new language features. See the Contributing Guide for code style, PR process, and development setup.")
-    (body-text page "The compiler is written in C++20 with LLVM 17+ as the backend. The standard library is written in Eshkol itself. Test suites use shell scripts in the scripts/ directory.")
+    (body-text page "The compiler is written in C++20 with LLVM 21+ as the backend. The standard library is written in Eshkol itself. Test suites use shell scripts in the scripts/ directory.")
 
     (create-divider page)
 
     ;; Development setup
     (section-subheading page "Development Setup")
-    (body-text page "To build Eshkol from source for development, you need LLVM 17+, a C++20 compiler (GCC 12+ or Clang 15+), and CMake 3.14+.")
+    (body-text page "To build Eshkol from source for development, you need LLVM 21+, a C++20 compiler (GCC 12+ or Clang 15+), and CMake 3.14+.")
     (create-code-block page
       "<code style='color:#22c55e'>$</code> git clone https://github.com/tsotchke/eshkol.git\n<code style='color:#22c55e'>$</code> cd eshkol && mkdir build && cd build\n<code style='color:#22c55e'>$</code> cmake .. -DCMAKE_BUILD_TYPE=Debug\n<code style='color:#22c55e'>$</code> make -j8\n<code style='color:#22c55e'>$</code> ./scripts/run_all_tests.sh")
     (body-text page "Run the full test suite with scripts/run_all_tests.sh. Individual test suites can be run with scripts/run_numeric_tests.sh, scripts/run_macros_tests.sh, etc.")
@@ -1353,17 +1353,17 @@
       (web-set-inner-html content "")
       (web-scroll-to 0 0)
       (cond
-        ((string=? route-buf "#/learn")
+        ((string=? route-buf "/learn")
          (render-learn-page content))
-        ((string=? route-buf "#/examples")
+        ((string=? route-buf "/examples")
          (render-examples-page content))
-        ((string=? route-buf "#/docs")
+        ((string=? route-buf "/docs")
          (render-docs-page content))
-        ((string=? route-buf "#/downloads")
+        ((string=? route-buf "/downloads")
          (render-downloads-page content))
-        ((string=? route-buf "#/playground")
+        ((string=? route-buf "/playground")
          (render-playground-page content))
-        ((string=? route-buf "#/community")
+        ((string=? route-buf "/community")
          (render-community-page content))
         (else
          (render-landing content))))))

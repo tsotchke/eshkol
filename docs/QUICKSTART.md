@@ -1186,7 +1186,7 @@ eshkol-run --wasm app.esk -o app.wasm
 - **GitHub**: https://github.com/tsotchke/eshkol
 - **Documentation**: [`docs/`](.)
 - **Examples**: [`examples-dep/`](../examples-dep)
-- **Tests**: [`tests/`](../tests) (434 test files across 35 suites)
+- **Tests**: [`tests/`](../tests) (438 test files across 35 suites)
 
 ---
 

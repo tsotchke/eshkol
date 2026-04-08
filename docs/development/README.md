@@ -32,7 +32,7 @@ See [Getting Started](../breakdown/GETTING_STARTED.md) for detailed installation
 
 ## Running Tests
 
-Eshkol includes 35 test suites with 434 test files:
+Eshkol includes 35 test suites with 438 test files:
 
 ```bash
 # Run all tests
@@ -94,7 +94,7 @@ eshkol/
 │   ├── tensor/       # Tensor utilities
 │   ├── repl/         # JIT compiler
 │   └── types/        # Type checker, HoTT types
-├── tests/            # Test suite (35 suites, 434 files)
+├── tests/            # Test suite (35 suites, 438 files)
 ├── tools/            # Developer tools
 │   ├── lsp/          # Language Server Protocol
 │   ├── pkg/          # Package manager (eshkol-pkg)

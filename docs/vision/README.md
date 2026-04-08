@@ -195,4 +195,4 @@ All vision documents in this directory:
 
 ---
 
-*This directory documents the Eshkol compiler vision. v1.1-accelerate is the current production release with GPU acceleration, consciousness engine, parallel primitives, exact arithmetic, dual backend architecture (LLVM + bytecode VM), and 75+ ML builtins. 434 tests across 35 suites.*
+*This directory documents the Eshkol compiler vision. v1.1-accelerate is the current production release with GPU acceleration, consciousness engine, parallel primitives, exact arithmetic, dual backend architecture (LLVM + bytecode VM), and 75+ ML builtins. 438 tests across 35 suites.*

@@ -362,7 +362,7 @@ Eshkol v1.1-accelerate is **READY FOR PRODUCTION RELEASE**. This assessment conf
 - Compiler supports multiple output modes (exe/eshkol-run.cpp)
 - REPL with LLVM ORC JIT and precompiled stdlib loading (lib/repl/repl_jit.cpp)
 - LSP server for editor integration (tools/lsp/eshkol_lsp.cpp)
-- 434+ test files with comprehensive coverage across 35 test suites
+- 438 test files with comprehensive coverage across 35 test suites
 - CMakeLists.txt with cross-platform support
 - Debian, Ubuntu, and CUDA Docker images (docker/)
 
@@ -410,7 +410,7 @@ Eshkol v1.1-accelerate is **READY FOR PRODUCTION RELEASE**. This assessment conf
 | **Web Tests** | ✅ Pass | Good |
 | **XLA Tests** | ✅ Pass | Good |
 
-**Total**: 35 test suites, 434+ test files, **100% pass rate**
+**Total**: 35 test suites, 438 test files, **100% pass rate**
 
 **Assessment**: Test coverage is comprehensive across all subsystems. Every v1.1 feature has dedicated test suites.
 
@@ -690,7 +690,7 @@ The following items from the v1.0 limitation list are now **fully resolved**:
 
 - **Architecture**: Modular LLVM backend with 21 specialized codegen modules
 - **Code Quality**: Production-grade C17/C++20 implementation
-- **Testing**: 35 test suites, 434+ test files, 100% pass rate
+- **Testing**: 35 test suites, 438 test files, 100% pass rate
 - **Error Handling**: Proper exception system with source locations, guard/raise
 - **Memory Safety**: Ownership analysis prevents use-after-move, thread-safe arenas
 - **Performance**: LLVM-native execution, deterministic timing, GPU/parallel acceleration
@@ -706,7 +706,7 @@ The following items from the v1.0 limitation list are now **fully resolved**:
 
 ### Stability and Reliability
 
-- **All Tests Passing**: 35 suites, 434+ test files execute successfully
+- **All Tests Passing**: 35 suites, 438 test files execute successfully
 - **No Critical Bugs**: All known issues documented and addressed (35/35 bignum gaps, PHI bugs, TCO corruption, etc.)
 - **Cross-Platform**: Verified on macOS, Linux, and Windows (MSYS2/MinGW64)
 - **Reproducible Builds**: Docker containers provided (Debian, Ubuntu, CUDA)
@@ -847,7 +847,7 @@ Eshkol v1.1-accelerate represents a **complete, production-quality compiler** th
 - **Web platform** with 73 functions and WASM compilation target
 - **Deterministic memory management** eliminating garbage collection entirely, now thread-safe
 - **Homoiconic native code** preserving S-expressions in 40-byte closures at LLVM speed
-- **555+ language features** with 39 special forms across 35 test suites (434+ tests, 100% pass rate)
+- **555+ language features** with 39 special forms across 35 test suites (438 tests, 100% pass rate)
 
 ### Recommendation
 

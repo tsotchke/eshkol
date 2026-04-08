@@ -52,7 +52,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 | Parser | 7,551 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp:1)) |
 | Memory manager | 4,972 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp:1)) |
 | Weight matrix transformer | 2,299 lines, 55/55 tests, 3-way verified |
-| Test suite | 434 tests across 35 suites (525+ assertions, 0 failures) |
+| Test suite | 438 tests across 35 suites (525+ assertions, 0 failures) |
 
 ---
 
@@ -1217,7 +1217,7 @@ This makes arena functions, autodiff tape operations, etc. available to JIT-comp
 
 ### Test Suite Organization
 
-**434 tests** across 35 suites:
+**438 tests** across 35 suites:
 
 | Category | Count | Purpose |
 |----------|-------|---------|

@@ -2,7 +2,7 @@
 
 **Status Key**: ✅ Production | 🚧 In Progress | 📋 Planned | ❌ Not Planned
 
-This matrix documents all implemented and planned features for the Eshkol language ecosystem. All **Production** features are code-verified with extensive test coverage (35 test suites, 434 test files).
+This matrix documents all implemented and planned features for the Eshkol language ecosystem. All **Production** features are code-verified with extensive test coverage (35 test suites, 438 test files).
 
 ---
 
@@ -858,7 +858,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 - Consciousness engine (logic, inference, workspace)
 - Signal processing library (FFT, filters, window functions)
 - R7RS extensions (call/cc, dynamic-wind, bytevectors)
-- 700+ builtins, 35 test suites, 434 test files
+- 700+ builtins, 35 test suites, 438 test files
 
 **Codebase**: ~232,000 lines of production C/C++
 
