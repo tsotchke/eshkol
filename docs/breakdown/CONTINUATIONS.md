@@ -83,15 +83,15 @@ The three fields serve distinct purposes:
 
 ### 2.3 Capture Mechanism (setjmp)
 
-The `codegenCallCC` function at `llvm_codegen.cpp:14243` emits the following
+The `codegenCallCC` function at `llvm_codegen.cpp:14626` emits the following
 LLVM IR sequence:
 
 1. **Allocate jmp_buf** on the current stack frame (200 bytes, platform-safe).
 2. **Create continuation state** via `eshkol_make_continuation_state(arena, jmp_buf)`
-   (`arena_memory.cpp:3791`). This arena-allocates the state struct and records
+   (`arena_memory.cpp:3845`). This arena-allocates the state struct and records
    the current `g_dynamic_wind_stack` as `wind_mark`.
 3. **Create continuation closure** via `eshkol_make_continuation_closure(arena, state)`
-   (`arena_memory.cpp:3805`). This allocates a standard closure with one capture
+   (`arena_memory.cpp:3859`). This allocates a standard closure with one capture
    (the state pointer) and overrides the header subtype to
    `CALLABLE_SUBTYPE_CONTINUATION`.
 4. **Package as tagged value** with type `ESHKOL_VALUE_CALLABLE`.
@@ -165,21 +165,21 @@ typedef struct eshkol_dynamic_wind_entry {
 } eshkol_dynamic_wind_entry_t;
 ```
 
-The global head pointer is `g_dynamic_wind_stack` (`arena_memory.cpp:3789`).
+The global head pointer is `g_dynamic_wind_stack` (`arena_memory.cpp:3843`).
 
 ### 3.3 Codegen for dynamic-wind
 
-The `codegenDynamicWind` function at `llvm_codegen.cpp:14354` emits:
+The `codegenDynamicWind` function at `llvm_codegen.cpp:14731` emits:
 
 1. Evaluate all three thunk expressions (with noreturn safety checks after each).
 2. Store `before` and `after` tagged values into stack allocas (placed in the
    function entry block for LLVM dominance correctness).
 3. Call `before()` via `codegenClosureCall` with zero arguments.
 4. Push the wind entry via `eshkol_push_dynamic_wind(arena, &before, &after)`
-   (`arena_memory.cpp:3874`). The push happens *after* `before()` succeeds,
+   (`arena_memory.cpp:3979`). The push happens *after* `before()` succeeds,
    per R7RS semantics.
 5. Call `thunk()` via `codegenClosureCall`, capturing the result.
-6. Pop the wind entry via `eshkol_pop_dynamic_wind()` (`arena_memory.cpp:3887`).
+6. Pop the wind entry via `eshkol_pop_dynamic_wind()` (`arena_memory.cpp:3992`).
 7. Call `after()` via `codegenClosureCall`.
 8. Return thunk's result.
 
@@ -205,9 +205,11 @@ saved mark, calling each `after` thunk along the way. The `wind_mark` was
 captured at `call/cc` time, so this unwinds exactly those `dynamic-wind` scopes
 that were entered after the continuation was created.
 
-The `call_thunk_from_tagged` helper (`arena_memory.cpp:3867`) extracts the
-closure pointer from a tagged `CALLABLE` value and dispatches by capture count
-(0 through 4), matching the LLVM calling convention for closure invocation.
+The `call_thunk_from_tagged` helper (`arena_memory.cpp:3972`) extracts the
+closure pointer from a tagged `CALLABLE` value and calls `call_thunk_closure`
+(`arena_memory.cpp:3908`), which dispatches by capture count (0 through 4).
+
+**Platform ABI note:** `call_thunk_closure` uses a compile-time branch on `__aarch64__` because `eshkol_tagged_value_t` (16 bytes) is returned differently on ARM64 (register pairs) vs x86/Windows (hidden return buffer). See [MEMORY_MANAGEMENT.md — Platform-Specific ABI Considerations](MEMORY_MANAGEMENT.md#platform-specific-abi-considerations).
 
 ---
 
@@ -228,7 +230,7 @@ Evaluates `body`. If `raise` is called during evaluation, the raised value is
 bound to `var` and the `clause` forms are evaluated as in a `cond` expression.
 If no clause matches, the exception is re-raised.
 
-The `codegenGuard` function at `llvm_codegen.cpp:13898` emits:
+The `codegenGuard` function at `llvm_codegen.cpp:14288` emits:
 
 1. **Setup block**: Allocate a 200-byte `jmp_buf` on the stack. Push an
    exception handler via `eshkol_push_exception_handler(jmp_buf)`
@@ -258,7 +260,7 @@ guard-establishing frame's stack, not on the tail-called function's frame.
 (raise obj)
 ```
 
-The `codegenRaise` function at `llvm_codegen.cpp:14163` emits:
+The `codegenRaise` function at `llvm_codegen.cpp:14546` emits:
 
 1. Store the original raised value (as a tagged value) into an alloca via
    `eshkol_set_raised_value`. This preserves the R7RS requirement that
@@ -282,7 +284,7 @@ A lower-level primitive. `handler` is a one-argument procedure; `thunk` is a
 zero-argument procedure. If an exception is raised during `thunk`, `handler`
 is called with the raised value.
 
-The `codegenWithExceptionHandler` function at `llvm_codegen.cpp:14420` follows
+The `codegenWithExceptionHandler` function at `llvm_codegen.cpp:14797` follows
 the same `setjmp`/`longjmp` pattern as `guard`, but invokes the handler closure
 with the raised value instead of evaluating `cond`-style clauses.
 
@@ -342,13 +344,13 @@ Total: 32 bytes, arena-allocated with 8-byte alignment.
 The `findFreeVariablesImpl` function must recurse into all continuation-related
 AST node types to correctly capture variables for lambda closures:
 
-- **ESHKOL_CALL_CC_OP** (`llvm_codegen.cpp:17781`): Recurses into
+- **ESHKOL_CALL_CC_OP** (`llvm_codegen.cpp:18238`): Recurses into
   `call_cc_op.proc`.
-- **ESHKOL_DYNAMIC_WIND_OP** (`llvm_codegen.cpp:17769`): Recurses into
+- **ESHKOL_DYNAMIC_WIND_OP** (`llvm_codegen.cpp:18226`): Recurses into
   `before`, `thunk`, and `after`.
-- **ESHKOL_GUARD_OP** (`llvm_codegen.cpp:17787`): Recurses into all body
+- **ESHKOL_GUARD_OP** (`llvm_codegen.cpp:18244`): Recurses into all body
   expressions and clause expressions.
-- **ESHKOL_RAISE_OP** (`llvm_codegen.cpp:17797`): Recurses into the exception
+- **ESHKOL_RAISE_OP** (`llvm_codegen.cpp:18254`): Recurses into the exception
   expression.
 
 Missing cases in `findFreeVariablesImpl` caused a historical bug where
@@ -528,12 +530,12 @@ intrinsics, CPS transformation passes, or runtime stack copying.
 
 - R7RS, Section 6.10: Control features (call/cc, dynamic-wind, values)
 - R7RS, Section 6.11: Exceptions (guard, raise, with-exception-handler)
-- `lib/backend/llvm_codegen.cpp`: codegenCallCC (line 14243), codegenDynamicWind
-  (line 14354), codegenGuard (line 13898), codegenRaise (line 14163),
+- `lib/backend/llvm_codegen.cpp`: codegenCallCC (line 14626), codegenDynamicWind
+  (line 14731), codegenGuard (line 14288), codegenRaise (line 14546),
   continuation invocation dispatch (line 4751)
-- `lib/core/arena_memory.cpp`: eshkol_make_continuation_state (line 3791),
-  eshkol_make_continuation_closure (line 3805), wind stack runtime (lines
-  3874--3901), exception handler stack (lines 3714--3741)
+- `lib/core/arena_memory.cpp`: eshkol_make_continuation_state (line 3845),
+  eshkol_make_continuation_closure (line 3859), wind stack runtime (lines
+  3979--4006), exception handler stack (lines 3714--3741)
 - `inc/eshkol/eshkol.h`: eshkol_continuation_state_t (line 984),
   eshkol_dynamic_wind_entry_t (line 991), runtime function declarations
   (lines 1001--1005)

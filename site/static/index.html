@@ -23,6 +23,19 @@
   <script src="eshkol-runtime.js"></script>
   <script src="eshkol-vm.js"></script>
   <script>
+    // Restore clean URL after 404.html redirect (GitHub Pages SPA trick)
+    (function(l) {
+      if (l.search[1] === '/') {
+        var decoded = l.search.slice(1).split('&').map(function(s) {
+          return s.replace(/~and~/g, '&');
+        });
+        window.history.replaceState(null, null,
+          l.pathname.slice(0, -1) + decoded[0] +
+          (decoded[1] ? '&' + decoded[1] : '') + l.hash
+        );
+      }
+    }(window.location));
+
     (async () => {
       const loadingEl = document.getElementById('loading');
       try {
@@ -37,12 +50,30 @@
         if (instance.exports.main) {
           instance.exports.main(0, 0);
         }
-        // SPA routing: re-call scheme_main on hash change
-        window.addEventListener('hashchange', () => {
+        // SPA routing: re-call scheme_main on popstate (back/forward)
+        window.addEventListener('popstate', () => {
           if (instance.exports.scheme_main) {
             instance.exports.scheme_main(0);
           }
         });
+        // Intercept internal link clicks — use pushState instead of full navigation
+        document.addEventListener('click', function(e) {
+          var target = e.target;
+          while (target && target.tagName !== 'A') target = target.parentElement;
+          if (!target) return;
+          var href = target.getAttribute('href');
+          if (!href) return;
+          if (href.startsWith('/') && !href.startsWith('//')) {
+            e.preventDefault();
+            if (window.location.pathname !== href) {
+              history.pushState(null, '', href);
+            }
+            if (instance.exports.scheme_main) {
+              instance.exports.scheme_main(0);
+            }
+            if (href === '/downloads') setTimeout(loadReleases, 100);
+          }
+        }, false);
         // Initialize the Eshkol bytecode VM for the browser REPL
         // Capture stdout from Emscripten into a buffer for the REPL terminal
         window._vmOutput = '';
@@ -187,7 +218,9 @@
             .catch(err => { container.innerHTML = '<p style="color:#71717a">Could not load releases. <a href="https://github.com/tsotchke/eshkol/releases">View on GitHub</a></p>'; });
         };
         // Load releases when navigating to downloads page
-        window.addEventListener('hashchange', () => { setTimeout(loadReleases, 100); });
+        window.addEventListener('popstate', () => {
+          if (window.location.pathname === '/downloads') setTimeout(loadReleases, 100);
+        });
         setTimeout(loadReleases, 500);
       } catch (e) {
         console.error('Eshkol WASM error:', e);

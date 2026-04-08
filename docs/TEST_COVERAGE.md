@@ -2,7 +2,7 @@
 
 **Version**: 1.1.11-accelerate
 **Last Updated**: 2026-03-27
-**Status**: 35 suites, 434 tests, 100% pass rate
+**Status**: 35 suites, 438 tests, 100% pass rate
 
 **Additional verification**: Bytecode VM passes 331/332 tests (99.7%), weight matrix transformer passes 55/55 tests with 3-way verification.
 
@@ -90,7 +90,7 @@ Coverage includes: arithmetic (int/float/rational/complex/bignum), strings (appe
 | 34 | Codegen | `run_codegen_tests.sh` | 2 | LLVM IR generation correctness: integer ops, floating-point ops |
 | 35 | Numeric | `run_numeric_tests.sh` | 7 | Critical numeric regressions: bignum, rational, rounding, expt, min/max |
 
-**Total**: 434 tests across 35 suites.
+**Total**: 438 tests across 35 suites.
 
 ---
 

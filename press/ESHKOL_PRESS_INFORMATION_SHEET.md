@@ -183,7 +183,7 @@ No other compiled language maintains this property.
 | **Parser** | Recursive descent, 5,487 lines |
 | **Type checker** | Bidirectional Hindley-Milner with HoTT extensions, 1,561 lines |
 | **Codegen** | 21 modular LLVM code generation components |
-| **Test suite** | 434 tests across 35 suites, all passing |
+| **Test suite** | 438 tests across 35 suites, all passing |
 | **Codebase** | ~232K lines |
 | **Bytecode VM** | 63-opcode VM, ESKB binary format, weight matrix transformer |
 

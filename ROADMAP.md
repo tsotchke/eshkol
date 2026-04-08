@@ -396,7 +396,7 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 - ✅ Package Manager (eshkol-pkg, TOML manifest) - Complete
 - ✅ LSP Server (diagnostics, completion, hover) - Complete
 - ✅ VSCode Extension (syntax highlighting, LSP client) - Complete
-- ✅ Test Suite (35 suites, 434 tests) - Complete
+- ✅ Test Suite (35 suites, 438 tests) - Complete
 
 ### v1.1-accelerate (Complete)
 - ✅ XLA Backend (StableHLO/MLIR + LLVM-direct) - Complete

@@ -6890,7 +6890,7 @@ for composability and custom pipelines.
 **Main Backend**: [llvm_codegen.cpp](lib/backend/llvm_codegen.cpp) — 34,928 lines
 **Tensor Codegen**: [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp) — 20,000+ lines
 **Compiler Modules**: 21 specialized code generators
-**Test Suite**: 35 test suites, 434 test files
+**Test Suite**: 35 test suites, 438 test files
 **Verified Operations**: 700+ builtins, 300+ standard library functions
 
 ---

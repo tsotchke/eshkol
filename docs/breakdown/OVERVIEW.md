@@ -451,12 +451,12 @@ Eshkol v1.1-accelerate represents a **mature, production-ready implementation** 
 | Tools (LSP, package manager) | 1,739 | 2 |
 | **Total C/C++ compiler infrastructure** | **~232,000** | **43+** |
 | Standard library (.esk) | ~2,500 | 40 modules |
-| Test code (.esk) | 32,120 | 434 files |
+| Test code (.esk) | 32,120 | 438 files |
 
 ### Test Coverage
 
 - **38 test directories** organized by feature: autodiff, bignum, closures, collections, complex, control_flow, error_handling, features, gpu, integration, io, json, lists, logic, macros, memory, migration, ml, modules, neural, numeric, parallel, parser, rational, repl, signal, stdlib, string, system, tco, types, typesystem, web, xla, benchmark, codegen
-- **434 test files** with 35 automated test suites via shell scripts
+- **438 test files** with 35 automated test suites via shell scripts
 - **~32,000 lines** of test code
 
 ### Tooling

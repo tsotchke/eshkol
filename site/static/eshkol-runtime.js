@@ -500,13 +500,15 @@ class EshkolRuntime {
                     return 0;
                 },
 
-                // Location
+                // Location (pathname-based routing — clean URLs, no hash)
                 web_get_hash: (bufPtr, bufLen) => {
-                    return rt.writeString(bufPtr, window.location.hash, bufLen);
+                    var path = window.location.pathname.replace(/\/$/, '') || '/';
+                    return rt.writeString(bufPtr, path, bufLen);
                 },
 
                 web_set_hash: (hashPtr) => {
-                    window.location.hash = rt.readString(hashPtr);
+                    var path = rt.readString(hashPtr);
+                    history.pushState(null, '', path);
                     return 0;
                 },
 
@@ -615,7 +617,7 @@ class EshkolRuntime {
 
                     // Code display
                     const codeDiv = document.createElement('div');
-                    codeDiv.style.cssText = 'padding:24px 28px;overflow:auto';
+                    codeDiv.style.cssText = 'padding:16px 20px;overflow-x:auto;overflow-y:visible';
                     codeDiv.innerHTML = html;
                     wrapper.appendChild(codeDiv);
 

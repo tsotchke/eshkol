@@ -32,6 +32,48 @@ The bytecode VM is now a fully production-grade execution engine with 555+ built
 
 ---
 
+## [1.1.12-accelerate] - 2026-04-07
+
+### Toolchain Unification + Platform Hardening Release
+
+#### LLVM 21 Toolchain Unification
+- Standardized entire build on LLVM 21 across Linux, macOS, and Windows (previously mixed LLVM 17/18)
+- New `cmake/LLVMToolchain.cmake`: authoritative LLVM version discovery and enforcement at configure time
+- New `scripts/lib/llvm21-env.sh`: platform-aware LLVM 21 activation for all shell scripts
+- All platform scripts now hand off LLVM policy to CMake instead of embedding independent logic
+- Hard version check: configure fails with a clear error if LLVM major version is not exactly 21
+- Removed misleading `LLVM 18+` compatibility branches from backend codegen
+
+#### Native Windows Support
+- Full build via Visual Studio 2022 + ClangCL + LLVM 21 SDK
+- Configures with `Visual Studio 17 2022` generator and `-T ClangCL`
+- `region_escape_tagged_value_into` ABI fix: now passes `eshkol_tagged_value_t` by pointer (`const eshkol_tagged_value_t*`) to satisfy Windows x64 calling convention for 16-byte aggregates
+
+#### ARM64 ABI Fix
+- Fixed `call_thunk_closure` in `arena_memory.cpp`: ARM64 returns 16-byte `eshkol_tagged_value_t` in registers (not via hidden return buffer as on x86/Windows)
+- Added `#if defined(__aarch64__)` dispatch — direct return ABI on ARM64, hidden-buffer ABI on x86/Windows
+- Resolves dynamic-wind + call/cc thunk invocation on Apple Silicon and Linux ARM64
+
+#### Mutual TCO Fix
+- `llvm_codegen.cpp`: version-gated tail call kind — `TCK_MustTail` on LLVM < 18, `TCK_Tail` on LLVM ≥ 18
+- Fixes "LLVM ERROR: cannot use musttail" on Linux (LLVM 21 rejects musttail for aggregate-return functions)
+
+#### Website
+- Clean URL routing: navigation now uses `/downloads`, `/learn`, `/docs` etc. instead of `/#/downloads`
+- GitHub Pages 404-redirect SPA routing for direct URL access
+- Updated LLVM requirement strings: LLVM 17+ → LLVM 21+
+- Updated WASM size stats to reflect current build sizes
+
+#### CI/CD Expansion
+- New GitLab CI matrix: Linux x64/arm64 × lite/XLA/CUDA + macOS × lite/XLA + Windows
+- GitHub CI updated to LLVM 21 baseline across all runners
+- Docker parity images (`docker/debian/`, `docker/ubuntu/`) updated to LLVM 21
+
+#### Test Results
+- 35/35 test suites, 438/438 tests, 100% pass rate (local, macOS ARM64)
+
+---
+
 ## [1.1.11-accelerate] - 2026-03-27
 
 ### Performance Acceleration Release
@@ -100,7 +142,7 @@ Eshkol v1.1-accelerate delivers comprehensive performance acceleration through X
 - Metal buffer leak fix (@autoreleasepool)
 - REPL complex type handling
 - Module visibility enforcement
-- 35 test suites passing (434 test files)
+- 35 test suites passing (438 test files)
 
 #### Dual Backend Architecture (NEW)
 - **Bytecode VM**: 63-opcode register+stack interpreter (eshkol_vm.c, 8457 lines) with 250+ native call IDs covering the full language

@@ -750,7 +750,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: 434 tests across 35 suites with automated verification
+- **Testing**: 438 tests across 35 suites with automated verification
 - **Platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (native x86_64 via Visual Studio 2022 + LLVM 21)
 
 ---

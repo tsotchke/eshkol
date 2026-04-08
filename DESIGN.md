@@ -287,9 +287,9 @@ The LLVM and VM backends share the same language semantics but use independent v
 | Weight matrix transformer | ~2,300 | 1 |
 | **Total compiler infrastructure** | **~232,000** | **130+** |
 | Standard library (.esk) | ~5,200 | 40 modules |
-| Test code (.esk) | ~34,000 | 434 files |
+| Test code (.esk) | ~34,000 | 438 files |
 
-35 automated test suites, 434 test files, 525+ assertions, 0 failures. Bytecode VM: 331/332 tests (99.7%). Weight matrices: 55/55 (3-way verified).
+35 automated test suites, 438 test files, 525+ assertions, 0 failures. Bytecode VM: 331/332 tests (99.7%). Weight matrices: 55/55 (3-way verified).
 
 ---
 

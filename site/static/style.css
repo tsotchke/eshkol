@@ -75,14 +75,20 @@ code, pre { font-family: var(--font-mono); }
 .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+/* Prevent grid items from overflowing their column */
+.grid-2 > *, .grid-3 > *, .grid-4 > * { min-width: 0; }
 
-@media (max-width: 960px) {
+@media (max-width: 1024px) {
   .grid-3 { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 960px) {
   .grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .card { padding: 20px; }
 }
 @media (max-width: 640px) {
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
   .section, .section-narrow { padding: 48px 16px; }
+  .card { padding: 16px; }
 }
 
 /* ── Cards ── */
