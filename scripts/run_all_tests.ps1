@@ -538,9 +538,14 @@ function Invoke-MemorySuite {
             Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
         } elseif ($run.Output -match "error:") {
-            Format-TestStatus $testName "RUNTIME ERROR" Yellow
-            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
-            Add-Fail $suite $testName
+            if ($expectsError) {
+                Format-TestStatus $testName "PASS (expected error)" Green
+                Add-Pass $suite
+            } else {
+                Format-TestStatus $testName "RUNTIME ERROR" Yellow
+                Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
+                Add-Fail $suite $testName
+            }
         } else {
             Format-TestStatus $testName "PASS" Green
             Add-Pass $suite
@@ -598,9 +603,14 @@ function Invoke-ModulesSuite {
             Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
         } elseif ($run.Output -match "error:") {
-            Format-TestStatus $testName "RUNTIME ERROR" Yellow
-            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
-            Add-Fail $suite $testName
+            if ($expectsError) {
+                Format-TestStatus $testName "PASS (expected error)" Green
+                Add-Pass $suite
+            } else {
+                Format-TestStatus $testName "RUNTIME ERROR" Yellow
+                Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
+                Add-Fail $suite $testName
+            }
         } else {
             Format-TestStatus $testName "PASS" Green
             Add-Pass $suite
@@ -646,9 +656,14 @@ function Invoke-ParserSuite {
                 Add-Fail $suite $testName
             }
         } elseif ($run.Output -match "error:") {
-            Format-TestStatus $testName "RUNTIME ERROR" Yellow
-            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
-            Add-Fail $suite $testName
+            if ($expectsError) {
+                Format-TestStatus $testName "PASS (expected error)" Green
+                Add-Pass $suite
+            } else {
+                Format-TestStatus $testName "RUNTIME ERROR" Yellow
+                Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
+                Add-Fail $suite $testName
+            }
         } else {
             Format-TestStatus $testName "PASS" Green
             Add-Pass $suite

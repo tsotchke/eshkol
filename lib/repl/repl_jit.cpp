@@ -221,10 +221,10 @@ void ReplJITContext::initializeJIT() {
     // This is needed because macOS doesn't export symbols from static libraries
     registerRuntimeSymbols();
 
-    // CRITICAL: Create shared arena for all REPL evaluations
-    // Set the global variable that will be accessed by JIT-compiled code
-    __repl_shared_arena.store(arena_create(8192));  // 8KB default block size
-    shared_arena_ = __repl_shared_arena.load();  // Keep local copy for cleanup
+    // Use the runtime global arena for REPL allocations so precompiled stdlib.o
+    // and JIT-generated REPL modules allocate into the same live arena.
+    shared_arena_ = get_global_arena();
+    __repl_shared_arena.store(static_cast<arena_t*>(shared_arena_));
 
     // REPL JIT initialized silently
 }
@@ -1011,17 +1011,21 @@ bool ReplJITContext::loadStdlib() {
     }
 
     // Fallback: JIT compile from source (slowest but always correct)
-    return loadModule("stdlib");
+    return loadModule("stdlib", false);
 }
 
 bool ReplJITContext::loadModule(const std::string& module_name) {
+    return loadModule(module_name, true);
+}
+
+bool ReplJITContext::loadModule(const std::string& module_name, bool allow_precompiled_stdlib) {
     // Check if already loaded by NAME first (for stdlib.o preloaded modules)
     if (loaded_modules.count(module_name)) {
         return true;  // Already loaded via stdlib.o
     }
 
     // For stdlib or core.* modules, use precompiled stdlib.o if available
-    if (module_name == "stdlib" || module_name.find("core.") == 0) {
+    if (allow_precompiled_stdlib && (module_name == "stdlib" || module_name.find("core.") == 0)) {
         // Try to load via stdlib.o (which includes all core modules)
         if (loadStdlib()) {
             return true;
@@ -1458,9 +1462,34 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
         global_var_names.push_back(var_name);
     }
 
+    // Capture named top-level functions so later REPL evaluations can import them
+    // even when the pre-registration path misses a module-loaded definition.
+    std::vector<std::pair<std::string, size_t>> exported_function_infos;
+    for (auto& func : cpp_module->functions()) {
+        if (func.isDeclaration() || func.hasLocalLinkage() || func.getName().starts_with("llvm.")) {
+            continue;
+        }
+        std::string fname = func.getName().str();
+        if (fname.find("__") == 0 || fname.find("lambda_") == 0) {
+            continue;
+        }
+        exported_function_infos.push_back({fname, func.arg_size()});
+    }
+
     // Release module + extract its context for proper ThreadSafeModule pairing
     auto module_context = eshkol_extract_module_context_for_jit(c_module);
     addModule(std::unique_ptr<Module>(cpp_module), std::move(module_context));
+
+    for (const auto& [func_name_export, arity] : exported_function_infos) {
+        uint64_t func_addr_export = lookupSymbol(func_name_export);
+        if (func_addr_export == 0) {
+            continue;
+        }
+
+        defined_lambdas_[func_name_export] = {func_name_export, arity};
+        eshkol_repl_register_function(func_name_export.c_str(), func_addr_export, arity);
+        registered_lambdas_.insert(func_name_export);
+    }
 
     // Register all lambda functions
     for (const auto& [var_name, lambda_info] : defined_lambdas_) {
@@ -1784,9 +1813,32 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         global_var_names.push_back(var_name);
     }
 
+    std::vector<std::pair<std::string, size_t>> exported_function_infos;
+    for (auto& func : cpp_module->functions()) {
+        if (func.isDeclaration() || func.hasLocalLinkage() || func.getName().starts_with("llvm.")) {
+            continue;
+        }
+        std::string fname = func.getName().str();
+        if (fname.find("__") == 0 || fname.find("lambda_") == 0) {
+            continue;
+        }
+        exported_function_infos.push_back({fname, func.arg_size()});
+    }
+
     // Release module + extract its context for proper ThreadSafeModule pairing
     auto module_context = eshkol_extract_module_context_for_jit(c_module);
     addModule(std::unique_ptr<Module>(cpp_module), std::move(module_context));
+
+    for (const auto& [func_name_export, arity] : exported_function_infos) {
+        uint64_t func_addr_export = lookupSymbol(func_name_export);
+        if (func_addr_export == 0) {
+            continue;
+        }
+
+        defined_lambdas_[func_name_export] = {func_name_export, arity};
+        eshkol_repl_register_function(func_name_export.c_str(), func_addr_export, arity);
+        registered_lambdas_.insert(func_name_export);
+    }
 
     // REPL MODE: Register all lambda functions from this module with global REPL context
     // This enables cross-evaluation function calls

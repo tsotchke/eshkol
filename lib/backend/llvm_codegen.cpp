@@ -1769,7 +1769,7 @@ public:
                     builder->CreateCall(init_stack_func);
                 }
 
-                {
+                if (!g_repl_mode_enabled) {
                     FunctionType* runtime_init_type = FunctionType::get(builder->getInt32Ty(), false);
                     Function* runtime_init_func = module->getFunction("eshkol_runtime_init");
                     if (!runtime_init_func) {
@@ -3413,7 +3413,7 @@ private:
                 builder->CreateCall(init_stack_func);
             }
 
-            {
+            if (!g_repl_mode_enabled) {
                 FunctionType* runtime_init_type = FunctionType::get(builder->getInt32Ty(), false);
                 Function* runtime_init_func = module->getFunction("eshkol_runtime_init");
                 if (!runtime_init_func) {
@@ -3683,7 +3683,7 @@ private:
                 builder->CreateCall(init_stack_func);
             }
 
-            {
+            if (!g_repl_mode_enabled) {
                 FunctionType* runtime_init_type = FunctionType::get(builder->getInt32Ty(), false);
                 Function* runtime_init_func = module->getFunction("eshkol_runtime_init");
                 if (!runtime_init_func) {
