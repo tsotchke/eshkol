@@ -4,10 +4,70 @@
 # SPDX-License-Identifier: MIT
 #
 cmake_minimum_required(VERSION 3.14)
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
 
 set(ESHKOL_VERSION "1.1.11")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
+
+set(ESHKOL_USING_MSVC FALSE)
+if(MSVC)
+    set(ESHKOL_USING_MSVC TRUE)
+endif()
+
+set(ESHKOL_CLANG_BUILTINS_LIB "")
+set(ESHKOL_EXTRA_LINK_LIBS "")
+set(ESHKOL_HOST_CXX_COMPILER "${CMAKE_CXX_COMPILER}")
+if(ESHKOL_USING_MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    # Visual Studio's ClangCL toolset drives lld-link directly, so compiler-rt
+    # builtins do not get auto-added the way they would through the Clang driver.
+    #
+    # Generated executable links inside eshkol-run/LLVM codegen use GCC-style
+    # flags (-L/-l/-o), so prefer the sibling clang++ driver there instead of
+    # clang-cl's CL-style frontend.
+    get_filename_component(_eshkol_clang_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    set(_eshkol_host_clangxx_candidate "${_eshkol_clang_bin_dir}/clang++.exe")
+    if(EXISTS "${_eshkol_host_clangxx_candidate}")
+        file(TO_CMAKE_PATH "${_eshkol_host_clangxx_candidate}" ESHKOL_HOST_CXX_COMPILER)
+    endif()
+
+    execute_process(
+        COMMAND "${CMAKE_CXX_COMPILER}" --print-resource-dir
+        OUTPUT_VARIABLE _eshkol_clang_resource_dir_raw
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _eshkol_clang_resource_dir_result
+        ERROR_QUIET
+    )
+    if(_eshkol_clang_resource_dir_result EQUAL 0 AND NOT "${_eshkol_clang_resource_dir_raw}" STREQUAL "")
+        file(TO_CMAKE_PATH "${_eshkol_clang_resource_dir_raw}" _eshkol_clang_resource_dir)
+        set(_eshkol_clang_builtins_candidate
+            "${_eshkol_clang_resource_dir}/lib/windows/clang_rt.builtins-x86_64.lib")
+        if(EXISTS "${_eshkol_clang_builtins_candidate}")
+            set(ESHKOL_CLANG_BUILTINS_LIB "${_eshkol_clang_builtins_candidate}")
+        endif()
+    endif()
+
+    if(NOT ESHKOL_CLANG_BUILTINS_LIB)
+        get_filename_component(_eshkol_clang_root "${_eshkol_clang_bin_dir}" DIRECTORY)
+        file(GLOB _eshkol_clang_builtins LIST_DIRECTORIES FALSE
+            "${_eshkol_clang_root}/lib/clang/*/lib/windows/clang_rt.builtins-x86_64.lib"
+        )
+        list(LENGTH _eshkol_clang_builtins _eshkol_clang_builtins_count)
+        if(_eshkol_clang_builtins_count GREATER 0)
+            list(GET _eshkol_clang_builtins 0 ESHKOL_CLANG_BUILTINS_LIB)
+        endif()
+    endif()
+
+    if(ESHKOL_CLANG_BUILTINS_LIB)
+        list(APPEND ESHKOL_EXTRA_LINK_LIBS "${ESHKOL_CLANG_BUILTINS_LIB}")
+    else()
+        message(WARNING
+            "ClangCL compiler-rt builtins were not found; native Windows links may fail "
+            "on __divti3/__chkstk_ms-style symbols.")
+    endif()
+endif()
 
 include(CTest)
 include(GNUInstallDirs)
@@ -28,10 +88,13 @@ option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 # When enabled, provides accelerated tensor operations via XLA/StableHLO
 # Requires MLIR and StableHLO libraries
 option(ESHKOL_XLA_ENABLED "Enable XLA backend for accelerated tensor operations" OFF)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LLVMToolchain.cmake)
+set(ESHKOL_LLVM_USE_CMAKE_PACKAGE FALSE)
+set(ESHKOL_LLVM_ROOT "")
 
 # StableHLO Root (for XLA builds with bundled LLVM/MLIR/StableHLO)
 # Set this to the path where StableHLO was built (e.g., /tmp/stablehlo)
-# When set, uses the bundled LLVM/MLIR instead of system LLVM17
+# When set, uses the bundled LLVM/MLIR instead of the lite/native system LLVM toolchain
 set(STABLEHLO_ROOT "" CACHE PATH "Path to StableHLO installation with bundled LLVM/MLIR")
 
 # ===== Sanitizers =====
@@ -53,7 +116,7 @@ set(ESHKOL_BUILD_BACKEND ON)
 # ===== LLVM Configuration =====
 # Two modes:
 # 1. STABLEHLO_ROOT set: Use StableHLO's bundled LLVM (XLA build)
-# 2. STABLEHLO_ROOT not set: Use system llvm-config (Lite build)
+# 2. STABLEHLO_ROOT not set: Use system llvm-config (Lite/native build)
 
 if(STABLEHLO_ROOT AND EXISTS "${STABLEHLO_ROOT}/llvm-build")
     # ===== XLA BUILD: Use StableHLO's bundled LLVM =====
@@ -62,6 +125,7 @@ if(STABLEHLO_ROOT AND EXISTS "${STABLEHLO_ROOT}/llvm-build")
 
     set(STABLEHLO_LLVM_BUILD "${STABLEHLO_ROOT}/llvm-build")
     set(STABLEHLO_LLVM_LIB "${STABLEHLO_LLVM_BUILD}/lib")
+    set(ESHKOL_LLVM_ROOT "${STABLEHLO_LLVM_BUILD}")
 
     # StableHLO build may not include llvm-config, so use direct paths
     # Include directories for bundled LLVM/MLIR
@@ -129,13 +193,14 @@ if(STABLEHLO_ROOT AND EXISTS "${STABLEHLO_ROOT}/llvm-build")
     message(STATUS "StableHLO LLVM Build: ${STABLEHLO_LLVM_BUILD}")
     message(STATUS "StableHLO LLVM Include: ${STABLEHLO_LLVM_BUILD}/include")
 else()
-    # ===== LITE BUILD: Use system llvm-config =====
+    # ===== LITE BUILD: Use system LLVM selected by ESHKOL_REQUIRED_LLVM_MAJOR =====
     message(STATUS "=== LITE BUILD MODE: Using system LLVM ===")
     set(USING_STABLEHLO_LLVM FALSE)
 
-    find_program(LLVM_CONFIG_EXECUTABLE NAMES llvm-config REQUIRED)
+    eshkol_find_lite_llvm()
 
     # Generated build config for toolchain/runtime helpers (Windows port)
+    set(ESHKOL_HOST_RUNTIME_LINK_ARGS "")
     set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
     file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
     configure_file(
@@ -144,60 +209,164 @@ else()
       @ONLY
     )
 
-    # Get LLVM configuration
-    execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --cxxflags OUTPUT_VARIABLE LLVM_CXXFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
-    execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --ldflags OUTPUT_VARIABLE LLVM_LDFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
-    execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --libs all OUTPUT_VARIABLE LLVM_LIBS OUTPUT_STRIP_TRAILING_WHITESPACE)
-    execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --system-libs OUTPUT_VARIABLE LLVM_SYSTEM_LIBS OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(WIN32)
+        set(ESHKOL_LLVM_USE_CMAKE_PACKAGE TRUE)
+        find_package(LibXml2 QUIET)
+        set(ESHKOL_WINDOWS_LLVM_HAS_LIBXML2 FALSE)
+        if(TARGET LibXml2::LibXml2)
+            set(ESHKOL_WINDOWS_LLVM_HAS_LIBXML2 TRUE)
+        else()
+            # The official Windows LLVM SDK can reference LibXml2::LibXml2 from
+            # LLVMWindowsManifest even when libxml2 is not installed locally.
+            # Provide a placeholder target so the package loads, then omit that
+            # optional LLVM library from our link set below.
+            add_library(LibXml2::LibXml2 INTERFACE IMPORTED)
+        endif()
+        find_package(LLVM CONFIG REQUIRED)
 
-    # Enhanced LLVM include directory detection (backwards-compatible)
-    # Extract include directories from CXXFLAGS for better cross-platform support
-    string(REGEX MATCHALL "-I[^ ]+" LLVM_INCLUDE_FLAGS "${LLVM_CXXFLAGS}")
-    set(LLVM_INCLUDE_DIRS "")
-    foreach(include_flag ${LLVM_INCLUDE_FLAGS})
-        string(REGEX REPLACE "^-I" "" include_dir "${include_flag}")
-        list(APPEND LLVM_INCLUDE_DIRS "${include_dir}")
-    endforeach()
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING
+            "Match the official LLVM Windows SDK runtime linkage" FORCE)
 
-    # Fallback: Try --includedir if no includes found in CXXFLAGS
-    if(NOT LLVM_INCLUDE_DIRS)
-        execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --includedir
-                       OUTPUT_VARIABLE LLVM_INCLUDE_DIR
-                       OUTPUT_STRIP_TRAILING_WHITESPACE
-                       ERROR_QUIET)
+        eshkol_validate_llvm_major("${LLVM_PACKAGE_VERSION}" "${LLVM_DIR}")
+
+        if(TARGET LLVMDebugInfoPDB)
+            file(GLOB _eshkol_dia_sdk_libs LIST_DIRECTORIES FALSE
+                "C:/Program Files (x86)/Microsoft Visual Studio/*/*/DIA SDK/lib/amd64/diaguids.lib"
+            )
+            list(LENGTH _eshkol_dia_sdk_libs _eshkol_dia_sdk_count)
+            if(_eshkol_dia_sdk_count GREATER 0)
+                list(GET _eshkol_dia_sdk_libs 0 ESHKOL_DIAGUIDS_LIB)
+                get_target_property(_eshkol_pdb_link_libs LLVMDebugInfoPDB INTERFACE_LINK_LIBRARIES)
+                if(_eshkol_pdb_link_libs)
+                    set(_eshkol_pdb_link_libs_patched "")
+                    foreach(_llvm_dep IN LISTS _eshkol_pdb_link_libs)
+                        if(_llvm_dep MATCHES "DIA SDK/lib/amd64/diaguids\\.lib$")
+                            list(APPEND _eshkol_pdb_link_libs_patched "${ESHKOL_DIAGUIDS_LIB}")
+                        else()
+                            list(APPEND _eshkol_pdb_link_libs_patched "${_llvm_dep}")
+                        endif()
+                    endforeach()
+                    set_target_properties(LLVMDebugInfoPDB PROPERTIES
+                        INTERFACE_LINK_LIBRARIES "${_eshkol_pdb_link_libs_patched}")
+                endif()
+            endif()
+        endif()
+
+        set(ESHKOL_LLVM_VERSION "${LLVM_PACKAGE_VERSION}")
+        set(ESHKOL_LLVM_ROOT "${LLVM_INSTALL_PREFIX}")
+        set(LLVM_CXXFLAGS "${LLVM_DEFINITIONS}")
+        set(LLVM_LDFLAGS "")
+        set(LLVM_INCLUDE_DIRS ${LLVM_INCLUDE_DIRS})
+        set(LLVM_LIBRARY_DIRS ${LLVM_LIBRARY_DIRS})
+        # The installed Windows package exposes imported targets for every
+        # library via LLVM_AVAILABLE_LIBS, but the "all" pseudo-component does
+        # not expand reliably outside LLVM's own build tree.
+        set(LLVM_LIBS_LIST ${LLVM_AVAILABLE_LIBS})
+        if(NOT ESHKOL_WINDOWS_LLVM_HAS_LIBXML2)
+            list(REMOVE_ITEM LLVM_LIBS_LIST LLVMWindowsManifest)
+        endif()
+        set(LLVM_SYSTEM_LIBS_LIST "")
+
+        # The official Windows SDK ships release libraries only. Map the other
+        # multi-config variants to Release so native VS generators stay usable.
+        set(CMAKE_MAP_IMPORTED_CONFIG_DEBUG Release)
+        set(CMAKE_MAP_IMPORTED_CONFIG_MINSIZEREL Release)
+        set(CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release)
+    else()
+        # Get LLVM configuration
+        execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --cxxflags OUTPUT_VARIABLE LLVM_CXXFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
+        execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --ldflags OUTPUT_VARIABLE LLVM_LDFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
+        execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --libs all OUTPUT_VARIABLE LLVM_LIBS OUTPUT_STRIP_TRAILING_WHITESPACE)
+        execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --system-libs OUTPUT_VARIABLE LLVM_SYSTEM_LIBS OUTPUT_STRIP_TRAILING_WHITESPACE)
+        execute_process(COMMAND ${LLVM_CONFIG_EXECUTABLE} --includedir OUTPUT_VARIABLE LLVM_INCLUDE_DIR OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+
+        # Enhanced LLVM include directory detection (backwards-compatible)
+        # Extract include directories from CXXFLAGS for better cross-platform support
+        string(REGEX MATCHALL "-I[^ ]+" LLVM_INCLUDE_FLAGS "${LLVM_CXXFLAGS}")
+        set(LLVM_INCLUDE_DIRS "")
+
+        foreach(include_flag ${LLVM_INCLUDE_FLAGS})
+            string(REGEX REPLACE "^-I" "" include_dir "${include_flag}")
+            list(APPEND LLVM_INCLUDE_DIRS "${include_dir}")
+        endforeach()
+
+        # Prefer llvm-config's canonical include directory when available.
         if(LLVM_INCLUDE_DIR AND EXISTS "${LLVM_INCLUDE_DIR}")
             list(APPEND LLVM_INCLUDE_DIRS "${LLVM_INCLUDE_DIR}")
         endif()
-    endif()
 
-    # Additional fallback for common LLVM installation patterns
-    if(NOT LLVM_INCLUDE_DIRS)
-        # Try to derive include path from llvm-config executable location
         get_filename_component(LLVM_CONFIG_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
-        get_filename_component(LLVM_ROOT "${LLVM_CONFIG_DIR}" DIRECTORY)
-        set(POTENTIAL_INCLUDE_DIRS
-            "${LLVM_ROOT}/include"
-            "${LLVM_ROOT}/include/llvm"
-            "/usr/include/llvm"
-            "/usr/local/include/llvm"
-        )
-        foreach(potential_dir ${POTENTIAL_INCLUDE_DIRS})
-            if(EXISTS "${potential_dir}/llvm/IR/LLVMContext.h")
-                list(APPEND LLVM_INCLUDE_DIRS "${potential_dir}")
-                break()
-            endif()
-        endforeach()
+        get_filename_component(ESHKOL_LLVM_ROOT "${LLVM_CONFIG_DIR}" DIRECTORY)
+
+        # Additional fallback for common LLVM installation patterns
+        if(NOT LLVM_INCLUDE_DIRS)
+            set(POTENTIAL_INCLUDE_DIRS
+                "${ESHKOL_LLVM_ROOT}/include"
+                "${ESHKOL_LLVM_ROOT}/include/llvm"
+                "/usr/include/llvm"
+                "/usr/local/include/llvm"
+            )
+            foreach(potential_dir ${POTENTIAL_INCLUDE_DIRS})
+                if(EXISTS "${potential_dir}/llvm/IR/LLVMContext.h")
+                    list(APPEND LLVM_INCLUDE_DIRS "${potential_dir}")
+                    break()
+                endif()
+            endforeach()
+        endif()
     endif()
 endif()
 
-# Convert to CMake format (common for both modes)
-separate_arguments(LLVM_CXXFLAGS_LIST UNIX_COMMAND "${LLVM_CXXFLAGS}")
-separate_arguments(LLVM_LDFLAGS_LIST UNIX_COMMAND "${LLVM_LDFLAGS}")
-separate_arguments(LLVM_LIBS_LIST UNIX_COMMAND "${LLVM_LIBS}")
-separate_arguments(LLVM_SYSTEM_LIBS_LIST UNIX_COMMAND "${LLVM_SYSTEM_LIBS}")
+# Convert llvm-config output to CMake lists.
+if(ESHKOL_LLVM_USE_CMAKE_PACKAGE)
+    separate_arguments(LLVM_CXXFLAGS_LIST WINDOWS_COMMAND "${LLVM_CXXFLAGS}")
+    set(LLVM_LDFLAGS_LIST "")
+elseif(WIN32)
+    separate_arguments(LLVM_CXXFLAGS_LIST WINDOWS_COMMAND "${LLVM_CXXFLAGS}")
+    separate_arguments(LLVM_LDFLAGS_LIST WINDOWS_COMMAND "${LLVM_LDFLAGS}")
+    separate_arguments(LLVM_LIBS_LIST WINDOWS_COMMAND "${LLVM_LIBS}")
+    separate_arguments(LLVM_SYSTEM_LIBS_LIST WINDOWS_COMMAND "${LLVM_SYSTEM_LIBS}")
+
+    set(_normalized_llvm_libs "")
+    foreach(llvm_item IN LISTS LLVM_LIBS_LIST)
+        file(TO_CMAKE_PATH "${llvm_item}" llvm_item_normalized)
+        list(APPEND _normalized_llvm_libs "${llvm_item_normalized}")
+    endforeach()
+    set(LLVM_LIBS_LIST "${_normalized_llvm_libs}")
+
+    set(_normalized_llvm_system_libs "")
+    foreach(llvm_item IN LISTS LLVM_SYSTEM_LIBS_LIST)
+        file(TO_CMAKE_PATH "${llvm_item}" llvm_item_normalized)
+        list(APPEND _normalized_llvm_system_libs "${llvm_item_normalized}")
+    endforeach()
+    set(LLVM_SYSTEM_LIBS_LIST "${_normalized_llvm_system_libs}")
+else()
+    separate_arguments(LLVM_CXXFLAGS_LIST UNIX_COMMAND "${LLVM_CXXFLAGS}")
+    separate_arguments(LLVM_LDFLAGS_LIST UNIX_COMMAND "${LLVM_LDFLAGS}")
+    separate_arguments(LLVM_LIBS_LIST UNIX_COMMAND "${LLVM_LIBS}")
+    separate_arguments(LLVM_SYSTEM_LIBS_LIST UNIX_COMMAND "${LLVM_SYSTEM_LIBS}")
+endif()
+
+# Keep LLVM's defines and unwind flags, but let the project control language mode
+# and exception support.
+if(ESHKOL_USING_MSVC)
+    list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^-I")
+    list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^[-/]std[:=]")
+    list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^/EH")
+    list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^-fno-exceptions$")
+else()
+    list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^-std=")
+    list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^-fno-exceptions$")
+endif()
 
 # Debug output for troubleshooting
-message(STATUS "LLVM Config: ${LLVM_CONFIG_EXECUTABLE}")
+if(ESHKOL_LLVM_USE_CMAKE_PACKAGE)
+    message(STATUS "LLVM Package: ${LLVM_DIR}")
+else()
+    message(STATUS "LLVM Config: ${LLVM_CONFIG_EXECUTABLE}")
+endif()
+if(ESHKOL_LLVM_VERSION)
+    message(STATUS "LLVM Version: ${ESHKOL_LLVM_VERSION}")
+endif()
 message(STATUS "LLVM Include Dirs: ${LLVM_INCLUDE_DIRS}")
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     message(STATUS "LLVM CXXFLAGS: ${LLVM_CXXFLAGS}")
@@ -213,7 +382,7 @@ if(ESHKOL_XLA_ENABLED)
     # ===== MLIR/StableHLO Detection =====
     # Two modes:
     # 1. STABLEHLO_ROOT set: Use bundled LLVM/MLIR/StableHLO (XLA build)
-    # 2. STABLEHLO_ROOT not set: Try system LLVM17 (Lite build fallback)
+    # 2. STABLEHLO_ROOT not set: Try the configured system LLVM (lite build fallback)
 
     if(STABLEHLO_ROOT AND EXISTS "${STABLEHLO_ROOT}")
         message(STATUS "Using StableHLO installation at: ${STABLEHLO_ROOT}")
@@ -225,10 +394,8 @@ if(ESHKOL_XLA_ENABLED)
             set(STABLEHLO_LLVM_BUILD "${STABLEHLO_ROOT}/llvm-build")
             message(STATUS "StableHLO: using bundled LLVM at ${STABLEHLO_LLVM_BUILD}")
         else()
-            # StableHLO built against system LLVM — derive root from llvm-config
-            get_filename_component(_sys_llvm_root "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
-            get_filename_component(_sys_llvm_root "${_sys_llvm_root}" DIRECTORY)
-            set(STABLEHLO_LLVM_BUILD "${_sys_llvm_root}")
+            # StableHLO built against system LLVM — reuse the resolved lite toolchain root.
+            set(STABLEHLO_LLVM_BUILD "${ESHKOL_LLVM_ROOT}")
             message(STATUS "StableHLO: using system LLVM at ${STABLEHLO_LLVM_BUILD}")
         endif()
         set(STABLEHLO_BUILD "${STABLEHLO_ROOT}/build")
@@ -314,8 +481,7 @@ if(ESHKOL_XLA_ENABLED)
 
     else()
         # Fallback: Try system LLVM (Lite build mode)
-        get_filename_component(LLVM_ROOT_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
-        get_filename_component(LLVM_ROOT_DIR "${LLVM_ROOT_DIR}" DIRECTORY)
+        set(LLVM_ROOT_DIR "${ESHKOL_LLVM_ROOT}")
 
         # Check for MLIR headers in system LLVM
         if(EXISTS "${LLVM_ROOT_DIR}/include/mlir/IR/MLIRContext.h")
@@ -489,6 +655,24 @@ if(ESHKOL_GPU_ENABLED)
         if(CUDAToolkit_FOUND)
             set(GPU_FOUND TRUE)
             set(GPU_LIBRARIES CUDA::cudart CUDA::cublas)
+            if(TARGET CUDA::cublasLt)
+                list(APPEND GPU_LIBRARIES CUDA::cublasLt)
+            elseif(CUDA_cublasLt_LIBRARY)
+                list(APPEND GPU_LIBRARIES "${CUDA_cublasLt_LIBRARY}")
+            endif()
+
+            if(WIN32)
+                set(ESHKOL_CUDA_DEVICE_RUNTIME "")
+                find_library(
+                    ESHKOL_CUDA_DEVICE_RUNTIME
+                    NAMES cudadevrt
+                    HINTS
+                        "${CUDAToolkit_ROOT}/lib/x64"
+                        "${CUDAToolkit_BIN_DIR}/../lib/x64"
+                    NO_DEFAULT_PATH
+                )
+            endif()
+
             add_compile_definitions(ESHKOL_GPU_CUDA_ENABLED)
             enable_language(CUDA)
             message(STATUS "GPU: NVIDIA CUDA")
@@ -513,6 +697,97 @@ if(ESHKOL_GPU_ENABLED)
     endif()
 else()
     message(STATUS "GPU acceleration: DISABLED (enable with -DESHKOL_GPU_ENABLED=ON)")
+    # Keep the GPU API linked even when the feature is explicitly disabled.
+    # XLA and tensor runtime code call into this surface and rely on the
+    # CPU-backed stub implementation when no real GPU backend is enabled.
+    set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_stub.cpp")
+endif()
+
+macro(eshkol_append_host_runtime_link_arg item)
+    if(NOT "${item}" STREQUAL "")
+        set(_eshkol_runtime_link_arg "")
+
+        if(TARGET "${item}")
+            if(WIN32)
+                foreach(_prop
+                    IMPORTED_IMPLIB_RELEASE
+                    IMPORTED_IMPLIB_RELWITHDEBINFO
+                    IMPORTED_IMPLIB_MINSIZEREL
+                    IMPORTED_IMPLIB_DEBUG
+                    IMPORTED_IMPLIB
+                    IMPORTED_LOCATION_RELEASE
+                    IMPORTED_LOCATION_RELWITHDEBINFO
+                    IMPORTED_LOCATION_MINSIZEREL
+                    IMPORTED_LOCATION_DEBUG
+                    IMPORTED_LOCATION
+                )
+                    if("${_eshkol_runtime_link_arg}" STREQUAL "")
+                        get_target_property(_candidate "${item}" ${_prop})
+                        if(_candidate AND NOT _candidate MATCHES "-NOTFOUND$")
+                            set(_eshkol_runtime_link_arg "${_candidate}")
+                        endif()
+                    endif()
+                endforeach()
+            else()
+                foreach(_prop
+                    IMPORTED_LOCATION_RELEASE
+                    IMPORTED_LOCATION_RELWITHDEBINFO
+                    IMPORTED_LOCATION_MINSIZEREL
+                    IMPORTED_LOCATION_DEBUG
+                    IMPORTED_LOCATION
+                )
+                    if("${_eshkol_runtime_link_arg}" STREQUAL "")
+                        get_target_property(_candidate "${item}" ${_prop})
+                        if(_candidate AND NOT _candidate MATCHES "-NOTFOUND$")
+                            set(_eshkol_runtime_link_arg "${_candidate}")
+                        endif()
+                    endif()
+                endforeach()
+            endif()
+        else()
+            set(_eshkol_runtime_link_arg "${item}")
+            if(NOT _eshkol_runtime_link_arg MATCHES "^-" AND
+               NOT _eshkol_runtime_link_arg MATCHES "[/\\\\]" AND
+               NOT _eshkol_runtime_link_arg MATCHES "\\.(a|so|dylib|lib)$")
+                set(_eshkol_runtime_link_arg "-l${_eshkol_runtime_link_arg}")
+            endif()
+        endif()
+
+        if(NOT "${_eshkol_runtime_link_arg}" STREQUAL "")
+            file(TO_CMAKE_PATH "${_eshkol_runtime_link_arg}" _eshkol_runtime_link_arg_norm)
+            list(APPEND ESHKOL_HOST_RUNTIME_LINK_ARGS "${_eshkol_runtime_link_arg_norm}")
+        endif()
+    endif()
+endmacro()
+
+if(NOT APPLE)
+    foreach(_extra_runtime_lib IN LISTS ESHKOL_EXTRA_LINK_LIBS)
+        eshkol_append_host_runtime_link_arg("${_extra_runtime_lib}")
+    endforeach()
+
+    if(BLAS_FOUND AND BLAS_LIBRARIES)
+        foreach(_blas_lib IN LISTS BLAS_LIBRARIES)
+            eshkol_append_host_runtime_link_arg("${_blas_lib}")
+        endforeach()
+    endif()
+
+    if(GPU_FOUND AND GPU_LIBRARIES)
+        foreach(_gpu_lib IN LISTS GPU_LIBRARIES)
+            eshkol_append_host_runtime_link_arg("${_gpu_lib}")
+        endforeach()
+    endif()
+
+    if(WIN32 AND ESHKOL_CUDA_DEVICE_RUNTIME)
+        eshkol_append_host_runtime_link_arg("${ESHKOL_CUDA_DEVICE_RUNTIME}")
+    endif()
+endif()
+
+if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR)
+    configure_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_config.h.in"
+      "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/build_config.h"
+      @ONLY
+    )
 endif()
 
 # Make uninstall.
@@ -558,11 +833,19 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
 
 # Exclude standalone .cpp programs with main()
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
-# platform_runtime.cpp excluded from static lib (linked separately for REPL/executables)
-list(FILTER LIB_SRC EXCLUDE REGEX "lib/core/platform_runtime\\.cpp$")
+# platform_runtime.cpp stays in eshkol-static so the REPL, compiler, and JIT
+# share the same path/process helpers on every platform.
 
-# Add eshkol_vm.c (unity build: includes vm_*.c, eskb_*.c internally)
-list(APPEND LIB_SRC lib/backend/eshkol_vm.c)
+# Native Windows REPL builds do not use the bytecode VM / ESKB compiler path.
+# Building the VM currently drags in a large POSIX-only unity build, so use a
+# stub there and keep the full VM everywhere else.
+if(WIN32)
+    list(APPEND LIB_SRC lib/backend/eshkol_vm_stub.c)
+    message(STATUS "Bytecode VM / ESKB emission: DISABLED for native Windows builds")
+else()
+    # Add eshkol_vm.c (unity build: includes vm_*.c, eskb_*.c internally)
+    list(APPEND LIB_SRC lib/backend/eshkol_vm.c)
+endif()
 
 # Exclude XLA sources from main library when XLA is disabled
 if(NOT ESHKOL_XLA_ENABLED)
@@ -576,6 +859,19 @@ add_compile_definitions(
   ESHKOL_VER="${ESHKOL_VERSION}-accelerate"
 )
 
+if(ESHKOL_USING_MSVC)
+    set(ESHKOL_WARNING_FLAGS /W4 /wd4100 /wd4018)
+    set(ESHKOL_HARDENING_FLAGS /GS)
+    set(ESHKOL_EXE_COMPILE_FLAGS "")
+else()
+    set(ESHKOL_WARNING_FLAGS
+      -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
+      -Wformat -Wformat-security
+    )
+    set(ESHKOL_HARDENING_FLAGS -fstack-protector-strong)
+    set(ESHKOL_EXE_COMPILE_FLAGS -fPIE)
+endif()
+
 # Create static library for executables.
 add_library(eshkol-static STATIC ${LIB_SRC})
 target_include_directories(
@@ -588,13 +884,14 @@ target_include_directories(
 # Always add LLVM support to static library
 # Enable strict warnings and security hardening
 target_compile_options(eshkol-static PRIVATE
-  ${LLVM_CXXFLAGS}
-  -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
-  -Wformat -Wformat-security
-  -fstack-protector-strong
+  $<$<COMPILE_LANGUAGE:C,CXX>:${LLVM_CXXFLAGS_LIST}>
+  $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_WARNING_FLAGS}>
+  $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_HARDENING_FLAGS}>
 )
 # Buffer overflow detection at compile time (requires optimization)
-target_compile_definitions(eshkol-static PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
+if(NOT ESHKOL_USING_MSVC)
+    target_compile_definitions(eshkol-static PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
+endif()
 target_compile_definitions(eshkol-static PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
 target_compile_definitions(eshkol-static PRIVATE ESHKOL_VM_LIBRARY_MODE)
 
@@ -604,12 +901,23 @@ if(LLVM_INCLUDE_DIRS)
 endif()
 
 # Extract library directories from LDFLAGS for proper linking
-string(REGEX MATCHALL "-L[^ ]+" LLVM_LIBRARY_DIR_FLAGS "${LLVM_LDFLAGS}")
-set(LLVM_LIBRARY_DIRS "")
-foreach(lib_dir_flag ${LLVM_LIBRARY_DIR_FLAGS})
-    string(REGEX REPLACE "^-L" "" lib_dir "${lib_dir_flag}")
-    list(APPEND LLVM_LIBRARY_DIRS "${lib_dir}")
-endforeach()
+if(NOT LLVM_LIBRARY_DIRS)
+    set(LLVM_LIBRARY_DIRS "")
+    if(ESHKOL_USING_MSVC)
+        string(REGEX MATCHALL "[-/]LIBPATH:[^ ]+" LLVM_LIBRARY_DIR_FLAGS "${LLVM_LDFLAGS}")
+        foreach(lib_dir_flag ${LLVM_LIBRARY_DIR_FLAGS})
+            string(REGEX REPLACE "^[-/]LIBPATH:" "" lib_dir "${lib_dir_flag}")
+            file(TO_CMAKE_PATH "${lib_dir}" lib_dir)
+            list(APPEND LLVM_LIBRARY_DIRS "${lib_dir}")
+        endforeach()
+    else()
+        string(REGEX MATCHALL "-L[^ ]+" LLVM_LIBRARY_DIR_FLAGS "${LLVM_LDFLAGS}")
+        foreach(lib_dir_flag ${LLVM_LIBRARY_DIR_FLAGS})
+            string(REGEX REPLACE "^-L" "" lib_dir "${lib_dir_flag}")
+            list(APPEND LLVM_LIBRARY_DIRS "${lib_dir}")
+        endforeach()
+    endif()
+endif()
 
 # Add library directories if found
 if(LLVM_LIBRARY_DIRS)
@@ -658,7 +966,7 @@ foreach (exe ${EXE_SRC})
 
   # Compile main executable source as object file
   add_executable(${exename} ${exe})
-  target_compile_options(${exename} PRIVATE ${LLVM_CXXFLAGS} -fPIE)
+  target_compile_options(${exename} PRIVATE ${LLVM_CXXFLAGS_LIST} ${ESHKOL_EXE_COMPILE_FLAGS})
   target_compile_definitions(${exename} PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
   target_include_directories(${exename} PRIVATE inc/)
   
@@ -672,19 +980,21 @@ foreach (exe ${EXE_SRC})
       target_link_directories(${exename} PRIVATE ${LLVM_LIBRARY_DIRS})
   endif()
   
-  target_link_libraries(${exename} PUBLIC eshkol-static ${LLVM_LIBS} ${LLVM_SYSTEM_LIBS})
+  target_link_libraries(${exename} PUBLIC eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
 endforeach ()
 
 # ===== Pre-compiled Standard Library =====
 # Compile stdlib.esk to stdlib.o for faster compilation of user programs
 set(STDLIB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lib/stdlib.esk")
 set(STDLIB_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stdlib.o")
+set(STDLIB_WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
 add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
-  COMMAND $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
+  COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+          $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
   DEPENDS eshkol-run ${STDLIB_SOURCE}
-  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  WORKING_DIRECTORY ${STDLIB_WORKING_DIRECTORY}
   COMMENT "Compiling standard library to ${STDLIB_OUTPUT}"
   VERBATIM
 )
@@ -701,7 +1011,7 @@ message(STATUS "Standard library will be pre-compiled to: ${STDLIB_OUTPUT}")
 
 option(BUILD_REPL "Build the interactive REPL" ON)
 
-if(BUILD_REPL AND REPL_SRC)
+if(REPL_SRC)
   # REPL library
   add_library(eshkol-repl-lib STATIC ${REPL_SRC})
 
@@ -713,7 +1023,7 @@ if(BUILD_REPL AND REPL_SRC)
   )
 
   # REPL needs LLVM ORC JIT components
-  target_compile_options(eshkol-repl-lib PRIVATE ${LLVM_CXXFLAGS})
+  target_compile_options(eshkol-repl-lib PRIVATE ${LLVM_CXXFLAGS_LIST})
   target_compile_definitions(eshkol-repl-lib PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
 
   if(LLVM_INCLUDE_DIRS)
@@ -725,13 +1035,13 @@ if(BUILD_REPL AND REPL_SRC)
   endif()
 
   # Link against main compiler library and LLVM
-  target_link_libraries(eshkol-repl-lib PUBLIC eshkol-static ${LLVM_LIBS} ${LLVM_SYSTEM_LIBS})
+  target_link_libraries(eshkol-repl-lib PUBLIC eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
 
   # REPL executable (only if we have the source)
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/exe/eshkol-repl.cpp")
+  if(BUILD_REPL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/exe/eshkol-repl.cpp")
     add_executable(eshkol-repl exe/eshkol-repl.cpp)
 
-    target_compile_options(eshkol-repl PRIVATE ${LLVM_CXXFLAGS})
+    target_compile_options(eshkol-repl PRIVATE ${LLVM_CXXFLAGS_LIST})
     target_compile_definitions(eshkol-repl PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
     target_include_directories(eshkol-repl PRIVATE inc/)
 
@@ -753,7 +1063,37 @@ if(BUILD_REPL AND REPL_SRC)
       message(WARNING "readline not found - REPL will use basic input (no history)")
     endif()
 
-    target_link_libraries(eshkol-repl PRIVATE eshkol-repl-lib)
+    target_link_libraries(eshkol-repl PRIVATE eshkol-repl-lib ${ESHKOL_EXTRA_LINK_LIBS})
+
+    if(WIN32)
+      set(_eshkol_llvm_c_dll "${ESHKOL_LLVM_ROOT}/bin/LLVM-C.dll")
+      if(EXISTS "${_eshkol_llvm_c_dll}")
+        add_custom_command(TARGET eshkol-repl POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                  "${_eshkol_llvm_c_dll}"
+                  "$<TARGET_FILE_DIR:eshkol-repl>/LLVM-C.dll"
+          COMMENT "Copying LLVM-C.dll for native Windows REPL"
+        )
+      endif()
+
+      set(_eshkol_repl_target_libs
+        LLVMTarget
+        LLVMTargetParser
+        LLVMAsmPrinter
+        LLVMCodeGen
+        LLVMX86CodeGen
+        LLVMX86AsmParser
+        LLVMX86Desc
+        LLVMX86Info
+        LLVMX86Disassembler
+      )
+      foreach(_llvm_repl_lib IN LISTS _eshkol_repl_target_libs)
+        set(_llvm_repl_lib_path "${ESHKOL_LLVM_ROOT}/lib/${_llvm_repl_lib}.lib")
+        if(EXISTS "${_llvm_repl_lib_path}")
+          target_link_options(eshkol-repl PRIVATE "/WHOLEARCHIVE:${_llvm_repl_lib_path}")
+        endif()
+      endforeach()
+    endif()
 
     # Force-load ALL symbols from eshkol-static into the REPL binary.
     # Without this, the macOS linker dead-strips archive members that aren't
@@ -763,6 +1103,9 @@ if(BUILD_REPL AND REPL_SRC)
     if(APPLE)
       target_link_options(eshkol-repl PRIVATE
         "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>")
+    elseif(WIN32)
+      # Native Windows links the needed runtime objects directly via
+      # eshkol-repl-lib's references and explicit JIT symbol registration.
     else()
       target_link_options(eshkol-repl PRIVATE
         "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "-Wl,--no-whole-archive")
@@ -771,6 +1114,8 @@ if(BUILD_REPL AND REPL_SRC)
     # Export all symbols for JIT symbol resolution
     if(APPLE)
       target_link_options(eshkol-repl PRIVATE "-Wl,-export_dynamic")
+    elseif(WIN32)
+      # No export-dynamic equivalent is required for the native Windows REPL path.
     else()
       target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
     endif()
@@ -792,12 +1137,15 @@ if(BUILD_REPL AND REPL_SRC)
     # 512MB stack for deep recursion (main thread stack set at link time on macOS)
     target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
     target_link_options(eshkol-run PRIVATE "-Wl,-bind_at_load")
+  elseif(WIN32)
+    # Native Windows uses the REPL/JIT symbol registration path and does not
+    # accept GNU ld options here.
   else()
     target_link_options(eshkol-run PRIVATE
       "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "-Wl,--no-whole-archive")
     target_link_options(eshkol-run PRIVATE "-Wl,--export-dynamic")
     # 512MB stack for deep recursion
-    target_link_options(eshkol-run PRIVATE "-Wl,-z,stacksize=536870912")
+    target_link_options(eshkol-run PRIVATE "-Wl,-z,stack-size=536870912")
     # Linker hardening: full RELRO + immediate binding
     target_link_options(eshkol-run PRIVATE "-Wl,-z,relro" "-Wl,-z,now")
   endif()
@@ -823,7 +1171,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/lsp/eshkol_lsp.cpp")
 
     add_executable(eshkol-lsp tools/lsp/eshkol_lsp.cpp)
 
-    target_compile_options(eshkol-lsp PRIVATE ${LLVM_CXXFLAGS})
+    target_compile_options(eshkol-lsp PRIVATE ${LLVM_CXXFLAGS_LIST})
     target_compile_definitions(eshkol-lsp PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
     target_include_directories(eshkol-lsp PRIVATE inc/)
 
@@ -835,7 +1183,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/lsp/eshkol_lsp.cpp")
         target_link_directories(eshkol-lsp PRIVATE ${LLVM_LIBRARY_DIRS})
     endif()
 
-    target_link_libraries(eshkol-lsp PRIVATE eshkol-static ${LLVM_LIBS} ${LLVM_SYSTEM_LIBS})
+    target_link_libraries(eshkol-lsp PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
 
     install(TARGETS eshkol-lsp DESTINATION bin)
 endif()
@@ -850,7 +1198,7 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_code
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
     )
 
-    target_compile_options(xla_codegen_test PRIVATE ${LLVM_CXXFLAGS})
+    target_compile_options(xla_codegen_test PRIVATE ${LLVM_CXXFLAGS_LIST})
 
     if(LLVM_INCLUDE_DIRS)
         target_include_directories(xla_codegen_test PRIVATE ${LLVM_INCLUDE_DIRS})
@@ -863,8 +1211,9 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_code
     # Link against the static library (includes XLA runtime)
     target_link_libraries(xla_codegen_test PRIVATE
         eshkol-static
-        ${LLVM_LIBS}
-        ${LLVM_SYSTEM_LIBS}
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
     )
 
     # Link MLIR/StableHLO if available

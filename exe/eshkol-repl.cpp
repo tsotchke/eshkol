@@ -7,6 +7,7 @@
 //
 
 #include <eshkol/eshkol.h>
+#include <eshkol/platform_runtime.h>
 #include "../lib/repl/repl_jit.h"
 #include "../lib/repl/repl_utils.h"
 
@@ -18,7 +19,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
-#include <unistd.h>
 #include <chrono>
 #include <iomanip>
 #include <setjmp.h>
@@ -29,7 +29,17 @@ using namespace eshkol::repl;
 static jmp_buf g_repl_exception_jmp_buf;
 
 // Jump buffer for signal-based crash recovery (segfaults, etc.)
-static sigjmp_buf g_crash_jmp_buf;
+#ifdef _WIN32
+using crash_jmp_buf_t = jmp_buf;
+#define ESHKOL_SIGSETJMP(env) setjmp(env)
+#define ESHKOL_SIGLONGJMP(env, value) longjmp(env, value)
+#else
+using crash_jmp_buf_t = sigjmp_buf;
+#define ESHKOL_SIGSETJMP(env) sigsetjmp(env, 1)
+#define ESHKOL_SIGLONGJMP(env, value) siglongjmp(env, value)
+#endif
+
+static crash_jmp_buf_t g_crash_jmp_buf;
 static volatile sig_atomic_t g_in_jit = 0;
 static volatile sig_atomic_t g_crash_signal = 0;
 
@@ -46,45 +56,15 @@ void sigint_handler(int sig) {
     g_interrupted = 1;
 }
 
-// Helper to install crash signal handler using sigaction with SA_RESETHAND
-static void install_crash_handler(int signum);
-
 // Signal handler for crashes during JIT execution (SIGSEGV, SIGFPE, SIGBUS)
-// IMPORTANT: Only async-signal-safe functions may be called here.
 void crash_handler(int sig) {
     if (g_in_jit) {
         g_crash_signal = sig;
-        // SA_RESETHAND already reset this signal to SIG_DFL, so if siglongjmp
-        // fails or crashes again, the default handler will terminate the process.
-        siglongjmp(g_crash_jmp_buf, 1);
+        ESHKOL_SIGLONGJMP(g_crash_jmp_buf, 1);
     } else {
-        // Not in JIT - the handler was installed with SA_RESETHAND, so the
-        // default disposition is already restored. Just re-raise to get the
-        // default behavior (core dump / termination).
+        signal(sig, SIG_DFL);
         raise(sig);
     }
-}
-
-// Install crash handler for a single signal using sigaction
-static void install_crash_handler(int signum) {
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = crash_handler;
-    sigemptyset(&sa.sa_mask);
-    // SA_RESETHAND: one-shot handler, automatically resets to SIG_DFL after firing
-    // SA_NODEFER: allow the signal to be received while in the handler (needed for siglongjmp)
-    sa.sa_flags = SA_RESETHAND | SA_NODEFER;
-    sigaction(signum, &sa, nullptr);
-}
-
-// Install SIGINT handler using sigaction (persistent, no SA_RESETHAND)
-static void install_sigint_handler() {
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = sigint_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;  // persistent handler
-    sigaction(SIGINT, &sa, nullptr);
 }
 
 // Get human-readable message for crash signal
@@ -92,7 +72,9 @@ const char* crash_signal_message(int sig) {
     switch (sig) {
         case SIGSEGV: return "Segmentation fault - likely a type error (e.g., arithmetic on non-numeric value)";
         case SIGFPE:  return "Floating point exception - likely division by zero";
+#ifdef SIGBUS
         case SIGBUS:  return "Bus error - memory access issue";
+#endif
         default:      return "Unknown runtime error";
     }
 }
@@ -559,7 +541,7 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
     if (cmd == ":quit" || cmd == ":q" || cmd == "(exit)" || cmd == "exit") {
         std::cout << color::dim() << "Goodbye!" << color::reset() << "\n";
         save_readline_history();
-        _exit(0);
+        std::_Exit(0);
     }
 
     if (cmd == ":clear") {
@@ -818,16 +800,19 @@ int main(int argc, char** argv) {
     }
 
     // Check if running interactively
-    g_interactive = isatty(STDIN_FILENO);
+    g_interactive = eshkol::platform::stdin_isatty();
 
-    // Install signal handlers using sigaction (async-signal-safe)
-    install_sigint_handler();
-    install_crash_handler(SIGSEGV);
-    install_crash_handler(SIGFPE);
-    install_crash_handler(SIGBUS);
+    // Install signal handlers.
+    signal(SIGINT, sigint_handler);
+    signal(SIGSEGV, crash_handler);
+    signal(SIGFPE, crash_handler);
+#ifdef SIGBUS
+    signal(SIGBUS, crash_handler);
+#endif
 
     // Initialize readline with completion and history (only if interactive)
     if (g_interactive) {
+        eshkol::platform::initialize_interactive_console();
         init_readline();
         // Print welcome banner only in interactive mode
         print_welcome_banner();
@@ -883,7 +868,7 @@ int main(int argc, char** argv) {
                 }
                 std::cout << "\n" << color::dim() << "Goodbye!" << color::reset() << "\n";
                 save_readline_history();
-                _exit(0);
+                std::_Exit(0);
             }
 
             // Empty continuation line - remove last line or cancel
@@ -931,7 +916,7 @@ int main(int argc, char** argv) {
                 free(input);
                 std::cout << color::dim() << "Goodbye!" << color::reset() << "\n";
                 save_readline_history();
-                _exit(0);
+                std::_Exit(0);
             }
 
             // Check for :cancel on any line
@@ -1037,7 +1022,7 @@ int main(int argc, char** argv) {
 
             // Outer layer: catch crashes (SIGSEGV, SIGFPE, etc.)
             g_in_jit = 1;
-            if (sigsetjmp(g_crash_jmp_buf, 1) == 0) {
+            if (ESHKOL_SIGSETJMP(g_crash_jmp_buf) == 0) {
                 // Inner layer: catch Eshkol exceptions
                 eshkol_push_exception_handler(&g_repl_exception_jmp_buf);
 
@@ -1060,8 +1045,8 @@ int main(int argc, char** argv) {
                 // Crash occurred - display error and continue
                 had_error = true;
                 print_error("Runtime error", crash_signal_message(g_crash_signal));
-                // Re-install signal handler (SA_RESETHAND reset it to SIG_DFL)
-                install_crash_handler(g_crash_signal);
+                // Re-install signal handler after a crash so the REPL can continue.
+                signal(g_crash_signal, crash_handler);
             }
             g_in_jit = 0;
 
@@ -1087,5 +1072,5 @@ int main(int argc, char** argv) {
     }
 
     save_readline_history();
-    _exit(0);
+    std::_Exit(0);
 }

@@ -53,7 +53,7 @@ Eshkol v1.0-architecture represents a **production-ready foundation** for scient
 - AD integration (`vref` creates graph nodes)
 
 ✅ **Compiler Infrastructure**
-- LLVM 17 backend with 21 modular codegen components
+- LLVM 21 backend with 21 modular codegen components
 - 5-phase compilation: macro expansion → parsing → type checking → LLVM IR → optimization
 - AOT compiler (`eshkol-run`) and JIT REPL (`eshkol-repl`)
 - Function cache for lambda deduplication

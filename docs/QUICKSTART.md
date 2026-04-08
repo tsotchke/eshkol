@@ -34,15 +34,16 @@ brew install eshkol
 sudo dpkg -i eshkol_*.deb
 ```
 
-### Windows (MSYS2/MinGW64)
+### Windows (Visual Studio 2022 + LLVM 21)
 
-```bash
-# In MSYS2 MinGW64 shell:
-pacman -S mingw-w64-x86_64-llvm mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
+```powershell
+# In Developer PowerShell for VS 2022:
 git clone https://github.com/tsotchke/eshkol.git
 cd eshkol
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DLLVM_DIR="C:/Program Files/LLVM/lib/cmake/llvm"
+cmake --build build --config Release --parallel
 ```
 
 ### From Source (macOS/Linux)
@@ -66,8 +67,8 @@ eshkol-run hello.esk -o hello
 ./hello
 ```
 
-**Requirements**: LLVM 17+, C++20 compiler, CMake 3.14+, Ninja
-**Platforms**: Linux, macOS (x86-64, ARM64), Windows (MSYS2/MinGW64)
+**Requirements**: LLVM 21, C++20 compiler, CMake 3.14+, Ninja
+**Platforms**: Linux, macOS (x86-64, ARM64), Windows (native x86-64)
 
 **Web REPL**: Visit [eshkol.ai](https://eshkol.ai) for an interactive Eshkol environment without installation — includes a full REPL, tutorials, and runnable examples.
 

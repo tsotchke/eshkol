@@ -49,7 +49,7 @@ struct arena {
     size_t default_block_size;     // Default size for new blocks
     size_t total_allocated;        // Total memory allocated
     size_t alignment;              // Memory alignment requirement
-    void* mutex;                   // Optional mutex for thread-safe access (pthread_mutex_t*)
+    void* mutex;                   // Optional mutex for thread-safe access (platform-specific)
     bool thread_safe;              // Whether this arena uses mutex locking
 };
 
@@ -270,6 +270,7 @@ void* region_escape(const void* ptr, size_t size);
 void* region_escape_string(const char* str);
 arena_tagged_cons_cell_t* region_escape_tagged_cons_cell(const arena_tagged_cons_cell_t* cell);
 eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_t val);
+void region_escape_tagged_value_into(eshkol_tagged_value_t* out, const eshkol_tagged_value_t* val);
 
 // Region statistics
 size_t region_get_used_memory(const eshkol_region_t* region);
@@ -432,7 +433,7 @@ bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t
 
 // Global shared arena for REPL mode (persistent across evaluations)
 // Atomic to synchronize writes (REPL init) and reads (runtime exception handlers)
-extern std::atomic<arena_t*> __repl_shared_arena;
+extern "C" std::atomic<arena_t*> __repl_shared_arena;
 
 // C++ Arena wrapper class for RAII
 class Arena {

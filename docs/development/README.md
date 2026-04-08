@@ -6,7 +6,7 @@ This directory indexes development workflow documentation.
 
 ### Prerequisites
 
-- LLVM 17 (required)
+- LLVM 21 (required for lite/native builds)
 - CMake 3.14+ (required)
 - C++20 compiler: GCC 10+, Clang 13+, or MSVC 2022+ (required)
 

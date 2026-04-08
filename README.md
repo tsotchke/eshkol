@@ -563,7 +563,7 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **Consciousness engine**: Logic programming, factor graphs with belief propagation, global workspace
 - **First-class continuations**: `call/cc`, `dynamic-wind`, `guard`/`raise`
 - **Dual backend**: Bytecode VM (63 opcodes, ESKB format) alongside LLVM native compiler
-- **Windows support**: Native MSYS2/MinGW64 build with UTF-8 REPL and DLL bundling
+- **Windows support**: Native Visual Studio 2022 + ClangCL/LLVM 21 build with UTF-8 REPL and DLL bundling
 
 ### Modern Language Features
 
@@ -746,12 +746,12 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 ## Technical Specifications
 
 - **Language**: C17 runtime, C++20 compiler implementation
-- **Backend**: LLVM 17 with native code generation and JIT support
+- **Backend**: LLVM 21 with native code generation and JIT support
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
 - **Testing**: 434 tests across 35 suites with automated verification
-- **Platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (MSYS2/MinGW64)
+- **Platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (native x86_64 via Visual Studio 2022 + LLVM 21)
 
 ---
 

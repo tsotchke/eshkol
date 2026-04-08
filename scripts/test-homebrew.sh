@@ -51,8 +51,11 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
+source "${SCRIPT_DIR}/lib/llvm21-env.sh"
 
 echo -e "${YELLOW}=== Homebrew Formula Test ===${NC}"
+
+LLVM_FORMULA="llvm@${ESHKOL_REQUIRED_LLVM_MAJOR}"
 
 # Check for Homebrew
 if ! command -v brew &> /dev/null; then
@@ -71,7 +74,7 @@ echo -e "${GREEN}Formula found: $FORMULA_PATH${NC}"
 
 # Check dependencies are available
 echo -e "${YELLOW}Checking dependencies...${NC}"
-DEPS=("llvm@17" "cmake" "ninja" "readline")
+DEPS=("${LLVM_FORMULA}" "cmake" "ninja" "readline")
 for dep in "${DEPS[@]}"; do
     if brew list "$dep" &>/dev/null; then
         echo -e "  ${GREEN}[OK]${NC} $dep"
@@ -94,20 +97,10 @@ fi
 if [ "$LOCAL_TEST" = true ]; then
     echo -e "${YELLOW}Testing local build (simulating Homebrew)...${NC}"
 
-    # Get LLVM path
-    ARCH=$(uname -m)
-    if [ "$ARCH" = "arm64" ]; then
-        LLVM_PATH="/opt/homebrew/opt/llvm@17"
-    else
-        LLVM_PATH="/usr/local/opt/llvm@17"
-    fi
-
-    if [ ! -d "$LLVM_PATH" ]; then
-        echo -e "${RED}LLVM 17 not found. Install with: brew install llvm@17${NC}"
+    if ! eshkol_activate_llvm_toolchain; then
+        echo -e "${RED}LLVM ${ESHKOL_REQUIRED_LLVM_MAJOR} not found. Install ${LLVM_FORMULA} first.${NC}"
         exit 1
     fi
-
-    export PATH="$LLVM_PATH/bin:$PATH"
 
     # Clean and build
     BUILD_DIR="build-homebrew-test"
@@ -115,7 +108,8 @@ if [ "$LOCAL_TEST" = true ]; then
 
     echo "Configuring..."
     cmake -B "$BUILD_DIR" -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_BUILD_TYPE=Release \
+        -DESHKOL_REQUIRED_LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR}"
 
     echo "Building..."
     cmake --build "$BUILD_DIR" --parallel

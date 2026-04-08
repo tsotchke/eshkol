@@ -29,7 +29,10 @@ namespace {
 
 // Create a null value
 inline eshkol_tagged_value_t make_null() {
-    return ESHKOL_MAKE_NULL_VALUE();
+    eshkol_tagged_value_t value;
+    std::memset(&value, 0, sizeof(value));
+    value.type = ESHKOL_VALUE_NULL;
+    return value;
 }
 
 // Check if value is null

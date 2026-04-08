@@ -46,6 +46,103 @@ log_info() {
     echo -e "${YELLOW}INFO${NC}: $1"
 }
 
+wasm_file_is_valid() {
+    local wasm_path="$1"
+
+    if [ ! -f "$wasm_path" ]; then
+        return 1
+    fi
+
+    if command -v file >/dev/null 2>&1; then
+        if file "$wasm_path" | grep -q "WebAssembly"; then
+            return 0
+        fi
+    fi
+
+    local magic
+    magic=$(od -An -tx1 -N4 "$wasm_path" 2>/dev/null)
+    magic="${magic//[[:space:]]/}"
+    [ "$magic" = "0061736d" ]
+}
+
+http_get() {
+    local url="$1"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -s "$url"
+        return
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$url" <<'PY'
+import sys
+import urllib.error
+import urllib.request
+
+url = sys.argv[1]
+req = urllib.request.Request(url, method="GET")
+try:
+    with urllib.request.urlopen(req) as resp:
+        sys.stdout.write(resp.read().decode("utf-8", errors="replace"))
+except urllib.error.HTTPError as exc:
+    sys.stdout.write(exc.read().decode("utf-8", errors="replace"))
+PY
+        return
+    fi
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -qO- "$url"
+        return
+    fi
+
+    return 127
+}
+
+http_post_json() {
+    local url="$1"
+    local json_body="$2"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -s -X POST "$url" \
+            -H "Content-Type: application/json" \
+            -d "$json_body"
+        return
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$url" "$json_body" <<'PY'
+import sys
+import urllib.error
+import urllib.request
+
+url = sys.argv[1]
+payload = sys.argv[2].encode("utf-8")
+req = urllib.request.Request(
+    url,
+    data=payload,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req) as resp:
+        sys.stdout.write(resp.read().decode("utf-8", errors="replace"))
+except urllib.error.HTTPError as exc:
+    sys.stdout.write(exc.read().decode("utf-8", errors="replace"))
+PY
+        return
+    fi
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -qO- \
+            --header="Content-Type: application/json" \
+            --post-data="$json_body" \
+            "$url"
+        return
+    fi
+
+    return 127
+}
+
 echo "========================================="
 echo "  Eshkol Web/WASM Test Suite"
 echo "========================================="
@@ -82,7 +179,7 @@ for test_file in "$PROJECT_DIR"/tests/web/*.esk; do
     output_wasm="/tmp/eshkol_web_test_$$.wasm"
     if "$ESHKOL_RUN" "$test_file" --wasm -o "$output_wasm" 2>/dev/null; then
         # Check if WASM file was created and is valid
-        if [ -f "$output_wasm" ] && file "$output_wasm" | grep -q "WebAssembly"; then
+        if wasm_file_is_valid "$output_wasm"; then
             log_pass "WASM compilation"
         else
             log_fail "WASM file invalid"
@@ -119,7 +216,7 @@ echo ""
 
 # Test: Health Check
 printf "Testing %-45s " "health endpoint"
-HEALTH=$(curl -s "http://localhost:$PORT/health" 2>/dev/null || echo "")
+HEALTH=$(http_get "http://localhost:$PORT/health" 2>/dev/null || echo "")
 if echo "$HEALTH" | grep -q '"status":"ok"'; then
     log_pass "health check"
 else
@@ -128,9 +225,8 @@ fi
 
 # Test: Compile simple function
 printf "Testing %-45s " "compile simple function"
-RESULT=$(curl -s -X POST "http://localhost:$PORT/compile" \
-    -H "Content-Type: application/json" \
-    -d '{"code":"(define (square x) (* x x))","session_id":"test1"}' 2>/dev/null || echo "")
+RESULT=$(http_post_json "http://localhost:$PORT/compile" \
+    '{"code":"(define (square x) (* x x))","session_id":"test1"}' 2>/dev/null || echo "")
 if echo "$RESULT" | grep -q '"success":true'; then
     log_pass "simple compile"
 else
@@ -139,9 +235,8 @@ fi
 
 # Test: Compile with web externals
 printf "Testing %-45s " "compile with web externals"
-RESULT=$(curl -s -X POST "http://localhost:$PORT/compile" \
-    -H "Content-Type: application/json" \
-    -d '{"code":"(extern i32 web-get-body :real web_get_body)\n(define (test) (web-get-body))","session_id":"test2"}' 2>/dev/null || echo "")
+RESULT=$(http_post_json "http://localhost:$PORT/compile" \
+    '{"code":"(extern i32 web-get-body :real web_get_body)\n(define (test) (web-get-body))","session_id":"test2"}' 2>/dev/null || echo "")
 if echo "$RESULT" | grep -q '"success":true'; then
     log_pass "web externals"
 else
@@ -150,9 +245,8 @@ fi
 
 # Test: Compile math functions
 printf "Testing %-45s " "compile math functions"
-RESULT=$(curl -s -X POST "http://localhost:$PORT/compile" \
-    -H "Content-Type: application/json" \
-    -d '{"code":"(define (circle-area r) (* 3.14159 (* r r)))","session_id":"test3"}' 2>/dev/null || echo "")
+RESULT=$(http_post_json "http://localhost:$PORT/compile" \
+    '{"code":"(define (circle-area r) (* 3.14159 (* r r)))","session_id":"test3"}' 2>/dev/null || echo "")
 if echo "$RESULT" | grep -q '"success":true'; then
     log_pass "math functions"
 else
@@ -161,9 +255,8 @@ fi
 
 # Test: Invalid code error handling
 printf "Testing %-45s " "error handling"
-RESULT=$(curl -s -X POST "http://localhost:$PORT/compile" \
-    -H "Content-Type: application/json" \
-    -d '{"code":"(define incomplete","session_id":"test4"}' 2>/dev/null || echo "")
+RESULT=$(http_post_json "http://localhost:$PORT/compile" \
+    '{"code":"(define incomplete","session_id":"test4"}' 2>/dev/null || echo "")
 if echo "$RESULT" | grep -q '"success":false'; then
     log_pass "error handling"
 else
@@ -172,7 +265,7 @@ fi
 
 # Test: Static file serving - index.html
 printf "Testing %-45s " "static: index.html"
-RESULT=$(curl -s "http://localhost:$PORT/" 2>/dev/null || echo "")
+RESULT=$(http_get "http://localhost:$PORT/" 2>/dev/null || echo "")
 if echo "$RESULT" | grep -q "Eshkol REPL"; then
     log_pass "index.html"
 else
@@ -181,7 +274,7 @@ fi
 
 # Test: Static file serving - style.css
 printf "Testing %-45s " "static: style.css"
-RESULT=$(curl -s "http://localhost:$PORT/style.css" 2>/dev/null || echo "")
+RESULT=$(http_get "http://localhost:$PORT/style.css" 2>/dev/null || echo "")
 if echo "$RESULT" | grep -q "Eshkol REPL Styles"; then
     log_pass "style.css"
 else
@@ -190,7 +283,7 @@ fi
 
 # Test: Static file serving - eshkol-repl.js
 printf "Testing %-45s " "static: eshkol-repl.js"
-RESULT=$(curl -s "http://localhost:$PORT/eshkol-repl.js" 2>/dev/null || echo "")
+RESULT=$(http_get "http://localhost:$PORT/eshkol-repl.js" 2>/dev/null || echo "")
 if echo "$RESULT" | grep -q "class EshkolRepl"; then
     log_pass "eshkol-repl.js"
 else
@@ -199,9 +292,8 @@ fi
 
 # Test: WASM binary in response
 printf "Testing %-45s " "WASM binary response"
-RESULT=$(curl -s -X POST "http://localhost:$PORT/compile" \
-    -H "Content-Type: application/json" \
-    -d '{"code":"(define x 42)","session_id":"test5"}' 2>/dev/null || echo "")
+RESULT=$(http_post_json "http://localhost:$PORT/compile" \
+    '{"code":"(define x 42)","session_id":"test5"}' 2>/dev/null || echo "")
 if echo "$RESULT" | grep -q '"wasm":"AGFzbQ'; then
     log_pass "WASM binary (base64)"
 else
@@ -210,9 +302,8 @@ fi
 
 # Test: Multiple definitions
 printf "Testing %-45s " "multiple definitions"
-RESULT=$(curl -s -X POST "http://localhost:$PORT/compile" \
-    -H "Content-Type: application/json" \
-    -d '{"code":"(define a 1)\n(define b 2)\n(define (add x y) (+ x y))","session_id":"test6"}' 2>/dev/null || echo "")
+RESULT=$(http_post_json "http://localhost:$PORT/compile" \
+    '{"code":"(define a 1)\n(define b 2)\n(define (add x y) (+ x y))","session_id":"test6"}' 2>/dev/null || echo "")
 if echo "$RESULT" | grep -q '"success":true'; then
     log_pass "multiple definitions"
 else
@@ -221,7 +312,7 @@ fi
 
 # Test: 404 handling
 printf "Testing %-45s " "404 handling"
-RESULT=$(curl -s "http://localhost:$PORT/nonexistent" 2>/dev/null || echo "")
+RESULT=$(http_get "http://localhost:$PORT/nonexistent" 2>/dev/null || echo "")
 if echo "$RESULT" | grep -qi "not found\|404"; then
     log_pass "404 handling"
 else
@@ -230,9 +321,8 @@ fi
 
 # Test: Session ID returned
 printf "Testing %-45s " "session ID in response"
-RESULT=$(curl -s -X POST "http://localhost:$PORT/compile" \
-    -H "Content-Type: application/json" \
-    -d '{"code":"(define y 0)","session_id":"mysession"}' 2>/dev/null || echo "")
+RESULT=$(http_post_json "http://localhost:$PORT/compile" \
+    '{"code":"(define y 0)","session_id":"mysession"}' 2>/dev/null || echo "")
 if echo "$RESULT" | grep -q '"session_id":"mysession"'; then
     log_pass "session ID"
 else

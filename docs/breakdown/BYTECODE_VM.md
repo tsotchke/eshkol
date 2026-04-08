@@ -132,7 +132,7 @@ Build and run:
 ```bash
 # Not built by default — build manually:
 g++ -O2 -std=c++20 exe/eshkol-server.cpp -o eshkol-server \
-  -I inc $(llvm-config-17 --cxxflags --ldflags --libs) -lm
+  -I inc $(llvm-config-21 --cxxflags --ldflags --libs) -lm
 
 # Run on port 8080
 ./eshkol-server --port 8080 --web-dir site/static/

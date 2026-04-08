@@ -15,7 +15,7 @@
 ### Prerequisites
 
 Eshkol requires:
-- **LLVM 17** (core dependency)
+- **LLVM 21** (core dependency for lite/native builds)
 - **CMake 3.14+** (build system)
 - **C++20 compiler** (GCC 11+, Clang 14+, or Apple Clang 15+)
 - **Ninja** (recommended build tool)
@@ -49,9 +49,9 @@ export PATH="$PATH:$(pwd)/build"
 # Install dependencies
 sudo apt-get update
 sudo apt-get install -y \
-    llvm-17 \
-    llvm-17-dev \
-    clang-17 \
+    llvm-21 \
+    llvm-21-dev \
+    clang-21 \
     cmake ninja-build \
     build-essential
 
@@ -64,13 +64,23 @@ cmake --build build -j$(nproc)
 
 ```bash
 # Install dependencies via Homebrew
-brew install llvm@17 cmake ninja
+brew install llvm@21 cmake ninja
 
 # Build Eshkol
 cmake -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
-    -DLLVM_DIR=$(brew --prefix llvm@17)/lib/cmake/llvm
+    -DLLVM_DIR=$(brew --prefix llvm@21)/lib/cmake/llvm
 cmake --build build -j$(sysctl -n hw.ncpu)
+```
+
+#### Windows
+
+```powershell
+# In Developer PowerShell for VS 2022
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL `
+    -DCMAKE_BUILD_TYPE=Release `
+    -DLLVM_DIR="C:/Program Files/LLVM/lib/cmake/llvm"
+cmake --build build --config Release --parallel
 ```
 
 ### Verification

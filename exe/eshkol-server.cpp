@@ -26,15 +26,89 @@
 #include <fstream>
 
 // Networking headers
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <io.h>
+#include <signal.h>
+#pragma comment(lib, "Ws2_32.lib")
+#else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <signal.h>
 #include <fcntl.h>
+#endif
+
+#ifdef _WIN32
+using socket_handle_t = SOCKET;
+using socket_length_t = int;
+constexpr socket_handle_t k_invalid_socket = INVALID_SOCKET;
+#else
+using socket_handle_t = int;
+using socket_length_t = socklen_t;
+constexpr socket_handle_t k_invalid_socket = -1;
+#endif
+
+namespace {
+
+bool init_socket_runtime() {
+#ifdef _WIN32
+    WSADATA wsa_data{};
+    return WSAStartup(MAKEWORD(2, 2), &wsa_data) == 0;
+#else
+    return true;
+#endif
+}
+
+void shutdown_socket_runtime() {
+#ifdef _WIN32
+    WSACleanup();
+#endif
+}
+
+void close_socket(socket_handle_t socket) {
+#ifdef _WIN32
+    if (socket != INVALID_SOCKET) {
+        closesocket(socket);
+    }
+#else
+    if (socket >= 0) {
+        close(socket);
+    }
+#endif
+}
+
+bool set_socket_receive_timeout(socket_handle_t socket, int seconds) {
+#ifdef _WIN32
+    const DWORD timeout_ms = static_cast<DWORD>(seconds * 1000);
+    return setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
+                      reinterpret_cast<const char*>(&timeout_ms),
+                      sizeof(timeout_ms)) == 0;
+#else
+    struct timeval tv;
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+    return setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
+#endif
+}
+
+bool path_exists(const char* path) {
+#ifdef _WIN32
+    return _access(path, 0) == 0;
+#else
+    return access(path, F_OK) == 0;
+#endif
+}
+
+} // namespace
 
 static std::atomic<bool> g_running{true};
-static int g_server_socket = -1;
+static socket_handle_t g_server_socket = k_invalid_socket;
 
 // Generate a random session ID
 std::string generate_session_id() {
@@ -299,17 +373,13 @@ std::string serve_static(const std::string& url_path) {
 }
 
 // Handle client connection
-void handle_client(int client_socket) {
+void handle_client(socket_handle_t client_socket) {
     // Read request
     char buffer[65536];
     std::string request_data;
-    ssize_t bytes_read;
+    int bytes_read;
 
-    // Set timeout for reading
-    struct timeval tv;
-    tv.tv_sec = 5;
-    tv.tv_usec = 0;
-    setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    set_socket_receive_timeout(client_socket, 5);
 
     // Read until we have the full request
     while ((bytes_read = recv(client_socket, buffer, sizeof(buffer) - 1, 0)) > 0) {
@@ -336,7 +406,7 @@ void handle_client(int client_socket) {
     }
 
     if (request_data.empty()) {
-        close(client_socket);
+        close_socket(client_socket);
         return;
     }
 
@@ -377,16 +447,16 @@ void handle_client(int client_socket) {
     }
 
     // Send response
-    send(client_socket, response.c_str(), response.size(), 0);
-    close(client_socket);
+    send(client_socket, response.c_str(), static_cast<int>(response.size()), 0);
+    close_socket(client_socket);
 }
 
 // Signal handler for graceful shutdown
 void signal_handler(int sig) {
     (void)sig;
     g_running = false;
-    if (g_server_socket >= 0) {
-        close(g_server_socket);
+    if (g_server_socket != k_invalid_socket) {
+        close_socket(g_server_socket);
     }
 }
 
@@ -416,30 +486,44 @@ int main(int argc, char** argv) {
     // Try to auto-detect web directory if not specified
     if (g_web_dir.empty()) {
         // Check for web/ relative to current directory
-        if (access("web/index.html", F_OK) == 0) {
+        if (path_exists("web/index.html")) {
             g_web_dir = "web";
         }
         // Check for ../web/ (if running from build/)
-        else if (access("../web/index.html", F_OK) == 0) {
+        else if (path_exists("../web/index.html")) {
             g_web_dir = "../web";
         }
+    }
+
+    if (!init_socket_runtime()) {
+        std::cerr << "Failed to initialize socket runtime\n";
+        return 1;
     }
 
     // Set up signal handlers
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);  // Ignore broken pipe
+#endif
 
     // Create socket
     g_server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (g_server_socket < 0) {
+    if (g_server_socket == k_invalid_socket) {
         std::cerr << "Failed to create socket\n";
+        shutdown_socket_runtime();
         return 1;
     }
 
     // Allow address reuse
     int opt = 1;
-    setsockopt(g_server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(g_server_socket, SOL_SOCKET, SO_REUSEADDR,
+#ifdef _WIN32
+               reinterpret_cast<const char*>(&opt),
+#else
+               &opt,
+#endif
+               sizeof(opt));
 
     // Bind
     struct sockaddr_in addr;
@@ -450,14 +534,16 @@ int main(int argc, char** argv) {
 
     if (bind(g_server_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         std::cerr << "Failed to bind to port " << port << "\n";
-        close(g_server_socket);
+        close_socket(g_server_socket);
+        shutdown_socket_runtime();
         return 1;
     }
 
     // Listen
     if (listen(g_server_socket, 10) < 0) {
         std::cerr << "Failed to listen\n";
-        close(g_server_socket);
+        close_socket(g_server_socket);
+        shutdown_socket_runtime();
         return 1;
     }
 
@@ -470,10 +556,10 @@ int main(int argc, char** argv) {
     // Accept connections
     while (g_running) {
         struct sockaddr_in client_addr;
-        socklen_t client_len = sizeof(client_addr);
+        socket_length_t client_len = sizeof(client_addr);
 
-        int client_socket = accept(g_server_socket, (struct sockaddr*)&client_addr, &client_len);
-        if (client_socket < 0) {
+        socket_handle_t client_socket = accept(g_server_socket, (struct sockaddr*)&client_addr, &client_len);
+        if (client_socket == k_invalid_socket) {
             if (g_running) {
                 std::cerr << "Accept failed\n";
             }
@@ -484,7 +570,8 @@ int main(int argc, char** argv) {
         std::thread(handle_client, client_socket).detach();
     }
 
-    close(g_server_socket);
+    close_socket(g_server_socket);
+    shutdown_socket_runtime();
     std::cout << "\nServer stopped\n";
     return 0;
 }

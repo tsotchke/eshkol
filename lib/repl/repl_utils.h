@@ -11,8 +11,9 @@
 #include <vector>
 #include <unordered_set>
 #include <cstdlib>
-#include <unistd.h>
 #include <iostream>
+
+#include <eshkol/platform_runtime.h>
 
 namespace eshkol {
 namespace repl {
@@ -31,10 +32,14 @@ inline bool supports_color() {
 
         if (no_color && no_color[0] != '\0') {
             cached = 0;
-        } else if (!isatty(STDOUT_FILENO)) {
+        } else if (!platform::stdout_isatty()) {
             cached = 0;
         } else if (colorterm && colorterm[0] != '\0') {
             cached = 1;
+#ifdef _WIN32
+        } else if (std::getenv("WT_SESSION") || std::getenv("ANSICON")) {
+            cached = 1;
+#endif
         } else if (term) {
             std::string t(term);
             cached = (t.find("color") != std::string::npos ||

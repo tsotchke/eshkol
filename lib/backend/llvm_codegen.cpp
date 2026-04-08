@@ -29,10 +29,60 @@
 #include <eshkol/backend/parallel_codegen.h>
 #include <eshkol/types/type_checker.h>
 #include <eshkol/frontend/macro_expander.h>
+#include <eshkol/build_config.h>
 #include <eshkol/logger.h>
+#include <eshkol/platform_runtime.h>
+#include <eshkol/runtime_exports.h>
 #include "../core/arena_memory.h"
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
+
+namespace {
+
+void append_host_runtime_link_args(std::vector<std::string>& link_args) {
+#ifdef _WIN32
+    std::stringstream stream(ESHKOL_HOST_RUNTIME_LINK_ARGS);
+    std::string item;
+
+    while (std::getline(stream, item, ';')) {
+        if (item.empty()) {
+            continue;
+        }
+
+        if (item.size() >= 3 &&
+            std::isalpha(static_cast<unsigned char>(item[0])) &&
+            item[1] == ':' &&
+            item[2] == '/') {
+            std::replace(item.begin(), item.end(), '/', '\\');
+        }
+
+        link_args.emplace_back(item);
+    }
+
+    const auto has_cudadevrt = std::any_of(link_args.begin(), link_args.end(), [](const std::string& arg) {
+        return std::filesystem::path(arg).filename() == "cudadevrt.lib";
+    });
+    if (!has_cudadevrt) {
+        for (const auto& arg : link_args) {
+            const auto path = std::filesystem::path(arg);
+            if (path.filename() == "cudart.lib") {
+                const auto candidate = path.parent_path() / "cudadevrt.lib";
+                std::error_code ec;
+                if (std::filesystem::exists(candidate, ec)) {
+                    link_args.emplace_back(candidate.string());
+                }
+                break;
+            }
+        }
+    }
+#else
+    for (const auto& runtime_arg : eshkol::platform::host_runtime_link_args()) {
+        link_args.emplace_back(runtime_arg);
+    }
+#endif
+}
+
+} // namespace
 
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
@@ -57,6 +107,7 @@
 #include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Scalar/GVN.h>
+#include <llvm/ADT/StringMap.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm/IR/Intrinsics.h>
@@ -69,9 +120,9 @@
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LLVM VERSION COMPATIBILITY
-// LLVM 18+ changed several APIs. This section provides compatibility for both.
+// LLVM 21 changed several APIs again. Keep older fallback paths explicit.
 // ═══════════════════════════════════════════════════════════════════════════
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
 #define ESHKOL_CODEGEN_FILETYPE CodeGenFileType::ObjectFile
 #define ESHKOL_GET_INTRINSIC(mod, id, types) Intrinsic::getOrInsertDeclaration(mod, id, types)
 #else
@@ -166,7 +217,6 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
 #include <algorithm>
 #include <cctype>
 #include <stack>
-#include <unistd.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>  /* _NSGetExecutablePath */
 #endif
@@ -333,6 +383,35 @@ static bool isLambdaName(const std::string& name) {
     // Check for "lambda_" at start (old format, still supported)
     if (name.find("lambda_") == 0) return true;
     return false;
+}
+
+static GlobalValue::LinkageTypes publicDefinitionLinkage(bool library_mode) {
+#ifdef _WIN32
+    if (library_mode || g_repl_mode_enabled) {
+        // COFF treats linkonce_odr as an ODR contract, which is too strict for
+        // stdlib symbols that user code is allowed to redefine.
+        return GlobalValue::WeakAnyLinkage;
+    }
+#endif
+    return (library_mode || g_repl_mode_enabled)
+        ? GlobalValue::LinkOnceODRLinkage
+        : GlobalValue::ExternalLinkage;
+}
+
+static GlobalValue::LinkageTypes sexprGlobalLinkage(
+    bool library_mode,
+    GlobalValue::LinkageTypes local_non_windows = GlobalValue::LinkOnceODRLinkage
+) {
+#ifdef _WIN32
+    if (library_mode || g_repl_mode_enabled) {
+        return GlobalValue::WeakAnyLinkage;
+    }
+    return GlobalValue::InternalLinkage;
+#else
+    return (library_mode || g_repl_mode_enabled)
+        ? GlobalValue::LinkOnceODRLinkage
+        : local_non_windows;
+#endif
 }
 
 // Forward declaration for callback wrappers
@@ -703,8 +782,8 @@ public:
         // Set target triple (use WASM triple if target_triple param is set)
         std::string target_triple_str = target_triple ? std::string(target_triple)
                                                        : sys::getDefaultTargetTriple();
+#if LLVM_VERSION_MAJOR >= 21
         Triple target_triple_obj(target_triple_str);
-#if LLVM_VERSION_MAJOR >= 18
         module->setTargetTriple(target_triple_obj);
 #else
         module->setTargetTriple(target_triple_str);
@@ -718,10 +797,10 @@ public:
             g_cached_target_triple = sys::getDefaultTargetTriple();
             g_cached_cpu_name = sys::getHostCPUName().str();
             SubtargetFeatures features;
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
             auto host_features = sys::getHostCPUFeatures();
 #else
-            StringMap<bool> host_features;
+            llvm::StringMap<bool> host_features;
             sys::getHostCPUFeatures(host_features);
 #endif
             for (auto& f : host_features) {
@@ -732,7 +811,7 @@ public:
         }
 
         std::string error;
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
         const Target* target = TargetRegistry::lookupTarget(target_triple_obj, error);
 #else
         const Target* target = TargetRegistry::lookupTarget(target_triple_str, error);
@@ -741,7 +820,7 @@ public:
             // Only set data layout for native targets — WASM data layout is set in compile step
             TargetOptions options;
             std::unique_ptr<TargetMachine> target_machine(
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
                 target->createTargetMachine(target_triple_obj, g_cached_cpu_name, g_cached_features,
                                            options, Reloc::PIC_));
 #else
@@ -1516,7 +1595,7 @@ public:
                                 if (!sexpr_global) {
                                     sexpr_global = new GlobalVariable(
                                         *module, int64_type, false,
-                                        GlobalValue::LinkOnceODRLinkage,
+                                        sexprGlobalLinkage(library_mode),
                                         ConstantInt::get(int64_type, 0),
                                         sexpr_key
                                     );
@@ -1555,7 +1634,7 @@ public:
                                             if (!var_sexpr_global) {
                                                 var_sexpr_global = new GlobalVariable(
                                                     *module, int64_type, false,
-                                                    GlobalValue::LinkOnceODRLinkage,
+                                                    sexprGlobalLinkage(library_mode),
                                                     ConstantInt::get(int64_type, 0),
                                                     var_sexpr_key
                                                 );
@@ -1754,7 +1833,7 @@ public:
                         if (!sexpr_global) {
                             sexpr_global = new GlobalVariable(
                                 *module, int64_type, false,
-                                GlobalValue::LinkOnceODRLinkage,
+                                sexprGlobalLinkage(library_mode),
                                 ConstantInt::get(int64_type, 0),
                                 sexpr_key
                             );
@@ -2918,7 +2997,7 @@ private:
 
         Function* function = Function::Create(
             func_type,
-            (library_mode || g_repl_mode_enabled) ? Function::LinkOnceODRLinkage : Function::ExternalLinkage,
+            publicDefinitionLinkage(library_mode),
             func_name,
             module.get()
         );
@@ -3039,7 +3118,7 @@ private:
                             // Create var_sexpr global (initial value will be set later)
                             new GlobalVariable(
                                 *module, int64_type, false,
-                                (library_mode || g_repl_mode_enabled) ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
+                                sexprGlobalLinkage(library_mode, GlobalValue::ExternalLinkage),
                                 ConstantInt::get(int64_type, 0),
                                 var_sexpr_key
                             );
@@ -3190,7 +3269,7 @@ private:
                 if (!sexpr_global) {
                     sexpr_global = new GlobalVariable(
                         *module, int64_type, false,
-                        GlobalValue::LinkOnceODRLinkage,
+                        sexprGlobalLinkage(library_mode),
                         ConstantInt::get(int64_type, 0),
                         sexpr_key
                     );
@@ -3223,6 +3302,9 @@ private:
         // Keep lambda functions as internal to avoid conflicts with user code
         for (auto& pair : function_table) {
             if (pair.second && pair.first != "__lambda_init__") {
+                if (pair.second->isDeclaration()) {
+                    continue;
+                }
                 // Skip runtime functions that need external linkage (they're declarations, not definitions)
                 if (pair.first.find("eshkol_") == 0 || pair.first.find("arena_") == 0) {
                     // Keep external linkage for runtime function declarations
@@ -3230,7 +3312,11 @@ private:
                 }
                 // Only export user-defined named functions, not lambdas
                 if (!isLambdaName(pair.first)) {
+#ifdef _WIN32
+                    pair.second->setLinkage(publicDefinitionLinkage(true));
+#else
                     pair.second->setLinkage(GlobalValue::ExternalLinkage);
+#endif
                 } else {
                     pair.second->setLinkage(GlobalValue::InternalLinkage);
                 }
@@ -3368,7 +3454,7 @@ private:
                     if (!sexpr_global) {
                         sexpr_global = new GlobalVariable(
                             *module, int64_type, false,
-                            GlobalValue::LinkOnceODRLinkage,
+                            sexprGlobalLinkage(library_mode),
                             ConstantInt::get(int64_type, 0),
                             sexpr_key
                         );
@@ -3426,7 +3512,7 @@ private:
                             if (!var_sexpr_global) {
                                 var_sexpr_global = new GlobalVariable(
                                     *module, int64_type, false,
-                                    GlobalValue::LinkOnceODRLinkage,
+                                    sexprGlobalLinkage(library_mode),
                                     ConstantInt::get(int64_type, 0),
                                     var_sexpr_key
                                 );
@@ -3638,7 +3724,7 @@ private:
                     if (!sexpr_global) {
                         sexpr_global = new GlobalVariable(
                             *module, int64_type, false,
-                            GlobalValue::LinkOnceODRLinkage,
+                            sexprGlobalLinkage(library_mode),
                             ConstantInt::get(int64_type, 0),
                             sexpr_key
                         );
@@ -7975,7 +8061,7 @@ private:
                     // Create alias global that points to the same S-expression
                     GlobalVariable* var_sexpr_global = new GlobalVariable(
                         *module, int64_type, false,
-                        GlobalValue::LinkOnceODRLinkage,
+                        sexprGlobalLinkage(library_mode),
                         ConstantInt::get(int64_type, 0),  // Initialize to 0, will be set at runtime
                         var_sexpr_key
                     );
@@ -8108,7 +8194,7 @@ private:
                         if (!var_sexpr_global) {
                             var_sexpr_global = new GlobalVariable(
                                 *module, int64_type, false,
-                                GlobalValue::LinkOnceODRLinkage,
+                                sexprGlobalLinkage(library_mode),
                                 ConstantInt::get(int64_type, 0),
                                 var_sexpr_key
                             );
@@ -8398,7 +8484,7 @@ private:
                                 if (lambda_sexpr_global) {
                                     GlobalVariable* var_sexpr_global = new GlobalVariable(
                                         *module, int64_type, false,
-                                        GlobalValue::LinkOnceODRLinkage,
+                                        sexprGlobalLinkage(library_mode),
                                         ConstantInt::get(int64_type, 0),
                                         var_sexpr_key
                                     );
@@ -10095,36 +10181,56 @@ private:
         if (func_name == "current-input-port" || func_name == "current-output-port" ||
             func_name == "current-error-port") {
             // Get the appropriate stdio FILE* global
-            const char* var_name;
             uint8_t port_type_tag;
+            Value* file_ptr;
+            if (func_name == "current-input-port") {
+                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x10; // input port
+            } else if (func_name == "current-output-port") {
+                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x40; // output port
+            } else {
+                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x40; // output port
+            }
+
+#ifdef _WIN32
+            const char* stream_symbol = nullptr;
+            if (func_name == "current-input-port") {
+                stream_symbol = eshkol::runtime::stdin_stream_symbol;
+            } else if (func_name == "current-output-port") {
+                stream_symbol = eshkol::runtime::stdout_stream_symbol;
+            } else {
+                stream_symbol = eshkol::runtime::stderr_stream_symbol;
+            }
+            FunctionType* stream_ft = FunctionType::get(PointerType::getUnqual(*context), {}, false);
+            FunctionCallee stream_fn = module->getOrInsertFunction(stream_symbol, stream_ft);
+            file_ptr = builder->CreateCall(stream_fn, {});
+#else
+            const char* var_name;
             if (func_name == "current-input-port") {
 #ifdef __APPLE__
                 var_name = "__stdinp";
 #else
                 var_name = "stdin";
 #endif
-                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x10; // input port
             } else if (func_name == "current-output-port") {
 #ifdef __APPLE__
                 var_name = "__stdoutp";
 #else
                 var_name = "stdout";
 #endif
-                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x40; // output port
             } else {
 #ifdef __APPLE__
                 var_name = "__stderrp";
 #else
                 var_name = "stderr";
 #endif
-                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x40; // output port
             }
             auto* stdio_var = module->getGlobalVariable(var_name);
             if (!stdio_var) {
                 stdio_var = new GlobalVariable(*module, PointerType::getUnqual(*context), false,
                     GlobalVariable::ExternalLinkage, nullptr, var_name);
             }
-            Value* file_ptr = builder->CreateLoad(PointerType::getUnqual(*context), stdio_var);
+            file_ptr = builder->CreateLoad(PointerType::getUnqual(*context), stdio_var);
+#endif
             Value* file_int = builder->CreatePtrToInt(file_ptr, int64_type);
 
             Value* result = UndefValue::get(tagged_value_type);
@@ -12900,7 +13006,16 @@ private:
             if (signatures_match) {
                 eshkol_debug("Mutual TCO: emitting tail call to %s", func_name.c_str());
                 CallInst* call = builder->CreateCall(callee, args);
+#if LLVM_VERSION_MAJOR >= 18
+                // LLVM 18's X86 backend rejects some musttail aggregate returns during
+                // stdlib compilation, and LLVM 21 still triggers the same failure in
+                // the shared stdlib build path. Keep the tail-position hint without
+                // hard-failing x86 builds on wrappers like second->cadr and none?->all?.
                 call->setTailCallKind(CallInst::TCK_Tail);
+#endif
+#if LLVM_VERSION_MAJOR < 18
+                call->setTailCallKind(CallInst::TCK_MustTail);
+#endif
                 builder->CreateRet(call);
                 return UndefValue::get(tagged_value_type);
             }
@@ -13512,6 +13627,11 @@ private:
             // At runtime: print diagnostic and abort
             FunctionType* fprintf_type = FunctionType::get(int32_type, {ptr_type, ptr_type}, true);
             FunctionCallee fprintf_fn = module->getOrInsertFunction("fprintf", fprintf_type);
+#ifdef _WIN32
+            FunctionType* stream_ft = FunctionType::get(ptr_type, {}, false);
+            FunctionCallee stderr_fn = module->getOrInsertFunction(eshkol::runtime::stderr_stream_symbol, stream_ft);
+            Value* stderr_val = builder->CreateCall(stderr_fn, {});
+#else
 #ifdef __APPLE__
             const char* stderr_sym = "__stderrp";
 #else
@@ -13523,6 +13643,7 @@ private:
                     GlobalValue::ExternalLinkage, nullptr, stderr_sym);
             }
             Value* stderr_val = builder->CreateLoad(ptr_type, stderr_var);
+#endif
             Value* fmt_str = builder->CreateGlobalString(
                 "Error: function '%s' does not support reverse-mode AD — cannot compute gradient\n");
             Value* fname_str = builder->CreateGlobalString(func_name);
@@ -14170,7 +14291,7 @@ private:
         Function* pop_handler_func = module->getFunction("eshkol_pop_exception_handler");
         Function* get_exception_func = module->getFunction("eshkol_get_current_exception");
         Function* clear_exception_func = module->getFunction("eshkol_clear_current_exception");
-        Function* setjmp_func = module->getFunction("setjmp");
+        Function* setjmp_func = getOrDeclareSetjmpFunc();
 
         // Declare functions if not already declared
         if (!push_handler_func) {
@@ -14189,12 +14310,6 @@ private:
             FunctionType* clear_type = FunctionType::get(builder->getVoidTy(), {}, false);
             clear_exception_func = Function::Create(clear_type, Function::ExternalLinkage, "eshkol_clear_current_exception", module.get());
         }
-        if (!setjmp_func) {
-            // setjmp takes a jmp_buf pointer and returns int
-            FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
-            setjmp_func = Function::Create(setjmp_type, Function::ExternalLinkage, "setjmp", module.get());
-        }
-
         Function* current_func = builder->GetInsertBlock()->getParent();
 
         // Create basic blocks - IMPORTANT: setup_block is separate to avoid
@@ -14210,15 +14325,14 @@ private:
         // Setup block: allocate jmp_buf, push handler, call setjmp
         builder->SetInsertPoint(setup_block);
 
-        // Allocate jmp_buf on stack (platform-specific size, use 200 bytes to be safe)
-        Type* jmp_buf_type = ArrayType::get(builder->getInt8Ty(), 200);
-        Value* jmp_buf_alloc = builder->CreateAlloca(jmp_buf_type, nullptr, "jmp_buf");
+        // Allocate a real platform-sized jmp_buf for the current host ABI.
+        Value* jmp_buf_alloc = allocaJmpBuf("jmp_buf");
 
         // Push exception handler
         builder->CreateCall(push_handler_func, {jmp_buf_alloc});
 
         // Call setjmp - returns 0 on first call, non-zero when longjmp is called
-        Value* setjmp_result = builder->CreateCall(setjmp_func, {jmp_buf_alloc}, "setjmp_result");
+        Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "setjmp_result");
         Value* is_exception = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(is_exception, handler_block, try_block);
@@ -14513,11 +14627,7 @@ private:
         Function* current_func = builder->GetInsertBlock()->getParent();
 
         // Declare setjmp if needed
-        Function* setjmp_func = module->getFunction("setjmp");
-        if (!setjmp_func) {
-            FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
-            setjmp_func = Function::Create(setjmp_type, Function::ExternalLinkage, "setjmp", module.get());
-        }
+        Function* setjmp_func = getOrDeclareSetjmpFunc();
 
         // Declare continuation runtime functions
         Function* make_state_func = module->getFunction("eshkol_make_continuation_state");
@@ -14545,9 +14655,7 @@ private:
         builder->CreateBr(setup_bb);
         builder->SetInsertPoint(setup_bb);
 
-        // Allocate jmp_buf on stack (200 bytes, platform-safe)
-        Type* jmp_buf_type = ArrayType::get(builder->getInt8Ty(), 200);
-        Value* jmp_buf_alloc = builder->CreateAlloca(jmp_buf_type, nullptr, "callcc_jmpbuf");
+        Value* jmp_buf_alloc = allocaJmpBuf("callcc_jmpbuf");
 
         // Get arena pointer
         Value* arena_ptr = getArenaPtr();
@@ -14562,7 +14670,7 @@ private:
         Value* cont_tagged = packPtrToTaggedValue(cont_closure_ptr, ESHKOL_VALUE_CALLABLE);
 
         // Call setjmp — returns 0 first time, non-zero when continuation is invoked
-        Value* setjmp_result = builder->CreateCall(setjmp_func, {jmp_buf_alloc}, "callcc_setjmp");
+        Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "callcc_setjmp");
         Value* was_invoked = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(was_invoked, invoked_bb, normal_bb);
@@ -14712,7 +14820,7 @@ private:
         // Get runtime functions (reuse existing declarations from guard)
         Function* push_handler_func = module->getFunction("eshkol_push_exception_handler");
         Function* pop_handler_func = module->getFunction("eshkol_pop_exception_handler");
-        Function* setjmp_func = module->getFunction("setjmp");
+        Function* setjmp_func = getOrDeclareSetjmpFunc();
         Function* get_raised_func = module->getFunction("eshkol_get_raised_value");
 
         if (!push_handler_func) {
@@ -14722,10 +14830,6 @@ private:
         if (!pop_handler_func) {
             FunctionType* pop_type = FunctionType::get(builder->getVoidTy(), {}, false);
             pop_handler_func = Function::Create(pop_type, Function::ExternalLinkage, "eshkol_pop_exception_handler", module.get());
-        }
-        if (!setjmp_func) {
-            FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
-            setjmp_func = Function::Create(setjmp_type, Function::ExternalLinkage, "setjmp", module.get());
         }
         if (!get_raised_func) {
             FunctionType* get_raised_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
@@ -14746,15 +14850,13 @@ private:
         // Setup block: allocate jmp_buf, push handler, call setjmp
         builder->SetInsertPoint(setup_block);
 
-        // Allocate jmp_buf on stack (200 bytes, same as guard)
-        Type* jmp_buf_type = ArrayType::get(builder->getInt8Ty(), 200);
-        Value* jmp_buf_alloc = builder->CreateAlloca(jmp_buf_type, nullptr, "weh_jmp_buf");
+        Value* jmp_buf_alloc = allocaJmpBuf("weh_jmp_buf");
 
         // Push exception handler
         builder->CreateCall(push_handler_func, {jmp_buf_alloc});
 
         // Call setjmp - returns 0 on first call, non-zero when longjmp fires
-        Value* setjmp_result = builder->CreateCall(setjmp_func, {jmp_buf_alloc}, "weh_setjmp");
+        Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "weh_setjmp");
         Value* is_exception = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(is_exception, handler_block, try_block);
@@ -18883,7 +18985,7 @@ private:
         if (!sexpr_global) {
             sexpr_global = new GlobalVariable(
                 *module, int64_type, false,
-                GlobalValue::LinkOnceODRLinkage,
+                sexprGlobalLinkage(library_mode),
                 ConstantInt::get(int64_type, 0),
                 sexpr_key
             );
@@ -19436,7 +19538,7 @@ private:
                     if (!var_sexpr_global) {
                         var_sexpr_global = new GlobalVariable(
                             *module, int64_type, false,
-                            GlobalVariable::LinkOnceODRLinkage,
+                            sexprGlobalLinkage(library_mode),
                             ConstantInt::get(int64_type, 0),
                             scoped_sexpr_key
                         );
@@ -22737,15 +22839,18 @@ private:
         // Escape the result value before popping the region
         // This copies heap-allocated return values to the parent region/global arena
         if (result) {
+            AllocaInst* result_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "region_result_slot");
+            AllocaInst* escaped_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "escaped_result_slot");
+            builder->CreateStore(result, result_alloca);
             FunctionType* escape_type = FunctionType::get(
-                tagged_value_type,  // returns escaped tagged value
-                {tagged_value_type},  // input tagged value
+                void_type,
+                {PointerType::getUnqual(*context), PointerType::getUnqual(*context)},
                 false);
             FunctionCallee escape_fn = module->getOrInsertFunction(
-                "region_escape_tagged_value", escape_type);
+                "region_escape_tagged_value_into", escape_type);
 
-            Value* escaped = builder->CreateCall(escape_fn, {result}, "escaped_result");
-            result = escaped;
+            builder->CreateCall(escape_fn, {escaped_alloca, result_alloca});
+            result = builder->CreateLoad(tagged_value_type, escaped_alloca, "escaped_result");
         }
 
         // Call region_pop (this destroys the region and frees all its memory)
@@ -27547,7 +27652,11 @@ private:
 
         Function* builtin_func = Function::Create(
             func_type,
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
             Function::LinkOnceODRLinkage,  // Allow deduplication when linking with stdlib
+#endif
             func_name,
             module.get()
         );
@@ -28091,6 +28200,67 @@ private:
     // Helper: alloca a tagged value result slot
     Value* allocaResult(const char* name) {
         return builder->CreateAlloca(tagged_value_type, nullptr, name);
+    }
+
+    Value* allocaJmpBuf(const char* name) {
+#ifdef _WIN32
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+        Type* jmp_buf_type = ArrayType::get(builder->getInt8Ty(), 256);
+        AllocaInst* jmp_buf = entry_builder.CreateAlloca(jmp_buf_type, nullptr, name);
+#else
+        FunctionType* size_type = FunctionType::get(int64_type, {}, false);
+        Function* size_func = module->getFunction(eshkol::runtime::jmp_buf_size_symbol);
+        if (!size_func) {
+            size_func = Function::Create(
+                size_type,
+                Function::ExternalLinkage,
+                eshkol::runtime::jmp_buf_size_symbol,
+                module.get());
+        }
+
+        Value* size = builder->CreateCall(size_func, {}, std::string(name) + "_size");
+        AllocaInst* jmp_buf = builder->CreateAlloca(builder->getInt8Ty(), size, name);
+#endif
+        jmp_buf->setAlignment(Align(16));
+        return jmp_buf;
+    }
+
+    Function* getOrDeclareSetjmpFunc() {
+#ifdef _WIN32
+        constexpr const char* setjmp_symbol = "_setjmpex";
+        FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy(), builder->getPtrTy()}, false);
+#else
+        constexpr const char* setjmp_symbol = "setjmp";
+        FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
+#endif
+        Function* setjmp_func = module->getFunction(setjmp_symbol);
+        if (!setjmp_func) {
+            setjmp_func = Function::Create(
+                setjmp_type,
+                Function::ExternalLinkage,
+                setjmp_symbol,
+                module.get());
+        }
+        setjmp_func->addFnAttr(Attribute::ReturnsTwice);
+        return setjmp_func;
+    }
+
+    std::vector<Value*> makeSetjmpArgs(Value* jmp_buf_alloc) {
+        std::vector<Value*> args = {jmp_buf_alloc};
+#ifdef _WIN32
+        // Native Windows x64 setjmp expects the address of the local variable
+        // area as a hidden second argument.
+        Function* localaddress = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::localaddress, {});
+        Value* local_area = builder->CreateCall(localaddress, {}, "setjmp_local_area");
+        Value* frame_ptr = builder->CreateInBoundsGEP(
+            builder->getInt8Ty(),
+            local_area,
+            ConstantInt::getSigned(int64_type, -128),
+            "setjmp_frame");
+        args.push_back(frame_ptr);
+#endif
+        return args;
     }
 
     // Helper: load tagged value from alloca
@@ -29168,12 +29338,8 @@ void eshkol_enable_debug_info(const char* source_filename) {
             g_debug_source_filename = path.substr(last_slash + 1);
         } else {
             // No directory separator - use current directory
-            char cwd[4096];
-            if (getcwd(cwd, sizeof(cwd))) {
-                g_debug_source_directory = cwd;
-            } else {
-                g_debug_source_directory = ".";
-            }
+            auto cwd = eshkol::platform::current_directory();
+            g_debug_source_directory = cwd.empty() ? "." : cwd.string();
             g_debug_source_filename = path;
         }
     }
@@ -29389,10 +29555,10 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             g_cached_target_triple = sys::getDefaultTargetTriple();
             g_cached_cpu_name = sys::getHostCPUName().str();
             SubtargetFeatures features;
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
             auto host_features = sys::getHostCPUFeatures();
 #else
-            StringMap<bool> host_features;
+            llvm::StringMap<bool> host_features;
             sys::getHostCPUFeatures(host_features);
 #endif
             for (auto& f : host_features) {
@@ -29402,7 +29568,7 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             g_target_info_cached = true;
         }
 
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
         Triple cached_triple(g_cached_target_triple);
         module->setTargetTriple(cached_triple);
 #else
@@ -29410,7 +29576,7 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
 #endif
 
         std::string error;
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
         const Target* target = TargetRegistry::lookupTarget(cached_triple, error);
 #else
         const Target* target = TargetRegistry::lookupTarget(g_cached_target_triple, error);
@@ -29423,13 +29589,12 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         // Create target machine with configured optimization level
         TargetOptions target_options;
         auto codegen_opt = getCodeGenOptLevel();
-#if LLVM_VERSION_MAJOR >= 18
         std::unique_ptr<TargetMachine> target_machine(
+#if LLVM_VERSION_MAJOR >= 21
             target->createTargetMachine(cached_triple, g_cached_cpu_name, g_cached_features,
                                        target_options, Reloc::PIC_, std::nullopt,
                                        codegen_opt));
 #else
-        std::unique_ptr<TargetMachine> target_machine(
             target->createTargetMachine(g_cached_target_triple, g_cached_cpu_name, g_cached_features,
                                        target_options, Reloc::PIC_, std::nullopt,
                                        codegen_opt));
@@ -29515,164 +29680,154 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
                                         const char* const* lib_paths, size_t num_lib_paths,
                                         const char* const* linked_libs, size_t num_linked_libs) {
     if (!module_ref || !filename) return -1;
-    
+
+    const auto output_path = eshkol::platform::with_executable_suffix(filename);
+
     // First compile to temporary object file
-    std::string temp_obj = std::string(filename) + ".tmp.o";
+    std::string temp_obj = output_path.generic_string() + ".tmp.o";
     if (eshkol_compile_llvm_ir_to_object(module_ref, temp_obj.c_str()) != 0) {
         return -1;
     }
-    
+
     try {
-        // Get absolute path to build directory where libeshkol-static.a is located
-        char cwd[4096];
-        if (getcwd(cwd, sizeof(cwd)) != nullptr) {
-            std::string build_dir = std::string(cwd) + "/build";
-            eshkol_debug("Adding library search path: %s", build_dir.c_str());
+        auto cwd = eshkol::platform::current_directory();
+        if (!cwd.empty()) {
+            auto build_dir = cwd / "build";
+            eshkol_debug("Adding library search path: %s", build_dir.string().c_str());
         }
-        
-        // Use system linker to create executable
-        std::string link_cmd = "c++ -fPIE";
-        // If debug info was emitted, pass -g to linker to preserve DWARF sections
+
+        std::vector<std::string> link_args = {eshkol::platform::cxx_compiler()};
+#ifndef _WIN32
+        link_args.emplace_back("-fPIE");
+#endif
         if (g_emit_debug_info) {
-            link_cmd += " -g";
+            link_args.emplace_back("-g");
         }
-        link_cmd += " " + temp_obj + " -lm";
-        
+        link_args.emplace_back(std::filesystem::path(temp_obj).generic_string());
+
         // Add library search paths FIRST (before -l flags)
         if (lib_paths && num_lib_paths > 0) {
             for (size_t i = 0; i < num_lib_paths; i++) {
                 if (lib_paths[i]) {
-                    link_cmd += " -L" + std::string(lib_paths[i]);
+                    link_args.emplace_back("-L" + std::filesystem::path(lib_paths[i]).generic_string());
                 }
             }
         }
-        
-        // Find libeshkol-static.a relative to the eshkol binary, NOT the CWD.
-        // Search order:
-        //   1. ESHKOL_LIB_DIR environment variable
-        //   2. Same directory as the eshkol-run binary (build/)
-        //   3. ../lib/ relative to binary (installed layout)
-        //   4. CWD/build/ as last resort
-        {
-            std::string lib_path;
-            bool found = false;
 
-            // 1. Environment variable
-            const char* env_lib = getenv("ESHKOL_LIB_DIR");
-            if (env_lib) {
-                lib_path = std::string(env_lib) + "/libeshkol-static.a";
-                if (access(lib_path.c_str(), R_OK) == 0) found = true;
-            }
+        std::filesystem::path runtime_lib_path;
+        const auto runtime_library_name = eshkol::platform::static_library_name("eshkol-static");
+        auto exe_dir = eshkol::platform::executable_directory();
 
-            // 2. Same directory as binary (get from /proc/self/exe or _NSGetExecutablePath)
-            if (!found) {
-#ifdef __APPLE__
-                char exe_path[4096];
-                uint32_t exe_size = sizeof(exe_path);
-                if (_NSGetExecutablePath(exe_path, &exe_size) == 0) {
-                    char* real = realpath(exe_path, nullptr);
-                    if (real) {
-                        std::string exe_dir = std::string(real);
-                        size_t last_slash = exe_dir.rfind('/');
-                        if (last_slash != std::string::npos) {
-                            exe_dir = exe_dir.substr(0, last_slash);
-                        }
-                        free(real);
-                        lib_path = exe_dir + "/libeshkol-static.a";
-                        if (access(lib_path.c_str(), R_OK) == 0) found = true;
-                    }
-                }
-#elif defined(__linux__)
-                char exe_path[4096];
-                ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-                if (len > 0) {
-                    exe_path[len] = '\0';
-                    std::string exe_dir = std::string(exe_path);
-                    size_t last_slash = exe_dir.rfind('/');
-                    if (last_slash != std::string::npos)
-                        exe_dir = exe_dir.substr(0, last_slash);
-                    lib_path = exe_dir + "/libeshkol-static.a";
-                    if (access(lib_path.c_str(), R_OK) == 0) found = true;
-                }
-#endif
-            }
-
-            // 3. CWD/build/ as fallback
-            if (!found) {
-                char build_path[4096];
-                if (getcwd(build_path, sizeof(build_path)) != nullptr) {
-                    std::string cwd_str = std::string(build_path);
-                    if (cwd_str.length() >= 5 && cwd_str.substr(cwd_str.length() - 5) == "build") {
-                        lib_path = cwd_str + "/libeshkol-static.a";
-                    } else {
-                        lib_path = cwd_str + "/build/libeshkol-static.a";
-                    }
-                    if (access(lib_path.c_str(), R_OK) == 0) found = true;
-                }
-            }
-
-            if (found) {
-                link_cmd += " " + lib_path;
-                eshkol_debug("Linking with library: %s", lib_path.c_str());
-            } else {
-                // Absolute last resort
-                link_cmd += " -L./build -leshkol-static";
-                eshkol_debug("WARNING: Could not find libeshkol-static.a, using -L./build");
+        if (const char* env_lib = std::getenv("ESHKOL_LIB_DIR")) {
+            auto env_path = std::filesystem::path(env_lib) / runtime_library_name;
+            if (std::filesystem::exists(env_path)) {
+                runtime_lib_path = env_path;
             }
         }
-        
+
+        if (runtime_lib_path.empty() && !exe_dir.empty()) {
+            std::vector<std::filesystem::path> candidates = {
+                exe_dir / runtime_library_name,
+                exe_dir / "../lib" / runtime_library_name,
+                exe_dir / "../lib/eshkol" / runtime_library_name,
+            };
+            for (const auto& candidate : candidates) {
+                if (std::filesystem::exists(candidate)) {
+                    runtime_lib_path = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (runtime_lib_path.empty() && !cwd.empty()) {
+            std::vector<std::filesystem::path> candidates = {
+                cwd / runtime_library_name,
+                cwd / "build" / runtime_library_name,
+                cwd.parent_path() / "build" / runtime_library_name,
+            };
+            for (const auto& candidate : candidates) {
+                if (std::filesystem::exists(candidate)) {
+                    runtime_lib_path = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (!runtime_lib_path.empty()) {
+            link_args.emplace_back(runtime_lib_path.generic_string());
+            eshkol_debug("Linking with library: %s", runtime_lib_path.string().c_str());
+        } else {
+            link_args.emplace_back(
+                (std::filesystem::path("build") / eshkol::platform::static_library_name("eshkol-static")).generic_string()
+            );
+            eshkol_debug("WARNING: Could not resolve runtime library path, falling back to build directory");
+        }
+
         // Add linked libraries
         if (linked_libs && num_linked_libs > 0) {
             for (size_t i = 0; i < num_linked_libs; i++) {
                 if (linked_libs[i]) {
-                    link_cmd += " -l" + std::string(linked_libs[i]);
+                    link_args.emplace_back("-l" + std::string(linked_libs[i]));
                 }
             }
         }
 
         // Add BLAS framework/library (required for libeshkol-static.a BLAS functions)
 #ifdef __APPLE__
-        // Link with Accelerate framework for BLAS (Apple Silicon optimized)
-        link_cmd += " -framework Accelerate";
-#elif defined(__linux__)
-        // Link with OpenBLAS on Linux
-        link_cmd += " -lopenblas";
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("Accelerate");
+#elif defined(__linux__) || defined(_WIN32)
+        append_host_runtime_link_args(link_args);
 #endif
 
         // Add GPU frameworks/libraries (for GPU-accelerated tensor operations)
-        // Metal: System framework on macOS, always safe to link (like Accelerate)
-        // CUDA: Not a system library, requires explicit detection (handled by cmake)
 #ifdef __APPLE__
-        // Metal and MetalPerformanceShaders for GPU on macOS
-        link_cmd += " -framework Metal -framework MetalPerformanceShaders -framework Foundation";
-        link_cmd += " -lobjc";  // Objective-C runtime
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("Metal");
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("MetalPerformanceShaders");
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("Foundation");
+        link_args.emplace_back("-lobjc");
 #endif
 
-        // Set generous stack size for deep recursion support
-        // macOS: main thread stack size is set at link time via Mach-O header
-        // Linux: -z stacksize sets the PT_GNU_STACK segment
 #ifdef __APPLE__
-        link_cmd += " -Wl,-stack_size,0x20000000";  // 512MB stack
+        link_args.emplace_back("-Wl,-stack_size,0x20000000");
+#elif defined(_WIN32)
+        link_args.emplace_back("-Xlinker");
+        link_args.emplace_back("/STACK:536870912");
 #elif defined(__linux__)
-        link_cmd += " -Wl,-z,stacksize=536870912";  // 512MB stack
+        link_args.emplace_back("-Wl,-z,stack-size=536870912");
 #endif
 
-        link_cmd += " -o " + std::string(filename);
-        
+        link_args.emplace_back("-o");
+        link_args.emplace_back(output_path.generic_string());
+#ifndef _WIN32
+        link_args.emplace_back("-lm");
+#endif
+
+        std::string link_cmd;
+        for (const auto& arg : link_args) {
+            if (!link_cmd.empty()) {
+                link_cmd.push_back(' ');
+            }
+            link_cmd += eshkol::platform::shell_quote(arg);
+        }
+
         eshkol_info("Linking executable: %s", link_cmd.c_str());
-        int result = system(link_cmd.c_str());
-        
+        int result = eshkol::platform::run_command(link_args);
+
         // Clean up temporary object file
         std::remove(temp_obj.c_str());
-        
+
         if (result != 0) {
             eshkol_error("Linking failed with exit code %d", result);
             return -1;
         }
-        
-        eshkol_info("Successfully generated executable: %s", filename);
+
+        eshkol_info("Successfully generated executable: %s", output_path.generic_string().c_str());
         return 0;
-        
+
     } catch (const std::exception& e) {
         eshkol_error("Exception during executable generation: %s", e.what());
         // Clean up temp file on error
@@ -29779,8 +29934,7 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
 
         // Set target triple for WebAssembly
         std::string target_triple = "wasm32-unknown-unknown";
-
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
         Triple wasm_triple(target_triple);
         module->setTargetTriple(wasm_triple);
 #else
@@ -29789,7 +29943,7 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
 
         // Lookup WebAssembly target
         std::string error;
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
         const Target* target = TargetRegistry::lookupTarget(wasm_triple, error);
 #else
         const Target* target = TargetRegistry::lookupTarget(target_triple, error);
@@ -29809,13 +29963,12 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
         // Use Reloc::Static for standalone WASM modules loaded via WebAssembly.instantiate().
         // Reloc::PIC_ generates GOT (Global Offset Table) entries that require a dynamic
         // linker — browsers reject these with "Import GOT.func: module is not an object".
-#if LLVM_VERSION_MAJOR >= 18
         std::unique_ptr<TargetMachine> target_machine(
+#if LLVM_VERSION_MAJOR >= 21
             target->createTargetMachine(wasm_triple, cpu, features,
                                        target_options, Reloc::Static, std::nullopt,
                                        codegen_opt));
 #else
-        std::unique_ptr<TargetMachine> target_machine(
             target->createTargetMachine(target_triple, cpu, features,
                                        target_options, Reloc::Static, std::nullopt,
                                        codegen_opt));
@@ -29906,4 +30059,3 @@ int eshkol_compile_llvm_ir_to_wasm_file(LLVMModuleRef module_ref, const char* fi
 } // extern "C"
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED
-

@@ -16,7 +16,7 @@
 
 ## Overview
 
-Eshkol compiles programs to **native executables via LLVM 17**. The compilation pipeline:
+Eshkol compiles programs to **native executables via LLVM 21**. The compilation pipeline:
 
 ```
 .esk source → Macro expansion → AST → HoTT type checking → LLVM IR → Optimization → Native code
@@ -35,7 +35,7 @@ Eshkol compiles programs to **native executables via LLVM 17**. The compilation 
 
 ### Required
 
-- **LLVM 17** (core code generation backend)
+- **LLVM 21** (core code generation backend for lite/native builds)
 - **CMake 3.14+** (build system)
 - **C++20 compiler** (GCC 11+, Clang 14+, or Apple Clang 15+)
 - **Ninja** (recommended build tool, faster than Make)
@@ -81,7 +81,7 @@ ls build/eshkol-*
 ```bash
 # Install dependencies
 sudo apt-get install -y \
-    llvm-17 llvm-17-dev clang-17 \
+    llvm-21 llvm-21-dev clang-21 \
     cmake ninja-build build-essential \
     libopenblas-dev  # Optional: BLAS acceleration
 
@@ -94,18 +94,28 @@ cmake --build build -j$(nproc)
 
 ```bash
 # Install via Homebrew
-brew install llvm@17 cmake ninja
+brew install llvm@21 cmake ninja
 
 # Configure with LLVM path
 cmake -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
-    -DLLVM_DIR=$(brew --prefix llvm@17)/lib/cmake/llvm
+    -DLLVM_DIR=$(brew --prefix llvm@21)/lib/cmake/llvm
 
 # Build
 cmake --build build -j$(sysctl -n hw.ncpu)
 ```
 
 Apple Accelerate (BLAS) and Metal (GPU) are auto-detected on macOS.
+
+#### Windows
+
+```powershell
+# In Developer PowerShell for VS 2022
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL `
+    -DCMAKE_BUILD_TYPE=Release `
+    -DLLVM_DIR="C:/Program Files/LLVM/lib/cmake/llvm"
+cmake --build build --config Release --parallel
+```
 
 #### Fedora/RHEL
 
@@ -372,7 +382,7 @@ Eshkol can compile programs to WebAssembly:
 eshkol-run program.esk --wasm -o program.wasm
 ```
 
-This uses the WebAssembly backend built into LLVM 17. The generated `.wasm` file can be run in any WASM runtime (wasmtime, wasmer, browser, etc.).
+This uses the WebAssembly backend built into LLVM 21. The generated `.wasm` file can be run in any WASM runtime (wasmtime, wasmer, browser, etc.).
 
 ---
 
@@ -452,11 +462,11 @@ CMake Error: Could not find LLVM
 
 ```bash
 # Ubuntu/Debian
-sudo apt-get install llvm-17-dev
+sudo apt-get install llvm-21-dev
 
 # macOS
-brew install llvm@17
-export LLVM_DIR=$(brew --prefix llvm@17)/lib/cmake/llvm
+brew install llvm@21
+export LLVM_DIR=$(brew --prefix llvm@21)/lib/cmake/llvm
 
 # Then reconfigure
 cmake -B build -G Ninja -DLLVM_DIR=$LLVM_DIR

@@ -15,6 +15,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/logger.h>
+#include <eshkol/runtime_exports.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Function.h>
@@ -109,6 +110,9 @@ static llvm::Function* getOrDeclareFputc(CodegenContext& ctx);
 static llvm::Function* getOrDeclareFgetc(CodegenContext& ctx);
 static llvm::Function* getOrDeclareUngetc(CodegenContext& ctx);
 static llvm::Function* getOrDeclareDisplayToPort(CodegenContext& ctx);
+static llvm::Function* getOrDeclareStdoutStream(CodegenContext& ctx);
+static llvm::Function* getOrDeclareStdinStream(CodegenContext& ctx);
+static llvm::Function* getOrDeclareStderrStream(CodegenContext& ctx);
 
 llvm::Value* StringIOCodegen::newline(const eshkol_operations_t* op) {
     // (newline) or (newline port) — R7RS: optional port argument
@@ -1714,6 +1718,10 @@ static llvm::Function* getOrDeclareFwrite(CodegenContext& ctx) {
 
 // Helper to get stdin global variable
 static llvm::Value* getStdin(CodegenContext& ctx) {
+#ifdef _WIN32
+    llvm::Function* stdin_stream_func = getOrDeclareStdinStream(ctx);
+    return ctx.builder().CreateCall(stdin_stream_func, {});
+#else
 #ifdef __APPLE__
     const char* stdin_name = "__stdinp";
 #else
@@ -1726,10 +1734,15 @@ static llvm::Value* getStdin(CodegenContext& ctx) {
             llvm::GlobalVariable::ExternalLinkage, nullptr, stdin_name);
     }
     return ctx.builder().CreateLoad(ctx.ptrType(), stdin_var);
+#endif
 }
 
 // Helper to get stderr global variable
 static llvm::Value* getStderr(CodegenContext& ctx) {
+#ifdef _WIN32
+    llvm::Function* stderr_stream_func = getOrDeclareStderrStream(ctx);
+    return ctx.builder().CreateCall(stderr_stream_func, {});
+#else
 #ifdef __APPLE__
     const char* stderr_name = "__stderrp";
 #else
@@ -1742,11 +1755,16 @@ static llvm::Value* getStderr(CodegenContext& ctx) {
             llvm::GlobalVariable::ExternalLinkage, nullptr, stderr_name);
     }
     return ctx.builder().CreateLoad(ctx.ptrType(), stderr_var);
+#endif
 }
 
 // Helper to get stdout global variable
 // On macOS/Darwin, stdout is __stdoutp; on Linux it's stdout
 static llvm::Value* getStdout(CodegenContext& ctx) {
+#ifdef _WIN32
+    llvm::Function* stdout_stream_func = getOrDeclareStdoutStream(ctx);
+    return ctx.builder().CreateCall(stdout_stream_func, {});
+#else
 #ifdef __APPLE__
     const char* stdout_name = "__stdoutp";
 #else
@@ -1759,6 +1777,46 @@ static llvm::Value* getStdout(CodegenContext& ctx) {
             llvm::GlobalVariable::ExternalLinkage, nullptr, stdout_name);
     }
     return ctx.builder().CreateLoad(ctx.ptrType(), stdout_var);
+#endif
+}
+
+static llvm::Function* getOrDeclareStdoutStream(CodegenContext& ctx) {
+    if (auto* existing = ctx.module().getFunction(runtime::stdout_stream_symbol)) {
+        return existing;
+    }
+    auto* ft = llvm::FunctionType::get(ctx.ptrType(), {}, false);
+    return llvm::Function::Create(
+        ft,
+        llvm::Function::ExternalLinkage,
+        runtime::stdout_stream_symbol,
+        ctx.module()
+    );
+}
+
+static llvm::Function* getOrDeclareStdinStream(CodegenContext& ctx) {
+    if (auto* existing = ctx.module().getFunction(runtime::stdin_stream_symbol)) {
+        return existing;
+    }
+    auto* ft = llvm::FunctionType::get(ctx.ptrType(), {}, false);
+    return llvm::Function::Create(
+        ft,
+        llvm::Function::ExternalLinkage,
+        runtime::stdin_stream_symbol,
+        ctx.module()
+    );
+}
+
+static llvm::Function* getOrDeclareStderrStream(CodegenContext& ctx) {
+    if (auto* existing = ctx.module().getFunction(runtime::stderr_stream_symbol)) {
+        return existing;
+    }
+    auto* ft = llvm::FunctionType::get(ctx.ptrType(), {}, false);
+    return llvm::Function::Create(
+        ft,
+        llvm::Function::ExternalLinkage,
+        runtime::stderr_stream_symbol,
+        ctx.module()
+    );
 }
 
 llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op) {

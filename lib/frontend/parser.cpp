@@ -16,14 +16,19 @@
 #include <sstream>
 #include <vector>
 #include <set>
+#if defined(__APPLE__) || defined(__linux__)
 #include <pthread.h>
+#endif
 
 // Stack space check: detect remaining stack and bail before overflow.
 // Uses platform APIs to measure actual stack consumption rather than
 // imposing an arbitrary depth limit.
 static bool check_stack_space() {
     static const size_t STACK_SAFETY_MARGIN = 65536; // 64 KB reserved
-#ifdef __APPLE__
+#ifdef _WIN32
+    (void)STACK_SAFETY_MARGIN;
+    return true;
+#elif defined(__APPLE__)
     pthread_t self = pthread_self();
     void* stack_addr = pthread_get_stackaddr_np(self);
     size_t stack_size = pthread_get_stacksize_np(self);

@@ -19,13 +19,18 @@
 #include <string.h>
 #include <assert.h>
 #include <setjmp.h>
+#ifndef _WIN32
 #include <pthread.h>
 #include <sys/resource.h>
+#endif
 
 #ifdef __cplusplus
 #include <new>      // for std::bad_alloc
 #include <stdexcept>
 #include <atomic>
+#ifdef _WIN32
+#include <mutex>
+#endif
 #endif
 
 // Default alignment for memory allocations
@@ -48,6 +53,10 @@ bool __ad_mode_active = false;
 // but setrlimit still helps for spawned threads and as a Linux fallback.
 // Env var ESHKOL_STACK_SIZE overrides the default (in bytes).
 extern "C" void eshkol_init_stack_size() {
+#ifdef _WIN32
+    // Windows thread stack sizing is handled at link/thread creation time.
+    return;
+#else
     const rlim_t default_stack = 512ULL * 1024 * 1024;  // 512MB
     rlim_t target = default_stack;
 
@@ -70,6 +79,7 @@ extern "C" void eshkol_init_stack_size() {
             setrlimit(RLIMIT_STACK, &rl);
         }
     }
+#endif
 }
 
 // Debug helper to print AD mode state
@@ -105,7 +115,7 @@ thread_local uint64_t __outer_ad_node_depth = 0;
 
 // Global shared arena for REPL mode (persistent across evaluations)
 // Atomic to synchronize writes (REPL init) and reads (runtime exception handlers)
-std::atomic<arena_t*> __repl_shared_arena{nullptr};
+extern "C" std::atomic<arena_t*> __repl_shared_arena{nullptr};
 
 // Global command-line arguments (for (command-line) procedure)
 // In REPL mode, these remain zero/null since there's no real main()
@@ -185,6 +195,14 @@ arena_t* arena_create_threadsafe(size_t default_block_size) {
     }
 
     // Allocate and initialize mutex
+#ifdef _WIN32
+    std::mutex* mutex = new (std::nothrow) std::mutex();
+    if (!mutex) {
+        eshkol_error("Failed to allocate mutex for thread-safe arena");
+        arena_destroy(arena);
+        return nullptr;
+    }
+#else
     pthread_mutex_t* mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
     if (!mutex) {
         eshkol_error("Failed to allocate mutex for thread-safe arena");
@@ -198,6 +216,7 @@ arena_t* arena_create_threadsafe(size_t default_block_size) {
         arena_destroy(arena);
         return nullptr;
     }
+#endif
 
     arena->mutex = mutex;
     arena->thread_safe = true;
@@ -209,13 +228,21 @@ arena_t* arena_create_threadsafe(size_t default_block_size) {
 // Thread-safety control functions
 void arena_lock(arena_t* arena) {
     if (arena && arena->thread_safe && arena->mutex) {
+#ifdef _WIN32
+        static_cast<std::mutex*>(arena->mutex)->lock();
+#else
         pthread_mutex_lock((pthread_mutex_t*)arena->mutex);
+#endif
     }
 }
 
 void arena_unlock(arena_t* arena) {
     if (arena && arena->thread_safe && arena->mutex) {
+#ifdef _WIN32
+        static_cast<std::mutex*>(arena->mutex)->unlock();
+#else
         pthread_mutex_unlock((pthread_mutex_t*)arena->mutex);
+#endif
     }
 }
 
@@ -224,8 +251,12 @@ void arena_destroy(arena_t* arena) {
 
     // Destroy mutex if thread-safe
     if (arena->thread_safe && arena->mutex) {
+#ifdef _WIN32
+        delete static_cast<std::mutex*>(arena->mutex);
+#else
         pthread_mutex_destroy((pthread_mutex_t*)arena->mutex);
         free(arena->mutex);
+#endif
     }
 
     // Free all blocks
@@ -1518,8 +1549,11 @@ thread_local uint64_t __region_stack_depth = 0;
 __attribute__((weak)) arena_t* __global_arena = nullptr;
 
 // Thread-safe global arena initialization
+#ifdef _WIN32
+static std::once_flag global_arena_once;
+#else
 static pthread_once_t global_arena_once = PTHREAD_ONCE_INIT;
-static pthread_mutex_t global_arena_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 static void init_global_arena_internal() {
     // Create a thread-safe arena for global allocations
@@ -1531,8 +1565,12 @@ static void init_global_arena_internal() {
 
 // Get or create the global arena (thread-safe)
 arena_t* get_global_arena() {
-    // Use pthread_once for thread-safe initialization
+    // Use platform once semantics for thread-safe initialization.
+#ifdef _WIN32
+    std::call_once(global_arena_once, init_global_arena_internal);
+#else
     pthread_once(&global_arena_once, init_global_arena_internal);
+#endif
     return __global_arena;
 }
 
@@ -1803,14 +1841,17 @@ arena_tagged_cons_cell_t* region_escape_tagged_cons_cell(const arena_tagged_cons
     return copy;
 }
 
-eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_t val) {
+static eshkol_tagged_value_t region_escape_tagged_value_impl(eshkol_tagged_value_t val) {
     // For immediate types (int, double, bool, char, etc.) — no escape needed
     uint8_t type = val.type;
 
-    // Check if this is a heap pointer type (might point into region memory)
-    bool is_heap = (type == ESHKOL_VALUE_HEAP_PTR) ||
-                   (type == ESHKOL_VALUE_CALLABLE) ||
-                   ((type & ESHKOL_PORT_ANY_FLAG) != 0);  // ports
+    // Ports are encoded as HEAP_PTR plus port flags; exact numbers also use 0x10,
+    // so a raw port-bit mask would misclassify exact immediates as heap pointers.
+    bool is_port = ((type & ESHKOL_PORT_ANY_FLAG) != 0) &&
+                   ((type & ESHKOL_VALUE_HEAP_PTR) == ESHKOL_VALUE_HEAP_PTR);
+
+    // Check if this is a pointer-like type (might point into region memory)
+    bool is_heap = ESHKOL_IS_ANY_PTR_TYPE(type) || is_port;
 
     if (!is_heap) {
         // Immediate value — safe to return as-is
@@ -1859,6 +1900,19 @@ eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_t val) {
     current->escape_count++;
 
     return val;
+}
+
+extern "C" eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_t val) {
+    return region_escape_tagged_value_impl(val);
+}
+
+extern "C" void region_escape_tagged_value_into(eshkol_tagged_value_t* out, const eshkol_tagged_value_t* val) {
+    if (!out) return;
+    if (!val) {
+        memset(out, 0, sizeof(*out));
+        return;
+    }
+    *out = region_escape_tagged_value_impl(*val);
 }
 
 // ===== END OALR IMPLEMENTATION =====
@@ -3847,6 +3901,13 @@ static eshkol_tagged_value_t call_thunk_closure(eshkol_closure_t* closure) {
         num_captures = CLOSURE_ENV_GET_NUM_CAPTURES(closure->env->num_captures);
     }
 
+    eshkol_tagged_value_t result;
+    memset(&result, 0, sizeof(result));
+    result.type = ESHKOL_VALUE_NULL;
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+    // AArch64 returns this 16-byte aggregate in registers, so the thunk bridge
+    // must match the direct return ABI instead of passing a hidden result slot.
     typedef eshkol_tagged_value_t (*fn0_t)(void);
     typedef eshkol_tagged_value_t (*fn1_t)(void*);
     typedef eshkol_tagged_value_t (*fn2_t)(void*, void*);
@@ -3854,13 +3915,57 @@ static eshkol_tagged_value_t call_thunk_closure(eshkol_closure_t* closure) {
     typedef eshkol_tagged_value_t (*fn4_t)(void*, void*, void*, void*);
 
     switch (num_captures) {
-        case 0: return ((fn0_t)(uintptr_t)closure->func_ptr)();
-        case 1: return ((fn1_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0]);
-        case 2: return ((fn2_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1]);
-        case 3: return ((fn3_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2]);
-        case 4: return ((fn4_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2], &closure->env->captures[3]);
-        default: return ((fn0_t)(uintptr_t)closure->func_ptr)();
+        case 0:
+            result = ((fn0_t)(uintptr_t)closure->func_ptr)();
+            break;
+        case 1:
+            result = ((fn1_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0]);
+            break;
+        case 2:
+            result = ((fn2_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1]);
+            break;
+        case 3:
+            result = ((fn3_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2]);
+            break;
+        case 4:
+            result = ((fn4_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2], &closure->env->captures[3]);
+            break;
+        default:
+            result = ((fn0_t)(uintptr_t)closure->func_ptr)();
+            break;
     }
+#else
+    // The currently-supported x86/Windows thunk ABI uses a hidden return buffer,
+    // so the runtime bridge must pass the result slot first.
+    typedef void (*fn0_t)(eshkol_tagged_value_t*);
+    typedef void (*fn1_t)(eshkol_tagged_value_t*, void*);
+    typedef void (*fn2_t)(eshkol_tagged_value_t*, void*, void*);
+    typedef void (*fn3_t)(eshkol_tagged_value_t*, void*, void*, void*);
+    typedef void (*fn4_t)(eshkol_tagged_value_t*, void*, void*, void*, void*);
+
+    switch (num_captures) {
+        case 0:
+            ((fn0_t)(uintptr_t)closure->func_ptr)(&result);
+            break;
+        case 1:
+            ((fn1_t)(uintptr_t)closure->func_ptr)(&result, &closure->env->captures[0]);
+            break;
+        case 2:
+            ((fn2_t)(uintptr_t)closure->func_ptr)(&result, &closure->env->captures[0], &closure->env->captures[1]);
+            break;
+        case 3:
+            ((fn3_t)(uintptr_t)closure->func_ptr)(&result, &closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2]);
+            break;
+        case 4:
+            ((fn4_t)(uintptr_t)closure->func_ptr)(&result, &closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2], &closure->env->captures[3]);
+            break;
+        default:
+            ((fn0_t)(uintptr_t)closure->func_ptr)(&result);
+            break;
+    }
+#endif
+
+    return result;
 }
 
 // Call a thunk stored as a tagged value (CALLABLE type)
@@ -3922,10 +4027,22 @@ static int num_string_output_ports = 0;
 
 extern "C" void* eshkol_open_input_string(void* arena_void, const char* str, int64_t len) {
     if (len == 0) {
-        // fmemopen with size 0 returns NULL on macOS.
         // tmpfile() is portable and returns EOF immediately on first read.
         return tmpfile();
     }
+#ifdef _WIN32
+    (void)arena_void;
+    FILE* fp = tmpfile();
+    if (!fp) {
+        return NULL;
+    }
+    if (fwrite(str, 1, (size_t)len, fp) != (size_t)len) {
+        fclose(fp);
+        return NULL;
+    }
+    rewind(fp);
+    return fp;
+#else
     arena_t* arena = (arena_t*)arena_void;
     // Copy string to arena so fmemopen has a stable buffer
     char* copy = (char*)arena_allocate(arena, len + 1);
@@ -3933,6 +4050,7 @@ extern "C" void* eshkol_open_input_string(void* arena_void, const char* str, int
     copy[len] = '\0';
     FILE* fp = fmemopen(copy, len, "r");
     return fp;
+#endif
 }
 
 extern "C" void* eshkol_open_output_string(void) {
@@ -3940,8 +4058,12 @@ extern "C" void* eshkol_open_output_string(void) {
     int idx = num_string_output_ports++;
     string_output_ports[idx].buf = NULL;
     string_output_ports[idx].size = 0;
+#ifdef _WIN32
+    FILE* fp = tmpfile();
+#else
     FILE* fp = open_memstream(&string_output_ports[idx].buf,
                               &string_output_ports[idx].size);
+#endif
     string_output_ports[idx].fp = fp;
     return fp;
 }
@@ -3952,12 +4074,34 @@ extern "C" void* eshkol_get_output_string(void* arena_void, void* fp_void) {
     fflush(fp);
     for (int i = 0; i < num_string_output_ports; i++) {
         if (string_output_ports[i].fp == fp) {
+#ifdef _WIN32
+            long saved_pos = ftell(fp);
+            if (saved_pos < 0) {
+                saved_pos = 0;
+            }
+            if (fseek(fp, 0, SEEK_END) != 0) {
+                break;
+            }
+            long end_pos = ftell(fp);
+            if (end_pos < 0) {
+                break;
+            }
+            rewind(fp);
+            size_t len = (size_t)end_pos;
+            char* result = (char*)arena_allocate_with_header(
+                arena, len + 1, HEAP_SUBTYPE_STRING, 0);
+            size_t read_len = len > 0 ? fread(result, 1, len, fp) : 0;
+            result[read_len] = '\0';
+            fseek(fp, saved_pos, SEEK_SET);
+            return result;
+#else
             size_t len = string_output_ports[i].size;
             char* result = (char*)arena_allocate_with_header(
                 arena, len + 1, HEAP_SUBTYPE_STRING, 0);
             memcpy(result, string_output_ports[i].buf, len);
             result[len] = '\0';
             return result;
+#endif
         }
     }
     // Not found - return empty string

@@ -56,7 +56,7 @@ a binary WASM module via `PassManager::run`. The output is a self-contained
 WASM target availability is guarded by a compile-time flag:
 
 ```cpp
-// System LLVM17 builds include WebAssembly; XLA/StableHLO builds may not.
+// System LLVM 21 builds include WebAssembly; XLA/StableHLO builds may not.
 #define ESHKOL_HAS_WASM_TARGET 1   // default system build
 #define ESHKOL_HAS_WASM_TARGET 0   // ESHKOL_XLA_FULL_MLIR builds
 ```

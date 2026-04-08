@@ -25,7 +25,7 @@ Eshkol is a compiled programming language for scientific computing and machine l
 git clone https://github.com/tsotchke/eshkol.git
 cd eshkol
 
-# Build (requires LLVM 17, CMake 3.14+, C++20 compiler)
+# Build (requires LLVM 21, CMake 3.14+, C++20 compiler)
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 
@@ -34,7 +34,7 @@ build/eshkol-run   # AOT compiler
 build/eshkol-repl  # JIT REPL
 ```
 
-> **Requirements**: LLVM 17, CMake 3.14+, C++20 compiler (GCC 11+, Clang 14+), Ninja (recommended)
+> **Requirements**: LLVM 21, CMake 3.14+, C++20 compiler (GCC 11+, Clang 14+), Ninja (recommended)
 
 ### Hello World
 
