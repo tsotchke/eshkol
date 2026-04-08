@@ -264,6 +264,62 @@ function Show-ProcessFailureDetails {
     }
 }
 
+function Get-ProcessTaskText {
+    param(
+        $Task,
+        [string]$Label
+    )
+
+    if (-not $Task) {
+        return ""
+    }
+
+    try {
+        return $Task.GetAwaiter().GetResult()
+    } catch [System.OperationCanceledException] {
+        return ""
+    } catch [System.ObjectDisposedException] {
+        return ""
+    } catch [System.AggregateException] {
+        $messages = @(
+            $_.Exception.Flatten().InnerExceptions |
+                Where-Object {
+                    $_ -isnot [System.OperationCanceledException] -and
+                    $_ -isnot [System.ObjectDisposedException]
+                } |
+                ForEach-Object { $_.Message }
+        )
+        if ($messages.Count -eq 0) {
+            return ""
+        }
+        return ("[process {0} capture failed: {1}]" -f $Label, ($messages -join "; "))
+    } catch {
+        return ("[process {0} capture failed: {1}]" -f $Label, $_.Exception.Message)
+    }
+}
+
+function New-ProcessCaptureResult {
+    param(
+        [System.Diagnostics.Process]$Process,
+        $StdOutTask,
+        $StdErrTask,
+        [int]$ExitCode,
+        [bool]$TimedOut
+    )
+
+    $null = $Process.WaitForExit()
+    $stdout = Get-ProcessTaskText -Task $StdOutTask -Label "stdout"
+    $stderr = Get-ProcessTaskText -Task $StdErrTask -Label "stderr"
+
+    return [pscustomobject]@{
+        ExitCode = $ExitCode
+        TimedOut = $TimedOut
+        StdOut   = $stdout
+        StdErr   = $stderr
+        Output   = Join-ProcessOutput -StdOut $stdout -StdErr $stderr
+    }
+}
+
 function Invoke-ProcessCapture {
     param(
         [string]$FilePath,
@@ -311,36 +367,11 @@ function Invoke-ProcessCapture {
                     $process.Kill($true)
                 } catch {
                 }
-                $null = $process.WaitForExit()
-                $stdoutTask.Wait()
-                $stderrTask.Wait()
-                $stdout = $stdoutTask.Result
-                $stderr = $stderrTask.Result
-                [pscustomobject]@{
-                    ExitCode = 124
-                    TimedOut = $true
-                    StdOut   = $stdout
-                    StdErr   = $stderr
-                    Output   = Join-ProcessOutput -StdOut $stdout -StdErr $stderr
-                }
-                return
+                return (New-ProcessCaptureResult -Process $process -StdOutTask $stdoutTask -StdErrTask $stderrTask -ExitCode 124 -TimedOut $true)
             }
-        } else {
-            $null = $process.WaitForExit()
         }
 
-        $stdoutTask.Wait()
-        $stderrTask.Wait()
-        $stdout = $stdoutTask.Result
-        $stderr = $stderrTask.Result
-
-        [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            TimedOut = $false
-            StdOut   = $stdout
-            StdErr   = $stderr
-            Output   = Join-ProcessOutput -StdOut $stdout -StdErr $stderr
-        }
+        return (New-ProcessCaptureResult -Process $process -StdOutTask $stdoutTask -StdErrTask $stderrTask -ExitCode $process.ExitCode -TimedOut $false)
     } finally {
         $process.Dispose()
     }
